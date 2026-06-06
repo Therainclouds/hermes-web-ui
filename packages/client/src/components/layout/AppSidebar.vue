@@ -68,6 +68,16 @@ const showChangelog = ref(false);
 function openChangelog() {
   showChangelog.value = true;
 }
+
+async function handleUpdateClick() {
+  await appStore.doUpdate();
+}
+
+async function handleReloadClick() {
+  if (typeof window !== 'undefined') {
+    window.location.reload();
+  }
+}
 </script>
 
 <template>
@@ -365,6 +375,37 @@ function openChangelog() {
         <span class="version-text" @click="openChangelog">{{ brandName }} v{{ appStore.serverVersion || "0.1.0" }}</span>
         <ThemeSwitch />
       </div>
+      <div
+        v-if="appStore.updateEnabled && appStore.updateAvailable && !appStore.updating"
+        class="sidebar-update-action"
+      >
+        <button
+          class="sidebar-update-btn"
+          :disabled="appStore.updating"
+          @click="handleUpdateClick"
+        >
+          <span class="sidebar-update-label">
+            {{ t('sidebar.updateVersion', { version: appStore.latestVersion || appStore.serverVersion }) }}
+          </span>
+        </button>
+      </div>
+      <div
+        v-else-if="appStore.updateEnabled && appStore.clientOutdated && !appStore.updating"
+        class="sidebar-update-action"
+      >
+        <button
+          class="sidebar-update-btn"
+          :disabled="appStore.updating"
+          @click="handleReloadClick"
+        >
+          <span class="sidebar-update-label">
+            {{ t('sidebar.reloadClientVersion', { version: appStore.serverVersion }) }}
+          </span>
+        </button>
+      </div>
+      <div v-else-if="appStore.updating" class="sidebar-update-action sidebar-update-progress">
+        <span class="sidebar-update-label">{{ t('sidebar.updating') }}</span>
+      </div>
       <div v-if="appStore.updateEnabled && appStore.updateSourceLabel" class="update-source">
         {{ t('sidebar.updateSource', { source: appStore.updateSourceLabel }) }}
       </div>
@@ -418,6 +459,54 @@ function openChangelog() {
   font-size: 12px;
   line-height: 1.4;
   color: $text-secondary;
+}
+
+.sidebar-update-action {
+  margin-top: 8px;
+}
+
+.sidebar-update-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid $primary-color;
+  background-color: rgba(var(--primary-rgb), 0.12);
+  color: $primary-color;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color $transition-normal, color $transition-normal;
+
+  &:hover:not(:disabled) {
+    background-color: $primary-color;
+    color: #fff;
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+  }
+}
+
+.sidebar-update-progress {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: $primary-color;
+  border-radius: 6px;
+  background-color: rgba(var(--primary-rgb), 0.08);
+}
+
+.sidebar-update-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sidebar-logo {
