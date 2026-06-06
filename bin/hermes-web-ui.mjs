@@ -25,6 +25,9 @@ const WEB_UI_DB_FILE = join(WEB_UI_HOME, 'hermes-web-ui.db')
 const DEFAULT_PORT = 8648
 const DEFAULT_USERNAME = 'quanthermes'
 const DEFAULT_PASSWORD = '12345678'
+const STOP_POLL_INTERVAL_MS = 100
+const DAEMON_RESTART_GRACE_MS = 5000
+const DAEMON_STOP_GRACE_MS = 15000
 
 // 鈹€鈹€鈹€ Auto-fix node-pty native module 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 function ensureNativeModules() {
@@ -745,6 +748,10 @@ function runUpdateInstall(npm) {
       process.exit(code ?? 1)
     }
   })
+}
+
+function getDaemonStopGraceMs({ restart } = {}) {
+  return restart ? DAEMON_RESTART_GRACE_MS : DAEMON_STOP_GRACE_MS
 }
 
 if (process.argv[1] && realpathSync(resolve(process.argv[1])) === __filename) {
