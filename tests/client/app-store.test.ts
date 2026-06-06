@@ -193,7 +193,7 @@ describe('App Store', () => {
     store.updateEnabled = true
 
     const updatePromise = store.doUpdate()
-    await vi.advanceTimersByTimeAsync(2 * 60 * 1000)
+    await vi.advanceTimersByTimeAsync(10 * 60 * 1000)
     const ok = await updatePromise
 
     expect(ok).toBe(true)

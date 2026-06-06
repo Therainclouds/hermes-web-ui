@@ -59,6 +59,11 @@ function normalizePackageName(value: string | undefined): string {
   return (value || '').trim()
 }
 
+function normalizeUpdateStrategy(value: string | undefined): 'npm-package' | 'source-deploy' {
+  const normalized = (value || '').trim().toLowerCase()
+  return normalized === 'source-deploy' ? 'source-deploy' : 'npm-package'
+}
+
 function getDefaultUpdateCliBin(packageName: string): string {
   const packageBasename = packageName.split('/').filter(Boolean).pop() || packageName
   return `${packageBasename}.mjs`
@@ -96,10 +101,28 @@ export const config = {
   corsOrigins: getCorsOrigins(),
   update: {
     enabled: parseBoolean(process.env.WEBUI_UPDATE_ENABLED),
+    strategy: normalizeUpdateStrategy(process.env.WEBUI_UPDATE_STRATEGY),
     packageName: updatePackageName,
     registry: updateRegistry,
     sourceLabel: (process.env.WEBUI_UPDATE_SOURCE_LABEL || '').trim() || getDefaultUpdateSourceLabel(updatePackageName, updateRegistry),
     distTag: (process.env.WEBUI_UPDATE_DIST_TAG || 'latest').trim() || 'latest',
     cliBin: (process.env.WEBUI_UPDATE_CLI_BIN || '').trim() || getDefaultUpdateCliBin(updatePackageName || 'hermes-web-ui'),
+    script: (process.env.WEBUI_UPDATE_SCRIPT || '').trim(),
   },
+}
+
+export function hasConfiguredUpdateCheck(
+  envUpdate: typeof config.update = config.update,
+): boolean {
+  return Boolean(envUpdate.enabled && envUpdate.packageName && envUpdate.registry)
+}
+
+export function hasConfiguredUpdateExecution(
+  envUpdate: typeof config.update = config.update,
+): boolean {
+  if (!hasConfiguredUpdateCheck(envUpdate))
+    return false
+  if (envUpdate.strategy === 'source-deploy')
+    return Boolean(envUpdate.script)
+  return Boolean(envUpdate.cliBin)
 }

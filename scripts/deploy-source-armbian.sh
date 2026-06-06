@@ -470,6 +470,27 @@ EOF
 
   run chown root:root "${SERVICE_ENV_FILE}"
   run chmod 0644 "${SERVICE_ENV_FILE}"
+
+  local update_env_name update_env_value
+  for update_env_name in \
+    WEBUI_UPDATE_ENABLED \
+    WEBUI_UPDATE_PACKAGE \
+    WEBUI_UPDATE_REGISTRY \
+    WEBUI_UPDATE_CLI_BIN \
+    WEBUI_UPDATE_SOURCE_LABEL \
+    WEBUI_UPDATE_DIST_TAG \
+    WEBUI_UPDATE_STRATEGY \
+    WEBUI_UPDATE_SCRIPT \
+    WEBUI_UPDATE_REPO
+  do
+    update_env_value="${!update_env_name:-}"
+    if [[ -n "${update_env_value}" ]]; then
+      run tee -a "${SERVICE_ENV_FILE}" >/dev/null <<EOF
+${update_env_name}=${update_env_value}
+EOF
+    fi
+  done
+
   info "Wrote ${SERVICE_ENV_FILE}"
 }
 
@@ -645,8 +666,18 @@ HERMES_INSTALL_FLAGS="${HERMES_INSTALL_FLAGS:---skip-setup --skip-browser}"
 SERVICE_TEMPLATE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hermes-web-ui.service"
 SYSTEMD_SERVICE_NAME="${SYSTEMD_SERVICE_NAME:-hermes-web-ui.service}"
 SERVICE_ENV_FILE="${SERVICE_ENV_FILE:-/etc/default/hermes-web-ui}"
+UPDATE_ONLY_RAW="${DEPLOY_UPDATE_ONLY:-false}"
 APP_USER_HOME=""
 NODE_ARCH=""
+
+case "${UPDATE_ONLY_RAW,,}" in
+  1|true|yes|on)
+    UPDATE_ONLY=true
+    ;;
+  *)
+    UPDATE_ONLY=false
+    ;;
+esac
 
 require_safe_env_value "PORT" "${PORT}"
 require_safe_env_value "BIND_HOST" "${BIND_HOST}"
@@ -662,14 +693,20 @@ echo
 
 require_debian_like
 require_supported_arch
-install_base_packages
+if [[ "${UPDATE_ONLY}" != "true" ]]; then
+  install_base_packages
+else
+  info "Running source deployment in update-only mode."
+fi
 ensure_app_user
 resolve_repo_dir
 prepare_deploy_dirs
 install_node
-install_hermes_agent
-configure_app_user_shell_path
-install_root_hermes_wrapper
+if [[ "${UPDATE_ONLY}" != "true" ]]; then
+  install_hermes_agent
+  configure_app_user_shell_path
+  install_root_hermes_wrapper
+fi
 write_npmrc
 install_webui_dependencies
 check_webui_dependencies
