@@ -90,6 +90,31 @@ print(repository)
 PY
 }
 
+download_file() {
+  local output="$1"
+  shift
+  local url
+  for url in "$@"; do
+    if [[ -z "${url}" ]]; then
+      continue
+    fi
+    info "Downloading ${url}"
+    if curl -fsSL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 300 "${url}" -o "${output}"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+get_codeload_tag_url() {
+  local repo_url="$1"
+  if [[ "${repo_url}" =~ ^https://github\.com/([^/]+)/([^/]+)$ ]]; then
+    printf 'https://codeload.github.com/%s/%s/tar.gz/refs/tags/%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${TARGET_TAG}"
+    return 0
+  fi
+  return 1
+}
+
 download_source_archive() {
   REPO_URL="$(resolve_repo_url || true)"
   if [[ -z "${REPO_URL}" ]]; then
@@ -97,11 +122,15 @@ download_source_archive() {
     exit 1
   fi
 
-  ARCHIVE_URL="${REPO_URL%/}/archive/refs/tags/${TARGET_TAG}.tar.gz"
   TMP_DIR="$(mktemp -d)"
   ARCHIVE_PATH="${TMP_DIR}/source.tar.gz"
-  info "Downloading ${ARCHIVE_URL}"
-  curl -fsSL --retry 2 --retry-delay 2 "${ARCHIVE_URL}" -o "${ARCHIVE_PATH}"
+  local archive_url codeload_url
+  archive_url="${REPO_URL%/}/archive/refs/tags/${TARGET_TAG}.tar.gz"
+  codeload_url="$(get_codeload_tag_url "${REPO_URL}" || true)"
+  if ! download_file "${ARCHIVE_PATH}" "${archive_url}" "${codeload_url}"; then
+    err "Failed to download source archive for ${TARGET_TAG}."
+    exit 1
+  fi
   tar -xzf "${ARCHIVE_PATH}" -C "${TMP_DIR}"
   SOURCE_DIR="$(find "${TMP_DIR}" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
   if [[ -z "${SOURCE_DIR}" || ! -f "${SOURCE_DIR}/package.json" || ! -f "${SOURCE_DIR}/scripts/deploy-source-armbian.sh" ]]; then

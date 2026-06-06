@@ -1,4 +1,4 @@
-﻿# 部署更新运行手册
+# 部署更新运行手册
 
 ## 目标
 
@@ -8,9 +8,23 @@
 
 - npm 包名：`@quanthermes/hermes-web-ui`
 - npm Registry：`https://registry.npmjs.org`
-- 全局安装命令：`npm install -g @quanthermes/hermes-web-ui`
-- 运行命令：`hermes-web-ui start`
-- GitHub Actions 发布：推送 `v*` tag 触发 `.github/workflows/npm-publish.yml`
+- npm 发布触发：推送 `v*` tag 到组织仓库，触发 `.github/workflows/npm-publish.yml`
+- 设备部署模式：源码部署
+- 设备更新模式：`source-deploy`
+- 源码更新仓库：`https://github.com/tangledup-ai/hermes-web-ui`
+
+## 当前推荐模式
+
+- 版本检测来源：npm registry
+- 更新执行方式：源码部署脚本
+- 首次部署入口：`scripts/deploy-source-armbian.sh`
+- 后续页面更新入口：`scripts/update-source-deploy.sh`
+
+这样可以保证：
+
+- 初始安装继续覆盖 `Hermes + Web UI + systemd + 环境文件`
+- 页面更新不再更新错目标
+- 部署路径和更新路径保持一致
 
 ## 自更新工作原理
 
@@ -18,10 +32,10 @@
 2. 后端通过 `/health` 返回当前版本、npm 最新版本、更新源标签和是否可更新。
 3. 前端轮询 `/health`。
 4. 当 `webui_version < webui_latest` 时，sidebar 底部显示更新按钮。
-5. 用户点击更新后，服务端执行：
-   - `npm install -g @quanthermes/hermes-web-ui@latest`
-   - 重启当前 Web UI 服务
-6. 浏览器检测到服务版本变化后自动刷新。
+5. 用户点击更新后，后端先从 npm registry 解析 `latest` 对应的真实版本号。
+6. 在源码部署模式下，后端后台执行 `scripts/update-source-deploy.sh --version <x.y.z>`。
+7. 更新脚本会下载对应 tag 的源码包，覆盖 `/opt/hermes-web-ui`，然后调用 `deploy-source-armbian.sh` 的 `update-only` 模式完成重建、写入环境变量、重启 `systemd` 和健康检查。
+8. 浏览器检测到服务版本变化后自动刷新。
 
 ## 必需环境变量
 
@@ -34,6 +48,21 @@ WEBUI_UPDATE_REGISTRY=https://registry.npmjs.org
 WEBUI_UPDATE_CLI_BIN=hermes-web-ui.mjs
 WEBUI_UPDATE_SOURCE_LABEL=Quanthermes npm
 WEBUI_UPDATE_DIST_TAG=latest
+WEBUI_UPDATE_STRATEGY=source-deploy
+WEBUI_UPDATE_SCRIPT=/opt/hermes-web-ui/scripts/update-source-deploy.sh
+WEBUI_UPDATE_REPO=https://github.com/tangledup-ai/hermes-web-ui
+```
+
+注意：
+
+- `WEBUI_UPDATE_REGISTRY` 和 `WEBUI_UPDATE_REPO` 不要写反引号，不要留前后空格。
+- `update-source-deploy.sh` 必须是 `root:root` 且 `755`。
+- `hermesui` 需要一条最小 sudoers 规则，允许免密执行更新脚本。
+
+推荐 sudoers：
+
+```bash
+hermesui ALL=(root) NOPASSWD:SETENV: /bin/bash /opt/hermes-web-ui/scripts/update-source-deploy.sh *
 ```
 
 ## systemd 推荐配置
@@ -63,6 +92,9 @@ WEBUI_UPDATE_REGISTRY=https://registry.npmjs.org
 WEBUI_UPDATE_CLI_BIN=hermes-web-ui.mjs
 WEBUI_UPDATE_SOURCE_LABEL=Quanthermes npm
 WEBUI_UPDATE_DIST_TAG=latest
+WEBUI_UPDATE_STRATEGY=source-deploy
+WEBUI_UPDATE_SCRIPT=/opt/hermes-web-ui/scripts/update-source-deploy.sh
+WEBUI_UPDATE_REPO=https://github.com/tangledup-ai/hermes-web-ui
 ```
 
 修改后执行：
@@ -84,6 +116,8 @@ sudo systemctl restart hermes-web-ui
 npm view @quanthermes/hermes-web-ui version
 ```
 
+6. 如需设备端源码部署，重新运行 `scripts/deploy-source-armbian.sh`，它会自动写入全部更新变量。
+
 ## 部署后验收
 
 每次部署完成后，必须做以下检查。
@@ -104,6 +138,9 @@ WEBUI_UPDATE_REGISTRY=https://registry.npmjs.org
 WEBUI_UPDATE_CLI_BIN=hermes-web-ui.mjs
 WEBUI_UPDATE_SOURCE_LABEL=Quanthermes npm
 WEBUI_UPDATE_DIST_TAG=latest
+WEBUI_UPDATE_STRATEGY=source-deploy
+WEBUI_UPDATE_SCRIPT=/opt/hermes-web-ui/scripts/update-source-deploy.sh
+WEBUI_UPDATE_REPO=https://github.com/tangledup-ai/hermes-web-ui
 ```
 
 ### 2. 检查健康检查接口
@@ -130,7 +167,7 @@ curl http://127.0.0.1:6060/health
 
 - 显示 `更新源：Quanthermes npm`
 - 当存在新版本时，显示更新按钮
-- 用户点击后可自动安装更新并重启
+- 用户点击后可自动触发源码更新并重启
 
 ## 一键部署脚本必须保证的内容
 
@@ -141,6 +178,20 @@ curl http://127.0.0.1:6060/health
 3. 重启 `hermes-web-ui`
 4. 自动执行一次环境变量和 `/health` 验证
 5. 任一检查失败时退出并提示错误
+
+现在 `scripts/deploy-source-armbian.sh` 已默认内置这些值：
+
+```bash
+WEBUI_UPDATE_ENABLED=true
+WEBUI_UPDATE_PACKAGE=@quanthermes/hermes-web-ui
+WEBUI_UPDATE_REGISTRY=https://registry.npmjs.org
+WEBUI_UPDATE_CLI_BIN=hermes-web-ui.mjs
+WEBUI_UPDATE_SOURCE_LABEL=Quanthermes npm
+WEBUI_UPDATE_DIST_TAG=latest
+WEBUI_UPDATE_STRATEGY=source-deploy
+WEBUI_UPDATE_SCRIPT=/opt/hermes-web-ui/scripts/update-source-deploy.sh
+WEBUI_UPDATE_REPO=https://github.com/tangledup-ai/hermes-web-ui
+```
 
 建议脚本内固定加入：
 
@@ -182,6 +233,12 @@ tr '\0' '\n' < /proc/$pid/environ | grep WEBUI_UPDATE
 - `WEBUI_UPDATE_REGISTRY`
 - `WEBUI_UPDATE_CLI_BIN`
 
+如果当前部署模式是源码部署，还要确认：
+
+- `WEBUI_UPDATE_STRATEGY=source-deploy`
+- `WEBUI_UPDATE_SCRIPT=/opt/hermes-web-ui/scripts/update-source-deploy.sh`
+- `WEBUI_UPDATE_REPO=https://github.com/tangledup-ai/hermes-web-ui`
+
 ### npm 已发布新版本，但页面没有更新按钮
 
 检查顺序：
@@ -197,12 +254,39 @@ tr '\0' '\n' < /proc/$pid/environ | grep WEBUI_UPDATE
 
 ```bash
 journalctl -u hermes-web-ui -n 200 --no-pager
+tail -n 200 /var/log/hermes-web-ui-update.log
+```
+
+如果页面点更新后没有动作，按这个顺序检查：
+
+```bash
+pid=$(systemctl show -p MainPID --value hermes-web-ui)
+tr '\0' '\n' < /proc/$pid/environ | grep WEBUI_UPDATE
+journalctl -u hermes-web-ui -n 200 --no-pager
+tail -n 200 /var/log/hermes-web-ui-update.log
+ls -l /opt/hermes-web-ui/scripts/update-source-deploy.sh
+```
+
+常见原因：
+
+- `update-source-deploy.sh` 没有执行权限
+- `update-source-deploy.sh` 不是 `root:root`
+- sudoers 没有 `NOPASSWD:SETENV`
+- `WEBUI_UPDATE_REPO` 写错或带反引号
+- GitHub archive 下载慢，需回退到 `codeload.github.com`
+
+更新脚本现在会按这个顺序下载：
+
+```text
+1. https://github.com/tangledup-ai/hermes-web-ui/archive/refs/tags/vX.Y.Z.tar.gz
+2. https://codeload.github.com/tangledup-ai/hermes-web-ui/tar.gz/refs/tags/vX.Y.Z
 ```
 
 并确认设备可以访问：
 
 - `https://registry.npmjs.org`
-- npm 包 `@quanthermes/hermes-web-ui`
+- `https://github.com/tangledup-ai/hermes-web-ui`
+- `https://codeload.github.com`
 
 ## 运维基线
 
@@ -214,3 +298,5 @@ journalctl -u hermes-web-ui -n 200 --no-pager
 - 健康检查地址：`http://127.0.0.1:6060/health`
 - npm 包名：`@quanthermes/hermes-web-ui`
 - 更新源标签：`Quanthermes npm`
+- 源码更新脚本：`/opt/hermes-web-ui/scripts/update-source-deploy.sh`
+- 源码更新仓库：`https://github.com/tangledup-ai/hermes-web-ui`

@@ -575,6 +575,15 @@ post_deploy_self_check() {
   fi
   info "Auth status check passed."
 
+  if [[ "${WEBUI_UPDATE_ENABLED,,}" == "true" || "${WEBUI_UPDATE_ENABLED}" == "1" ]]; then
+    if ! wait_for_http_ready "${probe_url}/health" "\"webui_update_enabled\":true"; then
+      err "Update configuration check failed: ${probe_url}/health did not report webui_update_enabled=true"
+      run journalctl -u "${SYSTEMD_SERVICE_NAME}" -n 120 --no-pager || true
+      return 1
+    fi
+    info "Update configuration check passed."
+  fi
+
   check_bridge_status
 }
 
@@ -666,6 +675,15 @@ HERMES_INSTALL_FLAGS="${HERMES_INSTALL_FLAGS:---skip-setup --skip-browser}"
 SERVICE_TEMPLATE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hermes-web-ui.service"
 SYSTEMD_SERVICE_NAME="${SYSTEMD_SERVICE_NAME:-hermes-web-ui.service}"
 SERVICE_ENV_FILE="${SERVICE_ENV_FILE:-/etc/default/hermes-web-ui}"
+WEBUI_UPDATE_ENABLED="${WEBUI_UPDATE_ENABLED:-true}"
+WEBUI_UPDATE_PACKAGE="${WEBUI_UPDATE_PACKAGE:-@quanthermes/hermes-web-ui}"
+WEBUI_UPDATE_REGISTRY="${WEBUI_UPDATE_REGISTRY:-https://registry.npmjs.org}"
+WEBUI_UPDATE_CLI_BIN="${WEBUI_UPDATE_CLI_BIN:-hermes-web-ui.mjs}"
+WEBUI_UPDATE_SOURCE_LABEL="${WEBUI_UPDATE_SOURCE_LABEL:-Quanthermes npm}"
+WEBUI_UPDATE_DIST_TAG="${WEBUI_UPDATE_DIST_TAG:-latest}"
+WEBUI_UPDATE_STRATEGY="${WEBUI_UPDATE_STRATEGY:-source-deploy}"
+WEBUI_UPDATE_SCRIPT="${WEBUI_UPDATE_SCRIPT:-${DEPLOY_DIR}/scripts/update-source-deploy.sh}"
+WEBUI_UPDATE_REPO="${WEBUI_UPDATE_REPO:-https://github.com/tangledup-ai/hermes-web-ui}"
 UPDATE_ONLY_RAW="${DEPLOY_UPDATE_ONLY:-false}"
 APP_USER_HOME=""
 NODE_ARCH=""
@@ -685,6 +703,15 @@ require_safe_env_value "APP_USER" "${APP_USER}"
 require_safe_env_value "DEPLOY_DIR" "${DEPLOY_DIR}"
 require_safe_env_value "HERMES_HOME_DIR" "${HERMES_HOME_DIR}"
 require_safe_env_value "SERVICE_ENV_FILE" "${SERVICE_ENV_FILE}"
+require_safe_env_value "WEBUI_UPDATE_ENABLED" "${WEBUI_UPDATE_ENABLED}"
+require_safe_env_value "WEBUI_UPDATE_PACKAGE" "${WEBUI_UPDATE_PACKAGE}"
+require_safe_env_value "WEBUI_UPDATE_REGISTRY" "${WEBUI_UPDATE_REGISTRY}"
+require_safe_env_value "WEBUI_UPDATE_CLI_BIN" "${WEBUI_UPDATE_CLI_BIN}"
+require_safe_env_value "WEBUI_UPDATE_SOURCE_LABEL" "${WEBUI_UPDATE_SOURCE_LABEL}"
+require_safe_env_value "WEBUI_UPDATE_DIST_TAG" "${WEBUI_UPDATE_DIST_TAG}"
+require_safe_env_value "WEBUI_UPDATE_STRATEGY" "${WEBUI_UPDATE_STRATEGY}"
+require_safe_env_value "WEBUI_UPDATE_SCRIPT" "${WEBUI_UPDATE_SCRIPT}"
+require_safe_env_value "WEBUI_UPDATE_REPO" "${WEBUI_UPDATE_REPO}"
 
 echo
 echo "hermes / hermes-web-ui source deployment"
