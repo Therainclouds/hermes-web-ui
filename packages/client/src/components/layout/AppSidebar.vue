@@ -472,18 +472,18 @@ async function handleReloadClick() {
   justify-content: center;
   gap: 6px;
   padding: 6px 10px;
-  border-radius: 6px;
-  border: 1px solid $primary-color;
-  background-color: rgba(var(--primary-rgb), 0.12);
-  color: $primary-color;
+  border-radius: $radius-sm;
+  border: 1px solid $accent-primary;
+  background-color: rgba(var(--accent-primary-rgb), 0.12);
+  color: $accent-primary;
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
   transition: background-color $transition-normal, color $transition-normal;
 
   &:hover:not(:disabled) {
-    background-color: $primary-color;
-    color: #fff;
+    background-color: $accent-primary;
+    color: $bg-primary;
   }
 
   &:disabled {
@@ -498,9 +498,9 @@ async function handleReloadClick() {
   justify-content: center;
   padding: 6px 10px;
   font-size: 12px;
-  color: $primary-color;
-  border-radius: 6px;
-  background-color: rgba(var(--primary-rgb), 0.08);
+  color: $accent-primary;
+  border-radius: $radius-sm;
+  background-color: rgba(var(--accent-primary-rgb), 0.08);
 }
 
 .sidebar-update-label {
