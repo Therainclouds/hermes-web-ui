@@ -1,4 +1,4 @@
-# Development Guidelines
+﻿# Development Guidelines
 
 This document defines project-level development rules for Hermes Web UI. It is tool-agnostic and applies to all contributors and coding agents.
 
@@ -26,7 +26,8 @@ npm run build
 - Runtime command remains `hermes-web-ui start`.
 - Push a `v*` tag to trigger `npm-publish.yml`.
 - Store a valid `NPM_TOKEN` in GitHub Actions secrets before the first release.
-- Follow `docs/npm-release.md` for the release checklist and rollback notes.
+- Follow docs/npm-release.md for the release checklist and rollback notes.
+- Follow docs/deploy-update-runbook.md for deployment-time update configuration, systemd examples, and post-deploy validation.
 
 ## Architecture
 
@@ -111,3 +112,4 @@ Closes #123
 - `npm run test:coverage`
 - `npm run build`
 ```
+

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'fs'
 import { resolve } from 'path'
 import * as hermesCli from '../services/hermes/hermes-cli'
-import { config } from '../config'
+import { config, hasConfiguredUpdateCheck, hasConfiguredUpdateExecution } from '../config'
 
 declare const __APP_VERSION__: string
 
@@ -42,7 +42,7 @@ const PACKAGE_INFO = readPackageInfo()
 const LOCAL_VERSION = BUILD_VERSION || PACKAGE_INFO?.version || ''
 
 function hasConfiguredUpdateSource(): boolean {
-  return Boolean(config.update.enabled && config.update.packageName && config.update.registry && config.update.cliBin)
+  return hasConfiguredUpdateExecution(config.update)
 }
 
 /**
@@ -62,7 +62,7 @@ function isUpdateCheckDisabled(): boolean {
 }
 
 export async function checkLatestVersion(): Promise<void> {
-  if (!hasConfiguredUpdateSource()) return
+  if (!hasConfiguredUpdateCheck(config.update)) return
   try {
     const packageName = config.update.packageName || PACKAGE_INFO?.name || 'hermes-web-ui'
     const registry = config.update.registry || 'https://registry.npmjs.org'
@@ -85,7 +85,7 @@ export async function checkLatestVersion(): Promise<void> {
 }
 
 export function startVersionCheck(): void {
-  if (!hasConfiguredUpdateSource() || isUpdateCheckDisabled()) return
+  if (!hasConfiguredUpdateCheck(config.update) || isUpdateCheckDisabled()) return
   setTimeout(checkLatestVersion, 5000)
   setInterval(checkLatestVersion, 30 * 60 * 1000)
 }

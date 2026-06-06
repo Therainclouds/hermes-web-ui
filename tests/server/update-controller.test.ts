@@ -4,6 +4,8 @@ import { delimiter, dirname, join } from 'path'
 const UPDATE_PACKAGE = '@quanthermes/hermes-web-ui'
 const UPDATE_REGISTRY = 'https://registry.npmjs.org'
 const UPDATE_CLI_BIN = 'hermes-web-ui.mjs'
+const UPDATE_SCRIPT = '/opt/hermes-web-ui/scripts/update-source-deploy.sh'
+const PUBLISHED_VERSION = '0.6.13'
 
 type UpdateControllerMocks = {
   execFile: ReturnType<typeof vi.fn>
@@ -82,6 +84,8 @@ describe('update controller', () => {
   const originalUpdatePackage = process.env.WEBUI_UPDATE_PACKAGE
   const originalUpdateRegistry = process.env.WEBUI_UPDATE_REGISTRY
   const originalUpdateCliBin = process.env.WEBUI_UPDATE_CLI_BIN
+  const originalUpdateStrategy = process.env.WEBUI_UPDATE_STRATEGY
+  const originalUpdateScript = process.env.WEBUI_UPDATE_SCRIPT
   const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
 
   beforeEach(() => {
@@ -91,6 +95,15 @@ describe('update controller', () => {
     process.env.WEBUI_UPDATE_PACKAGE = UPDATE_PACKAGE
     process.env.WEBUI_UPDATE_REGISTRY = UPDATE_REGISTRY
     process.env.WEBUI_UPDATE_CLI_BIN = UPDATE_CLI_BIN
+    delete process.env.WEBUI_UPDATE_STRATEGY
+    delete process.env.WEBUI_UPDATE_SCRIPT
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        version: PUBLISHED_VERSION,
+        'dist-tags': { latest: PUBLISHED_VERSION },
+      }),
+    }))
   })
 
   afterEach(() => {
@@ -111,6 +124,10 @@ describe('update controller', () => {
     else process.env.WEBUI_UPDATE_REGISTRY = originalUpdateRegistry
     if (originalUpdateCliBin === undefined) delete process.env.WEBUI_UPDATE_CLI_BIN
     else process.env.WEBUI_UPDATE_CLI_BIN = originalUpdateCliBin
+    if (originalUpdateStrategy === undefined) delete process.env.WEBUI_UPDATE_STRATEGY
+    else process.env.WEBUI_UPDATE_STRATEGY = originalUpdateStrategy
+    if (originalUpdateScript === undefined) delete process.env.WEBUI_UPDATE_SCRIPT
+    else process.env.WEBUI_UPDATE_SCRIPT = originalUpdateScript
     delete process.env.HERMES_WEB_UI_PREVIEW_REPO
   })
 
@@ -135,7 +152,7 @@ describe('update controller', () => {
 
     expect(mocks.execFileSync).toHaveBeenCalledWith(
       process.execPath,
-      [npmCli, 'install', '-g', `${UPDATE_PACKAGE}@latest`, '--registry', UPDATE_REGISTRY, '--ignore-scripts', '--no-audit', '--no-fund'],
+      [npmCli, 'install', '-g', `${UPDATE_PACKAGE}@${PUBLISHED_VERSION}`, '--registry', UPDATE_REGISTRY, '--ignore-scripts', '--no-audit', '--no-fund'],
       expect.objectContaining({
         encoding: 'utf-8',
         timeout: 10 * 60 * 1000,
@@ -174,6 +191,45 @@ describe('update controller', () => {
     expect(mocks.unref).toHaveBeenCalledOnce()
   })
 
+  it('starts the source deployment update script instead of installing a global npm package', async () => {
+    process.env.WEBUI_UPDATE_STRATEGY = 'source-deploy'
+    process.env.WEBUI_UPDATE_SCRIPT = UPDATE_SCRIPT
+    const { handleUpdate, mocks } = await loadUpdateController()
+    const ctx = createMockCtx()
+
+    await handleUpdate(ctx)
+
+    expect(ctx.body).toEqual({
+      success: true,
+      message: `Starting source deployment update to ${PUBLISHED_VERSION}`,
+    })
+    expect(mocks.execFileSync).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.arrayContaining(['install']),
+      expect.anything(),
+    )
+
+    vi.runAllTimers()
+
+    expect(mocks.spawn).toHaveBeenCalledWith(
+      process.platform === 'win32' ? 'bash' : UPDATE_SCRIPT,
+      process.platform === 'win32'
+        ? [UPDATE_SCRIPT, '--version', PUBLISHED_VERSION]
+        : ['--version', PUBLISHED_VERSION],
+      expect.objectContaining({
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+        env: expect.objectContaining({
+          HERMES_WEB_UI_UPDATE_VERSION: PUBLISHED_VERSION,
+          HERMES_WEB_UI_UPDATE_PACKAGE: UPDATE_PACKAGE,
+          HERMES_WEB_UI_UPDATE_REGISTRY: UPDATE_REGISTRY,
+        }),
+      }),
+    )
+    expect(mocks.unref).toHaveBeenCalledOnce()
+  })
+
   it('falls back to the default port when PORT is not set', async () => {
     delete process.env.PORT
     const { handleUpdate, mocks } = await loadUpdateController()
@@ -200,6 +256,22 @@ describe('update controller', () => {
     expect(ctx.body).toEqual({
       success: false,
       message: 'Update source is not fully configured. Set WEBUI_UPDATE_PACKAGE, WEBUI_UPDATE_REGISTRY, and WEBUI_UPDATE_CLI_BIN.',
+    })
+    expect(mocks.spawn).not.toHaveBeenCalled()
+  })
+
+  it('requires WEBUI_UPDATE_SCRIPT for source deployment updates', async () => {
+    process.env.WEBUI_UPDATE_STRATEGY = 'source-deploy'
+    delete process.env.WEBUI_UPDATE_SCRIPT
+    const { handleUpdate, mocks } = await loadUpdateController()
+    const ctx = createMockCtx()
+
+    await handleUpdate(ctx)
+
+    expect(ctx.status).toBe(500)
+    expect(ctx.body).toEqual({
+      success: false,
+      message: 'Update source is not fully configured. Set WEBUI_UPDATE_PACKAGE, WEBUI_UPDATE_REGISTRY, and WEBUI_UPDATE_SCRIPT.',
     })
     expect(mocks.spawn).not.toHaveBeenCalled()
   })

@@ -22,7 +22,7 @@ const WEB_UI_VERSION = __APP_VERSION__
 const SIDEBAR_COLLAPSED_KEY = 'hermes_sidebar_collapsed'
 const ACTIVE_PROFILE_STORAGE_KEY = 'hermes_active_profile_name'
 const MODELS_CACHE_TTL_MS = 30000
-const UPDATE_RELOAD_TIMEOUT_MS = 2 * 60 * 1000
+const UPDATE_RELOAD_TIMEOUT_MS = 10 * 60 * 1000
 const UPDATE_POLL_INTERVAL_MS = 3000
 
 export const useAppStore = defineStore('app', () => {
