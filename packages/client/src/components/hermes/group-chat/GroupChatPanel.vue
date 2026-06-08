@@ -5,7 +5,7 @@ import { useRouter } from 'vue-router'
 import { useMessage, NInput, NButton, NSpace, NSelect, NPopover, NPopconfirm, NInputNumber, NDropdown, type DropdownOption } from 'naive-ui'
 import { useGroupChatStore } from '@/stores/hermes/group-chat'
 import { useProfilesStore } from '@/stores/hermes/profiles'
-import { updateRoomConfig, forceCompress } from '@/api/hermes/group-chat'
+import { updateRoomConfig, forceCompress, exportRoom, exportAllRooms } from '@/api/hermes/group-chat'
 import GroupMessageList from './GroupMessageList.vue'
 import GroupChatInput from './GroupChatInput.vue'
 import ProfileAvatar from '@/components/hermes/profiles/ProfileAvatar.vue'
@@ -132,6 +132,15 @@ async function handleDeleteRoom(roomId: string) {
     }
 }
 
+async function handleExportAll(ext: 'json' | 'txt' = 'json') {
+    try {
+        await exportAllRooms(ext)
+        message.success(t('groupChat.exportSuccess'))
+    } catch {
+        message.error(t('common.saveFailed'))
+    }
+}
+
 function buildRoomUrl(roomId: string) {
     const href = router.resolve({ name: 'hermes.groupChatRoom', params: { roomId } }).href
     return `${window.location.origin}${window.location.pathname}${href}`
@@ -146,6 +155,9 @@ async function copyRoomLink(roomId: string) {
 const roomContextMenuOptions = computed<DropdownOption[]>(() => [
     { label: t('groupChat.copyRoomLink'), key: 'copy-link' },
     { label: t('groupChat.cloneRoom'), key: 'clone-room' },
+    { type: 'divider', key: 'd1' },
+    { label: t('groupChat.exportRoomJson'), key: 'export-json' },
+    { label: t('groupChat.exportRoomTxt'), key: 'export-txt' },
 ])
 
 function handleRoomContextMenu(event: MouseEvent, roomId: string) {
@@ -168,6 +180,10 @@ function handleRoomContextSelect(key: string) {
         void copyRoomLink(roomId)
     } else if (key === 'clone-room') {
         handleOpenCloneRoom(roomId)
+    } else if (key === 'export-json') {
+        exportRoom(roomId, 'json').then(() => message.success(t('groupChat.exportSuccess'))).catch(() => message.error(t('common.saveFailed')))
+    } else if (key === 'export-txt') {
+        exportRoom(roomId, 'txt').then(() => message.success(t('groupChat.exportSuccess'))).catch(() => message.error(t('common.saveFailed')))
     }
 }
 
@@ -341,6 +357,11 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
             <div class="sidebar-header">
                 <span class="sidebar-title">{{ t('groupChat.title') }}</span>
                 <div class="sidebar-actions">
+                    <button class="icon-btn" :title="t('groupChat.exportAll')" @click="handleExportAll">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                        </svg>
+                    </button>
                     <button class="icon-btn" :title="t('groupChat.createRoom')" @click="showCreateModal = true">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                             <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />

@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿export default {
+﻿﻿﻿﻿﻿﻿﻿export default {
   // Login
   login: {
     title: 'QuantHermes Web UI',
@@ -1553,6 +1553,10 @@ jobTriggered: 'Job declenche',
     clearContext: 'Effacer le contexte',
     clearContextConfirm: 'Effacer le contexte de ce salon ? Les messages et instantanés de compression seront supprimés, les agents et membres restent.',
     contextCleared: 'Contexte effacé',
+    exportRoomJson: 'Exporter en JSON',
+    exportRoomTxt: 'Exporter en TXT',
+    exportAll: 'Exporter toutes les salles',
+    exportSuccess: 'Export terminé',
     you: 'Vous',
     joined: 'Vous avez rejoint le salon',
     joinFailed: 'Echec de la connexion au salon',

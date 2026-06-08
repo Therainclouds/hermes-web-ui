@@ -235,3 +235,55 @@ export async function forceCompress(roomId: string): Promise<{ success: boolean;
         method: 'POST',
     })
 }
+
+// ─── Export ──────────────────────────────────────────────────
+
+export async function exportRoom(roomId: string, ext: 'json' | 'txt' = 'json'): Promise<void> {
+    const base = getBaseUrl()
+    const url = `${base}/api/hermes/group-chat/rooms/${roomId}/export?ext=${ext}`
+    const apiKey = getApiKey()
+    const headers: Record<string, string> = {}
+    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
+
+    const res = await fetch(url, { headers })
+    if (!res.ok) throw new Error(`Export failed: ${res.status}`)
+
+    const blob = await res.blob()
+    const disposition = res.headers.get('Content-Disposition') || ''
+    const filenameMatch = disposition.match(/filename="?([^"]+)"?/)
+    const filename = filenameMatch?.[1] || `room_${roomId.slice(0, 8)}.${ext}`
+
+    const objectUrl = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = objectUrl
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(objectUrl)
+}
+
+export async function exportAllRooms(ext: 'json' | 'txt' = 'json'): Promise<void> {
+    const base = getBaseUrl()
+    const url = `${base}/api/hermes/group-chat/rooms/export?ext=${ext}`
+    const apiKey = getApiKey()
+    const headers: Record<string, string> = {}
+    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
+
+    const res = await fetch(url, { headers })
+    if (!res.ok) throw new Error(`Export failed: ${res.status}`)
+
+    const blob = await res.blob()
+    const disposition = res.headers.get('Content-Disposition') || ''
+    const filenameMatch = disposition.match(/filename="?([^"]+)"?/)
+    const filename = filenameMatch?.[1] || `all_group_chats.${ext}`
+
+    const objectUrl = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = objectUrl
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(objectUrl)
+}
