@@ -530,3 +530,92 @@ groupChatRoutes.get('/api/hermes/group-chat/rooms/export', async (ctx) => {
         }, null, 2)
     }
 })
+
+// ─── Import ───────────────────────────────────────────────────
+
+interface ImportRoomData {
+    room: { id?: string; name: string; inviteCode?: string | null; triggerTokens?: number; maxHistoryTokens?: number; tailMessageCount?: number }
+    messages: Array<{ id: string; senderId: string; senderName: string; content: string; timestamp: number; role?: string; tool_name?: string | null; reasoning_content?: string | null }>
+    agents?: Array<{ profile: string; name?: string; description?: string }>
+    members?: Array<{ userId: string; userName: string }>
+}
+
+groupChatRoutes.post('/api/hermes/group-chat/rooms/import', async (ctx) => {
+    if (!chatServer) {
+        ctx.status = 503
+        ctx.body = { error: 'Group chat not initialized' }
+        return
+    }
+
+    let body: ImportRoomData | ImportRoomData[]
+    if (typeof ctx.request.body === 'string') {
+        body = JSON.parse(ctx.request.body)
+    } else {
+        body = ctx.request.body as ImportRoomData | ImportRoomData[]
+    }
+
+    const rooms = Array.isArray(body) ? body : [body]
+    const results: Array<{ name: string; roomId?: string; error?: string }> = []
+    const storage = chatServer.getStorage()
+
+    for (const data of rooms) {
+        try {
+            const room = data.room
+            if (!room.name) {
+                results.push({ name: '<unnamed>', error: 'Room name is required' })
+                continue
+            }
+
+            // Generate new IDs to avoid conflicts
+            const roomId = generateId()
+            const inviteCode = room.inviteCode?.trim() || generateInviteCode()
+            storage.saveRoom(roomId, room.name, inviteCode, {
+                triggerTokens: room.triggerTokens,
+                maxHistoryTokens: room.maxHistoryTokens,
+                tailMessageCount: room.tailMessageCount,
+            })
+
+            // Import messages
+            if (data.messages?.length) {
+                for (const msg of data.messages) {
+                    storage.upsertMessage({
+                        id: generateId(),
+                        roomId,
+                        senderId: msg.senderId || 'unknown',
+                        senderName: msg.senderName || 'Unknown',
+                        content: msg.content || '',
+                        timestamp: msg.timestamp || Date.now(),
+                        role: msg.role || 'user',
+                        tool_name: msg.tool_name || null,
+                        reasoning_content: msg.reasoning_content || null,
+                    })
+                }
+            }
+
+            // Import agents (optional - just record, don't connect)
+            if (data.agents?.length) {
+                for (const agent of data.agents) {
+                    storage.addRoomAgent(roomId, generateId(), agent.profile, agent.name || agent.profile, agent.description || '', 0)
+                }
+            }
+
+            // Import members (optional)
+            if (data.members?.length) {
+                for (const member of data.members) {
+                    storage.addRoomMember(roomId, generateId(), member.userId, member.userName, 'human', null)
+                }
+            }
+
+            results.push({ name: room.name, roomId })
+        } catch (err: any) {
+            results.push({ name: data.room?.name || '<unnamed>', error: err.message })
+        }
+    }
+
+    ctx.body = {
+        success: results.every(r => !r.error),
+        importedCount: results.filter(r => !r.error).length,
+        failedCount: results.filter(r => r.error).length,
+        results,
+    }
+})

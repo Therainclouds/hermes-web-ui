@@ -287,3 +287,27 @@ export async function exportAllRooms(ext: 'json' | 'txt' = 'json'): Promise<void
     document.body.removeChild(a)
     URL.revokeObjectURL(objectUrl)
 }
+
+export interface ImportResult {
+    success: boolean
+    importedCount: number
+    failedCount: number
+    results: Array<{ name: string; roomId?: string; error?: string }>
+}
+
+export async function importRooms(file: File): Promise<ImportResult> {
+    const base = getBaseUrl()
+    const url = `${base}/api/hermes/group-chat/rooms/import`
+    const apiKey = getApiKey()
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
+
+    const text = await file.text()
+    const res = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: text,
+    })
+    if (!res.ok) throw new Error(`Import failed: ${res.status}`)
+    return res.json()
+}
