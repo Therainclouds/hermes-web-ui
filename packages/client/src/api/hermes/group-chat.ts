@@ -1,5 +1,5 @@
 import { io } from 'socket.io-client'
-import { request, getApiKey } from '../client'
+import { request, getApiKey, getBaseUrlValue } from '../client'
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -239,7 +239,7 @@ export async function forceCompress(roomId: string): Promise<{ success: boolean;
 // ─── Export ──────────────────────────────────────────────────
 
 export async function exportRoom(roomId: string, ext: 'json' | 'txt' = 'json'): Promise<void> {
-    const base = getBaseUrl()
+    const base = getBaseUrlValue()
     const url = `${base}/api/hermes/group-chat/rooms/${roomId}/export?ext=${ext}`
     const apiKey = getApiKey()
     const headers: Record<string, string> = {}
@@ -264,7 +264,7 @@ export async function exportRoom(roomId: string, ext: 'json' | 'txt' = 'json'): 
 }
 
 export async function exportAllRooms(ext: 'json' | 'txt' = 'json'): Promise<void> {
-    const base = getBaseUrl()
+    const base = getBaseUrlValue()
     const url = `${base}/api/hermes/group-chat/rooms/export?ext=${ext}`
     const apiKey = getApiKey()
     const headers: Record<string, string> = {}
@@ -296,7 +296,7 @@ export interface ImportResult {
 }
 
 export async function importRooms(file: File): Promise<ImportResult> {
-    const base = getBaseUrl()
+    const base = getBaseUrlValue()
     const url = `${base}/api/hermes/group-chat/rooms/import`
     const apiKey = getApiKey()
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
@@ -308,6 +308,14 @@ export async function importRooms(file: File): Promise<ImportResult> {
         headers,
         body: text,
     })
-    if (!res.ok) throw new Error(`Import failed: ${res.status}`)
+    if (!res.ok) {
+        const raw = await res.text().catch(() => '')
+        try {
+            const parsed = JSON.parse(raw)
+            throw new Error(parsed?.error || `Import failed: ${res.status}`)
+        } catch {
+            throw new Error(raw || `Import failed: ${res.status}`)
+        }
+    }
     return res.json()
 }

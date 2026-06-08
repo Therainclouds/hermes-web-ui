@@ -155,6 +155,14 @@ function handleFileSelected(event: Event) {
     importFile.value = input.files?.[0] || null
 }
 
+function formatImportFailureSummary(results: Array<{ name: string; error?: string }>): string {
+    return results
+        .filter(result => result.error)
+        .slice(0, 3)
+        .map(result => `${result.name}: ${result.error}`)
+        .join('; ')
+}
+
 async function confirmImport() {
     if (!importFile.value) return
     isImporting.value = true
@@ -166,10 +174,12 @@ async function confirmImport() {
         if (result.success) {
             message.success(t('groupChat.importSuccess', { count: result.importedCount }))
         } else {
-            message.warning(t('groupChat.importPartialSuccess', { success: result.importedCount, failed: result.failedCount }))
+            const details = formatImportFailureSummary(result.results)
+            const summary = t('groupChat.importPartialSuccess', { success: result.importedCount, failed: result.failedCount })
+            message.warning(details ? `${summary}: ${details}` : summary)
         }
-    } catch {
-        message.error(t('common.saveFailed'))
+    } catch (err: any) {
+        message.error(err?.message || t('common.saveFailed'))
     } finally {
         isImporting.value = false
     }
@@ -396,7 +406,7 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
                         </svg>
                     </button>
-                    <button class="icon-btn" :title="t('groupChat.exportAll')" @click="handleExportAll">
+                    <button class="icon-btn" :title="t('groupChat.exportAll')" @click="() => handleExportAll()">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
                         </svg>

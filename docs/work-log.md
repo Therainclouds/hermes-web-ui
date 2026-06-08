@@ -1,5 +1,96 @@
 # 工作日志
 
+## 2026-06-08
+
+### 任务背景
+
+- 支持导出项目内群聊记录，并允许在另一套 `hermes-web-ui` 中导入恢复
+- 补齐群聊前端导出入口与导入入口，形成完整闭环
+- 排查“导出 404”“导入失败但房间已创建”“全部房间导出无法导入”等问题
+- 对本次修改进行类型检查与完整构建验证，并将结果记录到工作日志
+
+### 问题分析
+
+- 群聊最初只有后端数据存储与读取能力，没有导出/导入闭环
+- `GET /api/hermes/group-chat/rooms/export` 曾返回 `404`，根因是路由顺序冲突：
+  - `/api/hermes/group-chat/rooms/:roomId` 定义在更前面
+  - 请求 `/rooms/export` 时会先被错误匹配成 `roomId = "export"`
+- “导出所有房间”生成的 JSON 结构为：
+  - `{ exportedAt, roomCount, rooms: [...] }`
+- 但导入接口最初只接受：
+  - 单个 `{ room, messages, agents, members }`
+  - 或数组 `[{ room, messages, agents, members }]`
+- “单房间导出”可部分导入但提示失败，根因有两个：
+  - 成员导出字段使用 `name`，导入代码却按 `userName` 读取
+  - `addRoomMember()` 调用参数顺序错误，导致成员入库阶段可能抛错
+
+### 实际修改内容
+
+- 后端群聊路由与导出/导入能力：
+  - `packages/server/src/routes/hermes/group-chat.ts`
+- 前端群聊 API：
+  - `packages/client/src/api/hermes/group-chat.ts`
+- 前端群聊面板与导入反馈：
+  - `packages/client/src/components/hermes/group-chat/GroupChatPanel.vue`
+- 多语言文案补充（导出/导入相关）：
+  - `packages/client/src/i18n/locales/en.ts`
+  - `packages/client/src/i18n/locales/zh.ts`
+  - `packages/client/src/i18n/locales/zh-TW.ts`
+  - `packages/client/src/i18n/locales/de.ts`
+  - `packages/client/src/i18n/locales/es.ts`
+  - `packages/client/src/i18n/locales/fr.ts`
+  - `packages/client/src/i18n/locales/ja.ts`
+  - `packages/client/src/i18n/locales/ko.ts`
+  - `packages/client/src/i18n/locales/pt.ts`
+  - `packages/client/src/i18n/locales/ru.ts`
+
+### 功能结果
+
+- 新增群聊导出能力：
+  - 单房间导出：`/api/hermes/group-chat/rooms/:roomId/export`
+  - 全部房间导出：`/api/hermes/group-chat/rooms/export`
+- 新增群聊导入能力：
+  - `/api/hermes/group-chat/rooms/import`
+- 前端已提供入口：
+  - 侧边栏顶部按钮支持“导入”“导出所有房间”
+  - 右键单个群聊支持“导出为 JSON / TXT”
+
+### 关键修复点
+
+- 调整群聊路由顺序，确保以下静态路由优先于 `:roomId`：
+  - `/rooms`
+  - `/rooms/join/:code`
+  - `/rooms/export`
+  - `/rooms/import`
+- 新增导入归一化逻辑，兼容两种输入：
+  - 单房间导出 JSON
+  - 全部房间导出 JSON
+- 修正成员导入兼容字段：
+  - `name`
+  - `userName`
+- 修正 `addRoomMember()` 的参数顺序，避免“部分导入成功但最终报错”
+- 前端导入失败时透传后端具体错误，并展示失败房间与原因
+
+### 验证记录
+
+- 执行了类型检查：
+  - `npx tsc --noEmit`
+  - `npx tsc --noEmit -p packages/server/tsconfig.json`
+- 执行了完整构建：
+  - `npm run build`
+- 验证结果：
+  - TypeScript 检查通过
+  - 前后端完整构建通过
+  - 未发现本次修改引入的新增诊断错误
+
+### 本次结论
+
+- 已完成群聊“导出 -> 导入”闭环
+- 已修复全部房间导出无法导入的问题
+- 已修复单房间导入成功但提示失败的问题
+- 已修复群聊导出接口因路由顺序导致的 `404`
+- 本次结果已记录到工作日志，便于后续追踪与交接
+
 ## 2026-06-01
 
 ### 任务背景
