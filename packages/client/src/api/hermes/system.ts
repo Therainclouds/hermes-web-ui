@@ -2,13 +2,29 @@ import { request } from '../client'
 
 export interface HealthResponse {
   status: string
+  platform?: string
   version?: string
+  gateway?: string
   webui_version?: string
   webui_latest?: string
   webui_update_enabled?: boolean
   webui_update_available?: boolean
   webui_update_source_label?: string
   node_version?: string
+  agent_bridge?: {
+    status: string
+    reachable: boolean
+    ready?: boolean
+    running?: boolean
+    attached?: boolean
+    starting?: boolean
+    stopping?: boolean
+    restart_scheduled?: boolean
+    restart_attempts?: number
+    endpoint_kind?: 'ipc' | 'tcp' | 'unknown'
+    pid?: number
+    error?: string
+  }
 }
 
 export interface PreviewTag {
@@ -80,6 +96,7 @@ export interface AvailableModelGroup {
   /** Full unfiltered model catalog for this provider, used to restore hidden WUI models. */
   available_models?: string[]
   api_key: string
+  api_mode?: 'chat_completions' | 'codex_responses' | 'anthropic_messages'
   builtin?: boolean
   /** Env var used by Hermes to override this provider's base URL. If present, the preset URL is editable. */
   base_url_env?: string

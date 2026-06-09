@@ -49,6 +49,9 @@ export interface AgentBridgeChatOptions {
   source?: string
   wait?: boolean
   timeout?: number
+  /** Local patch (reasoning-effort): per-session reasoning effort override.
+   * Empty/undefined = use config.yaml default. */
+  reasoning_effort?: string
 }
 
 export type AgentBridgeMessage =
@@ -420,6 +423,8 @@ export class AgentBridgeClient {
       ...(options.wait ? { wait: true } : {}),
       ...(options.timeout ? { timeout: options.timeout } : {}),
       ...(options.force_compress ? { force_compress: true } : {}),
+      // Local patch (reasoning-effort): per-session reasoning effort override.
+      ...(options.reasoning_effort ? { reasoning_effort: options.reasoning_effort } : {}),
     })
   }
 
@@ -583,12 +588,12 @@ export class AgentBridgeClient {
     })
   }
 
-  statusIfLoaded(sessionId: string, profile?: string): Promise<AgentBridgeResponse> {
+  statusIfLoaded(sessionId: string, profile?: string, options: AgentBridgeRequestOptions = {}): Promise<AgentBridgeResponse> {
     return this.request({
       action: 'status_if_loaded',
       session_id: sessionId,
       ...(profile ? { profile } : {}),
-    })
+    }, options)
   }
 
   destroy(sessionId: string, profile?: string, workerKey?: string): Promise<AgentBridgeResponse> {
