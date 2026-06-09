@@ -1,29 +1,30 @@
 import { existsSync, readFileSync } from 'fs'
 import { resolve } from 'path'
 import * as hermesCli from '../services/hermes/hermes-cli'
-import { getAgentBridgeManager } from '../services/hermes/agent-bridge/manager'
-import { redactAgentBridgeError } from '../services/hermes/agent-bridge/redact'
+import { config, hasConfiguredUpdateCheck, hasConfiguredUpdateExecution } from '../config'
 
 declare const __APP_VERSION__: string
 
-type PackageInfo = {
+const BUILD_VERSION = typeof __APP_VERSION__ !== 'undefined'
+  ? __APP_VERSION__
+  : ''
+
+let cachedLatestVersion = ''
+
+interface PackageInfo {
   name: string
   version: string
 }
 
 function readPackageInfo(): PackageInfo | null {
   const candidatePaths = [
-    // ts-node dev: packages/server/src/controllers -> repo root
-    resolve(__dirname, '../../../../package.json'),
-    // bundled server: dist/server -> repo root/package root
     resolve(__dirname, '../../package.json'),
-    // fallback for dev/test processes started at the repo root
+    resolve(__dirname, '../../../../package.json'),
     resolve(process.cwd(), 'package.json'),
   ]
 
   for (const packagePath of candidatePaths) {
     if (!existsSync(packagePath)) continue
-
     try {
       const pkg = JSON.parse(readFileSync(packagePath, 'utf-8'))
       if (pkg?.name && pkg?.version) {
@@ -32,74 +33,89 @@ function readPackageInfo(): PackageInfo | null {
           version: String(pkg.version),
         }
       }
-    } catch {
-      // Try the next candidate path.
-    }
+    } catch {}
   }
-
   return null
 }
 
 const PACKAGE_INFO = readPackageInfo()
-const LOCAL_VERSION = typeof __APP_VERSION__ !== 'undefined'
-  ? __APP_VERSION__
-  : PACKAGE_INFO?.version || ''
+const LOCAL_VERSION = BUILD_VERSION || PACKAGE_INFO?.version || ''
 
-let cachedLatestVersion = ''
-const AGENT_BRIDGE_HEALTH_CACHE_TTL_MS = 250
-const AGENT_BRIDGE_HEALTH_FIRST_WAIT_MS = 75
-
-type AgentBridgeHealthPayload = {
-  status: string
-  reachable: boolean
-  ready?: boolean
-  running?: boolean
-  attached?: boolean
-  starting?: boolean
-  stopping?: boolean
-  restart_scheduled?: boolean
-  restart_attempts?: number
-  endpoint_kind?: 'ipc' | 'tcp' | 'unknown'
-  pid?: number
-  error?: string
+function hasConfiguredUpdateSource(): boolean {
+  return hasConfiguredUpdateExecution(config.update)
 }
 
-let cachedAgentBridgeHealth: { value: AgentBridgeHealthPayload; expiresAt: number } | null = null
-let pendingAgentBridgeHealthRefresh: Promise<AgentBridgeHealthPayload> | null = null
+interface ParsedSemver {
+  major: number
+  minor: number
+  patch: number
+}
+
+function parseSemver(version: string): ParsedSemver | null {
+  const normalized = version.trim()
+  if (!normalized) return null
+
+  const match = normalized.match(/^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/)
+  if (!match) return null
+
+  return {
+    major: Number.parseInt(match[1], 10),
+    minor: Number.parseInt(match[2], 10),
+    patch: Number.parseInt(match[3], 10),
+  }
+}
+
+function isRemoteVersionNewer(localVersion: string, remoteVersion: string): boolean {
+  const local = parseSemver(localVersion)
+  const remote = parseSemver(remoteVersion)
+  if (!local || !remote) return false
+
+  if (remote.major !== local.major) return remote.major > local.major
+  if (remote.minor !== local.minor) return remote.minor > local.minor
+  return remote.patch > local.patch
+}
 
 /**
  * Whether the periodic npm-registry version check is disabled.
  *
- * Useful when hermes-web-ui is bundled inside a packaged distribution
- * (e.g. a desktop app) where the user can't `npm install -g hermes-web-ui@latest`
+ * Useful when the Web UI is bundled inside a packaged distribution
+ * (e.g. a desktop app) where the user can't `npm install -g <your-package>@latest`
  * to upgrade — the "update available" prompt would be misleading and
  * the periodic outbound HTTP request to the npm registry is unnecessary.
  *
  * Set HERMES_WEB_UI_DISABLE_UPDATE_CHECK=true (or 1, on, yes) to disable.
  */
 function isUpdateCheckDisabled(): boolean {
+  if (hasConfiguredUpdateSource()) return false
   const raw = (process.env.HERMES_WEB_UI_DISABLE_UPDATE_CHECK || '').trim().toLowerCase()
   return raw === 'true' || raw === '1' || raw === 'on' || raw === 'yes'
 }
 
 export async function checkLatestVersion(): Promise<void> {
-  if (isUpdateCheckDisabled()) return
+  if (!hasConfiguredUpdateCheck(config.update)) return
   try {
-    const packageName = PACKAGE_INFO?.name || 'hermes-web-ui'
+    const packageName = config.update.packageName || PACKAGE_INFO?.name || 'hermes-web-ui'
+    const registry = config.update.registry || 'https://registry.npmjs.org'
+    const distTag = config.update.distTag || 'latest'
     const registryName = encodeURIComponent(packageName)
-    const res = await fetch(`https://registry.npmjs.org/${registryName}/latest`, { signal: AbortSignal.timeout(10000) })
+    const url = `${registry}/${registryName}`
+
+    const res = await fetch(url, { signal: AbortSignal.timeout(10000) })
     if (res.ok) {
-      const data = await res.json() as { version: string }
-      cachedLatestVersion = data.version
-      if (LOCAL_VERSION && cachedLatestVersion !== LOCAL_VERSION) {
-        console.log(`Update available: ${LOCAL_VERSION} → ${cachedLatestVersion}`)
+      const data = await res.json() as { version: string; 'dist-tags'?: Record<string, string> }
+      const version = data['dist-tags']?.[distTag] || data.version || data['dist-tags']?.latest
+      if (version) {
+        cachedLatestVersion = version
+        if (isRemoteVersionNewer(LOCAL_VERSION, cachedLatestVersion)) {
+          console.log(`Update available: ${LOCAL_VERSION} → ${cachedLatestVersion}`)
+        }
       }
     }
   } catch { /* ignore */ }
 }
 
 export function startVersionCheck(): void {
-  if (isUpdateCheckDisabled()) return
+  if (!hasConfiguredUpdateCheck(config.update) || isUpdateCheckDisabled()) return
   setTimeout(checkLatestVersion, 5000)
   setInterval(checkLatestVersion, 30 * 60 * 1000)
 }
@@ -170,17 +186,20 @@ async function refreshAgentBridgeHealth(): Promise<AgentBridgeHealthPayload> {
 export async function healthCheck(ctx: any) {
   const raw = await hermesCli.getVersion()
   const hermesVersion = raw.split('\n')[0].replace('Hermes Agent ', '') || ''
-  const agentBridge = await getAgentBridgeHealth()
+  const updateEnabled = hasConfiguredUpdateSource()
+  const updateCheckDisabled = isUpdateCheckDisabled()
   ctx.body = {
     status: 'ok',
     platform: 'hermes-agent',
     version: hermesVersion,
     gateway: 'running',
     webui_version: LOCAL_VERSION,
-    webui_latest: isUpdateCheckDisabled() ? '' : cachedLatestVersion,
-    webui_update_available: isUpdateCheckDisabled()
+    webui_latest: updateCheckDisabled ? '' : cachedLatestVersion,
+    webui_update_enabled: updateEnabled,
+    webui_update_source_label: updateEnabled ? config.update.sourceLabel : '',
+    webui_update_available: updateCheckDisabled
       ? false
-      : Boolean(LOCAL_VERSION && cachedLatestVersion && cachedLatestVersion !== LOCAL_VERSION),
+      : isRemoteVersionNewer(LOCAL_VERSION, cachedLatestVersion),
     node_version: process.versions.node,
     agent_bridge: agentBridge,
   }

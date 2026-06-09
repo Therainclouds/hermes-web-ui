@@ -1,13 +1,16 @@
 import Router from '@koa/router'
 import * as ctrl from '../controllers/update'
-import { requireSuperAdmin } from '../middleware/user-auth'
 
 export const updateRoutes = new Router()
 
+// Web UI self-update is exposed to any logged-in user, matching the "normal
+// software" UX where anyone can click update and the service installs the
+// new version and restarts itself. Admin-only update flows live under
+// /api/hermes/update/preview/* when needed.
 updateRoutes.post('/api/hermes/update', ctrl.handleUpdate)
-updateRoutes.get('/api/hermes/update/preview', requireSuperAdmin, ctrl.previewStatus)
-updateRoutes.get('/api/hermes/update/preview/tags', requireSuperAdmin, ctrl.previewTags)
-updateRoutes.post('/api/hermes/update/preview/prepare', requireSuperAdmin, ctrl.preparePreview)
-updateRoutes.post('/api/hermes/update/preview/install', requireSuperAdmin, ctrl.installPreview)
-updateRoutes.post('/api/hermes/update/preview/start', requireSuperAdmin, ctrl.startPreview)
-updateRoutes.post('/api/hermes/update/preview/stop', requireSuperAdmin, ctrl.stopPreview)
+updateRoutes.get('/api/hermes/update/preview', ctrl.previewStatus)
+updateRoutes.get('/api/hermes/update/preview/tags', ctrl.previewTags)
+updateRoutes.post('/api/hermes/update/preview/prepare', ctrl.preparePreview)
+updateRoutes.post('/api/hermes/update/preview/install', ctrl.installPreview)
+updateRoutes.post('/api/hermes/update/preview/start', ctrl.startPreview)
+updateRoutes.post('/api/hermes/update/preview/stop', ctrl.stopPreview)

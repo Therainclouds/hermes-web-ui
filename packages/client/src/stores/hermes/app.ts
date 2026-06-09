@@ -5,9 +5,9 @@ import {
   fetchAvailableModels,
   addCustomModel as persistCustomModel,
   removeCustomModel as deletePersistedCustomModel,
+  triggerUpdate,
   updateDefaultModel,
   updateModelVisibility,
-  triggerUpdate,
   updateModelAlias,
   type AvailableModelGroup,
   type AvailableModelsResponse,
@@ -22,6 +22,8 @@ const WEB_UI_VERSION = __APP_VERSION__
 const SIDEBAR_COLLAPSED_KEY = 'hermes_sidebar_collapsed'
 const ACTIVE_PROFILE_STORAGE_KEY = 'hermes_active_profile_name'
 const MODELS_CACHE_TTL_MS = 30000
+const UPDATE_RELOAD_TIMEOUT_MS = 10 * 60 * 1000
+const UPDATE_POLL_INTERVAL_MS = 3000
 
 export const useAppStore = defineStore('app', () => {
   const sidebarOpen = ref(false)
@@ -31,7 +33,9 @@ export const useAppStore = defineStore('app', () => {
   const connected = ref(false)
   const serverVersion = ref(WEB_UI_VERSION)
   const latestVersion = ref('')
+  const updateEnabled = ref(false)
   const updateAvailable = ref(false)
+  const updateSourceLabel = ref('')
   const clientOutdated = ref(false)
   const updating = ref(false)
   const modelGroups = ref<AvailableModelGroup[]>([])
@@ -51,15 +55,30 @@ export const useAppStore = defineStore('app', () => {
   let modelsLoadPromise: Promise<void> | null = null
   let modelsLastRequestedAt = 0
 
+  function sleep(ms: number) {
+    return new Promise(resolve => setTimeout(resolve, ms))
+  }
+
   async function doUpdate(): Promise<boolean> {
+    if (updating.value || !updateEnabled.value) return false
+
     updating.value = true
     try {
-      const res = await triggerUpdate()
-      if (res.success) {
-        updateAvailable.value = false
+      await triggerUpdate()
+      updateAvailable.value = false
+      latestVersion.value = ''
+
+      const deadline = Date.now() + UPDATE_RELOAD_TIMEOUT_MS
+      while (Date.now() < deadline) {
+        await sleep(UPDATE_POLL_INTERVAL_MS)
         await checkConnection()
+        if (clientOutdated.value) {
+          reloadClient()
+          return true
+        }
       }
-      return res.success
+
+      return true
     } catch (err) {
       console.error('Failed to update Hermes Web UI:', err)
       return false
@@ -75,11 +94,17 @@ export const useAppStore = defineStore('app', () => {
       if (res.webui_version) serverVersion.value = res.webui_version
       clientOutdated.value = !!res.webui_version && res.webui_version !== WEB_UI_VERSION
       if (res.webui_latest) latestVersion.value = res.webui_latest
-      updateAvailable.value = !!res.webui_update_available
+      else latestVersion.value = ''
+      updateEnabled.value = !!res.webui_update_enabled
+      updateSourceLabel.value = res.webui_update_source_label || ''
+      updateAvailable.value = !!res.webui_update_enabled && !!res.webui_update_available
       if (res.node_version) nodeVersion.value = res.node_version
     } catch {
       connected.value = false
       clientOutdated.value = false
+      updateEnabled.value = false
+      updateAvailable.value = false
+      updateSourceLabel.value = ''
     }
   }
 
@@ -331,7 +356,9 @@ export const useAppStore = defineStore('app', () => {
     serverVersion,
     latestVersion,
     nodeVersion,
+    updateEnabled,
     updateAvailable,
+    updateSourceLabel,
     clientOutdated,
     updating,
     doUpdate,

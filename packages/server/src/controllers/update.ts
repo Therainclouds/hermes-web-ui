@@ -2,7 +2,7 @@ import { execFile, execFileSync, spawn, type ChildProcess } from 'child_process'
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { createServer } from 'net'
 import { delimiter, dirname, extname, join, resolve } from 'path'
-import { getWebUiHome } from '../config'
+import { config, getWebUiHome, hasConfiguredUpdateExecution } from '../config'
 
 let updateInProgress = false
 const NODE_ENVIRONMENT_MISSING_CODE = 'node_environment_missing'
@@ -321,8 +321,21 @@ function getPreviewViteHostArg() {
   return isTermuxRuntime() ? '127.0.0.1' : ''
 }
 
-function getGlobalPackageBin(root: string) {
-  return join(root, 'hermes-web-ui', 'bin', 'hermes-web-ui.mjs')
+function getGlobalPackageDir(root: string, packageName: string) {
+  return join(root, ...packageName.split('/').filter(Boolean))
+}
+
+function normalizeCliRelativePath(cliBin: string) {
+  return cliBin.replace(/^[./\\]+/, '')
+}
+
+function getGlobalPackageBin(root: string, packageName: string, cliBin: string) {
+  const packageDir = getGlobalPackageDir(root, packageName)
+  const normalizedCli = normalizeCliRelativePath(cliBin)
+  return [
+    join(packageDir, 'bin', normalizedCli),
+    join(packageDir, normalizedCli),
+  ].find(existsSync) || join(packageDir, 'bin', normalizedCli)
 }
 
 function getCurrentNodeEnv() {
@@ -1002,21 +1015,45 @@ function getGlobalRoot() {
 }
 
 function getGlobalCliScript() {
-  const cli = getGlobalPackageBin(getGlobalRoot())
+  const packageName = config.update.packageName
+  const cliBin = config.update.cliBin
+  const cli = getGlobalPackageBin(getGlobalRoot(), packageName, cliBin)
   if (!existsSync(cli)) {
-    throw new Error(`Updated hermes-web-ui CLI not found: ${cli}`)
+    throw new Error(`Updated package CLI not found: ${cli}`)
   }
   return cli
 }
 
-function runUpdateInstall() {
-  try {
-    runNpm(['cache', 'clean', '--force'], { timeout: 2 * 60 * 1000 })
-  } catch (err) {
-    console.warn('[update] failed to clean npm cache, continuing update:', err)
+async function resolvePublishedUpdateVersion() {
+  const packageName = config.update.packageName
+  const registry = config.update.registry
+  const distTag = config.update.distTag || 'latest'
+  if (!packageName || !registry) return ''
+
+  const registryName = encodeURIComponent(packageName)
+  const url = `${registry}/${registryName}`
+  const res = await fetch(url, { signal: AbortSignal.timeout(10000) })
+  if (!res.ok) {
+    throw new Error(`Failed to resolve the latest published version from ${registry}: HTTP ${res.status}`)
   }
 
-  return runNpm(['install', '-g', 'hermes-web-ui@latest'], { timeout: 10 * 60 * 1000 })
+  const data = await res.json() as { version?: string; 'dist-tags'?: Record<string, string> }
+  return data['dist-tags']?.[distTag] || data.version || data['dist-tags']?.latest || ''
+}
+
+function runUpdateInstall(versionOrTag: string) {
+  const packageName = config.update.packageName
+  return runNpm(
+    ['install', '-g', `${packageName}@${versionOrTag}`, '--registry', config.update.registry, '--ignore-scripts', '--no-audit', '--no-fund'],
+    { timeout: 10 * 60 * 1000 },
+  )
+}
+
+function getUpdateExecutionMessage() {
+  if (config.update.strategy === 'source-deploy') {
+    return 'Update source is not fully configured. Set WEBUI_UPDATE_PACKAGE, WEBUI_UPDATE_REGISTRY, and WEBUI_UPDATE_SCRIPT.'
+  }
+  return 'Update source is not fully configured. Set WEBUI_UPDATE_PACKAGE, WEBUI_UPDATE_REGISTRY, and WEBUI_UPDATE_CLI_BIN.'
 }
 
 function spawnRestart(port: string) {
@@ -1030,12 +1067,73 @@ function spawnRestart(port: string) {
   })
 }
 
+function spawnSourceDeployUpdate(version: string) {
+  const script = config.update.script
+  if (!script) {
+    throw new Error('WEBUI_UPDATE_SCRIPT is not configured for source-deploy updates.')
+  }
+
+  const env = {
+    ...getCurrentNodeEnv(),
+    HERMES_WEB_UI_UPDATE_VERSION: version,
+    HERMES_WEB_UI_UPDATE_PACKAGE: config.update.packageName || '',
+    HERMES_WEB_UI_UPDATE_REGISTRY: config.update.registry || '',
+    HERMES_WEB_UI_UPDATE_DIST_TAG: config.update.distTag || 'latest',
+  }
+  const options = {
+    detached: true,
+    stdio: 'ignore' as const,
+    windowsHide: true,
+    env,
+  }
+
+  return process.platform === 'win32'
+    ? spawn('bash', [script, '--version', version], options)
+    : spawn(script, ['--version', version], options)
+}
+
+function observeDetachedUpdateProcess(
+  updateChild: ChildProcess,
+  label: string,
+) {
+  updateChild.on('error', (err) => {
+    updateInProgress = false
+    console.error(`[update] ${label} failed:`, err)
+  })
+  updateChild.on('exit', (code, signal) => {
+    updateInProgress = false
+    const failed = (typeof code === 'number' && code !== 0) || Boolean(signal)
+    if (failed) {
+      console.error(`[update] ${label} exited before replacing server: code=${code} signal=${signal}`)
+    }
+  })
+  updateChild.unref()
+}
+
 export async function handleUpdate(ctx: any) {
+  if (!config.update.enabled) {
+    ctx.status = 403
+    ctx.body = {
+      success: false,
+      message: 'In-app update is disabled for this customized build',
+    }
+    return
+  }
+
+  if (!hasConfiguredUpdateExecution(config.update)) {
+    ctx.status = 500
+    ctx.body = {
+      success: false,
+      message: getUpdateExecutionMessage(),
+    }
+    return
+  }
+
   if (updateInProgress) {
     ctx.status = 409
     ctx.body = {
       success: false,
-      message: 'hermes-web-ui update is already in progress',
+      message: `${config.update.packageName || 'Hermes Web UI'} update is already in progress`,
     }
     return
   }
@@ -1043,11 +1141,40 @@ export async function handleUpdate(ctx: any) {
   updateInProgress = true
 
   try {
-    const output = runUpdateInstall()
+    const resolvedVersion = await resolvePublishedUpdateVersion()
+    const targetSpecifier = resolvedVersion || config.update.distTag || 'latest'
+
+    if (config.update.strategy === 'source-deploy') {
+      if (!resolvedVersion) {
+        throw new Error(`Could not resolve the latest published version for ${config.update.packageName}`)
+      }
+
+      console.info(`[update] starting source deployment update for ${config.update.packageName}@${resolvedVersion}`)
+      ctx.body = {
+        success: true,
+        message: `Starting source deployment update to ${resolvedVersion}`,
+      }
+
+      setTimeout(() => {
+        let updateChild
+        try {
+          updateChild = spawnSourceDeployUpdate(resolvedVersion)
+        } catch (err) {
+          updateInProgress = false
+          console.error('[update] failed to spawn source deployment update:', err)
+          return
+        }
+        observeDetachedUpdateProcess(updateChild, 'source deployment update')
+      }, 1000)
+      return
+    }
+
+    console.info(`[update] installing ${config.update.packageName}@${targetSpecifier} from ${config.update.registry}`)
+    const output = runUpdateInstall(targetSpecifier)
 
     ctx.body = {
       success: true,
-      message: output.trim() || 'hermes-web-ui updated successfully',
+      message: output.trim() || `${config.update.packageName || 'Hermes Web UI'} updated successfully`,
     }
 
     setTimeout(() => {
@@ -1059,19 +1186,7 @@ export async function handleUpdate(ctx: any) {
         console.error('[update] failed to spawn restart:', err)
         return
       }
-
-      restart.on('error', (err) => {
-        updateInProgress = false
-        console.error('[update] restart process failed:', err)
-      })
-      restart.on('exit', (code, signal) => {
-        updateInProgress = false
-        const failed = (typeof code === 'number' && code !== 0) || Boolean(signal)
-        if (failed) {
-          console.error(`[update] restart process exited before replacing server: code=${code} signal=${signal}`)
-        }
-      })
-      restart.unref()
+      observeDetachedUpdateProcess(restart, 'restart helper')
     }, 3000)
   } catch (err: any) {
     updateInProgress = false

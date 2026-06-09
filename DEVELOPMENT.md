@@ -1,4 +1,4 @@
-# Development Guidelines
+﻿﻿﻿﻿# Development Guidelines
 
 This document defines project-level development rules for Hermes Web UI. It is tool-agnostic and applies to all contributors and coding agents.
 
@@ -18,6 +18,16 @@ npm run build
 - `npm run test:coverage` is what the Build workflow runs before `npm run build`.
 - `npm run test:e2e` runs Playwright browser tests against a mocked BFF API.
 - `npm run build` type-checks and builds both client and server.
+
+## npm Release
+
+- Published package name is `@quanthermes/hermes-web-ui`.
+- Global install command is `npm install -g @quanthermes/hermes-web-ui`.
+- Runtime command remains `hermes-web-ui start`.
+- Push a `v*` tag to trigger `npm-publish.yml`.
+- Store a valid `NPM_TOKEN` in GitHub Actions secrets before the first release.
+- Follow docs/npm-release.md for the release checklist and rollback notes.
+- Follow docs/deploy-update-runbook.md for deployment-time update configuration, systemd examples, and post-deploy validation.
 
 ## Architecture
 
@@ -102,3 +112,4 @@ Closes #123
 - `npm run test:coverage`
 - `npm run build`
 ```
+

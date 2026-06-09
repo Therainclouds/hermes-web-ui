@@ -2,6 +2,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'fs'
 import { resolve } from 'path'
 
+const UPDATE_PACKAGE = '@quanthermes/hermes-web-ui'
+const UPDATE_REGISTRY = 'https://registry.npmjs.org'
+const UPDATE_SOURCE_LABEL = 'Company npm registry'
+
 function readRootPackage() {
   return JSON.parse(readFileSync(resolve(process.cwd(), 'package.json'), 'utf-8')) as {
     name: string
@@ -86,10 +90,26 @@ function createMockCtx() {
 }
 
 describe('health controller version metadata', () => {
+  const originalUpdateEnabled = process.env.WEBUI_UPDATE_ENABLED
+  const originalUpdatePackage = process.env.WEBUI_UPDATE_PACKAGE
+  const originalUpdateRegistry = process.env.WEBUI_UPDATE_REGISTRY
+  const originalUpdateCliBin = process.env.WEBUI_UPDATE_CLI_BIN
+  const originalUpdateSourceLabel = process.env.WEBUI_UPDATE_SOURCE_LABEL
+
   afterEach(() => {
     vi.restoreAllMocks()
     vi.resetModules()
     ;(globalThis as any).__APP_VERSION__ = 'test'
+    if (originalUpdateEnabled === undefined) delete process.env.WEBUI_UPDATE_ENABLED
+    else process.env.WEBUI_UPDATE_ENABLED = originalUpdateEnabled
+    if (originalUpdatePackage === undefined) delete process.env.WEBUI_UPDATE_PACKAGE
+    else process.env.WEBUI_UPDATE_PACKAGE = originalUpdatePackage
+    if (originalUpdateRegistry === undefined) delete process.env.WEBUI_UPDATE_REGISTRY
+    else process.env.WEBUI_UPDATE_REGISTRY = originalUpdateRegistry
+    if (originalUpdateCliBin === undefined) delete process.env.WEBUI_UPDATE_CLI_BIN
+    else process.env.WEBUI_UPDATE_CLI_BIN = originalUpdateCliBin
+    if (originalUpdateSourceLabel === undefined) delete process.env.WEBUI_UPDATE_SOURCE_LABEL
+    else process.env.WEBUI_UPDATE_SOURCE_LABEL = originalUpdateSourceLabel
   })
 
   it('reads the root package version in ts-node/dev mode instead of falling back to 0.0.0', async () => {
@@ -116,21 +136,25 @@ describe('health controller version metadata', () => {
     expect(ctx.body.webui_version).toBe('9.9.9-test')
   })
 
-  it('checks npm latest using the root package name', async () => {
+  it('checks npm latest using the configured package name', async () => {
+    process.env.WEBUI_UPDATE_ENABLED = 'true'
+    process.env.WEBUI_UPDATE_PACKAGE = UPDATE_PACKAGE
+    process.env.WEBUI_UPDATE_REGISTRY = UPDATE_REGISTRY
+    process.env.WEBUI_UPDATE_CLI_BIN = 'hermes-web-ui.mjs'
+    process.env.WEBUI_UPDATE_SOURCE_LABEL = UPDATE_SOURCE_LABEL
     vi.spyOn(console, 'log').mockImplementation(() => {})
-    const pkg = readRootPackage()
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: vi.fn().mockResolvedValue({ version: '99.99.99' }),
     })
     vi.stubGlobal('fetch', fetchMock)
 
-    const { checkLatestVersion, healthCheck } = await loadHealthControllerWithoutInjectedVersion()
+    const { checkLatestVersion, healthCheck } = await loadHealthControllerWithInjectedVersion('0.6.10-test')
 
     await checkLatestVersion()
 
     expect(fetchMock).toHaveBeenCalledWith(
-      `https://registry.npmjs.org/${pkg.name}/latest`,
+      `https://registry.npmjs.org/${encodeURIComponent(UPDATE_PACKAGE)}`,
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
 
@@ -138,7 +162,44 @@ describe('health controller version metadata', () => {
     await healthCheck(ctx)
 
     expect(ctx.body.webui_latest).toBe('99.99.99')
+    expect(ctx.body.webui_update_enabled).toBe(true)
     expect(ctx.body.webui_update_available).toBe(true)
+    expect(ctx.body.webui_update_source_label).toBe(UPDATE_SOURCE_LABEL)
+  })
+
+  it('does not report an update when the local version is equal to or ahead of the registry version', async () => {
+    process.env.WEBUI_UPDATE_ENABLED = 'true'
+    process.env.WEBUI_UPDATE_PACKAGE = UPDATE_PACKAGE
+    process.env.WEBUI_UPDATE_REGISTRY = UPDATE_REGISTRY
+    process.env.WEBUI_UPDATE_CLI_BIN = 'hermes-web-ui.mjs'
+    process.env.WEBUI_UPDATE_SOURCE_LABEL = UPDATE_SOURCE_LABEL
+
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({ version: '0.6.14' }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({ version: '0.6.13' }),
+      })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { checkLatestVersion, healthCheck } = await loadHealthControllerWithInjectedVersion('0.6.14')
+
+    await checkLatestVersion()
+
+    const equalCtx = createMockCtx()
+    await healthCheck(equalCtx)
+    expect(equalCtx.body.webui_latest).toBe('0.6.14')
+    expect(equalCtx.body.webui_update_available).toBe(false)
+
+    await checkLatestVersion()
+
+    const aheadCtx = createMockCtx()
+    await healthCheck(aheadCtx)
+    expect(aheadCtx.body.webui_latest).toBe('0.6.13')
+    expect(aheadCtx.body.webui_update_available).toBe(false)
   })
 
   it('does not throw when latest-version lookup fails', async () => {

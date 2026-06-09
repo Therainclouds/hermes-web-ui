@@ -4,6 +4,83 @@ import { isReservedMentionName } from '../../services/hermes/group-chat/mention-
 
 export const groupChatRoutes = new Router()
 
+// ─── Types ──────────────────────────────────────────────────
+
+interface ImportRoomData {
+    room: { id?: string; name: string; inviteCode?: string | null; triggerTokens?: number; maxHistoryTokens?: number; tailMessageCount?: number }
+    messages: Array<{ id: string; senderId: string; senderName: string; content: string; timestamp: number; role?: string; tool_name?: string | null; reasoning_content?: string | null }>
+    agents?: Array<{ profile: string; name?: string; description?: string }>
+    members?: Array<{
+        id?: string
+        userId?: string
+        userName?: string
+        name?: string
+        description?: string
+        avatar?: string
+    }>
+}
+
+interface ImportRoomsEnvelope {
+    exportedAt?: string
+    roomCount?: number
+    rooms: ImportRoomData[]
+}
+
+// ─── Export Helpers ──────────────────────────────────────────
+
+function serializeGroupChatAsText(room: { id: string; name: string }, messages: any[], agents: any[], members: any[]): string {
+    const lines: string[] = [`# ${room.name} (${room.id})`, '']
+
+    lines.push('## Members')
+    for (const m of members) {
+        lines.push(`- ${m.name || m.userName || m.userId || 'unknown'} (${m.source || 'human'})`)
+    }
+    lines.push('')
+
+    lines.push('## Agents')
+    for (const a of agents) {
+        lines.push(`- @${a.name} (${a.profile})`)
+    }
+    lines.push('')
+
+    lines.push('## Messages')
+    for (const msg of messages) {
+        const sender = msg.senderName || 'unknown'
+        const role = msg.role || 'user'
+        const ts = msg.timestamp ? new Date(msg.timestamp).toISOString() : ''
+        const toolInfo = msg.tool_name ? ` [tool: ${msg.tool_name}]` : ''
+        lines.push(`[${role}] ${sender}${ts ? ' ' + ts : ''}${toolInfo}`)
+        const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
+        lines.push(content || '')
+        if (msg.reasoning_content) {
+            lines.push(`  reasoning: ${msg.reasoning_content}`)
+        }
+        lines.push('')
+    }
+
+    return lines.join('\n')
+}
+
+function normalizeImportPayload(payload: unknown): ImportRoomData[] {
+    if (Array.isArray(payload)) {
+        return payload as ImportRoomData[]
+    }
+
+    if (payload && typeof payload === 'object') {
+        const maybeEnvelope = payload as Partial<ImportRoomsEnvelope>
+        if (Array.isArray(maybeEnvelope.rooms)) {
+            return maybeEnvelope.rooms
+        }
+
+        const maybeSingle = payload as Partial<ImportRoomData>
+        if (maybeSingle.room && typeof maybeSingle.room === 'object') {
+            return [maybeSingle as ImportRoomData]
+        }
+    }
+
+    return []
+}
+
 let chatServer: GroupChatServer | null = null
 
 export function setGroupChatServer(server: GroupChatServer) {
@@ -167,6 +244,192 @@ groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/clone', async (ctx) =
     ctx.body = { room, agents: addedAgents, agentResults }
 })
 
+// ─── List rooms (before :roomId to avoid conflict) ─────────
+groupChatRoutes.get('/api/hermes/group-chat/rooms', async (ctx) => {
+    if (!chatServer) {
+        ctx.status = 503
+        ctx.body = { error: 'Group chat not initialized' }
+        return
+    }
+
+    const user = ctx.state.user
+    const storage = chatServer.getStorage()
+    const rooms = !user || user.role === 'super_admin'
+        ? storage.getAllRooms()
+        : storage.getRoomsForProfiles(user.profiles || [])
+    ctx.body = { rooms }
+})
+
+// Get room by invite code (before :roomId to avoid conflict)
+groupChatRoutes.get('/api/hermes/group-chat/rooms/join/:code', async (ctx) => {
+    if (!chatServer) {
+        ctx.status = 503
+        ctx.body = { error: 'Group chat not initialized' }
+        return
+    }
+
+    const room = chatServer.getStorage().getRoomByInviteCode(ctx.params.code)
+    if (!room) {
+        ctx.status = 404
+        ctx.body = { error: 'Room not found' }
+        return
+    }
+
+    ctx.body = { room }
+})
+
+// Export all rooms (before :roomId to avoid conflict)
+groupChatRoutes.get('/api/hermes/group-chat/rooms/export', async (ctx) => {
+    if (!chatServer) {
+        ctx.status = 503
+        ctx.body = { error: 'Group chat not initialized' }
+        return
+    }
+
+    const user = ctx.state.user
+    const storage = chatServer.getStorage()
+    const allRooms = !user || user.role === 'super_admin'
+        ? storage.getAllRooms()
+        : storage.getRoomsForProfiles(user.profiles || [])
+
+    const ext = (ctx.query.ext as string) || 'json'
+
+    if (ext === 'txt') {
+        const lines: string[] = [`# All Group Chats Export (${new Date().toISOString()})`, '']
+        for (const room of allRooms) {
+            const messages = storage.getMessages(room.id, 10000, 0)
+            const agents = storage.getRoomAgents(room.id)
+            const members = storage.getRoomMembers(room.id)
+            lines.push(serializeGroupChatAsText(room, messages, agents, members))
+            lines.push('---', '')
+        }
+        const filename = `all_group_chats_${Date.now()}.txt`
+        ctx.set('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`)
+        ctx.set('Content-Type', 'text/plain; charset=utf-8')
+        ctx.body = lines.join('\n')
+    } else {
+        const roomsData = allRooms.map(room => ({
+            room,
+            messages: storage.getMessages(room.id, 10000, 0),
+            agents: storage.getRoomAgents(room.id),
+            members: storage.getRoomMembers(room.id),
+        }))
+        const filename = `all_group_chats_${Date.now()}.json`
+        ctx.set('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`)
+        ctx.set('Content-Type', 'application/json')
+        ctx.body = JSON.stringify({
+            exportedAt: new Date().toISOString(),
+            roomCount: roomsData.length,
+            rooms: roomsData,
+        }, null, 2)
+    }
+})
+
+// Import rooms (before :roomId to avoid conflict)
+groupChatRoutes.post('/api/hermes/group-chat/rooms/import', async (ctx) => {
+    if (!chatServer) {
+        ctx.status = 503
+        ctx.body = { error: 'Group chat not initialized' }
+        return
+    }
+
+    let payload: unknown
+    try {
+        payload = typeof ctx.request.body === 'string'
+            ? JSON.parse(ctx.request.body)
+            : ctx.request.body
+    } catch (err: any) {
+        ctx.status = 400
+        ctx.body = { error: err?.message || 'Invalid JSON payload' }
+        return
+    }
+
+    const rooms = normalizeImportPayload(payload)
+    if (!rooms.length) {
+        ctx.status = 400
+        ctx.body = {
+            error: 'Unsupported import payload. Expected a single room export or an all-rooms export.',
+        }
+        return
+    }
+
+    const results: Array<{ name: string; roomId?: string; error?: string }> = []
+    const storage = chatServer.getStorage()
+
+    for (const data of rooms) {
+        try {
+            const room = data.room
+            if (!room.name) {
+                results.push({ name: '<unnamed>', error: 'Room name is required' })
+                continue
+            }
+
+            // Generate new IDs to avoid conflicts
+            const roomId = generateId()
+            const inviteCode = room.inviteCode?.trim() || generateInviteCode()
+            storage.saveRoom(roomId, room.name, inviteCode, {
+                triggerTokens: room.triggerTokens,
+                maxHistoryTokens: room.maxHistoryTokens,
+                tailMessageCount: room.tailMessageCount,
+            })
+
+            // Import messages
+            if (data.messages?.length) {
+                for (const msg of data.messages) {
+                    storage.upsertMessage({
+                        id: generateId(),
+                        roomId,
+                        senderId: msg.senderId || 'unknown',
+                        senderName: msg.senderName || 'Unknown',
+                        content: msg.content || '',
+                        timestamp: msg.timestamp || Date.now(),
+                        role: msg.role || 'user',
+                        tool_name: msg.tool_name || null,
+                        reasoning_content: msg.reasoning_content || null,
+                    })
+                }
+            }
+
+            // Import agents (optional - just record, don't connect)
+            if (data.agents?.length) {
+                for (const agent of data.agents) {
+                    storage.addRoomAgent(roomId, generateId(), agent.profile, agent.name || agent.profile, agent.description || '', 0)
+                }
+            }
+
+            // Import members (optional)
+            if (data.members?.length) {
+                for (const member of data.members) {
+                    const userId = (member.userId || member.id || generateId()).trim()
+                    const userName = (member.userName || member.name || '').trim()
+                    if (!userName) {
+                        throw new Error('Member name is required')
+                    }
+                    storage.addRoomMember(
+                        roomId,
+                        userId,
+                        userName,
+                        member.description || '',
+                        member.avatar || '',
+                        undefined,
+                    )
+                }
+            }
+
+            results.push({ name: room.name, roomId })
+        } catch (err: any) {
+            results.push({ name: data.room?.name || '<unnamed>', error: err.message })
+        }
+    }
+
+    ctx.body = {
+        success: results.every(r => !r.error),
+        importedCount: results.filter(r => !r.error).length,
+        failedCount: results.filter(r => r.error).length,
+        results,
+    }
+})
+
 // Get room detail and messages
 groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId', async (ctx) => {
     if (!chatServer) {
@@ -189,40 +452,6 @@ groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId', async (ctx) => {
     const agents = chatServer.getStorage().getRoomAgents(ctx.params.roomId)
     const members = chatServer.getStorage().getRoomMembers(ctx.params.roomId)
     ctx.body = { room, messages, agents, members, total, offset, limit, hasMore: offset + messages.length < total }
-})
-
-// List rooms
-groupChatRoutes.get('/api/hermes/group-chat/rooms', async (ctx) => {
-    if (!chatServer) {
-        ctx.status = 503
-        ctx.body = { error: 'Group chat not initialized' }
-        return
-    }
-
-    const user = ctx.state.user
-    const storage = chatServer.getStorage()
-    const rooms = !user || user.role === 'super_admin'
-        ? storage.getAllRooms()
-        : storage.getRoomsForProfiles(user.profiles || [])
-    ctx.body = { rooms }
-})
-
-// Get room by invite code
-groupChatRoutes.get('/api/hermes/group-chat/rooms/join/:code', async (ctx) => {
-    if (!chatServer) {
-        ctx.status = 503
-        ctx.body = { error: 'Group chat not initialized' }
-        return
-    }
-
-    const room = chatServer.getStorage().getRoomByInviteCode(ctx.params.code)
-    if (!room) {
-        ctx.status = 404
-        ctx.body = { error: 'Room not found' }
-        return
-    }
-
-    ctx.body = { room }
 })
 
 // Update room invite code
@@ -411,5 +640,40 @@ groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/compress', async (ctx
     } catch (err: any) {
         ctx.status = 500
         ctx.body = { error: err.message }
+    }
+})
+
+// Export single room
+groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId/export', async (ctx) => {
+    if (!chatServer) {
+        ctx.status = 503
+        ctx.body = { error: 'Group chat not initialized' }
+        return
+    }
+
+    const room = chatServer.getStorage().getRoom(ctx.params.roomId)
+    if (!room) {
+        ctx.status = 404
+        ctx.body = { error: 'Room not found' }
+        return
+    }
+
+    const ext = (ctx.query.ext as string) || 'json'
+    const safeName = room.name.replace(/[^a-zA-Z0-9一-鿿_-]/g, '_').slice(0, 50)
+    const filename = `${safeName}_${room.id.slice(0, 8)}.${ext}`
+
+    // Fetch all messages (paginate if needed, max 10000)
+    const messages = chatServer.getStorage().getMessages(room.id, 10000, 0)
+    const agents = chatServer.getStorage().getRoomAgents(room.id)
+    const members = chatServer.getStorage().getRoomMembers(room.id)
+
+    if (ext === 'txt') {
+        ctx.set('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`)
+        ctx.set('Content-Type', 'text/plain; charset=utf-8')
+        ctx.body = serializeGroupChatAsText(room, messages, agents, members)
+    } else {
+        ctx.set('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`)
+        ctx.set('Content-Type', 'application/json')
+        ctx.body = JSON.stringify({ room, messages, agents, members, exportedAt: new Date().toISOString() }, null, 2)
     }
 })

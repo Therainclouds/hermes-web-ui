@@ -7,7 +7,9 @@ export interface HealthResponse {
   gateway?: string
   webui_version?: string
   webui_latest?: string
+  webui_update_enabled?: boolean
   webui_update_available?: boolean
+  webui_update_source_label?: string
   node_version?: string
   agent_bridge?: {
     status: string

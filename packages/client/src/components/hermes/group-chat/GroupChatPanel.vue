@@ -5,7 +5,7 @@ import { useRouter } from 'vue-router'
 import { useMessage, NInput, NButton, NSpace, NSelect, NPopover, NPopconfirm, NInputNumber, NDropdown, type DropdownOption } from 'naive-ui'
 import { useGroupChatStore } from '@/stores/hermes/group-chat'
 import { useProfilesStore } from '@/stores/hermes/profiles'
-import { updateRoomConfig, forceCompress } from '@/api/hermes/group-chat'
+import { updateRoomConfig, forceCompress, exportRoom, exportAllRooms, importRooms } from '@/api/hermes/group-chat'
 import GroupMessageList from './GroupMessageList.vue'
 import GroupChatInput from './GroupChatInput.vue'
 import ProfileAvatar from '@/components/hermes/profiles/ProfileAvatar.vue'
@@ -22,6 +22,10 @@ const profilesStore = useProfilesStore()
 const showSidebar = ref(window.innerWidth > 768)
 const showCreateModal = ref(false)
 const showCloneModal = ref(false)
+const showImportModal = ref(false)
+const importFile = ref<File | null>(null)
+const importInputRef = ref<HTMLInputElement | null>(null)
+const isImporting = ref(false)
 const showAddAgentModal = ref(false)
 const showCompressionModal = ref(false)
 const compressionConfig = ref({ triggerTokens: 100000, maxHistoryTokens: 32000, tailMessageCount: 10 })
@@ -132,6 +136,55 @@ async function handleDeleteRoom(roomId: string) {
     }
 }
 
+async function handleExportAll(ext: 'json' | 'txt' = 'json') {
+    try {
+        await exportAllRooms(ext)
+        message.success(t('groupChat.exportSuccess'))
+    } catch {
+        message.error(t('common.saveFailed'))
+    }
+}
+
+function handleOpenImport() {
+    showImportModal.value = true
+    importFile.value = null
+}
+
+function handleFileSelected(event: Event) {
+    const input = event.target as HTMLInputElement
+    importFile.value = input.files?.[0] || null
+}
+
+function formatImportFailureSummary(results: Array<{ name: string; error?: string }>): string {
+    return results
+        .filter(result => result.error)
+        .slice(0, 3)
+        .map(result => `${result.name}: ${result.error}`)
+        .join('; ')
+}
+
+async function confirmImport() {
+    if (!importFile.value) return
+    isImporting.value = true
+    try {
+        const result = await importRooms(importFile.value)
+        showImportModal.value = false
+        importFile.value = null
+        await store.loadRooms()
+        if (result.success) {
+            message.success(t('groupChat.importSuccess', { count: result.importedCount }))
+        } else {
+            const details = formatImportFailureSummary(result.results)
+            const summary = t('groupChat.importPartialSuccess', { success: result.importedCount, failed: result.failedCount })
+            message.warning(details ? `${summary}: ${details}` : summary)
+        }
+    } catch (err: any) {
+        message.error(err?.message || t('common.saveFailed'))
+    } finally {
+        isImporting.value = false
+    }
+}
+
 function buildRoomUrl(roomId: string) {
     const href = router.resolve({ name: 'hermes.groupChatRoom', params: { roomId } }).href
     return `${window.location.origin}${window.location.pathname}${href}`
@@ -146,6 +199,9 @@ async function copyRoomLink(roomId: string) {
 const roomContextMenuOptions = computed<DropdownOption[]>(() => [
     { label: t('groupChat.copyRoomLink'), key: 'copy-link' },
     { label: t('groupChat.cloneRoom'), key: 'clone-room' },
+    { type: 'divider', key: 'd1' },
+    { label: t('groupChat.exportRoomJson'), key: 'export-json' },
+    { label: t('groupChat.exportRoomTxt'), key: 'export-txt' },
 ])
 
 function handleRoomContextMenu(event: MouseEvent, roomId: string) {
@@ -168,6 +224,10 @@ function handleRoomContextSelect(key: string) {
         void copyRoomLink(roomId)
     } else if (key === 'clone-room') {
         handleOpenCloneRoom(roomId)
+    } else if (key === 'export-json') {
+        exportRoom(roomId, 'json').then(() => message.success(t('groupChat.exportSuccess'))).catch(() => message.error(t('common.saveFailed')))
+    } else if (key === 'export-txt') {
+        exportRoom(roomId, 'txt').then(() => message.success(t('groupChat.exportSuccess'))).catch(() => message.error(t('common.saveFailed')))
     }
 }
 
@@ -341,6 +401,16 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
             <div class="sidebar-header">
                 <span class="sidebar-title">{{ t('groupChat.title') }}</span>
                 <div class="sidebar-actions">
+                    <button class="icon-btn" :title="t('groupChat.import')" @click="handleOpenImport">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+                        </svg>
+                    </button>
+                    <button class="icon-btn" :title="t('groupChat.exportAll')" @click="() => handleExportAll()">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                        </svg>
+                    </button>
                     <button class="icon-btn" :title="t('groupChat.createRoom')" @click="showCreateModal = true">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                             <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
@@ -620,6 +690,31 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                         <NSpace justify="end">
                             <NButton @click="showCloneModal = false">{{ t('common.cancel') }}</NButton>
                             <NButton type="primary" :disabled="!cloneRoomName.trim()" @click="confirmCloneRoom">{{ t('groupChat.cloneRoom') }}</NButton>
+                        </NSpace>
+                    </div>
+                </div>
+            </div>
+            <div v-if="showImportModal" class="modal-backdrop" @click.self="showImportModal = false">
+                <div class="modal">
+                    <h3>{{ t('groupChat.import') }}</h3>
+                    <div class="form-group">
+                        <label class="form-label">{{ t('groupChat.selectFile') }}</label>
+                        <input
+                            ref="importInputRef"
+                            type="file"
+                            accept=".json"
+                            class="file-input"
+                            @change="handleFileSelected"
+                        />
+                        <NButton size="small" @click="importInputRef?.click()">
+                            {{ importFile ? importFile.name : t('groupChat.chooseFile') }}
+                        </NButton>
+                        <p class="form-hint">{{ t('groupChat.importHint') }}</p>
+                    </div>
+                    <div class="modal-actions">
+                        <NSpace justify="end">
+                            <NButton @click="showImportModal = false">{{ t('common.cancel') }}</NButton>
+                            <NButton type="primary" :disabled="!importFile || isImporting" :loading="isImporting" @click="confirmImport">{{ t('groupChat.import') }}</NButton>
                         </NSpace>
                     </div>
                 </div>
@@ -1265,6 +1360,10 @@ export default defineComponent({ components: { CreateRoomForm } })
         color: $text-primary;
         margin: 0 0 20px;
     }
+}
+
+.file-input {
+    display: none;
 }
 
 .form-group {

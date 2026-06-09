@@ -2,7 +2,7 @@
 import { computed, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
-import { NButton, NModal, useMessage } from "naive-ui";
+import { NModal } from "naive-ui";
 import { useAppStore } from "@/stores/hermes/app";
 import ModelSelector from "./ModelSelector.vue";
 import ProfileSelector from "./ProfileSelector.vue";
@@ -16,7 +16,6 @@ import { changelog } from "@/data/changelog";
 import { isStoredSuperAdmin, getStoredUsername } from "@/api/client";
 
 const { t } = useI18n();
-const message = useMessage();
 const route = useRoute();
 const router = useRouter();
 const appStore = useAppStore();
@@ -42,6 +41,7 @@ function hasRoute(name: string): boolean {
   return router.hasRoute(name);
 }
 const logoPath = '/logo.png';
+const brandName = 'Quanta Hermes';
 
 const { record: collapsedGroups, persist: persistCollapsedGroups } = usePersistentRecord('hermes.sidebar.collapsedGroups');
 
@@ -51,6 +51,8 @@ function groupLabel(key: SidebarGroupKey) {
   return t(`sidebar.group${key}${appStore.sidebarCollapsed ? "Short" : ""}`);
 }
 
+const provisioningUrl = computed(() => resolveDeviceUrls().provisioningUrl);
+
 function toggleGroup(key: string) {
   collapsedGroups[key] = !collapsedGroups[key];
   persistCollapsedGroups();
@@ -58,20 +60,6 @@ function toggleGroup(key: string) {
 
 function isGroupCollapsed(key: string) {
   return !!collapsedGroups[key];
-}
-
-
-async function handleUpdate() {
-  const ok = await appStore.doUpdate();
-  if (ok) {
-    message.success(t('sidebar.updateSuccess'), { duration: 5000 });
-  } else {
-    message.error(t('sidebar.updateFailed'));
-  }
-}
-
-function handleReloadClient() {
-  appStore.reloadClient();
 }
 
 function handleLogout() {
@@ -87,16 +75,22 @@ function openChangelog() {
   showChangelog.value = true;
 }
 
-function openVersionManagement() {
-  showVersionManagement.value = true;
+async function handleUpdateClick() {
+  await appStore.doUpdate();
+}
+
+async function handleReloadClick() {
+  if (typeof window !== 'undefined') {
+    window.location.reload();
+  }
 }
 </script>
 
 <template>
   <aside class="sidebar" :class="{ open: appStore.sidebarOpen, collapsed: appStore.sidebarCollapsed }">
     <RouteLinkItem class="sidebar-logo" :to="{ name: 'hermes.chat' }">
-      <img :src="logoPath" alt="Hermes Studio" class="logo-img" />
-      <span class="logo-text">Hermes Studio</span>
+      <img :src="logoPath" :alt="brandName" class="logo-img" />
+      <span class="logo-text">{{ brandName }}</span>
       <!-- <video class="logo-dance" :src="isDark ? danceVideoDark : danceVideoLight" autoplay loop muted playsinline /> -->
     </RouteLinkItem>
 
@@ -146,10 +140,6 @@ function openVersionManagement() {
             </svg>
             <span>{{ t("sidebar.search") }}</span>
           </button>
-          <a class="nav-item fun-link" href="https://apikey.fun/register?aff=LIBAPI" target="_blank" rel="noopener noreferrer">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-            <span>{{ t('sidebar.apiRelay') }}</span>
-          </a>
         </div>
       </div>
 
@@ -327,6 +317,19 @@ function openVersionManagement() {
           </svg>
         </div>
         <div v-show="!isGroupCollapsed('system')" class="nav-group-items">
+          <a class="nav-item" :href="provisioningUrl" target="_blank" rel="noopener noreferrer">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="16" y="16" width="6" height="6" rx="1" />
+              <path d="M32 22h-8" />
+              <path d="M22 22h-2" />
+              <path d="M32 16h-12" />
+              <path d="M18 16H2" />
+              <path d="M32 10H12" />
+              <path d="M18 10H2" />
+              <path d="M22 4H2" />
+            </svg>
+            <span>{{ t("sidebar.networkConfig") }}</span>
+          </a>
           <RouteLinkItem v-if="isSuperAdmin" class="nav-item" :to="{ name: 'hermes.profiles' }" :active="selectedKey === 'hermes.profiles'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
@@ -376,26 +379,46 @@ function openVersionManagement() {
         <LanguageSwitch />
       </div>
       <div class="version-info">
-        <div class="version-links">
-          <a class="github-link" href="https://github.com/EKKOLearnAI/hermes-web-ui" target="_blank" rel="noopener noreferrer" title="GitHub">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
-          </a>
-          <a class="website-link" href="https://hermes-studio.ai/" target="_blank" rel="noopener noreferrer" title="Website">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-          </a>
-        </div>
-        <span class="version-text" @click="openChangelog">Studio v{{ appStore.serverVersion || "0.1.0" }}</span>
+        <span class="version-text" @click="openChangelog">{{ brandName }} v{{ appStore.serverVersion || "0.1.0" }}</span>
         <ThemeSwitch />
       </div>
-      <NButton v-if="isDesktopShell" type="primary" size="tiny" block class="update-btn" @click="openVersionManagement">
-        {{ t('sidebar.versionManagement') }}
-      </NButton>
-      <NButton v-if="appStore.clientOutdated" type="warning" size="tiny" block class="update-btn" @click="handleReloadClient">
-        {{ t('sidebar.reloadClientVersion', { version: appStore.serverVersion }) }}
-      </NButton>
-      <NButton v-if="appStore.updateAvailable" type="primary" size="tiny" block class="update-btn" :loading="appStore.updating" @click="handleUpdate">
-        {{ appStore.updating ? t('sidebar.updating') : t('sidebar.updateVersion', { version: appStore.latestVersion }) }}
-      </NButton>
+      <div
+        v-if="appStore.updateEnabled && appStore.updateAvailable && !appStore.updating"
+        class="sidebar-update-action"
+      >
+        <button
+          class="sidebar-update-btn"
+          :disabled="appStore.updating"
+          @click="handleUpdateClick"
+        >
+          <span class="sidebar-update-label">
+            {{ t('sidebar.updateVersion', { version: appStore.latestVersion || appStore.serverVersion }) }}
+          </span>
+        </button>
+      </div>
+      <div
+        v-else-if="appStore.updateEnabled && appStore.clientOutdated && !appStore.updating"
+        class="sidebar-update-action"
+      >
+        <button
+          class="sidebar-update-btn"
+          :disabled="appStore.updating"
+          @click="handleReloadClick"
+        >
+          <span class="sidebar-update-label">
+            {{ t('sidebar.reloadClientVersion', { version: appStore.serverVersion }) }}
+          </span>
+        </button>
+      </div>
+      <div v-else-if="appStore.updating" class="sidebar-update-action sidebar-update-progress">
+        <span class="sidebar-update-label">{{ t('sidebar.updating') }}</span>
+      </div>
+      <div v-if="appStore.updateEnabled && appStore.updateSourceLabel" class="update-source">
+        {{ t('sidebar.updateSource', { source: appStore.updateSourceLabel }) }}
+      </div>
+      <div v-else-if="!appStore.updateEnabled" class="update-source">
+        {{ t('sidebar.updateManagedInternally') }}
+      </div>
     </div>
 
     <!-- Changelog modal -->
@@ -437,6 +460,61 @@ function openVersionManagement() {
   height: 28px;
   border-radius: 0;
   flex-shrink: 0;
+}
+
+.update-source {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: $text-secondary;
+}
+
+.sidebar-update-action {
+  margin-top: 8px;
+}
+
+.sidebar-update-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: $radius-sm;
+  border: 1px solid $accent-primary;
+  background-color: rgba(var(--accent-primary-rgb), 0.12);
+  color: $accent-primary;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color $transition-normal, color $transition-normal;
+
+  &:hover:not(:disabled) {
+    background-color: $accent-primary;
+    color: $bg-primary;
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+  }
+}
+
+.sidebar-update-progress {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: $accent-primary;
+  border-radius: $radius-sm;
+  background-color: rgba(var(--accent-primary-rgb), 0.08);
+}
+
+.sidebar-update-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sidebar-logo {
@@ -665,32 +743,8 @@ function openVersionManagement() {
   overflow: hidden;
 }
 
-.version-links {
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-  gap: 6px;
-}
-
 :deep(.theme-switch-container) {
   flex-shrink: 0;
-}
-
-.github-link,
-.website-link {
-  color: $text-muted;
-  display: flex;
-  align-items: center;
-  transition: color 0.2s;
-
-  &:hover {
-    color: $text-primary;
-  }
-}
-
-.update-btn {
-  margin: 4px 0 0;
-  border-radius: 4px;
 }
 
 .version-text {
@@ -951,7 +1005,4 @@ function openVersionManagement() {
   }
 }
 
-.fun-link {
-  text-decoration: none;
-}
 </style>

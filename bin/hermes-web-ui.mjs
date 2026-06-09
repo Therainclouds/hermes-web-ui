@@ -11,6 +11,7 @@ const __filename = fileURLToPath(import.meta.url)
 const serverEntry = resolve(__dirname, '..', 'dist', 'server', 'index.js')
 const pkgDir = resolve(__dirname, '..')
 const pkg = JSON.parse(readFileSync(resolve(pkgDir, 'package.json'), 'utf-8'))
+const PACKAGE_NAME = pkg.name || 'hermes-web-ui'
 const VERSION = pkg.version
 const WEB_UI_HOME = process.env.HERMES_WEB_UI_HOME?.trim()
   ? resolve(process.env.HERMES_WEB_UI_HOME.trim())
@@ -22,29 +23,13 @@ const TOKEN_FILE = join(PID_DIR, '.token')
 const LOGIN_LOCK_FILE = join(WEB_UI_HOME, '.login-lock.json')
 const WEB_UI_DB_FILE = join(WEB_UI_HOME, 'hermes-web-ui.db')
 const DEFAULT_PORT = 8648
-const PREVIEW_BACKEND_PORT = 8650
-const PREVIEW_FRONTEND_PORT = 8651
-const PREVIEW_AGENT_BRIDGE_PORT = 18650
-const DEFAULT_USERNAME = 'admin'
-const DEFAULT_PASSWORD = '123456'
-const DEFAULT_RESTART_GRACE_MS = 5000
-const DEFAULT_STOP_GRACE_MS = 15000
-const STOP_POLL_INTERVAL_MS = 500
+const DEFAULT_USERNAME = 'quanthermes'
+const DEFAULT_PASSWORD = '12345678'
+const STOP_POLL_INTERVAL_MS = 100
+const DAEMON_RESTART_GRACE_MS = 5000
+const DAEMON_STOP_GRACE_MS = 15000
 
-function envPositiveInt(name) {
-  const value = Number(process.env[name])
-  return Number.isFinite(value) && value > 0 ? value : undefined
-}
-
-function getDaemonStopGraceMs(options = {}) {
-  const { restart = false } = options
-  if (restart) {
-    return envPositiveInt('HERMES_WEB_UI_RESTART_GRACE_MS') ?? DEFAULT_RESTART_GRACE_MS
-  }
-  return envPositiveInt('HERMES_WEB_UI_STOP_GRACE_MS') ?? DEFAULT_STOP_GRACE_MS
-}
-
-// ─── Auto-fix node-pty native module ──────────────────────────
+// 鈹€鈹€鈹€ Auto-fix node-pty native module 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 function ensureNativeModules() {
   const prebuildDir = join(pkgDir, 'node_modules', 'node-pty', 'prebuilds', `${process.platform}-${process.arch}`)
   const helper = join(prebuildDir, 'spawn-helper')
@@ -275,7 +260,7 @@ function getListeningPids(port) {
 function killListeningPids(port, pids = getListeningPids(port)) {
   if (pids.length === 0) return
 
-  console.log(`  ⚠ Port ${port} is in use by PID(s): ${pids.join(' ')}, killing...`)
+  console.log(`  鈿?Port ${port} is in use by PID(s): ${pids.join(' ')}, killing...`)
   try {
     if (process.platform === 'win32') {
       execSync(`taskkill /F /PID ${pids.join(' /PID ')}`, { encoding: 'utf-8' })
@@ -367,7 +352,7 @@ function removePid() {
 function startDaemon(port) {
   const existing = getPid()
   if (existing && isRunning(existing)) {
-    console.log(`  ✗ hermes-web-ui is already running (PID: ${existing})`)
+    console.log(`  鉁?hermes-web-ui is already running (PID: ${existing})`)
     console.log(`    Use "hermes-web-ui stop" to stop it first`)
     process.exit(1)
   }
@@ -386,7 +371,7 @@ function startDaemon(port) {
   ensureNativeModules()
   const token = ensureToken()
 
-  // Rotate log if over 3MB — keep last 2000 lines
+  // Rotate log if over 3MB 鈥?keep last 2000 lines
   const MAX_LOG_SIZE = 3 * 1024 * 1024
   const MAX_LOG_LINES = 2000
   try {
@@ -396,7 +381,7 @@ function startDaemon(port) {
       const lines = content.split('\n')
       const kept = lines.slice(-MAX_LOG_LINES)
       writeFileSync(LOG_FILE, kept.join('\n'), 'utf-8')
-      console.log(`  ↻ Log rotated (${(stat.size / 1024 / 1024).toFixed(1)}MB → ${kept.length} lines)`)
+      console.log(`  鈫?Log rotated (${(stat.size / 1024 / 1024).toFixed(1)}MB 鈫?${kept.length} lines)`)
     }
   } catch { }
 
@@ -415,7 +400,7 @@ function startDaemon(port) {
   })
 
   child.on('error', (err) => {
-    console.error(`  ✗ Failed to start: ${err.message}`)
+    console.error(`  鉁?Failed to start: ${err.message}`)
     removePid()
     process.exit(1)
   })
@@ -429,12 +414,12 @@ function startDaemon(port) {
   const interval = 500
   let waited = 0
 
-  console.log(`  ⏳ Starting hermes-web-ui (PID: ${child.pid}, port: ${port})...`)
+  console.log(`  鈴?Starting hermes-web-ui (PID: ${child.pid}, port: ${port})...`)
 
   function poll() {
     waited += interval
     if (!isRunning(child.pid)) {
-      console.log('  ✗ Failed to start hermes-web-ui')
+      console.log('  鉁?Failed to start hermes-web-ui')
       console.log(`    Check log: ${LOG_FILE}`)
       removePid()
       process.exit(1)
@@ -448,7 +433,7 @@ function startDaemon(port) {
           writePid(listeningPid)
         }
         const url = `http://localhost:${port}`
-        console.log(`  ✓ hermes-web-ui started`)
+        console.log(`  鉁?hermes-web-ui started`)
         console.log(`    ${url}`)
         console.log(`    Log: ${LOG_FILE}`)
         const isWin = process.platform === 'win32'
@@ -457,7 +442,7 @@ function startDaemon(port) {
       } else if (waited < maxWait) {
         setTimeout(poll, interval)
       } else {
-        console.log(`  ⚠ Server process is running but health check failed after ${maxWait / 1000}s`)
+        console.log(`  鈿?Server process is running but health check failed after ${maxWait / 1000}s`)
         console.log(`    Check log: ${LOG_FILE}`)
         const url = `http://localhost:${port}`
         console.log(`    ${url}`)
@@ -466,7 +451,7 @@ function startDaemon(port) {
       if (waited < maxWait) {
         setTimeout(poll, interval)
       } else {
-        console.log(`  ⚠ Server process is running but health check failed after ${maxWait / 1000}s`)
+        console.log(`  鈿?Server process is running but health check failed after ${maxWait / 1000}s`)
         console.log(`    Check log: ${LOG_FILE}`)
         const url = `http://localhost:${port}`
         console.log(`    ${url}`)
@@ -502,7 +487,7 @@ function stopDaemon(options = {}) {
 
   if (!isRunning(pid)) {
     removePid()
-    console.log(`  ✓ hermes-web-ui was not running (cleaned stale PID)`)
+    console.log(`  鉁?hermes-web-ui was not running (cleaned stale PID)`)
     return
   }
 
@@ -527,9 +512,9 @@ function stopDaemon(options = {}) {
       }
     }
     removePid()
-    console.log(`  ✓ hermes-web-ui stopped (PID: ${pid})`)
+    console.log(`  鉁?hermes-web-ui stopped (PID: ${pid})`)
   } catch (err) {
-    console.log(`  ✗ Failed to stop: ${err.message}`)
+    console.log(`  鉁?Failed to stop: ${err.message}`)
     process.exit(1)
   }
 }
@@ -537,11 +522,11 @@ function stopDaemon(options = {}) {
 function showStatus() {
   const pid = getPid()
   if (pid && isRunning(pid)) {
-    console.log(`  ✓ hermes-web-ui is running (PID: ${pid})`)
+    console.log(`  鉁?hermes-web-ui is running (PID: ${pid})`)
     console.log(`    PID file: ${PID_FILE}`)
   } else {
     if (pid) removePid()
-    console.log('  ✗ hermes-web-ui is not running')
+    console.log('  鉁?hermes-web-ui is not running')
   }
 }
 
@@ -553,18 +538,18 @@ function clearLoginLocks(options = {}) {
   try {
     unlinkSync(LOGIN_LOCK_FILE)
     removed = true
-    if (!silent) console.log(`  ✓ Removed login lock file: ${LOGIN_LOCK_FILE}`)
+    if (!silent) console.log(`  鉁?Removed login lock file: ${LOGIN_LOCK_FILE}`)
   } catch (err) {
     if (err?.code === 'ENOENT') {
-      if (!silent) console.log(`  ✓ No login lock file found: ${LOGIN_LOCK_FILE}`)
+      if (!silent) console.log(`  鉁?No login lock file found: ${LOGIN_LOCK_FILE}`)
     } else {
-      if (!silent) console.log(`  ✗ Failed to remove login lock file: ${err.message}`)
+      if (!silent) console.log(`  鉁?Failed to remove login lock file: ${err.message}`)
       throw err
     }
   }
 
   if (!silent && serverRunning) {
-    console.log('  ⚠ hermes-web-ui is running; restart it to clear in-memory login locks.')
+    console.log('  鈿?hermes-web-ui is running; restart it to clear in-memory login locks.')
     console.log('    Run: hermes-web-ui restart')
   }
 
@@ -606,7 +591,7 @@ async function resetDefaultLogin(options = {}) {
          WHERE id = ?`
       ).run(passwordHash, now, existing.id)
       if (!silent) {
-        console.log(`  ✓ Reset default login: ${DEFAULT_USERNAME} / ${DEFAULT_PASSWORD}`)
+        console.log(`  鉁?Reset default login: ${DEFAULT_USERNAME} / ${DEFAULT_PASSWORD}`)
         console.log(`    Database: ${WEB_UI_DB_FILE}`)
       }
       return { path: WEB_UI_DB_FILE, username: DEFAULT_USERNAME, password: DEFAULT_PASSWORD, action: 'updated' }
@@ -617,7 +602,7 @@ async function resetDefaultLogin(options = {}) {
        VALUES (?, ?, 'super_admin', 'active', ?, ?)`
     ).run(DEFAULT_USERNAME, passwordHash, now, now)
     if (!silent) {
-      console.log(`  ✓ Created default login: ${DEFAULT_USERNAME} / ${DEFAULT_PASSWORD}`)
+      console.log(`  鉁?Created default login: ${DEFAULT_USERNAME} / ${DEFAULT_PASSWORD}`)
       console.log(`    Database: ${WEB_UI_DB_FILE}`)
     }
     return { path: WEB_UI_DB_FILE, username: DEFAULT_USERNAME, password: DEFAULT_PASSWORD, action: 'created' }
@@ -721,40 +706,40 @@ Options:
 }
 
 function doUpdate() {
-  console.log('  ⬆ Updating hermes-web-ui...')
+  console.log(`  Updating ${PACKAGE_NAME}...`)
 
   const npm = getNpmBin()
   try {
-    console.log('  🧹 Cleaning npm cache...')
+    console.log('  馃Ч Cleaning npm cache...')
     execFileSync(npm, ['cache', 'clean', '--force'], {
       stdio: 'inherit',
       env: getCurrentNodeEnv(),
     })
   } catch (err) {
-    console.log(`  ⚠ Failed to clean npm cache, continuing update: ${err?.message || err}`)
+    console.log(`  鈿?Failed to clean npm cache, continuing update: ${err?.message || err}`)
   }
 
   runUpdateInstall(npm)
 }
 
 function runUpdateInstall(npm) {
-  const child = spawnCli(npm, ['install', '-g', 'hermes-web-ui@latest'], {
+  const child = spawnCli(npm, ['install', '-g', `${PACKAGE_NAME}@latest`], {
     stdio: 'inherit',
     windowsHide: true,
     env: getCurrentNodeEnv(),
   })
 
   child.on('error', (err) => {
-    console.log(`  ✗ Update failed: ${err.message}`)
+    console.log(`  鉁?Update failed: ${err.message}`)
     process.exit(1)
   })
 
   child.on('exit', (code) => {
     if (code === 0) {
-      console.log('  ✓ Update complete, restarting...')
+      console.log('  鉁?Update complete, restarting...')
       const cli = getGlobalCliBin()
       if (!existsSync(cli)) {
-        console.log(`  ✗ Updated CLI not found: ${cli}`)
+        console.log(`  鉁?Updated CLI not found: ${cli}`)
         process.exit(1)
       }
 
@@ -764,20 +749,24 @@ function runUpdateInstall(npm) {
         env: getCurrentNodeEnv(),
       })
       restart.on('error', (err) => {
-        console.log(`  ✗ Restart failed: ${err.message}`)
+        console.log(`  鉁?Restart failed: ${err.message}`)
         process.exit(1)
       })
       restart.on('exit', (restartCode) => process.exit(restartCode ?? 1))
     } else {
-      console.log('  ✗ Update failed')
+      console.log('  鉁?Update failed')
       process.exit(code ?? 1)
     }
   })
 }
 
+function getDaemonStopGraceMs({ restart } = {}) {
+  return restart ? DAEMON_RESTART_GRACE_MS : DAEMON_STOP_GRACE_MS
+}
+
 if (process.argv[1] && realpathSync(resolve(process.argv[1])) === __filename) {
   main().catch(err => {
-    console.error(`  ✗ ${err?.message || err}`)
+    console.error(`  鉁?${err?.message || err}`)
     process.exit(1)
   })
 }

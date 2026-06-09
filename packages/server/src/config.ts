@@ -42,8 +42,43 @@ export function getListenHost(env: Record<string, string | undefined> = process.
 }
 
 export function getWebUiHome(env: Record<string, string | undefined> = process.env): string {
-  const appHome = env.HERMES_WEB_UI_HOME?.trim() || env.HERMES_WEBUI_STATE_DIR?.trim()
-  return appHome ? resolve(appHome) : join(homedir(), '.hermes-web-ui')
+  const configuredHome = env.HERMES_WEB_UI_HOME?.trim() || env.HERMES_WEBUI_STATE_DIR?.trim()
+  return configuredHome ? resolve(configuredHome) : join(homedir(), '.hermes-web-ui')
+}
+
+function parseBoolean(value: string | undefined, fallback = false): boolean {
+  if (value == null) return fallback
+  const normalized = value.trim().toLowerCase()
+  if (!normalized) return fallback
+  return ['1', 'true', 'yes', 'on'].includes(normalized)
+}
+
+function normalizeUrl(value: string | undefined): string {
+  return (value || '').trim().replace(/\/+$/, '')
+}
+
+function normalizePackageName(value: string | undefined): string {
+  return (value || '').trim()
+}
+
+function normalizeUpdateStrategy(value: string | undefined): 'npm-package' | 'source-deploy' {
+  const normalized = (value || '').trim().toLowerCase()
+  return normalized === 'source-deploy' ? 'source-deploy' : 'npm-package'
+}
+
+function getDefaultUpdateCliBin(packageName: string): string {
+  const packageBasename = packageName.split('/').filter(Boolean).pop() || packageName
+  return `${packageBasename}.mjs`
+}
+
+function getDefaultUpdateSourceLabel(packageName: string, registry: string): string {
+  if (!packageName || !registry) return ''
+  try {
+    const host = new URL(registry).host
+    return `${packageName} @ ${host}`
+  } catch {
+    return `${packageName} @ ${registry}`
+  }
 }
 
 export function shouldCreateWebUiDataDir(env: Record<string, string | undefined> = process.env): boolean {
@@ -55,6 +90,8 @@ export function getCorsOrigins(env: Record<string, string | undefined> = process
 }
 
 const appHome = getWebUiHome()
+const updatePackageName = normalizePackageName(process.env.WEBUI_UPDATE_PACKAGE)
+const updateRegistry = normalizeUrl(process.env.WEBUI_UPDATE_REGISTRY)
 
 export const config = {
   port: parseInt(process.env.PORT || '8648', 10),
@@ -64,4 +101,30 @@ export const config = {
   uploadDir: process.env.UPLOAD_DIR || join(appHome, 'upload'),
   dataDir: resolve(__dirname, '..', 'data'),
   corsOrigins: getCorsOrigins(),
+  update: {
+    enabled: parseBoolean(process.env.WEBUI_UPDATE_ENABLED),
+    strategy: normalizeUpdateStrategy(process.env.WEBUI_UPDATE_STRATEGY),
+    packageName: updatePackageName,
+    registry: updateRegistry,
+    sourceLabel: (process.env.WEBUI_UPDATE_SOURCE_LABEL || '').trim() || getDefaultUpdateSourceLabel(updatePackageName, updateRegistry),
+    distTag: (process.env.WEBUI_UPDATE_DIST_TAG || 'latest').trim() || 'latest',
+    cliBin: (process.env.WEBUI_UPDATE_CLI_BIN || '').trim() || getDefaultUpdateCliBin(updatePackageName || 'hermes-web-ui'),
+    script: (process.env.WEBUI_UPDATE_SCRIPT || '').trim(),
+  },
+}
+
+export function hasConfiguredUpdateCheck(
+  envUpdate: typeof config.update = config.update,
+): boolean {
+  return Boolean(envUpdate.enabled && envUpdate.packageName && envUpdate.registry)
+}
+
+export function hasConfiguredUpdateExecution(
+  envUpdate: typeof config.update = config.update,
+): boolean {
+  if (!hasConfiguredUpdateCheck(envUpdate))
+    return false
+  if (envUpdate.strategy === 'source-deploy')
+    return Boolean(envUpdate.script)
+  return Boolean(envUpdate.cliBin)
 }
