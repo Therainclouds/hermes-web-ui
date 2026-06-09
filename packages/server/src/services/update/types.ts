@@ -15,6 +15,16 @@ export interface UpdateConfig {
   manifestUrl: string
   manifestBaseUrl: string
   packageType: UpdatePackageType
+  installerScript: string
+  stagingDir: string
+  backupDir: string
+  healthcheckUrl: string
+  stateFile: string
+  logDir: string
+  healthcheckTimeoutMs: number
+  healthcheckIntervalMs: number
+  healthcheckRetries: number
+  healthcheckInitialDelayMs: number
 }
 
 export interface UpdateRuntimePaths {
@@ -53,12 +63,18 @@ export type UpdateTaskStatus = 'idle' | 'queued' | 'running' | 'succeeded' | 'fa
 export type UpdateTaskStage =
   | 'idle'
   | 'queued'
+  | 'checking'
   | 'resolving_version'
+  | 'downloading'
+  | 'verifying'
+  | 'backing_up'
   | 'starting'
   | 'installing'
   | 'restarting'
+  | 'health_checking'
   | 'succeeded'
   | 'failed'
+  | 'rolled_back'
 
 export interface UpdateTaskRecord {
   id: string
@@ -69,6 +85,9 @@ export interface UpdateTaskRecord {
   targetVersion: string
   warning: string
   error: string
+  logPath: string
+  rollbackMessage: string
+  healthcheckUrl: string
   startedAt: string
   finishedAt: string | null
 }
@@ -84,6 +103,18 @@ export interface ManifestUpdateInfo {
   sourceLabel: string
   packageType: UpdatePackageType
   manifestUrl: string
+}
+
+export interface DevicePackageManifest extends ManifestUpdateInfo {
+  artifactFormat: 'tar.gz'
+  packageUrl: string
+  sha256: string
+  releasedAt: string
+  compatibleNodeMajor: number
+  minCurrentVersion: string
+  notesUrl: string
+  size: number
+  healthcheckUrl: string
 }
 
 export interface UpdateCheckResult {

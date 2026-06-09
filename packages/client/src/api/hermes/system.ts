@@ -19,22 +19,31 @@ export type UpdateTaskStatus = 'idle' | 'queued' | 'running' | 'succeeded' | 'fa
 export type UpdateTaskStage =
   | 'idle'
   | 'queued'
+  | 'checking'
   | 'resolving_version'
+  | 'downloading'
+  | 'verifying'
+  | 'backing_up'
   | 'starting'
   | 'installing'
   | 'restarting'
+  | 'health_checking'
   | 'succeeded'
   | 'failed'
+  | 'rolled_back'
 
 export interface UpdateTaskRecord {
   id: string
-  strategy: 'npm-package' | 'source-deploy'
+  strategy: 'npm-package' | 'source-deploy' | 'device-package'
   status: UpdateTaskStatus
   stage: UpdateTaskStage
   message: string
   targetVersion: string
   warning: string
   error: string
+  logPath?: string
+  rollbackMessage?: string
+  healthcheckUrl?: string
   startedAt: string
   finishedAt: string | null
 }

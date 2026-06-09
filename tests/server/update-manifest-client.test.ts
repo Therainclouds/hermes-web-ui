@@ -105,4 +105,45 @@ describe('update manifest client', () => {
       packageType: 'device-package',
     })).rejects.toThrow(/version field/)
   })
+
+  it('validates required execution fields for device package manifests', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        version: '1.2.5',
+        channel: 'stable',
+        sourceLabel: 'Internal Manifest',
+        packageType: 'device-package',
+        artifactFormat: 'tar.gz',
+        packageUrl: 'https://updates.example.com/releases/v1.2.5/hermes-web-ui-device-v1.2.5.tar.gz',
+        sha256: 'a'.repeat(64),
+        releasedAt: '2026-06-09T00:00:00Z',
+        compatibleNodeMajor: 23,
+        minCurrentVersion: '1.2.0',
+      }),
+    }))
+    const { fetchDevicePackageManifest } = await import('../../packages/server/src/services/update/manifest-client')
+
+    const result = await fetchDevicePackageManifest({
+      enabled: true,
+      strategy: 'device-package',
+      packageName: '',
+      registry: '',
+      sourceLabel: 'Fallback Source',
+      distTag: 'latest',
+      cliBin: '',
+      script: '',
+      channel: 'stable',
+      manifestUrl: 'https://updates.example.com/custom.json',
+      manifestBaseUrl: '',
+      packageType: 'device-package',
+      installerScript: '/opt/hermes-web-ui/scripts/install-device-package.sh',
+      stagingDir: '/tmp/staging',
+      backupDir: '/tmp/backups',
+      healthcheckUrl: 'http://127.0.0.1:8648/health',
+    })
+
+    expect(result.packageUrl).toContain('hermes-web-ui-device-v1.2.5.tar.gz')
+    expect(result.artifactFormat).toBe('tar.gz')
+  })
 })

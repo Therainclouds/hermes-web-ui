@@ -4,14 +4,17 @@ import { createServer } from 'net'
 import { delimiter, dirname, extname, join, resolve } from 'path'
 import { config, getWebUiHome, hasConfiguredUpdateExecution } from '../config'
 import { UpdateError } from '../services/update/errors'
+import { parseSemver } from '../services/update/version-compare'
+import { assertDevicePackageCompatibility, assertDevicePackageExecution, buildDevicePackageInstallCommand, buildDevicePackageInstallEnv, downloadAndVerifyDevicePackage, getDevicePackageExecutionMessage, resolveDevicePackageManifest } from '../services/update/strategies/device-package'
 import { runUpdatePreflight } from '../services/update/preflight'
 import { resolveUpdateRuntimePaths } from '../services/update/runtime-paths'
 import { assertNpmPackageExecution, buildNpmPackageInstallArgs, getNpmPackageExecutionMessage } from '../services/update/strategies/npm-package'
 import { assertSourceDeployExecution, buildSourceDeployCommand, buildSourceDeployEnv, getSourceDeployExecutionMessage } from '../services/update/strategies/source-deploy'
 import { updateTaskStore } from '../services/update/task-store'
-import type { UpdateRuntimePaths } from '../services/update/types'
+import type { DevicePackageManifest, UpdateRuntimePaths } from '../services/update/types'
 
-let updateInProgress = false
+updateTaskStore.syncFromDisk()
+let updateInProgress = Boolean(updateTaskStore.getCurrentTask())
 const NODE_ENVIRONMENT_MISSING_CODE = 'node_environment_missing'
 
 const PREVIEW_DIR_NAME = 'hermes-web-ui-pereview'
@@ -108,6 +111,14 @@ function readPackageInfo(): PackageInfo | null {
   }
 
   return null
+}
+
+function getLocalWebUiVersion(): string {
+  const injectedVersion = (globalThis as any).__APP_VERSION__
+  if (typeof injectedVersion === 'string' && parseSemver(injectedVersion)) {
+    return injectedVersion.trim()
+  }
+  return readPackageInfo()?.version || '0.0.0'
 }
 
 function normalizeGithubRepoUrl(raw: string): string {
@@ -1056,6 +1067,9 @@ function runUpdateInstall(versionOrTag: string) {
 }
 
 function getUpdateExecutionMessage() {
+  if (config.update.strategy === 'device-package') {
+    return getDevicePackageExecutionMessage()
+  }
   if (config.update.strategy === 'source-deploy') {
     return getSourceDeployExecutionMessage()
   }
@@ -1076,7 +1090,7 @@ function spawnRestart(port: string) {
 function spawnSourceDeployUpdate(version: string, runtimePaths: UpdateRuntimePaths) {
   const script = config.update.script
   if (!script) {
-    throw new Error('WEBUI_UPDATE_SCRIPT is not configured for source-deploy updates.')
+    throw new UpdateError('update_execution_misconfigured', getSourceDeployExecutionMessage())
   }
 
   const env = buildSourceDeployEnv(config.update, getCurrentNodeEnv(), version, runtimePaths)
@@ -1088,6 +1102,29 @@ function spawnSourceDeployUpdate(version: string, runtimePaths: UpdateRuntimePat
   }
 
   const command = buildSourceDeployCommand(script, version)
+  return spawn(command.command, command.args, options)
+}
+
+function spawnDevicePackageUpdate(
+  manifest: DevicePackageManifest,
+  artifactPath: string,
+  runtimePaths: UpdateRuntimePaths,
+  taskId: string,
+) {
+  const script = config.update.installerScript
+  if (!script) {
+    throw new UpdateError('update_execution_misconfigured', getDevicePackageExecutionMessage())
+  }
+
+  const env = buildDevicePackageInstallEnv(config.update, getCurrentNodeEnv(), manifest, artifactPath, runtimePaths, taskId)
+  const options = {
+    detached: true,
+    stdio: 'ignore' as const,
+    windowsHide: true,
+    env,
+  }
+
+  const command = buildDevicePackageInstallCommand(script, manifest, artifactPath)
   return spawn(command.command, command.args, options)
 }
 
@@ -1127,6 +1164,8 @@ function failCurrentUpdateTask(message: string, error = message) {
 }
 
 export async function updateStatus(ctx: any) {
+  updateTaskStore.syncFromDisk()
+  updateInProgress = Boolean(updateTaskStore.getCurrentTask())
   ctx.body = updateTaskStore.getStatus()
 }
 
@@ -1179,8 +1218,90 @@ export async function handleUpdate(ctx: any) {
   try {
     if (config.update.strategy === 'source-deploy') {
       assertSourceDeployExecution(config.update)
+    } else if (config.update.strategy === 'device-package') {
+      assertDevicePackageExecution(config.update)
     } else {
       assertNpmPackageExecution(config.update)
+    }
+
+    if (config.update.strategy === 'device-package') {
+      ctx.body = {
+        success: true,
+        taskId: task.id,
+        status: 'running',
+        stage: 'checking',
+        message: appendPreflightWarning('Accepted device package update request', preflight.warningText),
+        warning: preflight.warningText || undefined,
+      }
+
+      void (async () => {
+        try {
+          if (preflight.warningText) {
+            console.warn(`[update] preflight warning: ${preflight.warningText}`)
+          }
+          updateTaskStore.updateCurrentStage('checking', 'Resolving device package manifest', {
+            warning: preflight.warningText,
+          })
+          const manifest = await resolveDevicePackageManifest(config.update)
+          assertDevicePackageCompatibility(manifest, getLocalWebUiVersion())
+          updateTaskStore.updateCurrentStage('checking', `Validated device package manifest ${manifest.version}`, {
+            targetVersion: manifest.version,
+            warning: preflight.warningText,
+            healthcheckUrl: manifest.healthcheckUrl || config.update.healthcheckUrl,
+          })
+          updateTaskStore.updateCurrentStage('downloading', `Downloading device package ${manifest.version}`, {
+            targetVersion: manifest.version,
+            warning: preflight.warningText,
+            healthcheckUrl: manifest.healthcheckUrl || config.update.healthcheckUrl,
+          })
+          const { artifactPath } = await downloadAndVerifyDevicePackage(config.update, manifest)
+          updateTaskStore.updateCurrentStage('verifying', `Verified device package ${manifest.version}`, {
+            targetVersion: manifest.version,
+            warning: preflight.warningText,
+            healthcheckUrl: manifest.healthcheckUrl || config.update.healthcheckUrl,
+          })
+          let updateChild
+          try {
+            updateTaskStore.updateCurrentStage('backing_up', `Installer is preparing a backup for ${manifest.version}`, {
+              targetVersion: manifest.version,
+              warning: preflight.warningText,
+              healthcheckUrl: manifest.healthcheckUrl || config.update.healthcheckUrl,
+            })
+            updateChild = spawnDevicePackageUpdate(manifest, artifactPath, runtimePaths, task.id)
+            updateTaskStore.updateCurrentStage('installing', `Installing device package ${manifest.version}`, {
+              targetVersion: manifest.version,
+              warning: preflight.warningText,
+              healthcheckUrl: manifest.healthcheckUrl || config.update.healthcheckUrl,
+            })
+          } catch (err) {
+            updateInProgress = false
+            failCurrentUpdateTask('Failed to spawn device package installer', err instanceof Error ? err.message : String(err))
+            console.error('[update] failed to spawn device package installer:', err)
+            return
+          }
+          observeDetachedUpdateProcess(updateChild, 'device package installer', {
+            onSuccess: () => {
+              updateTaskStore.syncFromDisk()
+              updateInProgress = Boolean(updateTaskStore.getCurrentTask())
+            },
+            onFailure: (message) => {
+              updateTaskStore.syncFromDisk()
+              if (updateTaskStore.getCurrentTask()) {
+                failCurrentUpdateTask('Device package installer failed before restart completed', message)
+              }
+            },
+          })
+        } catch (err: any) {
+          updateInProgress = false
+          if (err instanceof UpdateError) {
+            failCurrentUpdateTask(err.message, err.message)
+            return
+          }
+          failCurrentUpdateTask(err?.stderr?.toString?.() || err?.message || String(err))
+          console.error('[update] device package update failed:', err)
+        }
+      })()
+      return
     }
 
     updateTaskStore.updateCurrentStage('resolving_version', 'Resolving latest published version', {

@@ -1,16 +1,31 @@
-import { beforeEach, describe, expect, it } from 'vitest'
-import { updateTaskStore } from '../../packages/server/src/services/update/task-store'
+import { afterEach, describe, expect, it } from 'vitest'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
+import { UpdateTaskStore, updateTaskStore } from '../../packages/server/src/services/update/task-store'
 
 describe('update task store', () => {
-  beforeEach(() => {
+  const tempDirs: string[] = []
+
+  afterEach(() => {
     updateTaskStore.clear()
+    while (tempDirs.length) {
+      rmSync(tempDirs.pop()!, { recursive: true, force: true })
+    }
   })
 
+  function createStore() {
+    const dir = mkdtempSync(join(tmpdir(), 'hermes-update-task-store-'))
+    tempDirs.push(dir)
+    return new UpdateTaskStore(join(dir, 'update-task-state.json'))
+  }
+
   it('creates a queued task and exposes it as the current task', () => {
-    const task = updateTaskStore.createTask('source-deploy', 'accepted')
+    const store = createStore()
+    const task = store.createTask('source-deploy', 'accepted')
 
     expect(task.id).toContain('update-')
-    expect(updateTaskStore.getStatus()).toEqual({
+    expect(store.getStatus()).toEqual({
       currentTask: expect.objectContaining({
         id: task.id,
         status: 'queued',
@@ -21,14 +36,28 @@ describe('update task store', () => {
     })
   })
 
-  it('updates the current task stage and keeps the task active', () => {
-    updateTaskStore.createTask('npm-package', 'accepted')
-    updateTaskStore.updateCurrentStage('installing', 'installing package', {
+  it('persists the current task to disk and restores it in a new store instance', () => {
+    const store = createStore()
+    const stateFile = store.getStateFilePath()
+
+    store.createTask('npm-package', 'accepted')
+    store.updateCurrentStage('installing', 'installing package', {
       targetVersion: '0.6.13',
       warning: 'compat layout',
     })
 
-    expect(updateTaskStore.getStatus().currentTask).toEqual(expect.objectContaining({
+    expect(existsSync(stateFile)).toBe(true)
+    expect(JSON.parse(readFileSync(stateFile, 'utf-8'))).toEqual(expect.objectContaining({
+      currentTask: expect.objectContaining({
+        status: 'running',
+        stage: 'installing',
+        targetVersion: '0.6.13',
+        warning: 'compat layout',
+      }),
+    }))
+
+    const restoredStore = new UpdateTaskStore(stateFile)
+    expect(restoredStore.getStatus().currentTask).toEqual(expect.objectContaining({
       status: 'running',
       stage: 'installing',
       targetVersion: '0.6.13',
@@ -36,17 +65,48 @@ describe('update task store', () => {
     }))
   })
 
-  it('moves the task into lastTask when it completes', () => {
-    updateTaskStore.createTask('source-deploy', 'accepted')
-    updateTaskStore.completeCurrentTask('failed', 'update failed', 'engine mismatch')
+  it('moves the completed task into lastTask and restores it from disk', () => {
+    const store = createStore()
+    const stateFile = store.getStateFilePath()
 
-    expect(updateTaskStore.getStatus()).toEqual({
+    store.createTask('source-deploy', 'accepted')
+    store.completeCurrentTask('failed', 'update failed', 'engine mismatch')
+
+    expect(store.getStatus()).toEqual({
       currentTask: null,
       lastTask: expect.objectContaining({
         status: 'failed',
         stage: 'failed',
         message: 'update failed',
         error: 'engine mismatch',
+        finishedAt: expect.any(String),
+      }),
+    })
+
+    const restoredStore = new UpdateTaskStore(stateFile)
+    expect(restoredStore.getStatus()).toEqual({
+      currentTask: null,
+      lastTask: expect.objectContaining({
+        status: 'failed',
+        stage: 'failed',
+        error: 'engine mismatch',
+      }),
+    })
+  })
+
+  it('marks the task as rolled back and clears the active task', () => {
+    const store = createStore()
+
+    store.createTask('device-package', 'accepted')
+    store.markRolledBack('update failed and was rolled back', 'restored previous deploy')
+
+    expect(store.getStatus()).toEqual({
+      currentTask: null,
+      lastTask: expect.objectContaining({
+        status: 'failed',
+        stage: 'rolled_back',
+        message: 'update failed and was rolled back',
+        rollbackMessage: 'restored previous deploy',
         finishedAt: expect.any(String),
       }),
     })

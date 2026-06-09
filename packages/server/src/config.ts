@@ -120,6 +120,19 @@ function getDefaultManifestSourceLabel(manifestUrl: string, manifestBaseUrl: str
   }
 }
 
+function getDefaultInstallerScript(): string {
+  return resolve('scripts', 'install-device-package.sh')
+}
+
+function getDefaultUpdateHealthcheckUrl(port: string): string {
+  return `http://127.0.0.1:${port}/health`
+}
+
+function parsePositiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt((value || '').trim(), 10)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback
+}
+
 export function shouldCreateWebUiDataDir(env: Record<string, string | undefined> = process.env): boolean {
   return env.NODE_ENV !== 'production'
 }
@@ -157,6 +170,16 @@ export const config = {
     manifestUrl: updateManifestUrl,
     manifestBaseUrl: updateManifestBaseUrl,
     packageType: normalizeUpdatePackageType(process.env.WEBUI_UPDATE_PACKAGE_TYPE),
+    installerScript: (process.env.WEBUI_UPDATE_INSTALLER_SCRIPT || '').trim() || getDefaultInstallerScript(),
+    stagingDir: resolve((process.env.WEBUI_UPDATE_STAGING_DIR || join(appHome, 'updates', 'staging')).trim()),
+    backupDir: resolve((process.env.WEBUI_UPDATE_BACKUP_DIR || join(appHome, 'updates', 'backups')).trim()),
+    healthcheckUrl: (process.env.WEBUI_UPDATE_HEALTHCHECK_URL || '').trim() || getDefaultUpdateHealthcheckUrl(process.env.PORT || '8648'),
+    stateFile: resolve((process.env.WEBUI_UPDATE_STATE_FILE || join(appHome, 'updates', 'update-task-state.json')).trim()),
+    logDir: resolve((process.env.WEBUI_UPDATE_LOG_DIR || join(appHome, 'updates', 'logs')).trim()),
+    healthcheckTimeoutMs: parsePositiveInteger(process.env.WEBUI_UPDATE_HEALTHCHECK_TIMEOUT_MS, 2_000),
+    healthcheckIntervalMs: parsePositiveInteger(process.env.WEBUI_UPDATE_HEALTHCHECK_INTERVAL_MS, 2_000),
+    healthcheckRetries: parsePositiveInteger(process.env.WEBUI_UPDATE_HEALTHCHECK_RETRIES, 15),
+    healthcheckInitialDelayMs: parsePositiveInteger(process.env.WEBUI_UPDATE_HEALTHCHECK_INITIAL_DELAY_MS, 5_000),
   },
 }
 
@@ -181,7 +204,7 @@ export function hasConfiguredUpdateExecution(
   if (!hasConfiguredUpdateCheck(envUpdate))
     return false
   if (envUpdate.strategy === 'device-package')
-    return false
+    return Boolean((envUpdate.manifestUrl || envUpdate.manifestBaseUrl) && envUpdate.installerScript)
   if (envUpdate.strategy === 'source-deploy')
     return Boolean(envUpdate.script)
   return Boolean(envUpdate.cliBin)

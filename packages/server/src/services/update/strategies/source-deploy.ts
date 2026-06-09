@@ -1,5 +1,6 @@
 import type { UpdateConfig, UpdateRuntimePaths } from '../types'
 import { UpdateError } from '../errors'
+import { buildShellScriptCommand, type CommandResolver } from './script-command'
 
 export function getSourceDeployExecutionMessage(): string {
   return 'Update source is not fully configured. Set WEBUI_UPDATE_PACKAGE, WEBUI_UPDATE_REGISTRY, and WEBUI_UPDATE_SCRIPT.'
@@ -32,8 +33,15 @@ export function buildSourceDeployEnv(
   }
 }
 
-export function buildSourceDeployCommand(script: string, version: string): { command: string; args: string[] } {
-  return process.platform === 'win32'
-    ? { command: 'bash', args: [script, '--version', version] }
-    : { command: script, args: ['--version', version] }
+export function buildSourceDeployCommand(
+  script: string,
+  version: string,
+  resolveCommand?: CommandResolver,
+): { command: string; args: string[] } {
+  return buildShellScriptCommand(
+    script,
+    ['--version', version],
+    'Source deployment update script',
+    resolveCommand,
+  )
 }

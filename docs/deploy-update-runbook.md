@@ -55,6 +55,20 @@
 - 程序更新只替换程序代码、构建产物、脚本和依赖
 - 用户聊天历史、上传、配置和 `Hermes` 运行状态不应被更新过程覆盖
 
+## 设备包状态与日志
+
+当更新策略为 `device-package` 时，安装器会把任务状态和日志落在 `Web UI` 数据目录下，默认位置为：
+
+- 状态文件：`${HERMES_WEB_UI_HOME}/updates/update-task-state.json`
+- 日志目录：`${HERMES_WEB_UI_HOME}/updates/logs/`
+
+默认约定：
+
+- `GET /api/hermes/update/status` 会在服务启动后和每次查询前从状态文件同步
+- 设备包安装器会写入 `logPath`，便于前端和运维定位本次更新日志
+- 更新成功后，任务状态会落为 `succeeded`
+- 健康检查失败且自动回退成功后，任务状态会落为 `rolled_back`
+
 ## 自更新工作原理
 
 1. 服务启动时读取 `WEBUI_UPDATE_*` 环境变量。
@@ -238,6 +252,7 @@ tail -n 200 /var/log/hermes-web-ui-update.log
 - 是否出现 `WARNING` 级兼容布局提示
 - 是否出现“inside DEPLOY_DIR and update is blocked”之类的危险布局阻止信息
 - 是否打印了最终保留的顶层目录列表
+- 对于 `device-package`，还应确认状态文件中的 `logPath / rollbackMessage / healthcheckUrl` 与现场一致
 
 ## 一键部署脚本必须保证的内容
 
@@ -346,6 +361,7 @@ ls -l /opt/hermes-web-ui/scripts/update-source-deploy.sh
 - `WEBUI_UPDATE_REPO` 写错或带反引号
 - `HERMES_WEB_UI_HOME` 或 `UPLOAD_DIR` 被配置到了 `DEPLOY_DIR` 内，导致 preflight 主动阻止
 - GitHub archive 下载慢，需回退到 `codeload.github.com`
+- 设备包安装后健康检查失败，安装器已触发自动回退，可继续检查状态文件中的 `rollbackMessage`
 
 如果日志中看到以下类型消息：
 
