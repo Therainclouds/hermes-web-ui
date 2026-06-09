@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿export default {
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿export default {
   // 로그인
   login: {
     title: 'QuantHermes Web UI',
@@ -1552,6 +1552,16 @@
     clearContext: '컨텍스트 지우기',
     clearContextConfirm: '이 방의 컨텍스트를 지우시겠습니까? 메시지와 압축 스냅샷은 삭제되고 에이전트와 멤버는 유지됩니다.',
     contextCleared: '컨텍스트가 지워졌습니다',
+    exportRoomJson: 'JSON으로 내보내기',
+    exportRoomTxt: 'TXT로 내보내기',
+    exportAll: '모든 방 내보내기',
+    exportSuccess: '내보내기 완료',
+    import: '가져오기',
+    selectFile: '파일 선택',
+    chooseFile: '파일 선택',
+    importHint: '그룹 채팅에서 내보낸 JSON 파일 선택',
+    importSuccess: '{count}개 방 가져오기 성공',
+    importPartialSuccess: '{success}개 성공, {failed}개 실패',
     you: '나',
     joined: '방에 참여했습니다',
     joinFailed: '방 참여에 실패했습니다',

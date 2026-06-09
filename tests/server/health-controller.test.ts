@@ -119,6 +119,41 @@ describe('health controller version metadata', () => {
     expect(ctx.body.webui_update_source_label).toBe(UPDATE_SOURCE_LABEL)
   })
 
+  it('does not report an update when the local version is equal to or ahead of the registry version', async () => {
+    process.env.WEBUI_UPDATE_ENABLED = 'true'
+    process.env.WEBUI_UPDATE_PACKAGE = UPDATE_PACKAGE
+    process.env.WEBUI_UPDATE_REGISTRY = UPDATE_REGISTRY
+    process.env.WEBUI_UPDATE_CLI_BIN = 'hermes-web-ui.mjs'
+    process.env.WEBUI_UPDATE_SOURCE_LABEL = UPDATE_SOURCE_LABEL
+
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({ version: '0.6.14' }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({ version: '0.6.13' }),
+      })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { checkLatestVersion, healthCheck } = await loadHealthControllerWithInjectedVersion('0.6.14')
+
+    await checkLatestVersion()
+
+    const equalCtx = createMockCtx()
+    await healthCheck(equalCtx)
+    expect(equalCtx.body.webui_latest).toBe('0.6.14')
+    expect(equalCtx.body.webui_update_available).toBe(false)
+
+    await checkLatestVersion()
+
+    const aheadCtx = createMockCtx()
+    await healthCheck(aheadCtx)
+    expect(aheadCtx.body.webui_latest).toBe('0.6.13')
+    expect(aheadCtx.body.webui_update_available).toBe(false)
+  })
+
   it('does not throw when latest-version lookup fails', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')))
 

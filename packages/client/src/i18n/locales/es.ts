@@ -1,4 +1,4 @@
-﻿﻿﻿﻿export default {
+﻿﻿﻿﻿﻿﻿﻿﻿export default {
   // Login
   login: {
     title: 'QuantHermes Web UI',
@@ -1553,6 +1553,16 @@ jobTriggered: 'Job ejecutado',
     clearContext: 'Limpiar contexto',
     clearContextConfirm: '¿Limpiar el contexto de esta sala? Se eliminarán mensajes e instantáneas de compresión, pero se conservan agentes y miembros.',
     contextCleared: 'Contexto limpiado',
+    exportRoomJson: 'Exportar como JSON',
+    exportRoomTxt: 'Exportar como TXT',
+    exportAll: 'Exportar todas las salas',
+    exportSuccess: 'Exportacion completada',
+    import: 'Importar',
+    selectFile: 'Seleccionar archivo',
+    chooseFile: 'Elegir archivo',
+    importHint: 'Seleccione un archivo JSON exportado del chat grupal',
+    importSuccess: '{count} sala(s) importada(s) correctamente',
+    importPartialSuccess: '{success} exitado(s), {failed} fallido(s)',
     you: 'Tú',
     joined: 'Se unio a la sala',
     joinFailed: 'Error al unirse a la sala',

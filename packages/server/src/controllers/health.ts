@@ -45,6 +45,36 @@ function hasConfiguredUpdateSource(): boolean {
   return hasConfiguredUpdateExecution(config.update)
 }
 
+interface ParsedSemver {
+  major: number
+  minor: number
+  patch: number
+}
+
+function parseSemver(version: string): ParsedSemver | null {
+  const normalized = version.trim()
+  if (!normalized) return null
+
+  const match = normalized.match(/^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/)
+  if (!match) return null
+
+  return {
+    major: Number.parseInt(match[1], 10),
+    minor: Number.parseInt(match[2], 10),
+    patch: Number.parseInt(match[3], 10),
+  }
+}
+
+function isRemoteVersionNewer(localVersion: string, remoteVersion: string): boolean {
+  const local = parseSemver(localVersion)
+  const remote = parseSemver(remoteVersion)
+  if (!local || !remote) return false
+
+  if (remote.major !== local.major) return remote.major > local.major
+  if (remote.minor !== local.minor) return remote.minor > local.minor
+  return remote.patch > local.patch
+}
+
 /**
  * Whether the periodic npm-registry version check is disabled.
  *
@@ -76,7 +106,7 @@ export async function checkLatestVersion(): Promise<void> {
       const version = data['dist-tags']?.[distTag] || data.version || data['dist-tags']?.latest
       if (version) {
         cachedLatestVersion = version
-        if (LOCAL_VERSION && cachedLatestVersion !== LOCAL_VERSION) {
+        if (isRemoteVersionNewer(LOCAL_VERSION, cachedLatestVersion)) {
           console.log(`Update available: ${LOCAL_VERSION} → ${cachedLatestVersion}`)
         }
       }
@@ -106,7 +136,7 @@ export async function healthCheck(ctx: any) {
     webui_update_source_label: updateEnabled ? config.update.sourceLabel : '',
     webui_update_available: updateCheckDisabled
       ? false
-      : Boolean(LOCAL_VERSION && cachedLatestVersion && cachedLatestVersion !== LOCAL_VERSION),
+      : isRemoteVersionNewer(LOCAL_VERSION, cachedLatestVersion),
     node_version: process.versions.node,
   }
 }

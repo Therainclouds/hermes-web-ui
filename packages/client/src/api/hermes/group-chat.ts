@@ -1,5 +1,5 @@
 import { io } from 'socket.io-client'
-import { request, getApiKey } from '../client'
+import { request, getApiKey, getBaseUrlValue } from '../client'
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -234,4 +234,88 @@ export async function forceCompress(roomId: string): Promise<{ success: boolean;
     return request(`/api/hermes/group-chat/rooms/${roomId}/compress`, {
         method: 'POST',
     })
+}
+
+// ─── Export ──────────────────────────────────────────────────
+
+export async function exportRoom(roomId: string, ext: 'json' | 'txt' = 'json'): Promise<void> {
+    const base = getBaseUrlValue()
+    const url = `${base}/api/hermes/group-chat/rooms/${roomId}/export?ext=${ext}`
+    const apiKey = getApiKey()
+    const headers: Record<string, string> = {}
+    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
+
+    const res = await fetch(url, { headers })
+    if (!res.ok) throw new Error(`Export failed: ${res.status}`)
+
+    const blob = await res.blob()
+    const disposition = res.headers.get('Content-Disposition') || ''
+    const filenameMatch = disposition.match(/filename="?([^"]+)"?/)
+    const filename = filenameMatch?.[1] || `room_${roomId.slice(0, 8)}.${ext}`
+
+    const objectUrl = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = objectUrl
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(objectUrl)
+}
+
+export async function exportAllRooms(ext: 'json' | 'txt' = 'json'): Promise<void> {
+    const base = getBaseUrlValue()
+    const url = `${base}/api/hermes/group-chat/rooms/export?ext=${ext}`
+    const apiKey = getApiKey()
+    const headers: Record<string, string> = {}
+    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
+
+    const res = await fetch(url, { headers })
+    if (!res.ok) throw new Error(`Export failed: ${res.status}`)
+
+    const blob = await res.blob()
+    const disposition = res.headers.get('Content-Disposition') || ''
+    const filenameMatch = disposition.match(/filename="?([^"]+)"?/)
+    const filename = filenameMatch?.[1] || `all_group_chats.${ext}`
+
+    const objectUrl = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = objectUrl
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(objectUrl)
+}
+
+export interface ImportResult {
+    success: boolean
+    importedCount: number
+    failedCount: number
+    results: Array<{ name: string; roomId?: string; error?: string }>
+}
+
+export async function importRooms(file: File): Promise<ImportResult> {
+    const base = getBaseUrlValue()
+    const url = `${base}/api/hermes/group-chat/rooms/import`
+    const apiKey = getApiKey()
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
+
+    const text = await file.text()
+    const res = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: text,
+    })
+    if (!res.ok) {
+        const raw = await res.text().catch(() => '')
+        try {
+            const parsed = JSON.parse(raw)
+            throw new Error(parsed?.error || `Import failed: ${res.status}`)
+        } catch {
+            throw new Error(raw || `Import failed: ${res.status}`)
+        }
+    }
+    return res.json()
 }

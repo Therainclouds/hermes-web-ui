@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿export default {
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿export default {
   // Login
   login: {
     title: 'QuantHermes Web UI',
@@ -1553,6 +1553,16 @@ jobTriggered: 'Job ausgelost',
     clearContext: 'Kontext löschen',
     clearContextConfirm: 'Diesen Raumkontext löschen? Nachrichten und Komprimierungs-Snapshots werden entfernt, Agenten und Mitglieder bleiben.',
     contextCleared: 'Kontext gelöscht',
+    exportRoomJson: 'Als JSON exportieren',
+    exportRoomTxt: 'Als TXT exportieren',
+    exportAll: 'Alle Räume exportieren',
+    exportSuccess: 'Export abgeschlossen',
+    import: 'Importieren',
+    selectFile: 'Datei auswählen',
+    chooseFile: 'Datei auswählen',
+    importHint: 'JSON-Datei aus Gruppenchat exportieren',
+    importSuccess: '{count} Raum/Räume erfolgreich importiert',
+    importPartialSuccess: '{success} importiert, {failed} fehlgeschlagen',
     you: 'Du',
     joined: 'Raum beigetreten',
     joinFailed: 'Beitreten fehlgeschlagen',

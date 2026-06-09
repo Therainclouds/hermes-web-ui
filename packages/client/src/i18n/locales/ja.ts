@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿export default {
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿export default {
   // ログイン
   login: {
     title: 'QuantHermes Web UI',
@@ -1552,6 +1552,16 @@
     clearContext: 'コンテキストを削除',
     clearContextConfirm: 'このルームのコンテキストを削除しますか？メッセージと圧縮スナップショットは削除されますが、エージェントとメンバーは残ります。',
     contextCleared: 'コンテキストを削除しました',
+    exportRoomJson: 'JSONとしてエクスポート',
+    exportRoomTxt: 'TXTとしてエクスポート',
+    exportAll: 'すべてのルームをエクスポート',
+    exportSuccess: 'エクスポート完了',
+    import: 'インポート',
+    selectFile: 'ファイルを選択',
+    chooseFile: 'ファイルを選択',
+    importHint: 'グループチャットからエクスポートされたJSONファイルを選択',
+    importSuccess: '{count}ルームのインポートが成功しました',
+    importPartialSuccess: '{success}インポート成功、{failed}失敗',
     you: 'あなた',
     joined: 'ルームに参加しました',
     joinFailed: 'ルームへの参加に失敗しました',

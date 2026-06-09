@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿export default {
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿export default {
   // 登入
   login: {
     title: 'QuantHermes Web UI',
@@ -1518,6 +1518,16 @@
     clearContext: '清理上下文',
     clearContextConfirm: '確定清理目前房間上下文嗎？訊息和壓縮快照會被刪除，智慧代理和成員會保留。',
     contextCleared: '上下文已清理',
+    exportRoomJson: '匯出為 JSON',
+    exportRoomTxt: '匯出為 TXT',
+    exportAll: '匯出所有房間',
+    exportSuccess: '匯出完成',
+    import: '匯入',
+    selectFile: '選擇檔案',
+    chooseFile: '選擇檔案',
+    importHint: '選擇從房間匯出的 JSON 檔案',
+    importSuccess: '成功匯入 {count} 個房間',
+    importPartialSuccess: '匯入成功 {success} 個，失敗 {failed} 個',
     you: '你',
     joined: '已加入房間',
     joinFailed: '加入房間失敗',
