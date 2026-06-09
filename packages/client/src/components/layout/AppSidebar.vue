@@ -28,6 +28,18 @@ const selectedKey = computed(() => {
 });
 const isSuperAdmin = computed(() => isStoredSuperAdmin());
 const isVersionPreview = import.meta.env.VITE_HERMES_PREVIEW === '1';
+const updateStageLabel = computed(() => {
+  const stage = appStore.updateTaskStage;
+  return stage && stage !== 'idle'
+    ? t(`sidebar.updateStage.${stage}`)
+    : t('sidebar.updating');
+});
+const updateDetailText = computed(() => {
+  return appStore.updateTaskWarning || appStore.updateTaskMessage || '';
+});
+const updateErrorText = computed(() => {
+  return appStore.updateTaskError || appStore.updateTaskMessage || t('sidebar.updateFailed');
+});
 
 function isNavActive(...names: string[]) {
   return names.includes(selectedKey.value);
@@ -74,9 +86,7 @@ async function handleUpdateClick() {
 }
 
 async function handleReloadClick() {
-  if (typeof window !== 'undefined') {
-    window.location.reload();
-  }
+  appStore.reloadClient();
 }
 </script>
 
@@ -404,7 +414,11 @@ async function handleReloadClick() {
         </button>
       </div>
       <div v-else-if="appStore.updating" class="sidebar-update-action sidebar-update-progress">
-        <span class="sidebar-update-label">{{ t('sidebar.updating') }}</span>
+        <span class="sidebar-update-label">{{ updateStageLabel }}</span>
+        <span v-if="updateDetailText" class="sidebar-update-detail">{{ updateDetailText }}</span>
+      </div>
+      <div v-else-if="appStore.updateTaskStatus === 'failed'" class="sidebar-update-action sidebar-update-progress sidebar-update-error">
+        <span class="sidebar-update-label">{{ t('sidebar.updateFailedWithReason', { reason: updateErrorText }) }}</span>
       </div>
       <div v-if="appStore.updateEnabled && appStore.updateSourceLabel" class="update-source">
         {{ t('sidebar.updateSource', { source: appStore.updateSourceLabel }) }}
@@ -494,8 +508,10 @@ async function handleReloadClick() {
 
 .sidebar-update-progress {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
+  flex-direction: column;
+  gap: 4px;
   padding: 6px 10px;
   font-size: 12px;
   color: $accent-primary;
@@ -507,6 +523,20 @@ async function handleReloadClick() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  width: 100%;
+}
+
+.sidebar-update-detail {
+  width: 100%;
+  color: $text-secondary;
+  line-height: 1.4;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.sidebar-update-error {
+  color: #d14343;
+  background-color: rgba(209, 67, 67, 0.08);
 }
 
 .sidebar-logo {

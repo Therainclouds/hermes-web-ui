@@ -9,9 +9,16 @@ const mockAppStore = vi.hoisted(() => ({
   connected: true,
   serverVersion: 'test',
   latestVersion: '',
+  updateEnabled: true,
+  updateSourceLabel: '',
   updateAvailable: false,
   clientOutdated: false,
   updating: false,
+  updateTaskStatus: 'idle',
+  updateTaskStage: 'idle',
+  updateTaskMessage: '',
+  updateTaskWarning: '',
+  updateTaskError: '',
   toggleSidebar: vi.fn(),
   toggleSidebarCollapsed: vi.fn(),
   closeSidebar: vi.fn(),
@@ -103,9 +110,16 @@ describe('AppSidebar search entry', () => {
     openSessionSearchMock.mockClear()
     mockAppStore.serverVersion = 'test'
     mockAppStore.latestVersion = ''
+    mockAppStore.updateEnabled = true
+    mockAppStore.updateSourceLabel = ''
     mockAppStore.updateAvailable = false
     mockAppStore.clientOutdated = false
     mockAppStore.updating = false
+    mockAppStore.updateTaskStatus = 'idle'
+    mockAppStore.updateTaskStage = 'idle'
+    mockAppStore.updateTaskMessage = ''
+    mockAppStore.updateTaskWarning = ''
+    mockAppStore.updateTaskError = ''
     mockAppStore.sidebarCollapsed = false
     mockAppStore.reloadClient.mockClear()
   })
@@ -151,6 +165,42 @@ describe('AppSidebar search entry', () => {
 
     await reloadButton!.trigger('click')
     expect(mockAppStore.reloadClient).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows update stage details while an update task is running', () => {
+    mockAppStore.updating = true
+    mockAppStore.updateTaskStage = 'installing'
+    mockAppStore.updateTaskMessage = 'Running update'
+    const wrapper = mount(AppSidebar, {
+      global: {
+        stubs: {
+          ProfileSelector: true,
+          ModelSelector: true,
+          LanguageSwitch: true,
+          ThemeSwitch: true,
+        },
+      },
+    })
+
+    expect(wrapper.text()).toContain('sidebar.updateStage.installing')
+    expect(wrapper.text()).toContain('Running update')
+  })
+
+  it('shows a failure summary when the last update task failed', () => {
+    mockAppStore.updateTaskStatus = 'failed'
+    mockAppStore.updateTaskError = 'boom'
+    const wrapper = mount(AppSidebar, {
+      global: {
+        stubs: {
+          ProfileSelector: true,
+          ModelSelector: true,
+          LanguageSwitch: true,
+          ThemeSwitch: true,
+        },
+      },
+    })
+
+    expect(wrapper.text()).toContain('sidebar.updateFailedWithReason')
   })
 
   it('uses short group labels and keeps group folding active when collapsed', async () => {

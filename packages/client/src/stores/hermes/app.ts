@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import {
   checkHealth,
   fetchAvailableModels,
+  fetchUpdateStatus,
   addCustomModel as persistCustomModel,
   removeCustomModel as deletePersistedCustomModel,
   triggerUpdate,
@@ -11,6 +12,10 @@ import {
   updateModelAlias,
   type AvailableModelGroup,
   type AvailableModelsResponse,
+  type UpdateStatusResponse,
+  type UpdateTaskRecord,
+  type UpdateTaskStage,
+  type UpdateTaskStatus,
   type ProfileAvailableModels,
   type ModelVisibility,
   type ModelVisibilityRule,
@@ -38,6 +43,12 @@ export const useAppStore = defineStore('app', () => {
   const updateSourceLabel = ref('')
   const clientOutdated = ref(false)
   const updating = ref(false)
+  const updateTaskId = ref('')
+  const updateTaskStatus = ref<UpdateTaskStatus>('idle')
+  const updateTaskStage = ref<UpdateTaskStage>('idle')
+  const updateTaskMessage = ref('')
+  const updateTaskWarning = ref('')
+  const updateTaskError = ref('')
   const modelGroups = ref<AvailableModelGroup[]>([])
   const profileModelGroups = ref<ProfileAvailableModels[]>([])
   const selectedModel = ref('')
@@ -54,9 +65,78 @@ export const useAppStore = defineStore('app', () => {
   const maxTokens = ref(4096)
   let modelsLoadPromise: Promise<void> | null = null
   let modelsLastRequestedAt = 0
+  let updatePollPromise: Promise<void> | null = null
 
   function sleep(ms: number) {
     return new Promise(resolve => setTimeout(resolve, ms))
+  }
+
+  function resetUpdateTaskState() {
+    updateTaskId.value = ''
+    updateTaskStatus.value = 'idle'
+    updateTaskStage.value = 'idle'
+    updateTaskMessage.value = ''
+    updateTaskWarning.value = ''
+    updateTaskError.value = ''
+  }
+
+  function applyUpdateTask(task: UpdateTaskRecord | null) {
+    if (!task) {
+      if (!updating.value) resetUpdateTaskState()
+      return
+    }
+    updateTaskId.value = task.id
+    updateTaskStatus.value = task.status
+    updateTaskStage.value = task.stage
+    updateTaskMessage.value = task.message || ''
+    updateTaskWarning.value = task.warning || ''
+    updateTaskError.value = task.error || ''
+    updating.value = task.status === 'queued' || task.status === 'running'
+  }
+
+  function getPreferredTask(status: UpdateStatusResponse): UpdateTaskRecord | null {
+    return status.currentTask || status.lastTask
+  }
+
+  async function checkUpdateStatus() {
+    try {
+      const res = await fetchUpdateStatus()
+      const task = getPreferredTask(res)
+      applyUpdateTask(task)
+      return task
+    } catch {
+      return null
+    }
+  }
+
+  async function monitorUpdateProgress(timeoutMs = UPDATE_RELOAD_TIMEOUT_MS) {
+    if (updatePollPromise) return updatePollPromise
+
+    updatePollPromise = (async () => {
+      const deadline = Date.now() + timeoutMs
+      while (Date.now() < deadline) {
+        await Promise.all([checkConnection(), checkUpdateStatus()])
+        if (clientOutdated.value) {
+          reloadClient()
+          return
+        }
+        if (updateTaskStatus.value === 'failed' || updateTaskStatus.value === 'succeeded') {
+          updating.value = false
+          return
+        }
+        await sleep(UPDATE_POLL_INTERVAL_MS)
+      }
+
+      updating.value = false
+      updateTaskStatus.value = 'failed'
+      updateTaskStage.value = 'failed'
+      updateTaskMessage.value = 'Update status polling timed out'
+      updateTaskError.value = 'Update status polling timed out'
+    })().finally(() => {
+      updatePollPromise = null
+    })
+
+    return updatePollPromise
   }
 
   async function doUpdate(): Promise<boolean> {
@@ -64,26 +144,25 @@ export const useAppStore = defineStore('app', () => {
 
     updating.value = true
     try {
-      await triggerUpdate()
+      const res = await triggerUpdate()
+      updateTaskId.value = res.taskId || ''
+      updateTaskStatus.value = res.status || 'queued'
+      updateTaskStage.value = res.stage || 'queued'
+      updateTaskMessage.value = res.message || ''
+      updateTaskWarning.value = res.warning || ''
+      updateTaskError.value = ''
       updateAvailable.value = false
       latestVersion.value = ''
-
-      const deadline = Date.now() + UPDATE_RELOAD_TIMEOUT_MS
-      while (Date.now() < deadline) {
-        await sleep(UPDATE_POLL_INTERVAL_MS)
-        await checkConnection()
-        if (clientOutdated.value) {
-          reloadClient()
-          return true
-        }
-      }
-
+      void monitorUpdateProgress()
       return true
     } catch (err) {
       console.error('Failed to update Hermes Web UI:', err)
-      return false
-    } finally {
+      updateTaskStatus.value = 'failed'
+      updateTaskStage.value = 'failed'
+      updateTaskMessage.value = 'Update request failed'
+      updateTaskError.value = err instanceof Error ? err.message : String(err)
       updating.value = false
+      return false
     }
   }
 
@@ -312,8 +391,10 @@ export const useAppStore = defineStore('app', () => {
 
   function startHealthPolling(interval = 30000) {
     stopHealthPolling()
-    checkConnection()
-    healthPollTimer.value = setInterval(checkConnection, interval)
+    void Promise.all([checkConnection(), checkUpdateStatus()])
+    healthPollTimer.value = setInterval(() => {
+      void Promise.all([checkConnection(), checkUpdateStatus()])
+    }, interval)
   }
 
   function stopHealthPolling() {
@@ -361,6 +442,12 @@ export const useAppStore = defineStore('app', () => {
     updateSourceLabel,
     clientOutdated,
     updating,
+    updateTaskId,
+    updateTaskStatus,
+    updateTaskStage,
+    updateTaskMessage,
+    updateTaskWarning,
+    updateTaskError,
     doUpdate,
     reloadClient,
     modelGroups,
@@ -388,5 +475,6 @@ export const useAppStore = defineStore('app', () => {
     setModelVisibility,
     startHealthPolling,
     stopHealthPolling,
+    checkUpdateStatus,
   }
 })

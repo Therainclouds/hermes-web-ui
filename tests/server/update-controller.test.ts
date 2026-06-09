@@ -184,7 +184,13 @@ describe('update controller', () => {
         }),
       }),
     )
-    expect(ctx.body).toEqual({ success: true, message: 'updated' })
+    expect(ctx.body).toEqual(expect.objectContaining({
+      success: true,
+      message: 'updated',
+      status: 'running',
+      stage: 'restarting',
+      taskId: expect.any(String),
+    }))
 
     vi.runAllTimers()
 
@@ -219,10 +225,13 @@ describe('update controller', () => {
 
     await handleUpdate(ctx)
 
-    expect(ctx.body).toEqual({
+    expect(ctx.body).toEqual(expect.objectContaining({
       success: true,
       message: `Starting source deployment update to ${PUBLISHED_VERSION}`,
-    })
+      status: 'running',
+      stage: 'starting',
+      taskId: expect.any(String),
+    }))
     expect(mocks.execFileSync).not.toHaveBeenCalledWith(
       expect.anything(),
       expect.arrayContaining(['install']),
@@ -313,6 +322,28 @@ describe('update controller', () => {
     expect(mocks.spawn).not.toHaveBeenCalled()
   })
 
+  it('returns update task status for the active task', async () => {
+    process.env.WEBUI_UPDATE_STRATEGY = 'source-deploy'
+    process.env.WEBUI_UPDATE_SCRIPT = UPDATE_SCRIPT
+    const { handleUpdate, updateStatus } = await loadUpdateController()
+    const ctx = createMockCtx()
+    const statusCtx = createMockCtx()
+
+    await handleUpdate(ctx)
+    await updateStatus(statusCtx)
+
+    expect(statusCtx.body).toEqual({
+      currentTask: expect.objectContaining({
+        id: expect.any(String),
+        strategy: 'source-deploy',
+        status: 'running',
+        stage: 'starting',
+        targetVersion: PUBLISHED_VERSION,
+      }),
+      lastTask: null,
+    })
+  })
+
   it('does not log a restart error when the restart helper exits successfully', async () => {
     const handlers = new Map<string, (...args: any[]) => void>()
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
@@ -351,6 +382,29 @@ describe('update controller', () => {
     expect(ctx.body).toEqual({ success: false, message: 'engine mismatch' })
     expect(mocks.spawn).not.toHaveBeenCalled()
     expect(exitSpy).not.toHaveBeenCalled()
+  })
+
+  it('stores the failed task result when installation fails', async () => {
+    const execFileSync = vi.fn(() => {
+      const error = new Error('install failed') as Error & { stderr?: string }
+      error.stderr = 'engine mismatch'
+      throw error
+    })
+    const { handleUpdate, updateStatus } = await loadUpdateController({ execFileSync })
+    const ctx = createMockCtx()
+    const statusCtx = createMockCtx()
+
+    await handleUpdate(ctx)
+    await updateStatus(statusCtx)
+
+    expect(statusCtx.body).toEqual({
+      currentTask: null,
+      lastTask: expect.objectContaining({
+        status: 'failed',
+        stage: 'failed',
+        error: 'engine mismatch',
+      }),
+    })
   })
 
   it('loads preview tags through async git with a short timeout', async () => {

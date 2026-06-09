@@ -11,6 +11,45 @@ export interface HealthResponse {
   node_version?: string
 }
 
+export type UpdateTaskStatus = 'idle' | 'queued' | 'running' | 'succeeded' | 'failed'
+
+export type UpdateTaskStage =
+  | 'idle'
+  | 'queued'
+  | 'resolving_version'
+  | 'starting'
+  | 'installing'
+  | 'restarting'
+  | 'succeeded'
+  | 'failed'
+
+export interface UpdateTaskRecord {
+  id: string
+  strategy: 'npm-package' | 'source-deploy'
+  status: UpdateTaskStatus
+  stage: UpdateTaskStage
+  message: string
+  targetVersion: string
+  warning: string
+  error: string
+  startedAt: string
+  finishedAt: string | null
+}
+
+export interface UpdateStatusResponse {
+  currentTask: UpdateTaskRecord | null
+  lastTask: UpdateTaskRecord | null
+}
+
+export interface TriggerUpdateResponse {
+  success: boolean
+  message: string
+  taskId?: string
+  status?: UpdateTaskStatus
+  stage?: UpdateTaskStage
+  warning?: string
+}
+
 export interface PreviewTag {
   name: string
   sha: string
@@ -119,8 +158,12 @@ export async function checkHealth(): Promise<HealthResponse> {
   return request<HealthResponse>('/health')
 }
 
-export async function triggerUpdate(): Promise<{ success: boolean; message: string }> {
-  return request<{ success: boolean; message: string }>('/api/hermes/update', { method: 'POST' })
+export async function triggerUpdate(): Promise<TriggerUpdateResponse> {
+  return request<TriggerUpdateResponse>('/api/hermes/update', { method: 'POST' })
+}
+
+export async function fetchUpdateStatus(): Promise<UpdateStatusResponse> {
+  return request<UpdateStatusResponse>('/api/hermes/update/status')
 }
 
 export async function fetchPreviewStatus(): Promise<PreviewStatus> {

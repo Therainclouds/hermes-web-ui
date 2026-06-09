@@ -41,3 +41,33 @@ export interface UpdatePreflightResult {
   warningText: string
   blockingText: string
 }
+
+export type UpdateTaskStatus = 'idle' | 'queued' | 'running' | 'succeeded' | 'failed'
+
+export type UpdateTaskStage =
+  | 'idle'
+  | 'queued'
+  | 'resolving_version'
+  | 'starting'
+  | 'installing'
+  | 'restarting'
+  | 'succeeded'
+  | 'failed'
+
+export interface UpdateTaskRecord {
+  id: string
+  strategy: UpdateStrategy
+  status: UpdateTaskStatus
+  stage: UpdateTaskStage
+  message: string
+  targetVersion: string
+  warning: string
+  error: string
+  startedAt: string
+  finishedAt: string | null
+}
+
+export interface UpdateTaskStatusResponse {
+  currentTask: UpdateTaskRecord | null
+  lastTask: UpdateTaskRecord | null
+}
