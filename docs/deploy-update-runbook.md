@@ -4,6 +4,10 @@
 
 这份手册用于保证 Quanthermes 自定义版本在后续发布和部署后，始终可以稳定检测到 npm 上的新版本，并在 Web UI 中触发自更新。
 
+相关现场手工升级流程见：
+
+- `docs/update-distribution/09-manual-source-upgrade-sop.md`
+
 ## 当前发布约定
 
 - npm 包名：`@quanthermes/hermes-web-ui`

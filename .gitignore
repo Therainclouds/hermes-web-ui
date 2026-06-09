@@ -57,3 +57,4 @@ packages/client/src/**/*.js
 # Local error logs
 docs/erro.txt
 docs/update-distribution
+docs
