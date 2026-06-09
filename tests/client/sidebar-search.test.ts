@@ -11,6 +11,7 @@ const mockAppStore = vi.hoisted(() => ({
   latestVersion: '',
   updateEnabled: true,
   updateSourceLabel: '',
+  updateChannel: '',
   updateAvailable: false,
   clientOutdated: false,
   updating: false,
@@ -112,6 +113,7 @@ describe('AppSidebar search entry', () => {
     mockAppStore.latestVersion = ''
     mockAppStore.updateEnabled = true
     mockAppStore.updateSourceLabel = ''
+    mockAppStore.updateChannel = ''
     mockAppStore.updateAvailable = false
     mockAppStore.clientOutdated = false
     mockAppStore.updating = false
@@ -201,6 +203,23 @@ describe('AppSidebar search entry', () => {
     })
 
     expect(wrapper.text()).toContain('sidebar.updateFailedWithReason')
+  })
+
+  it('shows update source and channel metadata when available', () => {
+    mockAppStore.updateSourceLabel = 'Device Manifest'
+    mockAppStore.updateChannel = 'stable'
+    const wrapper = mount(AppSidebar, {
+      global: {
+        stubs: {
+          ProfileSelector: true,
+          ModelSelector: true,
+          LanguageSwitch: true,
+          ThemeSwitch: true,
+        },
+      },
+    })
+
+    expect(wrapper.text()).toContain('sidebar.updateSourceWithChannel')
   })
 
   it('uses short group labels and keeps group folding active when collapsed', async () => {

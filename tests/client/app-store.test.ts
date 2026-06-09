@@ -169,6 +169,10 @@ describe('App Store', () => {
       webui_version: '0.5.17',
       webui_latest: '0.5.17',
       webui_update_available: false,
+      webui_update_source_label: 'Device Manifest',
+      webui_update_channel: 'stable',
+      webui_update_strategy: 'device-package',
+      webui_update_package_type: 'device-package',
     })
     const store = useAppStore()
 
@@ -178,6 +182,10 @@ describe('App Store', () => {
     expect(store.serverVersion).toBe('0.5.17')
     expect(store.clientOutdated).toBe(true)
     expect(store.updateAvailable).toBe(false)
+    expect(store.updateSourceLabel).toBe('Device Manifest')
+    expect(store.updateChannel).toBe('stable')
+    expect(store.updateStrategy).toBe('device-package')
+    expect(store.updatePackageType).toBe('device-package')
   })
 
   it('waits for the restarted server after triggering self-update', async () => {

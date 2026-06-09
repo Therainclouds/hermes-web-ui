@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { homedir } from 'os'
 import { join, resolve } from 'path'
-import { getCorsOrigins, getDeployDir, getHermesHome, getListenHost, getUploadDir, getWebUiHome, shouldCreateWebUiDataDir } from '../../packages/server/src/config'
+import { getCorsOrigins, getDeployDir, getHermesHome, getListenHost, getUploadDir, getWebUiHome, hasConfiguredManifestCheck, hasConfiguredUpdateCheck, shouldCreateWebUiDataDir } from '../../packages/server/src/config'
 
 describe('server config', () => {
   it('defaults to an IPv4 bind host', () => {
@@ -44,6 +44,37 @@ describe('server config', () => {
   it('uses DEPLOY_DIR when provided and falls back to cwd', () => {
     expect(getDeployDir({ DEPLOY_DIR: ' ./tmp/deploy ' }, 'g:/ignored')).toBe(resolve('./tmp/deploy'))
     expect(getDeployDir({}, '/tmp/current')).toBe(resolve('/tmp/current'))
+  })
+
+  it('treats manifest configuration as a valid update check source', () => {
+    expect(hasConfiguredManifestCheck({
+      enabled: true,
+      strategy: 'device-package',
+      packageName: '',
+      registry: '',
+      sourceLabel: 'Manifest',
+      distTag: 'latest',
+      cliBin: '',
+      script: '',
+      channel: 'stable',
+      manifestUrl: 'https://updates.example.com/stable/manifest.json',
+      manifestBaseUrl: '',
+      packageType: 'device-package',
+    })).toBe(true)
+    expect(hasConfiguredUpdateCheck({
+      enabled: true,
+      strategy: 'device-package',
+      packageName: '',
+      registry: '',
+      sourceLabel: 'Manifest',
+      distTag: 'latest',
+      cliBin: '',
+      script: '',
+      channel: 'stable',
+      manifestUrl: '',
+      manifestBaseUrl: 'https://updates.example.com',
+      packageType: 'device-package',
+    })).toBe(true)
   })
 
   it('only creates the development data directory outside production', () => {

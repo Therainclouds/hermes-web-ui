@@ -420,8 +420,12 @@ async function handleReloadClick() {
       <div v-else-if="appStore.updateTaskStatus === 'failed'" class="sidebar-update-action sidebar-update-progress sidebar-update-error">
         <span class="sidebar-update-label">{{ t('sidebar.updateFailedWithReason', { reason: updateErrorText }) }}</span>
       </div>
-      <div v-if="appStore.updateEnabled && appStore.updateSourceLabel" class="update-source">
-        {{ t('sidebar.updateSource', { source: appStore.updateSourceLabel }) }}
+      <div v-if="appStore.updateSourceLabel" class="update-source">
+        {{
+          appStore.updateChannel
+            ? t('sidebar.updateSourceWithChannel', { source: appStore.updateSourceLabel, channel: appStore.updateChannel })
+            : t('sidebar.updateSource', { source: appStore.updateSourceLabel })
+        }}
       </div>
       <div v-else-if="!appStore.updateEnabled" class="update-source">
         {{ t('sidebar.updateManagedInternally') }}

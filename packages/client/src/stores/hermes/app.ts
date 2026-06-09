@@ -41,6 +41,9 @@ export const useAppStore = defineStore('app', () => {
   const updateEnabled = ref(false)
   const updateAvailable = ref(false)
   const updateSourceLabel = ref('')
+  const updateChannel = ref('')
+  const updateStrategy = ref('')
+  const updatePackageType = ref('')
   const clientOutdated = ref(false)
   const updating = ref(false)
   const updateTaskId = ref('')
@@ -176,7 +179,10 @@ export const useAppStore = defineStore('app', () => {
       else latestVersion.value = ''
       updateEnabled.value = !!res.webui_update_enabled
       updateSourceLabel.value = res.webui_update_source_label || ''
-      updateAvailable.value = !!res.webui_update_enabled && !!res.webui_update_available
+      updateChannel.value = res.webui_update_channel || ''
+      updateStrategy.value = res.webui_update_strategy || ''
+      updatePackageType.value = res.webui_update_package_type || ''
+      updateAvailable.value = !!res.webui_update_available
       if (res.node_version) nodeVersion.value = res.node_version
     } catch {
       connected.value = false
@@ -184,6 +190,9 @@ export const useAppStore = defineStore('app', () => {
       updateEnabled.value = false
       updateAvailable.value = false
       updateSourceLabel.value = ''
+      updateChannel.value = ''
+      updateStrategy.value = ''
+      updatePackageType.value = ''
     }
   }
 
@@ -440,6 +449,9 @@ export const useAppStore = defineStore('app', () => {
     updateEnabled,
     updateAvailable,
     updateSourceLabel,
+    updateChannel,
+    updateStrategy,
+    updatePackageType,
     clientOutdated,
     updating,
     updateTaskId,

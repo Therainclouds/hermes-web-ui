@@ -228,6 +228,7 @@ export default {
     updateFailed: 'Update failed. Check your internal update source configuration.',
     updateFailedWithReason: 'Update failed: {reason}',
     updateSource: 'Update source: {source}',
+    updateSourceWithChannel: 'Update source: {source} · Channel: {channel}',
     updateManagedInternally: 'Customized build: upgrades are managed through your internal release process',
     updateStage: {
       queued: 'Update request queued',

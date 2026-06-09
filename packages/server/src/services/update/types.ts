@@ -1,4 +1,6 @@
-export type UpdateStrategy = 'npm-package' | 'source-deploy'
+export type UpdateStrategy = 'npm-package' | 'source-deploy' | 'device-package'
+
+export type UpdatePackageType = 'device-package' | 'npm-package' | 'source-deploy'
 
 export interface UpdateConfig {
   enabled: boolean
@@ -9,6 +11,10 @@ export interface UpdateConfig {
   distTag: string
   cliBin: string
   script: string
+  channel: string
+  manifestUrl: string
+  manifestBaseUrl: string
+  packageType: UpdatePackageType
 }
 
 export interface UpdateRuntimePaths {
@@ -70,4 +76,21 @@ export interface UpdateTaskRecord {
 export interface UpdateTaskStatusResponse {
   currentTask: UpdateTaskRecord | null
   lastTask: UpdateTaskRecord | null
+}
+
+export interface ManifestUpdateInfo {
+  version: string
+  channel: string
+  sourceLabel: string
+  packageType: UpdatePackageType
+  manifestUrl: string
+}
+
+export interface UpdateCheckResult {
+  latestVersion: string
+  sourceLabel: string
+  channel: string
+  packageType: UpdatePackageType
+  strategy: UpdateStrategy
+  detectionSource: 'manifest' | 'npm-registry'
 }

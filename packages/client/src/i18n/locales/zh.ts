@@ -228,6 +228,7 @@ export default {
     updateFailed: '更新失败，请检查内部更新源配置',
     updateFailedWithReason: '更新失败：{reason}',
     updateSource: '更新源：{source}',
+    updateSourceWithChannel: '更新源：{source} · 通道：{channel}',
     updateManagedInternally: '当前为定制版，升级由内部发布流程管理',
     updateStage: {
       queued: '更新请求已入队',

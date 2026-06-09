@@ -8,6 +8,9 @@ export interface HealthResponse {
   webui_update_enabled?: boolean
   webui_update_available?: boolean
   webui_update_source_label?: string
+  webui_update_channel?: string
+  webui_update_strategy?: 'npm-package' | 'source-deploy' | 'device-package' | string
+  webui_update_package_type?: 'npm-package' | 'source-deploy' | 'device-package' | string
   node_version?: string
 }
 

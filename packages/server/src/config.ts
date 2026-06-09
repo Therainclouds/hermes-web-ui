@@ -1,5 +1,6 @@
 import { join, resolve } from 'path'
 import { homedir } from 'os'
+import type { UpdatePackageType, UpdateStrategy } from './services/update/types'
 
 /**
  * Web UI environment variables.
@@ -73,13 +74,25 @@ function normalizeUrl(value: string | undefined): string {
   return (value || '').trim().replace(/\/+$/, '')
 }
 
+function normalizeOptionalUrl(value: string | undefined): string {
+  return (value || '').trim()
+}
+
 function normalizePackageName(value: string | undefined): string {
   return (value || '').trim()
 }
 
-function normalizeUpdateStrategy(value: string | undefined): 'npm-package' | 'source-deploy' {
+function normalizeUpdateStrategy(value: string | undefined): UpdateStrategy {
   const normalized = (value || '').trim().toLowerCase()
+  if (normalized === 'device-package') return 'device-package'
   return normalized === 'source-deploy' ? 'source-deploy' : 'npm-package'
+}
+
+function normalizeUpdatePackageType(value: string | undefined): UpdatePackageType {
+  const normalized = (value || '').trim().toLowerCase()
+  if (normalized === 'npm-package') return 'npm-package'
+  if (normalized === 'source-deploy') return 'source-deploy'
+  return 'device-package'
 }
 
 function getDefaultUpdateCliBin(packageName: string): string {
@@ -97,6 +110,16 @@ function getDefaultUpdateSourceLabel(packageName: string, registry: string): str
   }
 }
 
+function getDefaultManifestSourceLabel(manifestUrl: string, manifestBaseUrl: string): string {
+  const candidate = manifestUrl || manifestBaseUrl
+  if (!candidate) return ''
+  try {
+    return `Manifest @ ${new URL(candidate).host}`
+  } catch {
+    return 'Manifest'
+  }
+}
+
 export function shouldCreateWebUiDataDir(env: Record<string, string | undefined> = process.env): boolean {
   return env.NODE_ENV !== 'production'
 }
@@ -108,6 +131,8 @@ export function getCorsOrigins(env: Record<string, string | undefined> = process
 const appHome = getWebUiHome()
 const updatePackageName = normalizePackageName(process.env.WEBUI_UPDATE_PACKAGE)
 const updateRegistry = normalizeUrl(process.env.WEBUI_UPDATE_REGISTRY)
+const updateManifestUrl = normalizeOptionalUrl(process.env.WEBUI_UPDATE_MANIFEST_URL)
+const updateManifestBaseUrl = normalizeUrl(process.env.WEBUI_UPDATE_MANIFEST_BASE_URL)
 
 export const config = {
   port: parseInt(process.env.PORT || '8648', 10),
@@ -122,23 +147,40 @@ export const config = {
     strategy: normalizeUpdateStrategy(process.env.WEBUI_UPDATE_STRATEGY),
     packageName: updatePackageName,
     registry: updateRegistry,
-    sourceLabel: (process.env.WEBUI_UPDATE_SOURCE_LABEL || '').trim() || getDefaultUpdateSourceLabel(updatePackageName, updateRegistry),
+    sourceLabel: (process.env.WEBUI_UPDATE_SOURCE_LABEL || '').trim()
+      || getDefaultManifestSourceLabel(updateManifestUrl, updateManifestBaseUrl)
+      || getDefaultUpdateSourceLabel(updatePackageName, updateRegistry),
     distTag: (process.env.WEBUI_UPDATE_DIST_TAG || 'latest').trim() || 'latest',
     cliBin: (process.env.WEBUI_UPDATE_CLI_BIN || '').trim() || getDefaultUpdateCliBin(updatePackageName || 'hermes-web-ui'),
     script: (process.env.WEBUI_UPDATE_SCRIPT || '').trim(),
+    channel: (process.env.WEBUI_UPDATE_CHANNEL || 'stable').trim() || 'stable',
+    manifestUrl: updateManifestUrl,
+    manifestBaseUrl: updateManifestBaseUrl,
+    packageType: normalizeUpdatePackageType(process.env.WEBUI_UPDATE_PACKAGE_TYPE),
   },
+}
+
+export function hasConfiguredManifestCheck(
+  envUpdate: typeof config.update = config.update,
+): boolean {
+  return Boolean(envUpdate.enabled && (envUpdate.manifestUrl || envUpdate.manifestBaseUrl))
 }
 
 export function hasConfiguredUpdateCheck(
   envUpdate: typeof config.update = config.update,
 ): boolean {
-  return Boolean(envUpdate.enabled && envUpdate.packageName && envUpdate.registry)
+  return Boolean(
+    envUpdate.enabled
+    && ((envUpdate.manifestUrl || envUpdate.manifestBaseUrl) || (envUpdate.packageName && envUpdate.registry)),
+  )
 }
 
 export function hasConfiguredUpdateExecution(
   envUpdate: typeof config.update = config.update,
 ): boolean {
   if (!hasConfiguredUpdateCheck(envUpdate))
+    return false
+  if (envUpdate.strategy === 'device-package')
     return false
   if (envUpdate.strategy === 'source-deploy')
     return Boolean(envUpdate.script)
