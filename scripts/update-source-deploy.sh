@@ -8,10 +8,13 @@ APP_USER="${APP_USER:-hermesui}"
 PORT="${PORT:-6060}"
 SYSTEMD_SERVICE_NAME="${SYSTEMD_SERVICE_NAME:-hermes-web-ui.service}"
 SERVICE_ENV_FILE="${SERVICE_ENV_FILE:-/etc/default/hermes-web-ui}"
-HERMES_HOME_DIR="${HERMES_HOME_DIR:-${DEPLOY_DIR}/hermes_data}"
+HERMES_HOME_DIR="${HERMES_HOME_DIR:-${HERMES_HOME:-${DEPLOY_DIR}/hermes_data}}"
+HERMES_WEB_UI_HOME="${HERMES_WEB_UI_HOME:-${HERMES_WEBUI_STATE_DIR:-}}"
+UPLOAD_DIR="${UPLOAD_DIR:-}"
 PRESERVE_NAMES=("hermes_data" ".git" ".runtime-hermes" ".runtime-home")
 
 info() { printf '[update-source-deploy] %s\n' "$*"; }
+warn() { printf '[update-source-deploy] WARNING: %s\n' "$*"; }
 err() { printf '[update-source-deploy] ERROR: %s\n' "$*" >&2; }
 
 cleanup() {
@@ -29,13 +32,125 @@ ensure_root() {
     err "sudo is required for source deployment updates."
     exit 1
   fi
-  export DEPLOY_DIR APP_USER PORT SYSTEMD_SERVICE_NAME SERVICE_ENV_FILE HERMES_HOME_DIR
+  export DEPLOY_DIR APP_USER PORT SYSTEMD_SERVICE_NAME SERVICE_ENV_FILE HERMES_HOME_DIR HERMES_HOME HERMES_WEB_UI_HOME HERMES_WEBUI_STATE_DIR UPLOAD_DIR
   export WEBUI_UPDATE_ENABLED WEBUI_UPDATE_PACKAGE WEBUI_UPDATE_REGISTRY WEBUI_UPDATE_CLI_BIN
   export WEBUI_UPDATE_SOURCE_LABEL WEBUI_UPDATE_DIST_TAG WEBUI_UPDATE_STRATEGY WEBUI_UPDATE_SCRIPT WEBUI_UPDATE_REPO
   export HERMES_WEB_UI_UPDATE_LOG="${LOG_FILE}"
   exec sudo -n \
-    --preserve-env=DEPLOY_DIR,APP_USER,PORT,SYSTEMD_SERVICE_NAME,SERVICE_ENV_FILE,HERMES_HOME_DIR,WEBUI_UPDATE_ENABLED,WEBUI_UPDATE_PACKAGE,WEBUI_UPDATE_REGISTRY,WEBUI_UPDATE_CLI_BIN,WEBUI_UPDATE_SOURCE_LABEL,WEBUI_UPDATE_DIST_TAG,WEBUI_UPDATE_STRATEGY,WEBUI_UPDATE_SCRIPT,WEBUI_UPDATE_REPO,HERMES_WEB_UI_UPDATE_LOG,HERMES_WEB_UI_UPDATE_VERSION \
+    --preserve-env=DEPLOY_DIR,APP_USER,PORT,SYSTEMD_SERVICE_NAME,SERVICE_ENV_FILE,HERMES_HOME_DIR,HERMES_HOME,HERMES_WEB_UI_HOME,HERMES_WEBUI_STATE_DIR,UPLOAD_DIR,WEBUI_UPDATE_ENABLED,WEBUI_UPDATE_PACKAGE,WEBUI_UPDATE_REGISTRY,WEBUI_UPDATE_CLI_BIN,WEBUI_UPDATE_SOURCE_LABEL,WEBUI_UPDATE_DIST_TAG,WEBUI_UPDATE_STRATEGY,WEBUI_UPDATE_SCRIPT,WEBUI_UPDATE_REPO,HERMES_WEB_UI_UPDATE_LOG,HERMES_WEB_UI_UPDATE_VERSION \
     /bin/bash "${SELF_PATH}" "$@"
+}
+
+canonicalize_path() {
+  python3 - "$1" <<'PY'
+import os
+import sys
+
+value = sys.argv[1].strip()
+if not value:
+    print("")
+else:
+    print(os.path.realpath(os.path.abspath(value)))
+PY
+}
+
+path_is_same_or_within() {
+  python3 - "$1" "$2" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+parent = sys.argv[1].strip()
+child = sys.argv[2].strip()
+if not parent or not child:
+    print("false")
+    raise SystemExit(0)
+
+parent_path = Path(parent).resolve()
+child_path = Path(child).resolve()
+
+try:
+    child_path.relative_to(parent_path)
+    print("true")
+except ValueError:
+    print("false")
+PY
+}
+
+top_level_child_name() {
+  python3 - "$1" "$2" <<'PY'
+import sys
+from pathlib import Path
+
+parent = Path(sys.argv[1]).resolve()
+child = Path(sys.argv[2]).resolve()
+relative = child.relative_to(parent)
+print(relative.parts[0] if relative.parts else "")
+PY
+}
+
+append_preserve_name() {
+  local name="$1"
+  local existing
+  [[ -z "${name}" ]] && return 0
+  for existing in "${PRESERVE_NAMES[@]}"; do
+    [[ "${existing}" == "${name}" ]] && return 0
+  done
+  PRESERVE_NAMES+=("${name}")
+}
+
+protect_runtime_path() {
+  local label="$1"
+  local raw_path="$2"
+  local mode="$3"
+  local resolved_path
+  local top_level_name
+
+  [[ -z "${raw_path}" ]] && return 0
+
+  resolved_path="$(canonicalize_path "${raw_path}")"
+  [[ -z "${resolved_path}" ]] && return 0
+
+  if [[ "$(path_is_same_or_within "${DEPLOY_DIR}" "${resolved_path}")" != "true" ]]; then
+    return 0
+  fi
+
+  if [[ "${mode}" == "block" ]]; then
+    err "${label} is inside DEPLOY_DIR and update is blocked to avoid overwriting user data: ${resolved_path}"
+    exit 1
+  fi
+
+  top_level_name="$(top_level_child_name "${DEPLOY_DIR}" "${resolved_path}")"
+  append_preserve_name "${top_level_name}"
+  warn "${label} is inside DEPLOY_DIR and will be preserved in compatibility mode: ${resolved_path}"
+}
+
+build_preserve_names() {
+  local resolved_deploy_dir
+  local default_upload_dir
+
+  resolved_deploy_dir="$(canonicalize_path "${DEPLOY_DIR}")"
+  DEPLOY_DIR="${resolved_deploy_dir}"
+
+  if [[ -n "${HERMES_WEB_UI_HOME}" ]]; then
+    HERMES_WEB_UI_HOME="$(canonicalize_path "${HERMES_WEB_UI_HOME}")"
+  fi
+  if [[ -n "${HERMES_HOME_DIR}" ]]; then
+    HERMES_HOME_DIR="$(canonicalize_path "${HERMES_HOME_DIR}")"
+    HERMES_HOME="${HERMES_HOME_DIR}"
+  fi
+  if [[ -z "${UPLOAD_DIR}" && -n "${HERMES_WEB_UI_HOME}" ]]; then
+    default_upload_dir="${HERMES_WEB_UI_HOME}/upload"
+    UPLOAD_DIR="${default_upload_dir}"
+  elif [[ -n "${UPLOAD_DIR}" ]]; then
+    UPLOAD_DIR="$(canonicalize_path "${UPLOAD_DIR}")"
+  fi
+
+  protect_runtime_path "Web UI data directory" "${HERMES_WEB_UI_HOME}" "block"
+  protect_runtime_path "Upload directory" "${UPLOAD_DIR}" "block"
+  protect_runtime_path "Hermes data directory" "${HERMES_HOME_DIR}" "warn"
+
+  info "Preserving top-level entries during source sync: ${PRESERVE_NAMES[*]}"
 }
 
 parse_args() {
@@ -140,14 +255,16 @@ download_source_archive() {
 }
 
 sync_source_tree() {
+  local -a find_args
+  local preserve_name
   mkdir -p "${DEPLOY_DIR}"
   info "Syncing source tree into ${DEPLOY_DIR}"
-  find "${DEPLOY_DIR}" -mindepth 1 -maxdepth 1 \
-    ! -name "${PRESERVE_NAMES[0]}" \
-    ! -name "${PRESERVE_NAMES[1]}" \
-    ! -name "${PRESERVE_NAMES[2]}" \
-    ! -name "${PRESERVE_NAMES[3]}" \
-    -exec rm -rf {} +
+  find_args=("${DEPLOY_DIR}" -mindepth 1 -maxdepth 1)
+  for preserve_name in "${PRESERVE_NAMES[@]}"; do
+    find_args+=('!' -name "${preserve_name}")
+  done
+  find_args+=(-exec rm -rf {} +)
+  find "${find_args[@]}"
   tar -C "${SOURCE_DIR}" -cf - . | tar -C "${DEPLOY_DIR}" -xf -
 }
 
@@ -161,6 +278,10 @@ run_deploy_script() {
     SYSTEMD_SERVICE_NAME="${SYSTEMD_SERVICE_NAME}" \
     SERVICE_ENV_FILE="${SERVICE_ENV_FILE}" \
     HERMES_HOME_DIR="${HERMES_HOME_DIR}" \
+    HERMES_HOME="${HERMES_HOME:-${HERMES_HOME_DIR}}" \
+    HERMES_WEB_UI_HOME="${HERMES_WEB_UI_HOME:-}" \
+    HERMES_WEBUI_STATE_DIR="${HERMES_WEB_UI_HOME:-}" \
+    UPLOAD_DIR="${UPLOAD_DIR:-}" \
     WEBUI_UPDATE_ENABLED="${WEBUI_UPDATE_ENABLED:-}" \
     WEBUI_UPDATE_PACKAGE="${WEBUI_UPDATE_PACKAGE:-}" \
     WEBUI_UPDATE_REGISTRY="${WEBUI_UPDATE_REGISTRY:-}" \
@@ -179,6 +300,7 @@ exec >>"${LOG_FILE}" 2>&1
 
 info "Starting source deployment update"
 parse_args "$@"
+build_preserve_names
 download_source_archive
 sync_source_tree
 run_deploy_script

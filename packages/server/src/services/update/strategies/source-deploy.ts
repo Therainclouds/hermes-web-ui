@@ -1,0 +1,39 @@
+import type { UpdateConfig, UpdateRuntimePaths } from '../types'
+import { UpdateError } from '../errors'
+
+export function getSourceDeployExecutionMessage(): string {
+  return 'Update source is not fully configured. Set WEBUI_UPDATE_PACKAGE, WEBUI_UPDATE_REGISTRY, and WEBUI_UPDATE_SCRIPT.'
+}
+
+export function assertSourceDeployExecution(update: UpdateConfig): void {
+  if (!update.packageName || !update.registry || !update.script) {
+    throw new UpdateError('update_execution_misconfigured', getSourceDeployExecutionMessage())
+  }
+}
+
+export function buildSourceDeployEnv(
+  update: UpdateConfig,
+  baseEnv: NodeJS.ProcessEnv,
+  version: string,
+  paths: UpdateRuntimePaths,
+): NodeJS.ProcessEnv {
+  return {
+    ...baseEnv,
+    DEPLOY_DIR: paths.deployDir,
+    HERMES_HOME: paths.hermesHome || baseEnv.HERMES_HOME || '',
+    HERMES_HOME_DIR: paths.hermesHome || baseEnv.HERMES_HOME_DIR || '',
+    HERMES_WEB_UI_HOME: paths.webUiHome,
+    HERMES_WEBUI_STATE_DIR: paths.webUiHome,
+    UPLOAD_DIR: paths.uploadDir,
+    HERMES_WEB_UI_UPDATE_VERSION: version,
+    HERMES_WEB_UI_UPDATE_PACKAGE: update.packageName || '',
+    HERMES_WEB_UI_UPDATE_REGISTRY: update.registry || '',
+    HERMES_WEB_UI_UPDATE_DIST_TAG: update.distTag || 'latest',
+  }
+}
+
+export function buildSourceDeployCommand(script: string, version: string): { command: string; args: string[] } {
+  return process.platform === 'win32'
+    ? { command: 'bash', args: [script, '--version', version] }
+    : { command: script, args: ['--version', version] }
+}

@@ -44,6 +44,24 @@ export function getWebUiHome(env: Record<string, string | undefined> = process.e
   return configuredHome ? resolve(configuredHome) : join(homedir(), '.hermes-web-ui')
 }
 
+export function getUploadDir(env: Record<string, string | undefined> = process.env): string {
+  const configuredDir = env.UPLOAD_DIR?.trim()
+  return configuredDir ? resolve(configuredDir) : join(getWebUiHome(env), 'upload')
+}
+
+export function getHermesHome(env: Record<string, string | undefined> = process.env): string {
+  const configuredHome = env.HERMES_HOME?.trim() || env.HERMES_HOME_DIR?.trim()
+  return configuredHome ? resolve(configuredHome) : ''
+}
+
+export function getDeployDir(
+  env: Record<string, string | undefined> = process.env,
+  cwd = process.cwd(),
+): string {
+  const configuredDir = env.DEPLOY_DIR?.trim()
+  return resolve(configuredDir || cwd)
+}
+
 function parseBoolean(value: string | undefined, fallback = false): boolean {
   if (value == null) return fallback
   const normalized = value.trim().toLowerCase()
@@ -96,7 +114,7 @@ export const config = {
   // Default to IPv4 for stable WSL/Windows browser access. Use BIND_HOST=:: explicitly for IPv6.
   host: getListenHost(),
   appHome,
-  uploadDir: process.env.UPLOAD_DIR || join(appHome, 'upload'),
+  uploadDir: getUploadDir(),
   dataDir: resolve(__dirname, '..', 'data'),
   corsOrigins: getCorsOrigins(),
   update: {

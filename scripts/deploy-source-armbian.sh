@@ -448,8 +448,10 @@ write_service_env() {
   step "Write service environment file"
   local hermes_bin
   local hermes_agent_root
+  local webui_home
   hermes_bin="${APP_USER_HOME}/.local/bin/hermes"
   hermes_agent_root=""
+  webui_home="${HERMES_WEB_UI_HOME:-${APP_USER_HOME}/.hermes-web-ui}"
   if [[ -z "${HERMES_AGENT_WHEEL_URL}" ]]; then
     hermes_agent_root="${APP_USER_HOME}/.hermes/hermes-agent"
   fi
@@ -463,7 +465,7 @@ PATH=${NODE_INSTALL_DIR}/bin:${APP_USER_HOME}/.local/bin:/usr/local/sbin:/usr/lo
 HERMES_HOME=${HERMES_HOME_DIR}
 HERMES_BIN=${hermes_bin}
 ${hermes_agent_root:+HERMES_AGENT_ROOT=${hermes_agent_root}}
-HERMES_WEB_UI_HOME=${APP_USER_HOME}/.hermes-web-ui
+HERMES_WEB_UI_HOME=${webui_home}
 LANG=C.UTF-8
 LC_ALL=C.UTF-8
 EOF
@@ -473,6 +475,7 @@ EOF
 
   local update_env_name update_env_value
   for update_env_name in \
+    UPLOAD_DIR \
     WEBUI_UPDATE_ENABLED \
     WEBUI_UPDATE_PACKAGE \
     WEBUI_UPDATE_REGISTRY \

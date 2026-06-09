@@ -30,6 +30,31 @@
 - 页面更新不再更新错目标
 - 部署路径和更新路径保持一致
 
+## 当前数据保护边界
+
+当前更新链路已按“真实路径识别 + 风险分级”接入第一阶段保护逻辑。
+
+受保护的数据目录至少包括：
+
+- `HERMES_WEB_UI_HOME` / `HERMES_WEBUI_STATE_DIR`
+- `UPLOAD_DIR`
+- `HERMES_HOME_DIR` / `HERMES_HOME`
+
+当前规则如下：
+
+- `Web UI` 默认数据目录继续位于用户家目录下，不要求迁移。
+- 更新前会先识别真实数据路径，而不是只依赖固定目录名。
+- 若 `HERMES_WEB_UI_HOME` 或 `UPLOAD_DIR` 位于 `DEPLOY_DIR` 内，更新会被直接阻止。
+- 若 `HERMES_HOME_DIR` 位于 `DEPLOY_DIR` 内，当前按兼容布局处理：
+  - 历史默认路径如 `${DEPLOY_DIR}/hermes_data` 会给出告警但允许更新
+  - 更新脚本会显式保留该目录，避免源码同步时被清理
+- 第一阶段不会自动迁移任何数据目录，也不会回滚用户数据内容。
+
+这意味着：
+
+- 程序更新只替换程序代码、构建产物、脚本和依赖
+- 用户聊天历史、上传、配置和 `Hermes` 运行状态不应被更新过程覆盖
+
 ## 自更新工作原理
 
 1. 服务启动时读取 `WEBUI_UPDATE_*` 环境变量。
@@ -37,9 +62,12 @@
 3. 前端轮询 `/health`。
 4. 当 `webui_version < webui_latest` 时，sidebar 底部显示更新按钮。
 5. 用户点击更新后，后端先从 npm registry 解析 `latest` 对应的真实版本号。
-6. 在源码部署模式下，后端后台执行 `scripts/update-source-deploy.sh --version <x.y.z>`。
-7. 更新脚本会下载对应 tag 的源码包，覆盖 `/opt/hermes-web-ui`，然后调用 `deploy-source-armbian.sh` 的 `update-only` 模式完成重建、写入环境变量、重启 `systemd` 和健康检查。
-8. 浏览器检测到服务版本变化后自动刷新。
+6. 后端在真正执行更新前，会统一执行 preflight，判断真实数据路径和风险级别。
+7. 在源码部署模式下，后端后台执行 `scripts/update-source-deploy.sh --version <x.y.z>`。
+8. 更新脚本会再次根据真实数据路径执行脚本侧保护，避免误删受保护目录。
+9. 更新脚本会下载对应 tag 的源码包，覆盖 `/opt/hermes-web-ui`，然后调用 `deploy-source-armbian.sh` 的 `update-only` 模式完成重建、写入环境变量、重启 `systemd` 和健康检查。
+10. `update-only` 模式会保留当前 `HERMES_WEB_UI_HOME` 和 `UPLOAD_DIR`，不再强制回写成固定默认值。
+11. 浏览器检测到服务版本变化后自动刷新。
 
 ## 必需环境变量
 
@@ -69,6 +97,19 @@ WEBUI_UPDATE_REPO=https://github.com/tangledup-ai/hermes-web-ui
 hermesui ALL=(root) NOPASSWD:SETENV: /bin/bash /opt/hermes-web-ui/scripts/update-source-deploy.sh *
 ```
 
+与数据保护直接相关的环境变量建议显式保留：
+
+```bash
+HERMES_HOME=/opt/hermes-web-ui/hermes_data
+HERMES_WEB_UI_HOME=/home/hermesui/.hermes-web-ui
+UPLOAD_DIR=/home/hermesui/.hermes-web-ui/upload
+```
+
+说明：
+
+- 若未显式设置 `UPLOAD_DIR`，服务端默认使用 `${HERMES_WEB_UI_HOME}/upload`
+- 若使用自定义目录，请确保目录不与程序源码目录混放
+
 ## systemd 推荐配置
 
 当前设备采用 systemd + EnvironmentFile 方式启动：
@@ -87,6 +128,7 @@ PATH=/opt/node-v23/bin:/home/hermesui/.local/bin:/usr/local/sbin:/usr/local/bin:
 HERMES_HOME=/opt/hermes-web-ui/hermes_data
 HERMES_BIN=/home/hermesui/.local/bin/hermes
 HERMES_WEB_UI_HOME=/home/hermesui/.hermes-web-ui
+UPLOAD_DIR=/home/hermesui/.hermes-web-ui/upload
 LANG=C.UTF-8
 LC_ALL=C.UTF-8
 
@@ -173,15 +215,40 @@ curl http://127.0.0.1:6060/health
 - 当存在新版本时，显示更新按钮
 - 用户点击后可自动触发源码更新并重启
 
+### 4. 检查数据目录是否符合当前保护预期
+
+```bash
+grep -E '^(HERMES_HOME|HERMES_WEB_UI_HOME|UPLOAD_DIR)=' /etc/default/hermes-web-ui
+```
+
+建议至少确认：
+
+- `HERMES_WEB_UI_HOME` 位于用户家目录或独立数据目录
+- `UPLOAD_DIR` 未落在程序源码目录内
+- `HERMES_HOME` 如位于 `${DEPLOY_DIR}/hermes_data`，属于兼容布局，可继续运行但应知晓其告警属性
+
+### 5. 检查更新日志中的 preflight 和保护输出
+
+```bash
+tail -n 200 /var/log/hermes-web-ui-update.log
+```
+
+重点关注：
+
+- 是否出现 `WARNING` 级兼容布局提示
+- 是否出现“inside DEPLOY_DIR and update is blocked”之类的危险布局阻止信息
+- 是否打印了最终保留的顶层目录列表
+
 ## 一键部署脚本必须保证的内容
 
 后续任何源码打包脚本或一键部署脚本，必须满足：
 
 1. 写入 `/etc/default/hermes-web-ui`
 2. 写入全部 `WEBUI_UPDATE_*` 变量
-3. 重启 `hermes-web-ui`
-4. 自动执行一次环境变量和 `/health` 验证
-5. 任一检查失败时退出并提示错误
+3. 保留或显式写入 `HERMES_HOME`、`HERMES_WEB_UI_HOME`、`UPLOAD_DIR`
+4. 重启 `hermes-web-ui`
+5. 自动执行一次环境变量和 `/health` 验证
+6. 任一检查失败时退出并提示错误
 
 现在 `scripts/deploy-source-armbian.sh` 已默认内置这些值：
 
@@ -277,7 +344,21 @@ ls -l /opt/hermes-web-ui/scripts/update-source-deploy.sh
 - `update-source-deploy.sh` 不是 `root:root`
 - sudoers 没有 `NOPASSWD:SETENV`
 - `WEBUI_UPDATE_REPO` 写错或带反引号
+- `HERMES_WEB_UI_HOME` 或 `UPLOAD_DIR` 被配置到了 `DEPLOY_DIR` 内，导致 preflight 主动阻止
 - GitHub archive 下载慢，需回退到 `codeload.github.com`
+
+如果日志中看到以下类型消息：
+
+- `Web UI data directory is inside DEPLOY_DIR and update is blocked`
+- `Upload directory is inside DEPLOY_DIR and update is blocked`
+
+说明当前布局会导致更新覆盖用户数据，必须先调整目录后再继续。
+
+如果日志中看到以下类型消息：
+
+- `Hermes data directory is using the legacy compatibility layout inside the deploy directory`
+
+说明当前仍在使用兼容布局，更新会继续，但后续建议逐步评估迁移到部署目录外的数据路径。
 
 更新脚本现在会按这个顺序下载：
 

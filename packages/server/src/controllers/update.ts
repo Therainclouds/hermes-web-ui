@@ -3,6 +3,12 @@ import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSyn
 import { createServer } from 'net'
 import { delimiter, dirname, extname, join, resolve } from 'path'
 import { config, getWebUiHome, hasConfiguredUpdateExecution } from '../config'
+import { UpdateError } from '../services/update/errors'
+import { runUpdatePreflight } from '../services/update/preflight'
+import { resolveUpdateRuntimePaths } from '../services/update/runtime-paths'
+import { assertNpmPackageExecution, buildNpmPackageInstallArgs, getNpmPackageExecutionMessage } from '../services/update/strategies/npm-package'
+import { assertSourceDeployExecution, buildSourceDeployCommand, buildSourceDeployEnv, getSourceDeployExecutionMessage } from '../services/update/strategies/source-deploy'
+import type { UpdateRuntimePaths } from '../services/update/types'
 
 let updateInProgress = false
 const NODE_ENVIRONMENT_MISSING_CODE = 'node_environment_missing'
@@ -1042,18 +1048,17 @@ async function resolvePublishedUpdateVersion() {
 }
 
 function runUpdateInstall(versionOrTag: string) {
-  const packageName = config.update.packageName
   return runNpm(
-    ['install', '-g', `${packageName}@${versionOrTag}`, '--registry', config.update.registry, '--ignore-scripts', '--no-audit', '--no-fund'],
+    buildNpmPackageInstallArgs(config.update, versionOrTag),
     { timeout: 10 * 60 * 1000 },
   )
 }
 
 function getUpdateExecutionMessage() {
   if (config.update.strategy === 'source-deploy') {
-    return 'Update source is not fully configured. Set WEBUI_UPDATE_PACKAGE, WEBUI_UPDATE_REGISTRY, and WEBUI_UPDATE_SCRIPT.'
+    return getSourceDeployExecutionMessage()
   }
-  return 'Update source is not fully configured. Set WEBUI_UPDATE_PACKAGE, WEBUI_UPDATE_REGISTRY, and WEBUI_UPDATE_CLI_BIN.'
+  return getNpmPackageExecutionMessage()
 }
 
 function spawnRestart(port: string) {
@@ -1067,19 +1072,13 @@ function spawnRestart(port: string) {
   })
 }
 
-function spawnSourceDeployUpdate(version: string) {
+function spawnSourceDeployUpdate(version: string, runtimePaths: UpdateRuntimePaths) {
   const script = config.update.script
   if (!script) {
     throw new Error('WEBUI_UPDATE_SCRIPT is not configured for source-deploy updates.')
   }
 
-  const env = {
-    ...getCurrentNodeEnv(),
-    HERMES_WEB_UI_UPDATE_VERSION: version,
-    HERMES_WEB_UI_UPDATE_PACKAGE: config.update.packageName || '',
-    HERMES_WEB_UI_UPDATE_REGISTRY: config.update.registry || '',
-    HERMES_WEB_UI_UPDATE_DIST_TAG: config.update.distTag || 'latest',
-  }
+  const env = buildSourceDeployEnv(config.update, getCurrentNodeEnv(), version, runtimePaths)
   const options = {
     detached: true,
     stdio: 'ignore' as const,
@@ -1087,9 +1086,8 @@ function spawnSourceDeployUpdate(version: string) {
     env,
   }
 
-  return process.platform === 'win32'
-    ? spawn('bash', [script, '--version', version], options)
-    : spawn(script, ['--version', version], options)
+  const command = buildSourceDeployCommand(script, version)
+  return spawn(command.command, command.args, options)
 }
 
 function observeDetachedUpdateProcess(
@@ -1108,6 +1106,10 @@ function observeDetachedUpdateProcess(
     }
   })
   updateChild.unref()
+}
+
+function appendPreflightWarning(message: string, warningText: string): string {
+  return warningText ? `${message} Warning: ${warningText}` : message
 }
 
 export async function handleUpdate(ctx: any) {
@@ -1138,27 +1140,49 @@ export async function handleUpdate(ctx: any) {
     return
   }
 
+  const runtimePaths = resolveUpdateRuntimePaths()
+  const preflight = runUpdatePreflight(config.update.strategy, runtimePaths)
+  if (preflight.shouldBlock) {
+    ctx.status = 409
+    ctx.body = {
+      success: false,
+      code: 'update_dangerous_layout',
+      message: preflight.blockingText || 'Update blocked because protected data would be at risk.',
+      issues: preflight.issues,
+    }
+    return
+  }
+
   updateInProgress = true
 
   try {
+    if (config.update.strategy === 'source-deploy') {
+      assertSourceDeployExecution(config.update)
+    } else {
+      assertNpmPackageExecution(config.update)
+    }
+
     const resolvedVersion = await resolvePublishedUpdateVersion()
     const targetSpecifier = resolvedVersion || config.update.distTag || 'latest'
-
     if (config.update.strategy === 'source-deploy') {
       if (!resolvedVersion) {
         throw new Error(`Could not resolve the latest published version for ${config.update.packageName}`)
       }
 
+      if (preflight.warningText) {
+        console.warn(`[update] preflight warning: ${preflight.warningText}`)
+      }
       console.info(`[update] starting source deployment update for ${config.update.packageName}@${resolvedVersion}`)
       ctx.body = {
         success: true,
-        message: `Starting source deployment update to ${resolvedVersion}`,
+        message: appendPreflightWarning(`Starting source deployment update to ${resolvedVersion}`, preflight.warningText),
+        warning: preflight.warningText || undefined,
       }
 
       setTimeout(() => {
         let updateChild
         try {
-          updateChild = spawnSourceDeployUpdate(resolvedVersion)
+          updateChild = spawnSourceDeployUpdate(resolvedVersion, runtimePaths)
         } catch (err) {
           updateInProgress = false
           console.error('[update] failed to spawn source deployment update:', err)
@@ -1171,10 +1195,17 @@ export async function handleUpdate(ctx: any) {
 
     console.info(`[update] installing ${config.update.packageName}@${targetSpecifier} from ${config.update.registry}`)
     const output = runUpdateInstall(targetSpecifier)
+    if (preflight.warningText) {
+      console.warn(`[update] preflight warning: ${preflight.warningText}`)
+    }
 
     ctx.body = {
       success: true,
-      message: output.trim() || `${config.update.packageName || 'Hermes Web UI'} updated successfully`,
+      message: appendPreflightWarning(
+        output.trim() || `${config.update.packageName || 'Hermes Web UI'} updated successfully`,
+        preflight.warningText,
+      ),
+      warning: preflight.warningText || undefined,
     }
 
     setTimeout(() => {
@@ -1190,6 +1221,16 @@ export async function handleUpdate(ctx: any) {
     }, 3000)
   } catch (err: any) {
     updateInProgress = false
+    if (err instanceof UpdateError) {
+      ctx.status = err.status
+      ctx.body = {
+        success: false,
+        code: err.code,
+        message: err.message,
+        details: err.details,
+      }
+      return
+    }
     ctx.status = 500
     ctx.body = {
       success: false,

@@ -86,6 +86,11 @@ describe('update controller', () => {
   const originalUpdateCliBin = process.env.WEBUI_UPDATE_CLI_BIN
   const originalUpdateStrategy = process.env.WEBUI_UPDATE_STRATEGY
   const originalUpdateScript = process.env.WEBUI_UPDATE_SCRIPT
+  const originalWebUiHome = process.env.HERMES_WEB_UI_HOME
+  const originalWebUiStateDir = process.env.HERMES_WEBUI_STATE_DIR
+  const originalUploadDir = process.env.UPLOAD_DIR
+  const originalHermesHome = process.env.HERMES_HOME
+  const originalHermesHomeDir = process.env.HERMES_HOME_DIR
   const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
 
   beforeEach(() => {
@@ -97,6 +102,11 @@ describe('update controller', () => {
     process.env.WEBUI_UPDATE_CLI_BIN = UPDATE_CLI_BIN
     delete process.env.WEBUI_UPDATE_STRATEGY
     delete process.env.WEBUI_UPDATE_SCRIPT
+    delete process.env.HERMES_WEB_UI_HOME
+    delete process.env.HERMES_WEBUI_STATE_DIR
+    delete process.env.UPLOAD_DIR
+    delete process.env.HERMES_HOME
+    delete process.env.HERMES_HOME_DIR
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -128,6 +138,16 @@ describe('update controller', () => {
     else process.env.WEBUI_UPDATE_STRATEGY = originalUpdateStrategy
     if (originalUpdateScript === undefined) delete process.env.WEBUI_UPDATE_SCRIPT
     else process.env.WEBUI_UPDATE_SCRIPT = originalUpdateScript
+    if (originalWebUiHome === undefined) delete process.env.HERMES_WEB_UI_HOME
+    else process.env.HERMES_WEB_UI_HOME = originalWebUiHome
+    if (originalWebUiStateDir === undefined) delete process.env.HERMES_WEBUI_STATE_DIR
+    else process.env.HERMES_WEBUI_STATE_DIR = originalWebUiStateDir
+    if (originalUploadDir === undefined) delete process.env.UPLOAD_DIR
+    else process.env.UPLOAD_DIR = originalUploadDir
+    if (originalHermesHome === undefined) delete process.env.HERMES_HOME
+    else process.env.HERMES_HOME = originalHermesHome
+    if (originalHermesHomeDir === undefined) delete process.env.HERMES_HOME_DIR
+    else process.env.HERMES_HOME_DIR = originalHermesHomeDir
     delete process.env.HERMES_WEB_UI_PREVIEW_REPO
   })
 
@@ -273,6 +293,23 @@ describe('update controller', () => {
       success: false,
       message: 'Update source is not fully configured. Set WEBUI_UPDATE_PACKAGE, WEBUI_UPDATE_REGISTRY, and WEBUI_UPDATE_SCRIPT.',
     })
+    expect(mocks.spawn).not.toHaveBeenCalled()
+  })
+
+  it('blocks updates when protected web-ui data would be inside the deploy directory', async () => {
+    process.env.HERMES_WEB_UI_HOME = './state'
+    const { handleUpdate, mocks } = await loadUpdateController()
+    const ctx = createMockCtx()
+
+    await handleUpdate(ctx)
+
+    expect(ctx.status).toBe(409)
+    expect(ctx.body).toEqual(expect.objectContaining({
+      success: false,
+      code: 'update_dangerous_layout',
+    }))
+    expect(String((ctx.body as any).message)).toContain('Web UI data directory is inside the deploy directory')
+    expect(mocks.execFileSync).not.toHaveBeenCalled()
     expect(mocks.spawn).not.toHaveBeenCalled()
   })
 
