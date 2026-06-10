@@ -9,7 +9,7 @@ describe('update manifest client', () => {
   it('builds a channel manifest URL from the configured base URL', async () => {
     const { buildManifestUrl } = await import('../../packages/server/src/services/update/manifest-client')
     expect(buildManifestUrl('https://updates.example.com/releases/', 'stable')).toBe(
-      'https://updates.example.com/releases/stable/manifest.json',
+      'https://updates.example.com/releases/stable/latest.json',
     )
   })
 

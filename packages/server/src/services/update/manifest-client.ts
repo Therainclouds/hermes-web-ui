@@ -30,7 +30,7 @@ function toPackageType(value: unknown, fallback: UpdatePackageType): UpdatePacka
 export function buildManifestUrl(baseUrl: string, channel: string): string {
   const normalizedBaseUrl = (baseUrl || '').trim().replace(/\/+$/, '')
   const normalizedChannel = (channel || 'stable').trim() || 'stable'
-  return `${normalizedBaseUrl}/${encodeURIComponent(normalizedChannel)}/manifest.json`
+  return `${normalizedBaseUrl}/${encodeURIComponent(normalizedChannel)}/latest.json`
 }
 
 export function resolveConfiguredManifestUrl(update: UpdateConfig = config.update): string {
