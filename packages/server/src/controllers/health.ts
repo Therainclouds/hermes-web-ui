@@ -1,8 +1,7 @@
-import { existsSync, readFileSync } from 'fs'
-import { resolve } from 'path'
 import * as hermesCli from '../services/hermes/hermes-cli'
 import { config, hasConfiguredManifestCheck, hasConfiguredUpdateCheck, hasConfiguredUpdateExecution } from '../config'
 import { resolveManifestCheckResult } from '../services/update/manifest-client'
+import { getLocalWebUiVersion, readPackageInfo } from '../services/update/package-info'
 import type { UpdateCheckResult } from '../services/update/types'
 import { isRemoteVersionNewer } from '../services/update/version-compare'
 
@@ -21,35 +20,8 @@ let cachedUpdateInfo: UpdateCheckResult = {
   detectionSource: 'npm-registry',
 }
 
-interface PackageInfo {
-  name: string
-  version: string
-}
-
-function readPackageInfo(): PackageInfo | null {
-  const candidatePaths = [
-    resolve(__dirname, '../../package.json'),
-    resolve(__dirname, '../../../../package.json'),
-    resolve(process.cwd(), 'package.json'),
-  ]
-
-  for (const packagePath of candidatePaths) {
-    if (!existsSync(packagePath)) continue
-    try {
-      const pkg = JSON.parse(readFileSync(packagePath, 'utf-8'))
-      if (pkg?.name && pkg?.version) {
-        return {
-          name: String(pkg.name),
-          version: String(pkg.version),
-        }
-      }
-    } catch {}
-  }
-  return null
-}
-
 const PACKAGE_INFO = readPackageInfo()
-const LOCAL_VERSION = BUILD_VERSION || PACKAGE_INFO?.version || ''
+const LOCAL_VERSION = getLocalWebUiVersion(BUILD_VERSION)
 
 function hasConfiguredUpdateSource(): boolean {
   return hasConfiguredUpdateExecution(config.update)

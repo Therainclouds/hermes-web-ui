@@ -1,6 +1,33 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 describe('update manifest client', () => {
+  function createUpdateConfig() {
+    return {
+      enabled: true,
+      strategy: 'device-package' as const,
+      packageName: '',
+      registry: '',
+      sourceLabel: 'Fallback Source',
+      distTag: 'latest',
+      cliBin: '',
+      script: '',
+      channel: 'stable',
+      manifestUrl: '',
+      manifestBaseUrl: '',
+      packageType: 'device-package' as const,
+      installerScript: '/opt/hermes-web-ui/scripts/install-device-package.sh',
+      stagingDir: '/tmp/staging',
+      backupDir: '/tmp/backups',
+      healthcheckUrl: 'http://127.0.0.1:8648/health',
+      stateFile: '/tmp/update-state.json',
+      logDir: '/tmp/update-logs',
+      healthcheckTimeoutMs: 2_000,
+      healthcheckIntervalMs: 2_000,
+      healthcheckRetries: 15,
+      healthcheckInitialDelayMs: 5_000,
+    }
+  }
+
   afterEach(() => {
     vi.restoreAllMocks()
     vi.resetModules()
@@ -26,18 +53,8 @@ describe('update manifest client', () => {
     const { fetchManifestUpdateInfo } = await import('../../packages/server/src/services/update/manifest-client')
 
     const result = await fetchManifestUpdateInfo({
-      enabled: true,
-      strategy: 'device-package',
-      packageName: '',
-      registry: '',
-      sourceLabel: 'Fallback Source',
-      distTag: 'latest',
-      cliBin: '',
-      script: '',
-      channel: 'stable',
+      ...createUpdateConfig(),
       manifestUrl: 'https://updates.example.com/custom.json',
-      manifestBaseUrl: '',
-      packageType: 'device-package',
     })
 
     expect(result).toEqual({
@@ -59,18 +76,9 @@ describe('update manifest client', () => {
     const { resolveManifestCheckResult } = await import('../../packages/server/src/services/update/manifest-client')
 
     const result = await resolveManifestCheckResult({
-      enabled: true,
-      strategy: 'device-package',
-      packageName: '',
-      registry: '',
+      ...createUpdateConfig(),
       sourceLabel: 'Manifest Host',
-      distTag: 'latest',
-      cliBin: '',
-      script: '',
-      channel: 'stable',
-      manifestUrl: '',
       manifestBaseUrl: 'https://updates.example.com/releases',
-      packageType: 'device-package',
     })
 
     expect(result).toEqual({
@@ -91,18 +99,8 @@ describe('update manifest client', () => {
     const { fetchManifestUpdateInfo } = await import('../../packages/server/src/services/update/manifest-client')
 
     await expect(fetchManifestUpdateInfo({
-      enabled: true,
-      strategy: 'device-package',
-      packageName: '',
-      registry: '',
-      sourceLabel: 'Fallback Source',
-      distTag: 'latest',
-      cliBin: '',
-      script: '',
-      channel: 'stable',
+      ...createUpdateConfig(),
       manifestUrl: 'https://updates.example.com/custom.json',
-      manifestBaseUrl: '',
-      packageType: 'device-package',
     })).rejects.toThrow(/version field/)
   })
 
@@ -118,32 +116,27 @@ describe('update manifest client', () => {
         packageUrl: 'https://updates.example.com/releases/v1.2.5/hermes-web-ui-device-v1.2.5.tar.gz',
         sha256: 'a'.repeat(64),
         releasedAt: '2026-06-09T00:00:00Z',
-        compatibleNodeMajor: 23,
+        compatibleNodeRange: '>=23.0.0',
         minCurrentVersion: '1.2.0',
       }),
     }))
     const { fetchDevicePackageManifest } = await import('../../packages/server/src/services/update/manifest-client')
 
     const result = await fetchDevicePackageManifest({
-      enabled: true,
-      strategy: 'device-package',
-      packageName: '',
-      registry: '',
-      sourceLabel: 'Fallback Source',
-      distTag: 'latest',
-      cliBin: '',
-      script: '',
-      channel: 'stable',
+      ...createUpdateConfig(),
       manifestUrl: 'https://updates.example.com/custom.json',
-      manifestBaseUrl: '',
-      packageType: 'device-package',
-      installerScript: '/opt/hermes-web-ui/scripts/install-device-package.sh',
-      stagingDir: '/tmp/staging',
-      backupDir: '/tmp/backups',
-      healthcheckUrl: 'http://127.0.0.1:8648/health',
     })
 
     expect(result.packageUrl).toContain('hermes-web-ui-device-v1.2.5.tar.gz')
     expect(result.artifactFormat).toBe('tar.gz')
+    expect(result.compatibleNodeRange).toBe('>=23.0.0')
+  })
+
+  it('rejects invalid manifest channels before building the latest.json URL', async () => {
+    const { buildManifestUrl } = await import('../../packages/server/src/services/update/manifest-client')
+
+    expect(() => buildManifestUrl('https://updates.example.com/releases/', 'beta/canary')).toThrow(
+      /Invalid update channel/,
+    )
   })
 })

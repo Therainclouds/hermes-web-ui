@@ -1,4 +1,10 @@
 import { config } from '../../config'
+import {
+  DEFAULT_UPDATE_CHANNEL,
+  DEVICE_PACKAGE_ARTIFACT_FORMAT,
+  normalizeChannelSegment,
+  normalizeNodeVersionRange,
+} from './device-package-contract'
 import { UpdateError } from './errors'
 import { parseSemver } from './version-compare'
 import type { DevicePackageManifest, ManifestUpdateInfo, UpdateCheckResult, UpdateConfig, UpdatePackageType } from './types'
@@ -13,6 +19,7 @@ interface RawManifestPayload {
   sha256?: unknown
   releasedAt?: unknown
   compatibleNodeMajor?: unknown
+  compatibleNodeRange?: unknown
   minCurrentVersion?: unknown
   notesUrl?: unknown
   size?: unknown
@@ -29,8 +36,8 @@ function toPackageType(value: unknown, fallback: UpdatePackageType): UpdatePacka
 
 export function buildManifestUrl(baseUrl: string, channel: string): string {
   const normalizedBaseUrl = (baseUrl || '').trim().replace(/\/+$/, '')
-  const normalizedChannel = (channel || 'stable').trim() || 'stable'
-  return `${normalizedBaseUrl}/${encodeURIComponent(normalizedChannel)}/latest.json`
+  const normalizedChannel = normalizeChannelSegment(channel || DEFAULT_UPDATE_CHANNEL)
+  return `${normalizedBaseUrl}/${normalizedChannel}/latest.json`
 }
 
 export function resolveConfiguredManifestUrl(update: UpdateConfig = config.update): string {
@@ -68,8 +75,8 @@ function normalizeBaseManifestInfo(
   }
 
   const channel = typeof payload.channel === 'string' && payload.channel.trim()
-    ? payload.channel.trim()
-    : update.channel
+    ? normalizeChannelSegment(payload.channel.trim())
+    : normalizeChannelSegment(update.channel)
   const sourceLabel = typeof payload.sourceLabel === 'string' && payload.sourceLabel.trim()
     ? payload.sourceLabel.trim()
     : update.sourceLabel
@@ -116,8 +123,11 @@ export async function fetchDevicePackageManifest(update: UpdateConfig = config.u
   }
 
   const artifactFormat = requireStringField(payload.artifactFormat, 'artifactFormat', manifestUrl)
-  if (artifactFormat !== 'tar.gz') {
-    throw new UpdateError('update_manifest_invalid', `Manifest artifactFormat must be "tar.gz": ${manifestUrl}`)
+  if (artifactFormat !== DEVICE_PACKAGE_ARTIFACT_FORMAT) {
+    throw new UpdateError(
+      'update_manifest_invalid',
+      `Manifest artifactFormat must be "${DEVICE_PACKAGE_ARTIFACT_FORMAT}": ${manifestUrl}`,
+    )
   }
 
   const packageUrl = requireStringField(payload.packageUrl, 'packageUrl', manifestUrl)
@@ -131,14 +141,17 @@ export async function fetchDevicePackageManifest(update: UpdateConfig = config.u
   if (!parseSemver(minCurrentVersion)) {
     throw new UpdateError('update_manifest_invalid', `Manifest minCurrentVersion is not a valid semver: ${minCurrentVersion}`)
   }
+  const compatibleNodeRange = typeof payload.compatibleNodeRange === 'string' && payload.compatibleNodeRange.trim()
+    ? normalizeNodeVersionRange(payload.compatibleNodeRange)
+    : normalizeLegacyNodeRange(payload.compatibleNodeMajor, manifestUrl)
 
   return {
     ...info,
-    artifactFormat: 'tar.gz',
+    artifactFormat: DEVICE_PACKAGE_ARTIFACT_FORMAT,
     packageUrl,
     sha256,
     releasedAt,
-    compatibleNodeMajor: requirePositiveInteger(payload.compatibleNodeMajor, 'compatibleNodeMajor', manifestUrl),
+    compatibleNodeRange,
     minCurrentVersion,
     notesUrl: typeof payload.notesUrl === 'string' ? payload.notesUrl.trim() : '',
     size: typeof payload.size === 'number' && Number.isFinite(payload.size) ? payload.size : 0,
@@ -146,6 +159,11 @@ export async function fetchDevicePackageManifest(update: UpdateConfig = config.u
       ? payload.healthcheckUrl.trim()
       : update.healthcheckUrl,
   }
+}
+
+function normalizeLegacyNodeRange(compatibleNodeMajor: unknown, manifestUrl: string): string {
+  const major = requirePositiveInteger(compatibleNodeMajor, 'compatibleNodeMajor', manifestUrl)
+  return `>=${major}.0.0 <${major + 1}.0.0`
 }
 
 export async function resolveManifestCheckResult(update: UpdateConfig = config.update): Promise<UpdateCheckResult> {

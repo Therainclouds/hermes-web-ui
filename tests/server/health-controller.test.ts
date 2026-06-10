@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'fs'
 import { resolve } from 'path'
 
@@ -52,6 +52,11 @@ describe('health controller version metadata', () => {
   const originalUpdateChannel = process.env.WEBUI_UPDATE_CHANNEL
   const originalUpdateStrategy = process.env.WEBUI_UPDATE_STRATEGY
   const originalUpdatePackageType = process.env.WEBUI_UPDATE_PACKAGE_TYPE
+  const originalUpdateInstallerScript = process.env.WEBUI_UPDATE_INSTALLER_SCRIPT
+
+  beforeEach(() => {
+    delete process.env.WEBUI_UPDATE_INSTALLER_SCRIPT
+  })
 
   afterEach(() => {
     vi.restoreAllMocks()
@@ -77,6 +82,8 @@ describe('health controller version metadata', () => {
     else process.env.WEBUI_UPDATE_STRATEGY = originalUpdateStrategy
     if (originalUpdatePackageType === undefined) delete process.env.WEBUI_UPDATE_PACKAGE_TYPE
     else process.env.WEBUI_UPDATE_PACKAGE_TYPE = originalUpdatePackageType
+    if (originalUpdateInstallerScript === undefined) delete process.env.WEBUI_UPDATE_INSTALLER_SCRIPT
+    else process.env.WEBUI_UPDATE_INSTALLER_SCRIPT = originalUpdateInstallerScript
   })
 
   it('reads the root package version in ts-node/dev mode instead of falling back to 0.0.0', async () => {
@@ -165,7 +172,7 @@ describe('health controller version metadata', () => {
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
     expect(ctx.body.webui_latest).toBe('0.6.99')
-    expect(ctx.body.webui_update_enabled).toBe(false)
+    expect(ctx.body.webui_update_enabled).toBe(true)
     expect(ctx.body.webui_update_available).toBe(true)
     expect(ctx.body.webui_update_source_label).toBe('Stable Device Manifest')
     expect(ctx.body.webui_update_channel).toBe('stable')

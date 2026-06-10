@@ -137,7 +137,7 @@ export class UpdateTaskStore {
   updateCurrentStage(
     stage: UpdateTaskStage,
     message: string,
-    overrides: Partial<Pick<UpdateTaskRecord, 'status' | 'targetVersion' | 'warning' | 'error'>> = {},
+    overrides: Partial<Pick<UpdateTaskRecord, 'status' | 'targetVersion' | 'warning' | 'error' | 'logPath' | 'rollbackMessage' | 'healthcheckUrl'>> = {},
   ): UpdateTaskRecord | null {
     return this.patchCurrentTask({
       stage,
@@ -146,6 +146,9 @@ export class UpdateTaskStore {
       targetVersion: overrides.targetVersion,
       warning: overrides.warning,
       error: overrides.error,
+      logPath: overrides.logPath,
+      rollbackMessage: overrides.rollbackMessage,
+      healthcheckUrl: overrides.healthcheckUrl,
     })
   }
 

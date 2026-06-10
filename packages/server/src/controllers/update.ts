@@ -4,7 +4,7 @@ import { createServer } from 'net'
 import { delimiter, dirname, extname, join, resolve } from 'path'
 import { config, getWebUiHome, hasConfiguredUpdateExecution } from '../config'
 import { UpdateError } from '../services/update/errors'
-import { parseSemver } from '../services/update/version-compare'
+import { getLocalWebUiVersion, readPackageInfo } from '../services/update/package-info'
 import { assertDevicePackageCompatibility, assertDevicePackageExecution, buildDevicePackageInstallCommand, buildDevicePackageInstallEnv, downloadAndVerifyDevicePackage, getDevicePackageExecutionMessage, resolveDevicePackageManifest } from '../services/update/strategies/device-package'
 import { runUpdatePreflight } from '../services/update/preflight'
 import { resolveUpdateRuntimePaths } from '../services/update/runtime-paths'
@@ -74,52 +74,6 @@ class PreviewRuntimeState {
 }
 
 const previewState = new PreviewRuntimeState()
-
-interface PackageInfo {
-  name: string
-  version: string
-  repositoryUrl?: string
-}
-
-function readPackageInfo(): PackageInfo | null {
-  const candidatePaths = [
-    // ts-node dev: packages/server/src/controllers -> repo root
-    resolve(__dirname, '../../../../package.json'),
-    // bundled server: dist/server -> repo root/package root
-    resolve(__dirname, '../../package.json'),
-    // fallback for processes started at the repo root
-    resolve(process.cwd(), 'package.json'),
-  ]
-
-  for (const packagePath of candidatePaths) {
-    if (!existsSync(packagePath)) continue
-    try {
-      const pkg = JSON.parse(readFileSync(packagePath, 'utf-8'))
-      if (pkg?.name && pkg?.version) {
-        const repository = typeof pkg.repository === 'string'
-          ? pkg.repository
-          : typeof pkg.repository?.url === 'string'
-            ? pkg.repository.url
-            : ''
-        return {
-          name: String(pkg.name),
-          version: String(pkg.version),
-          repositoryUrl: repository,
-        }
-      }
-    } catch {}
-  }
-
-  return null
-}
-
-function getLocalWebUiVersion(): string {
-  const injectedVersion = (globalThis as any).__APP_VERSION__
-  if (typeof injectedVersion === 'string' && parseSemver(injectedVersion)) {
-    return injectedVersion.trim()
-  }
-  return readPackageInfo()?.version || '0.0.0'
-}
 
 function normalizeGithubRepoUrl(raw: string): string {
   return raw
@@ -1243,7 +1197,7 @@ export async function handleUpdate(ctx: any) {
             warning: preflight.warningText,
           })
           const manifest = await resolveDevicePackageManifest(config.update)
-          assertDevicePackageCompatibility(manifest, getLocalWebUiVersion())
+          assertDevicePackageCompatibility(manifest, getLocalWebUiVersion((globalThis as any).__APP_VERSION__))
           updateTaskStore.updateCurrentStage('checking', `Validated device package manifest ${manifest.version}`, {
             targetVersion: manifest.version,
             warning: preflight.warningText,

@@ -110,7 +110,7 @@ export interface DevicePackageManifest extends ManifestUpdateInfo {
   packageUrl: string
   sha256: string
   releasedAt: string
-  compatibleNodeMajor: number
+  compatibleNodeRange: string
   minCurrentVersion: string
   notesUrl: string
   size: number

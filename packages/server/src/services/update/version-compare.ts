@@ -27,3 +27,12 @@ export function isRemoteVersionNewer(localVersion: string, remoteVersion: string
   if (remote.minor !== local.minor) return remote.minor > local.minor
   return remote.patch > local.patch
 }
+
+export function compareSemver(a: string, b: string): number | null {
+  const parsedA = parseSemver(a)
+  const parsedB = parseSemver(b)
+  if (!parsedA || !parsedB) return null
+  if (parsedA.major !== parsedB.major) return parsedA.major - parsedB.major
+  if (parsedA.minor !== parsedB.minor) return parsedA.minor - parsedB.minor
+  return parsedA.patch - parsedB.patch
+}

@@ -1,20 +1,12 @@
 import { createHash } from 'crypto'
 import { mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { basename, join, resolve } from 'path'
+import { isNodeVersionRangeSatisfied } from '../device-package-contract'
 import { UpdateError } from '../errors'
 import { fetchDevicePackageManifest } from '../manifest-client'
-import { parseSemver } from '../version-compare'
+import { compareSemver } from '../version-compare'
 import type { DevicePackageManifest, UpdateConfig, UpdateRuntimePaths } from '../types'
 import { buildShellScriptCommand, type CommandResolver } from './script-command'
-
-function compareSemver(a: string, b: string): number | null {
-  const parsedA = parseSemver(a)
-  const parsedB = parseSemver(b)
-  if (!parsedA || !parsedB) return null
-  if (parsedA.major !== parsedB.major) return parsedA.major - parsedB.major
-  if (parsedA.minor !== parsedB.minor) return parsedA.minor - parsedB.minor
-  return parsedA.patch - parsedB.patch
-}
 
 function sanitizeVersionSegment(version: string): string {
   return version.replace(/[^A-Za-z0-9._-]/g, '_')
@@ -46,11 +38,10 @@ export async function resolveDevicePackageManifest(update: UpdateConfig): Promis
 }
 
 export function assertDevicePackageCompatibility(manifest: DevicePackageManifest, currentVersion: string): void {
-  const currentNodeMajor = Number.parseInt(process.versions.node.split('.')[0] || '0', 10)
-  if (currentNodeMajor !== manifest.compatibleNodeMajor) {
+  if (!isNodeVersionRangeSatisfied(manifest.compatibleNodeRange, process.versions.node)) {
     throw new UpdateError(
       'update_incompatible_node',
-      `Device package ${manifest.version} requires Node.js major ${manifest.compatibleNodeMajor}, current runtime is ${currentNodeMajor}.`,
+      `Device package ${manifest.version} requires Node.js ${manifest.compatibleNodeRange}, current runtime is ${process.versions.node}.`,
       409,
     )
   }

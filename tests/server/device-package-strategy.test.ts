@@ -30,6 +30,12 @@ function createUpdateConfig(overrides: Partial<UpdateConfig> = {}): UpdateConfig
     stagingDir: join(tmpdir(), 'hermes-web-ui-tests', 'staging'),
     backupDir: join(tmpdir(), 'hermes-web-ui-tests', 'backups'),
     healthcheckUrl: 'http://127.0.0.1:8648/health',
+    stateFile: join(tmpdir(), 'hermes-web-ui-tests', 'update-state.json'),
+    logDir: join(tmpdir(), 'hermes-web-ui-tests', 'logs'),
+    healthcheckTimeoutMs: 2_000,
+    healthcheckIntervalMs: 2_000,
+    healthcheckRetries: 15,
+    healthcheckInitialDelayMs: 5_000,
     ...overrides,
   }
 }
@@ -45,7 +51,7 @@ function createManifest(overrides: Partial<DevicePackageManifest> = {}): DeviceP
     packageUrl: 'https://updates.example.com/releases/v0.6.13/hermes-web-ui-device-v0.6.13.tar.gz',
     sha256: 'a'.repeat(64),
     releasedAt: '2026-06-09T00:00:00Z',
-    compatibleNodeMajor: Number.parseInt(process.versions.node.split('.')[0] || '0', 10),
+    compatibleNodeRange: `>=${process.versions.node}`,
     minCurrentVersion: '0.6.10',
     notesUrl: '',
     size: 0,
@@ -73,11 +79,18 @@ describe('device package strategy', () => {
     expect(() => assertDevicePackageCompatibility(manifest, '0.6.10')).toThrow(/minimum supported update version/)
   })
 
-  it('rejects when the Node.js major version is incompatible', () => {
-    const manifest = createManifest({ compatibleNodeMajor: 999 })
+  it('rejects when the Node.js version is incompatible with the declared range', () => {
+    const manifest = createManifest({ compatibleNodeRange: '>999.0.0' })
 
     expect(() => assertDevicePackageCompatibility(manifest, '0.6.13')).toThrow(UpdateError)
-    expect(() => assertDevicePackageCompatibility(manifest, '0.6.13')).toThrow(/requires Node\.js major/)
+    expect(() => assertDevicePackageCompatibility(manifest, '0.6.13')).toThrow(/requires Node\.js/)
+  })
+
+  it('allows runtimes that satisfy the declared Node.js range', () => {
+    const currentMajor = Number.parseInt(process.versions.node.split('.')[0] || '0', 10)
+    const manifest = createManifest({ compatibleNodeRange: `>=${currentMajor}.0.0` })
+
+    expect(() => assertDevicePackageCompatibility(manifest, '0.6.13')).not.toThrow()
   })
 
   it('downloads the package and validates the checksum', async () => {

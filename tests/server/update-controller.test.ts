@@ -405,7 +405,7 @@ describe('update controller', () => {
           packageUrl: 'https://updates.example.com/releases/v0.6.13/hermes-web-ui-device-v0.6.13.tar.gz',
           sha256,
           releasedAt: '2026-06-09T00:00:00Z',
-          compatibleNodeMajor: Number.parseInt(process.versions.node.split('.')[0] || '0', 10),
+          compatibleNodeRange: `>=${process.versions.node}`,
           minCurrentVersion: '0.6.10',
         }),
       })
@@ -666,7 +666,7 @@ describe('update controller', () => {
           packageUrl: 'https://updates.example.com/releases/v0.6.13/hermes-web-ui-device-v0.6.13.tar.gz',
           sha256,
           releasedAt: '2026-06-09T00:00:00Z',
-          compatibleNodeMajor: Number.parseInt(process.versions.node.split('.')[0] || '0', 10),
+          compatibleNodeRange: `>=${process.versions.node}`,
           minCurrentVersion: '0.6.10',
         }),
       })

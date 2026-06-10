@@ -83,7 +83,7 @@ describe('build-device-package script', () => {
     expect(manifest.packageUrl).toBe(
       'https://github.com/example/hermes-web-ui/releases/download/v1.2.3/hermes-web-ui-device-v1.2.3.tar.gz',
     )
-    expect(manifest.compatibleNodeMajor).toBe(23)
+    expect(manifest.compatibleNodeRange).toBe('>=23.0.0')
     expect(manifest.minCurrentVersion).toBe('1.0.0')
     expect(metadata.latestUrl).toBe(
       'https://raw.githubusercontent.com/example/hermes-web-ui/release-manifests/releases/stable/latest.json',
@@ -135,5 +135,46 @@ describe('build-device-package script', () => {
       releaseRepo: 'example/hermes-web-ui',
       tag: 'v1.2.3',
     })).rejects.toThrow(/minCurrentVersion is required/)
+  })
+
+  it('rejects update channels that are not safe path segments', async () => {
+    const repoRoot = createTempDir('device-package-repo-invalid-channel-')
+    const outputDir = createTempDir('device-package-out-invalid-channel-')
+
+    mkdirSync(resolve(repoRoot, 'dist', 'server'), { recursive: true })
+    mkdirSync(resolve(repoRoot, 'scripts'), { recursive: true })
+    mkdirSync(resolve(repoRoot, '.github'), { recursive: true })
+
+    writeFileSync(resolve(repoRoot, 'dist', 'server', 'index.js'), 'console.log("server")\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'scripts', 'deploy-source-armbian.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'scripts', 'install-device-package.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'package-lock.json'), '{ "name": "@quanthermes/hermes-web-ui", "lockfileVersion": 3 }\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'package.json'), JSON.stringify({
+      name: '@quanthermes/hermes-web-ui',
+      version: '1.2.3',
+      repository: {
+        type: 'git',
+        url: 'https://github.com/example/hermes-web-ui.git',
+      },
+      engines: {
+        node: '>=23.0.0',
+      },
+    }, null, 2), 'utf-8')
+    writeFileSync(resolve(repoRoot, '.github', 'device-package-release.json'), JSON.stringify({
+      version: '1.2.3',
+      channel: 'stable',
+      minCurrentVersion: '1.0.0',
+      manifestBranch: 'release-manifests',
+    }, null, 2), 'utf-8')
+
+    const { buildDevicePackageRelease } = await import('../../scripts/build-device-package.mjs')
+
+    await expect(buildDevicePackageRelease({
+      repoRoot,
+      outputDir,
+      releaseRepo: 'example/hermes-web-ui',
+      tag: 'v1.2.3',
+      channel: 'beta/canary',
+    })).rejects.toThrow(/Invalid update channel/)
   })
 })

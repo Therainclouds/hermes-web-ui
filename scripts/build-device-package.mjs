@@ -8,6 +8,8 @@ const DEFAULT_SOURCE_LABEL = 'Quanthermes Device Releases'
 const DEFAULT_HEALTHCHECK_URL = 'http://127.0.0.1:6060/health'
 const DEFAULT_MANIFEST_BRANCH = 'release-manifests'
 const DEFAULT_RELEASE_CONFIG_PATH = '.github/device-package-release.json'
+const DEFAULT_UPDATE_CHANNEL = 'stable'
+const DEVICE_PACKAGE_ARTIFACT_FORMAT = 'tar.gz'
 const REQUIRED_PACKAGE_ENTRIES = [
   'dist/',
   'package.json',
@@ -15,6 +17,7 @@ const REQUIRED_PACKAGE_ENTRIES = [
   'scripts/deploy-source-armbian.sh',
   'scripts/install-device-package.sh',
 ]
+const CHANNEL_SEGMENT_PATTERN = /^[A-Za-z0-9._-]+$/
 
 function parseArgs(argv) {
   const parsed = {}
@@ -73,13 +76,27 @@ function parseGitHubRepo(packageJson) {
   return match[1]
 }
 
-function parseCompatibleNodeMajor(packageJson) {
-  const range = typeof packageJson?.engines?.node === 'string' ? packageJson.engines.node : ''
-  const match = /(\d{1,3})/.exec(range)
-  if (!match) {
-    throw new Error('Unable to derive compatibleNodeMajor from package.json engines.node.')
+function normalizeChannelSegment(channel) {
+  const normalized = (channel || DEFAULT_UPDATE_CHANNEL).trim() || DEFAULT_UPDATE_CHANNEL
+  if (!CHANNEL_SEGMENT_PATTERN.test(normalized)) {
+    throw new Error(
+      `Invalid update channel "${channel}". Use only letters, numbers, dot, underscore, and dash.`,
+    )
   }
-  return Number.parseInt(match[1], 10)
+  return normalized
+}
+
+function parseCompatibleNodeRange(packageJson) {
+  const range = typeof packageJson?.engines?.node === 'string' ? packageJson.engines.node : ''
+  const normalized = range.trim()
+  if (!normalized) {
+    throw new Error('Unable to derive compatibleNodeRange from package.json engines.node.')
+  }
+  return normalized
+}
+
+function buildLegacyMajorRange(major) {
+  return `>=${major}.0.0 <${major + 1}.0.0`
 }
 
 function computeSha256(filePath) {
@@ -164,7 +181,7 @@ export async function buildDevicePackageRelease(options = {}) {
     )
   }
   const tag = sanitizeTag(options.tag, version)
-  const channel = (options.channel || releaseConfig.channel || 'stable').trim() || 'stable'
+  const channel = normalizeChannelSegment(options.channel || releaseConfig.channel || DEFAULT_UPDATE_CHANNEL)
   const releaseRepo = (options.releaseRepo || parseGitHubRepo(packageJson)).trim()
   const sourceLabel = (options.sourceLabel || releaseConfig.sourceLabel || DEFAULT_SOURCE_LABEL).trim() || DEFAULT_SOURCE_LABEL
   const healthcheckUrl = (options.healthcheckUrl || releaseConfig.healthcheckUrl || DEFAULT_HEALTHCHECK_URL).trim() || DEFAULT_HEALTHCHECK_URL
@@ -175,11 +192,14 @@ export async function buildDevicePackageRelease(options = {}) {
     )
   }
   const manifestBranch = (options.manifestBranch || releaseConfig.manifestBranch || DEFAULT_MANIFEST_BRANCH).trim() || DEFAULT_MANIFEST_BRANCH
-  const compatibleNodeMajor = Number.isInteger(options.compatibleNodeMajor)
-    ? options.compatibleNodeMajor
-    : Number.isInteger(releaseConfig.compatibleNodeMajor)
-      ? releaseConfig.compatibleNodeMajor
-      : parseCompatibleNodeMajor(packageJson)
+  const compatibleNodeRange = (
+    options.compatibleNodeRange
+    || releaseConfig.compatibleNodeRange
+    || (Number.isInteger(releaseConfig.compatibleNodeMajor)
+      ? buildLegacyMajorRange(releaseConfig.compatibleNodeMajor)
+      : '')
+    || parseCompatibleNodeRange(packageJson)
+  ).trim()
 
   const releaseDir = resolve(outputDir, 'releases', tag)
   const latestDir = resolve(outputDir, 'releases', channel)
@@ -216,11 +236,11 @@ export async function buildDevicePackageRelease(options = {}) {
     channel,
     sourceLabel,
     packageType: 'device-package',
-    artifactFormat: 'tar.gz',
+    artifactFormat: DEVICE_PACKAGE_ARTIFACT_FORMAT,
     packageUrl: buildReleaseAssetUrl(releaseRepo, tag, artifactName),
     sha256,
     releasedAt,
-    compatibleNodeMajor,
+    compatibleNodeRange,
     minCurrentVersion,
     notesUrl: buildReleaseNotesUrl(releaseRepo, tag),
     size,
@@ -242,7 +262,7 @@ export async function buildDevicePackageRelease(options = {}) {
     manifestPath,
     latestPath,
     manifestBaseUrl: `https://raw.githubusercontent.com/${releaseRepo}/${manifestBranch}/releases`,
-    latestUrl: `https://raw.githubusercontent.com/${releaseRepo}/${manifestBranch}/releases/${encodeURIComponent(channel)}/latest.json`,
+    latestUrl: `https://raw.githubusercontent.com/${releaseRepo}/${manifestBranch}/releases/${channel}/latest.json`,
   }, null, 2)}\n`, 'utf-8')
 
   rmSync(stageRoot, { recursive: true, force: true })
@@ -277,9 +297,7 @@ async function main() {
     healthcheckUrl: args['healthcheck-url'],
     minCurrentVersion: args['min-current-version'],
     manifestBranch: args['manifest-branch'],
-    compatibleNodeMajor: args['compatible-node-major']
-      ? Number.parseInt(args['compatible-node-major'], 10)
-      : undefined,
+    compatibleNodeRange: args['compatible-node-range'],
   })
 
   process.stdout.write(`${JSON.stringify({
