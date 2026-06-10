@@ -1,5 +1,7 @@
 import * as hermesCli from '../services/hermes/hermes-cli'
 import { config, hasConfiguredManifestCheck, hasConfiguredUpdateCheck, hasConfiguredUpdateExecution } from '../config'
+import { getAgentBridgeManager } from '../services/hermes/agent-bridge/manager'
+import { redactAgentBridgeError } from '../services/hermes/agent-bridge/redact'
 import { resolveManifestCheckResult } from '../services/update/manifest-client'
 import { getLocalWebUiVersion, readPackageInfo } from '../services/update/package-info'
 import type { UpdateCheckResult } from '../services/update/types'
@@ -22,6 +24,26 @@ let cachedUpdateInfo: UpdateCheckResult = {
 
 const PACKAGE_INFO = readPackageInfo()
 const LOCAL_VERSION = getLocalWebUiVersion(BUILD_VERSION)
+const AGENT_BRIDGE_HEALTH_FIRST_WAIT_MS = 75
+const AGENT_BRIDGE_HEALTH_CACHE_TTL_MS = 1000
+
+type AgentBridgeHealthPayload = {
+  status: 'ready' | 'starting' | 'recovering' | 'stopping' | 'restarting' | 'unreachable' | 'unknown'
+  reachable: boolean
+  ready?: boolean
+  running?: boolean
+  attached?: boolean
+  starting?: boolean
+  stopping?: boolean
+  restart_scheduled?: boolean
+  restart_attempts?: number
+  endpoint_kind?: 'ipc' | 'tcp' | 'unknown'
+  pid?: number
+  error?: string
+}
+
+let cachedAgentBridgeHealth: { value: AgentBridgeHealthPayload; expiresAt: number } | null = null
+let pendingAgentBridgeHealthRefresh: Promise<AgentBridgeHealthPayload> | null = null
 
 function hasConfiguredUpdateSource(): boolean {
   return hasConfiguredUpdateExecution(config.update)
@@ -171,6 +193,7 @@ export async function healthCheck(ctx: any) {
   const updateEnabled = hasConfiguredUpdateExecution(config.update)
   const updateCheckConfigured = hasConfiguredUpdateCheck(config.update)
   const updateCheckDisabled = isUpdateCheckDisabled()
+  const agentBridge = await getAgentBridgeHealth()
   ctx.body = {
     status: 'ok',
     platform: 'hermes-agent',

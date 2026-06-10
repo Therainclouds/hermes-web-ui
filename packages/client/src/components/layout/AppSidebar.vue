@@ -12,6 +12,7 @@ import VersionManagementModal from './VersionManagementModal.vue'
 import { useSessionSearch } from '@/composables/useSessionSearch'
 import { usePersistentRecord } from '@/composables/usePersistentRecord'
 import RouteLinkItem from '@/components/common/RouteLinkItem.vue'
+import { resolveDeviceUrls } from '@/utils/deviceUrls'
 import { changelog } from "@/data/changelog";
 import { isStoredSuperAdmin, getStoredUsername } from "@/api/client";
 
@@ -52,6 +53,31 @@ function groupLabel(key: SidebarGroupKey) {
 }
 
 const provisioningUrl = computed(() => resolveDeviceUrls().provisioningUrl);
+
+function getUpdateStageLabel(stage: string) {
+  switch (stage) {
+    case 'queued':
+    case 'checking':
+    case 'resolving_version':
+    case 'downloading':
+    case 'verifying':
+    case 'backing_up':
+    case 'starting':
+    case 'installing':
+    case 'restarting':
+    case 'health_checking':
+    case 'succeeded':
+    case 'failed':
+    case 'rolled_back':
+      return t(`sidebar.updateStage.${stage}`);
+    default:
+      return t('sidebar.updating');
+  }
+}
+
+const updateStageLabel = computed(() => getUpdateStageLabel(appStore.updateTaskStage));
+const updateDetailText = computed(() => appStore.updateTaskWarning || appStore.updateTaskMessage || '');
+const updateErrorText = computed(() => appStore.updateTaskError || appStore.updateTaskMessage || t('sidebar.updateFailed'));
 
 function toggleGroup(key: string) {
   collapsedGroups[key] = !collapsedGroups[key];
