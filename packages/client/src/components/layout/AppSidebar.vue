@@ -8,12 +8,12 @@ import ModelSelector from "./ModelSelector.vue";
 import ProfileSelector from "./ProfileSelector.vue";
 import LanguageSwitch from "./LanguageSwitch.vue";
 import ThemeSwitch from "./ThemeSwitch.vue";
+import VersionManagementModal from './VersionManagementModal.vue'
 import { useSessionSearch } from '@/composables/useSessionSearch'
 import { usePersistentRecord } from '@/composables/usePersistentRecord'
 import RouteLinkItem from '@/components/common/RouteLinkItem.vue'
 import { changelog } from "@/data/changelog";
-import { isStoredSuperAdmin } from "@/api/client";
-import { resolveDeviceUrls } from "@/utils/deviceUrls";
+import { isStoredSuperAdmin, getStoredUsername } from "@/api/client";
 
 const { t } = useI18n();
 const route = useRoute();
@@ -27,18 +27,11 @@ const selectedKey = computed(() => {
   return route.name as string;
 });
 const isSuperAdmin = computed(() => isStoredSuperAdmin());
+const currentUsername = computed(() => getStoredUsername());
 const isVersionPreview = import.meta.env.VITE_HERMES_PREVIEW === '1';
-const updateStageLabel = computed(() => {
-  const stage = appStore.updateTaskStage;
-  return stage && stage !== 'idle'
-    ? t(`sidebar.updateStage.${stage}`)
-    : t('sidebar.updating');
-});
-const updateDetailText = computed(() => {
-  return appStore.updateTaskWarning || appStore.updateTaskMessage || '';
-});
-const updateErrorText = computed(() => {
-  return appStore.updateTaskError || appStore.updateTaskMessage || t('sidebar.updateFailed');
+const isDesktopShell = computed(() => {
+  return typeof window !== 'undefined' &&
+    (window as typeof window & { hermesDesktop?: { isDesktop?: boolean } }).hermesDesktop?.isDesktop === true;
 });
 
 function isNavActive(...names: string[]) {
@@ -71,11 +64,12 @@ function isGroupCollapsed(key: string) {
 
 function handleLogout() {
   localStorage.clear();
-  router.replace({ name: 'login' });
+  window.location.reload();
 }
 
 // Changelog
 const showChangelog = ref(false);
+const showVersionManagement = ref(false);
 
 function openChangelog() {
   showChangelog.value = true;
@@ -363,6 +357,7 @@ async function handleReloadClick() {
           <line x1="21" y1="12" x2="9" y2="12" />
         </svg>
         <span>{{ t("sidebar.logout") }}</span>
+        <span v-if="currentUsername" class="logout-username" :title="currentUsername">{{ currentUsername }}</span>
       </button>
       <div class="status-row">
         <div
@@ -446,6 +441,7 @@ async function handleReloadClick() {
         </div>
       </div>
     </NModal>
+    <VersionManagementModal v-if="isDesktopShell" v-model:show="showVersionManagement" />
   </aside>
 </template>
 
@@ -698,9 +694,28 @@ async function handleReloadClick() {
   font-size: 13px;
   color: $text-muted;
 
+  > svg,
+  > span:not(.logout-username) {
+    flex-shrink: 0;
+  }
+
   &:hover {
     color: $error;
     background: rgba(var(--error-rgb, 239, 68, 68), 0.06);
+  }
+
+  .logout-username {
+    margin-left: auto;
+    width: 96px;
+    min-width: 0;
+    max-width: 40%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: right;
+    flex: 0 1 96px;
+    font-size: 12px;
+    color: $text-muted;
   }
 }
 

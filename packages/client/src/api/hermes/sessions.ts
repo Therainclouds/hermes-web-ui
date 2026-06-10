@@ -4,6 +4,10 @@ export interface SessionSummary {
   id: string
   profile?: string | null
   source: string
+  agent?: string
+  agent_mode?: 'global' | 'scoped' | string
+  agent_session_id?: string
+  agent_native_session_id?: string
   model: string
   provider?: string
   title: string | null

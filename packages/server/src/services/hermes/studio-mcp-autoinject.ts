@@ -1,3 +1,6 @@
+import { existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { config } from '../../config'
 import { updateConfigYamlForProfile } from '../config-helpers'
 import { logger } from '../logger'
@@ -26,17 +29,63 @@ export interface BundledMcpInjectionResult {
   targets: BundledMcpInjectionTargetResult[]
 }
 
+function isEnabledEnv(value: string | undefined): boolean {
+  return ['1', 'true', 'yes', 'on'].includes(String(value || '').trim().toLowerCase())
+}
+
 function isDisabled(): boolean {
-  const value = String(process.env.HERMES_WEB_UI_DISABLE_MCP_AUTOINJECT || '').trim().toLowerCase()
-  return ['1', 'true', 'yes', 'on'].includes(value)
+  return isEnabledEnv(process.env.HERMES_WEB_UI_DISABLE_MCP_AUTOINJECT)
+}
+
+function allowTransientAutoinject(): boolean {
+  return isEnabledEnv(process.env.HERMES_WEB_UI_ALLOW_TRANSIENT_MCP_AUTOINJECT)
+}
+
+function normalizedPathPrefix(pathname: string): string {
+  return pathname.replace(/\/+$/, '') + '/'
+}
+
+function isTransientAppHome(appHome: string): boolean {
+  const normalized = normalizedPathPrefix(appHome)
+  const transientRoots = [tmpdir(), '/tmp', '/private/tmp']
+    .filter(Boolean)
+    .map(root => normalizedPathPrefix(root))
+  return transientRoots.some(root => normalized.startsWith(root))
+}
+
+function shouldSkipTransientAutoinject(): boolean {
+  return isTransientAppHome(config.appHome) && !allowTransientAutoinject()
 }
 
 function isDesktopRuntime(): boolean {
   return String(process.env.HERMES_DESKTOP || '').trim().toLowerCase() === 'true'
 }
 
-function managedCommand(): string {
-  return isDesktopRuntime() ? 'hermes-studio-mcp' : 'hermes-web-ui-mcp'
+function candidateBundledMcpScripts(): string[] {
+  return [
+    process.env.HERMES_WEB_UI_MCP_BIN,
+    join(process.cwd(), 'bin/hermes-web-ui-mcp.mjs'),
+    join(__dirname, '../../bin/hermes-web-ui-mcp.mjs'),
+    join(__dirname, '../../../../../bin/hermes-web-ui-mcp.mjs'),
+  ].filter((value): value is string => !!value)
+}
+
+function bundledMcpScriptPath(): string | null {
+  return candidateBundledMcpScripts().find(candidate => existsSync(candidate)) || null
+}
+
+function managedCommandConfig(): Record<string, unknown> {
+  if (isDesktopRuntime()) {
+    return { command: 'hermes-studio-mcp' }
+  }
+
+  const bundledScript = bundledMcpScriptPath()
+  if (bundledScript) {
+    return { command: process.execPath, args: [bundledScript] }
+  }
+
+  logger.warn({ candidates: candidateBundledMcpScripts() }, '[mcp-autoinject] bundled MCP script not found; falling back to PATH command')
+  return { command: 'hermes-web-ui-mcp' }
 }
 
 function managedConfig(): Record<string, unknown> {
@@ -48,7 +97,7 @@ function managedConfig(): Record<string, unknown> {
   }
 
   return {
-    command: managedCommand(),
+    ...managedCommandConfig(),
     env,
     enabled: true,
   }
@@ -64,9 +113,18 @@ function isManagedServer(server: unknown): boolean {
   return typeof server.command === 'string' && LEGACY_COMMANDS.has(server.command)
 }
 
+function sameArgs(existing: Record<string, any>, desired: Record<string, unknown>): boolean {
+  const desiredArgs = Array.isArray(desired.args) ? desired.args : undefined
+  const existingArgs = Array.isArray(existing.args) ? existing.args : undefined
+  if (!desiredArgs && !existingArgs) return true
+  if (!desiredArgs || !existingArgs) return false
+  return desiredArgs.length === existingArgs.length && desiredArgs.every((arg, index) => existingArgs[index] === arg)
+}
+
 function sameConfig(existing: Record<string, any>, desired: Record<string, unknown>): boolean {
   const desiredEnv = desired.env as Record<string, string>
   return existing.command === desired.command &&
+    sameArgs(existing, desired) &&
     existing.enabled !== false &&
     isRecord(existing.env) &&
     existing.env.HERMES_WEB_UI_URL === desiredEnv.HERMES_WEB_UI_URL &&
@@ -99,6 +157,18 @@ async function injectIntoProfile(profile: string, desired: Record<string, unknow
       }
     }
 
+    if (isRecord(existing) && existing.enabled === false) {
+      return {
+        data: cfg,
+        write: false,
+        result: {
+          profile,
+          status: 'skipped',
+          reason: `existing ${SERVER_NAME} MCP server is disabled by user`,
+        } satisfies BundledMcpInjectionTargetResult,
+      }
+    }
+
     if (sameConfig(existing, desired)) {
       return {
         data: cfg,
@@ -122,6 +192,11 @@ export async function injectBundledMcpServer(): Promise<BundledMcpInjectionResul
 
   if (isDisabled()) {
     logger.info('[mcp-autoinject] disabled by HERMES_WEB_UI_DISABLE_MCP_AUTOINJECT')
+    return result
+  }
+
+  if (shouldSkipTransientAutoinject()) {
+    logger.info({ appHome: config.appHome }, '[mcp-autoinject] skipped for transient Web UI home')
     return result
   }
 

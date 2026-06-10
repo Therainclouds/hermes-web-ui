@@ -5,10 +5,18 @@ import { useAppStore } from '@/stores/hermes/app'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { fetchContextLength } from '@/api/hermes/sessions'
 import { setModelContext } from '@/api/hermes/model-context'
-import { NButton, NTooltip, NSwitch, NModal, NInputNumber, useMessage } from 'naive-ui'
+import { NButton, NTooltip, NSwitch, NModal, NInputNumber, NPopselect, useMessage } from 'naive-ui'
 import { computed, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToolTraceVisibility } from '@/composables/useToolTraceVisibility'
+import VoiceDialogueControls from './VoiceDialogueControls.vue'
+import { useMicRecorder } from '@/composables/useMicRecorder'
+import { useGlobalSpeech } from '@/composables/useSpeech'
+import { useVoiceDialogue } from '@/composables/useVoiceDialogue'
+import { transcribeSpeech } from '@/api/hermes/stt'
+import type { StoredSttProvider } from '@/api/hermes/stt-settings'
+import { useSttSettings } from '@/composables/useSttSettings'
+import { useBrowserSpeechRecognition } from '@/composables/useBrowserSpeechRecognition'
 
 const chatStore = useChatStore()
 const appStore = useAppStore()
@@ -16,6 +24,30 @@ const profilesStore = useProfilesStore()
 const { t } = useI18n()
 const message = useMessage()
 const { toolTraceVisible, toggleToolTraceVisible } = useToolTraceVisibility()
+
+const reasoningEffortOptions = computed(() => [
+  { label: t('chat.reasoningEffort.options.default'), value: '' },
+  { label: t('chat.reasoningEffort.options.none'), value: 'none' },
+  { label: t('chat.reasoningEffort.options.minimal'), value: 'minimal' },
+  { label: t('chat.reasoningEffort.options.low'), value: 'low' },
+  { label: t('chat.reasoningEffort.options.medium'), value: 'medium' },
+  { label: t('chat.reasoningEffort.options.high'), value: 'high' },
+  { label: t('chat.reasoningEffort.options.xhigh'), value: 'xhigh' },
+])
+const currentReasoningEffort = computed<string>(() =>
+  chatStore.activeSession?.reasoningEffort || ''
+)
+const reasoningEffortLabel = computed<string>(() => {
+  const v = currentReasoningEffort.value
+  if (!v) return t('chat.reasoningEffort.defaultLabel')
+  const opt = reasoningEffortOptions.value.find(o => o.value === v)
+  return opt?.label || v
+})
+function onReasoningEffortChange(value: string | null | undefined) {
+  const sid = chatStore.activeSessionId
+  if (!sid) return
+  chatStore.setSessionReasoningEffort(sid, value || '')
+}
 const DRAFT_STORAGE_KEY = 'hermes_chat_input_drafts_v1'
 type DraftMap = Record<string, string>
 const inputText = ref('')
@@ -26,6 +58,112 @@ const attachments = ref<Attachment[]>([])
 const isDragging = ref(false)
 const dragCounter = ref(0)
 const isComposing = ref(false)
+const speech = useGlobalSpeech()
+const micRecorder = useMicRecorder({
+  messages: {
+    unsupported: t('chat.voiceInput.microphoneUnsupported'),
+    recordingFailed: t('chat.voiceInput.microphoneRecordingFailed'),
+  },
+})
+const sttSettings = useSttSettings()
+const browserRecognition = useBrowserSpeechRecognition({
+  messages: {
+    unsupported: t('chat.voiceInput.browserSpeechUnsupported'),
+    failed: t('chat.voiceInput.browserSpeechFailed'),
+    failedWithReason: (reason) => t('chat.voiceInput.browserSpeechFailedWithReason', { error: reason }),
+  },
+})
+const activeVoiceCaptureMode = ref<'browser' | 'backend' | null>(null)
+
+function normalizeVoiceTranscript(text: string) {
+  return text.replace(/\s+/g, ' ').trim()
+}
+
+function backendTranscribeOptions(): {
+  provider: StoredSttProvider
+  language?: string
+  prompt?: string
+} {
+  if (sttSettings.provider.value === 'custom') {
+    return {
+      provider: 'custom',
+      language: sttSettings.customLanguage.value.trim() || undefined,
+      prompt: sttSettings.customPrompt.value.trim() || undefined,
+    }
+  }
+
+  return {
+    provider: 'openai',
+    language: sttSettings.openaiLanguage.value.trim() || undefined,
+    prompt: sttSettings.openaiPrompt.value.trim() || undefined,
+  }
+}
+
+function browserCaptureLanguage() {
+  return sttSettings.openaiLanguage.value.trim() || sttSettings.customLanguage.value.trim() || ''
+}
+
+function insertVoiceTranscriptIntoInput(text: string) {
+  const normalizedTranscript = normalizeVoiceTranscript(text)
+  if (!normalizedTranscript) return
+
+  const el = textareaRef.value
+  const currentValue = inputText.value
+  const selectionStart = el?.selectionStart ?? currentValue.length
+  const selectionEnd = el?.selectionEnd ?? selectionStart
+  const before = currentValue.slice(0, selectionStart)
+  const after = currentValue.slice(selectionEnd)
+  const prefix = before && !/\s$/.test(before) ? ' ' : ''
+  const suffix = after && !/^\s/.test(after) ? ' ' : ''
+  const nextValue = `${before}${prefix}${normalizedTranscript}${suffix}${after}`
+  const nextCursorPosition = before.length + prefix.length + normalizedTranscript.length
+
+  inputText.value = nextValue
+  slashActive.value = false
+
+  nextTick(() => {
+    const textarea = textareaRef.value
+    if (!textarea) return
+
+    textarea.focus()
+    textarea.setSelectionRange(nextCursorPosition, nextCursorPosition)
+
+    if (textareaHeight.value === null) {
+      textarea.style.height = 'auto'
+      textarea.style.height = `${Math.min(textarea.scrollHeight, 100)}px`
+    }
+  })
+}
+
+const voiceDialogue = useVoiceDialogue({
+  transcribe: async (audio) => {
+    const { provider, language, prompt } = backendTranscribeOptions()
+    return transcribeSpeech({ audio, provider, language, prompt })
+  },
+  sendMessage: async (text) => {
+    insertVoiceTranscriptIntoInput(text)
+  },
+  stopOutputAudio: () => speech.stop(true),
+})
+const voiceDialogueTranscript = computed(() => {
+  if (activeVoiceCaptureMode.value !== 'browser' || voiceDialogue.status.value !== 'capturing') {
+    return voiceDialogue.transcript.value
+  }
+
+  return normalizeVoiceTranscript([
+    browserRecognition.transcript.value,
+    browserRecognition.partialTranscript.value,
+  ].filter(Boolean).join(' '))
+})
+const shouldShowBrowserRecognitionError = computed(() =>
+  sttSettings.provider.value === 'browser' || activeVoiceCaptureMode.value === 'browser',
+)
+const voiceDialogueError = computed(() =>
+  voiceDialogue.error.value?.message
+  ?? (shouldShowBrowserRecognitionError.value ? browserRecognition.error.value?.message : null)
+  ?? micRecorder.state.value.error?.message
+  ?? null,
+)
 
 const bridgeCommands = computed(() => [
   { name: 'usage', args: '', description: t('chat.slashCommands.usage') },
@@ -206,8 +344,10 @@ let contextLengthRequest: Promise<void> | null = null
 const showContextEditModal = ref(false)
 const editingContextLimit = ref(256000)
 const isSavingContextLimit = ref(false)
+const isCodingAgentSession = computed(() => chatStore.activeSession?.source === 'coding_agent')
 
 async function handleEditContextLimit() {
+  if (isCodingAgentSession.value) return
   editingContextLimit.value = contextLength.value
   showContextEditModal.value = true
 }
@@ -255,6 +395,7 @@ function currentContextLengthKey() {
 }
 
 async function loadContextLength() {
+  if (isCodingAgentSession.value) return
   const key = currentContextLengthKey()
   if (key === contextLengthLoadedKey) return
   if (key === contextLengthRequestKey && contextLengthRequest) return contextLengthRequest
@@ -291,18 +432,21 @@ watch(
     chatStore.activeSession?.profile,
     chatStore.activeSession?.provider,
     chatStore.activeSession?.model,
+    chatStore.activeSession?.source,
   ],
   loadContextLength,
   { flush: 'post' },
 )
 
 const totalTokens = computed(() => {
+  if (isCodingAgentSession.value) return 0
   const context = chatStore.activeSession?.contextTokens
   if (typeof context === 'number' && Number.isFinite(context) && context > 0) return context
   const input = chatStore.activeSession?.inputTokens ?? 0
   const output = chatStore.activeSession?.outputTokens ?? 0
   return input + output
 })
+const showContextUsage = computed(() => totalTokens.value > 0)
 
 const remainingTokens = computed(() => Math.max(0, contextLength.value - totalTokens.value))
 
@@ -406,6 +550,93 @@ function handleSend() {
   if (textareaRef.value) {
     textareaRef.value.style.height = 'auto'
   }
+}
+
+async function startVoiceCapture() {
+  browserRecognition.clearError()
+  const { captureId } = await voiceDialogue.beginCapture()
+  const useBrowserProvider = sttSettings.provider.value === 'browser'
+
+  activeVoiceCaptureMode.value = useBrowserProvider ? 'browser' : 'backend'
+
+  try {
+    if (useBrowserProvider) {
+      await browserRecognition.start({ language: browserCaptureLanguage() })
+      return
+    }
+
+    await micRecorder.start()
+  } catch {
+    activeVoiceCaptureMode.value = null
+    voiceDialogue.cancelCapture(captureId)
+  }
+}
+
+async function stopVoiceCapture() {
+  const captureId = voiceDialogue.activeCaptureId.value
+  if (!captureId) return
+
+  if (activeVoiceCaptureMode.value === 'browser') {
+    let transcript = ''
+
+    try {
+      transcript = await browserRecognition.stop()
+    } catch {
+      activeVoiceCaptureMode.value = null
+      voiceDialogue.cancelCapture(captureId)
+      return
+    }
+
+    activeVoiceCaptureMode.value = null
+
+    try {
+      await voiceDialogue.commitTranscript(captureId, transcript)
+    } catch {
+      // Voice dialogue state already tracks send errors.
+    }
+    return
+  }
+
+  if (micRecorder.state.value.status === 'requesting') {
+    micRecorder.cancel()
+    activeVoiceCaptureMode.value = null
+    voiceDialogue.cancelCapture(captureId)
+    return
+  }
+
+  let audio: Blob
+
+  try {
+    audio = await micRecorder.stop()
+  } catch {
+    activeVoiceCaptureMode.value = null
+    voiceDialogue.cancelCapture(captureId)
+    return
+  }
+
+  activeVoiceCaptureMode.value = null
+
+  if (audio.size <= 0) {
+    voiceDialogue.cancelCapture(captureId)
+    return
+  }
+
+  try {
+    await voiceDialogue.transcribeAndSend(captureId, audio)
+  } catch {
+    // Voice dialogue state already tracks transcription/send errors.
+  }
+}
+
+function cancelVoiceCapture() {
+  if (activeVoiceCaptureMode.value === 'browser') {
+    browserRecognition.cancel()
+  } else {
+    micRecorder.cancel()
+  }
+
+  activeVoiceCaptureMode.value = null
+  voiceDialogue.cancelCapture()
 }
 
 function handleCompositionStart() {
@@ -519,6 +750,35 @@ function isImage(type: string): boolean {
         {{ t('chat.attachFiles') }}
       </NTooltip>
 
+      <NPopselect
+        v-if="!isCodingAgentSession"
+        :value="currentReasoningEffort"
+        :options="reasoningEffortOptions"
+        trigger="click"
+        @update:value="onReasoningEffortChange"
+      >
+        <NTooltip trigger="hover">
+          <template #trigger>
+            <NButton
+              quaternary
+              size="tiny"
+              circle
+              class="reasoning-effort-button"
+              :class="{ active: !!currentReasoningEffort }"
+              :aria-label="`${t('chat.reasoningEffort.tooltip')}: ${reasoningEffortLabel}`"
+            >
+              <template #icon>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z"/>
+                  <path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z"/>
+                </svg>
+              </template>
+            </NButton>
+          </template>
+          {{ t('chat.reasoningEffort.tooltip') }}: {{ reasoningEffortLabel }}
+        </NTooltip>
+      </NPopselect>
+
       <div class="auto-play-speech-switch">
         <NTooltip trigger="hover">
           <template #trigger>
@@ -555,7 +815,7 @@ function isImage(type: string): boolean {
         {{ toolTraceVisible ? t('chat.hideToolCalls') : t('chat.showToolCalls') }}
       </NTooltip>
 
-      <span v-if="totalTokens > 0" class="context-info" :class="{ 'context-warning': usagePercent > 80 }">
+      <span v-if="showContextUsage" class="context-info" :class="{ 'context-warning': usagePercent > 80 }">
         {{ formatTokens(totalTokens) }} /
         <NTooltip trigger="hover">
           <template #trigger>
@@ -567,7 +827,7 @@ function isImage(type: string): boolean {
         </NTooltip>
         · {{ t('chat.contextRemaining') }} {{ formatTokens(remainingTokens) }}
       </span>
-      <div v-if="totalTokens > 0" class="context-bar">
+      <div v-if="showContextUsage" class="context-bar">
         <div
           class="context-bar-fill"
           :class="{
@@ -653,6 +913,15 @@ function isImage(type: string): boolean {
         </div>
       </Transition>
       <div class="input-actions">
+        <VoiceDialogueControls
+          :status="voiceDialogue.status.value"
+          :transcript="voiceDialogueTranscript"
+          :error="voiceDialogueError"
+          :events="voiceDialogue.events.value"
+          :on-start="startVoiceCapture"
+          :on-stop="stopVoiceCapture"
+          :on-cancel="cancelVoiceCapture"
+        />
         <NButton
           v-if="chatStore.isStreaming"
           size="small"
@@ -797,6 +1066,12 @@ function isImage(type: string): boolean {
   &:hover {
     color: #999999;
     opacity: 1;
+  }
+}
+
+.reasoning-effort-button {
+  &.active {
+    color: #4caf50;
   }
 }
 

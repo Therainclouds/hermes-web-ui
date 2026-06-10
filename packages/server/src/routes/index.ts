@@ -32,11 +32,13 @@ import { jobRoutes } from './hermes/jobs'
 import { cronHistoryRoutes } from './hermes/cron-history'
 import { kanbanRoutes } from './hermes/kanban'
 import { ttsRoutes, ttsProtectedRoutes } from './hermes/tts'
+import { sttProtectedRoutes } from './hermes/stt'
 import { mediaRoutes } from './hermes/media'
 import { proxyRoutes, proxyMiddleware } from './hermes/proxy'
 import { groupChatRoutes, setGroupChatServer } from './hermes/group-chat'
 import { performanceMonitorRoutes } from './hermes/performance-monitor'
 import { mcpRoutes } from './hermes/mcp'
+import { runtimeVersionRoutes } from './hermes/runtime-versions'
 
 /**
  * Register all routes on the Koa app.
@@ -83,9 +85,11 @@ export function registerRoutes(app: any, authMiddleware: Array<(ctx: Context, ne
   app.use(cronHistoryRoutes.routes())        // Must be before proxy
   app.use(kanbanRoutes.routes())             // Must be before proxy
   app.use(ttsProtectedRoutes.routes())
+  app.use(sttProtectedRoutes.routes())
   app.use(mediaRoutes.routes())              // Must be before proxy
   app.use(performanceMonitorRoutes.routes())  // Must be before proxy
   app.use(mcpRoutes.routes())                   // MCP management
+  app.use(runtimeVersionRoutes.routes())         // Runtime and version management
   app.use(proxyRoutes.routes())
 
   // Proxy catch-all middleware (must be last)
