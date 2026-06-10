@@ -3,7 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const handleBridgeRunMock = vi.hoisted(() => vi.fn(async () => {}))
 const resumeBridgeRunMock = vi.hoisted(() => vi.fn(async () => {}))
 const handleApiRunMock = vi.hoisted(() => vi.fn(async () => {}))
+const handleCodingAgentRunMock = vi.hoisted(() => vi.fn(async () => {}))
 const loadSessionStateFromDbMock = vi.hoisted(() => vi.fn())
+const ensureReadyMock = vi.hoisted(() => vi.fn())
 const bridgeMock = vi.hoisted(() => ({
   status: vi.fn(),
   statusIfLoaded: vi.fn(),
@@ -20,6 +22,10 @@ vi.mock('../../packages/server/src/services/hermes/run-chat/handle-api-run', () 
   resolveRunSource: vi.fn((source?: string) => source || 'cli'),
 }))
 
+vi.mock('../../packages/server/src/services/hermes/run-chat/handle-coding-agent-run', () => ({
+  handleCodingAgentRun: handleCodingAgentRunMock,
+}))
+
 vi.mock('../../packages/server/src/services/hermes/run-chat/session-command', () => ({
   handleSessionCommand: vi.fn(),
   isSessionCommand: vi.fn(() => false),
@@ -28,6 +34,12 @@ vi.mock('../../packages/server/src/services/hermes/run-chat/session-command', ()
 
 vi.mock('../../packages/server/src/services/hermes/agent-bridge', () => ({
   AgentBridgeClient: vi.fn(() => bridgeMock),
+}))
+
+vi.mock('../../packages/server/src/services/hermes/agent-bridge/manager', () => ({
+  getAgentBridgeManager: vi.fn(() => ({
+    ensureReady: ensureReadyMock,
+  })),
 }))
 
 vi.mock('../../packages/server/src/services/logger', () => ({
@@ -59,8 +71,10 @@ vi.mock('../../packages/server/src/db/hermes/users-store', () => ({
 
 function makeServerHarness() {
   const handlers = new Map<string, Function>()
+  const sockets = new Map<string, any>()
   const namespace = {
-    adapter: { rooms: new Map() },
+    adapter: { rooms: new Map([['session:session-1', new Set(['socket-1'])]]) },
+    sockets,
     to: vi.fn(() => ({ emit: vi.fn() })),
     use: vi.fn(),
     on: vi.fn(),
@@ -78,12 +92,18 @@ function makeServerHarness() {
       handlers.set(event, handler)
     }),
   }
+  sockets.set(socket.id, socket)
   return { handlers, io, namespace, socket }
 }
 
 describe('ChatRunSocket queued bridge runs', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    ensureReadyMock.mockResolvedValue({
+      reachable: true,
+      status: 'ready',
+      endpoint: 'ipc:///tmp/hermes-agent-bridge.sock',
+    })
     bridgeMock.statusIfLoaded.mockResolvedValue({ ok: true, exists: false, running: false, loaded: false })
     loadSessionStateFromDbMock.mockResolvedValue({
       messages: [],
@@ -144,6 +164,78 @@ describe('ChatRunSocket queued bridge runs', () => {
     expect(call[6]).toBe(false)
   })
 
+  it('queues coding-agent messages while a coding-agent turn is active', async () => {
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const { handlers, io, namespace, socket } = makeServerHarness()
+    const server = new ChatRunSocket(io as any)
+    ;(server as any).onConnection(socket)
+    ;(server as any).sessionMap.set('session-1', {
+      messages: [],
+      isWorking: true,
+      isAborting: false,
+      events: [],
+      queue: [],
+      source: 'coding_agent',
+    })
+
+    await handlers.get('run')?.({
+      session_id: 'session-1',
+      input: 'queued codex follow-up',
+      source: 'coding_agent',
+      coding_agent_id: 'codex',
+      queue_id: 'queue-codex',
+      model: 'gpt-5-codex',
+      provider: 'openai-codex',
+      profile: 'default',
+    })
+
+    expect(handleCodingAgentRunMock).not.toHaveBeenCalled()
+    expect((server as any).sessionMap.get('session-1').queue).toEqual([
+      expect.objectContaining({
+        queue_id: 'queue-codex',
+        input: 'queued codex follow-up',
+        source: 'coding_agent',
+        codingAgentId: 'codex',
+      }),
+    ])
+    expect(namespace.to).toHaveBeenCalledWith('session:session-1')
+  })
+
+  it('dequeues coding-agent messages when an external coding-agent run completes', async () => {
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const { io, socket } = makeServerHarness()
+    const server = new ChatRunSocket(io as any)
+    ;(server as any).sessionMap.set('session-1', {
+      messages: [],
+      isWorking: true,
+      isAborting: false,
+      events: [],
+      queue: [{
+        queue_id: 'queue-codex',
+        input: 'queued codex follow-up',
+        source: 'coding_agent',
+        codingAgentId: 'codex',
+        model: 'gpt-5-codex',
+        provider: 'openai-codex',
+        profile: 'default',
+        originSocketId: socket.id,
+      }],
+      source: 'coding_agent',
+    })
+
+    ;(server as any).markExternalRunCompleted('session-1', 'run.completed')
+
+    await vi.waitFor(() => expect(handleCodingAgentRunMock).toHaveBeenCalled())
+    const call = handleCodingAgentRunMock.mock.calls.at(-1)!
+    expect(call[2]).toEqual(expect.objectContaining({
+      input: 'queued codex follow-up',
+      source: 'coding_agent',
+      coding_agent_id: 'codex',
+      queue_id: 'queue-codex',
+    }))
+    expect((server as any).sessionMap.get('session-1').queue).toEqual([])
+  })
+
   it('checks bridge resume status without cold-starting the profile worker', async () => {
     const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
     const { handlers, io, socket } = makeServerHarness()
@@ -152,7 +244,7 @@ describe('ChatRunSocket queued bridge runs', () => {
     ;(server as any).onConnection(socket)
     await handlers.get('resume')?.({ session_id: 'session-1' })
 
-    expect(bridgeMock.statusIfLoaded).toHaveBeenCalledWith('session-1', 'default')
+    expect(bridgeMock.statusIfLoaded).toHaveBeenCalledWith('session-1', 'default', { timeoutMs: 1000 })
     expect(bridgeMock.status).not.toHaveBeenCalled()
     expect(resumeBridgeRunMock).not.toHaveBeenCalled()
     expect(socket.emit).toHaveBeenCalledWith('resumed', expect.objectContaining({

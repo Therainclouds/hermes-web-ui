@@ -102,6 +102,69 @@ export function startVersionCheck(): void {
   setInterval(checkLatestVersion, 30 * 60 * 1000)
 }
 
+async function getAgentBridgeHealth() {
+  const now = Date.now()
+  if (cachedAgentBridgeHealth && cachedAgentBridgeHealth.expiresAt > now) {
+    return cachedAgentBridgeHealth.value
+  }
+
+  if (!pendingAgentBridgeHealthRefresh) {
+    pendingAgentBridgeHealthRefresh = refreshAgentBridgeHealth().finally(() => {
+      pendingAgentBridgeHealthRefresh = null
+    })
+  }
+
+  if (cachedAgentBridgeHealth) {
+    return cachedAgentBridgeHealth.value
+  }
+
+  const firstResult = await Promise.race([
+    pendingAgentBridgeHealthRefresh,
+    new Promise<AgentBridgeHealthPayload>((resolve) => {
+      setTimeout(() => resolve({ status: 'unknown', reachable: false }), AGENT_BRIDGE_HEALTH_FIRST_WAIT_MS)
+    }),
+  ])
+
+  return firstResult
+}
+
+async function refreshAgentBridgeHealth(): Promise<AgentBridgeHealthPayload> {
+  let endpoint: string | undefined
+
+  try {
+    const manager = getAgentBridgeManager()
+    endpoint = typeof manager.getRuntimeState === 'function'
+      ? manager.getRuntimeState().endpoint
+      : undefined
+
+    const readiness = await manager.checkReadiness({ timeoutMs: AGENT_BRIDGE_HEALTH_FIRST_WAIT_MS, connectRetryMs: 0 })
+    const value: AgentBridgeHealthPayload = {
+      status: readiness.status,
+      reachable: readiness.reachable,
+      ready: readiness.ready,
+      running: readiness.running,
+      attached: readiness.attached,
+      starting: readiness.starting,
+      stopping: readiness.stopping,
+      restart_scheduled: readiness.restartScheduled,
+      restart_attempts: readiness.restartAttempts,
+      endpoint_kind: readiness.endpointKind,
+      pid: readiness.pid,
+      error: redactAgentBridgeError(readiness.error, readiness.endpoint),
+    }
+    cachedAgentBridgeHealth = { value, expiresAt: Date.now() + AGENT_BRIDGE_HEALTH_CACHE_TTL_MS }
+    return value
+  } catch (err) {
+    const value: AgentBridgeHealthPayload = {
+      status: 'unknown',
+      reachable: false,
+      error: redactAgentBridgeError(err instanceof Error ? err.message : String(err), endpoint),
+    }
+    cachedAgentBridgeHealth = { value, expiresAt: Date.now() + AGENT_BRIDGE_HEALTH_CACHE_TTL_MS }
+    return value
+  }
+}
+
 export async function healthCheck(ctx: any) {
   const raw = await hermesCli.getVersion()
   const hermesVersion = raw.split('\n')[0].replace('Hermes Agent ', '') || ''
@@ -124,5 +187,6 @@ export async function healthCheck(ctx: any) {
       ? false
       : isRemoteVersionNewer(LOCAL_VERSION, cachedUpdateInfo.latestVersion),
     node_version: process.versions.node,
+    agent_bridge: agentBridge,
   }
 }
