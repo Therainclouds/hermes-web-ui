@@ -2,10 +2,23 @@
 
 ## 目标
 
-这份手册用于保证 Quanthermes 自定义版本在后续发布和部署后，始终可以稳定检测到 npm 上的新版本，并在 Web UI 中触发自更新。
+这份手册用于保证 Quanthermes 自定义版本在发布后具备可验证、可配置、可验收的设备更新闭环。
 
-相关现场手工升级流程见：
+当前仓库同时保留两条更新链路：
 
+- 兼容链路：`npm registry + source-deploy`
+- `P4` 发布闭环链路：`release-manifests + device-package`
+
+本手册的目标不是立即切换所有设备默认策略，而是明确：
+
+- 真实发布后该如何校验
+- 设备端如何配置 `device-package` 消费
+- 运维如何定位状态、日志和自动回退结果
+
+相关文档：
+
+- `docs/update-distribution/04-release-flow.md`
+- `docs/update-distribution/08-validation-and-rollback.md`
 - `docs/update-distribution/09-manual-source-upgrade-sop.md`
 
 ## 当前发布约定
@@ -13,22 +26,32 @@
 - npm 包名：`@quanthermes/hermes-web-ui`
 - npm Registry：`https://registry.npmjs.org`
 - npm 发布触发：推送 `v*` tag 到组织仓库，触发 `.github/workflows/npm-publish.yml`
-- 设备部署模式：源码部署
-- 设备更新模式：`source-deploy`
-- 源码更新仓库：`https://github.com/tangledup-ai/hermes-web-ui`
+- 设备包发布触发：推送 `v*` tag 或手工触发 `.github/workflows/device-package-release.yml`
+- 设备包稳定入口：`release-manifests` 分支下的 `releases/<channel>/latest.json`
+- 当前稳定通道：`stable`
+- 当前首次部署入口：`scripts/deploy-source-armbian.sh`
 
-## 当前推荐模式
+## 模式说明
+
+### 兼容模式
 
 - 版本检测来源：npm registry
-- 更新执行方式：源码部署脚本
-- 首次部署入口：`scripts/deploy-source-armbian.sh`
-- 后续页面更新入口：`scripts/update-source-deploy.sh`
+- 更新执行方式：`source-deploy`
+- 页面更新入口：`scripts/update-source-deploy.sh`
+- 适用场景：历史设备、尚未切到 `device-package` 配置的现场
 
-这样可以保证：
+### P4 推荐发布闭环模式
 
-- 初始安装继续覆盖 `Hermes + Web UI + systemd + 环境文件`
-- 页面更新不再更新错目标
-- 部署路径和更新路径保持一致
+- 版本检测来源：`release-manifests`
+- 更新执行方式：`device-package`
+- 包格式：`tar.gz + sha256 + manifest.json`
+- 适用场景：需要验证或接入第一阶段正式设备包发布链路的设备
+
+说明：
+
+- 本轮收口只补配置、校验和验收准备
+- 本轮不修改 `scripts/deploy-source-armbian.sh` 的默认更新策略
+- 因此“推荐模式”并不等于“所有新设备已自动默认启用”
 
 ## 当前数据保护边界
 
@@ -42,50 +65,60 @@
 
 当前规则如下：
 
-- `Web UI` 默认数据目录继续位于用户家目录下，不要求迁移。
-- 更新前会先识别真实数据路径，而不是只依赖固定目录名。
-- 若 `HERMES_WEB_UI_HOME` 或 `UPLOAD_DIR` 位于 `DEPLOY_DIR` 内，更新会被直接阻止。
-- 若 `HERMES_HOME_DIR` 位于 `DEPLOY_DIR` 内，当前按兼容布局处理：
-  - 历史默认路径如 `${DEPLOY_DIR}/hermes_data` 会给出告警但允许更新
-  - 更新脚本会显式保留该目录，避免源码同步时被清理
-- 第一阶段不会自动迁移任何数据目录，也不会回滚用户数据内容。
+- `Web UI` 默认数据目录继续位于用户家目录下，不要求迁移
+- 更新前会先识别真实数据路径，而不是只依赖固定目录名
+- 若 `HERMES_WEB_UI_HOME` 或 `UPLOAD_DIR` 位于 `DEPLOY_DIR` 内，更新会被直接阻止
+- 若 `HERMES_HOME_DIR` 位于 `DEPLOY_DIR` 内，当前按兼容布局处理
+- 历史默认路径如 `${DEPLOY_DIR}/hermes_data` 会给出告警但允许更新
+- 更新脚本会显式保留该目录，避免源码同步时被清理
+- 第一阶段不会自动迁移任何数据目录，也不会回滚用户数据内容
 
 这意味着：
 
 - 程序更新只替换程序代码、构建产物、脚本和依赖
 - 用户聊天历史、上传、配置和 `Hermes` 运行状态不应被更新过程覆盖
 
-## 设备包状态与日志
+## 设备包状态、日志与备份
 
 当更新策略为 `device-package` 时，安装器会把任务状态和日志落在 `Web UI` 数据目录下，默认位置为：
 
 - 状态文件：`${HERMES_WEB_UI_HOME}/updates/update-task-state.json`
 - 日志目录：`${HERMES_WEB_UI_HOME}/updates/logs/`
+- 备份目录：`${DEPLOY_DIR}/.releases/backups`
+- staging 目录：`${DEPLOY_DIR}/.releases/staging`
 
 默认约定：
 
 - `GET /api/hermes/update/status` 会在服务启动后和每次查询前从状态文件同步
-- 设备包安装器会写入 `logPath`，便于前端和运维定位本次更新日志
-- 更新成功后，任务状态会落为 `succeeded`
+- 设备包安装器会写入 `logPath`
 - 健康检查失败且自动回退成功后，任务状态会落为 `rolled_back`
+- 回退后会在状态文件中保留 `rollbackMessage`
+- 设备端排障时应优先核对状态文件、任务日志和 `journalctl`
 
 ## 自更新工作原理
 
+### source-deploy
+
 1. 服务启动时读取 `WEBUI_UPDATE_*` 环境变量。
 2. 后端通过 `/health` 返回当前版本、npm 最新版本、更新源标签和是否可更新。
-3. 前端轮询 `/health`。
-4. 当 `webui_version < webui_latest` 时，sidebar 底部显示更新按钮。
-5. 用户点击更新后，后端先从 npm registry 解析 `latest` 对应的真实版本号。
-6. 后端在真正执行更新前，会统一执行 preflight，判断真实数据路径和风险级别。
-7. 在源码部署模式下，后端后台执行 `scripts/update-source-deploy.sh --version <x.y.z>`。
-8. 更新脚本会再次根据真实数据路径执行脚本侧保护，避免误删受保护目录。
-9. 更新脚本会下载对应 tag 的源码包，覆盖 `/opt/hermes-web-ui`，然后调用 `deploy-source-armbian.sh` 的 `update-only` 模式完成重建、写入环境变量、重启 `systemd` 和健康检查。
-10. `update-only` 模式会保留当前 `HERMES_WEB_UI_HOME` 和 `UPLOAD_DIR`，不再强制回写成固定默认值。
-11. 浏览器检测到服务版本变化后自动刷新。
+3. 用户点击更新后，后端先从 npm registry 解析 `latest` 对应的真实版本号。
+4. 后端执行统一 preflight，判断真实数据路径和风险级别。
+5. 后台执行 `scripts/update-source-deploy.sh --version <x.y.z>`。
+6. 更新脚本下载 tag 源码包，覆盖部署目录，再调用 `deploy-source-armbian.sh` 的 `update-only` 模式重建与自检。
 
-## 必需环境变量
+### device-package
 
-源码部署、systemd 部署或一键部署脚本都必须提供以下变量：
+1. 服务启动后按 `WEBUI_UPDATE_MANIFEST_URL` 或 `WEBUI_UPDATE_MANIFEST_BASE_URL + WEBUI_UPDATE_CHANNEL` 解析 `latest.json`。
+2. `/health` 返回最新版本、更新源标签、策略、通道和包类型。
+3. 用户点击更新后，后端下载 `latest.json` 指向的设备包并校验 `sha256`。
+4. 安装器解包到 staging 目录，校验最小结构，创建部署目录备份。
+5. 安装器执行受控替换，并调用 `deploy-source-armbian.sh` 的 `update-only` 模式重建。
+6. 安装器执行 `/health` 健康检查。
+7. 若健康检查失败，则恢复备份并再次执行 `update-only`，最终把结果写入状态文件。
+
+## 配置说明
+
+### 兼容模式必需变量
 
 ```bash
 WEBUI_UPDATE_ENABLED=true
@@ -101,9 +134,9 @@ WEBUI_UPDATE_REPO=https://github.com/tangledup-ai/hermes-web-ui
 
 注意：
 
-- `WEBUI_UPDATE_REGISTRY` 和 `WEBUI_UPDATE_REPO` 不要写反引号，不要留前后空格。
-- `update-source-deploy.sh` 必须是 `root:root` 且 `755`。
-- `hermesui` 需要一条最小 sudoers 规则，允许免密执行更新脚本。
+- `WEBUI_UPDATE_REGISTRY` 和 `WEBUI_UPDATE_REPO` 不要写反引号，不要留前后空格
+- `update-source-deploy.sh` 必须是 `root:root` 且 `755`
+- `hermesui` 需要一条最小 sudoers 规则，允许免密执行更新脚本
 
 推荐 sudoers：
 
@@ -111,7 +144,31 @@ WEBUI_UPDATE_REPO=https://github.com/tangledup-ai/hermes-web-ui
 hermesui ALL=(root) NOPASSWD:SETENV: /bin/bash /opt/hermes-web-ui/scripts/update-source-deploy.sh *
 ```
 
-与数据保护直接相关的环境变量建议显式保留：
+### device-package 推荐变量
+
+```bash
+WEBUI_UPDATE_ENABLED=true
+WEBUI_UPDATE_SOURCE_LABEL=Quanthermes release-manifests
+WEBUI_UPDATE_STRATEGY=device-package
+WEBUI_UPDATE_PACKAGE_TYPE=device-package
+WEBUI_UPDATE_CHANNEL=stable
+WEBUI_UPDATE_MANIFEST_BASE_URL=https://raw.githubusercontent.com/<owner>/<repo>/release-manifests/releases
+WEBUI_UPDATE_INSTALLER_SCRIPT=/opt/hermes-web-ui/scripts/install-device-package.sh
+WEBUI_UPDATE_VERIFY_SHA256=true
+WEBUI_UPDATE_STAGING_DIR=/opt/hermes-web-ui/.releases/staging
+WEBUI_UPDATE_BACKUP_DIR=/opt/hermes-web-ui/.releases/backups
+WEBUI_UPDATE_HEALTHCHECK_URL=http://127.0.0.1:6060/health
+WEBUI_UPDATE_HEALTHCHECK_TIMEOUT=60
+```
+
+说明：
+
+- 若同时配置 `WEBUI_UPDATE_MANIFEST_URL` 和 `WEBUI_UPDATE_MANIFEST_BASE_URL`，以前者为准
+- `WEBUI_UPDATE_MANIFEST_BASE_URL` 应指向 `release-manifests/releases` 根路径，不要直接带 `latest.json`
+- `WEBUI_UPDATE_INSTALLER_SCRIPT` 必须存在于部署目录并具备执行权限
+- `WEBUI_UPDATE_VERIFY_SHA256` 在第一阶段建议保持 `true`
+
+### 与数据保护相关的变量
 
 ```bash
 HERMES_HOME=/opt/hermes-web-ui/hermes_data
@@ -131,7 +188,7 @@ UPLOAD_DIR=/home/hermesui/.hermes-web-ui/upload
 - 服务文件：`/etc/systemd/system/hermes-web-ui.service`
 - 环境文件：`/etc/default/hermes-web-ui`
 
-推荐的 `/etc/default/hermes-web-ui` 最小内容如下：
+### 兼容模式最小示例
 
 ```bash
 PORT=6060
@@ -157,6 +214,35 @@ WEBUI_UPDATE_SCRIPT=/opt/hermes-web-ui/scripts/update-source-deploy.sh
 WEBUI_UPDATE_REPO=https://github.com/tangledup-ai/hermes-web-ui
 ```
 
+### device-package 最小示例
+
+```bash
+PORT=6060
+BIND_HOST=0.0.0.0
+NODE_ENV=production
+HOME=/home/hermesui
+PATH=/opt/node-v23/bin:/home/hermesui/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+HERMES_HOME=/opt/hermes-web-ui/hermes_data
+HERMES_BIN=/home/hermesui/.local/bin/hermes
+HERMES_WEB_UI_HOME=/home/hermesui/.hermes-web-ui
+UPLOAD_DIR=/home/hermesui/.hermes-web-ui/upload
+LANG=C.UTF-8
+LC_ALL=C.UTF-8
+
+WEBUI_UPDATE_ENABLED=true
+WEBUI_UPDATE_SOURCE_LABEL=Quanthermes release-manifests
+WEBUI_UPDATE_STRATEGY=device-package
+WEBUI_UPDATE_PACKAGE_TYPE=device-package
+WEBUI_UPDATE_CHANNEL=stable
+WEBUI_UPDATE_MANIFEST_BASE_URL=https://raw.githubusercontent.com/<owner>/<repo>/release-manifests/releases
+WEBUI_UPDATE_INSTALLER_SCRIPT=/opt/hermes-web-ui/scripts/install-device-package.sh
+WEBUI_UPDATE_VERIFY_SHA256=true
+WEBUI_UPDATE_STAGING_DIR=/opt/hermes-web-ui/.releases/staging
+WEBUI_UPDATE_BACKUP_DIR=/opt/hermes-web-ui/.releases/backups
+WEBUI_UPDATE_HEALTHCHECK_URL=http://127.0.0.1:6060/health
+WEBUI_UPDATE_HEALTHCHECK_TIMEOUT=60
+```
+
 修改后执行：
 
 ```bash
@@ -169,20 +255,93 @@ sudo systemctl restart hermes-web-ui
 1. 修改 `package.json` 版本号。
 2. 提交代码并推送到组织仓库。
 3. 推送 `v*` tag。
-4. 等待 GitHub Actions 完成 npm 发布。
+4. 等待 GitHub Actions 完成 npm 发布和 `device-package-release.yml`。
 5. 用以下命令确认 npm 上已经有新版本：
 
 ```bash
 npm view @quanthermes/hermes-web-ui version
 ```
 
-6. 如需设备端源码部署，重新运行 `scripts/deploy-source-armbian.sh`，它会自动写入全部更新变量。
+6. 打开本次 `device-package-release` workflow summary，记录：
 
-## 部署后验收
+- tag
+- channel
+- manifest branch
+- latest URL
 
-每次部署完成后，必须做以下检查。
+7. 对照下文“发布后校验”完成人工复核。
 
-### 1. 检查 systemd 进程是否拿到更新变量
+## 发布后校验
+
+每次 `device-package-release.yml` 真实发布后，至少完成以下检查。
+
+### 1. 检查 GitHub Release 资产
+
+确认对应 tag 下至少存在：
+
+- `hermes-web-ui-device-vX.Y.Z.tar.gz`
+- `hermes-web-ui-device-vX.Y.Z.tar.gz.sha256`
+- `manifest.json`
+
+### 2. 检查 manifest branch
+
+确认 `release-manifests` 分支存在以下文件：
+
+- `releases/stable/latest.json`
+- `releases/vX.Y.Z/manifest.json`
+- `releases/vX.Y.Z/hermes-web-ui-device-vX.Y.Z.tar.gz.sha256`
+
+可使用：
+
+```bash
+git fetch origin release-manifests
+git show origin/release-manifests:releases/stable/latest.json
+```
+
+### 3. 检查 latest.json 内容
+
+确认至少包含：
+
+- `version`
+- `channel`
+- `packageUrl`
+- `sha256`
+- `minCurrentVersion`
+- `compatibleNodeRange`
+
+### 4. 检查真实下载与 sha256
+
+```bash
+curl -fsSL "<packageUrl>" -o /tmp/hermes-device-package.tar.gz
+sha256sum /tmp/hermes-device-package.tar.gz
+```
+
+预期：
+
+- 下载成功
+- 输出摘要与 `latest.json` 中的 `sha256` 一致
+
+### 5. 检查 manifest.json 回读一致性
+
+确认 Release 下载到的 `manifest.json` 与 `release-manifests` 分支按版本归档的 `manifest.json` 一致。
+
+### 6. 记录验收留痕
+
+建议在发布记录中保留：
+
+- GitHub Actions run URL
+- 发布 tag
+- 发布 channel
+- `latest.json` URL
+- `packageUrl`
+- 摘要校验结果
+- 是否需要补发或回退
+
+## 设备侧消费验收
+
+设备切到 `device-package` 配置后，至少做以下检查。
+
+### 1. 检查运行进程是否拿到更新变量
 
 ```bash
 pid=$(systemctl show -p MainPID --value hermes-web-ui)
@@ -193,14 +352,12 @@ tr '\0' '\n' < /proc/$pid/environ | grep WEBUI_UPDATE
 
 ```bash
 WEBUI_UPDATE_ENABLED=true
-WEBUI_UPDATE_PACKAGE=@quanthermes/hermes-web-ui
-WEBUI_UPDATE_REGISTRY=https://registry.npmjs.org
-WEBUI_UPDATE_CLI_BIN=hermes-web-ui.mjs
-WEBUI_UPDATE_SOURCE_LABEL=Quanthermes npm
-WEBUI_UPDATE_DIST_TAG=latest
-WEBUI_UPDATE_STRATEGY=source-deploy
-WEBUI_UPDATE_SCRIPT=/opt/hermes-web-ui/scripts/update-source-deploy.sh
-WEBUI_UPDATE_REPO=https://github.com/tangledup-ai/hermes-web-ui
+WEBUI_UPDATE_STRATEGY=device-package
+WEBUI_UPDATE_PACKAGE_TYPE=device-package
+WEBUI_UPDATE_CHANNEL=stable
+WEBUI_UPDATE_MANIFEST_BASE_URL=https://raw.githubusercontent.com/<owner>/<repo>/release-manifests/releases
+WEBUI_UPDATE_INSTALLER_SCRIPT=/opt/hermes-web-ui/scripts/install-device-package.sh
+WEBUI_UPDATE_VERIFY_SHA256=true
 ```
 
 ### 2. 检查健康检查接口
@@ -209,27 +366,49 @@ WEBUI_UPDATE_REPO=https://github.com/tangledup-ai/hermes-web-ui
 curl http://127.0.0.1:6060/health
 ```
 
-预期当 npm 上存在新版本时，返回类似：
+预期至少包含：
 
 ```json
 {
-  "webui_version": "0.6.12",
-  "webui_latest": "0.6.13",
+  "status": "ok",
   "webui_update_enabled": true,
-  "webui_update_source_label": "Quanthermes npm",
-  "webui_update_available": true
+  "webui_update_strategy": "device-package",
+  "webui_update_channel": "stable",
+  "webui_update_package_type": "device-package"
 }
 ```
 
-### 3. 检查页面表现
+### 3. 检查状态与日志路径
+
+```bash
+ls -ld /home/hermesui/.hermes-web-ui/updates
+ls -ld /home/hermesui/.hermes-web-ui/updates/logs
+```
+
+若已有任务记录，再检查：
+
+```bash
+cat /home/hermesui/.hermes-web-ui/updates/update-task-state.json
+```
+
+重点关注：
+
+- `status`
+- `stage`
+- `logPath`
+- `rollbackMessage`
+- `healthcheckUrl`
+
+### 4. 检查页面表现
 
 预期前端页面左下角：
 
-- 显示 `更新源：Quanthermes npm`
-- 当存在新版本时，显示更新按钮
-- 用户点击后可自动触发源码更新并重启
+- 显示更新源标签
+- 当存在新版本时显示更新按钮
+- 更新过程中显示阶段状态
+- 失败后显示失败摘要
 
-### 4. 检查数据目录是否符合当前保护预期
+### 5. 检查数据目录边界
 
 ```bash
 grep -E '^(HERMES_HOME|HERMES_WEB_UI_HOME|UPLOAD_DIR)=' /etc/default/hermes-web-ui
@@ -241,98 +420,32 @@ grep -E '^(HERMES_HOME|HERMES_WEB_UI_HOME|UPLOAD_DIR)=' /etc/default/hermes-web-
 - `UPLOAD_DIR` 未落在程序源码目录内
 - `HERMES_HOME` 如位于 `${DEPLOY_DIR}/hermes_data`，属于兼容布局，可继续运行但应知晓其告警属性
 
-### 5. 检查更新日志中的 preflight 和保护输出
-
-```bash
-tail -n 200 /var/log/hermes-web-ui-update.log
-```
-
-重点关注：
-
-- 是否出现 `WARNING` 级兼容布局提示
-- 是否出现“inside DEPLOY_DIR and update is blocked”之类的危险布局阻止信息
-- 是否打印了最终保留的顶层目录列表
-- 对于 `device-package`，还应确认状态文件中的 `logPath / rollbackMessage / healthcheckUrl` 与现场一致
-
-## 一键部署脚本必须保证的内容
-
-后续任何源码打包脚本或一键部署脚本，必须满足：
-
-1. 写入 `/etc/default/hermes-web-ui`
-2. 写入全部 `WEBUI_UPDATE_*` 变量
-3. 保留或显式写入 `HERMES_HOME`、`HERMES_WEB_UI_HOME`、`UPLOAD_DIR`
-4. 重启 `hermes-web-ui`
-5. 自动执行一次环境变量和 `/health` 验证
-6. 任一检查失败时退出并提示错误
-
-现在 `scripts/deploy-source-armbian.sh` 已默认内置这些值：
-
-```bash
-WEBUI_UPDATE_ENABLED=true
-WEBUI_UPDATE_PACKAGE=@quanthermes/hermes-web-ui
-WEBUI_UPDATE_REGISTRY=https://registry.npmjs.org
-WEBUI_UPDATE_CLI_BIN=hermes-web-ui.mjs
-WEBUI_UPDATE_SOURCE_LABEL=Quanthermes npm
-WEBUI_UPDATE_DIST_TAG=latest
-WEBUI_UPDATE_STRATEGY=source-deploy
-WEBUI_UPDATE_SCRIPT=/opt/hermes-web-ui/scripts/update-source-deploy.sh
-WEBUI_UPDATE_REPO=https://github.com/tangledup-ai/hermes-web-ui
-```
-
-建议脚本内固定加入：
-
-```bash
-systemctl restart hermes-web-ui
-sleep 2
-
-pid=$(systemctl show -p MainPID --value hermes-web-ui)
-tr '\0' '\n' < /proc/$pid/environ | grep WEBUI_UPDATE || {
-  echo "WEBUI_UPDATE env missing"
-  exit 1
-}
-
-curl -fsS http://127.0.0.1:6060/health || {
-  echo "/health check failed"
-  exit 1
-}
-```
-
 ## 常见问题
-
-### 页面显示当前为定制版，升级由内部发布流程管理
-
-原因：`WEBUI_UPDATE_*` 未配置或运行进程未拿到这些变量。
-
-检查：
-
-```bash
-pid=$(systemctl show -p MainPID --value hermes-web-ui)
-tr '\0' '\n' < /proc/$pid/environ | grep WEBUI_UPDATE
-```
 
 ### `/health` 中 `webui_update_enabled` 为 false
 
-原因：配置文件缺少以下任一项：
+优先检查：
 
 - `WEBUI_UPDATE_ENABLED`
-- `WEBUI_UPDATE_PACKAGE`
-- `WEBUI_UPDATE_REGISTRY`
-- `WEBUI_UPDATE_CLI_BIN`
+- `WEBUI_UPDATE_STRATEGY`
+- `WEBUI_UPDATE_SOURCE_LABEL`
 
-如果当前部署模式是源码部署，还要确认：
+若当前希望走 `device-package`，还要确认：
 
-- `WEBUI_UPDATE_STRATEGY=source-deploy`
-- `WEBUI_UPDATE_SCRIPT=/opt/hermes-web-ui/scripts/update-source-deploy.sh`
-- `WEBUI_UPDATE_REPO=https://github.com/tangledup-ai/hermes-web-ui`
+- `WEBUI_UPDATE_PACKAGE_TYPE=device-package`
+- `WEBUI_UPDATE_CHANNEL=stable`
+- `WEBUI_UPDATE_MANIFEST_BASE_URL` 或 `WEBUI_UPDATE_MANIFEST_URL` 已正确配置
+- `WEBUI_UPDATE_INSTALLER_SCRIPT` 存在且可执行
 
-### npm 已发布新版本，但页面没有更新按钮
+### 页面没有更新按钮
 
 检查顺序：
 
-1. `npm view @quanthermes/hermes-web-ui version`
-2. `curl http://127.0.0.1:6060/health`
-3. 浏览器强制刷新 `Ctrl + F5`
-4. 确认当前运行版本是否包含更新按钮对应的前端代码
+1. `curl http://127.0.0.1:6060/health`
+2. 确认 `webui_update_enabled` 为 `true`
+3. 确认 `webui_latest` 高于 `webui_version`
+4. 浏览器强制刷新 `Ctrl + F5`
+5. 确认当前运行版本已包含更新按钮对应的前端代码
 
 ### 设备升级失败
 
@@ -340,54 +453,25 @@ tr '\0' '\n' < /proc/$pid/environ | grep WEBUI_UPDATE
 
 ```bash
 journalctl -u hermes-web-ui -n 200 --no-pager
-tail -n 200 /var/log/hermes-web-ui-update.log
-```
-
-如果页面点更新后没有动作，按这个顺序检查：
-
-```bash
-pid=$(systemctl show -p MainPID --value hermes-web-ui)
-tr '\0' '\n' < /proc/$pid/environ | grep WEBUI_UPDATE
-journalctl -u hermes-web-ui -n 200 --no-pager
-tail -n 200 /var/log/hermes-web-ui-update.log
-ls -l /opt/hermes-web-ui/scripts/update-source-deploy.sh
+cat /home/hermesui/.hermes-web-ui/updates/update-task-state.json
+tail -n 200 /home/hermesui/.hermes-web-ui/updates/logs/*.log
 ```
 
 常见原因：
 
-- `update-source-deploy.sh` 没有执行权限
-- `update-source-deploy.sh` 不是 `root:root`
-- sudoers 没有 `NOPASSWD:SETENV`
-- `WEBUI_UPDATE_REPO` 写错或带反引号
+- `WEBUI_UPDATE_MANIFEST_BASE_URL` 写错
+- `WEBUI_UPDATE_INSTALLER_SCRIPT` 缺失或没有执行权限
+- `packageUrl` 不可下载
+- `sha256` 校验失败
 - `HERMES_WEB_UI_HOME` 或 `UPLOAD_DIR` 被配置到了 `DEPLOY_DIR` 内，导致 preflight 主动阻止
-- GitHub archive 下载慢，需回退到 `codeload.github.com`
-- 设备包安装后健康检查失败，安装器已触发自动回退，可继续检查状态文件中的 `rollbackMessage`
+- 安装后健康检查失败，安装器已触发自动回退
 
-如果日志中看到以下类型消息：
+若状态文件中出现：
 
-- `Web UI data directory is inside DEPLOY_DIR and update is blocked`
-- `Upload directory is inside DEPLOY_DIR and update is blocked`
+- `status=rolled_back`
+- `rollbackMessage`
 
-说明当前布局会导致更新覆盖用户数据，必须先调整目录后再继续。
-
-如果日志中看到以下类型消息：
-
-- `Hermes data directory is using the legacy compatibility layout inside the deploy directory`
-
-说明当前仍在使用兼容布局，更新会继续，但后续建议逐步评估迁移到部署目录外的数据路径。
-
-更新脚本现在会按这个顺序下载：
-
-```text
-1. https://github.com/tangledup-ai/hermes-web-ui/archive/refs/tags/vX.Y.Z.tar.gz
-2. https://codeload.github.com/tangledup-ai/hermes-web-ui/tar.gz/refs/tags/vX.Y.Z
-```
-
-并确认设备可以访问：
-
-- `https://registry.npmjs.org`
-- `https://github.com/tangledup-ai/hermes-web-ui`
-- `https://codeload.github.com`
+说明本次更新已自动恢复到上一个可用程序版本，应继续检查任务日志与 `journalctl`。
 
 ## 运维基线
 
@@ -398,6 +482,6 @@ ls -l /opt/hermes-web-ui/scripts/update-source-deploy.sh
 - 服务启动命令：`/opt/node-v23/bin/node /opt/hermes-web-ui/dist/server/index.js`
 - 健康检查地址：`http://127.0.0.1:6060/health`
 - npm 包名：`@quanthermes/hermes-web-ui`
-- 更新源标签：`Quanthermes npm`
-- 源码更新脚本：`/opt/hermes-web-ui/scripts/update-source-deploy.sh`
-- 源码更新仓库：`https://github.com/tangledup-ai/hermes-web-ui`
+- 设备包安装器：`/opt/hermes-web-ui/scripts/install-device-package.sh`
+- 兼容源码更新脚本：`/opt/hermes-web-ui/scripts/update-source-deploy.sh`
+- manifest branch：`release-manifests`

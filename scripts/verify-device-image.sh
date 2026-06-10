@@ -30,8 +30,18 @@ check_http() {
   log "HTTP check passed: ${url}"
 }
 
+check_file_contains() {
+  local file_path="$1"
+  local expected="$2"
+  grep -q "${expected}" "${file_path}" || fail "Expected '${expected}' in ${file_path}"
+  log "Config check passed: ${file_path} contains ${expected}"
+}
+
 EXPECTED_MODEL="${EXPECTED_MODEL:-}"
 ACTUAL_MODEL="$(tr -d '\0' </proc/device-tree/model 2>/dev/null || echo unknown)"
+HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:6060/health}"
+ENV_FILE="${ENV_FILE:-/etc/default/hermes-web-ui}"
+WEBUI_HOME="${WEBUI_HOME:-/home/hermesui/.hermes-web-ui}"
 
 if [[ -n "${EXPECTED_MODEL}" && "${ACTUAL_MODEL}" != "${EXPECTED_MODEL}" ]]; then
   fail "Model mismatch. Expected '${EXPECTED_MODEL}', got '${ACTUAL_MODEL}'"
@@ -47,7 +57,31 @@ ss -lntpH '( sport = :6060 )' | grep -q ':6060' || fail "Port 6060 is not listen
 log "Ports 80 and 6060 are listening"
 
 check_http "http://127.0.0.1/api/status" "\"displayMode\":"
-check_http "http://127.0.0.1:6060/health" "\"status\":\"ok\""
+check_http "${HEALTH_URL}" "\"status\":\"ok\""
+check_http "${HEALTH_URL}" "\"webui_update_enabled\":"
+
+test -f "${ENV_FILE}" || fail "Missing environment file: ${ENV_FILE}"
+check_file_contains "${ENV_FILE}" '^WEBUI_UPDATE_ENABLED='
+check_file_contains "${ENV_FILE}" '^WEBUI_UPDATE_STRATEGY='
+
+if grep -q '^WEBUI_UPDATE_STRATEGY=device-package$' "${ENV_FILE}"; then
+  check_file_contains "${ENV_FILE}" '^WEBUI_UPDATE_PACKAGE_TYPE=device-package$'
+  if ! grep -q '^WEBUI_UPDATE_MANIFEST_URL=' "${ENV_FILE}" && ! grep -q '^WEBUI_UPDATE_MANIFEST_BASE_URL=' "${ENV_FILE}"; then
+    fail "device-package mode requires WEBUI_UPDATE_MANIFEST_URL or WEBUI_UPDATE_MANIFEST_BASE_URL"
+  fi
+  check_file_contains "${ENV_FILE}" '^WEBUI_UPDATE_INSTALLER_SCRIPT='
+  test -x /opt/hermes-web-ui/scripts/install-device-package.sh || fail "install-device-package.sh is missing or not executable"
+  log "device-package readiness checks passed"
+fi
+
+test -d "${WEBUI_HOME}" || fail "Missing Web UI home directory: ${WEBUI_HOME}"
+if [[ -d "${WEBUI_HOME}/updates" && -d "${WEBUI_HOME}/updates/logs" ]]; then
+  log "Update directories already exist under ${WEBUI_HOME}"
+elif [[ -w "${WEBUI_HOME}" ]]; then
+  log "Update directories do not exist yet, but ${WEBUI_HOME} is writable"
+else
+  fail "Update directories are missing and ${WEBUI_HOME} is not writable"
+fi
 
 if pgrep -x fcitx5 >/dev/null 2>&1; then
   log "fcitx5 process detected"

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { basename, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { create as createTar, list as listTar } from 'tar'
@@ -203,7 +204,7 @@ export async function buildDevicePackageRelease(options = {}) {
 
   const releaseDir = resolve(outputDir, 'releases', tag)
   const latestDir = resolve(outputDir, 'releases', channel)
-  const stageRoot = resolve(outputDir, '.stage')
+  const stageRoot = mkdtempSync(resolve(tmpdir(), 'hermes-web-ui-device-package-'))
   const artifactName = `hermes-web-ui-device-${tag}.tar.gz`
   const artifactPath = resolve(releaseDir, artifactName)
   const shaPath = `${artifactPath}.sha256`
@@ -211,75 +212,76 @@ export async function buildDevicePackageRelease(options = {}) {
   const latestPath = resolve(latestDir, 'latest.json')
   const metadataPath = resolve(outputDir, 'release-metadata.json')
 
-  createCleanDir(outputDir)
-  mkdirSync(releaseDir, { recursive: true })
-  mkdirSync(latestDir, { recursive: true })
-  mkdirSync(stageRoot, { recursive: true })
+  try {
+    createCleanDir(outputDir)
+    mkdirSync(releaseDir, { recursive: true })
+    mkdirSync(latestDir, { recursive: true })
 
-  copyBundleFiles(repoRoot, stageRoot)
+    copyBundleFiles(repoRoot, stageRoot)
 
-  await createTar({
-    cwd: stageRoot,
-    file: artifactPath,
-    gzip: true,
-    portable: true,
-    noMtime: true,
-  }, ['.'])
+    await createTar({
+      cwd: stageRoot,
+      file: artifactPath,
+      gzip: true,
+      portable: true,
+      noMtime: true,
+    }, ['.'])
 
-  await assertArchiveStructure(artifactPath)
+    await assertArchiveStructure(artifactPath)
 
-  const sha256 = computeSha256(artifactPath)
-  const size = statSync(artifactPath).size
-  const releasedAt = new Date().toISOString()
-  const manifest = {
-    version,
-    channel,
-    sourceLabel,
-    packageType: 'device-package',
-    artifactFormat: DEVICE_PACKAGE_ARTIFACT_FORMAT,
-    packageUrl: buildReleaseAssetUrl(releaseRepo, tag, artifactName),
-    sha256,
-    releasedAt,
-    compatibleNodeRange,
-    minCurrentVersion,
-    notesUrl: buildReleaseNotesUrl(releaseRepo, tag),
-    size,
-    healthcheckUrl,
-  }
+    const sha256 = computeSha256(artifactPath)
+    const size = statSync(artifactPath).size
+    const releasedAt = new Date().toISOString()
+    const manifest = {
+      version,
+      channel,
+      sourceLabel,
+      packageType: 'device-package',
+      artifactFormat: DEVICE_PACKAGE_ARTIFACT_FORMAT,
+      packageUrl: buildReleaseAssetUrl(releaseRepo, tag, artifactName),
+      sha256,
+      releasedAt,
+      compatibleNodeRange,
+      minCurrentVersion,
+      notesUrl: buildReleaseNotesUrl(releaseRepo, tag),
+      size,
+      healthcheckUrl,
+    }
 
-  writeFileSync(shaPath, `${sha256}  ${basename(artifactPath)}\n`, 'utf-8')
-  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf-8')
-  writeFileSync(latestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf-8')
-  writeFileSync(metadataPath, `${JSON.stringify({
-    version,
-    tag,
-    channel,
-    releaseRepo,
-    manifestBranch,
-    artifactName,
-    artifactPath,
-    shaPath,
-    manifestPath,
-    latestPath,
-    manifestBaseUrl: `https://raw.githubusercontent.com/${releaseRepo}/${manifestBranch}/releases`,
-    latestUrl: `https://raw.githubusercontent.com/${releaseRepo}/${manifestBranch}/releases/${channel}/latest.json`,
-  }, null, 2)}\n`, 'utf-8')
+    writeFileSync(shaPath, `${sha256}  ${basename(artifactPath)}\n`, 'utf-8')
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf-8')
+    writeFileSync(latestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf-8')
+    writeFileSync(metadataPath, `${JSON.stringify({
+      version,
+      tag,
+      channel,
+      releaseRepo,
+      manifestBranch,
+      artifactName,
+      artifactPath,
+      shaPath,
+      manifestPath,
+      latestPath,
+      manifestBaseUrl: `https://raw.githubusercontent.com/${releaseRepo}/${manifestBranch}/releases`,
+      latestUrl: `https://raw.githubusercontent.com/${releaseRepo}/${manifestBranch}/releases/${channel}/latest.json`,
+    }, null, 2)}\n`, 'utf-8')
 
-  rmSync(stageRoot, { recursive: true, force: true })
-
-  return {
-    version,
-    tag,
-    channel,
-    releaseRepo,
-    manifestBranch,
-    artifactName,
-    artifactPath,
-    shaPath,
-    manifestPath,
-    latestPath,
-    metadataPath,
-    manifest,
+    return {
+      version,
+      tag,
+      channel,
+      releaseRepo,
+      manifestBranch,
+      artifactName,
+      artifactPath,
+      shaPath,
+      manifestPath,
+      latestPath,
+      metadataPath,
+      manifest,
+    }
+  } finally {
+    rmSync(stageRoot, { recursive: true, force: true })
   }
 }
 
