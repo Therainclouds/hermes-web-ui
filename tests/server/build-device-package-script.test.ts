@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, resolve } from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -97,6 +97,54 @@ describe('build-device-package script', () => {
       'scripts/deploy-source-armbian.sh',
       'scripts/install-device-package.sh',
     ]))
+  })
+
+  it('builds successfully when the output directory lives under repo dist', async () => {
+    const repoRoot = createTempDir('device-package-repo-nested-output-')
+    const outputDir = resolve(repoRoot, 'dist', 'device-package-release')
+
+    mkdirSync(resolve(repoRoot, 'dist', 'server'), { recursive: true })
+    mkdirSync(resolve(repoRoot, 'dist', 'client'), { recursive: true })
+    mkdirSync(resolve(repoRoot, 'scripts'), { recursive: true })
+    mkdirSync(resolve(repoRoot, 'bin'), { recursive: true })
+    mkdirSync(resolve(repoRoot, '.github'), { recursive: true })
+
+    writeFileSync(resolve(repoRoot, 'dist', 'server', 'index.js'), 'console.log("server")\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'dist', 'client', 'index.html'), '<html></html>\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'scripts', 'deploy-source-armbian.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'scripts', 'install-device-package.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'bin', 'hermes-web-ui.mjs'), 'console.log("cli")\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'package-lock.json'), '{ "name": "@quanthermes/hermes-web-ui", "lockfileVersion": 3 }\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'package.json'), JSON.stringify({
+      name: '@quanthermes/hermes-web-ui',
+      version: '1.2.3',
+      repository: {
+        type: 'git',
+        url: 'https://github.com/example/hermes-web-ui.git',
+      },
+      engines: {
+        node: '>=23.0.0',
+      },
+    }, null, 2), 'utf-8')
+    writeFileSync(resolve(repoRoot, '.github', 'device-package-release.json'), JSON.stringify({
+      version: '1.2.3',
+      channel: 'stable',
+      minCurrentVersion: '1.0.0',
+      manifestBranch: 'release-manifests',
+    }, null, 2), 'utf-8')
+
+    const { buildDevicePackageRelease } = await import('../../scripts/build-device-package.mjs')
+    const result = await buildDevicePackageRelease({
+      repoRoot,
+      outputDir,
+      releaseRepo: 'example/hermes-web-ui',
+      tag: 'v1.2.3',
+    })
+
+    expect(existsSync(result.artifactPath)).toBe(true)
+    expect(existsSync(result.manifestPath)).toBe(true)
+    expect(existsSync(result.latestPath)).toBe(true)
+    expect(existsSync(result.metadataPath)).toBe(true)
   })
 
   it('fails when minCurrentVersion is not provided by config or CLI', async () => {
