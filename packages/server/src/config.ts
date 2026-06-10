@@ -1,5 +1,6 @@
 import { join, resolve } from 'path'
 import { homedir } from 'os'
+import type { UpdatePackageType, UpdateStrategy } from './services/update/types'
 
 /**
  * Web UI environment variables.
@@ -46,6 +47,24 @@ export function getWebUiHome(env: Record<string, string | undefined> = process.e
   return configuredHome ? resolve(configuredHome) : join(homedir(), '.hermes-web-ui')
 }
 
+export function getUploadDir(env: Record<string, string | undefined> = process.env): string {
+  const configuredDir = env.UPLOAD_DIR?.trim()
+  return configuredDir ? resolve(configuredDir) : join(getWebUiHome(env), 'upload')
+}
+
+export function getHermesHome(env: Record<string, string | undefined> = process.env): string {
+  const configuredHome = env.HERMES_HOME?.trim() || env.HERMES_HOME_DIR?.trim()
+  return configuredHome ? resolve(configuredHome) : ''
+}
+
+export function getDeployDir(
+  env: Record<string, string | undefined> = process.env,
+  cwd = process.cwd(),
+): string {
+  const configuredDir = env.DEPLOY_DIR?.trim()
+  return resolve(configuredDir || cwd)
+}
+
 function parseBoolean(value: string | undefined, fallback = false): boolean {
   if (value == null) return fallback
   const normalized = value.trim().toLowerCase()
@@ -57,13 +76,25 @@ function normalizeUrl(value: string | undefined): string {
   return (value || '').trim().replace(/\/+$/, '')
 }
 
+function normalizeOptionalUrl(value: string | undefined): string {
+  return (value || '').trim()
+}
+
 function normalizePackageName(value: string | undefined): string {
   return (value || '').trim()
 }
 
-function normalizeUpdateStrategy(value: string | undefined): 'npm-package' | 'source-deploy' {
+function normalizeUpdateStrategy(value: string | undefined): UpdateStrategy {
   const normalized = (value || '').trim().toLowerCase()
+  if (normalized === 'device-package') return 'device-package'
   return normalized === 'source-deploy' ? 'source-deploy' : 'npm-package'
+}
+
+function normalizeUpdatePackageType(value: string | undefined): UpdatePackageType {
+  const normalized = (value || '').trim().toLowerCase()
+  if (normalized === 'npm-package') return 'npm-package'
+  if (normalized === 'source-deploy') return 'source-deploy'
+  return 'device-package'
 }
 
 function getDefaultUpdateCliBin(packageName: string): string {
@@ -81,6 +112,29 @@ function getDefaultUpdateSourceLabel(packageName: string, registry: string): str
   }
 }
 
+function getDefaultManifestSourceLabel(manifestUrl: string, manifestBaseUrl: string): string {
+  const candidate = manifestUrl || manifestBaseUrl
+  if (!candidate) return ''
+  try {
+    return `Manifest @ ${new URL(candidate).host}`
+  } catch {
+    return 'Manifest'
+  }
+}
+
+function getDefaultInstallerScript(): string {
+  return resolve('scripts', 'install-device-package.sh')
+}
+
+function getDefaultUpdateHealthcheckUrl(port: string): string {
+  return `http://127.0.0.1:${port}/health`
+}
+
+function parsePositiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt((value || '').trim(), 10)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback
+}
+
 export function shouldCreateWebUiDataDir(env: Record<string, string | undefined> = process.env): boolean {
   return env.NODE_ENV !== 'production'
 }
@@ -92,13 +146,15 @@ export function getCorsOrigins(env: Record<string, string | undefined> = process
 const appHome = getWebUiHome()
 const updatePackageName = normalizePackageName(process.env.WEBUI_UPDATE_PACKAGE)
 const updateRegistry = normalizeUrl(process.env.WEBUI_UPDATE_REGISTRY)
+const updateManifestUrl = normalizeOptionalUrl(process.env.WEBUI_UPDATE_MANIFEST_URL)
+const updateManifestBaseUrl = normalizeUrl(process.env.WEBUI_UPDATE_MANIFEST_BASE_URL)
 
 export const config = {
   port: parseInt(process.env.PORT || '8648', 10),
   // Default to IPv4 for stable WSL/Windows browser access. Use BIND_HOST=:: explicitly for IPv6.
   host: getListenHost(),
   appHome,
-  uploadDir: process.env.UPLOAD_DIR || join(appHome, 'upload'),
+  uploadDir: getUploadDir(),
   dataDir: resolve(__dirname, '..', 'data'),
   corsOrigins: getCorsOrigins(),
   update: {
@@ -106,17 +162,42 @@ export const config = {
     strategy: normalizeUpdateStrategy(process.env.WEBUI_UPDATE_STRATEGY),
     packageName: updatePackageName,
     registry: updateRegistry,
-    sourceLabel: (process.env.WEBUI_UPDATE_SOURCE_LABEL || '').trim() || getDefaultUpdateSourceLabel(updatePackageName, updateRegistry),
+    sourceLabel: (process.env.WEBUI_UPDATE_SOURCE_LABEL || '').trim()
+      || getDefaultManifestSourceLabel(updateManifestUrl, updateManifestBaseUrl)
+      || getDefaultUpdateSourceLabel(updatePackageName, updateRegistry),
     distTag: (process.env.WEBUI_UPDATE_DIST_TAG || 'latest').trim() || 'latest',
     cliBin: (process.env.WEBUI_UPDATE_CLI_BIN || '').trim() || getDefaultUpdateCliBin(updatePackageName || 'hermes-web-ui'),
     script: (process.env.WEBUI_UPDATE_SCRIPT || '').trim(),
+    channel: (process.env.WEBUI_UPDATE_CHANNEL || 'stable').trim() || 'stable',
+    manifestUrl: updateManifestUrl,
+    manifestBaseUrl: updateManifestBaseUrl,
+    packageType: normalizeUpdatePackageType(process.env.WEBUI_UPDATE_PACKAGE_TYPE),
+    installerScript: (process.env.WEBUI_UPDATE_INSTALLER_SCRIPT || '').trim() || getDefaultInstallerScript(),
+    stagingDir: resolve((process.env.WEBUI_UPDATE_STAGING_DIR || join(appHome, 'updates', 'staging')).trim()),
+    backupDir: resolve((process.env.WEBUI_UPDATE_BACKUP_DIR || join(appHome, 'updates', 'backups')).trim()),
+    healthcheckUrl: (process.env.WEBUI_UPDATE_HEALTHCHECK_URL || '').trim() || getDefaultUpdateHealthcheckUrl(process.env.PORT || '8648'),
+    stateFile: resolve((process.env.WEBUI_UPDATE_STATE_FILE || join(appHome, 'updates', 'update-task-state.json')).trim()),
+    logDir: resolve((process.env.WEBUI_UPDATE_LOG_DIR || join(appHome, 'updates', 'logs')).trim()),
+    healthcheckTimeoutMs: parsePositiveInteger(process.env.WEBUI_UPDATE_HEALTHCHECK_TIMEOUT_MS, 2_000),
+    healthcheckIntervalMs: parsePositiveInteger(process.env.WEBUI_UPDATE_HEALTHCHECK_INTERVAL_MS, 2_000),
+    healthcheckRetries: parsePositiveInteger(process.env.WEBUI_UPDATE_HEALTHCHECK_RETRIES, 15),
+    healthcheckInitialDelayMs: parsePositiveInteger(process.env.WEBUI_UPDATE_HEALTHCHECK_INITIAL_DELAY_MS, 5_000),
   },
+}
+
+export function hasConfiguredManifestCheck(
+  envUpdate: typeof config.update = config.update,
+): boolean {
+  return Boolean(envUpdate.enabled && (envUpdate.manifestUrl || envUpdate.manifestBaseUrl))
 }
 
 export function hasConfiguredUpdateCheck(
   envUpdate: typeof config.update = config.update,
 ): boolean {
-  return Boolean(envUpdate.enabled && envUpdate.packageName && envUpdate.registry)
+  return Boolean(
+    envUpdate.enabled
+    && ((envUpdate.manifestUrl || envUpdate.manifestBaseUrl) || (envUpdate.packageName && envUpdate.registry)),
+  )
 }
 
 export function hasConfiguredUpdateExecution(
@@ -124,6 +205,8 @@ export function hasConfiguredUpdateExecution(
 ): boolean {
   if (!hasConfiguredUpdateCheck(envUpdate))
     return false
+  if (envUpdate.strategy === 'device-package')
+    return Boolean((envUpdate.manifestUrl || envUpdate.manifestBaseUrl) && envUpdate.installerScript)
   if (envUpdate.strategy === 'source-deploy')
     return Boolean(envUpdate.script)
   return Boolean(envUpdate.cliBin)

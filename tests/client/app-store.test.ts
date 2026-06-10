@@ -5,6 +5,7 @@ import { createPinia, setActivePinia } from 'pinia'
 const mockSystemApi = vi.hoisted(() => ({
   checkHealth: vi.fn(),
   fetchAvailableModels: vi.fn(),
+  fetchUpdateStatus: vi.fn(),
   addCustomModel: vi.fn(),
   removeCustomModel: vi.fn(),
   updateDefaultModel: vi.fn(),
@@ -24,6 +25,7 @@ describe('App Store', () => {
     vi.clearAllMocks()
     mockSystemApi.addCustomModel.mockResolvedValue({ success: true, custom_models: {} })
     mockSystemApi.removeCustomModel.mockResolvedValue({ success: true, custom_models: {} })
+    mockSystemApi.fetchUpdateStatus.mockResolvedValue({ currentTask: null, lastTask: null })
     window.localStorage.clear()
   })
 
@@ -167,6 +169,10 @@ describe('App Store', () => {
       webui_version: '0.5.17',
       webui_latest: '0.5.17',
       webui_update_available: false,
+      webui_update_source_label: 'Device Manifest',
+      webui_update_channel: 'stable',
+      webui_update_strategy: 'device-package',
+      webui_update_package_type: 'device-package',
     })
     const store = useAppStore()
 
@@ -176,11 +182,21 @@ describe('App Store', () => {
     expect(store.serverVersion).toBe('0.5.17')
     expect(store.clientOutdated).toBe(true)
     expect(store.updateAvailable).toBe(false)
+    expect(store.updateSourceLabel).toBe('Device Manifest')
+    expect(store.updateChannel).toBe('stable')
+    expect(store.updateStrategy).toBe('device-package')
+    expect(store.updatePackageType).toBe('device-package')
   })
 
   it('waits for the restarted server after triggering self-update', async () => {
     vi.useFakeTimers()
-    mockSystemApi.triggerUpdate.mockResolvedValue({ success: true, message: 'ok' })
+    mockSystemApi.triggerUpdate.mockResolvedValue({
+      success: true,
+      message: 'ok',
+      taskId: 'task-1',
+      status: 'queued',
+      stage: 'queued',
+    })
     mockSystemApi.checkHealth.mockResolvedValue({
       status: 'ok',
       webui_version: 'test',
@@ -189,17 +205,52 @@ describe('App Store', () => {
       webui_update_available: false,
       webui_update_source_label: 'Company npm registry',
     })
+    mockSystemApi.fetchUpdateStatus
+      .mockResolvedValueOnce({
+        currentTask: {
+          id: 'task-1',
+          strategy: 'source-deploy',
+          status: 'running',
+          stage: 'installing',
+          message: 'installing',
+          targetVersion: 'test',
+          warning: '',
+          error: '',
+          startedAt: '2026-06-09T00:00:00.000Z',
+          finishedAt: null,
+        },
+        lastTask: null,
+      })
+      .mockResolvedValueOnce({
+        currentTask: null,
+        lastTask: {
+          id: 'task-1',
+          strategy: 'source-deploy',
+          status: 'succeeded',
+          stage: 'succeeded',
+          message: 'done',
+          targetVersion: 'test',
+          warning: '',
+          error: '',
+          startedAt: '2026-06-09T00:00:00.000Z',
+          finishedAt: '2026-06-09T00:00:03.000Z',
+        },
+      })
     const store = useAppStore()
     store.updateEnabled = true
 
     const updatePromise = store.doUpdate()
-    await vi.advanceTimersByTimeAsync(10 * 60 * 1000)
     const ok = await updatePromise
+    await Promise.resolve()
+    await vi.advanceTimersByTimeAsync(3000)
 
     expect(ok).toBe(true)
     expect(store.updating).toBe(false)
+    expect(store.updateTaskStatus).toBe('succeeded')
+    expect(store.updateTaskStage).toBe('succeeded')
     expect(mockSystemApi.triggerUpdate).toHaveBeenCalledTimes(1)
     expect(mockSystemApi.checkHealth).toHaveBeenCalled()
+    expect(mockSystemApi.fetchUpdateStatus).toHaveBeenCalled()
   })
 
   it('does not mark the client stale when the served Web UI version matches this bundle', async () => {
@@ -227,6 +278,9 @@ describe('App Store', () => {
 
     expect(ok).toBe(false)
     expect(store.updating).toBe(false)
+    expect(store.updateTaskStatus).toBe('failed')
+    expect(store.updateTaskStage).toBe('failed')
+    expect(store.updateTaskError).toBe('install failed')
     expect(consoleError).toHaveBeenCalledWith('Failed to update Hermes Web UI:', expect.any(Error))
     consoleError.mockRestore()
   })

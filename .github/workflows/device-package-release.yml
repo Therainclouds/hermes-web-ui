@@ -1,0 +1,207 @@
+name: device-package-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build and publish (e.g. v0.6.14)
+        required: true
+        type: string
+      channel:
+        description: Release channel to update
+        required: false
+        default: stable
+        type: string
+      min_current_version:
+        description: Minimum current version allowed to upgrade from
+        required: false
+        type: string
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: device-package-release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      RELEASE_CHANNEL: ${{ github.event.inputs.channel || '' }}
+      MIN_CURRENT_VERSION: ${{ github.event.inputs.min_current_version || '' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Run focused validation
+        run: npm run test -- tests/server/update-manifest-client.test.ts tests/server/build-device-package-script.test.ts tests/server/device-package-strategy.test.ts tests/server/update-controller.test.ts
+
+      - name: Build project
+        run: npm run build
+
+      - name: Build device package release
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(
+            --tag "${RELEASE_TAG}"
+            --release-repo "${GITHUB_REPOSITORY}"
+            --release-config ".github/device-package-release.json"
+          )
+          if [ -n "${RELEASE_CHANNEL}" ]; then
+            args+=(--channel "${RELEASE_CHANNEL}")
+          fi
+          if [ -n "${MIN_CURRENT_VERSION}" ]; then
+            args+=(--min-current-version "${MIN_CURRENT_VERSION}")
+          fi
+          npm run build:device-package -- "${args[@]}"
+
+      - name: Read release metadata
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE' >> "$GITHUB_OUTPUT"
+          const fs = require('node:fs')
+          const metadata = JSON.parse(fs.readFileSync('dist/device-package-release/release-metadata.json', 'utf8'))
+          console.log(`artifact_path=${metadata.artifactPath}`)
+          console.log(`sha_path=${metadata.shaPath}`)
+          console.log(`manifest_path=${metadata.manifestPath}`)
+          console.log(`latest_path=${metadata.latestPath}`)
+          console.log(`tag=${metadata.tag}`)
+          console.log(`channel=${metadata.channel}`)
+          console.log(`manifest_branch=${metadata.manifestBranch}`)
+          console.log(`manifest_base_url=${metadata.manifestBaseUrl}`)
+          console.log(`latest_url=${metadata.latestUrl}`)
+          NODE
+
+      - name: Ensure GitHub release exists
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release create "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --verify-tag --title "${RELEASE_TAG}" --notes "Automated device package release assets."
+          fi
+
+      - name: Upload device package assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "${RELEASE_TAG}" \
+            "${{ steps.metadata.outputs.artifact_path }}" \
+            "${{ steps.metadata.outputs.sha_path }}" \
+            "${{ steps.metadata.outputs.manifest_path }}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --clobber
+
+      - name: Publish latest.json on manifest branch
+        shell: bash
+        env:
+          RELEASE_CHANNEL: ${{ steps.metadata.outputs.channel }}
+          MANIFEST_BRANCH: ${{ steps.metadata.outputs.manifest_branch }}
+          LATEST_PATH: ${{ steps.metadata.outputs.latest_path }}
+          MANIFEST_PATH: ${{ steps.metadata.outputs.manifest_path }}
+          SHA_PATH: ${{ steps.metadata.outputs.sha_path }}
+          RELEASE_TAG: ${{ steps.metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin "${MANIFEST_BRANCH}" >/dev/null 2>&1; then
+            git fetch origin "${MANIFEST_BRANCH}:${MANIFEST_BRANCH}"
+            git worktree add .manifest-branch "${MANIFEST_BRANCH}"
+          else
+            git worktree add --detach .manifest-branch
+            (
+              cd .manifest-branch
+              git checkout --orphan "${MANIFEST_BRANCH}"
+              git rm -rf . >/dev/null 2>&1 || true
+            )
+          fi
+
+          mkdir -p ".manifest-branch/releases/${RELEASE_CHANNEL}" ".manifest-branch/releases/${RELEASE_TAG}"
+          cp "${LATEST_PATH}" ".manifest-branch/releases/${RELEASE_CHANNEL}/latest.json"
+          cp "${MANIFEST_PATH}" ".manifest-branch/releases/${RELEASE_TAG}/manifest.json"
+          cp "${SHA_PATH}" ".manifest-branch/releases/${RELEASE_TAG}/$(basename "${SHA_PATH}")"
+
+          (
+            cd .manifest-branch
+            git add releases
+            git commit -m "chore: publish ${RELEASE_TAG} device package metadata" || true
+            git push origin "${MANIFEST_BRANCH}"
+          )
+
+      - name: Verify published assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch origin "${{ steps.metadata.outputs.manifest_branch }}"
+          git show "origin/${{ steps.metadata.outputs.manifest_branch }}:releases/${{ steps.metadata.outputs.channel }}/latest.json" > /tmp/latest.json
+          diff -u "${{ steps.metadata.outputs.latest_path }}" /tmp/latest.json
+
+          manifest_asset_url="$(gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[] | select(.name == "manifest.json") | .apiUrl')"
+          if [ -z "${manifest_asset_url}" ]; then
+            echo "manifest.json asset is missing on release ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+          curl -fsSL \
+            -H "Accept: application/octet-stream" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            "${manifest_asset_url}" > /tmp/manifest.json
+          diff -u "${{ steps.metadata.outputs.manifest_path }}" /tmp/manifest.json
+
+          package_url="$(node -e "const fs=require('node:fs'); const data=JSON.parse(fs.readFileSync('${{ steps.metadata.outputs.latest_path }}','utf8')); process.stdout.write(data.packageUrl)")"
+          expected_sha="$(node -e "const fs=require('node:fs'); const data=JSON.parse(fs.readFileSync('${{ steps.metadata.outputs.latest_path }}','utf8')); process.stdout.write(data.sha256)")"
+          curl -fsSL "${package_url}" > /tmp/device-package.tar.gz
+          actual_sha="$(sha256sum /tmp/device-package.tar.gz | awk '{print $1}')"
+          if [ "${actual_sha}" != "${expected_sha}" ]; then
+            echo "Published device package checksum mismatch: expected ${expected_sha}, got ${actual_sha}" >&2
+            exit 1
+          fi
+
+      - name: Upload release metadata artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: device-package-release-${{ steps.metadata.outputs.tag }}
+          path: |
+            dist/device-package-release/release-metadata.json
+            ${{ steps.metadata.outputs.manifest_path }}
+            ${{ steps.metadata.outputs.latest_path }}
+            ${{ steps.metadata.outputs.sha_path }}
+
+      - name: Write workflow summary
+        shell: bash
+        run: |
+          {
+            echo "## Device Package Release"
+            echo
+            echo "- Tag: \`${RELEASE_TAG}\`"
+            echo "- Channel: \`${{ steps.metadata.outputs.channel }}\`"
+            echo "- Manifest branch: \`${{ steps.metadata.outputs.manifest_branch }}\`"
+            echo "- Manifest base URL: \`${{ steps.metadata.outputs.manifest_base_url }}\`"
+            echo "- Latest URL: [latest.json](${{ steps.metadata.outputs.latest_url }})"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { homedir } from 'os'
 import { join, resolve } from 'path'
-import { getCorsOrigins, getListenHost, getWebUiHome, shouldCreateWebUiDataDir } from '../../packages/server/src/config'
+import { getCorsOrigins, getDeployDir, getHermesHome, getListenHost, getUploadDir, getWebUiHome, hasConfiguredManifestCheck, hasConfiguredUpdateCheck, shouldCreateWebUiDataDir } from '../../packages/server/src/config'
 
 describe('server config', () => {
   it('defaults to an IPv4 bind host', () => {
@@ -26,6 +26,55 @@ describe('server config', () => {
 
   it('uses HERMES_WEBUI_STATE_DIR as a compatibility alias', () => {
     expect(getWebUiHome({ HERMES_WEBUI_STATE_DIR: ' ./tmp/hermes-state ' })).toBe(resolve('./tmp/hermes-state'))
+  })
+
+  it('defaults upload dir under the web-ui home', () => {
+    expect(getUploadDir({})).toBe(join(homedir(), '.hermes-web-ui', 'upload'))
+  })
+
+  it('uses UPLOAD_DIR when provided', () => {
+    expect(getUploadDir({ UPLOAD_DIR: ' ./tmp/uploads ' })).toBe(resolve('./tmp/uploads'))
+  })
+
+  it('prefers HERMES_HOME and falls back to HERMES_HOME_DIR', () => {
+    expect(getHermesHome({ HERMES_HOME: ' ./tmp/hermes-home ' })).toBe(resolve('./tmp/hermes-home'))
+    expect(getHermesHome({ HERMES_HOME_DIR: ' ./tmp/hermes-home-dir ' })).toBe(resolve('./tmp/hermes-home-dir'))
+  })
+
+  it('uses DEPLOY_DIR when provided and falls back to cwd', () => {
+    expect(getDeployDir({ DEPLOY_DIR: ' ./tmp/deploy ' }, 'g:/ignored')).toBe(resolve('./tmp/deploy'))
+    expect(getDeployDir({}, '/tmp/current')).toBe(resolve('/tmp/current'))
+  })
+
+  it('treats manifest configuration as a valid update check source', () => {
+    expect(hasConfiguredManifestCheck({
+      enabled: true,
+      strategy: 'device-package',
+      packageName: '',
+      registry: '',
+      sourceLabel: 'Manifest',
+      distTag: 'latest',
+      cliBin: '',
+      script: '',
+      channel: 'stable',
+      manifestUrl: 'https://updates.example.com/stable/manifest.json',
+      manifestBaseUrl: '',
+      packageType: 'device-package',
+    })).toBe(true)
+    expect(hasConfiguredUpdateCheck({
+      enabled: true,
+      strategy: 'device-package',
+      packageName: '',
+      registry: '',
+      sourceLabel: 'Manifest',
+      distTag: 'latest',
+      cliBin: '',
+      script: '',
+      channel: 'stable',
+      manifestUrl: '',
+      manifestBaseUrl: 'https://updates.example.com',
+      packageType: 'device-package',
+    })).toBe(true)
   })
 
   it('only creates the development data directory outside production', () => {

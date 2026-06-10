@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createHash } from 'crypto'
 import { delimiter, dirname, join } from 'path'
 
 const UPDATE_PACKAGE = '@quanthermes/hermes-web-ui'
@@ -6,6 +7,7 @@ const UPDATE_REGISTRY = 'https://registry.npmjs.org'
 const UPDATE_CLI_BIN = 'hermes-web-ui.mjs'
 const UPDATE_SCRIPT = '/opt/hermes-web-ui/scripts/update-source-deploy.sh'
 const PUBLISHED_VERSION = '0.6.13'
+const WINDOWS_BASH_PATH = 'C:\\Program Files\\Git\\bin\\bash.exe'
 
 type UpdateControllerMocks = {
   execFile: ReturnType<typeof vi.fn>
@@ -14,12 +16,20 @@ type UpdateControllerMocks = {
   unref: ReturnType<typeof vi.fn>
   existsSync: ReturnType<typeof vi.fn>
   readFileSync: ReturnType<typeof vi.fn>
+  writeFileSync: ReturnType<typeof vi.fn>
+  renameSync: ReturnType<typeof vi.fn>
+  unlinkSync: ReturnType<typeof vi.fn>
   appendFileSync: ReturnType<typeof vi.fn>
 }
 
 async function loadUpdateController(overrides: Partial<UpdateControllerMocks> = {}) {
   const execFile = overrides.execFile ?? vi.fn((_command: string, _args: string[], _options: any, callback: any) => callback(null, '', ''))
-  const execFileSync = overrides.execFileSync ?? vi.fn().mockReturnValue('updated')
+  const execFileSync = overrides.execFileSync ?? vi.fn((command: string, args?: string[]) => {
+    if (command === 'where.exe' && (args?.[0] === 'bash' || args?.[0] === 'bash.exe')) {
+      return `${WINDOWS_BASH_PATH}\r\n`
+    }
+    return 'updated'
+  })
   const unref = overrides.unref ?? vi.fn()
   const spawn = overrides.spawn ?? vi.fn(() => ({ unref, on: vi.fn() }))
   const existsSync = overrides.existsSync ?? vi.fn(() => true)
@@ -28,6 +38,9 @@ async function loadUpdateController(overrides: Partial<UpdateControllerMocks> = 
     version: '0.0.0',
     repository: { url: 'https://github.com/EKKOLearnAI/hermes-web-ui.git' },
   }))
+  const writeFileSync = overrides.writeFileSync ?? vi.fn()
+  const renameSync = overrides.renameSync ?? vi.fn()
+  const unlinkSync = overrides.unlinkSync ?? vi.fn()
   const appendFileSync = overrides.appendFileSync ?? vi.fn()
 
   vi.resetModules()
@@ -39,14 +52,16 @@ async function loadUpdateController(overrides: Partial<UpdateControllerMocks> = 
     mkdirSync: vi.fn(),
     openSync: vi.fn(() => 1),
     readFileSync,
+    renameSync,
     rmSync: vi.fn(),
-    writeFileSync: vi.fn(),
+    unlinkSync,
+    writeFileSync,
   }))
 
   const mod = await import('../../packages/server/src/controllers/update')
   return {
     ...mod,
-    mocks: { execFile, execFileSync, spawn, unref, existsSync, readFileSync, appendFileSync },
+    mocks: { execFile, execFileSync, spawn, unref, existsSync, readFileSync, writeFileSync, renameSync, unlinkSync, appendFileSync },
   }
 }
 
@@ -54,6 +69,48 @@ function createMockCtx() {
   return {
     status: 200,
     body: null as unknown,
+  }
+}
+
+function createStatefulFsMocks(initialState?: unknown): Partial<UpdateControllerMocks> & { getState: () => string } {
+  let stateFileContents = initialState ? JSON.stringify(initialState) : ''
+  let tempStateContents = ''
+  const packageJson = JSON.stringify({
+    name: 'hermes-web-ui',
+    version: '0.6.10',
+    repository: { url: 'https://github.com/EKKOLearnAI/hermes-web-ui.git' },
+  })
+
+  return {
+    existsSync: vi.fn((filePath: string) => {
+      const normalized = String(filePath)
+      if (normalized.endsWith('update-task-state.json')) return Boolean(stateFileContents)
+      if (normalized.endsWith('update-task-state.json.tmp')) return Boolean(tempStateContents)
+      return true
+    }),
+    readFileSync: vi.fn((filePath: string) => {
+      const normalized = String(filePath)
+      if (normalized.endsWith('update-task-state.json')) return stateFileContents
+      if (normalized.endsWith('update-task-state.json.tmp')) return tempStateContents
+      return packageJson
+    }),
+    writeFileSync: vi.fn((filePath: string, content: string) => {
+      if (String(filePath).endsWith('update-task-state.json.tmp')) {
+        tempStateContents = String(content)
+      }
+    }),
+    renameSync: vi.fn((fromPath: string, toPath: string) => {
+      if (String(fromPath).endsWith('update-task-state.json.tmp') && String(toPath).endsWith('update-task-state.json')) {
+        stateFileContents = tempStateContents
+        tempStateContents = ''
+      }
+    }),
+    unlinkSync: vi.fn((filePath: string) => {
+      if (String(filePath).endsWith('update-task-state.json')) {
+        stateFileContents = ''
+      }
+    }),
+    getState: () => stateFileContents,
   }
 }
 
@@ -86,6 +143,16 @@ describe('update controller', () => {
   const originalUpdateCliBin = process.env.WEBUI_UPDATE_CLI_BIN
   const originalUpdateStrategy = process.env.WEBUI_UPDATE_STRATEGY
   const originalUpdateScript = process.env.WEBUI_UPDATE_SCRIPT
+  const originalWebUiHome = process.env.HERMES_WEB_UI_HOME
+  const originalWebUiStateDir = process.env.HERMES_WEBUI_STATE_DIR
+  const originalUploadDir = process.env.UPLOAD_DIR
+  const originalHermesHome = process.env.HERMES_HOME
+  const originalHermesHomeDir = process.env.HERMES_HOME_DIR
+  const originalUpdateManifestUrl = process.env.WEBUI_UPDATE_MANIFEST_URL
+  const originalUpdateManifestBaseUrl = process.env.WEBUI_UPDATE_MANIFEST_BASE_URL
+  const originalUpdateInstallerScript = process.env.WEBUI_UPDATE_INSTALLER_SCRIPT
+  const originalUpdatePackageType = process.env.WEBUI_UPDATE_PACKAGE_TYPE
+  const originalUpdateChannel = process.env.WEBUI_UPDATE_CHANNEL
   const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
 
   beforeEach(() => {
@@ -97,6 +164,16 @@ describe('update controller', () => {
     process.env.WEBUI_UPDATE_CLI_BIN = UPDATE_CLI_BIN
     delete process.env.WEBUI_UPDATE_STRATEGY
     delete process.env.WEBUI_UPDATE_SCRIPT
+    delete process.env.HERMES_WEB_UI_HOME
+    delete process.env.HERMES_WEBUI_STATE_DIR
+    delete process.env.UPLOAD_DIR
+    delete process.env.HERMES_HOME
+    delete process.env.HERMES_HOME_DIR
+    delete process.env.WEBUI_UPDATE_MANIFEST_URL
+    delete process.env.WEBUI_UPDATE_MANIFEST_BASE_URL
+    delete process.env.WEBUI_UPDATE_INSTALLER_SCRIPT
+    delete process.env.WEBUI_UPDATE_PACKAGE_TYPE
+    delete process.env.WEBUI_UPDATE_CHANNEL
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -128,6 +205,26 @@ describe('update controller', () => {
     else process.env.WEBUI_UPDATE_STRATEGY = originalUpdateStrategy
     if (originalUpdateScript === undefined) delete process.env.WEBUI_UPDATE_SCRIPT
     else process.env.WEBUI_UPDATE_SCRIPT = originalUpdateScript
+    if (originalWebUiHome === undefined) delete process.env.HERMES_WEB_UI_HOME
+    else process.env.HERMES_WEB_UI_HOME = originalWebUiHome
+    if (originalWebUiStateDir === undefined) delete process.env.HERMES_WEBUI_STATE_DIR
+    else process.env.HERMES_WEBUI_STATE_DIR = originalWebUiStateDir
+    if (originalUploadDir === undefined) delete process.env.UPLOAD_DIR
+    else process.env.UPLOAD_DIR = originalUploadDir
+    if (originalHermesHome === undefined) delete process.env.HERMES_HOME
+    else process.env.HERMES_HOME = originalHermesHome
+    if (originalHermesHomeDir === undefined) delete process.env.HERMES_HOME_DIR
+    else process.env.HERMES_HOME_DIR = originalHermesHomeDir
+    if (originalUpdateManifestUrl === undefined) delete process.env.WEBUI_UPDATE_MANIFEST_URL
+    else process.env.WEBUI_UPDATE_MANIFEST_URL = originalUpdateManifestUrl
+    if (originalUpdateManifestBaseUrl === undefined) delete process.env.WEBUI_UPDATE_MANIFEST_BASE_URL
+    else process.env.WEBUI_UPDATE_MANIFEST_BASE_URL = originalUpdateManifestBaseUrl
+    if (originalUpdateInstallerScript === undefined) delete process.env.WEBUI_UPDATE_INSTALLER_SCRIPT
+    else process.env.WEBUI_UPDATE_INSTALLER_SCRIPT = originalUpdateInstallerScript
+    if (originalUpdatePackageType === undefined) delete process.env.WEBUI_UPDATE_PACKAGE_TYPE
+    else process.env.WEBUI_UPDATE_PACKAGE_TYPE = originalUpdatePackageType
+    if (originalUpdateChannel === undefined) delete process.env.WEBUI_UPDATE_CHANNEL
+    else process.env.WEBUI_UPDATE_CHANNEL = originalUpdateChannel
     delete process.env.HERMES_WEB_UI_PREVIEW_REPO
   })
 
@@ -137,7 +234,10 @@ describe('update controller', () => {
     const npmCli = getNpmCliPath()
     const globalPrefix = getNodePrefix()
     const cliScript = getGlobalCliScript(globalPrefix)
-    const execFileSync = vi.fn((_command: string, args: string[]) => {
+    const execFileSync = vi.fn((command: string, args: string[]) => {
+      if (command === 'where.exe' && (args[0] === 'bash' || args[0] === 'bash.exe')) {
+        return `${WINDOWS_BASH_PATH}\r\n`
+      }
       if (args[1] === 'root') {
         return process.platform === 'win32'
           ? join(globalPrefix, 'node_modules')
@@ -164,7 +264,13 @@ describe('update controller', () => {
         }),
       }),
     )
-    expect(ctx.body).toEqual({ success: true, message: 'updated' })
+    expect(ctx.body).toEqual(expect.objectContaining({
+      success: true,
+      message: 'updated',
+      status: 'running',
+      stage: 'restarting',
+      taskId: expect.any(String),
+    }))
 
     vi.runAllTimers()
 
@@ -199,10 +305,13 @@ describe('update controller', () => {
 
     await handleUpdate(ctx)
 
-    expect(ctx.body).toEqual({
+    expect(ctx.body).toEqual(expect.objectContaining({
       success: true,
       message: `Starting source deployment update to ${PUBLISHED_VERSION}`,
-    })
+      status: 'running',
+      stage: 'starting',
+      taskId: expect.any(String),
+    }))
     expect(mocks.execFileSync).not.toHaveBeenCalledWith(
       expect.anything(),
       expect.arrayContaining(['install']),
@@ -212,7 +321,7 @@ describe('update controller', () => {
     vi.runAllTimers()
 
     expect(mocks.spawn).toHaveBeenCalledWith(
-      process.platform === 'win32' ? 'bash' : UPDATE_SCRIPT,
+      process.platform === 'win32' ? WINDOWS_BASH_PATH : UPDATE_SCRIPT,
       process.platform === 'win32'
         ? [UPDATE_SCRIPT, '--version', PUBLISHED_VERSION]
         : ['--version', PUBLISHED_VERSION],
@@ -276,6 +385,200 @@ describe('update controller', () => {
     expect(mocks.spawn).not.toHaveBeenCalled()
   })
 
+  it('starts the device package installer after manifest download and checksum verification', async () => {
+    process.env.WEBUI_UPDATE_STRATEGY = 'device-package'
+    process.env.WEBUI_UPDATE_MANIFEST_URL = 'https://updates.example.com/stable/manifest.json'
+    process.env.WEBUI_UPDATE_INSTALLER_SCRIPT = '/opt/hermes-web-ui/scripts/install-device-package.sh'
+    process.env.WEBUI_UPDATE_PACKAGE_TYPE = 'device-package'
+    process.env.WEBUI_UPDATE_CHANNEL = 'stable'
+    const packageBuffer = Buffer.from('device package archive bytes')
+    const sha256 = createHash('sha256').update(packageBuffer).digest('hex')
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          version: PUBLISHED_VERSION,
+          channel: 'stable',
+          sourceLabel: 'Device Manifest',
+          packageType: 'device-package',
+          artifactFormat: 'tar.gz',
+          packageUrl: 'https://updates.example.com/releases/v0.6.13/hermes-web-ui-device-v0.6.13.tar.gz',
+          sha256,
+          releasedAt: '2026-06-09T00:00:00Z',
+          compatibleNodeRange: `>=${process.versions.node}`,
+          minCurrentVersion: '0.6.10',
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        arrayBuffer: async () => packageBuffer,
+      }))
+    const readFileSync = vi.fn((filePath: string) => {
+      if (String(filePath).endsWith('.tar.gz')) return packageBuffer
+      return JSON.stringify({
+        name: 'hermes-web-ui',
+        version: '0.6.10',
+        repository: { url: 'https://github.com/EKKOLearnAI/hermes-web-ui.git' },
+      })
+    })
+    const { handleUpdate, mocks } = await loadUpdateController({ readFileSync })
+    const ctx = createMockCtx()
+
+    await handleUpdate(ctx)
+    for (let index = 0; index < 10 && mocks.spawn.mock.calls.length === 0; index += 1) {
+      await Promise.resolve()
+    }
+
+    expect(ctx.body).toEqual(expect.objectContaining({
+      success: true,
+      status: 'running',
+      stage: 'checking',
+      taskId: expect.any(String),
+    }))
+    expect(mocks.spawn).toHaveBeenCalledWith(
+      process.platform === 'win32' ? WINDOWS_BASH_PATH : '/opt/hermes-web-ui/scripts/install-device-package.sh',
+      process.platform === 'win32'
+        ? [
+            '/opt/hermes-web-ui/scripts/install-device-package.sh',
+            '--package',
+            expect.stringContaining('hermes-web-ui-device-v0.6.13.tar.gz'),
+            '--version',
+            PUBLISHED_VERSION,
+          ]
+        : [
+            '--package',
+            expect.stringContaining('hermes-web-ui-device-v0.6.13.tar.gz'),
+            '--version',
+            PUBLISHED_VERSION,
+          ],
+      expect.objectContaining({
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+        env: expect.objectContaining({
+          HERMES_WEB_UI_UPDATE_STATE_FILE: expect.stringMatching(/[\\/]update-task-state\.json$/),
+          HERMES_WEB_UI_UPDATE_LOG_DIR: expect.stringMatching(/[\\/]updates[\\/]logs$/),
+          HERMES_WEB_UI_UPDATE_TASK_ID: expect.any(String),
+          HERMES_WEB_UI_UPDATE_HEALTHCHECK_TIMEOUT_MS: '2000',
+          HERMES_WEB_UI_UPDATE_HEALTHCHECK_INTERVAL_MS: '2000',
+          HERMES_WEB_UI_UPDATE_HEALTHCHECK_RETRIES: '15',
+          HERMES_WEB_UI_UPDATE_HEALTHCHECK_INITIAL_DELAY_MS: '5000',
+          HERMES_WEB_UI_UPDATE_VERSION: PUBLISHED_VERSION,
+          HERMES_WEB_UI_UPDATE_EXPECTED_SHA256: sha256,
+        }),
+      }),
+    )
+  })
+
+  it('fails the source deployment task when bash is unavailable on Windows', async () => {
+    if (process.platform !== 'win32') return
+
+    process.env.WEBUI_UPDATE_STRATEGY = 'source-deploy'
+    process.env.WEBUI_UPDATE_SCRIPT = UPDATE_SCRIPT
+    const fsMocks = createStatefulFsMocks()
+    const execFileSync = vi.fn((command: string) => {
+      if (command === 'where.exe') {
+        throw new Error('bash not found')
+      }
+      return 'updated'
+    })
+    const { handleUpdate, updateStatus, mocks } = await loadUpdateController({ execFileSync, ...fsMocks })
+    const ctx = createMockCtx()
+    const statusCtx = createMockCtx()
+
+    await handleUpdate(ctx)
+    vi.runAllTimers()
+    await updateStatus(statusCtx)
+
+    expect(mocks.spawn).not.toHaveBeenCalled()
+    expect(statusCtx.body).toEqual({
+      currentTask: null,
+      lastTask: expect.objectContaining({
+        status: 'failed',
+        stage: 'failed',
+        error: expect.stringContaining('requires bash on Windows'),
+      }),
+    })
+  })
+
+  it('blocks updates when protected web-ui data would be inside the deploy directory', async () => {
+    process.env.HERMES_WEB_UI_HOME = './state'
+    const { handleUpdate, mocks } = await loadUpdateController()
+    const ctx = createMockCtx()
+
+    await handleUpdate(ctx)
+
+    expect(ctx.status).toBe(409)
+    expect(ctx.body).toEqual(expect.objectContaining({
+      success: false,
+      code: 'update_dangerous_layout',
+    }))
+    expect(String((ctx.body as any).message)).toContain('Web UI data directory is inside the deploy directory')
+    expect(mocks.execFileSync).not.toHaveBeenCalled()
+    expect(mocks.spawn).not.toHaveBeenCalled()
+  })
+
+  it('returns update task status for the active task', async () => {
+    process.env.WEBUI_UPDATE_STRATEGY = 'source-deploy'
+    process.env.WEBUI_UPDATE_SCRIPT = UPDATE_SCRIPT
+    const fsMocks = createStatefulFsMocks()
+    const { handleUpdate, updateStatus } = await loadUpdateController(fsMocks)
+    const ctx = createMockCtx()
+    const statusCtx = createMockCtx()
+
+    await handleUpdate(ctx)
+    await updateStatus(statusCtx)
+
+    expect(statusCtx.body).toEqual({
+      currentTask: expect.objectContaining({
+        id: expect.any(String),
+        strategy: 'source-deploy',
+        status: 'running',
+        stage: 'starting',
+        targetVersion: PUBLISHED_VERSION,
+      }),
+      lastTask: null,
+    })
+  })
+
+  it('loads the persisted update task state from disk when serving status', async () => {
+    const persistedState = {
+      currentTask: null,
+      lastTask: {
+        id: 'update-persisted',
+        strategy: 'device-package',
+        status: 'failed',
+        stage: 'rolled_back',
+        message: 'Device package update failed and was rolled back',
+        targetVersion: '0.6.13',
+        warning: '',
+        error: 'health check failed',
+        logPath: '/tmp/hermes-update.log',
+        rollbackMessage: 'Restored previous deploy from backup',
+        healthcheckUrl: 'http://127.0.0.1:8648/health',
+        startedAt: '2026-06-09T00:00:00.000Z',
+        finishedAt: '2026-06-09T00:05:00.000Z',
+      },
+    }
+    const existsSync = vi.fn((filePath: string) => String(filePath).endsWith('update-task-state.json') || String(filePath).endsWith('package.json'))
+    const readFileSync = vi.fn((filePath: string) => {
+      if (String(filePath).endsWith('update-task-state.json')) {
+        return JSON.stringify(persistedState)
+      }
+      return JSON.stringify({
+        name: 'hermes-web-ui',
+        version: '0.6.10',
+        repository: { url: 'https://github.com/EKKOLearnAI/hermes-web-ui.git' },
+      })
+    })
+    const { updateStatus } = await loadUpdateController({ existsSync, readFileSync })
+    const ctx = createMockCtx()
+
+    await updateStatus(ctx)
+
+    expect(ctx.body).toEqual(persistedState)
+  })
+
   it('does not log a restart error when the restart helper exits successfully', async () => {
     const handlers = new Map<string, (...args: any[]) => void>()
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
@@ -314,6 +617,100 @@ describe('update controller', () => {
     expect(ctx.body).toEqual({ success: false, message: 'engine mismatch' })
     expect(mocks.spawn).not.toHaveBeenCalled()
     expect(exitSpy).not.toHaveBeenCalled()
+  })
+
+  it('stores the failed task result when installation fails', async () => {
+    const fsMocks = createStatefulFsMocks()
+    const execFileSync = vi.fn(() => {
+      const error = new Error('install failed') as Error & { stderr?: string }
+      error.stderr = 'engine mismatch'
+      throw error
+    })
+    const { handleUpdate, updateStatus } = await loadUpdateController({ execFileSync, ...fsMocks })
+    const ctx = createMockCtx()
+    const statusCtx = createMockCtx()
+
+    await handleUpdate(ctx)
+    await updateStatus(statusCtx)
+
+    expect(statusCtx.body).toEqual({
+      currentTask: null,
+      lastTask: expect.objectContaining({
+        status: 'failed',
+        stage: 'failed',
+        error: 'engine mismatch',
+      }),
+    })
+  })
+
+  it('fails the device package task when bash is unavailable on Windows', async () => {
+    if (process.platform !== 'win32') return
+
+    process.env.WEBUI_UPDATE_STRATEGY = 'device-package'
+    process.env.WEBUI_UPDATE_MANIFEST_URL = 'https://updates.example.com/stable/manifest.json'
+    process.env.WEBUI_UPDATE_INSTALLER_SCRIPT = '/opt/hermes-web-ui/scripts/install-device-package.sh'
+    process.env.WEBUI_UPDATE_PACKAGE_TYPE = 'device-package'
+    process.env.WEBUI_UPDATE_CHANNEL = 'stable'
+    const fsMocks = createStatefulFsMocks()
+    const packageBuffer = Buffer.from('device package archive bytes')
+    const sha256 = createHash('sha256').update(packageBuffer).digest('hex')
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          version: PUBLISHED_VERSION,
+          channel: 'stable',
+          sourceLabel: 'Device Manifest',
+          packageType: 'device-package',
+          artifactFormat: 'tar.gz',
+          packageUrl: 'https://updates.example.com/releases/v0.6.13/hermes-web-ui-device-v0.6.13.tar.gz',
+          sha256,
+          releasedAt: '2026-06-09T00:00:00Z',
+          compatibleNodeRange: `>=${process.versions.node}`,
+          minCurrentVersion: '0.6.10',
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        arrayBuffer: async () => packageBuffer,
+      }))
+    const readFileSync = vi.fn((filePath: string) => {
+      if (String(filePath).endsWith('update-task-state.json')) {
+        return fsMocks.readFileSync!(filePath)
+      }
+      if (String(filePath).endsWith('.tar.gz')) return packageBuffer
+      return JSON.stringify({
+        name: 'hermes-web-ui',
+        version: '0.6.10',
+        repository: { url: 'https://github.com/EKKOLearnAI/hermes-web-ui.git' },
+      })
+    })
+    const execFileSync = vi.fn((command: string) => {
+      if (command === 'where.exe') {
+        throw new Error('bash not found')
+      }
+      return 'updated'
+    })
+    const { handleUpdate, updateStatus, mocks } = await loadUpdateController({ ...fsMocks, execFileSync, readFileSync })
+    const ctx = createMockCtx()
+    const statusCtx = createMockCtx()
+
+    await handleUpdate(ctx)
+    for (let index = 0; index < 20; index += 1) {
+      await updateStatus(statusCtx)
+      if ((statusCtx.body as any)?.lastTask) break
+      await Promise.resolve()
+    }
+
+    expect(mocks.spawn).not.toHaveBeenCalled()
+    expect(statusCtx.body).toEqual({
+      currentTask: null,
+      lastTask: expect.objectContaining({
+        status: 'failed',
+        stage: 'failed',
+        error: expect.stringContaining('requires bash on Windows'),
+      }),
+    })
   })
 
   it('loads preview tags through async git with a short timeout', async () => {

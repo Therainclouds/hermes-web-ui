@@ -10,6 +10,9 @@ export interface HealthResponse {
   webui_update_enabled?: boolean
   webui_update_available?: boolean
   webui_update_source_label?: string
+  webui_update_channel?: string
+  webui_update_strategy?: 'npm-package' | 'source-deploy' | 'device-package' | string
+  webui_update_package_type?: 'npm-package' | 'source-deploy' | 'device-package' | string
   node_version?: string
   agent_bridge?: {
     status: string
@@ -25,6 +28,54 @@ export interface HealthResponse {
     pid?: number
     error?: string
   }
+}
+
+export type UpdateTaskStatus = 'idle' | 'queued' | 'running' | 'succeeded' | 'failed'
+
+export type UpdateTaskStage =
+  | 'idle'
+  | 'queued'
+  | 'checking'
+  | 'resolving_version'
+  | 'downloading'
+  | 'verifying'
+  | 'backing_up'
+  | 'starting'
+  | 'installing'
+  | 'restarting'
+  | 'health_checking'
+  | 'succeeded'
+  | 'failed'
+  | 'rolled_back'
+
+export interface UpdateTaskRecord {
+  id: string
+  strategy: 'npm-package' | 'source-deploy' | 'device-package'
+  status: UpdateTaskStatus
+  stage: UpdateTaskStage
+  message: string
+  targetVersion: string
+  warning: string
+  error: string
+  logPath?: string
+  rollbackMessage?: string
+  healthcheckUrl?: string
+  startedAt: string
+  finishedAt: string | null
+}
+
+export interface UpdateStatusResponse {
+  currentTask: UpdateTaskRecord | null
+  lastTask: UpdateTaskRecord | null
+}
+
+export interface TriggerUpdateResponse {
+  success: boolean
+  message: string
+  taskId?: string
+  status?: UpdateTaskStatus
+  stage?: UpdateTaskStage
+  warning?: string
 }
 
 export interface PreviewTag {
@@ -136,8 +187,12 @@ export async function checkHealth(): Promise<HealthResponse> {
   return request<HealthResponse>('/health')
 }
 
-export async function triggerUpdate(): Promise<{ success: boolean; message: string }> {
-  return request<{ success: boolean; message: string }>('/api/hermes/update', { method: 'POST' })
+export async function triggerUpdate(): Promise<TriggerUpdateResponse> {
+  return request<TriggerUpdateResponse>('/api/hermes/update', { method: 'POST' })
+}
+
+export async function fetchUpdateStatus(): Promise<UpdateStatusResponse> {
+  return request<UpdateStatusResponse>('/api/hermes/update/status')
 }
 
 export async function fetchPreviewStatus(): Promise<PreviewStatus> {
