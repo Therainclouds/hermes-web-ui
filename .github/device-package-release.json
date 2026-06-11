@@ -1,8 +1,8 @@
 {
-  "version": "0.6.15",
-  "channel": "stable",
-  "minCurrentVersion": "0.6.13",
-  "sourceLabel": "Quanthermes Device Releases",
-  "healthcheckUrl": "http://127.0.0.1:6060/health",
-  "manifestBranch": "release-manifests"
+    "version":  "0.6.17",
+    "channel":  "stable",
+    "minCurrentVersion":  "0.6.13",
+    "sourceLabel":  "Quanthermes Device Releases",
+    "healthcheckUrl":  "http://127.0.0.1:6060/health",
+    "manifestBranch":  "release-manifests"
 }
