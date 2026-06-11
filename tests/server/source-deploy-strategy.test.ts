@@ -7,18 +7,18 @@ describe('source deploy strategy', () => {
     vi.restoreAllMocks()
   })
 
-  it('builds the script command directly on non-Windows runtimes', () => {
-    vi.spyOn(process, 'platform', 'get').mockReturnValue('linux')
-
-    expect(buildSourceDeployCommand('/opt/hermes-web-ui/scripts/update-source-deploy.sh', '0.6.13')).toEqual({
-      command: '/opt/hermes-web-ui/scripts/update-source-deploy.sh',
-      args: ['--version', '0.6.13'],
+  it('builds the script command through a discovered bash executable on Linux', () => {
+    expect(buildSourceDeployCommand(
+      '/opt/hermes-web-ui/scripts/update-source-deploy.sh',
+      '0.6.13',
+      () => '/bin/bash',
+    )).toEqual({
+      command: '/bin/bash',
+      args: ['/opt/hermes-web-ui/scripts/update-source-deploy.sh', '--version', '0.6.13'],
     })
   })
 
   it('builds the script command through a discovered bash executable on Windows', () => {
-    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
-
     expect(buildSourceDeployCommand(
       '/opt/hermes-web-ui/scripts/update-source-deploy.sh',
       '0.6.13',
@@ -29,9 +29,7 @@ describe('source deploy strategy', () => {
     })
   })
 
-  it('fails with UpdateError when bash is unavailable on Windows', () => {
-    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
-
+  it('fails with UpdateError when bash is unavailable', () => {
     expect(() => buildSourceDeployCommand(
       '/opt/hermes-web-ui/scripts/update-source-deploy.sh',
       '0.6.13',
@@ -41,6 +39,6 @@ describe('source deploy strategy', () => {
       '/opt/hermes-web-ui/scripts/update-source-deploy.sh',
       '0.6.13',
       () => undefined,
-    )).toThrow(/requires bash on Windows/)
+    )).toThrow(/requires bash, but no bash executable was found in PATH/)
   })
 })

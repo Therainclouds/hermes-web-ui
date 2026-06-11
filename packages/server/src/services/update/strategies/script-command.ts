@@ -41,15 +41,13 @@ export function buildShellScriptCommand(
   scriptLabel: string,
   resolveCommand: CommandResolver = resolveExecutable,
 ): ScriptExecutionCommand {
-  if (process.platform !== 'win32') {
-    return { command: script, args }
-  }
-
-  const bash = resolveCommand('bash') || resolveCommand('bash.exe')
+  const bash = resolveCommand('bash')
+    || resolveCommand('bash.exe')
+    || resolveCommand('/bin/bash')
   if (!bash) {
     throw new UpdateError(
       'update_execution_misconfigured',
-      `${scriptLabel} requires bash on Windows, but no bash executable was found in PATH.`,
+      `${scriptLabel} requires bash, but no bash executable was found in PATH.`,
     )
   }
 

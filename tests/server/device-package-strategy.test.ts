@@ -125,16 +125,19 @@ describe('device package strategy', () => {
     })
   })
 
-  it('builds installer command directly on non-Windows runtimes', () => {
+  it('builds installer command through a discovered bash executable on Linux', () => {
     const manifest = createManifest()
     const update = createUpdateConfig()
     const artifactPath = '/tmp/hermes-web-ui-device-v0.6.13.tar.gz'
 
-    vi.spyOn(process, 'platform', 'get').mockReturnValue('linux')
-
-    expect(buildDevicePackageInstallCommand(update.installerScript, manifest, artifactPath)).toEqual({
-      command: update.installerScript,
-      args: ['--package', artifactPath, '--version', manifest.version],
+    expect(buildDevicePackageInstallCommand(
+      update.installerScript,
+      manifest,
+      artifactPath,
+      () => '/bin/bash',
+    )).toEqual({
+      command: '/bin/bash',
+      args: [update.installerScript, '--package', artifactPath, '--version', manifest.version],
     })
   })
 
@@ -156,12 +159,10 @@ describe('device package strategy', () => {
     })
   })
 
-  it('fails with UpdateError when bash is unavailable on Windows', () => {
+  it('fails with UpdateError when bash is unavailable', () => {
     const manifest = createManifest()
     const update = createUpdateConfig()
     const artifactPath = '/tmp/hermes-web-ui-device-v0.6.13.tar.gz'
-
-    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
 
     expect(() => buildDevicePackageInstallCommand(
       update.installerScript,
@@ -174,7 +175,7 @@ describe('device package strategy', () => {
       manifest,
       artifactPath,
       () => undefined,
-    )).toThrow(/requires bash on Windows/)
+    )).toThrow(/requires bash, but no bash executable was found in PATH/)
   })
 
   it('builds installer env for the device package workflow', () => {
