@@ -39,6 +39,7 @@
 - 更新执行方式：`source-deploy`
 - 页面更新入口：`scripts/update-source-deploy.sh`
 - 适用场景：历史设备、尚未切到 `device-package` 配置的现场
+- 后端执行约定：统一以 `bash <script>.sh` 启动更新脚本，不再依赖仓库中文件 mode 是否为 `755`
 
 ### P4 推荐发布闭环模式
 
@@ -46,6 +47,7 @@
 - 更新执行方式：`device-package`
 - 包格式：`tar.gz + sha256 + manifest.json`
 - 适用场景：需要验证或接入第一阶段正式设备包发布链路的设备
+- 桥接注意：`deploy-source-armbian.sh` 的 `update-only` 重建流程必须保留整组 `device-package` 环境变量，避免旧设备重建后退回 `source-deploy`
 
 说明：
 
@@ -135,7 +137,8 @@ WEBUI_UPDATE_REPO=https://github.com/tangledup-ai/hermes-web-ui
 注意：
 
 - `WEBUI_UPDATE_REGISTRY` 和 `WEBUI_UPDATE_REPO` 不要写反引号，不要留前后空格
-- `update-source-deploy.sh` 必须是 `root:root` 且 `755`
+- 页面触发更新时，服务端会通过 `bash /opt/hermes-web-ui/scripts/update-source-deploy.sh` 执行脚本，因此不会再因仓库文件 mode 为 `644` 而在 `spawn` 前失败
+- 若运维需要直接执行脚本，仍建议 `update-source-deploy.sh` 保持 `root:root` 且 `755`
 - `hermesui` 需要一条最小 sudoers 规则，允许免密执行更新脚本
 
 推荐 sudoers：
@@ -158,14 +161,20 @@ WEBUI_UPDATE_VERIFY_SHA256=true
 WEBUI_UPDATE_STAGING_DIR=/opt/hermes-web-ui/.releases/staging
 WEBUI_UPDATE_BACKUP_DIR=/opt/hermes-web-ui/.releases/backups
 WEBUI_UPDATE_HEALTHCHECK_URL=http://127.0.0.1:6060/health
-WEBUI_UPDATE_HEALTHCHECK_TIMEOUT=60
+WEBUI_UPDATE_STATE_FILE=/home/hermesui/.hermes-web-ui/updates/update-task-state.json
+WEBUI_UPDATE_LOG_DIR=/home/hermesui/.hermes-web-ui/updates/logs
+WEBUI_UPDATE_HEALTHCHECK_TIMEOUT_MS=60000
+WEBUI_UPDATE_HEALTHCHECK_INTERVAL_MS=2000
+WEBUI_UPDATE_HEALTHCHECK_RETRIES=15
+WEBUI_UPDATE_HEALTHCHECK_INITIAL_DELAY_MS=5000
 ```
 
 说明：
 
 - 若同时配置 `WEBUI_UPDATE_MANIFEST_URL` 和 `WEBUI_UPDATE_MANIFEST_BASE_URL`，以前者为准
 - `WEBUI_UPDATE_MANIFEST_BASE_URL` 应指向 `release-manifests/releases` 根路径，不要直接带 `latest.json`
-- `WEBUI_UPDATE_INSTALLER_SCRIPT` 必须存在于部署目录并具备执行权限
+- 页面触发更新时，服务端会通过 `bash /opt/hermes-web-ui/scripts/install-device-package.sh` 执行安装器，因此不会再因仓库文件 mode 为 `644` 而在 `spawn` 前失败
+- `deploy-source-armbian.sh` 的 `update-only` 重建流程必须保留上面这组 `device-package` 变量，否则旧设备会在重建后失去 manifest 配置
 - `WEBUI_UPDATE_VERIFY_SHA256` 在第一阶段建议保持 `true`
 
 ### 与数据保护相关的变量
@@ -240,7 +249,12 @@ WEBUI_UPDATE_VERIFY_SHA256=true
 WEBUI_UPDATE_STAGING_DIR=/opt/hermes-web-ui/.releases/staging
 WEBUI_UPDATE_BACKUP_DIR=/opt/hermes-web-ui/.releases/backups
 WEBUI_UPDATE_HEALTHCHECK_URL=http://127.0.0.1:6060/health
-WEBUI_UPDATE_HEALTHCHECK_TIMEOUT=60
+WEBUI_UPDATE_STATE_FILE=/home/hermesui/.hermes-web-ui/updates/update-task-state.json
+WEBUI_UPDATE_LOG_DIR=/home/hermesui/.hermes-web-ui/updates/logs
+WEBUI_UPDATE_HEALTHCHECK_TIMEOUT_MS=60000
+WEBUI_UPDATE_HEALTHCHECK_INTERVAL_MS=2000
+WEBUI_UPDATE_HEALTHCHECK_RETRIES=15
+WEBUI_UPDATE_HEALTHCHECK_INITIAL_DELAY_MS=5000
 ```
 
 修改后执行：

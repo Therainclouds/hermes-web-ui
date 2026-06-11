@@ -470,19 +470,25 @@ describe('update controller', () => {
     )
   })
 
-  it('fails the source deployment task when bash is unavailable on Windows', async () => {
+  it('fails the source deployment task when bash is unavailable', async () => {
     if (process.platform !== 'win32') return
 
     process.env.WEBUI_UPDATE_STRATEGY = 'source-deploy'
     process.env.WEBUI_UPDATE_SCRIPT = UPDATE_SCRIPT
     const fsMocks = createStatefulFsMocks()
+    const existsSync = vi.fn((filePath: string) => {
+      if (String(filePath).replace(/\\/g, '/').endsWith('/bin/bash')) {
+        return false
+      }
+      return fsMocks.existsSync!(filePath)
+    })
     const execFileSync = vi.fn((command: string) => {
       if (command === 'where.exe') {
         throw new Error('bash not found')
       }
       return 'updated'
     })
-    const { handleUpdate, updateStatus, mocks } = await loadUpdateController({ execFileSync, ...fsMocks })
+    const { handleUpdate, updateStatus, mocks } = await loadUpdateController({ ...fsMocks, existsSync, execFileSync })
     const ctx = createMockCtx()
     const statusCtx = createMockCtx()
 
@@ -496,7 +502,7 @@ describe('update controller', () => {
       lastTask: expect.objectContaining({
         status: 'failed',
         stage: 'failed',
-        error: expect.stringContaining('requires bash on Windows'),
+        error: expect.stringContaining('requires bash, but no bash executable was found in PATH'),
       }),
     })
   })
@@ -643,7 +649,7 @@ describe('update controller', () => {
     })
   })
 
-  it('fails the device package task when bash is unavailable on Windows', async () => {
+  it('fails the device package task when bash is unavailable', async () => {
     if (process.platform !== 'win32') return
 
     process.env.WEBUI_UPDATE_STRATEGY = 'device-package'
@@ -652,6 +658,12 @@ describe('update controller', () => {
     process.env.WEBUI_UPDATE_PACKAGE_TYPE = 'device-package'
     process.env.WEBUI_UPDATE_CHANNEL = 'stable'
     const fsMocks = createStatefulFsMocks()
+    const existsSync = vi.fn((filePath: string) => {
+      if (String(filePath).replace(/\\/g, '/').endsWith('/bin/bash')) {
+        return false
+      }
+      return fsMocks.existsSync!(filePath)
+    })
     const packageBuffer = Buffer.from('device package archive bytes')
     const sha256 = createHash('sha256').update(packageBuffer).digest('hex')
     vi.stubGlobal('fetch', vi.fn()
@@ -691,7 +703,7 @@ describe('update controller', () => {
       }
       return 'updated'
     })
-    const { handleUpdate, updateStatus, mocks } = await loadUpdateController({ ...fsMocks, execFileSync, readFileSync })
+    const { handleUpdate, updateStatus, mocks } = await loadUpdateController({ ...fsMocks, existsSync, execFileSync, readFileSync })
     const ctx = createMockCtx()
     const statusCtx = createMockCtx()
 
@@ -708,7 +720,7 @@ describe('update controller', () => {
       lastTask: expect.objectContaining({
         status: 'failed',
         stage: 'failed',
-        error: expect.stringContaining('requires bash on Windows'),
+        error: expect.stringContaining('requires bash, but no bash executable was found in PATH'),
       }),
     })
   })
