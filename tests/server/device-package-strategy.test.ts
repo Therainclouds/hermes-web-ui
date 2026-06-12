@@ -26,6 +26,7 @@ function createUpdateConfig(overrides: Partial<UpdateConfig> = {}): UpdateConfig
     script: '',
     channel: 'stable',
     manifestUrl: 'https://updates.example.com/stable/manifest.json',
+    manifestUrls: [],
     manifestBaseUrl: '',
     packageType: 'device-package',
     installerScript: '/opt/hermes-web-ui/scripts/install-device-package.sh',
@@ -55,6 +56,7 @@ function createManifest(overrides: Partial<DevicePackageManifest> = {}): DeviceP
     manifestUrl: 'https://updates.example.com/stable/manifest.json',
     artifactFormat: 'tar.gz',
     packageUrl: 'https://updates.example.com/releases/v0.6.13/hermes-web-ui-device-v0.6.13.tar.gz',
+    packageUrls: undefined,
     sha256: 'a'.repeat(64),
     releasedAt: '2026-06-09T00:00:00Z',
     compatibleNodeRange: `>=${process.versions.node}`,
@@ -168,6 +170,34 @@ describe('device package strategy', () => {
     })
   })
 
+  it('tries the next package source when the primary URL fails', async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'hermes-web-ui-device-package-'))
+    const packageBuffer = Buffer.from('device package via fallback source list')
+    const sha256 = createHash('sha256').update(packageBuffer).digest('hex')
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new TypeError('fetch failed'), { code: 'ETIMEDOUT' }))
+      .mockResolvedValueOnce({
+        ok: true,
+        arrayBuffer: async () => packageBuffer,
+      })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await downloadAndVerifyDevicePackage(
+      createUpdateConfig({ stagingDir: join(tempRoot, 'staging') }),
+      createManifest({
+        packageUrl: 'https://oss.example.com/device-package.tar.gz',
+        packageUrls: [
+          'https://oss.example.com/device-package.tar.gz',
+          'https://github.com/example/device-package.tar.gz',
+        ],
+        sha256,
+      }),
+    )
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(readFileSync(result.artifactPath)).toEqual(packageBuffer)
+  })
+
   it('returns a structured package fetch failure when both transports fail', async () => {
     tempRoot = mkdtempSync(join(tmpdir(), 'hermes-web-ui-device-package-'))
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(Object.assign(new TypeError('fetch failed'), { code: 'ETIMEDOUT' })))
@@ -179,9 +209,12 @@ describe('device package strategy', () => {
       code: 'update_package_fetch_failed',
       details: expect.objectContaining({
         packageUrl: 'http://127.0.0.1:1/device-package.tar.gz',
-        primary: expect.objectContaining({
-          message: 'fetch failed',
-        }),
+        packageUrls: ['http://127.0.0.1:1/device-package.tar.gz'],
+        failures: expect.arrayContaining([
+          expect.objectContaining({
+            packageUrl: 'http://127.0.0.1:1/device-package.tar.gz',
+          }),
+        ]),
       }),
     })
   })

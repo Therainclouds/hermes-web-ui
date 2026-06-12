@@ -94,6 +94,15 @@ jobs:
           console.log(`manifest_branch=${metadata.manifestBranch}`)
           console.log(`manifest_base_url=${metadata.manifestBaseUrl}`)
           console.log(`latest_url=${metadata.latestUrl}`)
+          console.log(`oss_path=${metadata.ossPath || ''}`)
+          console.log(`oss_public_base_url=${metadata.ossPublicBaseUrl || ''}`)
+          console.log(`oss_artifact_path=${metadata.ossArtifactPath || ''}`)
+          console.log(`oss_sha_path=${metadata.ossShaPath || ''}`)
+          console.log(`oss_manifest_path=${metadata.ossManifestPath || ''}`)
+          console.log(`oss_latest_path=${metadata.ossLatestPath || ''}`)
+          console.log(`oss_artifact_url=${metadata.ossArtifactUrl || ''}`)
+          console.log(`oss_manifest_url=${metadata.ossManifestUrl || ''}`)
+          console.log(`oss_latest_url=${metadata.ossLatestUrl || ''}`)
           NODE
 
       - name: Ensure GitHub release exists
@@ -118,6 +127,24 @@ jobs:
             "${{ steps.metadata.outputs.manifest_path }}" \
             --repo "${GITHUB_REPOSITORY}" \
             --clobber
+
+      - name: Setup OSS util
+        if: steps.metadata.outputs.oss_path != ''
+        uses: yizhoumo/setup-ossutil@v2
+        with:
+          endpoint: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
+          access-key-id: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
+          access-key-secret: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
+
+      - name: Upload release assets to OSS
+        if: steps.metadata.outputs.oss_path != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          ossutil cp -f "${{ steps.metadata.outputs.artifact_path }}" "${{ steps.metadata.outputs.oss_artifact_path }}"
+          ossutil cp -f "${{ steps.metadata.outputs.sha_path }}" "${{ steps.metadata.outputs.oss_sha_path }}"
+          ossutil cp -f "${{ steps.metadata.outputs.manifest_path }}" "${{ steps.metadata.outputs.oss_manifest_path }}"
+          ossutil cp -f "${{ steps.metadata.outputs.latest_path }}" "${{ steps.metadata.outputs.oss_latest_path }}"
 
       - name: Publish latest.json on manifest branch
         shell: bash
@@ -184,6 +211,25 @@ jobs:
           if [ "${actual_sha}" != "${expected_sha}" ]; then
             echo "Published device package checksum mismatch: expected ${expected_sha}, got ${actual_sha}" >&2
             exit 1
+          fi
+
+          if [ -n "${{ steps.metadata.outputs.oss_latest_url }}" ]; then
+            curl -fsSL "${{ steps.metadata.outputs.oss_latest_url }}" > /tmp/oss-latest.json
+            diff -u "${{ steps.metadata.outputs.latest_path }}" /tmp/oss-latest.json
+          fi
+
+          if [ -n "${{ steps.metadata.outputs.oss_manifest_url }}" ]; then
+            curl -fsSL "${{ steps.metadata.outputs.oss_manifest_url }}" > /tmp/oss-manifest.json
+            diff -u "${{ steps.metadata.outputs.manifest_path }}" /tmp/oss-manifest.json
+          fi
+
+          if [ -n "${{ steps.metadata.outputs.oss_artifact_url }}" ]; then
+            curl -fsSL "${{ steps.metadata.outputs.oss_artifact_url }}" > /tmp/oss-device-package.tar.gz
+            oss_actual_sha="$(sha256sum /tmp/oss-device-package.tar.gz | awk '{print $1}')"
+            if [ "${oss_actual_sha}" != "${expected_sha}" ]; then
+              echo "OSS device package checksum mismatch: expected ${expected_sha}, got ${oss_actual_sha}" >&2
+              exit 1
+            fi
           fi
 
       - name: Upload release metadata artifact

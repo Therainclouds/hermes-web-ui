@@ -94,6 +94,13 @@ function normalizeOptionalUrl(value: string | undefined): string {
   return sanitizeConfigValue(value)
 }
 
+function parseUrlList(value: string | undefined): string[] {
+  return (value || '')
+    .split(/[\r\n,]+/)
+    .map(entry => normalizeOptionalUrl(entry))
+    .filter(Boolean)
+}
+
 function normalizePackageName(value: string | undefined): string {
   return (value || '').trim()
 }
@@ -162,6 +169,8 @@ const updatePackageName = normalizePackageName(process.env.WEBUI_UPDATE_PACKAGE)
 const updateRegistry = normalizeUrl(process.env.WEBUI_UPDATE_REGISTRY)
 const updateManifestUrl = normalizeOptionalUrl(process.env.WEBUI_UPDATE_MANIFEST_URL)
 const updateManifestBaseUrl = normalizeUrl(process.env.WEBUI_UPDATE_MANIFEST_BASE_URL)
+const updateManifestUrls = parseUrlList(process.env.WEBUI_UPDATE_MANIFEST_URLS)
+const updateManifestBaseUrls = parseUrlList(process.env.WEBUI_UPDATE_MANIFEST_BASE_URLS)
 
 export const config = {
   port: parseInt(process.env.PORT || '8648', 10),
@@ -184,6 +193,10 @@ export const config = {
     script: (process.env.WEBUI_UPDATE_SCRIPT || '').trim(),
     channel: (process.env.WEBUI_UPDATE_CHANNEL || 'stable').trim() || 'stable',
     manifestUrl: updateManifestUrl,
+    manifestUrls: [
+      ...updateManifestUrls,
+      ...updateManifestBaseUrls.map(baseUrl => `${baseUrl}/${(process.env.WEBUI_UPDATE_CHANNEL || 'stable').trim() || 'stable'}/latest.json`),
+    ],
     manifestBaseUrl: updateManifestBaseUrl,
     packageType: normalizeUpdatePackageType(process.env.WEBUI_UPDATE_PACKAGE_TYPE),
     installerScript: (process.env.WEBUI_UPDATE_INSTALLER_SCRIPT || '').trim() || getDefaultInstallerScript(),
@@ -206,7 +219,7 @@ export const config = {
 export function hasConfiguredManifestCheck(
   envUpdate: typeof config.update = config.update,
 ): boolean {
-  return Boolean(envUpdate.enabled && (envUpdate.manifestUrl || envUpdate.manifestBaseUrl))
+  return Boolean(envUpdate.enabled && (envUpdate.manifestUrl || envUpdate.manifestBaseUrl || envUpdate.manifestUrls?.length))
 }
 
 export function hasConfiguredUpdateCheck(
@@ -214,7 +227,7 @@ export function hasConfiguredUpdateCheck(
 ): boolean {
   return Boolean(
     envUpdate.enabled
-    && ((envUpdate.manifestUrl || envUpdate.manifestBaseUrl) || (envUpdate.packageName && envUpdate.registry)),
+    && ((envUpdate.manifestUrl || envUpdate.manifestBaseUrl || envUpdate.manifestUrls?.length) || (envUpdate.packageName && envUpdate.registry)),
   )
 }
 
@@ -224,7 +237,7 @@ export function hasConfiguredUpdateExecution(
   if (!hasConfiguredUpdateCheck(envUpdate))
     return false
   if (envUpdate.strategy === 'device-package')
-    return Boolean((envUpdate.manifestUrl || envUpdate.manifestBaseUrl) && envUpdate.installerScript)
+    return Boolean((envUpdate.manifestUrl || envUpdate.manifestBaseUrl || envUpdate.manifestUrls?.length) && envUpdate.installerScript)
   if (envUpdate.strategy === 'source-deploy')
     return Boolean(envUpdate.script)
   return Boolean(envUpdate.cliBin)

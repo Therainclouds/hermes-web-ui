@@ -13,6 +13,7 @@ export interface UpdateConfig {
   script: string
   channel: string
   manifestUrl: string
+  manifestUrls?: string[]
   manifestBaseUrl: string
   packageType: UpdatePackageType
   installerScript: string
@@ -112,6 +113,7 @@ export interface ManifestUpdateInfo {
 export interface DevicePackageManifest extends ManifestUpdateInfo {
   artifactFormat: 'tar.gz'
   packageUrl: string
+  packageUrls?: string[]
   sha256: string
   releasedAt: string
   compatibleNodeRange: string

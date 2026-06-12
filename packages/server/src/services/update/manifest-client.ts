@@ -17,6 +17,7 @@ interface RawManifestPayload {
   packageType?: unknown
   artifactFormat?: unknown
   packageUrl?: unknown
+  packageUrls?: unknown
   sha256?: unknown
   releasedAt?: unknown
   compatibleNodeMajor?: unknown
@@ -47,54 +48,70 @@ export function resolveConfiguredManifestUrl(update: UpdateConfig = config.updat
   return ''
 }
 
+export function resolveConfiguredManifestUrls(update: UpdateConfig = config.update): string[] {
+  const configured = new Set<string>()
+  for (const manifestUrl of update.manifestUrls || []) {
+    const normalized = (manifestUrl || '').trim()
+    if (normalized) configured.add(normalized)
+  }
+  if (update.manifestUrl) configured.add(update.manifestUrl)
+  if (update.manifestBaseUrl) configured.add(buildManifestUrl(update.manifestBaseUrl, update.channel))
+  return [...configured]
+}
+
 async function fetchRawManifest(update: UpdateConfig = config.update): Promise<{ manifestUrl: string; payload: RawManifestPayload }> {
-  const manifestUrl = resolveConfiguredManifestUrl(update)
-  if (!manifestUrl) {
+  const manifestUrls = resolveConfiguredManifestUrls(update)
+  if (manifestUrls.length === 0) {
     throw new UpdateError('update_execution_misconfigured', 'Manifest update source is not configured')
   }
 
-  let response: Awaited<ReturnType<typeof fetchUpdateJson>>
-  try {
-    response = await fetchUpdateJson(manifestUrl, {
-      timeoutMs: update.manifestTimeoutMs,
-      retries: update.downloadRetries,
-      retryDelayMs: update.downloadRetryDelayMs,
-    })
-  } catch (err) {
-    if (err instanceof SyntaxError) {
-      throw new UpdateError('update_manifest_invalid', `Manifest response is not valid JSON: ${manifestUrl}`)
-    }
-    throw new UpdateError(
-      'update_manifest_fetch_failed',
-      `Failed to fetch update manifest from ${manifestUrl}.`,
-      502,
-      {
+  const failures: Array<Record<string, unknown>> = []
+  for (const manifestUrl of manifestUrls) {
+    let response: Awaited<ReturnType<typeof fetchUpdateJson>>
+    try {
+      response = await fetchUpdateJson(manifestUrl, {
+        timeoutMs: update.manifestTimeoutMs,
+        retries: update.downloadRetries,
+        retryDelayMs: update.downloadRetryDelayMs,
+      })
+    } catch (err) {
+      if (err instanceof SyntaxError) {
+        throw new UpdateError('update_manifest_invalid', `Manifest response is not valid JSON: ${manifestUrl}`)
+      }
+      failures.push({
         manifestUrl,
         ...describeUpdateNetworkError(err),
-      },
-    )
-  }
+      })
+      continue
+    }
 
-  if (!response.ok) {
-    throw new UpdateError(
-      'update_manifest_fetch_failed',
-      `Failed to load manifest from ${manifestUrl}: HTTP ${response.status}`,
-      502,
-      {
+    if (!response.ok) {
+      failures.push({
         manifestUrl,
         status: response.status,
         transport: response.transport,
         attempts: response.attempts,
-      },
-    )
+      })
+      continue
+    }
+
+    if (!response.data || typeof response.data !== 'object' || Array.isArray(response.data)) {
+      throw new UpdateError('update_manifest_invalid', `Manifest response is not a JSON object: ${manifestUrl}`)
+    }
+
+    const payload = response.data as RawManifestPayload
+    return { manifestUrl, payload }
   }
 
-  if (!response.data || typeof response.data !== 'object' || Array.isArray(response.data)) {
-    throw new UpdateError('update_manifest_invalid', `Manifest response is not a JSON object: ${manifestUrl}`)
-  }
-
-  const payload = response.data as RawManifestPayload
-  return { manifestUrl, payload }
+  throw new UpdateError(
+    'update_manifest_fetch_failed',
+    `Failed to fetch update manifest from ${manifestUrls[0]}.`,
+    502,
+    {
+      manifestUrls,
+      failures,
+    },
+  )
 }
 
 function normalizeBaseManifestInfo(
@@ -134,6 +151,11 @@ function requireStringField(value: unknown, fieldName: string, manifestUrl: stri
   return normalized
 }
 
+function normalizeUrlListField(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return [...new Set(value.map(entry => (typeof entry === 'string' ? entry.trim() : '')).filter(Boolean))]
+}
+
 function requirePositiveInteger(value: unknown, fieldName: string, manifestUrl: string): number {
   const parsed = typeof value === 'number'
     ? value
@@ -166,7 +188,8 @@ export async function fetchDevicePackageManifest(update: UpdateConfig = config.u
     )
   }
 
-  const packageUrl = requireStringField(payload.packageUrl, 'packageUrl', manifestUrl)
+  const packageUrls = normalizeUrlListField(payload.packageUrls)
+  const packageUrl = packageUrls[0] || requireStringField(payload.packageUrl, 'packageUrl', manifestUrl)
   const sha256 = requireStringField(payload.sha256, 'sha256', manifestUrl).toLowerCase()
   if (!/^[a-f0-9]{64}$/.test(sha256)) {
     throw new UpdateError('update_manifest_invalid', `Manifest sha256 must be a 64 character hex string: ${manifestUrl}`)
@@ -185,6 +208,7 @@ export async function fetchDevicePackageManifest(update: UpdateConfig = config.u
     ...info,
     artifactFormat: DEVICE_PACKAGE_ARTIFACT_FORMAT,
     packageUrl,
+    packageUrls: packageUrls.length > 0 ? packageUrls : undefined,
     sha256,
     releasedAt,
     compatibleNodeRange,

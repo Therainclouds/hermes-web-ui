@@ -5,6 +5,8 @@
   "sourceLabel": "Quanthermes Device Releases",
   "healthcheckUrl": "http://127.0.0.1:6060/health",
   "manifestBranch": "release-manifests",
+  "ossPath": "oss://tangledup-ai-staging/quanthermes_pj/quanthermes_web_ui",
+  "ossPublicBaseUrl": "https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui",
   "packageAllowlist": [
     "dist/client",
     "dist/server",

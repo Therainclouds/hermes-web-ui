@@ -15,7 +15,8 @@ function sanitizeVersionSegment(version: string): string {
 
 function inferPackageFilename(manifest: DevicePackageManifest): string {
   try {
-    const pathname = new URL(manifest.packageUrl).pathname
+    const sourceUrl = manifest.packageUrls?.[0] || manifest.packageUrl
+    const pathname = new URL(sourceUrl).pathname
     const fromUrl = basename(pathname)
     if (fromUrl) return fromUrl
   } catch {
@@ -78,35 +79,47 @@ export async function downloadAndVerifyDevicePackage(
   mkdirSync(workDir, { recursive: true })
   const artifactPath = resolve(workDir, inferPackageFilename(manifest))
 
-  let response: Awaited<ReturnType<typeof fetchUpdateBinary>>
-  try {
-    response = await fetchUpdateBinary(manifest.packageUrl, {
-      timeoutMs: update.packageTimeoutMs,
-      retries: update.downloadRetries,
-      retryDelayMs: update.downloadRetryDelayMs,
-    })
-  } catch (err) {
-    throw new UpdateError(
-      'update_package_fetch_failed',
-      `Failed to download device package ${manifest.version} from ${manifest.packageUrl}.`,
-      502,
-      {
-        packageUrl: manifest.packageUrl,
+  const packageUrls = [...new Set((manifest.packageUrls || [manifest.packageUrl]).filter(Boolean))]
+  const failures: Array<Record<string, unknown>> = []
+  let response: Awaited<ReturnType<typeof fetchUpdateBinary>> | null = null
+  let resolvedPackageUrl = manifest.packageUrl
+
+  for (const packageUrl of packageUrls) {
+    try {
+      const candidate = await fetchUpdateBinary(packageUrl, {
+        timeoutMs: update.packageTimeoutMs,
+        retries: update.downloadRetries,
+        retryDelayMs: update.downloadRetryDelayMs,
+      })
+      if (!candidate.ok) {
+        failures.push({
+          packageUrl,
+          status: candidate.status,
+          transport: candidate.transport,
+          attempts: candidate.attempts,
+        })
+        continue
+      }
+      response = candidate
+      resolvedPackageUrl = packageUrl
+      break
+    } catch (err) {
+      failures.push({
+        packageUrl,
         ...describeUpdateNetworkError(err),
-      },
-    )
+      })
+    }
   }
 
-  if (!response.ok) {
+  if (!response) {
     throw new UpdateError(
       'update_package_fetch_failed',
-      `Failed to download device package ${manifest.version}: HTTP ${response.status}`,
+      `Failed to download device package ${manifest.version} from ${packageUrls[0] || manifest.packageUrl}.`,
       502,
       {
-        packageUrl: manifest.packageUrl,
-        status: response.status,
-        transport: response.transport,
-        attempts: response.attempts,
+        packageUrl: packageUrls[0] || manifest.packageUrl,
+        packageUrls,
+        failures,
       },
     )
   }
@@ -123,6 +136,7 @@ export async function downloadAndVerifyDevicePackage(
         expectedSha256: manifest.sha256,
         actualSha256,
         artifactPath,
+        packageUrl: resolvedPackageUrl,
       },
     )
   }

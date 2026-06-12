@@ -15,6 +15,7 @@ describe('update manifest client', () => {
       script: '',
       channel: 'stable',
       manifestUrl: '',
+      manifestUrls: [],
       manifestBaseUrl: '',
       packageType: 'device-package' as const,
       installerScript: '/opt/hermes-web-ui/scripts/install-device-package.sh',
@@ -88,6 +89,40 @@ describe('update manifest client', () => {
     })
   })
 
+  it('falls back to the next configured manifest URL when the first source fails', async () => {
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new TypeError('fetch failed'), { code: 'ETIMEDOUT' }))
+      .mockResolvedValueOnce({
+        ok: true,
+        url: 'https://oss.example.com/releases/stable/latest.json',
+        arrayBuffer: vi.fn().mockResolvedValue(Buffer.from(JSON.stringify({
+          version: '1.2.3',
+          channel: 'stable',
+          sourceLabel: 'OSS Manifest',
+          packageType: 'device-package',
+        }))),
+      })
+    vi.stubGlobal('fetch', fetchMock)
+    const { fetchManifestUpdateInfo } = await import('../../packages/server/src/services/update/manifest-client')
+
+    const result = await fetchManifestUpdateInfo({
+      ...createUpdateConfig(),
+      manifestUrls: [
+        'https://raw.example.com/releases/stable/latest.json',
+        'https://oss.example.com/releases/stable/latest.json',
+      ],
+    })
+
+    expect(result).toEqual({
+      version: '1.2.3',
+      channel: 'stable',
+      sourceLabel: 'OSS Manifest',
+      packageType: 'device-package',
+      manifestUrl: 'https://oss.example.com/releases/stable/latest.json',
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
   it('falls back to configured metadata when optional manifest fields are missing', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
@@ -139,6 +174,10 @@ describe('update manifest client', () => {
         packageType: 'device-package',
         artifactFormat: 'tar.gz',
         packageUrl: 'https://updates.example.com/releases/v1.2.5/hermes-web-ui-device-v1.2.5.tar.gz',
+        packageUrls: [
+          'https://oss.example.com/releases/v1.2.5/hermes-web-ui-device-v1.2.5.tar.gz',
+          'https://updates.example.com/releases/v1.2.5/hermes-web-ui-device-v1.2.5.tar.gz',
+        ],
         sha256: 'a'.repeat(64),
         releasedAt: '2026-06-09T00:00:00Z',
         compatibleNodeRange: '>=23.0.0',
@@ -153,6 +192,10 @@ describe('update manifest client', () => {
     })
 
     expect(result.packageUrl).toContain('hermes-web-ui-device-v1.2.5.tar.gz')
+    expect(result.packageUrls).toEqual([
+      'https://oss.example.com/releases/v1.2.5/hermes-web-ui-device-v1.2.5.tar.gz',
+      'https://updates.example.com/releases/v1.2.5/hermes-web-ui-device-v1.2.5.tar.gz',
+    ])
     expect(result.artifactFormat).toBe('tar.gz')
     expect(result.compatibleNodeRange).toBe('>=23.0.0')
   })
@@ -196,10 +239,12 @@ describe('update manifest client', () => {
     })).rejects.toMatchObject({
       code: 'update_manifest_fetch_failed',
       details: expect.objectContaining({
-        manifestUrl: 'http://127.0.0.1:1/stable/latest.json',
-        primary: expect.objectContaining({
-          message: 'fetch failed',
-        }),
+        manifestUrls: ['http://127.0.0.1:1/stable/latest.json'],
+        failures: expect.arrayContaining([
+          expect.objectContaining({
+            manifestUrl: 'http://127.0.0.1:1/stable/latest.json',
+          }),
+        ]),
       }),
     })
   })

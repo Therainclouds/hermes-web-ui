@@ -1,0 +1,112 @@
+name: hermes-agent-oss-mirror
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Hermes Agent version, for example 0.15.2
+        required: true
+        type: string
+      wheel_url:
+        description: Source wheel URL from upstream release
+        required: true
+        type: string
+      channel:
+        description: Release channel pointer to update
+        required: false
+        default: stable
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    env:
+      OSS_PATH: oss://tangledup-ai-staging/quanthermes_pj/quanthermes_web_ui
+      OSS_PUBLIC_BASE_URL: https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Setup OSS util
+        uses: yizhoumo/setup-ossutil@v2
+        with:
+          endpoint: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
+          access-key-id: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
+          access-key-secret: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
+
+      - name: Download Hermes Agent wheel and dependencies
+        shell: bash
+        env:
+          WHEEL_URL: ${{ github.event.inputs.wheel_url }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/hermes-agent/release dist/hermes-agent/wheelhouse
+          python -m pip install --upgrade pip
+          python -m pip download --dest dist/hermes-agent/release "${WHEEL_URL}"
+          wheel_path="$(find dist/hermes-agent/release -maxdepth 1 -type f -name '*.whl' | head -n 1)"
+          if [ -z "${wheel_path}" ]; then
+            echo "Failed to download hermes-agent wheel from ${WHEEL_URL}" >&2
+            exit 1
+          fi
+          python -m pip download --dest dist/hermes-agent/wheelhouse "${wheel_path}"
+          cp -f "${wheel_path}" dist/hermes-agent/wheelhouse/
+
+      - name: Write Hermes Agent metadata
+        shell: bash
+        env:
+          AGENT_VERSION: ${{ github.event.inputs.version }}
+          WHEEL_URL: ${{ github.event.inputs.wheel_url }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/hermes-agent/metadata
+          wheel_name="$(find dist/hermes-agent/release -maxdepth 1 -type f -name '*.whl' -printf '%f\n' | head -n 1)"
+          export RELEASE_URL="${OSS_PUBLIC_BASE_URL}/hermes-agent/releases/${AGENT_VERSION}/${wheel_name}"
+          export WHEELHOUSE_URL="${OSS_PUBLIC_BASE_URL}/hermes-agent/wheelhouse/"
+          python <<'PY'
+import json
+import os
+from datetime import datetime
+from pathlib import Path
+
+payload = {
+    "version": os.environ["AGENT_VERSION"].strip(),
+    "wheelUrl": os.environ["RELEASE_URL"].strip(),
+    "wheelUrls": [
+        os.environ["RELEASE_URL"].strip(),
+        os.environ["WHEEL_URL"].strip(),
+    ],
+    "wheelhouseUrl": os.environ["WHEELHOUSE_URL"].strip(),
+    "releasedAt": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+}
+metadata_dir = Path("dist/hermes-agent/metadata")
+metadata_dir.mkdir(parents=True, exist_ok=True)
+(metadata_dir / "latest.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+PY
+
+      - name: Upload Hermes Agent wheel release to OSS
+        shell: bash
+        env:
+          AGENT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          wheel_path="$(find dist/hermes-agent/release -maxdepth 1 -type f -name '*.whl' | head -n 1)"
+          wheel_name="$(basename "${wheel_path}")"
+          ossutil cp -f "${wheel_path}" "${OSS_PATH}/hermes-agent/releases/${AGENT_VERSION}/${wheel_name}"
+          ossutil cp -r -f dist/hermes-agent/wheelhouse/ "${OSS_PATH}/hermes-agent/wheelhouse/"
+          ossutil cp -f dist/hermes-agent/metadata/latest.json "${OSS_PATH}/hermes-agent/${{ github.event.inputs.channel }}/latest.json"
+
+      - name: Verify published Hermes Agent metadata
+        shell: bash
+        env:
+          AGENT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          wheel_name="$(find dist/hermes-agent/release -maxdepth 1 -type f -name '*.whl' -printf '%f\n' | head -n 1)"
+          curl -fsSL "${OSS_PUBLIC_BASE_URL}/hermes-agent/${{ github.event.inputs.channel }}/latest.json" > /tmp/hermes-agent-latest.json
+          grep -F "\"version\": \"${AGENT_VERSION}\"" /tmp/hermes-agent-latest.json
+          curl -fsSL "${OSS_PUBLIC_BASE_URL}/hermes-agent/releases/${AGENT_VERSION}/${wheel_name}" -o /tmp/hermes-agent.whl

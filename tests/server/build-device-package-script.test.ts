@@ -38,6 +38,8 @@ function createReleaseConfig(overrides: Record<string, unknown> = {}) {
     channel: 'stable',
     minCurrentVersion: '1.0.0',
     manifestBranch: 'release-manifests',
+    ossPath: 'oss://example-bucket/hermes-web-ui',
+    ossPublicBaseUrl: 'https://example-bucket.oss-cn-shanghai.aliyuncs.com/hermes-web-ui',
     packageAllowlist: PACKAGE_ALLOWLIST,
     ...overrides,
   }
@@ -101,12 +103,19 @@ describe('build-device-package script', () => {
 
     expect(manifest).toEqual(latest)
     expect(manifest.packageUrl).toBe(
-      'https://github.com/example/hermes-web-ui/releases/download/v1.2.3/hermes-web-ui-device-v1.2.3.tar.gz',
+      'https://example-bucket.oss-cn-shanghai.aliyuncs.com/hermes-web-ui/releases/v1.2.3/hermes-web-ui-device-v1.2.3.tar.gz',
     )
+    expect(manifest.packageUrls).toEqual([
+      'https://example-bucket.oss-cn-shanghai.aliyuncs.com/hermes-web-ui/releases/v1.2.3/hermes-web-ui-device-v1.2.3.tar.gz',
+      'https://github.com/example/hermes-web-ui/releases/download/v1.2.3/hermes-web-ui-device-v1.2.3.tar.gz',
+    ])
     expect(manifest.compatibleNodeRange).toBe('>=23.0.0')
     expect(manifest.minCurrentVersion).toBe('1.0.0')
     expect(metadata.latestUrl).toBe(
       'https://raw.githubusercontent.com/example/hermes-web-ui/release-manifests/releases/stable/latest.json',
+    )
+    expect(metadata.ossLatestUrl).toBe(
+      'https://example-bucket.oss-cn-shanghai.aliyuncs.com/hermes-web-ui/releases/stable/latest.json',
     )
     expect(shaText).toContain('hermes-web-ui-device-v1.2.3.tar.gz')
     expect(entries).toEqual(expect.arrayContaining([

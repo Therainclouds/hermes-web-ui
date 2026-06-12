@@ -113,7 +113,7 @@
 
 ### device-package
 
-1. 服务启动后按 `WEBUI_UPDATE_MANIFEST_URL` 或 `WEBUI_UPDATE_MANIFEST_BASE_URL + WEBUI_UPDATE_CHANNEL` 解析 `latest.json`。
+1. 服务启动后按 `WEBUI_UPDATE_MANIFEST_URL`、`WEBUI_UPDATE_MANIFEST_URLS` 或 `WEBUI_UPDATE_MANIFEST_BASE_URL + WEBUI_UPDATE_CHANNEL` 解析 `latest.json`。
 2. `/health` 返回最新版本、更新源标签、策略、通道和包类型。
 3. 用户点击更新后，后端下载 `latest.json` 指向的设备包并校验 `sha256`。
 4. 安装器解包到 staging 目录，校验最小结构，并先调用新包里的 `deploy-source-armbian.sh` 升级 `hermes-agent` 最新稳定版。
@@ -155,13 +155,15 @@ hermesui ALL=(root) NOPASSWD:SETENV: /bin/bash /opt/hermes-web-ui/scripts/update
 
 ```bash
 WEBUI_UPDATE_ENABLED=true
-WEBUI_UPDATE_SOURCE_LABEL=Quanthermes release-manifests
+WEBUI_UPDATE_SOURCE_LABEL=Quanthermes OSS + release-manifests
 WEBUI_UPDATE_STRATEGY=device-package
 WEBUI_UPDATE_PACKAGE_TYPE=device-package
 WEBUI_UPDATE_CHANNEL=stable
-WEBUI_UPDATE_MANIFEST_BASE_URL=https://raw.githubusercontent.com/<owner>/<repo>/release-manifests/releases
+WEBUI_UPDATE_MANIFEST_BASE_URL=https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/releases
+WEBUI_UPDATE_MANIFEST_URLS=https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/releases/stable/latest.json,https://raw.githubusercontent.com/<owner>/<repo>/release-manifests/releases/stable/latest.json
 WEBUI_UPDATE_INSTALLER_SCRIPT=/opt/hermes-web-ui/scripts/install-device-package.sh
 WEBUI_UPDATE_VERIFY_SHA256=true
+WEBUI_UPDATE_STAGING_DIR=/opt/hermes-web-ui/.releases/staging
 WEBUI_UPDATE_STAGING_DIR=/opt/hermes-web-ui/.releases/staging
 WEBUI_UPDATE_BACKUP_DIR=/opt/hermes-web-ui/.releases/backups
 WEBUI_UPDATE_HEALTHCHECK_URL=http://127.0.0.1:6060/health
@@ -175,18 +177,25 @@ WEBUI_UPDATE_HEALTHCHECK_TIMEOUT_MS=60000
 WEBUI_UPDATE_HEALTHCHECK_INTERVAL_MS=2000
 WEBUI_UPDATE_HEALTHCHECK_RETRIES=15
 WEBUI_UPDATE_HEALTHCHECK_INITIAL_DELAY_MS=5000
+HERMES_AGENT_UPDATE_MANIFEST_URL=https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/hermes-agent/stable/latest.json
+HERMES_AGENT_WHEELHOUSE_URL=https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/hermes-agent/wheelhouse/
+```
+HERMES_AGENT_WHEELHOUSE_URL=https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/hermes-agent/wheelhouse/
 ```
 
 说明：
 
-- 若同时配置 `WEBUI_UPDATE_MANIFEST_URL` 和 `WEBUI_UPDATE_MANIFEST_BASE_URL`，以前者为准
+- 若同时配置 `WEBUI_UPDATE_MANIFEST_URL`、`WEBUI_UPDATE_MANIFEST_URLS` 和 `WEBUI_UPDATE_MANIFEST_BASE_URL`，服务端会按顺序依次尝试 manifest 源
 - `WEBUI_UPDATE_MANIFEST_BASE_URL` 应指向 `release-manifests/releases` 根路径，不要直接带 `latest.json`
+- `latest.json` 现在可同时携带 `packageUrl` 和 `packageUrls`，推荐把 OSS 直链放在首位、GitHub Release 放在回退位
 - 页面触发更新时，服务端会通过 `bash /opt/hermes-web-ui/scripts/install-device-package.sh` 执行安装器，因此不会再因仓库文件 mode 为 `644` 而在 `spawn` 前失败
 - `deploy-source-armbian.sh` 的 `update-only` 重建流程必须保留上面这组 `device-package` 变量，否则旧设备会在重建后失去 manifest 配置
 - `WEBUI_UPDATE_VERIFY_SHA256` 在第一阶段建议保持 `true`
 - `WEBUI_UPDATE_MANIFEST_TIMEOUT_MS` 控制 `latest.json` / `manifest.json` 拉取超时
 - `WEBUI_UPDATE_PACKAGE_TIMEOUT_MS` 控制设备包下载超时
 - `WEBUI_UPDATE_DOWNLOAD_RETRIES` 与 `WEBUI_UPDATE_DOWNLOAD_RETRY_DELAY_MS` 用于应对 GitHub 网络抖动；默认会对 manifest 和设备包下载一起生效
+- `HERMES_AGENT_UPDATE_MANIFEST_URL` 指向 OSS 上维护的 `hermes-agent/stable/latest.json`
+- `HERMES_AGENT_WHEELHOUSE_URL` 指向 OSS wheelhouse，脚本会优先使用 `--no-index --find-links` 从国内源安装依赖
 
 ### 与数据保护相关的变量
 
@@ -285,20 +294,21 @@ sudo systemctl restart hermes-web-ui
 2. 提交代码并推送到组织仓库。
 3. 推送 `v*` tag。
 4. 等待 GitHub Actions 完成 npm 发布和 `device-package-release.yml`。
-5. 用以下命令确认 npm 上已经有新版本：
+5. 如需同步新的 `hermes-agent` 稳定 wheel，手工触发 `.github/workflows/hermes-agent-oss-mirror.yml`。
+6. 用以下命令确认 npm 上已经有新版本：
 
 ```bash
 npm view @quanthermes/hermes-web-ui version
 ```
 
-6. 打开本次 `device-package-release` workflow summary，记录：
+7. 打开本次 `device-package-release` workflow summary，记录：
 
 - tag
 - channel
 - manifest branch
 - latest URL
 
-7. 对照下文“发布后校验”完成人工复核。
+8. 对照下文“发布后校验”完成人工复核。
 
 ## 发布后校验
 
@@ -334,27 +344,46 @@ git show origin/release-manifests:releases/stable/latest.json
 - `version`
 - `channel`
 - `packageUrl`
+- `packageUrls`
 - `sha256`
 - `minCurrentVersion`
 - `compatibleNodeRange`
 
-### 4. 检查真实下载与 sha256
+### 4. 检查 OSS 与 GitHub 真实下载
 
 ```bash
-curl -fsSL "<packageUrl>" -o /tmp/hermes-device-package.tar.gz
-sha256sum /tmp/hermes-device-package.tar.gz
+curl -fsSL "https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/releases/vX.Y.Z/hermes-web-ui-device-vX.Y.Z.tar.gz" -o /tmp/hermes-device-package-oss.tar.gz
+sha256sum /tmp/hermes-device-package-oss.tar.gz
+```
+
+```bash
+curl -fsSL "<packageUrl>" -o /tmp/hermes-device-package-github.tar.gz
+sha256sum /tmp/hermes-device-package-github.tar.gz
 ```
 
 预期：
 
-- 下载成功
-- 输出摘要与 `latest.json` 中的 `sha256` 一致
+- 两次下载都成功
+- 两次输出摘要与 `latest.json` 中的 `sha256` 一致
 
-### 5. 检查 manifest.json 回读一致性
+### 5. 检查 hermes-agent OSS 元数据
+
+```bash
+curl -fsSL "https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/hermes-agent/stable/latest.json"
+```
+
+预期至少包含：
+
+- `version`
+- `wheelUrl`
+- `wheelUrls`
+- `wheelhouseUrl`
+
+### 6. 检查 manifest.json 回读一致性
 
 确认 Release 下载到的 `manifest.json` 与 `release-manifests` 分支按版本归档的 `manifest.json` 一致。
 
-### 6. 记录验收留痕
+### 7. 记录验收留痕
 
 建议在发布记录中保留：
 

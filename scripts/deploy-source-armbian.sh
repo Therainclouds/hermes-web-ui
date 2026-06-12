@@ -255,6 +255,57 @@ resolve_hermes_agent_wheel_url() {
     return 0
   fi
 
+  if [[ -n "${HERMES_AGENT_UPDATE_MANIFEST_URL:-}" ]]; then
+    step "Resolve latest stable Hermes Agent wheel from update manifest"
+    local resolved_manifest_values
+    resolved_manifest_values="$(
+      python3 - "${HERMES_AGENT_UPDATE_MANIFEST_URL}" <<'PY'
+import json
+import sys
+import urllib.request
+
+manifest_url = sys.argv[1]
+request = urllib.request.Request(
+    manifest_url,
+    headers={
+        "Accept": "application/json",
+        "User-Agent": "hermes-web-ui-deploy-source-armbian",
+    },
+)
+with urllib.request.urlopen(request, timeout=20) as response:
+    payload = json.load(response)
+
+wheel_urls = payload.get("wheelUrls") or []
+wheel_url = ""
+for candidate in wheel_urls:
+    candidate = str(candidate or "").strip()
+    if candidate:
+        wheel_url = candidate
+        break
+if not wheel_url:
+    wheel_url = str(payload.get("wheelUrl") or "").strip()
+if not wheel_url:
+    raise SystemExit(f"Manifest {manifest_url} does not contain wheelUrl or wheelUrls")
+
+wheelhouse_url = str(payload.get("wheelhouseUrl") or "").strip()
+print(wheel_url)
+print(wheelhouse_url)
+PY
+    )" || true
+    if [[ -n "${resolved_manifest_values}" ]]; then
+      HERMES_AGENT_WHEEL_URL="$(printf '%s\n' "${resolved_manifest_values}" | sed -n '1p')"
+      if [[ -z "${HERMES_AGENT_WHEELHOUSE_URL:-}" ]]; then
+        HERMES_AGENT_WHEELHOUSE_URL="$(printf '%s\n' "${resolved_manifest_values}" | sed -n '2p')"
+      fi
+      info "Resolved latest stable Hermes Agent wheel from manifest: ${HERMES_AGENT_WHEEL_URL}"
+      if [[ -n "${HERMES_AGENT_WHEELHOUSE_URL:-}" ]]; then
+        info "Using Hermes Agent wheelhouse: ${HERMES_AGENT_WHEELHOUSE_URL}"
+      fi
+      return 0
+    fi
+    warn "Failed to resolve Hermes Agent wheel from ${HERMES_AGENT_UPDATE_MANIFEST_URL}. Falling back to GitHub release metadata."
+  fi
+
   step "Resolve latest stable Hermes Agent wheel"
   local resolved_url
   resolved_url="$(
@@ -370,7 +421,14 @@ install_hermes_agent() {
       run_as_app_user "python3 -m venv '${venv_dir}'"
     fi
     run_as_app_user "'${venv_dir}/bin/pip' install --upgrade pip"
-    run_as_app_user "'${venv_dir}/bin/pip' install --upgrade '${HERMES_AGENT_WHEEL_URL}'"
+    if [[ -n "${HERMES_AGENT_WHEELHOUSE_URL:-}" ]]; then
+      if ! run_as_app_user "'${venv_dir}/bin/pip' install --upgrade --no-index --find-links '${HERMES_AGENT_WHEELHOUSE_URL}' '${HERMES_AGENT_WHEEL_URL}'"; then
+        warn "Hermes Agent wheelhouse install failed. Retrying against the direct wheel URL."
+        run_as_app_user "'${venv_dir}/bin/pip' install --upgrade '${HERMES_AGENT_WHEEL_URL}'"
+      fi
+    else
+      run_as_app_user "'${venv_dir}/bin/pip' install --upgrade '${HERMES_AGENT_WHEEL_URL}'"
+    fi
     ensure_wheel_anthropic_pin
 
     # Link the command
@@ -551,7 +609,9 @@ EOF
   for update_env_name in \
     UPLOAD_DIR \
     HERMES_AGENT_WHEEL_URL \
+    HERMES_AGENT_WHEELHOUSE_URL \
     HERMES_AGENT_RELEASES_API_URL \
+    HERMES_AGENT_UPDATE_MANIFEST_URL \
     HERMES_ANTHROPIC_VERSION \
     WEBUI_UPDATE_ENABLED \
     WEBUI_UPDATE_PACKAGE \
@@ -563,7 +623,9 @@ EOF
     WEBUI_UPDATE_SCRIPT \
     WEBUI_UPDATE_REPO \
     WEBUI_UPDATE_MANIFEST_URL \
+    WEBUI_UPDATE_MANIFEST_URLS \
     WEBUI_UPDATE_MANIFEST_BASE_URL \
+    WEBUI_UPDATE_MANIFEST_BASE_URLS \
     WEBUI_UPDATE_CHANNEL \
     WEBUI_UPDATE_PACKAGE_TYPE \
     WEBUI_UPDATE_INSTALLER_SCRIPT \
@@ -763,9 +825,12 @@ NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmmirror.com}"
 NPM_BINARY_MIRROR_PREFIX="${NPM_BINARY_MIRROR_PREFIX:-https://cdn.npmmirror.com/binaries}"
 HERMES_INSTALLER_MIRROR="${HERMES_INSTALLER_MIRROR:-https://cdn.jsdelivr.net/gh/NousResearch/hermes-agent@main/scripts/install.sh}"
 HERMES_INSTALLER_FALLBACK="${HERMES_INSTALLER_FALLBACK:-https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh}"
+OSS_PUBLIC_BASE_URL="${OSS_PUBLIC_BASE_URL:-https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui}"
 DEFAULT_HERMES_AGENT_WHEEL_URL="https://github.com/NousResearch/hermes-agent/releases/download/v2026.5.29.2/hermes_agent-0.15.2-py3-none-any.whl"
 HERMES_AGENT_WHEEL_URL="${HERMES_AGENT_WHEEL_URL:-${DEFAULT_HERMES_AGENT_WHEEL_URL}}"
+HERMES_AGENT_WHEELHOUSE_URL="${HERMES_AGENT_WHEELHOUSE_URL:-${OSS_PUBLIC_BASE_URL}/hermes-agent/wheelhouse/}"
 HERMES_AGENT_RELEASES_API_URL="${HERMES_AGENT_RELEASES_API_URL:-https://api.github.com/repos/NousResearch/hermes-agent/releases/latest}"
+HERMES_AGENT_UPDATE_MANIFEST_URL="${HERMES_AGENT_UPDATE_MANIFEST_URL:-${OSS_PUBLIC_BASE_URL}/hermes-agent/stable/latest.json}"
 HERMES_AGENT_UPDATE_LATEST_STABLE="${HERMES_AGENT_UPDATE_LATEST_STABLE:-false}"
 HERMES_ANTHROPIC_VERSION="${HERMES_ANTHROPIC_VERSION:-}"
 WEBUI_BUNDLE_URL="${WEBUI_BUNDLE_URL:-}"
@@ -782,6 +847,7 @@ WEBUI_UPDATE_DIST_TAG="${WEBUI_UPDATE_DIST_TAG:-latest}"
 WEBUI_UPDATE_STRATEGY="${WEBUI_UPDATE_STRATEGY:-source-deploy}"
 WEBUI_UPDATE_SCRIPT="${WEBUI_UPDATE_SCRIPT:-${DEPLOY_DIR}/scripts/update-source-deploy.sh}"
 WEBUI_UPDATE_REPO="${WEBUI_UPDATE_REPO:-https://github.com/tangledup-ai/hermes-web-ui}"
+WEBUI_UPDATE_MANIFEST_BASE_URL="${WEBUI_UPDATE_MANIFEST_BASE_URL:-${OSS_PUBLIC_BASE_URL}/releases}"
 UPDATE_ONLY_RAW="${DEPLOY_UPDATE_ONLY:-false}"
 AGENT_ONLY_RAW="${DEPLOY_HERMES_AGENT_ONLY:-false}"
 USE_CONFIGURED_DEPLOY_DIR_RAW="${DEPLOY_USE_CONFIGURED_DIR:-false}"
