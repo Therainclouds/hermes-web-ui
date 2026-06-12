@@ -1,5 +1,7 @@
 import { createHash } from 'crypto'
 import { mkdtempSync, readFileSync, rmSync } from 'fs'
+import { createServer, type IncomingMessage, type ServerResponse } from 'http'
+import type { AddressInfo } from 'net'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -72,6 +74,21 @@ describe('device package strategy', () => {
     }
   })
 
+  async function withHttpServer(
+    handler: (req: IncomingMessage, res: ServerResponse) => void,
+    run: (baseUrl: string) => Promise<void>,
+  ): Promise<void> {
+    const server = createServer(handler)
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()))
+    const address = server.address() as AddressInfo
+    const baseUrl = `http://127.0.0.1:${address.port}`
+    try {
+      await run(baseUrl)
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close(err => (err ? reject(err) : resolve())))
+    }
+  }
+
   it('rejects when the current version is below minCurrentVersion', () => {
     const manifest = createManifest({ minCurrentVersion: '0.6.12' })
 
@@ -122,6 +139,45 @@ describe('device package strategy', () => {
       createManifest({ sha256: 'f'.repeat(64) }),
     )).rejects.toMatchObject({
       code: 'update_sha256_mismatch',
+    })
+  })
+
+  it('falls back to node-http when fetch fails during package download', async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'hermes-web-ui-device-package-'))
+    const packageBuffer = Buffer.from('device package via fallback')
+    const sha256 = createHash('sha256').update(packageBuffer).digest('hex')
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')))
+
+    await withHttpServer((_, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream' })
+      res.end(packageBuffer)
+    }, async (baseUrl) => {
+      const result = await downloadAndVerifyDevicePackage(
+        createUpdateConfig({ stagingDir: join(tempRoot, 'staging') }),
+        createManifest({
+          packageUrl: `${baseUrl}/device-package.tar.gz`,
+          sha256,
+        }),
+      )
+
+      expect(readFileSync(result.artifactPath)).toEqual(packageBuffer)
+    })
+  })
+
+  it('returns a structured package fetch failure when both transports fail', async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'hermes-web-ui-device-package-'))
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(Object.assign(new TypeError('fetch failed'), { code: 'ETIMEDOUT' })))
+
+    await expect(downloadAndVerifyDevicePackage(
+      createUpdateConfig({ stagingDir: join(tempRoot, 'staging') }),
+      createManifest({ packageUrl: 'http://127.0.0.1:1/device-package.tar.gz' }),
+    )).rejects.toMatchObject({
+      code: 'update_package_fetch_failed',
+      details: expect.objectContaining({
+        primary: expect.objectContaining({
+          message: 'fetch failed',
+        }),
+      }),
     })
   })
 

@@ -51,8 +51,8 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
-      - name: Run focused validation
-        run: npm run test -- tests/server/update-manifest-client.test.ts tests/server/build-device-package-script.test.ts tests/server/device-package-strategy.test.ts tests/server/update-controller.test.ts
+      - name: Run device-package focused validation
+        run: npm run test:device-package-release
 
       - name: Build project
         run: npm run build

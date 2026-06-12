@@ -6,6 +6,7 @@ import {
   normalizeNodeVersionRange,
 } from './device-package-contract'
 import { UpdateError } from './errors'
+import { describeUpdateNetworkError, fetchUpdateJson } from './network-client'
 import { parseSemver } from './version-compare'
 import type { DevicePackageManifest, ManifestUpdateInfo, UpdateCheckResult, UpdateConfig, UpdatePackageType } from './types'
 
@@ -52,12 +53,39 @@ async function fetchRawManifest(update: UpdateConfig = config.update): Promise<{
     throw new UpdateError('update_execution_misconfigured', 'Manifest update source is not configured')
   }
 
-  const res = await fetch(manifestUrl, { signal: AbortSignal.timeout(10_000) })
-  if (!res.ok) {
-    throw new UpdateError('update_manifest_invalid', `Failed to load manifest: HTTP ${res.status}`)
+  let response: Awaited<ReturnType<typeof fetchUpdateJson>>
+  try {
+    response = await fetchUpdateJson(manifestUrl, 10_000)
+  } catch (err) {
+    if (err instanceof SyntaxError) {
+      throw new UpdateError('update_manifest_invalid', `Manifest response is not valid JSON: ${manifestUrl}`)
+    }
+    throw new UpdateError(
+      'update_manifest_fetch_failed',
+      `Failed to fetch update manifest from ${manifestUrl}.`,
+      502,
+      describeUpdateNetworkError(err),
+    )
   }
 
-  const payload = await res.json() as RawManifestPayload
+  if (!response.ok) {
+    throw new UpdateError(
+      'update_manifest_fetch_failed',
+      `Failed to load manifest from ${manifestUrl}: HTTP ${response.status}`,
+      502,
+      {
+        manifestUrl,
+        status: response.status,
+        transport: response.transport,
+      },
+    )
+  }
+
+  if (!response.data || typeof response.data !== 'object' || Array.isArray(response.data)) {
+    throw new UpdateError('update_manifest_invalid', `Manifest response is not a JSON object: ${manifestUrl}`)
+  }
+
+  const payload = response.data as RawManifestPayload
   return { manifestUrl, payload }
 }
 

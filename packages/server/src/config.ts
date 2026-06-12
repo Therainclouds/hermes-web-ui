@@ -72,12 +72,20 @@ function parseBoolean(value: string | undefined, fallback = false): boolean {
   return ['1', 'true', 'yes', 'on'].includes(normalized)
 }
 
+export function sanitizeConfigValue(value: string | undefined): string {
+  return (value || '')
+    .trim()
+    .replace(/^[`"']+/, '')
+    .replace(/[`"']+$/, '')
+    .trim()
+}
+
 function normalizeUrl(value: string | undefined): string {
-  return (value || '').trim().replace(/\/+$/, '')
+  return sanitizeConfigValue(value).replace(/\/+$/, '')
 }
 
 function normalizeOptionalUrl(value: string | undefined): string {
-  return (value || '').trim()
+  return sanitizeConfigValue(value)
 }
 
 function normalizePackageName(value: string | undefined): string {

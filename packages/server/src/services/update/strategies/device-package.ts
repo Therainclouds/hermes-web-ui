@@ -4,6 +4,7 @@ import { basename, join, resolve } from 'path'
 import { isNodeVersionRangeSatisfied } from '../device-package-contract'
 import { UpdateError } from '../errors'
 import { fetchDevicePackageManifest } from '../manifest-client'
+import { describeUpdateNetworkError, fetchUpdateBinary } from '../network-client'
 import { compareSemver } from '../version-compare'
 import type { DevicePackageManifest, UpdateConfig, UpdateRuntimePaths } from '../types'
 import { buildShellScriptCommand, type CommandResolver } from './script-command'
@@ -77,17 +78,32 @@ export async function downloadAndVerifyDevicePackage(
   mkdirSync(workDir, { recursive: true })
   const artifactPath = resolve(workDir, inferPackageFilename(manifest))
 
-  const res = await fetch(manifest.packageUrl, { signal: AbortSignal.timeout(60_000) })
-  if (!res.ok) {
+  let response: Awaited<ReturnType<typeof fetchUpdateBinary>>
+  try {
+    response = await fetchUpdateBinary(manifest.packageUrl, 60_000)
+  } catch (err) {
     throw new UpdateError(
-      'update_download_failed',
-      `Failed to download device package ${manifest.version}: HTTP ${res.status}`,
+      'update_package_fetch_failed',
+      `Failed to download device package ${manifest.version} from ${manifest.packageUrl}.`,
       502,
+      describeUpdateNetworkError(err),
     )
   }
 
-  const archiveBuffer = Buffer.from(await res.arrayBuffer())
-  writeFileSync(artifactPath, archiveBuffer)
+  if (!response.ok) {
+    throw new UpdateError(
+      'update_package_fetch_failed',
+      `Failed to download device package ${manifest.version}: HTTP ${response.status}`,
+      502,
+      {
+        packageUrl: manifest.packageUrl,
+        status: response.status,
+        transport: response.transport,
+      },
+    )
+  }
+
+  writeFileSync(artifactPath, response.buffer)
 
   const actualSha256 = computeSha256(artifactPath)
   if (actualSha256 !== manifest.sha256) {

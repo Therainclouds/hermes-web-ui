@@ -111,4 +111,50 @@ describe('update task store', () => {
       }),
     })
   })
+
+  it('recovers an interrupted running task into lastTask', () => {
+    const store = createStore()
+
+    store.createTask('device-package', 'accepted')
+    store.updateCurrentStage('downloading', 'downloading package', {
+      targetVersion: '0.6.17',
+    })
+
+    const recoveredTask = store.recoverInterruptedTask()
+
+    expect(recoveredTask).toEqual(expect.objectContaining({
+      status: 'failed',
+      stage: 'failed',
+      targetVersion: '0.6.17',
+      error: 'Previous update task was interrupted during downloading.',
+      finishedAt: expect.any(String),
+    }))
+    expect(store.getStatus()).toEqual({
+      currentTask: null,
+      lastTask: expect.objectContaining({
+        status: 'failed',
+        stage: 'failed',
+        error: 'Previous update task was interrupted during downloading.',
+      }),
+    })
+  })
+
+  it('clears only recovered interrupted history', () => {
+    const store = createStore()
+
+    store.createTask('device-package', 'accepted')
+    store.updateCurrentStage('downloading', 'downloading package')
+    store.recoverInterruptedTask()
+
+    const clearedTask = store.clearRecoveredInterruptedTask()
+
+    expect(clearedTask).toEqual(expect.objectContaining({
+      error: 'Previous update task was interrupted during downloading.',
+    }))
+    expect(store.getStatus()).toEqual({
+      currentTask: null,
+      lastTask: null,
+    })
+    expect(existsSync(store.getStateFilePath())).toBe(false)
+  })
 })

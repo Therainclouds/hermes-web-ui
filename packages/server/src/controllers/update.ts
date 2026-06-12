@@ -13,8 +13,25 @@ import { assertSourceDeployExecution, buildSourceDeployCommand, buildSourceDeplo
 import { updateTaskStore } from '../services/update/task-store'
 import type { DevicePackageManifest, UpdateRuntimePaths } from '../services/update/types'
 
-updateTaskStore.syncFromDisk()
-let updateInProgress = Boolean(updateTaskStore.getCurrentTask())
+let updateInProgress = false
+let managedUpdateTaskId = ''
+
+function syncUpdateTaskState() {
+  updateTaskStore.syncFromDisk()
+  const currentTask = updateTaskStore.getCurrentTask()
+  const recoveredTask = currentTask && currentTask.id !== managedUpdateTaskId
+    ? updateTaskStore.recoverInterruptedTask()
+    : null
+  if (recoveredTask) {
+    console.warn('[update] recovered interrupted update task %s (%s)', recoveredTask.id, recoveredTask.targetVersion || recoveredTask.strategy)
+  }
+  if (!updateTaskStore.getCurrentTask()) {
+    managedUpdateTaskId = ''
+  }
+  updateInProgress = Boolean(updateTaskStore.getCurrentTask())
+}
+
+syncUpdateTaskState()
 const NODE_ENVIRONMENT_MISSING_CODE = 'node_environment_missing'
 
 const PREVIEW_DIR_NAME = 'hermes-web-ui-pereview'
@@ -1114,16 +1131,51 @@ function appendPreflightWarning(message: string, warningText: string): string {
 }
 
 function failCurrentUpdateTask(message: string, error = message) {
+  managedUpdateTaskId = ''
   updateTaskStore.completeCurrentTask('failed', message, error)
 }
 
 export async function updateStatus(ctx: any) {
-  updateTaskStore.syncFromDisk()
-  updateInProgress = Boolean(updateTaskStore.getCurrentTask())
+  syncUpdateTaskState()
   ctx.body = updateTaskStore.getStatus()
 }
 
+export async function clearStaleUpdateStatus(ctx: any) {
+  syncUpdateTaskState()
+  const currentTask = updateTaskStore.getCurrentTask()
+  if (currentTask) {
+    ctx.status = 409
+    ctx.body = {
+      success: false,
+      code: 'update_task_still_running',
+      message: 'Cannot clear update task state while an update is still running.',
+      ...updateTaskStore.getStatus(),
+    }
+    return
+  }
+
+  const clearedTask = updateTaskStore.clearRecoveredInterruptedTask()
+  if (!clearedTask) {
+    ctx.status = 409
+    ctx.body = {
+      success: false,
+      code: 'update_task_clear_not_needed',
+      message: 'No recovered interrupted update task is available to clear.',
+      ...updateTaskStore.getStatus(),
+    }
+    return
+  }
+
+  ctx.body = {
+    success: true,
+    clearedTaskId: clearedTask.id,
+    message: 'Recovered interrupted update task state was cleared.',
+    ...updateTaskStore.getStatus(),
+  }
+}
+
 export async function handleUpdate(ctx: any) {
+  syncUpdateTaskState()
   if (!config.update.enabled) {
     ctx.status = 403
     ctx.body = {
@@ -1168,6 +1220,7 @@ export async function handleUpdate(ctx: any) {
 
   updateInProgress = true
   const task = updateTaskStore.createTask(config.update.strategy, 'Update request accepted')
+  managedUpdateTaskId = task.id
 
   try {
     if (config.update.strategy === 'source-deploy') {
@@ -1303,6 +1356,7 @@ export async function handleUpdate(ctx: any) {
         }
         observeDetachedUpdateProcess(updateChild, 'source deployment update', {
           onSuccess: () => {
+            managedUpdateTaskId = ''
             updateTaskStore.completeCurrentTask(
               'succeeded',
               `Source deployment update finished for ${resolvedVersion}`,
@@ -1354,6 +1408,7 @@ export async function handleUpdate(ctx: any) {
       }
       observeDetachedUpdateProcess(restart, 'restart helper', {
         onSuccess: () => {
+          managedUpdateTaskId = ''
           updateTaskStore.completeCurrentTask(
             'succeeded',
             `Restart helper completed for ${config.update.packageName || 'Hermes Web UI'}`,

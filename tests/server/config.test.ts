@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { homedir } from 'os'
 import { join, resolve } from 'path'
-import { getCorsOrigins, getDeployDir, getHermesHome, getListenHost, getUploadDir, getWebUiHome, hasConfiguredManifestCheck, hasConfiguredUpdateCheck, shouldCreateWebUiDataDir } from '../../packages/server/src/config'
+import { getCorsOrigins, getDeployDir, getHermesHome, getListenHost, getUploadDir, getWebUiHome, hasConfiguredManifestCheck, hasConfiguredUpdateCheck, sanitizeConfigValue, shouldCreateWebUiDataDir } from '../../packages/server/src/config'
 
 describe('server config', () => {
   it('defaults to an IPv4 bind host', () => {
@@ -88,5 +88,11 @@ describe('server config', () => {
 
   it('uses CORS_ORIGINS when provided', () => {
     expect(getCorsOrigins({ CORS_ORIGINS: ' https://app.example, http://localhost:3000 ' })).toBe('https://app.example, http://localhost:3000')
+  })
+
+  it('strips accidental quoting markers from configured URLs', () => {
+    expect(sanitizeConfigValue(' `https://updates.example.com/releases` ')).toBe('https://updates.example.com/releases')
+    expect(sanitizeConfigValue('"https://registry.npmjs.org"')).toBe('https://registry.npmjs.org')
+    expect(sanitizeConfigValue("'https://github.com/tangledup-ai/hermes-web-ui'")).toBe('https://github.com/tangledup-ai/hermes-web-ui')
   })
 })

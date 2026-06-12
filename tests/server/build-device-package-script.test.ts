@@ -5,6 +5,15 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { list as listTar } from 'tar'
 
 const tempDirs: string[] = []
+const PACKAGE_ALLOWLIST = [
+  'dist/client',
+  'dist/server',
+  'package.json',
+  'package-lock.json',
+  'scripts/deploy-source-armbian.sh',
+  'scripts/hermes-web-ui.service',
+  'scripts/install-device-package.sh',
+]
 
 function createTempDir(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix))
@@ -23,6 +32,17 @@ async function listArchiveEntries(filePath: string): Promise<string[]> {
   return entries
 }
 
+function createReleaseConfig(overrides: Record<string, unknown> = {}) {
+  return {
+    version: '1.2.3',
+    channel: 'stable',
+    minCurrentVersion: '1.0.0',
+    manifestBranch: 'release-manifests',
+    packageAllowlist: PACKAGE_ALLOWLIST,
+    ...overrides,
+  }
+}
+
 describe('build-device-package script', () => {
   afterEach(() => {
     while (tempDirs.length > 0) {
@@ -30,20 +50,21 @@ describe('build-device-package script', () => {
     }
   })
 
-  it('builds a device package archive, manifest, sha256 file, and latest.json', async () => {
+  it('builds a device package archive from the allowlisted runtime entries only', async () => {
     const repoRoot = createTempDir('device-package-repo-')
     const outputDir = createTempDir('device-package-out-')
 
     mkdirSync(resolve(repoRoot, 'dist', 'server'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'dist', 'client'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'scripts'), { recursive: true })
-    mkdirSync(resolve(repoRoot, 'bin'), { recursive: true })
 
     writeFileSync(resolve(repoRoot, 'dist', 'server', 'index.js'), 'console.log("server")\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'dist', 'client', 'index.html'), '<html></html>\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'deploy-source-armbian.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui.service'), '[Service]\nExecStart=node dist/server/index.js\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'install-device-package.sh'), '#!/usr/bin/env bash\n', 'utf-8')
-    writeFileSync(resolve(repoRoot, 'bin', 'hermes-web-ui.mjs'), 'console.log("cli")\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'scripts', 'unexpected-helper.sh'), '#!/usr/bin/env bash\necho "skip"\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'README.md'), '# not packaged\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'package-lock.json'), '{ "name": "@quanthermes/hermes-web-ui", "lockfileVersion": 3 }\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'package.json'), JSON.stringify({
       name: '@quanthermes/hermes-web-ui',
@@ -57,12 +78,11 @@ describe('build-device-package script', () => {
       },
     }, null, 2), 'utf-8')
     mkdirSync(resolve(repoRoot, '.github'), { recursive: true })
-    writeFileSync(resolve(repoRoot, '.github', 'device-package-release.json'), JSON.stringify({
-      version: '1.2.3',
-      channel: 'stable',
-      minCurrentVersion: '1.0.0',
-      manifestBranch: 'release-manifests',
-    }, null, 2), 'utf-8')
+    writeFileSync(resolve(repoRoot, '.github', 'device-package-release.json'), JSON.stringify(
+      createReleaseConfig(),
+      null,
+      2,
+    ), 'utf-8')
 
     const { buildDevicePackageRelease } = await import('../../scripts/build-device-package.mjs')
     const result = await buildDevicePackageRelease({
@@ -95,7 +115,12 @@ describe('build-device-package script', () => {
       'package.json',
       'package-lock.json',
       'scripts/deploy-source-armbian.sh',
+      'scripts/hermes-web-ui.service',
       'scripts/install-device-package.sh',
+    ]))
+    expect(entries).not.toEqual(expect.arrayContaining([
+      'README.md',
+      'scripts/unexpected-helper.sh',
     ]))
   })
 
@@ -106,14 +131,13 @@ describe('build-device-package script', () => {
     mkdirSync(resolve(repoRoot, 'dist', 'server'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'dist', 'client'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'scripts'), { recursive: true })
-    mkdirSync(resolve(repoRoot, 'bin'), { recursive: true })
     mkdirSync(resolve(repoRoot, '.github'), { recursive: true })
 
     writeFileSync(resolve(repoRoot, 'dist', 'server', 'index.js'), 'console.log("server")\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'dist', 'client', 'index.html'), '<html></html>\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'deploy-source-armbian.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui.service'), '[Service]\nExecStart=node dist/server/index.js\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'install-device-package.sh'), '#!/usr/bin/env bash\n', 'utf-8')
-    writeFileSync(resolve(repoRoot, 'bin', 'hermes-web-ui.mjs'), 'console.log("cli")\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'package-lock.json'), '{ "name": "@quanthermes/hermes-web-ui", "lockfileVersion": 3 }\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'package.json'), JSON.stringify({
       name: '@quanthermes/hermes-web-ui',
@@ -126,12 +150,11 @@ describe('build-device-package script', () => {
         node: '>=23.0.0',
       },
     }, null, 2), 'utf-8')
-    writeFileSync(resolve(repoRoot, '.github', 'device-package-release.json'), JSON.stringify({
-      version: '1.2.3',
-      channel: 'stable',
-      minCurrentVersion: '1.0.0',
-      manifestBranch: 'release-manifests',
-    }, null, 2), 'utf-8')
+    writeFileSync(resolve(repoRoot, '.github', 'device-package-release.json'), JSON.stringify(
+      createReleaseConfig(),
+      null,
+      2,
+    ), 'utf-8')
 
     const { buildDevicePackageRelease } = await import('../../scripts/build-device-package.mjs')
     const result = await buildDevicePackageRelease({
@@ -152,11 +175,14 @@ describe('build-device-package script', () => {
     const outputDir = createTempDir('device-package-out-missing-floor-')
 
     mkdirSync(resolve(repoRoot, 'dist', 'server'), { recursive: true })
+    mkdirSync(resolve(repoRoot, 'dist', 'client'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'scripts'), { recursive: true })
     mkdirSync(resolve(repoRoot, '.github'), { recursive: true })
 
     writeFileSync(resolve(repoRoot, 'dist', 'server', 'index.js'), 'console.log("server")\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'dist', 'client', 'index.html'), '<html></html>\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'deploy-source-armbian.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui.service'), '[Service]\nExecStart=node dist/server/index.js\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'install-device-package.sh'), '#!/usr/bin/env bash\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'package-lock.json'), '{ "name": "@quanthermes/hermes-web-ui", "lockfileVersion": 3 }\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'package.json'), JSON.stringify({
@@ -170,10 +196,11 @@ describe('build-device-package script', () => {
         node: '>=23.0.0',
       },
     }, null, 2), 'utf-8')
-    writeFileSync(resolve(repoRoot, '.github', 'device-package-release.json'), JSON.stringify({
-      version: '1.2.3',
-      channel: 'stable',
-    }, null, 2), 'utf-8')
+    writeFileSync(resolve(repoRoot, '.github', 'device-package-release.json'), JSON.stringify(
+      createReleaseConfig({ minCurrentVersion: undefined }),
+      null,
+      2,
+    ), 'utf-8')
 
     const { buildDevicePackageRelease } = await import('../../scripts/build-device-package.mjs')
 
@@ -190,11 +217,57 @@ describe('build-device-package script', () => {
     const outputDir = createTempDir('device-package-out-invalid-channel-')
 
     mkdirSync(resolve(repoRoot, 'dist', 'server'), { recursive: true })
+    mkdirSync(resolve(repoRoot, 'dist', 'client'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'scripts'), { recursive: true })
     mkdirSync(resolve(repoRoot, '.github'), { recursive: true })
 
     writeFileSync(resolve(repoRoot, 'dist', 'server', 'index.js'), 'console.log("server")\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'dist', 'client', 'index.html'), '<html></html>\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'deploy-source-armbian.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui.service'), '[Service]\nExecStart=node dist/server/index.js\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'scripts', 'install-device-package.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'package-lock.json'), '{ "name": "@quanthermes/hermes-web-ui", "lockfileVersion": 3 }\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'package.json'), JSON.stringify({
+      name: '@quanthermes/hermes-web-ui',
+      version: '1.2.3',
+      repository: {
+        type: 'git',
+        url: 'https://github.com/example/hermes-web-ui.git',
+      },
+      engines: {
+        node: '>=23.0.0',
+      },
+    }, null, 2), 'utf-8')
+    writeFileSync(resolve(repoRoot, '.github', 'device-package-release.json'), JSON.stringify(
+      createReleaseConfig(),
+      null,
+      2,
+    ), 'utf-8')
+
+    const { buildDevicePackageRelease } = await import('../../scripts/build-device-package.mjs')
+
+    await expect(buildDevicePackageRelease({
+      repoRoot,
+      outputDir,
+      releaseRepo: 'example/hermes-web-ui',
+      tag: 'v1.2.3',
+      channel: 'beta/canary',
+    })).rejects.toThrow(/Invalid update channel/)
+  })
+
+  it('fails when packageAllowlist is not defined in the release contract', async () => {
+    const repoRoot = createTempDir('device-package-repo-missing-allowlist-')
+    const outputDir = createTempDir('device-package-out-missing-allowlist-')
+
+    mkdirSync(resolve(repoRoot, 'dist', 'server'), { recursive: true })
+    mkdirSync(resolve(repoRoot, 'dist', 'client'), { recursive: true })
+    mkdirSync(resolve(repoRoot, 'scripts'), { recursive: true })
+    mkdirSync(resolve(repoRoot, '.github'), { recursive: true })
+
+    writeFileSync(resolve(repoRoot, 'dist', 'server', 'index.js'), 'console.log("server")\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'dist', 'client', 'index.html'), '<html></html>\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'scripts', 'deploy-source-armbian.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui.service'), '[Service]\nExecStart=node dist/server/index.js\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'install-device-package.sh'), '#!/usr/bin/env bash\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'package-lock.json'), '{ "name": "@quanthermes/hermes-web-ui", "lockfileVersion": 3 }\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'package.json'), JSON.stringify({
@@ -222,7 +295,6 @@ describe('build-device-package script', () => {
       outputDir,
       releaseRepo: 'example/hermes-web-ui',
       tag: 'v1.2.3',
-      channel: 'beta/canary',
-    })).rejects.toThrow(/Invalid update channel/)
+    })).rejects.toThrow(/packageAllowlist is required/)
   })
 })

@@ -3,6 +3,8 @@ import { dirname } from 'path'
 import { config } from '../../config'
 import type { UpdateTaskRecord, UpdateTaskStage, UpdateTaskStatus, UpdateTaskStatusResponse, UpdateStrategy } from './types'
 
+export const INTERRUPTED_UPDATE_TASK_ERROR_PREFIX = 'Previous update task was interrupted'
+
 type UpdateTaskPatch = Partial<Pick<
   UpdateTaskRecord,
   'status' | 'stage' | 'message' | 'targetVersion' | 'warning' | 'error' | 'logPath' | 'rollbackMessage' | 'healthcheckUrl' | 'finishedAt'
@@ -40,6 +42,18 @@ function normalizePersistedState(payload: unknown): PersistedUpdateTaskState {
     currentTask: isTaskRecord(candidate.currentTask) ? candidate.currentTask : null,
     lastTask: isTaskRecord(candidate.lastTask) ? candidate.lastTask : null,
   }
+}
+
+function isRunningTask(task: UpdateTaskRecord | null): task is UpdateTaskRecord {
+  return Boolean(task && (task.status === 'queued' || task.status === 'running'))
+}
+
+function interruptedTaskMessage(stage: UpdateTaskStage): string {
+  return `Previous update task was interrupted during ${stage}.`
+}
+
+function isInterruptedTaskRecord(task: UpdateTaskRecord | null): task is UpdateTaskRecord {
+  return Boolean(task && task.error.startsWith(INTERRUPTED_UPDATE_TASK_ERROR_PREFIX))
 }
 
 export class UpdateTaskStore {
@@ -83,6 +97,39 @@ export class UpdateTaskStore {
       console.warn('[update] failed to load persisted task state:', error)
       this.currentTask = null
     }
+  }
+
+  recoverInterruptedTask(): UpdateTaskRecord | null {
+    if (!isRunningTask(this.currentTask)) {
+      return null
+    }
+
+    const message = interruptedTaskMessage(this.currentTask.stage)
+    const recoveredTask: UpdateTaskRecord = {
+      ...this.currentTask,
+      status: 'failed',
+      stage: 'failed',
+      message,
+      error: message,
+      finishedAt: new Date().toISOString(),
+    }
+    this.lastTask = recoveredTask
+    this.currentTask = null
+    this.persist()
+    return this.getLastTask()
+  }
+
+  clearRecoveredInterruptedTask(): UpdateTaskRecord | null {
+    if (this.currentTask || !isInterruptedTaskRecord(this.lastTask)) {
+      return null
+    }
+
+    const clearedTask = this.getLastTask()
+    this.lastTask = null
+    if (existsSync(this.stateFilePath)) {
+      unlinkSync(this.stateFilePath)
+    }
+    return clearedTask
   }
 
   createTask(strategy: UpdateStrategy, initialMessage: string): UpdateTaskRecord {

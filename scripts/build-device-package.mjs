@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, dirname, resolve } from 'node:path'
+import { basename, dirname, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { create as createTar, list as listTar } from 'tar'
 
@@ -11,13 +11,6 @@ const DEFAULT_MANIFEST_BRANCH = 'release-manifests'
 const DEFAULT_RELEASE_CONFIG_PATH = '.github/device-package-release.json'
 const DEFAULT_UPDATE_CHANNEL = 'stable'
 const DEVICE_PACKAGE_ARTIFACT_FORMAT = 'tar.gz'
-const REQUIRED_PACKAGE_ENTRIES = [
-  'dist/',
-  'package.json',
-  'package-lock.json',
-  'scripts/deploy-source-armbian.sh',
-  'scripts/install-device-package.sh',
-]
 const CHANNEL_SEGMENT_PATTERN = /^[A-Za-z0-9._-]+$/
 
 function parseArgs(argv) {
@@ -127,43 +120,115 @@ function createCleanDir(dirPath) {
   mkdirSync(dirPath, { recursive: true })
 }
 
-function copyBundleFiles(repoRoot, stageRoot) {
-  const filesToCopy = [
-    'bin',
-    'dist',
-    'scripts',
-    'package.json',
-    'package-lock.json',
-  ]
+function normalizeRelativePackageEntry(entry) {
+  const normalized = typeof entry === 'string'
+    ? entry.trim().replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/\/+$/, '')
+    : ''
 
-  for (const relativePath of filesToCopy) {
-    const sourcePath = resolve(repoRoot, relativePath)
-    if (!existsSync(sourcePath)) continue
-    const targetPath = resolve(stageRoot, relativePath)
-    cpSync(sourcePath, targetPath, { recursive: true })
+  if (
+    !normalized
+    || normalized === '.'
+    || normalized === '..'
+    || normalized.startsWith('/')
+    || normalized.startsWith('../')
+    || normalized.includes('/../')
+  ) {
+    throw new Error(`Invalid packageAllowlist entry "${entry}". Use repository-relative paths only.`)
+  }
+
+  return normalized
+}
+
+function resolvePackageAllowlist(packageAllowlist, releaseConfigPath) {
+  if (!Array.isArray(packageAllowlist) || packageAllowlist.length === 0) {
+    throw new Error(
+      `packageAllowlist is required. Set it in ${releaseConfigPath} and include the exact files or directories to bundle.`,
+    )
+  }
+
+  return [...new Set(packageAllowlist.map(normalizeRelativePackageEntry))]
+}
+
+function buildPackageEntries(repoRoot, packageAllowlist) {
+  return packageAllowlist.map((entryPath) => {
+    const sourcePath = resolve(repoRoot, entryPath)
+    const repoRelative = relative(repoRoot, sourcePath).replace(/\\/g, '/')
+    if (
+      !repoRelative
+      || repoRelative === '..'
+      || repoRelative.startsWith('../')
+    ) {
+      throw new Error(`packageAllowlist entry escapes the repository root: ${entryPath}`)
+    }
+    if (!existsSync(sourcePath)) {
+      throw new Error(`packageAllowlist entry is missing from the repository: ${entryPath}`)
+    }
+
+    return {
+      path: entryPath,
+      sourcePath,
+      isDirectory: statSync(sourcePath).isDirectory(),
+    }
+  })
+}
+
+function copyPackageEntries(stageRoot, packageEntries) {
+  for (const entry of packageEntries) {
+    const targetPath = resolve(stageRoot, entry.path)
+    mkdirSync(dirname(targetPath), { recursive: true })
+    cpSync(entry.sourcePath, targetPath, { recursive: true })
   }
 }
 
-async function assertArchiveStructure(archivePath) {
+function normalizeArchiveEntry(entryPath) {
+  return entryPath.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '')
+}
+
+function matchesPackageEntry(archiveEntry, packageEntry) {
+  if (archiveEntry === packageEntry.path) return true
+  return packageEntry.isDirectory && archiveEntry.startsWith(`${packageEntry.path}/`)
+}
+
+function isAllowlistedAncestorEntry(archiveEntry, packageEntries) {
+  return packageEntries.some(packageEntry => packageEntry.path.startsWith(`${archiveEntry}/`))
+}
+
+async function assertArchiveMatchesAllowlist(archivePath, packageEntries) {
   const entries = new Set()
   await listTar({
     file: archivePath,
     onentry: (entry) => {
-      const normalized = entry.path.replace(/\\/g, '/').replace(/^\.\//, '')
+      const normalized = normalizeArchiveEntry(entry.path)
       if (!normalized) return
-      if (normalized.endsWith('/')) entries.add(normalized)
-      else entries.add(normalized)
+      entries.add(normalized)
     },
   })
 
-  for (const requiredEntry of REQUIRED_PACKAGE_ENTRIES) {
-    const normalized = requiredEntry.replace(/\\/g, '/')
-    if (entries.has(normalized)) continue
-    if (normalized.endsWith('/') && [...entries].some(entry => entry.startsWith(normalized))) continue
-    throw new Error(`Device package archive is missing required entry: ${requiredEntry}`)
+  for (const packageEntry of packageEntries) {
+    const hasMatch = [...entries].some(entry => matchesPackageEntry(entry, packageEntry))
+    if (!hasMatch) {
+      throw new Error(`Device package archive is missing allowlisted entry: ${packageEntry.path}`)
+    }
+  }
+
+  for (const entry of entries) {
+    const allowed = packageEntries.some(packageEntry => matchesPackageEntry(entry, packageEntry))
+      || isAllowlistedAncestorEntry(entry, packageEntries)
+    if (!allowed) {
+      throw new Error(`Device package archive contains a non-allowlisted entry: ${entry}`)
+    }
   }
 }
 
+/**
+ * Build a release-ready device package from the repository's allowlisted runtime assets.
+ *
+ * Why: the device installer must consume a minimal, deterministic bundle that excludes
+ * unrelated source files and release tooling by default.
+ * How: read the release contract, copy only allowlisted paths into a staging tree, tar
+ * that tree, then verify the resulting archive still matches the allowlist exactly.
+ * What: returns release metadata for the artifact, manifest, and latest channel pointer.
+ */
 export async function buildDevicePackageRelease(options = {}) {
   const scriptDir = dirname(fileURLToPath(import.meta.url))
   const repoRoot = resolve(options.repoRoot || resolve(scriptDir, '..'))
@@ -192,6 +257,11 @@ export async function buildDevicePackageRelease(options = {}) {
       `minCurrentVersion is required. Set it in ${releaseConfigPath} or pass --min-current-version explicitly.`,
     )
   }
+  const packageAllowlist = resolvePackageAllowlist(
+    options.packageAllowlist ?? releaseConfig.packageAllowlist,
+    releaseConfigPath,
+  )
+  const packageEntries = buildPackageEntries(repoRoot, packageAllowlist)
   const manifestBranch = (options.manifestBranch || releaseConfig.manifestBranch || DEFAULT_MANIFEST_BRANCH).trim() || DEFAULT_MANIFEST_BRANCH
   const compatibleNodeRange = (
     options.compatibleNodeRange
@@ -217,7 +287,7 @@ export async function buildDevicePackageRelease(options = {}) {
     mkdirSync(releaseDir, { recursive: true })
     mkdirSync(latestDir, { recursive: true })
 
-    copyBundleFiles(repoRoot, stageRoot)
+    copyPackageEntries(stageRoot, packageEntries)
 
     await createTar({
       cwd: stageRoot,
@@ -227,7 +297,7 @@ export async function buildDevicePackageRelease(options = {}) {
       noMtime: true,
     }, ['.'])
 
-    await assertArchiveStructure(artifactPath)
+    await assertArchiveMatchesAllowlist(artifactPath, packageEntries)
 
     const sha256 = computeSha256(artifactPath)
     const size = statSync(artifactPath).size
@@ -257,6 +327,7 @@ export async function buildDevicePackageRelease(options = {}) {
       channel,
       releaseRepo,
       manifestBranch,
+      packageAllowlist: packageEntries.map(entry => entry.path),
       artifactName,
       artifactPath,
       shaPath,

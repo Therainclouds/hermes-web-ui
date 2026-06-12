@@ -396,7 +396,9 @@ describe('update controller', () => {
     vi.stubGlobal('fetch', vi.fn()
       .mockResolvedValueOnce({
         ok: true,
-        json: async () => ({
+        status: 200,
+        url: 'https://updates.example.com/stable/manifest.json',
+        arrayBuffer: async () => Buffer.from(JSON.stringify({
           version: PUBLISHED_VERSION,
           channel: 'stable',
           sourceLabel: 'Device Manifest',
@@ -407,10 +409,12 @@ describe('update controller', () => {
           releasedAt: '2026-06-09T00:00:00Z',
           compatibleNodeRange: `>=${process.versions.node}`,
           minCurrentVersion: '0.6.10',
-        }),
+        })),
       })
       .mockResolvedValueOnce({
         ok: true,
+        status: 200,
+        url: 'https://updates.example.com/releases/v0.6.13/hermes-web-ui-device-v0.6.13.tar.gz',
         arrayBuffer: async () => packageBuffer,
       }))
     const readFileSync = vi.fn((filePath: string) => {
@@ -421,11 +425,13 @@ describe('update controller', () => {
         repository: { url: 'https://github.com/EKKOLearnAI/hermes-web-ui.git' },
       })
     })
-    const { handleUpdate, mocks } = await loadUpdateController({ readFileSync })
+    const { handleUpdate, updateStatus, mocks } = await loadUpdateController({ readFileSync })
     const ctx = createMockCtx()
+    const statusCtx = createMockCtx()
 
     await handleUpdate(ctx)
-    for (let index = 0; index < 10 && mocks.spawn.mock.calls.length === 0; index += 1) {
+    for (let index = 0; index < 30 && mocks.spawn.mock.calls.length === 0; index += 1) {
+      await updateStatus(statusCtx)
       await Promise.resolve()
     }
 
@@ -585,6 +591,123 @@ describe('update controller', () => {
     expect(ctx.body).toEqual(persistedState)
   })
 
+  it('recovers a persisted running task into a failed lastTask when serving status', async () => {
+    const fsMocks = createStatefulFsMocks({
+      currentTask: {
+        id: 'update-running',
+        strategy: 'device-package',
+        status: 'running',
+        stage: 'downloading',
+        message: 'Downloading device package 0.6.17',
+        targetVersion: '0.6.17',
+        warning: '',
+        error: '',
+        logPath: '',
+        rollbackMessage: '',
+        healthcheckUrl: 'http://127.0.0.1:8648/health',
+        startedAt: '2026-06-11T14:34:00.000Z',
+        finishedAt: null,
+      },
+      lastTask: null,
+    })
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const { updateStatus } = await loadUpdateController(fsMocks)
+    const ctx = createMockCtx()
+
+    await updateStatus(ctx)
+
+    expect(ctx.body).toEqual({
+      currentTask: null,
+      lastTask: expect.objectContaining({
+        id: 'update-running',
+        status: 'failed',
+        stage: 'failed',
+        targetVersion: '0.6.17',
+        error: 'Previous update task was interrupted during downloading.',
+        finishedAt: expect.any(String),
+      }),
+    })
+    warnSpy.mockRestore()
+  })
+
+  it('allows a new update request after recovering a persisted running task', async () => {
+    process.env.WEBUI_UPDATE_STRATEGY = 'source-deploy'
+    process.env.WEBUI_UPDATE_SCRIPT = UPDATE_SCRIPT
+    const fsMocks = createStatefulFsMocks({
+      currentTask: {
+        id: 'update-running',
+        strategy: 'device-package',
+        status: 'running',
+        stage: 'downloading',
+        message: 'Downloading device package 0.6.17',
+        targetVersion: '0.6.17',
+        warning: '',
+        error: '',
+        logPath: '',
+        rollbackMessage: '',
+        healthcheckUrl: '',
+        startedAt: '2026-06-11T14:34:00.000Z',
+        finishedAt: null,
+      },
+      lastTask: null,
+    })
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const { handleUpdate } = await loadUpdateController(fsMocks)
+    const ctx = createMockCtx()
+
+    await handleUpdate(ctx)
+
+    expect(ctx.status).toBe(200)
+    expect(ctx.body).toEqual(expect.objectContaining({
+      success: true,
+      status: 'running',
+      stage: 'starting',
+      taskId: expect.any(String),
+    }))
+    warnSpy.mockRestore()
+  })
+
+  it('clears recovered interrupted update history through the safe endpoint', async () => {
+    const fsMocks = createStatefulFsMocks({
+      currentTask: {
+        id: 'update-running',
+        strategy: 'device-package',
+        status: 'running',
+        stage: 'downloading',
+        message: 'Downloading device package 0.6.17',
+        targetVersion: '0.6.17',
+        warning: '',
+        error: '',
+        logPath: '',
+        rollbackMessage: '',
+        healthcheckUrl: '',
+        startedAt: '2026-06-11T14:34:00.000Z',
+        finishedAt: null,
+      },
+      lastTask: null,
+    })
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const { clearStaleUpdateStatus, updateStatus } = await loadUpdateController(fsMocks)
+    const clearCtx = createMockCtx()
+    const statusCtx = createMockCtx()
+
+    await clearStaleUpdateStatus(clearCtx)
+    await updateStatus(statusCtx)
+
+    expect(clearCtx.body).toEqual({
+      success: true,
+      clearedTaskId: 'update-running',
+      message: 'Recovered interrupted update task state was cleared.',
+      currentTask: null,
+      lastTask: null,
+    })
+    expect(statusCtx.body).toEqual({
+      currentTask: null,
+      lastTask: null,
+    })
+    warnSpy.mockRestore()
+  })
+
   it('does not log a restart error when the restart helper exits successfully', async () => {
     const handlers = new Map<string, (...args: any[]) => void>()
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
@@ -669,7 +792,9 @@ describe('update controller', () => {
     vi.stubGlobal('fetch', vi.fn()
       .mockResolvedValueOnce({
         ok: true,
-        json: async () => ({
+        status: 200,
+        url: 'https://updates.example.com/stable/manifest.json',
+        arrayBuffer: async () => Buffer.from(JSON.stringify({
           version: PUBLISHED_VERSION,
           channel: 'stable',
           sourceLabel: 'Device Manifest',
@@ -680,10 +805,12 @@ describe('update controller', () => {
           releasedAt: '2026-06-09T00:00:00Z',
           compatibleNodeRange: `>=${process.versions.node}`,
           minCurrentVersion: '0.6.10',
-        }),
+        })),
       })
       .mockResolvedValueOnce({
         ok: true,
+        status: 200,
+        url: 'https://updates.example.com/releases/v0.6.13/hermes-web-ui-device-v0.6.13.tar.gz',
         arrayBuffer: async () => packageBuffer,
       }))
     const readFileSync = vi.fn((filePath: string) => {
