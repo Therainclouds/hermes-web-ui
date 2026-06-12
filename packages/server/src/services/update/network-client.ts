@@ -10,6 +10,7 @@ export interface UpdateNetworkResponse {
   url: string
   transport: UpdateNetworkTransport
   buffer: Buffer
+  attempts: number
 }
 
 export interface UpdateNetworkErrorDetail {
@@ -25,6 +26,7 @@ export class UpdateNetworkError extends Error {
   url: string
   responseType: UpdateNetworkResponseType
   timeoutMs: number
+  attempts: number
   primaryError: UpdateNetworkErrorDetail
   fallbackError: UpdateNetworkErrorDetail
 
@@ -32,6 +34,7 @@ export class UpdateNetworkError extends Error {
     url: string,
     responseType: UpdateNetworkResponseType,
     timeoutMs: number,
+    attempts: number,
     primaryError: UpdateNetworkErrorDetail,
     fallbackError: UpdateNetworkErrorDetail,
   ) {
@@ -43,9 +46,16 @@ export class UpdateNetworkError extends Error {
     this.url = url
     this.responseType = responseType
     this.timeoutMs = timeoutMs
+    this.attempts = attempts
     this.primaryError = primaryError
     this.fallbackError = fallbackError
   }
+}
+
+export interface UpdateNetworkRequestOptions {
+  timeoutMs?: number
+  retries?: number
+  retryDelayMs?: number
 }
 
 function toNetworkErrorDetail(err: any): UpdateNetworkErrorDetail {
@@ -87,6 +97,7 @@ async function requestWithFetch(
       url: response.url || url,
       transport: 'fetch',
       buffer: Buffer.from(await response.arrayBuffer()),
+      attempts: 1,
     }
   } finally {
     clearTimeout(timeout)
@@ -136,6 +147,7 @@ function requestWithNodeHttp(
           url,
           transport: 'node-http',
           buffer: Buffer.concat(chunks),
+          attempts: 1,
         })
       })
     })
@@ -154,18 +166,22 @@ async function requestUpdateResource(
   url: string,
   responseType: UpdateNetworkResponseType,
   timeoutMs: number,
+  attempts = 1,
 ): Promise<UpdateNetworkResponse> {
   try {
-    return await requestWithFetch(url, responseType, timeoutMs)
+    const response = await requestWithFetch(url, responseType, timeoutMs)
+    return { ...response, attempts }
   } catch (err: any) {
     const primaryError = toNetworkErrorDetail(err)
     try {
-      return await requestWithNodeHttp(url, responseType, timeoutMs)
+      const response = await requestWithNodeHttp(url, responseType, timeoutMs)
+      return { ...response, attempts }
     } catch (fallbackErr: any) {
       throw new UpdateNetworkError(
         url,
         responseType,
         timeoutMs,
+        attempts,
         primaryError,
         toNetworkErrorDetail(fallbackErr),
       )
@@ -173,14 +189,80 @@ async function requestUpdateResource(
   }
 }
 
-export async function fetchUpdateJson(url: string, timeoutMs = 10_000): Promise<{
+function normalizeRequestOptions(
+  optionsOrTimeout: UpdateNetworkRequestOptions | number | undefined,
+  defaultTimeoutMs: number,
+): Required<UpdateNetworkRequestOptions> {
+  if (typeof optionsOrTimeout === 'number') {
+    return {
+      timeoutMs: optionsOrTimeout,
+      retries: 0,
+      retryDelayMs: 0,
+    }
+  }
+
+  return {
+    timeoutMs: Math.max(optionsOrTimeout?.timeoutMs ?? defaultTimeoutMs, 1),
+    retries: Math.max(optionsOrTimeout?.retries ?? 0, 0),
+    retryDelayMs: Math.max(optionsOrTimeout?.retryDelayMs ?? 0, 0),
+  }
+}
+
+function shouldRetryResponse(status: number): boolean {
+  return status === 408 || status === 425 || status === 429 || status >= 500
+}
+
+function delayForRetry(baseDelayMs: number, attempt: number): Promise<void> {
+  const delayMs = Math.max(baseDelayMs, 0) * Math.max(attempt, 1)
+  if (delayMs <= 0) {
+    return Promise.resolve()
+  }
+  return new Promise(resolve => setTimeout(resolve, delayMs))
+}
+
+async function requestUpdateResourceWithRetry(
+  url: string,
+  responseType: UpdateNetworkResponseType,
+  optionsOrTimeout: UpdateNetworkRequestOptions | number | undefined,
+  defaultTimeoutMs: number,
+): Promise<UpdateNetworkResponse> {
+  const options = normalizeRequestOptions(optionsOrTimeout, defaultTimeoutMs)
+  const maxAttempts = options.retries + 1
+  let lastError: unknown = null
+  let lastResponse: UpdateNetworkResponse | null = null
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const response = await requestUpdateResource(url, responseType, options.timeoutMs, attempt)
+      if (response.ok || !shouldRetryResponse(response.status) || attempt === maxAttempts) {
+        return response
+      }
+      lastResponse = response
+    } catch (error) {
+      lastError = error
+      if (attempt === maxAttempts) {
+        throw error
+      }
+    }
+
+    await delayForRetry(options.retryDelayMs, attempt)
+  }
+
+  if (lastResponse) {
+    return lastResponse
+  }
+  throw lastError ?? new Error(`request failed for ${url}`)
+}
+
+export async function fetchUpdateJson(url: string, optionsOrTimeout?: UpdateNetworkRequestOptions | number): Promise<{
   ok: boolean
   status: number
   url: string
   transport: UpdateNetworkTransport
   data: unknown
+  attempts: number
 }> {
-  const response = await requestUpdateResource(url, 'json', timeoutMs)
+  const response = await requestUpdateResourceWithRetry(url, 'json', optionsOrTimeout, 10_000)
   const raw = response.buffer.toString('utf-8')
   const data = raw ? JSON.parse(raw) : {}
   return {
@@ -189,11 +271,15 @@ export async function fetchUpdateJson(url: string, timeoutMs = 10_000): Promise<
     url: response.url,
     transport: response.transport,
     data,
+    attempts: response.attempts,
   }
 }
 
-export async function fetchUpdateBinary(url: string, timeoutMs = 60_000): Promise<UpdateNetworkResponse> {
-  return requestUpdateResource(url, 'binary', timeoutMs)
+export async function fetchUpdateBinary(
+  url: string,
+  optionsOrTimeout?: UpdateNetworkRequestOptions | number,
+): Promise<UpdateNetworkResponse> {
+  return requestUpdateResourceWithRetry(url, 'binary', optionsOrTimeout, 60_000)
 }
 
 export function describeUpdateNetworkError(err: unknown): Record<string, unknown> | null {
@@ -203,6 +289,7 @@ export function describeUpdateNetworkError(err: unknown): Record<string, unknown
       url: err.url,
       responseType: err.responseType,
       timeoutMs: err.timeoutMs,
+      attempts: err.attempts,
       primary: err.primaryError,
       fallback: err.fallbackError,
     }

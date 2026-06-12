@@ -167,6 +167,10 @@ WEBUI_UPDATE_BACKUP_DIR=/opt/hermes-web-ui/.releases/backups
 WEBUI_UPDATE_HEALTHCHECK_URL=http://127.0.0.1:6060/health
 WEBUI_UPDATE_STATE_FILE=/home/hermesui/.hermes-web-ui/updates/update-task-state.json
 WEBUI_UPDATE_LOG_DIR=/home/hermesui/.hermes-web-ui/updates/logs
+WEBUI_UPDATE_MANIFEST_TIMEOUT_MS=30000
+WEBUI_UPDATE_PACKAGE_TIMEOUT_MS=300000
+WEBUI_UPDATE_DOWNLOAD_RETRIES=3
+WEBUI_UPDATE_DOWNLOAD_RETRY_DELAY_MS=2000
 WEBUI_UPDATE_HEALTHCHECK_TIMEOUT_MS=60000
 WEBUI_UPDATE_HEALTHCHECK_INTERVAL_MS=2000
 WEBUI_UPDATE_HEALTHCHECK_RETRIES=15
@@ -180,6 +184,9 @@ WEBUI_UPDATE_HEALTHCHECK_INITIAL_DELAY_MS=5000
 - 页面触发更新时，服务端会通过 `bash /opt/hermes-web-ui/scripts/install-device-package.sh` 执行安装器，因此不会再因仓库文件 mode 为 `644` 而在 `spawn` 前失败
 - `deploy-source-armbian.sh` 的 `update-only` 重建流程必须保留上面这组 `device-package` 变量，否则旧设备会在重建后失去 manifest 配置
 - `WEBUI_UPDATE_VERIFY_SHA256` 在第一阶段建议保持 `true`
+- `WEBUI_UPDATE_MANIFEST_TIMEOUT_MS` 控制 `latest.json` / `manifest.json` 拉取超时
+- `WEBUI_UPDATE_PACKAGE_TIMEOUT_MS` 控制设备包下载超时
+- `WEBUI_UPDATE_DOWNLOAD_RETRIES` 与 `WEBUI_UPDATE_DOWNLOAD_RETRY_DELAY_MS` 用于应对 GitHub 网络抖动；默认会对 manifest 和设备包下载一起生效
 
 ### 与数据保护相关的变量
 
@@ -255,6 +262,10 @@ WEBUI_UPDATE_BACKUP_DIR=/opt/hermes-web-ui/.releases/backups
 WEBUI_UPDATE_HEALTHCHECK_URL=http://127.0.0.1:6060/health
 WEBUI_UPDATE_STATE_FILE=/home/hermesui/.hermes-web-ui/updates/update-task-state.json
 WEBUI_UPDATE_LOG_DIR=/home/hermesui/.hermes-web-ui/updates/logs
+WEBUI_UPDATE_MANIFEST_TIMEOUT_MS=30000
+WEBUI_UPDATE_PACKAGE_TIMEOUT_MS=300000
+WEBUI_UPDATE_DOWNLOAD_RETRIES=3
+WEBUI_UPDATE_DOWNLOAD_RETRY_DELAY_MS=2000
 WEBUI_UPDATE_HEALTHCHECK_TIMEOUT_MS=60000
 WEBUI_UPDATE_HEALTHCHECK_INTERVAL_MS=2000
 WEBUI_UPDATE_HEALTHCHECK_RETRIES=15
@@ -416,6 +427,14 @@ cat /home/hermesui/.hermes-web-ui/updates/update-task-state.json
 - `logPath`
 - `rollbackMessage`
 - `healthcheckUrl`
+- `error`
+
+若下载阶段失败，`error` 里现在会附带底层网络细节，例如：
+
+- `code`
+- `timeoutMs`
+- `attempts`
+- `primary` / `fallback` 传输错误
 
 ### 4. 检查页面表现
 
@@ -482,6 +501,7 @@ tail -n 200 /home/hermesui/.hermes-web-ui/updates/logs/*.log
 - `WEBUI_UPDATE_MANIFEST_BASE_URL` 写错
 - `WEBUI_UPDATE_INSTALLER_SCRIPT` 缺失或没有执行权限
 - `packageUrl` 不可下载
+- GitHub 网络瞬时抖动导致 manifest 或设备包下载超时，需结合 `error` 中的 `attempts` / `timeoutMs` / `ETIMEDOUT` / `ECONNRESET` 判断
 - `sha256` 校验失败
 - `HERMES_WEB_UI_HOME` 或 `UPLOAD_DIR` 被配置到了 `DEPLOY_DIR` 内，导致 preflight 主动阻止
 - 安装后健康检查失败，安装器已触发自动回退

@@ -1130,6 +1130,19 @@ function appendPreflightWarning(message: string, warningText: string): string {
   return warningText ? `${message} Warning: ${warningText}` : message
 }
 
+function formatUpdateTaskError(message: string, details?: unknown): string {
+  if (details == null) return message
+  try {
+    const serialized = JSON.stringify(details)
+    if (!serialized || serialized === '{}' || serialized === 'null') {
+      return message
+    }
+    return `${message} Details: ${serialized}`
+  } catch {
+    return message
+  }
+}
+
 function failCurrentUpdateTask(message: string, error = message) {
   managedUpdateTaskId = ''
   updateTaskStore.completeCurrentTask('failed', message, error)
@@ -1301,7 +1314,13 @@ export async function handleUpdate(ctx: any) {
         } catch (err: any) {
           updateInProgress = false
           if (err instanceof UpdateError) {
-            failCurrentUpdateTask(err.message, err.message)
+            const formattedError = formatUpdateTaskError(err.message, err.details)
+            failCurrentUpdateTask(err.message, formattedError)
+            console.error('[update] device package update failed:', {
+              code: err.code,
+              message: err.message,
+              details: err.details,
+            })
             return
           }
           failCurrentUpdateTask(err?.stderr?.toString?.() || err?.message || String(err))

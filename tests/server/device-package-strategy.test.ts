@@ -34,6 +34,10 @@ function createUpdateConfig(overrides: Partial<UpdateConfig> = {}): UpdateConfig
     healthcheckUrl: 'http://127.0.0.1:8648/health',
     stateFile: join(tmpdir(), 'hermes-web-ui-tests', 'update-state.json'),
     logDir: join(tmpdir(), 'hermes-web-ui-tests', 'logs'),
+    manifestTimeoutMs: 100,
+    packageTimeoutMs: 100,
+    downloadRetries: 0,
+    downloadRetryDelayMs: 1,
     healthcheckTimeoutMs: 2_000,
     healthcheckIntervalMs: 2_000,
     healthcheckRetries: 15,
@@ -174,11 +178,38 @@ describe('device package strategy', () => {
     )).rejects.toMatchObject({
       code: 'update_package_fetch_failed',
       details: expect.objectContaining({
+        packageUrl: 'http://127.0.0.1:1/device-package.tar.gz',
         primary: expect.objectContaining({
           message: 'fetch failed',
         }),
       }),
     })
+  })
+
+  it('retries transient package download failures before succeeding', async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'hermes-web-ui-device-package-'))
+    const packageBuffer = Buffer.from('device package after retries')
+    const sha256 = createHash('sha256').update(packageBuffer).digest('hex')
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new TypeError('fetch failed'), { code: 'ETIMEDOUT' }))
+      .mockRejectedValueOnce(Object.assign(new TypeError('fetch failed'), { code: 'ECONNRESET' }))
+      .mockResolvedValue({
+        ok: true,
+        arrayBuffer: async () => packageBuffer,
+      })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await downloadAndVerifyDevicePackage(
+      createUpdateConfig({
+        stagingDir: join(tempRoot, 'staging'),
+        downloadRetries: 2,
+        downloadRetryDelayMs: 1,
+      }),
+      createManifest({ sha256 }),
+    )
+
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(readFileSync(result.artifactPath)).toEqual(packageBuffer)
   })
 
   it('builds installer command through a discovered bash executable on Linux', () => {

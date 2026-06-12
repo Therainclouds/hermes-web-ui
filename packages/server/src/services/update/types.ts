@@ -21,6 +21,10 @@ export interface UpdateConfig {
   healthcheckUrl: string
   stateFile: string
   logDir: string
+  manifestTimeoutMs: number
+  packageTimeoutMs: number
+  downloadRetries: number
+  downloadRetryDelayMs: number
   healthcheckTimeoutMs: number
   healthcheckIntervalMs: number
   healthcheckRetries: number

@@ -156,6 +156,10 @@ describe('update controller', () => {
   const originalUpdateInstallerScript = process.env.WEBUI_UPDATE_INSTALLER_SCRIPT
   const originalUpdatePackageType = process.env.WEBUI_UPDATE_PACKAGE_TYPE
   const originalUpdateChannel = process.env.WEBUI_UPDATE_CHANNEL
+  const originalUpdateManifestTimeoutMs = process.env.WEBUI_UPDATE_MANIFEST_TIMEOUT_MS
+  const originalUpdatePackageTimeoutMs = process.env.WEBUI_UPDATE_PACKAGE_TIMEOUT_MS
+  const originalUpdateDownloadRetries = process.env.WEBUI_UPDATE_DOWNLOAD_RETRIES
+  const originalUpdateDownloadRetryDelayMs = process.env.WEBUI_UPDATE_DOWNLOAD_RETRY_DELAY_MS
   const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
 
   beforeEach(() => {
@@ -177,6 +181,10 @@ describe('update controller', () => {
     delete process.env.WEBUI_UPDATE_INSTALLER_SCRIPT
     delete process.env.WEBUI_UPDATE_PACKAGE_TYPE
     delete process.env.WEBUI_UPDATE_CHANNEL
+    delete process.env.WEBUI_UPDATE_MANIFEST_TIMEOUT_MS
+    delete process.env.WEBUI_UPDATE_PACKAGE_TIMEOUT_MS
+    delete process.env.WEBUI_UPDATE_DOWNLOAD_RETRIES
+    delete process.env.WEBUI_UPDATE_DOWNLOAD_RETRY_DELAY_MS
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -228,6 +236,14 @@ describe('update controller', () => {
     else process.env.WEBUI_UPDATE_PACKAGE_TYPE = originalUpdatePackageType
     if (originalUpdateChannel === undefined) delete process.env.WEBUI_UPDATE_CHANNEL
     else process.env.WEBUI_UPDATE_CHANNEL = originalUpdateChannel
+    if (originalUpdateManifestTimeoutMs === undefined) delete process.env.WEBUI_UPDATE_MANIFEST_TIMEOUT_MS
+    else process.env.WEBUI_UPDATE_MANIFEST_TIMEOUT_MS = originalUpdateManifestTimeoutMs
+    if (originalUpdatePackageTimeoutMs === undefined) delete process.env.WEBUI_UPDATE_PACKAGE_TIMEOUT_MS
+    else process.env.WEBUI_UPDATE_PACKAGE_TIMEOUT_MS = originalUpdatePackageTimeoutMs
+    if (originalUpdateDownloadRetries === undefined) delete process.env.WEBUI_UPDATE_DOWNLOAD_RETRIES
+    else process.env.WEBUI_UPDATE_DOWNLOAD_RETRIES = originalUpdateDownloadRetries
+    if (originalUpdateDownloadRetryDelayMs === undefined) delete process.env.WEBUI_UPDATE_DOWNLOAD_RETRY_DELAY_MS
+    else process.env.WEBUI_UPDATE_DOWNLOAD_RETRY_DELAY_MS = originalUpdateDownloadRetryDelayMs
     delete process.env.HERMES_WEB_UI_PREVIEW_REPO
   })
 
@@ -844,6 +860,61 @@ describe('update controller', () => {
         error: expect.stringContaining('requires bash, but no bash executable was found in PATH'),
       }),
     })
+  })
+
+  it('stores network error details when device package download fails before installer start', async () => {
+    process.env.WEBUI_UPDATE_STRATEGY = 'device-package'
+    process.env.WEBUI_UPDATE_MANIFEST_URL = 'https://updates.example.com/stable/manifest.json'
+    process.env.WEBUI_UPDATE_INSTALLER_SCRIPT = '/opt/hermes-web-ui/scripts/install-device-package.sh'
+    process.env.WEBUI_UPDATE_PACKAGE_TYPE = 'device-package'
+    process.env.WEBUI_UPDATE_CHANNEL = 'stable'
+    process.env.WEBUI_UPDATE_MANIFEST_TIMEOUT_MS = '100'
+    process.env.WEBUI_UPDATE_PACKAGE_TIMEOUT_MS = '100'
+    process.env.WEBUI_UPDATE_DOWNLOAD_RETRIES = '1'
+    process.env.WEBUI_UPDATE_DOWNLOAD_RETRY_DELAY_MS = '1'
+    const fsMocks = createStatefulFsMocks()
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        url: 'https://updates.example.com/stable/manifest.json',
+        arrayBuffer: async () => Buffer.from(JSON.stringify({
+          version: PUBLISHED_VERSION,
+          channel: 'stable',
+          sourceLabel: 'Device Manifest',
+          packageType: 'device-package',
+          artifactFormat: 'tar.gz',
+          packageUrl: 'not a valid url',
+          sha256: 'a'.repeat(64),
+          releasedAt: '2026-06-09T00:00:00Z',
+          compatibleNodeRange: `>=${process.versions.node}`,
+          minCurrentVersion: '0.6.10',
+        })),
+      })
+      .mockRejectedValue(Object.assign(new TypeError('fetch failed'), { code: 'ETIMEDOUT' })))
+    const { handleUpdate, updateStatus, mocks } = await loadUpdateController(fsMocks)
+    const ctx = createMockCtx()
+    const statusCtx = createMockCtx()
+
+    await handleUpdate(ctx)
+    await vi.runAllTimersAsync()
+    for (let index = 0; index < 20; index += 1) {
+      await updateStatus(statusCtx)
+      if ((statusCtx.body as any)?.lastTask) break
+      await Promise.resolve()
+    }
+
+    expect(mocks.spawn).not.toHaveBeenCalled()
+    expect(statusCtx.body).toEqual({
+      currentTask: null,
+      lastTask: expect.objectContaining({
+        status: 'failed',
+        stage: 'failed',
+        message: 'Failed to download device package 0.6.13 from not a valid url.',
+        error: expect.stringContaining('"code":"ETIMEDOUT"'),
+      }),
+    })
+    expect((statusCtx.body as any).lastTask.error).toContain('"attempts":2')
   })
 
   it('loads preview tags through async git with a short timeout', async () => {

@@ -80,13 +80,20 @@ export async function downloadAndVerifyDevicePackage(
 
   let response: Awaited<ReturnType<typeof fetchUpdateBinary>>
   try {
-    response = await fetchUpdateBinary(manifest.packageUrl, 60_000)
+    response = await fetchUpdateBinary(manifest.packageUrl, {
+      timeoutMs: update.packageTimeoutMs,
+      retries: update.downloadRetries,
+      retryDelayMs: update.downloadRetryDelayMs,
+    })
   } catch (err) {
     throw new UpdateError(
       'update_package_fetch_failed',
       `Failed to download device package ${manifest.version} from ${manifest.packageUrl}.`,
       502,
-      describeUpdateNetworkError(err),
+      {
+        packageUrl: manifest.packageUrl,
+        ...describeUpdateNetworkError(err),
+      },
     )
   }
 
@@ -99,6 +106,7 @@ export async function downloadAndVerifyDevicePackage(
         packageUrl: manifest.packageUrl,
         status: response.status,
         transport: response.transport,
+        attempts: response.attempts,
       },
     )
   }

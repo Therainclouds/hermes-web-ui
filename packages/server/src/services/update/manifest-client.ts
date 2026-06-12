@@ -55,7 +55,11 @@ async function fetchRawManifest(update: UpdateConfig = config.update): Promise<{
 
   let response: Awaited<ReturnType<typeof fetchUpdateJson>>
   try {
-    response = await fetchUpdateJson(manifestUrl, 10_000)
+    response = await fetchUpdateJson(manifestUrl, {
+      timeoutMs: update.manifestTimeoutMs,
+      retries: update.downloadRetries,
+      retryDelayMs: update.downloadRetryDelayMs,
+    })
   } catch (err) {
     if (err instanceof SyntaxError) {
       throw new UpdateError('update_manifest_invalid', `Manifest response is not valid JSON: ${manifestUrl}`)
@@ -64,7 +68,10 @@ async function fetchRawManifest(update: UpdateConfig = config.update): Promise<{
       'update_manifest_fetch_failed',
       `Failed to fetch update manifest from ${manifestUrl}.`,
       502,
-      describeUpdateNetworkError(err),
+      {
+        manifestUrl,
+        ...describeUpdateNetworkError(err),
+      },
     )
   }
 
@@ -77,6 +84,7 @@ async function fetchRawManifest(update: UpdateConfig = config.update): Promise<{
         manifestUrl,
         status: response.status,
         transport: response.transport,
+        attempts: response.attempts,
       },
     )
   }

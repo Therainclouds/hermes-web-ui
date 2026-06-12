@@ -23,6 +23,10 @@ describe('update manifest client', () => {
       healthcheckUrl: 'http://127.0.0.1:8648/health',
       stateFile: '/tmp/update-state.json',
       logDir: '/tmp/update-logs',
+      manifestTimeoutMs: 100,
+      packageTimeoutMs: 100,
+      downloadRetries: 0,
+      downloadRetryDelayMs: 1,
       healthcheckTimeoutMs: 2_000,
       healthcheckIntervalMs: 2_000,
       healthcheckRetries: 15,
@@ -192,6 +196,7 @@ describe('update manifest client', () => {
     })).rejects.toMatchObject({
       code: 'update_manifest_fetch_failed',
       details: expect.objectContaining({
+        manifestUrl: 'http://127.0.0.1:1/stable/latest.json',
         primary: expect.objectContaining({
           message: 'fetch failed',
         }),

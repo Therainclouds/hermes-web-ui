@@ -35,6 +35,12 @@ import type { UpdatePackageType, UpdateStrategy } from './services/update/types'
  * - MAX_EDIT_SIZE: Max editable file size. Default: 10MB.
  * - LOG_LEVEL: Server log level. Default: info.
  * - BRIDGE_LOG_LEVEL: Bridge log level. Default: LOG_LEVEL or info.
+ *
+ * Update networking:
+ * - WEBUI_UPDATE_MANIFEST_TIMEOUT_MS: Timeout for manifest HTTP requests. Default: 30000.
+ * - WEBUI_UPDATE_PACKAGE_TIMEOUT_MS: Timeout for device package downloads. Default: 300000.
+ * - WEBUI_UPDATE_DOWNLOAD_RETRIES: Retries for transient update downloads. Default: 3.
+ * - WEBUI_UPDATE_DOWNLOAD_RETRY_DELAY_MS: Base delay between retries. Default: 2000.
  */
 
 export function getListenHost(env: Record<string, string | undefined> = process.env): string {
@@ -186,6 +192,10 @@ export const config = {
     healthcheckUrl: (process.env.WEBUI_UPDATE_HEALTHCHECK_URL || '').trim() || getDefaultUpdateHealthcheckUrl(process.env.PORT || '8648'),
     stateFile: resolve((process.env.WEBUI_UPDATE_STATE_FILE || join(appHome, 'updates', 'update-task-state.json')).trim()),
     logDir: resolve((process.env.WEBUI_UPDATE_LOG_DIR || join(appHome, 'updates', 'logs')).trim()),
+    manifestTimeoutMs: parsePositiveInteger(process.env.WEBUI_UPDATE_MANIFEST_TIMEOUT_MS, 30_000),
+    packageTimeoutMs: parsePositiveInteger(process.env.WEBUI_UPDATE_PACKAGE_TIMEOUT_MS, 300_000),
+    downloadRetries: parsePositiveInteger(process.env.WEBUI_UPDATE_DOWNLOAD_RETRIES, 3),
+    downloadRetryDelayMs: parsePositiveInteger(process.env.WEBUI_UPDATE_DOWNLOAD_RETRY_DELAY_MS, 2_000),
     healthcheckTimeoutMs: parsePositiveInteger(process.env.WEBUI_UPDATE_HEALTHCHECK_TIMEOUT_MS, 2_000),
     healthcheckIntervalMs: parsePositiveInteger(process.env.WEBUI_UPDATE_HEALTHCHECK_INTERVAL_MS, 2_000),
     healthcheckRetries: parsePositiveInteger(process.env.WEBUI_UPDATE_HEALTHCHECK_RETRIES, 15),
