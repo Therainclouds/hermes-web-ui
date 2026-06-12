@@ -51,9 +51,10 @@
 
 说明：
 
-- 本轮收口只补配置、校验和验收准备
-- 本轮不修改 `scripts/deploy-source-armbian.sh` 的默认更新策略
-- 因此“推荐模式”并不等于“所有新设备已自动默认启用”
+- 当前源码部署自更新链路会在替换 `hermes-web-ui` 前，先串行升级 `hermes-agent` 到最新稳定版
+- `hermes-agent` 升级失败时，整次 `hermes-web-ui` 更新直接中止，不继续覆盖部署目录
+- `anthropic` 版本默认不固定；只有显式设置 `HERMES_ANTHROPIC_VERSION` 时，自更新链路才会额外 pin 该 SDK
+- Docker 部署链路不在本轮调整范围内
 
 ## 当前数据保护边界
 
@@ -106,17 +107,20 @@
 3. 用户点击更新后，后端先从 npm registry 解析 `latest` 对应的真实版本号。
 4. 后端执行统一 preflight，判断真实数据路径和风险级别。
 5. 后台执行 `scripts/update-source-deploy.sh --version <x.y.z>`。
-6. 更新脚本下载 tag 源码包，覆盖部署目录，再调用 `deploy-source-armbian.sh` 的 `update-only` 模式重建与自检。
+6. 更新脚本下载 tag 源码包，并先调用新源码里的 `deploy-source-armbian.sh` 升级 `hermes-agent` 最新稳定版。
+7. 若 `hermes-agent` 升级失败，整次更新中止，不覆盖当前 `hermes-web-ui` 部署目录。
+8. `hermes-agent` 升级成功后，更新脚本覆盖部署目录，再调用 `deploy-source-armbian.sh` 的 `update-only` 模式重建与自检。
 
 ### device-package
 
 1. 服务启动后按 `WEBUI_UPDATE_MANIFEST_URL` 或 `WEBUI_UPDATE_MANIFEST_BASE_URL + WEBUI_UPDATE_CHANNEL` 解析 `latest.json`。
 2. `/health` 返回最新版本、更新源标签、策略、通道和包类型。
 3. 用户点击更新后，后端下载 `latest.json` 指向的设备包并校验 `sha256`。
-4. 安装器解包到 staging 目录，校验最小结构，创建部署目录备份。
-5. 安装器执行受控替换，并调用 `deploy-source-armbian.sh` 的 `update-only` 模式重建。
-6. 安装器执行 `/health` 健康检查。
-7. 若健康检查失败，则恢复备份并再次执行 `update-only`，最终把结果写入状态文件。
+4. 安装器解包到 staging 目录，校验最小结构，并先调用新包里的 `deploy-source-armbian.sh` 升级 `hermes-agent` 最新稳定版。
+5. 若 `hermes-agent` 升级失败，整次更新直接中止，不替换当前部署目录。
+6. `hermes-agent` 升级成功后，安装器创建部署目录备份，执行受控替换，再调用 `deploy-source-armbian.sh` 的 `update-only` 模式重建。
+7. 安装器执行 `/health` 健康检查。
+8. 若健康检查失败，则恢复备份并再次执行 `update-only`，最终把结果写入状态文件。
 
 ## 配置说明
 
@@ -473,6 +477,8 @@ tail -n 200 /home/hermesui/.hermes-web-ui/updates/logs/*.log
 
 常见原因：
 
+- `hermes-agent` 最新稳定版 release 元数据解析失败
+- `hermes-agent` 最新稳定版 wheel 下载或安装失败
 - `WEBUI_UPDATE_MANIFEST_BASE_URL` 写错
 - `WEBUI_UPDATE_INSTALLER_SCRIPT` 缺失或没有执行权限
 - `packageUrl` 不可下载

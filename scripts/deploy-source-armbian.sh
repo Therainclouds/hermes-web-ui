@@ -189,6 +189,11 @@ ensure_app_user() {
 }
 
 resolve_repo_dir() {
+  if [[ "${USE_CONFIGURED_DEPLOY_DIR}" == "true" ]]; then
+    info "Using DEPLOY_DIR provided by the caller: ${DEPLOY_DIR}"
+    return 0
+  fi
+
   local script_root
   script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -235,6 +240,67 @@ download_file() {
   return 1
 }
 
+resolve_hermes_agent_wheel_url() {
+  local latest_flag="${HERMES_AGENT_UPDATE_LATEST_STABLE:-false}"
+  case "${latest_flag,,}" in
+    1|true|yes|on)
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+
+  if [[ -n "${HERMES_AGENT_WHEEL_URL}" && "${HERMES_AGENT_WHEEL_URL}" != "${DEFAULT_HERMES_AGENT_WHEEL_URL}" ]]; then
+    info "Using caller-provided Hermes Agent wheel URL override: ${HERMES_AGENT_WHEEL_URL}"
+    return 0
+  fi
+
+  step "Resolve latest stable Hermes Agent wheel"
+  local resolved_url
+  resolved_url="$(
+    python3 - "${HERMES_AGENT_RELEASES_API_URL}" <<'PY'
+import json
+import sys
+import urllib.request
+
+api_url = sys.argv[1]
+request = urllib.request.Request(
+    api_url,
+    headers={
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "hermes-web-ui-deploy-source-armbian",
+    },
+)
+with urllib.request.urlopen(request, timeout=20) as response:
+    payload = json.load(response)
+
+assets = payload.get("assets") or []
+candidates = []
+for asset in assets:
+    name = str(asset.get("name") or "")
+    url = str(asset.get("browser_download_url") or "")
+    if not url:
+        continue
+    if name.startswith("hermes_agent-") and name.endswith("-py3-none-any.whl"):
+        candidates.append((name, url))
+
+if not candidates:
+    raise SystemExit(
+        f"No stable hermes-agent wheel asset found in release payload from {api_url}"
+    )
+
+candidates.sort()
+print(candidates[0][1])
+PY
+  )"
+  if [[ -z "${resolved_url}" ]]; then
+    err "Failed to resolve the latest stable Hermes Agent wheel URL."
+    exit 1
+  fi
+  HERMES_AGENT_WHEEL_URL="${resolved_url}"
+  info "Resolved latest stable Hermes Agent wheel: ${HERMES_AGENT_WHEEL_URL}"
+}
+
 install_node() {
   step "Install Node.js ${NODE_VERSION}"
 
@@ -265,6 +331,11 @@ install_node() {
 
 ensure_wheel_anthropic_pin() {
   local venv_dir="${APP_USER_HOME}/.hermes/hermes-agent-venv"
+  if [[ -z "${HERMES_ANTHROPIC_VERSION:-}" ]]; then
+    info "No HERMES_ANTHROPIC_VERSION override provided. Skipping Anthropic SDK pin."
+    return 0
+  fi
+
   if [[ ! -x "${venv_dir}/bin/pip" ]]; then
     warn "Wheel venv not found at ${venv_dir}; skipping Anthropic SDK pin."
     return 0
@@ -277,37 +348,40 @@ ensure_wheel_anthropic_pin() {
 }
 
 install_hermes_agent() {
-  step "Install Hermes Agent"
-
   local hermes_bin_candidate
   hermes_bin_candidate="${APP_USER_HOME}/.local/bin/hermes"
-  if run_as_app_user "test -x '${hermes_bin_candidate}'"; then
-    if [[ -n "${HERMES_AGENT_WHEEL_URL}" ]]; then
-      ensure_wheel_anthropic_pin
-    fi
-    info "Hermes is already installed. Skipping installation."
-    return 0
-  fi
+  resolve_hermes_agent_wheel_url
 
   # Mode A: Install from Wheel URL (Fast, no git clone)
   if [[ -n "${HERMES_AGENT_WHEEL_URL}" ]]; then
-    info "Installing Hermes Agent from pre-built wheel: ${HERMES_AGENT_WHEEL_URL}"
     local venv_dir="${APP_USER_HOME}/.hermes/hermes-agent-venv"
     local bin_dir="${APP_USER_HOME}/.local/bin"
 
+    if run_as_app_user "test -x '${hermes_bin_candidate}'"; then
+      step "Update Hermes Agent"
+      info "Updating Hermes Agent from wheel: ${HERMES_AGENT_WHEEL_URL}"
+    else
+      step "Install Hermes Agent"
+      info "Installing Hermes Agent from pre-built wheel: ${HERMES_AGENT_WHEEL_URL}"
+    fi
+
     run_as_app_user "mkdir -p '${venv_dir}' '${bin_dir}'"
-    run_as_app_user "python3 -m venv '${venv_dir}'"
+    if ! run_as_app_user "test -x '${venv_dir}/bin/python3'"; then
+      run_as_app_user "python3 -m venv '${venv_dir}'"
+    fi
     run_as_app_user "'${venv_dir}/bin/pip' install --upgrade pip"
-    run_as_app_user "'${venv_dir}/bin/pip' install '${HERMES_AGENT_WHEEL_URL}'"
+    run_as_app_user "'${venv_dir}/bin/pip' install --upgrade '${HERMES_AGENT_WHEEL_URL}'"
     ensure_wheel_anthropic_pin
 
     # Link the command
     run_as_app_user "ln -sf '${venv_dir}/bin/hermes' '${bin_dir}/hermes'"
-    info "Hermes installed from wheel at: ${hermes_bin_candidate}"
+    run_as_app_user "'${bin_dir}/hermes' version >/dev/null"
+    info "Hermes Agent is ready from wheel at: ${hermes_bin_candidate}"
     return 0
   fi
 
   # Mode B: Official Installer (Legacy/Source)
+  step "Install Hermes Agent"
   local install_command
   install_command=$(cat <<'EOF'
 set -euo pipefail
@@ -476,6 +550,9 @@ EOF
   local update_env_name update_env_value
   for update_env_name in \
     UPLOAD_DIR \
+    HERMES_AGENT_WHEEL_URL \
+    HERMES_AGENT_RELEASES_API_URL \
+    HERMES_ANTHROPIC_VERSION \
     WEBUI_UPDATE_ENABLED \
     WEBUI_UPDATE_PACKAGE \
     WEBUI_UPDATE_REGISTRY \
@@ -686,8 +763,11 @@ NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmmirror.com}"
 NPM_BINARY_MIRROR_PREFIX="${NPM_BINARY_MIRROR_PREFIX:-https://cdn.npmmirror.com/binaries}"
 HERMES_INSTALLER_MIRROR="${HERMES_INSTALLER_MIRROR:-https://cdn.jsdelivr.net/gh/NousResearch/hermes-agent@main/scripts/install.sh}"
 HERMES_INSTALLER_FALLBACK="${HERMES_INSTALLER_FALLBACK:-https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh}"
-HERMES_AGENT_WHEEL_URL="${HERMES_AGENT_WHEEL_URL:-https://github.com/NousResearch/hermes-agent/releases/download/v2026.5.29.2/hermes_agent-0.15.2-py3-none-any.whl}"
-HERMES_ANTHROPIC_VERSION="${HERMES_ANTHROPIC_VERSION:-0.87.0}"
+DEFAULT_HERMES_AGENT_WHEEL_URL="https://github.com/NousResearch/hermes-agent/releases/download/v2026.5.29.2/hermes_agent-0.15.2-py3-none-any.whl"
+HERMES_AGENT_WHEEL_URL="${HERMES_AGENT_WHEEL_URL:-${DEFAULT_HERMES_AGENT_WHEEL_URL}}"
+HERMES_AGENT_RELEASES_API_URL="${HERMES_AGENT_RELEASES_API_URL:-https://api.github.com/repos/NousResearch/hermes-agent/releases/latest}"
+HERMES_AGENT_UPDATE_LATEST_STABLE="${HERMES_AGENT_UPDATE_LATEST_STABLE:-false}"
+HERMES_ANTHROPIC_VERSION="${HERMES_ANTHROPIC_VERSION:-}"
 WEBUI_BUNDLE_URL="${WEBUI_BUNDLE_URL:-}"
 HERMES_INSTALL_FLAGS="${HERMES_INSTALL_FLAGS:---skip-setup --skip-browser}"
 SERVICE_TEMPLATE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hermes-web-ui.service"
@@ -703,6 +783,8 @@ WEBUI_UPDATE_STRATEGY="${WEBUI_UPDATE_STRATEGY:-source-deploy}"
 WEBUI_UPDATE_SCRIPT="${WEBUI_UPDATE_SCRIPT:-${DEPLOY_DIR}/scripts/update-source-deploy.sh}"
 WEBUI_UPDATE_REPO="${WEBUI_UPDATE_REPO:-https://github.com/tangledup-ai/hermes-web-ui}"
 UPDATE_ONLY_RAW="${DEPLOY_UPDATE_ONLY:-false}"
+AGENT_ONLY_RAW="${DEPLOY_HERMES_AGENT_ONLY:-false}"
+USE_CONFIGURED_DEPLOY_DIR_RAW="${DEPLOY_USE_CONFIGURED_DIR:-false}"
 APP_USER_HOME=""
 NODE_ARCH=""
 
@@ -712,6 +794,24 @@ case "${UPDATE_ONLY_RAW,,}" in
     ;;
   *)
     UPDATE_ONLY=false
+    ;;
+esac
+
+case "${AGENT_ONLY_RAW,,}" in
+  1|true|yes|on)
+    AGENT_ONLY=true
+    ;;
+  *)
+    AGENT_ONLY=false
+    ;;
+esac
+
+case "${USE_CONFIGURED_DEPLOY_DIR_RAW,,}" in
+  1|true|yes|on)
+    USE_CONFIGURED_DEPLOY_DIR=true
+    ;;
+  *)
+    USE_CONFIGURED_DEPLOY_DIR=false
     ;;
 esac
 
@@ -738,14 +838,23 @@ echo
 
 require_debian_like
 require_supported_arch
-if [[ "${UPDATE_ONLY}" != "true" ]]; then
+if [[ "${UPDATE_ONLY}" != "true" && "${AGENT_ONLY}" != "true" ]]; then
   install_base_packages
+elif [[ "${AGENT_ONLY}" == "true" ]]; then
+  info "Running source deployment in hermes-agent-only mode."
 else
   info "Running source deployment in update-only mode."
 fi
 ensure_app_user
 resolve_repo_dir
 prepare_deploy_dirs
+if [[ "${AGENT_ONLY}" == "true" ]]; then
+  install_hermes_agent
+  echo
+  info "Hermes Agent update completed"
+  exit 0
+fi
+
 install_node
 if [[ "${UPDATE_ONLY}" != "true" ]]; then
   install_hermes_agent

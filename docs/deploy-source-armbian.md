@@ -45,6 +45,8 @@
   - `DEPLOY_DIR`
 - 如果这两个位置都没有源码目录，脚本会直接报错退出。
 - 如果现场部署失败，优先按 [`docs/deploy-troubleshooting.md`](./deploy-troubleshooting.md) 的命令顺序排查。
+- 源码部署的**自更新链路**现在会在替换 `hermes-web-ui` 前，先顺序升级 `hermes-agent` 到最新稳定版；如果 `hermes-agent` 升级失败，整次更新会直接中止。
+- `anthropic` 不再默认写死版本；只有显式设置 `HERMES_ANTHROPIC_VERSION` 时，脚本才会额外固定该 SDK 版本。
 
 ## 默认主流程：压缩打包 + SCP 上传 + 解压部署
 
@@ -142,7 +144,7 @@ sudo PORT=8080 \
 export HERMES_AGENT_WHEEL_URL="https://github.com/NousResearch/hermes-agent/releases/download/v2026.5.29.2/hermes_agent-0.15.2-py3-none-any.whl"
 ```
 
-如果你要使用 `MiniMax / MiniMax CN` 这类 Anthropic 兼容 provider，建议同时固定 Anthropic SDK 版本。部署脚本现在默认会在 wheel venv 中预装 `anthropic==0.87.0`；如需覆盖，可显式传入：
+如果你要使用 `MiniMax / MiniMax CN` 这类 Anthropic 兼容 provider，并且现场需要兼容某个已验证版本，可以显式固定 Anthropic SDK：
 
 ```bash
 export HERMES_ANTHROPIC_VERSION="0.87.0"
@@ -160,14 +162,13 @@ tar -czf hermes-webui-dist.tar.gz dist/
 #### 3. 执行安装
 ```bash
 sudo HERMES_AGENT_WHEEL_URL="https://.../hermes_agent-0.15.2-py3-none-any.whl" \
-     HERMES_ANTHROPIC_VERSION="0.87.0" \
      WEBUI_BUNDLE_URL="https://.../hermes-webui-dist.tar.gz" \
      ./scripts/deploy-source-armbian.sh
 ```
 
 **极速模式优势**：
 - **Agent**: 跳过 `git clone`，直接 `pip install` 二进制包，速度提升 5-10 倍。
-- **Anthropic 兼容 provider**: wheel 模式会额外固定安装 `anthropic==0.87.0`，避免 MiniMax 等 Anthropic 兼容端点因为手工执行 `pip install anthropic` 拉到过新 SDK 而出现兼容问题。
+- **Anthropic 兼容 provider**: 默认不额外固定 `anthropic`。如果现场验证需要特定兼容版本，可显式设置 `HERMES_ANTHROPIC_VERSION="0.87.0"` 之类的覆盖值。
 - **Web UI**: 跳过 `npm install` (100MB+) 和 `npm build` (极耗 CPU)，直接解压产物，速度提升 20 倍以上，且彻底解决超时问题。
 
 ## 部署完成后的首次配置
@@ -259,7 +260,8 @@ NPM_REGISTRY=https://registry.npmmirror.com
 NODE_MIRROR_URL=https://npmmirror.com/mirrors/node
 HERMES_INSTALL_FLAGS="--skip-setup --skip-browser"
 HERMES_AGENT_WHEEL_URL="https://github.com/NousResearch/hermes-agent/releases/download/v2026.5.29.2/hermes_agent-0.15.2-py3-none-any.whl"
-HERMES_ANTHROPIC_VERSION="0.87.0"
+HERMES_AGENT_RELEASES_API_URL="https://api.github.com/repos/NousResearch/hermes-agent/releases/latest"
+HERMES_ANTHROPIC_VERSION=""
 ```
 
 ## 自定义参数
@@ -583,6 +585,23 @@ sudo tar -xzf /tmp/hermes-web-ui-src.tar.gz -C /opt
 cd /opt/hermes-web-ui
 chmod +x scripts/deploy-source-armbian.sh
 sudo ./scripts/deploy-source-armbian.sh
+```
+
+### 9. 页面自更新时会先升级 Hermes Agent
+
+源码部署设备在页面触发 `source-deploy` 或 `device-package` 自更新时，会先执行一轮 `hermes-agent` 顺序升级：
+
+1. 解析 `NousResearch/hermes-agent` 的最新稳定版 Release
+2. 安装对应 wheel 到 `/home/hermesui/.hermes/hermes-agent-venv`
+3. 若显式设置了 `HERMES_ANTHROPIC_VERSION`，再额外固定该版本的 `anthropic`
+4. 只有上述步骤全部成功，才继续替换 `hermes-web-ui`
+
+如果现场需要手工覆盖这一步，可在环境文件或执行脚本时指定：
+
+```bash
+HERMES_AGENT_WHEEL_URL="https://github.com/NousResearch/hermes-agent/releases/download/<tag>/hermes_agent-<version>-py3-none-any.whl"
+HERMES_AGENT_RELEASES_API_URL="https://api.github.com/repos/NousResearch/hermes-agent/releases/latest"
+HERMES_ANTHROPIC_VERSION="0.87.0"
 ```
 
 如果你要彻底重置源码部署：

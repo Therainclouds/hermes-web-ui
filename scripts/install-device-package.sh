@@ -517,7 +517,32 @@ run_deploy_script() {
     WEBUI_UPDATE_MANIFEST_BASE_URL="${WEBUI_UPDATE_MANIFEST_BASE_URL:-}" \
     WEBUI_UPDATE_CHANNEL="${WEBUI_UPDATE_CHANNEL:-}" \
     WEBUI_UPDATE_PACKAGE_TYPE="${WEBUI_UPDATE_PACKAGE_TYPE:-}" \
+    HERMES_AGENT_WHEEL_URL="${HERMES_AGENT_WHEEL_URL:-}" \
+    HERMES_AGENT_RELEASES_API_URL="${HERMES_AGENT_RELEASES_API_URL:-}" \
+    HERMES_ANTHROPIC_VERSION="${HERMES_ANTHROPIC_VERSION:-}" \
     bash "${DEPLOY_DIR}/scripts/deploy-source-armbian.sh"
+}
+
+run_hermes_agent_update() {
+  step "Upgrade Hermes Agent before replacing the Web UI package"
+  env \
+    DEPLOY_HERMES_AGENT_ONLY=true \
+    DEPLOY_USE_CONFIGURED_DIR=true \
+    DEPLOY_DIR="${DEPLOY_DIR}" \
+    APP_USER="${APP_USER}" \
+    PORT="${PORT}" \
+    SYSTEMD_SERVICE_NAME="${SYSTEMD_SERVICE_NAME}" \
+    SERVICE_ENV_FILE="${SERVICE_ENV_FILE}" \
+    HERMES_HOME_DIR="${HERMES_HOME_DIR}" \
+    HERMES_HOME="${HERMES_HOME_DIR}" \
+    HERMES_WEB_UI_HOME="${HERMES_WEB_UI_HOME:-}" \
+    HERMES_WEBUI_STATE_DIR="${HERMES_WEB_UI_HOME:-}" \
+    UPLOAD_DIR="${UPLOAD_DIR:-}" \
+    HERMES_AGENT_UPDATE_LATEST_STABLE=true \
+    HERMES_AGENT_WHEEL_URL="${HERMES_AGENT_WHEEL_URL:-}" \
+    HERMES_AGENT_RELEASES_API_URL="${HERMES_AGENT_RELEASES_API_URL:-}" \
+    HERMES_ANTHROPIC_VERSION="${HERMES_ANTHROPIC_VERSION:-}" \
+    bash "${SOURCE_DIR}/scripts/deploy-source-armbian.sh"
 }
 
 main() {
@@ -526,8 +551,10 @@ main() {
   trap 'on_error $? $LINENO "$BASH_COMMAND"' ERR
   build_preserve_names
   prepare_workdirs
-  update_task_stage "backing_up" "Creating program backup for ${TARGET_VERSION}"
   extract_package
+  update_task_stage "updating_runtime" "Upgrading Hermes Agent before applying ${TARGET_VERSION}"
+  run_hermes_agent_update
+  update_task_stage "backing_up" "Creating program backup for ${TARGET_VERSION}"
   backup_current_deploy
   if backup_has_entries; then
     ROLLBACK_READY=1
