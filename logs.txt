@@ -1,0 +1,313 @@
+root@69max-rk3528:/opt/hermes-web-ui# cat /home/hermesui/.hermes-web-ui/updates/update-task-state.jsonermes-web-ui# cat /home/hermesui/.hermes-web-ui/updates/update-task-state.json
+{
+  "currentTask": null,
+  "lastTask": {
+    "id": "update-mqaqmmnv-q7q77f",
+    "strategy": "device-package",
+    "status": "failed",
+    "stage": "failed",
+    "message": "Failed to download device package 0.6.19 from https://github.com/tangledup-ai/hermes-web-ui/releases/download/v0.6.19/hermes-web-ui-device-v0.6.19.tar.gz.",
+    "targetVersion": "0.6.19",
+    "warning": "Hermes data directory is using the legacy compatibility layout inside the deploy directory and will be preserved during updates: /opt/hermes-web-ui/hermes_data",
+    "error": "Failed to download device package 0.6.19 from https://github.com/tangledup-ai/hermes-web-ui/releases/download/v0.6.19/hermes-web-ui-device-v0.6.19.tar.gz.",
+    "logPath": "",
+    "rollbackMessage": "",
+    "healthcheckUrl": "http://127.0.0.1:6060/health",
+    "startedAt": "2026-06-12T09:42:18.427Z",
+    "finishedAt": "2026-06-12T09:48:18.666Z"
+  }
+}root@69max-rk3528:/opt/hermes-web-ui#curl -s http://127.0.0.1:6060/api/hermes/update/statuss
+{"error":"Unauthorized"}root@69max-rk3528:/opt/hermes-web-ui# sudo journalctl -u hermes-web-ui -n 120 --no-pager                       sudo journalctl -u hermes-web-ui -n 120 --no-pager
+Jun 12 13:00:05 69max-rk3528 systemd[1]: Started hermes-web-ui.service - Hermes Web UI (source deployment).
+Jun 12 13:00:08 69max-rk3528 node[1304]: hermes-web-ui v0.6.16 starting...
+Jun 12 13:00:08 69max-rk3528 node[1304]: (node:1304) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+Jun 12 13:00:08 69max-rk3528 node[1304]: (Use `node --trace-warnings ...` to show where the warning was created)
+Jun 12 13:00:26 69max-rk3528 node[1304]: [bootstrap] profile gateways checked
+Jun 12 13:00:33 69max-rk3528 node[1304]: [bootstrap] agent bridge started
+Jun 12 13:00:35 69max-rk3528 node[1304]: [bootstrap] all stores initialized
+Jun 12 13:00:35 69max-rk3528 node[1304]: [bootstrap] cors + bodyParser registered
+Jun 12 13:00:35 69max-rk3528 node[1304]: [bootstrap] routes registered
+Jun 12 13:00:35 69max-rk3528 node[1304]: [bootstrap] SPA fallback registered
+Jun 12 13:00:35 69max-rk3528 node[1304]: [bootstrap] listening on 0.0.0.0:6060
+Jun 12 13:00:35 69max-rk3528 node[1304]: [bootstrap] app.listen called
+Jun 12 13:00:35 69max-rk3528 node[1304]: [bootstrap] terminal + kanban + LAN peer websocket setup
+Jun 12 13:00:35 69max-rk3528 node[1304]: [bootstrap] session deleter started, profile=default    
+Jun 12 13:00:35 69max-rk3528 node[1304]: Server: http://localhost:6060 (LAN: http://192.168.2.247:6060)
+Jun 12 13:00:35 69max-rk3528 node[1304]: Log: /home/hermesui/.hermes-web-ui/logs/server.log      
+Jun 12 13:30:45 69max-rk3528 node[1304]: Update available: 0.6.16 → 0.6.17
+Jun 12 14:00:36 69max-rk3528 node[1304]: Update available: 0.6.16 → 0.6.17
+Jun 12 15:00:45 69max-rk3528 node[1304]: Update available: 0.6.16 → 0.6.17
+Jun 12 15:39:08 69max-rk3528 systemd[1]: Stopping hermes-web-ui.service - Hermes Web UI (source deployment)...
+Jun 12 15:39:08 69max-rk3528 node[1304]: [shutdown] Received signal: SIGINT
+Jun 12 15:39:10 69max-rk3528 systemd[1]: hermes-web-ui.service: Deactivated successfully.        
+Jun 12 15:39:10 69max-rk3528 systemd[1]: Stopped hermes-web-ui.service - Hermes Web UI (source deployment).
+Jun 12 15:39:10 69max-rk3528 systemd[1]: hermes-web-ui.service: Consumed 23min 30.518s CPU time, 245.3M memory peak.
+Jun 12 15:39:10 69max-rk3528 systemd[1]: Started hermes-web-ui.service - Hermes Web UI (source deployment).
+Jun 12 15:39:12 69max-rk3528 node[65001]: hermes-web-ui v0.6.16 starting...
+Jun 12 15:39:12 69max-rk3528 node[65001]: (node:65001) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+Jun 12 15:39:12 69max-rk3528 node[65001]: (Use `node --trace-warnings ...` to show where the warning was created)
+Jun 12 15:39:33 69max-rk3528 node[65001]: [bootstrap] profile gateways checked
+Jun 12 15:39:40 69max-rk3528 node[65001]: [bootstrap] agent bridge started
+Jun 12 15:39:42 69max-rk3528 node[65001]: [bootstrap] all stores initialized
+Jun 12 15:39:42 69max-rk3528 node[65001]: [bootstrap] cors + bodyParser registered
+Jun 12 15:39:42 69max-rk3528 node[65001]: [bootstrap] routes registered
+Jun 12 15:39:42 69max-rk3528 node[65001]: [bootstrap] SPA fallback registered
+Jun 12 15:39:42 69max-rk3528 node[65001]: [bootstrap] listening on 0.0.0.0:6060
+Jun 12 15:39:42 69max-rk3528 node[65001]: [bootstrap] app.listen called
+Jun 12 15:39:42 69max-rk3528 node[65001]: [bootstrap] terminal + kanban + LAN peer websocket setup
+Jun 12 15:39:42 69max-rk3528 node[65001]: [bootstrap] session deleter started, profile=default   
+Jun 12 15:39:42 69max-rk3528 node[65001]: Server: http://localhost:6060 (LAN: http://192.168.2.247:6060)
+Jun 12 15:39:42 69max-rk3528 node[65001]: Log: /home/hermesui/.hermes-web-ui/logs/server.log     
+Jun 12 15:39:50 69max-rk3528 node[65001]: Update available: 0.6.16 → 0.6.18
+Jun 12 15:43:52 69max-rk3528 systemd[1]: Stopping hermes-web-ui.service - Hermes Web UI (source deployment)...
+Jun 12 15:43:52 69max-rk3528 node[65001]: [shutdown] Received signal: SIGINT
+Jun 12 15:43:53 69max-rk3528 systemd[1]: hermes-web-ui.service: Deactivated successfully.        
+Jun 12 15:43:53 69max-rk3528 systemd[1]: Stopped hermes-web-ui.service - Hermes Web UI (source deployment).
+Jun 12 15:43:53 69max-rk3528 systemd[1]: hermes-web-ui.service: Consumed 1min 41.975s CPU time, 208.4M memory peak.
+Jun 12 15:43:53 69max-rk3528 systemd[1]: Started hermes-web-ui.service - Hermes Web UI (source deployment).
+Jun 12 15:43:55 69max-rk3528 node[66910]: hermes-web-ui v0.6.16 starting...
+Jun 12 15:43:55 69max-rk3528 node[66910]: (node:66910) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+Jun 12 15:43:55 69max-rk3528 node[66910]: (Use `node --trace-warnings ...` to show where the warning was created)
+Jun 12 15:44:16 69max-rk3528 node[66910]: [bootstrap] profile gateways checked
+Jun 12 15:44:23 69max-rk3528 node[66910]: [bootstrap] agent bridge started
+Jun 12 15:44:25 69max-rk3528 node[66910]: [bootstrap] all stores initialized
+Jun 12 15:44:25 69max-rk3528 node[66910]: [bootstrap] cors + bodyParser registered
+Jun 12 15:44:25 69max-rk3528 node[66910]: [bootstrap] routes registered
+Jun 12 15:44:25 69max-rk3528 node[66910]: [bootstrap] SPA fallback registered
+Jun 12 15:44:25 69max-rk3528 node[66910]: [bootstrap] listening on 0.0.0.0:6060
+Jun 12 15:44:25 69max-rk3528 node[66910]: [bootstrap] app.listen called
+Jun 12 15:44:25 69max-rk3528 node[66910]: [bootstrap] terminal + kanban + LAN peer websocket setup
+Jun 12 15:44:25 69max-rk3528 node[66910]: [bootstrap] session deleter started, profile=default   
+Jun 12 15:44:25 69max-rk3528 node[66910]: Server: http://localhost:6060 (LAN: http://192.168.2.247:6060)
+Jun 12 15:44:25 69max-rk3528 node[66910]: Log: /home/hermesui/.hermes-web-ui/logs/server.log
+Jun 12 15:44:31 69max-rk3528 node[66910]: Update available: 0.6.16 → 0.6.18
+Jun 12 15:53:24 69max-rk3528 node[66910]: [update] preflight warning: Hermes data directory is using the legacy compatibility layout inside the deploy directory and will be preserved during updates: /opt/hermes-web-ui/hermes_data
+Jun 12 16:14:27 69max-rk3528 node[66910]: Update available: 0.6.16 → 0.6.18
+Jun 12 16:14:46 69max-rk3528 node[66910]: [shutdown] Received signal: SIGINT
+Jun 12 16:14:46 69max-rk3528 systemd[1]: Stopping hermes-web-ui.service - Hermes Web UI (source deployment)...
+Jun 12 16:14:47 69max-rk3528 systemd[1]: hermes-web-ui.service: Deactivated successfully.        
+Jun 12 16:14:47 69max-rk3528 systemd[1]: Stopped hermes-web-ui.service - Hermes Web UI (source deployment).
+Jun 12 16:14:47 69max-rk3528 systemd[1]: hermes-web-ui.service: Consumed 5min 24.738s CPU time, 150.1M memory peak.
+Jun 12 16:14:47 69max-rk3528 systemd[1]: Started hermes-web-ui.service - Hermes Web UI (source deployment).
+Jun 12 16:14:49 69max-rk3528 node[79502]: hermes-web-ui v0.6.16 starting...
+Jun 12 16:14:49 69max-rk3528 node[79502]: (node:79502) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+Jun 12 16:14:49 69max-rk3528 node[79502]: (Use `node --trace-warnings ...` to show where the warning was created)
+Jun 12 16:15:09 69max-rk3528 node[79502]: [bootstrap] profile gateways checked
+Jun 12 16:15:16 69max-rk3528 node[79502]: [bootstrap] agent bridge started
+Jun 12 16:15:18 69max-rk3528 node[79502]: [bootstrap] all stores initialized
+Jun 12 16:15:18 69max-rk3528 node[79502]: [bootstrap] cors + bodyParser registered
+Jun 12 16:15:18 69max-rk3528 node[79502]: [bootstrap] routes registered
+Jun 12 16:15:18 69max-rk3528 node[79502]: [bootstrap] SPA fallback registered
+Jun 12 16:15:18 69max-rk3528 node[79502]: [bootstrap] listening on 0.0.0.0:6060
+Jun 12 16:15:18 69max-rk3528 node[79502]: [bootstrap] app.listen called
+Jun 12 16:15:18 69max-rk3528 node[79502]: [bootstrap] terminal + kanban + LAN peer websocket setup
+Jun 12 16:15:18 69max-rk3528 node[79502]: [bootstrap] session deleter started, profile=default   
+Jun 12 16:15:18 69max-rk3528 node[79502]: Server: http://localhost:6060 (LAN: http://192.168.2.247:6060)
+Jun 12 16:15:18 69max-rk3528 node[79502]: Log: /home/hermesui/.hermes-web-ui/logs/server.log     
+Jun 12 16:15:24 69max-rk3528 node[79502]: Update available: 0.6.16 → 0.6.18
+Jun 12 16:45:20 69max-rk3528 node[79502]: Update available: 0.6.16 → 0.6.18
+Jun 12 17:15:21 69max-rk3528 node[79502]: Update available: 0.6.16 → 0.6.19
+Jun 12 17:15:50 69max-rk3528 node[79502]: [update] preflight warning: Hermes data directory is using the legacy compatibility layout inside the deploy directory and will be preserved during updates: /opt/hermes-web-ui/hermes_data
+Jun 12 17:42:18 69max-rk3528 node[79502]: [update] preflight warning: Hermes data directory is using the legacy compatibility layout inside the deploy directory and will be preserved during updates: /opt/hermes-web-ui/hermes_data
+root@69max-rk3528:/opt/hermes-web-ui# tail -n 200 /home/hermesui/.hermes-web-ui/logs/server.log
+{"level":30,"time":1781187673018,"pid":995602,"hostname":"69max-rk3528","msg":"Shutting down (SIGINT)..."}
+{"level":30,"time":1781187673180,"pid":995602,"hostname":"69max-rk3528","msg":"Preview runtime stopped"}
+{"level":40,"time":1781187673203,"pid":995602,"hostname":"69max-rk3528","msg":"[agent-bridge] stale managed child exit ignored code=null signal=SIGTERM pid=995875"}
+{"level":30,"time":1781187673204,"pid":995602,"hostname":"69max-rk3528","msg":"Agent bridge stopped"}
+{"level":30,"time":1781187673205,"pid":995602,"hostname":"69max-rk3528","msg":"[chat-run-socket] closed all connections and cleared state"}
+{"level":30,"time":1781187673206,"pid":995602,"hostname":"69max-rk3528","msg":"ChatRunSocket closed"}
+{"level":30,"time":1781187673207,"pid":995602,"hostname":"69max-rk3528","msg":"Coding agent hidden sessions closed"}
+{"level":30,"time":1781187673216,"pid":995602,"hostname":"69max-rk3528","msg":"[AgentClients] All agents disconnected"}
+{"level":30,"time":1781187673226,"pid":995602,"hostname":"69max-rk3528","msg":"Socket.IO closed"}
+{"level":30,"time":1781187673282,"pid":995602,"hostname":"69max-rk3528","msg":"HTTP server closed"}
+{"level":30,"time":1781188224727,"pid":1031626,"hostname":"69max-rk3528","sourceDir":"/opt/hermes-web-ui/dist/skills","targetDirs":["/opt/hermes-web-ui/hermes_data/skills"],"targetCount":1,"bundledSkillNames":["apikey-image-gen","grok-image-to-video","hyperframes","markdown-viewer","remotion"],"msg":"[skill-injector] syncing bundled skills across profiles"}
+{"level":30,"time":1781188224799,"pid":1031626,"hostname":"69max-rk3528","profile":"default","injected":["apikey-image-gen","grok-image-to-video","hyperframes","markdown-viewer","remotion"],"updated":[],"skipped":[],"targetDir":"/opt/hermes-web-ui/hermes_data/skills","msg":"[skill-injector] synced bundled skills"}
+{"level":30,"time":1781188224800,"pid":1031626,"hostname":"69max-rk3528","sourceDir":"/opt/hermes-web-ui/dist/skills","targetCount":1,"injected":["apikey-image-gen","grok-image-to-video","hyperframes","markdown-viewer","remotion"],"updated":[],"skipped":[],"targets":[{"profile":"default","targetDir":"/opt/hermes-web-ui/hermes_data/skills","injected":["apikey-image-gen","grok-image-to-video","hyperframes","markdown-viewer","remotion"],"updated":[],"skipped":[]}],"msg":"[skill-injector] completed bundled skills sync"}
+{"level":30,"time":1781188224801,"pid":1031626,"hostname":"69max-rk3528","injected":["apikey-image-gen","grok-image-to-video","hyperframes","markdown-viewer","remotion"],"targetCount":1,"msg":"[bootstrap] bundled skills injected"}
+{"level":30,"time":1781188224844,"pid":1031626,"hostname":"69max-rk3528","serverName":"hermes-studio","command":"/opt/node-v23/bin/node","targets":[{"profile":"default","status":"injected"}],"msg":"[mcp-autoinject] synced bundled MCP server"}
+{"level":40,"time":1781188234140,"pid":1031626,"hostname":"69max-rk3528","err":{"type":"Error","message":"Command failed: /home/hermesui/.local/bin/hermes gateway start\n","stack":"Error: Command failed: /home/hermesui/.local/bin/hermes gateway start\n\n    at genericNodeError (node:internal/errors:983:15)\n    at wrappedFn (node:internal/errors:537:14)\n    at ChildProcess.exithandler (node:child_process:414:12)\n    at ChildProcess.emit (node:events:507:28)\n    at maybeClose (node:internal/child_process:1101:16)\n    at ChildProcess._handle.onexit (node:internal/child_process:305:5)","code":1,"killed":false,"signal":null,"cmd":"/home/hermesui/.local/bin/hermes gateway start","stdout":"✗ Gateway service is not installed\n  Run: hermes gateway install\n","stderr":""},"msg":"[gateway-autostart] Hermes CLI gateway start failed; falling back to background run profile=default home=/opt/hermes-web-ui/hermes_data"}
+{"level":30,"time":1781188234155,"pid":1031626,"hostname":"69max-rk3528","msg":"[gateway-autostart] gateway started via fallback background run profile=default home=/opt/hermes-web-ui/hermes_data pid=1031824"}
+{"level":30,"time":1781188245655,"pid":1031626,"hostname":"69max-rk3528","msg":"[agent-bridge] starting: /home/hermesui/.hermes/hermes-agent-venv/bin/python3 /opt/hermes-web-ui/dist/server/agent-bridge/hermes_bridge.py --endpoint ipc:///tmp/hermes-agent-bridge.sock --hermes-home /opt/hermes-web-ui/hermes_data"}
+{"level":30,"time":1781188247136,"pid":1031626,"hostname":"69max-rk3528","msg":"[agent-bridge] ready at ipc:///tmp/hermes-agent-bridge.sock"}
+{"level":30,"time":1781188249221,"pid":1031626,"hostname":"69max-rk3528","msg":"WebSocket ready at /terminal (shell: /bin/bash, transport: node-pty)"}
+{"level":30,"time":1781188249222,"pid":1031626,"hostname":"69max-rk3528","msg":"WebSocket ready at /api/hermes/kanban/events (kanban watch bridge)"}
+{"level":30,"time":1781188249241,"pid":1031626,"hostname":"69max-rk3528","msg":"[GroupChat] Socket.IO ready at /group-chat"}
+{"level":30,"time":1781188249244,"pid":1031626,"hostname":"69max-rk3528","msg":"[chat-run-socket] Socket.IO ready at /chat-run"}
+{"level":30,"time":1781188249245,"pid":1031626,"hostname":"69max-rk3528","msg":"[SessionDeleter] started, profile=default, interval=300000ms"}
+{"level":30,"time":1781188249252,"pid":1031626,"hostname":"69max-rk3528","msg":"Server: http://localhost:6060 (LAN: http://192.168.2.146:6060)"}
+{"level":30,"time":1781188249268,"pid":1031626,"hostname":"69max-rk3528","msg":"[lan-discovery] responder listening on udp://0.0.0.0:46060 for http port 6060"}
+{"level":30,"time":1781188249571,"pid":1031626,"hostname":"69max-rk3528","msg":"[AgentClients] Connected: 助理一号 (mpz5gpnv87oew1)"}
+{"level":30,"time":1781188249603,"pid":1031626,"hostname":"69max-rk3528","msg":"[AgentClients] 助理一号 joined room: mpz5gk7orum8c0"}
+{"level":30,"time":1781188249604,"pid":1031626,"hostname":"69max-rk3528","msg":"[GroupChat] Restored 1 agent(s) across 1 room(s)"}
+{"level":30,"time":1781188339600,"pid":1031626,"hostname":"69max-rk3528","msg":"Shutting down (SIGINT)..."}
+{"level":30,"time":1781188339814,"pid":1031626,"hostname":"69max-rk3528","msg":"Preview runtime stopped"}
+{"level":40,"time":1781188339836,"pid":1031626,"hostname":"69max-rk3528","msg":"[agent-bridge] stale managed child exit ignored code=null signal=SIGTERM pid=1031985"}
+{"level":30,"time":1781188339837,"pid":1031626,"hostname":"69max-rk3528","msg":"Agent bridge stopped"}
+{"level":30,"time":1781188339838,"pid":1031626,"hostname":"69max-rk3528","msg":"[chat-run-socket] closed all connections and cleared state"}
+{"level":30,"time":1781188339839,"pid":1031626,"hostname":"69max-rk3528","msg":"ChatRunSocket closed"}
+{"level":30,"time":1781188339839,"pid":1031626,"hostname":"69max-rk3528","msg":"Coding agent hidden sessions closed"}
+{"level":30,"time":1781188339848,"pid":1031626,"hostname":"69max-rk3528","msg":"[AgentClients] All agents disconnected"}
+{"level":30,"time":1781188339857,"pid":1031626,"hostname":"69max-rk3528","msg":"Socket.IO closed"}
+{"level":30,"time":1781188339903,"pid":1031626,"hostname":"69max-rk3528","msg":"HTTP server closed"}
+{"level":30,"time":1781188342040,"pid":1033243,"hostname":"69max-rk3528","sourceDir":"/opt/hermes-web-ui/dist/skills","targetDirs":["/opt/hermes-web-ui/hermes_data/skills"],"targetCount":1,"bundledSkillNames":["apikey-image-gen","grok-image-to-video","hyperframes","markdown-viewer","remotion"],"msg":"[skill-injector] syncing bundled skills across profiles"}
+{"level":30,"time":1781188342079,"pid":1033243,"hostname":"69max-rk3528","sourceDir":"/opt/hermes-web-ui/dist/skills","targetCount":1,"injected":[],"updated":[],"skipped":[],"targets":[{"profile":"default","targetDir":"/opt/hermes-web-ui/hermes_data/skills","injected":[],"updated":[],"skipped":[]}],"msg":"[skill-injector] completed bundled skills sync"}
+{"level":40,"time":1781188350888,"pid":1033243,"hostname":"69max-rk3528","err":{"type":"Error","message":"Command failed: /home/hermesui/.local/bin/hermes gateway start\n","stack":"Error: Command failed: /home/hermesui/.local/bin/hermes gateway start\n\n    at genericNodeError (node:internal/errors:983:15)\n    at wrappedFn (node:internal/errors:537:14)\n    at ChildProcess.exithandler (node:child_process:414:12)\n    at ChildProcess.emit (node:events:507:28)\n    at maybeClose (node:internal/child_process:1101:16)\n    at ChildProcess._handle.onexit (node:internal/child_process:305:5)","code":1,"killed":false,"signal":null,"cmd":"/home/hermesui/.local/bin/hermes gateway start","stdout":"✗ Gateway service is not installed\n  Run: hermes gateway install\n","stderr":""},"msg":"[gateway-autostart] Hermes CLI gateway start failed; falling back to background run profile=default home=/opt/hermes-web-ui/hermes_data"}
+{"level":30,"time":1781188350904,"pid":1033243,"hostname":"69max-rk3528","msg":"[gateway-autostart] gateway started via fallback background run profile=default home=/opt/hermes-web-ui/hermes_data pid=1033396"}
+{"level":30,"time":1781188362554,"pid":1033243,"hostname":"69max-rk3528","msg":"[agent-bridge] starting: /home/hermesui/.hermes/hermes-agent-venv/bin/python3 /opt/hermes-web-ui/dist/server/agent-bridge/hermes_bridge.py --endpoint ipc:///tmp/hermes-agent-bridge.sock --hermes-home /opt/hermes-web-ui/hermes_data"}
+{"level":30,"time":1781188364144,"pid":1033243,"hostname":"69max-rk3528","msg":"[agent-bridge] ready at ipc:///tmp/hermes-agent-bridge.sock"}
+{"level":30,"time":1781188366219,"pid":1033243,"hostname":"69max-rk3528","msg":"WebSocket ready at /terminal (shell: /bin/bash, transport: node-pty)"}
+{"level":30,"time":1781188366221,"pid":1033243,"hostname":"69max-rk3528","msg":"WebSocket ready at /api/hermes/kanban/events (kanban watch bridge)"}
+{"level":30,"time":1781188366239,"pid":1033243,"hostname":"69max-rk3528","msg":"[GroupChat] Socket.IO ready at /group-chat"}
+{"level":30,"time":1781188366241,"pid":1033243,"hostname":"69max-rk3528","msg":"[chat-run-socket] Socket.IO ready at /chat-run"}
+{"level":30,"time":1781188366243,"pid":1033243,"hostname":"69max-rk3528","msg":"[SessionDeleter] started, profile=default, interval=300000ms"}
+{"level":30,"time":1781188366250,"pid":1033243,"hostname":"69max-rk3528","msg":"Server: http://localhost:6060 (LAN: http://192.168.2.146:6060)"}
+{"level":30,"time":1781188366265,"pid":1033243,"hostname":"69max-rk3528","msg":"[lan-discovery] responder listening on udp://0.0.0.0:46060 for http port 6060"}
+{"level":30,"time":1781188366649,"pid":1033243,"hostname":"69max-rk3528","msg":"[AgentClients] Connected: 助理一号 (mpz5gpnv87oew1)"}
+{"level":30,"time":1781188366681,"pid":1033243,"hostname":"69max-rk3528","msg":"[AgentClients] 助理一号 joined room: mpz5gk7orum8c0"}
+{"level":30,"time":1781188366681,"pid":1033243,"hostname":"69max-rk3528","msg":"[GroupChat] Restored 1 agent(s) across 1 room(s)"}
+{"level":30,"time":1781188413498,"pid":1033243,"hostname":"69max-rk3528","msg":"[chat-run-socket] loaded session mpz5o3iynprm0f from DB (1 messages)"}
+{"level":30,"time":1781188413593,"pid":1033243,"hostname":"69max-rk3528","msg":"[chat-run-socket] socket kqpH0_ReuPyFg8uVAAAH resumed session mpz5o3iynprm0f (working: false, messages: 1)"}      
+{"level":30,"time":1781188430367,"pid":1033243,"hostname":"69max-rk3528","msg":"[chat-run-socket] socket R6asPtkcHRXJ0rDnAAAK resumed session mpz5o3iynprm0f (working: false, messages: 1)"}      
+{"level":30,"time":1781188748994,"pid":1033243,"hostname":"69max-rk3528","msg":"[chat-run-socket] socket R6asPtkcHRXJ0rDnAAAK resumed session mpz5o3iynprm0f (working: false, messages: 1)"}      
+{"level":30,"time":1781188750892,"pid":1033243,"hostname":"69max-rk3528","msg":"[chat-run-socket] socket R6asPtkcHRXJ0rDnAAAK resumed session mpz5o3iynprm0f (working: false, messages: 1)"}      
+{"level":30,"time":1781188919219,"pid":1033243,"hostname":"69max-rk3528","msg":"[chat-run-socket] socket R6asPtkcHRXJ0rDnAAAK resumed session mpz5o3iynprm0f (working: false, messages: 1)"}      
+{"level":30,"time":1781188926323,"pid":1033243,"hostname":"69max-rk3528","msg":"[chat-run-socket] socket R6asPtkcHRXJ0rDnAAAK resumed session mpz5o3iynprm0f (working: false, messages: 1)"}      
+{"level":30,"time":1781188933941,"pid":1033243,"hostname":"69max-rk3528","msg":"[chat-run-socket] socket G0ivwQnitOzs_8kRAAAE resumed session mpz5o3iynprm0f (working: false, messages: 1)"}      
+{"level":30,"time":1781188942827,"pid":1033243,"hostname":"69max-rk3528","msg":"[chat-run-socket] socket pAKrX1I4l7mqAqQ3AAAN resumed session mpz5o3iynprm0f (working: false, messages: 1)"}      
+{"level":30,"time":1781189511951,"pid":1033243,"hostname":"69max-rk3528","msg":"[chat-run-socket] socket pAKrX1I4l7mqAqQ3AAAN resumed session mpz5o3iynprm0f (working: false, messages: 1)"}      
+{"level":30,"time":1781189594241,"pid":1033243,"hostname":"69max-rk3528","msg":"[chat-run-socket] socket TjWWqG_ckm0IooGiAAAQ resumed session mpz5o3iynprm0f (working: false, messages: 1)"}      
+{"level":30,"time":1781236608764,"pid":1033243,"hostname":"69max-rk3528","msg":"[chat-run-socket] socket TjWWqG_ckm0IooGiAAAQ resumed session mpz5o3iynprm0f (working: false, messages: 1)"}      
+{"level":30,"time":1781239762483,"pid":1033243,"hostname":"69max-rk3528","msg":"Shutting down (SIGINT)..."}
+{"level":30,"time":1781239762810,"pid":1033243,"hostname":"69max-rk3528","msg":"Preview runtime stopped"}
+{"level":40,"time":1781239762834,"pid":1033243,"hostname":"69max-rk3528","msg":"[agent-bridge] stale managed child exit ignored code=null signal=SIGTERM pid=1033545"}
+{"level":30,"time":1781239762835,"pid":1033243,"hostname":"69max-rk3528","msg":"Agent bridge stopped"}
+{"level":30,"time":1781239762836,"pid":1033243,"hostname":"69max-rk3528","msg":"[chat-run-socket] closed all connections and cleared state"}
+{"level":30,"time":1781239762837,"pid":1033243,"hostname":"69max-rk3528","msg":"ChatRunSocket closed"}
+{"level":30,"time":1781239762837,"pid":1033243,"hostname":"69max-rk3528","msg":"Coding agent hidden sessions closed"}
+{"level":30,"time":1781239762853,"pid":1033243,"hostname":"69max-rk3528","msg":"[AgentClients] All agents disconnected"}
+{"level":30,"time":1781239762860,"pid":1033243,"hostname":"69max-rk3528","msg":"Socket.IO closed"}
+{"level":30,"time":1781239762918,"pid":1033243,"hostname":"69max-rk3528","msg":"HTTP server closed"}
+{"level":30,"time":1781239765847,"pid":1401868,"hostname":"69max-rk3528","sourceDir":"/opt/hermes-web-ui/dist/skills","targetDirs":["/opt/hermes-web-ui/hermes_data/skills"],"targetCount":1,"bundledSkillNames":["apikey-image-gen","grok-image-to-video","hyperframes","markdown-viewer","remotion"],"msg":"[skill-injector] syncing bundled skills across profiles"}
+{"level":30,"time":1781239765903,"pid":1401868,"hostname":"69max-rk3528","sourceDir":"/opt/hermes-web-ui/dist/skills","targetCount":1,"injected":[],"updated":[],"skipped":[],"targets":[{"profile":"default","targetDir":"/opt/hermes-web-ui/hermes_data/skills","injected":[],"updated":[],"skipped":[]}],"msg":"[skill-injector] completed bundled skills sync"}
+{"level":40,"time":1781239776817,"pid":1401868,"hostname":"69max-rk3528","err":{"type":"Error","message":"Command failed: /home/hermesui/.local/bin/hermes gateway start\n","stack":"Error: Command failed: /home/hermesui/.local/bin/hermes gateway start\n\n    at genericNodeError (node:internal/errors:983:15)\n    at wrappedFn (node:internal/errors:537:14)\n    at ChildProcess.exithandler (node:child_process:414:12)\n    at ChildProcess.emit (node:events:507:28)\n    at maybeClose (node:internal/child_process:1101:16)\n    at ChildProcess._handle.onexit (node:internal/child_process:305:5)","code":1,"killed":false,"signal":null,"cmd":"/home/hermesui/.local/bin/hermes gateway start","stdout":"✗ Gateway service is not installed\n  Run: hermes gateway install\n","stderr":""},"msg":"[gateway-autostart] Hermes CLI gateway start failed; falling back to background run profile=default home=/opt/hermes-web-ui/hermes_data"}
+{"level":30,"time":1781239776836,"pid":1401868,"hostname":"69max-rk3528","msg":"[gateway-autostart] gateway started via fallback background run profile=default home=/opt/hermes-web-ui/hermes_data pid=1401978"}
+{"level":30,"time":1781239790337,"pid":1401868,"hostname":"69max-rk3528","msg":"[agent-bridge] starting: /home/hermesui/.hermes/hermes-agent-venv/bin/python3 /opt/hermes-web-ui/dist/server/agent-bridge/hermes_bridge.py --endpoint ipc:///tmp/hermes-agent-bridge.sock --hermes-home /opt/hermes-web-ui/hermes_data"}
+{"level":30,"time":1781239792260,"pid":1401868,"hostname":"69max-rk3528","msg":"[agent-bridge] ready at ipc:///tmp/hermes-agent-bridge.sock"}
+{"level":30,"time":1781239794381,"pid":1401868,"hostname":"69max-rk3528","msg":"WebSocket ready at /terminal (shell: /bin/bash, transport: node-pty)"}
+{"level":30,"time":1781239794383,"pid":1401868,"hostname":"69max-rk3528","msg":"WebSocket ready at /api/hermes/kanban/events (kanban watch bridge)"}
+{"level":30,"time":1781239794413,"pid":1401868,"hostname":"69max-rk3528","msg":"[GroupChat] Socket.IO ready at /group-chat"}
+{"level":30,"time":1781239794418,"pid":1401868,"hostname":"69max-rk3528","msg":"[chat-run-socket] Socket.IO ready at /chat-run"}
+{"level":30,"time":1781239794420,"pid":1401868,"hostname":"69max-rk3528","msg":"[SessionDeleter] started, profile=default, interval=300000ms"}
+{"level":30,"time":1781239794432,"pid":1401868,"hostname":"69max-rk3528","msg":"Server: http://localhost:6060 (LAN: http://192.168.2.146:6060)"}
+{"level":30,"time":1781239794461,"pid":1401868,"hostname":"69max-rk3528","msg":"[lan-discovery] responder listening on udp://0.0.0.0:46060 for http port 6060"}
+{"level":30,"time":1781239794953,"pid":1401868,"hostname":"69max-rk3528","msg":"[AgentClients] Connected: 助理一号 (mpz5gpnv87oew1)"}
+{"level":30,"time":1781239794996,"pid":1401868,"hostname":"69max-rk3528","msg":"[AgentClients] 助理一号 joined room: mpz5gk7orum8c0"}
+{"level":30,"time":1781239794996,"pid":1401868,"hostname":"69max-rk3528","msg":"[GroupChat] Restored 1 agent(s) across 1 room(s)"}
+{"level":30,"time":1781240408883,"pid":1304,"hostname":"69max-rk3528","sourceDir":"/opt/hermes-web-ui/dist/skills","targetDirs":["/opt/hermes-web-ui/hermes_data/skills"],"targetCount":1,"bundledSkillNames":["apikey-image-gen","grok-image-to-video","hyperframes","markdown-viewer","remotion"],"msg":"[skill-injector] syncing bundled skills across profiles"}
+{"level":30,"time":1781240408943,"pid":1304,"hostname":"69max-rk3528","sourceDir":"/opt/hermes-web-ui/dist/skills","targetCount":1,"injected":[],"updated":[],"skipped":[],"targets":[{"profile":"default","targetDir":"/opt/hermes-web-ui/hermes_data/skills","injected":[],"updated":[],"skipped":[]}],"msg":"[skill-injector] completed bundled skills sync"}
+{"level":40,"time":1781240419297,"pid":1304,"hostname":"69max-rk3528","err":{"type":"Error","message":"Command failed: /home/hermesui/.local/bin/hermes gateway start\n","stack":"Error: Command failed: /home/hermesui/.local/bin/hermes gateway start\n\n    at genericNodeError (node:internal/errors:983:15)\n    at wrappedFn (node:internal/errors:537:14)\n    at ChildProcess.exithandler (node:child_process:414:12)\n    at ChildProcess.emit (node:events:507:28)\n    at maybeClose (node:internal/child_process:1101:16)\n    at ChildProcess._handle.onexit (node:internal/child_process:305:5)","code":1,"killed":false,"signal":null,"cmd":"/home/hermesui/.local/bin/hermes gateway start","stdout":"✗ Gateway service is not installed\n  Run: hermes gateway install\n","stderr":""},"msg":"[gateway-autostart] Hermes CLI gateway start failed; falling back to background run profile=default home=/opt/hermes-web-ui/hermes_data"}
+{"level":30,"time":1781240419314,"pid":1304,"hostname":"69max-rk3528","msg":"[gateway-autostart] gateway started via fallback background run profile=default home=/opt/hermes-web-ui/hermes_data pid=1579"}
+{"level":30,"time":1781240431406,"pid":1304,"hostname":"69max-rk3528","msg":"[agent-bridge] starting: /home/hermesui/.hermes/hermes-agent-venv/bin/python3 /opt/hermes-web-ui/dist/server/agent-bridge/hermes_bridge.py --endpoint ipc:///tmp/hermes-agent-bridge.sock --hermes-home /opt/hermes-web-ui/hermes_data"}
+{"level":30,"time":1781240432999,"pid":1304,"hostname":"69max-rk3528","msg":"[agent-bridge] ready at ipc:///tmp/hermes-agent-bridge.sock"}
+{"level":30,"time":1781240435093,"pid":1304,"hostname":"69max-rk3528","msg":"WebSocket ready at /terminal (shell: /bin/bash, transport: node-pty)"}
+{"level":30,"time":1781240435095,"pid":1304,"hostname":"69max-rk3528","msg":"WebSocket ready at /api/hermes/kanban/events (kanban watch bridge)"}
+{"level":30,"time":1781240435115,"pid":1304,"hostname":"69max-rk3528","msg":"[GroupChat] Socket.IO ready at /group-chat"}
+{"level":30,"time":1781240435118,"pid":1304,"hostname":"69max-rk3528","msg":"[chat-run-socket] Socket.IO ready at /chat-run"}
+{"level":30,"time":1781240435119,"pid":1304,"hostname":"69max-rk3528","msg":"[SessionDeleter] started, profile=default, interval=300000ms"}
+{"level":30,"time":1781240435127,"pid":1304,"hostname":"69max-rk3528","msg":"Server: http://localhost:6060 (LAN: http://192.168.2.247:6060)"}
+{"level":30,"time":1781240435144,"pid":1304,"hostname":"69max-rk3528","msg":"[lan-discovery] responder listening on udp://0.0.0.0:46060 for http port 6060"}
+{"level":30,"time":1781240435491,"pid":1304,"hostname":"69max-rk3528","msg":"[AgentClients] Connected: 助理一号 (mpz5gpnv87oew1)"}
+{"level":30,"time":1781240435526,"pid":1304,"hostname":"69max-rk3528","msg":"[AgentClients] 助理 一号 joined room: mpz5gk7orum8c0"}
+{"level":30,"time":1781240435527,"pid":1304,"hostname":"69max-rk3528","msg":"[GroupChat] Restored 1 agent(s) across 1 room(s)"}
+{"level":30,"time":1781240931968,"pid":1304,"hostname":"69max-rk3528","msg":"[chat-run-socket] loaded session mpz5o3iynprm0f from DB (1 messages)"}
+{"level":30,"time":1781240931996,"pid":1304,"hostname":"69max-rk3528","msg":"[chat-run-socket] socket jUGcDiTUBu1mrBV6AAAE resumed session mpz5o3iynprm0f (working: false, messages: 1)"}
+{"level":30,"time":1781241516462,"pid":1304,"hostname":"69max-rk3528","msg":"[chat-run-socket] socket jUGcDiTUBu1mrBV6AAAE resumed session mpz5o3iynprm0f (working: false, messages: 1)"}
+{"level":30,"time":1781241522456,"pid":1304,"hostname":"69max-rk3528","msg":"[chat-run-socket] socket jUGcDiTUBu1mrBV6AAAE resumed session mpz5o3iynprm0f (working: false, messages: 1)"}
+{"level":30,"time":1781245711931,"pid":1304,"hostname":"69max-rk3528","msg":"[chat-run-socket] socket BvxCY-xKDbT3urssAAAH resumed session mpz5o3iynprm0f (working: false, messages: 1)"}
+{"level":30,"time":1781249948458,"pid":1304,"hostname":"69max-rk3528","msg":"Shutting down (SIGINT)..."}
+{"level":30,"time":1781249948750,"pid":1304,"hostname":"69max-rk3528","msg":"Preview runtime stopped"}
+{"level":40,"time":1781249948772,"pid":1304,"hostname":"69max-rk3528","msg":"[agent-bridge] stale managed child exit ignored code=null signal=SIGTERM pid=1619"}
+{"level":30,"time":1781249948774,"pid":1304,"hostname":"69max-rk3528","msg":"Agent bridge stopped"}
+{"level":30,"time":1781249948775,"pid":1304,"hostname":"69max-rk3528","msg":"[chat-run-socket] closed all connections and cleared state"}
+{"level":30,"time":1781249948775,"pid":1304,"hostname":"69max-rk3528","msg":"ChatRunSocket closed"}
+{"level":30,"time":1781249948776,"pid":1304,"hostname":"69max-rk3528","msg":"Coding agent hidden sessions closed"}
+{"level":30,"time":1781249948793,"pid":1304,"hostname":"69max-rk3528","msg":"[AgentClients] All agents disconnected"}
+{"level":30,"time":1781249948801,"pid":1304,"hostname":"69max-rk3528","msg":"Socket.IO closed"}  
+{"level":30,"time":1781249948852,"pid":1304,"hostname":"69max-rk3528","msg":"HTTP server closed"}
+{"level":30,"time":1781249953020,"pid":65001,"hostname":"69max-rk3528","sourceDir":"/opt/hermes-web-ui/dist/skills","targetDirs":["/opt/hermes-web-ui/hermes_data/skills"],"targetCount":1,"bundledSkillNames":["apikey-image-gen","grok-image-to-video","hyperframes","markdown-viewer","remotion"],"msg":"[skill-injector] syncing bundled skills across profiles"}
+{"level":30,"time":1781249953075,"pid":65001,"hostname":"69max-rk3528","sourceDir":"/opt/hermes-web-ui/dist/skills","targetCount":1,"injected":[],"updated":[],"skipped":[],"targets":[{"profile":"default","targetDir":"/opt/hermes-web-ui/hermes_data/skills","injected":[],"updated":[],"skipped":[]}],"msg":"[skill-injector] completed bundled skills sync"}
+{"level":40,"time":1781249964483,"pid":65001,"hostname":"69max-rk3528","err":{"type":"Error","message":"Command failed: /home/hermesui/.local/bin/hermes gateway start\n","stack":"Error: Command failed: /home/hermesui/.local/bin/hermes gateway start\n\n    at genericNodeError (node:internal/errors:983:15)\n    at wrappedFn (node:internal/errors:537:14)\n    at ChildProcess.exithandler (node:child_process:414:12)\n    at ChildProcess.emit (node:events:507:28)\n    at maybeClose (node:internal/child_process:1101:16)\n    at ChildProcess._handle.onexit (node:internal/child_process:305:5)","code":1,"killed":false,"signal":null,"cmd":"/home/hermesui/.local/bin/hermes gateway start","stdout":"✗ Gateway service is not installed\n  Run: hermes gateway install\n","stderr":""},"msg":"[gateway-autostart] Hermes CLI gateway start failed; falling back to background run profile=default home=/opt/hermes-web-ui/hermes_data"}
+{"level":30,"time":1781249964504,"pid":65001,"hostname":"69max-rk3528","msg":"[gateway-autostart] gateway started via fallback background run profile=default home=/opt/hermes-web-ui/hermes_data pid=65143"}
+{"level":30,"time":1781249978718,"pid":65001,"hostname":"69max-rk3528","msg":"[agent-bridge] starting: /home/hermesui/.hermes/hermes-agent-venv/bin/python3 /opt/hermes-web-ui/dist/server/agent-bridge/hermes_bridge.py --endpoint ipc:///tmp/hermes-agent-bridge.sock --hermes-home /opt/hermes-web-ui/hermes_data"}
+{"level":30,"time":1781249980653,"pid":65001,"hostname":"69max-rk3528","msg":"[agent-bridge] ready at ipc:///tmp/hermes-agent-bridge.sock"}
+{"level":30,"time":1781249982790,"pid":65001,"hostname":"69max-rk3528","msg":"WebSocket ready at /terminal (shell: /bin/bash, transport: node-pty)"}
+{"level":30,"time":1781249982792,"pid":65001,"hostname":"69max-rk3528","msg":"WebSocket ready at /api/hermes/kanban/events (kanban watch bridge)"}
+{"level":30,"time":1781249982824,"pid":65001,"hostname":"69max-rk3528","msg":"[GroupChat] Socket.IO ready at /group-chat"}
+{"level":30,"time":1781249982830,"pid":65001,"hostname":"69max-rk3528","msg":"[chat-run-socket] Socket.IO ready at /chat-run"}
+{"level":30,"time":1781249982833,"pid":65001,"hostname":"69max-rk3528","msg":"[SessionDeleter] started, profile=default, interval=300000ms"}
+{"level":30,"time":1781249982845,"pid":65001,"hostname":"69max-rk3528","msg":"Server: http://localhost:6060 (LAN: http://192.168.2.247:6060)"}
+{"level":30,"time":1781249982871,"pid":65001,"hostname":"69max-rk3528","msg":"[lan-discovery] responder listening on udp://0.0.0.0:46060 for http port 6060"}
+{"level":30,"time":1781249983479,"pid":65001,"hostname":"69max-rk3528","msg":"[AgentClients] Connected: 助理一号 (mpz5gpnv87oew1)"}
+{"level":30,"time":1781249983518,"pid":65001,"hostname":"69max-rk3528","msg":"[AgentClients] 助理一号 joined room: mpz5gk7orum8c0"}
+{"level":30,"time":1781249983518,"pid":65001,"hostname":"69max-rk3528","msg":"[GroupChat] Restored 1 agent(s) across 1 room(s)"}
+{"level":30,"time":1781250153807,"pid":65001,"hostname":"69max-rk3528","msg":"[chat-run-socket] loaded session mpz5o3iynprm0f from DB (1 messages)"}
+{"level":30,"time":1781250153826,"pid":65001,"hostname":"69max-rk3528","msg":"[chat-run-socket] socket EpD30nyKPnBrk6LAAAAH resumed session mpz5o3iynprm0f (working: false, messages: 1)"}        
+{"level":30,"time":1781250232466,"pid":65001,"hostname":"69max-rk3528","msg":"Shutting down (SIGINT)..."}
+{"level":30,"time":1781250232788,"pid":65001,"hostname":"69max-rk3528","msg":"Preview runtime stopped"}
+{"level":40,"time":1781250232811,"pid":65001,"hostname":"69max-rk3528","msg":"[agent-bridge] stale managed child exit ignored code=null signal=SIGTERM pid=65250"}
+{"level":30,"time":1781250232812,"pid":65001,"hostname":"69max-rk3528","msg":"Agent bridge stopped"}
+{"level":30,"time":1781250232813,"pid":65001,"hostname":"69max-rk3528","msg":"[chat-run-socket] closed all connections and cleared state"}
+{"level":30,"time":1781250232814,"pid":65001,"hostname":"69max-rk3528","msg":"ChatRunSocket closed"}
+{"level":30,"time":1781250232815,"pid":65001,"hostname":"69max-rk3528","msg":"Coding agent hidden sessions closed"}
+{"level":30,"time":1781250232830,"pid":65001,"hostname":"69max-rk3528","msg":"[AgentClients] All agents disconnected"}
+{"level":30,"time":1781250232837,"pid":65001,"hostname":"69max-rk3528","msg":"Socket.IO closed"} 
+{"level":30,"time":1781250232881,"pid":65001,"hostname":"69max-rk3528","msg":"HTTP server closed"}
+{"level":30,"time":1781250235924,"pid":66910,"hostname":"69max-rk3528","sourceDir":"/opt/hermes-web-ui/dist/skills","targetDirs":["/opt/hermes-web-ui/hermes_data/skills"],"targetCount":1,"bundledSkillNames":["apikey-image-gen","grok-image-to-video","hyperframes","markdown-viewer","remotion"],"msg":"[skill-injector] syncing bundled skills across profiles"}
+{"level":30,"time":1781250235980,"pid":66910,"hostname":"69max-rk3528","sourceDir":"/opt/hermes-web-ui/dist/skills","targetCount":1,"injected":[],"updated":[],"skipped":[],"targets":[{"profile":"default","targetDir":"/opt/hermes-web-ui/hermes_data/skills","injected":[],"updated":[],"skipped":[]}],"msg":"[skill-injector] completed bundled skills sync"}
+{"level":40,"time":1781250247288,"pid":66910,"hostname":"69max-rk3528","err":{"type":"Error","message":"Command failed: /home/hermesui/.local/bin/hermes gateway start\n","stack":"Error: Command failed: /home/hermesui/.local/bin/hermes gateway start\n\n    at genericNodeError (node:internal/errors:983:15)\n    at wrappedFn (node:internal/errors:537:14)\n    at ChildProcess.exithandler (node:child_process:414:12)\n    at ChildProcess.emit (node:events:507:28)\n    at maybeClose (node:internal/child_process:1101:16)\n    at Socket.<anonymous> (node:internal/child_process:457:11)\n    at Socket.emit (node:events:507:28)\n    at Pipe.<anonymous> (node:net:351:12)","code":1,"killed":false,"signal":null,"cmd":"/home/hermesui/.local/bin/hermes gateway start","stdout":"✗ Gateway service is not installed\n  Run: hermes gateway install\n","stderr":""},"msg":"[gateway-autostart] Hermes CLI gateway start failed; falling back to background run profile=default home=/opt/hermes-web-ui/hermes_data"}
+{"level":30,"time":1781250247311,"pid":66910,"hostname":"69max-rk3528","msg":"[gateway-autostart] gateway started via fallback background run profile=default home=/opt/hermes-web-ui/hermes_data pid=67030"}
+{"level":30,"time":1781250261349,"pid":66910,"hostname":"69max-rk3528","msg":"[agent-bridge] starting: /home/hermesui/.hermes/hermes-agent-venv/bin/python3 /opt/hermes-web-ui/dist/server/agent-bridge/hermes_bridge.py --endpoint ipc:///tmp/hermes-agent-bridge.sock --hermes-home /opt/hermes-web-ui/hermes_data"}
+{"level":30,"time":1781250263428,"pid":66910,"hostname":"69max-rk3528","msg":"[agent-bridge] ready at ipc:///tmp/hermes-agent-bridge.sock"}
+{"level":30,"time":1781250265574,"pid":66910,"hostname":"69max-rk3528","msg":"WebSocket ready at /terminal (shell: /bin/bash, transport: node-pty)"}
+{"level":30,"time":1781250265577,"pid":66910,"hostname":"69max-rk3528","msg":"WebSocket ready at /api/hermes/kanban/events (kanban watch bridge)"}
+{"level":30,"time":1781250265615,"pid":66910,"hostname":"69max-rk3528","msg":"[GroupChat] Socket.IO ready at /group-chat"}
+{"level":30,"time":1781250265620,"pid":66910,"hostname":"69max-rk3528","msg":"[chat-run-socket] Socket.IO ready at /chat-run"}
+{"level":30,"time":1781250265622,"pid":66910,"hostname":"69max-rk3528","msg":"[SessionDeleter] started, profile=default, interval=300000ms"}
+{"level":30,"time":1781250265638,"pid":66910,"hostname":"69max-rk3528","msg":"Server: http://localhost:6060 (LAN: http://192.168.2.247:6060)"}
+{"level":30,"time":1781250265666,"pid":66910,"hostname":"69max-rk3528","msg":"[lan-discovery] responder listening on udp://0.0.0.0:46060 for http port 6060"}
+{"level":30,"time":1781250266120,"pid":66910,"hostname":"69max-rk3528","msg":"[AgentClients] Connected: 助理一号 (mpz5gpnv87oew1)"}
+{"level":30,"time":1781250266160,"pid":66910,"hostname":"69max-rk3528","msg":"[AgentClients] 助理一号 joined room: mpz5gk7orum8c0"}
+{"level":30,"time":1781250266161,"pid":66910,"hostname":"69max-rk3528","msg":"[GroupChat] Restored 1 agent(s) across 1 room(s)"}
+{"level":30,"time":1781252086964,"pid":66910,"hostname":"69max-rk3528","msg":"Shutting down (SIGINT)..."}
+{"level":30,"time":1781252087228,"pid":66910,"hostname":"69max-rk3528","msg":"Preview runtime stopped"}
+{"level":40,"time":1781252087253,"pid":66910,"hostname":"69max-rk3528","msg":"[agent-bridge] stale managed child exit ignored code=null signal=SIGTERM pid=67136"}
+{"level":30,"time":1781252087254,"pid":66910,"hostname":"69max-rk3528","msg":"Agent bridge stopped"}
+{"level":30,"time":1781252087255,"pid":66910,"hostname":"69max-rk3528","msg":"[chat-run-socket] closed all connections and cleared state"}
+{"level":30,"time":1781252087255,"pid":66910,"hostname":"69max-rk3528","msg":"ChatRunSocket closed"}
+{"level":30,"time":1781252087256,"pid":66910,"hostname":"69max-rk3528","msg":"Coding agent hidden sessions closed"}
+{"level":30,"time":1781252087270,"pid":66910,"hostname":"69max-rk3528","msg":"[AgentClients] All agents disconnected"}
+{"level":30,"time":1781252087282,"pid":66910,"hostname":"69max-rk3528","msg":"Socket.IO closed"} 
+{"level":30,"time":1781252087332,"pid":66910,"hostname":"69max-rk3528","msg":"HTTP server closed"}
+{"level":30,"time":1781252089961,"pid":79502,"hostname":"69max-rk3528","sourceDir":"/opt/hermes-web-ui/dist/skills","targetDirs":["/opt/hermes-web-ui/hermes_data/skills"],"targetCount":1,"bundledSkillNames":["apikey-image-gen","grok-image-to-video","hyperframes","markdown-viewer","remotion"],"msg":"[skill-injector] syncing bundled skills across profiles"}
+{"level":30,"time":1781252090011,"pid":79502,"hostname":"69max-rk3528","sourceDir":"/opt/hermes-web-ui/dist/skills","targetCount":1,"injected":[],"updated":[],"skipped":[],"targets":[{"profile":"default","targetDir":"/opt/hermes-web-ui/hermes_data/skills","injected":[],"updated":[],"skipped":[]}],"msg":"[skill-injector] completed bundled skills sync"}
+{"level":40,"time":1781252100735,"pid":79502,"hostname":"69max-rk3528","err":{"type":"Error","message":"Command failed: /home/hermesui/.local/bin/hermes gateway start\n","stack":"Error: Command failed: /home/hermesui/.local/bin/hermes gateway start\n\n    at genericNodeError (node:internal/errors:983:15)\n    at wrappedFn (node:internal/errors:537:14)\n    at ChildProcess.exithandler (node:child_process:414:12)\n    at ChildProcess.emit (node:events:507:28)\n    at maybeClose (node:internal/child_process:1101:16)\n    at Socket.<anonymous> (node:internal/child_process:457:11)\n    at Socket.emit (node:events:507:28)\n    at Pipe.<anonymous> (node:net:351:12)","code":1,"killed":false,"signal":null,"cmd":"/home/hermesui/.local/bin/hermes gateway start","stdout":"✗ Gateway service is not installed\n  Run: hermes gateway install\n","stderr":""},"msg":"[gateway-autostart] Hermes CLI gateway start failed; falling back to background run profile=default home=/opt/hermes-web-ui/hermes_data"}
+{"level":30,"time":1781252100753,"pid":79502,"hostname":"69max-rk3528","msg":"[gateway-autostart] gateway started via fallback background run profile=default home=/opt/hermes-web-ui/hermes_data pid=79589"}
+{"level":30,"time":1781252114370,"pid":79502,"hostname":"69max-rk3528","msg":"[agent-bridge] starting: /home/hermesui/.hermes/hermes-agent-venv/bin/python3 /opt/hermes-web-ui/dist/server/agent-bridge/hermes_bridge.py --endpoint ipc:///tmp/hermes-agent-bridge.sock --hermes-home /opt/hermes-web-ui/hermes_data"}
+{"level":30,"time":1781252116294,"pid":79502,"hostname":"69max-rk3528","msg":"[agent-bridge] ready at ipc:///tmp/hermes-agent-bridge.sock"}
+{"level":30,"time":1781252118397,"pid":79502,"hostname":"69max-rk3528","msg":"WebSocket ready at /terminal (shell: /bin/bash, transport: node-pty)"}
+{"level":30,"time":1781252118399,"pid":79502,"hostname":"69max-rk3528","msg":"WebSocket ready at /api/hermes/kanban/events (kanban watch bridge)"}
+{"level":30,"time":1781252118424,"pid":79502,"hostname":"69max-rk3528","msg":"[GroupChat] Socket.IO ready at /group-chat"}
+{"level":30,"time":1781252118428,"pid":79502,"hostname":"69max-rk3528","msg":"[chat-run-socket] Socket.IO ready at /chat-run"}
+{"level":30,"time":1781252118430,"pid":79502,"hostname":"69max-rk3528","msg":"[SessionDeleter] started, profile=default, interval=300000ms"}
+{"level":30,"time":1781252118438,"pid":79502,"hostname":"69max-rk3528","msg":"Server: http://localhost:6060 (LAN: http://192.168.2.247:6060)"}
+{"level":30,"time":1781252118460,"pid":79502,"hostname":"69max-rk3528","msg":"[lan-discovery] responder listening on udp://0.0.0.0:46060 for http port 6060"}
+{"level":30,"time":1781252118864,"pid":79502,"hostname":"69max-rk3528","msg":"[AgentClients] Connected: 助理一号 (mpz5gpnv87oew1)"}
+{"level":30,"time":1781252118904,"pid":79502,"hostname":"69max-rk3528","msg":"[AgentClients] 助理一号 joined room: mpz5gk7orum8c0"}
+{"level":30,"time":1781252118905,"pid":79502,"hostname":"69max-rk3528","msg":"[GroupChat] Restored 1 agent(s) across 1 room(s)"}
+{"level":30,"time":1781252417601,"pid":79502,"hostname":"69max-rk3528","msg":"[chat-run-socket] loaded session mpz5o3iynprm0f from DB (1 messages)"}
+{"level":30,"time":1781252417666,"pid":79502,"hostname":"69max-rk3528","msg":"[chat-run-socket] socket sL2IwV0wmL3rKWNfAAAH resumed session mpz5o3iynprm0f (working: false, messages: 1)"}        
+{"level":30,"time":1781252492005,"pid":79502,"hostname":"69max-rk3528","msg":"[chat-run-socket] socket 1uK-UNdHIw1go3aZAAAK resumed session mpz5o3iynprm0f (working: false, messages: 1)"}        
+{"level":30,"time":1781255610509,"pid":79502,"hostname":"69max-rk3528","msg":"[chat-run-socket] socket 29TqF75yx5QW3rJmAAAN resumed session mpz5o3iynprm0f (working: false, messages: 1)"}        
+{"level":30,"time":1781255642985,"pid":79502,"hostname":"69max-rk3528","msg":"[chat-run-socket] socket OdwwY1tePxUILm-BAAAQ resumed session mpz5o3iynprm0f (working: false, messages: 1)"}        
+{"level":30,"time":1781255708684,"pid":79502,"hostname":"69max-rk3528","msg":"[chat-run-socket] socket pjS5xZq8OHrlqU0DAAAT resumed session mpz5o3iynprm0f (working: false, messages: 1)"}        
+root@69max-rk3528:/opt/hermes-web-ui#
