@@ -57,6 +57,7 @@
     "build:desktop:win": "npm run build && npm run desktop:install && npm --prefix packages/desktop run dist -- --win --publish never",
     "build:desktop:linux": "npm run build && npm run desktop:install && npm --prefix packages/desktop run dist -- --linux --publish never",
     "build:device-package": "node scripts/build-device-package.mjs",
+    "test:device-package-release": "vitest run tests/server/update-manifest-client.test.ts tests/server/build-device-package-script.test.ts tests/server/device-package-strategy.test.ts tests/server/update-controller.test.ts tests/server/device-package-contract.test.ts tests/server/config.test.ts tests/server/update-task-store.test.ts",
     "openapi:generate": "node scripts/generate-openapi.mjs",
     "prepublishOnly": "npm run build",
     "release:npm": "npm publish --access public",
