@@ -28,6 +28,9 @@ async function loadUpdateController(overrides: Partial<UpdateControllerMocks> = 
     if (command === 'where.exe' && (args?.[0] === 'bash' || args?.[0] === 'bash.exe')) {
       return `${WINDOWS_BASH_PATH}\r\n`
     }
+    if (command === 'which' && args?.[0] === 'bash') {
+      return '/bin/bash\n'
+    }
     return 'updated'
   })
   const unref = overrides.unref ?? vi.fn()
@@ -321,10 +324,8 @@ describe('update controller', () => {
     vi.runAllTimers()
 
     expect(mocks.spawn).toHaveBeenCalledWith(
-      process.platform === 'win32' ? WINDOWS_BASH_PATH : UPDATE_SCRIPT,
-      process.platform === 'win32'
-        ? [UPDATE_SCRIPT, '--version', PUBLISHED_VERSION]
-        : ['--version', PUBLISHED_VERSION],
+      process.platform === 'win32' ? WINDOWS_BASH_PATH : '/bin/bash',
+      [UPDATE_SCRIPT, '--version', PUBLISHED_VERSION],
       expect.objectContaining({
         detached: true,
         stdio: 'ignore',
@@ -442,21 +443,14 @@ describe('update controller', () => {
       taskId: expect.any(String),
     }))
     expect(mocks.spawn).toHaveBeenCalledWith(
-      process.platform === 'win32' ? WINDOWS_BASH_PATH : '/opt/hermes-web-ui/scripts/install-device-package.sh',
-      process.platform === 'win32'
-        ? [
-            '/opt/hermes-web-ui/scripts/install-device-package.sh',
-            '--package',
-            expect.stringContaining('hermes-web-ui-device-v0.6.13.tar.gz'),
-            '--version',
-            PUBLISHED_VERSION,
-          ]
-        : [
-            '--package',
-            expect.stringContaining('hermes-web-ui-device-v0.6.13.tar.gz'),
-            '--version',
-            PUBLISHED_VERSION,
-          ],
+      process.platform === 'win32' ? WINDOWS_BASH_PATH : '/bin/bash',
+      [
+        '/opt/hermes-web-ui/scripts/install-device-package.sh',
+        '--package',
+        expect.stringContaining('hermes-web-ui-device-v0.6.13.tar.gz'),
+        '--version',
+        PUBLISHED_VERSION,
+      ],
       expect.objectContaining({
         detached: true,
         stdio: 'ignore',

@@ -1,4 +1,4 @@
-﻿﻿﻿﻿# Development Guidelines
+﻿﻿﻿﻿﻿﻿# Development Guidelines
 
 This document defines project-level development rules for Hermes Web UI. It is tool-agnostic and applies to all contributors and coding agents.
 
