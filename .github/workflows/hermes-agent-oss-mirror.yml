@@ -98,25 +98,25 @@ jobs:
           export RELEASE_URL="${OSS_PUBLIC_BASE_URL}/hermes-agent/releases/${AGENT_VERSION}/${wheel_name}"
           export WHEELHOUSE_URL="${OSS_PUBLIC_BASE_URL}/hermes-agent/wheelhouse/"
           python <<'PY'
-import json
-import os
-from datetime import datetime
-from pathlib import Path
-
-payload = {
-    "version": os.environ["AGENT_VERSION"].strip(),
-    "wheelUrl": os.environ["RELEASE_URL"].strip(),
-    "wheelUrls": [
-        os.environ["RELEASE_URL"].strip(),
-        os.environ["WHEEL_URL"].strip(),
-    ],
-    "wheelhouseUrl": os.environ["WHEELHOUSE_URL"].strip(),
-    "releasedAt": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
-}
-metadata_dir = Path("dist/hermes-agent/metadata")
-metadata_dir.mkdir(parents=True, exist_ok=True)
-(metadata_dir / "latest.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-PY
+          import json
+          import os
+          from datetime import datetime
+          from pathlib import Path
+          
+          payload = {
+              "version": os.environ["AGENT_VERSION"].strip(),
+              "wheelUrl": os.environ["RELEASE_URL"].strip(),
+              "wheelUrls": [
+                  os.environ["RELEASE_URL"].strip(),
+                  os.environ["WHEEL_URL"].strip(),
+              ],
+              "wheelhouseUrl": os.environ["WHEELHOUSE_URL"].strip(),
+              "releasedAt": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+          }
+          metadata_dir = Path("dist/hermes-agent/metadata")
+          metadata_dir.mkdir(parents=True, exist_ok=True)
+          (metadata_dir / "latest.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+          PY
 
       - name: Upload Hermes Agent wheel release to OSS
         shell: bash
