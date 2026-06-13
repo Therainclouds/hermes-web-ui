@@ -160,10 +160,9 @@ WEBUI_UPDATE_STRATEGY=device-package
 WEBUI_UPDATE_PACKAGE_TYPE=device-package
 WEBUI_UPDATE_CHANNEL=stable
 WEBUI_UPDATE_MANIFEST_BASE_URL=https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/releases
-WEBUI_UPDATE_MANIFEST_URLS=https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/releases/stable/latest.json,https://raw.githubusercontent.com/<owner>/<repo>/release-manifests/releases/stable/latest.json
+WEBUI_UPDATE_MANIFEST_URLS=https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/releases/stable/latest.json,https://raw.githubusercontent.com/tangledup-ai/hermes-web-ui/release-manifests/releases/stable/latest.json
 WEBUI_UPDATE_INSTALLER_SCRIPT=/opt/hermes-web-ui/scripts/install-device-package.sh
 WEBUI_UPDATE_VERIFY_SHA256=true
-WEBUI_UPDATE_STAGING_DIR=/opt/hermes-web-ui/.releases/staging
 WEBUI_UPDATE_STAGING_DIR=/opt/hermes-web-ui/.releases/staging
 WEBUI_UPDATE_BACKUP_DIR=/opt/hermes-web-ui/.releases/backups
 WEBUI_UPDATE_HEALTHCHECK_URL=http://127.0.0.1:6060/health
@@ -180,20 +179,19 @@ WEBUI_UPDATE_HEALTHCHECK_INITIAL_DELAY_MS=5000
 HERMES_AGENT_UPDATE_MANIFEST_URL=https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/hermes-agent/stable/latest.json
 HERMES_AGENT_WHEELHOUSE_URL=https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/hermes-agent/wheelhouse/
 ```
-HERMES_AGENT_WHEELHOUSE_URL=https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/hermes-agent/wheelhouse/
-```
 
 说明：
 
 - 若同时配置 `WEBUI_UPDATE_MANIFEST_URL`、`WEBUI_UPDATE_MANIFEST_URLS` 和 `WEBUI_UPDATE_MANIFEST_BASE_URL`，服务端会按顺序依次尝试 manifest 源
-- `WEBUI_UPDATE_MANIFEST_BASE_URL` 应指向 `release-manifests/releases` 根路径，不要直接带 `latest.json`
+- `WEBUI_UPDATE_MANIFEST_BASE_URL` 应指向当前主分发源的 `releases` 根路径，不要直接带 `latest.json`
+- 当前推荐把 OSS `latest.json` 放在首位，把 GitHub `release-manifests` 放在回退位
 - `latest.json` 现在可同时携带 `packageUrl` 和 `packageUrls`，推荐把 OSS 直链放在首位、GitHub Release 放在回退位
 - 页面触发更新时，服务端会通过 `bash /opt/hermes-web-ui/scripts/install-device-package.sh` 执行安装器，因此不会再因仓库文件 mode 为 `644` 而在 `spawn` 前失败
 - `deploy-source-armbian.sh` 的 `update-only` 重建流程必须保留上面这组 `device-package` 变量，否则旧设备会在重建后失去 manifest 配置
 - `WEBUI_UPDATE_VERIFY_SHA256` 在第一阶段建议保持 `true`
 - `WEBUI_UPDATE_MANIFEST_TIMEOUT_MS` 控制 `latest.json` / `manifest.json` 拉取超时
 - `WEBUI_UPDATE_PACKAGE_TIMEOUT_MS` 控制设备包下载超时
-- `WEBUI_UPDATE_DOWNLOAD_RETRIES` 与 `WEBUI_UPDATE_DOWNLOAD_RETRY_DELAY_MS` 用于应对 GitHub 网络抖动；默认会对 manifest 和设备包下载一起生效
+- `WEBUI_UPDATE_DOWNLOAD_RETRIES` 与 `WEBUI_UPDATE_DOWNLOAD_RETRY_DELAY_MS` 会对 manifest 和设备包下载一起生效；当现场到 GitHub 不稳定时，仍应优先依赖 OSS 主源
 - `HERMES_AGENT_UPDATE_MANIFEST_URL` 指向 OSS 上维护的 `hermes-agent/stable/latest.json`
 - `HERMES_AGENT_WHEELHOUSE_URL` 指向 OSS wheelhouse，脚本会优先使用 `--no-index --find-links` 从国内源安装依赖
 
@@ -259,11 +257,12 @@ LANG=C.UTF-8
 LC_ALL=C.UTF-8
 
 WEBUI_UPDATE_ENABLED=true
-WEBUI_UPDATE_SOURCE_LABEL=Quanthermes release-manifests
+WEBUI_UPDATE_SOURCE_LABEL=Quanthermes OSS + release-manifests
 WEBUI_UPDATE_STRATEGY=device-package
 WEBUI_UPDATE_PACKAGE_TYPE=device-package
 WEBUI_UPDATE_CHANNEL=stable
-WEBUI_UPDATE_MANIFEST_BASE_URL=https://raw.githubusercontent.com/<owner>/<repo>/release-manifests/releases
+WEBUI_UPDATE_MANIFEST_BASE_URL=https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/releases
+WEBUI_UPDATE_MANIFEST_URLS=https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/releases/stable/latest.json,https://raw.githubusercontent.com/tangledup-ai/hermes-web-ui/release-manifests/releases/stable/latest.json
 WEBUI_UPDATE_INSTALLER_SCRIPT=/opt/hermes-web-ui/scripts/install-device-package.sh
 WEBUI_UPDATE_VERIFY_SHA256=true
 WEBUI_UPDATE_STAGING_DIR=/opt/hermes-web-ui/.releases/staging
@@ -279,6 +278,8 @@ WEBUI_UPDATE_HEALTHCHECK_TIMEOUT_MS=60000
 WEBUI_UPDATE_HEALTHCHECK_INTERVAL_MS=2000
 WEBUI_UPDATE_HEALTHCHECK_RETRIES=15
 WEBUI_UPDATE_HEALTHCHECK_INITIAL_DELAY_MS=5000
+HERMES_AGENT_UPDATE_MANIFEST_URL=https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/hermes-agent/stable/latest.json
+HERMES_AGENT_WHEELHOUSE_URL=https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/hermes-agent/wheelhouse/
 ```
 
 修改后执行：
@@ -413,9 +414,12 @@ WEBUI_UPDATE_ENABLED=true
 WEBUI_UPDATE_STRATEGY=device-package
 WEBUI_UPDATE_PACKAGE_TYPE=device-package
 WEBUI_UPDATE_CHANNEL=stable
-WEBUI_UPDATE_MANIFEST_BASE_URL=https://raw.githubusercontent.com/<owner>/<repo>/release-manifests/releases
+WEBUI_UPDATE_MANIFEST_BASE_URL=https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/releases
+WEBUI_UPDATE_MANIFEST_URLS=https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/releases/stable/latest.json,https://raw.githubusercontent.com/tangledup-ai/hermes-web-ui/release-manifests/releases/stable/latest.json
 WEBUI_UPDATE_INSTALLER_SCRIPT=/opt/hermes-web-ui/scripts/install-device-package.sh
 WEBUI_UPDATE_VERIFY_SHA256=true
+HERMES_AGENT_UPDATE_MANIFEST_URL=https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/hermes-agent/stable/latest.json
+HERMES_AGENT_WHEELHOUSE_URL=https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/hermes-agent/wheelhouse/
 ```
 
 ### 2. 检查健康检查接口
