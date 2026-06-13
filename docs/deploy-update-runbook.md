@@ -94,6 +94,7 @@
 
 - `GET /api/hermes/update/status` 会在服务启动后和每次查询前从状态文件同步
 - 设备包安装器会写入 `logPath`
+- 受控更新服务以 `root` 执行安装器，但会把状态文件、日志目录和请求文件修正回 `hermesui` 可读写
 - 健康检查失败且自动回退成功后，任务状态会落为 `rolled_back`
 - 回退后会在状态文件中保留 `rollbackMessage`
 - 设备端排障时应优先核对状态文件、任务日志和 `journalctl`
@@ -142,6 +143,7 @@ WEBUI_UPDATE_REPO=https://github.com/tangledup-ai/hermes-web-ui
 
 - `WEBUI_UPDATE_REGISTRY` 和 `WEBUI_UPDATE_REPO` 不要写反引号，不要留前后空格
 - 页面触发更新时，服务端会先写入更新请求文件，再通过 `sudo systemctl start hermes-web-ui-update.service` 触发固定 root 更新服务
+- `hermes-web-ui` 与 `hermes-agent` 常驻进程继续运行在 `hermesui`；只有受控更新服务短暂以 `root` 执行
 - 若运维需要直接执行脚本，仍建议 `update-source-deploy.sh` 保持 `root:root` 且 `755`
 - `hermesui` 需要一条最小 sudoers 规则，允许免密启动受控更新服务，而不是直接执行更新脚本
 
@@ -195,6 +197,7 @@ HERMES_AGENT_WHEELHOUSE_URL=https://tangledup-ai-staging.oss-cn-shanghai.aliyunc
 - 当前推荐把 OSS `latest.json` 放在首位，把 GitHub `release-manifests` 放在回退位
 - `latest.json` 现在可同时携带 `packageUrl` 和 `packageUrls`，推荐把 OSS 直链放在首位、GitHub Release 放在回退位
 - 页面触发更新时，服务端会先写入更新请求文件，再通过 `sudo systemctl start hermes-web-ui-update.service` 触发固定 root 更新服务
+- `hermes-web-ui` 与 `hermes-agent` 常驻进程继续运行在 `hermesui`；只有受控更新服务短暂以 `root` 执行
 - `deploy-source-armbian.sh` 的 `update-only` 重建流程必须保留上面这组 `device-package` 变量，否则旧设备会在重建后失去 manifest 配置
 - `WEBUI_UPDATE_RUNNER_SERVICE` 应与设备上的受控更新服务名一致，默认是 `hermes-web-ui-update.service`
 - `WEBUI_UPDATE_RUNNER_REQUEST_FILE` 是服务端写入的请求文件位置，默认位于 `HERMES_WEB_UI_HOME/updates/update-runner-request.json`

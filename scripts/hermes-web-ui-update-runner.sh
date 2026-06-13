@@ -31,6 +31,7 @@ import sys
 from pathlib import Path
 
 allowed_keys = {
+    "APP_USER",
     "DEPLOY_DIR",
     "HERMES_HOME",
     "HERMES_HOME_DIR",
@@ -82,6 +83,81 @@ PY
 
 # shellcheck disable=SC1090
 source "${tmp_env}"
+
+repair_update_runtime_permissions() {
+  local app_user app_group update_root state_file log_dir
+  app_user="${APP_USER:-hermesui}"
+  if ! id -u "${app_user}" >/dev/null 2>&1; then
+    err "Configured app user does not exist: ${app_user}"
+    exit 1
+  fi
+
+  app_group="$(id -gn "${app_user}")"
+  state_file="${HERMES_WEB_UI_UPDATE_STATE_FILE:-${HERMES_WEB_UI_HOME:-/home/hermesui/.hermes-web-ui}/updates/update-task-state.json}"
+  log_dir="${HERMES_WEB_UI_UPDATE_LOG_DIR:-${HERMES_WEB_UI_HOME:-/home/hermesui/.hermes-web-ui}/updates/logs}"
+  update_root="$(dirname "${state_file}")"
+
+  python3 - "${app_user}" "${app_group}" "${request_file}" "${update_root}" "${state_file}" "${log_dir}" <<'PY'
+from __future__ import annotations
+
+import os
+import stat
+import sys
+from pathlib import Path
+
+app_user, app_group, request_file, update_root, state_file, log_dir = sys.argv[1:7]
+
+
+def ensure_directory(path_str: str) -> None:
+    path = Path(path_str)
+    path.mkdir(parents=True, exist_ok=True)
+    repair_path(path, dir_mode=0o775, file_mode=0o664)
+
+
+def repair_path(path: Path, dir_mode: int, file_mode: int) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+
+    os.chown(path, uid, gid, follow_symlinks=False)
+    if path.is_symlink():
+        return
+
+    if path.is_dir():
+        path.chmod(dir_mode)
+        for root, dirs, files in os.walk(path):
+            root_path = Path(root)
+            os.chown(root_path, uid, gid)
+            root_path.chmod(dir_mode)
+            for entry in dirs:
+                dir_path = root_path / entry
+                if dir_path.is_symlink():
+                    os.chown(dir_path, uid, gid, follow_symlinks=False)
+                    continue
+                os.chown(dir_path, uid, gid)
+                dir_path.chmod(dir_mode)
+            for entry in files:
+                file_path = root_path / entry
+                os.chown(file_path, uid, gid, follow_symlinks=False)
+                if file_path.is_symlink():
+                    continue
+                file_path.chmod(file_mode)
+        return
+
+    path.chmod(file_mode)
+
+
+user_record = __import__("pwd").getpwnam(app_user)
+uid = user_record.pw_uid
+gid = user_record.pw_gid
+
+ensure_directory(update_root)
+ensure_directory(log_dir)
+repair_path(Path(request_file), dir_mode=0o775, file_mode=0o664)
+repair_path(Path(state_file), dir_mode=0o775, file_mode=0o664)
+PY
+}
+
+repair_update_runtime_permissions
 rm -f "${request_file}"
 
 strategy="${HERMES_WEB_UI_UPDATE_REQUEST_STRATEGY}"

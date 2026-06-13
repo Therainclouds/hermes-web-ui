@@ -159,6 +159,7 @@ export function buildDevicePackageInstallEnv(
 ): NodeJS.ProcessEnv {
   return {
     ...baseEnv,
+    APP_USER: baseEnv.APP_USER || 'hermesui',
     DEPLOY_DIR: paths.deployDir,
     HERMES_HOME: paths.hermesHome || baseEnv.HERMES_HOME || '',
     HERMES_HOME_DIR: paths.hermesHome || baseEnv.HERMES_HOME_DIR || '',

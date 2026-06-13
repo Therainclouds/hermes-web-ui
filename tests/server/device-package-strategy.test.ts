@@ -316,6 +316,7 @@ describe('device package strategy', () => {
       },
       'task-123',
     )).toEqual(expect.objectContaining({
+      APP_USER: 'hermesui',
       DEPLOY_DIR: '/opt/hermes-web-ui',
       HERMES_WEB_UI_UPDATE_PACKAGE_ARCHIVE: artifactPath,
       HERMES_WEB_UI_UPDATE_EXPECTED_SHA256: manifest.sha256,

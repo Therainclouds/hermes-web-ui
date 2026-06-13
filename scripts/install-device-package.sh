@@ -163,6 +163,7 @@ write_task_state() {
     TARGET_VERSION="${TARGET_VERSION}" \
     LOG_PATH="${LOG_PATH}" \
     HEALTHCHECK_URL="${HEALTHCHECK_URL}" \
+    APP_USER="${APP_USER}" \
     TASK_ACTION="${action}" \
     TASK_STATUS="${status}" \
     TASK_STAGE="${stage}" \
@@ -236,20 +237,26 @@ else:
     record["finishedAt"] = None
     data["currentTask"] = record
 
+app_user = os.environ.get("APP_USER", "").strip()
+pw_record = None
+if app_user:
+    try:
+        pw_record = pwd.getpwnam(app_user)
+    except KeyError:
+        pw_record = None
+
 path.parent.mkdir(parents=True, exist_ok=True)
+if pw_record is not None:
+    os.chown(path.parent, pw_record.pw_uid, pw_record.pw_gid)
+os.chmod(path.parent, 0o775)
 with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False) as handle:
     json.dump(data, handle, indent=2)
     handle.write("\n")
 tmp_path = Path(handle.name)
 tmp_path.replace(path)
 
-app_user = os.environ.get("APP_USER", "").strip()
-if app_user:
-    try:
-        pw_record = pwd.getpwnam(app_user)
-        os.chown(path, pw_record.pw_uid, pw_record.pw_gid)
-    except KeyError:
-        pass
+if pw_record is not None:
+    os.chown(path, pw_record.pw_uid, pw_record.pw_gid)
 os.chmod(path, 0o664)
 PY
 }

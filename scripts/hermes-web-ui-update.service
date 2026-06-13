@@ -5,8 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=hermesui
-Group=hermesui
+User=root
+Group=root
 WorkingDirectory={{DEPLOY_DIR}}
 EnvironmentFile=-{{SERVICE_ENV_FILE}}
 ExecStart={{UPDATE_RUNNER_BIN}}
