@@ -131,20 +131,52 @@ jobs:
       - name: Setup OSS util
         if: steps.metadata.outputs.oss_path != ''
         uses: yizhoumo/setup-ossutil@v2
-        with:
-          endpoint: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
-          access-key-id: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
-          access-key-secret: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
+
+      - name: Configure OSS credentials
+        if: steps.metadata.outputs.oss_path != ''
+        shell: bash
+        env:
+          ALIYUN_OSS_ENDPOINT: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
+          ALIYUN_OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
+          ALIYUN_OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
+        run: |
+          set -euo pipefail
+          : "${ALIYUN_OSS_ENDPOINT:?ALIYUN_OSS_ENDPOINT is required}"
+          : "${ALIYUN_OSS_ACCESS_KEY_ID:?ALIYUN_OSS_ACCESS_KEY_ID is required}"
+          : "${ALIYUN_OSS_ACCESS_KEY_SECRET:?ALIYUN_OSS_ACCESS_KEY_SECRET is required}"
+
+          endpoint="${ALIYUN_OSS_ENDPOINT}"
+          if [[ "${endpoint}" != http://* && "${endpoint}" != https://* ]]; then
+            endpoint="https://${endpoint}"
+          fi
+
+          cat > "${HOME}/.ossutilconfig" <<EOF
+          [Credentials]
+          language = EN
+          endpoint = ${endpoint}
+          accessKeyID = ${ALIYUN_OSS_ACCESS_KEY_ID}
+          accessKeySecret = ${ALIYUN_OSS_ACCESS_KEY_SECRET}
+          EOF
+          chmod 600 "${HOME}/.ossutilconfig"
+
+      - name: Verify OSS configuration
+        if: steps.metadata.outputs.oss_path != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "${HOME}/.ossutilconfig"
+          grep -q '^endpoint = ' "${HOME}/.ossutilconfig"
+          ossutil -c "${HOME}/.ossutilconfig" ls "${{ steps.metadata.outputs.oss_path }}" >/dev/null
 
       - name: Upload release assets to OSS
         if: steps.metadata.outputs.oss_path != ''
         shell: bash
         run: |
           set -euo pipefail
-          ossutil cp -f "${{ steps.metadata.outputs.artifact_path }}" "${{ steps.metadata.outputs.oss_artifact_path }}"
-          ossutil cp -f "${{ steps.metadata.outputs.sha_path }}" "${{ steps.metadata.outputs.oss_sha_path }}"
-          ossutil cp -f "${{ steps.metadata.outputs.manifest_path }}" "${{ steps.metadata.outputs.oss_manifest_path }}"
-          ossutil cp -f "${{ steps.metadata.outputs.latest_path }}" "${{ steps.metadata.outputs.oss_latest_path }}"
+          ossutil -c "${HOME}/.ossutilconfig" cp -f "${{ steps.metadata.outputs.artifact_path }}" "${{ steps.metadata.outputs.oss_artifact_path }}"
+          ossutil -c "${HOME}/.ossutilconfig" cp -f "${{ steps.metadata.outputs.sha_path }}" "${{ steps.metadata.outputs.oss_sha_path }}"
+          ossutil -c "${HOME}/.ossutilconfig" cp -f "${{ steps.metadata.outputs.manifest_path }}" "${{ steps.metadata.outputs.oss_manifest_path }}"
+          ossutil -c "${HOME}/.ossutilconfig" cp -f "${{ steps.metadata.outputs.latest_path }}" "${{ steps.metadata.outputs.oss_latest_path }}"
 
       - name: Publish latest.json on manifest branch
         shell: bash
