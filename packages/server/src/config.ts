@@ -147,6 +147,14 @@ function getDefaultInstallerScript(): string {
   return resolve('scripts', 'install-device-package.sh')
 }
 
+function getDefaultUpdateRunnerService(): string {
+  return 'hermes-web-ui-update.service'
+}
+
+function getDefaultUpdateRunnerRequestFile(appHomePath: string): string {
+  return resolve(appHomePath, 'updates', 'update-runner-request.json')
+}
+
 function getDefaultUpdateHealthcheckUrl(port: string): string {
   return `http://127.0.0.1:${port}/health`
 }
@@ -191,6 +199,8 @@ export const config = {
     distTag: (process.env.WEBUI_UPDATE_DIST_TAG || 'latest').trim() || 'latest',
     cliBin: (process.env.WEBUI_UPDATE_CLI_BIN || '').trim() || getDefaultUpdateCliBin(updatePackageName || 'hermes-web-ui'),
     script: (process.env.WEBUI_UPDATE_SCRIPT || '').trim(),
+    runnerService: (process.env.WEBUI_UPDATE_RUNNER_SERVICE || '').trim() || getDefaultUpdateRunnerService(),
+    runnerRequestFile: resolve((process.env.WEBUI_UPDATE_RUNNER_REQUEST_FILE || getDefaultUpdateRunnerRequestFile(appHome)).trim()),
     channel: (process.env.WEBUI_UPDATE_CHANNEL || 'stable').trim() || 'stable',
     manifestUrl: updateManifestUrl,
     manifestUrls: [
@@ -237,8 +247,13 @@ export function hasConfiguredUpdateExecution(
   if (!hasConfiguredUpdateCheck(envUpdate))
     return false
   if (envUpdate.strategy === 'device-package')
-    return Boolean((envUpdate.manifestUrl || envUpdate.manifestBaseUrl || envUpdate.manifestUrls?.length) && envUpdate.installerScript)
+    return Boolean(
+      (envUpdate.manifestUrl || envUpdate.manifestBaseUrl || envUpdate.manifestUrls?.length)
+      && envUpdate.installerScript
+      && envUpdate.runnerService
+      && envUpdate.runnerRequestFile,
+    )
   if (envUpdate.strategy === 'source-deploy')
-    return Boolean(envUpdate.script)
+    return Boolean(envUpdate.script && envUpdate.runnerService && envUpdate.runnerRequestFile)
   return Boolean(envUpdate.cliBin)
 }

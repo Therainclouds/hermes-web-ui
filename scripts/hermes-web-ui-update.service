@@ -1,0 +1,14 @@
+[Unit]
+Description=Hermes Web UI managed update runner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory={{DEPLOY_DIR}}
+EnvironmentFile=-{{SERVICE_ENV_FILE}}
+ExecStart={{UPDATE_RUNNER_BIN}}
+StandardOutput=journal
+StandardError=journal

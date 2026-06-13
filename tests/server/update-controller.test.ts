@@ -154,6 +154,8 @@ describe('update controller', () => {
   const originalUpdateManifestUrl = process.env.WEBUI_UPDATE_MANIFEST_URL
   const originalUpdateManifestBaseUrl = process.env.WEBUI_UPDATE_MANIFEST_BASE_URL
   const originalUpdateInstallerScript = process.env.WEBUI_UPDATE_INSTALLER_SCRIPT
+  const originalUpdateRunnerService = process.env.WEBUI_UPDATE_RUNNER_SERVICE
+  const originalUpdateRunnerRequestFile = process.env.WEBUI_UPDATE_RUNNER_REQUEST_FILE
   const originalUpdatePackageType = process.env.WEBUI_UPDATE_PACKAGE_TYPE
   const originalUpdateChannel = process.env.WEBUI_UPDATE_CHANNEL
   const originalUpdateManifestTimeoutMs = process.env.WEBUI_UPDATE_MANIFEST_TIMEOUT_MS
@@ -179,6 +181,8 @@ describe('update controller', () => {
     delete process.env.WEBUI_UPDATE_MANIFEST_URL
     delete process.env.WEBUI_UPDATE_MANIFEST_BASE_URL
     delete process.env.WEBUI_UPDATE_INSTALLER_SCRIPT
+    delete process.env.WEBUI_UPDATE_RUNNER_SERVICE
+    delete process.env.WEBUI_UPDATE_RUNNER_REQUEST_FILE
     delete process.env.WEBUI_UPDATE_PACKAGE_TYPE
     delete process.env.WEBUI_UPDATE_CHANNEL
     delete process.env.WEBUI_UPDATE_MANIFEST_TIMEOUT_MS
@@ -232,6 +236,10 @@ describe('update controller', () => {
     else process.env.WEBUI_UPDATE_MANIFEST_BASE_URL = originalUpdateManifestBaseUrl
     if (originalUpdateInstallerScript === undefined) delete process.env.WEBUI_UPDATE_INSTALLER_SCRIPT
     else process.env.WEBUI_UPDATE_INSTALLER_SCRIPT = originalUpdateInstallerScript
+    if (originalUpdateRunnerService === undefined) delete process.env.WEBUI_UPDATE_RUNNER_SERVICE
+    else process.env.WEBUI_UPDATE_RUNNER_SERVICE = originalUpdateRunnerService
+    if (originalUpdateRunnerRequestFile === undefined) delete process.env.WEBUI_UPDATE_RUNNER_REQUEST_FILE
+    else process.env.WEBUI_UPDATE_RUNNER_REQUEST_FILE = originalUpdateRunnerRequestFile
     if (originalUpdatePackageType === undefined) delete process.env.WEBUI_UPDATE_PACKAGE_TYPE
     else process.env.WEBUI_UPDATE_PACKAGE_TYPE = originalUpdatePackageType
     if (originalUpdateChannel === undefined) delete process.env.WEBUI_UPDATE_CHANNEL
@@ -339,18 +347,24 @@ describe('update controller', () => {
 
     vi.runAllTimers()
 
+    const requestCall = mocks.writeFileSync.mock.calls.find(call => String(call[0]).endsWith('update-runner-request.json'))
+    expect(requestCall).toBeDefined()
+    expect(JSON.parse(String(requestCall?.[1]))).toEqual(expect.objectContaining({
+      strategy: 'source-deploy',
+      env: expect.objectContaining({
+        HERMES_WEB_UI_UPDATE_VERSION: PUBLISHED_VERSION,
+        HERMES_WEB_UI_UPDATE_PACKAGE: UPDATE_PACKAGE,
+        HERMES_WEB_UI_UPDATE_REGISTRY: UPDATE_REGISTRY,
+      }),
+    }))
     expect(mocks.spawn).toHaveBeenCalledWith(
-      process.platform === 'win32' ? WINDOWS_BASH_PATH : '/bin/bash',
-      [UPDATE_SCRIPT, '--version', PUBLISHED_VERSION],
+      'sudo',
+      ['-n', 'systemctl', 'start', 'hermes-web-ui-update.service'],
       expect.objectContaining({
         detached: true,
         stdio: 'ignore',
         windowsHide: true,
-        env: expect.objectContaining({
-          HERMES_WEB_UI_UPDATE_VERSION: PUBLISHED_VERSION,
-          HERMES_WEB_UI_UPDATE_PACKAGE: UPDATE_PACKAGE,
-          HERMES_WEB_UI_UPDATE_REGISTRY: UPDATE_REGISTRY,
-        }),
+        env: expect.objectContaining({ npm_node_execpath: process.execPath }),
       }),
     )
     expect(mocks.unref).toHaveBeenCalledOnce()
@@ -397,7 +411,7 @@ describe('update controller', () => {
     expect(ctx.status).toBe(500)
     expect(ctx.body).toEqual({
       success: false,
-      message: 'Update source is not fully configured. Set WEBUI_UPDATE_PACKAGE, WEBUI_UPDATE_REGISTRY, and WEBUI_UPDATE_SCRIPT.',
+      message: 'Update source is not fully configured. Set WEBUI_UPDATE_PACKAGE, WEBUI_UPDATE_REGISTRY, WEBUI_UPDATE_SCRIPT, and WEBUI_UPDATE_RUNNER_SERVICE.',
     })
     expect(mocks.spawn).not.toHaveBeenCalled()
   })
@@ -458,53 +472,34 @@ describe('update controller', () => {
       stage: 'checking',
       taskId: expect.any(String),
     }))
+    const requestCall = mocks.writeFileSync.mock.calls.find(call => String(call[0]).endsWith('update-runner-request.json'))
+    expect(requestCall).toBeDefined()
+    expect(JSON.parse(String(requestCall?.[1]))).toEqual(expect.objectContaining({
+      strategy: 'device-package',
+      env: expect.objectContaining({
+        HERMES_WEB_UI_UPDATE_TASK_ID: expect.any(String),
+        HERMES_WEB_UI_UPDATE_VERSION: PUBLISHED_VERSION,
+        HERMES_WEB_UI_UPDATE_EXPECTED_SHA256: sha256,
+      }),
+    }))
     expect(mocks.spawn).toHaveBeenCalledWith(
-      process.platform === 'win32' ? WINDOWS_BASH_PATH : '/bin/bash',
-      [
-        '/opt/hermes-web-ui/scripts/install-device-package.sh',
-        '--package',
-        expect.stringContaining('hermes-web-ui-device-v0.6.13.tar.gz'),
-        '--version',
-        PUBLISHED_VERSION,
-      ],
+      'sudo',
+      ['-n', 'systemctl', 'start', 'hermes-web-ui-update.service'],
       expect.objectContaining({
         detached: true,
         stdio: 'ignore',
         windowsHide: true,
-        env: expect.objectContaining({
-          HERMES_WEB_UI_UPDATE_STATE_FILE: expect.stringMatching(/[\\/]update-task-state\.json$/),
-          HERMES_WEB_UI_UPDATE_LOG_DIR: expect.stringMatching(/[\\/]updates[\\/]logs$/),
-          HERMES_WEB_UI_UPDATE_TASK_ID: expect.any(String),
-          HERMES_WEB_UI_UPDATE_HEALTHCHECK_TIMEOUT_MS: '2000',
-          HERMES_WEB_UI_UPDATE_HEALTHCHECK_INTERVAL_MS: '2000',
-          HERMES_WEB_UI_UPDATE_HEALTHCHECK_RETRIES: '15',
-          HERMES_WEB_UI_UPDATE_HEALTHCHECK_INITIAL_DELAY_MS: '5000',
-          HERMES_WEB_UI_UPDATE_VERSION: PUBLISHED_VERSION,
-          HERMES_WEB_UI_UPDATE_EXPECTED_SHA256: sha256,
-        }),
+        env: expect.objectContaining({ npm_node_execpath: process.execPath }),
       }),
     )
   })
 
-  it('fails the source deployment task when bash is unavailable', async () => {
-    if (process.platform !== 'win32') return
-
+  it('fails the source deployment task when the managed update service cannot be started', async () => {
     process.env.WEBUI_UPDATE_STRATEGY = 'source-deploy'
     process.env.WEBUI_UPDATE_SCRIPT = UPDATE_SCRIPT
     const fsMocks = createStatefulFsMocks()
-    const existsSync = vi.fn((filePath: string) => {
-      if (String(filePath).replace(/\\/g, '/').endsWith('/bin/bash')) {
-        return false
-      }
-      return fsMocks.existsSync!(filePath)
-    })
-    const execFileSync = vi.fn((command: string) => {
-      if (command === 'where.exe') {
-        throw new Error('bash not found')
-      }
-      return 'updated'
-    })
-    const { handleUpdate, updateStatus, mocks } = await loadUpdateController({ ...fsMocks, existsSync, execFileSync })
+    const spawn = vi.fn(() => { throw new Error('sudo unavailable') })
+    const { handleUpdate, updateStatus, mocks } = await loadUpdateController({ ...fsMocks, spawn })
     const ctx = createMockCtx()
     const statusCtx = createMockCtx()
 
@@ -512,13 +507,13 @@ describe('update controller', () => {
     vi.runAllTimers()
     await updateStatus(statusCtx)
 
-    expect(mocks.spawn).not.toHaveBeenCalled()
+    expect(mocks.spawn).toHaveBeenCalled()
     expect(statusCtx.body).toEqual({
       currentTask: null,
       lastTask: expect.objectContaining({
         status: 'failed',
         stage: 'failed',
-        error: expect.stringContaining('requires bash, but no bash executable was found in PATH'),
+        error: 'sudo unavailable',
       }),
     })
   })
@@ -782,21 +777,13 @@ describe('update controller', () => {
     })
   })
 
-  it('fails the device package task when bash is unavailable', async () => {
-    if (process.platform !== 'win32') return
-
+  it('fails the device package task when the managed update service cannot be started', async () => {
     process.env.WEBUI_UPDATE_STRATEGY = 'device-package'
     process.env.WEBUI_UPDATE_MANIFEST_URL = 'https://updates.example.com/stable/manifest.json'
     process.env.WEBUI_UPDATE_INSTALLER_SCRIPT = '/opt/hermes-web-ui/scripts/install-device-package.sh'
     process.env.WEBUI_UPDATE_PACKAGE_TYPE = 'device-package'
     process.env.WEBUI_UPDATE_CHANNEL = 'stable'
     const fsMocks = createStatefulFsMocks()
-    const existsSync = vi.fn((filePath: string) => {
-      if (String(filePath).replace(/\\/g, '/').endsWith('/bin/bash')) {
-        return false
-      }
-      return fsMocks.existsSync!(filePath)
-    })
     const packageBuffer = Buffer.from('device package archive bytes')
     const sha256 = createHash('sha256').update(packageBuffer).digest('hex')
     vi.stubGlobal('fetch', vi.fn()
@@ -834,13 +821,8 @@ describe('update controller', () => {
         repository: { url: 'https://github.com/EKKOLearnAI/hermes-web-ui.git' },
       })
     })
-    const execFileSync = vi.fn((command: string) => {
-      if (command === 'where.exe') {
-        throw new Error('bash not found')
-      }
-      return 'updated'
-    })
-    const { handleUpdate, updateStatus, mocks } = await loadUpdateController({ ...fsMocks, existsSync, execFileSync, readFileSync })
+    const spawn = vi.fn(() => { throw new Error('sudo unavailable') })
+    const { handleUpdate, updateStatus, mocks } = await loadUpdateController({ ...fsMocks, spawn, readFileSync })
     const ctx = createMockCtx()
     const statusCtx = createMockCtx()
 
@@ -851,13 +833,13 @@ describe('update controller', () => {
       await Promise.resolve()
     }
 
-    expect(mocks.spawn).not.toHaveBeenCalled()
+    expect(mocks.spawn).toHaveBeenCalled()
     expect(statusCtx.body).toEqual({
       currentTask: null,
       lastTask: expect.objectContaining({
         status: 'failed',
         stage: 'failed',
-        error: expect.stringContaining('requires bash, but no bash executable was found in PATH'),
+        error: 'sudo unavailable',
       }),
     })
   })

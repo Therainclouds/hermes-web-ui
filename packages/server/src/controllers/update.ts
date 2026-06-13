@@ -5,13 +5,13 @@ import { delimiter, dirname, extname, join, resolve } from 'path'
 import { config, getWebUiHome, hasConfiguredUpdateExecution } from '../config'
 import { UpdateError } from '../services/update/errors'
 import { getLocalWebUiVersion, readPackageInfo } from '../services/update/package-info'
-import { assertDevicePackageCompatibility, assertDevicePackageExecution, buildDevicePackageInstallCommand, buildDevicePackageInstallEnv, downloadAndVerifyDevicePackage, getDevicePackageExecutionMessage, resolveDevicePackageManifest } from '../services/update/strategies/device-package'
+import { assertDevicePackageCompatibility, assertDevicePackageExecution, buildDevicePackageInstallEnv, downloadAndVerifyDevicePackage, getDevicePackageExecutionMessage, resolveDevicePackageManifest } from '../services/update/strategies/device-package'
 import { runUpdatePreflight } from '../services/update/preflight'
 import { resolveUpdateRuntimePaths } from '../services/update/runtime-paths'
 import { assertNpmPackageExecution, buildNpmPackageInstallArgs, getNpmPackageExecutionMessage } from '../services/update/strategies/npm-package'
-import { assertSourceDeployExecution, buildSourceDeployCommand, buildSourceDeployEnv, getSourceDeployExecutionMessage } from '../services/update/strategies/source-deploy'
+import { assertSourceDeployExecution, buildSourceDeployEnv, getSourceDeployExecutionMessage } from '../services/update/strategies/source-deploy'
 import { updateTaskStore } from '../services/update/task-store'
-import type { DevicePackageManifest, UpdateRuntimePaths } from '../services/update/types'
+import type { DevicePackageManifest, UpdateRuntimePaths, UpdateStrategy } from '../services/update/types'
 
 let updateInProgress = false
 let managedUpdateTaskId = ''
@@ -46,6 +46,30 @@ const PREVIEW_FRONTEND_URL = `http://localhost:${PREVIEW_FRONTEND_PORT}`
 const PREVIEW_TAG_REF_PATTERN = /^[A-Za-z0-9._/-]+$/
 const PREVIEW_MAIN_REF = 'main'
 const PREVIEW_TAGS_CACHE_MS = 5 * 60 * 1000
+const UPDATE_RUNNER_ENV_KEYS = [
+  'DEPLOY_DIR',
+  'HERMES_HOME',
+  'HERMES_HOME_DIR',
+  'HERMES_WEB_UI_HOME',
+  'HERMES_WEBUI_STATE_DIR',
+  'UPLOAD_DIR',
+  'HERMES_WEB_UI_UPDATE_VERSION',
+  'HERMES_WEB_UI_UPDATE_PACKAGE',
+  'HERMES_WEB_UI_UPDATE_REGISTRY',
+  'HERMES_WEB_UI_UPDATE_DIST_TAG',
+  'HERMES_WEB_UI_UPDATE_PACKAGE_ARCHIVE',
+  'HERMES_WEB_UI_UPDATE_STAGING_DIR',
+  'HERMES_WEB_UI_UPDATE_BACKUP_DIR',
+  'HERMES_WEB_UI_UPDATE_STATE_FILE',
+  'HERMES_WEB_UI_UPDATE_LOG_DIR',
+  'HERMES_WEB_UI_UPDATE_TASK_ID',
+  'HERMES_WEB_UI_UPDATE_HEALTHCHECK_URL',
+  'HERMES_WEB_UI_UPDATE_HEALTHCHECK_TIMEOUT_MS',
+  'HERMES_WEB_UI_UPDATE_HEALTHCHECK_INTERVAL_MS',
+  'HERMES_WEB_UI_UPDATE_HEALTHCHECK_RETRIES',
+  'HERMES_WEB_UI_UPDATE_HEALTHCHECK_INITIAL_DELAY_MS',
+  'HERMES_WEB_UI_UPDATE_EXPECTED_SHA256',
+] as const
 
 type PreviewTagRef = { name: string; sha: string }
 type PreviewTagsCache = { expiresAt: number; tags: PreviewTagRef[] }
@@ -1059,21 +1083,13 @@ function spawnRestart(port: string) {
 }
 
 function spawnSourceDeployUpdate(version: string, runtimePaths: UpdateRuntimePaths) {
-  const script = config.update.script
-  if (!script) {
+  if (!config.update.script || !config.update.runnerService || !config.update.runnerRequestFile) {
     throw new UpdateError('update_execution_misconfigured', getSourceDeployExecutionMessage())
   }
 
   const env = buildSourceDeployEnv(config.update, getCurrentNodeEnv(), version, runtimePaths)
-  const options = {
-    detached: true,
-    stdio: 'ignore' as const,
-    windowsHide: true,
-    env,
-  }
-
-  const command = buildSourceDeployCommand(script, version)
-  return spawn(command.command, command.args, options)
+  writeUpdateRunnerRequest('source-deploy', env)
+  return spawnManagedUpdateService()
 }
 
 function spawnDevicePackageUpdate(
@@ -1082,21 +1098,43 @@ function spawnDevicePackageUpdate(
   runtimePaths: UpdateRuntimePaths,
   taskId: string,
 ) {
-  const script = config.update.installerScript
-  if (!script) {
+  if (!config.update.installerScript || !config.update.runnerService || !config.update.runnerRequestFile) {
     throw new UpdateError('update_execution_misconfigured', getDevicePackageExecutionMessage())
   }
 
   const env = buildDevicePackageInstallEnv(config.update, getCurrentNodeEnv(), manifest, artifactPath, runtimePaths, taskId)
-  const options = {
-    detached: true,
-    stdio: 'ignore' as const,
-    windowsHide: true,
-    env,
+  writeUpdateRunnerRequest('device-package', env)
+  return spawnManagedUpdateService()
+}
+
+function buildUpdateRunnerRequest(strategy: Extract<UpdateStrategy, 'source-deploy' | 'device-package'>, env: NodeJS.ProcessEnv) {
+  const requestEnv: Record<string, string> = {}
+  for (const key of UPDATE_RUNNER_ENV_KEYS) {
+    const value = env[key]
+    if (typeof value === 'string' && value.length > 0) {
+      requestEnv[key] = value
+    }
   }
 
-  const command = buildDevicePackageInstallCommand(script, manifest, artifactPath)
-  return spawn(command.command, command.args, options)
+  return {
+    strategy,
+    env: requestEnv,
+  }
+}
+
+function writeUpdateRunnerRequest(strategy: Extract<UpdateStrategy, 'source-deploy' | 'device-package'>, env: NodeJS.ProcessEnv) {
+  const requestPath = config.update.runnerRequestFile
+  mkdirSync(dirname(requestPath), { recursive: true })
+  writeFileSync(requestPath, JSON.stringify(buildUpdateRunnerRequest(strategy, env), null, 2), 'utf-8')
+}
+
+function spawnManagedUpdateService() {
+  return spawn('sudo', ['-n', 'systemctl', 'start', config.update.runnerService], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+    env: getCurrentNodeEnv(),
+  })
 }
 
 function observeDetachedUpdateProcess(

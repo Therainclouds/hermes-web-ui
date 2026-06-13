@@ -581,9 +581,11 @@ write_service_env() {
   local hermes_bin
   local hermes_agent_root
   local webui_home
+  local update_runner_request_file
   hermes_bin="${APP_USER_HOME}/.local/bin/hermes"
   hermes_agent_root=""
   webui_home="${HERMES_WEB_UI_HOME:-${APP_USER_HOME}/.hermes-web-ui}"
+  update_runner_request_file="${WEBUI_UPDATE_RUNNER_REQUEST_FILE:-${webui_home}/updates/update-runner-request.json}"
   if [[ -z "${HERMES_AGENT_WHEEL_URL}" ]]; then
     hermes_agent_root="${APP_USER_HOME}/.hermes/hermes-agent"
   fi
@@ -629,6 +631,8 @@ EOF
     WEBUI_UPDATE_CHANNEL \
     WEBUI_UPDATE_PACKAGE_TYPE \
     WEBUI_UPDATE_INSTALLER_SCRIPT \
+    WEBUI_UPDATE_RUNNER_SERVICE \
+    WEBUI_UPDATE_RUNNER_REQUEST_FILE \
     WEBUI_UPDATE_VERIFY_SHA256 \
     WEBUI_UPDATE_STAGING_DIR \
     WEBUI_UPDATE_BACKUP_DIR \
@@ -641,6 +645,16 @@ EOF
     WEBUI_UPDATE_HEALTHCHECK_INITIAL_DELAY_MS
   do
     update_env_value="${!update_env_name:-}"
+    if [[ -z "${update_env_value}" ]]; then
+      case "${update_env_name}" in
+        WEBUI_UPDATE_RUNNER_SERVICE)
+          update_env_value="${UPDATE_RUNNER_SERVICE_NAME}"
+          ;;
+        WEBUI_UPDATE_RUNNER_REQUEST_FILE)
+          update_env_value="${update_runner_request_file}"
+          ;;
+      esac
+    fi
     if [[ -n "${update_env_value}" ]]; then
       run tee -a "${SERVICE_ENV_FILE}" >/dev/null <<EOF
 ${update_env_name}=${update_env_value}
@@ -779,6 +793,71 @@ PY
   info "systemd service started: ${SYSTEMD_SERVICE_NAME}"
 }
 
+install_update_runner_script() {
+  step "Install managed update runner"
+  run install -o root -g root -m 0755 "${UPDATE_RUNNER_SCRIPT_SOURCE}" "${UPDATE_RUNNER_SCRIPT_PATH}"
+  info "Managed update runner installed: ${UPDATE_RUNNER_SCRIPT_PATH}"
+}
+
+install_update_runner_service() {
+  step "Install managed update systemd service"
+
+  local rendered_service
+  rendered_service="$(mktemp)"
+
+  python3 - "${UPDATE_RUNNER_TEMPLATE}" "${rendered_service}" \
+    "${DEPLOY_DIR}" "${SERVICE_ENV_FILE}" "${UPDATE_RUNNER_SCRIPT_PATH}" <<'PY'
+from pathlib import Path
+import sys
+
+template_path = Path(sys.argv[1])
+output_path = Path(sys.argv[2])
+replacements = {
+    "{{DEPLOY_DIR}}": sys.argv[3],
+    "{{SERVICE_ENV_FILE}}": sys.argv[4],
+    "{{UPDATE_RUNNER_BIN}}": sys.argv[5],
+}
+
+content = template_path.read_text(encoding="utf-8")
+for old, new in replacements.items():
+    content = content.replace(old, new)
+output_path.write_text(content, encoding="utf-8")
+PY
+
+  run cp "${rendered_service}" "/etc/systemd/system/${UPDATE_RUNNER_SERVICE_NAME}"
+  rm -f "${rendered_service}"
+  info "Managed update service installed: ${UPDATE_RUNNER_SERVICE_NAME}"
+}
+
+install_update_runner_sudoers() {
+  step "Install managed update sudoers policy"
+
+  local systemctl_bin
+  local journalctl_bin
+  local sudoers_tmp
+
+  systemctl_bin="$(command -v systemctl)"
+  journalctl_bin="$(command -v journalctl)"
+  sudoers_tmp="$(mktemp)"
+
+  cat >"${sudoers_tmp}" <<EOF
+Defaults:${APP_USER} env_reset,use_pty,log_output,secure_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Defaults!${systemctl_bin} !setenv
+Defaults!${journalctl_bin} !setenv
+
+Cmnd_Alias HERMES_WEB_UI_UPDATE = ${systemctl_bin} start ${UPDATE_RUNNER_SERVICE_NAME}, ${systemctl_bin} status ${UPDATE_RUNNER_SERVICE_NAME}, ${journalctl_bin} -u ${UPDATE_RUNNER_SERVICE_NAME} -n 200 --no-pager
+
+${APP_USER} ALL=(root) NOPASSWD: HERMES_WEB_UI_UPDATE
+EOF
+
+  run install -o root -g root -m 0440 "${sudoers_tmp}" "${UPDATE_RUNNER_SUDOERS_FILE}"
+  if command -v visudo >/dev/null 2>&1; then
+    run visudo -cf "${UPDATE_RUNNER_SUDOERS_FILE}"
+  fi
+  rm -f "${sudoers_tmp}"
+  info "Managed update sudoers installed: ${UPDATE_RUNNER_SUDOERS_FILE}"
+}
+
 show_summary() {
   local server_url
   server_url="http://$(hostname -I 2>/dev/null | awk '{print $1}'):${PORT}"
@@ -836,7 +915,12 @@ HERMES_ANTHROPIC_VERSION="${HERMES_ANTHROPIC_VERSION:-}"
 WEBUI_BUNDLE_URL="${WEBUI_BUNDLE_URL:-}"
 HERMES_INSTALL_FLAGS="${HERMES_INSTALL_FLAGS:---skip-setup --skip-browser}"
 SERVICE_TEMPLATE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hermes-web-ui.service"
+UPDATE_RUNNER_TEMPLATE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hermes-web-ui-update.service"
+UPDATE_RUNNER_SCRIPT_SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hermes-web-ui-update-runner.sh"
 SYSTEMD_SERVICE_NAME="${SYSTEMD_SERVICE_NAME:-hermes-web-ui.service}"
+UPDATE_RUNNER_SERVICE_NAME="${WEBUI_UPDATE_RUNNER_SERVICE:-hermes-web-ui-update.service}"
+UPDATE_RUNNER_SCRIPT_PATH="${UPDATE_RUNNER_SCRIPT_PATH:-/usr/local/sbin/hermes-web-ui-update-runner}"
+UPDATE_RUNNER_SUDOERS_FILE="${UPDATE_RUNNER_SUDOERS_FILE:-/etc/sudoers.d/hermes-web-ui-update}"
 SERVICE_ENV_FILE="${SERVICE_ENV_FILE:-/etc/default/hermes-web-ui}"
 WEBUI_UPDATE_ENABLED="${WEBUI_UPDATE_ENABLED:-true}"
 WEBUI_UPDATE_PACKAGE="${WEBUI_UPDATE_PACKAGE:-@quanthermes/hermes-web-ui}"
@@ -887,6 +971,7 @@ require_safe_env_value "APP_USER" "${APP_USER}"
 require_safe_env_value "DEPLOY_DIR" "${DEPLOY_DIR}"
 require_safe_env_value "HERMES_HOME_DIR" "${HERMES_HOME_DIR}"
 require_safe_env_value "SERVICE_ENV_FILE" "${SERVICE_ENV_FILE}"
+require_safe_env_value "UPDATE_RUNNER_SERVICE_NAME" "${UPDATE_RUNNER_SERVICE_NAME}"
 require_safe_env_value "WEBUI_UPDATE_ENABLED" "${WEBUI_UPDATE_ENABLED}"
 require_safe_env_value "WEBUI_UPDATE_PACKAGE" "${WEBUI_UPDATE_PACKAGE}"
 require_safe_env_value "WEBUI_UPDATE_REGISTRY" "${WEBUI_UPDATE_REGISTRY}"
@@ -932,6 +1017,9 @@ install_webui_dependencies
 check_webui_dependencies
 build_webui
 write_service_env
+install_update_runner_script
+install_update_runner_service
+install_update_runner_sudoers
 install_systemd_service
 post_deploy_self_check
 show_summary

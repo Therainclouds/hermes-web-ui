@@ -141,14 +141,20 @@ WEBUI_UPDATE_REPO=https://github.com/tangledup-ai/hermes-web-ui
 注意：
 
 - `WEBUI_UPDATE_REGISTRY` 和 `WEBUI_UPDATE_REPO` 不要写反引号，不要留前后空格
-- 页面触发更新时，服务端会通过 `bash /opt/hermes-web-ui/scripts/update-source-deploy.sh` 执行脚本，因此不会再因仓库文件 mode 为 `644` 而在 `spawn` 前失败
+- 页面触发更新时，服务端会先写入更新请求文件，再通过 `sudo systemctl start hermes-web-ui-update.service` 触发固定 root 更新服务
 - 若运维需要直接执行脚本，仍建议 `update-source-deploy.sh` 保持 `root:root` 且 `755`
-- `hermesui` 需要一条最小 sudoers 规则，允许免密执行更新脚本
+- `hermesui` 需要一条最小 sudoers 规则，允许免密启动受控更新服务，而不是直接执行更新脚本
 
 推荐 sudoers：
 
 ```bash
-hermesui ALL=(root) NOPASSWD:SETENV: /bin/bash /opt/hermes-web-ui/scripts/update-source-deploy.sh *
+Defaults:hermesui env_reset,use_pty,log_output,secure_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Defaults!/usr/bin/systemctl !setenv
+Defaults!/usr/bin/journalctl !setenv
+
+Cmnd_Alias HERMES_WEB_UI_UPDATE = /usr/bin/systemctl start hermes-web-ui-update.service, /usr/bin/systemctl status hermes-web-ui-update.service, /usr/bin/journalctl -u hermes-web-ui-update.service -n 200 --no-pager
+
+hermesui ALL=(root) NOPASSWD: HERMES_WEB_UI_UPDATE
 ```
 
 ### device-package 推荐变量
@@ -162,6 +168,8 @@ WEBUI_UPDATE_CHANNEL=stable
 WEBUI_UPDATE_MANIFEST_BASE_URL=https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/releases
 WEBUI_UPDATE_MANIFEST_URLS=https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/releases/stable/latest.json,https://raw.githubusercontent.com/tangledup-ai/hermes-web-ui/release-manifests/releases/stable/latest.json
 WEBUI_UPDATE_INSTALLER_SCRIPT=/opt/hermes-web-ui/scripts/install-device-package.sh
+WEBUI_UPDATE_RUNNER_SERVICE=hermes-web-ui-update.service
+WEBUI_UPDATE_RUNNER_REQUEST_FILE=/home/hermesui/.hermes-web-ui/updates/update-runner-request.json
 WEBUI_UPDATE_VERIFY_SHA256=true
 WEBUI_UPDATE_STAGING_DIR=/opt/hermes-web-ui/.releases/staging
 WEBUI_UPDATE_BACKUP_DIR=/opt/hermes-web-ui/.releases/backups
@@ -186,8 +194,10 @@ HERMES_AGENT_WHEELHOUSE_URL=https://tangledup-ai-staging.oss-cn-shanghai.aliyunc
 - `WEBUI_UPDATE_MANIFEST_BASE_URL` 应指向当前主分发源的 `releases` 根路径，不要直接带 `latest.json`
 - 当前推荐把 OSS `latest.json` 放在首位，把 GitHub `release-manifests` 放在回退位
 - `latest.json` 现在可同时携带 `packageUrl` 和 `packageUrls`，推荐把 OSS 直链放在首位、GitHub Release 放在回退位
-- 页面触发更新时，服务端会通过 `bash /opt/hermes-web-ui/scripts/install-device-package.sh` 执行安装器，因此不会再因仓库文件 mode 为 `644` 而在 `spawn` 前失败
+- 页面触发更新时，服务端会先写入更新请求文件，再通过 `sudo systemctl start hermes-web-ui-update.service` 触发固定 root 更新服务
 - `deploy-source-armbian.sh` 的 `update-only` 重建流程必须保留上面这组 `device-package` 变量，否则旧设备会在重建后失去 manifest 配置
+- `WEBUI_UPDATE_RUNNER_SERVICE` 应与设备上的受控更新服务名一致，默认是 `hermes-web-ui-update.service`
+- `WEBUI_UPDATE_RUNNER_REQUEST_FILE` 是服务端写入的请求文件位置，默认位于 `HERMES_WEB_UI_HOME/updates/update-runner-request.json`
 - `WEBUI_UPDATE_VERIFY_SHA256` 在第一阶段建议保持 `true`
 - `WEBUI_UPDATE_MANIFEST_TIMEOUT_MS` 控制 `latest.json` / `manifest.json` 拉取超时
 - `WEBUI_UPDATE_PACKAGE_TIMEOUT_MS` 控制设备包下载超时
@@ -213,6 +223,7 @@ UPLOAD_DIR=/home/hermesui/.hermes-web-ui/upload
 当前设备采用 systemd + EnvironmentFile 方式启动：
 
 - 服务文件：`/etc/systemd/system/hermes-web-ui.service`
+- 更新服务文件：`/etc/systemd/system/hermes-web-ui-update.service`
 - 环境文件：`/etc/default/hermes-web-ui`
 
 ### 兼容模式最小示例
@@ -238,6 +249,8 @@ WEBUI_UPDATE_SOURCE_LABEL=Quanthermes npm
 WEBUI_UPDATE_DIST_TAG=latest
 WEBUI_UPDATE_STRATEGY=source-deploy
 WEBUI_UPDATE_SCRIPT=/opt/hermes-web-ui/scripts/update-source-deploy.sh
+WEBUI_UPDATE_RUNNER_SERVICE=hermes-web-ui-update.service
+WEBUI_UPDATE_RUNNER_REQUEST_FILE=/home/hermesui/.hermes-web-ui/updates/update-runner-request.json
 WEBUI_UPDATE_REPO=https://github.com/tangledup-ai/hermes-web-ui
 ```
 
@@ -264,6 +277,8 @@ WEBUI_UPDATE_CHANNEL=stable
 WEBUI_UPDATE_MANIFEST_BASE_URL=https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/releases
 WEBUI_UPDATE_MANIFEST_URLS=https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/releases/stable/latest.json,https://raw.githubusercontent.com/tangledup-ai/hermes-web-ui/release-manifests/releases/stable/latest.json
 WEBUI_UPDATE_INSTALLER_SCRIPT=/opt/hermes-web-ui/scripts/install-device-package.sh
+WEBUI_UPDATE_RUNNER_SERVICE=hermes-web-ui-update.service
+WEBUI_UPDATE_RUNNER_REQUEST_FILE=/home/hermesui/.hermes-web-ui/updates/update-runner-request.json
 WEBUI_UPDATE_VERIFY_SHA256=true
 WEBUI_UPDATE_STAGING_DIR=/opt/hermes-web-ui/.releases/staging
 WEBUI_UPDATE_BACKUP_DIR=/opt/hermes-web-ui/.releases/backups
@@ -417,6 +432,7 @@ WEBUI_UPDATE_CHANNEL=stable
 WEBUI_UPDATE_MANIFEST_BASE_URL=https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/releases
 WEBUI_UPDATE_MANIFEST_URLS=https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/releases/stable/latest.json,https://raw.githubusercontent.com/tangledup-ai/hermes-web-ui/release-manifests/releases/stable/latest.json
 WEBUI_UPDATE_INSTALLER_SCRIPT=/opt/hermes-web-ui/scripts/install-device-package.sh
+WEBUI_UPDATE_RUNNER_SERVICE=hermes-web-ui-update.service
 WEBUI_UPDATE_VERIFY_SHA256=true
 HERMES_AGENT_UPDATE_MANIFEST_URL=https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/hermes-agent/stable/latest.json
 HERMES_AGENT_WHEELHOUSE_URL=https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/hermes-agent/wheelhouse/
@@ -506,6 +522,7 @@ grep -E '^(HERMES_HOME|HERMES_WEB_UI_HOME|UPLOAD_DIR)=' /etc/default/hermes-web-
 - `WEBUI_UPDATE_CHANNEL=stable`
 - `WEBUI_UPDATE_MANIFEST_BASE_URL` 或 `WEBUI_UPDATE_MANIFEST_URL` 已正确配置
 - `WEBUI_UPDATE_INSTALLER_SCRIPT` 存在且可执行
+- `WEBUI_UPDATE_RUNNER_SERVICE` 与设备上的受控更新服务名一致
 
 ### 页面没有更新按钮
 
@@ -533,6 +550,7 @@ tail -n 200 /home/hermesui/.hermes-web-ui/updates/logs/*.log
 - `hermes-agent` 最新稳定版 wheel 下载或安装失败
 - `WEBUI_UPDATE_MANIFEST_BASE_URL` 写错
 - `WEBUI_UPDATE_INSTALLER_SCRIPT` 缺失或没有执行权限
+- `WEBUI_UPDATE_RUNNER_SERVICE` 不存在或未被 sudoers 放行
 - `packageUrl` 不可下载
 - GitHub 网络瞬时抖动导致 manifest 或设备包下载超时，需结合 `error` 中的 `attempts` / `timeoutMs` / `ETIMEDOUT` / `ECONNRESET` 判断
 - `sha256` 校验失败
@@ -556,5 +574,6 @@ tail -n 200 /home/hermesui/.hermes-web-ui/updates/logs/*.log
 - 健康检查地址：`http://127.0.0.1:6060/health`
 - npm 包名：`@quanthermes/hermes-web-ui`
 - 设备包安装器：`/opt/hermes-web-ui/scripts/install-device-package.sh`
+- 受控更新服务：`hermes-web-ui-update.service`
 - 兼容源码更新脚本：`/opt/hermes-web-ui/scripts/update-source-deploy.sh`
 - manifest branch：`release-manifests`

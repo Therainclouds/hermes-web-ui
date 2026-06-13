@@ -11,6 +11,8 @@ export interface UpdateConfig {
   distTag: string
   cliBin: string
   script: string
+  runnerService: string
+  runnerRequestFile: string
   channel: string
   manifestUrl: string
   manifestUrls?: string[]

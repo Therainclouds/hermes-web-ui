@@ -26,11 +26,16 @@ function inferPackageFilename(manifest: DevicePackageManifest): string {
 }
 
 export function getDevicePackageExecutionMessage(): string {
-  return 'Update source is not fully configured. Set WEBUI_UPDATE_MANIFEST_URL or WEBUI_UPDATE_MANIFEST_BASE_URL, and WEBUI_UPDATE_INSTALLER_SCRIPT.'
+  return 'Update source is not fully configured. Set WEBUI_UPDATE_MANIFEST_URL or WEBUI_UPDATE_MANIFEST_BASE_URL, WEBUI_UPDATE_INSTALLER_SCRIPT, and WEBUI_UPDATE_RUNNER_SERVICE.'
 }
 
 export function assertDevicePackageExecution(update: UpdateConfig): void {
-  if (!(update.manifestUrl || update.manifestBaseUrl) || !update.installerScript) {
+  if (
+    !(update.manifestUrl || update.manifestBaseUrl || update.manifestUrls?.length)
+    || !update.installerScript
+    || !update.runnerService
+    || !update.runnerRequestFile
+  ) {
     throw new UpdateError('update_execution_misconfigured', getDevicePackageExecutionMessage())
   }
 }

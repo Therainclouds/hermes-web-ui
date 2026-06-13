@@ -3,11 +3,11 @@ import { UpdateError } from '../errors'
 import { buildShellScriptCommand, type CommandResolver } from './script-command'
 
 export function getSourceDeployExecutionMessage(): string {
-  return 'Update source is not fully configured. Set WEBUI_UPDATE_PACKAGE, WEBUI_UPDATE_REGISTRY, and WEBUI_UPDATE_SCRIPT.'
+  return 'Update source is not fully configured. Set WEBUI_UPDATE_PACKAGE, WEBUI_UPDATE_REGISTRY, WEBUI_UPDATE_SCRIPT, and WEBUI_UPDATE_RUNNER_SERVICE.'
 }
 
 export function assertSourceDeployExecution(update: UpdateConfig): void {
-  if (!update.packageName || !update.registry || !update.script) {
+  if (!update.packageName || !update.registry || !update.script || !update.runnerService || !update.runnerRequestFile) {
     throw new UpdateError('update_execution_misconfigured', getSourceDeployExecutionMessage())
   }
 }

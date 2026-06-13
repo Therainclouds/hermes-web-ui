@@ -11,6 +11,8 @@ const PACKAGE_ALLOWLIST = [
   'package.json',
   'package-lock.json',
   'scripts/deploy-source-armbian.sh',
+  'scripts/hermes-web-ui-update-runner.sh',
+  'scripts/hermes-web-ui-update.service',
   'scripts/hermes-web-ui.service',
   'scripts/install-device-package.sh',
 ]
@@ -63,6 +65,8 @@ describe('build-device-package script', () => {
     writeFileSync(resolve(repoRoot, 'dist', 'server', 'index.js'), 'console.log("server")\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'dist', 'client', 'index.html'), '<html></html>\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'deploy-source-armbian.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui-update-runner.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui-update.service'), '[Service]\nExecStart=/usr/local/sbin/hermes-web-ui-update-runner\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui.service'), '[Service]\nExecStart=node dist/server/index.js\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'install-device-package.sh'), '#!/usr/bin/env bash\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'unexpected-helper.sh'), '#!/usr/bin/env bash\necho "skip"\n', 'utf-8')
@@ -124,6 +128,8 @@ describe('build-device-package script', () => {
       'package.json',
       'package-lock.json',
       'scripts/deploy-source-armbian.sh',
+      'scripts/hermes-web-ui-update-runner.sh',
+      'scripts/hermes-web-ui-update.service',
       'scripts/hermes-web-ui.service',
       'scripts/install-device-package.sh',
     ]))
@@ -145,6 +151,8 @@ describe('build-device-package script', () => {
     writeFileSync(resolve(repoRoot, 'dist', 'server', 'index.js'), 'console.log("server")\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'dist', 'client', 'index.html'), '<html></html>\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'deploy-source-armbian.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui-update-runner.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui-update.service'), '[Service]\nExecStart=/usr/local/sbin/hermes-web-ui-update-runner\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui.service'), '[Service]\nExecStart=node dist/server/index.js\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'install-device-package.sh'), '#!/usr/bin/env bash\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'package-lock.json'), '{ "name": "@quanthermes/hermes-web-ui", "lockfileVersion": 3 }\n', 'utf-8')
