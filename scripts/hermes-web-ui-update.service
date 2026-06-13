@@ -5,10 +5,11 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=root
-Group=root
+User=hermesui
+Group=hermesui
 WorkingDirectory={{DEPLOY_DIR}}
 EnvironmentFile=-{{SERVICE_ENV_FILE}}
 ExecStart={{UPDATE_RUNNER_BIN}}
 StandardOutput=journal
 StandardError=journal
+UMask=0002

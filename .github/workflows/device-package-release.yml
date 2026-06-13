@@ -105,6 +105,34 @@ jobs:
           console.log(`oss_latest_url=${metadata.ossLatestUrl || ''}`)
           NODE
 
+      - name: Read Hermes Agent stable config
+        id: hermes_agent
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE' >> "$GITHUB_OUTPUT"
+          const fs = require('node:fs')
+          const config = JSON.parse(fs.readFileSync('release/hermes-agent-stable.json', 'utf8'))
+
+          const version = String(config.version || '').trim()
+          const wheelUrl = String(config.wheel_url || '').trim()
+          const channel = String(config.channel || 'stable').trim()
+
+          if (!version) {
+            throw new Error('release/hermes-agent-stable.json version is required')
+          }
+          if (!wheelUrl) {
+            throw new Error('release/hermes-agent-stable.json wheel_url is required')
+          }
+          if (!/^[A-Za-z0-9._-]+$/.test(channel)) {
+            throw new Error(`Invalid Hermes Agent channel: ${channel}`)
+          }
+
+          console.log(`version=${version}`)
+          console.log(`wheel_url=${wheelUrl}`)
+          console.log(`channel=${channel}`)
+          NODE
+
       - name: Ensure GitHub release exists
         shell: bash
         env:
@@ -131,6 +159,12 @@ jobs:
       - name: Setup OSS util
         if: steps.metadata.outputs.oss_path != ''
         uses: yizhoumo/setup-ossutil@v2
+
+      - name: Setup Python
+        if: steps.metadata.outputs.oss_path != ''
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
 
       - name: Configure OSS credentials
         if: steps.metadata.outputs.oss_path != ''
@@ -177,6 +211,60 @@ jobs:
           ossutil -c "${HOME}/.ossutilconfig" cp -f "${{ steps.metadata.outputs.sha_path }}" "${{ steps.metadata.outputs.oss_sha_path }}"
           ossutil -c "${HOME}/.ossutilconfig" cp -f "${{ steps.metadata.outputs.manifest_path }}" "${{ steps.metadata.outputs.oss_manifest_path }}"
           ossutil -c "${HOME}/.ossutilconfig" cp -f "${{ steps.metadata.outputs.latest_path }}" "${{ steps.metadata.outputs.oss_latest_path }}"
+
+      - name: Mirror Hermes Agent stable release to OSS
+        if: steps.metadata.outputs.oss_path != ''
+        shell: bash
+        env:
+          AGENT_VERSION: ${{ steps.hermes_agent.outputs.version }}
+          WHEEL_URL: ${{ steps.hermes_agent.outputs.wheel_url }}
+          AGENT_CHANNEL: ${{ steps.hermes_agent.outputs.channel }}
+          OSS_PATH: ${{ steps.metadata.outputs.oss_path }}
+          OSS_PUBLIC_BASE_URL: ${{ steps.metadata.outputs.oss_public_base_url }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist/hermes-agent/release dist/hermes-agent/wheelhouse dist/hermes-agent/metadata
+          python -m pip install --upgrade pip
+          python -m pip download --dest dist/hermes-agent/release "${WHEEL_URL}"
+
+          wheel_path="$(find dist/hermes-agent/release -maxdepth 1 -type f -name '*.whl' | head -n 1)"
+          if [ -z "${wheel_path}" ]; then
+            echo "Failed to download hermes-agent wheel from ${WHEEL_URL}" >&2
+            exit 1
+          fi
+
+          python -m pip download --dest dist/hermes-agent/wheelhouse "${wheel_path}"
+          cp -f "${wheel_path}" dist/hermes-agent/wheelhouse/
+
+          wheel_name="$(basename "${wheel_path}")"
+          export RELEASE_URL="${OSS_PUBLIC_BASE_URL}/hermes-agent/releases/${AGENT_VERSION}/${wheel_name}"
+          export WHEELHOUSE_URL="${OSS_PUBLIC_BASE_URL}/hermes-agent/wheelhouse/"
+
+          python <<'PY'
+          import json
+          import os
+          from datetime import datetime
+          from pathlib import Path
+
+          payload = {
+              "version": os.environ["AGENT_VERSION"].strip(),
+              "wheelUrl": os.environ["RELEASE_URL"].strip(),
+              "wheelUrls": [
+                  os.environ["RELEASE_URL"].strip(),
+                  os.environ["WHEEL_URL"].strip(),
+              ],
+              "wheelhouseUrl": os.environ["WHEELHOUSE_URL"].strip(),
+              "releasedAt": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+          }
+          metadata_dir = Path("dist/hermes-agent/metadata")
+          metadata_dir.mkdir(parents=True, exist_ok=True)
+          (metadata_dir / "latest.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+          PY
+
+          ossutil -c "${HOME}/.ossutilconfig" cp -f "${wheel_path}" "${OSS_PATH}/hermes-agent/releases/${AGENT_VERSION}/${wheel_name}"
+          ossutil -c "${HOME}/.ossutilconfig" cp -r -f dist/hermes-agent/wheelhouse/ "${OSS_PATH}/hermes-agent/wheelhouse/"
+          ossutil -c "${HOME}/.ossutilconfig" cp -f dist/hermes-agent/metadata/latest.json "${OSS_PATH}/hermes-agent/${AGENT_CHANNEL}/latest.json"
 
       - name: Publish latest.json on manifest branch
         shell: bash
@@ -264,6 +352,19 @@ jobs:
             fi
           fi
 
+          hermes_agent_channel="${{ steps.hermes_agent.outputs.channel }}"
+          hermes_agent_version="${{ steps.hermes_agent.outputs.version }}"
+          hermes_agent_latest_url="${{ steps.metadata.outputs.oss_public_base_url }}/hermes-agent/${hermes_agent_channel}/latest.json"
+          curl -fsSL "${hermes_agent_latest_url}" > /tmp/hermes-agent-latest.json
+          grep -F "\"version\": \"${hermes_agent_version}\"" /tmp/hermes-agent-latest.json
+
+          hermes_agent_wheel_url="$(node -e "const fs=require('node:fs'); const data=JSON.parse(fs.readFileSync('/tmp/hermes-agent-latest.json','utf8')); process.stdout.write(String(data.wheelUrl || ''))")"
+          if [ -z "${hermes_agent_wheel_url}" ]; then
+            echo "Published Hermes Agent metadata is missing wheelUrl" >&2
+            exit 1
+          fi
+          curl -fsSL "${hermes_agent_wheel_url}" -o /tmp/hermes-agent.whl
+
       - name: Upload release metadata artifact
         uses: actions/upload-artifact@v4
         with:
@@ -285,4 +386,6 @@ jobs:
             echo "- Manifest branch: \`${{ steps.metadata.outputs.manifest_branch }}\`"
             echo "- Manifest base URL: \`${{ steps.metadata.outputs.manifest_base_url }}\`"
             echo "- Latest URL: [latest.json](${{ steps.metadata.outputs.latest_url }})"
+            echo "- Hermes Agent stable: \`${{ steps.hermes_agent.outputs.version }}\`"
+            echo "- Hermes Agent channel: \`${{ steps.hermes_agent.outputs.channel }}\`"
           } >> "$GITHUB_STEP_SUMMARY"

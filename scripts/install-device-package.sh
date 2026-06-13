@@ -172,6 +172,7 @@ write_task_state() {
     python3 <<'PY'
 import json
 import os
+import pwd
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -241,6 +242,15 @@ with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), de
     handle.write("\n")
 tmp_path = Path(handle.name)
 tmp_path.replace(path)
+
+app_user = os.environ.get("APP_USER", "").strip()
+if app_user:
+    try:
+        pw_record = pwd.getpwnam(app_user)
+        os.chown(path, pw_record.pw_uid, pw_record.pw_gid)
+    except KeyError:
+        pass
+os.chmod(path, 0o664)
 PY
 }
 

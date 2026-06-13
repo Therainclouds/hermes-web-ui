@@ -310,7 +310,7 @@ sudo systemctl restart hermes-web-ui
 2. 提交代码并推送到组织仓库。
 3. 推送 `v*` tag。
 4. 等待 GitHub Actions 完成 npm 发布和 `device-package-release.yml`。
-5. 如需同步新的 `hermes-agent` 稳定 wheel，手工触发 `.github/workflows/hermes-agent-oss-mirror.yml`。
+5. `device-package-release.yml` 会读取仓库内的 `release/hermes-agent-stable.json`，自动把本次绑定的 `hermes-agent` 稳定 wheel、wheelhouse 和 `stable/latest.json` 同步到 OSS。
 6. 用以下命令确认 npm 上已经有新版本：
 
 ```bash
@@ -323,6 +323,7 @@ npm view @quanthermes/hermes-web-ui version
 - channel
 - manifest branch
 - latest URL
+- hermes-agent stable version
 
 8. 对照下文“发布后校验”完成人工复核。
 
@@ -394,6 +395,11 @@ curl -fsSL "https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quantherme
 - `wheelUrl`
 - `wheelUrls`
 - `wheelhouseUrl`
+
+说明：
+
+- 正常发布路径下，这个文件会由 `device-package-release.yml` 自动生成并上传
+- 仅当需要补传或重建 `hermes-agent` OSS 元数据时，才手工触发 `.github/workflows/hermes-agent-oss-mirror.yml`
 
 ### 6. 检查 manifest.json 回读一致性
 
