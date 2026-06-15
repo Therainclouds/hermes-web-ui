@@ -41,6 +41,7 @@ SOURCE_DIR=""
 BACKUP_DIR=""
 ROLLBACK_READY=0
 ROLLBACK_ATTEMPTED=0
+BACKUP_RETENTION_COUNT="${HERMES_WEB_UI_UPDATE_BACKUP_RETENTION_COUNT:-2}"
 
 if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
   SUDO=()
@@ -132,6 +133,21 @@ protect_runtime_path() {
   top_level_name="$(top_level_child_name "${DEPLOY_DIR}" "${resolved_path}")"
   append_preserve_name "${top_level_name}"
   warn "${label} is inside DEPLOY_DIR and will be preserved in compatibility mode: ${resolved_path}"
+}
+
+ensure_workdir_outside_deploy() {
+  local label="$1"
+  local raw_path="$2"
+  local resolved_path
+
+  [[ -z "${raw_path}" ]] && return 0
+  resolved_path="$(canonicalize_path "${raw_path}")"
+  [[ -z "${resolved_path}" ]] && return 0
+
+  if [[ "$(path_is_same_or_within "${DEPLOY_DIR}" "${resolved_path}")" == "true" ]]; then
+    err "${label} must be outside DEPLOY_DIR for device package updates: ${resolved_path}"
+    exit 1
+  fi
 }
 
 init_logging() {
@@ -281,6 +297,37 @@ backup_has_entries() {
   [[ -n "${BACKUP_DIR}" ]] && find "${BACKUP_DIR}" -mindepth 1 -maxdepth 1 -print -quit | grep -q .
 }
 
+cleanup_workdir() {
+  if [[ -n "${WORK_DIR}" && -d "${WORK_DIR}" ]]; then
+    rm -rf "${WORK_DIR}"
+  fi
+}
+
+prune_old_backups() {
+  local retention_count="$1"
+  local backup_root="$2"
+  local entry
+  local -a backups_to_remove
+
+  [[ -d "${backup_root}" ]] || return 0
+  if ! [[ "${retention_count}" =~ ^[0-9]+$ ]]; then
+    warn "Ignoring invalid backup retention count: ${retention_count}"
+    return 0
+  fi
+
+  mapfile -t backups_to_remove < <(
+    find "${backup_root}" -mindepth 1 -maxdepth 1 -type d -name 'last-known-good-*' -printf '%T@ %p\n' |
+      sort -nr |
+      awk -v keep="${retention_count}" 'NR > keep { sub(/^[^ ]+ /, "", $0); print }'
+  )
+
+  for entry in "${backups_to_remove[@]}"; do
+    [[ -n "${entry}" ]] || continue
+    run rm -rf "${entry}"
+    info "Removed old device package backup: ${entry}"
+  done
+}
+
 clear_deploy_tree_except_preserved() {
   local -a find_args
   local preserve_name
@@ -402,10 +449,14 @@ build_preserve_names() {
   elif [[ -n "${UPLOAD_DIR}" ]]; then
     UPLOAD_DIR="$(canonicalize_path "${UPLOAD_DIR}")"
   fi
+  [[ -n "${STAGING_ROOT}" ]] && STAGING_ROOT="$(canonicalize_path "${STAGING_ROOT}")"
+  [[ -n "${BACKUP_ROOT}" ]] && BACKUP_ROOT="$(canonicalize_path "${BACKUP_ROOT}")"
 
   protect_runtime_path "Web UI data directory" "${HERMES_WEB_UI_HOME}" "block"
   protect_runtime_path "Upload directory" "${UPLOAD_DIR}" "block"
   protect_runtime_path "Hermes data directory" "${HERMES_HOME_DIR}" "warn"
+  ensure_workdir_outside_deploy "Device package staging directory" "${STAGING_ROOT}"
+  ensure_workdir_outside_deploy "Device package backup directory" "${BACKUP_ROOT}"
   info "Preserving top-level entries during install: ${PRESERVE_NAMES[*]}"
 }
 
@@ -566,6 +617,7 @@ main() {
   parse_args "$@"
   init_logging
   trap 'on_error $? $LINENO "$BASH_COMMAND"' ERR
+  trap cleanup_workdir EXIT
   build_preserve_names
   prepare_workdirs
   extract_package
@@ -573,6 +625,7 @@ main() {
   run_hermes_agent_update
   update_task_stage "backing_up" "Creating program backup for ${TARGET_VERSION}"
   backup_current_deploy
+  prune_old_backups "${BACKUP_RETENTION_COUNT}" "${BACKUP_ROOT}"
   if backup_has_entries; then
     ROLLBACK_READY=1
   else

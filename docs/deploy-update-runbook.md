@@ -87,14 +87,17 @@
 
 - 状态文件：`${HERMES_WEB_UI_HOME}/updates/update-task-state.json`
 - 日志目录：`${HERMES_WEB_UI_HOME}/updates/logs/`
-- 备份目录：`${DEPLOY_DIR}/.releases/backups`
-- staging 目录：`${DEPLOY_DIR}/.releases/staging`
+- 备份目录：`${HERMES_WEB_UI_HOME}/updates/backups`
+- staging 目录：`${HERMES_WEB_UI_HOME}/updates/staging`
 
 默认约定：
 
 - `GET /api/hermes/update/status` 会在服务启动后和每次查询前从状态文件同步
 - 设备包安装器会写入 `logPath`
 - 受控更新服务以 `root` 执行安装器，但会把状态文件、日志目录和请求文件修正回 `hermesui` 可读写
+- 安装器会在执行结束后清理本次 staging 临时目录
+- 备份目录默认只保留最近 `2` 份 `last-known-good-*`，更旧的备份会自动清理
+- 若自定义 `staging` 或 `backups` 目录仍落在 `DEPLOY_DIR` 内，安装器会直接拒绝执行
 - 健康检查失败且自动回退成功后，任务状态会落为 `rolled_back`
 - 回退后会在状态文件中保留 `rollbackMessage`
 - 设备端排障时应优先核对状态文件、任务日志和 `journalctl`
@@ -173,8 +176,9 @@ WEBUI_UPDATE_INSTALLER_SCRIPT=/opt/hermes-web-ui/scripts/install-device-package.
 WEBUI_UPDATE_RUNNER_SERVICE=hermes-web-ui-update.service
 WEBUI_UPDATE_RUNNER_REQUEST_FILE=/home/hermesui/.hermes-web-ui/updates/update-runner-request.json
 WEBUI_UPDATE_VERIFY_SHA256=true
-WEBUI_UPDATE_STAGING_DIR=/opt/hermes-web-ui/.releases/staging
-WEBUI_UPDATE_BACKUP_DIR=/opt/hermes-web-ui/.releases/backups
+WEBUI_UPDATE_STAGING_DIR=/home/hermesui/.hermes-web-ui/updates/staging
+WEBUI_UPDATE_BACKUP_DIR=/home/hermesui/.hermes-web-ui/updates/backups
+WEBUI_UPDATE_BACKUP_RETENTION_COUNT=2
 WEBUI_UPDATE_HEALTHCHECK_URL=http://127.0.0.1:6060/health
 WEBUI_UPDATE_STATE_FILE=/home/hermesui/.hermes-web-ui/updates/update-task-state.json
 WEBUI_UPDATE_LOG_DIR=/home/hermesui/.hermes-web-ui/updates/logs
@@ -202,6 +206,8 @@ HERMES_AGENT_WHEELHOUSE_URL=https://tangledup-ai-staging.oss-cn-shanghai.aliyunc
 - `WEBUI_UPDATE_RUNNER_SERVICE` 应与设备上的受控更新服务名一致，默认是 `hermes-web-ui-update.service`
 - `WEBUI_UPDATE_RUNNER_REQUEST_FILE` 是服务端写入的请求文件位置，默认位于 `HERMES_WEB_UI_HOME/updates/update-runner-request.json`
 - `WEBUI_UPDATE_VERIFY_SHA256` 在第一阶段建议保持 `true`
+- `WEBUI_UPDATE_STAGING_DIR` 与 `WEBUI_UPDATE_BACKUP_DIR` 必须位于运行时状态目录，不要放在 `DEPLOY_DIR` 内
+- `WEBUI_UPDATE_BACKUP_RETENTION_COUNT` 默认保留最近 `2` 份备份；若不配置，安装器仍按 `2` 处理
 - `WEBUI_UPDATE_MANIFEST_TIMEOUT_MS` 控制 `latest.json` / `manifest.json` 拉取超时
 - `WEBUI_UPDATE_PACKAGE_TIMEOUT_MS` 控制设备包下载超时
 - `WEBUI_UPDATE_DOWNLOAD_RETRIES` 与 `WEBUI_UPDATE_DOWNLOAD_RETRY_DELAY_MS` 会对 manifest 和设备包下载一起生效；当现场到 GitHub 不稳定时，仍应优先依赖 OSS 主源
