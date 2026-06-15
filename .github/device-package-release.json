@@ -1,5 +1,5 @@
 {
-  "version": "0.6.26",
+  "version": "0.6.27",
   "channel": "stable",
   "minCurrentVersion": "0.6.13",
   "sourceLabel": "Quanthermes Device Releases",
@@ -19,3 +19,4 @@
     "scripts/install-device-package.sh"
   ]
 }
+

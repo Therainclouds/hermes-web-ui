@@ -720,6 +720,7 @@ check_bridge_status() {
 
 post_deploy_self_check() {
   local probe_url="http://127.0.0.1:${PORT}"
+  local deployed_version=""
   step "Run post-deploy self-checks"
 
   if ! run systemctl is-active --quiet "${SYSTEMD_SERVICE_NAME}"; then
@@ -738,6 +739,30 @@ post_deploy_self_check() {
     return 1
   fi
   info "Health check passed."
+
+  deployed_version="$(
+    python3 - "${DEPLOY_DIR}/package.json" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+package_path = Path(sys.argv[1])
+payload = json.loads(package_path.read_text(encoding="utf-8"))
+version = str(payload.get("version") or "").strip()
+if version:
+    print(version)
+PY
+  )"
+  if [[ -n "${deployed_version}" ]]; then
+    if ! wait_for_http_ready "${probe_url}/health" "\"webui_version\":\"${deployed_version}\""; then
+      err "Version cutover check failed: ${probe_url}/health did not report webui_version=${deployed_version}"
+      run journalctl -u "${SYSTEMD_SERVICE_NAME}" -n 120 --no-pager || true
+      return 1
+    fi
+    info "Version cutover check passed: ${deployed_version}"
+  fi
 
   if ! wait_for_http_ready "${probe_url}/api/auth/status" "\"hasPasswordLogin\":true"; then
     err "Auth status check failed: ${probe_url}/api/auth/status"
@@ -759,7 +784,12 @@ post_deploy_self_check() {
 }
 
 install_systemd_service() {
+  local was_active=false
   step "Install systemd service"
+
+  if systemctl is-active --quiet "${SYSTEMD_SERVICE_NAME}" >/dev/null 2>&1; then
+    was_active=true
+  fi
 
   local rendered_service
   rendered_service="$(mktemp)"
@@ -789,8 +819,14 @@ PY
   run cp "${rendered_service}" "/etc/systemd/system/${SYSTEMD_SERVICE_NAME}"
   rm -f "${rendered_service}"
   run systemctl daemon-reload
-  run systemctl enable --now "${SYSTEMD_SERVICE_NAME}"
-  info "systemd service started: ${SYSTEMD_SERVICE_NAME}"
+  run systemctl enable "${SYSTEMD_SERVICE_NAME}"
+  if [[ "${was_active}" == "true" ]]; then
+    run systemctl restart "${SYSTEMD_SERVICE_NAME}"
+    info "systemd service restarted: ${SYSTEMD_SERVICE_NAME}"
+  else
+    run systemctl start "${SYSTEMD_SERVICE_NAME}"
+    info "systemd service started: ${SYSTEMD_SERVICE_NAME}"
+  fi
 }
 
 install_update_runner_script() {

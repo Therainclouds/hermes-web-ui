@@ -202,6 +202,7 @@ HERMES_AGENT_WHEELHOUSE_URL=https://tangledup-ai-staging.oss-cn-shanghai.aliyunc
 - `latest.json` 现在可同时携带 `packageUrl` 和 `packageUrls`，推荐把 OSS 直链放在首位、GitHub Release 放在回退位
 - 页面触发更新时，服务端会先写入更新请求文件，再通过 `sudo systemctl start hermes-web-ui-update.service` 触发固定 root 更新服务
 - `hermes-web-ui` 与 `hermes-agent` 常驻进程继续运行在 `hermesui`；只有受控更新服务短暂以 `root` 执行
+- device-package 更新成功后，`deploy-source-armbian.sh` 会显式重启 `hermes-web-ui.service` 完成 cutover，并在自检里确认 `/health` 返回的新 `webui_version` 已与磁盘版本一致
 - `deploy-source-armbian.sh` 的 `update-only` 重建流程必须保留上面这组 `device-package` 变量，否则旧设备会在重建后失去 manifest 配置
 - `WEBUI_UPDATE_RUNNER_SERVICE` 应与设备上的受控更新服务名一致，默认是 `hermes-web-ui-update.service`
 - `WEBUI_UPDATE_RUNNER_REQUEST_FILE` 是服务端写入的请求文件位置，默认位于 `HERMES_WEB_UI_HOME/updates/update-runner-request.json`
