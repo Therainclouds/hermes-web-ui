@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NButton, NCheckbox, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useKanbanStore } from '@/stores/hermes/kanban'
 import { withDefaultAssignee } from '@/utils/hermes/kanban-assignees'
+import { fetchSkills } from '@/api/hermes/skills'
+import type { SkillInfo } from '@/api/hermes/skills'
 
 const emit = defineEmits<{
   close: []
@@ -23,12 +25,14 @@ const triage = ref(false)
 const workspaceKind = ref<'scratch' | 'dir' | 'worktree'>('scratch')
 const workspacePath = ref('')
 const branch = ref('')
-const skills = ref('')
+const skills = ref<string[]>([])
 const maxRuntime = ref('')
 const maxRetries = ref<number | null>(null)
 const goalMode = ref(false)
 const goalMaxTurns = ref<number | null>(null)
 const saving = ref(false)
+const skillsLoading = ref(false)
+const skillOptions = ref<Array<{ label: string; value: string }>>([])
 
 const priorityOptions = computed(() => [
   { label: t('kanban.card.priority.low'), value: 1 },
@@ -55,9 +59,31 @@ function workspaceValue(): string | undefined {
 }
 
 function skillList(): string[] | undefined {
-  const values = skills.value.split(',').map(item => item.trim()).filter(Boolean)
-  return values.length ? values : undefined
+  return skills.value.length ? skills.value : undefined
 }
+
+function buildSkillOptions(skills: SkillInfo[]): Array<{ label: string; value: string }> {
+  const byName = new Map<string, SkillInfo>()
+  for (const skill of skills) {
+    if (skill.enabled === false) continue
+    if (!byName.has(skill.name)) byName.set(skill.name, skill)
+  }
+  return [...byName.values()]
+    .map(skill => ({ label: skill.name, value: skill.name }))
+    .sort((a, b) => a.label.localeCompare(b.label))
+}
+
+onMounted(async () => {
+  skillsLoading.value = true
+  try {
+    const data = await fetchSkills()
+    skillOptions.value = buildSkillOptions(data.categories.flatMap(category => category.skills || []))
+  } catch {
+    skillOptions.value = []
+  } finally {
+    skillsLoading.value = false
+  }
+})
 
 async function handleSubmit() {
   if (!title.value.trim()) {
@@ -128,7 +154,15 @@ async function handleSubmit() {
         <NInput v-model:value="branch" :placeholder="t('kanban.form.branchPlaceholder')" />
       </NFormItem>
       <NFormItem :label="t('kanban.form.skills')">
-        <NInput v-model:value="skills" :placeholder="t('kanban.form.skillsPlaceholder')" />
+        <NSelect
+          v-model:value="skills"
+          multiple
+          filterable
+          clearable
+          :loading="skillsLoading"
+          :options="skillOptions"
+          :placeholder="t('kanban.form.skillsPlaceholder')"
+        />
       </NFormItem>
       <div class="advanced-row">
         <NCheckbox v-model:checked="triage">{{ t('kanban.form.triage') }}</NCheckbox>

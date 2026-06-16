@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { createTestingPinia } from '@pinia/testing'
 import { nextTick } from 'vue'
 import { useChatStore } from '@/stores/hermes/chat'
 import ChatInput from '@/components/hermes/chat/ChatInput.vue'
+
+const fetchSkillsMock = vi.hoisted(() => vi.fn())
 
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({ t: (key: string) => key }),
@@ -46,6 +48,10 @@ vi.mock('@/api/hermes/model-context', () => ({
   setModelContext: vi.fn().mockResolvedValue(undefined),
 }))
 
+vi.mock('@/api/hermes/skills', () => ({
+  fetchSkills: fetchSkillsMock,
+}))
+
 vi.mock('@/composables/useToolTraceVisibility', () => ({
   useToolTraceVisibility: () => ({ toolTraceVisible: { value: true }, toggleToolTraceVisible: vi.fn() }),
 }))
@@ -64,6 +70,8 @@ function mountForSession(sessionId: string, sessionOverrides: Partial<ReturnType
 describe('ChatInput draft persistence', () => {
   beforeEach(() => {
     localStorage.clear()
+    fetchSkillsMock.mockReset()
+    fetchSkillsMock.mockResolvedValue({ categories: [], archived: [] })
   })
 
   it('restores unsent text for the active session after the chat view is remounted', async () => {
@@ -138,5 +146,40 @@ describe('ChatInput draft persistence', () => {
 
     expect(store.sessions[0].reasoningEffort).toBe('high')
     expect(localStorage.getItem('hermes:reasoning_effort:session-reasoning')).toBe('high')
+  })
+
+  it('opens the skill picker from /skill and inserts the selected skill command', async () => {
+    fetchSkillsMock.mockResolvedValue({
+      categories: [
+        {
+          name: 'review',
+          description: '',
+          skills: [
+            { name: 'github-pr-review', description: 'Review pull requests', enabled: true },
+            { name: 'disabled-skill', description: 'Hidden', enabled: false },
+          ],
+        },
+      ],
+      archived: [],
+    })
+    const wrapper = mountForSession('session-skills', { profile: 'work' })
+    const textarea = wrapper.get('textarea')
+
+    await textarea.setValue('/skill')
+    await nextTick()
+
+    await wrapper.get('.slash-command-item').trigger('mousedown')
+    await flushPromises()
+    await nextTick()
+
+    expect(fetchSkillsMock).toHaveBeenCalledWith('work')
+    expect(wrapper.text()).toContain('/skill github-pr-review')
+    expect(wrapper.text()).toContain('Review pull requests')
+    expect(wrapper.text()).not.toContain('disabled-skill')
+
+    await wrapper.get('.skill-picker-item').trigger('click')
+    await nextTick()
+
+    expect((textarea.element as HTMLTextAreaElement).value).toBe('/skill github-pr-review ')
   })
 })

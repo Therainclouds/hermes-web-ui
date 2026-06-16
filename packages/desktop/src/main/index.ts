@@ -1,4 +1,5 @@
-import { app, BrowserWindow, Menu, Tray, shell, ipcMain, nativeImage } from 'electron'
+import { app, BrowserWindow, Menu, Tray, shell, ipcMain, nativeImage, Notification } from 'electron'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { startWebUiServer, stopWebUiServer, getToken } from './webui-server'
 import { bundledNode, desktopIcon, desktopRuntimeVersion, desktopTrayTemplateIcon, desktopWindowsTrayIcon, hermesBinExists, hermesBin, webuiDir } from './paths'
@@ -7,10 +8,8 @@ import { t } from './desktop-i18n'
 import { installHermesStudioCliShim, installHermesStudioMcpShim } from './cli-shim'
 import { parseHermesCliArgs, runBundledHermesCli } from './hermes-cli'
 import {
-  cachedRuntimeNeedsPackagedReleaseUpdate,
   ensureDesktopRuntime,
   isDesktopRuntimeReady,
-  migrateLegacyDesktopRuntime,
   writeActiveRuntimeVersion,
   type RuntimeDownloadSource,
   type RuntimeProgress,
@@ -19,6 +18,8 @@ import {
 const PORT = Number(process.env.HERMES_DESKTOP_PORT) || 8748
 const START_HIDDEN = process.argv.includes('--hidden')
 const QUIT_EXISTING = process.argv.includes('--quit')
+const APP_USER_MODEL_ID = 'com.hermeswebui.studio'
+type WindowControlAction = 'minimize' | 'toggle-maximize' | 'close'
 
 let mainWindow: BrowserWindow | null = null
 let serverUrl: string | null = null
@@ -26,6 +27,11 @@ let tray: Tray | null = null
 let isQuitting = false
 let isBootstrapping = false
 let windowFadeTimer: NodeJS.Timeout | null = null
+const activeNotifications = new Set<Notification>()
+
+if (process.platform === 'win32') {
+  app.setAppUserModelId(APP_USER_MODEL_ID)
+}
 
 function cancelWindowFade() {
   if (windowFadeTimer) {
@@ -76,6 +82,31 @@ function showMainWindow() {
 function quitApp() {
   isQuitting = true
   app.quit()
+}
+
+function windowState() {
+  return {
+    isMaximized: !!mainWindow?.isMaximized(),
+  }
+}
+
+function handleWindowControl(action: WindowControlAction) {
+  if (!mainWindow || mainWindow.isDestroyed()) return windowState()
+  if (action === 'minimize') {
+    mainWindow.minimize()
+  } else if (action === 'toggle-maximize') {
+    if (mainWindow.isMaximized()) mainWindow.unmaximize()
+    else mainWindow.maximize()
+  } else if (action === 'close') {
+    mainWindow.close()
+  }
+  return windowState()
+}
+
+function hasQuitRequest(data: unknown): boolean {
+  return typeof data === 'object'
+    && data !== null
+    && (data as { quit?: unknown }).quit === true
 }
 
 function loginItemOptions() {
@@ -172,6 +203,16 @@ function createWindow() {
     backgroundColor: '#1a1a1a',
     autoHideMenuBar: true,
     show: false,
+    ...(process.platform === 'darwin'
+      ? {
+          titleBarStyle: 'hiddenInset' as const,
+          trafficLightPosition: { x: 16, y: 12 },
+        }
+      : process.platform === 'win32'
+        ? {
+            frame: false,
+          }
+        : {}),
     ...(process.platform === 'linux' ? { icon: desktopIcon() } : {}),
     webPreferences: {
       preload: join(__dirname, '..', 'preload', 'index.js'),
@@ -211,16 +252,16 @@ function createWindow() {
   if (serverUrl) {
     mainWindow.loadURL(serverUrl)
   } else {
-    mainWindow.loadURL(splashHtml())
+    mainWindow.loadURL(splashHtml(t('runtime.checking')))
   }
   updateTrayMenu()
 }
 
-function splashHtml(): string {
-  const startingLabel = escapeHtml(t('desktop.startingLocalServices'))
+function splashHtml(label = t('desktop.startingLocalServices')): string {
+  const startingLabel = escapeHtml(label)
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Hermes Studio</title>
 <style>
-  html,body{margin:0;height:100%;background:#1a1a1a;color:#e5e5e5;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif;}
+  html,body{margin:0;height:100%;background:#1a1a1a;color:#e5e5e5;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif;-webkit-app-region:drag;}
   .wrap{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:20px}
   .dot{width:10px;height:10px;border-radius:50%;background:#888;animation:pulse 1.2s ease-in-out infinite}
   @keyframes pulse{0%,100%{opacity:.3}50%{opacity:1}}
@@ -241,6 +282,20 @@ function splashHtml(): string {
   return 'data:text/html;charset=utf-8,' + encodeURIComponent(html)
 }
 
+async function showShutdownSplash() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  cancelWindowFade()
+  try {
+    await mainWindow.loadURL(splashHtml(t('desktop.shuttingDown')))
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.setOpacity(1)
+    mainWindow.show()
+    updateTrayMenu()
+  } catch {
+    /* best effort during app shutdown */
+  }
+}
+
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, char => ({
     '&': '&amp;',
@@ -251,8 +306,30 @@ function escapeHtml(value: string): string {
   }[char] || char))
 }
 
+function resolveRuntimeSourceLogo(): string {
+  const candidates = [
+    join(webuiDir(), 'dist', 'client', 'logo.png'),
+    join(webuiDir(), 'packages', 'client', 'public', 'logo.png'),
+    join(webuiDir(), 'logo.png'),
+    desktopIcon(),
+  ]
+  return candidates.find(candidate => existsSync(candidate)) || desktopIcon()
+}
+
+function runtimeSourceLogoDataUri(): string {
+  const logoPath = resolveRuntimeSourceLogo()
+  try {
+    const image = nativeImage.createFromPath(logoPath)
+    if (image.isEmpty()) return ''
+    return image.resize({ width: 68, height: 68, quality: 'best' }).toDataURL()
+  } catch {
+    return ''
+  }
+}
+
 function runtimeSourceHtml(errorMessage?: string): string {
   const safeError = errorMessage ? escapeHtml(errorMessage) : ''
+  const logoUrl = runtimeSourceLogoDataUri()
   const errorBlock = safeError
     ? `<section class="error" aria-live="polite">
         <div class="error-title">${escapeHtml(t('desktop.downloadFailed'))}</div>
@@ -263,15 +340,15 @@ function runtimeSourceHtml(errorMessage?: string): string {
 <style>
   :root{color-scheme:dark}
   *{box-sizing:border-box}
-  html,body{margin:0;min-height:100%;background:#191919;color:#f1f1f1;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif;}
-  body{display:grid;place-items:center;padding:32px}
+  html,body{margin:0;width:100%;height:100%;background:#191919;color:#f1f1f1;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif;}
+  body{min-height:100%;display:grid;place-items:center;padding:32px;-webkit-app-region:drag;}
   .wrap{width:min(720px,100%);display:flex;flex-direction:column;align-items:center;gap:22px;text-align:center}
   .brand{display:flex;align-items:center;gap:10px;color:#f6f6f6}
-  .mark{width:32px;height:32px;border-radius:7px;background:#f0f0f0;color:#171717;display:grid;place-items:center;font-weight:700;font-size:16px}
+  .mark{width:34px;height:34px;border-radius:8px;object-fit:contain;display:block}
   h1{font-weight:560;margin:0;font-size:22px;line-height:1.25}
   .label{max-width:520px;font-size:14px;line-height:1.6;color:#b9b9b9;margin:0}
   .actions{width:100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
-  button{min-height:86px;border:1px solid #4c4c4c;border-radius:8px;background:#242424;color:#f2f2f2;cursor:pointer;padding:16px;text-align:left;display:flex;flex-direction:column;gap:7px;transition:background .14s ease,border-color .14s ease,transform .14s ease}
+  button{min-height:86px;border:1px solid #4c4c4c;border-radius:8px;background:#242424;color:#f2f2f2;cursor:pointer;padding:16px;text-align:left;display:flex;flex-direction:column;gap:7px;transition:background .14s ease,border-color .14s ease,transform .14s ease;-webkit-app-region:no-drag}
   button:hover{background:#2d2d2d;border-color:#747474;transform:translateY(-1px)}
   button:active{transform:translateY(0)}
   button:focus-visible{outline:2px solid #dcdcdc;outline-offset:3px}
@@ -279,14 +356,14 @@ function runtimeSourceHtml(errorMessage?: string): string {
   .button-detail{font-size:12px;line-height:1.45;color:#aaaaaa}
   .error{width:100%;text-align:left;background:#241b1b;border:1px solid #6b3939;border-radius:8px;padding:14px}
   .error-title{font-size:13px;font-weight:650;color:#ffc3c3;margin-bottom:8px}
-  pre{width:100%;max-height:180px;overflow:auto;white-space:pre-wrap;margin:0;color:#ffaaaa;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  pre{width:100%;max-height:180px;overflow:auto;white-space:pre-wrap;margin:0;color:#ffaaaa;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;-webkit-app-region:no-drag}
   @media (max-width:560px){
     body{padding:24px}
     .actions{grid-template-columns:1fr}
     button{min-height:78px}
   }
 </style></head><body><main class="wrap">
-<div class="brand"><div class="mark">H</div><h1>Hermes Studio</h1></div>
+<div class="brand">${logoUrl ? `<img class="mark" src="${logoUrl}" alt="Hermes Studio">` : ''}<h1>Hermes Studio</h1></div>
 <p class="label">${escapeHtml(t('desktop.selectRuntimeSource'))}</p>
 ${errorBlock}
 <div class="actions">
@@ -358,23 +435,19 @@ async function bootstrap(source?: RuntimeDownloadSource) {
 
   try {
     const selectedSource = source || envRuntimeDownloadSource()
-    const migration = migrateLegacyDesktopRuntime(updateSplash)
-    const migrationFailed = migration.status === 'failed'
     const runtimeUrlOverride = !!process.env.HERMES_DESKTOP_RUNTIME_URL?.trim()
     const manifestOverride = !!process.env.HERMES_DESKTOP_RUNTIME_MANIFEST_URL?.trim()
     const forceUpdate = !!process.env.HERMES_DESKTOP_RUNTIME_FORCE_UPDATE
     const runtimeReady = isDesktopRuntimeReady()
-    const packagedRuntimeUpdate = app.isPackaged && runtimeReady && cachedRuntimeNeedsPackagedReleaseUpdate()
-    const shouldCheckRuntime = !runtimeReady || forceUpdate || runtimeUrlOverride || manifestOverride || packagedRuntimeUpdate
-    const runtimeSource = selectedSource || (!runtimeReady || packagedRuntimeUpdate || migrationFailed ? 'cf' : undefined)
+    const needsRuntimeWork = !runtimeReady || forceUpdate || runtimeUrlOverride || manifestOverride
 
-    if (shouldCheckRuntime) {
-      if (!runtimeSource && !runtimeUrlOverride && !manifestOverride) {
+    if (needsRuntimeWork) {
+      if (!selectedSource && !runtimeUrlOverride && !manifestOverride) {
         if (mainWindow) await mainWindow.loadURL(runtimeSourceHtml())
         isBootstrapping = false
         return
       }
-      await ensureDesktopRuntime(updateSplash, runtimeSource, true)
+      await ensureDesktopRuntime(updateSplash, selectedSource)
     }
     if (isDesktopRuntimeReady()) {
       writeActiveRuntimeVersion()
@@ -395,6 +468,7 @@ async function bootstrap(source?: RuntimeDownloadSource) {
   }
 
   try {
+    updateSplash({ stage: 'resolve', message: t('desktop.startingLocalServices') })
     const url = await startWebUiServer(PORT)
     serverUrl = url
     if (mainWindow) await mainWindow.loadURL(url)
@@ -414,25 +488,78 @@ async function bootstrap(source?: RuntimeDownloadSource) {
 }
 
 ipcMain.handle('hermes-desktop:get-token', () => getToken())
+ipcMain.handle('hermes-desktop:get-window-state', () => windowState())
+ipcMain.handle('hermes-desktop:window-control', (_event, action?: unknown) => {
+  if (action !== 'minimize' && action !== 'toggle-maximize' && action !== 'close') return windowState()
+  return handleWindowControl(action)
+})
+function resolveNotificationIcon(icon: unknown): string {
+  if (typeof icon !== 'string') return desktopIcon()
+  const normalized = icon.trim().replace(/^\/+/, '')
+  if (!normalized || normalized.includes('..')) return desktopIcon()
+
+  const candidates = [
+    join(webuiDir(), 'dist', 'client', normalized),
+    join(webuiDir(), 'dist', normalized),
+    join(webuiDir(), 'packages', 'client', 'public', normalized),
+    join(webuiDir(), normalized),
+  ]
+  return candidates.find(candidate => existsSync(candidate)) || desktopIcon()
+}
+
+ipcMain.handle('hermes-desktop:notify-completion', (_event, payload?: { title?: unknown; body?: unknown; icon?: unknown; tag?: unknown }) => {
+  const supported = Notification.isSupported()
+  if (!supported) {
+    console.warn('[desktop-notification] Electron notifications are not supported on this system')
+    return false
+  }
+
+  const title = typeof payload?.title === 'string' && payload.title.trim()
+    ? payload.title.trim()
+    : 'Hermes Studio'
+  const body = typeof payload?.body === 'string' ? payload.body.trim().slice(0, 240) : ''
+  const icon = resolveNotificationIcon(payload?.icon)
+  const notification = new Notification({
+    title,
+    body,
+    icon,
+    silent: false,
+  })
+  activeNotifications.add(notification)
+  const releaseNotification = () => {
+    activeNotifications.delete(notification)
+  }
+  notification.on('click', () => {
+    releaseNotification()
+    showMainWindow()
+  })
+  notification.on('close', releaseNotification)
+  notification.on('failed', (_event, error) => {
+    console.warn('[desktop-notification] notification failed', error)
+    releaseNotification()
+  })
+  notification.show()
+  return true
+})
 ipcMain.handle('hermes-desktop:retry-bootstrap', async (_event, source?: RuntimeDownloadSource) => {
   if (serverUrl) {
     await mainWindow?.loadURL(serverUrl)
     return
   }
   const selectedSource = source === 'cf' || source === 'github' ? source : undefined
-  await mainWindow?.loadURL(splashHtml())
+  await mainWindow?.loadURL(splashHtml(t('runtime.downloading')))
   await bootstrap(selectedSource)
 })
 
 function runDesktopApp() {
-  const gotLock = app.requestSingleInstanceLock()
+  const gotLock = app.requestSingleInstanceLock(QUIT_EXISTING ? { quit: true } : undefined)
   if (!gotLock) {
     app.quit()
     return
   }
 
-  app.on('second-instance', (_event, argv) => {
-    if (argv.includes('--quit')) {
+  app.on('second-instance', (_event, argv, _workingDirectory, additionalData) => {
+    if (argv.includes('--quit') || hasQuitRequest(additionalData)) {
       quitApp()
       return
     }
@@ -500,6 +627,7 @@ function runDesktopApp() {
     }
     e.preventDefault()
     cancelWindowFade()
+    await showShutdownSplash()
     await stopWebUiServer().catch(() => undefined)
     app.exit(0)
   })

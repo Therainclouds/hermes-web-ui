@@ -6,6 +6,7 @@ export interface DisplayConfig {
   resume_display?: string
   busy_input_mode?: string
   bell_on_complete?: boolean
+  notify_on_complete?: boolean
   show_reasoning?: boolean
   streaming?: boolean
   inline_diffs?: boolean
@@ -26,6 +27,11 @@ export interface MemoryConfig {
   user_profile_enabled?: boolean
   memory_char_limit?: number
   user_char_limit?: number
+  write_approval?: boolean
+}
+
+export interface SkillsConfig {
+  write_approval?: boolean
 }
 
 export interface CompressionConfig {
@@ -61,6 +67,7 @@ export interface AppConfig {
   display?: DisplayConfig
   agent?: AgentConfig
   memory?: MemoryConfig
+  skills?: SkillsConfig
   compression?: CompressionConfig
   session_reset?: SessionResetConfig
   privacy?: PrivacyConfig

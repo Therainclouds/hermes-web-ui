@@ -17,13 +17,13 @@ import { app } from 'electron'
 import {
   desktopRuntimeDir,
   desktopRuntimeVersion,
-  legacyDesktopRuntimeDir,
   runtimePlatformKey,
   targetDesktopRuntimeDir,
   webUiHome,
   webuiDir,
 } from './paths'
 import {
+  compareHermesAgentVersions,
   hermesAgentVersionFromRuntimeTag,
   runtimeManifestMatchesHermesAgentVersion,
 } from './runtime-version'
@@ -31,7 +31,7 @@ import { extractTarGzipArchive } from './runtime-archive'
 import { t } from './desktop-i18n'
 
 const DEFAULT_RUNTIME_BASE_URL = 'https://download.ekkolearnai.com'
-const DEFAULT_RUNTIME_GITHUB_REPO = 'EKKOLearnAI/hermes-web-ui'
+const DEFAULT_RUNTIME_GITHUB_REPO = 'EKKOLearnAI/hermes-studio'
 const RUNTIME_MANIFEST_NAME = 'runtime-manifest.json'
 const PACKAGED_RUNTIME_RELEASE_NAME = 'runtime-release.json'
 const ACTIVE_RUNTIME_VERSION_NAME = 'active-version.json'
@@ -63,7 +63,7 @@ type PackagedRuntimeRelease = {
 }
 
 export type RuntimeProgress = {
-  stage: 'migrate' | 'resolve' | 'download' | 'verify' | 'extract' | 'ready'
+  stage: 'resolve' | 'download' | 'verify' | 'extract' | 'ready'
   message: string
   percent?: number
   receivedBytes?: number
@@ -71,13 +71,6 @@ export type RuntimeProgress = {
 }
 
 type RuntimeProgressHandler = (progress: RuntimeProgress) => void
-
-export type RuntimeMigrationResult = {
-  status: 'not-needed' | 'migrated' | 'failed'
-  from?: string
-  to?: string
-  error?: string
-}
 
 function runtimeDownloadSource(source?: RuntimeDownloadSource): RuntimeDownloadSource | null {
   if (source) return source
@@ -119,39 +112,6 @@ function rootRuntimeReady(root: string): boolean {
 
 export function isDesktopRuntimeReady(): boolean {
   return runtimeReady()
-}
-
-export function migrateLegacyDesktopRuntime(onProgress?: RuntimeProgressHandler): RuntimeMigrationResult {
-  if (process.env.HERMES_DESKTOP_RUNTIME_DIR?.trim()) return { status: 'not-needed' }
-  if (runtimeReady()) return { status: 'not-needed' }
-
-  const from = legacyDesktopRuntimeDir()
-  const to = targetDesktopRuntimeDir()
-  if (from === to || !existsSync(from)) return { status: 'not-needed' }
-
-  onProgress?.({ stage: 'migrate', message: t('runtime.migrating') })
-
-  const missing = missingRuntimeFiles(from)
-  if (missing.length > 0) {
-    const error = `Legacy runtime is missing required files: ${missing.map(file => relative(from, file)).join(', ')}`
-    console.warn(`[runtime] ${error}`)
-    onProgress?.({ stage: 'migrate', message: t('runtime.migrationFailed') })
-    return { status: 'failed', from, to, error }
-  }
-
-  try {
-    mkdirSync(dirname(to), { recursive: true })
-    rmSync(to, { recursive: true, force: true })
-    renameSync(from, to)
-    onProgress?.({ stage: 'migrate', message: t('runtime.migrated') })
-    console.log(`[runtime] migrated Hermes runtime from ${from} to ${to}`)
-    return { status: 'migrated', from, to }
-  } catch (err) {
-    const error = err instanceof Error ? err.message : String(err)
-    console.warn(`[runtime] failed to migrate Hermes runtime from ${from} to ${to}: ${error}`)
-    onProgress?.({ stage: 'migrate', message: t('runtime.migrationFailed') })
-    return { status: 'failed', from, to, error }
-  }
 }
 
 function releaseTagCandidates(): string[] {
@@ -196,7 +156,14 @@ export function cachedRuntimeNeedsPackagedReleaseUpdate(): boolean {
     ? hermesAgentVersionFromRuntimeTag(process.env.HERMES_DESKTOP_RUNTIME_RELEASE_TAG)
     : metadata?.hermesAgentVersion || hermesAgentVersionFromRuntimeTag(metadata?.tag)
   if (!expectedVersion) return false
-  const match = runtimeManifestMatchesHermesAgentVersion(readCachedRuntimeManifest(desktopRuntimeDir()), expectedVersion)
+  const manifest = readCachedRuntimeManifest(desktopRuntimeDir())
+  const assetVersion = typeof manifest?.asset?.name === 'string'
+    ? manifest.asset.name.match(/hermes-agent-([^-]+)-/)?.[1]
+    : undefined
+  const cachedVersion = manifest?.hermesAgentVersion || assetVersion
+  const comparison = compareHermesAgentVersions(cachedVersion, expectedVersion)
+  if (comparison !== null) return comparison < 0
+  const match = runtimeManifestMatchesHermesAgentVersion(manifest, expectedVersion)
   return match === false
 }
 
@@ -397,9 +364,7 @@ async function extractRuntimeArchive(archive: string, targetRoot: string): Promi
 export async function ensureDesktopRuntime(
   onProgress?: RuntimeProgressHandler,
   source?: RuntimeDownloadSource,
-  skipMigration = false,
 ): Promise<void> {
-  if (!skipMigration) migrateLegacyDesktopRuntime(onProgress)
   const runtimeRoot = targetDesktopRuntimeDir()
   mkdirSync(runtimeRoot, { recursive: true })
 

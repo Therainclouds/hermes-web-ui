@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { NAlert, NButton, NForm, NFormItem, NInput, NModal, NRadioButton, NRadioGroup, NSelect, NSpace, NSpin, NTag, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import {
@@ -78,6 +78,7 @@ const launchResult = ref<CodingAgentLaunchResult | null>(null)
 const terminalVisible = ref(false)
 const terminalCommand = ref('')
 const terminalKey = ref(0)
+const CODING_AGENT_AUTH_PROVIDER_KEYS = new Set(['openai-codex', 'copilot', 'xai-oauth', 'nous', 'google-gemini-cli', 'claude-oauth'])
 
 const agentLogos: Record<CodingAgentBlock['tool'], string> = {
   'Claude Code': '/coding-agents/claude-code.svg',
@@ -136,7 +137,18 @@ const statusById = computed(() => {
 
 const activeProfileName = computed(() => profilesStore.activeProfileName || 'default')
 
-const launchProviderOptions = computed(() => launchProviders.value.map(provider => ({
+function isCodingAgentAuthProvider(provider: AvailableModelGroup) {
+  const providerKey = String(provider.provider || '').toLowerCase()
+  return CODING_AGENT_AUTH_PROVIDER_KEYS.has(providerKey)
+}
+
+const selectableLaunchProviders = computed(() => (
+  launchMode.value === 'scoped'
+    ? launchProviders.value.filter(provider => !isCodingAgentAuthProvider(provider))
+    : launchProviders.value
+))
+
+const launchProviderOptions = computed(() => selectableLaunchProviders.value.map(provider => ({
   label: provider.label && provider.label !== provider.provider
     ? `${provider.label} (${provider.provider})`
     : provider.provider,
@@ -144,7 +156,7 @@ const launchProviderOptions = computed(() => launchProviders.value.map(provider 
 })))
 
 const selectedLaunchProvider = computed(() => (
-  launchProviders.value.find(provider => provider.provider === launchProvider.value) || null
+  selectableLaunchProviders.value.find(provider => provider.provider === launchProvider.value) || null
 ))
 
 const launchModelOptions = computed(() => (
@@ -244,17 +256,23 @@ async function saveConfigFile(agentId: CodingAgentId) {
 }
 
 function resetLaunchSelection() {
-  const firstProvider = launchProviders.value[0]
+  const firstProvider = selectableLaunchProviders.value[0]
   launchProvider.value = firstProvider?.provider || ''
   launchModel.value = firstProvider?.models[0] || ''
   launchApiMode.value = defaultLaunchApiMode(firstProvider)
 }
 
 function handleLaunchProviderChange(value: string) {
-  const provider = launchProviders.value.find(item => item.provider === value)
+  const provider = selectableLaunchProviders.value.find(item => item.provider === value)
   launchModel.value = provider?.models[0] || ''
   launchApiMode.value = defaultLaunchApiMode(provider)
 }
+
+watch([selectableLaunchProviders, launchMode], () => {
+  if (useGlobalLaunchConfig.value) return
+  if (selectedLaunchProvider.value) return
+  resetLaunchSelection()
+})
 
 function defaultLaunchApiMode(provider?: AvailableModelGroup | null): CodingAgentApiMode {
   const providerKey = String(provider?.provider || '').toLowerCase()

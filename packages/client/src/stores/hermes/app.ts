@@ -196,12 +196,24 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
-  function applyAvailableModelsResponse(res: AvailableModelsResponse) {
+  function applyAvailableModelsResponse(res: AvailableModelsResponse, opts: { preserveSelection?: boolean } = {}) {
+    const previousModel = selectedModel.value
+    const previousProvider = selectedProvider.value
+
     modelGroups.value = res.groups
     profileModelGroups.value = res.profiles || []
     modelAliases.value = res.model_aliases || {}
     modelVisibility.value = res.model_visibility || {}
     customModels.value = res.custom_models || {}
+
+    // Manual refresh keeps the user's current selection as long as it still exists
+    // in the freshly loaded groups, instead of snapping back to the config default.
+    if (opts.preserveSelection && previousModel && previousProvider) {
+      const stillAvailable = res.groups.some(
+        g => g.provider === previousProvider && g.models.includes(previousModel),
+      ) || (res.custom_models?.[previousProvider] || []).includes(previousModel)
+      if (stillAvailable) return
+    }
 
     const activeProfileName = localStorage.getItem(ACTIVE_PROFILE_STORAGE_KEY) || ''
     const activeProfileModels = activeProfileName
@@ -257,7 +269,7 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
-  async function loadModels(force = false) {
+  async function loadModels(force = false, opts: { preserveSelection?: boolean } = {}) {
     if (!hasApiKey()) return
     if (!force && modelsLoadPromise) return modelsLoadPromise
     if (!force && modelsLastRequestedAt > 0 && Date.now() - modelsLastRequestedAt < MODELS_CACHE_TTL_MS) return
@@ -265,7 +277,7 @@ export const useAppStore = defineStore('app', () => {
     modelsLoadPromise = (async () => {
       try {
         const res = await fetchAvailableModels()
-        applyAvailableModelsResponse(res)
+        applyAvailableModelsResponse(res, opts)
       } catch {
         // ignore
       } finally {
@@ -285,8 +297,8 @@ export const useAppStore = defineStore('app', () => {
     ])
   }
 
-  async function reloadModels() {
-    return loadModels(true)
+  async function reloadModels(opts: { preserveSelection?: boolean } = {}) {
+    return loadModels(true, opts)
   }
 
   function getModelAlias(modelId: string, provider?: string): string {

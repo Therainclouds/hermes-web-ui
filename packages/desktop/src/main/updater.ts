@@ -5,16 +5,10 @@ import { t } from './desktop-i18n'
 let initialized = false
 let checking = false
 let updateDownloaded = false
+let tryingFallbackFeed = false
 
-const LATEST_RELEASE_DOWNLOAD_URL = 'https://github.com/EKKOLearnAI/hermes-web-ui/releases/latest/download'
-const CLOUDFLARE_DOWNLOAD_BASE_URL = 'https://download.ekkolearnai.com'
-
-class MissingUpdateInfoError extends Error {
-  constructor(public readonly url: string) {
-    super(`Update information is not available at ${url}`)
-    this.name = 'MissingUpdateInfoError'
-  }
-}
+const CLOUDFLARE_LATEST_FEED_URL = 'https://download.ekkolearnai.com/latest'
+const GITHUB_LATEST_FEED_URL = 'https://github.com/EKKOLearnAI/hermes-studio/releases/latest/download'
 
 interface AutoUpdaterOptions {
   beforeQuitAndInstall?: () => void
@@ -22,54 +16,27 @@ interface AutoUpdaterOptions {
 
 let options: AutoUpdaterOptions = {}
 
-async function getLatestReleaseTag(assetName: string): Promise<string> {
-  const res = await fetch(`${LATEST_RELEASE_DOWNLOAD_URL}/${encodeURIComponent(assetName)}`, {
-    method: 'HEAD',
-    redirect: 'manual',
-    headers: {
-      'User-Agent': `Hermes-Studio/${app.getVersion()}`,
-    },
-  })
-
-  if (res.status < 300 || res.status >= 400) throw new Error(`GitHub returned ${res.status}`)
-
-  const location = res.headers.get('location')
-  if (!location) throw new Error('Latest release redirect did not include a location')
-
-  const redirectUrl = new URL(location, LATEST_RELEASE_DOWNLOAD_URL)
-  const parts = redirectUrl.pathname.split('/')
-  const downloadIndex = parts.indexOf('download')
-  const tag = downloadIndex >= 0 ? parts[downloadIndex + 1]?.trim() : ''
-  if (!tag) throw new Error('Latest release redirect did not include a tag')
-  return tag
-}
-
-function updateManifestFile(): string {
-  if (process.platform === 'darwin') return 'latest-mac.yml'
-  if (process.platform === 'win32') return 'latest.yml'
-  return 'latest-linux.yml'
-}
-
-async function assertUpdateManifestExists(feedUrl: string): Promise<void> {
-  const manifestUrl = `${feedUrl}/${updateManifestFile()}`
-  const res = await fetch(manifestUrl, {
-    method: 'HEAD',
-    headers: {
-      'User-Agent': `Hermes-Studio/${app.getVersion()}`,
-    },
-  })
-  if (res.status === 404) throw new MissingUpdateInfoError(manifestUrl)
-  if (!res.ok) throw new Error(`Update feed returned ${res.status}`)
-}
-
-async function configureFeedFromLatestRelease(): Promise<void> {
-  const tag = await getLatestReleaseTag(updateManifestFile())
-  const feedUrl = `${CLOUDFLARE_DOWNLOAD_BASE_URL}/${tag}`
-  await assertUpdateManifestExists(feedUrl)
+function configureUpdateFeed(url: string): void {
   autoUpdater.setFeedURL({
     provider: 'generic',
-    url: feedUrl,
+    url,
   })
+}
+
+async function checkForUpdatesWithFallback(): Promise<void> {
+  configureUpdateFeed(CLOUDFLARE_LATEST_FEED_URL)
+  try {
+    await autoUpdater.checkForUpdates()
+  } catch (err) {
+    console.warn(`[updater] Cloudflare update feed failed, trying GitHub: ${err instanceof Error ? err.message : String(err)}`)
+    tryingFallbackFeed = true
+    try {
+      configureUpdateFeed(GITHUB_LATEST_FEED_URL)
+      await autoUpdater.checkForUpdates()
+    } finally {
+      tryingFallbackFeed = false
+    }
+  }
 }
 
 function showUpToDate(info?: UpdateInfo) {
@@ -83,12 +50,11 @@ function showUpToDate(info?: UpdateInfo) {
   }).catch(() => undefined)
 }
 
-function showUpdateCheckFailed(err: unknown) {
-  const isMissingUpdateInfo = err instanceof MissingUpdateInfoError
+function showUpdateCheckFailed() {
   dialog.showMessageBox({
-    type: isMissingUpdateInfo ? 'info' : 'error',
-    title: isMissingUpdateInfo ? t('update.upToDateTitle') : t('update.failedTitle'),
-    message: isMissingUpdateInfo ? t('update.noUpdateInfoMessage') : t('update.failedMessage'),
+    type: 'error',
+    title: t('update.failedTitle'),
+    message: t('update.failedMessage'),
     buttons: [t('common.ok')],
   }).catch(() => undefined)
 }
@@ -119,7 +85,7 @@ export function initAutoUpdater(nextOptions: AutoUpdaterOptions = {}) {
   })
   autoUpdater.on('error', err => {
     console.error('[updater] error:', err)
-    if (checking) showUpdateCheckFailed(err)
+    if (checking && !tryingFallbackFeed) showUpdateCheckFailed()
   })
   autoUpdater.on('download-progress', (info: ProgressInfo) => {
     console.log(`[updater] download ${Math.round(info.percent)}%`)
@@ -183,10 +149,9 @@ export async function checkForDesktopUpdates(manual: boolean): Promise<void> {
 
   checking = manual
   try {
-    await configureFeedFromLatestRelease()
-    await autoUpdater.checkForUpdates()
+    await checkForUpdatesWithFallback()
   } catch (err) {
-    if (manual) showUpdateCheckFailed(err)
+    if (manual) showUpdateCheckFailed()
     throw err
   } finally {
     checking = false

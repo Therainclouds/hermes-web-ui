@@ -594,6 +594,8 @@ onUnmounted(() => {
 <style scoped lang="scss">
 @use "@/styles/variables" as *;
 
+$terminal-panel-header-height: 47px;
+
 .terminal-panel-drawer {
   display: flex;
   height: 100%;
@@ -648,9 +650,11 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  height: $terminal-panel-header-height;
   padding: 12px;
   flex-shrink: 0;
   border-bottom: 1px solid $border-color;
+  box-sizing: border-box;
 }
 
 .sidebar-title {
@@ -795,10 +799,12 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 12px 16px;
+  height: $terminal-panel-header-height;
+  padding: 9px 16px;
   border-bottom: 1px solid $border-color;
   flex-shrink: 0;
   min-width: 0;
+  box-sizing: border-box;
 }
 
 .header-session-title {

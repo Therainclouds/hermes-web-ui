@@ -7,7 +7,6 @@ import SessionListItem from '@/components/hermes/chat/SessionListItem.vue'
 vi.mock('@/stores/hermes/app', () => ({
   useAppStore: () => ({
     profileModelGroups: [],
-    displayModelName: (model: string) => model,
   }),
 }))
 
@@ -154,7 +153,7 @@ describe('SessionListItem', () => {
     const logo = wrapper.get('.session-item-agent-logo')
     expect(logo.attributes('src')).toBe('/coding-agents/hermes.png')
     expect(logo.attributes('alt')).toBe('Hermes')
-    expect(wrapper.get('.session-item-agent-name').text()).toBe('Hermes')
+    expect(wrapper.find('.session-item-agent-name').exists()).toBe(false)
   })
 
   it('defaults old sessions without agent metadata to the Hermes logo', () => {
@@ -175,7 +174,7 @@ describe('SessionListItem', () => {
     const logo = wrapper.get('.session-item-agent-logo')
     expect(logo.attributes('src')).toBe('/coding-agents/hermes.png')
     expect(logo.attributes('alt')).toBe('Hermes')
-    expect(wrapper.get('.session-item-agent-name').text()).toBe('Hermes')
+    expect(wrapper.find('.session-item-agent-name').exists()).toBe(false)
   })
 
   it('renders the Claude Code logo for Claude coding agent sessions', () => {
@@ -196,7 +195,7 @@ describe('SessionListItem', () => {
     const logo = wrapper.get('.session-item-agent-logo')
     expect(logo.attributes('src')).toBe('/coding-agents/claude-code.svg')
     expect(logo.attributes('alt')).toBe('Claude Code')
-    expect(wrapper.get('.session-item-agent-name').text()).toBe('Claude Code')
+    expect(wrapper.find('.session-item-agent-name').exists()).toBe(false)
   })
 
   it('renders the Codex logo for Codex coding agent sessions', () => {
@@ -217,6 +216,6 @@ describe('SessionListItem', () => {
     const logo = wrapper.get('.session-item-agent-logo')
     expect(logo.attributes('src')).toBe('/coding-agents/codex-openai.png')
     expect(logo.attributes('alt')).toBe('Codex')
-    expect(wrapper.get('.session-item-agent-name').text()).toBe('Codex')
+    expect(wrapper.find('.session-item-agent-name').exists()).toBe(false)
   })
 })

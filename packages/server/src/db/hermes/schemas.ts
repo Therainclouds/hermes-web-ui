@@ -66,6 +66,8 @@ export const MESSAGES_SCHEMA: Record<string, string> = {
   session_id: 'TEXT NOT NULL',
   role: 'TEXT NOT NULL',
   content: 'TEXT NOT NULL DEFAULT \'\'',
+  display_role: 'TEXT',
+  display_content: 'TEXT',
   tool_call_id: 'TEXT',
   tool_calls: 'TEXT',
   tool_name: 'TEXT',

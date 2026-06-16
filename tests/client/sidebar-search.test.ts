@@ -106,7 +106,7 @@ vi.mock('naive-ui', async () => {
 
 import AppSidebar from '@/components/layout/AppSidebar.vue'
 
-describe('AppSidebar search entry', () => {
+describe('AppSidebar navigation', () => {
   beforeEach(() => {
     openSessionSearchMock.mockClear()
     mockAppStore.serverVersion = 'test'
@@ -126,7 +126,7 @@ describe('AppSidebar search entry', () => {
     mockAppStore.reloadClient.mockClear()
   })
 
-  it('opens the session search modal from the sidebar button', async () => {
+  it('keeps page-sidebar-only actions out of the app sidebar', () => {
     const wrapper = mount(AppSidebar, {
       global: {
         stubs: {
@@ -139,34 +139,9 @@ describe('AppSidebar search entry', () => {
       },
     })
 
-    const buttons = wrapper.findAll('button')
-    const searchButton = buttons.find(node => node.text().includes('sidebar.search'))
-    expect(searchButton).toBeTruthy()
-
-    await searchButton!.trigger('click')
-    expect(openSessionSearchMock).toHaveBeenCalledTimes(1)
-  })
-
-  it('offers a client reload when the server version differs from the loaded bundle', async () => {
-    mockAppStore.clientOutdated = true
-    mockAppStore.serverVersion = '0.5.17'
-    const wrapper = mount(AppSidebar, {
-      global: {
-        stubs: {
-          ProfileSelector: true,
-          ModelSelector: true,
-          LanguageSwitch: true,
-          ThemeSwitch: true,
-        },
-      },
-    })
-
-    const reloadButton = wrapper.findAll('button')
-      .find(node => node.text().includes('sidebar.reloadClientVersion'))
-    expect(reloadButton).toBeTruthy()
-
-    await reloadButton!.trigger('click')
-    expect(mockAppStore.reloadClient).toHaveBeenCalledTimes(1)
+    expect(wrapper.text()).not.toContain('sidebar.search')
+    expect(wrapper.text()).not.toContain('sidebar.reloadClientVersion')
+    expect(wrapper.find('.sidebar-return-tab').exists()).toBe(true)
   })
 
   it('shows update stage details while an update task is running', () => {
@@ -238,14 +213,13 @@ describe('AppSidebar search entry', () => {
 
     expect(wrapper.classes()).toContain('collapsed')
     expect(wrapper.findAll('.nav-group-label span').map(node => node.text())).toEqual([
-      'sidebar.groupConversationShort',
       'sidebar.groupAgentShort',
       'sidebar.groupMonitoringShort',
       'sidebar.groupToolsShort',
       'sidebar.groupSystemShort',
     ])
 
-    const agentGroup = wrapper.findAll('.nav-group')[1]
+    const agentGroup = wrapper.findAll('.nav-group')[0]
     expect(agentGroup.find('.nav-group-items').attributes('style')).toBeUndefined()
 
     await agentGroup.find('.nav-group-label').trigger('click')

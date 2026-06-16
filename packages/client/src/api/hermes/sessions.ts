@@ -54,6 +54,8 @@ export interface HermesMessage {
   session_id: string
   role: 'user' | 'assistant' | 'system' | 'tool' | 'command'
   content: string
+  display_role?: 'user' | 'assistant' | 'system' | 'tool' | 'command' | null
+  display_content?: string | null
   tool_call_id: string | null
   tool_calls: any[] | null
   tool_name: string | null
@@ -112,7 +114,7 @@ export async function fetchSession(id: string, profile?: string | null): Promise
 export async function fetchSessionMessagesPage(
   id: string,
   offset: number,
-  limit = 300,
+  limit = 150,
   profile?: string | null,
 ): Promise<PaginatedSessionMessages | null> {
   try {

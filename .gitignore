@@ -27,6 +27,7 @@ packages/server/node_modules/
 .hermes-web-ui/
 packages/desktop/dist/
 packages/desktop/release/
+packages/desktop/resources/
 packages/desktop/resources/python/
 packages/desktop/node_modules/
 
@@ -53,6 +54,12 @@ packages/client/src/**/*.js
 .runtime-hermes/state.db-wal
 
 .hermes/
+.runtime-hermes/
+.runtime-home/
+pip/cache/
+/logs.txt
+/e --abbrev-ref HEAD
+/tatus --short
 
 # Local error logs
 docs/erro.txt

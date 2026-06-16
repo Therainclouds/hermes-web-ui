@@ -102,8 +102,9 @@ export interface SkillUsageStats {
   top_skills: SkillUsageRow[]
 }
 
-export async function fetchSkills(): Promise<SkillsData> {
-  const res = await request<SkillListResponse>('/api/hermes/skills')
+export async function fetchSkills(profile?: string): Promise<SkillsData> {
+  const query = profile ? `?profile=${encodeURIComponent(profile)}` : ''
+  const res = await request<SkillListResponse>(`/api/hermes/skills${query}`)
   return { categories: res.categories, archived: res.archived ?? [], paths: res.paths }
 }
 

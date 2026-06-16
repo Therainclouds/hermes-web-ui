@@ -12,6 +12,10 @@ import { shouldRejectUpgradeOrigin, writeForbiddenOrigin } from '../../security'
 
 let pty: any = null
 
+export function canOpenTerminal(user: { role?: string } | null | undefined): boolean {
+  return user?.role === 'super_admin'
+}
+
 function ensureNodePtySpawnHelperExecutable() {
   if (process.platform !== 'darwin') return
 
@@ -160,8 +164,14 @@ export function setupTerminalWebSocket(httpServers: HttpServer | HttpServer[]) {
       // Auth check
       if (await isAuthEnabled()) {
         const token = url.searchParams.get('token') || ''
-        if (!await authenticateUserToken(token)) {
+        const user = await authenticateUserToken(token)
+        if (!user) {
           socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
+          socket.destroy()
+          return
+        }
+        if (!canOpenTerminal(user)) {
+          socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
           socket.destroy()
           return
         }

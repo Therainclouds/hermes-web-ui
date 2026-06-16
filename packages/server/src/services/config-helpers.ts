@@ -3,6 +3,7 @@ import { readdir, stat } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { getActiveProfileDir, getActiveConfigPath, getActiveEnvPath, getProfileDir } from './hermes/hermes-profile'
+import { getCompatibleCustomProviders } from './hermes/custom-providers-compat'
 import { logger } from './logger'
 import { safeFileStore } from './safe-file-store'
 
@@ -12,7 +13,6 @@ export const PROVIDER_ENV_MAP: Record<string, { api_key_env: string; base_url_en
   'fun-claude': { api_key_env: '', base_url_env: '' },
   lmstudio: { api_key_env: 'LM_API_KEY', base_url_env: 'LM_BASE_URL' },
   openrouter: { api_key_env: 'OPENROUTER_API_KEY', base_url_env: 'OPENROUTER_BASE_URL' },
-  atlascloud: { api_key_env: 'ATLASCLOUD_API_KEY', base_url_env: 'ATLASCLOUD_BASE_URL' },
   'glm-coding-plan': { api_key_env: '', base_url_env: '' },
   zai: { api_key_env: 'GLM_API_KEY', base_url_env: 'GLM_BASE_URL' },
   'kimi-coding': { api_key_env: 'KIMI_API_KEY', base_url_env: 'KIMI_BASE_URL' },
@@ -23,11 +23,13 @@ export const PROVIDER_ENV_MAP: Record<string, { api_key_env: string; base_url_en
   alibaba: { api_key_env: 'DASHSCOPE_API_KEY', base_url_env: 'DASHSCOPE_BASE_URL' },
   'alibaba-coding-plan': { api_key_env: 'ALIBABA_CODING_PLAN_API_KEY', base_url_env: 'ALIBABA_CODING_PLAN_BASE_URL' },
   anthropic: { api_key_env: 'ANTHROPIC_API_KEY', base_url_env: 'ANTHROPIC_BASE_URL' },
+  'claude-oauth': { api_key_env: '', base_url_env: '' },
   xai: { api_key_env: 'XAI_API_KEY', base_url_env: 'XAI_BASE_URL' },
   'xai-oauth': { api_key_env: '', base_url_env: '' },
   xiaomi: { api_key_env: 'XIAOMI_API_KEY', base_url_env: 'XIAOMI_BASE_URL' },
   'xiaomi-token-plan': { api_key_env: 'XIAOMI_TOKEN_PLAN_API_KEY', base_url_env: 'XIAOMI_TOKEN_PLAN_BASE_URL' },
   gemini: { api_key_env: 'GEMINI_API_KEY', base_url_env: 'GEMINI_BASE_URL' },
+  'google-gemini-cli': { api_key_env: '', base_url_env: '' },
   kilocode: { api_key_env: 'KILO_API_KEY', base_url_env: 'KILOCODE_BASE_URL' },
   'ai-gateway': { api_key_env: 'AI_GATEWAY_API_KEY', base_url_env: 'AI_GATEWAY_BASE_URL' },
   cliproxyapi: { api_key_env: '', base_url_env: '' },
@@ -104,20 +106,6 @@ export async function updateConfigYamlForProfile<T = void>(
   updater: (config: Record<string, any>) => Record<string, any> | { data: Record<string, any>; result: T; write?: boolean } | Promise<Record<string, any> | { data: Record<string, any>; result: T; write?: boolean }>,
 ): Promise<T | undefined> {
   return safeFileStore.updateYaml(configPathForProfile(profile), updater, { backup: true })
-}
-
-export function stripLegacyApiServerGatewayConfig(config: Record<string, any>): { config: Record<string, any>; changed: boolean } {
-  if (!config.platforms || typeof config.platforms !== 'object' || Array.isArray(config.platforms)) {
-    return { config, changed: false }
-  }
-
-  if (config.platforms.api_server !== undefined) {
-    delete config.platforms.api_server
-    if (Object.keys(config.platforms).length === 0) delete config.platforms
-    return { config, changed: true }
-  }
-
-  return { config, changed: false }
 }
 
 // --- .env helpers ---
@@ -250,6 +238,11 @@ export async function fetchProviderModels(baseUrl: string, apiKey: string, freeO
       return []
     }
     let models = data.data.map(m => m.id)
+    // Gemini returns model IDs with "models/" prefix. Strip to avoid double
+    // prefix when Hermes native adapter constructs .../models/{model}:generateContent
+    if (base.includes('generativelanguage.googleapis.com')) {
+      models = models.map(m => m.startsWith('models/') ? m.slice('models/'.length) : m)
+    }
     if (freeOnly) models = models.filter(m => m.endsWith(':free'))
     return models.sort()
   } catch (err: any) {
@@ -270,22 +263,26 @@ export function buildModelGroups(config: Record<string, any>): { default: string
     defaultModel = modelSection.trim()
   }
 
-  // 2. Extract custom_providers section
-  const customProviders = config.custom_providers
-  if (Array.isArray(customProviders)) {
-    const customModels: ModelInfo[] = []
-    for (const entry of customProviders) {
-      if (entry && typeof entry === 'object') {
-        const cName = String(entry.name || '').trim()
-        const cModel = String(entry.model || '').trim()
-        if (cName && cModel) {
-          customModels.push({ id: cModel, label: `${cName}: ${cModel}` })
-        }
-      }
+  // 2. Aggregate custom providers from both schemas (legacy list + v12+ dict).
+  const customProviders = getCompatibleCustomProviders(config)
+  const customModels: ModelInfo[] = []
+  for (const entry of customProviders) {
+    const cName = entry.name.trim()
+    if (!cName) continue
+    const seen = new Set<string>()
+    const pushModel = (modelId: string) => {
+      const id = modelId.trim()
+      if (!id || seen.has(id)) return
+      seen.add(id)
+      customModels.push({ id, label: `${cName}: ${id}` })
     }
-    if (customModels.length > 0) {
-      groups.push({ provider: 'Custom', models: customModels })
+    if (entry.model) pushModel(entry.model)
+    if (entry.models && typeof entry.models === 'object') {
+      for (const id of Object.keys(entry.models)) pushModel(id)
     }
+  }
+  if (customModels.length > 0) {
+    groups.push({ provider: 'Custom', models: customModels })
   }
 
   return { default: defaultModel, groups }
