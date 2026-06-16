@@ -1,5 +1,5 @@
 {
-  "name": "hermes-studio",
+  "name": "@quanthermes/hermes-web-ui-desktop",
   "version": "0.6.15",
   "description": "Hermes Studio desktop distribution with bundled Python runtime and hermes-agent",
   "homepage": "https://hermes-studio.ai",

@@ -4,33 +4,13 @@
 </p>
 
 <p align="center">
-  面向 <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a> 的桌面应用、本地运行时和 Web 控制台。<br/>
+  面向 Hermes Agent 的桌面应用、本地运行时和 Web 控制台。<br/>
   聊天、模型与 Profile 管理、平台渠道接入、任务自动化、<br/>
   文件查看、Coding Agent 和本地运行环境都在一个界面中完成。
 </p>
 
 <p align="center">
-  <a href="https://github.com/EKKOLearnAI/hermes-studio/releases/latest">下载 Hermes Studio 桌面版</a>
-  ·
   <code>npm install -g hermes-web-ui && hermes-web-ui start</code>
-</p>
-
-<p align="center">
-  <img src="https://github.com/EKKOLearnAI/hermes-studio/blob/main/packages/client/src/assets/image.gif" alt="Hermes Web UI 演示" width="680"/>
-</p>
-
-<p align="center">
-  <strong>移动端</strong>
-</p>
-
-<p align="center">
-  <video src="https://github.com/EKKOLearnAI/hermes-studio/blob/main/packages/client/src/assets/video.mp4?raw=true" width="360" controls></video>
-</p>
-
-<p align="center">
-  <a href="https://www.npmjs.com/package/@quanthermes/hermes-web-ui"><img src="https://img.shields.io/npm/v/%40quanthermes%2Fhermes-web-ui?style=flat-square&color=blue" alt="npm 版本"/></a>
-  <a href="https://github.com/EKKOLearnAI/hermes-web-ui/blob/main/LICENSE"><img src="https://img.shields.io/npm/l/%40quanthermes%2Fhermes-web-ui?style=flat-square" alt="许可证"/></a>
-  <a href="https://github.com/EKKOLearnAI/hermes-web-ui/stargazers"><img src="https://img.shields.io/github/stars/EKKOLearnAI/hermes-web-ui?style=flat-square" alt="Star"/></a>
 </p>
 
 ## 核心能力
@@ -228,8 +208,7 @@ hermes-web-ui reset-default-login
 
 ### 桌面应用（推荐）
 
-从 [GitHub Releases](https://github.com/EKKOLearnAI/hermes-studio/releases/latest)
-下载最新的 **Hermes Studio** 桌面安装包。
+请从你们自己的发布渠道下载最新的 **Hermes Studio** 桌面安装包。
 
 桌面版会发布 macOS、Windows 和 Linux 构建；适用时会区分不同 CPU 架构。
 桌面应用内置 Web UI 运行时，Hermes Agent 数据会保存到原生 Hermes 目录：
@@ -240,9 +219,7 @@ hermes-web-ui reset-default-login
 桌面壳自身的 Web UI 状态会单独保存到 `~/.hermes-web-ui`，除非设置了
 `HERMES_WEB_UI_HOME`。
 
-桌面自动更新会优先读取 `https://download.ekkolearnai.com/latest`。
-如果该端点不可用，更新器会回退到
-`https://github.com/EKKOLearnAI/hermes-studio/releases/latest/download`。
+桌面自动更新应优先读取你们自己的更新元数据地址和安装包分发地址。
 
 ### npm 安装
 
@@ -253,20 +230,9 @@ hermes-web-ui start
 
 打开 **http://localhost:8648**
 
-### 一键安装（自动检测系统）
+### 一键安装与 WSL
 
-自动安装 Node.js（如未安装）和 hermes-web-ui，支持 Debian/Ubuntu/macOS：
-
-```bash
-bash <(curl -fsSL https://cdn.jsdelivr.net/gh/EKKOLearnAI/hermes-web-ui@main/scripts/setup.sh)
-```
-
-### WSL
-
-```bash
-bash <(curl -fsSL https://cdn.jsdelivr.net/gh/EKKOLearnAI/hermes-web-ui@main/scripts/setup.sh)
-hermes-web-ui start
-```
+请使用你们自己维护的安装脚本或部署文档，不再引用官方远程安装脚本。
 
 > WSL 使用与其他本地安装相同的 Web UI 后台启动流程；Web UI 不再单独启动 gateway 服务。
 
@@ -349,7 +315,7 @@ Web UI 启动后端聊天能力时，会优先使用包含 `run_agent.py` 的源
 | `HERMES_BRIDGE_TOOLSETS` | profile/默认值 | bridge 运行时的 toolset 覆盖。 |
 | `HERMES_BRIDGE_MAX_TURNS` | profile/默认值 | bridge 运行时的最大轮数覆盖。 |
 | `HERMES_BRIDGE_SUPPRESS_PLATFORM_HINT` | `cli` | 控制传给 Hermes Agent 的 bridge platform hint suppression。 |
-| `HERMES_OPENROUTER_APP_REFERER` | `https://hermes-studio.ai` | bridge 运行发送给 OpenRouter 的 attribution referer。 |
+| `HERMES_OPENROUTER_APP_REFERER` | 未设置 | bridge 运行发送给 OpenRouter 的 attribution referer；如需使用，请改成你们自己的公网站点。 |
 | `HERMES_OPENROUTER_APP_TITLE` | `Hermes Web UI` | bridge 运行发送给 OpenRouter 的 attribution title。 |
 | `HERMES_OPENROUTER_APP_CATEGORIES` | `cli-agent,personal-agent` | bridge 运行发送给 OpenRouter 的 attribution categories。 |
 | `HERMES_WEB_UI_MANAGED_GATEWAY` | 默认开启 | 控制 Web UI 托管 Hermes gateway 进程；设为 `0`、`false`、`no` 或 `off` 时改用 `hermes gateway start`。 |
@@ -400,8 +366,6 @@ Web UI 启动后端聊天能力时，会优先使用包含 `run_agent.py` 的源
 ## 开发
 
 ```bash
-git clone https://github.com/EKKOLearnAI/hermes-studio.git
-cd hermes-web-ui
 npm install
 npm run dev
 ```

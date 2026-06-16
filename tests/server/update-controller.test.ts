@@ -416,6 +416,27 @@ describe('update controller', () => {
     expect(mocks.spawn).not.toHaveBeenCalled()
   })
 
+  it('requires device package execution settings for device-package updates', async () => {
+    process.env.WEBUI_UPDATE_STRATEGY = 'device-package'
+    process.env.WEBUI_UPDATE_MANIFEST_URL = 'https://updates.example.com/stable/manifest.json'
+    process.env.WEBUI_UPDATE_INSTALLER_SCRIPT = '/opt/hermes-web-ui/scripts/install-device-package.sh'
+    process.env.WEBUI_UPDATE_PACKAGE_TYPE = 'device-package'
+    process.env.WEBUI_UPDATE_CHANNEL = 'stable'
+    delete process.env.WEBUI_UPDATE_RUNNER_SERVICE
+    delete process.env.WEBUI_UPDATE_RUNNER_REQUEST_FILE
+    const { handleUpdate, mocks } = await loadUpdateController()
+    const ctx = createMockCtx()
+
+    await handleUpdate(ctx)
+
+    expect(ctx.status).toBe(500)
+    expect(ctx.body).toEqual({
+      success: false,
+      message: 'Update source is not fully configured. Set WEBUI_UPDATE_MANIFEST_URL or WEBUI_UPDATE_MANIFEST_BASE_URL, WEBUI_UPDATE_INSTALLER_SCRIPT, and WEBUI_UPDATE_RUNNER_SERVICE.',
+    })
+    expect(mocks.spawn).not.toHaveBeenCalled()
+  })
+
   it('starts the device package installer after manifest download and checksum verification', async () => {
     process.env.WEBUI_UPDATE_STRATEGY = 'device-package'
     process.env.WEBUI_UPDATE_MANIFEST_URL = 'https://updates.example.com/stable/manifest.json'

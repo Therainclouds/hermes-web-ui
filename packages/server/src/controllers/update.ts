@@ -351,6 +351,17 @@ function getGlobalPackageBin(root: string, packageName: string, cliBin: string) 
   ].find(existsSync) || join(packageDir, 'bin', normalizedCli)
 }
 
+function getUpdateExecutionMessage() {
+  switch (config.update.strategy) {
+    case 'device-package':
+      return getDevicePackageExecutionMessage()
+    case 'source-deploy':
+      return getSourceDeployExecutionMessage()
+    default:
+      return getNpmPackageExecutionMessage()
+  }
+}
+
 function getCurrentNodeEnv() {
   return {
     ...process.env,
@@ -993,7 +1004,11 @@ async function getGlobalRootAsync() {
 }
 
 async function getGlobalCliScriptAsync() {
-  const cli = getGlobalPackageBin(await getGlobalRootAsync())
+  const cli = getGlobalPackageBin(
+    await getGlobalRootAsync(),
+    config.update.packageName,
+    config.update.cliBin,
+  )
   if (!existsSync(cli)) {
     throw new Error(`Updated package CLI not found: ${cli}`)
   }

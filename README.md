@@ -4,26 +4,16 @@
 </p>
 
 <p align="center">
-  A desktop app, local runtime, and web console for <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a>.<br/>
+  A desktop app, local runtime, and web console for Hermes Agent.<br/>
   Chat with agents, manage models and profiles, connect platform channels,<br/>
   automate jobs, inspect files, run coding agents, and keep everything local.
-  A full-featured web dashboard for <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a>.<br/>
+  A full-featured web dashboard for Hermes Agent.<br/>
   Manage AI chat sessions, monitor usage & costs, configure platform channels,<br/>
   schedule cron jobs, browse skills — all from a clean, responsive web interface.
 </p>
 
 <p align="center">
   <code>npm install -g @quanthermes/hermes-web-ui && hermes-web-ui start</code>
-</p>
-
-<p align="center">
-  <img src="https://github.com/EKKOLearnAI/hermes-studio/blob/main/packages/client/src/assets/image.gif" alt="Hermes Web UI Demo" width="680"/>
-</p>
-
-<p align="center">
-  <a href="https://www.npmjs.com/package/@quanthermes/hermes-web-ui"><img src="https://img.shields.io/npm/v/%40quanthermes%2Fhermes-web-ui?style=flat-square&color=blue" alt="npm version"/></a>
-  <a href="https://github.com/EKKOLearnAI/hermes-web-ui/blob/main/LICENSE"><img src="https://img.shields.io/npm/l/%40quanthermes%2Fhermes-web-ui?style=flat-square" alt="license"/></a>
-  <a href="https://github.com/EKKOLearnAI/hermes-web-ui/stargazers"><img src="https://img.shields.io/github/stars/EKKOLearnAI/hermes-web-ui?style=flat-square" alt="stars"/></a>
 </p>
 
 ## Core Capabilities
@@ -325,7 +315,7 @@ These variables configure Hermes Web UI itself. Provider API keys and Hermes Age
 | `HERMES_BRIDGE_TOOLSETS` | profile/default | Toolset override for bridge runs. |
 | `HERMES_BRIDGE_MAX_TURNS` | profile/default | Maximum turn override for bridge runs. |
 | `HERMES_BRIDGE_SUPPRESS_PLATFORM_HINT` | `cli` | Controls bridge platform hint suppression passed to Hermes Agent. |
-| `HERMES_OPENROUTER_APP_REFERER` | `https://hermes-studio.ai` | OpenRouter attribution referer sent by bridge runs. |
+| `HERMES_OPENROUTER_APP_REFERER` | unset | OpenRouter attribution referer sent by bridge runs. Set this to your own public site if needed. |
 | `HERMES_OPENROUTER_APP_TITLE` | `Hermes Web UI` | OpenRouter attribution title sent by bridge runs. |
 | `HERMES_OPENROUTER_APP_CATEGORIES` | `cli-agent,personal-agent` | OpenRouter attribution categories sent by bridge runs. |
 | `HERMES_WEB_UI_MANAGED_GATEWAY` | enabled | Controls Web UI-managed Hermes gateway process handling. Set `0`, `false`, `no`, or `off` to use `hermes gateway start` instead. |
@@ -378,8 +368,6 @@ On startup the BFF server automatically:
 ## Development
 
 ```bash
-git clone https://github.com/EKKOLearnAI/hermes-studio.git
-cd hermes-web-ui
 npm install
 npm run dev
 ```
