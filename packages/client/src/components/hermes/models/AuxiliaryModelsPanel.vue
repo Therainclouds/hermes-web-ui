@@ -288,7 +288,6 @@ watch(() => form.value.provider, (provider) => {
             :options="providerOptions"
             :placeholder="t('models.chooseProvider')"
             filterable
-            clearable
           />
         </label>
         <label>
@@ -299,16 +298,15 @@ watch(() => form.value.provider, (provider) => {
             :placeholder="t('models.selectModel')"
             :disabled="!form.provider || form.provider === 'auto' || form.provider === 'main'"
             filterable
-            clearable
           />
         </label>
         <label>
           <span>{{ t('models.auxiliaryTimeout') }}</span>
-          <NInputNumber v-model:value="form.timeout" :min="1" :precision="0" clearable />
+          <NInputNumber v-model:value="form.timeout" :min="1" :precision="0" />
         </label>
         <label v-if="isEditingVision">
           <span>{{ t('models.auxiliaryDownloadTimeout') }}</span>
-          <NInputNumber v-model:value="form.download_timeout" :min="1" :precision="0" clearable />
+          <NInputNumber v-model:value="form.download_timeout" :min="1" :precision="0" />
         </label>
         <label class="extra-body-field">
           <span>{{ t('models.auxiliaryExtraBody') }}</span>

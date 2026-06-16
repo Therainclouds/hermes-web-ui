@@ -290,8 +290,9 @@ WEBUI_UPDATE_INSTALLER_SCRIPT=/opt/hermes-web-ui/scripts/install-device-package.
 WEBUI_UPDATE_RUNNER_SERVICE=hermes-web-ui-update.service
 WEBUI_UPDATE_RUNNER_REQUEST_FILE=/home/hermesui/.hermes-web-ui/updates/update-runner-request.json
 WEBUI_UPDATE_VERIFY_SHA256=true
-WEBUI_UPDATE_STAGING_DIR=/opt/hermes-web-ui/.releases/staging
-WEBUI_UPDATE_BACKUP_DIR=/opt/hermes-web-ui/.releases/backups
+WEBUI_UPDATE_STAGING_DIR=/home/hermesui/.hermes-web-ui/updates/staging
+WEBUI_UPDATE_BACKUP_DIR=/home/hermesui/.hermes-web-ui/updates/backups
+WEBUI_UPDATE_BACKUP_RETENTION_COUNT=2
 WEBUI_UPDATE_HEALTHCHECK_URL=http://127.0.0.1:6060/health
 WEBUI_UPDATE_STATE_FILE=/home/hermesui/.hermes-web-ui/updates/update-task-state.json
 WEBUI_UPDATE_LOG_DIR=/home/hermesui/.hermes-web-ui/updates/logs
@@ -316,18 +317,20 @@ sudo systemctl restart hermes-web-ui
 
 ## 发布标准流程
 
-1. 修改 `package.json` 版本号。
-2. 提交代码并推送到组织仓库。
-3. 推送 `v*` tag。
-4. 等待 GitHub Actions 完成 npm 发布和 `device-package-release.yml`。
-5. `device-package-release.yml` 会读取仓库内的 `release/hermes-agent-stable.json`，自动把本次绑定的 `hermes-agent` 稳定 wheel、wheelhouse 和 `stable/latest.json` 同步到 OSS。
-6. 用以下命令确认 npm 上已经有新版本：
+1. 保持根 `package.json`、`package-lock.json`、`packages/desktop/package.json`、`packages/desktop/package-lock.json`、`.github/device-package-release.json` 版本一致。
+2. 对 `0.6.15` 基线发布，保留 `.github/device-package-release.json` 中的 `minCurrentVersion=0.6.15`，避免 `0.6.14` 旧设备直接走网页更新。
+3. `0.6.14` 旧设备先执行 `scripts/bootstrap-device-from-v0.6.14-to-v0.6.15.sh`，把更新执行链和权限修复逻辑种到设备上。
+4. 提交代码并推送到组织仓库。
+5. 推送 `v*` tag。
+6. 等待 GitHub Actions 完成 npm 发布和 `device-package-release.yml`。
+7. `device-package-release.yml` 会读取仓库内的 `release/hermes-agent-stable.json`，自动把本次绑定的 `hermes-agent` 稳定 wheel、wheelhouse 和 `stable/latest.json` 同步到 OSS。
+8. 用以下命令确认 npm 上已经有新版本：
 
 ```bash
 npm view @quanthermes/hermes-web-ui version
 ```
 
-7. 打开本次 `device-package-release` workflow summary，记录：
+9. 打开本次 `device-package-release` workflow summary，记录：
 
 - tag
 - channel
@@ -335,7 +338,34 @@ npm view @quanthermes/hermes-web-ui version
 - latest URL
 - hermes-agent stable version
 
-8. 对照下文“发布后校验”完成人工复核。
+10. 对照下文“发布后校验”完成人工复核。
+
+## `0.6.14 -> 0.6.15 -> 0.6.16` 推荐升级路径
+
+1. 先发布 `v0.6.15`，作为新版更新执行链的稳定基线。
+2. 对还停留在 `0.6.14` 的设备，不直接依赖网页升级。
+3. 将以下文件复制到设备同一目录后，以 `root` 执行：
+
+```bash
+install-device-package.sh
+bootstrap-device-from-v0.6.14-to-v0.6.15.sh
+hermes-web-ui-device-v0.6.15.tar.gz
+```
+
+4. 手动升级成功后，确认：
+
+```bash
+curl -sS --max-time 5 http://127.0.0.1:6060/health
+ls -l /home/hermesui/.hermes-web-ui/updates/update-task-state.json
+```
+
+5. 确认设备已经到 `0.6.15` 且状态文件所有者恢复为 `hermesui` 后，再将仓库版本推进到 `0.6.16`。
+6. 发布 `v0.6.16` 时，将 `.github/device-package-release.json` 的 `version` 更新为 `0.6.16`，并保持 `minCurrentVersion=0.6.15`。
+7. 最后一轮网页更新验证仅覆盖：
+   - `0.6.15 -> 0.6.16`
+   - 页面点击更新
+   - 更新过程中状态展示
+   - 更新后自动切到新版本
 
 ## 发布后校验
 

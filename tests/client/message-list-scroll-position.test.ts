@@ -29,6 +29,7 @@ vi.mock('@/components/hermes/chat/VirtualMessageList.vue', () => ({
     name: 'VirtualMessageList',
     props: {
       messages: { type: Array, default: () => [] },
+      virtualized: { type: Boolean, default: true },
     },
     emits: ['top-reach'],
     setup(_props, { expose }) {
@@ -46,6 +47,7 @@ vi.mock('@/components/hermes/chat/VirtualMessageList.vue', () => ({
     },
     template: `
       <div class="virtual-message-list-stub">
+        <slot name="before" />
         <slot name="item" v-for="message in messages" :key="message.id" :message="message" />
       </div>
     `,
@@ -130,6 +132,71 @@ describe('MessageList session scroll position', () => {
 
     expect(mockRestoreViewportPosition).toHaveBeenCalledWith(sessionASnapshot)
     expect(mockScrollToBottom).not.toHaveBeenCalled()
+  })
+
+  it('disables virtual scrolling for the live chat transcript', async () => {
+    const chatStore = useChatStore()
+    chatStore.activeSessionId = 'plain-scroll-session'
+    chatStore.activeSession = makeSession('plain-scroll-session')
+
+    const wrapper = mount(MessageList, {
+      global: {
+        stubs: { Transition: false },
+      },
+    })
+    await flushSessionScroll()
+
+    expect(wrapper.getComponent({ name: 'VirtualMessageList' }).props('virtualized')).toBe(false)
+  })
+
+  it('shows a history link instead of loading more after the live chat message cap', async () => {
+    const chatStore = useChatStore()
+    const session = makeSession('history-cap-session')
+    session.profile = 'default'
+    session.loadedMessageCount = 300
+    session.messageTotal = 450
+    session.hasMoreBefore = true
+    chatStore.activeSessionId = session.id
+    chatStore.activeSession = session
+    const loadOlderSpy = vi.spyOn(chatStore, 'loadOlderMessages')
+
+    const wrapper = mount(MessageList, {
+      global: {
+        stubs: { Transition: false },
+      },
+    })
+    await flushSessionScroll()
+
+    const link = wrapper.get('.history-archive-link')
+    expect(link.text()).toBe('chat.viewOlderInHistory')
+    expect(link.attributes('href')).toBe('#/hermes/history/session/history-cap-session?profile=default')
+
+    wrapper.getComponent({ name: 'VirtualMessageList' }).vm.$emit('top-reach')
+    await nextTick()
+
+    expect(loadOlderSpy).not.toHaveBeenCalled()
+  })
+
+  it('shows a bottom jump button when the transcript is far from the bottom', async () => {
+    const chatStore = useChatStore()
+    chatStore.activeSessionId = 'bottom-button-session'
+    chatStore.activeSession = makeSession('bottom-button-session')
+    mockIsNearBottom.mockImplementation((threshold?: number) => threshold === 1000 ? false : true)
+
+    const wrapper = mount(MessageList, {
+      global: {
+        stubs: { Transition: false },
+      },
+    })
+    await flushSessionScroll()
+
+    const button = wrapper.get('.scroll-bottom-button')
+    expect(button.attributes('aria-label')).toBe('chat.scrollToBottom')
+
+    await button.trigger('click')
+
+    expect(mockScrollToBottom).toHaveBeenCalledWith({ frames: 4, keepAliveMs: 600 })
+    expect(wrapper.find('.scroll-bottom-button').exists()).toBe(false)
   })
 
   it('does not force the bottom while streaming after the user scrolls away', async () => {

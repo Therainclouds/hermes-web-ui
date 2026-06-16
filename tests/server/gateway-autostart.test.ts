@@ -81,7 +81,21 @@ describe('gateway autostart status parsing', () => {
     expect(gatewayStatusLooksRunning('not running')).toBe(false)
   })
 
-  it('allows managed gateway mode to be forced by environment', () => {
+  it('uses managed gateway mode by default', () => {
+    const previous = process.env.HERMES_WEB_UI_MANAGED_GATEWAY
+    try {
+      delete process.env.HERMES_WEB_UI_MANAGED_GATEWAY
+      expect(shouldUseManagedGatewayRun()).toBe(true)
+      expect(shouldUseManagedGatewayRunForAutostart('darwin')).toBe(true)
+      expect(shouldUseManagedGatewayRunForAutostart('linux')).toBe(true)
+      expect(shouldUseManagedGatewayRunForAutostart('win32')).toBe(true)
+    } finally {
+      if (previous === undefined) delete process.env.HERMES_WEB_UI_MANAGED_GATEWAY
+      else process.env.HERMES_WEB_UI_MANAGED_GATEWAY = previous
+    }
+  })
+
+  it('keeps managed gateway mode enabled when explicitly set', () => {
     const previous = process.env.HERMES_WEB_UI_MANAGED_GATEWAY
     process.env.HERMES_WEB_UI_MANAGED_GATEWAY = '1'
     try {
@@ -93,8 +107,19 @@ describe('gateway autostart status parsing', () => {
     }
   })
 
-  it('uses managed gateway autostart on Windows', () => {
-    expect(shouldUseManagedGatewayRunForAutostart('win32')).toBe(true)
+  it('allows managed gateway mode to be disabled by environment', () => {
+    const previous = process.env.HERMES_WEB_UI_MANAGED_GATEWAY
+    try {
+      for (const value of ['0', 'false', 'no', 'off']) {
+        process.env.HERMES_WEB_UI_MANAGED_GATEWAY = value
+        expect(shouldUseManagedGatewayRun()).toBe(false)
+        expect(shouldUseManagedGatewayRunForAutostart('win32')).toBe(false)
+        expect(shouldUseManagedGatewayRunForAutostart('darwin')).toBe(false)
+      }
+    } finally {
+      if (previous === undefined) delete process.env.HERMES_WEB_UI_MANAGED_GATEWAY
+      else process.env.HERMES_WEB_UI_MANAGED_GATEWAY = previous
+    }
   })
 
   it('only recovers Windows desktop gateway orphans when enabled', () => {

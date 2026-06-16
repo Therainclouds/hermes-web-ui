@@ -41,6 +41,25 @@ function redactBridgeReadyError(error: string, endpoint?: string): string {
   return redactAgentBridgeError(normalized, endpoint, 'configured endpoint') || 'unknown error'
 }
 
+function isBridgeStatusLookupTimeout(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /^Agent bridge request timed out after \d+ms$/.test(message.trim())
+}
+
+function isHermesWorkerBackedSession(session?: { source?: string | null; agent?: string | null; agent_session_id?: string | null }): boolean {
+  const source = session?.source || undefined
+  // "api_server" is a legacy/default source value; Hermes sessions still use worker-backed runtime.
+  // coding_agent runs have a separate lifecycle.
+  if (!source || source === 'cli' || source === 'api_server') return true
+  if (source !== 'global_agent') return false
+  const agent = String(session?.agent || '').trim()
+  return agent !== 'claude' && agent !== 'codex' && !session?.agent_session_id
+}
+
+function isBridgeRunSource(source?: string): boolean {
+  return source === 'cli' || source === 'global_agent'
+}
+
 export async function ensureBridgeReadyForChatRun(): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
     const readiness = await getAgentBridgeManager().ensureReady({ timeoutMs: 1000, connectRetryMs: 0, recover: false })
@@ -144,6 +163,7 @@ export class ChatRunSocket {
       queue_id?: string
       workspace?: string | null
       source?: string
+      session_source?: 'global_agent'
       coding_agent_id?: 'claude-code' | 'codex'
       agent_id?: 'claude-code' | 'codex'
       mode?: 'scoped' | 'global'
@@ -172,7 +192,7 @@ export class ChatRunSocket {
         const state = getOrCreateSession(this.sessionMap, data.session_id)
         const source = resolveRunSource(data.source, data.session_id)
         const command = parseSessionCommand(data.input)
-        if (command && source === 'cli') {
+        if (command && isBridgeRunSource(source)) {
           try {
             await handleSessionCommand(data.session_id, command, {
               nsp: this.nsp,
@@ -210,6 +230,7 @@ export class ChatRunSocket {
             profile: runProfile,
             workspace: data.workspace,
             source,
+            sessionSource: data.session_source,
             codingAgentId: data.coding_agent_id,
             agentId: data.agent_id,
             mode: data.mode,
@@ -341,6 +362,7 @@ export class ChatRunSocket {
       instructions?: string
       workspace?: string | null
       source?: string
+      session_source?: 'global_agent'
       queue_id?: string
       peerExcludeSocketId?: string
       coding_agent_id?: 'claude-code' | 'codex'
@@ -357,9 +379,9 @@ export class ChatRunSocket {
     skipUserMessage = false,
   ) {
     const source = resolveRunSource(data.source, data.session_id)
-    if (data.session_id && source === 'cli' && isSessionCommand(data.input)) return
+    if (data.session_id && isBridgeRunSource(source) && isSessionCommand(data.input)) return
 
-    if (source === 'cli') {
+    if (isBridgeRunSource(source)) {
       const bridgeReady = await ensureBridgeReadyForChatRun()
       if (!bridgeReady.ok) {
         let shouldDequeueNext = false
@@ -476,6 +498,8 @@ export class ChatRunSocket {
   private async reattachBridgeRun(socket: Socket, sid: string, state: SessionState) {
     if (state.runId && state.isWorking) return
     const session = getSession(sid)
+    const source = state.source || session?.source
+    if (!isHermesWorkerBackedSession({ source, agent: session?.agent, agent_session_id: session?.agent_session_id })) return
     const profile = session?.profile || currentProfileFromSocket(socket)
     let pollKey: string | undefined
     try {
@@ -491,7 +515,7 @@ export class ChatRunSocket {
       state.runId = runId
       state.activeRunMarker = undefined
       state.profile = profile
-      state.source = 'cli'
+      state.source = source === 'global_agent' ? 'global_agent' : 'cli'
       state.events = []
       const instructions = this.resumeInstructionsForSession(sid)
       void resumeBridgeRun(
@@ -504,6 +528,7 @@ export class ChatRunSocket {
           instructions,
           model: session?.model,
           provider: session?.provider,
+          source,
         },
         this.sessionMap,
         this.bridge,
@@ -514,6 +539,10 @@ export class ChatRunSocket {
       logger.info('[chat-run-socket] reattached running bridge run %s for session %s', runId, sid)
     } catch (err) {
       if (pollKey) this.bridgeResumePolls.delete(pollKey)
+      if (isBridgeStatusLookupTimeout(err)) {
+        logger.debug(err, '[chat-run-socket] bridge status lookup timed out while resuming session %s', sid)
+        return
+      }
       logger.warn(err, '[chat-run-socket] bridge status lookup failed while resuming session %s', sid)
       const endpoint = getAgentBridgeManager().getRuntimeState?.().endpoint
       const error = redactBridgeReadyError(err instanceof Error ? err.message : String(err), endpoint)
@@ -579,6 +608,7 @@ export class ChatRunSocket {
       instructions: next.instructions,
       workspace: next.workspace,
       source: next.source,
+      session_source: next.sessionSource,
       queue_id: next.queue_id,
       peerExcludeSocketId: next.originSocketId,
       coding_agent_id: next.codingAgentId,

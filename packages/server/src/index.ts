@@ -1,4 +1,5 @@
 import Koa from 'koa'
+import type { Context } from 'koa'
 import cors from '@koa/cors'
 import bodyParser from '@koa/bodyparser'
 import serve from 'koa-static'
@@ -25,9 +26,13 @@ import { ensureProfileGatewaysRunning } from './services/hermes/gateway-autostar
 import { refreshConfiguredProviderModelCatalogsInBackground } from './services/hermes/model-catalog-cache'
 import { scanLanDevices, startLanDiscoveryResponder } from './services/lan-discovery'
 import { getLanPeerSocketManager, getLanPeerSocketPath } from './services/lan-peer-socket'
+import { startGlobalAgentServer } from './services/global-agent/server'
+import { startOutboundRelayClient } from './services/global-agent/outbound-relay-client'
 import { logger } from './services/logger'
+import { createStaticCompressionMiddleware } from './middleware/static-compression'
 import { requireUserJwt, resolveUserProfile } from './middleware/user-auth'
 import { createCorsOriginResolver, securityHeaders } from './security'
+import type { ShutdownHandler } from './services/shutdown'
 
 // Injected by esbuild at build time; fallback to reading package.json in dev mode
 declare const __APP_VERSION__: string
@@ -53,6 +58,9 @@ let server: any = null
 let servers: any[] = []
 let chatRunServer: any = null
 let agentBridgeManager: any = null
+let desktopShutdownHandler: ShutdownHandler | null = null
+
+const LOCAL_GLOBAL_AGENT_CONNECTION_ID = 'local-global-agent'
 
 interface ListenResult {
   primary: any
@@ -74,6 +82,12 @@ async function listenWithFallback(app: Koa, port: number, host?: string): Promis
   return { primary, servers: [primary] }
 }
 
+function getLoopbackBaseUrl(httpServer: any): string {
+  const address = httpServer?.address?.()
+  const port = typeof address === 'object' && address?.port ? address.port : config.port
+  return `http://127.0.0.1:${port}`
+}
+
 /**
  * 安全获取网络接口信息（兼容 Termux/proot 环境）
  * 在 proot 环境中 os.networkInterfaces() 会抛出权限错误（errno 13）
@@ -88,6 +102,61 @@ function safeNetworkInterfaces() {
 
 function isDesktopRuntime(): boolean {
   return String(process.env.HERMES_DESKTOP || '').trim().toLowerCase() === 'true'
+}
+
+function isLoopbackAddress(address?: string | null): boolean {
+  if (!address) return false
+  return address === '127.0.0.1'
+    || address === '::1'
+    || address === '::ffff:127.0.0.1'
+    || address.startsWith('::ffff:127.')
+}
+
+function bearerToken(ctx: Context): string {
+  const header = ctx.get('authorization')
+  const match = header.match(/^Bearer\s+(.+)$/i)
+  return match?.[1]?.trim() || ''
+}
+
+function registerDesktopShutdownRoute(app: Koa): void {
+  app.use(async (ctx, next) => {
+    if (ctx.method !== 'POST' || ctx.path !== '/api/desktop/shutdown') {
+      await next()
+      return
+    }
+
+    if (!isDesktopRuntime()) {
+      ctx.status = 404
+      ctx.body = { error: 'not_found' }
+      return
+    }
+
+    const remoteAddress = ctx.req.socket.remoteAddress
+    if (!isLoopbackAddress(remoteAddress)) {
+      ctx.status = 403
+      ctx.body = { error: 'forbidden' }
+      return
+    }
+
+    const expectedToken = String(process.env.AUTH_TOKEN || '').trim()
+    if (!expectedToken || bearerToken(ctx) !== expectedToken) {
+      ctx.status = 401
+      ctx.body = { error: 'unauthorized' }
+      return
+    }
+
+    if (!desktopShutdownHandler) {
+      ctx.status = 503
+      ctx.body = { error: 'shutdown_not_ready' }
+      return
+    }
+
+    ctx.status = 202
+    ctx.body = { ok: true }
+    setTimeout(() => {
+      void desktopShutdownHandler?.('desktop-api')
+    }, 50).unref?.()
+  })
 }
 
 function envFlagEnabled(name: string): boolean {
@@ -107,13 +176,12 @@ async function startRuntimeServicesBeforeListen(): Promise<void> {
   if (gatewayAutostartDisabled()) {
     console.log('[bootstrap] profile gateway check disabled by HERMES_WEB_UI_DISABLE_GATEWAY_AUTOSTART')
   } else {
-    try {
-      await ensureProfileGatewaysRunning()
-      console.log('[bootstrap] profile gateways checked')
-    } catch (err) {
-      logger.warn(err, '[bootstrap] failed to ensure profile gateways')
-      console.warn('[bootstrap] failed to ensure profile gateways:', err instanceof Error ? err.message : err)
-    }
+    void ensureProfileGatewaysRunning()
+      .then(() => console.log('[bootstrap] profile gateways checked'))
+      .catch((err) => {
+        logger.warn(err, '[bootstrap] failed to ensure profile gateways')
+        console.warn('[bootstrap] failed to ensure profile gateways:', err instanceof Error ? err.message : err)
+      })
   }
 
   try {
@@ -214,12 +282,9 @@ export async function bootstrap() {
   }
 
   const app = new Koa()
-  await new Promise(resolve => setTimeout(resolve, 1000))
   // Initialize all web-ui SQLite tables
   const { initAllStores } = await import('./db/hermes/init')
-  // Wait 1 second before initializing stores to ensure all resources are ready
   initAllStores()
-  await new Promise(resolve => setTimeout(resolve, 1000))
   console.log('[bootstrap] all stores initialized')
 
   app.use(securityHeaders())
@@ -235,13 +300,15 @@ export async function bootstrap() {
   }))
   console.log('[bootstrap] cors + bodyParser registered')
 
+  registerDesktopShutdownRoute(app)
+
   // Register all routes (handles auth internally)
-  const proxyMiddleware = registerRoutes(app, [requireUserJwt, resolveUserProfile])
-  app.use(proxyMiddleware)
+  registerRoutes(app, [requireUserJwt, resolveUserProfile])
   console.log('[bootstrap] routes registered')
 
   // SPA fallback
   const distDir = resolve(__dirname, '..', 'client')
+  app.use(createStaticCompressionMiddleware())
   app.use(serve(distDir))
   app.use(async (ctx) => {
     if (!ctx.path.startsWith('/api') &&
@@ -272,6 +339,17 @@ export async function bootstrap() {
   chatRunServer = new ChatRunSocket(groupChatServer.getIO())
   setChatRunServer(chatRunServer)
   chatRunServer.init()
+
+  const loopbackBaseUrl = getLoopbackBaseUrl(server)
+  const globalAgentServer = startGlobalAgentServer(groupChatServer.getIO())
+  startOutboundRelayClient({
+    connectionId: LOCAL_GLOBAL_AGENT_CONNECTION_ID,
+    relayUrl: `${loopbackBaseUrl}${globalAgentServer.getNamespace()}`,
+    relayToken: globalAgentServer.getAuthToken(),
+    instanceId: LOCAL_GLOBAL_AGENT_CONNECTION_ID,
+    localBaseUrl: loopbackBaseUrl,
+  })
+  console.log('[bootstrap] local global agent connected')
 
   // Session deleter — periodically drain pending session deletes
   const { SessionDeleter } = await import('./services/hermes/session-deleter')
@@ -316,7 +394,7 @@ export async function bootstrap() {
     })
   })
 
-  bindShutdown(servers, groupChatServer, chatRunServer, agentBridgeManager)
+  desktopShutdownHandler = bindShutdown(servers, groupChatServer, chatRunServer, agentBridgeManager)
   startVersionCheck()
 }
 

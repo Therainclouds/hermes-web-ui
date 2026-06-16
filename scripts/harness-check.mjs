@@ -247,15 +247,44 @@ const desktopReleaseWorkflow = await readText('.github/workflows/desktop-release
 const desktopManualBuildWorkflow = await readText('.github/workflows/desktop-manual-build.yml')
 const desktopMacUpdateManifestWorkflow = await readText('.github/workflows/desktop-mac-update-manifest.yml')
 const desktopRuntimeWorkflow = await readText('.github/workflows/desktop-runtime.yml')
+const webuiReleaseWorkflow = await readText('.github/workflows/webui-release.yml')
+const dockerPublishWorkflow = await readText('.github/workflows/docker-publish.yml')
 const electronBuilderConfig = await readText('packages/desktop/electron-builder.yml')
 const desktopPackageJson = await readText('packages/desktop/package.json')
 const desktopInstallHermes = await readText('packages/desktop/scripts/install-hermes.mjs')
 const desktopWebuiServer = await readText('packages/desktop/src/main/webui-server.ts')
+const desktopMain = await readText('packages/desktop/src/main/index.ts')
+const desktopUpdater = await readText('packages/desktop/src/main/updater.ts')
+const desktopInstallerScript = await readText('packages/desktop/build/installer.nsh')
 const desktopRuntimeManager = await readText('packages/desktop/src/main/runtime-manager.ts')
 const desktopPaths = await readText('packages/desktop/src/main/paths.ts')
 const desktopRuntimeAssetName = await readText('packages/desktop/scripts/runtime-asset-name.mjs')
 if (!desktopReleaseWorkflow.includes('files: ${{ matrix.artifact_files }}')) {
   fail('desktop-release.yml must upload matrix-specific artifact_files')
+}
+
+if (desktopReleaseWorkflow.includes('types: [published]')) {
+  fail('desktop-release.yml must not run full desktop packaging on every published GitHub Release')
+}
+
+if (!desktopReleaseWorkflow.includes('gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --latest')) {
+  fail('desktop-release.yml must mark successful full desktop releases as GitHub latest')
+}
+
+for (const [file, text] of [
+  ['webui-release.yml', webuiReleaseWorkflow],
+  ['docker-publish.yml', dockerPublishWorkflow],
+]) {
+  if (!text.includes('release:') || !text.includes('types: [published]')) {
+    fail(`${file} must keep running on published GitHub Releases`)
+  }
+  if (!text.includes('gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --latest=false')) {
+    fail(`${file} must keep published GitHub Releases out of latest`)
+  }
+}
+
+if (!webuiReleaseWorkflow.includes('make_latest: false')) {
+  fail('webui-release.yml must not mark release uploads as GitHub latest')
 }
 
 if (!electronBuilderConfig.includes('icon: build/icons')) {
@@ -381,6 +410,40 @@ for (const phrase of [
   if (!desktopWebuiServer.includes(phrase)) {
     fail(`desktop webui server must expose bundled browser runtime: ${phrase}`)
   }
+}
+
+for (const phrase of [
+  'requestSingleInstanceLock(QUIT_EXISTING ? { quit: true } : undefined)',
+  'hasQuitRequest(additionalData)',
+]) {
+  if (!desktopMain.includes(phrase)) {
+    fail(`desktop main process must forward --quit to an existing app instance: ${phrase}`)
+  }
+}
+
+for (const phrase of [
+  'HERMES_STUDIO_EXE',
+  'Get-CimInstance Win32_Process',
+  'CloseMainWindow()',
+  'Stop-Process -Id',
+]) {
+  if (!desktopInstallerScript.includes(phrase)) {
+    fail(`desktop installer must close stale Hermes Studio processes by installed executable path: ${phrase}`)
+  }
+}
+
+for (const phrase of [
+  'https://download.ekkolearnai.com/latest',
+  'https://github.com/EKKOLearnAI/hermes-studio/releases/latest/download',
+  'checkForUpdatesWithFallback()',
+]) {
+  if (!desktopUpdater.includes(phrase)) {
+    fail(`desktop updater must check Cloudflare first and keep GitHub as fallback: ${phrase}`)
+  }
+}
+
+if (desktopUpdater.includes('fetch(')) {
+  fail('desktop updater must not make custom fetch requests to resolve the latest release tag')
 }
 
 for (const phrase of [

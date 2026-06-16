@@ -1,22 +1,34 @@
-import { mkdtempSync, readFileSync, rmSync } from 'fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
-import { join } from 'path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { dirname, join } from 'path'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { claudeProxyMessages, claudeProxyModels, registerClaudeCodeProxyTarget } from '../../packages/server/src/services/agent-runner/proxies/claude-code-proxy'
 import { codexProxyModels, codexProxyResponses, registerCodexProxyTarget } from '../../packages/server/src/services/agent-runner/proxies/codex-proxy'
 import { prepareCodingAgentLaunch } from '../../packages/server/src/services/coding-agents'
 
 const homes: string[] = []
 
+function mockProcessUid(uid: number) {
+  vi.spyOn(process, 'getuid').mockReturnValue(uid)
+  vi.spyOn(process, 'geteuid').mockReturnValue(uid)
+}
+
 function makeHome() {
   const home = mkdtempSync(join(tmpdir(), 'hermes-coding-agent-launch-'))
   homes.push(home)
   process.env.HERMES_WEB_UI_HOME = home
+  process.env.HERMES_CODING_AGENT_GLOBAL_HOME = join(home, 'global-home')
   return home
 }
 
+beforeEach(() => {
+  mockProcessUid(1000)
+})
+
 afterEach(() => {
   delete process.env.HERMES_WEB_UI_HOME
+  delete process.env.HERMES_CODING_AGENT_GLOBAL_HOME
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true })
 })
@@ -57,7 +69,33 @@ describe('coding agent launch preparation', () => {
       args: ['--dangerously-skip-permissions'],
       env: {},
       shellCommand: `cd ${join(home, 'coding-agent', 'workspace', 'default', 'global')} && claude --dangerously-skip-permissions`,
-      files: [],
+      files: [{
+        key: 'prompt',
+        path: '~/.claude/CLAUDE.md',
+        absolutePath: join(home, 'global-home', '.claude', 'CLAUDE.md'),
+      }],
+    })
+    const prompt = readFileSync(join(home, 'global-home', '.claude', 'CLAUDE.md'), 'utf-8')
+    expect(prompt).toContain('<!-- BEGIN HERMES WEB UI PROMPT -->')
+    expect(prompt).toContain('# 输出格式规范')
+  })
+
+  it('uses Claude Code auto permission mode instead of dangerous bypass when running as root', async () => {
+    mockProcessUid(0)
+    const home = makeHome()
+
+    const result = await prepareCodingAgentLaunch('claude-code', {
+      mode: 'global',
+      profile: 'default',
+    })
+
+    expect(result).toMatchObject({
+      agentId: 'claude-code',
+      mode: 'global',
+      rootDir: join(home, 'coding-agent', 'workspace', 'default', 'global'),
+      command: 'claude',
+      args: ['--permission-mode', 'auto'],
+      shellCommand: `cd ${join(home, 'coding-agent', 'workspace', 'default', 'global')} && claude --permission-mode auto`,
     })
   })
 
@@ -83,6 +121,20 @@ describe('coding agent launch preparation', () => {
       shellCommand: `cd ${join(home, 'coding-agent', 'workspace', 'default', 'global')} && codex`,
       files: [],
     })
+  })
+
+  it('preserves existing global Claude Code prompt files while updating the Hermes block', async () => {
+    const home = makeHome()
+    const claudePromptPath = join(home, 'global-home', '.claude', 'CLAUDE.md')
+    mkdirSync(dirname(claudePromptPath), { recursive: true })
+    writeFileSync(claudePromptPath, 'Existing Claude notes\n')
+
+    await prepareCodingAgentLaunch('claude-code', { mode: 'global', profile: 'default' })
+    await prepareCodingAgentLaunch('claude-code', { mode: 'global', profile: 'default' })
+
+    const claudePrompt = readFileSync(claudePromptPath, 'utf-8')
+    expect(claudePrompt).toContain('Existing Claude notes')
+    expect(claudePrompt.match(/BEGIN HERMES WEB UI PROMPT/g)).toHaveLength(1)
   })
 
   it('uses a selected workspace directory when launching a coding agent', async () => {
@@ -150,6 +202,24 @@ describe('coding agent launch preparation', () => {
       ANTHROPIC_DEFAULT_OPUS_MODEL_NAME: 'Dolphin Mistral 24b Venice Edition:Free',
     })
     expect(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL).not.toBe('claude-sonnet-4-6')
+
+    const mcp = JSON.parse(readFileSync(join(result.rootDir, 'mcp.json'), 'utf-8'))
+    expect(mcp.mcpServers['hermes-studio']).toMatchObject({
+      command: process.execPath,
+      args: [join(process.cwd(), 'bin/hermes-web-ui-mcp.mjs')],
+      env: {
+        HERMES_WEB_UI_URL: 'http://127.0.0.1:8648',
+        HERMES_WEB_UI_HOME: home,
+        HERMES_WEBUI_STATE_DIR: home,
+        HERMES_WEB_UI_PROFILE: 'default',
+        HERMES_MCP_SERVER_NAME: 'hermes-studio-mcp',
+        HERMES_WEB_UI_MANAGED_MCP: '1',
+      },
+    })
+
+    const prompt = readFileSync(join(result.rootDir, 'CLAUDE.md'), 'utf-8')
+    expect(prompt).toContain('# 输出格式规范')
+    expect(prompt).toContain('当你的回复中包含图片、视频或文件引用时')
   })
 
   it('isolates Claude Code settings for hidden chat runs only', async () => {
@@ -176,6 +246,35 @@ describe('coding agent launch preparation', () => {
     expect(result.shellCommand).not.toContain('--setting-sources local')
     const launcher = readFileSync(join(result.rootDir, 'launch.sh'), 'utf-8')
     expect(launcher).toContain('--setting-sources local')
+    expect(result.rootDir).toBe(join(home, 'coding-agent', 'model', 'default', 'openrouter', 'claude-code'))
+  })
+
+  it('uses Claude Code auto permission mode for scoped root launches', async () => {
+    mockProcessUid(0)
+    const home = makeHome()
+
+    const result = await prepareCodingAgentLaunch('claude-code', {
+      profile: 'default',
+      provider: 'openrouter',
+      model: 'anthropic/claude-sonnet-4.6',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      apiKey: 'sk-test',
+      isolateSettings: true,
+    })
+
+    expect(result.args).toEqual([
+      '--settings',
+      join(result.rootDir, 'settings.json'),
+      '--setting-sources',
+      'local',
+      '--mcp-config',
+      join(result.rootDir, 'mcp.json'),
+      '--permission-mode',
+      'auto',
+    ])
+    const launcher = readFileSync(join(result.rootDir, 'launch.sh'), 'utf-8')
+    expect(launcher).toContain('--permission-mode auto')
+    expect(launcher).not.toContain('--dangerously-skip-permissions')
     expect(result.rootDir).toBe(join(home, 'coding-agent', 'model', 'default', 'openrouter', 'claude-code'))
   })
 
@@ -217,6 +316,16 @@ describe('coding agent launch preparation', () => {
     expect(config).toContain('requires_openai_auth = false')
     expect(config).toContain(`model_catalog_json = "${join(result.rootDir, 'codex-model-catalog.json')}"`)
     expect(config).toContain('model_reasoning_summary = "auto"')
+    expect(config).toContain('[mcp_servers.hermes-studio]')
+    expect(config).toContain(`command = "${process.execPath}"`)
+    expect(config).toContain(`args = ["${join(process.cwd(), 'bin/hermes-web-ui-mcp.mjs')}"]`)
+    expect(config).toContain(`env = { HERMES_WEB_UI_URL = "http://127.0.0.1:8648", HERMES_WEB_UI_HOME = "${home}"`)
+    expect(config).toContain('HERMES_WEBUI_STATE_DIR = "')
+    expect(config).toContain('HERMES_WEB_UI_PROFILE = "default"')
+    expect(config).toContain('HERMES_MCP_SERVER_NAME = "hermes-studio-mcp"')
+    expect(config).toContain('HERMES_WEB_UI_MANAGED_MCP = "1"')
+
+    expect(result.files.some(file => file.key === 'agents')).toBe(false)
 
     const catalog = JSON.parse(readFileSync(join(result.rootDir, 'codex-model-catalog.json'), 'utf-8'))
     expect(catalog.models.some((entry: any) => entry.slug === 'openai/gpt-oss-20b:free')).toBe(true)

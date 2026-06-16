@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { getApiKey } from '@/api/client'
+import { getActiveProfileName, getApiKey, getStoredUsername } from '@/api/client'
 import { fetchCurrentUser } from '@/api/auth'
 import { getDownloadUrl } from '@/api/hermes/download'
 import type { Attachment, ContentBlock } from './chat'
@@ -32,10 +32,14 @@ async function uploadGroupFiles(attachments: Attachment[]): Promise<{ name: stri
         if (att.file) formData.append('file', att.file, att.name)
     }
     const token = getApiKey()
+    const profileName = getActiveProfileName()
+    const headers: Record<string, string> = {}
+    if (token) headers.Authorization = `Bearer ${token}`
+    if (profileName) headers['X-Hermes-Profile'] = profileName
     const res = await fetch('/upload', {
         method: 'POST',
         body: formData,
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        headers,
     })
     if (!res.ok) throw new Error(`Upload failed: ${res.status}`)
     const data = await res.json() as { files: { name: string; path: string }[] }
@@ -72,6 +76,8 @@ function uid(): string {
 }
 
 const STREAM_FINAL_CONTENT_RECOVERY_DELAY_MS = 300
+export const GROUP_CHAT_MESSAGE_PAGE_SIZE = 150
+export const GROUP_CHAT_MAX_DISPLAY_MESSAGES = 600
 
 function normalizeLocalFilePath(path: string): string {
     return /^[a-zA-Z]:\\/.test(path) ? path.replace(/\\/g, '/') : path
@@ -79,6 +85,14 @@ function normalizeLocalFilePath(path: string): string {
 
 function hasText(value?: string | null): boolean {
     return !!value?.trim()
+}
+
+function authenticatedGroupUserId(authUserId: number): string {
+    return `auth:${authUserId}`
+}
+
+function getStoredGroupUserName(): string {
+    return getStoredUserName()?.trim() || ''
 }
 
 function hasToolCalls(message: ChatMessage): boolean {
@@ -108,6 +122,7 @@ export interface GroupPendingApproval {
     description: string
     choices: Array<'once' | 'session' | 'always' | 'deny'>
     allowPermanent: boolean
+    isMemoryWrite: boolean
     requestedAt: number
 }
 
@@ -130,6 +145,9 @@ export const useGroupChatStore = defineStore('groupChat', () => {
     const loadedMessageCount = ref(0)
     const hasMoreBefore = ref(false)
     const isLoadingOlderMessages = ref(false)
+    const hasReachedMessageDisplayLimit = computed(() =>
+        hasMoreBefore.value && loadedMessageCount.value >= GROUP_CHAT_MAX_DISPLAY_MESSAGES,
+    )
 const currentUserAvatar = ref('')
 
     function resetMessagePaging() {
@@ -195,12 +213,15 @@ const currentUserAvatar = ref('')
         return null
     })
     const userId = ref(getStoredUserId())
-    const userName = ref(getStoredUserName() || '')
+    const userName = ref(getStoredGroupUserName() || getStoredUsername() || '')
 
     function applyRealtimeJoinState(res: any, options: { syncMessages?: boolean } = {}) {
         members.value = res.members || []
         if (res.agents) agents.value = res.agents
         if (res.roomName) roomName.value = res.roomName
+        const currentMember = members.value.find(member => member.userId === userId.value)
+        if (currentMember?.name) userName.value = currentMember.name
+        if (currentMember?.avatar) currentUserAvatar.value = currentMember.avatar
         if (options.syncMessages && Array.isArray(res.messages)) {
             const byId = new Map(messages.value.map(message => [message.id, message]))
             for (const message of res.messages) {
@@ -240,11 +261,12 @@ const currentUserAvatar = ref('')
     async function joinRealtimeRoom(roomId: string, options: { syncMessages?: boolean } = {}) {
         const socket = getSocket()
         if (!socket) return
+        const storedName = getStoredGroupUserName()
 
         await new Promise<void>((resolve) => {
             socket.emit('join', {
                 roomId,
-                name: userName.value || undefined,
+                name: storedName || undefined,
                 description: localStorage.getItem('gc_user_description') || undefined,
             }, (res: any) => {
                 if (currentRoomId.value !== roomId) {
@@ -283,14 +305,17 @@ const currentUserAvatar = ref('')
     // ─── Connection ────────────────────────────────────────
     async function connect() {
         let authUserId: number | undefined
+        const connectionName = getStoredGroupUserName()
         try {
             const user = await fetchCurrentUser()
             authUserId = user.id
+            userId.value = authenticatedGroupUserId(user.id)
+            if (!connectionName) userName.value = user.username
             currentUserAvatar.value = user.avatar || ''
         } catch { /* non-critical: avatar fallback handles missing id */ }
         const socket = connectGroupChat({
             userId: userId.value,
-            userName: userName.value || undefined,
+            userName: connectionName || undefined,
             authUserId,
         })
         console.log('[GroupChat] connecting...', { userId: userId.value, userName: userName.value })
@@ -468,6 +493,13 @@ const currentUserAvatar = ref('')
 
         socket.on('approval.requested', (data: { roomId: string; agentName?: string; approval_id?: string; command?: string; description?: string; choices?: string[]; allow_permanent?: boolean }) => {
             if (!data.approval_id) return
+            const description = data.description || ''
+            const normalizedDescription = description.trim().toLowerCase().replace(/\s+/g, ' ')
+            const isMemoryWrite = !Boolean(data.allow_permanent) && (
+                normalizedDescription === 'save to memory' ||
+                normalizedDescription.startsWith('save to memory:') ||
+                normalizedDescription.startsWith('save to memory?')
+            )
             const choices = (Array.isArray(data.choices) ? data.choices : ['once', 'session', 'deny'])
                 .filter((choice): choice is GroupPendingApproval['choices'][number] =>
                     choice === 'once' || choice === 'session' || choice === 'always' || choice === 'deny')
@@ -476,9 +508,10 @@ const currentUserAvatar = ref('')
                 agentName: data.agentName || '',
                 approvalId: data.approval_id,
                 command: data.command || '',
-                description: data.description || '',
-                choices: choices.length ? choices : ['once', 'session', 'deny'],
+                description,
+                choices: isMemoryWrite ? ['once', 'deny'] : choices.length ? choices : ['once', 'session', 'deny'],
                 allowPermanent: Boolean(data.allow_permanent),
+                isMemoryWrite,
                 requestedAt: Date.now(),
             })
             pendingApprovals.value = new Map(pendingApprovals.value)
@@ -557,9 +590,11 @@ const currentUserAvatar = ref('')
         const roomId = currentRoomId.value
         if (!roomId || isLoadingOlderMessages.value || !hasMoreBefore.value) return false
         const offset = loadedMessageCount.value
+        if (offset >= GROUP_CHAT_MAX_DISPLAY_MESSAGES) return false
         isLoadingOlderMessages.value = true
         try {
-            const res = await getRoomDetail(roomId, { offset, limit: 300 })
+            const limit = Math.min(GROUP_CHAT_MESSAGE_PAGE_SIZE, GROUP_CHAT_MAX_DISPLAY_MESSAGES - offset)
+            const res = await getRoomDetail(roomId, { offset, limit })
             const existingIds = new Set(messages.value.map(message => message.id))
             const olderMessages = res.messages.filter(message => !existingIds.has(message.id))
             messages.value = [...olderMessages, ...messages.value]
@@ -792,6 +827,7 @@ const currentUserAvatar = ref('')
         loadedMessageCount,
         hasMoreBefore,
         isLoadingOlderMessages,
+        hasReachedMessageDisplayLimit,
         userId,
         userName,
         currentUserAvatar,

@@ -11,11 +11,15 @@ const COPILOT_PROVIDER = 'copilot'
 const FUN_CODEX_PROVIDER = 'fun-codex'
 const KIMI_CODING_PROVIDER = 'kimi-coding'
 const KIMI_CODING_CN_PROVIDER = 'kimi-coding-cn'
+const ALIBABA_CODING_PLAN_PROVIDER = 'alibaba-coding-plan'
 const MINIMAX_PROVIDER = 'minimax'
 const MINIMAX_CN_PROVIDER = 'minimax-cn'
 const NOUS_PROVIDER = 'nous'
 const STEPFUN_PROVIDER = 'stepfun'
 const XAI_OAUTH_PROVIDER = 'xai-oauth'
+const GEMINI_OAUTH_PROVIDER = 'google-gemini-cli'
+const CLAUDE_OAUTH_PROVIDER = 'claude-oauth'
+const ANTHROPIC_PROVIDER = 'anthropic'
 const GPT_5_5_MODEL = 'gpt-5.5'
 
 function modelsForProvider(providerPresets: Array<{ value: string; models: string[] }>, provider: string): string[] {
@@ -51,6 +55,22 @@ describe('provider presets', () => {
     expect(PROVIDER_ENV_MAP[XAI_OAUTH_PROVIDER]).toEqual({ api_key_env: '', base_url_env: '' })
   })
 
+  it('treats Google Gemini OAuth as OAuth-only for availability checks', () => {
+    expect(PROVIDER_ENV_MAP[GEMINI_OAUTH_PROVIDER]).toEqual({ api_key_env: '', base_url_env: '' })
+    expect(modelsForProvider(SERVER_PROVIDER_PRESETS, GEMINI_OAUTH_PROVIDER)).toContain('gemini-3.1-pro-preview')
+  })
+
+  it('treats Claude OAuth as OAuth-only while keeping Anthropic API key separate', () => {
+    expect(PROVIDER_ENV_MAP[CLAUDE_OAUTH_PROVIDER]).toEqual({ api_key_env: '', base_url_env: '' })
+    expect(PROVIDER_ENV_MAP.anthropic).toEqual({ api_key_env: 'ANTHROPIC_API_KEY', base_url_env: 'ANTHROPIC_BASE_URL' })
+    expect(modelsForProvider(SERVER_PROVIDER_PRESETS, CLAUDE_OAUTH_PROVIDER)).toContain('claude-sonnet-4-6')
+  })
+
+  it('includes Claude Fable 5 for direct Anthropic and Claude OAuth', () => {
+    expect(modelsForProvider(SERVER_PROVIDER_PRESETS, ANTHROPIC_PROVIDER)).toContain('claude-fable-5')
+    expect(modelsForProvider(SERVER_PROVIDER_PRESETS, CLAUDE_OAUTH_PROVIDER)).toContain('claude-fable-5')
+  })
+
   it('keeps Kimi Coding Plan and China credentials distinct without duplicate Moonshot presets', () => {
     expect(PROVIDER_ENV_MAP[KIMI_CODING_PROVIDER]).toEqual({ api_key_env: 'KIMI_API_KEY', base_url_env: 'KIMI_BASE_URL' })
     expect(PROVIDER_ENV_MAP[KIMI_CODING_CN_PROVIDER]).toEqual({ api_key_env: 'KIMI_CN_API_KEY', base_url_env: '' })
@@ -60,6 +80,10 @@ describe('provider presets', () => {
     expect(SERVER_PROVIDER_PRESETS.find(candidate => candidate.value === KIMI_CODING_CN_PROVIDER)?.base_url).toBe('https://api.kimi.cn/coding/v1')
     expect(SERVER_PROVIDER_PRESETS.find(candidate => candidate.value === KIMI_CODING_CN_PROVIDER)?.label).toBe('Kimi for Coding China')
     expect(SERVER_PROVIDER_PRESETS.find(candidate => candidate.value === 'moonshot')).toBeUndefined()
+  })
+
+  it('includes Qwen 3.7 Plus in the Alibaba Coding Plan fallback catalog', () => {
+    expect(modelsForProvider(SERVER_PROVIDER_PRESETS, ALIBABA_CODING_PLAN_PROVIDER)).toContain('qwen3.7-plus')
   })
 
   it('does not expose incomplete built-in provider presets', () => {

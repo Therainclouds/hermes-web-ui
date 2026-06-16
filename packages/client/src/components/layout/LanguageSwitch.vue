@@ -30,7 +30,7 @@ function handleChange(val: string) {
     :options="options"
     size="tiny"
     :consistent-menu-width="false"
-    class="input-sm"
+    class="language-switch input-sm"
     @update:value="handleChange"
   />
 </template>

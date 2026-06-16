@@ -23,12 +23,16 @@ import {
 
 const DEFAULT_PORT = 8748
 const DEFAULT_READY_TIMEOUT_MS = 120_000
+const DEFAULT_FULL_STARTUP_WAIT_MS = 0
+const DEFAULT_STOP_TIMEOUT_MS = 20_000
+const DEFAULT_GRACEFUL_STOP_TIMEOUT_MS = 18_000
 const AGENT_BRIDGE_STARTED_MARKER = '[bootstrap] agent bridge started'
 const AGENT_BRIDGE_FAILED_MARKER = '[bootstrap] agent bridge failed to start'
 const execFileAsync = promisify(execFile)
 
 let serverProc: ChildProcess | null = null
 let cachedToken: string | null = null
+let currentServerPort = DEFAULT_PORT
 
 function killProcessTree(proc: ChildProcess): void {
   if (!proc.pid || proc.killed) return
@@ -60,6 +64,24 @@ function envPositiveInt(name: string): number | undefined {
 
 function readyTimeoutMs(): number {
   return envPositiveInt('HERMES_DESKTOP_READY_TIMEOUT_MS') || DEFAULT_READY_TIMEOUT_MS
+}
+
+function fullStartupWaitMs(): number {
+  const raw = process.env.HERMES_DESKTOP_FULL_STARTUP_WAIT_MS
+  if (raw === undefined) return DEFAULT_FULL_STARTUP_WAIT_MS
+  const value = Number(raw)
+  return Number.isFinite(value) && value >= 0 ? value : DEFAULT_FULL_STARTUP_WAIT_MS
+}
+
+function gracefulStopTimeoutMs(): number {
+  return envPositiveInt('HERMES_DESKTOP_GRACEFUL_STOP_TIMEOUT_MS') || DEFAULT_GRACEFUL_STOP_TIMEOUT_MS
+}
+
+function timeoutAfter(ms: number, message: string): Promise<void> {
+  return new Promise((_, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms)
+    timer.unref?.()
+  })
 }
 
 function createAgentBridgeStartupTracker(): {
@@ -282,6 +304,7 @@ async function getFreeTcpPortInRange(min: number, max: number): Promise<number> 
 export async function startWebUiServer(port = DEFAULT_PORT): Promise<string> {
   ensureNativeModules()
   const token = ensureToken()
+  currentServerPort = port
   const entry = webuiServerEntry()
   if (!existsSync(entry)) {
     throw new Error(`Web UI server entry not found at ${entry}. Run: npm run build:webui`)
@@ -405,40 +428,76 @@ export async function startWebUiServer(port = DEFAULT_PORT): Promise<string> {
   })
 
   const timeoutMs = readyTimeoutMs()
-  void bridgeStartup.wait(timeoutMs).catch(err => {
-    console.warn(`[webui] agent bridge was not ready during startup: ${err instanceof Error ? err.message : String(err)}`)
-  })
+  const bridgeReady = bridgeStartup.wait(timeoutMs)
   await waitForReady(port, timeoutMs)
+  const fullStartupTimeoutMs = fullStartupWaitMs()
+  if (fullStartupTimeoutMs > 0) {
+    await Promise.race([
+      bridgeReady,
+      timeoutAfter(fullStartupTimeoutMs, `Agent bridge did not become ready within ${fullStartupTimeoutMs}ms`),
+    ]).catch(err => {
+      console.warn(`[webui] agent bridge was not ready during startup: ${err instanceof Error ? err.message : String(err)}`)
+    })
+    void bridgeReady.catch(() => undefined)
+  } else {
+    void bridgeReady.catch(err => {
+      console.warn(`[webui] agent bridge was not ready during startup: ${err instanceof Error ? err.message : String(err)}`)
+    })
+  }
   return getServerUrl(port)
 }
 
 async function waitForReady(port: number, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs
-  const url = `http://127.0.0.1:${port}/api/health`
+  const url = `http://127.0.0.1:${port}/`
   while (Date.now() < deadline) {
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(1000) })
-      if (res.ok || res.status === 401) return // 401 = up but auth-gated, server is alive
+      if (res.ok) return
     } catch {
       /* not ready yet */
     }
     await new Promise(r => setTimeout(r, 300))
   }
-  throw new Error(`Web UI server did not become ready within ${timeoutMs}ms`)
+  throw new Error(`Web UI shell did not become ready within ${timeoutMs}ms`)
 }
 
-export function stopWebUiServer(): Promise<void> {
-  return new Promise(resolve => {
-    if (!serverProc || serverProc.killed) return resolve()
-    const proc = serverProc
+async function requestGracefulShutdown(port: number, token: string): Promise<void> {
+  const timeoutMs = gracefulStopTimeoutMs()
+  const response = await fetch(`http://127.0.0.1:${port}/api/desktop/shutdown`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(timeoutMs),
+  })
+  if (!response.ok && response.status !== 202) {
+    throw new Error(`desktop shutdown returned HTTP ${response.status}`)
+  }
+}
+
+export async function stopWebUiServer(): Promise<void> {
+  if (!serverProc || serverProc.killed) return
+
+  const proc = serverProc
+  const exited = new Promise<void>(resolve => {
+    proc.once('exit', () => resolve())
+  })
+  const forceAfter = new Promise<void>(resolve => {
     const timer = setTimeout(() => {
       killProcessTree(proc)
       resolve()
-    }, 3000)
+    }, envPositiveInt('HERMES_DESKTOP_STOP_TIMEOUT_MS') || DEFAULT_STOP_TIMEOUT_MS)
     proc.once('exit', () => {
       clearTimeout(timer)
       resolve()
     })
-    try { proc.kill('SIGTERM') } catch { resolve() }
   })
+
+  try {
+    await requestGracefulShutdown(currentServerPort, ensureToken())
+  } catch (err) {
+    console.warn(`[webui] graceful shutdown request failed: ${err instanceof Error ? err.message : String(err)}`)
+    killProcessTree(proc)
+  }
+
+  await Promise.race([exited, forceAfter])
 }

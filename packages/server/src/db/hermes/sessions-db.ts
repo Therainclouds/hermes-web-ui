@@ -47,6 +47,8 @@ export interface HermesMessageRow {
   session_id: string
   role: string
   content: string
+  display_role: string | null
+  display_content: string | null
   tool_call_id: string | null
   tool_calls: any[] | null
   tool_name: string | null
@@ -353,6 +355,8 @@ function mapMessageRow(row: Record<string, unknown>): HermesMessageRow {
     session_id: String(row.session_id || ''),
     role: String(row.role || ''),
     content: row.content == null ? '' : String(row.content),
+    display_role: normalizeNullableString(row.display_role),
+    display_content: normalizeNullableString(row.display_content),
     tool_call_id: normalizeNullableString(row.tool_call_id),
     tool_calls: parseToolCalls(row.tool_calls),
     tool_name: normalizeNullableString(row.tool_name),
@@ -683,7 +687,7 @@ export async function getSessionDetailPaginatedFromDbWithProfile(
   sessionId: string,
   profile: string,
   offset = 0,
-  limit = 300,
+  limit = 150,
 ): Promise<PaginatedHermesSessionDetailResult | null> {
   const db = await openSessionDb(profile)
   try {

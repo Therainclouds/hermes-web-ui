@@ -4,49 +4,39 @@ import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { NModal } from "naive-ui";
 import { useAppStore } from "@/stores/hermes/app";
-import ModelSelector from "./ModelSelector.vue";
-import ProfileSelector from "./ProfileSelector.vue";
-import LanguageSwitch from "./LanguageSwitch.vue";
-import ThemeSwitch from "./ThemeSwitch.vue";
-import VersionManagementModal from './VersionManagementModal.vue'
-import { useSessionSearch } from '@/composables/useSessionSearch'
 import { usePersistentRecord } from '@/composables/usePersistentRecord'
 import RouteLinkItem from '@/components/common/RouteLinkItem.vue'
-import { resolveDeviceUrls } from '@/utils/deviceUrls'
+import ModelSelector from "@/components/layout/ModelSelector.vue";
+import ProfileSelector from "@/components/layout/ProfileSelector.vue";
+import LanguageSwitch from "@/components/layout/LanguageSwitch.vue";
+import ThemeSwitch from "@/components/layout/ThemeSwitch.vue";
+import VersionManagementModal from "@/components/layout/VersionManagementModal.vue";
 import { changelog } from "@/data/changelog";
-import { isStoredSuperAdmin, getStoredUsername } from "@/api/client";
+import { getStoredUsername, isStoredSuperAdmin } from "@/api/client";
+import { resolveDeviceUrls } from "@/utils/deviceUrls";
 
 const { t } = useI18n();
 const route = useRoute();
 const router = useRouter();
 const appStore = useAppStore();
-const { openSessionSearch } = useSessionSearch();
 const selectedKey = computed(() => {
-  if (route.name === "hermes.session") return "hermes.chat";
-  if (route.name === "hermes.historySession") return "hermes.history";
-  if (route.name === "hermes.groupChatRoom") return "hermes.groupChat";
   return route.name as string;
 });
 const isSuperAdmin = computed(() => isStoredSuperAdmin());
 const currentUsername = computed(() => getStoredUsername());
 const isVersionPreview = import.meta.env.VITE_HERMES_PREVIEW === '1';
-const isDesktopShell = computed(() => {
-  return typeof window !== 'undefined' &&
-    (window as typeof window & { hermesDesktop?: { isDesktop?: boolean } }).hermesDesktop?.isDesktop === true;
-});
+const isDesktopShell = computed(() =>
+  (window as typeof window & { hermesDesktop?: { isDesktop?: boolean } }).hermesDesktop?.isDesktop === true,
+);
+const showChangelog = ref(false);
+const showVersionManagement = ref(false);
 
-function isNavActive(...names: string[]) {
-  return names.includes(selectedKey.value);
-}
 function hasRoute(name: string): boolean {
   return router.hasRoute(name);
 }
-const logoPath = '/logo.png';
-const brandName = 'Quanta Hermes';
-
 const { record: collapsedGroups, persist: persistCollapsedGroups } = usePersistentRecord('hermes.sidebar.collapsedGroups');
 
-type SidebarGroupKey = "Conversation" | "Agent" | "Monitoring" | "Tools" | "System";
+type SidebarGroupKey = "Agent" | "Monitoring" | "Tools" | "System";
 
 function groupLabel(key: SidebarGroupKey) {
   return t(`sidebar.group${key}${appStore.sidebarCollapsed ? "Short" : ""}`);
@@ -88,14 +78,35 @@ function isGroupCollapsed(key: string) {
   return !!collapsedGroups[key];
 }
 
+function handleSidebarClick(event: MouseEvent) {
+  const target = event.target instanceof Element ? event.target : null;
+
+  if (!target?.closest(".route-link-item")) {
+    return;
+  }
+
+  if (typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches) {
+    appStore.closeSidebar();
+  }
+}
+
+async function handleUpdate() {
+  const ok = await appStore.doUpdate();
+  if (ok) {
+    message.success(t('sidebar.updateSuccess'), { duration: 5000 });
+  } else {
+    message.error(t('sidebar.updateFailed'));
+  }
+}
+
+function handleReloadClient() {
+  appStore.reloadClient();
+}
+
 function handleLogout() {
   localStorage.clear();
   window.location.reload();
 }
-
-// Changelog
-const showChangelog = ref(false);
-const showVersionManagement = ref(false);
 
 function openChangelog() {
   showChangelog.value = true;
@@ -111,62 +122,8 @@ async function handleReloadClick() {
 </script>
 
 <template>
-  <aside class="sidebar" :class="{ open: appStore.sidebarOpen, collapsed: appStore.sidebarCollapsed }">
-    <RouteLinkItem class="sidebar-logo" :to="{ name: 'hermes.chat' }">
-      <img :src="logoPath" :alt="brandName" class="logo-img" />
-      <span class="logo-text">{{ brandName }}</span>
-      <!-- <video class="logo-dance" :src="isDark ? danceVideoDark : danceVideoLight" autoplay loop muted playsinline /> -->
-    </RouteLinkItem>
-
-    <button class="collapse-btn" @click="appStore.toggleSidebarCollapsed()" :title="appStore.sidebarCollapsed ? t('sidebar.expand') : t('sidebar.collapse')">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <polyline v-if="appStore.sidebarCollapsed" points="9 18 15 12 9 6" />
-        <polyline v-else points="15 18 9 12 15 6" />
-      </svg>
-    </button>
-
+  <aside class="sidebar" :class="{ open: appStore.sidebarOpen, collapsed: appStore.sidebarCollapsed }" @click="handleSidebarClick">
     <nav class="sidebar-nav">
-      <!-- Conversation -->
-      <div class="nav-group">
-        <div class="nav-group-label" @click="toggleGroup('conversation')">
-          <span>{{ groupLabel("Conversation") }}</span>
-          <svg class="nav-group-arrow" :class="{ collapsed: isGroupCollapsed('conversation') }" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="6 9 12 15 18 9" />
-          </svg>
-        </div>
-        <div v-show="!isGroupCollapsed('conversation')" class="nav-group-items">
-          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.chat' }" :active="isNavActive('hermes.chat', 'hermes.session')">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-            </svg>
-            <span>{{ t("sidebar.chat") }}</span>
-          </RouteLinkItem>
-          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.history' }" :active="isNavActive('hermes.history', 'hermes.historySession')">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10" />
-              <polyline points="12 6 12 12 16 14" />
-            </svg>
-            <span>{{ t("sidebar.history") }}</span>
-          </RouteLinkItem>
-          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.groupChat' }" :active="isNavActive('hermes.groupChat', 'hermes.groupChatRoom')">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-              <circle cx="9" cy="7" r="4" />
-              <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-              <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-            </svg>
-            <span>{{ t("sidebar.groupChat") }}<span class="beta-tag">(beta)</span></span>
-          </RouteLinkItem>
-          <button class="nav-item" @click="openSessionSearch">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="11" cy="11" r="7" />
-              <path d="m20 20-3.5-3.5" />
-            </svg>
-            <span>{{ t("sidebar.search") }}</span>
-          </button>
-        </div>
-      </div>
-
       <!-- Agent -->
       <div class="nav-group">
         <div class="nav-group-label" @click="toggleGroup('agent')">
@@ -403,7 +360,16 @@ async function handleReloadClick() {
         <LanguageSwitch />
       </div>
       <div class="version-info">
-        <span class="version-text" @click="openChangelog">{{ brandName }} v{{ appStore.serverVersion || "0.1.0" }}</span>
+        <span
+          class="version-text"
+          role="button"
+          tabindex="0"
+          @click="openChangelog"
+          @keydown.enter="openChangelog"
+          @keydown.space.prevent="openChangelog"
+        >
+          Studio v{{ appStore.serverVersion || "0.1.0" }}
+        </span>
         <ThemeSwitch />
       </div>
       <div
@@ -453,7 +419,22 @@ async function handleReloadClick() {
       </div>
     </div>
 
-    <!-- Changelog modal -->
+    <div class="sidebar-top-actions">
+      <RouteLinkItem class="nav-item sidebar-return-tab" :to="{ name: 'hermes.chat' }" :title="t('sidebar.backToChat')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="15 18 9 12 15 6" />
+          <line x1="9" y1="12" x2="21" y2="12" />
+        </svg>
+        <span>{{ t("sidebar.backToChat") }}</span>
+      </RouteLinkItem>
+      <button class="collapse-btn" @click="appStore.toggleSidebarCollapsed()" :title="appStore.sidebarCollapsed ? t('sidebar.expand') : t('sidebar.collapse')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline v-if="appStore.sidebarCollapsed" points="9 18 15 12 9 6" />
+          <polyline v-else points="15 18 9 12 15 6" />
+        </svg>
+      </button>
+    </div>
+
     <NModal v-model:show="showChangelog" preset="dialog" :title="t('sidebar.changelog')" style="width: 520px;">
       <div class="changelog-list">
         <div v-for="entry in changelog" :key="entry.version" class="changelog-version-block">
@@ -482,131 +463,15 @@ async function handleReloadClick() {
   border-right: 1px solid $border-color;
   display: flex;
   flex-direction: column;
-  padding: 0 12px 20px;
+  padding: 8px 12px 20px;
   flex-shrink: 0;
   transition: width $transition-normal;
-}
-
-.logo-img {
-  width: 28px;
-  height: 28px;
-  border-radius: 0;
-  flex-shrink: 0;
-}
-
-.update-source {
-  margin-top: 8px;
-  font-size: 12px;
-  line-height: 1.4;
-  color: $text-secondary;
-}
-
-.sidebar-update-action {
-  margin-top: 8px;
-}
-
-.sidebar-update-btn {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 6px 10px;
-  border-radius: $radius-sm;
-  border: 1px solid $accent-primary;
-  background-color: rgba(var(--accent-primary-rgb), 0.12);
-  color: $accent-primary;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background-color $transition-normal, color $transition-normal;
-
-  &:hover:not(:disabled) {
-    background-color: $accent-primary;
-    color: $bg-primary;
-  }
-
-  &:disabled {
-    cursor: not-allowed;
-    opacity: 0.6;
-  }
-}
-
-.sidebar-update-progress {
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  flex-direction: column;
-  gap: 4px;
-  padding: 6px 10px;
-  font-size: 12px;
-  color: $accent-primary;
-  border-radius: $radius-sm;
-  background-color: rgba(var(--accent-primary-rgb), 0.08);
-}
-
-.sidebar-update-label {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  width: 100%;
-}
-
-.sidebar-update-detail {
-  width: 100%;
-  color: $text-secondary;
-  line-height: 1.4;
-  white-space: normal;
-  word-break: break-word;
-}
-
-.sidebar-update-error {
-  color: #d14343;
-  background-color: rgba(209, 67, 67, 0.08);
-}
-
-.sidebar-logo {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 20px 12px;
-  margin: 0 -12px;
-  color: $text-primary;
-  cursor: pointer;
-  background-color: $bg-card;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-
-  .dark & {
-    background-color: #393939;
-  }
-  position: relative;
-  overflow: hidden;
-
-  .logo-text {
-    font-size: 16px;
-    font-weight: 600;
-    letter-spacing: 0.5px;
-    white-space: nowrap;
-  }
-
-  .logo-dance {
-    position: absolute;
-    right: 12px;
-    top: 50%;
-    transform: translateY(-50%);
-    height: 100px;
-    border-radius: $radius-md;
-    object-fit: contain;
-    flex-shrink: 0;
-    width: auto;
-    pointer-events: none;
-  }
 }
 
 .sidebar-nav {
   flex: 1;
   display: flex;
-  padding-top: 12px;
+  padding-top: 8px;
   flex-direction: column;
   gap: 6px;
   overflow-y: auto;
@@ -616,11 +481,6 @@ async function handleReloadClick() {
   &::-webkit-scrollbar {
     display: none;
   }
-}
-
-:deep(.profile-selector) {
-  padding-top: 12px;
-  border-top: 1px solid $border-color;
 }
 
 .nav-group {
@@ -708,62 +568,71 @@ async function handleReloadClick() {
   }
 }
 
-.sidebar-footer {
+.sidebar-top-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
   padding-top: 8px;
   border-top: 1px solid $border-color;
 }
 
-.logout-item {
-  margin: 0 -12px;
-  padding: 10px 12px;
-  border-radius: 0;
+.sidebar-return-tab {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
   font-size: 13px;
-  color: $text-muted;
+}
 
-  > svg,
-  > span:not(.logout-username) {
-    flex-shrink: 0;
-  }
+.sidebar-footer {
+  padding-top: 10px;
+  border-top: 1px solid $border-color;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.logout-item {
+  color: $text-secondary;
 
   &:hover {
     color: $error;
-    background: rgba(var(--error-rgb, 239, 68, 68), 0.06);
   }
 
-  .logout-username {
-    margin-left: auto;
-    width: 96px;
+  > span:not(.logout-username) {
     min-width: 0;
-    max-width: 40%;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    text-align: right;
-    flex: 0 1 96px;
-    font-size: 12px;
-    color: $text-muted;
   }
+}
+
+.logout-username {
+  margin-left: auto;
+  max-width: 96px;
+  color: $text-muted;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
+  gap: 8px;
+  padding: 2px 0 4px;
 }
 
 .status-indicator {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  padding-left: 12px;
   font-size: 12px;
-
-  .status-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
+  color: $text-secondary;
 
   &.connected .status-dot {
     background-color: $success;
@@ -773,26 +642,42 @@ async function handleReloadClick() {
   &.disconnected .status-dot {
     background-color: $error;
   }
+}
 
-  .status-text {
-    color: $text-secondary;
-  }
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.status-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .version-info {
-  padding: 2px 12px 8px;
+  padding: 2px 0 8px 12px;
   font-size: 11px;
   color: $text-muted;
   display: flex;
-  flex-direction: row;
   align-items: center;
   justify-content: space-between;
   gap: 6px;
   overflow: hidden;
 }
 
-:deep(.theme-switch-container) {
-  flex-shrink: 0;
+.sidebar-footer-link {
+  color: $text-muted;
+  display: flex;
+  align-items: center;
+  transition: color $transition-fast;
+
+  &:hover {
+    color: $text-primary;
+  }
 }
 
 .version-text {
@@ -800,15 +685,24 @@ async function handleReloadClick() {
   overflow: visible;
   white-space: nowrap;
   cursor: pointer;
-  transition: color 0.2s;
+  transition: color $transition-fast;
 
   &:hover {
     color: $accent-primary;
   }
 }
 
+.version-info :deep(.theme-switch-container) {
+  flex-shrink: 0;
+}
+
+.update-btn {
+  margin: 4px 0 0;
+  border-radius: $radius-sm;
+}
+
 .changelog-list {
-  max-height: 400px;
+  max-height: min(70vh, 640px);
   overflow-y: auto;
 }
 
@@ -832,6 +726,11 @@ async function handleReloadClick() {
   font-size: 14px;
   color: $text-primary;
   font-family: $font-code;
+}
+
+.changelog-date {
+  font-size: 12px;
+  color: $text-muted;
 }
 
 .changelog-changes {
@@ -862,23 +761,25 @@ async function handleReloadClick() {
 
 .sidebar.collapsed {
   width: $sidebar-collapsed-width;
-  padding: 0 8px 12px;
+  padding: 8px 8px 12px;
   overflow: hidden;
-
-  .sidebar-logo {
-    padding: 12px 4px 8px;
-    margin: 0 -8px;
-    justify-content: center;
-    gap: 0;
-
-    .logo-text {
-      display: none;
-    }
-  }
 
   .collapse-btn {
     display: flex;
-    margin: 0 auto 8px;
+    margin: 0;
+  }
+
+  .sidebar-top-actions {
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 8px;
+    padding-top: 8px;
+  }
+
+  .sidebar-return-tab {
+    width: 100%;
+    flex: 0 0 auto;
+    padding: 10px 4px;
   }
 
   .nav-group-label {
@@ -910,8 +811,6 @@ async function handleReloadClick() {
     }
   }
 
-  // Hide model selector in icon-rail mode, but keep the active profile avatar
-  // visible as the profile manager entry point.
   :deep(.model-selector) {
     display: none;
   }
@@ -920,73 +819,20 @@ async function handleReloadClick() {
     display: flex;
     justify-content: center;
     padding: 8px 0;
-    margin: 0 0 6px;
-    border-top: 1px solid $border-color;
-  }
-
-  :deep(.profile-selector .selector-label),
-  :deep(.profile-selector .profile-name) {
-    display: none;
-  }
-
-  :deep(.profile-selector .profile-display) {
-    width: 36px;
-    height: 36px;
-    justify-content: center;
-    padding: 0;
-    gap: 0;
-    border: none;
-    border-radius: 0;
-    background: transparent;
-  }
-
-  :deep(.profile-selector .profile-display:hover) {
-    background: transparent;
-  }
-
-  :deep(.profile-selector .profile-avatar) {
-    width: 28px !important;
-    height: 28px !important;
-    flex-basis: 28px !important;
   }
 
   .sidebar-footer {
-    .logout-item {
-      margin: 0;
-      padding: 10px 4px;
-      border-radius: $radius-sm;
-    }
-
-    .logout-item span {
-      display: none;
-    }
-
-    .status-text {
-      display: none;
-    }
-
-    .version-text,
-    .version-links {
-      display: none;
-    }
-
-    .status-row {
-      justify-content: center;
-
-      :deep(.input-sm) {
-        display: none;
-      }
-    }
-
-    .version-info {
-      justify-content: center;
-      padding: 4px 0;
-
-      :deep(.theme-switch-container) {
-        flex-direction: column;
-      }
-    }
+    align-items: center;
+    gap: 6px;
+    padding-top: 8px;
   }
+
+  .status-row,
+  .version-info,
+  .update-btn {
+    display: none;
+  }
+
 }
 
 // ─── Collapse button ────────────────────────────────────────────
@@ -1005,8 +851,7 @@ async function handleReloadClick() {
   border-radius: $radius-sm;
   cursor: pointer;
   flex-shrink: 0;
-  margin-left: auto;
-  margin-right: 0;
+  margin: 0;
   transition: all $transition-fast;
 
   &:hover {
@@ -1015,25 +860,7 @@ async function handleReloadClick() {
   }
 }
 
-// In expanded mode, overlap the top-right of the logo area
-.sidebar:not(.collapsed) .collapse-btn {
-  position: absolute;
-  top: 18px;
-  right: 16px;
-  z-index: 5;
-}
-
 @media (max-width: $breakpoint-mobile) {
-  .logo-dance {
-    display: none;
-  }
-
-  .status-row {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 8px;
-  }
-
   .sidebar {
     position: fixed;
     left: 0;
@@ -1052,5 +879,4 @@ async function handleReloadClick() {
     }
   }
 }
-
 </style>

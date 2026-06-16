@@ -24,22 +24,33 @@ const { t } = useI18n()
 
 <style scoped lang="scss">
 .site-footer {
-  border-top: 1px solid var(--border-color);
-  background: var(--bg-secondary);
+  padding: 0 18px 18px;
+  background: #f7f8fa;
+
+  @media (max-width: $breakpoint-mobile) {
+    padding: 0 10px 10px;
+  }
 }
 
 .footer-inner {
   max-width: 1120px;
   margin: 0 auto;
-  padding: 40px 24px;
+  padding: 28px 32px;
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
   gap: 40px;
+  border: 1px solid rgba(30, 50, 90, 0.08);
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.66);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84);
+  backdrop-filter: blur(14px);
 
   @media (max-width: $breakpoint-mobile) {
     flex-direction: column;
     gap: 24px;
+    padding: 22px 18px;
+    border-radius: 22px;
   }
 }
 
@@ -52,19 +63,21 @@ const { t } = useI18n()
 .footer-brand {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-weight: 600;
-  color: var(--text-primary);
+  gap: 10px;
+  font-weight: 650;
+  color: rgba(30, 38, 52, 0.9);
 }
 
 .footer-logo {
-  width: 24px;
-  height: 24px;
-  border-radius: $radius-sm;
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  background: #f7f4ef;
+  border: 1px solid rgba(30, 50, 90, 0.08);
 }
 
 .footer-desc {
-  color: var(--text-muted);
+  color: rgba(42, 50, 64, 0.58);
   font-size: 13px;
 }
 
@@ -80,7 +93,7 @@ const { t } = useI18n()
 }
 
 .footer-meta {
-  color: var(--text-muted);
+  color: rgba(42, 50, 64, 0.58);
   font-size: 13px;
 }
 

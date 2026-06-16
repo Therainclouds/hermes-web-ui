@@ -10,6 +10,21 @@ const mockMessage = vi.hoisted(() => ({
   error: vi.fn(),
 }))
 
+const mockFetchSkills = vi.hoisted(() => vi.fn(async () => ({
+  categories: [
+    {
+      name: 'local',
+      description: '',
+      skills: [
+        { name: 'planner', description: 'Plan work' },
+        { name: 'reviewer', description: 'Review work' },
+        { name: 'disabled-skill', description: 'Disabled', enabled: false },
+      ],
+    },
+  ],
+  archived: [],
+})))
+
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
     t: (key: string) => key,
@@ -21,6 +36,10 @@ vi.mock('@/stores/hermes/kanban', () => ({
     assignees: [{ name: 'alice', counts: { todo: 1 } }],
     createTask: mockCreateTask,
   }),
+}))
+
+vi.mock('@/api/hermes/skills', () => ({
+  fetchSkills: mockFetchSkills,
 }))
 
 vi.mock('naive-ui', () => ({
@@ -41,9 +60,9 @@ vi.mock('naive-ui', () => ({
     template: '<input class="n-input-number-stub" type="number" :value="value ?? \'\'" @input="$emit(\'update:value\', $event.target.value === \'\' ? null : Number($event.target.value))" />',
   }),
   NSelect: defineComponent({
-    props: { value: { required: false }, options: { type: Array, default: () => [] } },
+    props: { value: { required: false }, options: { type: Array, default: () => [] }, multiple: { type: Boolean, default: false } },
     emits: ['update:value'],
-    template: '<select class="n-select-stub" @change="$emit(\'update:value\', $event.target.value === \'\' ? null : (/^\\d+$/.test($event.target.value) ? Number($event.target.value) : $event.target.value))"><option value=""></option><option v-for="option in options" :key="option.value" :value="option.value">{{ option.label }}</option></select>',
+    template: '<select class="n-select-stub" :multiple="multiple" @change="$emit(\'update:value\', multiple ? Array.from($event.target.selectedOptions).map(option => option.value) : ($event.target.value === \'\' ? null : (/^\\d+$/.test($event.target.value) ? Number($event.target.value) : $event.target.value)))"><option value=""></option><option v-for="option in options" :key="option.value" :value="option.value">{{ option.label }}</option></select>',
   }),
   NButton: defineComponent({
     emits: ['click'],
@@ -101,6 +120,7 @@ describe('KanbanCreateForm', () => {
     mockCreateTask.mockResolvedValue({ id: 'task-1' })
     const wrapper = mount(KanbanCreateForm)
 
+    await flushPromises()
     const inputs = () => wrapper.findAll('.n-input-stub')
     const selects = wrapper.findAll('.n-select-stub')
     await inputs()[0].setValue('Build parity')
@@ -110,8 +130,8 @@ describe('KanbanCreateForm', () => {
     await inputs()[2].setValue('ops')
     await inputs()[3].setValue('/repo')
     await inputs()[4].setValue('kanban-ui')
-    await inputs()[5].setValue('planner, reviewer')
-    await inputs()[6].setValue('2h')
+    await selects[3].setValue(['planner', 'reviewer'])
+    await inputs()[5].setValue('2h')
     await wrapper.findAll('.n-input-number-stub')[0].setValue('3')
     const checkboxes = wrapper.findAll('input[type="checkbox"]')
     await checkboxes[0].setValue(true)

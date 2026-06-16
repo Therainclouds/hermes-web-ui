@@ -112,7 +112,7 @@ approval.load_permanent_allowlist = load_permanent_allowlist
 approval.check_execute_code_guard = check_execute_code_guard
 sys.modules["tools.approval"] = approval
 
-path = Path("packages/server/src/services/hermes/agent-bridge/hermes_bridge.py")
+path = Path("packages/server/src/services/hermes/agent-bridge/python/hermes_bridge.py")
 spec = importlib.util.spec_from_file_location("hermes_bridge", path)
 bridge = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = bridge
@@ -183,6 +183,176 @@ def wait_for(condition, timeout=20):
 `
 
 describe('agent bridge Python session concurrency', () => {
+  it('hot-switches a loaded idle session model without recreating the session', () => {
+    runPython(String.raw`
+${harness}
+
+def fake_resolve_runtime(model, provider=None):
+    return {
+        "provider": provider or "openai",
+        "base_url": f"https://{provider or 'openai'}.example/v1",
+        "api_key": f"key:{model}",
+        "api_mode": "chat_completions",
+    }
+
+bridge._resolve_runtime = fake_resolve_runtime
+pool, _fake_db = make_pool()
+
+class SwitchableAgent:
+    def __init__(self):
+        self.model = "old-model"
+        self.provider = "openai"
+        self.base_url = "https://old.example/v1"
+        self.api_key = "old-key"
+        self.api_mode = "chat_completions"
+        self.switch_calls = []
+
+    def switch_model(self, **kwargs):
+        self.switch_calls.append(kwargs)
+        self.model = kwargs["new_model"]
+        self.provider = kwargs["new_provider"]
+        self.base_url = kwargs["base_url"]
+        self.api_key = kwargs["api_key"]
+        self.api_mode = kwargs["api_mode"]
+
+agent = SwitchableAgent()
+session = bridge.AgentSession(
+    session_id="session-model",
+    agent=agent,
+    config={"profile": "default", "model": "old-model", "provider": "openai"},
+)
+pool._sessions["session-model"] = session
+
+result = pool.switch_session_model("session-model", "new-model", "anthropic", "default")
+
+assert result["switched"] is True
+assert pool._sessions["session-model"] is session
+assert agent.switch_calls == [{
+    "new_model": "new-model",
+    "new_provider": "anthropic",
+    "api_key": "key:new-model",
+    "base_url": "https://anthropic.example/v1",
+    "api_mode": "chat_completions",
+}]
+assert session.config["model"] == "new-model"
+assert session.config["provider"] == "anthropic"
+assert "pending_model_switch_note" in session.config
+`)
+  })
+
+  it('defers a loaded session model switch while a run is active and applies it after completion', () => {
+    runPython(String.raw`
+${harness}
+
+def fake_resolve_runtime(model, provider=None):
+    return {
+        "provider": provider or "openai",
+        "base_url": f"https://{provider or 'openai'}.example/v1",
+        "api_key": f"key:{model}",
+        "api_mode": "chat_completions",
+    }
+
+bridge._resolve_runtime = fake_resolve_runtime
+pool, _fake_db = make_pool()
+release = threading.Event()
+
+class RunningAgent:
+    def __init__(self):
+        self.model = "old-model"
+        self.provider = "openai"
+        self.switch_calls = []
+
+    def switch_model(self, **kwargs):
+        self.switch_calls.append(kwargs)
+        self.model = kwargs["new_model"]
+        self.provider = kwargs["new_provider"]
+
+    def run_conversation(self, message, **kwargs):
+        release.wait(timeout=5)
+        return {"messages": [{"role": "assistant", "content": "done"}]}
+
+agent = RunningAgent()
+session, record, thread = start_manual_run(pool, "running-model", agent)
+session.config.update({"profile": "default", "model": "old-model", "provider": "openai"})
+assert wait_for(lambda: session.running)
+
+result = pool.switch_session_model("running-model", "new-model", "anthropic", "default")
+assert result["deferred"] is True
+assert agent.switch_calls == []
+
+release.set()
+thread.join(timeout=5)
+
+assert record.status == "complete"
+assert agent.switch_calls == [{
+    "new_model": "new-model",
+    "new_provider": "anthropic",
+    "api_key": "key:new-model",
+    "base_url": "https://anthropic.example/v1",
+    "api_mode": "chat_completions",
+}]
+assert session.config["model"] == "new-model"
+assert session.config["provider"] == "anthropic"
+assert "pending_model_switch" not in session.config
+`)
+  })
+
+  it('syncs generated result tail to the session DB when the agent crashes after generation', () => {
+    runPython(String.raw`
+${harness}
+
+class CrashingAgent:
+    def run_conversation(self, message, **kwargs):
+        self.messages = [
+            {"role": "user", "content": message},
+            {"role": "assistant", "content": "assistant survived"},
+        ]
+        raise RuntimeError("late post-processing failure")
+
+pool, fake_db = make_pool()
+_session, record, thread = start_manual_run(pool, "tail-sync", CrashingAgent())
+thread.join(timeout=5)
+
+assert record.status == "error"
+messages = fake_db.get_messages("tail-sync")
+assert [(msg["role"], msg["content"]) for msg in messages] == [
+    ("user", "message:tail-sync"),
+    ("assistant", "assistant survived"),
+]
+`)
+  })
+
+  it('only appends missing generated tail messages when the session DB is partially flushed', () => {
+    runPython(String.raw`
+${harness}
+
+class PartiallyFlushedAgent:
+    def __init__(self, db):
+        self.db = db
+
+    def run_conversation(self, message, **kwargs):
+        self.db.append_message("partial-tail-sync", "assistant", "already flushed")
+        self.messages = [
+            {"role": "user", "content": message},
+            {"role": "assistant", "content": "already flushed"},
+            {"role": "tool", "content": "missing tool result", "tool_name": "demo"},
+        ]
+        raise RuntimeError("late post-processing failure")
+
+pool, fake_db = make_pool()
+_session, record, thread = start_manual_run(pool, "partial-tail-sync", PartiallyFlushedAgent(fake_db))
+thread.join(timeout=5)
+
+assert record.status == "error"
+messages = fake_db.get_messages("partial-tail-sync")
+assert [(msg["role"], msg["content"]) for msg in messages] == [
+    ("user", "message:partial-tail-sync"),
+    ("assistant", "already flushed"),
+    ("tool", "missing tool result"),
+]
+`)
+  })
+
   it('remembers execute_code approvals inside the bridge without patching upstream files', () => {
     runPython(String.raw`
 ${harness}
@@ -732,6 +902,96 @@ assert calls == []
 pool._run_context.session_id = "session-a"
 assert pool._approval_dispatcher("cmd", "desc", allow_permanent=False) == "once"
 assert calls == [("cmd", "desc", False)]
+`)
+  })
+
+  it('does not persist session-level approval for repeated memory write prompts', () => {
+    runPython(String.raw`
+${harness}
+
+pool, _fake_db = make_pool()
+callback = pool._approval_callback("session-a")
+result = {}
+
+def first_prompt():
+    result["first"] = callback("memory text", "Save to memory: add to memory", allow_permanent=False)
+
+thread = threading.Thread(target=first_prompt)
+thread.start()
+
+deadline = time.time() + 5
+approval_id = None
+while time.time() < deadline:
+    with pool._lock:
+        approval_id = next(iter(pool._approval_requests), None)
+    if approval_id:
+        break
+    time.sleep(0.01)
+
+assert approval_id is not None
+assert pool.respond_approval(approval_id, "session") == {
+    "approval_id": approval_id,
+    "resolved": True,
+    "choice": "session",
+}
+thread.join(timeout=5)
+assert result["first"] == "session"
+
+second_result = {}
+def second_prompt():
+    second_result["choice"] = callback("memory text 2", "Save to memory: add to memory", allow_permanent=False)
+
+thread = threading.Thread(target=second_prompt)
+thread.start()
+deadline = time.time() + 5
+approval_id = None
+while time.time() < deadline:
+    with pool._lock:
+        approval_id = next(iter(pool._approval_requests), None)
+    if approval_id:
+        break
+    time.sleep(0.01)
+
+assert approval_id is not None
+pool.respond_approval(approval_id, "once")
+thread.join(timeout=5)
+assert second_result["choice"] == "once"
+`)
+  })
+
+  it('keeps bound approval session when Hermes propagates callback to tool workers', () => {
+    runPython(String.raw`
+${harness}
+
+pool, _fake_db = make_pool()
+pool._install_approval_dispatcher_for_current_thread("session-a")
+parent_callback = terminal_tool._get_approval_callback()
+assert parent_callback is not None
+
+result = {}
+def worker_prompt():
+    # Hermes propagates the terminal approval callback object to worker threads,
+    # but it does not propagate bridge_pool._run_context because that is a
+    # bridge-local threading.local(). The callback itself must carry session-a.
+    assert getattr(pool._run_context, "session_id", "") == ""
+    result["first"] = parent_callback("memory text", "Save to memory: add preference", allow_permanent=False)
+
+thread = threading.Thread(target=worker_prompt)
+thread.start()
+
+deadline = time.time() + 5
+approval_id = None
+while time.time() < deadline:
+    with pool._lock:
+        approval_id = next(iter(pool._approval_requests), None)
+    if approval_id:
+        break
+    time.sleep(0.01)
+
+assert approval_id is not None
+pool.respond_approval(approval_id, "session")
+thread.join(timeout=5)
+assert result["first"] == "session"
 `)
   })
 

@@ -33,12 +33,14 @@ type ViewportScrollSnapshot = {
 
 const props = withDefaults(defineProps<{
   messages: VirtualItem[];
+  virtualized?: boolean;
   estimatedItemHeight?: number;
   overscan?: number;
   rowGap?: number;
   padding?: string;
   topThreshold?: number;
 }>(), {
+  virtualized: true,
   estimatedItemHeight: 180,
   overscan: 8,
   rowGap: 16,
@@ -112,11 +114,12 @@ function cancelBottomScroll() {
 function handleScroll() {
   const previousScrollTop = scrollTop.value;
   syncViewport();
-  if (!isProgrammaticScroll()) {
-    const delta = scrollTop.value - previousScrollTop;
-    if (delta < -1) {
-      userDetachedFromBottom = true;
-    } else if (isNearBottom(32)) {
+  const delta = scrollTop.value - previousScrollTop;
+  if (delta < -1) {
+    userDetachedFromBottom = true;
+    cancelBottomScroll();
+  } else if (!isProgrammaticScroll()) {
+    if (isNearBottom(32)) {
       userDetachedFromBottom = false;
     }
     if (userDetachedFromBottom || !isNearBottom(96)) {
@@ -163,7 +166,7 @@ function scrollToBottom(options: BottomScrollOptions = {}) {
 function setScrollToBottomNow(): boolean {
   const el = getScrollerElement();
   markProgrammaticScroll();
-  scrollerRef.value?.scrollToBottom();
+  if (props.virtualized) scrollerRef.value?.scrollToBottom();
   if (el) {
     el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
     syncViewport();
@@ -184,7 +187,7 @@ function scheduleScrollToBottom(frames = 1) {
     } else {
       bottomFrameAttempts += 1;
     }
-    if (bottomFrameRemaining <= 0 && Date.now() >= keepBottomUntil) {
+    if (bottomFrameRemaining <= 0) {
       bottomFrame = null;
       bottomFrameRemaining = 0;
       bottomFrameAttempts = 0;
@@ -232,9 +235,35 @@ function alignElement(targetEl: HTMLElement, align: AnchorAlign) {
   syncViewport();
 }
 
+function findRowElement(index: number): HTMLElement | null {
+  const el = getScrollerElement();
+  return el?.querySelector<HTMLElement>(`.virtual-row[data-virtual-index="${index}"]`) ?? null;
+}
+
 function scrollToItem(index: number, options?: ScrollToOptions) {
   markProgrammaticScroll();
-  scrollerRef.value?.scrollToItem(index, options);
+  if (props.virtualized) {
+    scrollerRef.value?.scrollToItem(index, options);
+    syncViewport();
+    return;
+  }
+
+  const el = getScrollerElement();
+  const row = findRowElement(index);
+  if (!el || !row) {
+    syncViewport();
+    return;
+  }
+
+  const rowRect = row.getBoundingClientRect();
+  const scrollerRect = el.getBoundingClientRect();
+  const align = options?.align ?? "start";
+  const offset = options?.offset ?? 0;
+  const delta = align === "center"
+    ? rowRect.top + rowRect.height / 2 - (scrollerRect.top + scrollerRect.height / 2)
+    : rowRect.top - scrollerRect.top + offset;
+
+  el.scrollTop = Math.max(0, el.scrollTop + delta);
   syncViewport();
 }
 
@@ -334,7 +363,7 @@ function restoreScrollPosition(snapshot: { scrollTop: number; scrollHeight: numb
     if (!el) return;
     const nextScrollTop = Math.max(0, el.scrollHeight - snapshot.scrollHeight + snapshot.scrollTop);
     markProgrammaticScroll();
-    scrollerRef.value?.scrollToPosition(nextScrollTop);
+    if (props.virtualized) scrollerRef.value?.scrollToPosition(nextScrollTop);
     el.scrollTop = nextScrollTop;
     syncViewport();
   });
@@ -368,7 +397,7 @@ function restoreViewportPosition(snapshot: ViewportScrollSnapshot | null, frames
       const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
       const nextScrollTop = Math.min(maxScrollTop, Math.max(0, snapshot.scrollTop));
       markProgrammaticScroll();
-      scrollerRef.value?.scrollToPosition(nextScrollTop);
+      if (props.virtualized) scrollerRef.value?.scrollToPosition(nextScrollTop);
       el.scrollTop = nextScrollTop;
       syncViewport();
 
@@ -428,6 +457,7 @@ defineExpose({
     :style="{ '--virtual-row-gap': `${rowGap}px`, '--virtual-list-padding': padding }"
   >
     <DynamicScroller
+      v-if="virtualized"
       ref="scrollerRef"
       class="virtual-message-list"
       :items="messages"
@@ -450,6 +480,7 @@ defineExpose({
           :index="index"
           :active="active"
           class="virtual-row"
+          :data-virtual-index="index"
         >
           <slot v-if="active" name="item" :message="item" />
         </DynamicScrollerItem>
@@ -458,6 +489,23 @@ defineExpose({
         <slot v-if="messages.length > 0" name="after" />
       </template>
     </DynamicScroller>
+    <div
+      v-else
+      class="virtual-message-list"
+      @scroll.passive="handleScroll"
+      @wheel.passive="handleWheel"
+    >
+      <slot v-if="messages.length > 0" name="before" />
+      <div
+        v-for="(item, index) in messages"
+        :key="messageKey(item)"
+        class="virtual-row"
+        :data-virtual-index="index"
+      >
+        <slot name="item" :message="item" />
+      </div>
+      <slot v-if="messages.length > 0" name="after" />
+    </div>
     <div v-if="messages.length === 0 && $slots.empty" class="virtual-message-list-empty">
       <slot name="empty" />
     </div>
@@ -470,6 +518,8 @@ defineExpose({
 .virtual-message-list-host {
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   position: relative;
   animation: message-list-fade-in 1.5s ease both;
@@ -478,6 +528,11 @@ defineExpose({
 .virtual-message-list {
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  max-width: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
   padding: var(--virtual-list-padding);
   box-sizing: border-box;
   background-color: $bg-card;
@@ -489,6 +544,8 @@ defineExpose({
 
 .virtual-row {
   box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   padding-bottom: var(--virtual-row-gap);
 }
 

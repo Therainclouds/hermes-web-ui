@@ -5,6 +5,7 @@ import { useAppStore } from '@/stores/hermes/app'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { fetchContextLength } from '@/api/hermes/sessions'
 import { setModelContext } from '@/api/hermes/model-context'
+import { fetchSkills, type SkillCategory, type SkillInfo } from '@/api/hermes/skills'
 import { NButton, NTooltip, NSwitch, NModal, NInputNumber, NPopselect, useMessage } from 'naive-ui'
 import { computed, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -74,6 +75,15 @@ const browserRecognition = useBrowserSpeechRecognition({
   },
 })
 const activeVoiceCaptureMode = ref<'browser' | 'backend' | null>(null)
+
+type SlashCommandOption = {
+  name: string
+  args: string
+  description: string
+  insertText?: string
+  key: string
+  opensSkillPicker?: boolean
+}
 
 function normalizeVoiceTranscript(text: string) {
   return text.replace(/\s+/g, ' ').trim()
@@ -165,38 +175,110 @@ const voiceDialogueError = computed(() =>
   ?? null,
 )
 
-const bridgeCommands = computed(() => [
-  { name: 'usage', args: '', description: t('chat.slashCommands.usage') },
-  { name: 'status', args: '', description: t('chat.slashCommands.status') },
-  { name: 'abort', args: '', description: t('chat.slashCommands.abort') },
-  { name: 'queue', args: t('chat.slashCommandArgs.message'), description: t('chat.slashCommands.queue') },
-  { name: 'plan', args: t('chat.slashCommandArgs.text'), description: t('chat.slashCommands.plan') },
-  { name: 'goal', args: t('chat.slashCommandArgs.text'), description: t('chat.slashCommands.goal') },
-  { name: 'goal', args: 'status', insertText: 'goal status', description: t('chat.slashCommands.goalStatus') },
-  { name: 'goal', args: 'pause', insertText: 'goal pause', description: t('chat.slashCommands.goalPause') },
-  { name: 'goal', args: 'resume', insertText: 'goal resume', description: t('chat.slashCommands.goalResume') },
-  { name: 'goal', args: 'done', insertText: 'goal done', description: t('chat.slashCommands.goalDone') },
-  { name: 'goal', args: 'clear', insertText: 'goal clear', description: t('chat.slashCommands.goalClear') },
-  { name: 'subgoal', args: t('chat.slashCommandArgs.text'), description: t('chat.slashCommands.subgoal') },
-  { name: 'clear', args: '', description: t('chat.slashCommands.clear') },
-  { name: 'clear', args: '--history', insertText: 'clear --history', description: t('chat.slashCommands.clearHistory') },
-  { name: 'title', args: t('chat.slashCommandArgs.title'), description: t('chat.slashCommands.title') },
-  { name: 'compress', args: '', description: t('chat.slashCommands.compress') },
-  { name: 'steer', args: t('chat.slashCommandArgs.text'), description: t('chat.slashCommands.steer') },
-  { name: 'destroy', args: '', description: t('chat.slashCommands.destroy') },
-  { name: 'reload-mcp', args: '', description: t('chat.slashCommands.reloadMcp') },
+const bridgeCommands = computed<SlashCommandOption[]>(() => [
+  { key: 'command:usage', name: 'usage', args: '', description: t('chat.slashCommands.usage') },
+  { key: 'command:status', name: 'status', args: '', description: t('chat.slashCommands.status') },
+  { key: 'command:abort', name: 'abort', args: '', description: t('chat.slashCommands.abort') },
+  { key: 'command:queue', name: 'queue', args: t('chat.slashCommandArgs.message'), description: t('chat.slashCommands.queue') },
+  { key: 'command:skill', name: 'skill', args: '', description: t('skills.title'), opensSkillPicker: true },
+  { key: 'command:plan', name: 'plan', args: t('chat.slashCommandArgs.text'), description: t('chat.slashCommands.plan') },
+  { key: 'command:goal', name: 'goal', args: t('chat.slashCommandArgs.text'), description: t('chat.slashCommands.goal') },
+  { key: 'command:goal-status', name: 'goal', args: 'status', insertText: 'goal status', description: t('chat.slashCommands.goalStatus') },
+  { key: 'command:goal-pause', name: 'goal', args: 'pause', insertText: 'goal pause', description: t('chat.slashCommands.goalPause') },
+  { key: 'command:goal-resume', name: 'goal', args: 'resume', insertText: 'goal resume', description: t('chat.slashCommands.goalResume') },
+  { key: 'command:goal-done', name: 'goal', args: 'done', insertText: 'goal done', description: t('chat.slashCommands.goalDone') },
+  { key: 'command:goal-clear', name: 'goal', args: 'clear', insertText: 'goal clear', description: t('chat.slashCommands.goalClear') },
+  { key: 'command:subgoal', name: 'subgoal', args: t('chat.slashCommandArgs.text'), description: t('chat.slashCommands.subgoal') },
+  { key: 'command:clear', name: 'clear', args: '', description: t('chat.slashCommands.clear') },
+  { key: 'command:clear-history', name: 'clear', args: '--history', insertText: 'clear --history', description: t('chat.slashCommands.clearHistory') },
+  { key: 'command:title', name: 'title', args: t('chat.slashCommandArgs.title'), description: t('chat.slashCommands.title') },
+  { key: 'command:compress', name: 'compress', args: '', description: t('chat.slashCommands.compress') },
+  { key: 'command:steer', name: 'steer', args: t('chat.slashCommandArgs.text'), description: t('chat.slashCommands.steer') },
+  { key: 'command:destroy', name: 'destroy', args: '', description: t('chat.slashCommands.destroy') },
+  { key: 'command:reload-mcp', name: 'reload-mcp', args: '', description: t('chat.slashCommands.reloadMcp') },
 ])
 
 const slashActive = ref(false)
 const slashQuery = ref('')
 const slashActiveIndex = ref(0)
+const skillCategories = ref<SkillCategory[]>([])
+const showSkillPicker = ref(false)
+const skillSearch = ref('')
+const skillPickerLoading = ref(false)
+let skillsLoadedKey = ''
+let skillsLoadRequest: Promise<void> | null = null
 const isBridgeSession = computed(() => chatStore.activeSession?.source === 'cli')
+const skillPickerItems = computed(() => {
+  const byName = new Map<string, SkillInfo>()
+  for (const category of skillCategories.value) {
+    for (const skill of category.skills || []) {
+      if (skill.enabled === false) continue
+      if (!byName.has(skill.name)) byName.set(skill.name, skill)
+    }
+  }
+  return [...byName.values()].map(skill => {
+    const commandName = skillCommandName(skill.name)
+    return {
+      key: `skill:${commandName}`,
+      name: skill.name,
+      commandName,
+      description: skill.description || skill.name,
+    }
+  })
+})
 const filteredBridgeCommands = computed(() => {
   const query = slashQuery.value.toLowerCase()
   return bridgeCommands.value.filter(command =>
-    command.name.includes(query) || command.insertText?.includes(query),
+    command.name.includes(query)
+    || command.insertText?.includes(query)
+    || command.description.toLowerCase().includes(query),
   )
 })
+const filteredSkillPickerItems = computed(() => {
+  const query = skillSearch.value.trim().toLowerCase()
+  if (!query) return skillPickerItems.value
+  return skillPickerItems.value.filter(skill =>
+    skill.name.toLowerCase().includes(query)
+    || skill.commandName.includes(query)
+    || skill.description.toLowerCase().includes(query),
+  )
+})
+
+function skillCommandName(name: string) {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/_/g, '-')
+    .replace(/[^a-z0-9-]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+}
+
+function currentSkillsKey() {
+  return chatStore.activeSession?.profile || profilesStore.activeProfileName || 'default'
+}
+
+async function loadSkills() {
+  if (!isBridgeSession.value) return
+  const key = currentSkillsKey()
+  if (skillsLoadedKey === key || skillsLoadRequest) return skillsLoadRequest
+  skillsLoadRequest = (async () => {
+    try {
+      const data = await fetchSkills(key)
+      if (currentSkillsKey() !== key) return
+      skillCategories.value = data.categories || []
+      skillsLoadedKey = key
+    } catch {
+      if (currentSkillsKey() !== key) return
+      skillCategories.value = []
+      skillsLoadedKey = key
+    } finally {
+      skillsLoadRequest = null
+    }
+  })()
+  return skillsLoadRequest
+}
 
 // 自定义高度拖拽
 const textareaHeight = ref<number | null>(null) // null = auto
@@ -292,6 +374,14 @@ watch(() => chatStore.activeSession?.id, () => {
   loadDraftForActiveSession()
 })
 
+watch(
+  () => [chatStore.activeSession?.profile, profilesStore.activeProfileName],
+  () => {
+    skillsLoadedKey = ''
+    skillCategories.value = []
+  },
+)
+
 const canSend = computed(() => inputText.value.trim() || attachments.value.length > 0)
 
 function scrollCommandIntoView() {
@@ -320,9 +410,39 @@ function updateSlashState() {
   slashActive.value = filteredBridgeCommands.value.length > 0
 }
 
-function selectBridgeCommand(command: { name: string; args: string; insertText?: string }) {
+function selectBridgeCommand(command: SlashCommandOption) {
+  if (command.opensSkillPicker) {
+    slashActive.value = false
+    void openSkillPicker()
+    return
+  }
   inputText.value = `/${command.insertText || command.name} `
   slashActive.value = false
+  nextTick(() => {
+    const el = textareaRef.value
+    if (!el) return
+    const pos = inputText.value.length
+    el.setSelectionRange(pos, pos)
+    el.focus()
+  })
+}
+
+async function openSkillPicker() {
+  if (!isBridgeSession.value) return
+  slashActive.value = false
+  skillSearch.value = ''
+  showSkillPicker.value = true
+  skillPickerLoading.value = true
+  try {
+    await loadSkills()
+  } finally {
+    skillPickerLoading.value = false
+  }
+}
+
+function selectSkill(skill: { commandName: string }) {
+  inputText.value = `/skill ${skill.commandName} `
+  showSkillPicker.value = false
   nextTick(() => {
     const el = textareaRef.value
     if (!el) return
@@ -540,6 +660,10 @@ function handleDrop(e: DragEvent) {
 function handleSend() {
   const text = inputText.value.trim()
   if (!text && attachments.value.length === 0) return
+  if (isBridgeSession.value && text === '/skill' && attachments.value.length === 0) {
+    void openSkillPicker()
+    return
+  }
 
   chatStore.sendMessage(text, attachments.value.length > 0 ? attachments.value : undefined)
   inputText.value = ''
@@ -900,7 +1024,7 @@ function isImage(type: string): boolean {
         >
           <div
             v-for="(command, i) in filteredBridgeCommands"
-            :key="command.name"
+            :key="command.key"
             class="slash-command-item"
             :class="{ active: i === slashActiveIndex }"
             @mousedown.prevent="selectBridgeCommand(command)"
@@ -944,6 +1068,44 @@ function isImage(type: string): boolean {
         </NButton>
       </div>
     </div>
+
+    <NModal
+      v-model:show="showSkillPicker"
+      :title="t('skills.title')"
+      :mask-closable="true"
+      preset="card"
+      style="width: min(620px, calc(100vw - 32px))"
+    >
+      <div v-if="showSkillPicker" class="skill-picker-modal">
+        <input
+          v-model="skillSearch"
+          class="skill-picker-search"
+          :placeholder="t('skills.searchPlaceholder')"
+          type="search"
+        />
+        <div class="skill-picker-list">
+          <div v-if="skillPickerLoading" class="skill-picker-empty">
+            {{ t('common.loading') }}
+          </div>
+          <template v-else>
+            <button
+              v-for="skill in filteredSkillPickerItems"
+              :key="skill.key"
+              type="button"
+              class="skill-picker-item"
+              @click="selectSkill(skill)"
+            >
+              <span class="skill-picker-command">/skill {{ skill.commandName }}</span>
+              <span class="skill-picker-name">{{ skill.name }}</span>
+              <span class="skill-picker-desc">{{ skill.description }}</span>
+            </button>
+          </template>
+          <div v-if="!skillPickerLoading && filteredSkillPickerItems.length === 0" class="skill-picker-empty">
+            {{ skillSearch ? t('skills.noMatch') : t('skills.noSkills') }}
+          </div>
+        </div>
+      </div>
+    </NModal>
 
     <!-- Context Length Edit Modal -->
     <NModal
@@ -1078,6 +1240,8 @@ function isImage(type: string): boolean {
 .context-info {
   font-size: 11px;
   color: $text-muted;
+  min-width: 0;
+  white-space: nowrap;
 
   &.context-warning {
     color: #e8a735;
@@ -1100,6 +1264,7 @@ function isImage(type: string): boolean {
 .context-bar {
   width: 60px;
   height: 4px;
+  margin-left: -4px;
   background: rgba(128, 128, 128, 0.2);
   border-radius: 2px;
   overflow: hidden;
@@ -1117,6 +1282,25 @@ function isImage(type: string): boolean {
 
   &.context-bar-danger {
     background: linear-gradient(90deg, #c43a2a, #e85d4a);
+  }
+}
+
+@media (max-width: 768px) {
+  .input-top-bar {
+    gap: 5px;
+  }
+
+  .context-info {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 10px;
+    line-height: 14px;
+    margin-right: 10px;
+  }
+
+  .context-bar {
+    width: 42px;
+    flex-shrink: 0;
   }
 }
 
@@ -1298,6 +1482,7 @@ function isImage(type: string): boolean {
   &:hover {
     background: rgba(var(--accent-primary-rgb), 0.1);
   }
+
 }
 
 .slash-command-name {
@@ -1321,6 +1506,97 @@ function isImage(type: string): boolean {
   white-space: nowrap;
   color: $text-secondary;
   font-size: 12px;
+}
+
+.skill-picker-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.skill-picker-search {
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid $border-color;
+  border-radius: $radius-sm;
+  background: $bg-input;
+  color: $text-primary;
+  outline: none;
+  font-family: $font-ui;
+  font-size: 13px;
+
+  &:focus {
+    border-color: $accent-primary;
+  }
+}
+
+.skill-picker-list {
+  max-height: min(420px, 52vh);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.skill-picker-item {
+  display: grid;
+  grid-template-columns: minmax(160px, auto) minmax(120px, 0.6fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 42px;
+  padding: 8px 10px;
+  border: 1px solid $border-color;
+  border-radius: $radius-sm;
+  background: $bg-secondary;
+  color: $text-primary;
+  text-align: left;
+  cursor: pointer;
+
+  &:hover {
+    border-color: rgba(var(--accent-primary-rgb), 0.5);
+    background: rgba(var(--accent-primary-rgb), 0.08);
+  }
+}
+
+.skill-picker-command {
+  font-family: $font-code;
+  font-size: 12px;
+  color: $accent-primary;
+  white-space: nowrap;
+}
+
+.skill-picker-name,
+.skill-picker-desc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-picker-name {
+  font-size: 13px;
+  color: $text-primary;
+}
+
+.skill-picker-desc {
+  font-size: 12px;
+  color: $text-secondary;
+}
+
+.skill-picker-empty {
+  padding: 18px 10px;
+  text-align: center;
+  color: $text-muted;
+  font-size: 13px;
+}
+
+@media (max-width: 768px) {
+  .skill-picker-item {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
 }
 
 .dropdown-fade-enter-active,

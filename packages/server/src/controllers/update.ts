@@ -351,46 +351,22 @@ function getGlobalPackageBin(root: string, packageName: string, cliBin: string) 
   ].find(existsSync) || join(packageDir, 'bin', normalizedCli)
 }
 
+function getUpdateExecutionMessage() {
+  switch (config.update.strategy) {
+    case 'device-package':
+      return getDevicePackageExecutionMessage()
+    case 'source-deploy':
+      return getSourceDeployExecutionMessage()
+    default:
+      return getNpmPackageExecutionMessage()
+  }
+}
+
 function getCurrentNodeEnv() {
   return {
     ...process.env,
     PATH: [getNodeBinDir(), process.env.PATH].filter(Boolean).join(delimiter),
     npm_node_execpath: process.execPath,
-  }
-}
-
-function runNpm(args: string[], options: { timeout?: number; cwd?: string; logLabel?: string; env?: NodeJS.ProcessEnv } = {}) {
-  const env = {
-    ...getCurrentNodeEnv(),
-    ...options.env,
-  }
-  const execution = npmExecution(args, env)
-  const label = options.logLabel || ''
-
-  if (label) appendPreviewActionLog(`${label}: ${execution.command} ${execution.args.join(' ')}${options.cwd ? `\ncwd: ${options.cwd}` : ''}`)
-  try {
-    const output = execFileSync(execution.command, execution.args, {
-      encoding: 'utf-8',
-      timeout: options.timeout,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env,
-      cwd: options.cwd,
-      windowsHide: true,
-    }).trim()
-    if (label) {
-      if (output) appendPreviewActionLog(`${label} output:\n${output}`)
-      appendPreviewActionLog(`${label} completed`)
-    }
-    return output
-  } catch (err: any) {
-    if (label) {
-      const stderr = err.stderr?.toString() || ''
-      const stdout = err.stdout?.toString() || ''
-      appendPreviewActionLog(`${label} failed`)
-      if (stdout) appendPreviewActionLog(`${label} stdout:\n${stdout}`)
-      if (stderr) appendPreviewActionLog(`${label} stderr:\n${stderr}`)
-    }
-    throw err
   }
 }
 
@@ -1023,56 +999,34 @@ async function checkoutPreview(ref: string) {
   appendPreviewActionLog(`preview tag ready: ${ref}`)
 }
 
-function getGlobalRoot() {
-  return runNpm(['root', '-g'])
+async function getGlobalRootAsync() {
+  return runNpmAsync(['root', '-g'])
 }
 
-function getGlobalCliScript() {
-  const packageName = config.update.packageName
-  const cliBin = config.update.cliBin
-  const cli = getGlobalPackageBin(getGlobalRoot(), packageName, cliBin)
+async function getGlobalCliScriptAsync() {
+  const cli = getGlobalPackageBin(
+    await getGlobalRootAsync(),
+    config.update.packageName,
+    config.update.cliBin,
+  )
   if (!existsSync(cli)) {
     throw new Error(`Updated package CLI not found: ${cli}`)
   }
   return cli
 }
 
-async function resolvePublishedUpdateVersion() {
-  const packageName = config.update.packageName
-  const registry = config.update.registry
-  const distTag = config.update.distTag || 'latest'
-  if (!packageName || !registry) return ''
-
-  const registryName = encodeURIComponent(packageName)
-  const url = `${registry}/${registryName}`
-  const res = await fetch(url, { signal: AbortSignal.timeout(10000) })
-  if (!res.ok) {
-    throw new Error(`Failed to resolve the latest published version from ${registry}: HTTP ${res.status}`)
+async function runUpdateInstall() {
+  try {
+    await runNpmAsync(['cache', 'clean', '--force'], { timeout: 2 * 60 * 1000 })
+  } catch (err) {
+    console.warn('[update] failed to clean npm cache, continuing update:', err)
   }
 
-  const data = await res.json() as { version?: string; 'dist-tags'?: Record<string, string> }
-  return data['dist-tags']?.[distTag] || data.version || data['dist-tags']?.latest || ''
+  return runNpmAsync(['install', '-g', 'hermes-web-ui@latest'], { timeout: 10 * 60 * 1000 })
 }
 
-function runUpdateInstall(versionOrTag: string) {
-  return runNpm(
-    buildNpmPackageInstallArgs(config.update, versionOrTag),
-    { timeout: 10 * 60 * 1000 },
-  )
-}
-
-function getUpdateExecutionMessage() {
-  if (config.update.strategy === 'device-package') {
-    return getDevicePackageExecutionMessage()
-  }
-  if (config.update.strategy === 'source-deploy') {
-    return getSourceDeployExecutionMessage()
-  }
-  return getNpmPackageExecutionMessage()
-}
-
-function spawnRestart(port: string) {
-  const cli = getGlobalCliScript()
+async function spawnRestart(port: string) {
+  const cli = await getGlobalCliScriptAsync()
 
   return spawn(process.execPath, [cli, 'restart', '--port', port], {
     detached: true,
@@ -1270,230 +1224,51 @@ export async function handleUpdate(ctx: any) {
   }
 
   updateInProgress = true
-  const task = updateTaskStore.createTask(config.update.strategy, 'Update request accepted')
-  managedUpdateTaskId = task.id
+  let keepUpdateLockForRestart = false
 
   try {
-    if (config.update.strategy === 'source-deploy') {
-      assertSourceDeployExecution(config.update)
-    } else if (config.update.strategy === 'device-package') {
-      assertDevicePackageExecution(config.update)
-    } else {
-      assertNpmPackageExecution(config.update)
-    }
-
-    if (config.update.strategy === 'device-package') {
-      ctx.body = {
-        success: true,
-        taskId: task.id,
-        status: 'running',
-        stage: 'checking',
-        message: appendPreflightWarning('Accepted device package update request', preflight.warningText),
-        warning: preflight.warningText || undefined,
-      }
-
-      void (async () => {
-        try {
-          if (preflight.warningText) {
-            console.warn(`[update] preflight warning: ${preflight.warningText}`)
-          }
-          updateTaskStore.updateCurrentStage('checking', 'Resolving device package manifest', {
-            warning: preflight.warningText,
-          })
-          const manifest = await resolveDevicePackageManifest(config.update)
-          assertDevicePackageCompatibility(manifest, getLocalWebUiVersion((globalThis as any).__APP_VERSION__))
-          updateTaskStore.updateCurrentStage('checking', `Validated device package manifest ${manifest.version}`, {
-            targetVersion: manifest.version,
-            warning: preflight.warningText,
-            healthcheckUrl: manifest.healthcheckUrl || config.update.healthcheckUrl,
-          })
-          updateTaskStore.updateCurrentStage('downloading', `Downloading device package ${manifest.version}`, {
-            targetVersion: manifest.version,
-            warning: preflight.warningText,
-            healthcheckUrl: manifest.healthcheckUrl || config.update.healthcheckUrl,
-          })
-          const { artifactPath } = await downloadAndVerifyDevicePackage(config.update, manifest)
-          updateTaskStore.updateCurrentStage('verifying', `Verified device package ${manifest.version}`, {
-            targetVersion: manifest.version,
-            warning: preflight.warningText,
-            healthcheckUrl: manifest.healthcheckUrl || config.update.healthcheckUrl,
-          })
-          let updateChild
-          try {
-            updateTaskStore.updateCurrentStage('backing_up', `Installer is preparing a backup for ${manifest.version}`, {
-              targetVersion: manifest.version,
-              warning: preflight.warningText,
-              healthcheckUrl: manifest.healthcheckUrl || config.update.healthcheckUrl,
-            })
-            updateChild = spawnDevicePackageUpdate(manifest, artifactPath, runtimePaths, task.id)
-            updateTaskStore.updateCurrentStage('installing', `Installing device package ${manifest.version}`, {
-              targetVersion: manifest.version,
-              warning: preflight.warningText,
-              healthcheckUrl: manifest.healthcheckUrl || config.update.healthcheckUrl,
-            })
-          } catch (err) {
-            updateInProgress = false
-            failCurrentUpdateTask('Failed to spawn device package installer', err instanceof Error ? err.message : String(err))
-            console.error('[update] failed to spawn device package installer:', err)
-            return
-          }
-          observeDetachedUpdateProcess(updateChild, 'device package installer', {
-            onSuccess: () => {
-              updateTaskStore.syncFromDisk()
-              updateInProgress = Boolean(updateTaskStore.getCurrentTask())
-            },
-            onFailure: (message) => {
-              updateTaskStore.syncFromDisk()
-              if (updateTaskStore.getCurrentTask()) {
-                failCurrentUpdateTask('Device package installer failed before restart completed', message)
-              }
-            },
-          })
-        } catch (err: any) {
-          updateInProgress = false
-          if (err instanceof UpdateError) {
-            const formattedError = formatUpdateTaskError(err.message, err.details)
-            failCurrentUpdateTask(err.message, formattedError)
-            console.error('[update] device package update failed:', {
-              code: err.code,
-              message: err.message,
-              details: err.details,
-            })
-            return
-          }
-          failCurrentUpdateTask(err?.stderr?.toString?.() || err?.message || String(err))
-          console.error('[update] device package update failed:', err)
-        }
-      })()
-      return
-    }
-
-    updateTaskStore.updateCurrentStage('resolving_version', 'Resolving latest published version', {
-      warning: preflight.warningText,
-    })
-    const resolvedVersion = await resolvePublishedUpdateVersion()
-    const targetSpecifier = resolvedVersion || config.update.distTag || 'latest'
-    if (config.update.strategy === 'source-deploy') {
-      if (!resolvedVersion) {
-        const message = `Could not resolve the latest published version for ${config.update.packageName}`
-        failCurrentUpdateTask(message)
-        throw new Error(message)
-      }
-
-      if (preflight.warningText) {
-        console.warn(`[update] preflight warning: ${preflight.warningText}`)
-      }
-      updateTaskStore.updateCurrentStage('starting', `Preparing source deployment update to ${resolvedVersion}`, {
-        targetVersion: resolvedVersion,
-        warning: preflight.warningText,
-      })
-      console.info(`[update] starting source deployment update for ${config.update.packageName}@${resolvedVersion}`)
-      ctx.body = {
-        success: true,
-        taskId: task.id,
-        status: 'running',
-        stage: 'starting',
-        message: appendPreflightWarning(`Starting source deployment update to ${resolvedVersion}`, preflight.warningText),
-        warning: preflight.warningText || undefined,
-      }
-
-      setTimeout(() => {
-        let updateChild
-        try {
-          updateTaskStore.updateCurrentStage('installing', `Source deployment update is running for ${resolvedVersion}`, {
-            targetVersion: resolvedVersion,
-            warning: preflight.warningText,
-          })
-          updateChild = spawnSourceDeployUpdate(resolvedVersion, runtimePaths)
-        } catch (err) {
-          updateInProgress = false
-          failCurrentUpdateTask('Failed to spawn source deployment update', err instanceof Error ? err.message : String(err))
-          console.error('[update] failed to spawn source deployment update:', err)
-          return
-        }
-        observeDetachedUpdateProcess(updateChild, 'source deployment update', {
-          onSuccess: () => {
-            managedUpdateTaskId = ''
-            updateTaskStore.completeCurrentTask(
-              'succeeded',
-              `Source deployment update finished for ${resolvedVersion}`,
-            )
-          },
-          onFailure: (message) => {
-            failCurrentUpdateTask('Source deployment update failed before restart completed', message)
-          },
-        })
-      }, 1000)
-      return
-    }
-
-    console.info(`[update] installing ${config.update.packageName}@${targetSpecifier} from ${config.update.registry}`)
-    updateTaskStore.updateCurrentStage('installing', `Installing ${config.update.packageName}@${targetSpecifier}`, {
-      targetVersion: targetSpecifier,
-      warning: preflight.warningText,
-    })
-    const output = runUpdateInstall(targetSpecifier)
-    if (preflight.warningText) {
-      console.warn(`[update] preflight warning: ${preflight.warningText}`)
-    }
-    updateTaskStore.updateCurrentStage('restarting', `Restarting Hermes Web UI after installing ${targetSpecifier}`, {
-      targetVersion: targetSpecifier,
-      warning: preflight.warningText,
-    })
+    const output = await runUpdateInstall()
 
     ctx.body = {
       success: true,
-      taskId: task.id,
-      status: 'running',
-      stage: 'restarting',
-      message: appendPreflightWarning(
-        output.trim() || `${config.update.packageName || 'Hermes Web UI'} updated successfully`,
-        preflight.warningText,
-      ),
-      warning: preflight.warningText || undefined,
+      message: output.trim() || 'hermes-web-ui updated successfully',
     }
 
+    keepUpdateLockForRestart = true
     setTimeout(() => {
-      let restart
-      try {
-        restart = spawnRestart(process.env.PORT || '8648')
-      } catch (err) {
-        updateInProgress = false
-        failCurrentUpdateTask('Failed to spawn restart helper', err instanceof Error ? err.message : String(err))
-        console.error('[update] failed to spawn restart:', err)
-        return
-      }
-      observeDetachedUpdateProcess(restart, 'restart helper', {
-        onSuccess: () => {
-          managedUpdateTaskId = ''
-          updateTaskStore.completeCurrentTask(
-            'succeeded',
-            `Restart helper completed for ${config.update.packageName || 'Hermes Web UI'}`,
-          )
-        },
-        onFailure: (message) => {
-          failCurrentUpdateTask('Restart helper failed before server replacement completed', message)
-        },
-      })
+      void (async () => {
+        let restart
+        try {
+          restart = await spawnRestart(process.env.PORT || '8648')
+        } catch (err) {
+          updateInProgress = false
+          console.error('[update] failed to spawn restart:', err)
+          return
+        }
+
+        restart.on('error', (err) => {
+          updateInProgress = false
+          console.error('[update] restart process failed:', err)
+        })
+        restart.on('exit', (code, signal) => {
+          updateInProgress = false
+          const failed = (typeof code === 'number' && code !== 0) || Boolean(signal)
+          if (failed) {
+            console.error(`[update] restart process exited before replacing server: code=${code} signal=${signal}`)
+          }
+        })
+        restart.unref()
+      })()
     }, 3000)
   } catch (err: any) {
-    updateInProgress = false
-    if (err instanceof UpdateError) {
-      failCurrentUpdateTask(err.message, err.message)
-      ctx.status = err.status
-      ctx.body = {
-        success: false,
-        code: err.code,
-        message: err.message,
-        details: err.details,
-      }
-      return
-    }
-    failCurrentUpdateTask(err.stderr?.toString() || err.message || String(err))
     ctx.status = 500
     ctx.body = {
       success: false,
       message: err.stderr?.toString() || err.message || String(err),
+    }
+  } finally {
+    if (!keepUpdateLockForRestart) {
+      updateInProgress = false
     }
   }
 }

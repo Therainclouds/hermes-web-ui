@@ -40,10 +40,21 @@ const groupChatApiMock = vi.hoisted(() => {
     clearRoomContext: vi.fn(),
   }
 })
+const clientApiMock = vi.hoisted(() => ({
+  getApiKey: vi.fn(() => 'test-token'),
+  getActiveProfileName: vi.fn(() => 'research'),
+  getStoredUsername: vi.fn(() => null),
+}))
+const authApiMock = vi.hoisted(() => ({
+  fetchCurrentUser: vi.fn(),
+}))
+const fetchMock = vi.hoisted(() => vi.fn())
 
 vi.mock('@/api/hermes/group-chat', () => groupChatApiMock)
-vi.mock('@/api/client', () => ({ getApiKey: vi.fn(() => 'test-token') }))
+vi.mock('@/api/client', () => clientApiMock)
+vi.mock('@/api/auth', () => authApiMock)
 vi.mock('@/api/hermes/download', () => ({ getDownloadUrl: vi.fn((path: string) => `/download?path=${path}`) }))
+vi.stubGlobal('fetch', fetchMock)
 
 function emitSocket(event: string, payload: unknown) {
   for (const cb of groupChatApiMock.handlers.get(event) || []) cb(payload)
@@ -96,6 +107,11 @@ describe('group chat store streaming merge', () => {
     groupChatApiMock.getSocket.mockReturnValue(groupChatApiMock.socket)
     groupChatApiMock.getStoredUserId.mockReturnValue('user-1')
     groupChatApiMock.getStoredUserName.mockReturnValue('tester')
+    clientApiMock.getApiKey.mockReturnValue('test-token')
+    clientApiMock.getActiveProfileName.mockReturnValue('research')
+    clientApiMock.getStoredUsername.mockReturnValue(null)
+    authApiMock.fetchCurrentUser.mockRejectedValue(new Error('not signed in'))
+    fetchMock.mockReset()
     groupChatApiMock.socket.on.mockClear()
     groupChatApiMock.socket.emit.mockReset()
     groupChatApiMock.socket.emit.mockImplementation((event: string, _data?: unknown, ack?: Function) => {
@@ -291,6 +307,37 @@ describe('group chat store streaming merge', () => {
     expect(store.contextStatus).toEqual(expect.objectContaining({ agentName: 'Worker', status: 'replying' }))
   })
 
+  it('loads group history in 150-message pages and stops at the 600-message display cap', async () => {
+    const store = await createJoinedStore()
+    store.loadedMessageCount = 450
+    store.totalMessages = 700
+    store.hasMoreBefore = true
+    const olderMessages = Array.from({ length: 150 }, (_, index) =>
+      assistantMessage({ id: `older-${index}`, timestamp: index + 1, content: `older ${index}` }),
+    )
+    groupChatApiMock.getRoomDetail.mockResolvedValueOnce({
+      room,
+      messages: olderMessages,
+      agents: [],
+      members: [],
+      total: 700,
+      offset: 450,
+      limit: 150,
+      hasMore: true,
+    })
+
+    await expect(store.loadOlderMessages()).resolves.toBe(true)
+
+    expect(groupChatApiMock.getRoomDetail).toHaveBeenCalledWith('room-1', { offset: 450, limit: 150 })
+    expect(store.loadedMessageCount).toBe(600)
+    expect(store.hasMoreBefore).toBe(true)
+    expect(store.hasReachedMessageDisplayLimit).toBe(true)
+
+    groupChatApiMock.getRoomDetail.mockClear()
+    await expect(store.loadOlderMessages()).resolves.toBe(false)
+    expect(groupChatApiMock.getRoomDetail).not.toHaveBeenCalled()
+  })
+
   it('ignores a stale reconnect join ack after the user switches rooms', async () => {
     const store = await createJoinedStore()
     let joinAck: Function | undefined
@@ -337,5 +384,84 @@ describe('group chat store streaming merge', () => {
       expect.anything(),
       expect.any(Function),
     )
+  })
+
+  it('uses authenticated account identity and restores the persisted room member name', async () => {
+    groupChatApiMock.getStoredUserId.mockReturnValue('browser-local-id')
+    groupChatApiMock.getStoredUserName.mockReturnValue(null)
+    clientApiMock.getStoredUsername.mockReturnValue('alice-login')
+    authApiMock.fetchCurrentUser.mockResolvedValue({
+      id: 42,
+      username: 'alice-login',
+      role: 'admin',
+      status: 'active',
+      created_at: 1,
+      updated_at: 1,
+      last_login_at: null,
+      avatar: '',
+    })
+    groupChatApiMock.getRoomDetail.mockResolvedValue({
+      room,
+      messages: [],
+      agents: [],
+      members: [],
+    })
+    groupChatApiMock.socket.emit.mockImplementation((event: string, data?: any, ack?: Function) => {
+      if (event === 'join' && ack) {
+        expect(data).toMatchObject({ roomId: 'room-1' })
+        expect(data.name).toBeUndefined()
+        ack({
+          members: [{ id: 'member-1', userId: 'auth:42', name: 'Alice Display', description: '', joinedAt: 1 }],
+          agents: [],
+          typingUsers: [],
+          contextStatuses: [],
+        })
+      }
+      return groupChatApiMock.socket
+    })
+    const { useGroupChatStore } = await import('@/stores/hermes/group-chat')
+    const store = useGroupChatStore()
+
+    await store.connect()
+    await store.joinRoom('room-1')
+
+    expect(groupChatApiMock.connectGroupChat).toHaveBeenCalledWith({
+      userId: 'auth:42',
+      userName: undefined,
+      authUserId: 42,
+    })
+    expect(store.userId).toBe('auth:42')
+    expect(store.userName).toBe('Alice Display')
+  })
+
+  it('adds auth and active profile headers to group chat uploads', async () => {
+    const store = await createJoinedStore()
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ files: [{ name: 'note.txt', path: '/tmp/note.txt' }] }),
+    })
+    groupChatApiMock.socket.emit.mockImplementation((event: string, _data?: unknown, ack?: Function) => {
+      if (event === 'join' && ack) ack({ members: [], agents: [], typingUsers: [], contextStatuses: [] })
+      if (event === 'message' && ack) ack({ id: 'msg-server' })
+      return groupChatApiMock.socket
+    })
+
+    await store.sendMessage('hello', [{
+      id: 'file-1',
+      name: 'note.txt',
+      type: 'text/plain',
+      size: 5,
+      url: '',
+      file: new File(['hello'], 'note.txt', { type: 'text/plain' }),
+    }])
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    const [url, options] = fetchMock.mock.calls[0]
+    expect(url).toBe('/upload')
+    expect(options.method).toBe('POST')
+    expect(options.headers.Authorization).toBe('Bearer test-token')
+    expect(options.headers['X-Hermes-Profile']).toBe('research')
+    expect(options.body).toBeInstanceOf(FormData)
   })
 })

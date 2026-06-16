@@ -151,6 +151,9 @@ export interface AvailableModelGroup {
   builtin?: boolean
   /** Env var used by Hermes to override this provider's base URL. If present, the preset URL is editable. */
   base_url_env?: string
+  /** Config source for custom providers. Dict-backed providers can be deleted from providers:<key>. */
+  provider_source?: 'custom_providers' | 'providers'
+  provider_key?: string
   /** 可选：模型 ID -> 元数据（preview/disabled/alias）。alias 仅用于 Web UI 展示。 */
   model_meta?: Record<string, { preview?: boolean; disabled?: boolean; alias?: string }>
 }
@@ -289,8 +292,11 @@ export async function addCustomProvider(data: CustomProvider): Promise<void> {
   })
 }
 
-export async function removeCustomProvider(name: string): Promise<void> {
-  await request(`/api/hermes/config/providers/${encodeURIComponent(name)}`, {
+export async function removeCustomProvider(name: string, options: { source?: 'custom_providers' | 'providers'; providerKey?: string } = {}): Promise<void> {
+  const query = new URLSearchParams()
+  if (options.source) query.set('source', options.source)
+  if (options.providerKey) query.set('providerKey', options.providerKey)
+  await request(`/api/hermes/config/providers/${encodeURIComponent(name)}${query.size ? `?${query}` : ''}`, {
     method: 'DELETE',
   })
 }
