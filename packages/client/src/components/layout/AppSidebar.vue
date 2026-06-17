@@ -90,19 +90,6 @@ function handleSidebarClick(event: MouseEvent) {
   }
 }
 
-async function handleUpdate() {
-  const ok = await appStore.doUpdate();
-  if (ok) {
-    message.success(t('sidebar.updateSuccess'), { duration: 5000 });
-  } else {
-    message.error(t('sidebar.updateFailed'));
-  }
-}
-
-function handleReloadClient() {
-  appStore.reloadClient();
-}
-
 function handleLogout() {
   localStorage.clear();
   window.location.reload();
