@@ -322,23 +322,17 @@ describe('update controller', () => {
     expect(mocks.unref).toHaveBeenCalledOnce()
   })
 
-  it('keeps update requests responsive while npm install is pending', async () => {
+  it('keeps update requests responsive while an update is pending before task persistence', async () => {
+    let resolveRegistryFetch: ((value: {
+      ok: boolean
+      json: () => Promise<{ version: string; 'dist-tags': { latest: string } }>
+    }) => void) | null = null
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation(() => new AbortController().signal)
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(resolve => {
+      resolveRegistryFetch = resolve
+    })))
     const npmCli = getNpmCliPath()
-    let installCallback: ((error: Error | null, stdout: string, stderr: string) => void) | undefined
-    const execFile = vi.fn((_command: string, args: string[], _options: any, callback: any) => {
-      if (args.includes('install') && args.includes('hermes-web-ui@latest')) {
-        installCallback = callback
-        return
-      }
-      callback(null, '', '')
-    })
-    const execFileSync = vi.fn((_command: string, args: string[]) => {
-      if (args.includes('install') && args.includes('hermes-web-ui@latest')) {
-        throw new Error('global update install must not use execFileSync')
-      }
-      return ''
-    })
-    const { handleUpdate, mocks } = await loadUpdateController({ execFile, execFileSync })
+    const { handleUpdate, mocks } = await loadUpdateController()
     const first = createMockCtx()
     const second = createMockCtx()
 
@@ -346,28 +340,34 @@ describe('update controller', () => {
     await Promise.resolve()
     await handleUpdate(second)
 
-    expect(installCallback).toBeTypeOf('function')
+    expect(resolveRegistryFetch).toBeTypeOf('function')
     expect(second.status).toBe(409)
-    expect(second.body).toEqual({
+    expect(second.body).toEqual(expect.objectContaining({
       success: false,
-      message: 'hermes-web-ui update is already in progress',
-    })
-    expect(mocks.execFile).toHaveBeenCalledWith(
-      process.execPath,
-      [npmCli, 'install', '-g', 'hermes-web-ui@latest'],
-      expect.objectContaining({ timeout: 10 * 60 * 1000 }),
-      expect.any(Function),
-    )
+      code: 'update_already_in_progress',
+      message: `${UPDATE_PACKAGE} update is already in progress`,
+    }))
     expect(mocks.execFileSync).not.toHaveBeenCalledWith(
       process.execPath,
-      [npmCli, 'install', '-g', 'hermes-web-ui@latest'],
+      [npmCli, 'install', '-g', `${UPDATE_PACKAGE}@${PUBLISHED_VERSION}`, '--registry', UPDATE_REGISTRY, '--ignore-scripts', '--no-audit', '--no-fund'],
       expect.any(Object),
     )
 
-    installCallback?.(null, 'updated', '')
+    resolveRegistryFetch?.({
+      ok: true,
+      json: async () => ({
+        version: PUBLISHED_VERSION,
+        'dist-tags': { latest: PUBLISHED_VERSION },
+      }),
+    })
     await firstUpdate
 
-    expect(first.body).toEqual({ success: true, message: 'updated' })
+    expect(first.body).toEqual(expect.objectContaining({
+      success: true,
+      status: 'running',
+      stage: 'restarting',
+      taskId: expect.any(String),
+    }))
   })
 
   it('falls back to the default port when PORT is not set', async () => {
@@ -418,12 +418,10 @@ describe('update controller', () => {
 
   it('requires device package execution settings for device-package updates', async () => {
     process.env.WEBUI_UPDATE_STRATEGY = 'device-package'
-    process.env.WEBUI_UPDATE_MANIFEST_URL = 'https://updates.example.com/stable/manifest.json'
-    process.env.WEBUI_UPDATE_INSTALLER_SCRIPT = '/opt/hermes-web-ui/scripts/install-device-package.sh'
     process.env.WEBUI_UPDATE_PACKAGE_TYPE = 'device-package'
     process.env.WEBUI_UPDATE_CHANNEL = 'stable'
-    delete process.env.WEBUI_UPDATE_RUNNER_SERVICE
-    delete process.env.WEBUI_UPDATE_RUNNER_REQUEST_FILE
+    delete process.env.WEBUI_UPDATE_MANIFEST_URL
+    delete process.env.WEBUI_UPDATE_MANIFEST_BASE_URL
     const { handleUpdate, mocks } = await loadUpdateController()
     const ctx = createMockCtx()
 
@@ -490,8 +488,13 @@ describe('update controller', () => {
     expect(ctx.body).toEqual(expect.objectContaining({
       success: true,
       status: 'running',
-      stage: 'checking',
+      stage: 'starting',
       taskId: expect.any(String),
+      currentTask: expect.objectContaining({
+        strategy: 'device-package',
+        stage: 'starting',
+        targetVersion: PUBLISHED_VERSION,
+      }),
     }))
     const requestCall = mocks.writeFileSync.mock.calls.find(call => String(call[0]).endsWith('update-runner-request.json'))
     expect(requestCall).toBeDefined()
@@ -512,6 +515,12 @@ describe('update controller', () => {
         windowsHide: true,
         env: expect.objectContaining({ npm_node_execpath: process.execPath }),
       }),
+    )
+    expect(mocks.execFile).not.toHaveBeenCalledWith(
+      process.execPath,
+      expect.arrayContaining(['install', '-g', `${UPDATE_PACKAGE}@${PUBLISHED_VERSION}`]),
+      expect.anything(),
+      expect.any(Function),
     )
   })
 
@@ -759,7 +768,7 @@ describe('update controller', () => {
 
   it('returns a 500 with stderr when installation fails', async () => {
     const execFile = vi.fn((_command: string, args: string[], _options: any, callback: any) => {
-      if (args.includes('install') && args.includes('hermes-web-ui@latest')) {
+      if (args.includes('install') && args.includes(`${UPDATE_PACKAGE}@${PUBLISHED_VERSION}`)) {
         const error = new Error('install failed') as Error & { stderr?: string }
         error.stderr = 'engine mismatch'
         callback(error, '', 'engine mismatch')
@@ -785,12 +794,16 @@ describe('update controller', () => {
 
   it('stores the failed task result when installation fails', async () => {
     const fsMocks = createStatefulFsMocks()
-    const execFileSync = vi.fn(() => {
-      const error = new Error('install failed') as Error & { stderr?: string }
-      error.stderr = 'engine mismatch'
-      throw error
+    const execFile = vi.fn((_command: string, args: string[], _options: any, callback: any) => {
+      if (args.includes('install') && args.includes(`${UPDATE_PACKAGE}@${PUBLISHED_VERSION}`)) {
+        const error = new Error('install failed') as Error & { stderr?: string }
+        error.stderr = 'engine mismatch'
+        callback(error, '', 'engine mismatch')
+        return
+      }
+      callback(null, '', '')
     })
-    const { handleUpdate, updateStatus } = await loadUpdateController({ execFileSync, ...fsMocks })
+    const { handleUpdate, updateStatus } = await loadUpdateController({ execFile, ...fsMocks })
     const ctx = createMockCtx()
     const statusCtx = createMockCtx()
 
@@ -908,8 +921,9 @@ describe('update controller', () => {
     const ctx = createMockCtx()
     const statusCtx = createMockCtx()
 
-    await handleUpdate(ctx)
+    const updatePromise = handleUpdate(ctx)
     await vi.runAllTimersAsync()
+    await updatePromise
     for (let index = 0; index < 20; index += 1) {
       await updateStatus(statusCtx)
       if ((statusCtx.body as any)?.lastTask) break

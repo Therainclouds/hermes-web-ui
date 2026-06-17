@@ -17,6 +17,7 @@ let updateInProgress = false
 let managedUpdateTaskId = ''
 
 function syncUpdateTaskState() {
+  const hadInMemoryLock = updateInProgress
   updateTaskStore.syncFromDisk()
   const currentTask = updateTaskStore.getCurrentTask()
   const recoveredTask = currentTask && currentTask.id !== managedUpdateTaskId
@@ -28,7 +29,10 @@ function syncUpdateTaskState() {
   if (!updateTaskStore.getCurrentTask()) {
     managedUpdateTaskId = ''
   }
-  updateInProgress = Boolean(updateTaskStore.getCurrentTask())
+  // Keep the in-memory lock while an update request is still progressing
+  // before it has persisted task state, otherwise a concurrent request can
+  // clear the lock and start a second update in the same process.
+  updateInProgress = hadInMemoryLock || Boolean(updateTaskStore.getCurrentTask())
 }
 
 syncUpdateTaskState()
@@ -1015,14 +1019,46 @@ async function getGlobalCliScriptAsync() {
   return cli
 }
 
-async function runUpdateInstall() {
+async function resolveRegistryUpdateVersion() {
+  if (!(config.update.packageName && config.update.registry)) {
+    throw new UpdateError('update_execution_misconfigured', getNpmPackageExecutionMessage())
+  }
+
+  const packageName = config.update.packageName
+  const registry = config.update.registry
+  const distTag = config.update.distTag || 'latest'
+  const registryName = encodeURIComponent(packageName)
+  const url = `${registry}/${registryName}`
+  const res = await fetch(url, { signal: AbortSignal.timeout(10_000) })
+  if (!res.ok) {
+    throw new UpdateError(
+      'update_registry_query_failed',
+      `Failed to resolve the latest published version from ${registry}: HTTP ${res.status}`,
+      502,
+    )
+  }
+
+  const data = await res.json() as { version?: string; 'dist-tags'?: Record<string, string> }
+  const version = data['dist-tags']?.[distTag] || data.version || data['dist-tags']?.latest || ''
+  if (!version) {
+    throw new UpdateError(
+      'update_registry_invalid',
+      `Could not resolve a published version for ${packageName} from ${registry}.`,
+      502,
+    )
+  }
+
+  return version
+}
+
+async function runUpdateInstall(versionOrTag: string) {
   try {
     await runNpmAsync(['cache', 'clean', '--force'], { timeout: 2 * 60 * 1000 })
   } catch (err) {
     console.warn('[update] failed to clean npm cache, continuing update:', err)
   }
 
-  return runNpmAsync(['install', '-g', 'hermes-web-ui@latest'], { timeout: 10 * 60 * 1000 })
+  return runNpmAsync(buildNpmPackageInstallArgs(config.update, versionOrTag), { timeout: 10 * 60 * 1000 })
 }
 
 async function spawnRestart(port: string) {
@@ -1140,6 +1176,22 @@ function failCurrentUpdateTask(message: string, error = message) {
   updateTaskStore.completeCurrentTask('failed', message, error)
 }
 
+function currentTaskResponse() {
+  return updateTaskStore.getCurrentTask()
+}
+
+function managedUpdateAcceptedResponse(message: string) {
+  const task = currentTaskResponse()
+  return {
+    success: true,
+    message,
+    status: task?.status || 'running',
+    stage: task?.stage || 'starting',
+    taskId: task?.id || '',
+    ...updateTaskStore.getStatus(),
+  }
+}
+
 export async function updateStatus(ctx: any) {
   syncUpdateTaskState()
   ctx.body = updateTaskStore.getStatus()
@@ -1227,11 +1279,101 @@ export async function handleUpdate(ctx: any) {
   let keepUpdateLockForRestart = false
 
   try {
-    const output = await runUpdateInstall()
+    if (config.update.strategy === 'device-package') {
+      assertDevicePackageExecution(config.update)
+      const task = updateTaskStore.createTask('device-package', 'Checking device package update.')
+      managedUpdateTaskId = task.id
+      updateTaskStore.updateCurrentStage('checking', 'Checking device package update.', {
+        warning: preflight.warningText,
+      })
 
+      const manifest = await resolveDevicePackageManifest(config.update)
+      updateTaskStore.updateCurrentStage('resolving_version', `Resolved device package ${manifest.version}.`, {
+        targetVersion: manifest.version,
+        warning: preflight.warningText,
+        healthcheckUrl: manifest.healthcheckUrl || config.update.healthcheckUrl,
+      })
+
+      assertDevicePackageCompatibility(manifest, getLocalWebUiVersion())
+
+      updateTaskStore.updateCurrentStage('downloading', `Downloading device package ${manifest.version}.`, {
+        targetVersion: manifest.version,
+        warning: preflight.warningText,
+        healthcheckUrl: manifest.healthcheckUrl || config.update.healthcheckUrl,
+      })
+      const { artifactPath } = await downloadAndVerifyDevicePackage(config.update, manifest)
+      updateTaskStore.updateCurrentStage('verifying', `Verified device package ${manifest.version}.`, {
+        targetVersion: manifest.version,
+        warning: preflight.warningText,
+        healthcheckUrl: manifest.healthcheckUrl || config.update.healthcheckUrl,
+      })
+
+      let updateChild: ChildProcess
+      try {
+        updateChild = spawnDevicePackageUpdate(manifest, artifactPath, runtimePaths, task.id)
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err)
+        failCurrentUpdateTask(`Failed to start device package update ${manifest.version}.`, error)
+        throw err
+      }
+      updateTaskStore.updateCurrentStage('starting', `Starting device package update ${manifest.version}.`, {
+        targetVersion: manifest.version,
+        warning: preflight.warningText,
+        healthcheckUrl: manifest.healthcheckUrl || config.update.healthcheckUrl,
+      })
+      observeDetachedUpdateProcess(updateChild, 'managed device package update service', {
+        onFailure: message => failCurrentUpdateTask(`Failed to start device package update ${manifest.version}.`, message),
+      })
+      ctx.body = managedUpdateAcceptedResponse(`Starting device package update ${manifest.version}.`)
+      return
+    }
+
+    if (config.update.strategy === 'source-deploy') {
+      assertSourceDeployExecution(config.update)
+      const version = await resolveRegistryUpdateVersion()
+      const task = updateTaskStore.createTask('source-deploy', `Preparing source deployment update ${version}.`)
+      managedUpdateTaskId = task.id
+      updateTaskStore.updateCurrentStage('starting', `Starting source deployment update ${version}.`, {
+        targetVersion: version,
+        warning: preflight.warningText,
+        healthcheckUrl: config.update.healthcheckUrl,
+      })
+
+      let updateChild: ChildProcess
+      try {
+        updateChild = spawnSourceDeployUpdate(version, runtimePaths)
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err)
+        failCurrentUpdateTask(`Failed to start source deployment update ${version}.`, error)
+        throw err
+      }
+      observeDetachedUpdateProcess(updateChild, 'managed source deployment update service', {
+        onFailure: message => failCurrentUpdateTask(`Failed to start source deployment update ${version}.`, message),
+      })
+      ctx.body = managedUpdateAcceptedResponse(`Starting source deployment update ${version}.`)
+      return
+    }
+
+    assertNpmPackageExecution(config.update)
+    const version = await resolveRegistryUpdateVersion()
+    const task = updateTaskStore.createTask('npm-package', `Installing ${config.update.packageName}@${version}.`)
+    managedUpdateTaskId = task.id
+    updateTaskStore.updateCurrentStage('installing', `Installing ${config.update.packageName}@${version}.`, {
+      targetVersion: version,
+      warning: preflight.warningText,
+    })
+    const output = await runUpdateInstall(version)
+
+    updateTaskStore.updateCurrentStage('restarting', `Restarting Hermes Web UI after updating to ${version}.`, {
+      targetVersion: version,
+      warning: preflight.warningText,
+    })
     ctx.body = {
       success: true,
       message: output.trim() || 'hermes-web-ui updated successfully',
+      status: 'running',
+      stage: 'restarting',
+      taskId: task.id,
     }
 
     keepUpdateLockForRestart = true
@@ -1242,29 +1384,47 @@ export async function handleUpdate(ctx: any) {
           restart = await spawnRestart(process.env.PORT || '8648')
         } catch (err) {
           updateInProgress = false
+          failCurrentUpdateTask(`Failed to restart Hermes Web UI after updating to ${version}.`, err instanceof Error ? err.message : String(err))
           console.error('[update] failed to spawn restart:', err)
           return
         }
 
         restart.on('error', (err) => {
           updateInProgress = false
+          failCurrentUpdateTask(`Failed to restart Hermes Web UI after updating to ${version}.`, err instanceof Error ? err.message : String(err))
           console.error('[update] restart process failed:', err)
         })
         restart.on('exit', (code, signal) => {
           updateInProgress = false
           const failed = (typeof code === 'number' && code !== 0) || Boolean(signal)
           if (failed) {
-            console.error(`[update] restart process exited before replacing server: code=${code} signal=${signal}`)
+            const message = `[update] restart process exited before replacing server: code=${code} signal=${signal}`
+            failCurrentUpdateTask(`Restart exited before completing update ${version}.`, message)
+            console.error(message)
+            return
           }
+          managedUpdateTaskId = ''
+          updateTaskStore.completeCurrentTask('succeeded', `Updated Hermes Web UI to ${version}.`)
         })
         restart.unref()
       })()
     }, 3000)
   } catch (err: any) {
-    ctx.status = 500
+    const responseError = err.stderr?.toString() || err.message || String(err)
+    const taskError = err instanceof UpdateError
+      ? formatUpdateTaskError(responseError, err.details)
+      : responseError
+    if (err instanceof UpdateError && err.status) {
+      ctx.status = err.status
+    } else {
+      ctx.status = 500
+    }
+    if (managedUpdateTaskId) {
+      failCurrentUpdateTask(err.message || 'Update failed', taskError)
+    }
     ctx.body = {
       success: false,
-      message: err.stderr?.toString() || err.message || String(err),
+      message: responseError,
     }
   } finally {
     if (!keepUpdateLockForRestart) {
