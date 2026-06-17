@@ -51,8 +51,9 @@ class WorkerProcess:
                 "--worker-profile",
                 self.profile,
             ]
-            if self.agent_root:
-                args.extend(["--agent-root", self.agent_root])
+            # Always pass --agent-root so workers never fall back to
+            # DEFAULT_AGENT_ROOT implicitly in wheel/venv deployments.
+            args.extend(["--agent-root", self.agent_root if self.agent_root is not None else ""])
             if self.hermes_home:
                 args.extend(["--hermes-home", self.hermes_home])
 

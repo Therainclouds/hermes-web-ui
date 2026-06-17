@@ -46,7 +46,7 @@ function openGroupChat() {
 
 function openApiRelay() {
   if (typeof window === 'undefined') return
-  window.open('https://apikey.fun/register?aff=LIBAPI', '_blank', 'noopener,noreferrer')
+  window.open('https://market.quant-speed.com/skills', '_blank', 'noopener,noreferrer')
 }
 </script>
 

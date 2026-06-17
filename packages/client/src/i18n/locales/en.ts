@@ -182,7 +182,7 @@ export default {
     chat: 'Chat',
     backToChat: 'Back',
     search: 'Search',
-    apiRelay: 'API Relay',
+    apiRelay: '量迹市场',
     history: 'History',
     jobs: 'Jobs',
     kanban: 'Kanban',
