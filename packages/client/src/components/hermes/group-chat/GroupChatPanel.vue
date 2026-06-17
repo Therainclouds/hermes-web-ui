@@ -5,7 +5,7 @@ import { useRouter } from 'vue-router'
 import { useMessage, NInput, NButton, NSpace, NSelect, NPopover, NPopconfirm, NInputNumber, NDropdown, type DropdownOption } from 'naive-ui'
 import { useGroupChatStore } from '@/stores/hermes/group-chat'
 import { useProfilesStore } from '@/stores/hermes/profiles'
-import { updateRoomConfig, forceCompress, exportRoom, exportAllRooms, importRooms } from '@/api/hermes/group-chat'
+import { updateRoomConfig, forceCompress, exportRoom, importRooms } from '@/api/hermes/group-chat'
 import GroupMessageList from './GroupMessageList.vue'
 import GroupChatInput from './GroupChatInput.vue'
 import ProfileAvatar from '@/components/hermes/profiles/ProfileAvatar.vue'
@@ -143,20 +143,6 @@ async function handleDeleteRoom(roomId: string) {
     } catch {
         message.error(t('common.saveFailed'))
     }
-}
-
-async function handleExportAll(ext: 'json' | 'txt' = 'json') {
-    try {
-        await exportAllRooms(ext)
-        message.success(t('groupChat.exportSuccess'))
-    } catch {
-        message.error(t('common.saveFailed'))
-    }
-}
-
-function handleOpenImport() {
-    showImportModal.value = true
-    importFile.value = null
 }
 
 function handleFileSelected(event: Event) {
