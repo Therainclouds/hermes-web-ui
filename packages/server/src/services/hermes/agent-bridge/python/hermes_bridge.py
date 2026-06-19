@@ -258,6 +258,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hermes-home", default=os.environ.get("HERMES_HOME", DEFAULT_HERMES_HOME))
     parser.add_argument("--worker-profile", default=os.environ.get("HERMES_AGENT_BRIDGE_WORKER_PROFILE"))
     args = parser.parse_args(argv)
+    args.agent_root = args.agent_root if args.agent_root != "" else None
 
     _set_path_env(args.agent_root, args.hermes_home)
     _ensure_agent_imports()

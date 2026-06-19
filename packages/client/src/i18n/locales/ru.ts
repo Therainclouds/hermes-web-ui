@@ -108,7 +108,7 @@ export default {
     chat: 'Чат',
     backToChat: 'Назад',
     search: 'Поиск',
-    apiRelay: 'Ретранслятор API',
+    apiRelay: '量迹市场',
     history: 'История',
     jobs: 'Задачи',
     kanban: 'Канбан',

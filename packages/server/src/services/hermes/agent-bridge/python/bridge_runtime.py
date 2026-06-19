@@ -310,8 +310,11 @@ def _candidate_agent_roots(raw: str | None = None) -> list[Path]:
 
 def _find_agent_root(raw: str | None = None) -> Path | None:
     for candidate in _candidate_agent_roots(raw):
-        if (candidate / "run_agent.py").exists():
-            return candidate
+        try:
+            if (candidate / "run_agent.py").exists():
+                return candidate
+        except PermissionError:
+            continue
     return None
 
 

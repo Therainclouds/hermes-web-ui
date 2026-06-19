@@ -393,6 +393,110 @@ print(json.dumps({
     })
   })
 
+  it('treats an empty worker agent-root as package mode instead of falling back to the default source root', async () => {
+    const packageDir = join(tempDir, 'site-packages')
+    const hermesHome = join(tempDir, 'home')
+    await mkdir(packageDir, { recursive: true })
+    await mkdir(hermesHome, { recursive: true })
+    await writeFile(join(packageDir, 'run_agent.py'), 'class AIAgent: pass\n', 'utf-8')
+    const expectedHermesHome = await realpath(hermesHome)
+
+    const result = await runBridgeProbe(`
+import importlib.util
+import json
+import os
+import sys
+
+spec = importlib.util.spec_from_file_location("hermes_bridge", os.environ["BRIDGE_PATH"])
+bridge = importlib.util.module_from_spec(spec)
+sys.modules["hermes_bridge"] = bridge
+spec.loader.exec_module(bridge)
+
+package_dir = os.path.join(os.environ["TEST_HERMES_HOME"], "site-packages")
+hermes_home = os.path.join(os.environ["TEST_HERMES_HOME"], "home")
+sys.path.insert(0, package_dir)
+bridge._candidate_agent_roots = lambda raw=None: []
+events = []
+class FakeBridgeServer:
+    def __init__(self, endpoint):
+        events.append({"event": "server", "endpoint": endpoint})
+    def serve_forever(self):
+        events.append({"event": "serve"})
+bridge.BridgeServer = FakeBridgeServer
+
+bridge.main([
+    "--endpoint", "tcp://127.0.0.1:0",
+    "--agent-root", "",
+    "--hermes-home", hermes_home,
+    "--worker-profile", "default",
+])
+from run_agent import AIAgent
+
+print(json.dumps({
+    "agent_root": os.environ.get("HERMES_AGENT_ROOT"),
+    "home": os.environ.get("HERMES_HOME"),
+    "base": os.environ.get("HERMES_AGENT_BRIDGE_BASE_HOME"),
+    "agent_class": AIAgent.__name__,
+    "events": events,
+}))
+`)
+
+    expect(result).toEqual({
+      agent_root: null,
+      home: expectedHermesHome,
+      base: expectedHermesHome,
+      agent_class: 'AIAgent',
+      events: [
+        { event: 'server', endpoint: 'tcp://127.0.0.1:0' },
+        { event: 'serve' },
+      ],
+    })
+  })
+
+  it('skips unreadable candidate agent roots while probing for run_agent.py', async () => {
+    const validRoot = join(tempDir, 'hermes-agent')
+    await mkdir(validRoot, { recursive: true })
+    await writeFile(join(validRoot, 'run_agent.py'), '', 'utf-8')
+    const expectedValidRoot = await realpath(validRoot)
+
+    const result = await runBridgeProbe(`
+import importlib.util
+import json
+import os
+import pathlib
+import sys
+
+spec = importlib.util.spec_from_file_location("hermes_bridge", os.environ["BRIDGE_PATH"])
+bridge = importlib.util.module_from_spec(spec)
+sys.modules["hermes_bridge"] = bridge
+spec.loader.exec_module(bridge)
+
+valid_root = pathlib.Path(os.path.join(os.environ["TEST_HERMES_HOME"], "hermes-agent")).resolve()
+blocked_root = pathlib.Path(os.path.join(os.environ["TEST_HERMES_HOME"], "blocked")).resolve()
+BasePath = type(pathlib.Path())
+
+class BlockedPath(BasePath):
+    _flavour = BasePath._flavour
+
+    def __truediv__(self, key):
+        return BlockedPath(str(super().__truediv__(key)))
+
+    def exists(self):
+        raise PermissionError("blocked")
+
+bridge._candidate_agent_roots = lambda raw=None: [BlockedPath(str(blocked_root)), valid_root]
+found = bridge._find_agent_root()
+
+print(json.dumps({
+    "found": str(found) if found is not None else None,
+}))
+`)
+
+    expect(result).toEqual({
+      found: expectedValidRoot,
+    })
+  })
+
   it('keeps inherited profile env keys for default profile compatibility', async () => {
     await mkdir(join(tempDir, 'profiles', 'work'), { recursive: true })
     await writeFile(join(tempDir, '.env'), 'OPENAI_API_KEY=default-openai\n', 'utf-8')

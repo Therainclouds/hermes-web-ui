@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿export default {
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿export default {
   // 로그인
   login: {
     title: 'QuantHermes Web UI',
@@ -182,7 +182,7 @@
     chat: '채팅',
     backToChat: '뒤로',
     search: '검색',
-    apiRelay: 'API 릴레이',
+    apiRelay: '量迹市场',
     history: '기록',
     jobs: '예약 작업',
     models: '모델',
