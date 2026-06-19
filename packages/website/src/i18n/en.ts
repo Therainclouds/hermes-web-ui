@@ -106,7 +106,7 @@ export default {
     wecom: 'WeCom',
   },
   screenshots: {
-    localUrl: 'http://localhost:8648',
+    localUrl: 'http://localhost:6060',
     tourLabel: 'Product tour',
     previous: 'Previous screenshot',
     next: 'Next screenshot',
@@ -187,7 +187,7 @@ export default {
       envVars: {
         title: 'Environment Variables',
         rows: [
-          ['PORT', 'Server listen port (default: 8648)'],
+          ['PORT', 'Server listen port (default: 6060)'],
           ['BIND_HOST', 'Server bind host (default: 0.0.0.0). Set :: explicitly to enable IPv6 listening.'],
           ['HERMES_WEB_UI_HOME', 'Hermes Studio data home for auth token, credentials, logs, DB, and default uploads'],
           ['HERMES_WEBUI_STATE_DIR', 'Compatibility alias for HERMES_WEB_UI_HOME'],

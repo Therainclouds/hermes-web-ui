@@ -158,7 +158,7 @@ class AgentClient {
     }
 
     async connect(port?: number): Promise<void> {
-        const actualPort = port ?? parseInt(process.env.PORT || '8648', 10)
+        const actualPort = port ?? parseInt(process.env.PORT || '6060', 10)
         const token = await getToken()
 
         this.socket = io(`http://127.0.0.1:${actualPort}/group-chat`, {

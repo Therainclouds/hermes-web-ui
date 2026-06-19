@@ -219,7 +219,7 @@ describe('coding agent launch preparation', () => {
       command: process.execPath,
       args: [join(process.cwd(), 'bin/hermes-web-ui-mcp.mjs')],
       env: {
-        HERMES_WEB_UI_URL: 'http://127.0.0.1:8648',
+        HERMES_WEB_UI_URL: 'http://127.0.0.1:6060',
         HERMES_WEB_UI_HOME: home,
         HERMES_WEBUI_STATE_DIR: home,
         HERMES_WEB_UI_PROFILE: 'default',
@@ -230,7 +230,7 @@ describe('coding agent launch preparation', () => {
 
     const prompt = readFileSync(join(result.rootDir, 'hermes-rules.md'), 'utf-8')
     expect(prompt).toContain('# 输出格式规范')
-    expect(prompt).toContain('当你的回复中包含图片、视频或文件引用时')
+    expect(prompt).toContain('当你的回复中包含图片、视频或文件引用�?)
   })
 
   it('isolates Claude Code settings for hidden chat runs only', async () => {
@@ -337,7 +337,7 @@ describe('coding agent launch preparation', () => {
     expect(config).toContain('[mcp_servers.hermes-studio]')
     expect(config).toContain(`command = "${process.execPath}"`)
     expect(config).toContain(`args = ["${join(process.cwd(), 'bin/hermes-web-ui-mcp.mjs')}"]`)
-    expect(config).toContain(`env = { HERMES_WEB_UI_URL = "http://127.0.0.1:8648", HERMES_WEB_UI_HOME = "${home}"`)
+    expect(config).toContain(`env = { HERMES_WEB_UI_URL = "http://127.0.0.1:6060", HERMES_WEB_UI_HOME = "${home}"`)
     expect(config).toContain('HERMES_WEBUI_STATE_DIR = "')
     expect(config).toContain('HERMES_WEB_UI_PROFILE = "default"')
     expect(config).toContain('HERMES_MCP_SERVER_NAME = "hermes-studio-mcp"')
@@ -365,7 +365,7 @@ describe('coding agent launch preparation', () => {
     })
 
     const config = readFileSync(join(result.rootDir, 'config.toml'), 'utf-8')
-    expect(config).toContain(`base_url = "http://127.0.0.1:8648/api/codex-proxy/`)
+    expect(config).toContain(`base_url = "http://127.0.0.1:6060/api/codex-proxy/`)
     expect(config).toContain('wire_api = "responses"')
     expect(config).toContain('requires_openai_auth = false')
     expect(config).toMatch(/experimental_bearer_token = "hwui_[^"]+"/)
@@ -396,7 +396,7 @@ describe('coding agent launch preparation', () => {
     })
 
     const config = readFileSync(join(result.rootDir, 'config.toml'), 'utf-8')
-    expect(config).toContain(`base_url = "http://127.0.0.1:8648/api/codex-proxy/`)
+    expect(config).toContain(`base_url = "http://127.0.0.1:6060/api/codex-proxy/`)
     expect(config).toMatch(/experimental_bearer_token = "hwui_[^"]+"/)
     expect(config).not.toContain('base_url = "https://api.openai.com/v1"')
     expect(result.rootDir).toBe(join(home, 'coding-agent', 'model', 'default', 'openai-api', 'codex'))
@@ -415,7 +415,7 @@ describe('coding agent launch preparation', () => {
     })
 
     const config = readFileSync(join(result.rootDir, 'config.toml'), 'utf-8')
-    expect(config).toContain(`base_url = "http://127.0.0.1:8648/api/codex-proxy/`)
+    expect(config).toContain(`base_url = "http://127.0.0.1:6060/api/codex-proxy/`)
     expect(config).toContain('wire_api = "responses"')
     expect(config).toContain('requires_openai_auth = false')
     expect(config).toMatch(/experimental_bearer_token = "hwui_[^"]+"/)

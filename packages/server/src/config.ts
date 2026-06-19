@@ -6,7 +6,7 @@ import type { UpdatePackageType, UpdateStrategy } from './services/update/types'
  * Web UI environment variables.
  *
  * Server/listen:
- * - PORT: Web UI listen port. Default: 8648.
+ * - PORT: Web UI listen port. Default: 6060.
  * - BIND_HOST: Web UI bind host. Default: 0.0.0.0.
  * - CORS_ORIGINS: Comma/space-separated cross-origin allowlist. Default: same host only.
  *
@@ -30,7 +30,7 @@ import type { UpdatePackageType, UpdateStrategy } from './services/update/types'
  * - HERMES_WEB_UI_DISABLE_MCP_AUTOINJECT: Disable Hermes Studio MCP config injection.
  * - HERMES_WEB_UI_ALLOW_TRANSIENT_MCP_AUTOINJECT: Allow MCP injection when HERMES_WEB_UI_HOME is under a temp dir.
  * - HERMES_LAN_DISCOVERY_ENABLED: Set false/0/off to disable UDP LAN discovery responder.
- * - HERMES_LAN_DISCOVERY_HTTP_PORTS: HTTP ports to probe during UDP discovery scans. Default: 8648,8748 plus current PORT.
+ * - HERMES_LAN_DISCOVERY_HTTP_PORTS: HTTP ports to probe during UDP discovery scans. Default: 6060,8748 plus current PORT.
  *   Discovery probes are sent to the fixed UDP port 48640 plus legacy mapped ports for compatibility.
  * - WORKSPACE_BASE: Base directory for workspace browsing. Default: current user's home directory.
  *
@@ -185,7 +185,7 @@ const updateManifestUrls = parseUrlList(process.env.WEBUI_UPDATE_MANIFEST_URLS)
 const updateManifestBaseUrls = parseUrlList(process.env.WEBUI_UPDATE_MANIFEST_BASE_URLS)
 
 export const config = {
-  port: parseInt(process.env.PORT || '8648', 10),
+  port: parseInt(process.env.PORT || '6060', 10),
   // Default to IPv4 for stable WSL/Windows browser access. Use BIND_HOST=:: explicitly for IPv6.
   host: getListenHost(),
   appHome,
@@ -216,7 +216,7 @@ export const config = {
     installerScript: (process.env.WEBUI_UPDATE_INSTALLER_SCRIPT || '').trim() || getDefaultInstallerScript(),
     stagingDir: resolve((process.env.WEBUI_UPDATE_STAGING_DIR || join(appHome, 'updates', 'staging')).trim()),
     backupDir: resolve((process.env.WEBUI_UPDATE_BACKUP_DIR || join(appHome, 'updates', 'backups')).trim()),
-    healthcheckUrl: (process.env.WEBUI_UPDATE_HEALTHCHECK_URL || '').trim() || getDefaultUpdateHealthcheckUrl(process.env.PORT || '8648'),
+    healthcheckUrl: (process.env.WEBUI_UPDATE_HEALTHCHECK_URL || '').trim() || getDefaultUpdateHealthcheckUrl(process.env.PORT || '6060'),
     stateFile: resolve((process.env.WEBUI_UPDATE_STATE_FILE || join(appHome, 'updates', 'update-task-state.json')).trim()),
     logDir: resolve((process.env.WEBUI_UPDATE_LOG_DIR || join(appHome, 'updates', 'logs')).trim()),
     manifestTimeoutMs: parsePositiveInteger(process.env.WEBUI_UPDATE_MANIFEST_TIMEOUT_MS, 30_000),

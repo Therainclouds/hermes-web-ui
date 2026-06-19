@@ -7,7 +7,7 @@ import { deviceIdFromPublicKey, getPublicSystemInfo, type PublicSystemInfo } fro
 const DISCOVERY_VERSION = 1
 export const HERMES_DISCOVERY_PORT = 48640
 const DISCOVERY_PORT_OFFSET = 40_000
-const DEFAULT_HTTP_PORTS = [8648, 8748]
+const DEFAULT_HTTP_PORTS = [6060, 8748]
 const DEFAULT_SCAN_TIMEOUT_MS = 1000
 
 type DiscoverySocket = dgram.Socket
@@ -101,7 +101,7 @@ function discoveryPortsForHttpPorts(httpPorts: number[]): number[] {
 }
 
 export function getLanEndpointKind(httpPort: number): LanEndpointKind {
-  if (httpPort === 8648) return 'web'
+  if (httpPort === 6060) return 'web'
   if (httpPort === 8748) return 'desktop'
   return 'custom'
 }

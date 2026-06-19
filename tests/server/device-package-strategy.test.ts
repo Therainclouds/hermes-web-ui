@@ -32,7 +32,7 @@ function createUpdateConfig(overrides: Partial<UpdateConfig> = {}): UpdateConfig
     installerScript: '/opt/hermes-web-ui/scripts/install-device-package.sh',
     stagingDir: join(tmpdir(), 'hermes-web-ui-tests', 'staging'),
     backupDir: join(tmpdir(), 'hermes-web-ui-tests', 'backups'),
-    healthcheckUrl: 'http://127.0.0.1:8648/health',
+    healthcheckUrl: 'http://127.0.0.1:6060/health',
     stateFile: join(tmpdir(), 'hermes-web-ui-tests', 'update-state.json'),
     logDir: join(tmpdir(), 'hermes-web-ui-tests', 'logs'),
     manifestTimeoutMs: 100,
@@ -63,7 +63,7 @@ function createManifest(overrides: Partial<DevicePackageManifest> = {}): DeviceP
     minCurrentVersion: '0.6.10',
     notesUrl: '',
     size: 0,
-    healthcheckUrl: 'http://127.0.0.1:8648/health',
+    healthcheckUrl: 'http://127.0.0.1:6060/health',
     ...overrides,
   }
 }
