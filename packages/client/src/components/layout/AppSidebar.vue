@@ -808,6 +808,17 @@ async function handleReloadClick() {
     padding: 8px 0;
   }
 
+  :deep(.profile-selector .selector-label),
+  :deep(.profile-selector .profile-name) {
+    display: none;
+  }
+
+  :deep(.profile-selector .profile-display) {
+    width: 40px;
+    justify-content: center;
+    padding: 4px;
+  }
+
   .sidebar-footer {
     align-items: center;
     gap: 6px;
@@ -858,6 +869,10 @@ async function handleReloadClick() {
 
     &.open {
       transform: translateX(0);
+    }
+
+    .collapse-btn {
+      display: flex;
     }
 
     // Override global utility — sidebar is always 240px wide

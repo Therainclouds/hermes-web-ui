@@ -168,6 +168,16 @@ function getPort() {
   return argPort ?? DEFAULT_PORT
 }
 
+function shouldOpenBrowser(argv = process.argv) {
+  return !argv.includes('--no-open')
+}
+
+function getRestartArgs(port, argv = process.argv) {
+  const args = ['restart', '--port', String(port)]
+  if (!shouldOpenBrowser(argv)) args.push('--no-open')
+  return args
+}
+
 function enableClientMode() {
   process.env.HERMES_WEB_UI_DISABLE_GATEWAY_AUTOSTART = '1'
   process.env.CORS_ORIGINS = '*'
@@ -393,6 +403,7 @@ function startDaemon(port) {
     serverEnv.ComSpec = serverEnv.ComSpec?.trim() || windowsShell
   }
   const child = spawn(process.execPath, [serverEntry], {
+    cwd: pkgDir,
     detached: true,
     stdio: ['ignore', logStream, logStream],
     env: serverEnv,
@@ -436,9 +447,11 @@ function startDaemon(port) {
         console.log(`  鉁?hermes-web-ui started`)
         console.log(`    ${url}`)
         console.log(`    Log: ${LOG_FILE}`)
-        const isWin = process.platform === 'win32'
-        const cmd = isWin ? `start ${url}` : process.platform === 'darwin' ? `open ${url}` : `xdg-open ${url}`
-        try { execSync(cmd, { stdio: 'ignore' }) } catch {}
+        if (shouldOpenBrowser()) {
+          const isWin = process.platform === 'win32'
+          const cmd = isWin ? `start ${url}` : process.platform === 'darwin' ? `open ${url}` : `xdg-open ${url}`
+          try { execSync(cmd, { stdio: 'ignore' }) } catch {}
+        }
       } else if (waited < maxWait) {
         setTimeout(poll, interval)
       } else {
@@ -640,6 +653,7 @@ Commands:
 Options:
   -v, --version      Show version number
   -h, --help         Show this help message
+  --no-open          Do not open a browser after startup
   --port <port>      Specify port (used with start/client/restart)
   --restart          Restart after clear-login-locks
 `)
@@ -695,6 +709,7 @@ Options:
         serverEnv.ComSpec = serverEnv.ComSpec?.trim() || windowsShell
       }
       const child = spawn(process.execPath, [serverEntry], {
+        cwd: pkgDir,
         stdio: 'inherit',
         env: serverEnv,
         windowsHide: true,
@@ -743,7 +758,7 @@ function runUpdateInstall(npm) {
         process.exit(1)
       }
 
-      const restart = spawnCli(cli, ['restart', '--port', String(getUpdatePort())], {
+      const restart = spawnCli(cli, getRestartArgs(getUpdatePort()), {
         stdio: 'inherit',
         windowsHide: true,
         env: getCurrentNodeEnv(),
@@ -776,7 +791,9 @@ export {
   commandExists,
   getDaemonStopGraceMs,
   getListeningPids,
+  getRestartArgs,
   parseUnixNetstatListeningPids,
   resetDefaultLogin,
+  shouldOpenBrowser,
   stopDaemon,
 }
