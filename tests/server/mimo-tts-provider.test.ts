@@ -121,6 +121,32 @@ describe('mimoTtsProvider', () => {
     expect(getHeader(init?.headers, 'Authorization')).toBeUndefined()
   })
 
+  it('returns PCM content type when MiMo is asked for PCM audio', async () => {
+    const audioData = Buffer.from('mimo-pcm').toString('base64')
+    mockFetch.mockResolvedValueOnce(jsonResponse({
+      choices: [{ message: { audio: { data: audioData } } }],
+    }))
+
+    const result = await mimoTtsProvider.synthesize(
+      { text: 'Hello' },
+      {
+        baseUrl: 'https://mimo.example.com',
+        apiKey: 'secret',
+        model: 'mimo-v2.5-tts',
+        voice: 'verse',
+        format: 'pcm',
+      },
+    )
+
+    expect(getJsonBody().audio).toEqual({ format: 'pcm', voice: 'verse' })
+    expect(result).toEqual({
+      audio: Buffer.from(audioData, 'base64'),
+      contentType: 'audio/x-pcm',
+      engine: 'mimo',
+      provider: 'mimo',
+    })
+  })
+
   it('both mode sends both auth headers', async () => {
     mockFetch.mockResolvedValueOnce(jsonResponse({
       choices: [{ message: { audio: { data: Buffer.from('ok').toString('base64') } } }],
@@ -142,13 +168,9 @@ describe('mimoTtsProvider', () => {
     expect(getHeader(init?.headers, 'Authorization')).toBe('Bearer secret')
   })
 
-  it('rejects unsafe baseUrl values before fetch', async () => {
+  it('rejects invalid baseUrl values before fetch', async () => {
     for (const baseUrl of [
       'file:///tmp/tts',
-      'http://localhost:8000/v1',
-      'http://127.0.0.1:8000/v1',
-      'http://[::1]:8000/v1',
-      'http://169.254.169.254/latest',
       'https://user:pass@mimo.example.com/v1',
     ]) {
       await expect(
@@ -164,6 +186,30 @@ describe('mimoTtsProvider', () => {
     }
 
     expect(mockFetch).not.toHaveBeenCalled()
+  })
+
+  it('allows local or private baseUrl values', async () => {
+    for (const baseUrl of [
+      'http://localhost:8000/v1',
+      'http://127.0.0.1:8000/v1',
+      'http://[::1]:8000/v1',
+      'http://169.254.169.254/latest',
+    ]) {
+      mockFetch.mockResolvedValueOnce(jsonResponse({
+        choices: [{ message: { audio: { data: Buffer.from('audio').toString('base64') } } }],
+      }))
+
+      await mimoTtsProvider.synthesize(
+        { text: 'Hello' },
+        {
+          baseUrl,
+          apiKey: 'secret',
+          model: 'mimo-v2.5-tts',
+        },
+      )
+    }
+
+    expect(mockFetch).toHaveBeenCalledTimes(4)
   })
 
   it('voiceDesign mode omits audio.voice and puts voiceDesignDesc/stylePrompt in user message', async () => {

@@ -415,6 +415,18 @@ function playSpeech(content: string, autoplay = false) {
         else speech.mimoToggle(props.message.id, content, options)
         return
     }
+    if (voiceSettings.provider.value === 'doubao') {
+        const options = {
+            provider: 'doubao' as const,
+            baseUrl: voiceSettings.doubaoBaseUrl.value,
+            model: voiceSettings.doubaoModel.value,
+            voice: voiceSettings.doubaoVoice.value,
+            stylePrompt: voiceSettings.doubaoStylePrompt.value || undefined,
+        }
+        if (autoplay) void speech.openaiPlay(props.message.id, content, options).catch(handleAutoplayTtsError)
+        else speech.openaiToggle(props.message.id, content, options)
+        return
+    }
     if (voiceSettings.provider.value === 'webspeech') {
         speech.toggleBrowser(props.message.id, content, {
             voiceName: voiceSettings.webspeechVoice.value || undefined,
