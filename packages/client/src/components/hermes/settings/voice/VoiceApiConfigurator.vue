@@ -4,6 +4,7 @@ import { NDrawer, NDrawerContent, NForm, NFormItem, NInput, NSelect, NSlider, NB
 import { useI18n } from 'vue-i18n'
 import type { VoiceApiConnection, VoiceApiSavePayload } from '@/types/voice-api'
 import { VOICE_API_PRESETS } from '@/constants/voiceApiPresets'
+import { DOUBAO_TTS_2_RESOURCE_ID, DOUBAO_TTS_VOICE_OPTIONS, doubaoTtsResourceForVoice } from '@/constants/doubaoTtsVoices'
 import { speedToEdgeRate, hzToEdgePitch } from '@/utils/ttsHelpers'
 
 const props = defineProps<{
@@ -109,6 +110,32 @@ const mimoModelOptions = [
   { label: t('settings.voice.mimoModelVoiceDesign'), value: 'mimo-v2.5-tts-voicedesign' },
   { label: t('settings.voice.mimoModelVoiceClone'), value: 'mimo-v2.5-tts-voiceclone' },
 ]
+
+const doubaoModelOptions = [
+  { label: 'Seed TTS 2.0', value: DOUBAO_TTS_2_RESOURCE_ID },
+]
+
+const doubaoVoiceOptions = computed(() => {
+  const current = stringField('voice').trim()
+  const presetOptions = DOUBAO_TTS_VOICE_OPTIONS.map(option => ({
+    label: option.label,
+    value: option.value,
+  }))
+  if (current && !DOUBAO_TTS_VOICE_OPTIONS.some(option => option.value === current)) {
+    return [{ label: current, value: current }, ...presetOptions]
+  }
+  return presetOptions
+})
+
+const sttAudioTranscodeOptions = computed(() => [
+  { label: t('settings.voice.sttAudioTranscodeNone'), value: 'none' },
+  { label: t('settings.voice.sttAudioTranscodeFfmpeg'), value: 'ffmpeg' },
+])
+
+function handleDoubaoVoiceUpdate(value: string) {
+  setField('voice', value)
+  setField('model', doubaoTtsResourceForVoice(value) || DOUBAO_TTS_2_RESOURCE_ID)
+}
 </script>
 
 <template>
@@ -130,6 +157,14 @@ const mimoModelOptions = [
             v-if="connection.provider === 'mimo'"
             :value="stringField('model')"
             :options="mimoModelOptions"
+            @update:value="value => setField('model', value)"
+          />
+          <NSelect
+            v-else-if="connection.provider === 'doubao'"
+            :value="stringField('model') || DOUBAO_TTS_2_RESOURCE_ID"
+            :options="doubaoModelOptions"
+            tag
+            filterable
             @update:value="value => setField('model', value)"
           />
           <NInput
@@ -159,6 +194,14 @@ const mimoModelOptions = [
             :value="stringField('voice')"
             :options="mimoVoiceOptions"
             @update:value="value => setField('voice', value)"
+          />
+          <NSelect
+            v-else-if="connection.provider === 'doubao'"
+            :value="stringField('voice')"
+            :options="doubaoVoiceOptions"
+            tag
+            filterable
+            @update:value="handleDoubaoVoiceUpdate"
           />
           <NInput
             v-else
@@ -204,6 +247,13 @@ const mimoModelOptions = [
         </template>
 
         <template v-if="connection.kind === 'stt' && connection.provider !== 'browser'">
+          <NFormItem :label="t('settings.voice.sttAudioTranscode')">
+            <NSelect
+              :value="stringField('audioTranscode') || 'none'"
+              :options="sttAudioTranscodeOptions"
+              @update:value="value => setField('audioTranscode', value)"
+            />
+          </NFormItem>
           <NFormItem :label="t('settings.voice.sttLanguage')">
             <NInput :value="stringField('language')" @update:value="value => setField('language', value)" />
           </NFormItem>

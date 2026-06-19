@@ -88,7 +88,7 @@ function isLegacyGlobalDefaultEndpoint(endpoint: string): boolean {
 }
 
 export function buildAgentBridgeProcessEnv(endpoint: string, hermesHome: string | undefined, agentRoot: string | undefined): NodeJS.ProcessEnv {
-  return {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     HERMES_AGENT_BRIDGE_ENDPOINT: endpoint,
     HERMES_HOME: hermesHome,
@@ -98,6 +98,8 @@ export function buildAgentBridgeProcessEnv(endpoint: string, hermesHome: string 
     // Clear inherited stale source roots for wheel/venv installs.
     HERMES_AGENT_ROOT: agentRoot?.trim() || '',
   }
+  delete env.ANTHROPIC_AUTH_TOKEN
+  return env
 }
 
 function pathCandidates(agentRoot?: string): string[] {
