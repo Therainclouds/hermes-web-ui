@@ -545,17 +545,20 @@ install_webui_dependencies() {
   path_env="${NODE_INSTALL_DIR}/bin:${APP_USER_HOME}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
   run chown -R "${APP_USER}:${APP_USER}" "${DEPLOY_DIR}"
-  run_as_app_user "cd '${DEPLOY_DIR}' && PATH='${path_env}' HERMES_WEB_UI_SKIP_PREPARE=1 npm install --include=dev && PATH='${path_env}' npm ls --depth=0 @vscode/markdown-it-katex naive-ui typescript vite vue-tsc >/dev/null"
+  # Use --ignore-scripts so the root `prepare` hook (which calls `npm run build`
+  # itself) does not race with build_webui below and leave a stale `dist/` from
+  # an older source tree.  build_webui is the single source of truth for the
+  # deploy build.
+  run_as_app_user "cd '${DEPLOY_DIR}' && PATH='${path_env}' npm install --include=dev --ignore-scripts && PATH='${path_env}' npm ls --depth=0 @vscode/markdown-it-katex naive-ui typescript vite vue-tsc >/dev/null"
 }
 
 check_webui_dependencies() {
   step "Check installed Web UI dependencies"
 
-  if [[ -f "${DEPLOY_DIR}/dist/server/index.js" ]]; then
-    info "Pre-built artifacts detected. Skipping build-time dependency check."
-    return 0
-  fi
-
+  # Always verify the build-time node_modules are present, even if a previous
+  # `dist/` exists.  Trusting a stale build artifact here is what allowed
+  # `dist/server/index.js` from an older version to keep being executed after
+  # a source upgrade.
   run test -f "${DEPLOY_DIR}/node_modules/naive-ui/package.json"
   run test -f "${DEPLOY_DIR}/node_modules/naive-ui/es/index.d.ts"
   run test -f "${DEPLOY_DIR}/node_modules/typescript/package.json"
@@ -565,10 +568,13 @@ check_webui_dependencies() {
 }
 
 build_webui() {
-  if [[ -f "${DEPLOY_DIR}/dist/server/index.js" ]]; then
-    info "Found pre-built artifacts in dist/. Skipping build_webui."
-    return 0
-  fi
+  # Force a clean rebuild on every deploy.  A previous `dist/` from an older
+  # source tree (with a different `__APP_VERSION__` baked in via
+  # scripts/build-server.mjs) would otherwise be reused by the systemd unit,
+  # causing the version cutover check in post_deploy_self_check to fail with
+  # "did not report webui_version=<expected>".
+  step "Clean previous build artifacts"
+  run rm -rf "${DEPLOY_DIR}/dist"
 
   step "Build hermes-web-ui"
   local path_env

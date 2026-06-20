@@ -41,7 +41,7 @@
     "build": "npm run openapi:generate && vue-tsc -b && vite build && tsc --noEmit -p packages/server/tsconfig.json && node scripts/build-server.mjs",
     "check:release-consistency": "node scripts/check-release-consistency.mjs",
     "harness:check": "node scripts/harness-check.mjs",
-    "prepare": "[ -d dist ] || npm run build",
+    "prepare": "node scripts/clean-dist.mjs && npm run build",
     "preview": "NODE_ENV=production vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
