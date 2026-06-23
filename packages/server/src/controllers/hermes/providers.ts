@@ -99,6 +99,33 @@ function findProviderDictKey(config: any, poolKey: string, requestedProviderKey 
   return ''
 }
 
+/**
+ * Drop the legacy `custom_providers:` list entry that matches `poolKey`.
+ * Returns the removed index, or `-1` if nothing matched.
+ *
+ * Extracted from `remove()` so the splice logic is unit-testable and the
+ * surrounding controller can stay declarative (see ADR-0010).
+ */
+function removeCustomProviderAtIndex(config: any, poolKey: string): number {
+  if (!Array.isArray(config.custom_providers)) return -1
+  const idx = findLegacyCustomProviderIndex(config, poolKey)
+  if (idx === -1) return -1
+  config.custom_providers.splice(idx, 1)
+  return idx
+}
+
+/**
+ * Drop the v12 `providers:` dict entry that matches `poolKey`.
+ * Returns `true` when an entry was removed.
+ */
+function deleteProviderDictEntry(config: any, poolKey: string, requestedProviderKey: string): boolean {
+  const dictKey = findProviderDictKey(config, poolKey, requestedProviderKey)
+  if (!dictKey) return false
+  if (!config.providers || typeof config.providers !== 'object') return false
+  delete config.providers[dictKey]
+  return true
+}
+
 export async function create(ctx: any) {
   const { name, base_url, api_key, model, context_length, providerKey, api_mode } = ctx.request.body as {
     name: string; base_url: string; api_key: string; model: string; context_length?: number; providerKey?: string | null; api_mode?: ProviderApiMode
@@ -247,22 +274,21 @@ export async function remove(ctx: any) {
       if (isCustom) {
         const removeLegacy = requestedSource !== 'providers'
         const removeDict = requestedSource !== 'custom_providers'
-        let didRemove = false
-        if (removeLegacy) {
-          const idx = findLegacyCustomProviderIndex(config, poolKey)
-          if (idx !== -1) {
-            ;(config.custom_providers as any[]).splice(idx, 1)
-            didRemove = true
-          }
-        }
-        if (!didRemove && removeDict) {
-          const dictKey = findProviderDictKey(config, poolKey, requestedProviderKey)
-          if (dictKey) {
-            delete config.providers[dictKey]
-            didRemove = true
-          }
-        }
-        if (!didRemove) return { data: config, result: false, write: false }
+        // When the caller did not pin a side (auto / legacy-default), we
+        // must clean *both* the legacy `custom_providers:` list and the
+        // v12 `providers:` dict. Hermes Agent can silently populate the
+        // dict while keeping the list, and the read path merges them by
+        // name+baseUrl+model — a partial delete would let the entry
+        // "resurrect" on the next refresh (ADR-0010).
+        let legacyRemoved = false
+        let dictRemoved = false
+        if (removeLegacy) legacyRemoved = removeCustomProviderAtIndex(config, poolKey) !== -1
+        if (removeDict) dictRemoved = deleteProviderDictEntry(config, poolKey, requestedProviderKey)
+        if (!legacyRemoved && !dictRemoved) return { data: config, result: false, write: false }
+        logger.info(
+          '[providers] removed poolKey=%s legacy=%s dict=%s source=%s',
+          poolKey, legacyRemoved, dictRemoved, requestedSource || 'auto',
+        )
       } else {
         const envMapping = PROVIDER_ENV_MAP[poolKey]
         if (envMapping?.api_key_env) {

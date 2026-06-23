@@ -338,4 +338,80 @@ describe('providers controller delete', () => {
     expect(researchAuthAfter.providers.openrouter).toEqual({ access_token: 'keep-research-token' })
     expect(researchAuthAfter.credential_pool.openrouter).toEqual([{ label: 'keep-research' }])
   })
+
+  // ─── ADR-0010: prevent "deleted provider reappears after refresh" ───
+
+  it('removes both legacy list and v12 dict entries when no source is specified (regression: ghost provider)', async () => {
+    // Mirrors the production bug: Hermes Agent's v12 migration populates
+    // the dict while leaving the legacy list intact, so a "found-then-stop"
+    // delete only cleans one side and the other side resurrects the entry
+    // on the next refresh.
+    writeFileSync(join(hermesHome, 'config.yaml'), [
+      'model:',
+      '  provider: openai-codex',
+      '  default: gpt-5.5',
+      'custom_providers:',
+      '  - name: ghost-provider',
+      '    base_url: https://legacy.invalid/v1',
+      '    api_key: legacy-key',
+      '    model: legacy-model',
+      'providers:',
+      '  ghost-provider:',
+      '    api: https://dict.invalid/v1',
+      '    api_key: dict-key',
+      '    default_model: dict-model',
+      '',
+    ].join('\n'))
+
+    const { remove } = await loadProvidersController()
+    const ctx = makeCtx('custom:ghost-provider') // no query.source
+
+    await remove(ctx)
+
+    expect(ctx.body).toEqual({ success: true })
+    const configAfter = readYaml(join(hermesHome, 'config.yaml'))
+    // Both sides must be empty — the bug was leaving the dict entry behind.
+    expect(configAfter.custom_providers ?? []).toHaveLength(0)
+    expect(configAfter.providers ?? {}).not.toHaveProperty('ghost-provider')
+    // Sanity: the unrelated default model survived.
+    expect(configAfter.model).toEqual({
+      provider: 'openai-codex',
+      default: 'gpt-5.5',
+    })
+  })
+
+  it('keeps selective source-based deletion: source=providers only clears the dict side', async () => {
+    // Locks in the existing contract from
+    // "uses provider source to delete one side when legacy and dict providers share a name":
+    // an explicit `source=providers` must still leave the legacy list untouched.
+    writeFileSync(join(hermesHome, 'config.yaml'), [
+      'model:',
+      '  provider: custom:shared',
+      '  default: legacy-model',
+      'custom_providers:',
+      '  - name: shared',
+      '    base_url: https://legacy.invalid/v1',
+      '    api_key: legacy-key',
+      '    model: legacy-model',
+      'providers:',
+      '  shared:',
+      '    api: https://dict.invalid/v1',
+      '    api_key: dict-key',
+      '    default_model: dict-model',
+      '',
+    ].join('\n'))
+
+    const { remove } = await loadProvidersController()
+    const ctx = makeCtx('custom:shared', {
+      query: { source: 'providers', providerKey: 'shared' },
+    })
+
+    await remove(ctx)
+
+    expect(ctx.body).toEqual({ success: true })
+    const configAfter = readYaml(join(hermesHome, 'config.yaml'))
+    expect(configAfter.providers ?? {}).not.toHaveProperty('shared')
+    expect(configAfter.custom_providers ?? []).toHaveLength(1)
+    expect(configAfter.custom_providers[0].name).toBe('shared')
+  })
 })
