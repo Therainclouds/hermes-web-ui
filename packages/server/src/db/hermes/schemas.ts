@@ -456,6 +456,42 @@ export const GC_SESSION_PROFILES_SCHEMA: Record<string, string> = {
 }
 
 // ============================================================================
+// Expert Marketplace (services/hermes/experts/*)
+// ============================================================================
+
+export const INSTALLED_EXPERTS_TABLE = 'installed_experts'
+
+export const INSTALLED_EXPERTS_SCHEMA: Record<string, string> = {
+  id: 'INTEGER PRIMARY KEY AUTOINCREMENT',
+  expert_slug: 'TEXT NOT NULL',
+  expert_name: "TEXT NOT NULL DEFAULT ''",
+  kind: "TEXT NOT NULL DEFAULT 'expert'",
+  category: "TEXT NOT NULL DEFAULT ''",
+  installed_version: "TEXT NOT NULL DEFAULT ''",
+  status: "TEXT NOT NULL DEFAULT 'installed'",
+  local_path: "TEXT NOT NULL DEFAULT ''",
+  manifest_json: "TEXT NOT NULL DEFAULT ''",
+  last_error: "TEXT NOT NULL DEFAULT ''",
+  last_error_stage: "TEXT NOT NULL DEFAULT ''",
+  installed_at: 'INTEGER NOT NULL DEFAULT 0',
+  updated_at: 'INTEGER NOT NULL DEFAULT 0',
+  team_slug: "TEXT NOT NULL DEFAULT ''",
+}
+
+export const EXPERT_PROFILE_BINDINGS_TABLE = 'expert_profile_bindings'
+
+export const EXPERT_PROFILE_BINDINGS_SCHEMA: Record<string, string> = {
+  id: 'INTEGER PRIMARY KEY AUTOINCREMENT',
+  expert_slug: 'TEXT NOT NULL',
+  profile_name: 'TEXT NOT NULL',
+  role: "TEXT NOT NULL DEFAULT 'expert'",
+  parent_team_slug: "TEXT NOT NULL DEFAULT ''",
+  installed_version: "TEXT NOT NULL DEFAULT ''",
+  created_at: 'INTEGER NOT NULL DEFAULT 0',
+  updated_at: 'INTEGER NOT NULL DEFAULT 0',
+}
+
+// ============================================================================
 // Schema Sync Utilities
 // ============================================================================
 
@@ -807,6 +843,20 @@ export function initAllHermesTables(): void {
     syncTable(GC_ROOM_MEMBERS_TABLE, GC_ROOM_MEMBERS_SCHEMA, {
       indexes: {
         idx_gc_room_members_user: 'CREATE INDEX idx_gc_room_members_user ON gc_room_members(userId)',
+      }
+    })
+
+    // Expert marketplace (installed experts + profile bindings)
+    syncTable(INSTALLED_EXPERTS_TABLE, INSTALLED_EXPERTS_SCHEMA, {
+      indexes: {
+        idx_installed_experts_slug: 'CREATE UNIQUE INDEX IF NOT EXISTS idx_installed_experts_slug ON installed_experts(expert_slug)',
+        idx_installed_experts_status: 'CREATE INDEX IF NOT EXISTS idx_installed_experts_status ON installed_experts(status)',
+      }
+    })
+    syncTable(EXPERT_PROFILE_BINDINGS_TABLE, EXPERT_PROFILE_BINDINGS_SCHEMA, {
+      indexes: {
+        idx_expert_bindings_slug: 'CREATE INDEX IF NOT EXISTS idx_expert_bindings_slug ON expert_profile_bindings(expert_slug)',
+        idx_expert_bindings_parent: 'CREATE INDEX IF NOT EXISTS idx_expert_bindings_parent ON expert_profile_bindings(parent_team_slug)',
       }
     })
   } catch (e) {
