@@ -3,6 +3,7 @@ import { closeDb } from '../db'
 import { stopPreviewRuntime } from '../controllers/update'
 import { codingAgentRunManager } from './agent-runner/coding-agent-run-manager'
 import { shutdownManagedGateways } from './hermes/gateway-runner'
+import { stopPeriodicGatewayReaper } from './hermes/gateway-autostart'
 import { stopOutboundRelayClient } from './global-agent/outbound-relay-client'
 
 const DEFAULT_SHUTDOWN_FORCE_EXIT_MS = 15_000
@@ -61,6 +62,15 @@ export function createShutdownHandler(server: any, groupChatServer?: any, chatRu
         logger.info('Preview runtime stopped')
       } catch (err) {
         logger.warn(err, 'Failed to stop preview runtime (non-fatal)')
+      }
+
+      // ★ ADR-0011: stop the periodic reaper *before* killing managed
+      // gateways so the timer can't fire mid-shutdown and race with the
+      // stop signals.
+      try {
+        stopPeriodicGatewayReaper()
+      } catch (err) {
+        logger.warn(err, 'Failed to stop periodic gateway reaper (non-fatal)')
       }
 
       if (shouldStopManagedGatewaysOnShutdown()) {

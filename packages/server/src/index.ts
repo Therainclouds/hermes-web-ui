@@ -22,7 +22,7 @@ import { ChatRunSocket } from './services/hermes/run-chat'
 import { getAgentBridgeManager, startAgentBridgeManager } from './services/hermes/agent-bridge'
 import { HermesSkillInjector } from './services/hermes/skill-injector'
 import { injectBundledMcpServer } from './services/hermes/studio-mcp-autoinject'
-import { ensureProfileGatewaysRunning } from './services/hermes/gateway-autostart'
+import { ensureProfileGatewaysRunning, startPeriodicGatewayReaper } from './services/hermes/gateway-autostart'
 import { refreshConfiguredProviderModelCatalogsInBackground } from './services/hermes/model-catalog-cache'
 import { scanLanDevices, startLanDiscoveryResponder } from './services/lan-discovery'
 import { getLanPeerSocketManager, getLanPeerSocketPath } from './services/lan-peer-socket'
@@ -174,7 +174,13 @@ async function startRuntimeServicesBeforeListen(): Promise<void> {
     console.log('[bootstrap] profile gateway check disabled by HERMES_WEB_UI_DISABLE_GATEWAY_AUTOSTART')
   } else {
     void ensureProfileGatewaysRunning()
-      .then(() => console.log('[bootstrap] profile gateways checked'))
+      .then(() => {
+        console.log('[bootstrap] profile gateways checked')
+        // ★ ADR-0011: start the cross-platform gateway reaper so stale
+        // PID files and ghost PIDs are swept even on Linux/ARMbian where
+        // the Windows-only startup recovery does not run.
+        startPeriodicGatewayReaper()
+      })
       .catch((err) => {
         logger.warn(err, '[bootstrap] failed to ensure profile gateways')
         console.warn('[bootstrap] failed to ensure profile gateways:', err instanceof Error ? err.message : err)

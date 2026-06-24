@@ -191,19 +191,52 @@ export async function shutdownManagedGateways(
   return { signaled, forced, errors }
 }
 
+/**
+ * Returns the PIDs of every currently supervised managed gateway. Used by
+ * the cross-platform reaper (ADR-0011) to distinguish "we own it" from
+ * "an external process holds the lock" — we never kill external PIDs.
+ */
+export function getAllManagedGatewayPids(): number[] {
+  const pids: number[] = []
+  for (const state of profileState.values()) {
+    const pid = state.current?.pid
+    if (typeof pid === 'number' && pid > 0) pids.push(pid)
+  }
+  return pids
+}
+
 export function startGatewayRunManaged(
   hermesBin: string,
-  opts: { profileDir?: string } = {},
+  opts: {
+    profileDir?: string
+    /**
+     * Test seam: override `process.platform` so unit tests can drive the
+     * non-Windows SIGTERM path without spawning a real taskkill.
+     * Not used in production — defaults to `process.platform`.
+     */
+    platformOverride?: NodeJS.Platform
+    /**
+     * Test seam: override the Windows process-tree killer.
+     */
+    killWindowsProcessTreeOverride?: KillWindowsProcessTree
+  } = {},
 ): { pid: number | null; reused: boolean } {
   return startGatewayRunManagedInternal(hermesBin, {
     profileDir: opts.profileDir,
     preserveRespawnAttempts: false,
+    platformOverride: opts.platformOverride,
+    killWindowsProcessTreeOverride: opts.killWindowsProcessTreeOverride,
   })
 }
 
 function startGatewayRunManagedInternal(
   hermesBin: string,
-  opts: { profileDir?: string; preserveRespawnAttempts?: boolean } = {},
+  opts: {
+    profileDir?: string
+    preserveRespawnAttempts?: boolean
+    platformOverride?: NodeJS.Platform
+    killWindowsProcessTreeOverride?: KillWindowsProcessTree
+  } = {},
 ): { pid: number | null; reused: boolean } {
   const profileDir = opts.profileDir || getActiveProfileDir()
   const state = getOrCreateProfileState(profileDir)
@@ -214,6 +247,32 @@ function startGatewayRunManagedInternal(
   clearRespawnTimer(state, profileDir)
   if (!opts.preserveRespawnAttempts) {
     state.respawnAttempts = 0
+  }
+
+  // ★ ADR-0011: stop the previous managed child before spawning a new one
+  // for the same profile. Without this, the reference is silently replaced
+  // and the old `gateway run --replace` process leaks as a ghost — the CLI's
+  // `gateway stop` may not reach it (it spawns a detached Python child whose
+  // PID isn't necessarily the one written to gateway.pid). Fire-and-forget
+  // so a slow kill doesn't block the user's config update; the periodic
+  // reaper (gateway-autostart) is the safety net.
+  if (state.current) {
+    const old = state.current
+    state.current = null
+    logger.info(
+      '[gateway-runner] stopping previous managed gateway before respawn profileDir=%s oldPid=%s',
+      profileDir, old.pid,
+    )
+    stopManagedGateway(old, {
+      timeoutMs: 3000,
+      platform: opts.platformOverride ?? process.platform,
+      killWindowsProcessTree: opts.killWindowsProcessTreeOverride ?? taskkillWindowsProcessTree,
+    }).catch(err => {
+      logger.warn(
+        err, '[gateway-runner] failed to stop previous managed gateway profileDir=%s oldPid=%s',
+        profileDir, old.pid,
+      )
+    })
   }
 
   const child = spawnHermesWithBin(hermesBin, ['gateway', 'run', '--replace'], {

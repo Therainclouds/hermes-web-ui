@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import { NButton, NTag, NSpin, useMessage, useDialog } from 'naive-ui'
 import type { HermesProfile, HermesProfileDetail } from '@/api/hermes/profiles'
 import { useProfilesStore } from '@/stores/hermes/profiles'
+import { useExpertsStore } from '@/stores/hermes/experts'
 import { useI18n } from 'vue-i18n'
 import ProfileAvatar from './ProfileAvatar.vue'
 
@@ -11,6 +12,7 @@ const emit = defineEmits<{}>()
 
 const { t } = useI18n()
 const profilesStore = useProfilesStore()
+const expertsStore = useExpertsStore()
 const message = useMessage()
 const dialog = useDialog()
 
@@ -21,6 +23,10 @@ const switching = ref(false)
 const detail = ref<HermesProfileDetail | null>(null)
 
 const isDefault = computed(() => props.profile.name === 'default')
+
+const expertBinding = computed(() => expertsStore.bindingsForProfile(props.profile.name))
+const isExpert = computed(() => !!expertBinding.value)
+const expertRole = computed(() => expertBinding.value?.role || '')
 
 async function toggleDetail() {
   if (expanded.value) {
@@ -100,6 +106,16 @@ async function handleExport() {
       <div class="profile-title">
         <ProfileAvatar :name="profile.name" :avatar="profile.avatar" :size="28" />
         <h3 class="profile-name">{{ profile.name }}</h3>
+        <NTag
+          v-if="isExpert"
+          size="tiny"
+          type="info"
+          :bordered="false"
+          class="expert-badge"
+          :title="`${t('experts.source.badge')}: ${expertRole}`"
+        >
+          {{ t('experts.source.badge') }}
+        </NTag>
       </div>
       <NTag v-if="profile.active" size="tiny" type="success" :bordered="false">
         {{ t('profiles.active') }}

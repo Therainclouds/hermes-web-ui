@@ -304,4 +304,38 @@ describe('gateway-runner supervision', () => {
     expect(killWindowsProcessTree).toHaveBeenCalledWith(10000)
     expect(fakeChildren[0].killSignals).toEqual([])
   })
+
+  // ─── ADR-0011: prevent "ghost gateway" after restart ─────────────────
+
+  it('stops the previous managed gateway before spawning a new one for the same profile', async () => {
+    vi.useFakeTimers()
+    vi.resetModules()
+    const { startGatewayRunManaged } = await import(
+      '../../packages/server/src/services/hermes/gateway-runner'
+    )
+
+    // Force the non-Windows path so the stop is synchronous (SIGTERM is
+    // called immediately on `child.kill('SIGTERM')` rather than going
+    // through a real `taskkill.exe` subprocess).
+    const platformOverride: NodeJS.Platform = 'linux'
+
+    // First start: a gateway is running
+    const first = startGatewayRunManaged('/usr/bin/hermes', { profileDir: '/tmp/adr-0011', platformOverride })
+    expect(first.pid).toBe(10000)
+    expect(fakeChildren).toHaveLength(1)
+
+    // Second start for the same profile: the previous managed child must
+    // be stopped (SIGTERM) BEFORE the new child is spawned. Otherwise the
+    // old `gateway run --replace` process leaks as a ghost holding the
+    // Feishu platform lock.
+    const second = startGatewayRunManaged('/usr/bin/hermes', { profileDir: '/tmp/adr-0011', platformOverride })
+    expect(second.pid).toBe(10001)
+    expect(second.pid).not.toBe(first.pid)
+    expect(fakeChildren).toHaveLength(2)
+    expect(fakeChildren[0].killSignals).toEqual(['SIGTERM'])
+
+    // Drain the await microtask so the fire-and-forget stop error handler
+    // resolves without leaking unhandled rejections.
+    await vi.advanceTimersByTimeAsync(0)
+  })
 })

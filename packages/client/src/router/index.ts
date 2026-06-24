@@ -62,6 +62,16 @@ const router = createRouter({
       meta: { requiresSuperAdmin: true },
     },
     {
+      path: '/hermes/experts',
+      name: 'hermes.experts',
+      component: () => import('@/views/hermes/ExpertsView.vue'),
+    },
+    {
+      path: '/hermes/experts/:slug',
+      name: 'hermes.expertDetail',
+      component: () => import('@/views/hermes/ExpertDetailView.vue'),
+    },
+    {
       path: '/hermes/logs',
       name: 'hermes.logs',
       component: () => import('@/views/hermes/LogsView.vue'),
