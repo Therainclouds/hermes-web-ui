@@ -168,6 +168,7 @@ describe('outbound relay client', () => {
       channels: 2,
       sampleRate: 16000,
     })
+    expect(enqueuePayload).not.toHaveProperty('completionManagedByServer')
 
     ws.__handlers.get('message')?.(JSON.stringify({
       type: 'audio.done',
@@ -207,7 +208,7 @@ describe('outbound relay client', () => {
       type: 'voice.recorded',
       interactionId: 'voice-tts-fail',
       mimeType: 'audio/wav',
-      profile: 'default',
+      profile: 'research',
     }), false)
     ws.__handlers.get('message')?.(Buffer.from('wav-audio'), true)
 
@@ -221,6 +222,14 @@ describe('outbound relay client', () => {
 
     await vi.waitFor(() => {
       expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('tts-synthesize-failed-xiaohe.s16le.pcm'))
+    })
+    const ttsCalls = fetchImpl.mock.calls.filter(([url]: [string]) => url.includes('/api/hermes/tts/synthesize'))
+    expect(ttsCalls).toHaveLength(2)
+    expect(ttsCalls[0][1].headers).toMatchObject({
+      'X-Hermes-Profile': 'research',
+    })
+    expect(ttsCalls[1][1].headers).toMatchObject({
+      'X-Hermes-Profile': 'research',
     })
     const enqueuePayload = JSON.parse(
       ws.send.mock.calls
@@ -238,6 +247,7 @@ describe('outbound relay client', () => {
       channels: 1,
       sampleRate: 16000,
     })
+    expect(enqueuePayload).not.toHaveProperty('completionManagedByServer')
   })
 
   it('forwards an allowed HTTP request to the local Web UI server', async () => {

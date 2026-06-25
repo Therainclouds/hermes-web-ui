@@ -31,7 +31,8 @@
   ],
   "bin": {
     "hermes-web-ui": "./bin/hermes-web-ui.mjs",
-    "hermes-web-ui-mcp": "./bin/hermes-web-ui-mcp.mjs"
+    "hermes-web-ui-mcp": "./bin/hermes-studio-mcp.mjs",
+    "hermes-studio-mcp": "./bin/hermes-studio-mcp.mjs"
   },
   "scripts": {
     "start": "vite --host --port 8648",
@@ -52,6 +53,7 @@
     "dev:website": "vite --config vite.config.website.ts",
     "build:website": "vite build --config vite.config.website.ts",
     "preview:website": "vite preview --config vite.config.website.ts",
+    "mcu:flash:clean": "pio run -d packages/esp32-c3 && pio run -d packages/esp32-c3 -t erase && pio run -d packages/esp32-c3 -t upload",
     "desktop:install": "npm ci --prefix packages/desktop --no-audit --no-fund",
     "desktop:prepare-runtime": "npm --prefix packages/desktop run prepare:runtime",
     "desktop:prepare-python": "npm --prefix packages/desktop run prepare:python",
@@ -74,7 +76,14 @@
     "access": "public"
   },
   "dependencies": {
+    "@audio/decode-mp3": "^1.1.0",
+    "@audio/decode-wav": "^1.2.0",
     "@vscode/markdown-it-katex": "^1.1.2",
+    "@vue-flow/background": "^1.3.2",
+    "@vue-flow/controls": "^1.1.3",
+    "@vue-flow/core": "^1.48.2",
+    "@vue-flow/minimap": "^1.5.4",
+    "@vue-flow/node-resizer": "^1.5.1",
     "adm-zip": "^0.5.17",
     "eventsource": "^4.1.0",
     "js-tiktoken": "^1.0.21",

@@ -27,6 +27,7 @@ import { refreshConfiguredProviderModelCatalogsInBackground } from './services/h
 import { scanLanDevices, startLanDiscoveryResponder } from './services/lan-discovery'
 import { getLanPeerSocketManager, getLanPeerSocketPath } from './services/lan-peer-socket'
 import { startGlobalAgentServer } from './services/global-agent/server'
+import { WorkflowSocketServer } from './services/workflow-socket'
 import { logger } from './services/logger'
 import { createStaticCompressionMiddleware } from './middleware/static-compression'
 import { requireUserJwt, resolveUserProfile } from './middleware/user-auth'
@@ -56,6 +57,7 @@ process.on('unhandledRejection', (reason) => {
 let server: any = null
 let servers: any[] = []
 let chatRunServer: any = null
+let workflowSocketServer: WorkflowSocketServer | null = null
 let agentBridgeManager: any = null
 let desktopShutdownHandler: ShutdownHandler | null = null
 
@@ -336,6 +338,9 @@ export async function bootstrap() {
   chatRunServer = new ChatRunSocket(groupChatServer.getIO())
   setChatRunServer(chatRunServer)
   chatRunServer.init()
+
+  workflowSocketServer = new WorkflowSocketServer(groupChatServer.getIO())
+  workflowSocketServer.init()
 
   const loopbackBaseUrl = getLoopbackBaseUrl(server)
   startGlobalAgentServer(groupChatServer.getIO(), { localBaseUrl: loopbackBaseUrl })

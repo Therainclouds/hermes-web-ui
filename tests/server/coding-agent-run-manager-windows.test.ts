@@ -262,9 +262,7 @@ describe('coding agent Windows process launch', () => {
     expect(emitted).toContainEqual(expect.objectContaining({
       event: 'run.failed',
       payload: expect.objectContaining({
-        error: expect.objectContaining({
-          message: 'spawn claude ENOENT',
-        }),
+        error: 'spawn claude ENOENT',
       }),
     }))
 
@@ -308,9 +306,7 @@ describe('coding agent Windows process launch', () => {
     expect(emitted).toContainEqual(expect.objectContaining({
       event: 'run.failed',
       payload: expect.objectContaining({
-        error: expect.objectContaining({
-          message: 'Codex exited with code 1: 不是',
-        }),
+        error: 'Codex exited with code 1: 不是',
       }),
     }))
 

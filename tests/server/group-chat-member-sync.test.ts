@@ -248,7 +248,7 @@ describe('Group Chat member/agent identity sync', () => {
       })),
       saveRoom: vi.fn(),
       addRoomMember: vi.fn(),
-      getMessages: vi.fn(() => []),
+      getRecentMessagesForUI: vi.fn(() => []),
       getRoomAgents: vi.fn(() => []),
     }
     const socket = {

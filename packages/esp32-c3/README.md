@@ -21,6 +21,11 @@ pio run -t upload
 pio device monitor
 ```
 
+After `pio run`, run `npm run build` from the repository root to sync the
+firmware into `packages/esp32-c3/release/firmware.bin` and package it into
+`dist/mcu/firmware.bin`. GitHub release builds reuse the checked-in release
+firmware and do not build ESP32 firmware in CI.
+
 The current macOS serial port is configured as:
 
 ```text

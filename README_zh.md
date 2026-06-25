@@ -306,6 +306,7 @@ Web UI 启动后端聊天能力时，会优先使用包含 `run_agent.py` 的源
 | `HERMES_AGENT_BRIDGE_TIMEOUT_MS` | `120000` | Node 请求 bridge broker 的响应超时。 |
 | `HERMES_AGENT_BRIDGE_CONNECT_RETRY_MS` | `5000` | 连接 bridge socket 失败时的短重试窗口。 |
 | `HERMES_AGENT_BRIDGE_STARTUP_TIMEOUT_MS` | `120000` | 等待 Python bridge ready 的超时。 |
+| `HERMES_AGENT_BRIDGE_STOP_ON_SHUTDOWN` | 开启 | Web UI 关闭和重启时是否停止 bridge broker；设为 `0`、`false`、`no` 或 `off` 才会在重启时保留 broker。 |
 | `HERMES_AGENT_BRIDGE_AUTO_RESTART` | 开启 | bridge broker 意外退出后是否自动重启；设为 `0`、`false`、`no` 或 `off` 可关闭。 |
 | `HERMES_AGENT_BRIDGE_RESTART_DELAY_MS` | `1000` | bridge 自动重启退避的基础延迟。 |
 | `HERMES_AGENT_BRIDGE_PLATFORM` | `cli` | 传给 Hermes Agent 的 platform 标识。 |
@@ -336,7 +337,7 @@ Web UI 启动后端聊天能力时，会优先使用包含 `run_agent.py` 的源
 | `hermes-web-ui start` | 后台启动（守护进程模式） |
 | `hermes-web-ui start --port 9000` | 自定义端口启动 |
 | `hermes-web-ui stop` | 停止后台进程 |
-| `hermes-web-ui restart` | 重启后台进程 |
+| `hermes-web-ui restart` | 重启后台进程；默认会关闭 bridge broker |
 | `hermes-web-ui status` | 查看运行状态 |
 | `hermes-web-ui update` | 更新到最新版本并重启 |
 | `hermes-web-ui upgrade` | `update` 的别名 |
@@ -411,3 +412,6 @@ BFF 层负责：Socket.IO 聊天流式推送、Hermes agent bridge、按 Profile
 ## 许可证
 
 [BSL-1.1](./LICENSE)
+
+该许可证覆盖 Hermes Studio、原 Hermes Web UI 名称、`hermes-web-ui` npm 包和
+CLI、桌面应用、固件、发布产物、文档以及本仓库内的关联文件。

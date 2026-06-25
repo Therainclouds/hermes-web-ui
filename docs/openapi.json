@@ -2,8 +2,8 @@
   "openapi": "3.0.3",
   "info": {
     "title": "Hermes Studio API",
-    "description": "Hermes Studio API — chat sessions, scheduled jobs, platform channels, model management, skills, memory, logs, file browser, group chat, and terminal.",
-    "version": "0.6.17"
+    "description": "Hermes Studio API �?chat sessions, scheduled jobs, platform channels, model management, skills, memory, logs, file browser, group chat, and terminal.",
+    "version": "0.6.18"
   },
   "servers": [
     {

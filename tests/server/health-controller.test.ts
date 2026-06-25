@@ -287,6 +287,25 @@ describe('health controller version metadata', () => {
     expect(aheadCtx.body.webui_update_available).toBe(false)
   })
 
+  it('does not report a registry version lower than the local build as an update', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ version: '0.6.17' }),
+    }))
+
+    const { checkLatestVersion, healthCheck } = await loadHealthControllerWithInjectedVersion('0.6.18')
+
+    await checkLatestVersion()
+
+    const ctx = createMockCtx()
+    await healthCheck(ctx)
+
+    expect(ctx.body.webui_latest).toBe('0.6.17')
+    expect(ctx.body.webui_update_available).toBe(false)
+    expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining('Update available'))
+  })
+
   it('does not throw when latest-version lookup fails', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')))
 

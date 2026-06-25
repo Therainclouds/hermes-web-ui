@@ -258,6 +258,7 @@ watch(
       :key="p.key"
       :name="p.name"
       :icon="p.icon"
+      :platform-key="p.key"
       :exclusive="p.exclusive"
       :config="settingsStore[p.key as keyof typeof settingsStore] as Record<string, any>"
       :credentials="getCreds(p.key)"
@@ -345,6 +346,12 @@ watch(
       <template v-if="p.key === 'matrix'">
         <SettingRow :label="t('platform.accessToken')" :hint="t('platform.accessTokenHint')">
           <NInput :value="credentialDraft('matrix').token || ''" :loading="isSavingPlatform('matrix')" clearable size="small" class="input-lg" placeholder="syt_..." @update:value="v => setCredentialDraft('matrix', { token: v })" />
+        </SettingRow>
+        <SettingRow :label="t('platform.matrixUserId')" :hint="t('platform.matrixUserIdHint')">
+          <NInput :value="credentialDraft('matrix').extra?.user_id || ''" :loading="isSavingPlatform('matrix')" clearable size="small" class="input-lg" placeholder="@hermes:example.org" @update:value="v => setCredentialDraft('matrix', { extra: { ...credentialDraft('matrix').extra, user_id: v } })" />
+        </SettingRow>
+        <SettingRow :label="t('platform.matrixPassword')" :hint="t('platform.matrixPasswordHint')">
+          <NInput :value="credentialDraft('matrix').extra?.password || ''" :loading="isSavingPlatform('matrix')" type="password" show-password-on="click" clearable size="small" class="input-lg" placeholder="Matrix password" @update:value="v => setCredentialDraft('matrix', { extra: { ...credentialDraft('matrix').extra, password: v } })" />
         </SettingRow>
         <SettingRow :label="t('platform.homeserver')" :hint="t('platform.homeserverHint')">
           <NInput :value="credentialDraft('matrix').extra?.homeserver || ''" :loading="isSavingPlatform('matrix')" clearable size="small" class="input-lg" placeholder="https://matrix.org" @update:value="v => setCredentialDraft('matrix', { extra: { ...credentialDraft('matrix').extra, homeserver: v } })" />

@@ -33,11 +33,12 @@ import { filterBridgeToolCallMarkupDelta, flushPendingToolCallMarkup } from './b
 import { markAbortCompleted } from './abort'
 import { writeModelRunProfileToken } from './model-run-prompt'
 import type { AuthenticatedUser } from '../../../middleware/user-auth'
+import { ensureHermesRunWorkspace } from './workspace'
 
 const BRIDGE_USAGE_FLUSH_DELAY_MS = 200
 const BRIDGE_TITLE_EVENT_POLL_INTERVAL_MS = 500
 const BRIDGE_TITLE_EVENT_POLL_TIMEOUT_MS = 45_000
-const BRIDGE_GOAL_EVALUATE_TIMEOUT_MS = 5_000
+const BRIDGE_GOAL_EVALUATE_TIMEOUT_MS = 120_000
 
 function stringValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
@@ -297,7 +298,7 @@ async function ensureBridgeFixedContext(args: {
 export async function handleBridgeRun(
   nsp: ReturnType<Server['of']>,
   socket: Socket,
-  data: { input: string | ContentBlock[]; display_input?: string | ContentBlock[] | null; display_role?: 'user' | 'command'; storage_message?: string; session_id?: string; model?: string; provider?: string; model_groups?: RunModelGroup[]; instructions?: string; workspace?: string | null; source?: string; session_source?: 'global_agent'; queue_id?: string; peerExcludeSocketId?: string; reasoning_effort?: string },
+  data: { input: string | ContentBlock[]; display_input?: string | ContentBlock[] | null; display_role?: 'user' | 'command'; storage_message?: string; session_id?: string; model?: string; provider?: string; model_groups?: RunModelGroup[]; instructions?: string; workspace?: string | null; source?: string; session_source?: 'global_agent' | 'workflow'; queue_id?: string; peerExcludeSocketId?: string; reasoning_effort?: string; onEvent?: (event: string, payload: any) => void },
   profile: string,
   sessionMap: Map<string, SessionState>,
   bridge: AgentBridgeClient,
@@ -306,17 +307,22 @@ export async function handleBridgeRun(
   dequeueNextQueuedRun: (socket: Socket, sessionId: string, fallbackProfile?: string) => void,
 ) {
   const { input, session_id, instructions } = data
-  const runSource = data.session_source === 'global_agent' || data.source === 'global_agent' ? 'global_agent' : 'cli'
+  const runSource = data.session_source === 'global_agent' || data.source === 'global_agent'
+    ? 'global_agent'
+    : data.session_source === 'workflow' || data.source === 'workflow'
+      ? 'workflow'
+      : 'cli'
   if (!session_id) {
     socket.emit('run.failed', { event: 'run.failed', error: 'session_id is required for cli source' })
     return
   }
 
   let fullInstructions = instructions
-    ? `${getSystemPrompt()}\n${instructions}`
-    : getSystemPrompt()
+    ? `${getSystemPrompt(undefined, { source: data.session_source || data.source })}\n${instructions}`
+    : getSystemPrompt(undefined, { source: data.session_source || data.source })
   const sessionRow = getSession(session_id)
-  const workspace = sessionRow?.workspace || String(data.workspace || '').trim()
+  const workspace = await ensureHermesRunWorkspace(profile, sessionRow?.workspace || data.workspace)
+  if (sessionRow && !sessionRow.workspace) updateSession(session_id, { workspace })
   const sessionModel = sessionRow?.model || ''
   const sessionProvider = sessionRow?.provider || ''
   const { model: resolvedModel, provider: resolvedProvider } = await resolveBridgeRunModelConfig({
@@ -396,7 +402,7 @@ export async function handleBridgeRun(
     if (!getSession(session_id)) {
       const previewText = extractTextForPreview(displayInput || input)
       const preview = previewText.replace(/[\r\n]/g, ' ').substring(0, 100)
-      createSession({ id: session_id, profile, source: runSource, model: resolvedModel, provider: resolvedProvider, title: preview, workspace: data.workspace || undefined })
+      createSession({ id: session_id, profile, source: runSource, model: resolvedModel, provider: resolvedProvider, title: preview, workspace })
     }
     messageId = addMessage({
       session_id,
@@ -409,7 +415,7 @@ export async function handleBridgeRun(
   } else if (!getSession(session_id)) {
     const previewText = displayInput === null ? extractTextForPreview(input) : extractTextForPreview(displayInput || input)
     const preview = previewText.replace(/[\r\n]/g, ' ').substring(0, 100)
-    createSession({ id: session_id, profile, source: runSource, model: resolvedModel, provider: resolvedProvider, title: preview, workspace: data.workspace || undefined })
+    createSession({ id: session_id, profile, source: runSource, model: resolvedModel, provider: resolvedProvider, title: preview, workspace })
   }
 
   socket.join(`session:${session_id}`)
@@ -430,8 +436,9 @@ export async function handleBridgeRun(
   }
   const emit = (event: string, payload: any) => {
     const tagged = { ...payload, session_id }
+    data.onEvent?.(event, tagged)
     nsp.to(`session:${session_id}`).emit(event, tagged)
-    if (!nsp.adapter.rooms.get(`session:${session_id}`)?.size && socket.connected) {
+    if (!data.onEvent && !nsp.adapter.rooms.get(`session:${session_id}`)?.size && socket.connected) {
       socket.emit(event, tagged)
     }
   }

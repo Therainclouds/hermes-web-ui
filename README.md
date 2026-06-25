@@ -306,6 +306,7 @@ These variables configure Hermes Web UI itself. Provider API keys and Hermes Age
 | `HERMES_AGENT_BRIDGE_TIMEOUT_MS` | `120000` | Timeout for Node requests to the bridge broker. |
 | `HERMES_AGENT_BRIDGE_CONNECT_RETRY_MS` | `5000` | Short retry window for connecting to the bridge socket. |
 | `HERMES_AGENT_BRIDGE_STARTUP_TIMEOUT_MS` | `120000` | Timeout while waiting for the Python bridge to become ready. |
+| `HERMES_AGENT_BRIDGE_STOP_ON_SHUTDOWN` | enabled | Stop the bridge broker during Web UI shutdown and restart. Set `0`, `false`, `no`, or `off` to keep the bridge across restarts. |
 | `HERMES_AGENT_BRIDGE_AUTO_RESTART` | enabled | Auto-restart the bridge broker after unexpected exit. Set `0`, `false`, `no`, or `off` to disable. |
 | `HERMES_AGENT_BRIDGE_RESTART_DELAY_MS` | `1000` | Base delay for bridge auto-restart backoff. |
 | `HERMES_AGENT_BRIDGE_PLATFORM` | `cli` | Platform identity passed to Hermes Agent. |
@@ -338,7 +339,7 @@ These variables configure Hermes Web UI itself. Provider API keys and Hermes Age
 | `hermes-web-ui start`             | Start in background (daemon mode)  |
 | `hermes-web-ui start --port 9000` | Start on custom port               |
 | `hermes-web-ui stop`              | Stop background process            |
-| `hermes-web-ui restart`           | Restart background process         |
+| `hermes-web-ui restart`           | Restart background process; stops the bridge by default |
 | `hermes-web-ui status`            | Check if running                   |
 | `hermes-web-ui update`            | Update to latest version & restart |
 | `hermes-web-ui upgrade`           | Alias for `update`                 |
@@ -413,3 +414,7 @@ The BFF layer handles Socket.IO chat streaming, the Hermes agent bridge, profile
 ## License
 
 [BSL-1.1](./LICENSE)
+
+The license covers Hermes Studio, the former Hermes Web UI name, the
+`hermes-web-ui` npm package and CLI, desktop applications, firmware, release
+artifacts, documentation, and associated files in this repository.

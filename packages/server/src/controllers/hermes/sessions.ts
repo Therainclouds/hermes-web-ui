@@ -25,6 +25,7 @@ import { listUserProfiles } from '../../db/hermes/users-store'
 import { readConfigYamlForProfile } from '../../services/config-helpers'
 import { codingAgentRunManager } from '../../services/agent-runner/coding-agent-run-manager'
 import { AgentBridgeClient, getAgentBridgeManager } from '../../services/hermes/agent-bridge'
+import { ensureHermesRunWorkspace } from '../../services/hermes/run-chat/workspace'
 
 function getPendingDeletedSessionIds(): Set<string> {
   return getGroupChatServer()?.getStorage().getPendingDeletedSessionIds() || new Set<string>()
@@ -105,11 +106,12 @@ function isVisibleWebUiSessionSource(source?: string | null): boolean {
 
 function isRequestedSessionSource(source: string | undefined, sessionSource?: string | null): boolean {
   if (source === 'global_agent') return sessionSource === 'global_agent'
+  if (source === 'workflow') return sessionSource === 'workflow'
   return isVisibleWebUiSessionSource(sessionSource)
 }
 
 function isHermesHistorySessionSource(source?: string | null): boolean {
-  return source !== 'api_server' && source !== 'global_agent'
+  return source !== 'api_server' && source !== 'global_agent' && source !== 'workflow'
 }
 
 function isCodingAgentSession(session?: { source?: string | null; agent?: string | null; agent_session_id?: string | null } | null): boolean {
@@ -339,7 +341,7 @@ export async function getConversationMessages(ctx: any) {
     return
   }
   if (denySessionAccess(ctx, detail)) return
-  const messages = detail.messages
+  const messages = (detail.messages || [])
     .filter(m => {
       if (humanOnly && m.role !== 'user' && m.role !== 'assistant') return false
       if (!m.content) return false
@@ -374,6 +376,18 @@ export async function list(ctx: any) {
       (!knownProfiles || knownProfiles.has(s.profile || 'default')),
     )),
   }
+}
+
+export async function count(ctx: any) {
+  const source = (ctx.query.source as string) || undefined
+  const profile = explicitProfileFilter(ctx)
+  const allSessions = localListSessions(profile, source, 2147483647)
+  const knownProfiles = profile ? null : new Set(listProfileNamesFromDisk())
+  const sessions = filterPendingDeletedSessions(filterByAllowedProfiles(ctx, allSessions).filter(s =>
+    isRequestedSessionSource(source, s.source) &&
+    (!knownProfiles || knownProfiles.has(s.profile || 'default')),
+  ))
+  ctx.body = { count: sessions.length }
 }
 
 /**
@@ -790,13 +804,28 @@ export async function setModel(ctx: any) {
   const existing = getSession(id)
   if (denySessionAccess(ctx, existing)) return
   const profile = existing?.profile || requestedProfile(ctx) || 'default'
-  if (!existing) {
-    createSession({ id, profile, title: '' })
-  }
   const cleanModel = model.trim()
   const cleanProvider = (provider || '').trim()
-  updateSession(id, { model: cleanModel, provider: cleanProvider } as any)
-  await notifyBridgeSessionModelChanged(id, cleanModel, cleanProvider, profile)
+  const codingAgentSession = isCodingAgentSession(existing)
+  const workspace = !codingAgentSession
+    ? await ensureHermesRunWorkspace(profile, existing?.workspace)
+    : undefined
+  if (!existing) {
+    createSession({ id, profile, title: '', model: cleanModel, provider: cleanProvider, workspace })
+  }
+  const updates: Record<string, string> = { model: cleanModel, provider: cleanProvider }
+  if (!codingAgentSession && existing && !existing.workspace && workspace) updates.workspace = workspace
+  if (
+    codingAgentSession &&
+    existing &&
+    (existing.model !== cleanModel || existing.provider !== cleanProvider)
+  ) {
+    updates.agent_native_session_id = ''
+  }
+  updateSession(id, updates as any)
+  if (!codingAgentSession) {
+    await notifyBridgeSessionModelChanged(id, cleanModel, cleanProvider, profile)
+  }
   ctx.body = { ok: true }
 }
 
@@ -1136,6 +1165,11 @@ export async function getConversationMessagesPaginated(ctx: any) {
       source: session.source,
       model: session.model,
       title: session.title,
+      parent_session_id: (session as any).parent_session_id,
+      fork_point_message_id: (session as any).fork_point_message_id,
+      parent_title: (session as any).parent_title,
+      parent_last_message: (session as any).parent_last_message,
+      parent_last_message_role: (session as any).parent_last_message_role,
       started_at: session.started_at,
       ended_at: session.ended_at,
       last_active: session.last_active,

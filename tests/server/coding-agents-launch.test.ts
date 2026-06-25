@@ -215,22 +215,101 @@ describe('coding agent launch preparation', () => {
     expect(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL).not.toBe('claude-sonnet-4-6')
 
     const mcp = JSON.parse(readFileSync(join(result.rootDir, 'mcp.json'), 'utf-8'))
-    expect(mcp.mcpServers['hermes-studio']).toMatchObject({
+    expect(mcp.mcpServers['hermes-studio-api']).toMatchObject({
       command: process.execPath,
-      args: [join(process.cwd(), 'bin/hermes-web-ui-mcp.mjs')],
+      args: [join(process.cwd(), 'bin/hermes-studio-mcp.mjs'), 'api'],
       env: {
         HERMES_WEB_UI_URL: 'http://127.0.0.1:8648',
         HERMES_WEB_UI_HOME: home,
         HERMES_WEBUI_STATE_DIR: home,
         HERMES_WEB_UI_PROFILE: 'default',
-        HERMES_MCP_SERVER_NAME: 'hermes-studio-mcp',
+        HERMES_MCP_SERVER_NAME: 'hermes-studio-api',
+        HERMES_MCP_TOOLSET: 'api',
         HERMES_WEB_UI_MANAGED_MCP: '1',
+      },
+    })
+    expect(mcp.mcpServers['hermes-studio-devices']).toMatchObject({
+      command: process.execPath,
+      args: [join(process.cwd(), 'bin/hermes-studio-mcp.mjs'), 'devices'],
+      env: {
+        HERMES_MCP_SERVER_NAME: 'hermes-studio-devices',
+        HERMES_MCP_TOOLSET: 'devices',
+      },
+    })
+    expect(mcp.mcpServers['hermes-studio-use']).toMatchObject({
+      command: process.execPath,
+      args: [join(process.cwd(), 'bin/hermes-studio-mcp.mjs'), 'use'],
+      env: {
+        HERMES_MCP_SERVER_NAME: 'hermes-studio-use',
+        HERMES_MCP_TOOLSET: 'use',
       },
     })
 
     const prompt = readFileSync(join(result.rootDir, 'hermes-rules.md'), 'utf-8')
     expect(prompt).toContain('# 输出格式规范')
     expect(prompt).toContain('当你的回复中包含图片、视频或文件引用时')
+  })
+
+  it('cleans legacy Hermes MCP entries from scoped Claude and Codex configs', async () => {
+    const home = makeHome()
+    const claudeRoot = join(home, 'coding-agent', 'model', 'default', 'openrouter', 'claude-code')
+    const claudeMcpPath = join(claudeRoot, 'mcp.json')
+    mkdirSync(dirname(claudeMcpPath), { recursive: true })
+    writeFileSync(claudeMcpPath, `${JSON.stringify({
+      mcpServers: {
+        'hermes-studio': {
+          command: 'hermes-web-ui-mcp',
+          env: { HERMES_WEB_UI_MANAGED_MCP: '1' },
+        },
+        'hermes-web-ui-mcp': {
+          command: 'hermes-web-ui-mcp',
+          env: { HERMES_WEB_UI_MANAGED_MCP: '1' },
+        },
+        custom: {
+          command: 'custom-mcp',
+        },
+      },
+    }, null, 2)}\n`)
+
+    const claude = await prepareCodingAgentLaunch('claude-code', {
+      profile: 'default',
+      provider: 'openrouter',
+      model: 'anthropic/claude-sonnet-4.6',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      apiKey: 'sk-test',
+    })
+    const claudeMcp = JSON.parse(readFileSync(join(claude.rootDir, 'mcp.json'), 'utf-8'))
+    expect(claudeMcp.mcpServers['hermes-studio']).toBeUndefined()
+    expect(claudeMcp.mcpServers['hermes-web-ui-mcp']).toBeUndefined()
+    expect(claudeMcp.mcpServers.custom).toEqual({ command: 'custom-mcp' })
+    expect(claudeMcp.mcpServers['hermes-studio-api']).toBeDefined()
+    expect(claudeMcp.mcpServers['hermes-studio-devices']).toBeDefined()
+    expect(claudeMcp.mcpServers['hermes-studio-use']).toBeDefined()
+
+    const codexRoot = join(home, 'coding-agent', 'model', 'default', 'openrouter', 'codex')
+    const codexConfigPath = join(codexRoot, 'config.toml')
+    mkdirSync(dirname(codexConfigPath), { recursive: true })
+    writeFileSync(codexConfigPath, [
+      '[mcp_servers.hermes-studio]',
+      'command = "hermes-web-ui-mcp"',
+      '[mcp_servers.hermes-web-ui-mcp]',
+      'command = "hermes-web-ui-mcp"',
+      '',
+    ].join('\n'))
+
+    const codex = await prepareCodingAgentLaunch('codex', {
+      profile: 'default',
+      provider: 'openrouter',
+      model: 'openai/gpt-oss-20b:free',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      apiKey: 'sk-test',
+    })
+    const codexConfig = readFileSync(join(codex.rootDir, 'config.toml'), 'utf-8')
+    expect(codexConfig).not.toContain('[mcp_servers.hermes-studio]')
+    expect(codexConfig).not.toContain('[mcp_servers.hermes-web-ui-mcp]')
+    expect(codexConfig).toContain('[mcp_servers.hermes-studio-api]')
+    expect(codexConfig).toContain('[mcp_servers.hermes-studio-devices]')
+    expect(codexConfig).toContain('[mcp_servers.hermes-studio-use]')
   })
 
   it('isolates Claude Code settings for hidden chat runs only', async () => {
@@ -334,13 +413,22 @@ describe('coding agent launch preparation', () => {
     expect(config).toContain('developer_instructions = """')
     expect(config).toContain('Hermes Studio MCP usage')
     expect(config).toContain('# 输出格式规范')
-    expect(config).toContain('[mcp_servers.hermes-studio]')
+    expect(config).toContain('[mcp_servers.hermes-studio-api]')
+    expect(config).toContain('[mcp_servers.hermes-studio-devices]')
+    expect(config).toContain('[mcp_servers.hermes-studio-use]')
     expect(config).toContain(`command = "${process.execPath}"`)
-    expect(config).toContain(`args = ["${join(process.cwd(), 'bin/hermes-web-ui-mcp.mjs')}"]`)
+    expect(config).toContain(`args = ["${join(process.cwd(), 'bin/hermes-studio-mcp.mjs')}", "api"]`)
+    expect(config).toContain(`args = ["${join(process.cwd(), 'bin/hermes-studio-mcp.mjs')}", "devices"]`)
+    expect(config).toContain(`args = ["${join(process.cwd(), 'bin/hermes-studio-mcp.mjs')}", "use"]`)
     expect(config).toContain(`env = { HERMES_WEB_UI_URL = "http://127.0.0.1:8648", HERMES_WEB_UI_HOME = "${home}"`)
     expect(config).toContain('HERMES_WEBUI_STATE_DIR = "')
     expect(config).toContain('HERMES_WEB_UI_PROFILE = "default"')
-    expect(config).toContain('HERMES_MCP_SERVER_NAME = "hermes-studio-mcp"')
+    expect(config).toContain('HERMES_MCP_SERVER_NAME = "hermes-studio-api"')
+    expect(config).toContain('HERMES_MCP_SERVER_NAME = "hermes-studio-devices"')
+    expect(config).toContain('HERMES_MCP_SERVER_NAME = "hermes-studio-use"')
+    expect(config).toContain('HERMES_MCP_TOOLSET = "api"')
+    expect(config).toContain('HERMES_MCP_TOOLSET = "devices"')
+    expect(config).toContain('HERMES_MCP_TOOLSET = "use"')
     expect(config).toContain('HERMES_WEB_UI_MANAGED_MCP = "1"')
 
     expect(result.files.some(file => file.key === 'agents')).toBe(false)
@@ -379,6 +467,40 @@ describe('coding agent launch preparation', () => {
     expect(deepseekModel.context_window).toBeGreaterThan(0)
     expect(deepseekModel.max_context_window).toBe(deepseekModel.context_window)
     expect(deepseekModel.model_messages.instructions_template).toContain('{{ base_instructions }}')
+  })
+
+  it('defaults Codex providers without an api mode to Chat Completions', async () => {
+    makeHome()
+    const launch = await prepareCodingAgentLaunch('codex', {
+      profile: 'default',
+      provider: 'xiaomi',
+      model: 'mimo-v2.5-pro',
+      baseUrl: 'https://api.xiaomimimo.com/v1',
+      apiKey: 'sk-upstream',
+    })
+    const config = readFileSync(join(launch.rootDir, 'config.toml'), 'utf-8')
+    const routeKey = config.match(/\/api\/codex-proxy\/([^/]+)\/v1/)?.[1] || ''
+    const token = config.match(/experimental_bearer_token = "([^"]+)"/)?.[1] || ''
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      id: 'chatcmpl_test',
+      choices: [{
+        finish_reason: 'stop',
+        message: { role: 'assistant', content: 'ok' },
+      }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const ctx = makeProxyContext(routeKey, token, {
+      max_output_tokens: 16,
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'hello' }] }],
+    })
+
+    await codexProxyResponses(ctx)
+
+    expect(fetchMock).toHaveBeenCalledWith('https://api.xiaomimimo.com/v1/chat/completions', expect.objectContaining({
+      method: 'POST',
+      headers: expect.objectContaining({ Authorization: 'Bearer sk-upstream' }),
+    }))
   })
 
   it('points Codex Responses providers at the local Responses proxy for stream capture', async () => {

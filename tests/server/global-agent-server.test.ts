@@ -378,7 +378,7 @@ describe('GlobalAgentServer', () => {
     expect(server.getClientIds()).toEqual(['device-1'])
   })
 
-  it('pushes MCU events to the selected agent socket and forwards MCU status events', async () => {
+  it('pushes MCU events only to the selected agent socket and forwards MCU status events to frontends', async () => {
     authMocks.authenticateUserToken.mockResolvedValue({ id: 7, username: 'ada', role: 'user' })
     authMocks.userCanAccessProfile.mockReturnValue(true)
     const nsp = createMockNamespace()
@@ -399,6 +399,17 @@ describe('GlobalAgentServer', () => {
     })
     nsp.__handlers.get('connection')?.(agentSocket)
 
+    const otherAgentSocket = createMockSocket('jwt-agent-socket-2', {
+      token: 'user-jwt',
+      role: 'hermes-studio',
+      instanceId: 'device-2',
+      profile: 'research',
+    })
+    await new Promise<void>((resolve, reject) => {
+      nsp.__middleware[0](otherAgentSocket, (err?: Error) => err ? reject(err) : resolve())
+    })
+    nsp.__handlers.get('connection')?.(otherAgentSocket)
+
     expect(server.emitMcuEvent({
       type: 'audio.enqueue',
       interactionId: 'voice-1',
@@ -411,19 +422,15 @@ describe('GlobalAgentServer', () => {
       segmentId: 'voice-1-tts-1',
       url: 'http://127.0.0.1/audio.pcm',
     })
+    expect(otherAgentSocket.emit).not.toHaveBeenCalledWith('audio.enqueue', expect.anything())
+    expect(agentSocket.broadcast.emit).not.toHaveBeenCalled()
 
     agentSocket.__handlers.get('audio.queued')?.({
       interactionId: 'voice-1',
       segmentId: 'voice-1-tts-1',
     })
-    expect(agentSocket.broadcast.emit).toHaveBeenCalledWith('relay.socket.event', {
-      clientId: 'device-1',
-      payload: {
-        type: 'audio.queued',
-        interactionId: 'voice-1',
-        segmentId: 'voice-1-tts-1',
-      },
-    })
+    expect(agentSocket.broadcast.emit).not.toHaveBeenCalled()
+    expect(otherAgentSocket.emit).not.toHaveBeenCalledWith('relay.socket.event', expect.anything())
   })
 
   it('keeps MCU voice stream in listening state until the upload is ended', async () => {
@@ -482,11 +489,14 @@ describe('GlobalAgentServer', () => {
     })
     server.init()
 
-    const audio = await (server as any).synthesizeMcuSpeech('hello', 'user-jwt')
+    const audio = await (server as any).synthesizeMcuSpeech('hello', 'user-jwt', 'research')
     expect(audio.url).toMatch(/^\/api\/hermes\/mcu\/audio\/[a-f0-9-]+\.pcm$/)
+    expect(fetchImpl.mock.calls[0][1]?.headers).toMatchObject({
+      'X-Hermes-Profile': 'research',
+    })
   })
 
-  it('does not force provider PCM output for MCU speech synthesis', async () => {
+  it('marks TTS requests as MCU playback without forcing every provider to PCM', async () => {
     authMocks.authenticateUserToken.mockResolvedValue({ id: 7, username: 'ada', role: 'user' })
     authMocks.userCanAccessProfile.mockReturnValue(true)
     const fetchImpl = vi.fn(async () => new Response(Buffer.from('pcm-audio'), {
@@ -503,11 +513,17 @@ describe('GlobalAgentServer', () => {
     })
     server.init()
 
-    await (server as any).synthesizeMcuSpeech('hello', 'user-jwt')
+    await (server as any).synthesizeMcuSpeech('hello', 'user-jwt', 'research')
 
+    expect(fetchImpl.mock.calls[0][1]?.headers).toMatchObject({
+      'X-Hermes-Profile': 'research',
+    })
     expect(JSON.parse(String(fetchImpl.mock.calls[0][1]?.body))).toMatchObject({
       text: 'hello',
-      options: {},
+      options: {
+        mcuPlayback: true,
+        sampleRate: 16000,
+      },
     })
   })
 
@@ -537,14 +553,20 @@ describe('GlobalAgentServer', () => {
     })
     server.init()
 
-    const audio = await (server as any).synthesizeMcuSpeech('hello', 'user-jwt')
+    const audio = await (server as any).synthesizeMcuSpeech('hello', 'user-jwt', 'research')
 
     expect(audio.url).toMatch(/^\/api\/hermes\/mcu\/audio\/[a-f0-9-]+\.pcm$/)
     expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(fetchImpl.mock.calls[1][1]?.headers).toMatchObject({
+      'X-Hermes-Profile': 'research',
+    })
     expect(JSON.parse(String(fetchImpl.mock.calls[1][1]?.body))).toMatchObject({
       provider: 'edge',
       text: 'hello',
-      options: {},
+      options: {
+        mcuPlayback: true,
+        sampleRate: 16000,
+      },
     })
   })
 
@@ -574,14 +596,20 @@ describe('GlobalAgentServer', () => {
     })
     server.init()
 
-    const audio = await (server as any).synthesizeMcuSpeech('hello', 'user-jwt')
+    const audio = await (server as any).synthesizeMcuSpeech('hello', 'user-jwt', 'research')
 
     expect(audio.url).toMatch(/^\/api\/hermes\/mcu\/audio\/[a-f0-9-]+\.pcm$/)
     expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(fetchImpl.mock.calls[1][1]?.headers).toMatchObject({
+      'X-Hermes-Profile': 'research',
+    })
     expect(JSON.parse(String(fetchImpl.mock.calls[1][1]?.body))).toMatchObject({
       provider: 'edge',
       text: 'hello',
-      options: {},
+      options: {
+        mcuPlayback: true,
+        sampleRate: 16000,
+      },
     })
   })
 
@@ -635,6 +663,7 @@ describe('GlobalAgentServer', () => {
       interactionId: 'voice-1',
       segmentId: 'voice-1-tts-1',
       url: expect.stringMatching(/^\/api\/hermes\/mcu\/audio\/[a-f0-9-]+\.pcm$/),
+      completionManagedByServer: true,
     }))
     agentSocket.__handlers.get('audio.done')?.({
       interactionId: 'voice-1',
@@ -654,6 +683,7 @@ describe('GlobalAgentServer', () => {
       interactionId: 'voice-1',
       segmentId: 'voice-1-tts-2',
       url: expect.stringMatching(/^\/api\/hermes\/mcu\/audio\/[a-f0-9-]+\.pcm$/),
+      completionManagedByServer: true,
     }))
   })
 
@@ -809,6 +839,56 @@ describe('GlobalAgentServer', () => {
       deleted: 2,
       memoryCleared: true,
     })
+  })
+
+  it('cancels a pending MCU interrupt when session clear arrives in the double-click window', async () => {
+    vi.useFakeTimers()
+    try {
+      authMocks.authenticateUserToken.mockResolvedValue({ id: 7, username: 'ada', role: 'user' })
+      authMocks.userCanAccessProfile.mockReturnValue(true)
+      const nsp = createMockNamespace()
+      const io = { of: vi.fn(() => nsp) }
+      const { GlobalAgentServer } = await import('../../packages/server/src/services/global-agent/server')
+
+      const server = new GlobalAgentServer(io as any)
+      server.init()
+
+      const agentSocket = createMockSocket('agent-socket', { token: server.getAuthToken(), instanceId: 'device-1' })
+      await new Promise<void>((resolve, reject) => {
+        nsp.__middleware[0](agentSocket, (err?: Error) => err ? reject(err) : resolve())
+      })
+      nsp.__handlers.get('connection')?.(agentSocket)
+
+      const runSocket = { emit: vi.fn() }
+      ;(server as any).mcuSessionRuns.set('mcu-device-1-research', {
+        interactionId: 'run-1',
+        socket: runSocket,
+      })
+
+      agentSocket.__handlers.get('mcu.interrupt')?.({
+        interactionId: 'run-1',
+        profile: 'research',
+      })
+      expect(runSocket.emit).not.toHaveBeenCalled()
+
+      agentSocket.__handlers.get('mcu.session.clear')?.({
+        interactionId: 'clear-1',
+        profile: 'research',
+      })
+
+      await vi.advanceTimersByTimeAsync(300)
+
+      expect(runSocket.emit).not.toHaveBeenCalled()
+      expect(chatRunMocks.clearSessionHistory).toHaveBeenCalledWith('mcu-device-1-research')
+      expect(agentSocket.emit).toHaveBeenCalledWith('mcu.session.cleared', expect.objectContaining({
+        type: 'mcu.session.cleared',
+        interactionId: 'clear-1',
+        profile: 'research',
+        sessionId: 'mcu-device-1-research',
+      }))
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('does not silently clear only the database when chat-run memory is unavailable', async () => {
