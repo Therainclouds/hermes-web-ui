@@ -297,7 +297,7 @@ groupChatRoutes.get('/api/hermes/group-chat/rooms/export', async (ctx) => {
     if (ext === 'txt') {
         const lines: string[] = [`# All Group Chats Export (${new Date().toISOString()})`, '']
         for (const room of allRooms) {
-            const messages = storage.getMessages(room.id, 10000, 0)
+            const messages = storage.getRecentMessagesForUI(room.id, 10000, 0)
             const agents = storage.getRoomAgents(room.id)
             const members = storage.getRoomMembers(room.id)
             lines.push(serializeGroupChatAsText(room, messages, agents, members))
@@ -310,7 +310,7 @@ groupChatRoutes.get('/api/hermes/group-chat/rooms/export', async (ctx) => {
     } else {
         const roomsData = allRooms.map(room => ({
             room,
-            messages: storage.getMessages(room.id, 10000, 0),
+            messages: storage.getRecentMessagesForUI(room.id, 10000, 0),
             agents: storage.getRoomAgents(room.id),
             members: storage.getRoomMembers(room.id),
         }))
@@ -663,7 +663,7 @@ groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId/export', async (ctx) =
     const filename = `${safeName}_${room.id.slice(0, 8)}.${ext}`
 
     // Fetch all messages (paginate if needed, max 10000)
-    const messages = chatServer.getStorage().getMessages(room.id, 10000, 0)
+    const messages = chatServer.getStorage().getRecentMessagesForUI(room.id, 10000, 0)
     const agents = chatServer.getStorage().getRoomAgents(room.id)
     const members = chatServer.getStorage().getRoomMembers(room.id)
 
