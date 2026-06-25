@@ -6,7 +6,7 @@
  */
 import { createReadStream, promises as fs } from 'fs'
 import { join, resolve as resolvePath, sep, normalize } from 'path'
-import { createGunzip } from 'zlib'
+import { createInflateRaw } from 'zlib'
 import { pipeline } from 'stream/promises'
 
 interface CentralDirEntry {
@@ -137,10 +137,10 @@ export async function extractZip(zipPath: string, destDir: string, maxBytes: num
           await out.close()
         }
       } else if (entry.compressionMethod === 8) {
-        // streamed inflate + gunzip
+        // ZIP deflate = raw inflate (no gzip header)
         const stream = createReadStream(zipPath, { start: dataStart, end: dataStart + entry.compressedSize - 1 })
         const out = (await import('fs')).createWriteStream(safe)
-        await pipeline(stream, createGunzip(), out)
+        await pipeline(stream, createInflateRaw(), out)
       } else {
         throw new Error(`unsupported compression method: ${entry.compressionMethod}`)
       }

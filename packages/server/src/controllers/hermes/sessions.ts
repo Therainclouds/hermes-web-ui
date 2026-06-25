@@ -100,6 +100,13 @@ function denySessionAccess(ctx: any, session: any | null | undefined): boolean {
   return true
 }
 
+function denyProfile(ctx: any, profile: string | null | undefined): boolean {
+  if (canAccessProfile(ctx, profile)) return false
+  ctx.status = 403
+  ctx.body = { error: `Profile "${profile || 'default'}" is not available for this user` }
+  return true
+}
+
 function isVisibleWebUiSessionSource(source?: string | null): boolean {
   return source === 'api_server' || source === 'cli' || source === 'coding_agent' || source === 'global_agent'
 }
@@ -537,11 +544,7 @@ export async function getHermesSession(ctx: any) {
 export async function importHermesSession(ctx: any) {
   const sessionId = ctx.params.id
   const profile = requestedProfile(ctx) || getActiveProfileName()
-  if (!canAccessProfile(ctx, profile)) {
-    ctx.status = 403
-    ctx.body = { error: `Profile "${profile || 'default'}" is not available for this user` }
-    return
-  }
+  if (denyProfile(ctx, profile)) return
 
   const existing = localGetSessionDetail(sessionId)
   if (existing) {
@@ -767,6 +770,50 @@ export async function rename(ctx: any) {
     return
   }
   ctx.body = { ok: true }
+}
+
+/**
+ * 显式创建一个空 session（用于专家系统立即聊天等场景，避免被 ChatView.loadSessions 覆盖）
+ * - 入参：{ id, profile, title?, source?, agent?, model?, provider? }
+ * - 行为：upsert（已存在则忽略），返回 { id, profile }
+ */
+export async function create(ctx: any) {
+  const body = (ctx.request.body ?? {}) as {
+    id?: string
+    profile?: string
+    title?: string
+    source?: string
+    agent?: string
+    model?: string
+    provider?: string
+  }
+  const id = typeof body.id === 'string' ? body.id.trim() : ''
+  if (!id) {
+    ctx.status = 400
+    ctx.body = { error: 'id is required' }
+    return
+  }
+  const profile = typeof body.profile === 'string' && body.profile.trim()
+    ? body.profile.trim()
+    : requestedProfile(ctx) || 'default'
+  if (denyProfile(ctx, profile)) return
+
+  const { createSession: dbCreateSession, getSession: dbGetSession } = await import(
+    '../../db/hermes/session-store'
+  )
+  const existing = dbGetSession(id)
+  if (!existing) {
+    dbCreateSession({
+      id,
+      profile,
+      source: body.source || 'api_server',
+      agent: body.agent || 'hermes',
+      model: body.model,
+      provider: body.provider,
+      title: body.title || '',
+    })
+  }
+  ctx.body = { ok: true, id, profile }
 }
 
 export async function setWorkspace(ctx: any) {

@@ -1,5 +1,5 @@
 import { startRunViaSocket, resumeSession, registerSessionHandlers, unregisterSessionHandlers, getChatRunSocket, respondToolApproval, onPeerUserMessage, onSessionCommand, onSessionTitleUpdated, respondClarify, type ChatRunTransport, type RunEvent, type ResumeSessionPayload, type StartRunRequest, type ContentBlock as ContentBlockImport } from '@/api/hermes/chat'
-import { deleteSession as deleteSessionApi, fetchSessionMessagesPage, fetchSessions, setSessionModel, type HermesMessage, type SessionSummary } from '@/api/hermes/sessions'
+import { createSessionServer, deleteSession as deleteSessionApi, fetchSessionMessagesPage, fetchSessions, setSessionModel, type HermesMessage, type SessionSummary } from '@/api/hermes/sessions'
 import { getActiveProfileName } from '@/api/client'
 import { inferCodingAgentApiMode, normalizeCodingAgentApiMode } from '@/api/coding-agents'
 import { getDownloadUrl } from '@/api/hermes/download'
@@ -1249,6 +1249,37 @@ export const useChatStore = defineStore('chat', () => {
       apiKey: options.apiKey,
       apiMode: options.apiMode,
     })
+    void switchSession(session.id)
+    return session
+  }
+
+  /**
+   * 同步在 server 端创建 session，避免 ChatView.loadSessions 覆盖本地新建 session
+   * 失败时回退到本地 createSession
+   */
+  async function newChatWithRemoteCreate(options: {
+    profile?: string
+    model?: string
+    provider?: string
+    source?: 'api_server' | 'cli' | 'coding_agent' | 'global_agent'
+    agent?: 'hermes' | 'claude' | 'codex'
+    title?: string
+  } = {}): Promise<Session> {
+    const session = createSession(options)
+    try {
+      await createSessionServer({
+        id: session.id,
+        profile: session.profile || 'default',
+        title: options.title || '',
+        source: session.source,
+        agent: session.agent,
+        model: session.model,
+        provider: session.provider,
+      })
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[chat] remote session create failed, falling back to local:', err)
+    }
     void switchSession(session.id)
     return session
   }
@@ -3595,9 +3626,11 @@ export const useChatStore = defineStore('chat', () => {
     isLoadingMessages,
 
     newChat,
+    newChatWithRemoteCreate,
     newCliSession,
     switchSession,
     ensureSessionLoaded,
+    addMessage,
     loadOlderMessages,
     switchSessionModel,
     addOrUpdateSession,

@@ -54,6 +54,10 @@ function openApiRelay() {
   if (typeof window === 'undefined') return
   window.open('https://market.quant-speed.com/skills', '_blank', 'noopener,noreferrer')
 }
+
+function openExperts() {
+  void router.push({ name: 'hermes.experts' })
+}
 </script>
 
 <template>
@@ -124,6 +128,21 @@ function openApiRelay() {
           <path d="M12 7v5l3 2" />
         </svg>
         <span>{{ historyButtonLabel }}</span>
+      </button>
+      <button class="page-sidebar-tab" type="button" @click="openExperts">
+        <svg
+          width="15"
+          height="15"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M12 2l2.5 6 6.5.5-5 4.5L17.5 20 12 16.5 6.5 20 8 13 3 8.5 9.5 8z" />
+        </svg>
+        <span>{{ t('experts.title') }}</span>
       </button>
       <button class="page-sidebar-tab" type="button" @click="openApiRelay">
         <svg

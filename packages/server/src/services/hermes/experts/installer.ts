@@ -136,13 +136,18 @@ export async function installExpertPackage(
   let manifestForReturn: ExpertManifest | null = null
 
   const fail = async (stage: InstallStage, message: string): Promise<never> => {
-    upsertInstalledExpert({
-      expert_slug: slug,
-      installed_version: version,
-      status: 'failed',
-      last_error: message.slice(0, 500),
-      last_error_stage: stage,
-    })
+    try {
+      upsertInstalledExpert({
+        expert_slug: slug,
+        installed_version: version,
+        status: 'failed',
+        last_error: message.slice(0, 500),
+        last_error_stage: stage,
+      })
+    } catch (dbErr) {
+      // eslint-disable-next-line no-console
+      console.error('[experts.installer.fail] db upsert failed', { slug, dbErr })
+    }
     try { await fs.rm(tmpDir, { recursive: true, force: true }) } catch { /* ignore */ }
     throw new InstallError(stage, message)
   }

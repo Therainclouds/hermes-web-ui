@@ -305,12 +305,6 @@ async function handleReloadClick() {
             </svg>
             <span>{{ t("sidebar.profiles") }}</span>
           </RouteLinkItem>
-          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.experts' }" :active="selectedKey === 'hermes.experts' || selectedKey === 'hermes.expertDetail'">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 2l2.5 6 6.5.5-5 4.5L17.5 20 12 16.5 6.5 20 8 13 3 8.5 9.5 8z" />
-            </svg>
-            <span>{{ t("sidebar.experts") }}</span>
-          </RouteLinkItem>
           <RouteLinkItem class="nav-item" :to="{ name: 'hermes.settings' }" :active="selectedKey === 'hermes.settings'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="3" />

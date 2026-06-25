@@ -36,6 +36,8 @@ packages/*/.pio/
 config.yaml
 .env
 hermes_data/
+config/experts-marketplace.yaml
+!config/experts-marketplace.yaml.example
 hermes-dependencies.md
 .curator_state
 # Editor directories and files

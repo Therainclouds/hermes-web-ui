@@ -193,6 +193,24 @@ export async function deleteSession(id: string, profile?: string | null): Promis
   }
 }
 
+/**
+ * 显式创建一个空 session（先在 server 端落库，避免 ChatView.loadSessions 覆盖本地新建 session）
+ */
+export async function createSessionServer(input: {
+  id: string
+  profile: string
+  title?: string
+  source?: string
+  agent?: string
+  model?: string
+  provider?: string
+}): Promise<{ ok: boolean; id: string; profile: string }> {
+  return request<{ ok: boolean; id: string; profile: string }>('/api/hermes/sessions', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
 export async function importHermesSession(id: string, profile?: string | null): Promise<{ ok: boolean; imported: boolean; session?: SessionDetail }> {
   const params = new URLSearchParams()
   if (profile) params.set('profile', profile)

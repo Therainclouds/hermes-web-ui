@@ -46,15 +46,39 @@ export async function installExpertFlow(input: {
     installResult.installDir,
     installResult.manifest,
   )
-  upsertInstalledExpert({
-    expert_slug: slug,
-    installed_version: version,
-    status: 'installed',
-    last_error: '',
-    last_error_stage: '',
-  })
+
+  // 只有"至少一个 profile 激活成功"才标记 installed；否则一律 failed
+  const allOk = activation.failed.length === 0 && activation.installed.length > 0
+  if (allOk) {
+    upsertInstalledExpert({
+      expert_slug: slug,
+      installed_version: version,
+      status: 'installed',
+      last_error: '',
+      last_error_stage: '',
+    })
+  } else {
+    const reason = activation.failed.length > 0
+      ? `${activation.failed.length} profile(s) failed: ${activation.failed
+          .map(f => `${f.slug}=${f.reason}`)
+          .slice(0, 3)
+          .join('; ')}`
+      : 'no profile activated'
+    upsertInstalledExpert({
+      expert_slug: slug,
+      installed_version: version,
+      status: 'failed',
+      last_error: reason.slice(0, 500),
+      last_error_stage: 'activate',
+    })
+  }
+
   return {
-    installed_expert: { slug, version, status: 'installed' },
+    installed_expert: {
+      slug,
+      version,
+      status: allOk ? 'installed' : 'failed',
+    },
     installed: activation.installed,
     failed: activation.failed,
   }
@@ -82,7 +106,13 @@ export async function uninstallExpertFlow(input: { slug: string }) {
   const { slug } = input
   const bindings = listBindingsByExpert(slug)
   const profileNames = bindings.map(b => b.profile_name)
+  // eslint-disable-next-line no-console
+  console.log('[experts.uninstall] profiles to remove:', profileNames)
+
   const removed = await deactivateExpert(slug, profileNames)
+  // eslint-disable-next-line no-console
+  if (removed.failed.length > 0) console.warn('[experts.uninstall] failed to remove profiles:', removed.failed)
+
   for (const name of profileNames) {
     deleteBindingByProfile(name)
   }

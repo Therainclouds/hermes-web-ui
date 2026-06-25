@@ -3,7 +3,7 @@ import { config, hasConfiguredManifestCheck, hasConfiguredUpdateCheck, hasConfig
 import { getAgentBridgeManager } from '../services/hermes/agent-bridge/manager'
 import { redactAgentBridgeError } from '../services/hermes/agent-bridge/redact'
 import { resolveManifestCheckResult } from '../services/update/manifest-client'
-import { getLocalWebUiVersion, readPackageInfo } from '../services/update/package-info'
+import { getLocalWebUiVersion } from '../services/update/package-info'
 import type { UpdateCheckResult } from '../services/update/types'
 import { isRemoteVersionNewer } from '../services/update/version-compare'
 
@@ -19,10 +19,9 @@ let cachedUpdateInfo: UpdateCheckResult = {
   channel: config.update.channel,
   packageType: config.update.packageType,
   strategy: config.update.strategy,
-  detectionSource: 'npm-registry',
+  detectionSource: 'manifest',
 }
 
-const PACKAGE_INFO = readPackageInfo()
 const LOCAL_VERSION = getLocalWebUiVersion(BUILD_VERSION)
 const AGENT_BRIDGE_HEALTH_FIRST_WAIT_MS = 75
 const AGENT_BRIDGE_HEALTH_CACHE_TTL_MS = 1000
@@ -65,40 +64,14 @@ function isUpdateCheckDisabled(): boolean {
   return raw === 'true' || raw === '1' || raw === 'on' || raw === 'yes'
 }
 
-async function resolveRegistryCheckResult(): Promise<UpdateCheckResult | null> {
-  if (!(config.update.packageName && config.update.registry)) return null
-
-  const packageName = config.update.packageName || PACKAGE_INFO?.name || 'hermes-web-ui'
-  const registry = config.update.registry || 'https://registry.npmjs.org'
-  const distTag = config.update.distTag || 'latest'
-  const registryName = encodeURIComponent(packageName)
-  const url = `${registry}/${registryName}`
-  const res = await fetch(url, { signal: AbortSignal.timeout(10000) })
-  if (!res.ok) {
-    throw new Error(`Failed to resolve the latest published version from ${registry}: HTTP ${res.status}`)
-  }
-
-  const data = await res.json() as { version?: string; 'dist-tags'?: Record<string, string> }
-  const version = data['dist-tags']?.[distTag] || data.version || data['dist-tags']?.latest || ''
-  if (!version) return null
-
-  return {
-    latestVersion: version,
-    sourceLabel: config.update.sourceLabel,
-    channel: config.update.channel,
-    packageType: config.update.packageType,
-    strategy: config.update.strategy,
-    detectionSource: 'npm-registry',
-  }
-}
-
 export async function checkLatestVersion(): Promise<void> {
   if (!hasConfiguredUpdateCheck(config.update)) return
+  // Manifest is the only authoritative source. Never probe the npm registry,
+  // so a stale or unconfigured `latest` tag cannot surface as a fake update.
+  if (!hasConfiguredManifestCheck(config.update)) return
 
   try {
-    const nextInfo = hasConfiguredManifestCheck(config.update)
-      ? await resolveManifestCheckResult(config.update)
-      : await resolveRegistryCheckResult()
+    const nextInfo = await resolveManifestCheckResult(config.update)
     if (nextInfo?.latestVersion) {
       cachedUpdateInfo = nextInfo
       if (isRemoteVersionNewer(LOCAL_VERSION, nextInfo.latestVersion)) {
@@ -106,15 +79,7 @@ export async function checkLatestVersion(): Promise<void> {
       }
     }
   } catch {
-    if (!hasConfiguredManifestCheck(config.update)) return
-    try {
-      const fallbackInfo = await resolveRegistryCheckResult()
-      if (fallbackInfo?.latestVersion) {
-        cachedUpdateInfo = fallbackInfo
-      }
-    } catch {
-      // ignore
-    }
+    // Manifest fetch failed; surface nothing instead of probing the registry.
   }
 }
 

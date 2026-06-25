@@ -5,7 +5,7 @@
 import { request } from '../client'
 
 export interface ExpertCatalogItem {
-  id: number
+  id?: number
   slug: string
   name: string
   kind: 'expert' | 'team'
@@ -15,8 +15,16 @@ export interface ExpertCatalogItem {
   category: string
   default_launch_target: string
   is_featured: boolean
-  latest_version: string | null
-  updated_at: string
+  latest_version: ExpertVersionLite | null
+  updated_at?: string
+}
+
+export interface ExpertVersionLite {
+  version: string
+  artifact_sha256: string
+  artifact_size: number
+  release_notes?: string
+  published_at: string
 }
 
 export interface ExpertVersionMeta {
@@ -128,16 +136,27 @@ export async function fetchMarketplaceConfig(): Promise<MarketplaceConfig> {
 }
 
 export async function fetchCatalog(): Promise<ExpertCatalogItem[]> {
-  const env = await request<ApiEnvelope<ExpertCatalogItem[]>>('/api/hermes/experts/catalog')
-  return unwrap(env) || []
+  const env = await request<ApiEnvelope<unknown>>('/api/hermes/experts/catalog')
+  return extractCatalogList(unwrap(env))
 }
 
 export async function refreshCatalog(): Promise<ExpertCatalogItem[]> {
-  const env = await request<ApiEnvelope<ExpertCatalogItem[]>>(
+  const env = await request<ApiEnvelope<unknown>>(
     '/api/hermes/experts/catalog/refresh',
     { method: 'POST' },
   )
-  return unwrap(env) || []
+  return extractCatalogList(unwrap(env))
+}
+
+function extractCatalogList(payload: unknown): ExpertCatalogItem[] {
+  if (Array.isArray(payload)) return payload as ExpertCatalogItem[]
+  if (payload && typeof payload === 'object') {
+    const obj = payload as Record<string, unknown>
+    if (Array.isArray(obj.experts)) return obj.experts as ExpertCatalogItem[]
+    if (Array.isArray(obj.results)) return obj.results as ExpertCatalogItem[]
+    if (Array.isArray(obj.data)) return obj.data as ExpertCatalogItem[]
+  }
+  return []
 }
 
 export async function fetchDetail(slug: string): Promise<ExpertDetail> {
@@ -224,5 +243,13 @@ export async function fetchStatus(slug: string): Promise<{
     installed_expert: InstalledExpertRow
     bindings: ExpertProfileBindingRow[]
   }>>(`/api/hermes/experts/${encodeURIComponent(slug)}/status`)
+  return unwrap(env)
+}
+
+export async function activateExpertProfile(profileName: string): Promise<{ success: boolean }> {
+  const env = await request<ApiEnvelope<{ success: boolean }>>('/api/hermes/experts/activate-profile', {
+    method: 'POST',
+    body: JSON.stringify({ profile_name: profileName }),
+  })
   return unwrap(env)
 }

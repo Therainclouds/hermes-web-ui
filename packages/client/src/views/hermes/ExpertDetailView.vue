@@ -13,6 +13,9 @@ import {
 import { useI18n } from 'vue-i18n'
 import { useExpertsStore } from '@/stores/hermes/experts'
 import { useProfilesStore } from '@/stores/hermes/profiles'
+import { useChatStore } from '@/stores/hermes/chat'
+import { useAppStore } from '@/stores/hermes/app'
+import * as expertsApi from '@/api/hermes/experts'
 import type { ExpertDetail, ExpertManifest } from '@/api/hermes/experts'
 
 const route = useRoute()
@@ -21,6 +24,8 @@ const message = useMessage()
 const { t } = useI18n()
 const expertsStore = useExpertsStore()
 const profilesStore = useProfilesStore()
+const chatStore = useChatStore()
+const appStore = useAppStore()
 
 const slug = computed(() => String(route.params.slug || ''))
 const detail = ref<ExpertDetail | null>(null)
@@ -99,6 +104,61 @@ async function handleUninstall() {
   }
 }
 
+function findChatProfileName(): string | null {
+  const expertBindings = expertsStore.bindings.filter((b) => b.expert_slug === slug.value)
+  if (expertBindings.length === 0) return null
+  // 优先团长，其次单专家，最后兜底
+  const captain = expertBindings.find((b) => b.role === 'captain')
+  if (captain) return captain.profile_name
+  const expert = expertBindings.find((b) => b.role === 'expert')
+  if (expert) return expert.profile_name
+  return expertBindings[0].profile_name
+}
+
+async function handleStartChat() {
+  const profileName = findChatProfileName()
+  if (!profileName) {
+    message.warning(t('experts.detail.noBinding'))
+    return
+  }
+  // 先设 localStorage 确保 reload 后拿到正确的 active profile
+  localStorage.setItem('hermes_active_profile_name', profileName)
+  // 调用专家系统的激活端点（无需 super admin 权限）
+  try {
+    await expertsApi.activateExpertProfile(profileName)
+  } catch (err) {
+    message.error(t('experts.detail.startChatFailed'))
+    return
+  }
+  message.success(t('experts.detail.startChatSuccess'))
+  await profilesStore.fetchProfiles()
+  // 强制刷新 app store 中的 model 列表（避免 30s 缓存 + expert profile 新写入 model 不同步）
+  await appStore.reloadModels({ preserveSelection: true })
+
+  // Q3: 创建新会话（先在 server 端落库，避免 ChatView.loadSessions 覆盖本地新 session）
+  const session = await chatStore.newChatWithRemoteCreate({
+    profile: profileName,
+    title: detail.value?.name || profileName,
+  })
+
+  // 从 manifest 构建自我介绍消息（通过 store API 写入，避免响应式 proxy 直接 push 触发告警）
+  const prompts = manifest.value?.profileTemplate?.starterPrompts
+  if (prompts && prompts.length > 0) {
+    const expertName = detail.value?.name || profileName
+    const introText = `👋 你好！我是 **${expertName}**。\n\n我可以帮助你：\n${prompts.map((p: string, i: number) => `${i + 1}. ${p}`).join('\n')}\n\n请告诉我你想做什么？`
+    const msgId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
+    chatStore.addMessage(session.id, {
+      id: msgId,
+      role: 'assistant',
+      content: introText,
+      timestamp: Date.now(),
+    })
+  }
+
+  // 跳转到聊天页（不带 sessionId，避免 ChatView.loadRouteSession 触发 loadSessions 覆盖新会话）
+  router.push({ name: 'hermes.chat' })
+}
+
 const teamMembers = computed(() => detail.value?.team_members || [])
 </script>
 
@@ -147,7 +207,14 @@ const teamMembers = computed(() => detail.value?.team_members || [])
               {{ t('experts.detail.install') }}
             </NButton>
             <NButton
-              v-else
+              v-if="installed"
+              type="primary"
+              @click="handleStartChat"
+            >
+              {{ t('experts.detail.startChat') }}
+            </NButton>
+            <NButton
+              v-if="installed"
               :loading="expertsStore.upgrading === slug"
               :disabled="!detail.latest_version || installed.installed_version === detail.latest_version.version"
               @click="handleUpgrade"
