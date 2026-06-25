@@ -17,7 +17,6 @@ export default {
   nav: {
     home: 'Home',
     docs: 'Documentation',
-    miniBox: 'Mini Box',
     github: 'GitHub',
   },
   hero: {
@@ -163,7 +162,6 @@ export default {
       configuration: 'Configuration',
       features: 'Features',
       hermesStudioManual: 'Client Manual',
-      esp32Intro: 'ESP32 Intro',
       platforms: 'Platform Guides',
       api: 'API Reference',
     },
@@ -323,38 +321,6 @@ export default {
       maintenance: {
         title: 'Maintenance note',
         content: 'When the website, reference docs, Hermes agent docs, and the current client UI differ, the manual treats the currently visible client interface as the operational source of truth. For future releases, replace the uploaded HTML/PDF assets and update the version scope on this page.',
-      },
-    },
-    esp32Intro: {
-      title: 'Hermes ESP32-C3 Device Intro',
-      intro: 'This page publishes the public introduction for the Hermes ESP32-C3 desktop AI conversation box. The device handles the small display, microphone, speaker, physical buttons, and local network connection, while Hermes Studio handles model access, speech recognition, speech synthesis, and session execution.',
-      open: {
-        title: 'Open the full intro page',
-        content: 'The uploaded intro page preserves the original HTML layout, product visuals, setup flow, specification notes, pre-purchase checklist, and FAQ. It is useful for public presentation, handoff notes, and quick user orientation.',
-        links: [
-          {
-            label: 'Open the Chinese ESP32 intro page',
-            href: '/docs/hermes-esp32-intro/index.html',
-            description: 'Includes product visuals, hardware highlights, Wi-Fi provisioning notes, Hermes Studio connection guidance, specifications, and FAQ.',
-          },
-        ],
-      },
-      overview: {
-        title: 'Device positioning',
-        content: 'This is a desktop hardware entry point for Hermes Studio, not an offline standalone large-model device. The ESP32-C3 provides local interaction and status feedback, while AI capability comes from Hermes Studio running on a computer or server plus the model, STT, and TTS services configured by the user.',
-      },
-      requirements: {
-        title: 'Requirements',
-        rows: [
-          ['Network', 'The ESP32 device and Hermes Studio should communicate on the same local network.'],
-          ['Service address', 'Enter the computer or server LAN IP plus port on the device page; do not use 127.0.0.1.'],
-          ['Voice capability', 'Hermes Studio needs working speech recognition, speech synthesis, and model services.'],
-          ['Best fit', 'Built for Hermes Studio users, ESP32/Arduino/PlatformIO makers, open hardware customization, and desktop AI interaction demos.'],
-        ],
-      },
-      maintenance: {
-        title: 'Maintenance note',
-        content: 'If firmware behavior, provisioning pages, ports, device visuals, or the Hermes Studio device connection flow changes, update the static HTML asset and this page scope together.',
       },
     },
     platforms: {

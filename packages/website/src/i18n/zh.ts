@@ -17,7 +17,6 @@ export default {
   nav: {
     home: '首页',
     docs: '文档',
-    miniBox: '小方盒',
     github: 'GitHub',
   },
   hero: {
@@ -159,7 +158,6 @@ export default {
       configuration: '配置说明',
       features: '功能详解',
       hermesStudioManual: '客户端手册',
-      esp32Intro: 'ESP32 介绍',
       platforms: '平台接入',
       api: 'API 参考',
     },
@@ -319,38 +317,6 @@ export default {
       maintenance: {
         title: '维护说明',
         content: '当官网、说明文档、Hermes 智能体文档与当前客户端界面存在差异时，操作步骤以当前客户端实际可见界面为准。后续版本更新时，请同步替换 HTML/PDF 资源并更新本页的适用版本说明。',
-      },
-    },
-    esp32Intro: {
-      title: 'Hermes ESP32-C3 设备介绍',
-      intro: '这页发布 Hermes ESP32-C3 桌面 AI 对话小方盒的官网介绍资料。设备侧负责小屏、麦克风、扬声器、实体按键和局域网连接；Hermes Studio 负责模型、语音识别、语音合成和会话运行。',
-      open: {
-        title: '打开完整介绍页',
-        content: '完整介绍页保留原始 HTML 排版、产品图、使用流程、规格说明、购买前须知和常见问题，适合公开展示、交付说明和用户快速了解设备定位。',
-        links: [
-          {
-            label: '在线打开 ESP32 中文介绍页',
-            href: '/docs/hermes-esp32-intro/index.html',
-            description: '包含产品图、硬件亮点、配网教程、连接 Hermes Studio 的说明、规格与常见问题。',
-          },
-        ],
-      },
-      overview: {
-        title: '设备定位',
-        content: '这是配合 Hermes Studio 使用的桌面硬件入口，不是离线独立大模型设备。ESP32-C3 提供本地交互与状态反馈，AI 能力由电脑端或服务器端 Hermes Studio 以及用户配置的模型、STT、TTS 服务提供。',
-      },
-      requirements: {
-        title: '使用前提',
-        rows: [
-          ['网络', 'ESP32 设备和 Hermes Studio 需要在同一局域网内通信。'],
-          ['服务地址', '设备端应填写电脑或服务器的局域网 IP + 端口，不能填写 127.0.0.1。'],
-          ['语音能力', '需要在 Hermes Studio 中配置可用的语音识别、语音合成和模型服务。'],
-          ['适合用户', '适合 Hermes Studio 用户、ESP32/Arduino/PlatformIO 玩家、开源硬件改造和桌面 AI 交互演示场景。'],
-        ],
-      },
-      maintenance: {
-        title: '维护说明',
-        content: '后续如固件、配网页、端口、设备外观或 Hermes Studio 设备接入流程变化，请同步更新静态 HTML 资源和本页的适用说明。',
       },
     },
     platforms: {

@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿export default {
+﻿﻿﻿﻿﻿﻿export default {
   // Login
   login: {
     title: 'QuantHermes Web UI',
@@ -1852,13 +1852,13 @@ jobTriggered: 'Job ejecutado',
     new_0_6_21_4: 'Al eliminar un voice provider ahora se borran los ajustes del profile en vez de solo limpiar la API key; Browser STT y Edge TTS siguen protegidos como defaults integrados',
     new_0_6_21_5: 'Los ajustes Matrix soportan user ID mas password y detectan correctamente el estado configurado al usar login con password',
     new_0_6_21_6: 'Web UI restart, update y upgrade dentro de la app ahora detienen Agent Bridge broker por defecto para no reutilizar procesos Python bridge antiguos',
-    new_0_6_21_7: 'Los headers de chat, group chat y workflow estan mejor alineados; Xiao Fang He muestra sold out; el alcance BSL queda mas claro; se documento el plan /learn; se elimino el proxy Hermes obsoleto',
+    new_0_6_21_7: 'Los headers de chat, group chat y workflow estan mejor alineados; el alcance BSL queda mas claro; se documento el plan /learn; se elimino el proxy Hermes obsoleto',
     new_0_6_20_1: 'Workflow ya esta disponible: crea nodos Agent, conectalos en un grafo y ejecuta el flujo completo desde la pagina Workflow',
     new_0_6_20_2: 'Los workflow runs guardan registros, snapshots del grafo, sesiones por nodo, estado de nodo en vivo, motivos de fallo y acciones para detener o eliminar runs',
     new_0_6_20_3: 'La vista y edicion de workflows son mas completas con historial de runs, snapshots de solo lectura, revision de chat por nodo, handles mas grandes y aviso para crear un workflow primero',
     new_0_6_20_4: 'El desktop deja que agent-browser resuelva Chrome desde AGENT_BROWSER_HOME en lugar de fijar un executable path obsoleto, con guards de integridad de patches y fixes de stdout del navegador',
     new_0_6_20_5: 'Los runtimes de navegador empaquetados fijan Chrome for Testing 149.0.7827.55 en plataformas desktop soportadas para evitar regresiones del navegador runtime',
-    new_0_6_20_6: 'ESP32 y Xiao Fang He reciben enlaces de tutorial actualizados, un fondo de badge mas claro y animacion de flujo compatible con Windows',
+    new_0_6_20_6: 'ESP32 recibe enlaces de tutorial actualizados y animacion de flujo compatible con Windows',
     new_0_6_19_1: 'Esta version incluye 16 PR desde 0.6.18 y mejora la experiencia visible de dispositivos, voz, Coding Agent y ajustes',
     new_0_6_19_2: 'Las sesiones de Coding Agent pueden cambiar de modelo, y las nuevas sesiones siguen correctamente el modelo global por defecto',
     new_0_6_19_3: 'Las interacciones MCU son mas estables con debounce de Wi-Fi/boot al iniciar, audio solo al dispositivo destino y mejor doble clic fisico para limpiar e interrumpir',

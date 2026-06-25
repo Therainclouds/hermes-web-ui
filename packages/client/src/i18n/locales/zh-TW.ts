@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿export default {
+﻿﻿﻿﻿﻿﻿﻿﻿﻿export default {
   // 登入
   login: {
     title: 'QuantHermes Web UI',
@@ -2252,13 +2252,13 @@
     new_0_6_21_4: '語音 provider 移除現在會刪除目前 profile 的 provider 設定，而不是只清空 API key；Browser STT 和 Edge TTS 仍作為內建預設項不可刪除',
     new_0_6_21_5: 'Matrix 平台設定支援 user ID 加 password 的登入配置，並在使用密碼登入時正確判斷已設定狀態',
     new_0_6_21_6: 'Web UI restart、update 和應用內升級預設會停止 Agent Bridge broker，避免新版本復用舊 Python bridge 行程',
-    new_0_6_21_7: '單聊、群聊和工作流頂部列對齊更一致；小方盒頁面改為售罄狀態；BSL 授權範圍更清楚；補充 /learn 接入規劃，並移除廢棄 Hermes proxy 程式碼',
+    new_0_6_21_7: '單聊、群聊和工作流頂部列對齊更一致；BSL 授權範圍更清楚；補充 /learn 接入規劃，並移除廢棄 Hermes proxy 程式碼',
     new_0_6_20_1: '工作流正式上線：可以建立 Agent 節點、連成流程圖，並直接在工作流頁面執行完整流程',
     new_0_6_20_2: '工作流執行會儲存執行記錄、流程圖快照、節點會話、即時節點狀態和失敗原因，並支援停止與刪除執行記錄',
     new_0_6_20_3: '工作流查看與編輯更完整：支援執行歷史、唯讀快照、節點聊天記錄查看、更大的連接點，以及未建立工作流時的新增節點提示',
     new_0_6_20_4: '桌面端啟動時改為讓 agent-browser 根據 AGENT_BROWSER_HOME 解析 Chrome，不再固定舊的可執行檔路徑，並補齊補丁完整性與瀏覽器 stdout 修復',
     new_0_6_20_5: '支援瀏覽器 runtime 的桌面平台統一固定 Chrome for Testing 149.0.7827.55，避免 runtime 瀏覽器版本回退問題',
-    new_0_6_20_6: 'ESP32 和小方盒細節最佳化：更新教學連結，調整淺色背景下的小方盒徽章，並修復 Windows 上流動效果不顯示的問題',
+    new_0_6_20_6: 'ESP32 細節最佳化：更新教學連結，並修復 Windows 上流動效果不顯示的問題',
     new_0_6_19_1: '本次版本包含 0.6.18 之後合併的 16 個 PR，重點改進前端可見的裝置、語音、Coding Agent 和設定體驗',
     new_0_6_19_2: 'Coding Agent 支援在會話中切換模型，新建會話也會正確跟隨全域預設模型',
     new_0_6_19_3: 'MCU 互動更穩定：修復開機 Wi-Fi/boot 狀態閃動、音訊只送到目標裝置，並最佳化實體按鍵雙擊清空與打斷體驗',
