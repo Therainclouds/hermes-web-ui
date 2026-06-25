@@ -1,4 +1,4 @@
-﻿# ADR 索引
+# ADR 索引
 
 本目录记录设备端自有更新包分发相关的关键架构决策。
 
@@ -8,6 +8,8 @@
 - `ADR-0002-device-update-permission-model.md`：用户可自助更新、安装器短时提权
 - `ADR-0003-device-package-format.md`：设备更新包格式选择
 - `ADR-0004-device-update-rollback-strategy.md`：失败自动回退与未来手动回滚策略
+- `ADR-0005-expert-marketplace-profile-integration.md`：专家市场接入、本地安装与 profile 集成策略
+- `0006-expert-profile-creation-bugfix.md`：专家系统集成首轮联调问题修复与后续约束
 
 ## 使用规则
 
