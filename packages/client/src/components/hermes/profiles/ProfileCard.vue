@@ -105,7 +105,7 @@ async function handleExport() {
     <div class="card-header">
       <div class="profile-title">
         <ProfileAvatar :name="profile.name" :avatar="profile.avatar" :size="28" />
-        <h3 class="profile-name">{{ profile.name }}</h3>
+        <h3 class="profile-name">{{ isExpert && profile.alias ? profile.alias : profile.name }}</h3>
         <NTag
           v-if="isExpert"
           size="tiny"

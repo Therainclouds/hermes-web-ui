@@ -146,13 +146,25 @@ export async function fetchCatalog(
   ) {
     return catalogCache.items
   }
-  const items = await fetchJson<ExpertCatalogItem[]>(
+  const payload = await fetchJson<ExpertCatalogItem[] | { experts: ExpertCatalogItem[] }>(
     '/api/experts/catalog/',
     undefined,
     'catalog',
   )
-  catalogCache = { fetchedAt: Date.now(), items: items ?? [] }
-  return items ?? []
+  const items = extractCatalogItems(payload)
+  catalogCache = { fetchedAt: Date.now(), items }
+  return items
+}
+
+function extractCatalogItems(
+  payload: ExpertCatalogItem[] | { experts: ExpertCatalogItem[] } | null | undefined,
+): ExpertCatalogItem[] {
+  if (!payload) return []
+  if (Array.isArray(payload)) return payload
+  if (Array.isArray((payload as { experts: ExpertCatalogItem[] }).experts)) {
+    return (payload as { experts: ExpertCatalogItem[] }).experts
+  }
+  return []
 }
 
 export function clearCatalogCache(): void {
@@ -212,5 +224,20 @@ export async function requestDownload(
   if (!data) {
     throw new MarketplaceError(400, 'download', '下载授权失败')
   }
-  return data
+  // 规范化 download_url：可能是相对路径（云端通过 /api/internal/local-storage/ 提供）
+  // 也要保证 URL 的 host 来自云端 baseUrl，避免被本地 dev proxy 拦截
+  return {
+    ...data,
+    download_url: absolutizeDownloadUrl(data.download_url),
+  }
+}
+
+function absolutizeDownloadUrl(url: string): string {
+  if (!url) return url
+  if (/^https?:\/\//i.test(url)) return url
+  const cfg = loadExpertsMarketplaceConfig()
+  const base = cfg.baseUrl.replace(/\/+$/, '')
+  if (!base) return url
+  if (url.startsWith('/')) return `${base}${url}`
+  return `${base}/${url}`
 }

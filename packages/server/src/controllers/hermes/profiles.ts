@@ -90,10 +90,25 @@ function listProfilesFromDisk(activeProfileName: string): HermesProfile[] {
       name,
       active: name === activeProfileName,
       model: '—',
-      alias: '',
+      alias: readExpertAlias(dir),
     })
   }
   return profiles
+}
+
+/**
+ * 读取 profile 目录下的 expert-package.json，提取 display_name 作为 alias
+ */
+function readExpertAlias(profileDir: string): string {
+  try {
+    const markerPath = join(profileDir, 'expert-package.json')
+    if (!existsSync(markerPath)) return ''
+    const raw = readFileSync(markerPath, 'utf-8')
+    const marker = JSON.parse(raw)
+    return String(marker.display_name || '').trim()
+  } catch {
+    return ''
+  }
 }
 
 function profileExistsForManualSwitch(name: string): boolean {

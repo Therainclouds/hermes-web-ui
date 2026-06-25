@@ -158,7 +158,9 @@ describe('health controller version metadata', () => {
     expect(ctx.body.webui_version).toBe('9.9.9-test')
   })
 
-  it('checks npm latest using the configured package name', async () => {
+  it('does not probe the npm registry when only package/registry env vars are set', async () => {
+    // The version probe is manifest-only. Even with package/registry configured,
+    // we must not hit the npm registry for version detection.
     process.env.WEBUI_UPDATE_ENABLED = 'true'
     process.env.WEBUI_UPDATE_PACKAGE = UPDATE_PACKAGE
     process.env.WEBUI_UPDATE_REGISTRY = UPDATE_REGISTRY
@@ -175,21 +177,16 @@ describe('health controller version metadata', () => {
 
     await checkLatestVersion()
 
-    expect(fetchMock).toHaveBeenCalledWith(
+    expect(fetchMock).not.toHaveBeenCalledWith(
       `https://registry.npmjs.org/${encodeURIComponent(UPDATE_PACKAGE)}`,
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      expect.anything(),
     )
 
     const ctx = createMockCtx()
     await healthCheck(ctx)
 
-    expect(ctx.body.webui_latest).toBe('99.99.99')
-    expect(ctx.body.webui_update_enabled).toBe(true)
-    expect(ctx.body.webui_update_available).toBe(true)
-    expect(ctx.body.webui_update_source_label).toBe(UPDATE_SOURCE_LABEL)
-    expect(ctx.body.webui_update_channel).toBe('stable')
-    expect(ctx.body.webui_update_strategy).toBe('npm-package')
-    expect(ctx.body.webui_update_package_type).toBe('device-package')
+    expect(ctx.body.webui_latest).toBe('')
+    expect(ctx.body.webui_update_available).toBe(false)
   })
 
   it('prefers manifest detection when a manifest URL is configured', async () => {
@@ -201,12 +198,13 @@ describe('health controller version metadata', () => {
     process.env.WEBUI_UPDATE_PACKAGE_TYPE = 'device-package'
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      json: vi.fn().mockResolvedValue({
+      url: 'https://updates.example.com/stable/manifest.json',
+      arrayBuffer: vi.fn().mockResolvedValue(Buffer.from(JSON.stringify({
         version: '0.6.99',
         channel: 'stable',
         sourceLabel: 'Stable Device Manifest',
         packageType: 'device-package',
-      }),
+      }))),
     })
     vi.stubGlobal('fetch', fetchMock)
 
@@ -228,18 +226,23 @@ describe('health controller version metadata', () => {
     expect(ctx.body.webui_update_package_type).toBe('device-package')
   })
 
-  it('falls back to the registry when manifest detection fails', async () => {
+  it('only fetches the manifest for version detection and never probes the npm registry', async () => {
+    // Both sources are configured, but the manifest must win; npm must not be touched.
     process.env.WEBUI_UPDATE_ENABLED = 'true'
     process.env.WEBUI_UPDATE_MANIFEST_URL = 'https://updates.example.com/stable/manifest.json'
     process.env.WEBUI_UPDATE_PACKAGE = UPDATE_PACKAGE
     process.env.WEBUI_UPDATE_REGISTRY = UPDATE_REGISTRY
     process.env.WEBUI_UPDATE_SOURCE_LABEL = UPDATE_SOURCE_LABEL
-    const fetchMock = vi.fn()
-      .mockRejectedValueOnce(new Error('manifest down'))
-      .mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue({ version: '0.6.88' }),
-      })
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      url: 'https://updates.example.com/stable/manifest.json',
+      arrayBuffer: vi.fn().mockResolvedValue(Buffer.from(JSON.stringify({
+        version: '0.6.42',
+        channel: 'stable',
+        sourceLabel: 'Device Manifest',
+        packageType: 'device-package',
+      }))),
+    })
     vi.stubGlobal('fetch', fetchMock)
 
     const { checkLatestVersion, healthCheck } = await loadHealthControllerWithInjectedVersion('0.6.10-test')
@@ -247,27 +250,41 @@ describe('health controller version metadata', () => {
     const ctx = createMockCtx()
     await healthCheck(ctx)
 
-    expect(ctx.body.webui_latest).toBe('0.6.88')
-    expect(ctx.body.webui_update_source_label).toBe(UPDATE_SOURCE_LABEL)
-    expect(ctx.body.webui_update_strategy).toBe('npm-package')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://updates.example.com/stable/manifest.json',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringContaining('registry.npmjs.org'),
+      expect.anything(),
+    )
+    expect(ctx.body.webui_latest).toBe('0.6.42')
   })
 
-  it('does not report an update when the local version is equal to or ahead of the registry version', async () => {
+  it('does not report an update when the local version is equal to or ahead of the manifest version', async () => {
     process.env.WEBUI_UPDATE_ENABLED = 'true'
-    process.env.WEBUI_UPDATE_PACKAGE = UPDATE_PACKAGE
-    process.env.WEBUI_UPDATE_REGISTRY = UPDATE_REGISTRY
+    process.env.WEBUI_UPDATE_MANIFEST_URL = 'https://updates.example.com/stable/manifest.json'
     process.env.WEBUI_UPDATE_CLI_BIN = 'hermes-web-ui.mjs'
     process.env.WEBUI_UPDATE_SOURCE_LABEL = UPDATE_SOURCE_LABEL
+    process.env.WEBUI_UPDATE_STRATEGY = 'device-package'
+
+    const buildManifestResponse = (version: string) => ({
+      ok: true,
+      url: 'https://updates.example.com/stable/manifest.json',
+      arrayBuffer: vi.fn().mockResolvedValue(
+        Buffer.from(JSON.stringify({
+          version,
+          channel: 'stable',
+          sourceLabel: 'Device Manifest',
+          packageType: 'device-package',
+        })),
+      ),
+    })
 
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue({ version: '0.6.14' }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue({ version: '0.6.13' }),
-      })
+      .mockResolvedValueOnce(buildManifestResponse('0.6.14'))
+      .mockResolvedValueOnce(buildManifestResponse('0.6.13'))
     vi.stubGlobal('fetch', fetchMock)
 
     const { checkLatestVersion, healthCheck } = await loadHealthControllerWithInjectedVersion('0.6.14')

@@ -103,6 +103,7 @@ export default {
     collapse: 'Collapse',
     start: 'Start',
     stop: 'Stop',
+    back: 'Back',
   },
 
   // MCP Management
@@ -831,6 +832,7 @@ export default {
     title: 'Expert Center',
     refresh: 'Refresh',
     refreshed: 'Refreshed',
+    refreshFailed: 'Refresh failed',
     empty: 'No content',
     installedEmpty: 'No installed experts',
     lastError: 'Last error',
@@ -855,11 +857,23 @@ export default {
     upgradeFailed: 'Upgrade failed',
     uninstallFailed: 'Uninstall failed',
     manifest: 'Manifest',
+    status: {
+      installed: 'Installed',
+      failed: 'Failed',
+      downloading: 'Downloading...',
+      verifying: 'Verifying...',
+      extracting: 'Extracting...',
+      installing_profile: 'Activating...',
+    },
     source: {
       badge: 'Expert',
     },
     detail: {
       install: 'Download & Activate',
+      startChat: 'Start Chat',
+      noBinding: 'Not bound to any profile',
+      startChatSuccess: 'Switched to expert profile',
+      startChatFailed: 'Failed to switch to expert profile',
       upgrade: 'Upgrade',
       uninstall: 'Uninstall',
       starterPrompts: 'Starter prompts',

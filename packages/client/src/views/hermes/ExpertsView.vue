@@ -23,9 +23,13 @@ onMounted(async () => {
 })
 
 async function handleRefresh() {
-  await expertsStore.refreshCatalog()
-  await expertsStore.fetchInstalled()
-  message.success(t('experts.refreshed'))
+  try {
+    await expertsStore.refreshCatalog()
+    await expertsStore.fetchInstalled()
+    message.success(t('experts.refreshed'))
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : t('experts.refreshFailed'))
+  }
 }
 
 function openDetail(slug: string) {
@@ -100,7 +104,7 @@ function renderCard(item: ExpertCatalogItem) {
             <template #header>
               <div class="card-head">
                 <span class="name">{{ item.name }}</span>
-                <NTag size="tiny" type="success" :bordered="false">{{ item.latest_version || '-' }}</NTag>
+                <NTag size="tiny" type="success" :bordered="false">{{ item.latest_version?.version || '-' }}</NTag>
               </div>
             </template>
             <template #header-extra>
@@ -127,7 +131,7 @@ function renderCard(item: ExpertCatalogItem) {
             <template #header>
               <div class="card-head">
                 <span class="name">{{ item.name }}</span>
-                <NTag size="tiny" type="success" :bordered="false">{{ item.latest_version || '-' }}</NTag>
+                <NTag size="tiny" type="success" :bordered="false">{{ item.latest_version?.version || '-' }}</NTag>
               </div>
             </template>
             <template #header-extra>

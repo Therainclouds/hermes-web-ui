@@ -103,6 +103,7 @@ export default {
     collapse: '收起',
     start: '启动',
     stop: '停止',
+    back: '返回',
   },
 
   // 侧边栏
@@ -831,6 +832,7 @@ export default {
     title: '专家中心',
     refresh: '刷新',
     refreshed: '已刷新',
+    refreshFailed: '刷新失败',
     empty: '暂无内容',
     installedEmpty: '暂未安装任何专家',
     lastError: '上次失败',
@@ -855,11 +857,23 @@ export default {
     upgradeFailed: '升级失败',
     uninstallFailed: '卸载失败',
     manifest: 'Manifest',
+    status: {
+      installed: '已安装',
+      failed: '失败',
+      downloading: '下载中...',
+      verifying: '校验中...',
+      extracting: '解压中...',
+      installing_profile: '激活中...',
+    },
     source: {
       badge: '专家',
     },
     detail: {
       install: '下载并激活',
+      startChat: '立即聊天',
+      noBinding: '尚未与 Profile 绑定',
+      startChatSuccess: '已切换到专家 Profile',
+      startChatFailed: '切换到专家 Profile 失败',
       upgrade: '升级',
       uninstall: '卸载',
       starterPrompts: '预设提示',
