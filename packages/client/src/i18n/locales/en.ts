@@ -961,6 +961,13 @@ export default {
   // Experts marketplace
   experts: {
     title: 'Expert Center',
+    subtitle: 'Discover, install and enable scenario-ready AI experts',
+    searchPlaceholder: 'Search experts by name, summary or category...',
+    allCategories: 'All categories',
+    featured: 'Featured',
+    upgradeAvailable: 'Update available',
+    filteredBy: 'Filtered by',
+    emptySearch: 'No experts match your search',
     refresh: 'Refresh',
     refreshed: 'Refreshed',
     refreshFailed: 'Refresh failed',
@@ -1009,6 +1016,17 @@ export default {
       uninstall: 'Uninstall',
       starterPrompts: 'Starter prompts',
       defaultSkills: 'Default skills',
+      noStarterPrompts: 'No starter prompts yet',
+      tabs: {
+        overview: 'Overview',
+        team: 'Team',
+        manifest: 'Manifest',
+      },
+      metaTitle: 'Info',
+      metaVersion: 'Latest version',
+      metaCategory: 'Category',
+      metaInstalled: 'Installed version',
+      metaStatus: 'Status',
     },
   },
 

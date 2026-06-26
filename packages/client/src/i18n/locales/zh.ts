@@ -961,6 +961,13 @@ export default {
   // 专家中心
   experts: {
     title: '专家中心',
+    subtitle: '发现、安装并启用面向场景的 AI 专家',
+    searchPlaceholder: '搜索专家名称、简介或分类...',
+    allCategories: '全部分类',
+    featured: '精品',
+    upgradeAvailable: '有新版本',
+    filteredBy: '当前筛选',
+    emptySearch: '没有匹配的专家',
     refresh: '刷新',
     refreshed: '已刷新',
     refreshFailed: '刷新失败',
@@ -1009,6 +1016,17 @@ export default {
       uninstall: '卸载',
       starterPrompts: '预设提示',
       defaultSkills: '默认技能',
+      noStarterPrompts: '暂无预设提示',
+      tabs: {
+        overview: '概览',
+        team: '团队',
+        manifest: 'Manifest',
+      },
+      metaTitle: '信息',
+      metaVersion: '最新版本',
+      metaCategory: '分类',
+      metaInstalled: '已安装版本',
+      metaStatus: '状态',
     },
   },
 

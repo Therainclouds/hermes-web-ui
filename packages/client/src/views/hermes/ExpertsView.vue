@@ -1,21 +1,83 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+/**
+ * ExpertsView - 专家中心列表页
+ * 结构：Hero + 分类 Chips + Featured 轮播 + Tabs + 卡片网格
+ */
+import { computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { NButton, NCard, NEmpty, NSpin, NTag, useMessage } from 'naive-ui'
+import { NEmpty, NSpin, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useExpertsStore } from '@/stores/hermes/experts'
-import type { ExpertCatalogItem, InstalledExpertRow } from '@/api/hermes/experts'
+import * as expertsApi from '@/api/hermes/experts'
+import {
+  ExpertCard,
+  ExpertFeaturedCarousel,
+  ExpertHero,
+} from '@/views/hermes/experts'
 
 const router = useRouter()
 const message = useMessage()
 const { t } = useI18n()
 const expertsStore = useExpertsStore()
 
-const activeTab = ref<'published' | 'team' | 'installed'>('published')
+const activeTab = computed<'published' | 'team' | 'installed'>({
+  get: () => expertsStore.categoryFilter === '__team__'
+    ? 'team'
+    : expertsStore.categoryFilter === '__installed__'
+      ? 'installed'
+      : 'published',
+  set: (v) => {
+    if (v === 'team') expertsStore.categoryFilter = '__team__'
+    else if (v === 'installed') expertsStore.categoryFilter = '__installed__'
+    else expertsStore.categoryFilter = null
+  },
+})
 
 const publishedItems = computed(() => expertsStore.catalog.filter((c) => c.kind === 'expert'))
 const teamItems = computed(() => expertsStore.catalog.filter((c) => c.kind === 'team'))
 const installedItems = computed(() => expertsStore.installed)
+
+function applySearchFilter<T extends { name: string; summary: string; category: string }>(items: T[]): T[] {
+  const q = expertsStore.searchQuery.trim().toLowerCase()
+  if (!q) return items
+  return items.filter((it) =>
+    [it.name, it.summary, it.category].some((v) => String(v || '').toLowerCase().includes(q)),
+  )
+}
+
+function applyCategoryFilter<T extends { category: string }>(items: T[]): T[] {
+  const filter = expertsStore.categoryFilter
+  if (!filter || filter === '__team__' || filter === '__installed__') return items
+  return items.filter((it) => it.category === filter)
+}
+
+function applyFeaturedFilter<T extends { is_featured?: boolean }>(items: T[]): T[] {
+  return expertsStore.featuredOnly ? items.filter((it) => it.is_featured) : items
+}
+
+const visiblePublished = computed(() => applyFeaturedFilter(applyCategoryFilter(applySearchFilter(publishedItems.value))))
+const visibleTeam = computed(() => applyFeaturedFilter(applyCategoryFilter(applySearchFilter(teamItems.value))))
+const visibleInstalled = computed(() => applySearchFilter(installedItems.value))
+
+const currentItems = computed(() => {
+  if (activeTab.value === 'team') return visibleTeam.value
+  if (activeTab.value === 'installed') return visibleInstalled.value
+  return visiblePublished.value
+})
+
+const activeCategoryLabel = computed(() => {
+  const f = expertsStore.categoryFilter
+  if (!f || f === '__team__' || f === '__installed__') return null
+  return f
+})
+
+const showEmpty = computed(() => !expertsStore.loading && currentItems.value.length === 0)
+
+const emptyDescription = computed(() => {
+  if (activeTab.value === 'installed') return t('experts.installedEmpty')
+  if (expertsStore.searchQuery.trim()) return t('experts.emptySearch')
+  return t('experts.empty')
+})
 
 onMounted(async () => {
   await expertsStore.fetchConfig()
@@ -36,142 +98,114 @@ function openDetail(slug: string) {
   router.push({ name: 'hermes.expertDetail', params: { slug } })
 }
 
-function isInstalled(slug: string): boolean {
-  return !!expertsStore.findInstalled(slug)
+async function handleStartChat(slug: string) {
+  const installed = expertsStore.findInstalled(slug)
+  if (!installed) return
+  const binding = expertsStore.bindings.find((b) => b.expert_slug === slug)
+  if (!binding) {
+    message.warning(t('experts.detail.noBinding'))
+    return
+  }
+  try {
+    localStorage.setItem('hermes_active_profile_name', binding.profile_name)
+    await expertsApi.activateExpertProfile(binding.profile_name)
+    message.success(t('experts.detail.startChatSuccess'))
+    router.push({ name: 'hermes.chat' })
+  } catch {
+    message.error(t('experts.detail.startChatFailed'))
+  }
 }
 
-function statusLabel(row: InstalledExpertRow): string {
-  if (row.status === 'installed') return t('experts.status.installed')
-  if (row.status === 'failed') return t('experts.status.failed')
-  if (row.status === 'downloading') return t('experts.status.downloading')
-  if (row.status === 'verifying') return t('experts.status.verifying')
-  if (row.status === 'extracting') return t('experts.status.extracting')
-  if (row.status === 'installing_profile') return t('experts.status.installing_profile')
-  return row.status
-}
-
-function renderCard(item: ExpertCatalogItem) {
-  return item
+function setCategory(cat: string | null) {
+  expertsStore.categoryFilter = cat
 }
 </script>
 
 <template>
   <div class="experts-view">
-    <header class="page-header">
-      <h2 class="header-title">{{ t('experts.title') }}</h2>
-      <div class="header-actions">
-        <NButton size="small" :loading="expertsStore.loading" @click="handleRefresh">
-          {{ t('experts.refresh') }}
-        </NButton>
-      </div>
-    </header>
+    <ExpertHero
+      :search="expertsStore.searchQuery"
+      :loading="expertsStore.loading"
+      @update:search="(v) => (expertsStore.searchQuery = v)"
+      @refresh="handleRefresh"
+    />
+
+    <div class="chips">
+      <button
+        class="chip"
+        :class="{ active: !expertsStore.categoryFilter }"
+        @click="setCategory(null)"
+      >
+        {{ t('experts.allCategories') }}
+      </button>
+      <button
+        v-for="cat in expertsStore.categories"
+        :key="cat"
+        class="chip"
+        :class="{ active: expertsStore.categoryFilter === cat }"
+        @click="setCategory(cat)"
+      >
+        {{ cat }}
+      </button>
+      <span class="chip-divider" />
+      <button
+        class="chip featured"
+        :class="{ active: expertsStore.featuredOnly }"
+        @click="expertsStore.featuredOnly = !expertsStore.featuredOnly"
+      >
+        ★ {{ t('experts.featured') }}
+      </button>
+    </div>
+
+    <ExpertFeaturedCarousel
+      v-if="!expertsStore.featuredOnly && activeTab === 'published'"
+      :items="expertsStore.catalog"
+      @open="openDetail"
+    />
 
     <div class="tab-bar">
-      <button
-        class="tab"
-        :class="{ active: activeTab === 'published' }"
-        @click="activeTab = 'published'"
-      >
-        {{ t('experts.tabPublished') }} ({{ publishedItems.length }})
+      <button class="tab" :class="{ active: activeTab === 'published' }" @click="activeTab = 'published'">
+        {{ t('experts.tabPublished') }}
+        <span class="tab-count">({{ publishedItems.length }})</span>
       </button>
-      <button
-        class="tab"
-        :class="{ active: activeTab === 'team' }"
-        @click="activeTab = 'team'"
-      >
-        {{ t('experts.tabTeam') }} ({{ teamItems.length }})
+      <button class="tab" :class="{ active: activeTab === 'team' }" @click="activeTab = 'team'">
+        {{ t('experts.tabTeam') }}
+        <span class="tab-count">({{ teamItems.length }})</span>
       </button>
-      <button
-        class="tab"
-        :class="{ active: activeTab === 'installed' }"
-        @click="activeTab = 'installed'"
-      >
-        {{ t('experts.tabInstalled') }} ({{ installedItems.length }})
+      <button class="tab" :class="{ active: activeTab === 'installed' }" @click="activeTab = 'installed'">
+        {{ t('experts.tabInstalled') }}
+        <span class="tab-count">({{ installedItems.length }})</span>
       </button>
+      <span v-if="activeCategoryLabel" class="active-filter">
+        {{ t('experts.filteredBy') }}: <strong>{{ activeCategoryLabel }}</strong>
+      </span>
     </div>
 
     <div class="experts-content">
       <NSpin :show="expertsStore.loading">
-        <div v-if="activeTab === 'published'" class="cards">
-          <NEmpty v-if="publishedItems.length === 0" :description="t('experts.empty')" />
-          <NCard
-            v-for="item in publishedItems.map(renderCard)"
-            :key="item.slug"
-            class="card"
-            hoverable
-            @click="openDetail(item.slug)"
-          >
-            <template #header>
-              <div class="card-head">
-                <span class="name">{{ item.name }}</span>
-                <NTag size="tiny" type="success" :bordered="false">{{ item.latest_version?.version || '-' }}</NTag>
-              </div>
-            </template>
-            <template #header-extra>
-              <NTag v-if="isInstalled(item.slug)" size="tiny" type="info" :bordered="false">
-                {{ t('experts.status.installed') }}
-              </NTag>
-            </template>
-            <div class="summary">{{ item.summary }}</div>
-            <div class="meta">
-              <NTag size="tiny" :bordered="false">{{ item.category }}</NTag>
-            </div>
-          </NCard>
-        </div>
-
-        <div v-else-if="activeTab === 'team'" class="cards">
-          <NEmpty v-if="teamItems.length === 0" :description="t('experts.empty')" />
-          <NCard
-            v-for="item in teamItems.map(renderCard)"
-            :key="item.slug"
-            class="card"
-            hoverable
-            @click="openDetail(item.slug)"
-          >
-            <template #header>
-              <div class="card-head">
-                <span class="name">{{ item.name }}</span>
-                <NTag size="tiny" type="success" :bordered="false">{{ item.latest_version?.version || '-' }}</NTag>
-              </div>
-            </template>
-            <template #header-extra>
-              <NTag v-if="isInstalled(item.slug)" size="tiny" type="info" :bordered="false">
-                {{ t('experts.status.installed') }}
-              </NTag>
-            </template>
-            <div class="summary">{{ item.summary }}</div>
-            <div class="meta">
-              <NTag size="tiny" :bordered="false">{{ item.category }}</NTag>
-              <NTag size="tiny" :bordered="false" type="warning">{{ t('experts.kind.team') }}</NTag>
-            </div>
-          </NCard>
-        </div>
-
+        <NEmpty v-if="showEmpty" :description="emptyDescription" />
         <div v-else class="cards">
-          <NEmpty v-if="installedItems.length === 0" :description="t('experts.installedEmpty')" />
-          <NCard
-            v-for="row in installedItems"
-            :key="row.expert_slug"
-            class="card"
-            hoverable
-            @click="openDetail(row.expert_slug)"
-          >
-            <template #header>
-              <div class="card-head">
-                <span class="name">{{ row.expert_name || row.expert_slug }}</span>
-                <NTag size="tiny" type="success" :bordered="false">{{ row.installed_version }}</NTag>
-              </div>
-            </template>
-            <template #header-extra>
-              <NTag size="tiny" :bordered="false" :type="row.status === 'installed' ? 'info' : row.status === 'failed' ? 'error' : 'default'">
-                {{ statusLabel(row) }}
-              </NTag>
-            </template>
-            <div class="summary">{{ row.kind }} · {{ row.category }}</div>
-            <div v-if="row.status === 'failed'" class="error">
-              {{ t('experts.lastError') }}: {{ row.last_error }}
-            </div>
-          </NCard>
+          <template v-if="activeTab === 'installed'">
+            <ExpertCard
+              v-for="row in visibleInstalled"
+              :key="row.expert_slug"
+              :item="row"
+              mode="installed"
+              :installed="row"
+              @open="openDetail"
+            />
+          </template>
+          <template v-else>
+            <ExpertCard
+              v-for="item in currentItems"
+              :key="item.slug"
+              :item="item"
+              :mode="activeTab === 'team' ? 'team' : 'published'"
+              :installed="expertsStore.findInstalled(item.slug)"
+              @open="openDetail"
+              @start-chat="handleStartChat"
+            />
+          </template>
         </div>
       </NSpin>
     </div>
@@ -182,28 +216,52 @@ function renderCard(item: ExpertCatalogItem) {
 @use '@/styles/variables' as *;
 
 .experts-view {
-  height: calc(100 * var(--vh));
   display: flex;
   flex-direction: column;
   padding: 0 20px 20px;
+  min-height: calc(100 * var(--vh));
 }
 
-.page-header {
+.chips {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 20px 0 12px;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 4px 0 14px;
 }
 
-.header-title {
-  font-size: 18px;
-  font-weight: 600;
-  color: $text-primary;
-  margin: 0;
+.chip {
+  height: 28px;
+  padding: 0 12px;
+  font-size: 12.5px;
+  color: $text-secondary;
+  background: transparent;
+  border: 1px solid $border-light;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all $transition-fast;
+
+  &:hover { color: $text-primary; border-color: $border-color; }
+
+  &.active {
+    color: var(--text-on-accent);
+    background: $accent-primary;
+    border-color: $accent-primary;
+  }
+
+  &.featured.active { background: var(--warning); border-color: var(--warning); }
+}
+
+.chip-divider {
+  width: 1px;
+  height: 18px;
+  background: $border-color;
+  margin: 0 4px;
 }
 
 .tab-bar {
   display: flex;
+  align-items: center;
   gap: 4px;
   border-bottom: 1px solid $border-color;
   margin-bottom: 14px;
@@ -217,55 +275,38 @@ function renderCard(item: ExpertCatalogItem) {
   padding: 8px 12px;
   cursor: pointer;
   border-bottom: 2px solid transparent;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  transition: color $transition-fast;
 }
+
+.tab:hover { color: $text-primary; }
 
 .tab.active {
   color: $accent-primary;
   border-bottom-color: $accent-primary;
 }
 
+.tab-count {
+  font-size: 11px;
+  color: $text-muted;
+}
+
+.active-filter {
+  margin-left: auto;
+  font-size: 12px;
+  color: $text-muted;
+}
+
 .experts-content {
   flex: 1;
-  overflow-y: auto;
   padding-bottom: 30px;
 }
 
 .cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr));
   gap: 12px;
-}
-
-.card {
-  cursor: pointer;
-}
-
-.card-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.name {
-  font-weight: 600;
-  color: $text-primary;
-}
-
-.summary {
-  font-size: 13px;
-  color: $text-secondary;
-  margin-bottom: 8px;
-}
-
-.meta {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.error {
-  margin-top: 6px;
-  font-size: 12px;
-  color: $error;
 }
 </style>
