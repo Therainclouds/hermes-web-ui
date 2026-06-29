@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿export default {
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿export default {
   // Login
   login: {
     title: 'QuantHermes Web UI',
@@ -18,6 +18,16 @@
     tooManyAttempts: 'Muitas tentativas falhadas, por favor tente novamente mais tarde',
     lockResetHint: 'Se este for seu servidor, limpe o bloqueio de login com:',
     defaultLoginResetHint: 'Para redefinir a senha padrao de quanthermes, execute:',
+    recoveryClearLocksButton: 'Limpar bloqueio de login',
+    recoveryResetPasswordButton: 'Redefinir senha padrao',
+    recoveryClearLocksTitle: 'Limpar bloqueio de login',
+    recoveryResetPasswordTitle: 'Redefinir senha padrao',
+    recoveryClearLocksDescription: 'Insira a senha de recuperacao para limpar todos os bloqueios IP. As contas de usuario existentes nao sao afetadas.',
+    recoveryResetPasswordDescription: 'Insira a senha de recuperacao para redefinir a conta quanthermes padrao para 12345678.',
+    recoveryClearLocksSuccess: 'Bloqueios de login removidos',
+    recoveryResetPasswordSuccess: 'Senha padrao redefinida',
+    recoveryPasswordPlaceholder: 'Senha de recuperacao',
+    recoveryFailed: 'Falha na recuperacao',
     sessionExpired: 'Login expirado. Entre novamente.',
     accessDenied: 'Voce nao tem permissao para acessar este recurso.',
     passwordMismatch: 'As senhas nao conferem',

@@ -163,6 +163,8 @@ hermes-web-ui reset-default-login
 
 `clear-login-locks` 会删除 `${HERMES_WEB_UI_HOME:-~/.hermes-web-ui}/.login-lock.json`。如果服务正在运行，需要重启服务才能清理内存中的锁定状态。`reset-default-login` 会更新 Web UI 账户数据库；如果已存在 `admin` 用户，则会把密码重置为 `123456`，并启用为超级管理员账户。
 
+登录页在 IP 被锁（HTTP 429/503）时会显示两个按钮 ——「清除登录锁定」和「重置默认密码」，由统一的恢复密码保护，默认与出厂 admin 密码一致（`12345678`）；可通过 `HERMES_WEB_UI_RECOVERY_PASSWORD` 环境变量配置为独立的值。
+
 ### 设置
 
 - 显示（流式输出、紧凑模式、推理过程、费用显示）

@@ -6,6 +6,7 @@ import { webhookRoutes } from './webhook'
 import { uploadRoutes } from './upload'
 import { updateRoutes } from './update'
 import { authPublicRoutes, authProtectedRoutes } from './auth'
+import { recoveryPublicRoutes } from './recovery'
 import { devicePublicRoutes, deviceRoutes } from './devices'
 import { codingAgentRoutes } from './coding-agents'
 import { apiDocsRoutes } from './api-docs'
@@ -57,6 +58,7 @@ export function registerRoutes(app: any, authMiddleware: Array<(ctx: Context, ne
   app.use(healthRoutes.routes())
   app.use(webhookRoutes.routes())
   app.use(authPublicRoutes.routes())
+  app.use(recoveryPublicRoutes.routes())
   app.use(devicePublicRoutes.routes())
   app.use(claudeCodeProxyRoutes.routes())
   app.use(codexProxyRoutes.routes())

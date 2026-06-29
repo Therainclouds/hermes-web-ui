@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿export default {
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿export default {
   // 로그인
   login: {
     title: 'QuantHermes Web UI',
@@ -18,6 +18,16 @@
     tooManyAttempts: '로그인 시도 횟수가 너무 많습니다. 잠시 후 다시 시도해 주세요',
     lockResetHint: '본인 서버라면 다음 명령으로 로그인 잠금을 해제할 수 있습니다:',
     defaultLoginResetHint: '기본 quanthermes 비밀번호를 재설정하려면 다음을 실행하세요:',
+    recoveryClearLocksButton: '로그인 잠금 해제',
+    recoveryResetPasswordButton: '기본 비밀번호 재설정',
+    recoveryClearLocksTitle: '로그인 잠금 해제',
+    recoveryResetPasswordTitle: '기본 비밀번호 재설정',
+    recoveryClearLocksDescription: '복구 비밀번호를 입력하여 모든 IP 잠금을 해제하세요. 기존 사용자 계정에는 영향을 주지 않습니다.',
+    recoveryResetPasswordDescription: '복구 비밀번호를 입력하여 기본 quanthermes 계정의 비밀번호를 기본값(12345678)으로 재설정합니다.',
+    recoveryClearLocksSuccess: '로그인 잠금이 해제되었습니다',
+    recoveryResetPasswordSuccess: '기본 비밀번호가 재설정되었습니다',
+    recoveryPasswordPlaceholder: '복구 비밀번호',
+    recoveryFailed: '복구 작업에 실패했습니다',
     sessionExpired: '로그인이 만료되었습니다. 다시 로그인해 주세요.',
     accessDenied: '이 리소스에 접근할 권한이 없습니다.',
     passwordMismatch: '비밀번호가 일치하지 않습니다',

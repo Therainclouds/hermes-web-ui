@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿export default {
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿export default {
   // 登入
   login: {
     title: 'QuantHermes Web UI',
@@ -18,6 +18,16 @@
     tooManyAttempts: '登入失敗次數過多，請稍後再試',
     lockResetHint: '如果這是你的伺服器，可以執行以下命令清除登入鎖定：',
     defaultLoginResetHint: '如需重置預設 quanthermes 密碼，可以執行：',
+    recoveryClearLocksButton: '清除登入鎖定',
+    recoveryResetPasswordButton: '重置預設密碼',
+    recoveryClearLocksTitle: '清除登入鎖定',
+    recoveryResetPasswordTitle: '重置預設密碼',
+    recoveryClearLocksDescription: '輸入復原密碼以清除所有 IP 鎖定。不會影響現有使用者帳號。',
+    recoveryResetPasswordDescription: '輸入復原密碼以將預設 quanthermes 帳號重置為出廠密碼（12345678）。',
+    recoveryClearLocksSuccess: '登入鎖定已清除',
+    recoveryResetPasswordSuccess: '預設密碼已重置',
+    recoveryPasswordPlaceholder: '復原密碼',
+    recoveryFailed: '復原操作失敗',
     sessionExpired: '登入已過期，請重新登入',
     accessDenied: '你沒有權限存取此資源',
     passwordMismatch: '兩次密碼不一致',

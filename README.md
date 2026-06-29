@@ -166,6 +166,8 @@ hermes-web-ui reset-default-login
 
 `clear-login-locks` removes `${HERMES_WEB_UI_HOME:-~/.hermes-web-ui}/.login-lock.json`. If the server is running, restart it to clear in-memory lock state. `reset-default-login` updates the Web UI account database; if an `admin` user already exists, its password is reset to `123456` and the account is enabled as a super administrator.
 
+When the login page reports that the IP is locked (HTTP 429/503), the same operations are available directly in the UI as two buttons — "Clear Login Lock" and "Reset Default Password" — protected by a single shared recovery password. By default the recovery password equals the shipped default admin password (`12345678`); override it with the `HERMES_WEB_UI_RECOVERY_PASSWORD` environment variable to use an independent value.
+
 ### Settings
 
 - Display (streaming, compact mode, reasoning, cost display)

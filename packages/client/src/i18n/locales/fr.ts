@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿export default {
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿export default {
   // Login
   login: {
     title: 'QuantHermes Web UI',
@@ -18,6 +18,16 @@
     tooManyAttempts: 'Trop de tentatives echouees, veuillez reessayer plus tard',
     lockResetHint: 'Si c est votre serveur, supprimez le verrouillage de connexion avec :',
     defaultLoginResetHint: 'Pour reinitialiser le mot de passe par defaut de quanthermes, executez :',
+    recoveryClearLocksButton: 'Deverrouiller la connexion',
+    recoveryResetPasswordButton: 'Reinitialiser le mot de passe',
+    recoveryClearLocksTitle: 'Deverrouillage de la connexion',
+    recoveryResetPasswordTitle: 'Reinitialisation du mot de passe',
+    recoveryClearLocksDescription: 'Saisissez le mot de passe de recuperation pour supprimer tous les verrous IP. Les comptes utilisateurs existants ne sont pas affectes.',
+    recoveryResetPasswordDescription: 'Saisissez le mot de passe de recuperation pour reinitialiser le compte quanthermes par defaut (12345678).',
+    recoveryClearLocksSuccess: 'Verrous de connexion supprimes',
+    recoveryResetPasswordSuccess: 'Mot de passe par defaut reinitialise',
+    recoveryPasswordPlaceholder: 'Mot de passe de recuperation',
+    recoveryFailed: 'Echec de la recuperation',
     sessionExpired: 'La session a expire. Veuillez vous reconnecter.',
     accessDenied: 'Vous n\'avez pas l\'autorisation d\'acceder a cette ressource.',
     passwordMismatch: 'Les mots de passe ne correspondent pas',

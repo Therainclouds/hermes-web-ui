@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿export default {
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿export default {
   // Login
   login: {
     title: 'QuantHermes Web UI',
@@ -18,6 +18,16 @@
     tooManyAttempts: 'Demasiados intentos fallidos, por favor intente mas tarde',
     lockResetHint: 'Si este es su servidor, borre el bloqueo de inicio de sesion con:',
     defaultLoginResetHint: 'Para restablecer la contrasena predeterminada de quanthermes, ejecute:',
+    recoveryClearLocksButton: 'Borrar bloqueo de inicio',
+    recoveryResetPasswordButton: 'Restablecer contrasena',
+    recoveryClearLocksTitle: 'Borrar bloqueo de inicio de sesion',
+    recoveryResetPasswordTitle: 'Restablecer contrasena predeterminada',
+    recoveryClearLocksDescription: 'Introduzca la contrasena de recuperacion para borrar todos los bloqueos IP. Las cuentas de usuario existentes no se ven afectadas.',
+    recoveryResetPasswordDescription: 'Introduzca la contrasena de recuperacion para restablecer la cuenta quanthermes predeterminada a 12345678.',
+    recoveryClearLocksSuccess: 'Bloqueos de inicio borrados',
+    recoveryResetPasswordSuccess: 'Contrasena predeterminada restablecida',
+    recoveryPasswordPlaceholder: 'Contrasena de recuperacion',
+    recoveryFailed: 'Recuperacion fallida',
     sessionExpired: 'La sesion expiro. Inicia sesion de nuevo.',
     accessDenied: 'No tienes permiso para acceder a este recurso.',
     passwordMismatch: 'Las contrasenas no coinciden',

@@ -1,18 +1,32 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { setApiKey, hasApiKey } from "@/api/client";
 import { fetchAuthStatus, loginWithPassword } from "@/api/auth";
+import { clearLoginLocks, resetDefaultLogin } from "@/api/recovery";
+import RecoveryConfirmModal, {
+  type RecoveryAction,
+} from "@/components/auth/RecoveryConfirmModal.vue";
 
 const { t } = useI18n();
 const router = useRouter();
+
+const RECOVERY_SUCCESS_KEYS = new Set([
+  "login.recoveryClearLocksSuccess",
+  "login.recoveryResetPasswordSuccess",
+]);
 
 const username = ref("");
 const password = ref("");
 const loading = ref(false);
 const errorMsg = ref("");
 const showLockResetHint = ref(false);
+
+// Recovery modal state
+type RecoveryModalState = { open: false } | { open: true; action: RecoveryAction };
+const recoveryModal = ref<RecoveryModalState>({ open: false });
+const recoveryModalRef = ref<InstanceType<typeof RecoveryConfirmModal> | null>(null);
 
 // If already has a key, try to go to main page
 if (hasApiKey()) {
@@ -56,6 +70,38 @@ async function handlePasswordLogin() {
     loading.value = false;
   }
 }
+
+function openRecoveryModal(action: RecoveryAction) {
+  recoveryModal.value = { open: true, action };
+}
+
+function closeRecoveryModal() {
+  recoveryModal.value = { open: false };
+}
+
+async function handleRecoverySubmit(recoveryPassword: string) {
+  if (!recoveryModal.value.open) return;
+  const action = recoveryModal.value.action;
+  try {
+    if (action === "clear-locks") {
+      await clearLoginLocks(recoveryPassword);
+    } else {
+      await resetDefaultLogin(recoveryPassword);
+    }
+    const successMessage = recoveryModalRef.value?.getSuccessMessage?.() || t("login.recoveryFailed");
+    recoveryModalRef.value?.showSuccess();
+    // Per product decision: clear the lock hint and surface a transient success
+    // banner above the form, then close the modal.
+    showLockResetHint.value = false;
+    errorMsg.value = successMessage;
+    setTimeout(() => {
+      closeRecoveryModal();
+      if (errorMsg.value === successMessage) errorMsg.value = "";
+    }, 1800);
+  } catch (err: any) {
+    recoveryModalRef.value?.setError(err?.message || t("login.recoveryFailed"));
+  }
+}
 </script>
 
 <template>
@@ -87,15 +133,40 @@ async function handlePasswordLogin() {
         <div v-if="errorMsg" class="login-error">{{ errorMsg }}</div>
         <div v-if="showLockResetHint" class="login-lock-hint">
           <span>{{ t("login.lockResetHint") }}</span>
-          <code>hermes-web-ui clear-login-locks --restart</code>
-          <span>{{ t("login.defaultLoginResetHint") }}</span>
-          <code>hermes-web-ui reset-default-login</code>
+          <div class="login-lock-hint__actions">
+            <button
+              type="button"
+              class="login-lock-hint__btn"
+              @click="openRecoveryModal('clear-locks')"
+            >
+              {{ t("login.recoveryClearLocksButton") }}
+            </button>
+            <button
+              type="button"
+              class="login-lock-hint__btn"
+              @click="openRecoveryModal('reset-password')"
+            >
+              {{ t("login.recoveryResetPasswordButton") }}
+            </button>
+          </div>
+          <span class="login-lock-hint__secondary">
+            {{ t("login.defaultLoginResetHint") }}
+          </span>
         </div>
         <button type="submit" class="login-btn" :disabled="loading">
           {{ loading ? "..." : t("login.submit") }}
         </button>
       </form>
     </div>
+
+    <RecoveryConfirmModal
+      v-if="recoveryModal.open"
+      ref="recoveryModalRef"
+      :open="recoveryModal.open"
+      :action="recoveryModal.action"
+      @close="closeRecoveryModal"
+      @submit="handleRecoverySubmit"
+    />
   </div>
 </template>
 
@@ -192,34 +263,70 @@ async function handlePasswordLogin() {
   font-size: 12px;
   line-height: 1.5;
   text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 
   code {
     display: block;
     margin-top: 4px;
     color: $text-primary;
-    font-family: $font-code;
-    word-break: break-all;
   }
+}
+
+.login-lock-hint__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.login-lock-hint__btn {
+  padding: 6px 12px;
+  border: 1px solid rgba(var(--warning-rgb), 0.55);
+  border-radius: $radius-sm;
+  background: transparent;
+  color: $text-primary;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background $transition-fast, border-color $transition-fast;
+
+  &:hover:not(:disabled) {
+    background: rgba(var(--warning-rgb), 0.15);
+    border-color: rgba(var(--warning-rgb), 0.8);
+  }
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+}
+
+.login-lock-hint__secondary {
+  font-size: 11px;
+  opacity: 0.85;
+  margin-top: 2px;
 }
 
 .login-btn {
   width: 100%;
-  padding: 14px;
+  padding: 14px 16px;
   border: none;
   border-radius: $radius-sm;
-  background: $text-primary;
-  color: var(--text-on-accent);
+  background: $accent-primary;
+  color: #fff;
   font-size: 15px;
   font-weight: 500;
   cursor: pointer;
   transition: opacity $transition-fast;
+  font-family: $font-code;
 
-  &:hover {
-    opacity: 0.85;
+  &:hover:not(:disabled) {
+    opacity: 0.92;
   }
 
   &:disabled {
-    opacity: 0.5;
+    opacity: 0.6;
     cursor: not-allowed;
   }
 }

@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿export default {
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿export default {
   // Login
   login: {
     title: 'QuantHermes Web UI',
@@ -18,6 +18,16 @@
     tooManyAttempts: 'Zu viele fehlgeschlagene Versuche, bitte versuchen Sie es spater erneut',
     lockResetHint: 'Wenn dies Ihr Server ist, heben Sie die Login-Sperre auf mit:',
     defaultLoginResetHint: 'Um das Standard-Admin-Passwort zuruckzusetzen, fuhren Sie aus:',
+    recoveryClearLocksButton: 'Login-Sperre aufheben',
+    recoveryResetPasswordButton: 'Standard-Passwort zurucksetzen',
+    recoveryClearLocksTitle: 'Login-Sperre aufheben',
+    recoveryResetPasswordTitle: 'Standard-Passwort zurucksetzen',
+    recoveryClearLocksDescription: 'Geben Sie das Wiederherstellungspasswort ein, um alle IP-Sperren aufzuheben. Bestehende Benutzerkonten sind nicht betroffen.',
+    recoveryResetPasswordDescription: 'Geben Sie das Wiederherstellungspasswort ein, um das quanthermes-Standardkonto auf 12345678 zuruckzusetzen.',
+    recoveryClearLocksSuccess: 'Login-Sperren aufgehoben',
+    recoveryResetPasswordSuccess: 'Standard-Passwort zuruckgesetzt',
+    recoveryPasswordPlaceholder: 'Wiederherstellungspasswort',
+    recoveryFailed: 'Wiederherstellung fehlgeschlagen',
     sessionExpired: 'Die Anmeldung ist abgelaufen. Bitte melden Sie sich erneut an.',
     accessDenied: 'Sie haben keine Berechtigung fur diese Ressource.',
     passwordMismatch: 'Passworter stimmen nicht uberein',

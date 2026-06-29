@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿export default {
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿export default {
   // ログイン
   login: {
     title: 'QuantHermes Web UI',
@@ -18,6 +18,16 @@
     tooManyAttempts: 'ログイン試行回数が多すぎます。しばらくしてからお試しください',
     lockResetHint: '自分のサーバーの場合は、次のコマンドでログインロックを解除できます:',
     defaultLoginResetHint: '既定の quanthermes パスワードをリセットするには、次を実行してください:',
+    recoveryClearLocksButton: 'ログインロックを解除',
+    recoveryResetPasswordButton: '既定パスワードをリセット',
+    recoveryClearLocksTitle: 'ログインロックの解除',
+    recoveryResetPasswordTitle: '既定パスワードのリセット',
+    recoveryClearLocksDescription: '復旧パスワードを入力してすべての IP ロックを解除します。既存のユーザーアカウントには影響しません。',
+    recoveryResetPasswordDescription: '復旧パスワードを入力して既定の quanthermes アカウントを既定パスワード（12345678）に戻します。',
+    recoveryClearLocksSuccess: 'ログインロックを解除しました',
+    recoveryResetPasswordSuccess: '既定パスワードをリセットしました',
+    recoveryPasswordPlaceholder: '復旧パスワード',
+    recoveryFailed: '復元に失敗しました',
     sessionExpired: 'ログインの有効期限が切れました。再度ログインしてください。',
     accessDenied: 'このリソースにアクセスする権限がありません。',
     passwordMismatch: 'パスワードが一致しません',
