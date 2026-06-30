@@ -194,6 +194,16 @@ resolve_repo_dir() {
     return 0
   fi
 
+  # Trust caller-provided DEPLOY_DIR if it already points at a valid source
+  # tree. This lets orchestrators (e.g. unzip.sh) redirect builds to a
+  # permission-friendly path like /opt/hermes-web-ui/src instead of the
+  # script's own location, which on many systems lives under a 700-mode
+  # /root and is unreachable for non-root users.
+  if [[ -n "${DEPLOY_DIR}" && -f "${DEPLOY_DIR}/package.json" ]]; then
+    info "Using DEPLOY_DIR from environment: ${DEPLOY_DIR}"
+    return 0
+  fi
+
   local script_root
   script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
