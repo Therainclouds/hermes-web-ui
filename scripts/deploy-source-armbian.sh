@@ -189,40 +189,42 @@ ensure_app_user() {
 }
 
 resolve_repo_dir() {
-  if [[ "${USE_CONFIGURED_DEPLOY_DIR}" == "true" ]]; then
-    info "Using DEPLOY_DIR provided by the caller: ${DEPLOY_DIR}"
+  # caller-provided DEPLOY_DIR is the single source of truth. If it is set
+  # (non-empty) we trust it as-is, regardless of USE_CONFIGURED_DEPLOY_DIR.
+  # This lets orchestrators (e.g. unzip.sh) redirect the build to a
+  # permission-friendly path like /opt/hermes-web-ui/src without being
+  # hijacked by the script's own BASH_SOURCE-derived location, which on
+  # many systems lives under /root (mode 700) and is unreachable for
+  # non-root users.
+  if [[ -n "${DEPLOY_DIR}" ]]; then
+    if [[ ! -d "${DEPLOY_DIR}" ]]; then
+      err "DEPLOY_DIR=${DEPLOY_DIR} does not exist or is not a directory."
+      err "Extract the source archive first, then rerun this script."
+      exit 1
+    fi
+    if [[ "${USE_CONFIGURED_DEPLOY_DIR}" == "true" ]]; then
+      info "Using DEPLOY_DIR provided by the caller: ${DEPLOY_DIR}"
+    else
+      info "Using DEPLOY_DIR from environment: ${DEPLOY_DIR}"
+    fi
     return 0
   fi
 
-  # Trust caller-provided DEPLOY_DIR if it already points at a valid source
-  # tree. This lets orchestrators (e.g. unzip.sh) redirect builds to a
-  # permission-friendly path like /opt/hermes-web-ui/src instead of the
-  # script's own location, which on many systems lives under a 700-mode
-  # /root and is unreachable for non-root users.
-  if [[ -n "${DEPLOY_DIR}" && -f "${DEPLOY_DIR}/package.json" ]]; then
-    info "Using DEPLOY_DIR from environment: ${DEPLOY_DIR}"
-    return 0
-  fi
-
+  # Fall back to the source tree next to the script when DEPLOY_DIR is
+  # unset. This preserves the historical behaviour for direct invocations
+  # like `sudo bash scripts/deploy-source-armbian.sh`.
   local script_root
   script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
   if [[ -f "${script_root}/package.json" ]]; then
     DEPLOY_DIR="${script_root}"
     info "Using source tree next to the script: ${DEPLOY_DIR}"
     return 0
   fi
 
-  if [[ -f "${DEPLOY_DIR}/package.json" ]]; then
-    info "Using extracted source tree from DEPLOY_DIR: ${DEPLOY_DIR}"
-    return 0
-  fi
-
   err "No source tree found."
-  err "Expected package.json in either:"
-  err "  1. the directory next to this script, or"
-  err "  2. DEPLOY_DIR=${DEPLOY_DIR}"
-  err "Upload and extract the local source package first, then rerun this script."
+  err "  - DEPLOY_DIR is empty"
+  err "  - ${script_root}/package.json does not exist"
+  err "Set DEPLOY_DIR or place package.json next to this script, then rerun."
   exit 1
 }
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { setApiKey, hasApiKey } from "@/api/client";
@@ -11,11 +11,6 @@ import RecoveryConfirmModal, {
 
 const { t } = useI18n();
 const router = useRouter();
-
-const RECOVERY_SUCCESS_KEYS = new Set([
-  "login.recoveryClearLocksSuccess",
-  "login.recoveryResetPasswordSuccess",
-]);
 
 const username = ref("");
 const password = ref("");

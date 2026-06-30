@@ -9,6 +9,7 @@ import { NEmpty, NSpin, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useExpertsStore } from '@/stores/hermes/experts'
 import * as expertsApi from '@/api/hermes/experts'
+import type { ExpertCatalogItem, InstalledExpertRow } from '@/api/hermes/experts'
 import {
   ExpertCard,
   ExpertFeaturedCarousel,
@@ -45,6 +46,14 @@ function applySearchFilter<T extends { name: string; summary: string; category: 
   )
 }
 
+function filterInstalled(items: InstalledExpertRow[]): InstalledExpertRow[] {
+  const q = expertsStore.searchQuery.trim().toLowerCase()
+  if (!q) return items
+  return items.filter((it) =>
+    [it.expert_name, it.category].some((v) => String(v || '').toLowerCase().includes(q)),
+  )
+}
+
 function applyCategoryFilter<T extends { category: string }>(items: T[]): T[] {
   const filter = expertsStore.categoryFilter
   if (!filter || filter === '__team__' || filter === '__installed__') return items
@@ -57,11 +66,13 @@ function applyFeaturedFilter<T extends { is_featured?: boolean }>(items: T[]): T
 
 const visiblePublished = computed(() => applyFeaturedFilter(applyCategoryFilter(applySearchFilter(publishedItems.value))))
 const visibleTeam = computed(() => applyFeaturedFilter(applyCategoryFilter(applySearchFilter(teamItems.value))))
-const visibleInstalled = computed(() => applySearchFilter(installedItems.value))
+const visibleInstalled = computed(() => filterInstalled(installedItems.value))
 
-const currentItems = computed(() => {
+// Only used by the v-else branch (published + team tabs). The installed
+// tab renders its own <template> above. Typed explicitly so the template
+// can access catalog-only fields (slug) without TS widening to the union.
+const currentItems = computed<ExpertCatalogItem[]>(() => {
   if (activeTab.value === 'team') return visibleTeam.value
-  if (activeTab.value === 'installed') return visibleInstalled.value
   return visiblePublished.value
 })
 
