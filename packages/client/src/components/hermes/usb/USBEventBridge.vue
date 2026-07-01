@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, watch } from 'vue'
+import { computed, h, onMounted, watch } from 'vue'
 import { useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { fetchConfig } from '@/api/hermes/config'
 import { useUSBStream } from '@/composables/useUSBStream'
+import router from '@/router'
 import { useSettingsStore } from '@/stores/hermes/settings'
 import { playCompletionSound } from '@/utils/completion-sound'
 import { showCompletionNotification } from '@/utils/completion-notification'
@@ -27,6 +28,11 @@ function notificationKey(eventId: string, kind: string): string {
   return `${kind}:${eventId}`
 }
 
+function openUSBPage() {
+  if (router.currentRoute.value.name === 'hermes.usb') return
+  void router.push({ name: 'hermes.usb' })
+}
+
 function shouldNotify(key: string): boolean {
   const now = Date.now()
   for (const [candidate, ts] of recentNotificationKeys) {
@@ -40,15 +46,23 @@ function shouldNotify(key: string): boolean {
 
 function toastEvent(event: { id: string, status: string, label: string | null, action: 'add' | 'remove', error: string | null }) {
   const label = deviceLabel(event.label)
+  const renderContent = (text: string) => () => h(
+    'span',
+    {
+      style: 'cursor:pointer;text-decoration:underline;',
+      onClick: openUSBPage,
+    },
+    text,
+  )
   if (event.status === 'mount_failed') {
-    message.error(t('usb.notifications.mountFailedBody', { label, error: event.error || 'Unknown error' }))
+    message.error(renderContent(t('usb.notifications.mountFailedBody', { label, error: event.error || 'Unknown error' })))
     return
   }
   if (event.action === 'remove') {
-    message.warning(t('usb.notifications.removedBody', { label }))
+    message.warning(renderContent(t('usb.notifications.removedBody', { label })))
     return
   }
-  message.success(t('usb.notifications.mountedBody', { label }))
+  message.success(renderContent(t('usb.notifications.mountedBody', { label })))
 }
 
 async function systemNotify(event: { id: string, status: string, label: string | null, action: 'add' | 'remove', error: string | null }) {

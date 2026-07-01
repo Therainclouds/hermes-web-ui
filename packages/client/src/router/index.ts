@@ -134,6 +134,11 @@ const router = createRouter({
       component: () => import('@/views/hermes/DevicesView.vue'),
     },
     {
+      path: '/hermes/usb',
+      name: 'hermes.usb',
+      component: () => import('@/views/hermes/USBView.vue'),
+    },
+    {
       path: '/hermes/group-chat',
       name: 'hermes.groupChat',
       component: () => import('@/views/hermes/GroupChatView.vue'),

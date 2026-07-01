@@ -273,6 +273,16 @@ async function handleReloadClick() {
             </svg>
             <span>{{ t("sidebar.devices") }}</span>
           </RouteLinkItem>
+          <RouteLinkItem v-if="hasRoute('hermes.usb')" class="nav-item" :to="{ name: 'hermes.usb' }" :active="selectedKey === 'hermes.usb'">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M8 7v5a4 4 0 0 0 8 0V7" />
+              <path d="M12 3v12" />
+              <path d="M8 4h8" />
+              <path d="M10 17h4" />
+              <path d="M9 21h6" />
+            </svg>
+            <span>{{ t("sidebar.usb") }}</span>
+          </RouteLinkItem>
         </div>
       </div>
 
