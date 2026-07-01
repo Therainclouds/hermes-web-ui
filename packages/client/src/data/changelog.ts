@@ -31,7 +31,7 @@ export const changelog: ChangelogEntry[] = [
     ],
   },
   {
-    version: '0.6.19',
+    version: '0.6.20',
     date: '2026-06-23',
     changes: [
       'changelog.new_0_6_19_1',
