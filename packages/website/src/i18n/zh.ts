@@ -214,6 +214,7 @@ export default {
           ['HERMES_AGENT_BRIDGE_TIMEOUT_MS', 'Node 请求 bridge broker 的响应超时'],
           ['HERMES_AGENT_BRIDGE_CONNECT_RETRY_MS', '连接 bridge socket 失败时的短重试窗口'],
           ['HERMES_AGENT_BRIDGE_STARTUP_TIMEOUT_MS', '等待 Python bridge ready 的超时'],
+          ['HERMES_AGENT_BRIDGE_STOP_ON_SHUTDOWN', 'Web UI 关闭和重启时默认停止 bridge broker；设为 0/false/no/off 才会在重启时保留 broker'],
           ['HERMES_AGENT_BRIDGE_AUTO_RESTART', 'bridge broker 意外退出后是否自动重启；设为 0/false/no/off 可关闭'],
           ['HERMES_AGENT_BRIDGE_RESTART_DELAY_MS', 'bridge 自动重启退避的基础延迟'],
           ['HERMES_AGENT_BRIDGE_PLATFORM', '传给 Hermes Agent 的 platform 标识'],
@@ -242,7 +243,7 @@ export default {
       },
       gateway: {
         title: 'Agent Bridge 运行时',
-        content: '聊天运行通过 Hermes agent bridge 处理。它与 Hermes Studio 服务一起运行，并直接连接 Hermes Agent runtime。HERMES_AGENT_BRIDGE_ENDPOINT 控制 Node 到 broker 的地址，HERMES_AGENT_BRIDGE_WORKER_TRANSPORT 控制 broker 与各 Profile worker 的连接方式。前端切换 Hermes Profile 只会影响后续请求上下文，不会重启 bridge 或清理其他正在运行的任务。',
+        content: '聊天运行通过 Hermes agent bridge 处理。它随 Hermes Studio 服务一起运行，并直接连接 Hermes Agent runtime。HERMES_AGENT_BRIDGE_ENDPOINT 控制 Node 与 bridge broker 的连接地址；HERMES_AGENT_BRIDGE_WORKER_TRANSPORT 控制 broker 与各 Profile worker 的连接方式。Web UI 关闭以及 CLI/应用内重启默认会停止 bridge broker；只有明确希望跨重启保留 bridge session 时，才设置 HERMES_AGENT_BRIDGE_STOP_ON_SHUTDOWN=0。前端切换 Hermes Profile 只影响后续请求上下文，不会重启 bridge 或清理其他正在运行的任务。',
       },
       profiles: {
         title: 'Profiles',

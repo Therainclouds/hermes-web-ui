@@ -158,7 +158,7 @@ describe('agent runner Responses adapters', () => {
       expect.objectContaining({
         type: 'function',
         function: expect.objectContaining({
-          name: 'hermes_lan_devices_scan',
+          name: 'hermes_studio_lan_devices_scan',
           parameters: expect.objectContaining({
             properties: expect.objectContaining({
               profile: expect.any(Object),
@@ -171,7 +171,7 @@ describe('agent runner Responses adapters', () => {
 
     expect(responsesToAnthropicMessages(body, target).tools).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        name: 'hermes_lan_devices_scan',
+        name: 'hermes_studio_lan_devices_scan',
         input_schema: expect.objectContaining({
           properties: expect.objectContaining({
             profile: expect.any(Object),
@@ -238,7 +238,7 @@ describe('agent runner Responses adapters', () => {
         message: {
           tool_calls: [{
             id: 'call_1',
-            function: { name: 'hermes_lan_devices_scan', arguments: '{"profile":"default"}' },
+            function: { name: 'hermes_studio_lan_devices_scan', arguments: '{"profile":"default"}' },
           }],
         },
       }],
@@ -246,7 +246,7 @@ describe('agent runner Responses adapters', () => {
       output: [{
         type: 'function_call',
         call_id: 'call_1',
-        name: 'hermes_lan_devices_scan',
+        name: 'hermes_studio_lan_devices_scan',
         namespace: 'mcp__hermes_studio',
       }],
     })
@@ -304,14 +304,14 @@ describe('agent runner Responses adapters', () => {
     expect(anthropicMessageToResponses({
       id: 'msg_1',
       content: [
-        { type: 'tool_use', id: 'toolu_1', name: 'hermes_lan_devices_list', input: { profile: 'default' } },
+        { type: 'tool_use', id: 'toolu_1', name: 'hermes_studio_lan_devices_list', input: { profile: 'default' } },
       ],
       usage: { input_tokens: 1, output_tokens: 1 },
     }, target)).toMatchObject({
       output: [{
         type: 'function_call',
         call_id: 'toolu_1',
-        name: 'hermes_lan_devices_list',
+        name: 'hermes_studio_lan_devices_list',
         namespace: 'mcp__hermes_studio',
       }],
     })
@@ -383,7 +383,7 @@ describe('agent runner Responses stream adapters', () => {
 
   it('marks expanded Hermes MCP Chat SSE tool calls with their Responses namespace', async () => {
     const events = await collectEvents(openAiChatSseToResponsesEvents(encodedChunks([
-      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"hermes_lan_devices_scan","arguments":"{}"}}]}}]}\n\n',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"hermes_studio_lan_devices_scan","arguments":"{}"}}]}}]}\n\n',
       'data: [DONE]\n\n',
     ]), codexTarget))
 
@@ -394,7 +394,7 @@ describe('agent runner Responses stream adapters', () => {
           item: expect.objectContaining({
             type: 'function_call',
             call_id: 'call_1',
-            name: 'hermes_lan_devices_scan',
+            name: 'hermes_studio_lan_devices_scan',
             namespace: 'mcp__hermes_studio',
           }),
         }),
@@ -445,7 +445,7 @@ describe('agent runner Responses stream adapters', () => {
   it('marks expanded Hermes MCP Anthropic SSE tool calls with their Responses namespace', async () => {
     const events = await collectEvents(anthropicMessagesSseToResponsesEvents(encodedChunks([
       'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1"}}\n\n',
-      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"hermes_lan_devices_list","input":{}}}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"hermes_studio_lan_devices_list","input":{}}}\n\n',
       'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"profile\\":\\"default\\"}"}}\n\n',
       'event: message_stop\ndata: {"type":"message_stop"}\n\n',
     ]), codexTarget))
@@ -457,7 +457,7 @@ describe('agent runner Responses stream adapters', () => {
           item: expect.objectContaining({
             type: 'function_call',
             call_id: 'toolu_1',
-            name: 'hermes_lan_devices_list',
+            name: 'hermes_studio_lan_devices_list',
             namespace: 'mcp__hermes_studio',
           }),
         }),

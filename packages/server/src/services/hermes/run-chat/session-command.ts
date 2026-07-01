@@ -1,5 +1,5 @@
 import type { Server, Socket } from 'socket.io'
-import { addMessage, clearSessionMessages, createSession, getSession, renameSession, updateSessionStats } from '../../../db/hermes/session-store'
+import { addMessage, clearSessionMessages, createBranchedSession, createSession, getSession, getSessionDetail, renameSession, updateSessionStats } from '../../../db/hermes/session-store'
 import { logger } from '../../logger'
 import type { AgentBridgeClient } from '../agent-bridge'
 import { flushBridgePendingToDb } from './bridge-message'
@@ -7,7 +7,7 @@ import { buildDbHistory, estimateSnapshotAwareHistoryUsage, forceCompressBridgeH
 import { handleAbort } from './abort'
 import { calcAndUpdateUsage, contextTokensWithCachedOverhead, updateMessageContextTokenUsage } from './usage'
 import { contentBlocksToString } from './content-blocks'
-import type { ContentBlock, QueuedRun, SessionState } from './types'
+import type { ChatRunSource, ContentBlock, QueuedRun, SessionState } from './types'
 
 type CommandName =
   | 'usage'
@@ -21,6 +21,7 @@ type CommandName =
   | 'clear'
   | 'title'
   | 'compress'
+  | 'branch'
   | 'steer'
   | 'destroy'
   | 'reload-mcp'
@@ -46,6 +47,24 @@ interface SessionCommandContext {
   runQueuedItem: (socket: Socket, sessionId: string, next: QueuedRun, fallbackProfile?: string) => void
 }
 
+interface BranchSessionSummary {
+  id: string
+  profile: string
+  source: ChatRunSource
+  title: string
+  model: string | null
+  provider: string | null
+  parentSessionId: string
+  forkPointMessageId: string | null
+  parentTitle: string | null
+  parentLastMessage: string | null
+  parentLastMessageRole: string | null
+  createdAt: number
+  updatedAt: number
+  messageCount: number
+  workspace: string | null
+}
+
 const COMMAND_ALIASES: Record<string, CommandName> = {
   usage: 'usage',
   status: 'status',
@@ -58,6 +77,7 @@ const COMMAND_ALIASES: Record<string, CommandName> = {
   clear: 'clear',
   title: 'title',
   compress: 'compress',
+  fork: 'branch',
   steer: 'steer',
   destroy: 'destroy',
   'reload-mcp': 'reload-mcp',
@@ -89,7 +109,8 @@ export async function handleSessionCommand(
   const state = getOrCreateSession(ctx.sessionMap, sessionId)
   ctx.socket.join(`session:${sessionId}`)
   ensureCommandSession(sessionId, command, ctx)
-  if (command.name !== 'plan' && command.name !== 'skill') {
+  const isKnownCommand = Boolean(COMMAND_ALIASES[command.rawName])
+  if (command.name !== 'plan' && command.name !== 'skill' && command.name !== 'branch' && isKnownCommand) {
     persistCommandMessage(sessionId, state, `/${command.rawName}${command.args ? ` ${command.args}` : ''}`)
   }
 
@@ -551,6 +572,58 @@ export async function handleSessionCommand(
       return
     }
 
+    case 'branch': {
+      const bridgeStatus = await getBridgeSessionStatus(ctx, sessionId)
+      if (state.isWorking || bridgeStatus?.running === true) {
+        emitCommand({
+          ok: false,
+          action: 'branch',
+          terminal: false,
+          message: 'Cannot branch while the session is running. Wait for it to finish or use /abort first.',
+        })
+        return
+      }
+
+      const parent = getSession(sessionId)
+      if (isCodingAgentBranchSource(parent)) {
+        emitCommand({
+          ok: false,
+          action: 'branch',
+          terminal: true,
+          message: 'Cannot branch coding agent sessions.',
+        })
+        return
+      }
+
+      const fork = createBranchSession(sessionId, command.args, ctx)
+      if (!fork) {
+        emitCommand({
+          ok: false,
+          action: 'branch',
+          terminal: true,
+          message: 'Cannot branch: no conversation messages found to copy.',
+        })
+        return
+      }
+
+      // Do not seed an empty in-memory child state here. The child transcript has
+      // just been copied into SQLite, and the immediate client switch/resume must
+      // hydrate it from the DB so the fork opens with copied messages plus
+      // lineage metadata instead of an empty "new conversation" view.
+      ctx.sessionMap.delete(fork.id)
+
+      emitCommand({
+        action: 'branch',
+        terminal: true,
+        parentSessionId: sessionId,
+        newSessionId: fork.id,
+        newSessionTitle: fork.title,
+        branchSession: fork,
+        message: `Branched session "${fork.title || fork.id}" from ${sessionId}.`,
+      })
+      return
+    }
+
     case 'steer': {
       if (!command.args) {
         emitCommand({ ok: false, action: 'steer', terminal: !state.isWorking, message: 'Usage: /steer <instruction>' })
@@ -848,6 +921,118 @@ function persistCommandMessage(sessionId: string, state: SessionState, content: 
     timestamp: now,
   })
   updateSessionStats(sessionId)
+}
+
+function createBranchSession(parentSessionId: string, requestedTitle: string, ctx: SessionCommandContext): BranchSessionSummary | null {
+  const parent = getSession(parentSessionId)
+  if (!parent || isCodingAgentBranchSource(parent)) return null
+
+  const detail = getSessionDetail(parentSessionId)
+  const sourceMessages = detail?.messages || []
+  const parentLast = getLastVisibleMessage(sourceMessages)
+  if (!parentLast) return null
+
+  const nowSeconds = Math.floor(Date.now() / 1000)
+  const newSessionId = generateBranchSessionId()
+  const title = buildBranchTitle(requestedTitle, parent.title || parent.preview || '')
+  const source = normalizeBranchSource(parent.source)
+
+  const persisted = createBranchedSession({
+    id: newSessionId,
+    profile: parent.profile || ctx.profile || 'default',
+    source,
+    agent: parent.agent || (source === 'cli' ? 'hermes' : ''),
+    agent_mode: parent.agent_mode || '',
+    agent_session_id: parent.agent_session_id || '',
+    agent_native_session_id: parent.agent_native_session_id || '',
+    model: parent.model || ctx.model || '',
+    provider: parent.provider || ctx.provider || '',
+    title,
+    parent_session_id: parentSessionId,
+    workspace: parent.workspace || undefined,
+    ended_at: nowSeconds,
+    last_active: nowSeconds,
+    messages: sourceMessages.map(message => ({
+      role: message.role,
+      content: message.content,
+      display_role: message.display_role,
+      display_content: message.display_content,
+      tool_call_id: message.tool_call_id,
+      tool_calls: message.tool_calls,
+      tool_name: message.tool_name,
+      timestamp: message.timestamp,
+      token_count: message.token_count,
+      finish_reason: message.finish_reason,
+      reasoning: message.reasoning,
+      reasoning_details: message.reasoning_details,
+      reasoning_content: message.reasoning_content,
+    })),
+  })
+  if (!persisted) return null
+
+  return {
+    id: newSessionId,
+    profile: parent.profile || ctx.profile || 'default',
+    source,
+    title,
+    model: parent.model || ctx.model || null,
+    provider: parent.provider || ctx.provider || null,
+    parentSessionId,
+    forkPointMessageId: persisted.fork_point_message_id || null,
+    parentTitle: parent.title || parent.preview || null,
+    parentLastMessage: parentLast?.content || null,
+    parentLastMessageRole: parentLast?.role || null,
+    createdAt: nowSeconds * 1000,
+    updatedAt: nowSeconds * 1000,
+    messageCount: sourceMessages.length,
+    workspace: parent.workspace || null,
+  }
+}
+
+
+function isCodingAgentBranchSource(session: { source?: string | null; agent?: string | null } | null | undefined): boolean {
+  return session?.source === 'coding_agent' || session?.agent === 'claude' || session?.agent === 'codex'
+}
+
+function generateBranchSessionId(): string {
+  const now = new Date()
+  const ts = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, '0'),
+    String(now.getDate()).padStart(2, '0'),
+    '_',
+    String(now.getHours()).padStart(2, '0'),
+    String(now.getMinutes()).padStart(2, '0'),
+    String(now.getSeconds()).padStart(2, '0'),
+  ].join('')
+  return `${ts}_${Math.random().toString(16).slice(2, 8)}`
+}
+
+function buildBranchTitle(requestedTitle: string, parentTitle: string): string {
+  const explicit = requestedTitle.replace(/\s+/g, ' ').trim()
+  if (explicit) return explicit.slice(0, 120)
+  const base = parentTitle.replace(/\s+/g, ' ').trim() || 'branch'
+  const prefix = 'branch: '
+  return `${prefix}${base.slice(0, Math.max(0, 120 - prefix.length))}`
+}
+
+function normalizeBranchSource(source: string | null | undefined): ChatRunSource {
+  if (source === 'api_server' || source === 'cli' || source === 'global_agent' || source === 'workflow') return source
+  return 'cli'
+}
+
+function getLastVisibleMessage(messages: Array<{ role: string; content: string }>): { role: string; content: string } | null {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i]
+    if (message.role !== 'user' && message.role !== 'assistant') continue
+    const content = String(message.content || '').replace(/\s+/g, ' ').trim()
+    if (!content) continue
+    return {
+      role: message.role,
+      content: content.length > 280 ? `${content.slice(0, 277)}...` : content,
+    }
+  }
+  return null
 }
 
 function emitToSession(nsp: ReturnType<Server['of']>, socket: Socket, sessionId: string, event: string, payload: any) {

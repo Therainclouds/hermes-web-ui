@@ -95,6 +95,28 @@ export async function uploadFiles(targetDir: string, files: File[]): Promise<{ n
   return data.files
 }
 
+export async function uploadRuntimeFiles(files: File[]): Promise<{ name: string; path: string }[]> {
+  const base = getBaseUrlValue()
+  const formData = new FormData()
+  for (const file of files) {
+    formData.append('file', file)
+  }
+
+  const headers: Record<string, string> = {}
+  const token = getApiKey()
+  if (token) headers.Authorization = `Bearer ${token}`
+  const profileName = getActiveProfileName()
+  if (profileName) headers['X-Hermes-Profile'] = profileName
+
+  const res = await fetch(`${base}/upload`, { method: 'POST', headers, body: formData })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }))
+    throw new Error(body.error || `Upload failed: ${res.status}`)
+  }
+  const data = await res.json()
+  return data.files
+}
+
 export function getFileDownloadUrl(relativePath: string, fileName?: string): string {
   const base = getBaseUrlValue()
   const params = new URLSearchParams({ path: relativePath })

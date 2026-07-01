@@ -1,4 +1,5 @@
 import { request, getApiKey, getBaseUrlValue } from '../client'
+import type { ProviderApiMode } from './system'
 
 export interface SessionSummary {
   id: string
@@ -11,6 +12,11 @@ export interface SessionSummary {
   model: string
   provider?: string
   title: string | null
+  parent_session_id?: string | null
+  fork_point_message_id?: string | null
+  parent_title?: string | null
+  parent_last_message?: string | null
+  parent_last_message_role?: string | null
   preview?: string
   started_at: number
   ended_at: number | null
@@ -267,11 +273,11 @@ export async function setSessionWorkspace(id: string, workspace: string | null):
   }
 }
 
-export async function setSessionModel(id: string, model: string, provider: string): Promise<boolean> {
+export async function setSessionModel(id: string, model: string, provider: string, apiMode?: ProviderApiMode): Promise<boolean> {
   try {
     await request(`/api/hermes/sessions/${id}/model`, {
       method: 'POST',
-      body: JSON.stringify({ model, provider }),
+      body: JSON.stringify({ model, provider, apiMode }),
     })
     return true
   } catch {

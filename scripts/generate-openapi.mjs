@@ -21,7 +21,7 @@ const openapi = {
   openapi: '3.0.3',
   info: {
     title: 'Hermes Studio API',
-    description: 'Hermes Studio API â€” chat sessions, scheduled jobs, platform channels, model management, skills, memory, logs, file browser, group chat, and terminal.',
+    description: 'Hermes Studio API â€?chat sessions, scheduled jobs, platform channels, model management, skills, memory, logs, file browser, group chat, and terminal.',
     version: packageJson.version,
   },
   servers: [
@@ -987,6 +987,6 @@ if (!openapi.tags.find(t => t.name === 'Terminal')) {
 const outputPath = join(rootDir, 'docs/openapi.json')
 writeFileSync(outputPath, JSON.stringify(openapi, null, 2))
 
-console.log(`âœ“ Generated OpenAPI spec: ${outputPath}`)
+console.log(`âœ?Generated OpenAPI spec: ${outputPath}`)
 console.log(`  ${Object.keys(openapi.paths).length} endpoints`)
 console.log(`  ${openapi.tags.length} tags`)

@@ -4,6 +4,7 @@ const listConversationsMock = vi.fn(async (ctx: any) => { ctx.body = { sessions:
 const getConversationMessagesMock = vi.fn(async (ctx: any) => { ctx.body = { session_id: ctx.params.id, messages: [] } })
 const getConversationMessagesPaginatedMock = vi.fn(async (ctx: any) => { ctx.body = { session_id: ctx.params.id, messages: [], pagination: {} } })
 const listMock = vi.fn(async (ctx: any) => { ctx.body = { sessions: [{ id: 's1' }] } })
+const countMock = vi.fn(async (ctx: any) => { ctx.body = { count: 1 } })
 const listHermesSessionsMock = vi.fn(async (ctx: any) => { ctx.body = { sessions: [{ id: 'hermes-1' }] } })
 const getHermesSessionMock = vi.fn(async (ctx: any) => { ctx.body = { session: { id: ctx.params.id } } })
 const importHermesSessionMock = vi.fn(async (ctx: any) => { ctx.body = { session_id: ctx.params.id } })
@@ -30,6 +31,7 @@ vi.mock('../../packages/server/src/controllers/hermes/sessions', () => ({
   getConversationMessages: getConversationMessagesMock,
   getConversationMessagesPaginated: getConversationMessagesPaginatedMock,
   list: listMock,
+  count: countMock,
   listHermesSessions: listHermesSessionsMock,
   getHermesSession: getHermesSessionMock,
   importHermesSession: importHermesSessionMock,
@@ -59,6 +61,7 @@ describe('session routes', () => {
     getConversationMessagesMock.mockClear()
     getConversationMessagesPaginatedMock.mockClear()
     listMock.mockClear()
+    countMock.mockClear()
     listHermesSessionsMock.mockClear()
     getHermesSessionMock.mockClear()
     importHermesSessionMock.mockClear()
@@ -83,6 +86,7 @@ describe('session routes', () => {
       '/api/hermes/sessions/conversations/:id/messages',
       '/api/hermes/sessions/conversations/:id/messages/paginated',
       '/api/hermes/sessions',
+      '/api/hermes/sessions/count',
       '/api/hermes/sessions/hermes',
       '/api/hermes/sessions/hermes/:id',
       '/api/hermes/sessions/hermes/:id/import',
@@ -100,6 +104,20 @@ describe('session routes', () => {
       '/api/hermes/workspace/folders',
       '/api/hermes/workspace/folders/rename',
     ]))
+  })
+
+  it('delegates session count route before the session id route', async () => {
+    const { sessionRoutes } = await import('../../packages/server/src/routes/hermes/sessions')
+    const countLayer = sessionRoutes.stack.find((entry: any) => entry.path === '/api/hermes/sessions/count')
+    const idLayer = sessionRoutes.stack.find((entry: any) => entry.path === '/api/hermes/sessions/:id')
+    expect(sessionRoutes.stack.indexOf(countLayer)).toBeLessThan(sessionRoutes.stack.indexOf(idLayer))
+
+    const ctx: any = { query: { source: 'cli' }, body: null, params: {} }
+    await countLayer.stack[0](ctx)
+
+    expect(countMock).toHaveBeenCalledWith(ctx)
+    expect(getMock).not.toHaveBeenCalled()
+    expect(ctx.body).toEqual({ count: 1 })
   })
 
   it('delegates session context route to the controller', async () => {

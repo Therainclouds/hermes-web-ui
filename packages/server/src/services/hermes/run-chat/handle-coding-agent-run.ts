@@ -11,6 +11,7 @@ import type { ContentBlock, SessionState } from './types'
 import { writeModelRunProfileToken } from './model-run-prompt'
 import type { AuthenticatedUser } from '../../../middleware/user-auth'
 import { getSystemPrompt } from '../../../lib/llm-prompt'
+import { getSession } from '../../../db/hermes/session-store'
 
 export interface CodingAgentRunSocketData {
   input: string | ContentBlock[]
@@ -22,13 +23,14 @@ export interface CodingAgentRunSocketData {
   agent_id?: CodingAgentId
   mode?: 'scoped' | 'global'
   workspace?: string | null
+  source?: string
   baseUrl?: string
   base_url?: string
   apiKey?: string
   api_key?: string
   apiMode?: any
   api_mode?: any
-  session_source?: 'global_agent'
+  session_source?: 'global_agent' | 'workflow'
 }
 
 function codingAgentId(data: CodingAgentRunSocketData): CodingAgentId {
@@ -53,15 +55,18 @@ export async function handleCodingAgentRun(
   const agentId = codingAgentId(data)
   const state = getOrCreateSession(sessionMap, sessionId)
   state.profile = profile
-  state.source = 'coding_agent'
+  state.source = data.session_source === 'workflow' || data.source === 'workflow' ? 'workflow' : 'coding_agent'
 
   let runId = codingAgentRunManager.runIdForSession(sessionId)
   const mode = data.mode === 'global' ? 'global' : 'scoped'
+  const storedSession = getSession(sessionId)
+  const launchProvider = data.provider || (mode === 'scoped' ? storedSession?.provider || undefined : undefined)
+  const launchModel = data.model || (mode === 'scoped' ? storedSession?.model || undefined : undefined)
   if (runId && !codingAgentRunManager.isSessionLaunchCompatible(sessionId, {
     agentId,
     mode,
-    provider: data.provider,
-    model: data.model,
+    provider: launchProvider,
+    model: launchModel,
   })) {
     codingAgentRunManager.stop(sessionId, { reportClosed: false })
     runId = undefined
@@ -71,8 +76,8 @@ export async function handleCodingAgentRun(
       sessionId,
       mode,
       profile,
-      provider: data.provider,
-      model: data.model,
+      provider: launchProvider,
+      model: launchModel,
       workspace: data.workspace,
       baseUrl: data.baseUrl || data.base_url,
       apiKey: data.apiKey || data.api_key,
@@ -91,7 +96,7 @@ export async function handleCodingAgentRun(
     await writeModelRunProfileToken(socketUser, profile)
     const includeBaseSystemPrompt = agentId === 'claude-code' || agentId === 'codex'
     const runPrompt = [
-      includeBaseSystemPrompt ? getSystemPrompt() : '',
+      includeBaseSystemPrompt ? getSystemPrompt(undefined, { source: data.session_source || data.source }) : '',
     ].filter(Boolean).join('\n')
     await sendCodingAgentRunInput(sessionId, inputText, runPrompt)
   } catch (err) {

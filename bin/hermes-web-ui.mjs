@@ -23,13 +23,39 @@ const TOKEN_FILE = join(PID_DIR, '.token')
 const LOGIN_LOCK_FILE = join(WEB_UI_HOME, '.login-lock.json')
 const WEB_UI_DB_FILE = join(WEB_UI_HOME, 'hermes-web-ui.db')
 const DEFAULT_PORT = 8648
+const PREVIEW_BACKEND_PORT = 8650
+const PREVIEW_FRONTEND_PORT = 8651
+const PREVIEW_AGENT_BRIDGE_PORT = 18650
 const DEFAULT_USERNAME = 'quanthermes'
 const DEFAULT_PASSWORD = '12345678'
-const STOP_POLL_INTERVAL_MS = 100
-const DAEMON_RESTART_GRACE_MS = 5000
-const DAEMON_STOP_GRACE_MS = 15000
+const DEFAULT_RESTART_GRACE_MS = 5000
+const DEFAULT_STOP_GRACE_MS = 15000
+const STOP_POLL_INTERVAL_MS = 500
 
-// 鈹€鈹€鈹€ Auto-fix node-pty native module 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+function envPositiveInt(name) {
+  const value = Number(process.env[name])
+  return Number.isFinite(value) && value > 0 ? value : undefined
+}
+
+function shouldPreserveBridgeOnShutdown() {
+  const raw = String(process.env.HERMES_AGENT_BRIDGE_STOP_ON_SHUTDOWN || '').trim().toLowerCase()
+  return ['0', 'false', 'no', 'off'].includes(raw)
+}
+
+function getDaemonStopGraceMs(options = {}) {
+  const { restart = false } = options
+  if (restart && shouldPreserveBridgeOnShutdown()) {
+    return envPositiveInt('HERMES_WEB_UI_RESTART_GRACE_MS') ?? DEFAULT_RESTART_GRACE_MS
+  }
+  if (restart) {
+    return envPositiveInt('HERMES_WEB_UI_RESTART_GRACE_MS')
+      ?? envPositiveInt('HERMES_WEB_UI_STOP_GRACE_MS')
+      ?? DEFAULT_STOP_GRACE_MS
+  }
+  return envPositiveInt('HERMES_WEB_UI_STOP_GRACE_MS') ?? DEFAULT_STOP_GRACE_MS
+}
+
+// ─── Auto-fix node-pty native module ──────────────────────────
 function ensureNativeModules() {
   const prebuildDir = join(pkgDir, 'node_modules', 'node-pty', 'prebuilds', `${process.platform}-${process.arch}`)
   const helper = join(prebuildDir, 'spawn-helper')
@@ -507,8 +533,9 @@ function stopDaemon(options = {}) {
   try {
     try {
       process.kill(pid, restart ? 'SIGUSR2' : 'SIGTERM')
-      // Restart keeps the bridge alive and should be quick. Stop waits longer
-      // so the server can ask the bridge broker to stop worker subprocesses.
+      // Restart uses a shorter grace window than stop. By default the server
+      // still shuts down the bridge; set HERMES_AGENT_BRIDGE_STOP_ON_SHUTDOWN=0
+      // to keep the bridge across restarts.
       const graceMs = getDaemonStopGraceMs({ restart })
       const attempts = Math.max(1, Math.ceil(graceMs / STOP_POLL_INTERVAL_MS))
       for (let i = 0; i < attempts; i++) {

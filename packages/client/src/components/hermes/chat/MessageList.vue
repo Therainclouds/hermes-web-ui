@@ -20,7 +20,7 @@ import { useI18n } from "vue-i18n";
 import { NButton, NInput } from "naive-ui";
 import VirtualMessageList from "./VirtualMessageList.vue";
 import MessageItem from "./MessageItem.vue";
-import { LIVE_CHAT_MAX_LOADED_MESSAGES, useChatStore } from "@/stores/hermes/chat";
+import { LIVE_CHAT_MAX_LOADED_MESSAGES, useChatStore, type Message } from "@/stores/hermes/chat";
 import thinkingImage from "@/assets/thinking.gif";
 import { useToolTraceVisibility } from "@/composables/useToolTraceVisibility";
 
@@ -136,6 +136,49 @@ const displayMessages = computed(() => {
   });
 });
 
+function forkDividerId(sessionId: string): string {
+  return `fork-divider-${sessionId}`;
+}
+
+const displayMessagesWithForkDivider = computed<Message[]>(() => {
+  const messages = displayMessages.value;
+  const lineage = forkLineage.value;
+  const session = chatStore.activeSession;
+  if (!lineage || !session?.forkPointMessageId) return messages;
+
+  const forkPoint = String(session.forkPointMessageId);
+  const index = messages.findIndex((message) => String(message.id) === forkPoint);
+  if (index < 0) return messages;
+
+  const divider: Message = {
+    id: forkDividerId(session.id),
+    role: "system",
+    content: "",
+    timestamp: session.updatedAt || Date.now(),
+    systemType: "fork-divider",
+  };
+  return [
+    ...messages.slice(0, index + 1),
+    divider,
+    ...messages.slice(index + 1),
+  ];
+});
+
+const canForkActiveSession = computed(() => {
+  const session = chatStore.activeSession;
+  const hasConversation = displayMessages.value.some((message) => message.role === "user" || message.role === "assistant");
+  return !!session && session.source !== "coding_agent" && !chatStore.isStreaming && !chatStore.isForkPending && hasConversation;
+});
+
+const lastForkActionMessageId = computed(() => {
+  const messages = displayMessagesWithForkDivider.value;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message.role === "user" || message.role === "assistant") return message.id;
+  }
+  return null;
+});
+
 const queuedMessages = computed(() => {
   const sid = chatStore.activeSessionId;
   if (!sid) return [];
@@ -162,6 +205,30 @@ const historyArchiveHref = computed(() => {
   const profileQuery = session.profile ? `?profile=${encodeURIComponent(session.profile)}` : "";
   return `#/hermes/history/session/${encodeURIComponent(session.id)}${profileQuery}`;
 });
+
+const forkLineage = computed(() => {
+  const session = chatStore.activeSession;
+  if (!session?.parentSessionId) return null;
+  return {
+    parentSessionId: session.parentSessionId,
+    parentTitle: session.parentTitle || session.parentSessionId,
+    parentHref: `#/hermes/history/session/${encodeURIComponent(session.parentSessionId)}${session.profile ? `?profile=${encodeURIComponent(session.profile)}` : ""}`,
+    canSwitchParent: chatStore.sessions.some((item) => item.id === session.parentSessionId),
+    lastRole: session.parentLastMessageRole || "",
+    lastMessage: session.parentLastMessage || "",
+  };
+});
+
+async function openForkParent(event?: MouseEvent) {
+  const lineage = forkLineage.value;
+  if (!lineage?.parentSessionId) return;
+  if (lineage.canSwitchParent) {
+    event?.preventDefault();
+    await chatStore.switchSession(lineage.parentSessionId);
+    return;
+  }
+  window.location.hash = lineage.parentHref.replace(/^#/, "");
+}
 
 function handleApproval(choice: "once" | "session" | "always" | "deny") {
   chatStore.respondApproval(choice);
@@ -238,6 +305,18 @@ function applyInitialSessionScroll(sessionId: string) {
     return;
   }
 
+  const session = chatStore.activeSession;
+  if (session?.parentSessionId && session.forkPointMessageId) {
+    const dividerId = forkDividerId(session.id);
+    const hasDivider = displayMessagesWithForkDivider.value.some((message) => message.id === dividerId);
+    if (hasDivider) {
+      pendingInitialScrollSessionId.value = null;
+      scrollToMessage(dividerId);
+      return;
+    }
+    if (chatStore.isLoadingMessages || chatStore.messages.length === 0) return;
+  }
+
   scrollToBottom(initialBottomScrollOptions);
   if (chatStore.messages.length > 0 && !chatStore.isLoadingMessages) {
     pendingInitialScrollSessionId.value = null;
@@ -297,8 +376,7 @@ watch(
     }
     await nextTick();
     if (chatStore.activeSessionId !== id) return;
-    scrollToBottom(initialBottomScrollOptions);
-    pendingInitialScrollSessionId.value = null;
+    applyInitialSessionScroll(id);
   },
   { flush: "post" },
 );
@@ -394,7 +472,7 @@ defineExpose({
     <VirtualMessageList
       :key="chatStore.activeSessionId || 'chat-empty'"
       ref="listRef"
-      :messages="displayMessages"
+      :messages="displayMessagesWithForkDivider"
       :virtualized="false"
       :padding="virtualListPadding"
       @scroll="handleListScroll"
@@ -420,9 +498,30 @@ defineExpose({
         </div>
       </template>
       <template #item="{ message: msg }">
+        <div v-if="msg.systemType === 'fork-divider' && forkLineage" class="fork-divider" role="separator">
+          <div class="fork-divider-line" aria-hidden="true"></div>
+          <div class="fork-divider-pill">
+            <span class="fork-divider-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="M6 3v6a4 4 0 0 0 4 4h4.2" />
+                <path d="M18 9l4 4-4 4" />
+                <path d="M6 21V3" />
+                <circle cx="6" cy="5" r="2" />
+                <circle cx="6" cy="19" r="2" />
+              </svg>
+            </span>
+            <span class="fork-divider-text">{{ t("chat.forkedFrom") }}</span>
+            <a class="fork-divider-link" :href="forkLineage.parentHref" @click="openForkParent">
+              {{ forkLineage.parentTitle }}
+            </a>
+          </div>
+          <div class="fork-divider-line" aria-hidden="true"></div>
+        </div>
         <MessageItem
+          v-else
           :message="msg"
           :highlight="chatStore.focusMessageId === msg.id"
+          :show-fork-action="canForkActiveSession && msg.id === lastForkActionMessageId"
         />
       </template>
       <template #after>
@@ -1224,6 +1323,90 @@ defineExpose({
 
 .history-archive-link:hover {
   background: rgba(var(--accent-primary-rgb), 0.14);
+}
+
+ .fork-divider {
+  display: grid;
+  grid-template-columns: minmax(24px, 1fr) auto minmax(24px, 1fr);
+  align-items: center;
+  gap: 12px;
+  width: min(760px, 100%);
+  margin: 12px auto 18px;
+  color: var(--text-secondary);
+}
+
+.fork-divider-line {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(var(--accent-primary-rgb), 0.26), transparent);
+}
+
+.fork-divider-pill {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  max-width: min(560px, calc(100vw - 56px));
+  padding: 7px 12px;
+  border: 1px solid rgba(var(--accent-primary-rgb), 0.22);
+  border-radius: 999px;
+  background: var(--bg-card);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.05);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.fork-divider-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--accent-primary);
+  flex: 0 0 auto;
+}
+
+.fork-divider-icon svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.fork-divider-text {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.fork-divider-link {
+  overflow: hidden;
+  max-width: 220px;
+  color: var(--text-primary);
+  font-weight: 700;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fork-divider-link:hover {
+  color: var(--accent-primary);
+  text-decoration: underline;
+}
+
+
+@media (max-width: 640px) {
+  .fork-divider {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .fork-divider-line {
+    display: none;
+  }
 }
 
 .fade-enter-active,

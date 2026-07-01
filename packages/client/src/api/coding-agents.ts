@@ -38,7 +38,7 @@ export function inferCodingAgentApiMode(provider?: string | null, baseUrl?: stri
     return 'chat_completions'
   }
 
-  return 'codex_responses'
+  return 'chat_completions'
 }
 
 export function normalizeCodingAgentApiMode(

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import MarkdownRenderer from '@/components/hermes/chat/MarkdownRenderer.vue'
-import { fetchSkillContent, fetchSkillFiles, pinSkillApi, type SkillFileEntry } from '@/api/hermes/skills'
+import { fetchSkillContent, fetchSkillFiles, pinSkillApi, type SkillFileEntry, type SkillTarget } from '@/api/hermes/skills'
 import { useI18n } from 'vue-i18n'
 import { useMessage } from 'naive-ui'
 
@@ -16,6 +16,8 @@ const props = defineProps<{
   useCount?: number
   viewCount?: number
   pinned?: boolean
+  target?: SkillTarget
+  readonly?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -38,8 +40,8 @@ async function loadSkill() {
   try {
     const skillPath = `${props.category}/${props.skill}/SKILL.md`
     const [skillContent, skillFiles] = await Promise.all([
-      fetchSkillContent(skillPath),
-      fetchSkillFiles(props.category, props.skill),
+      fetchSkillContent(skillPath, props.target || 'hermes'),
+      fetchSkillFiles(props.category, props.skill, props.target || 'hermes'),
     ])
     content.value = skillContent
     files.value = skillFiles.filter(f => !f.isDir && f.path !== 'SKILL.md')
@@ -66,7 +68,7 @@ async function viewFile(filePath: string) {
         relPath = afterSkillDir
       }
     }
-    fileContent.value = await fetchSkillContent(`${base}${relPath}`)
+    fileContent.value = await fetchSkillContent(`${base}${relPath}`, props.target || 'hermes')
   } catch (err: any) {
     fileContent.value = t('skills.fileLoadFailed') + `: ${err.message}`
   } finally {
@@ -95,7 +97,7 @@ async function handlePinToggle() {
   }
 }
 
-watch(() => `${props.category}/${props.skill}`, loadSkill, { immediate: true })
+watch(() => `${props.target || 'hermes'}/${props.category}/${props.skill}`, loadSkill, { immediate: true })
 </script>
 
 <template>
@@ -106,7 +108,7 @@ watch(() => `${props.category}/${props.skill}`, loadSkill, { immediate: true })
       <span class="detail-separator">/</span>
       <span class="detail-name">{{ skill }}</span>
       <div class="usage-stats">
-        <button class="pin-toggle" :class="{ active: pinned }" :disabled="pinLoading" :title="pinned ? t('skills.unpin') : t('skills.pin')" @click="handlePinToggle">
+        <button v-if="!readonly" class="pin-toggle" :class="{ active: pinned }" :disabled="pinLoading" :title="pinned ? t('skills.unpin') : t('skills.pin')" @click="handlePinToggle">
           <svg width="16" height="16" viewBox="0 0 24 24" :fill="pinned ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="2"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg>
         </button>
         <span v-if="viewCount != null" class="usage-stat" title="Views">
@@ -311,6 +313,8 @@ watch(() => `${props.category}/${props.skill}`, loadSkill, { immediate: true })
   border-top: 1px solid $border-color;
   padding-top: 12px;
   margin-top: 12px;
+  max-height: 30vh;
+  overflow-y: auto;
 }
 
 .files-header {

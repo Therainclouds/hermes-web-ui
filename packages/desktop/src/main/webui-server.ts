@@ -7,7 +7,7 @@ import { randomBytes } from 'node:crypto'
 import { promisify } from 'node:util'
 import { app } from 'electron'
 import {
-  bundledBrowserExecutable,
+  bundledAgentBrowserHome,
   bundledGit,
   bundledNode,
   gitPathDirs,
@@ -343,7 +343,7 @@ export async function startWebUiServer(port = DEFAULT_PORT): Promise<string> {
     process.env.Path,
     COMMON_USER_BIN_DIRS.join(delimiter),
   )
-  const browserExecutable = process.env.AGENT_BROWSER_EXECUTABLE_PATH?.trim() || bundledBrowserExecutable()
+  const browserExecutableOverride = process.env.AGENT_BROWSER_EXECUTABLE_PATH?.trim()
   const gitBin = bundledGit()
 
   // Run via Electron's "run as Node" mode — Electron binary doubles as Node.
@@ -361,8 +361,8 @@ export async function startWebUiServer(port = DEFAULT_PORT): Promise<string> {
     HERMES_AGENT_ROOT: pythonDir(),
     HERMES_AGENT_NODE: bundledNode(),
     HERMES_AGENT_NODE_ROOT: isWin ? bundledNodeBin : dirname(bundledNodeBin),
-    AGENT_BROWSER_HOME: process.env.AGENT_BROWSER_HOME?.trim() || join(agentHome, 'agent-browser'),
-    ...(browserExecutable ? { AGENT_BROWSER_EXECUTABLE_PATH: browserExecutable } : {}),
+    AGENT_BROWSER_HOME: process.env.AGENT_BROWSER_HOME?.trim() || bundledAgentBrowserHome(),
+    ...(browserExecutableOverride ? { AGENT_BROWSER_EXECUTABLE_PATH: browserExecutableOverride } : {}),
     PLAYWRIGHT_BROWSERS_PATH: process.env.PLAYWRIGHT_BROWSERS_PATH || join(pythonDir(), 'ms-playwright'),
     ...(gitBin ? { HERMES_AGENT_GIT: gitBin } : {}),
     // Force TCP loopback for the agent bridge. The default `ipc:///tmp/...`

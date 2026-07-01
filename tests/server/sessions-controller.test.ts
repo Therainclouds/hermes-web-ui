@@ -101,6 +101,7 @@ vi.mock('../../packages/server/src/services/hermes/model-context', () => ({
 
 vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
   getActiveProfileName: getActiveProfileNameMock,
+  getProfileDir: (name: string) => `/tmp/hermes-test/${name || 'default'}`,
   listProfileNamesFromDisk: () => ['default', 'travel'],
 }))
 
@@ -389,6 +390,74 @@ describe('session conversations controller', () => {
     expect(ctx.body.sessions).toEqual([expect.objectContaining({ id: 'global-1', source: 'global_agent' })])
   })
 
+  it('hides workflow sessions from the default list but allows explicit workflow filtering', async () => {
+    localListSessionsMock.mockReturnValue([
+      { id: 'workflow-1', profile: 'default', source: 'workflow' },
+      { id: 'chat-1', profile: 'default', source: 'cli' },
+    ])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const defaultCtx: any = {
+      query: {},
+      state: {},
+      body: null,
+    }
+    await mod.list(defaultCtx)
+    expect(defaultCtx.body.sessions).toEqual([expect.objectContaining({ id: 'chat-1', source: 'cli' })])
+
+    const workflowCtx: any = {
+      query: { source: 'workflow' },
+      state: {},
+      body: null,
+    }
+    await mod.list(workflowCtx)
+
+    expect(localListSessionsMock).toHaveBeenLastCalledWith(undefined, 'workflow', 2000)
+    expect(workflowCtx.body.sessions).toEqual([expect.objectContaining({ id: 'workflow-1', source: 'workflow' })])
+  })
+
+  it('counts visible single-chat sessions with the same filters as the list endpoint', async () => {
+    listUserProfilesMock.mockReturnValue([{ profile_name: 'default' }, { profile_name: 'travel' }])
+    localListSessionsMock.mockReturnValue([
+      { id: 'default-session', profile: 'default', source: 'cli' },
+      { id: 'travel-session', profile: 'travel', source: 'coding_agent' },
+      { id: 'secret-session', profile: 'secret', source: 'cli' },
+      { id: 'unknown-profile-session', profile: 'missing', source: 'cli' },
+      { id: 'api-session', profile: 'default', source: 'api_server' },
+      { id: 'workflow-session', profile: 'default', source: 'workflow' },
+    ])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      query: {},
+      state: {
+        user: { id: 1, role: 'admin' },
+      },
+      body: null,
+    }
+    await mod.count(ctx)
+
+    expect(localListSessionsMock).toHaveBeenCalledWith(undefined, undefined, 2147483647)
+    expect(ctx.body).toEqual({ count: 3 })
+  })
+
+  it('counts sessions for an explicit profile and source', async () => {
+    localListSessionsMock.mockReturnValue([
+      { id: 'travel-global', profile: 'travel', source: 'global_agent' },
+    ])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      query: { profile: 'travel', source: 'global_agent' },
+      state: {},
+      body: null,
+    }
+    await mod.count(ctx)
+
+    expect(localListSessionsMock).toHaveBeenCalledWith('travel', 'global_agent', 2147483647)
+    expect(ctx.body).toEqual({ count: 1 })
+  })
+
   it('marks Hermes history sessions that already exist in the Web UI store', async () => {
     localListSessionsMock.mockReturnValue([{ id: 'cli-1', profile: 'travel' }])
     listSessionSummariesMock.mockResolvedValue([
@@ -517,6 +586,24 @@ describe('session conversations controller', () => {
       session_id: 'root',
       messages: [{ id: 1, session_id: 'root', role: 'user', content: 'hello', timestamp: 1 }],
       visible_count: 1,
+      thread_session_count: 1,
+    })
+  })
+
+  it('treats missing conversation message arrays as empty', async () => {
+    localGetSessionDetailMock.mockReturnValue({
+      id: 'root',
+    })
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = { params: { id: 'root' }, query: { humanOnly: 'false' }, body: null }
+    await mod.getConversationMessages(ctx)
+
+    expect(localGetSessionDetailMock).toHaveBeenCalledWith('root')
+    expect(ctx.body).toEqual({
+      session_id: 'root',
+      messages: [],
+      visible_count: 0,
       thread_session_count: 1,
     })
   })
@@ -779,7 +866,11 @@ describe('session conversations controller', () => {
     await mod.setModel(ctx)
 
     expect(localCreateSessionMock).not.toHaveBeenCalled()
-    expect(localUpdateSessionMock).toHaveBeenCalledWith('session-1', { model: 'grok-4', provider: 'xai' })
+    expect(localUpdateSessionMock).toHaveBeenCalledWith('session-1', {
+      model: 'grok-4',
+      provider: 'xai',
+      workspace: '/tmp/hermes-test/default/workspace',
+    })
     expect(bridgeSwitchSessionModelMock).not.toHaveBeenCalled()
     expect(ctx.body).toEqual({ ok: true })
   })
@@ -804,13 +895,48 @@ describe('session conversations controller', () => {
     }
     await mod.setModel(ctx)
 
-    expect(localUpdateSessionMock).toHaveBeenCalledWith('session-1', { model: 'claude-sonnet-4-6', provider: 'claude-oauth' })
+    expect(localUpdateSessionMock).toHaveBeenCalledWith('session-1', {
+      model: 'claude-sonnet-4-6',
+      provider: 'claude-oauth',
+      workspace: '/tmp/hermes-test/travel/workspace',
+    })
     expect(bridgeSwitchSessionModelMock).toHaveBeenCalledWith(
       'session-1',
       'claude-sonnet-4-6',
       'anthropic',
       'travel',
     )
+    expect(ctx.body).toEqual({ ok: true })
+  })
+
+  it('stores a coding agent session model without stopping the runner or notifying the Hermes bridge', async () => {
+    bridgeGetRuntimeStateMock.mockReturnValue({ ready: true, running: true, endpoint: 'ipc:///tmp/hermes-agent-bridge.sock' })
+    getSessionMock.mockReturnValue({
+      id: 'codex-session',
+      profile: 'default',
+      source: 'coding_agent',
+      agent: 'codex',
+      model: 'old-model',
+      provider: 'openrouter',
+      agent_native_session_id: 'old-native-thread',
+      workspace: '/tmp/original-workspace',
+    })
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      params: { id: 'codex-session' },
+      request: { body: { model: 'gpt-5.5', provider: 'openai-codex' } },
+      body: null,
+    }
+    await mod.setModel(ctx)
+
+    expect(localUpdateSessionMock).toHaveBeenCalledWith('codex-session', {
+      model: 'gpt-5.5',
+      provider: 'openai-codex',
+      agent_native_session_id: '',
+    })
+    expect(codingAgentRunManagerMock.stop).not.toHaveBeenCalled()
+    expect(bridgeSwitchSessionModelMock).not.toHaveBeenCalled()
     expect(ctx.body).toEqual({ ok: true })
   })
 

@@ -6,8 +6,8 @@ describe('LLM prompt', () => {
     const prompt = getSystemPrompt('custom instructions')
 
     expect(prompt).toContain('custom instructions')
-    expect(prompt).toContain('hermes_api_openapi_get')
-    expect(prompt).toContain('hermes_api_request')
+    expect(prompt).toContain('hermes_studio_api_openapi_get')
+    expect(prompt).toContain('hermes_studio_api_request')
     expect(prompt).toContain('OpenAPI requestBody')
     expect(prompt).toContain('do not add Authorization headers')
     expect(prompt).not.toContain('hermes://openapi.json')
