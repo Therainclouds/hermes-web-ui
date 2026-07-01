@@ -68,3 +68,11 @@ pip/cache/
 docs/erro.txt
 docs/update-distribution
 docs/
+!hermes_data/
+hermes_data/*
+!hermes_data/bots/
+hermes_data/bots/*
+!hermes_data/bots/usb/
+!hermes_data/bots/usb/config.py
+!hermes_data/bots/usb/mounter.py
+!hermes_data/bots/usb/usb_monitor.py
