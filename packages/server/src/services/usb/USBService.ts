@@ -1,9 +1,10 @@
 import { EventEmitter } from 'events'
 import { existsSync } from 'fs'
 import { readdir, readFile, stat, statfs } from 'fs/promises'
-import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
+import { spawn, type ChildProcessByStdio } from 'child_process'
 import { basename, normalize, resolve } from 'path'
 import { createInterface } from 'readline'
+import type { Readable } from 'stream'
 import { config, getDeployDir } from '../../config'
 import { logger } from '../logger'
 import { isPathWithin, relativePathFromBase } from '../hermes/hermes-path'
@@ -69,7 +70,7 @@ export class USBService extends EventEmitter {
   private readonly env: NodeJS.ProcessEnv
   private readonly cleanupIntervalMs: number
   private readonly devices = new Map<string, USBDeviceRecord>()
-  private monitor: ChildProcessWithoutNullStreams | null = null
+  private monitor: ChildProcessByStdio<null, Readable, Readable> | null = null
   private cleanupTimer: NodeJS.Timeout | null = null
   private restartTimer: NodeJS.Timeout | null = null
   private stopRequested = false

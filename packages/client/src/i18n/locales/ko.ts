@@ -2301,5 +2301,16 @@ export default {
       tasks: '작업 수',
     },
   },
-}
 
+  usb: {
+    notifications: {
+      unknownDevice: 'USB 장치',
+      mountedTitle: 'USB 장치가 마운트됨',
+      mountedBody: '{label} 장치를 사용할 수 있습니다',
+      removedTitle: 'USB 장치가 제거됨',
+      removedBody: '{label} 장치가 제거되었습니다',
+      mountFailedTitle: 'USB 마운트 실패',
+      mountFailedBody: '{label}: {error}',
+    },
+  },
+}

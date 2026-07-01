@@ -2311,5 +2311,16 @@ export default {
     new_0_6_13_5: '桌面更新更可靠：Windows 升級會關閉殘留 Hermes Studio 行程，優先檢查 Cloudflare，並保留 GitHub 更新源兜底',
     new_0_6_13_6: '發佈自動化調整：Web UI 和 Docker release 不再標記為 GitHub Latest，完整桌面 release 手動建置成功後才提升為 Latest',
   },
-}
 
+  usb: {
+    notifications: {
+      unknownDevice: 'USB 裝置',
+      mountedTitle: 'USB 裝置已掛載',
+      mountedBody: '{label} 已準備就緒',
+      removedTitle: 'USB 裝置已移除',
+      removedBody: '{label} 已移除',
+      mountFailedTitle: 'USB 掛載失敗',
+      mountFailedBody: '{label}：{error}',
+    },
+  },
+}

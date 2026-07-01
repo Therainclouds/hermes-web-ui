@@ -2302,5 +2302,16 @@ jobTriggered: 'Job ejecutado',
       tasks: 'Tareas',
     },
   },
-}
 
+  usb: {
+    notifications: {
+      unknownDevice: 'Dispositivo USB',
+      mountedTitle: 'Dispositivo USB montado',
+      mountedBody: '{label} está listo para usar',
+      removedTitle: 'Dispositivo USB retirado',
+      removedBody: '{label} fue retirado',
+      mountFailedTitle: 'Error al montar USB',
+      mountFailedBody: '{label}: {error}',
+    },
+  },
+}

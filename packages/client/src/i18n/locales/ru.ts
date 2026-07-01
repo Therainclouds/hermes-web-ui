@@ -2056,4 +2056,15 @@ export default {
     new_0_6_13_6: 'Автоматизация релизов больше не помечает Web UI и Docker releases как GitHub Latest, а полные desktop releases вручную продвигаются в Latest после успешной сборки',
   },
 
+  usb: {
+    notifications: {
+      unknownDevice: 'USB-устройство',
+      mountedTitle: 'USB-устройство подключено',
+      mountedBody: '{label} готово к использованию',
+      removedTitle: 'USB-устройство отключено',
+      removedBody: '{label} было отключено',
+      mountFailedTitle: 'Не удалось подключить USB',
+      mountFailedBody: '{label}: {error}',
+    },
+  },
 }

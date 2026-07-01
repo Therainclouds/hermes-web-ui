@@ -2398,4 +2398,16 @@ export default {
     new_0_6_13_5: 'Desktop updates are more reliable: Windows upgrades close stale Hermes Studio processes, Cloudflare is checked first, and GitHub remains the fallback feed',
     new_0_6_13_6: 'Release automation now keeps Web UI and Docker releases out of GitHub Latest while full desktop releases are manually promoted to Latest',
   },
+
+  usb: {
+    notifications: {
+      unknownDevice: 'USB device',
+      mountedTitle: 'USB device mounted',
+      mountedBody: '{label} is ready to use',
+      removedTitle: 'USB device removed',
+      removedBody: '{label} was removed',
+      mountFailedTitle: 'USB mount failed',
+      mountFailedBody: '{label}: {error}',
+    },
+  },
 }

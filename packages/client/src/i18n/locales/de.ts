@@ -2302,5 +2302,16 @@ jobTriggered: 'Job ausgelost',
       tasks: 'Aufgaben',
     },
   },
-}
 
+  usb: {
+    notifications: {
+      unknownDevice: 'USB-Gerät',
+      mountedTitle: 'USB-Gerät eingebunden',
+      mountedBody: '{label} ist einsatzbereit',
+      removedTitle: 'USB-Gerät entfernt',
+      removedBody: '{label} wurde entfernt',
+      mountFailedTitle: 'USB-Einbindung fehlgeschlagen',
+      mountFailedBody: '{label}: {error}',
+    },
+  },
+}

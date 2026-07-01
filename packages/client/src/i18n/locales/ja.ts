@@ -2301,5 +2301,16 @@ export default {
       tasks: 'タスク数',
     },
   },
-}
 
+  usb: {
+    notifications: {
+      unknownDevice: 'USBデバイス',
+      mountedTitle: 'USBデバイスをマウントしました',
+      mountedBody: '{label} を使用できます',
+      removedTitle: 'USBデバイスを取り外しました',
+      removedBody: '{label} を取り外しました',
+      mountFailedTitle: 'USBのマウントに失敗しました',
+      mountFailedBody: '{label}: {error}',
+    },
+  },
+}

@@ -2302,5 +2302,16 @@ jobTriggered: 'Job declenche',
       tasks: 'Tâches',
     },
   },
-}
 
+  usb: {
+    notifications: {
+      unknownDevice: 'Appareil USB',
+      mountedTitle: 'Appareil USB monte',
+      mountedBody: '{label} est pret a l\'emploi',
+      removedTitle: 'Appareil USB retire',
+      removedBody: '{label} a ete retire',
+      mountFailedTitle: 'Echec du montage USB',
+      mountFailedBody: '{label} : {error}',
+    },
+  },
+}
