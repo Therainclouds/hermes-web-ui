@@ -2343,6 +2343,8 @@ export default {
 
   // Changelog
   changelog: {
+    new_0_6_28_1: 'Fixed duplicated Hermes gateway autostart lock and reaper declarations so server TypeScript builds and release publishing no longer fail on compile errors',
+    new_0_6_28_2: 'Synced npm, device update, and desktop release metadata to 0.6.28 so org releases and update manifests can be regenerated consistently',
     new_0_6_21_1: 'This release focuses on workflow reruns, MCP workflow tools, voice settings deletion, Matrix login settings, update cleanup, and documentation polish',
     new_0_6_21_2: 'Workflow node messages now open in a left-side resizable full chat drawer, with mobile run history restored and rerun actions for keeping the selected node output or clearing it before rerunning downstream nodes',
     new_0_6_21_3: 'The Hermes Studio MCP use toolset can now list, create, update, delete, run, stop, delete runs, and rerun workflows from a selected node',

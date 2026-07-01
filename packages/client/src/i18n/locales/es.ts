@@ -1856,6 +1856,8 @@ jobTriggered: 'Job ejecutado',
 
   // Registro de cambios
   changelog: {
+    new_0_6_28_1: 'Fixed duplicated Hermes gateway autostart lock and reaper declarations so server TypeScript builds and release publishing no longer fail on compile errors',
+    new_0_6_28_2: 'Synced npm, device update, and desktop release metadata to 0.6.28 so org releases and update manifests can be regenerated consistently',
     new_0_6_21_1: 'Esta version se centra en reruns de workflow, herramientas MCP de workflow, borrado de ajustes voice, ajustes Matrix, limpieza de updates y documentacion',
     new_0_6_21_2: 'Los mensajes de nodos workflow ahora se abren en un drawer de chat completo a la izquierda y redimensionable; el historial movil de runs vuelve a abrirse y los reruns pueden conservar o limpiar el nodo seleccionado',
     new_0_6_21_3: 'El toolset MCP use ahora puede listar, crear, actualizar, borrar, ejecutar, detener, borrar runs y rerun workflows desde un nodo seleccionado',
