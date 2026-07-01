@@ -43,7 +43,7 @@ export function shouldStopManagedGatewaysOnShutdown(env: NodeJS.ProcessEnv = pro
 
 export type ShutdownHandler = (signal: string) => Promise<void>
 
-export function createShutdownHandler(server: any, groupChatServer?: any, chatRunServer?: any, agentBridgeManager?: any): ShutdownHandler {
+export function createShutdownHandler(server: any, groupChatServer?: any, chatRunServer?: any, agentBridgeManager?: any, usbSocketServer?: { close?: () => void }): ShutdownHandler {
   let isShuttingDown = false
 
   return async (signal: string) => {
@@ -115,6 +115,13 @@ export function createShutdownHandler(server: any, groupChatServer?: any, chatRu
         logger.warn(err, 'Failed to stop USB service (non-fatal)')
       }
 
+      try {
+        usbSocketServer?.close?.()
+        logger.info('USB socket server closed')
+      } catch (err) {
+        logger.warn(err, 'Failed to close USB socket server (non-fatal)')
+      }
+
       // Disconnect Socket.IO before HTTP server to prevent hanging
       if (groupChatServer) {
         groupChatServer.agentClients.disconnectAll()
@@ -142,8 +149,8 @@ export function createShutdownHandler(server: any, groupChatServer?: any, chatRu
   }
 }
 
-export function bindShutdown(server: any, groupChatServer?: any, chatRunServer?: any, agentBridgeManager?: any): ShutdownHandler {
-  const shutdown = createShutdownHandler(server, groupChatServer, chatRunServer, agentBridgeManager)
+export function bindShutdown(server: any, groupChatServer?: any, chatRunServer?: any, agentBridgeManager?: any, usbSocketServer?: { close?: () => void }): ShutdownHandler {
+  const shutdown = createShutdownHandler(server, groupChatServer, chatRunServer, agentBridgeManager, usbSocketServer)
 
   process.once('SIGUSR2', shutdown)
   process.on('SIGINT', shutdown)

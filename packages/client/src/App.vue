@@ -12,6 +12,7 @@ import { useAppStore } from '@/stores/hermes/app'
 import SessionSearchModal from '@/components/hermes/chat/SessionSearchModal.vue'
 import AuthEventListener from '@/components/auth/AuthEventListener.vue'
 import DefaultCredentialPrompt from '@/components/auth/DefaultCredentialPrompt.vue'
+import USBEventBridge from '@/components/hermes/usb/USBEventBridge.vue'
 
 const { isDark, isComic } = useTheme()
 const { t } = useI18n()
@@ -72,6 +73,7 @@ useKeyboard()
   <NConfigProvider :theme="naiveTheme" :theme-overrides="themeOverrides">
     <NMessageProvider>
       <AuthEventListener />
+      <USBEventBridge />
       <NDialogProvider>
         <NNotificationProvider>
           <div class="app-shell" :class="{ desktop: isDesktopShell, 'desktop-titlebar-host': hasDesktopTitleBar }">

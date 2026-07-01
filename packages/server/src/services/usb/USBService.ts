@@ -227,11 +227,21 @@ export class USBService extends EventEmitter {
       for (const event of message.existing_devices || []) {
         this.applyDeviceEvent(event, false)
       }
+      this.emit('ready', {
+        ts: message.ts,
+        existingDevices: this.listDevices(),
+        runtime: this.status(),
+      })
       return
     }
     if (message.type === 'heartbeat') {
       this.runtimeStatus.lastHeartbeatAt = message.ts
       if (this.runtimeStatus.state !== 'unsupported') this.runtimeStatus.state = 'running'
+      this.emit('heartbeat', {
+        ts: message.ts,
+        deviceCount: this.listDevices().length,
+        runtime: this.status(),
+      })
       return
     }
     this.applyDeviceEvent(message, true)

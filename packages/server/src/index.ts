@@ -28,6 +28,7 @@ import { scanLanDevices, startLanDiscoveryResponder } from './services/lan-disco
 import { getLanPeerSocketManager, getLanPeerSocketPath } from './services/lan-peer-socket'
 import { startGlobalAgentServer } from './services/global-agent/server'
 import { WorkflowSocketServer } from './services/workflow-socket'
+import { USBSocketServer } from './services/usb/USBSocketServer'
 import { logger } from './services/logger'
 import { startUSBService } from './services/usb'
 import { createStaticCompressionMiddleware } from './middleware/static-compression'
@@ -59,6 +60,7 @@ let server: any = null
 let servers: any[] = []
 let chatRunServer: any = null
 let workflowSocketServer: WorkflowSocketServer | null = null
+let usbSocketServer: USBSocketServer | null = null
 let agentBridgeManager: any = null
 let desktopShutdownHandler: ShutdownHandler | null = null
 
@@ -356,6 +358,9 @@ export async function bootstrap() {
   workflowSocketServer = new WorkflowSocketServer(groupChatServer.getIO())
   workflowSocketServer.init()
 
+  usbSocketServer = new USBSocketServer(groupChatServer.getIO())
+  usbSocketServer.init()
+
   const loopbackBaseUrl = getLoopbackBaseUrl(server)
   startGlobalAgentServer(groupChatServer.getIO(), { localBaseUrl: loopbackBaseUrl })
   console.log('[bootstrap] global agent server ready')
@@ -403,7 +408,7 @@ export async function bootstrap() {
     })
   })
 
-  desktopShutdownHandler = bindShutdown(servers, groupChatServer, chatRunServer, agentBridgeManager)
+  desktopShutdownHandler = bindShutdown(servers, groupChatServer, chatRunServer, agentBridgeManager, usbSocketServer)
   startVersionCheck()
 }
 
