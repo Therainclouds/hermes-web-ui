@@ -5,6 +5,7 @@ import { codingAgentRunManager } from './agent-runner/coding-agent-run-manager'
 import { shutdownManagedGateways } from './hermes/gateway-runner'
 import { stopPeriodicGatewayReaper } from './hermes/gateway-autostart'
 import { stopOutboundRelayClient } from './global-agent/outbound-relay-client'
+import { stopUSBService } from './usb'
 
 const DEFAULT_SHUTDOWN_FORCE_EXIT_MS = 15_000
 const DEFAULT_DESKTOP_SHUTDOWN_FORCE_EXIT_MS = 15_000
@@ -106,6 +107,13 @@ export function createShutdownHandler(server: any, groupChatServer?: any, chatRu
 
       codingAgentRunManager.shutdown()
       logger.info('Coding agent hidden sessions closed')
+
+      try {
+        await stopUSBService()
+        logger.info('USB service stopped')
+      } catch (err) {
+        logger.warn(err, 'Failed to stop USB service (non-fatal)')
+      }
 
       // Disconnect Socket.IO before HTTP server to prevent hanging
       if (groupChatServer) {

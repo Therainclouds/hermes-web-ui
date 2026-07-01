@@ -256,6 +256,26 @@ export const DEVICES_INDEXES = {
   idx_devices_last_seen: 'CREATE INDEX IF NOT EXISTS idx_devices_last_seen ON devices(last_seen_at)',
 }
 
+export const USB_EVENTS_TABLE = 'usb_events'
+
+export const USB_EVENTS_SCHEMA: Record<string, string> = {
+  id: 'TEXT PRIMARY KEY',
+  uuid: "TEXT NOT NULL DEFAULT ''",
+  device_node: "TEXT NOT NULL DEFAULT ''",
+  action: "TEXT NOT NULL DEFAULT ''",
+  mount_point: 'TEXT',
+  fs_type: 'TEXT',
+  label: 'TEXT',
+  status: "TEXT NOT NULL DEFAULT ''",
+  error: 'TEXT',
+  ts: 'INTEGER NOT NULL DEFAULT 0',
+}
+
+export const USB_EVENTS_INDEXES = {
+  idx_usb_events_ts: 'CREATE INDEX IF NOT EXISTS idx_usb_events_ts ON usb_events(ts)',
+  idx_usb_events_uuid: 'CREATE INDEX IF NOT EXISTS idx_usb_events_uuid ON usb_events(uuid)',
+}
+
 export const STT_PROVIDER_SETTINGS_TABLE = 'stt_provider_settings'
 
 export const STT_PROVIDER_SETTINGS_SCHEMA: Record<string, string> = {
@@ -789,6 +809,9 @@ export function initAllHermesTables(): void {
     // LAN devices and link request status
     syncTable(DEVICES_TABLE, DEVICES_SCHEMA, {
       indexes: DEVICES_INDEXES,
+    })
+    syncTable(USB_EVENTS_TABLE, USB_EVENTS_SCHEMA, {
+      indexes: USB_EVENTS_INDEXES,
     })
     syncTable(STT_PROVIDER_SETTINGS_TABLE, STT_PROVIDER_SETTINGS_SCHEMA, {
       indexes: STT_PROVIDER_SETTINGS_INDEXES,

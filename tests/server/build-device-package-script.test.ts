@@ -8,6 +8,7 @@ const tempDirs: string[] = []
 const PACKAGE_ALLOWLIST = [
   'dist/client',
   'dist/server',
+  'hermes_data/bots/usb',
   'package.json',
   'package-lock.json',
   'scripts/deploy-source-armbian.sh',
@@ -60,6 +61,7 @@ describe('build-device-package script', () => {
 
     mkdirSync(resolve(repoRoot, 'dist', 'server'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'dist', 'client'), { recursive: true })
+    mkdirSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'scripts'), { recursive: true })
 
     writeFileSync(resolve(repoRoot, 'dist', 'server', 'index.js'), 'console.log("server")\n', 'utf-8')
@@ -69,6 +71,8 @@ describe('build-device-package script', () => {
     writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui-update.service'), '[Service]\nExecStart=/usr/local/sbin/hermes-web-ui-update-runner\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui.service'), '[Service]\nExecStart=node dist/server/index.js\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'install-device-package.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb', 'config.py'), 'WEBUI_HOME = "/tmp/hermes"\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb', 'usb_monitor.py'), 'print("usb monitor")\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'unexpected-helper.sh'), '#!/usr/bin/env bash\necho "skip"\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'README.md'), '# not packaged\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'package-lock.json'), '{ "name": "@quanthermes/hermes-web-ui", "lockfileVersion": 3 }\n', 'utf-8')
@@ -132,6 +136,8 @@ describe('build-device-package script', () => {
       'scripts/hermes-web-ui-update.service',
       'scripts/hermes-web-ui.service',
       'scripts/install-device-package.sh',
+      'hermes_data/bots/usb/config.py',
+      'hermes_data/bots/usb/usb_monitor.py',
     ]))
     expect(entries).not.toEqual(expect.arrayContaining([
       'README.md',
@@ -145,6 +151,7 @@ describe('build-device-package script', () => {
 
     mkdirSync(resolve(repoRoot, 'dist', 'server'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'dist', 'client'), { recursive: true })
+    mkdirSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'scripts'), { recursive: true })
     mkdirSync(resolve(repoRoot, '.github'), { recursive: true })
 
@@ -155,6 +162,8 @@ describe('build-device-package script', () => {
     writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui-update.service'), '[Service]\nExecStart=/usr/local/sbin/hermes-web-ui-update-runner\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui.service'), '[Service]\nExecStart=node dist/server/index.js\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'install-device-package.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb', 'config.py'), 'WEBUI_HOME = "/tmp/hermes"\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb', 'usb_monitor.py'), 'print("usb monitor")\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'package-lock.json'), '{ "name": "@quanthermes/hermes-web-ui", "lockfileVersion": 3 }\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'package.json'), JSON.stringify({
       name: '@quanthermes/hermes-web-ui',
@@ -193,6 +202,7 @@ describe('build-device-package script', () => {
 
     mkdirSync(resolve(repoRoot, 'dist', 'server'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'dist', 'client'), { recursive: true })
+    mkdirSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'scripts'), { recursive: true })
     mkdirSync(resolve(repoRoot, '.github'), { recursive: true })
 
@@ -201,6 +211,8 @@ describe('build-device-package script', () => {
     writeFileSync(resolve(repoRoot, 'scripts', 'deploy-source-armbian.sh'), '#!/usr/bin/env bash\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui.service'), '[Service]\nExecStart=node dist/server/index.js\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'install-device-package.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb', 'config.py'), 'WEBUI_HOME = "/tmp/hermes"\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb', 'usb_monitor.py'), 'print("usb monitor")\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'package-lock.json'), '{ "name": "@quanthermes/hermes-web-ui", "lockfileVersion": 3 }\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'package.json'), JSON.stringify({
       name: '@quanthermes/hermes-web-ui',
@@ -235,6 +247,7 @@ describe('build-device-package script', () => {
 
     mkdirSync(resolve(repoRoot, 'dist', 'server'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'dist', 'client'), { recursive: true })
+    mkdirSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'scripts'), { recursive: true })
     mkdirSync(resolve(repoRoot, '.github'), { recursive: true })
 
@@ -243,6 +256,8 @@ describe('build-device-package script', () => {
     writeFileSync(resolve(repoRoot, 'scripts', 'deploy-source-armbian.sh'), '#!/usr/bin/env bash\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui.service'), '[Service]\nExecStart=node dist/server/index.js\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'install-device-package.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb', 'config.py'), 'WEBUI_HOME = "/tmp/hermes"\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb', 'usb_monitor.py'), 'print("usb monitor")\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'package-lock.json'), '{ "name": "@quanthermes/hermes-web-ui", "lockfileVersion": 3 }\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'package.json'), JSON.stringify({
       name: '@quanthermes/hermes-web-ui',

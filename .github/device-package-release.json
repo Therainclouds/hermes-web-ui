@@ -10,6 +10,7 @@
   "packageAllowlist": [
     "dist/client",
     "dist/server",
+    "hermes_data/bots/usb",
     "package.json",
     "package-lock.json",
     "scripts/deploy-source-armbian.sh",
