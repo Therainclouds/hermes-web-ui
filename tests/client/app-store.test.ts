@@ -253,6 +253,60 @@ describe('App Store', () => {
     expect(mockSystemApi.fetchUpdateStatus).toHaveBeenCalled()
   })
 
+  it('keeps polling slow self-updates past the old 10 minute timeout before failing', async () => {
+    vi.useFakeTimers()
+    mockSystemApi.triggerUpdate.mockResolvedValue({
+      success: true,
+      message: 'ok',
+      taskId: 'task-2',
+      status: 'queued',
+      stage: 'queued',
+    })
+    mockSystemApi.checkHealth.mockResolvedValue({
+      status: 'ok',
+      webui_version: 'test',
+      webui_latest: '0.6.29',
+      webui_update_enabled: true,
+      webui_update_available: false,
+      webui_update_source_label: 'Quanthermes Device Releases',
+      webui_update_channel: 'stable',
+      webui_update_strategy: 'source-deploy',
+      webui_update_package_type: 'npm-package',
+    })
+    mockSystemApi.fetchUpdateStatus.mockResolvedValue({
+      currentTask: {
+        id: 'task-2',
+        strategy: 'source-deploy',
+        status: 'running',
+        stage: 'installing',
+        message: 'installing',
+        targetVersion: '0.6.29',
+        warning: '',
+        error: '',
+        startedAt: '2026-07-01T00:00:00.000Z',
+        finishedAt: null,
+      },
+      lastTask: null,
+    })
+    const store = useAppStore()
+    store.updateEnabled = true
+
+    const ok = await store.doUpdate()
+    await Promise.resolve()
+    await vi.advanceTimersByTimeAsync(10 * 60 * 1000 + 3000)
+
+    expect(ok).toBe(true)
+    expect(store.updating).toBe(true)
+    expect(store.updateTaskStatus).toBe('running')
+    expect(store.updateTaskStage).toBe('installing')
+
+    await vi.advanceTimersByTimeAsync(20 * 60 * 1000 + 3000)
+
+    expect(store.updating).toBe(false)
+    expect(store.updateTaskStatus).toBe('failed')
+    expect(store.updateTaskError).toBe('Update status polling timed out')
+  })
+
   it('does not mark the client stale when the served Web UI version matches this bundle', async () => {
     mockSystemApi.checkHealth.mockResolvedValue({
       status: 'ok',

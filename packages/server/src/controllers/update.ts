@@ -50,6 +50,13 @@ const PREVIEW_FRONTEND_URL = `http://localhost:${PREVIEW_FRONTEND_PORT}`
 const PREVIEW_TAG_REF_PATTERN = /^[A-Za-z0-9._/-]+$/
 const PREVIEW_MAIN_REF = 'main'
 const PREVIEW_TAGS_CACHE_MS = 5 * 60 * 1000
+const FATAL_DETACHED_CHILD_SIGNALS = new Set<NodeJS.Signals>([
+  'SIGKILL',
+  'SIGSEGV',
+  'SIGABRT',
+  'SIGBUS',
+  'SIGILL',
+])
 const UPDATE_RUNNER_ENV_KEYS = [
   'DEPLOY_DIR',
   'HERMES_HOME',
@@ -78,6 +85,11 @@ const UPDATE_RUNNER_ENV_KEYS = [
 type PreviewTagRef = { name: string; sha: string }
 type PreviewTagsCache = { expiresAt: number; tags: PreviewTagRef[] }
 type PreviewActionResult = { success: boolean; message?: string; code?: string }
+
+function isDetachedChildFailure(code: number | null, signal: NodeJS.Signals | null): boolean {
+  if (typeof code === 'number' && code !== 0) return true
+  return typeof signal === 'string' && FATAL_DETACHED_CHILD_SIGNALS.has(signal)
+}
 
 class PreviewRuntimeState {
   process: ChildProcess | null = null
@@ -1142,7 +1154,7 @@ function observeDetachedUpdateProcess(
   })
   updateChild.on('exit', (code, signal) => {
     updateInProgress = false
-    const failed = (typeof code === 'number' && code !== 0) || Boolean(signal)
+    const failed = isDetachedChildFailure(code, signal)
     if (failed) {
       const message = `${label} exited before replacing server: code=${code} signal=${signal}`
       console.error(`[update] ${message}`)
@@ -1396,7 +1408,7 @@ export async function handleUpdate(ctx: any) {
         })
         restart.on('exit', (code, signal) => {
           updateInProgress = false
-          const failed = (typeof code === 'number' && code !== 0) || Boolean(signal)
+          const failed = isDetachedChildFailure(code, signal)
           if (failed) {
             const message = `[update] restart process exited before replacing server: code=${code} signal=${signal}`
             failCurrentUpdateTask(`Restart exited before completing update ${version}.`, message)

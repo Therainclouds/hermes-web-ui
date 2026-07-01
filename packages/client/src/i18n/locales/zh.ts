@@ -2346,6 +2346,8 @@ export default {
 
   // 更新日志
   changelog: {
+    new_0_6_29_1: '修复 source-deploy 慢更新在旧的 10 分钟客户端轮询超时后被误报失败的问题，即使设备端随后已成功完成更新',
+    new_0_6_29_2: '修复 detached 更新 runner 与重启辅助进程交接时的 SIGINT 被误判为致命失败，避免成功的原地升级残留错误失败状态',
     new_0_6_28_1: '修复 Hermes gateway autostart 中重复声明的 lock 和 reaper 逻辑，避免 server TypeScript 构建与发布流程因为编译错误中断',
     new_0_6_28_2: '同步 npm、设备更新和桌面端版本信息到 0.6.28，确保组织仓库的重新发版和更新清单生成保持一致',
     new_0_6_21_1: '本次版本重点覆盖工作流重跑、MCP 工作流工具、语音配置删除、Matrix 登录配置、更新清理和文档维护',

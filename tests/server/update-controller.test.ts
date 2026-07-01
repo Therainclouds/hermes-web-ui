@@ -548,6 +548,78 @@ describe('update controller', () => {
     })
   })
 
+  it('keeps the source deployment task running when the detached runner exits with SIGINT', async () => {
+    process.env.WEBUI_UPDATE_STRATEGY = 'source-deploy'
+    process.env.WEBUI_UPDATE_SCRIPT = UPDATE_SCRIPT
+    const handlers = new Map<string, (...args: any[]) => void>()
+    const fsMocks = createStatefulFsMocks()
+    const unref = vi.fn()
+    const updateChild = {
+      unref,
+      on: vi.fn((event: string, handler: (...args: any[]) => void) => {
+        handlers.set(event, handler)
+        return updateChild
+      }),
+    }
+    const spawn = vi.fn(() => updateChild)
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const { handleUpdate, updateStatus } = await loadUpdateController({ ...fsMocks, spawn, unref })
+    const ctx = createMockCtx()
+    const statusCtx = createMockCtx()
+
+    await handleUpdate(ctx)
+    handlers.get('exit')?.(null, 'SIGINT')
+    await updateStatus(statusCtx)
+
+    expect(ctx.body).toEqual(expect.objectContaining({
+      success: true,
+      status: 'running',
+      stage: 'starting',
+    }))
+    expect(statusCtx.body).toEqual({
+      currentTask: expect.objectContaining({
+        strategy: 'source-deploy',
+        status: 'running',
+        stage: 'starting',
+      }),
+      lastTask: null,
+    })
+    expect(errorSpy).not.toHaveBeenCalled()
+    errorSpy.mockRestore()
+  })
+
+  it('fails the source deployment task when the detached runner exits with a fatal signal', async () => {
+    process.env.WEBUI_UPDATE_STRATEGY = 'source-deploy'
+    process.env.WEBUI_UPDATE_SCRIPT = UPDATE_SCRIPT
+    const handlers = new Map<string, (...args: any[]) => void>()
+    const fsMocks = createStatefulFsMocks()
+    const unref = vi.fn()
+    const updateChild = {
+      unref,
+      on: vi.fn((event: string, handler: (...args: any[]) => void) => {
+        handlers.set(event, handler)
+        return updateChild
+      }),
+    }
+    const spawn = vi.fn(() => updateChild)
+    const { handleUpdate, updateStatus } = await loadUpdateController({ ...fsMocks, spawn, unref })
+    const ctx = createMockCtx()
+    const statusCtx = createMockCtx()
+
+    await handleUpdate(ctx)
+    handlers.get('exit')?.(null, 'SIGSEGV')
+    await updateStatus(statusCtx)
+
+    expect(statusCtx.body).toEqual({
+      currentTask: null,
+      lastTask: expect.objectContaining({
+        status: 'failed',
+        stage: 'failed',
+        error: 'managed source deployment update service exited before replacing server: code=null signal=SIGSEGV',
+      }),
+    })
+  })
+
   it('blocks updates when protected web-ui data would be inside the deploy directory', async () => {
     process.env.HERMES_WEB_UI_HOME = './state'
     const { handleUpdate, mocks } = await loadUpdateController()
@@ -762,6 +834,40 @@ describe('update controller', () => {
     await vi.runAllTimersAsync()
     handlers.get('exit')?.(0, null)
 
+    expect(errorSpy).not.toHaveBeenCalled()
+    errorSpy.mockRestore()
+  })
+
+  it('treats SIGINT from the restart helper as a successful handoff', async () => {
+    const handlers = new Map<string, (...args: any[]) => void>()
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const fsMocks = createStatefulFsMocks()
+    const unref = vi.fn()
+    const restart = {
+      unref,
+      on: vi.fn((event: string, handler: (...args: any[]) => void) => {
+        handlers.set(event, handler)
+        return restart
+      }),
+    }
+    const spawn = vi.fn(() => restart)
+    const { handleUpdate, updateStatus } = await loadUpdateController({ ...fsMocks, spawn, unref })
+    const ctx = createMockCtx()
+    const statusCtx = createMockCtx()
+
+    await handleUpdate(ctx)
+    await vi.runAllTimersAsync()
+    handlers.get('exit')?.(null, 'SIGINT')
+    await updateStatus(statusCtx)
+
+    expect(statusCtx.body).toEqual({
+      currentTask: null,
+      lastTask: expect.objectContaining({
+        status: 'succeeded',
+        stage: 'succeeded',
+        message: `Updated Hermes Web UI to ${PUBLISHED_VERSION}.`,
+      }),
+    })
     expect(errorSpy).not.toHaveBeenCalled()
     errorSpy.mockRestore()
   })

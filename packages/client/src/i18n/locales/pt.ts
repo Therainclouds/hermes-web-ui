@@ -1857,6 +1857,8 @@ jobTriggered: 'Job acionado',
 
   // Registro de alteracoes
   changelog: {
+    new_0_6_29_1: 'Fixed long-running source deployment updates being marked as failed after the old 10 minute client polling timeout, even when the device update later completed successfully',
+    new_0_6_29_2: 'Stopped detached update runner and restart helper SIGINT handoff signals from being treated as fatal failures so successful in-place upgrades no longer persist stale failed status',
     new_0_6_28_1: 'Fixed duplicated Hermes gateway autostart lock and reaper declarations so server TypeScript builds and release publishing no longer fail on compile errors',
     new_0_6_28_2: 'Synced npm, device update, and desktop release metadata to 0.6.28 so org releases and update manifests can be regenerated consistently',
     new_0_6_21_1: 'Esta versao foca em reruns de workflow, ferramentas MCP de workflow, remocao de ajustes voice, ajustes Matrix, limpeza de updates e documentacao',
