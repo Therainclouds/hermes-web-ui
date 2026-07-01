@@ -214,6 +214,7 @@ export default {
           ['HERMES_AGENT_BRIDGE_TIMEOUT_MS', 'Timeout for Node requests to the bridge broker'],
           ['HERMES_AGENT_BRIDGE_CONNECT_RETRY_MS', 'Short retry window for connecting to the bridge socket'],
           ['HERMES_AGENT_BRIDGE_STARTUP_TIMEOUT_MS', 'Timeout while waiting for the Python bridge to become ready'],
+          ['HERMES_AGENT_BRIDGE_STOP_ON_SHUTDOWN', 'Stop the bridge broker during Web UI shutdown and restart by default; set 0/false/no/off to preserve the broker across restarts'],
           ['HERMES_AGENT_BRIDGE_AUTO_RESTART', 'Auto-restart the bridge broker after unexpected exit; set 0/false/no/off to disable'],
           ['HERMES_AGENT_BRIDGE_RESTART_DELAY_MS', 'Base delay for bridge auto-restart backoff'],
           ['HERMES_AGENT_BRIDGE_PLATFORM', 'Platform identity passed to Hermes Agent'],
@@ -242,7 +243,7 @@ export default {
       },
       gateway: {
         title: 'Agent Bridge Runtime',
-        content: 'Chat runs are handled through the Hermes agent bridge, which runs alongside the Hermes Studio server and talks directly to the Hermes Agent runtime. HERMES_AGENT_BRIDGE_ENDPOINT controls the Node-to-broker address, while HERMES_AGENT_BRIDGE_WORKER_TRANSPORT controls the broker-to-profile-worker transport. Switching the frontend Hermes Profile changes later request context only; it does not restart the bridge or clear other running tasks.',
+        content: 'Chat runs are handled through the Hermes agent bridge, which runs alongside the Hermes Studio server and talks directly to the Hermes Agent runtime. HERMES_AGENT_BRIDGE_ENDPOINT controls the Node-to-broker address, while HERMES_AGENT_BRIDGE_WORKER_TRANSPORT controls the broker-to-profile-worker transport. Web UI shutdown and CLI/app restarts stop the bridge broker by default; set HERMES_AGENT_BRIDGE_STOP_ON_SHUTDOWN=0 only when you intentionally want to preserve bridge sessions across restart. Switching the frontend Hermes Profile changes later request context only; it does not restart the bridge or clear other running tasks.',
       },
       profiles: {
         title: 'Profiles',

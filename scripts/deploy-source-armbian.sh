@@ -274,34 +274,46 @@ ensure_app_user() {
   fi
 
   run mkdir -p "${APP_USER_HOME}/.local/bin"
-  run chown -R "${APP_USER}:${APP_USER}" "${APP_USER_HOME}/.local"
+  run chown -R "${APP_USER}:${APP_USER}" "${APP_USER_HOME}"
 }
 
 resolve_repo_dir() {
-  if [[ "${USE_CONFIGURED_DEPLOY_DIR}" == "true" ]]; then
-    info "Using DEPLOY_DIR provided by the caller: ${DEPLOY_DIR}"
+  # caller-provided DEPLOY_DIR is the single source of truth. If it is set
+  # (non-empty) we trust it as-is, regardless of USE_CONFIGURED_DEPLOY_DIR.
+  # This lets orchestrators (e.g. unzip.sh) redirect the build to a
+  # permission-friendly path like /opt/hermes-web-ui/src without being
+  # hijacked by the script's own BASH_SOURCE-derived location, which on
+  # many systems lives under /root (mode 700) and is unreachable for
+  # non-root users.
+  if [[ -n "${DEPLOY_DIR}" ]]; then
+    if [[ ! -d "${DEPLOY_DIR}" ]]; then
+      err "DEPLOY_DIR=${DEPLOY_DIR} does not exist or is not a directory."
+      err "Extract the source archive first, then rerun this script."
+      exit 1
+    fi
+    if [[ "${USE_CONFIGURED_DEPLOY_DIR}" == "true" ]]; then
+      info "Using DEPLOY_DIR provided by the caller: ${DEPLOY_DIR}"
+    else
+      info "Using DEPLOY_DIR from environment: ${DEPLOY_DIR}"
+    fi
     return 0
   fi
 
+  # Fall back to the source tree next to the script when DEPLOY_DIR is
+  # unset. This preserves the historical behaviour for direct invocations
+  # like `sudo bash scripts/deploy-source-armbian.sh`.
   local script_root
   script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
   if [[ -f "${script_root}/package.json" ]]; then
     DEPLOY_DIR="${script_root}"
     info "Using source tree next to the script: ${DEPLOY_DIR}"
     return 0
   fi
 
-  if [[ -f "${DEPLOY_DIR}/package.json" ]]; then
-    info "Using extracted source tree from DEPLOY_DIR: ${DEPLOY_DIR}"
-    return 0
-  fi
-
   err "No source tree found."
-  err "Expected package.json in either:"
-  err "  1. the directory next to this script, or"
-  err "  2. DEPLOY_DIR=${DEPLOY_DIR}"
-  err "Upload and extract the local source package first, then rerun this script."
+  err "  - DEPLOY_DIR is empty"
+  err "  - ${script_root}/package.json does not exist"
+  err "Set DEPLOY_DIR or place package.json next to this script, then rerun."
   exit 1
 }
 
@@ -1036,7 +1048,7 @@ NPM_BINARY_MIRROR_PREFIX="${NPM_BINARY_MIRROR_PREFIX:-https://cdn.npmmirror.com/
 HERMES_INSTALLER_MIRROR="${HERMES_INSTALLER_MIRROR:-https://cdn.jsdelivr.net/gh/NousResearch/hermes-agent@main/scripts/install.sh}"
 HERMES_INSTALLER_FALLBACK="${HERMES_INSTALLER_FALLBACK:-https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh}"
 OSS_PUBLIC_BASE_URL="${OSS_PUBLIC_BASE_URL:-https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui}"
-DEFAULT_HERMES_AGENT_WHEEL_URL="https://github.com/NousResearch/hermes-agent/releases/download/v2026.5.29.2/hermes_agent-0.15.2-py3-none-any.whl"
+DEFAULT_HERMES_AGENT_WHEEL_URL="https://files.pythonhosted.org/packages/e3/e2/d18d5ec6735b412fde47ecac3b6a63874c824c83e9821e1c1f4a07bcff85/hermes_agent-0.17.0-py3-none-any.whl"
 HERMES_AGENT_WHEEL_URL="${HERMES_AGENT_WHEEL_URL:-${DEFAULT_HERMES_AGENT_WHEEL_URL}}"
 HERMES_AGENT_WHEELHOUSE_URL="${HERMES_AGENT_WHEELHOUSE_URL:-${OSS_PUBLIC_BASE_URL}/hermes-agent/wheelhouse/}"
 HERMES_AGENT_RELEASES_API_URL="${HERMES_AGENT_RELEASES_API_URL:-https://api.github.com/repos/NousResearch/hermes-agent/releases/latest}"

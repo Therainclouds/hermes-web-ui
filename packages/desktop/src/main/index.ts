@@ -578,7 +578,11 @@ function runDesktopApp() {
     // default is fine there.
     if (process.platform !== 'darwin') Menu.setApplicationMenu(null)
     if (app.isPackaged) {
-      installHermesStudioCliShim({ runtimeVersion: desktopRuntimeVersion() }).then(result => {
+      installHermesStudioCliShim({
+        nodePath: bundledNode(),
+        runtimeVersion: desktopRuntimeVersion(),
+        webUiScriptPath: join(webuiDir(), 'bin', 'hermes-web-ui.mjs'),
+      }).then(result => {
         if (result.status === 'skipped') {
           console.warn(`[cli-shim] ${result.reason}: ${result.shimPath}`)
         }
@@ -587,7 +591,7 @@ function runDesktopApp() {
       })
       installHermesStudioMcpShim({
         nodePath: bundledNode(),
-        scriptPath: join(webuiDir(), 'bin', 'hermes-web-ui-mcp.mjs'),
+        scriptPath: join(webuiDir(), 'bin', 'hermes-studio-mcp.mjs'),
         webUiUrl: `http://127.0.0.1:${PORT}`,
       }).then(result => {
         if (result.status === 'skipped') {

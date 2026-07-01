@@ -61,6 +61,7 @@ export interface GatewayAutoStartConfig {
   enabled?: boolean
   include?: string[]
   exclude?: string[]
+  management?: 'auto' | 'per_profile' | 'unified'
 }
 
 export interface AppConfig {

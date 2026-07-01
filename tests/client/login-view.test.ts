@@ -1,12 +1,14 @@
-﻿// @vitest-environment jsdom
+// @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { mount, flushPromises } from '@vue/test-utils'
 
 const mockReplace = vi.hoisted(() => vi.fn())
 const mockFetchAuthStatus = vi.hoisted(() => vi.fn())
 const mockLoginWithPassword = vi.hoisted(() => vi.fn())
 const mockSetApiKey = vi.hoisted(() => vi.fn())
 const mockHasApiKey = vi.hoisted(() => vi.fn())
+const mockClearLoginLocks = vi.hoisted(() => vi.fn())
+const mockResetDefaultLogin = vi.hoisted(() => vi.fn())
 
 vi.mock('vue-router', () => ({
   useRouter: () => ({
@@ -30,6 +32,11 @@ vi.mock('@/api/auth', () => ({
   loginWithPassword: mockLoginWithPassword,
 }))
 
+vi.mock('@/api/recovery', () => ({
+  clearLoginLocks: mockClearLoginLocks,
+  resetDefaultLogin: mockResetDefaultLogin,
+}))
+
 import LoginView from '@/views/LoginView.vue'
 
 describe('LoginView password login', () => {
@@ -38,6 +45,8 @@ describe('LoginView password login', () => {
     vi.clearAllMocks()
     mockHasApiKey.mockReturnValue(false)
     mockFetchAuthStatus.mockResolvedValue({ hasPasswordLogin: true, username: 'quanthermes' })
+    // Clean up any modals portaled to document.body from previous tests.
+    document.body.innerHTML = ''
   })
 
   it('logs in with username and password', async () => {
@@ -74,7 +83,7 @@ describe('LoginView password login', () => {
     expect(mockReplace).not.toHaveBeenCalled()
   })
 
-  it('shows the reset command hint when the login IP is locked', async () => {
+  it('shows the lock hint with two recovery buttons when the login IP is locked', async () => {
     const err: any = new Error('Too many login attempts')
     err.status = 429
     mockLoginWithPassword.mockRejectedValue(err)
@@ -84,14 +93,105 @@ describe('LoginView password login', () => {
     await inputs[0].setValue('quanthermes')
     await inputs[1].setValue('12345678')
     await wrapper.find('form.login-form').trigger('submit')
+    await flushPromises()
 
     expect(wrapper.find('.login-error').text()).toBe('login.tooManyAttempts')
-    expect(wrapper.find('.login-lock-hint').text()).toContain('login.lockResetHint')
-    expect(wrapper.find('.login-lock-hint').text()).toContain('login.defaultLoginResetHint')
-    const commands = wrapper.findAll('.login-lock-hint code').map(command => command.text())
-    expect(commands).toEqual([
-      'hermes-web-ui clear-login-locks --restart',
-      'hermes-web-ui reset-default-login',
-    ])
+    const hint = wrapper.find('.login-lock-hint')
+    expect(hint.text()).toContain('login.lockResetHint')
+    expect(hint.text()).toContain('login.defaultLoginResetHint')
+    const buttons = wrapper.findAll('.login-lock-hint__btn')
+    expect(buttons).toHaveLength(2)
+    expect(buttons[0].text()).toBe('login.recoveryClearLocksButton')
+    expect(buttons[1].text()).toBe('login.recoveryResetPasswordButton')
+  })
+
+  it('opens the clear-locks recovery modal and calls the API on submit', async () => {
+    const err: any = new Error('Too many login attempts')
+    err.status = 503
+    mockLoginWithPassword.mockRejectedValue(err)
+    mockClearLoginLocks.mockResolvedValue({ success: true, action: 'cleared-locks', clearedCount: 2 })
+
+    const wrapper = mount(LoginView)
+    const inputs = wrapper.findAll('input.login-input')
+    await inputs[0].setValue('quanthermes')
+    await inputs[1].setValue('12345678')
+    await wrapper.find('form.login-form').trigger('submit')
+    await flushPromises()
+
+    await wrapper.findAll('.login-lock-hint__btn')[0].trigger('click')
+    await flushPromises()
+
+    // NModal portals its body to document.body, so query globally.
+    const passwordInput = document.querySelector('.recovery-modal input[type="password"]') as HTMLInputElement
+    expect(passwordInput).toBeTruthy()
+    passwordInput.value = '12345678'
+    passwordInput.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+
+    const confirmBtn = document.querySelector('.recovery-modal__footer button.n-button--primary-type') as HTMLButtonElement
+    expect(confirmBtn).toBeTruthy()
+    confirmBtn.click()
+    await flushPromises()
+
+    expect(mockClearLoginLocks).toHaveBeenCalledWith('12345678')
+    expect(mockResetDefaultLogin).not.toHaveBeenCalled()
+  })
+
+  it('shows an error when the recovery API rejects', async () => {
+    const err: any = new Error('Too many login attempts')
+    err.status = 429
+    mockLoginWithPassword.mockRejectedValue(err)
+    mockClearLoginLocks.mockRejectedValue(new Error('Invalid recovery password'))
+
+    const wrapper = mount(LoginView)
+    const inputs = wrapper.findAll('input.login-input')
+    await inputs[0].setValue('quanthermes')
+    await inputs[1].setValue('12345678')
+    await wrapper.find('form.login-form').trigger('submit')
+    await flushPromises()
+
+    await wrapper.findAll('.login-lock-hint__btn')[0].trigger('click')
+    await flushPromises()
+
+    const passwordInput = document.querySelector('.recovery-modal input[type="password"]') as HTMLInputElement
+    passwordInput.value = 'wrong'
+    passwordInput.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+
+    const confirmBtn = document.querySelector('.recovery-modal__footer button.n-button--primary-type') as HTMLButtonElement
+    confirmBtn.click()
+    await flushPromises()
+
+    expect(mockClearLoginLocks).toHaveBeenCalledWith('wrong')
+    const errorEl = document.querySelector('.recovery-modal__error')
+    expect(errorEl?.textContent).toBe('Invalid recovery password')
+  })
+
+  it('uses the reset-password API when the second button is clicked', async () => {
+    const err: any = new Error('Too many login attempts')
+    err.status = 429
+    mockLoginWithPassword.mockRejectedValue(err)
+    mockResetDefaultLogin.mockResolvedValue({ success: true, action: 'reset-password', username: 'quanthermes' })
+
+    const wrapper = mount(LoginView)
+    const inputs = wrapper.findAll('input.login-input')
+    await inputs[0].setValue('quanthermes')
+    await inputs[1].setValue('12345678')
+    await wrapper.find('form.login-form').trigger('submit')
+    await flushPromises()
+
+    await wrapper.findAll('.login-lock-hint__btn')[1].trigger('click')
+    await flushPromises()
+
+    const passwordInput = document.querySelector('.recovery-modal input[type="password"]') as HTMLInputElement
+    passwordInput.value = '12345678'
+    passwordInput.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+
+    const confirmBtn = document.querySelector('.recovery-modal__footer button.n-button--primary-type') as HTMLButtonElement
+    confirmBtn.click()
+    await flushPromises()
+
+    expect(mockResetDefaultLogin).toHaveBeenCalledWith('12345678')
   })
 })

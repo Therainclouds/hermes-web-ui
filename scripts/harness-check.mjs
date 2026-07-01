@@ -252,6 +252,7 @@ const dockerPublishWorkflow = await readText('.github/workflows/docker-publish.y
 const electronBuilderConfig = await readText('packages/desktop/electron-builder.yml')
 const desktopPackageJson = await readText('packages/desktop/package.json')
 const desktopInstallHermes = await readText('packages/desktop/scripts/install-hermes.mjs')
+const desktopHermesPatches = await readText('packages/desktop/scripts/apply-hermes-patches.mjs')
 const desktopWebuiServer = await readText('packages/desktop/src/main/webui-server.ts')
 const desktopMain = await readText('packages/desktop/src/main/index.ts')
 const desktopUpdater = await readText('packages/desktop/src/main/updater.ts')
@@ -389,6 +390,10 @@ if (!desktopRuntimeAssetName.includes('hermes-runtime-hermes-agent-')) {
 for (const phrase of [
   'websockets',
   'agent-browser@^0.26.0',
+  'HERMES_CHROME_FOR_TESTING_VERSION',
+  '149.0.7827.55',
+  'pinChromeForTestingBundle',
+  'chromeForTestingPlatform',
   'AGENT_BROWSER_HOME',
   'AGENT_BROWSER_EXECUTABLE_PATH',
   'PLAYWRIGHT_BROWSERS_PATH',
@@ -401,6 +406,21 @@ for (const phrase of [
 }
 
 for (const phrase of [
+  'from pathlib import Path',
+  'browser stdout decode fallback is incomplete',
+  'def _hermes_read_browser_output',
+  'dingtalk AI Card webhook patches are incomplete',
+  'sitecustomize hidden subprocess patch marker exists',
+  'python compile check',
+]) {
+  if (!desktopHermesPatches.includes(phrase)) {
+    fail(`apply-hermes-patches.mjs must keep browser stdout fallback complete: ${phrase}`)
+  }
+}
+
+for (const phrase of [
+  'bundledAgentBrowserHome',
+  'AGENT_BROWSER_HOME',
   'bundledNodeBin',
   'HERMES_AGENT_NODE',
   'HERMES_AGENT_GIT',
@@ -410,6 +430,10 @@ for (const phrase of [
   if (!desktopWebuiServer.includes(phrase)) {
     fail(`desktop webui server must expose bundled browser runtime: ${phrase}`)
   }
+}
+
+if (desktopWebuiServer.includes('bundledBrowserExecutable()')) {
+  fail('desktop webui server must let agent-browser resolve the bundled browser from AGENT_BROWSER_HOME')
 }
 
 for (const phrase of [

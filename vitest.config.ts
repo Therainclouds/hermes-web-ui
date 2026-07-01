@@ -7,7 +7,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': resolve(__dirname, 'packages/client/src'),
-      '/logo.png': resolve(__dirname, 'packages/client/src/assets/logo.png'),
+      '/logo.png': resolve(__dirname, 'packages/client/public/logo.png'),
     },
   },
   test: {

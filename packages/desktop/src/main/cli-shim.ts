@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer'
 import { execFile } from 'node:child_process'
 import {
   appendFileSync,
@@ -18,6 +19,7 @@ const SHIM_MARKER = 'HERMES_STUDIO_CLI_SHIM'
 const MCP_SHIM_MARKER = 'HERMES_STUDIO_MCP_SHIM'
 const PATH_MARKER_START = '# >>> Hermes Studio CLI shim >>>'
 const PATH_MARKER_END = '# <<< Hermes Studio CLI shim <<<'
+const WINDOWS_USER_PATH_ENV_B64 = 'HERMES_STUDIO_WINDOWS_USER_PATH_B64'
 
 type ShimInstallStatus = 'installed' | 'updated' | 'unchanged' | 'skipped'
 
@@ -32,8 +34,10 @@ interface CliShimInstallOptions {
   env?: NodeJS.ProcessEnv
   executablePath?: string
   homeDir?: string
+  nodePath?: string
   platform?: NodeJS.Platform
   runtimeVersion?: string
+  webUiScriptPath?: string
 }
 
 interface McpShimInstallOptions extends CliShimInstallOptions {
@@ -87,13 +91,29 @@ export function createShimContent(
   platform: NodeJS.Platform = process.platform,
   archName: string = process.arch,
   runtimeVersion = '0.15.2',
+  nodePath = process.execPath,
+  webUiScriptPath = resolve(process.cwd(), 'bin', 'hermes-web-ui.mjs'),
 ): string {
   if (platform === 'win32') {
     const runtimePlatform = windowsRuntimePlatformKey(archName)
+    const cliForwarder = `const cp=require('node:child_process');const args=process.argv.slice(1);if(args[0]&&args[0].toLowerCase()==='cli')args.shift();const r=cp.spawnSync(process.env.PYTHON,['-m','hermes_cli.main',...args],{stdio:'inherit'});if(r.error){console.error(r.error.message);process.exit(127)}process.exit(r.status===null?(r.signal?1:0):r.status)`
+    const webForwarder = `const cp=require('node:child_process');const args=process.argv.slice(1);if(args[0]&&args[0].toLowerCase()==='web')args.shift();const r=cp.spawnSync(process.env.NODE,[process.env.WEBUI_SCRIPT,...args],{stdio:'inherit'});if(r.error){console.error(r.error.message);process.exit(127)}process.exit(r.status===null?(r.signal?1:0):r.status)`
     return [
       '@echo off',
       `rem ${SHIM_MARKER}`,
       `set "APP=${executablePath}"`,
+      `set "NODE=${nodePath}"`,
+      `set "WEBUI_SCRIPT=${webUiScriptPath}"`,
+      'if "%~1"=="" goto openApp',
+      'if /I "%~1"=="help" goto help',
+      'if /I "%~1"=="-h" goto help',
+      'if /I "%~1"=="--help" goto help',
+      'if /I "%~1"=="cli" goto runCli',
+      'if /I "%~1"=="web" goto runWeb',
+      'echo Unknown Hermes Studio command: %~1 1>&2',
+      'echo Run hermes-studio --help for usage. 1>&2',
+      'exit /b 2',
+      ':resolveRuntime',
       'set "WEBUI_HOME=%HERMES_WEB_UI_HOME%"',
       'if "%WEBUI_HOME%"=="" set "WEBUI_HOME=%HERMES_WEBUI_STATE_DIR%"',
       'if "%WEBUI_HOME%"=="" set "WEBUI_HOME=%USERPROFILE%\\.hermes-web-ui"',
@@ -103,13 +123,45 @@ export function createShimContent(
       ')',
       `if "%RUNTIME%"=="" set "RUNTIME=%WEBUI_HOME%\\desktop-runtime\\hermes\\${runtimeVersion}\\${runtimePlatform}"`,
       'set "PYTHON=%RUNTIME%\\python\\python.exe"',
+      'exit /b 0',
+      ':runCli',
+      'call :resolveRuntime',
       'if not exist "%PYTHON%" (',
       '  echo Hermes Studio Python runtime not found at "%PYTHON%" 1>&2',
-      '  echo Open Hermes Studio once to finish runtime setup, then retry hermes-studio. 1>&2',
+      '  echo Open Hermes Studio once to finish runtime setup, then retry hermes-studio cli. 1>&2',
       '  exit /b 127',
       ')',
-      '"%PYTHON%" -m hermes_cli.main %*',
+      'if not exist "%NODE%" (',
+      '  echo Hermes Studio Node runtime not found at "%NODE%" 1>&2',
+      '  echo Open Hermes Studio once to finish runtime setup, then retry hermes-studio cli. 1>&2',
+      '  exit /b 127',
+      ')',
+      `"%NODE%" -e "${cliForwarder}" %*`,
       'exit /b %ERRORLEVEL%',
+      ':runWeb',
+      'if not exist "%NODE%" (',
+      '  echo Hermes Studio Node runtime not found at "%NODE%" 1>&2',
+      '  echo Open Hermes Studio once to finish runtime setup, then retry hermes-studio web. 1>&2',
+      '  exit /b 127',
+      ')',
+      'if not exist "%WEBUI_SCRIPT%" (',
+      '  echo Hermes Web UI script not found at "%WEBUI_SCRIPT%" 1>&2',
+      '  exit /b 127',
+      ')',
+      `"%NODE%" -e "${webForwarder}" %*`,
+      'exit /b %ERRORLEVEL%',
+      ':openApp',
+      'start "" "%APP%"',
+      'exit /b 0',
+      ':help',
+      'echo Usage: hermes-studio [command] [options]',
+      'echo.',
+      'echo Commands:',
+      'echo   ^(no command^)       Open Hermes Studio desktop app',
+      'echo   cli [args...]       Run bundled Hermes Agent CLI',
+      'echo   web [args...]       Run bundled hermes-web-ui command',
+      'echo   help, -h, --help    Show this help message',
+      'exit /b 0',
       '',
     ].join('\r\n')
   }
@@ -118,12 +170,55 @@ export function createShimContent(
     '#!/bin/sh',
     `# ${SHIM_MARKER}`,
     `APP=${shellQuote(executablePath)}`,
+    `NODE=${shellQuote(nodePath)}`,
+    `WEBUI_SCRIPT=${shellQuote(webUiScriptPath)}`,
+    'show_help() {',
+    '  cat <<\'EOF\'',
+    'Usage: hermes-studio [command] [options]',
+    '',
+    'Commands:',
+    '  (no command)       Open Hermes Studio desktop app',
+    '  cli [args...]      Run bundled Hermes Agent CLI',
+    '  web [args...]      Run bundled hermes-web-ui command',
+    '  help, -h, --help   Show this help message',
+    'EOF',
+    '}',
     'if [ ! -x "$APP" ]; then',
     '  echo "Hermes Studio executable not found at $APP" >&2',
     '  exit 127',
     'fi',
     'unset ELECTRON_RUN_AS_NODE',
-    `exec "$APP" -- ${HERMES_CLI_ARG} "$@"`,
+    'case "${1:-}" in',
+    '  "")',
+    '    exec "$APP"',
+    '    ;;',
+    '  cli)',
+    '    shift',
+    `    exec "$APP" -- ${HERMES_CLI_ARG} "$@"`,
+    '    ;;',
+    '  web)',
+    '    shift',
+    '    if [ ! -x "$NODE" ]; then',
+    '      echo "Hermes Studio Node runtime not found at $NODE" >&2',
+    '      echo "Open Hermes Studio once to finish runtime setup, then retry hermes-studio web." >&2',
+    '      exit 127',
+    '    fi',
+    '    if [ ! -f "$WEBUI_SCRIPT" ]; then',
+    '      echo "Hermes Web UI script not found at $WEBUI_SCRIPT" >&2',
+    '      exit 127',
+    '    fi',
+    '    exec "$NODE" "$WEBUI_SCRIPT" "$@"',
+    '    ;;',
+    '  help|-h|--help)',
+    '    show_help',
+    '    exit 0',
+    '    ;;',
+    '  *)',
+    '    echo "Unknown Hermes Studio command: $1" >&2',
+    '    echo "Run hermes-studio --help for usage." >&2',
+    '    exit 2',
+    '    ;;',
+    'esac',
     '',
   ].join('\n')
 }
@@ -156,7 +251,7 @@ export function createMcpShimContent(
       '    set "HERMES_WEB_UI_URL=http://127.0.0.1:%HERMES_DESKTOP_PORT%"',
       '  )',
       ')',
-      'set "HERMES_MCP_SERVER_NAME=hermes-studio-mcp"',
+      'if "%HERMES_MCP_SERVER_NAME%"=="" set "HERMES_MCP_SERVER_NAME=hermes-studio-mcp"',
       '"%NODE%" "%SCRIPT%" %*',
       'exit /b %ERRORLEVEL%',
       '',
@@ -185,7 +280,10 @@ export function createMcpShimContent(
     '  fi',
     'fi',
     'export HERMES_WEB_UI_URL',
-    'export HERMES_MCP_SERVER_NAME=hermes-studio-mcp',
+    'if [ -z "${HERMES_MCP_SERVER_NAME:-}" ]; then',
+    '  HERMES_MCP_SERVER_NAME=hermes-studio-mcp',
+    'fi',
+    'export HERMES_MCP_SERVER_NAME',
     'exec "$NODE" "$SCRIPT" "$@"',
     '',
   ].join('\n')
@@ -250,28 +348,48 @@ function shellPathSnippet(platform: NodeJS.Platform, profilePath: string): strin
   ].join('\n')
 }
 
+function powershellArgs(command: string): string[] {
+  return ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command]
+}
+
+async function readWindowsUserPath(): Promise<string> {
+  const command = [
+    "$value = [Environment]::GetEnvironmentVariable('Path', 'User')",
+    "if ($null -ne $value -and $value.Length -gt 0) { [Console]::Out.Write([Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($value))) }",
+  ].join('; ')
+  const { stdout } = await execFileAsync('powershell.exe', powershellArgs(command), {
+    encoding: 'utf-8',
+    timeout: 3000,
+    windowsHide: true,
+  })
+  const encoded = stdout.trim()
+  return encoded.length > 0 ? Buffer.from(encoded, 'base64').toString('utf-8') : ''
+}
+
+async function writeWindowsUserPath(pathValue: string): Promise<void> {
+  const command = [
+    `$bytes = [Convert]::FromBase64String($env:${WINDOWS_USER_PATH_ENV_B64})`,
+    '$value = [System.Text.Encoding]::UTF8.GetString($bytes)',
+    "[Environment]::SetEnvironmentVariable('Path', $value, 'User')",
+  ].join('; ')
+  await execFileAsync('powershell.exe', powershellArgs(command), {
+    encoding: 'utf-8',
+    env: {
+      ...process.env,
+      [WINDOWS_USER_PATH_ENV_B64]: Buffer.from(pathValue, 'utf-8').toString('base64'),
+    },
+    timeout: 3000,
+    windowsHide: true,
+  })
+}
+
 async function ensureWindowsUserPath(binDir: string): Promise<boolean> {
-  let currentPath = ''
-  try {
-    const { stdout } = await execFileAsync('reg.exe', ['query', 'HKCU\\Environment', '/v', 'Path'], {
-      encoding: 'utf-8',
-      timeout: 1500,
-      windowsHide: true,
-    })
-    const line = stdout.split(/\r?\n/).find(row => /^\s*Path\s+REG_/.test(row))
-    if (line) currentPath = line.replace(/^\s*Path\s+REG_\w+\s+/, '').trim()
-  } catch {
-    currentPath = process.env.Path || process.env.PATH || ''
-  }
+  const currentPath = await readWindowsUserPath()
 
   if (pathContainsDir(currentPath, binDir, 'win32')) return false
 
   const separator = currentPath ? ';' : ''
-  await execFileAsync('reg.exe', ['add', 'HKCU\\Environment', '/v', 'Path', '/t', 'REG_EXPAND_SZ', '/d', `${binDir}${separator}${currentPath}`, '/f'], {
-    encoding: 'utf-8',
-    timeout: 1500,
-    windowsHide: true,
-  })
+  await writeWindowsUserPath(`${binDir}${separator}${currentPath}`)
   return true
 }
 
@@ -311,7 +429,14 @@ export async function installHermesStudioCliShim(options: CliShimInstallOptions 
   const shimPath = shimPathForPlatform(binDir, platform)
 
   mkdirSync(binDir, { recursive: true })
-  const status = writeShim(shimPath, createShimContent(executablePath, platform, process.arch, options.runtimeVersion), platform)
+  const status = writeShim(shimPath, createShimContent(
+    executablePath,
+    platform,
+    process.arch,
+    options.runtimeVersion,
+    options.nodePath,
+    options.webUiScriptPath,
+  ), platform)
   const pathUpdated = await ensureUserBinOnPath(homeDir, binDir, platform, env).catch((err) => {
     console.warn(`[cli-shim] failed to update PATH: ${err instanceof Error ? err.message : String(err)}`)
     return false
@@ -332,7 +457,7 @@ export async function installHermesStudioMcpShim(options: McpShimInstallOptions 
   const binDir = resolve(homeDir, 'bin')
   const shimPath = mcpShimPathForPlatform(binDir, platform)
   const nodePath = options.nodePath || process.execPath
-  const scriptPath = options.scriptPath || resolve(process.cwd(), 'bin', 'hermes-web-ui-mcp.mjs')
+  const scriptPath = options.scriptPath || resolve(process.cwd(), 'bin', 'hermes-studio-mcp.mjs')
   const webUiUrl = options.webUiUrl || 'http://127.0.0.1:8748'
 
   mkdirSync(binDir, { recursive: true })

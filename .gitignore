@@ -67,4 +67,4 @@ pip/cache/
 # Local error logs
 docs/erro.txt
 docs/update-distribution
-docs
+docs/

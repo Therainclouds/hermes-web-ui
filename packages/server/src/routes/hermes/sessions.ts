@@ -8,6 +8,7 @@ sessionRoutes.get('/api/hermes/sessions/conversations/:id/messages', ctrl.getCon
 sessionRoutes.get('/api/hermes/sessions/conversations/:id/messages/paginated', ctrl.getConversationMessagesPaginated)
 sessionRoutes.get('/api/hermes/sessions', ctrl.list)
 sessionRoutes.post('/api/hermes/sessions', ctrl.create)
+sessionRoutes.get('/api/hermes/sessions/count', ctrl.count)
 sessionRoutes.get('/api/hermes/sessions/hermes', ctrl.listHermesSessions)
 sessionRoutes.get('/api/hermes/sessions/hermes/:id', ctrl.getHermesSession)
 sessionRoutes.post('/api/hermes/sessions/hermes/:id/import', ctrl.importHermesSession)

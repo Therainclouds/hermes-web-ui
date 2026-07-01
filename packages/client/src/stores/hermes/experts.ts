@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import * as expertsApi from '@/api/hermes/experts'
 import type {
   ExpertCatalogItem,
@@ -24,6 +24,19 @@ export const useExpertsStore = defineStore('experts', () => {
   const upgrading = ref<string | null>(null)
   const uninstalling = ref<string | null>(null)
   const lastError = ref<string | null>(null)
+
+  // 列表页 UI 状态：搜索关键词与分类筛选
+  const searchQuery = ref('')
+  const categoryFilter = ref<string | null>(null)
+  const featuredOnly = ref(false)
+
+  const categories = computed(() => {
+    const set = new Set<string>()
+    for (const c of catalog.value) {
+      if (c.category) set.add(c.category)
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b))
+  })
 
   function manifestKey(slug: string, version: string) {
     return `${slug}@${version}`
@@ -162,6 +175,10 @@ export const useExpertsStore = defineStore('experts', () => {
     upgrading,
     uninstalling,
     lastError,
+    searchQuery,
+    categoryFilter,
+    featuredOnly,
+    categories,
     fetchConfig,
     fetchCatalog,
     refreshCatalog,

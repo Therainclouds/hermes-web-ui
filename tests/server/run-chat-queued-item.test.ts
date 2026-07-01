@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const handleBridgeRunMock = vi.hoisted(() => vi.fn(async () => {}))
 const resumeBridgeRunMock = vi.hoisted(() => vi.fn(async () => {}))
-const handleApiRunMock = vi.hoisted(() => vi.fn(async () => {}))
 const handleCodingAgentRunMock = vi.hoisted(() => vi.fn(async () => {}))
 const loadSessionStateFromDbMock = vi.hoisted(() => vi.fn())
 const ensureReadyMock = vi.hoisted(() => vi.fn())
@@ -15,6 +14,7 @@ const bridgeMock = vi.hoisted(() => ({
   status: vi.fn(),
   statusIfLoaded: vi.fn(),
   interrupt: vi.fn(),
+  approvalRespond: vi.fn(),
 }))
 const sessionStoreMocks = vi.hoisted(() => ({
   clearSessionMessages: vi.fn(),
@@ -25,8 +25,7 @@ vi.mock('../../packages/server/src/services/hermes/run-chat/handle-bridge-run', 
   resumeBridgeRun: resumeBridgeRunMock,
 }))
 
-vi.mock('../../packages/server/src/services/hermes/run-chat/handle-api-run', () => ({
-  handleApiRun: handleApiRunMock,
+vi.mock('../../packages/server/src/services/hermes/run-chat/load-state', () => ({
   loadSessionStateFromDb: loadSessionStateFromDbMock,
   resolveRunSource: vi.fn((source?: string) => source || 'cli'),
 }))
@@ -58,6 +57,7 @@ vi.mock('../../packages/server/src/lib/llm-prompt', () => ({
 vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
   clearSessionMessages: sessionStoreMocks.clearSessionMessages,
   getSession: vi.fn(() => ({ id: 'session-1', profile: 'default', source: 'cli' })),
+  getSessionDetail: vi.fn(() => null),
 }))
 
 vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
@@ -113,6 +113,7 @@ describe('ChatRunSocket queued bridge runs', () => {
     })
     bridgeMock.statusIfLoaded.mockResolvedValue({ ok: true, exists: false, running: false, loaded: false })
     bridgeMock.interrupt.mockResolvedValue({ ok: true })
+    bridgeMock.approvalRespond.mockResolvedValue({ resolved: true })
     sessionStoreMocks.clearSessionMessages.mockReturnValue(2)
     loadSessionStateFromDbMock.mockResolvedValue({
       messages: [],
@@ -173,6 +174,97 @@ describe('ChatRunSocket queued bridge runs', () => {
       queue_id: 'queue-normal',
     }))
     expect(call[6]).toBe(false)
+  })
+
+  it('supports bridge peer broadcasts during runAndWait workflow runs', async () => {
+    handleBridgeRunMock.mockImplementationOnce(async (_nsp, socket, data) => {
+      socket.to(`session:${data.session_id}`).emit('run.peer_user_message', {
+        event: 'run.peer_user_message',
+        session_id: data.session_id,
+      })
+      data.onEvent?.('run.completed', {
+        run_id: 'run-workflow-1',
+        output: 'done',
+      })
+    })
+
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const { io, namespace } = makeServerHarness()
+    const server = new ChatRunSocket(io as any)
+
+    const result = await server.runAndWait({
+      session_id: 'session-1',
+      input: 'workflow node',
+      source: 'workflow',
+      session_source: 'workflow',
+    }, { profile: 'default' })
+
+    expect(result).toMatchObject({
+      ok: true,
+      run_id: 'run-workflow-1',
+      output: 'done',
+    })
+    expect(namespace.to).toHaveBeenCalledWith('session:session-1')
+  })
+
+  it('auto-responds once to approvals only when runAndWait enables it', async () => {
+    handleBridgeRunMock.mockImplementationOnce(async (_nsp, _socket, data) => {
+      data.onEvent?.('approval.requested', {
+        run_id: 'run-workflow-approval',
+        approval_id: 'approval-1',
+        choices: ['once', 'session', 'deny'],
+      })
+      data.onEvent?.('run.completed', {
+        run_id: 'run-workflow-approval',
+        output: 'approved',
+      })
+    })
+
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const { io, namespace } = makeServerHarness()
+    const server = new ChatRunSocket(io as any)
+
+    const result = await server.runAndWait({
+      session_id: 'session-1',
+      input: 'workflow node',
+      source: 'workflow',
+      session_source: 'workflow',
+    }, { profile: 'default', approvalChoice: 'once' })
+
+    expect(result).toMatchObject({
+      ok: true,
+      run_id: 'run-workflow-approval',
+      output: 'approved',
+    })
+    expect(bridgeMock.approvalRespond).toHaveBeenCalledWith('approval-1', 'once')
+    expect(namespace.to).toHaveBeenCalledWith('session:session-1')
+  })
+
+  it('does not auto-respond to approvals for normal runAndWait calls', async () => {
+    handleBridgeRunMock.mockImplementationOnce(async (_nsp, _socket, data) => {
+      data.onEvent?.('approval.requested', {
+        run_id: 'run-normal-approval',
+        approval_id: 'approval-normal',
+        choices: ['once', 'session', 'deny'],
+      })
+      data.onEvent?.('run.completed', {
+        run_id: 'run-normal-approval',
+        output: 'manual approval path',
+      })
+    })
+
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const { io } = makeServerHarness()
+    const server = new ChatRunSocket(io as any)
+
+    const result = await server.runAndWait({
+      session_id: 'session-1',
+      input: 'normal node',
+      source: 'cli',
+    }, { profile: 'default' })
+
+    expect(result.ok).toBe(true)
+    expect(bridgeMock.approvalRespond).not.toHaveBeenCalled()
   })
 
   it('persists the visible plan command when dequeuing expanded plan command runs', async () => {

@@ -6,32 +6,32 @@ const HERMES_STUDIO_NAMESPACE = 'mcp__hermes_studio'
 
 const HERMES_STUDIO_MCP_TOOLS = [
   {
-    name: 'hermes_lan_devices_list',
+    name: 'hermes_studio_lan_devices_list',
     description: 'List known LAN and remote devices from Hermes Web UI, including pairing and online status.',
     inputSchema: inputSchema(),
   },
   {
-    name: 'hermes_lan_devices_scan',
+    name: 'hermes_studio_lan_devices_scan',
     description: 'Refresh LAN device discovery cache and return known devices with pairing and online status.',
     inputSchema: inputSchema(),
   },
   {
-    name: 'hermes_lan_peer_connect',
+    name: 'hermes_studio_lan_peer_connect',
     description: 'Connect to a paired LAN device by device id.',
     inputSchema: inputSchema({ device_id: { type: 'string' } }, ['device_id']),
   },
   {
-    name: 'hermes_lan_peer_connections',
+    name: 'hermes_studio_lan_peer_connections',
     description: 'List active LAN peer socket connections.',
     inputSchema: inputSchema(),
   },
   {
-    name: 'hermes_lan_peer_disconnect',
+    name: 'hermes_studio_lan_peer_disconnect',
     description: 'Disconnect an active LAN peer socket connection.',
     inputSchema: inputSchema({ connection_id: { type: 'string' } }, ['connection_id']),
   },
   {
-    name: 'hermes_lan_terminal_create',
+    name: 'hermes_studio_lan_terminal_create',
     description: 'Create an interactive terminal on a connected LAN peer.',
     inputSchema: inputSchema({
       connection_id: { type: 'string' },
@@ -41,12 +41,12 @@ const HERMES_STUDIO_MCP_TOOLS = [
     }, ['connection_id']),
   },
   {
-    name: 'hermes_lan_terminal_list',
+    name: 'hermes_studio_lan_terminal_list',
     description: 'List interactive terminals tracked for a connected LAN peer, including IDs that can be read or closed.',
     inputSchema: inputSchema({ connection_id: { type: 'string' } }, ['connection_id']),
   },
   {
-    name: 'hermes_lan_terminal_input',
+    name: 'hermes_studio_lan_terminal_input',
     description: 'Write input to an interactive terminal on a connected LAN peer.',
     inputSchema: inputSchema({
       connection_id: { type: 'string' },
@@ -55,7 +55,7 @@ const HERMES_STUDIO_MCP_TOOLS = [
     }, ['connection_id', 'terminal_id', 'data']),
   },
   {
-    name: 'hermes_lan_terminal_read',
+    name: 'hermes_studio_lan_terminal_read',
     description: 'Read buffered terminal output from an interactive terminal.',
     inputSchema: inputSchema({
       connection_id: { type: 'string' },
@@ -63,7 +63,7 @@ const HERMES_STUDIO_MCP_TOOLS = [
     }, ['connection_id', 'terminal_id']),
   },
   {
-    name: 'hermes_lan_terminal_resize',
+    name: 'hermes_studio_lan_terminal_resize',
     description: 'Resize an interactive terminal on a connected LAN peer.',
     inputSchema: inputSchema({
       connection_id: { type: 'string' },
@@ -73,7 +73,7 @@ const HERMES_STUDIO_MCP_TOOLS = [
     }, ['connection_id', 'terminal_id', 'cols', 'rows']),
   },
   {
-    name: 'hermes_lan_terminal_close',
+    name: 'hermes_studio_lan_terminal_close',
     description: 'Close an interactive terminal on a connected LAN peer.',
     inputSchema: inputSchema({
       connection_id: { type: 'string' },
@@ -81,7 +81,7 @@ const HERMES_STUDIO_MCP_TOOLS = [
     }, ['connection_id', 'terminal_id']),
   },
   {
-    name: 'hermes_lan_command_exec',
+    name: 'hermes_studio_lan_command_exec',
     description: 'Run a command on a connected LAN peer using command plus args, without shell string execution.',
     inputSchema: inputSchema({
       connection_id: { type: 'string' },
@@ -92,7 +92,7 @@ const HERMES_STUDIO_MCP_TOOLS = [
     }, ['connection_id', 'command']),
   },
   {
-    name: 'hermes_lan_file_download',
+    name: 'hermes_studio_lan_file_download',
     description: 'Download a file from a connected LAN peer remote path to a local path on this machine.',
     inputSchema: inputSchema({
       connection_id: { type: 'string' },
@@ -102,7 +102,7 @@ const HERMES_STUDIO_MCP_TOOLS = [
     }, ['connection_id', 'remote_path', 'local_path']),
   },
   {
-    name: 'hermes_lan_file_upload',
+    name: 'hermes_studio_lan_file_upload',
     description: 'Upload a local file path from this machine to a connected LAN peer remote path.',
     inputSchema: inputSchema({
       connection_id: { type: 'string' },

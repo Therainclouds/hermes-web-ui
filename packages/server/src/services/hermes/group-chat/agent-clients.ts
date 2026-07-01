@@ -8,6 +8,9 @@ import { AgentBridgeClient, type AgentBridgeContextEstimate, type AgentBridgeMes
 import { convertContentBlocksForAgent, isContentBlockArray } from '../run-chat/content-blocks'
 import { resolveBridgeRunModelConfig } from '../run-chat/model-config'
 import type { ContentBlock } from '../run-chat/types'
+import type { StoredMessage } from '../context-engine/types'
+import { buildProjectedGroupChatHistory, projectGroupChatMessage } from './context-projection'
+import { sliceGroupMessagesForSnapshotTail } from './group-message-ordering'
 import {
     isAllAgentsMentioned,
     resolveMentionTargets,
@@ -36,12 +39,26 @@ interface MessageData {
 }
 
 type MentionMessage = {
+    messageId?: string
     content: string
     senderName: string
     senderId: string
     timestamp: number
+    role?: string
     input?: string | ContentBlock[]
     mentionDepth?: number
+}
+
+export function mentionMessageToStoredContextMessage(roomId: string, msg: MentionMessage): StoredMessage {
+    return {
+        id: msg.messageId || '',
+        roomId,
+        senderId: msg.senderId,
+        senderName: msg.senderName,
+        content: msg.content,
+        timestamp: msg.timestamp,
+        role: msg.role === 'assistant' ? 'assistant' : 'user',
+    }
 }
 
 type GroupEstimateMessage = { role: 'user' | 'assistant'; content: string }
@@ -458,7 +475,7 @@ class AgentClient {
                         members,
                         upstream: '',
                         apiKey: null,
-                        currentMessage: msg,
+                        currentMessage: mentionMessageToStoredContextMessage(roomId, msg),
                         compression,
                         profile: this.profile,
                         onProgress: (event: { status: 'compressing'; messageCount: number; tokenCount: number }) => {
@@ -610,7 +627,7 @@ class AgentClient {
         instructions?: string,
         modelContext: GroupModelContext = { model: '', provider: '' },
     ): Promise<void> {
-        if (!this.storage?.getMessages) return
+        if (!this.storage?.getMessagesForContext) return
         try {
             const history = this.buildRoomEstimateHistory(roomId)
             const cachedTokens = await this.estimateGroupContextTokens(
@@ -632,55 +649,17 @@ class AgentClient {
     }
 
     private buildRoomEstimateHistory(roomId: string): Array<{ role: 'user' | 'assistant'; content: string }> {
-        const messages = this.storage?.getMessages?.(roomId) || []
+        const messages: StoredMessage[] = this.storage?.getMessagesForContext?.(roomId) || []
+        const snapshot = this.storage?.getContextSnapshot?.(roomId)
+        if (snapshot?.summary) {
+            const tail = sliceGroupMessagesForSnapshotTail(messages, snapshot.lastMessageId).messages
+            return buildProjectedGroupChatHistory(snapshot.summary, tail, { agentId: this.agentId, socketId: this.socket?.id, name: this.name })
+        }
         return messages.map((message: any) => this.mapRoomMessageForEstimate(message))
     }
 
     private mapRoomMessageForEstimate(message: any): { role: 'user' | 'assistant'; content: string } {
-        const senderName = String(message?.senderName || 'unknown')
-        const role = String(message?.role || 'user')
-        const isOwnAgent = message?.senderId === this.socket?.id || senderName === this.name
-
-        if (role === 'tool') {
-            const label = message?.tool_name ? `Tool result: ${message.tool_name}` : 'Tool result'
-            return { role: 'user', content: `[${senderName}] [${label}]\n${message?.content || ''}` }
-        }
-
-        if (role === 'assistant' && Array.isArray(message?.tool_calls) && message.tool_calls.length > 0) {
-            const toolsInfo = message.tool_calls.map((toolCall: any) => {
-                const name = toolCall?.function?.name || 'unknown'
-                let args = String(toolCall?.function?.arguments || '{}')
-                if (args.length > 4000) args = `${args.slice(0, 4000)}...`
-                return `[Calling tool: ${name} with arguments: ${args}]`
-            }).join('\n')
-            const content = String(message?.content || '').trim()
-            return {
-                role: isOwnAgent ? 'assistant' : 'user',
-                content: content
-                    ? `${this.formatAttributedContent(senderName, content)}\n${this.formatAttributionPrefix(senderName)}${toolsInfo}`
-                    : `${this.formatAttributionPrefix(senderName)}${toolsInfo}`,
-            }
-        }
-
-        return {
-            role: isOwnAgent ? 'assistant' : 'user',
-            content: this.formatAttributedContent(senderName, String(message?.content || '')),
-        }
-    }
-
-    private formatAttributedContent(senderName: string, content: string): string {
-        return `${this.formatAttributionPrefix(senderName)}${this.stripMentions(content)}`
-    }
-
-    private formatAttributionPrefix(senderName: string): string {
-        return `[${senderName}]: `
-    }
-
-    private stripMentions(content: string): string {
-        return String(content || '')
-            .replace(/@([^\s@]+)/g, '')
-            .replace(/[ \t]{2,}/g, ' ')
-            .replace(/^\s+/, '')
+        return projectGroupChatMessage(message, { agentId: this.agentId, socketId: this.socket?.id, name: this.name })
     }
 
     private async sendAgentErrorMessage(

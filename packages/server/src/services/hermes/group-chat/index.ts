@@ -12,6 +12,7 @@ import { authenticateUserToken, isAuthEnabled, type AuthenticatedUser } from '..
 import { findUserByUsername, getUserAvatar } from '../../../db/hermes/users-store'
 import { config } from '../../../config'
 import { createSocketIoCorsOrigin, shouldRejectUpgradeOrigin } from '../../../security'
+import { paginateRecentGroupMessagesCanonical, sliceGroupMessagesCanonical, sliceGroupMessagesForSnapshotTail, type GroupMessageCursorCutoff } from './group-message-ordering'
 
 // ─── Types ────────────────────────────────────────────────────
 
@@ -157,44 +158,15 @@ function maxAgentMentionDepth(): number {
     return Math.min(10, Math.floor(value))
 }
 
-function groupRunOrder(id: string): { baseId: string; phase: number } {
-    const value = String(id || '')
-    const partMatch = value.match(/^(.*)_part_(\d+)(?:_(toolcall|toolresult)_.+)?$/)
-    if (partMatch) {
-        const part = Number(partMatch[2] || 0)
-        const kind = partMatch[3] || 'assistant'
-        const offset = kind === 'toolcall' ? 1 : kind === 'toolresult' ? 2 : 0
-        return { baseId: partMatch[1], phase: part * 3 + offset }
-    }
-    const toolIdx = value.indexOf('_toolcall_')
-    if (toolIdx >= 0) return { baseId: value.slice(0, toolIdx), phase: 0 }
-    const resultIdx = value.indexOf('_toolresult_')
-    if (resultIdx >= 0) return { baseId: value.slice(0, resultIdx), phase: 1 }
-    return { baseId: value, phase: 2 }
-}
-
-function sortGroupMessages<T extends { id: string; timestamp: number }>(messages: T[]): T[] {
-    const baseMinTimestamp = new Map<string, number>()
-    for (const msg of messages) {
-        const { baseId } = groupRunOrder(msg.id)
-        const existing = baseMinTimestamp.get(baseId)
-        if (existing == null || msg.timestamp < existing) baseMinTimestamp.set(baseId, msg.timestamp)
-    }
-    return [...messages].sort((a, b) => {
-        const ao = groupRunOrder(a.id)
-        const bo = groupRunOrder(b.id)
-        const at = baseMinTimestamp.get(ao.baseId) ?? a.timestamp
-        const bt = baseMinTimestamp.get(bo.baseId) ?? b.timestamp
-        if (at !== bt) return at - bt
-        if (ao.baseId !== bo.baseId) return ao.baseId.localeCompare(bo.baseId)
-        if (ao.phase !== bo.phase) return ao.phase - bo.phase
-        if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp
-        return a.id.localeCompare(b.id)
-    })
-}
-
 class ChatStorage {
     private db() { return getDb() }
+
+    private mapStoredMessageRow(row: any): ChatMessage {
+        return {
+            ...row,
+            tool_calls: parseJsonArray(row.tool_calls),
+        }
+    }
 
     init(): void {
         if (_tablesEnsured) return
@@ -391,12 +363,15 @@ class ChatStorage {
 
     private estimateRoomTotalTokens(roomId: string, messages: ChatMessage[]): number {
         const snapshot = this.getContextSnapshot(roomId)
-        if (snapshot && messages.length) {
-            const snapshotIdx = messages.findIndex(m => m.id === snapshot.lastMessageId)
-            const newMessages = snapshotIdx >= 0
-                ? messages.slice(snapshotIdx + 1)
-                : messages.filter(m => m.timestamp > snapshot.lastMessageTimestamp)
-            const newUsage = this.estimateUsageTokensFromMessages(newMessages)
+        if (snapshot) {
+            const snapshotTail = messages.length
+                ? sliceGroupMessagesForSnapshotTail(messages, snapshot.lastMessageId)
+                : { messages: [], snapshotCursorFound: true }
+            const newUsage = this.estimateUsageTokensFromMessages(snapshotTail.messages)
+            // Missing cursor usually means pruneMessages() removed the anchor row while leaving
+            // the snapshot. The summary still covers the older conversation, and without the
+            // exact boundary we conservatively treat the retained transcript as the verbatim
+            // post-summary tail instead of guessing with timestamps.
             return countTokens(SUMMARY_PREFIX + snapshot.summary) + newUsage.inputTokens + newUsage.outputTokens
         }
         const usage = this.estimateUsageTokensFromMessages(messages)
@@ -405,14 +380,18 @@ class ChatStorage {
 
     // ─── Messages ─────────────────────────────────────────────
 
-    getMessages(roomId: string, limit = 150, offset = 0): ChatMessage[] {
+    getRecentMessagesForUI(roomId: string, limit = 150, offset = 0): ChatMessage[] {
         const rows = (this.db()?.prepare(
-            'SELECT id, roomId, senderId, senderName, content, timestamp, role, tool_call_id, tool_calls, tool_name, finish_reason, reasoning, reasoning_details, reasoning_content FROM gc_messages WHERE roomId = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?'
-        ).all(roomId, limit, offset) || []) as any[]
-        return sortGroupMessages(rows.map(row => ({
-            ...row,
-            tool_calls: parseJsonArray(row.tool_calls),
-        })))
+            'SELECT id, roomId, senderId, senderName, content, timestamp, role, tool_call_id, tool_calls, tool_name, finish_reason, reasoning, reasoning_details, reasoning_content FROM gc_messages WHERE roomId = ?'
+        ).all(roomId) || []) as any[]
+        return paginateRecentGroupMessagesCanonical(rows.map(row => this.mapStoredMessageRow(row)), { limit, offset })
+    }
+
+    getMessagesForContext(roomId: string, cutoff?: GroupMessageCursorCutoff): ChatMessage[] {
+        const rows = (this.db()?.prepare(
+            'SELECT id, roomId, senderId, senderName, content, timestamp, role, tool_call_id, tool_calls, tool_name, finish_reason, reasoning, reasoning_details, reasoning_content FROM gc_messages WHERE roomId = ?'
+        ).all(roomId) || []) as any[]
+        return sliceGroupMessagesCanonical(rows.map(row => this.mapStoredMessageRow(row)), cutoff).messages
     }
 
     getMessageCount(roomId: string): number {
@@ -427,10 +406,7 @@ class ChatStorage {
             'SELECT id, roomId, senderId, senderName, content, timestamp, role, tool_call_id, tool_calls, tool_name, finish_reason, reasoning, reasoning_details, reasoning_content FROM gc_messages WHERE id = ?'
         ).get(messageId) as any
         if (!row) return null
-        return {
-            ...row,
-            tool_calls: parseJsonArray(row.tool_calls),
-        }
+        return this.mapStoredMessageRow(row)
     }
 
     addMessage(msg: ChatMessage): void {
@@ -478,7 +454,7 @@ class ChatStorage {
             const message = existing && options.preserveExistingTimestamp ? { ...msg, timestamp: existing.timestamp } : msg
             this.upsertMessage(message)
             this.pruneMessages(msg.roomId)
-            const messages = this.getMessages(msg.roomId)
+            const messages = this.getMessagesForContext(msg.roomId)
             const totalTokens = this.estimateRoomTotalTokens(msg.roomId, messages)
             this.updateRoomTotalTokens(msg.roomId, totalTokens)
             db.exec('COMMIT')
@@ -1018,7 +994,7 @@ export class GroupChatServer {
         }
 
         // Load history from SQLite
-        const messages = this.storage.getMessages(roomId)
+        const messages = this.storage.getRecentMessagesForUI(roomId)
         const agents = this.storage.getRoomAgents(roomId)
 
         ack?.({
@@ -1084,11 +1060,13 @@ export class GroupChatServer {
             // Agent replies are allowed to mention other agents, but mentionDepth
             // bounds chained agent-to-agent handoffs so one prompt cannot loop forever.
             this.agentClients.processMentions(roomId, {
+                messageId: savedMsg.id,
                 content: contentToText(savedMsg.content),
                 input: Array.isArray(data.content) ? data.content : undefined,
                 senderName: savedMsg.senderName,
                 senderId: savedMsg.senderId,
                 timestamp: savedMsg.timestamp,
+                role: savedMsg.role,
                 mentionDepth,
             }).catch((err) => {
                 logger.error(`[GroupChat] processMentions error: ${err.message}`)

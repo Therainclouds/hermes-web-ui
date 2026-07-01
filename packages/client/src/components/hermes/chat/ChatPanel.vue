@@ -53,7 +53,10 @@ const chatDropCounter = ref(0);
 const isChatDropActive = ref(false);
 const showToolPanel = ref(false);
 const activeToolPanel = ref<"files" | "terminal">("files");
-const toolPanelWidth = ref(560);
+const TOOL_PANEL_MIN_WIDTH = 360;
+const TOOL_PANEL_DEFAULT_WIDTH = 560;
+const TOOL_PANEL_STORAGE_KEY = "hermes.chat.toolPanelWidth";
+const toolPanelWidth = ref(loadToolPanelWidth());
 const toolResizeStart = ref<{ x: number; width: number } | null>(null);
 
 const currentMode = ref<"chat" | "live">("chat");
@@ -97,20 +100,38 @@ function handleOutlineNavigate(target: { messageId: string; anchorId: string }) 
   if (isMobile.value) showOutline.value = false;
 }
 
+function loadToolPanelWidth() {
+  if (typeof window === "undefined") return TOOL_PANEL_DEFAULT_WIDTH;
+  const saved = Number.parseInt(
+    window.localStorage.getItem(TOOL_PANEL_STORAGE_KEY) || "",
+    10,
+  );
+  return Number.isFinite(saved) ? Math.round(saved) : TOOL_PANEL_DEFAULT_WIDTH;
+}
+
 function toolPanelMaxWidth() {
+  if (typeof window === "undefined") return 1180;
+  if (isMobile.value) return window.innerWidth;
   const available = chatContentWrapperRef.value?.clientWidth || window.innerWidth;
-  return Math.max(320, available - 120);
+  return Math.max(320, Math.min(Math.floor(available * 0.88), available - 120));
+}
+
+function clampToolPanelWidth(width: number) {
+  const maxWidth = toolPanelMaxWidth();
+  const minWidth = Math.min(TOOL_PANEL_MIN_WIDTH, maxWidth);
+  return Math.min(maxWidth, Math.max(minWidth, Math.round(width)));
+}
+
+function handleToolPanelViewportResize() {
+  if (isMobile.value) return;
+  toolPanelWidth.value = clampToolPanelWidth(toolPanelWidth.value);
 }
 
 function handleToolResizeMove(event: PointerEvent) {
   const start = toolResizeStart.value;
   if (!start) return;
   const delta = start.x - event.clientX;
-  const maxWidth = toolPanelMaxWidth();
-  toolPanelWidth.value = Math.min(
-    Math.max(360, start.width + delta),
-    maxWidth,
-  );
+  toolPanelWidth.value = clampToolPanelWidth(start.width + delta);
 }
 
 function stopToolResize() {
@@ -118,6 +139,9 @@ function stopToolResize() {
   toolResizeStart.value = null;
   window.removeEventListener("pointermove", handleToolResizeMove);
   window.removeEventListener("pointerup", stopToolResize);
+  if (!isMobile.value) {
+    window.localStorage.setItem(TOOL_PANEL_STORAGE_KEY, String(toolPanelWidth.value));
+  }
   document.body.style.userSelect = "";
   document.body.style.cursor = "";
 }
@@ -179,6 +203,9 @@ async function handleSessionClick(sessionId: string) {
     name: chatStore.runtimeMode === "global_agent" ? "hermes.globalAgentSession" : "hermes.session",
     params: { sessionId },
   });
+  if (chatStore.activeSessionId !== sessionId) {
+    await chatStore.switchSession(sessionId);
+  }
   if (mobileQuery?.matches) showSessions.value = false;
 }
 
@@ -198,6 +225,8 @@ onMounted(() => {
   handleMobileChange(mobileQuery);
   mobileQuery.addEventListener("change", handleMobileChange);
   window.addEventListener("hermes:open-page-sidebar", openPageSidebar);
+  window.addEventListener("resize", handleToolPanelViewportResize);
+  handleToolPanelViewportResize();
   if (profilesStore.profiles.length === 0) {
     void profilesStore.fetchProfiles();
   }
@@ -206,8 +235,15 @@ onMounted(() => {
 onUnmounted(() => {
   mobileQuery?.removeEventListener("change", handleMobileChange);
   window.removeEventListener("hermes:open-page-sidebar", openPageSidebar);
+  window.removeEventListener("resize", handleToolPanelViewportResize);
   stopToolResize();
 });
+watch(showToolPanel, async (visible) => {
+  if (!visible || isMobile.value) return;
+  await nextTick();
+  handleToolPanelViewportResize();
+});
+
 const showRenameModal = ref(false);
 const renameValue = ref("");
 const renameSessionId = ref<string | null>(null);
@@ -274,10 +310,6 @@ const activeSessionModelLabel = computed(() => {
   return appStore.displayModelName(session.model, session.provider);
 });
 
-const isActiveSessionCodingAgent = computed(() =>
-  chatStore.activeSession?.source === "coding_agent",
-);
-
 const headerTitle = computed(() =>
   currentMode.value === "live"
     ? t("chat.liveSessions")
@@ -336,6 +368,21 @@ function getSelectableModelGroupsForProfile(profile: string) {
 
 function getDefaultModelForProfile(profile: string) {
   const groups = getSelectableModelGroupsForProfile(profile);
+  const activeProfileName = profilesStore.activeProfileName || "default";
+  const selectedProvider = appStore.selectedProvider || "";
+  const selectedModel = appStore.selectedModel || "";
+  const selectedGroup = selectedProvider
+    ? groups.find((group) => group.provider === selectedProvider)
+    : undefined;
+  if (
+    profile === activeProfileName &&
+    selectedGroup?.models.includes(selectedModel)
+  ) {
+    return {
+      provider: selectedProvider,
+      model: selectedModel,
+    };
+  }
   const profileModels = appStore.profileModelGroups.find(
     (entry) => entry.profile === profile,
   );
@@ -682,7 +729,7 @@ const contextMenuOptions = computed(() => {
   { label: t("chat.rename"), key: "rename" },
   { label: t("chat.setWorkspace"), key: "workspace" }]
 
-  if (contextSession.value?.source === "cli") {
+  if (contextSession.value?.source === "cli" || contextSession.value?.source === "coding_agent") {
     options.push({ label: t("chat.setModel"), key: "model" })
   }
 
@@ -813,6 +860,14 @@ const showWorkspaceModal = ref(false);
 const workspaceValue = ref("");
 const workspaceSessionId = ref<string | null>(null);
 
+function openActiveSessionWorkspace() {
+  const session = chatStore.activeSession;
+  if (!session?.id) return;
+  workspaceSessionId.value = session.id;
+  workspaceValue.value = session.workspace || "";
+  showWorkspaceModal.value = true;
+}
+
 async function handleWorkspaceConfirm() {
   if (!workspaceSessionId.value) return;
   const ok = await setSessionWorkspace(
@@ -835,6 +890,7 @@ async function handleWorkspaceConfirm() {
 }
 
 const showSessionModelModal = ref(false);
+const showSessionModelModeModal = ref(false);
 const sessionModelSessionId = ref<string | null>(null);
 const sessionModelSearch = ref("");
 const sessionModelCollapsedGroups = ref<Record<string, boolean>>({});
@@ -842,14 +898,30 @@ const sessionModelValue = ref("");
 const sessionModelProvider = ref("");
 const sessionModelCustomInput = ref("");
 const sessionModelCustomProvider = ref("");
+const sessionModelApiMode = ref<CodingAgentApiMode>("codex_responses");
+const pendingSessionModelSwitch = ref<{ model: string; provider: string } | null>(null);
 
 const sessionModelProfile = computed<string | null>(() => {
   const session = chatStore.sessions.find((s) => s.id === sessionModelSessionId.value);
   return session?.profile || null;
 });
 
+const sessionModelSession = computed(() =>
+  chatStore.sessions.find((s) => s.id === sessionModelSessionId.value) ||
+  (chatStore.activeSession?.id === sessionModelSessionId.value ? chatStore.activeSession : undefined),
+);
+
+const isSessionModelScopedCodingAgent = computed(() =>
+  sessionModelSession.value?.source === "coding_agent" &&
+  sessionModelSession.value?.codingAgentMode !== "global",
+);
+
 const sessionModelBaseGroups = computed(() =>
-  sessionModelProfile.value ? getModelGroupsForProfile(sessionModelProfile.value) : [],
+  sessionModelProfile.value
+    ? getModelGroupsForProfile(sessionModelProfile.value).filter((group) => (
+        !isSessionModelScopedCodingAgent.value || !isCodingAgentAuthProvider(group.provider)
+      ))
+    : [],
 );
 
 const sessionModelProviderOptions = computed(() =>
@@ -889,12 +961,20 @@ async function openSessionModelModal(sessionId: string) {
   const session =
     chatStore.sessions.find((s) => s.id === sessionId) ||
     (chatStore.activeSession?.id === sessionId ? chatStore.activeSession : undefined);
-  const defaults = session?.profile
-    ? getDefaultModelForProfile(session.profile)
-    : { provider: "", model: "" };
   sessionModelSessionId.value = sessionId;
-  sessionModelValue.value = session?.model || defaults.model || "";
-  sessionModelProvider.value = session?.provider || defaults.provider || "";
+  const groups = sessionModelBaseGroups.value;
+  const providerGroup = session?.provider
+    ? groups.find((group) => group.provider === session.provider)
+    : undefined;
+  const fallbackGroup = providerGroup || groups.find((group) => group.models.length > 0);
+  const defaults = {
+    provider: fallbackGroup?.provider || "",
+    model: fallbackGroup?.models.includes(session?.model || "")
+      ? session?.model || ""
+      : fallbackGroup?.models[0] || "",
+  };
+  sessionModelValue.value = providerGroup ? session?.model || defaults.model || "" : defaults.model || "";
+  sessionModelProvider.value = providerGroup ? session?.provider || "" : defaults.provider || "";
   sessionModelCustomProvider.value = sessionModelProvider.value;
   sessionModelSearch.value = "";
   sessionModelCustomInput.value = "";
@@ -908,7 +988,6 @@ function handleHeaderModelClick() {
     openNewChatModal();
     return;
   }
-  if (isActiveSessionCodingAgent.value) return;
   openSessionModelModal(sessionId);
 }
 
@@ -932,18 +1011,53 @@ function sessionModelAlias(model: string, provider: string) {
   return appStore.getModelAlias(model, provider);
 }
 
-async function selectSessionModel(model: string, provider: string) {
-  const meta = sessionModelBaseGroups.value.find((group) => group.provider === provider)?.model_meta?.[model];
-  if (meta?.disabled || !sessionModelSessionId.value) return;
-  const ok = await chatStore.switchSessionModel(model, provider, sessionModelSessionId.value);
+function defaultSessionModelApiMode(provider: string): CodingAgentApiMode {
+  const group = sessionModelBaseGroups.value.find((item) => item.provider === provider);
+  const providerKey = String(group?.provider || provider || "").toLowerCase();
+  const baseUrl = String(group?.base_url || "").toLowerCase();
+  return normalizeCodingAgentApiMode(
+    group?.api_mode,
+    inferCodingAgentApiMode(providerKey, baseUrl),
+  );
+}
+
+async function applySessionModelSwitch(model: string, provider: string, apiMode?: CodingAgentApiMode) {
+  if (!sessionModelSessionId.value) return;
+  const ok = await chatStore.switchSessionModel(model, provider, sessionModelSessionId.value, apiMode);
   if (ok) {
     sessionModelValue.value = model;
     sessionModelProvider.value = provider;
+    if (apiMode) sessionModelApiMode.value = apiMode;
+    pendingSessionModelSwitch.value = null;
+    showSessionModelModeModal.value = false;
     showSessionModelModal.value = false;
     message.success(t("chat.modelSet"));
   } else {
     message.error(t("chat.modelSetFailed"));
   }
+}
+
+async function selectSessionModel(model: string, provider: string) {
+  const meta = sessionModelBaseGroups.value.find((group) => group.provider === provider)?.model_meta?.[model];
+  if (meta?.disabled || !sessionModelSessionId.value) return;
+  if (isSessionModelScopedCodingAgent.value) {
+    pendingSessionModelSwitch.value = { model, provider };
+    sessionModelApiMode.value = defaultSessionModelApiMode(provider);
+    showSessionModelModeModal.value = true;
+    return;
+  }
+  await applySessionModelSwitch(model, provider);
+}
+
+async function confirmSessionModelMode() {
+  const pending = pendingSessionModelSwitch.value;
+  if (!pending) return;
+  await applySessionModelSwitch(pending.model, pending.provider, sessionModelApiMode.value);
+}
+
+function cancelSessionModelMode() {
+  pendingSessionModelSwitch.value = null;
+  showSessionModelModeModal.value = false;
 }
 
 async function handleSessionModelCustomSubmit() {
@@ -1307,6 +1421,27 @@ async function handleSessionModelCustomSubmit() {
       </div>
     </NModal>
 
+    <NModal
+      v-model:show="showSessionModelModeModal"
+      preset="dialog"
+      :title="t('codingAgents.protocolScope')"
+      :mask-closable="true"
+      style="width: min(420px, calc(100vw - 32px))"
+    >
+      <NSelect
+        v-model:value="sessionModelApiMode"
+        :options="newChatApiModeOptions"
+      />
+      <template #action>
+        <NButton size="small" @click="cancelSessionModelMode">
+          {{ t('common.cancel') }}
+        </NButton>
+        <NButton size="small" type="primary" @click="confirmSessionModelMode">
+          {{ t('common.confirm') }}
+        </NButton>
+      </template>
+    </NModal>
+
     <NDrawer
       v-model:show="showNewChatModal"
       class="new-chat-drawer"
@@ -1435,16 +1570,23 @@ async function handleSessionModelCustomSubmit() {
             </template>
           </NButton>
           <span class="header-session-title">{{ headerTitle }}</span>
-          <span
+          <button
             v-if="chatStore.activeSession?.workspace"
             class="workspace-badge"
+            type="button"
             :title="chatStore.activeSession.workspace"
-            >📁
-            {{
-              chatStore.activeSession.workspace.split("/").pop() ||
-              chatStore.activeSession.workspace
-            }}</span
+            @click="openActiveSessionWorkspace"
           >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+            </svg>
+            <span>
+              {{
+                chatStore.activeSession.workspace.split("/").pop() ||
+                chatStore.activeSession.workspace
+              }}
+            </span>
+          </button>
         </div>
         <div class="header-actions">
           <!-- chat/live mode toggle hidden -->
@@ -1530,7 +1672,6 @@ async function handleSessionModelCustomSubmit() {
             </NTooltip>
             <NButton
               class="header-model-button"
-              :class="{ 'header-model-button--readonly': isActiveSessionCodingAgent }"
               size="small"
               :circle="isMobile"
               :title="activeSessionModelLabel"
@@ -2136,10 +2277,14 @@ async function handleSessionModelCustomSubmit() {
 .page-sidebar-bottom {
   flex-shrink: 0;
   padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .page-sidebar-menu-btn {
-  width: 100%;
+  flex: 1 1 auto;
+  width: auto;
   min-width: 0;
   height: 36px;
   border: none;
@@ -2264,15 +2409,6 @@ async function handleSessionModelCustomSubmit() {
   max-width: 220px;
 }
 
-.header-model-button--readonly {
-  cursor: default;
-}
-
-.header-model-button--readonly :deep(.n-button__content),
-.header-model-button--readonly :deep(.n-button__icon) {
-  cursor: default;
-}
-
 .header-model-button :deep(.n-button__content) {
   min-width: 0;
   overflow: hidden;
@@ -2289,7 +2425,7 @@ async function handleSessionModelCustomSubmit() {
 
 @media (max-width: $breakpoint-mobile) {
   .chat-header {
-    padding: 16px 12px 16px 52px;
+    padding: calc(16px + env(safe-area-inset-top, 0px)) 12px 16px 52px;
   }
 
   .header-sidebar-toggle {
@@ -2299,16 +2435,35 @@ async function handleSessionModelCustomSubmit() {
 }
 
 .workspace-badge {
+  border: 0;
   font-size: 11px;
+  line-height: 16px;
   color: $text-muted;
   background: rgba(255, 255, 255, 0.05);
   padding: 2px 8px;
   border-radius: 4px;
   max-width: 160px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: default;
+  cursor: pointer;
+
+  svg {
+    flex: 0 0 auto;
+  }
+
+  span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &:hover {
+    color: $text-secondary;
+    background: rgba(var(--accent-primary-rgb), 0.06);
+  }
 }
 
 .header-tool-toggle.active {

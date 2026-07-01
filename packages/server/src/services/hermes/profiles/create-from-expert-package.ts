@@ -11,7 +11,7 @@ import { detectHermesRootHome } from '../hermes-path'
 import {
   readConfigYamlForProfile,
 } from '../../config-helpers'
-import { getActiveProfileName, getProfileDir } from '../hermes-profile'
+import { getActiveProfileName } from '../hermes-profile'
 import yaml from 'js-yaml'
 
 function profileDir(name: string): string {
@@ -189,27 +189,6 @@ async function copyModelFromActiveProfile(targetProfile: string): Promise<void> 
     await fs.writeFile(configPath, yamlStr, 'utf-8')
     // eslint-disable-next-line no-console
     console.log('[experts.copyModel] written yaml=\n', yamlStr)
-
-    // 复制 default profile 的 .env（API key / 凭证）——没有 .env 则 buildAvailableForProfile
-    // 会因 envHasValue(apiKeyEnv) === false 而跳过该 provider，导致前端显示"无可用"
-    // 注意：getProfileDir('default') == hermesBase（不在 profiles/default 下）
-    const defaultEnvPath = join(getProfileDir('default'), '.env')
-    const targetEnvPath = join(dirname(configPath), '.env')
-    try {
-      const envContent = await fs.readFile(defaultEnvPath, 'utf-8')
-      if (envContent && envContent.trim()) {
-        await fs.writeFile(targetEnvPath, envContent, 'utf-8')
-        // eslint-disable-next-line no-console
-        console.log('[experts.copyModel] copied .env from default to', targetEnvPath)
-      } else {
-        // eslint-disable-next-line no-console
-        console.log('[experts.copyModel] default .env is empty, skip copy')
-      }
-    } catch (envErr) {
-      // eslint-disable-next-line no-console
-      console.warn('[experts.copyModel] default .env not found, skip copy:', envErr)
-    }
-
     // eslint-disable-next-line no-console
     console.log('[experts.copyModel] done: copied default=', defaultModel, 'provider=', defaultProvider, 'to=', targetProfile)
   } catch (err) {

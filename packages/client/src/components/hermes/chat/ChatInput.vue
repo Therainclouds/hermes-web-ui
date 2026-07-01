@@ -203,6 +203,7 @@ const skillPickerLoading = ref(false)
 let skillsLoadedKey = ''
 let skillsLoadRequest: Promise<void> | null = null
 const isBridgeSession = computed(() => chatStore.activeSession?.source === 'cli')
+const isForkCommandSession = computed(() => !!chatStore.activeSession && chatStore.activeSession.source !== 'coding_agent')
 const skillPickerItems = computed(() => {
   const byName = new Map<string, SkillInfo>()
   for (const category of skillCategories.value) {
@@ -223,11 +224,17 @@ const skillPickerItems = computed(() => {
 })
 const filteredBridgeCommands = computed(() => {
   const query = slashQuery.value.trim().toLowerCase()
-  if (!query) return bridgeCommands.value
-  return bridgeCommands.value.filter((command) => {
+  const commands = isBridgeSession.value
+    ? bridgeCommands.value
+    : isForkCommandSession.value
+      ? bridgeCommands.value.filter(command => command.name === 'fork')
+      : []
+  if (!query) return commands
+  return commands.filter((command) => {
     const name = command.name.toLowerCase()
     const insertText = command.insertText?.toLowerCase()
-    return name.startsWith(query) || insertText?.startsWith(query)
+    const description = command.description.toLowerCase()
+    return name.startsWith(query) || insertText?.startsWith(query) || description.includes(query)
   })
 })
 const filteredSkillPickerItems = computed(() => {
@@ -389,7 +396,7 @@ function scrollCommandIntoView() {
 }
 
 function updateSlashState() {
-  if (!isBridgeSession.value) {
+  if (!isBridgeSession.value && !isForkCommandSession.value) {
     slashActive.value = false
     return
   }

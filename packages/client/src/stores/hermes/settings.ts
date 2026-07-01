@@ -30,6 +30,13 @@ function mergeGatewayAutoStart(current: GatewayAutoStartConfig, values: Record<s
     if (Array.isArray(values.exclude)) next.exclude = parseProfileList(values.exclude)
     else delete next.exclude
   }
+  if ('management' in values) {
+    if (values.management === 'auto' || values.management === 'per_profile' || values.management === 'unified') {
+      next.management = values.management
+    } else {
+      delete next.management
+    }
+  }
   return next
 }
 

@@ -25,6 +25,7 @@ import type { UpdatePackageType, UpdateStrategy } from './services/update/types'
  * - HERMES_GATEWAY_URL / GATEWAY_URL: Explicit Hermes gateway upstream URL for proxy routes.
  * - GATEWAY_HOST: Default Hermes gateway upstream host. Default: 127.0.0.1.
  * - GATEWAY_PORT: Default Hermes gateway upstream port. Default: 8642.
+ * - HERMES_WEB_UI_DISABLE_GATEWAY_AUTOSTART: Disable Web UI gateway autostart checks and config-driven gateway start/stop reconciliation.
  * - HERMES_WEB_UI_MANAGED_GATEWAY: Web UI-managed Hermes gateway handling. Enabled by default; set 0/false/off to use CLI start.
  * - HERMES_WEB_UI_STOP_GATEWAYS_ON_SHUTDOWN: Whether Web UI shutdown also stops managed gateways.
  * - HERMES_WEB_UI_DISABLE_MCP_AUTOINJECT: Disable Hermes Studio MCP config injection.

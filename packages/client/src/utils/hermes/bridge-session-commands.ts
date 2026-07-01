@@ -10,6 +10,7 @@ export type BridgeSessionCommandName =
   | 'clear'
   | 'title'
   | 'compress'
+  | 'fork'
   | 'steer'
   | 'destroy'
   | 'reload-mcp'
@@ -43,6 +44,7 @@ export const BRIDGE_SESSION_COMMAND_DEFINITIONS: BridgeSessionCommandDefinition[
   { key: 'command:clear-history', name: 'clear', args: '--history', insertText: 'clear --history', descriptionKey: 'chat.slashCommands.clearHistory' },
   { key: 'command:title', name: 'title', argsKey: 'chat.slashCommandArgs.title', descriptionKey: 'chat.slashCommands.title' },
   { key: 'command:compress', name: 'compress', args: '', descriptionKey: 'chat.slashCommands.compress' },
+  { key: 'command:fork', name: 'fork', argsKey: 'chat.slashCommandArgs.title', descriptionKey: 'chat.slashCommands.fork' },
   { key: 'command:steer', name: 'steer', argsKey: 'chat.slashCommandArgs.text', descriptionKey: 'chat.slashCommands.steer' },
   { key: 'command:destroy', name: 'destroy', args: '', descriptionKey: 'chat.slashCommands.destroy' },
   { key: 'command:reload-mcp', name: 'reload-mcp', args: '', descriptionKey: 'chat.slashCommands.reloadMcp' },

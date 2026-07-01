@@ -1,16 +1,33 @@
 import { execFile } from 'child_process'
-import { existsSync, readFileSync, readdirSync, unlinkSync } from 'fs'
+import { existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'fs'
+import YAML from 'js-yaml'
 import { join } from 'path'
 import { promisify } from 'util'
 import { readAppConfig, type GatewayAutoStartConfig } from '../app-config'
 import { logger } from '../logger'
-import { getProfileDir, listProfileNamesFromDisk } from './hermes-profile'
-import { startGatewayRunManaged } from './gateway-runner'
+import { getHermesBaseDir, getProfileDir, listProfileNamesFromDisk } from './hermes-profile'
+import { retireManagedGatewayForProfile, startGatewayRunManaged } from './gateway-runner'
 import { parseGatewayStatusesFromProfileList } from './profile-list-parser'
 import { execHermesWithBin } from './hermes-process'
 
 const execFileAsync = promisify(execFile)
 const GATEWAY_RUNTIME_FILES = ['gateway.pid', 'gateway.lock', 'gateway_state.json'] as const
+
+export type GatewayManagementMode = 'auto' | 'per_profile' | 'unified'
+
+export interface GatewayRuntimeTarget {
+  requestedProfile: string
+  targetProfile: string
+  unified: boolean
+}
+
+export interface GatewayManagementTransitionResult {
+  changed: boolean
+  previousUnified: boolean
+  nextUnified: boolean
+  stoppedProfiles: string[]
+  startedProfiles: string[]
+}
 
 const RESERVED_PROFILE_NAMES = new Set([
   'hermes', 'test', 'tmp', 'root', 'sudo',
@@ -61,6 +78,58 @@ export function selectProfilesForGatewayAutostart(
   return candidates.filter(name => !exclude.has(name))
 }
 
+function configTruthy(value: unknown): boolean {
+  if (value === true) return true
+  const normalized = String(value || '').trim().toLowerCase()
+  return ['1', 'true', 'yes', 'on'].includes(normalized)
+}
+
+export function gatewayMultiplexConfigEnabledForDefaultProfile(defaultProfileDir = getProfileDir('default')): boolean {
+  const configPath = join(defaultProfileDir, 'config.yaml')
+  if (!existsSync(configPath)) return false
+
+  try {
+    const data = YAML.load(readFileSync(configPath, 'utf-8'), { json: true }) as Record<string, any> | null
+    return configTruthy(data?.multiplex_profiles) || configTruthy(data?.gateway?.multiplex_profiles)
+  } catch (err) {
+    logger.warn(err, '[gateway-autostart] failed to read gateway multiplex config from %s', configPath)
+    return false
+  }
+}
+
+export function gatewayAutoStartManagementMode(policy?: GatewayAutoStartConfig): GatewayManagementMode {
+  return policy?.management === 'per_profile' || policy?.management === 'unified' ? policy.management : 'auto'
+}
+
+export function shouldUseUnifiedGatewayManagement(
+  policy?: GatewayAutoStartConfig,
+  defaultProfileDir = getProfileDir('default'),
+): boolean {
+  const mode = gatewayAutoStartManagementMode(policy)
+  if (mode === 'unified') return true
+  if (mode === 'per_profile') return false
+  return gatewayMultiplexConfigEnabledForDefaultProfile(defaultProfileDir)
+}
+
+export function resolveGatewayTargetProfile(profile: string, unified: boolean): GatewayRuntimeTarget {
+  const requestedProfile = String(profile || '').trim() || 'default'
+  return {
+    requestedProfile,
+    targetProfile: unified ? 'default' : requestedProfile,
+    unified,
+  }
+}
+
+export function selectGatewayProfilesForAutostart(
+  profiles: string[],
+  policy?: GatewayAutoStartConfig,
+  unified = false,
+): string[] {
+  const selected = selectProfilesForGatewayAutostart(profiles, policy)
+  if (!unified || selected.length === 0) return selected
+  return profiles.includes('default') ? ['default'] : [selected[0]]
+}
+
 function envFlagDisabled(name: string): boolean {
   const normalized = String(process.env[name] || '').trim().toLowerCase()
   return ['0', 'false', 'no', 'off'].includes(normalized)
@@ -73,6 +142,10 @@ function envValueFlagEnabled(value: unknown): boolean {
 
 function envFlagEnabledIn(env: NodeJS.ProcessEnv, name: string): boolean {
   return envValueFlagEnabled(env[name])
+}
+
+export function gatewayAutostartDisabledByEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  return envFlagEnabledIn(env, 'HERMES_WEB_UI_DISABLE_GATEWAY_AUTOSTART')
 }
 
 function envFlagDisabledIn(env: NodeJS.ProcessEnv, name: string): boolean {
@@ -347,7 +420,21 @@ async function waitForGatewayRunning(hermesBin: string, profile: string, profile
   return false
 }
 
-async function stopGatewayForProfile(hermesBin: string, profile: string, profileDir: string): Promise<void> {
+async function stopGatewayForProfile(
+  hermesBin: string,
+  profile: string,
+  profileDir: string,
+  opts: { retireManaged?: boolean } = {},
+): Promise<void> {
+  if (opts.retireManaged) {
+    writeGatewayDesiredStopped(profileDir)
+    try {
+      await retireManagedGatewayForProfile(profileDir, { timeoutMs: 2000 })
+    } catch (err) {
+      logger.warn(err, '[gateway-autostart] failed to retire managed gateway before stop profile=%s home=%s', profile, profileDir)
+    }
+  }
+
   try {
     await execHermesWithBin(hermesBin, ['gateway', 'stop'], {
       timeout: 30000,
@@ -360,6 +447,140 @@ async function stopGatewayForProfile(hermesBin: string, profile: string, profile
     logger.info('[gateway-autostart] gateway stopped profile=%s home=%s', profile, profileDir)
   } catch (err) {
     logger.warn(err, '[gateway-autostart] Hermes CLI gateway stop failed before restart profile=%s home=%s', profile, profileDir)
+  }
+}
+
+function uniqueProfiles(profiles: string[]): string[] {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const profile of profiles) {
+    const name = String(profile || '').trim() || 'default'
+    if (seen.has(name)) continue
+    seen.add(name)
+    result.push(name)
+  }
+  return result
+}
+
+export async function reconcileGatewayManagementTransition(
+  previousPolicy: GatewayAutoStartConfig | undefined,
+  nextPolicy: GatewayAutoStartConfig | undefined,
+  opts: {
+    hermesBin?: string
+    profiles?: string[]
+    stopGateway?: (profile: string, profileDir: string) => Promise<void>
+    startGateway?: (profile: string, profileDir: string) => Promise<void>
+    waitForGateway?: (profile: string, profileDir: string) => Promise<boolean>
+  } = {},
+): Promise<GatewayManagementTransitionResult> {
+  const previousUnified = shouldUseUnifiedGatewayManagement(previousPolicy)
+  const nextUnified = shouldUseUnifiedGatewayManagement(nextPolicy)
+  const result: GatewayManagementTransitionResult = {
+    changed: previousUnified !== nextUnified,
+    previousUnified,
+    nextUnified,
+    stoppedProfiles: [],
+    startedProfiles: [],
+  }
+  if (!result.changed) return result
+
+  const hermesBin = opts.hermesBin || resolveHermesBin()
+  const profiles = opts.profiles || listProfileNamesFromDisk()
+  const stopProfiles = uniqueProfiles(previousUnified ? ['default'] : profiles)
+  const startProfiles = uniqueProfiles(nextUnified
+    ? selectGatewayProfilesForAutostart(profiles, nextPolicy, true)
+    : selectProfilesForGatewayAutostart(profiles, nextPolicy))
+  const stopGateway = opts.stopGateway || ((profile: string, profileDir: string) =>
+    stopGatewayForProfile(hermesBin, profile, profileDir, { retireManaged: true }))
+  const startGateway = opts.startGateway || ((profile: string, profileDir: string) =>
+    startGatewayForProfile(hermesBin, profile, profileDir, { managedRun: shouldUseManagedGatewayRunForAutostart() }))
+  const waitForGateway = opts.waitForGateway || ((profile: string, profileDir: string) =>
+    waitForGatewayRunning(hermesBin, profile, profileDir))
+
+  logger.info(
+    '[gateway-autostart] reconciling gateway management previousUnified=%s nextUnified=%s stopProfiles=%s startProfiles=%s',
+    previousUnified,
+    nextUnified,
+    stopProfiles.join(',') || 'none',
+    startProfiles.join(',') || 'none',
+  )
+
+  for (const profile of stopProfiles) {
+    const profileDir = getProfileDir(profile)
+    await stopGateway(profile, profileDir)
+    result.stoppedProfiles.push(profile)
+  }
+
+  for (const profile of startProfiles) {
+    if (isReservedProfileName(profile)) {
+      logger.warn('[gateway-autostart] skipping reserved profile name during gateway management reconcile profile=%s', profile)
+      continue
+    }
+
+    const profileDir = getProfileDir(profile)
+    await startGateway(profile, profileDir)
+    const ready = await waitForGateway(profile, profileDir)
+    if (!ready) {
+      logger.warn('[gateway-autostart] gateway start completed but did not report running during management reconcile profile=%s home=%s', profile, profileDir)
+    }
+    result.startedProfiles.push(profile)
+  }
+
+  return result
+}
+
+function writeGatewayDesiredStopped(profileDir: string): void {
+  if (!existsSync(profileDir)) return
+  const statePath = join(profileDir, 'gateway_state.json')
+  try {
+    writeFileSync(
+      statePath,
+      JSON.stringify({
+        gateway_state: 'stopped',
+        desired_state: 'stopped',
+        updated_at: new Date().toISOString(),
+      }, null, 2),
+      'utf-8',
+    )
+  } catch (err) {
+    logger.warn(err, '[gateway-autostart] failed to mark gateway desired stopped before profile delete profileDir=%s', profileDir)
+  }
+}
+
+function getProfileDirForDelete(profile: string): string {
+  if (!profile || profile === 'default') return getProfileDir(profile)
+  return join(getHermesBaseDir(), 'profiles', profile)
+}
+
+export async function prepareGatewayForProfileDelete(profile: string): Promise<void> {
+  const hermesBin = resolveHermesBin()
+  const profileDir = getProfileDirForDelete(profile)
+
+  if (!existsSync(profileDir)) {
+    logger.info('[gateway-autostart] skipping profile delete gateway prep for missing profile profile=%s home=%s', profile, profileDir)
+    return
+  }
+
+  writeGatewayDesiredStopped(profileDir)
+
+  try {
+    await retireManagedGatewayForProfile(profileDir, { timeoutMs: 2000 })
+  } catch (err) {
+    logger.warn(err, '[gateway-autostart] failed to retire managed gateway before profile delete profile=%s home=%s', profile, profileDir)
+  }
+
+  try {
+    await execHermesWithBin(hermesBin, ['gateway', 'stop'], {
+      timeout: 10000,
+      windowsHide: true,
+      env: {
+        ...process.env,
+        HERMES_HOME: profileDir,
+      },
+    })
+    logger.info('[gateway-autostart] gateway stopped before profile delete profile=%s home=%s', profile, profileDir)
+  } catch (err) {
+    logger.warn(err, '[gateway-autostart] Hermes gateway stop failed before profile delete profile=%s home=%s', profile, profileDir)
   }
 }
 
@@ -402,17 +623,48 @@ export async function startGatewayForProfile(
   }
 }
 
-export async function getGatewayRuntimeStatusForProfile(profile: string): Promise<{ running: boolean; profile: string }> {
+export async function getGatewayRuntimeStatusForProfile(profile: string): Promise<{
+  running: boolean
+  profile: string
+  targetProfile?: string
+  unified?: boolean
+}> {
   const hermesBin = resolveHermesBin()
-  const profileDir = getProfileDir(profile)
+  const { gatewayAutoStart } = await readAppConfig()
+  const target = resolveGatewayTargetProfile(profile, shouldUseUnifiedGatewayManagement(gatewayAutoStart))
+  const profileDir = getProfileDir(target.targetProfile)
   const running = await isGatewayRunningForProfile(hermesBin, profileDir)
-  return { running, profile }
+  return {
+    running,
+    profile: target.requestedProfile,
+    targetProfile: target.targetProfile,
+    unified: target.unified,
+  }
 }
 
-export async function restartGatewayForProfile(profile: string): Promise<{ running: boolean; profile: string }> {
+export async function restartGatewayForProfile(profile: string): Promise<{
+  running: boolean
+  profile: string
+  targetProfile?: string
+  unified?: boolean
+}> {
   const hermesBin = resolveHermesBin()
-  const profileDir = getProfileDir(profile)
-  await stopGatewayForProfile(hermesBin, profile, profileDir)
+  const { gatewayAutoStart } = await readAppConfig()
+  const target = resolveGatewayTargetProfile(profile, shouldUseUnifiedGatewayManagement(gatewayAutoStart))
+  const profileDir = getProfileDir(target.targetProfile)
+  await stopGatewayForProfile(hermesBin, target.targetProfile, profileDir)
+
+  // ★ ADR-0011: wait for the runtime lock to be released before spawning
+  // the new gateway. Without this, the new managed process can race the
+  // still-dying old one and either fail to bind the port or, worse, leave
+  // the old process alive holding the platform lock (Feishu channel mess).
+  const lockReleased = await waitForGatewayLockReleaseInPlace(profileDir, 5000)
+  if (!lockReleased) {
+    logger.warn(
+      '[gateway-autostart] gateway lock not released within timeout profile=%s home=%s — proceeding anyway (reaper will sweep)',
+      profile, profileDir,
+    )
+  }
 
   // ★ ADR-0011: wait for the runtime lock to be released before spawning
   // the new gateway. Without this, the new managed process can race the
@@ -427,15 +679,249 @@ export async function restartGatewayForProfile(profile: string): Promise<{ runni
   }
 
   try {
-    await startGatewayForProfile(hermesBin, profile, profileDir, { managedRun: shouldUseManagedGatewayRun() })
+    await startGatewayForProfile(hermesBin, target.targetProfile, profileDir, { managedRun: shouldUseManagedGatewayRun() })
   } catch (err) {
-    logger.error(err, '[gateway-autostart] Hermes gateway restart failed profile=%s home=%s', profile, profileDir)
+    logger.error(
+      err,
+      '[gateway-autostart] Hermes gateway restart failed requestedProfile=%s targetProfile=%s home=%s',
+      target.requestedProfile,
+      target.targetProfile,
+      profileDir,
+    )
     throw err
   }
 
-  const running = await waitForGatewayRunning(hermesBin, profile, profileDir)
+  const running = await waitForGatewayRunning(hermesBin, target.targetProfile, profileDir)
   if (!running) throw new Error('Hermes gateway start completed but gateway did not report running within timeout')
-  return { running, profile }
+  return {
+    running,
+    profile: target.requestedProfile,
+    targetProfile: target.targetProfile,
+    unified: target.unified,
+  }
+}
+
+/**
+ * Lightweight, self-contained equivalent of hermes-cli's
+ * `waitForGatewayLockReleasedAfterStop`. Polls `gateway.lock`,
+ * `gateway.pid`, and `gateway_state.json` until none of the recorded PIDs
+ * is alive (or the timeout expires). Also opportunistically unlinks stale
+ * files so the next start does not see a ghost PID.
+ *
+ * Inlined to avoid a circular import with `hermes-cli.ts`.
+ */
+export async function waitForGatewayLockReleaseInPlace(profileDir: string, timeoutMs = 5000): Promise<boolean> {
+  const lockPath = join(profileDir, 'gateway.lock')
+  const pidPath = join(profileDir, 'gateway.pid')
+  const statePath = join(profileDir, 'gateway_state.json')
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const lockPid = readGatewayRuntimePid(lockPath, 'gateway.lock')
+    const statePid = readGatewayRuntimePid(statePath, 'gateway_state.json')
+    const rawPid = readGatewayRuntimePid(pidPath, 'gateway.pid')
+    const livePids = [lockPid, statePid, rawPid].filter((p): p is number => !!p && p > 0)
+    if (livePids.every(p => !isProcessAlive(p))) {
+      for (const p of [lockPath, pidPath, statePath]) {
+        try { if (existsSync(p)) unlinkSync(p) } catch { /* ignore */ }
+      }
+      return true
+    }
+    await new Promise(resolve => setTimeout(resolve, 250))
+  }
+  return false
+}
+
+// ─── ADR-0011: cross-platform gateway orphan reaper ───────────────────────
+
+/**
+ * True if the periodic gateway reaper should run on the given platform/env.
+ * Default-on for linux/darwin/win32. Disable via env:
+ *   HERMES_WEB_UI_DISABLE_GATEWAY_REAPER=1
+ */
+export function shouldRunGatewayReaper(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const disabled = String(env.HERMES_WEB_UI_DISABLE_GATEWAY_REAPER || '').trim().toLowerCase()
+  if (disabled === '1' || disabled === 'true' || disabled === 'yes' || disabled === 'on') return false
+  return platform === 'linux' || platform === 'darwin' || platform === 'win32'
+}
+
+/** Read the periodic interval (ms) from env; default 30 000 ms (30 s). */
+export function readGatewayReaperIntervalMs(
+  env: NodeJS.ProcessEnv = process.env,
+  fallbackMs = 30_000,
+): number {
+  const raw = String(env.HERMES_WEB_UI_GATEWAY_REAPER_INTERVAL_MS || '').trim()
+  if (!raw) return fallbackMs
+  const n = parseInt(raw, 10)
+  if (!Number.isFinite(n) || n < 1000) return fallbackMs
+  return n
+}
+
+export interface ReapResult {
+  attempted: boolean
+  scannedProfiles: number
+  cleanedFiles: string[]
+  stalePids: number[]
+  liveOrphans: number[]
+  errors: number
+}
+
+/**
+ * Cross-platform gateway orphan reaper. Scans every profile directory for
+ * `gateway.pid` / `gateway.lock` / `gateway_state.json` and:
+ *  - cleans up **stale** files (PID is recorded but the process is dead)
+ *  - **logs** live-but-untracked PIDs (returns them in `liveOrphans` for the
+ *    caller to log; we never kill these automatically because they may
+ *    belong to a legitimate CLI-managed gateway the user has set up).
+ *
+ * The set of `managedPids` is passed in by the caller so the reaper can
+ * distinguish "we know about it" from "we don't".
+ */
+export async function reapGatewayOrphans(opts: {
+  platform?: NodeJS.Platform
+  env?: NodeJS.ProcessEnv
+  hermesHome?: string
+  managedPids?: Iterable<number>
+  isAlive?: (pid: number) => boolean
+} = {}): Promise<ReapResult> {
+  const platform = opts.platform ?? process.platform
+  const env = opts.env ?? process.env
+  const hermesHome = opts.hermesHome ?? process.env.HERMES_WEBUI_STATE_DIR ?? ''
+  const isAlive = opts.isAlive ?? isProcessAlive
+  const managed = new Set<number>()
+  for (const p of opts.managedPids ?? []) managed.add(p)
+
+  const result: ReapResult = {
+    attempted: !!hermesHome,
+    scannedProfiles: 0,
+    cleanedFiles: [],
+    stalePids: [],
+    liveOrphans: [],
+    errors: 0,
+  }
+
+  if (!hermesHome || !existsSync(hermesHome)) return result
+  const profilesRoot = join(hermesHome, 'profiles')
+  if (!existsSync(profilesRoot)) return result
+
+  let profileDirs: string[] = []
+  try {
+    profileDirs = readdirSync(profilesRoot, { withFileTypes: true })
+      .filter(d => d.isDirectory() && d.name !== 'shared' && !d.name.startsWith('.'))
+      .map(d => join(profilesRoot, d.name))
+  } catch (err) {
+    logger.warn(err, '[gateway-reaper] failed to read profiles dir %s', profilesRoot)
+    result.errors += 1
+    return result
+  }
+
+  for (const profileDir of profileDirs) {
+    result.scannedProfiles += 1
+    for (const fileName of GATEWAY_RUNTIME_FILES) {
+      const filePath = join(profileDir, fileName)
+      if (!existsSync(filePath)) continue
+      const pid = readGatewayRuntimePid(filePath, fileName)
+      if (pid === null) continue
+      if (managed.has(pid)) continue
+      const alive = isAlive(pid)
+      if (!alive) {
+        // Stale: file says running, process is dead → clean up.
+        try {
+          unlinkSync(filePath)
+          result.cleanedFiles.push(filePath)
+        } catch (err) {
+          logger.warn(err, '[gateway-reaper] failed to unlink stale file %s', filePath)
+          result.errors += 1
+        }
+        result.stalePids.push(pid)
+      } else {
+        // Live but untracked — log only, do not kill automatically.
+        result.liveOrphans.push(pid)
+      }
+    }
+  }
+
+  return result
+}
+
+// Module-level timer reference (intentionally not in the profile state map
+// so the periodic sweep itself is not subject to per-profile lifecycle).
+let reaperTimer: NodeJS.Timeout | null = null
+let reaperIntervalMs = 30_000
+
+/**
+ * Start the periodic gateway reaper. Idempotent: subsequent calls are
+ * no-ops until `stopPeriodicGatewayReaper()` is invoked.
+ */
+export function startPeriodicGatewayReaper(intervalMs?: number): void {
+  if (reaperTimer) return
+  if (!shouldRunGatewayReaper()) {
+    logger.info('[gateway-reaper] disabled by env or unsupported platform')
+    return
+  }
+  reaperIntervalMs = intervalMs ?? readGatewayReaperIntervalMs()
+  logger.info('[gateway-reaper] starting periodic sweep intervalMs=%d', reaperIntervalMs)
+  reaperTimer = setInterval(runReaperSweepSafe, reaperIntervalMs)
+  reaperTimer.unref()
+}
+
+/** Stop the periodic gateway reaper. Idempotent. */
+export function stopPeriodicGatewayReaper(): void {
+  if (!reaperTimer) return
+  clearInterval(reaperTimer)
+  reaperTimer = null
+  logger.info('[gateway-reaper] stopped')
+}
+
+/** Test seam: invoke one sweep on demand (used by tests). */
+export async function runReaperSweepOnce(): Promise<ReapResult> {
+  const managed = collectManagedGatewayPids()
+  return reapGatewayOrphans({ managedPids: managed })
+}
+
+async function runReaperSweepSafe(): Promise<void> {
+  try {
+    const result = await runReaperSweepOnce()
+    if (
+      result.cleanedFiles.length > 0
+      || result.stalePids.length > 0
+      || result.liveOrphans.length > 0
+      || result.errors > 0
+    ) {
+      logger.info(
+        '[gateway-reaper] sweep scanned=%d cleaned=%d stalePids=[%s] liveOrphans=[%s] errors=%d',
+        result.scannedProfiles,
+        result.cleanedFiles.length,
+        result.stalePids.join(',') || '-',
+        result.liveOrphans.join(',') || '-',
+        result.errors,
+      )
+    }
+  } catch (err) {
+    logger.warn(err, '[gateway-reaper] periodic sweep failed')
+  }
+}
+
+/**
+ * Best-effort collection of the PIDs we are currently supervising in-memory.
+ * Avoids importing gateway-runner to keep the dependency graph simple and
+ * to make the reaper robust against circular imports.
+ */
+function collectManagedGatewayPids(): number[] {
+  const out: number[] = []
+  try {
+    // Lazy import so the reaper module remains self-contained for unit tests.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getAllManagedGatewayPids } = require('./gateway-runner') as { getAllManagedGatewayPids?: () => number[] }
+    if (typeof getAllManagedGatewayPids === 'function') {
+      return getAllManagedGatewayPids()
+    }
+  } catch {
+    // gateway-runner is optional; reaper still works without it.
+  }
+  return out
 }
 
 /**
@@ -667,12 +1153,14 @@ export async function ensureProfileGatewaysRunning(): Promise<void> {
   const hermesBin = resolveHermesBin()
   const discoveredProfiles = listProfileNamesFromDisk()
   const { gatewayAutoStart } = await readAppConfig()
-  const profiles = selectProfilesForGatewayAutostart(discoveredProfiles, gatewayAutoStart)
+  const unified = shouldUseUnifiedGatewayManagement(gatewayAutoStart)
+  const profiles = selectGatewayProfilesForAutostart(discoveredProfiles, gatewayAutoStart, unified)
   const skippedProfiles = discoveredProfiles.filter(profile => !profiles.includes(profile))
   if (skippedProfiles.length > 0) {
     logger.info(
-      '[gateway-autostart] skipping profiles excluded by gatewayAutoStart policy profiles=%s',
+      '[gateway-autostart] skipping profiles excluded by gatewayAutoStart policy profiles=%s unified=%s',
       skippedProfiles.join(','),
+      unified,
     )
   }
   let gatewayStatuses: Map<string, string> | undefined
