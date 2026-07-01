@@ -1381,7 +1381,7 @@ export async function handleUpdate(ctx: any) {
       void (async () => {
         let restart
         try {
-          restart = await spawnRestart(process.env.PORT || '8648')
+          restart = await spawnRestart(process.env.PORT || '6060')
         } catch (err) {
           updateInProgress = false
           failCurrentUpdateTask(`Failed to restart Hermes Web UI after updating to ${version}.`, err instanceof Error ? err.message : String(err))

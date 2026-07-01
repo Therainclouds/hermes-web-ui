@@ -12,6 +12,34 @@ warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 err()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 step()  { echo -e "${BLUE}[STEP]${NC} $*"; }
 
+# ============================================================
+# Proxy configuration for acceleration (local mirror)
+# ============================================================
+if [[ -z "${LOCAL_PROXY:-}" ]]; then
+  LOCAL_PROXY="http://6.6.6.66:7890"
+fi
+
+export no_proxy="localhost,127.0.0.1,*.local,*.aliyuncs.com"
+export NO_PROXY="${no_proxy}"
+
+# Probe the proxy with a real HTTP request. /dev/tcp is unreliable on some
+# Armbian images (IPv6 preference, DNS quirks, etc.).
+proxy_reachable=0
+if curl -x "${LOCAL_PROXY}" -s -o /dev/null --connect-timeout 5 --max-time 10 http://connectivitycheck.gstatic.com/generate_204 2>/dev/null; then
+  proxy_reachable=1
+fi
+
+if [[ "${proxy_reachable}" -eq 1 ]]; then
+  export http_proxy="${LOCAL_PROXY}"
+  export https_proxy="${LOCAL_PROXY}"
+  export HTTP_PROXY="${LOCAL_PROXY}"
+  export HTTPS_PROXY="${LOCAL_PROXY}"
+  info "Proxy reachable: ${LOCAL_PROXY}"
+else
+  unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
+  warn "Proxy ${LOCAL_PROXY} unreachable on this network. Falling back to direct connection."
+fi
+
 trap 'err "Source deployment failed at line: $LINENO"' ERR
 
 if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
@@ -45,12 +73,16 @@ run_as_app_user() {
   local command="$1"
   shift || true
 
-  if [[ ${#SUDO[@]} -eq 0 ]]; then
-    env HOME="${APP_USER_HOME}" "$@" runuser -u "${APP_USER}" -- bash -lc "$command"
-    return
-  fi
+  # Pass proxy env vars through sudo (which resets environment by default)
+  local proxy_env=()
+  [[ -n "${http_proxy:-}"  ]] && proxy_env+=( "http_proxy=${http_proxy}" )
+  [[ -n "${https_proxy:-}" ]] && proxy_env+=( "https_proxy=${https_proxy}" )
+  [[ -n "${HTTP_PROXY:-}"  ]] && proxy_env+=( "HTTP_PROXY=${HTTP_PROXY}" )
+  [[ -n "${HTTPS_PROXY:-}" ]] && proxy_env+=( "HTTPS_PROXY=${HTTPS_PROXY}" )
+  [[ -n "${no_proxy:-}"    ]] && proxy_env+=( "no_proxy=${no_proxy}" )
+  [[ -n "${NO_PROXY:-}"    ]] && proxy_env+=( "NO_PROXY=${NO_PROXY}" )
 
-  sudo -u "${APP_USER}" -H env HOME="${APP_USER_HOME}" "$@" bash -lc "$command"
+  sudo -u "${APP_USER}" -H env HOME="${APP_USER_HOME}" "${proxy_env[@]}" "$@" bash -lc "$command"
 }
 
 is_clock_synchronized() {
@@ -99,7 +131,35 @@ apt_update() {
     return 0
   fi
 
-  warn "apt-get update failed. Retrying after clock synchronization."
+  # First retry: disable sources that return 502/404 (e.g. apt.armbian.com
+  # redirecting to mirrors.nju.edu.cn which may be temporarily unavailable).
+  warn "apt-get update failed. Disabling unreachable sources and retrying."
+  local disabled_files=()
+  local src_file
+  for src_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do
+    [[ -f "${src_file}" ]] || continue
+    local bad=0
+    while IFS= read -r url; do
+      local code
+      code="$(curl -x "${http_proxy:-}" -s -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 10 "${url}" 2>/dev/null || echo "000")"
+      if [[ "${code}" =~ ^(404|502|503|000)$ ]]; then
+        bad=1
+        break
+      fi
+    done < <(grep -oE 'https?://[^ ]+' "${src_file}" 2>/dev/null | head -5)
+    if [[ "${bad}" -eq 1 ]]; then
+      warn "Disabling unreachable source: ${src_file}"
+      run mv "${src_file}" "${src_file}.disabled"
+      disabled_files+=("${src_file}")
+    fi
+  done
+
+  if [[ ${#disabled_files[@]} -gt 0 ]] && run apt-get update -y; then
+    info "apt-get update succeeded after disabling ${#disabled_files[@]} unreachable source(s)."
+    return 0
+  fi
+
+  warn "Retrying after clock synchronization."
   try_sync_clock || true
 
   if run apt-get update -y; then
@@ -107,7 +167,36 @@ apt_update() {
   fi
 
   warn "apt-get update still failed after clock sync. Retrying with Acquire::Check-Date=false."
-  run apt-get -o Acquire::Check-Date=false update -y
+  if run apt-get -o Acquire::Check-Date=false update -y; then
+    return 0
+  fi
+
+  # Last resort: if a proxy is set but the failure looks network-related,
+  # drop the proxy and try direct connection. Useful when the proxy is
+  # configured but the device is on a network that can't reach it.
+  if [[ -n "${http_proxy:-}${https_proxy:-}" ]]; then
+    warn "apt-get update still failed. Retrying with proxy unset (direct connection)."
+    local saved_http="${http_proxy:-}" saved_https="${https_proxy:-}"
+    local saved_HTTP="${HTTP_PROXY:-}" saved_HTTPS="${HTTPS_PROXY:-}"
+    unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
+    if run apt-get -o Acquire::Check-Date=false update -y; then
+      return 0
+    fi
+    # Restore proxy in case later stages still need it
+    [[ -n "${saved_http}"  ]] && export http_proxy="${saved_http}"
+    [[ -n "${saved_https}" ]] && export https_proxy="${saved_https}"
+    [[ -n "${saved_HTTP}"  ]] && export HTTP_PROXY="${saved_HTTP}"
+    [[ -n "${saved_HTTPS}" ]] && export HTTPS_PROXY="${saved_HTTPS}"
+  fi
+
+  # Restore disabled sources so they are not silently lost
+  local f
+  for f in "${disabled_files[@]}"; do
+    [[ -f "${f}.disabled" ]] && run mv "${f}.disabled" "${f}"
+  done
+
+  err "apt-get update failed after all retries."
+  return 1
 }
 
 require_debian_like() {
@@ -557,17 +646,20 @@ install_webui_dependencies() {
   path_env="${NODE_INSTALL_DIR}/bin:${APP_USER_HOME}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
   run chown -R "${APP_USER}:${APP_USER}" "${DEPLOY_DIR}"
-  run_as_app_user "cd '${DEPLOY_DIR}' && PATH='${path_env}' HERMES_WEB_UI_SKIP_PREPARE=1 npm install --include=dev && PATH='${path_env}' npm ls --depth=0 @vscode/markdown-it-katex naive-ui typescript vite vue-tsc >/dev/null"
+  # Use --ignore-scripts so the root `prepare` hook (which calls `npm run build`
+  # itself) does not race with build_webui below and leave a stale `dist/` from
+  # an older source tree.  build_webui is the single source of truth for the
+  # deploy build.
+  run_as_app_user "cd '${DEPLOY_DIR}' && PATH='${path_env}' npm install --include=dev --ignore-scripts && PATH='${path_env}' npm ls --depth=0 @vscode/markdown-it-katex naive-ui typescript vite vue-tsc >/dev/null"
 }
 
 check_webui_dependencies() {
   step "Check installed Web UI dependencies"
 
-  if [[ -f "${DEPLOY_DIR}/dist/server/index.js" ]]; then
-    info "Pre-built artifacts detected. Skipping build-time dependency check."
-    return 0
-  fi
-
+  # Always verify the build-time node_modules are present, even if a previous
+  # `dist/` exists.  Trusting a stale build artifact here is what allowed
+  # `dist/server/index.js` from an older version to keep being executed after
+  # a source upgrade.
   run test -f "${DEPLOY_DIR}/node_modules/naive-ui/package.json"
   run test -f "${DEPLOY_DIR}/node_modules/naive-ui/es/index.d.ts"
   run test -f "${DEPLOY_DIR}/node_modules/typescript/package.json"
@@ -577,10 +669,13 @@ check_webui_dependencies() {
 }
 
 build_webui() {
-  if [[ -f "${DEPLOY_DIR}/dist/server/index.js" ]]; then
-    info "Found pre-built artifacts in dist/. Skipping build_webui."
-    return 0
-  fi
+  # Force a clean rebuild on every deploy.  A previous `dist/` from an older
+  # source tree (with a different `__APP_VERSION__` baked in via
+  # scripts/build-server.mjs) would otherwise be reused by the systemd unit,
+  # causing the version cutover check in post_deploy_self_check to fail with
+  # "did not report webui_version=<expected>".
+  step "Clean previous build artifacts"
+  run rm -rf "${DEPLOY_DIR}/dist"
 
   step "Build hermes-web-ui"
   local path_env

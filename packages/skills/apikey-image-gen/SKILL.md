@@ -49,12 +49,12 @@ Resolve the Hermes Web UI base URL in this order:
 
 1. `HERMES_WEB_UI_URL` environment variable, if set.
 2. `http://127.0.0.1:${PORT}`, if `PORT` is set.
-3. `http://127.0.0.1:8648` for the Web UI single-server default.
+3. `http://127.0.0.1:6060` for the Web UI single-server default.
 
 Common local ports:
 
 - Development API backend: `http://127.0.0.1:8647`. Use this with `npm run dev`; do not target the Vite frontend port.
-- Web UI single-server default: `http://127.0.0.1:8648`.
+- Web UI single-server default: `http://127.0.0.1:6060`.
 - Desktop app default: `http://127.0.0.1:8748`.
 - Custom port: set `HERMES_WEB_UI_URL` to the full base URL, or set `PORT` to use `http://127.0.0.1:${PORT}`.
 
@@ -175,7 +175,7 @@ fi
 
 BASE_URL="${HERMES_WEB_UI_URL:-}"
 if [ -z "$BASE_URL" ]; then
-  BASE_URL="http://127.0.0.1:${PORT:-8648}"
+  BASE_URL="http://127.0.0.1:${PORT:-6060}"
 fi
 BASE_URL="${BASE_URL%/}"
 

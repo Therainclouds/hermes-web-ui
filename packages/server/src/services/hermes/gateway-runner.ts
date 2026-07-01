@@ -46,6 +46,11 @@ const MAX_RESPAWN_ATTEMPTS = 3
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 2000
 const execFileAsync = promisify(execFile)
 
+interface GatewayExitDisposition {
+  respawn: boolean
+  reason: string
+}
+
 export interface ManagedGatewayShutdownResult {
   signaled: number
   forced: number
@@ -62,6 +67,17 @@ function getOrCreateProfileState(profileDir: string): ProfileState {
 }
 
 type KillWindowsProcessTree = (pid: number) => Promise<void>
+
+function classifyManagedGatewayExit(
+  code: number | null,
+  signal: NodeJS.Signals | null,
+): GatewayExitDisposition {
+  if (code === 0) return { respawn: false, reason: 'exit-code-0' }
+  if (signal === 'SIGTERM' || signal === 'SIGINT') {
+    return { respawn: false, reason: `signal-${signal.toLowerCase()}` }
+  }
+  return { respawn: true, reason: 'unexpected-exit' }
+}
 
 function clearRespawnTimer(state: ProfileState, profileDir: string): void {
   if (!state.respawnTimer) return
@@ -319,6 +335,14 @@ function startGatewayRunManagedInternal(
       // want the old child's exit to trigger anything.
       if (state.current?.pid !== pid) return
       state.current = null
+      const disposition = classifyManagedGatewayExit(code, signal)
+      if (!disposition.respawn) {
+        logger.info(
+          '[gateway-runner] managed gateway exited without respawn (profileDir=%s pid=%s code=%s signal=%s reason=%s)',
+          profileDir, pid, code, signal, disposition.reason,
+        )
+        return
+      }
       if (Date.now() - entry.startedAt >= RESPAWN_STABLE_RUN_MS) {
         state.respawnAttempts = 0
       }

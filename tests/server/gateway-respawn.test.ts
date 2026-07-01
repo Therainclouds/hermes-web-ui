@@ -67,6 +67,38 @@ describe('gateway-runner supervision', () => {
     expect(newPid).not.toBe(10000)
   })
 
+  it('does not respawn when the managed gateway exits cleanly with code 0', async () => {
+    vi.useFakeTimers()
+    vi.resetModules()
+    const { startGatewayRunManaged } = await import(
+      '../../packages/server/src/services/hermes/gateway-runner'
+    )
+
+    startGatewayRunManaged('/usr/bin/hermes', { profileDir: '/tmp/clean-exit' })
+    expect(fakeChildren).toHaveLength(1)
+
+    fakeChildren[0].emit('exit', 0, null)
+    await vi.advanceTimersByTimeAsync(5000)
+
+    expect(fakeChildren).toHaveLength(1)
+  })
+
+  it('does not respawn when the managed gateway is terminated with SIGTERM', async () => {
+    vi.useFakeTimers()
+    vi.resetModules()
+    const { startGatewayRunManaged } = await import(
+      '../../packages/server/src/services/hermes/gateway-runner'
+    )
+
+    startGatewayRunManaged('/usr/bin/hermes', { profileDir: '/tmp/sigterm-exit' })
+    expect(fakeChildren).toHaveLength(1)
+
+    fakeChildren[0].emit('exit', null, 'SIGTERM')
+    await vi.advanceTimersByTimeAsync(5000)
+
+    expect(fakeChildren).toHaveLength(1)
+  })
+
   it('stops respawning after three consecutive quick failures', async () => {
     vi.useFakeTimers()
     vi.resetModules()
@@ -226,7 +258,7 @@ describe('gateway-runner supervision', () => {
     startGatewayRunManaged('/usr/bin/hermes', { profileDir: '/tmp/shutdown-b' })
     expect(fakeChildren).toHaveLength(2)
 
-    const shutdown = shutdownManagedGateways({ timeoutMs: 5000 })
+    const shutdown = shutdownManagedGateways({ timeoutMs: 5000, platform: 'linux' })
 
     expect(fakeChildren[0].killSignals).toEqual(['SIGTERM'])
     expect(fakeChildren[1].killSignals).toEqual(['SIGTERM'])
@@ -266,7 +298,7 @@ describe('gateway-runner supervision', () => {
 
     startGatewayRunManaged('/usr/bin/hermes', { profileDir: '/tmp/shutdown-d' })
 
-    const shutdown = shutdownManagedGateways({ timeoutMs: 1000 })
+    const shutdown = shutdownManagedGateways({ timeoutMs: 1000, platform: 'linux' })
     expect(fakeChildren[0].killSignals).toEqual(['SIGTERM'])
 
     await vi.advanceTimersByTimeAsync(1000)

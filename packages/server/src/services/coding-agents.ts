@@ -826,7 +826,7 @@ function hermesMcpServerConfig(profile: string, serverName: string, toolset: str
   return {
     ...hermesMcpCommandConfig(toolset),
     env: {
-      HERMES_WEB_UI_URL: `http://127.0.0.1:${process.env.PORT || '8648'}`,
+      HERMES_WEB_UI_URL: `http://127.0.0.1:${process.env.PORT || '6060'}`,
       HERMES_WEB_UI_HOME: appHome,
       HERMES_WEBUI_STATE_DIR: appHome,
       HERMES_WEB_UI_PROFILE: profile,

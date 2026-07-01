@@ -21,7 +21,7 @@ describe('update manifest client', () => {
       installerScript: '/opt/hermes-web-ui/scripts/install-device-package.sh',
       stagingDir: '/tmp/staging',
       backupDir: '/tmp/backups',
-      healthcheckUrl: 'http://127.0.0.1:8648/health',
+      healthcheckUrl: 'http://127.0.0.1:6060/health',
       stateFile: '/tmp/update-state.json',
       logDir: '/tmp/update-logs',
       manifestTimeoutMs: 100,

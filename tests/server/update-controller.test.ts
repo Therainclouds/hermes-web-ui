@@ -380,7 +380,7 @@ describe('update controller', () => {
 
     expect(mocks.spawn).toHaveBeenCalledWith(
       process.execPath,
-      [expect.any(String), 'restart', '--port', '8648'],
+      [expect.any(String), 'restart', '--port', '6060'],
       expect.objectContaining({ detached: true, stdio: 'ignore', windowsHide: true }),
     )
   })
@@ -602,7 +602,7 @@ describe('update controller', () => {
         error: 'health check failed',
         logPath: '/tmp/hermes-update.log',
         rollbackMessage: 'Restored previous deploy from backup',
-        healthcheckUrl: 'http://127.0.0.1:8648/health',
+        healthcheckUrl: 'http://127.0.0.1:6060/health',
         startedAt: '2026-06-09T00:00:00.000Z',
         finishedAt: '2026-06-09T00:05:00.000Z',
       },
@@ -639,7 +639,7 @@ describe('update controller', () => {
         error: '',
         logPath: '',
         rollbackMessage: '',
-        healthcheckUrl: 'http://127.0.0.1:8648/health',
+        healthcheckUrl: 'http://127.0.0.1:6060/health',
         startedAt: '2026-06-11T14:34:00.000Z',
         finishedAt: null,
       },
