@@ -11,6 +11,7 @@ const PACKAGE_ALLOWLIST = [
   'hermes_data/bots/usb',
   'package.json',
   'package-lock.json',
+  'release/device-host-dependencies.json',
   'scripts/deploy-source-armbian.sh',
   'scripts/hermes-web-ui-update-runner.sh',
   'scripts/hermes-web-ui-update.service',
@@ -41,6 +42,7 @@ function createReleaseConfig(overrides: Record<string, unknown> = {}) {
     channel: 'stable',
     minCurrentVersion: '1.0.0',
     manifestBranch: 'release-manifests',
+    hostDependenciesPath: 'release/device-host-dependencies.json',
     ossPath: 'oss://example-bucket/hermes-web-ui',
     ossPublicBaseUrl: 'https://example-bucket.oss-cn-shanghai.aliyuncs.com/hermes-web-ui',
     packageAllowlist: PACKAGE_ALLOWLIST,
@@ -62,6 +64,7 @@ describe('build-device-package script', () => {
     mkdirSync(resolve(repoRoot, 'dist', 'server'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'dist', 'client'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb'), { recursive: true })
+    mkdirSync(resolve(repoRoot, 'release'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'scripts'), { recursive: true })
 
     writeFileSync(resolve(repoRoot, 'dist', 'server', 'index.js'), 'console.log("server")\n', 'utf-8')
@@ -73,6 +76,10 @@ describe('build-device-package script', () => {
     writeFileSync(resolve(repoRoot, 'scripts', 'install-device-package.sh'), '#!/usr/bin/env bash\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb', 'config.py'), 'WEBUI_HOME = "/tmp/hermes"\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb', 'usb_monitor.py'), 'print("usb monitor")\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'release', 'device-host-dependencies.json'), JSON.stringify({
+      schema: 1,
+      aptPackages: ['python3-pyudev', 'ntfs-3g'],
+    }, null, 2), 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'unexpected-helper.sh'), '#!/usr/bin/env bash\necho "skip"\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'README.md'), '# not packaged\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'package-lock.json'), '{ "name": "@quanthermes/hermes-web-ui", "lockfileVersion": 3 }\n', 'utf-8')
@@ -119,18 +126,29 @@ describe('build-device-package script', () => {
     ])
     expect(manifest.compatibleNodeRange).toBe('>=23.0.0')
     expect(manifest.minCurrentVersion).toBe('1.0.0')
+    expect(manifest.hostDependenciesPath).toBe('release/device-host-dependencies.json')
+    expect(manifest.hostDependencies).toEqual({
+      schema: 1,
+      aptPackages: ['python3-pyudev', 'ntfs-3g'],
+    })
     expect(metadata.latestUrl).toBe(
       'https://raw.githubusercontent.com/example/hermes-web-ui/release-manifests/releases/stable/latest.json',
     )
     expect(metadata.ossLatestUrl).toBe(
       'https://example-bucket.oss-cn-shanghai.aliyuncs.com/hermes-web-ui/releases/stable/latest.json',
     )
+    expect(metadata.hostDependenciesPath).toBe('release/device-host-dependencies.json')
+    expect(metadata.hostDependencies).toEqual({
+      schema: 1,
+      aptPackages: ['python3-pyudev', 'ntfs-3g'],
+    })
     expect(shaText).toContain('hermes-web-ui-device-v1.2.3.tar.gz')
     expect(entries).toEqual(expect.arrayContaining([
       'dist/server/index.js',
       'dist/client/index.html',
       'package.json',
       'package-lock.json',
+      'release/device-host-dependencies.json',
       'scripts/deploy-source-armbian.sh',
       'scripts/hermes-web-ui-update-runner.sh',
       'scripts/hermes-web-ui-update.service',
@@ -152,6 +170,7 @@ describe('build-device-package script', () => {
     mkdirSync(resolve(repoRoot, 'dist', 'server'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'dist', 'client'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb'), { recursive: true })
+    mkdirSync(resolve(repoRoot, 'release'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'scripts'), { recursive: true })
     mkdirSync(resolve(repoRoot, '.github'), { recursive: true })
 
@@ -164,6 +183,10 @@ describe('build-device-package script', () => {
     writeFileSync(resolve(repoRoot, 'scripts', 'install-device-package.sh'), '#!/usr/bin/env bash\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb', 'config.py'), 'WEBUI_HOME = "/tmp/hermes"\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb', 'usb_monitor.py'), 'print("usb monitor")\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'release', 'device-host-dependencies.json'), JSON.stringify({
+      schema: 1,
+      aptPackages: ['python3-pyudev', 'ntfs-3g'],
+    }, null, 2), 'utf-8')
     writeFileSync(resolve(repoRoot, 'package-lock.json'), '{ "name": "@quanthermes/hermes-web-ui", "lockfileVersion": 3 }\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'package.json'), JSON.stringify({
       name: '@quanthermes/hermes-web-ui',
@@ -203,6 +226,7 @@ describe('build-device-package script', () => {
     mkdirSync(resolve(repoRoot, 'dist', 'server'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'dist', 'client'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb'), { recursive: true })
+    mkdirSync(resolve(repoRoot, 'release'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'scripts'), { recursive: true })
     mkdirSync(resolve(repoRoot, '.github'), { recursive: true })
 
@@ -213,6 +237,10 @@ describe('build-device-package script', () => {
     writeFileSync(resolve(repoRoot, 'scripts', 'install-device-package.sh'), '#!/usr/bin/env bash\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb', 'config.py'), 'WEBUI_HOME = "/tmp/hermes"\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb', 'usb_monitor.py'), 'print("usb monitor")\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'release', 'device-host-dependencies.json'), JSON.stringify({
+      schema: 1,
+      aptPackages: ['python3-pyudev', 'ntfs-3g'],
+    }, null, 2), 'utf-8')
     writeFileSync(resolve(repoRoot, 'package-lock.json'), '{ "name": "@quanthermes/hermes-web-ui", "lockfileVersion": 3 }\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'package.json'), JSON.stringify({
       name: '@quanthermes/hermes-web-ui',
@@ -248,6 +276,7 @@ describe('build-device-package script', () => {
     mkdirSync(resolve(repoRoot, 'dist', 'server'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'dist', 'client'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb'), { recursive: true })
+    mkdirSync(resolve(repoRoot, 'release'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'scripts'), { recursive: true })
     mkdirSync(resolve(repoRoot, '.github'), { recursive: true })
 
@@ -258,6 +287,10 @@ describe('build-device-package script', () => {
     writeFileSync(resolve(repoRoot, 'scripts', 'install-device-package.sh'), '#!/usr/bin/env bash\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb', 'config.py'), 'WEBUI_HOME = "/tmp/hermes"\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb', 'usb_monitor.py'), 'print("usb monitor")\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'release', 'device-host-dependencies.json'), JSON.stringify({
+      schema: 1,
+      aptPackages: ['python3-pyudev', 'ntfs-3g'],
+    }, null, 2), 'utf-8')
     writeFileSync(resolve(repoRoot, 'package-lock.json'), '{ "name": "@quanthermes/hermes-web-ui", "lockfileVersion": 3 }\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'package.json'), JSON.stringify({
       name: '@quanthermes/hermes-web-ui',
@@ -293,6 +326,7 @@ describe('build-device-package script', () => {
 
     mkdirSync(resolve(repoRoot, 'dist', 'server'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'dist', 'client'), { recursive: true })
+    mkdirSync(resolve(repoRoot, 'release'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'scripts'), { recursive: true })
     mkdirSync(resolve(repoRoot, '.github'), { recursive: true })
 
@@ -301,6 +335,10 @@ describe('build-device-package script', () => {
     writeFileSync(resolve(repoRoot, 'scripts', 'deploy-source-armbian.sh'), '#!/usr/bin/env bash\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui.service'), '[Service]\nExecStart=node dist/server/index.js\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'install-device-package.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'release', 'device-host-dependencies.json'), JSON.stringify({
+      schema: 1,
+      aptPackages: ['python3-pyudev', 'ntfs-3g'],
+    }, null, 2), 'utf-8')
     writeFileSync(resolve(repoRoot, 'package-lock.json'), '{ "name": "@quanthermes/hermes-web-ui", "lockfileVersion": 3 }\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'package.json'), JSON.stringify({
       name: '@quanthermes/hermes-web-ui',
@@ -318,6 +356,7 @@ describe('build-device-package script', () => {
       channel: 'stable',
       minCurrentVersion: '1.0.0',
       manifestBranch: 'release-manifests',
+      hostDependenciesPath: 'release/device-host-dependencies.json',
     }, null, 2), 'utf-8')
 
     const { buildDevicePackageRelease } = await import('../../scripts/build-device-package.mjs')

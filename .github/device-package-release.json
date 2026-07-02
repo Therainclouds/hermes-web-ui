@@ -5,6 +5,7 @@
   "sourceLabel": "Quanthermes Device Releases",
   "healthcheckUrl": "http://127.0.0.1:6060/health",
   "manifestBranch": "release-manifests",
+  "hostDependenciesPath": "release/device-host-dependencies.json",
   "ossPath": "oss://tangledup-ai-staging/quanthermes_pj/quanthermes_web_ui",
   "ossPublicBaseUrl": "https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui",
   "packageAllowlist": [
@@ -13,6 +14,7 @@
     "hermes_data/bots/usb",
     "package.json",
     "package-lock.json",
+    "release/device-host-dependencies.json",
     "scripts/deploy-source-armbian.sh",
     "scripts/hermes-web-ui-update-runner.sh",
     "scripts/hermes-web-ui-update.service",

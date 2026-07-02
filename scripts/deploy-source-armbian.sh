@@ -626,6 +626,98 @@ EOF
   info "Wrote ${APP_USER_HOME}/.npmrc"
 }
 
+resolve_host_dependency_manifest_file() {
+  local manifest_path="${DEPLOY_DIR}/${HOST_DEPENDENCY_MANIFEST_RELATIVE_PATH}"
+  [[ -f "${manifest_path}" ]] || return 1
+  printf '%s\n' "${manifest_path}"
+}
+
+load_managed_host_dependency_packages() {
+  local manifest_path parsed_packages
+
+  if ! manifest_path="$(resolve_host_dependency_manifest_file)"; then
+    MANAGED_HOST_DEPENDENCY_MANIFEST_FILE=""
+    MANAGED_HOST_APT_PACKAGES=()
+    info "No managed host dependency manifest found at ${DEPLOY_DIR}/${HOST_DEPENDENCY_MANIFEST_RELATIVE_PATH}; skipping host dependency reconcile."
+    return 0
+  fi
+
+  parsed_packages="$(
+    python3 - "${manifest_path}" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+manifest_path = Path(sys.argv[1])
+payload = json.loads(manifest_path.read_text(encoding='utf-8'))
+if not isinstance(payload, dict):
+    raise SystemExit(f"Host dependency manifest must be a JSON object: {manifest_path}")
+
+schema = int(payload.get('schema') or 0)
+if schema != 1:
+    raise SystemExit(f"Host dependency manifest schema must be 1: {manifest_path}")
+
+apt_packages = []
+seen = set()
+for entry in payload.get('aptPackages') or []:
+    normalized = str(entry or '').strip()
+    if not normalized or normalized in seen:
+        continue
+    seen.add(normalized)
+    apt_packages.append(normalized)
+
+if not apt_packages:
+    raise SystemExit(f"Host dependency manifest aptPackages must contain at least one package: {manifest_path}")
+
+print("\n".join(apt_packages))
+PY
+  )" || {
+    err "Failed to parse managed host dependency manifest: ${manifest_path}"
+    exit 1
+  }
+
+  MANAGED_HOST_DEPENDENCY_MANIFEST_FILE="${manifest_path}"
+  MANAGED_HOST_APT_PACKAGES=()
+  while IFS= read -r package_name; do
+    [[ -n "${package_name}" ]] && MANAGED_HOST_APT_PACKAGES+=("${package_name}")
+  done <<< "${parsed_packages}"
+
+  info "Loaded managed host dependencies from ${manifest_path}: ${MANAGED_HOST_APT_PACKAGES[*]}"
+}
+
+is_apt_package_installed() {
+  local package_name="$1"
+  dpkg-query -W -f='${db:Status-Status}' "${package_name}" 2>/dev/null | grep -qx 'installed'
+}
+
+reconcile_host_dependencies() {
+  local package_name
+  local -a missing_packages=()
+
+  load_managed_host_dependency_packages
+  if [[ ${#MANAGED_HOST_APT_PACKAGES[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  for package_name in "${MANAGED_HOST_APT_PACKAGES[@]}"; do
+    if ! is_apt_package_installed "${package_name}"; then
+      missing_packages+=("${package_name}")
+    fi
+  done
+
+  if [[ ${#missing_packages[@]} -eq 0 ]]; then
+    info "Managed host dependencies are already installed."
+    return 0
+  fi
+
+  step "Install managed host dependencies"
+  info "Installing missing host dependencies from ${MANAGED_HOST_DEPENDENCY_MANIFEST_FILE}: ${missing_packages[*]}"
+  apt_update
+  run apt-get install -y "${missing_packages[@]}"
+}
+
 resolve_dependency_snapshot_file() {
   local webui_home
   webui_home="${HERMES_WEB_UI_HOME:-${APP_USER_HOME}/.hermes-web-ui}"
@@ -1426,6 +1518,9 @@ UPDATE_DEPENDENCY_MANAGER="npm"
 DEPENDENCY_SNAPSHOT_CHANGED=true
 DEPENDENCY_INSTALL_REASON=""
 DEPENDENCY_SNAPSHOT_JSON=""
+HOST_DEPENDENCY_MANIFEST_RELATIVE_PATH="release/device-host-dependencies.json"
+MANAGED_HOST_DEPENDENCY_MANIFEST_FILE=""
+MANAGED_HOST_APT_PACKAGES=()
 
 case "${UPDATE_ONLY_RAW,,}" in
   1|true|yes|on)
@@ -1522,6 +1617,7 @@ if [[ "${UPDATE_ONLY}" != "true" ]]; then
 fi
 write_npmrc
 install_webui_dependencies
+reconcile_host_dependencies
 check_webui_dependencies
 build_webui
 write_service_env

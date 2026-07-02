@@ -18,6 +18,12 @@ function expectVersion(label, actual, expected) {
   }
 }
 
+function expectNonEmptyString(label, value) {
+  if (!String(value || '').trim()) {
+    fail(`${label} is required`)
+  }
+}
+
 const rootPackage = readJson('package.json')
 const rootLockfile = readJson('package-lock.json')
 const desktopPackage = readJson('packages/desktop/package.json')
@@ -27,6 +33,27 @@ const releaseConfig = readJson('.github/device-package-release.json')
 const releaseVersion = String(rootPackage.version || '').trim()
 if (!releaseVersion) {
   fail('package.json version is required')
+}
+
+expectNonEmptyString('.github/device-package-release.json hostDependenciesPath', releaseConfig.hostDependenciesPath)
+const hostDependenciesPath = String(releaseConfig.hostDependenciesPath).trim()
+const packageAllowlist = Array.isArray(releaseConfig.packageAllowlist) ? releaseConfig.packageAllowlist : []
+if (!packageAllowlist.includes(hostDependenciesPath)) {
+  fail(`packageAllowlist must include hostDependenciesPath: ${hostDependenciesPath}`)
+}
+
+const hostDependencies = readJson(hostDependenciesPath)
+if (hostDependencies == null || typeof hostDependencies !== 'object' || Array.isArray(hostDependencies)) {
+  fail(`Host dependency manifest must be a JSON object: ${hostDependenciesPath}`)
+}
+if (Number.parseInt(String(hostDependencies.schema ?? ''), 10) !== 1) {
+  fail(`Host dependency manifest schema must be 1: ${hostDependenciesPath}`)
+}
+const aptPackages = Array.isArray(hostDependencies.aptPackages)
+  ? [...new Set(hostDependencies.aptPackages.map(value => String(value || '').trim()).filter(Boolean))]
+  : []
+if (aptPackages.length === 0) {
+  fail(`Host dependency manifest aptPackages must contain at least one package: ${hostDependenciesPath}`)
 }
 
 expectVersion('package-lock.json', rootLockfile.version, releaseVersion)

@@ -176,6 +176,43 @@ function resolvePackageAllowlist(packageAllowlist, releaseConfigPath) {
   return [...new Set(packageAllowlist.map(normalizeRelativePackageEntry))]
 }
 
+function loadHostDependencies(repoRoot, hostDependenciesPath, releaseConfigPath) {
+  const normalizedPath = typeof hostDependenciesPath === 'string'
+    ? normalizeRelativePackageEntry(hostDependenciesPath)
+    : ''
+  if (!normalizedPath) {
+    throw new Error(
+      `hostDependenciesPath is required. Set it in ${releaseConfigPath} and point it at the managed host dependency manifest.`,
+    )
+  }
+
+  const manifestPath = resolve(repoRoot, normalizedPath)
+  ensureFile(manifestPath, 'Host dependency manifest')
+
+  const parsed = JSON.parse(readFileSync(manifestPath, 'utf-8'))
+  if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`Host dependency manifest must be a JSON object: ${normalizedPath}`)
+  }
+
+  const schema = Number.parseInt(String(parsed.schema ?? ''), 10)
+  if (schema !== 1) {
+    throw new Error(`Host dependency manifest schema must be 1: ${normalizedPath}`)
+  }
+
+  const aptPackages = dedupeNonEmpty(Array.isArray(parsed.aptPackages) ? parsed.aptPackages : [])
+  if (aptPackages.length === 0) {
+    throw new Error(`Host dependency manifest aptPackages must contain at least one package: ${normalizedPath}`)
+  }
+
+  return {
+    relativePath: normalizedPath,
+    manifest: {
+      schema,
+      aptPackages,
+    },
+  }
+}
+
 function buildPackageEntries(repoRoot, packageAllowlist) {
   return packageAllowlist.map((entryPath) => {
     const sourcePath = resolve(repoRoot, entryPath)
@@ -284,10 +321,20 @@ export async function buildDevicePackageRelease(options = {}) {
       `minCurrentVersion is required. Set it in ${releaseConfigPath} or pass --min-current-version explicitly.`,
     )
   }
+  const hostDependencies = loadHostDependencies(
+    repoRoot,
+    options.hostDependenciesPath || releaseConfig.hostDependenciesPath,
+    releaseConfigPath,
+  )
   const packageAllowlist = resolvePackageAllowlist(
     options.packageAllowlist ?? releaseConfig.packageAllowlist,
     releaseConfigPath,
   )
+  if (!packageAllowlist.includes(hostDependencies.relativePath)) {
+    throw new Error(
+      `packageAllowlist must include hostDependenciesPath (${hostDependencies.relativePath}) so runtime updates can reconcile host dependencies.`,
+    )
+  }
   const packageEntries = buildPackageEntries(repoRoot, packageAllowlist)
   const ossPath = normalizeOptionalUrl(options.ossPath || releaseConfig.ossPath)
   const ossPublicBaseUrl = normalizeOptionalUrl(options.ossPublicBaseUrl || releaseConfig.ossPublicBaseUrl)
@@ -353,6 +400,8 @@ export async function buildDevicePackageRelease(options = {}) {
       notesUrl: buildReleaseNotesUrl(releaseRepo, tag),
       size,
       healthcheckUrl,
+      hostDependenciesPath: hostDependencies.relativePath,
+      hostDependencies: hostDependencies.manifest,
     }
 
     writeFileSync(shaPath, `${sha256}  ${basename(artifactPath)}\n`, 'utf-8')
@@ -365,6 +414,8 @@ export async function buildDevicePackageRelease(options = {}) {
       releaseRepo,
       manifestBranch,
       packageAllowlist: packageEntries.map(entry => entry.path),
+      hostDependenciesPath: hostDependencies.relativePath,
+      hostDependencies: hostDependencies.manifest,
       artifactName,
       artifactPath,
       shaPath,
