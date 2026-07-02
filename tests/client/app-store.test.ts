@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 
 const mockSystemApi = vi.hoisted(() => ({
   checkHealth: vi.fn(),
+  clearStaleUpdateStatus: vi.fn(),
   fetchAvailableModels: vi.fn(),
   fetchUpdateStatus: vi.fn(),
   addCustomModel: vi.fn(),
@@ -25,6 +26,7 @@ describe('App Store', () => {
     vi.clearAllMocks()
     mockSystemApi.addCustomModel.mockResolvedValue({ success: true, custom_models: {} })
     mockSystemApi.removeCustomModel.mockResolvedValue({ success: true, custom_models: {} })
+    mockSystemApi.clearStaleUpdateStatus.mockResolvedValue({ success: true, currentTask: null, lastTask: null })
     mockSystemApi.fetchUpdateStatus.mockResolvedValue({ currentTask: null, lastTask: null })
     window.localStorage.clear()
   })
@@ -320,6 +322,28 @@ describe('App Store', () => {
 
     expect(store.serverVersion).toBe('test')
     expect(store.clientOutdated).toBe(false)
+  })
+
+  it('clears a stale failed update status through the store action', async () => {
+    mockSystemApi.fetchUpdateStatus.mockResolvedValueOnce({
+      currentTask: null,
+      lastTask: null,
+    })
+    const store = useAppStore()
+    store.updateTaskId = 'task-stale'
+    store.updateTaskStatus = 'failed'
+    store.updateTaskStage = 'failed'
+    store.updateTaskMessage = 'Failed to start source deployment update 0.6.29.'
+    store.updateTaskError = 'managed source deployment update service exited before replacing server: code=null signal=SIGINT'
+
+    const ok = await store.clearStaleUpdateStatus()
+
+    expect(ok).toBe(true)
+    expect(mockSystemApi.clearStaleUpdateStatus).toHaveBeenCalledTimes(1)
+    expect(store.updateTaskId).toBe('')
+    expect(store.updateTaskStatus).toBe('idle')
+    expect(store.updateTaskStage).toBe('idle')
+    expect(store.updateTaskError).toBe('')
   })
 
   it('clears the updating state and reports failure when self-update request fails', async () => {

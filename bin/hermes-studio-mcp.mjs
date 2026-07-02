@@ -1357,6 +1357,41 @@ const tools = [
         timeout_ms: { type: 'number' },
       }, ['connection_id', 'local_path', 'remote_path']),
   },
+  {
+    name: 'hermes_studio_usb_devices_list',
+    toolset: 'devices',
+    description: 'List mounted USB storage devices known to Hermes Web UI.',
+    inputSchema: inputSchema(),
+  },
+  {
+    name: 'hermes_studio_usb_files_list',
+    toolset: 'devices',
+    description: 'List files or folders for one mounted USB device path.',
+    inputSchema: inputSchema({
+      uuid: { type: 'string' },
+      path: { type: 'string', description: 'USB relative path such as / or /docs/readme.txt.' },
+    }, ['uuid']),
+  },
+  {
+    name: 'hermes_studio_usb_file_read',
+    toolset: 'devices',
+    description: 'Read one USB file through the Web UI safety layer.',
+    inputSchema: inputSchema({
+      uuid: { type: 'string' },
+      path: { type: 'string', description: 'USB relative file path such as /notes.txt.' },
+    }, ['uuid', 'path']),
+  },
+  {
+    name: 'hermes_studio_usb_copy_to_workspace',
+    toolset: 'devices',
+    description: 'Copy one USB file into the current Hermes session workspace so the active session can read it safely.',
+    inputSchema: inputSchema({
+      uuid: { type: 'string' },
+      path: { type: 'string', description: 'USB relative file path such as /notes.txt.' },
+      session_id: { type: 'string', description: 'Existing Hermes session id whose workspace should receive the file.' },
+      target_path: { type: 'string', description: 'Optional relative destination path inside the workspace.' },
+    }, ['uuid', 'path', 'session_id']),
+  },
 ]
 
 const TOOL_ALIASES = new Map([
@@ -1376,6 +1411,10 @@ const TOOL_ALIASES = new Map([
   ['hermes_lan_command_exec', 'hermes_studio_lan_command_exec'],
   ['hermes_lan_file_download', 'hermes_studio_lan_file_download'],
   ['hermes_lan_file_upload', 'hermes_studio_lan_file_upload'],
+  ['hermes_usb_devices_list', 'hermes_studio_usb_devices_list'],
+  ['hermes_usb_files_list', 'hermes_studio_usb_files_list'],
+  ['hermes_usb_file_read', 'hermes_studio_usb_file_read'],
+  ['hermes_usb_copy_to_workspace', 'hermes_studio_usb_copy_to_workspace'],
 ])
 
 function resolveToolName(name) {
@@ -1608,6 +1647,21 @@ async function callTool(name, args = {}) {
       return jsonText(await request(`/api/devices/peer-connections/${encodeURIComponent(args.connection_id)}/upload`, withAuthArgs(args, {
         method: 'POST',
         body: { local_path: args.local_path, remote_path: args.remote_path, timeout_ms: args.timeout_ms },
+      })))
+    case 'hermes_studio_usb_devices_list':
+      return jsonText(await request('/api/usb/devices', withAuthArgs(args)))
+    case 'hermes_studio_usb_files_list':
+      return jsonText(await request(`/api/usb/devices/${encodeURIComponent(args.uuid)}/ls`, withAuthArgs(args, {
+        query: pickDefined(args, ['path']),
+      })))
+    case 'hermes_studio_usb_file_read':
+      return jsonText(await request(`/api/usb/devices/${encodeURIComponent(args.uuid)}/read`, withAuthArgs(args, {
+        query: pickDefined(args, ['path']),
+      })))
+    case 'hermes_studio_usb_copy_to_workspace':
+      return jsonText(await request(`/api/usb/devices/${encodeURIComponent(args.uuid)}/copy-to-workspace`, withAuthArgs(args, {
+        method: 'POST',
+        body: pickDefined(args, ['path', 'session_id', 'target_path']),
       })))
     default:
       return errorText(`Unknown tool: ${name}`)

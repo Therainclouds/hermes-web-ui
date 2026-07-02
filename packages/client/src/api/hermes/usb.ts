@@ -47,6 +47,15 @@ export interface USBListFilesResponse {
   entries: USBFileEntry[]
 }
 
+export interface USBCopyToWorkspaceResponse {
+  uuid: string
+  session_id: string
+  workspace: string
+  workspacePath: string
+  relativeWorkspacePath: string
+  size: number
+}
+
 function guessMimeType(path: string): string {
   const normalized = path.toLowerCase()
   if (normalized.endsWith('.png')) return 'image/png'
@@ -94,6 +103,22 @@ export async function readUSBFile(uuid: string, path: string): Promise<USBReadFi
 
 export async function fetchUSBDiskUsage(uuid: string): Promise<{ uuid: string, usage: USBDiskUsage }> {
   return request<{ uuid: string, usage: USBDiskUsage }>(`/api/usb/devices/${encodeURIComponent(uuid)}/disk-usage`)
+}
+
+export async function copyUSBFileToWorkspace(
+  uuid: string,
+  path: string,
+  sessionId: string,
+  targetPath?: string,
+): Promise<USBCopyToWorkspaceResponse> {
+  return request<USBCopyToWorkspaceResponse>(`/api/usb/devices/${encodeURIComponent(uuid)}/copy-to-workspace`, {
+    method: 'POST',
+    body: JSON.stringify({
+      path,
+      session_id: sessionId,
+      ...(targetPath ? { target_path: targetPath } : {}),
+    }),
+  })
 }
 
 export async function fetchUSBFileBlob(uuid: string, path: string): Promise<Blob> {

@@ -132,6 +132,19 @@ export class UpdateTaskStore {
     return clearedTask
   }
 
+  clearStaleFinishedTask(): UpdateTaskRecord | null {
+    if (this.currentTask || !this.lastTask?.finishedAt) {
+      return null
+    }
+
+    const clearedTask = this.getLastTask()
+    this.lastTask = null
+    if (existsSync(this.stateFilePath)) {
+      unlinkSync(this.stateFilePath)
+    }
+    return clearedTask
+  }
+
   createTask(strategy: UpdateStrategy, initialMessage: string): UpdateTaskRecord {
     const task: UpdateTaskRecord = {
       id: `update-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,

@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import {
   checkHealth,
+  clearStaleUpdateStatus as clearStaleUpdateStatusRequest,
   fetchAvailableModels,
   fetchUpdateStatus,
   addCustomModel as persistCustomModel,
@@ -168,6 +169,19 @@ export const useAppStore = defineStore('app', () => {
       updateTaskMessage.value = 'Update request failed'
       updateTaskError.value = err instanceof Error ? err.message : String(err)
       updating.value = false
+      return false
+    }
+  }
+
+  async function clearStaleUpdateStatus(): Promise<boolean> {
+    try {
+      await clearStaleUpdateStatusRequest()
+      updating.value = false
+      resetUpdateTaskState()
+      await checkUpdateStatus()
+      return true
+    } catch (err) {
+      console.error('Failed to clear stale update status:', err)
       return false
     }
   }
@@ -476,6 +490,7 @@ export const useAppStore = defineStore('app', () => {
     updateTaskWarning,
     updateTaskError,
     doUpdate,
+    clearStaleUpdateStatus,
     reloadClient,
     modelGroups,
     profileModelGroups,

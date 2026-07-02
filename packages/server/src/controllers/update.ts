@@ -1223,7 +1223,8 @@ export async function clearStaleUpdateStatus(ctx: any) {
     return
   }
 
-  const clearedTask = updateTaskStore.clearRecoveredInterruptedTask()
+  const clearedInterruptedTask = updateTaskStore.clearRecoveredInterruptedTask()
+  const clearedTask = clearedInterruptedTask || updateTaskStore.clearStaleFinishedTask()
   if (!clearedTask) {
     ctx.status = 409
     ctx.body = {
@@ -1238,7 +1239,9 @@ export async function clearStaleUpdateStatus(ctx: any) {
   ctx.body = {
     success: true,
     clearedTaskId: clearedTask.id,
-    message: 'Recovered interrupted update task state was cleared.',
+    message: clearedInterruptedTask
+      ? 'Recovered interrupted update task state was cleared.'
+      : 'Finished update task state was cleared.',
     ...updateTaskStore.getStatus(),
   }
 }
@@ -1334,6 +1337,10 @@ export async function handleUpdate(ctx: any) {
         healthcheckUrl: manifest.healthcheckUrl || config.update.healthcheckUrl,
       })
       observeDetachedUpdateProcess(updateChild, 'managed device package update service', {
+        onSuccess: () => {
+          managedUpdateTaskId = ''
+          updateTaskStore.completeCurrentTask('succeeded', `Updated Hermes Web UI to ${manifest.version}.`)
+        },
         onFailure: message => failCurrentUpdateTask(`Failed to start device package update ${manifest.version}.`, message),
       })
       ctx.body = managedUpdateAcceptedResponse(`Starting device package update ${manifest.version}.`)
@@ -1360,6 +1367,10 @@ export async function handleUpdate(ctx: any) {
         throw err
       }
       observeDetachedUpdateProcess(updateChild, 'managed source deployment update service', {
+        onSuccess: () => {
+          managedUpdateTaskId = ''
+          updateTaskStore.completeCurrentTask('succeeded', `Updated Hermes Web UI to ${version}.`)
+        },
         onFailure: message => failCurrentUpdateTask(`Failed to start source deployment update ${version}.`, message),
       })
       ctx.body = managedUpdateAcceptedResponse(`Starting source deployment update ${version}.`)

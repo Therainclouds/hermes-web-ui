@@ -1,8 +1,8 @@
 import { EventEmitter } from 'events'
 import { existsSync } from 'fs'
-import { readdir, readFile, stat, statfs } from 'fs/promises'
+import { copyFile, mkdir, readdir, readFile, stat, statfs } from 'fs/promises'
 import { spawn, type ChildProcessByStdio } from 'child_process'
-import { basename, normalize, resolve } from 'path'
+import { basename, dirname, normalize, resolve } from 'path'
 import { createInterface } from 'readline'
 import type { Readable } from 'stream'
 import { config, getDeployDir } from '../../config'
@@ -221,6 +221,41 @@ export class USBService extends EventEmitter {
     }
   }
 
+  async copyFileToWorkspace(
+    uuid: string,
+    relativePath: string,
+    workspace: string,
+    destinationRelativePath?: string,
+  ): Promise<{ workspacePath: string, relativeWorkspacePath: string, size: number }> {
+    const { resolvedPath, mountPoint } = this.resolveDevicePath(uuid, relativePath)
+    const fileStat = await stat(resolvedPath)
+    if (!fileStat.isFile()) {
+      throw makeError('not_found', 'Not a file')
+    }
+
+    const workspaceRoot = resolve(String(workspace || '').trim())
+    if (!workspaceRoot) {
+      throw makeError('invalid_workspace', 'Workspace path is required')
+    }
+
+    const defaultRelativePath = ['usb-imports', uuid, toResponsePath(resolvedPath, mountPoint).replace(/^\/+/, '')]
+      .filter(Boolean)
+      .join('/')
+    const targetRelativePath = this.normalizeWorkspaceRelativePath(destinationRelativePath, defaultRelativePath)
+    const targetAbsolutePath = resolve(workspaceRoot, ...targetRelativePath.split('/'))
+    if (targetAbsolutePath !== workspaceRoot && !isPathWithin(targetAbsolutePath, workspaceRoot)) {
+      throw makeError('invalid_path', 'Invalid workspace destination path')
+    }
+
+    await mkdir(dirname(targetAbsolutePath), { recursive: true })
+    await copyFile(resolvedPath, targetAbsolutePath)
+    return {
+      workspacePath: targetAbsolutePath,
+      relativeWorkspacePath: targetRelativePath,
+      size: fileStat.size,
+    }
+  }
+
   ingestMonitorMessage(message: USBMonitorMessage): void {
     if (message.type === 'ready') {
       this.runtimeStatus.state = 'running'
@@ -385,5 +420,17 @@ export class USBService extends EventEmitter {
       throw makeError('invalid_path', 'Path traversal detected')
     }
     return { resolvedPath: targetPath, mountPoint: device.mountPoint }
+  }
+
+  private normalizeWorkspaceRelativePath(inputPath: string | undefined, fallbackPath: string): string {
+    const rawPath = String(inputPath || fallbackPath || '').replace(/\\/g, '/').trim()
+    const normalizedPath = rawPath.replace(/^\/+/, '')
+    if (!normalizedPath) {
+      throw makeError('invalid_path', 'Invalid workspace destination path')
+    }
+    if (normalizedPath.split('/').some(segment => segment === '..')) {
+      throw makeError('invalid_path', 'Invalid workspace destination path')
+    }
+    return normalizedPath
   }
 }

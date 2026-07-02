@@ -548,7 +548,83 @@ describe('update controller', () => {
     })
   })
 
-  it('keeps the source deployment task running when the detached runner exits with SIGINT', async () => {
+  it('marks the device package task succeeded when the detached runner exits with SIGINT', async () => {
+    process.env.WEBUI_UPDATE_STRATEGY = 'device-package'
+    process.env.WEBUI_UPDATE_MANIFEST_URL = 'https://updates.example.com/stable/manifest.json'
+    process.env.WEBUI_UPDATE_INSTALLER_SCRIPT = '/opt/hermes-web-ui/scripts/install-device-package.sh'
+    process.env.WEBUI_UPDATE_PACKAGE_TYPE = 'device-package'
+    process.env.WEBUI_UPDATE_CHANNEL = 'stable'
+    const handlers = new Map<string, (...args: any[]) => void>()
+    const fsMocks = createStatefulFsMocks()
+    const unref = vi.fn()
+    const updateChild = {
+      unref,
+      on: vi.fn((event: string, handler: (...args: any[]) => void) => {
+        handlers.set(event, handler)
+        return updateChild
+      }),
+    }
+    const spawn = vi.fn(() => updateChild)
+    const packageBuffer = Buffer.from('device package archive bytes')
+    const sha256 = createHash('sha256').update(packageBuffer).digest('hex')
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        url: 'https://updates.example.com/stable/manifest.json',
+        arrayBuffer: async () => Buffer.from(JSON.stringify({
+          version: PUBLISHED_VERSION,
+          channel: 'stable',
+          sourceLabel: 'Device Manifest',
+          packageType: 'device-package',
+          artifactFormat: 'tar.gz',
+          packageUrl: 'https://updates.example.com/releases/v0.6.13/hermes-web-ui-device-v0.6.13.tar.gz',
+          sha256,
+          releasedAt: '2026-06-09T00:00:00Z',
+          compatibleNodeRange: `>=${process.versions.node}`,
+          minCurrentVersion: '0.6.10',
+        })),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        url: 'https://updates.example.com/releases/v0.6.13/hermes-web-ui-device-v0.6.13.tar.gz',
+        arrayBuffer: async () => packageBuffer,
+      }))
+    const readFileSync = vi.fn((filePath: string) => {
+      if (String(filePath).endsWith('update-task-state.json')) {
+        return fsMocks.readFileSync!(filePath)
+      }
+      if (String(filePath).endsWith('.tar.gz')) return packageBuffer
+      return JSON.stringify({
+        name: 'hermes-web-ui',
+        version: '0.6.10',
+        repository: { url: 'https://github.com/EKKOLearnAI/hermes-web-ui.git' },
+      })
+    })
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const { handleUpdate, updateStatus } = await loadUpdateController({ ...fsMocks, spawn, unref, readFileSync })
+    const ctx = createMockCtx()
+    const statusCtx = createMockCtx()
+
+    await handleUpdate(ctx)
+    handlers.get('exit')?.(null, 'SIGINT')
+    await updateStatus(statusCtx)
+
+    expect(statusCtx.body).toEqual({
+      currentTask: null,
+      lastTask: expect.objectContaining({
+        strategy: 'device-package',
+        status: 'succeeded',
+        stage: 'succeeded',
+        message: `Updated Hermes Web UI to ${PUBLISHED_VERSION}.`,
+      }),
+    })
+    expect(errorSpy).not.toHaveBeenCalled()
+    errorSpy.mockRestore()
+  })
+
+  it('marks the source deployment task succeeded when the detached runner exits with SIGINT', async () => {
     process.env.WEBUI_UPDATE_STRATEGY = 'source-deploy'
     process.env.WEBUI_UPDATE_SCRIPT = UPDATE_SCRIPT
     const handlers = new Map<string, (...args: any[]) => void>()
@@ -577,12 +653,13 @@ describe('update controller', () => {
       stage: 'starting',
     }))
     expect(statusCtx.body).toEqual({
-      currentTask: expect.objectContaining({
+      currentTask: null,
+      lastTask: expect.objectContaining({
         strategy: 'source-deploy',
-        status: 'running',
-        stage: 'starting',
+        status: 'succeeded',
+        stage: 'succeeded',
+        message: `Updated Hermes Web UI to ${PUBLISHED_VERSION}.`,
       }),
-      lastTask: null,
     })
     expect(errorSpy).not.toHaveBeenCalled()
     errorSpy.mockRestore()
@@ -813,6 +890,45 @@ describe('update controller', () => {
       lastTask: null,
     })
     warnSpy.mockRestore()
+  })
+
+  it('clears a stale finished failed update through the safe endpoint', async () => {
+    const fsMocks = createStatefulFsMocks({
+      currentTask: null,
+      lastTask: {
+        id: 'update-failed',
+        strategy: 'source-deploy',
+        status: 'failed',
+        stage: 'failed',
+        message: 'Failed to start source deployment update 0.6.29.',
+        targetVersion: '0.6.29',
+        warning: '',
+        error: 'managed source deployment update service exited before replacing server: code=null signal=SIGINT',
+        logPath: '',
+        rollbackMessage: '',
+        healthcheckUrl: '',
+        startedAt: '2026-07-01T00:00:00.000Z',
+        finishedAt: '2026-07-01T00:10:00.000Z',
+      },
+    })
+    const { clearStaleUpdateStatus, updateStatus } = await loadUpdateController(fsMocks)
+    const clearCtx = createMockCtx()
+    const statusCtx = createMockCtx()
+
+    await clearStaleUpdateStatus(clearCtx)
+    await updateStatus(statusCtx)
+
+    expect(clearCtx.body).toEqual({
+      success: true,
+      clearedTaskId: 'update-failed',
+      message: 'Finished update task state was cleared.',
+      currentTask: null,
+      lastTask: null,
+    })
+    expect(statusCtx.body).toEqual({
+      currentTask: null,
+      lastTask: null,
+    })
   })
 
   it('does not log a restart error when the restart helper exits successfully', async () => {

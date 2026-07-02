@@ -2,21 +2,38 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { NButton, NCard, NEmpty, NSpin, NTag, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import { fetchUSBDevices, fetchUSBHistory } from '@/api/hermes/usb'
+import { copyUSBFileToWorkspace, fetchUSBDevices, fetchUSBHistory } from '@/api/hermes/usb'
 import USBEventHistory from '@/components/hermes/usb/USBEventHistory.vue'
 import USBFileBrowser from '@/components/hermes/usb/USBFileBrowser.vue'
 import { useUSBStream } from '@/composables/useUSBStream'
+import { useChatStore } from '@/stores/hermes/chat'
 
 const { t } = useI18n()
 const message = useMessage()
 const usbStore = useUSBStream()
+const chatStore = useChatStore()
 
 const refreshing = ref(false)
 const selectedUuid = ref('')
+const agentReadBusy = ref(false)
+const agentStatusTone = ref<'info' | 'success' | 'error'>('info')
+const agentStatusMessage = ref('')
 
 const devices = computed(() => usbStore.devices)
 const selectedDevice = computed(() => devices.value.find(device => device.uuid === selectedUuid.value) || devices.value[0] || null)
 const runtimeState = computed(() => usbStore.runtime?.state || 'idle')
+const activeChatSession = computed(() => chatStore.activeSession)
+const activeChatSessionName = computed(() => activeChatSession.value?.title?.trim() || activeChatSession.value?.id || '')
+const canUseActiveChatSession = computed(() => {
+  const session = activeChatSession.value
+  if (!session) return false
+  return session.source !== 'coding_agent' && session.source !== 'global_agent' && session.source !== 'workflow'
+})
+const agentReadHint = computed(() => {
+  if (!activeChatSession.value) return t('usb.page.agent.noActiveSession')
+  if (!canUseActiveChatSession.value) return t('usb.page.agent.unsupportedSession')
+  return t('usb.page.agent.usingSession', { session: activeChatSessionName.value })
+})
 
 function runtimeTagType() {
   if (runtimeState.value === 'running') return 'success'
@@ -67,6 +84,45 @@ async function refreshSnapshot() {
   }
 }
 
+function setAgentStatus(tone: 'info' | 'success' | 'error', text: string) {
+  agentStatusTone.value = tone
+  agentStatusMessage.value = text
+}
+
+async function handleReadWithAgent(payload: { path: string, name: string }) {
+  const session = activeChatSession.value
+  const device = selectedDevice.value
+  if (!device || !session || !canUseActiveChatSession.value) {
+    const fallback = !session
+      ? t('usb.page.agent.noActiveSession')
+      : t('usb.page.agent.unsupportedSession')
+    setAgentStatus('error', fallback)
+    message.error(fallback)
+    return
+  }
+
+  agentReadBusy.value = true
+  try {
+    setAgentStatus('info', t('usb.page.agent.copying'))
+    const copied = await copyUSBFileToWorkspace(device.uuid, payload.path, session.id)
+    if (activeChatSession.value?.id === session.id) {
+      activeChatSession.value.workspace = copied.workspace
+    }
+    setAgentStatus('info', t('usb.page.agent.starting'))
+    const promptPath = copied.relativeWorkspacePath.replace(/\\/g, '/')
+    await chatStore.sendMessage(t('usb.page.agent.readPrompt', { path: promptPath }))
+    const successText = t('usb.page.agent.started', { session: activeChatSessionName.value })
+    setAgentStatus('success', successText)
+    message.success(successText)
+  } catch (error: any) {
+    const failureText = error?.message || t('usb.page.agent.failed')
+    setAgentStatus('error', failureText)
+    message.error(failureText)
+  } finally {
+    agentReadBusy.value = false
+  }
+}
+
 watch(
   devices,
   (nextDevices) => {
@@ -92,6 +148,7 @@ onMounted(() => {
       <div>
         <h2 class="page-title">{{ t('usb.page.title') }}</h2>
         <p class="page-subtitle">{{ t('usb.page.subtitle') }}</p>
+        <p class="page-session">{{ agentReadHint }}</p>
       </div>
 
       <div class="page-actions">
@@ -107,6 +164,10 @@ onMounted(() => {
     </header>
 
     <NSpin :show="refreshing && devices.length === 0" class="usb-spin">
+      <div v-if="agentStatusMessage" class="agent-status" :class="`is-${agentStatusTone}`">
+        {{ agentStatusMessage }}
+      </div>
+
       <div v-if="devices.length === 0" class="page-empty">
         <NEmpty :description="t('usb.page.empty')">
           <template #extra>
@@ -146,7 +207,13 @@ onMounted(() => {
 
         <div class="page-content">
           <div class="browser-column">
-            <USBFileBrowser :device="selectedDevice" />
+            <USBFileBrowser
+              :device="selectedDevice"
+              :agent-read-enabled="canUseActiveChatSession"
+              :agent-read-busy="agentReadBusy"
+              :agent-read-hint="agentReadHint"
+              @read-with-agent="handleReadWithAgent"
+            />
           </div>
 
           <div class="side-column">
@@ -209,6 +276,12 @@ onMounted(() => {
   color: $text-muted;
 }
 
+.page-session {
+  margin: 8px 0 0;
+  color: $text-muted;
+  font-size: 13px;
+}
+
 .page-actions {
   display: flex;
   align-items: center;
@@ -227,6 +300,29 @@ onMounted(() => {
   align-items: center;
   justify-content: center;
   min-height: 420px;
+}
+
+.agent-status {
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 13px;
+  border: 1px solid $border-color;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.agent-status.is-info {
+  border-color: rgba(24, 160, 88, 0.25);
+  color: $text-primary;
+}
+
+.agent-status.is-success {
+  border-color: rgba(24, 160, 88, 0.35);
+  color: $success;
+}
+
+.agent-status.is-error {
+  border-color: rgba(208, 48, 80, 0.35);
+  color: $error;
 }
 
 .device-grid {

@@ -78,6 +78,13 @@ export interface TriggerUpdateResponse {
   warning?: string
 }
 
+export interface ClearStaleUpdateStatusResponse extends UpdateStatusResponse {
+  success: boolean
+  message: string
+  clearedTaskId?: string
+  code?: string
+}
+
 export interface PreviewTag {
   name: string
   sha: string
@@ -198,6 +205,12 @@ export async function triggerUpdate(): Promise<TriggerUpdateResponse> {
 
 export async function fetchUpdateStatus(): Promise<UpdateStatusResponse> {
   return request<UpdateStatusResponse>('/api/hermes/update/status')
+}
+
+export async function clearStaleUpdateStatus(): Promise<ClearStaleUpdateStatusResponse> {
+  return request<ClearStaleUpdateStatusResponse>('/api/hermes/update/status/clear-stale', {
+    method: 'POST',
+  })
 }
 
 export async function fetchPreviewStatus(): Promise<PreviewStatus> {

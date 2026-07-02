@@ -17,6 +17,13 @@ import { copyToClipboard } from '@/utils/clipboard'
 
 const props = defineProps<{
   device: USBDeviceRecord | null
+  agentReadEnabled?: boolean
+  agentReadBusy?: boolean
+  agentReadHint?: string
+}>()
+
+const emit = defineEmits<{
+  readWithAgent: [{ path: string, name: string }]
 }>()
 
 const { t } = useI18n()
@@ -187,6 +194,14 @@ async function handleDownload() {
   }
 }
 
+function handleReadWithAgent() {
+  if (!selectedStat.value || selectedStat.value.isDir) return
+  emit('readWithAgent', {
+    path: selectedStat.value.path,
+    name: selectedStat.value.name,
+  })
+}
+
 watch(
   () => props.device?.uuid,
   (uuid) => {
@@ -219,6 +234,14 @@ onBeforeUnmount(() => {
         </NButton>
         <NButton size="small" :disabled="!device" @click="copyCurrentPath">
           {{ t('usb.page.copyPath') }}
+        </NButton>
+        <NButton
+          size="small"
+          :disabled="!selectedStat || selectedStat.isDir || !agentReadEnabled || agentReadBusy"
+          :title="agentReadHint"
+          @click="handleReadWithAgent"
+        >
+          {{ t('usb.page.readWithAgent') }}
         </NButton>
         <NButton size="small" type="primary" :disabled="!selectedStat || selectedStat.isDir" @click="handleDownload">
           {{ t('usb.page.download') }}

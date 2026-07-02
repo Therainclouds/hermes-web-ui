@@ -106,6 +106,10 @@ async function handleUpdateClick() {
 async function handleReloadClick() {
   appStore.reloadClient();
 }
+
+async function handleClearStaleUpdateClick() {
+  await appStore.clearStaleUpdateStatus();
+}
 </script>
 
 <template>
@@ -403,6 +407,9 @@ async function handleReloadClick() {
       </div>
       <div v-else-if="appStore.updateTaskStatus === 'failed'" class="sidebar-update-action sidebar-update-progress sidebar-update-error">
         <span class="sidebar-update-label">{{ t('sidebar.updateFailedWithReason', { reason: updateErrorText }) }}</span>
+        <button class="sidebar-update-clear-btn" @click="handleClearStaleUpdateClick">
+          {{ t('sidebar.updateClearStale') }}
+        </button>
       </div>
       <div v-if="appStore.updateSourceLabel" class="update-source">
         {{
@@ -463,6 +470,29 @@ async function handleReloadClick() {
   padding: 8px 12px 20px;
   flex-shrink: 0;
   transition: width $transition-normal;
+}
+
+.sidebar-update-action {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sidebar-update-btn,
+.sidebar-update-clear-btn {
+  width: 100%;
+  border: 1px solid var(--n-border-color, rgba(255, 255, 255, 0.12));
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  border-radius: 10px;
+  padding: 8px 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sidebar-update-clear-btn {
+  text-align: center;
+  font-size: 12px;
 }
 
 .sidebar-nav {

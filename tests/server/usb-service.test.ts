@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { resolve } from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -102,6 +102,46 @@ describe('usb service', () => {
 
     expect(service.listDevices()).toHaveLength(0)
     expect(service.listHistory('24h')).toHaveLength(2)
+    await service.stop()
+  })
+
+  it('copies a USB file into the workspace while keeping the target inside workspace root', async () => {
+    const mountPoint = resolve(tempRoot, 'mnt', 'usb', '1234-ABCD')
+    const workspace = resolve(tempRoot, 'workspace')
+    mkdirSync(resolve(mountPoint, 'docs'), { recursive: true })
+    mkdirSync(workspace, { recursive: true })
+    writeFileSync(resolve(mountPoint, 'docs', 'nested.txt'), 'nested usb', 'utf-8')
+
+    const { USBService } = await import('../../packages/server/src/services/usb/USBService')
+    const service = new USBService({
+      platform: 'linux',
+      deployDir: tempRoot,
+      appHome: tempRoot,
+      env: { USB_MONITOR_DISABLED: '1' },
+      cleanupIntervalMs: 60_000,
+    })
+
+    service.ingestMonitorMessage({
+      type: 'device_event',
+      action: 'add',
+      uuid: '1234-ABCD',
+      device_node: '/dev/sdb1',
+      mount_point: mountPoint,
+      fs_type: 'vfat',
+      label: 'KINGSTON',
+      status: 'mounted',
+      ts: new Date('2026-07-01T10:00:00.000Z').toISOString(),
+    })
+
+    const copied = await service.copyFileToWorkspace('1234-ABCD', '/docs/nested.txt', workspace)
+    expect(copied.relativeWorkspacePath).toBe('usb-imports/1234-ABCD/docs/nested.txt')
+    expect(copied.workspacePath).toBe(resolve(workspace, 'usb-imports', '1234-ABCD', 'docs', 'nested.txt'))
+    expect(copied.size).toBe(10)
+    expect(readFileSync(copied.workspacePath, 'utf-8')).toBe('nested usb')
+    await expect(service.copyFileToWorkspace('1234-ABCD', '/docs/nested.txt', workspace, '../escape.txt')).rejects.toMatchObject({
+      code: 'invalid_path',
+    })
+
     await service.stop()
   })
 })
