@@ -1,11 +1,7 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref } from 'vue'
 import yaml from 'js-yaml'
-import {
-  NAlert, NButton, NEmpty, NInput, NModal,
-  NSpin, NRadioGroup, NRadioButton, useMessage,
-  NCheckbox, NScrollbar,
-} from 'naive-ui'
+import { NAlert, NButton, NEmpty, NInput, NModal, NSpin, NRadioGroup, NRadioButton, NCheckbox, NScrollbar } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import McpServerCard from '@/components/hermes/mcp/McpServerCard.vue'
 import {
@@ -13,6 +9,7 @@ import {
   mcpServerUpdate, mcpServerTest, mcpReload,
   type McpServerInfo, type McpServerConfig,
 } from '@/api/hermes/mcp'
+import { useMessage } from '@/composables/useAppMessage'
 
 const { t } = useI18n()
 const message = useMessage()

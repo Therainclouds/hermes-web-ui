@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { NInput, NButton, NSpin, NEmpty, useMessage } from 'naive-ui'
+import { NInput, NButton, NSpin, NEmpty } from 'naive-ui'
 import { useModelsStore } from '@/stores/hermes/models'
 import { updateProvider } from '@/api/hermes/system'
 import { useI18n } from 'vue-i18n'
+import { useMessage } from '@/composables/useAppMessage'
 
 const { t } = useI18n()
 const modelsStore = useModelsStore()

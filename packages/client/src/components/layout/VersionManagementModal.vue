@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { NAlert, NButton, NDrawer, NDrawerContent, NPopconfirm, NProgress, NSpin, NTag, useMessage } from 'naive-ui'
+import { NAlert, NButton, NDrawer, NDrawerContent, NPopconfirm, NProgress, NSpin, NTag } from 'naive-ui'
 import {
   activateRuntimeVersion,
   activateWebUiVersion,
@@ -19,6 +19,7 @@ import {
   type VersionDownloadKind,
   type VersionDownloadSource,
 } from '@/api/hermes/runtime-versions'
+import { useMessage } from '@/composables/useAppMessage'
 
 const props = defineProps<{ show: boolean }>()
 const emit = defineEmits<{ (event: 'update:show', value: boolean): void }>()

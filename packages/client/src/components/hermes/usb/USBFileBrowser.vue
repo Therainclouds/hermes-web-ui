@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { NBreadcrumb, NBreadcrumbItem, NButton, NEmpty, NProgress, NSpin, useMessage } from 'naive-ui'
+import { NBreadcrumb, NBreadcrumbItem, NButton, NEmpty, NProgress, NSpin } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import {
   downloadUSBFile,
@@ -14,6 +14,7 @@ import {
 } from '@/api/hermes/usb'
 import type { USBDeviceRecord } from '@/api/hermes/usb-socket'
 import { copyToClipboard } from '@/utils/clipboard'
+import { useMessage } from '@/composables/useAppMessage'
 
 const props = defineProps<{
   device: USBDeviceRecord | null
@@ -224,19 +225,21 @@ onBeforeUnmount(() => {
   <section class="usb-browser">
     <div class="browser-header">
       <div class="browser-heading">
+        <div class="browser-kicker">Workspace</div>
         <h3>{{ t('usb.page.browser.title') }}</h3>
         <span v-if="device" class="browser-path">{{ selectedAbsolutePath || device.mountPoint }}</span>
       </div>
 
       <div class="browser-actions">
-        <NButton size="small" :disabled="!device" @click="refreshCurrent">
+        <NButton size="small" ghost :disabled="!device" @click="refreshCurrent">
           {{ t('usb.page.refresh') }}
         </NButton>
-        <NButton size="small" :disabled="!device" @click="copyCurrentPath">
+        <NButton size="small" ghost :disabled="!device" @click="copyCurrentPath">
           {{ t('usb.page.copyPath') }}
         </NButton>
         <NButton
           size="small"
+          ghost
           :disabled="!selectedStat || selectedStat.isDir || !agentReadEnabled || agentReadBusy"
           :title="agentReadHint"
           @click="handleReadWithAgent"
@@ -256,9 +259,9 @@ onBeforeUnmount(() => {
     <template v-else>
       <div class="usage-card">
         <div class="usage-top">
-          <span>{{ t('usb.page.capacity') }}</span>
-          <span v-if="usageLoading">{{ t('usb.page.loading') }}</span>
-          <span v-else>{{ formatBytes(usage?.usedBytes) }} / {{ formatBytes(usage?.totalBytes) }}</span>
+          <span class="usage-label">{{ t('usb.page.capacity') }}</span>
+          <span class="usage-value" v-if="usageLoading">{{ t('usb.page.loading') }}</span>
+          <span class="usage-value" v-else>{{ formatBytes(usage?.usedBytes) }} / {{ formatBytes(usage?.totalBytes) }}</span>
         </div>
         <NProgress type="line" :percentage="usagePercent" :show-indicator="false" />
       </div>
@@ -278,6 +281,13 @@ onBeforeUnmount(() => {
 
       <div class="browser-content">
         <div class="entry-panel">
+          <div class="panel-head">
+            <div>
+              <span class="panel-kicker">Explorer</span>
+              <strong>{{ t('usb.page.browser.title') }}</strong>
+            </div>
+            <span class="panel-meta">{{ entries.length }}</span>
+          </div>
           <NSpin :show="loading">
             <div v-if="errorMessage" class="panel-empty">
               <NEmpty :description="errorMessage" />
@@ -295,8 +305,11 @@ onBeforeUnmount(() => {
                 @click="openEntry(entry)"
               >
                 <div class="entry-main">
-                  <span class="entry-name">{{ entry.name }}</span>
-                  <span class="entry-meta">{{ entry.isDir ? t('usb.page.browser.folder') : formatBytes(entry.size) }}</span>
+                  <div class="entry-copy">
+                    <span class="entry-name">{{ entry.name }}</span>
+                    <span class="entry-meta">{{ entry.isDir ? t('usb.page.browser.folder') : formatBytes(entry.size) }}</span>
+                  </div>
+                  <span class="entry-badge">{{ entry.isDir ? t('usb.page.browser.folder') : t('usb.page.browser.file') }}</span>
                 </div>
                 <span class="entry-time">{{ formatTime(entry.modTime) }}</span>
               </button>
@@ -305,6 +318,13 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="preview-panel">
+          <div class="panel-head">
+            <div>
+              <span class="panel-kicker">Preview</span>
+              <strong>{{ selectedFileName || t('usb.page.browser.selectFile') }}</strong>
+            </div>
+            <span class="panel-meta">{{ selectedStat?.isDir ? t('usb.page.browser.folder') : t('usb.page.browser.file') }}</span>
+          </div>
           <NSpin :show="previewLoading">
             <div v-if="!selectedEntry" class="panel-empty">
               <NEmpty :description="t('usb.page.browser.selectFile')" />
@@ -355,7 +375,8 @@ onBeforeUnmount(() => {
 }
 
 .browser-header,
-.usage-top {
+.usage-top,
+.panel-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -366,12 +387,21 @@ onBeforeUnmount(() => {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
+}
+
+.browser-kicker,
+.panel-kicker {
+  color: rgba(151, 216, 255, 0.78);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
 }
 
 .browser-heading h3 {
   margin: 0;
-  font-size: 16px;
+  font-size: 18px;
+  letter-spacing: -0.01em;
 }
 
 .browser-actions {
@@ -381,7 +411,7 @@ onBeforeUnmount(() => {
 }
 
 .browser-path {
-  color: $text-muted;
+  color: rgba(205, 217, 229, 0.6);
   font-size: 12px;
   word-break: break-all;
 }
@@ -389,11 +419,23 @@ onBeforeUnmount(() => {
 .usage-card {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px;
-  border: 1px solid $border-color;
-  border-radius: 12px;
-  background: $bg-card;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid rgba(157, 204, 255, 0.1);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(11, 18, 27, 0.82), rgba(8, 13, 20, 0.86));
+}
+
+.usage-label {
+  color: rgba(202, 214, 226, 0.52);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.usage-value {
+  color: #eff6fd;
+  font-size: 13px;
 }
 
 .browser-content {
@@ -405,11 +447,32 @@ onBeforeUnmount(() => {
 
 .entry-panel,
 .preview-panel {
-  border: 1px solid $border-color;
-  border-radius: 12px;
-  background: $bg-card;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(157, 204, 255, 0.1);
+  border-radius: 20px;
+  background: linear-gradient(180deg, rgba(9, 14, 21, 0.88), rgba(8, 12, 18, 0.95));
   min-height: 0;
   overflow: hidden;
+}
+
+.panel-head {
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(157, 204, 255, 0.08);
+}
+
+.panel-head strong {
+  display: block;
+  color: #edf4fb;
+  font-size: 14px;
+  word-break: break-word;
+}
+
+.panel-meta {
+  color: rgba(202, 214, 226, 0.48);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .entry-list {
@@ -420,16 +483,21 @@ onBeforeUnmount(() => {
 .entry-item {
   width: 100%;
   border: none;
-  border-bottom: 1px solid $border-color;
+  border-bottom: 1px solid rgba(157, 204, 255, 0.08);
   background: transparent;
   color: inherit;
   padding: 12px 14px;
   text-align: left;
   cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+
+.entry-item:hover {
+  background: rgba(120, 194, 255, 0.05);
 }
 
 .entry-item.active {
-  background: rgba(24, 160, 88, 0.08);
+  background: rgba(120, 194, 255, 0.08);
 }
 
 .entry-main {
@@ -439,16 +507,34 @@ onBeforeUnmount(() => {
   gap: 12px;
 }
 
+.entry-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .entry-name {
   font-weight: 600;
+  color: #eff5fc;
   word-break: break-word;
+}
+
+.entry-badge {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(120, 194, 255, 0.08);
+  border: 1px solid rgba(120, 194, 255, 0.12);
+  color: rgba(213, 232, 249, 0.76);
+  font-size: 11px;
 }
 
 .entry-meta,
 .entry-time,
 .stat-label,
 .preview-placeholder {
-  color: $text-muted;
+  color: rgba(205, 217, 229, 0.56);
   font-size: 12px;
 }
 
@@ -457,6 +543,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 16px;
   padding: 16px;
+  min-height: 100%;
 }
 
 .stat-grid {
@@ -468,16 +555,28 @@ onBeforeUnmount(() => {
 .stat-grid > div {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(157, 204, 255, 0.08);
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.stat-grid strong {
+  color: #eef5fc;
+  font-size: 13px;
+  word-break: break-word;
 }
 
 .text-preview {
   margin: 0;
   max-height: 420px;
   overflow: auto;
-  padding: 12px;
-  border-radius: 10px;
-  background: $code-bg;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(157, 204, 255, 0.08);
+  background: rgba(6, 10, 16, 0.92);
+  color: #d9e5f2;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -486,8 +585,9 @@ onBeforeUnmount(() => {
   display: flex;
   justify-content: center;
   padding: 12px;
-  border: 1px dashed $border-color;
-  border-radius: 10px;
+  border: 1px dashed rgba(157, 204, 255, 0.18);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.012);
 }
 
 .image-preview img {
@@ -513,7 +613,8 @@ onBeforeUnmount(() => {
   }
 
   .browser-header,
-  .usage-top {
+  .usage-top,
+  .panel-head {
     flex-direction: column;
     align-items: flex-start;
   }

@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, watch } from 'vue'
-import { NButton, NDropdown, NInput, NModal, NSpace, NSpin, useDialog, useMessage } from 'naive-ui'
+import { NButton, NDropdown, NInput, NModal, NSpace, NSpin, useDialog } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { request } from '@/api/client'
 import { copyToClipboard } from '@/utils/clipboard'
+import { useMessage } from '@/composables/useAppMessage'
 
 interface FolderEntry {
   name: string

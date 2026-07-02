@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { NButton, NSelect, NSpin, NCollapse, NCollapseItem, NModal, NInput, useMessage } from 'naive-ui'
+import { NButton, NSelect, NSpin, NCollapse, NCollapseItem, NModal, NInput } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import KanbanTaskCard from '@/components/hermes/kanban/KanbanTaskCard.vue'
@@ -11,6 +11,7 @@ import { useProfilesStore } from '@/stores/hermes/profiles'
 import { withDefaultAssignee } from '@/utils/hermes/kanban-assignees'
 import type { KanbanTaskStatus } from '@/api/hermes/kanban'
 import type { ProfileAvatar } from '@/api/hermes/profiles'
+import { useMessage } from '@/composables/useAppMessage'
 
 const { t } = useI18n()
 const route = useRoute()

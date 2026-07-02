@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { NButton, NInput, NInputNumber, NModal, NSelect, NSpin, useMessage } from 'naive-ui'
+import { NButton, NInput, NInputNumber, NModal, NSelect, NSpin } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { fetchAuxiliaryModels, saveAuxiliaryModels, type AuxiliaryModelSettings, type AuxiliaryModelTask, type AuxiliaryModelsConfig } from '@/api/hermes/config'
 import { useModelsStore } from '@/stores/hermes/models'
 import { useProfilesStore } from '@/stores/hermes/profiles'
+import { useMessage } from '@/composables/useAppMessage'
 
 const { t } = useI18n()
 const message = useMessage()

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { NModal, NButton, NInput, useMessage } from 'naive-ui'
+import { NModal, NButton, NInput } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { fetchExternalDirs, saveExternalDirs, type ExternalDirEntry } from '@/api/hermes/skills'
+import { useMessage } from '@/composables/useAppMessage'
 
 const emit = defineEmits<{
   close: []

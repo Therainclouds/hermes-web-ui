@@ -41,7 +41,10 @@ function formatTime(ts: number): string {
 <template>
   <section class="usb-history">
     <div class="section-header">
-      <h3>{{ t('usb.page.history.title') }}</h3>
+      <div class="section-title-wrap">
+        <span class="section-kicker">Activity</span>
+        <h3>{{ t('usb.page.history.title') }}</h3>
+      </div>
       <span class="section-meta">{{ t('usb.page.history.count', { count: recentEvents.length }) }}</span>
     </div>
 
@@ -51,6 +54,7 @@ function formatTime(ts: number): string {
 
     <div v-else class="history-list">
       <article v-for="event in recentEvents" :key="event.id" class="history-item">
+        <div class="history-line"></div>
         <div class="history-main">
           <div class="history-top">
             <NTag size="small" :type="eventType(event)">
@@ -64,7 +68,7 @@ function formatTime(ts: number): string {
           <div v-if="event.error" class="history-error">{{ event.error }}</div>
         </div>
 
-        <NButton quaternary size="tiny" @click="emit('pickDevice', event.uuid)">
+        <NButton quaternary size="tiny" class="history-action" @click="emit('pickDevice', event.uuid)">
           {{ t('usb.page.history.openDevice') }}
         </NButton>
       </article>
@@ -89,14 +93,29 @@ function formatTime(ts: number): string {
   gap: 12px;
 }
 
+.section-title-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.section-kicker {
+  color: rgba(151, 216, 255, 0.78);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
 .section-header h3 {
   margin: 0;
   font-size: 16px;
 }
 
 .section-meta {
-  color: $text-muted;
-  font-size: 12px;
+  color: rgba(202, 214, 226, 0.5);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .empty-wrap {
@@ -114,14 +133,37 @@ function formatTime(ts: number): string {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  padding: 12px;
-  border: 1px solid $border-color;
-  border-radius: 12px;
-  background: $bg-card;
+  padding: 14px 14px 14px 18px;
+  border: 1px solid rgba(157, 204, 255, 0.1);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(10, 16, 24, 0.86), rgba(8, 12, 19, 0.92));
+  position: relative;
+}
+
+.history-item::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(135deg, rgba(157, 204, 255, 0.06), transparent 36%, transparent 68%, rgba(157, 204, 255, 0.04));
+}
+
+.history-line {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  width: 2px;
+  align-self: stretch;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(127, 212, 255, 0.9), rgba(127, 212, 255, 0.15));
+  box-shadow: 0 0 16px rgba(127, 212, 255, 0.35);
 }
 
 .history-main {
+  position: relative;
+  z-index: 1;
   min-width: 0;
+  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -136,18 +178,24 @@ function formatTime(ts: number): string {
 
 .history-time,
 .history-path {
-  color: $text-muted;
+  color: rgba(205, 217, 229, 0.56);
   font-size: 12px;
   word-break: break-all;
 }
 
 .history-label {
   font-weight: 600;
+  color: #eef5fc;
 }
 
 .history-error {
   color: $error;
   word-break: break-word;
+}
+
+.history-action {
+  position: relative;
+  z-index: 1;
 }
 
 @media (max-width: $breakpoint-mobile) {

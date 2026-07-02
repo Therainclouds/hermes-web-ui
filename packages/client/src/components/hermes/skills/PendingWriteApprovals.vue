@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { NButton, NTag, useMessage } from 'naive-ui'
+import { NButton, NTag } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import MarkdownRenderer from '@/components/hermes/chat/MarkdownRenderer.vue'
 import {
@@ -11,6 +11,7 @@ import {
   type PendingWriteReview,
   type PendingWriteRecord,
 } from '@/api/hermes/write-gate'
+import { useMessage } from '@/composables/useAppMessage'
 
 const emit = defineEmits<{
   (e: 'count-change', count: number): void

@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref, nextTick } from 'vue'
-import { NDropdown, useMessage, useDialog } from 'naive-ui'
+import { NDropdown, useDialog } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useFilesStore, isTextFile, isPreviewableFile } from '@/stores/hermes/files'
 import { downloadFile } from '@/api/hermes/download'
 import type { FileEntry } from '@/api/hermes/files'
 import { copyToClipboard } from '@/utils/clipboard'
 import { getClipboardPathForEntry } from '@/utils/file-path'
+import { useMessage } from '@/composables/useAppMessage'
 
 const { t } = useI18n()
 const message = useMessage()

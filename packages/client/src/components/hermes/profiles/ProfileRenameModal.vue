@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { NModal, NForm, NFormItem, NInput, NButton, NText, useMessage } from 'naive-ui'
+import { NModal, NForm, NFormItem, NInput, NButton, NText } from 'naive-ui'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useI18n } from 'vue-i18n'
+import { useMessage } from '@/composables/useAppMessage'
 
 const props = defineProps<{ profileName: string }>()
 const emit = defineEmits<{

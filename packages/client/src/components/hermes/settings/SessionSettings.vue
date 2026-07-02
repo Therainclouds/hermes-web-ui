@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { NInputNumber, NSelect, NSwitch, useMessage } from "naive-ui";
+import { NInputNumber, NSelect, NSwitch } from "naive-ui";
+import { useMessage } from "@/composables/useAppMessage";
 import { useI18n } from "vue-i18n";
 import { useSettingsStore } from "@/stores/hermes/settings";
 import { useSessionBrowserPrefsStore } from "@/stores/hermes/session-browser-prefs";

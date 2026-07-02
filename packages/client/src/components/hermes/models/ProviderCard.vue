@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { NButton, NCheckbox, NCheckboxGroup, NModal, NInput, useMessage, useDialog } from 'naive-ui'
+import { NButton, NCheckbox, NCheckboxGroup, NModal, NInput, useDialog } from 'naive-ui'
 import type { AvailableModelGroup } from '@/api/hermes/system'
 import { useModelsStore } from '@/stores/hermes/models'
 import { useAppStore } from '@/stores/hermes/app'
 import { useChatStore } from '@/stores/hermes/chat'
 import { checkCopilotToken, disableCopilot } from '@/api/hermes/copilot-auth'
 import { useI18n } from 'vue-i18n'
+import { useMessage } from '@/composables/useAppMessage'
 
 const props = defineProps<{ provider: AvailableModelGroup }>()
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h, onMounted, watch } from 'vue'
-import { useMessage } from 'naive-ui'
+
 import { useI18n } from 'vue-i18n'
 import { fetchConfig } from '@/api/hermes/config'
 import { useUSBStream } from '@/composables/useUSBStream'
@@ -8,10 +8,11 @@ import router from '@/router'
 import { useSettingsStore } from '@/stores/hermes/settings'
 import { playCompletionSound } from '@/utils/completion-sound'
 import { showCompletionNotification } from '@/utils/completion-notification'
+import { useNotification } from '@/composables/useAppMessage'
 
 const usbStore = useUSBStream()
 const settingsStore = useSettingsStore()
-const message = useMessage()
+const notification = useNotification()
 const { t } = useI18n()
 
 const usbNotificationsEnabled = computed(() => settingsStore.display.notify_on_complete !== false)
@@ -33,6 +34,21 @@ function openUSBPage() {
   void router.push({ name: 'hermes.usb' })
 }
 
+function renderOpenAction() {
+  return h(
+    'button',
+    {
+      type: 'button',
+      style: 'border:0;background:none;padding:0;color:var(--n-action-text-color);cursor:pointer;font:inherit;',
+      onClick: (event: MouseEvent) => {
+        event.stopPropagation()
+        openUSBPage()
+      },
+    },
+    t('usb.page.title'),
+  )
+}
+
 function shouldNotify(key: string): boolean {
   const now = Date.now()
   for (const [candidate, ts] of recentNotificationKeys) {
@@ -46,23 +62,33 @@ function shouldNotify(key: string): boolean {
 
 function toastEvent(event: { id: string, status: string, label: string | null, action: 'add' | 'remove', error: string | null }) {
   const label = deviceLabel(event.label)
-  const renderContent = (text: string) => () => h(
-    'span',
-    {
-      style: 'cursor:pointer;text-decoration:underline;',
-      onClick: openUSBPage,
-    },
-    text,
-  )
   if (event.status === 'mount_failed') {
-    message.error(renderContent(t('usb.notifications.mountFailedBody', { label, error: event.error || 'Unknown error' })))
+    notification.error({
+      title: t('usb.notifications.mountFailedTitle'),
+      content: t('usb.notifications.mountFailedBody', { label, error: event.error || 'Unknown error' }),
+      duration: 6_000,
+      action: renderOpenAction,
+      closable: true,
+    })
     return
   }
   if (event.action === 'remove') {
-    message.warning(renderContent(t('usb.notifications.removedBody', { label })))
+    notification.warning({
+      title: t('usb.notifications.removedTitle'),
+      content: t('usb.notifications.removedBody', { label }),
+      duration: 4_000,
+      action: renderOpenAction,
+      closable: true,
+    })
     return
   }
-  message.success(renderContent(t('usb.notifications.mountedBody', { label })))
+  notification.success({
+    title: t('usb.notifications.mountedTitle'),
+    content: t('usb.notifications.mountedBody', { label }),
+    duration: 4_000,
+    action: renderOpenAction,
+    closable: true,
+  })
 }
 
 async function systemNotify(event: { id: string, status: string, label: string | null, action: 'add' | 'remove', error: string | null }) {

@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { NSelect, NSwitch, useMessage } from 'naive-ui'
+import { NSelect, NSwitch } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useSettingsStore } from '@/stores/hermes/settings'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import SettingRow from './SettingRow.vue'
+import { useMessage } from '@/composables/useAppMessage'
 
 const settingsStore = useSettingsStore()
 const profilesStore = useProfilesStore()

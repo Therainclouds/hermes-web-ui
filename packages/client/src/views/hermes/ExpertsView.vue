@@ -5,7 +5,7 @@
  */
 import { computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { NEmpty, NSpin, useMessage } from 'naive-ui'
+import { NEmpty, NSpin } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useExpertsStore } from '@/stores/hermes/experts'
 import * as expertsApi from '@/api/hermes/experts'
@@ -15,6 +15,7 @@ import {
   ExpertFeaturedCarousel,
   ExpertHero,
 } from '@/views/hermes/experts'
+import { useMessage } from '@/composables/useAppMessage'
 
 const router = useRouter()
 const message = useMessage()

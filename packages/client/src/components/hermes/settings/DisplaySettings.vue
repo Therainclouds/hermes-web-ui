@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { NButton, NSwitch, NSelect, useMessage } from 'naive-ui'
+import { NButton, NSwitch, NSelect } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useSettingsStore } from '@/stores/hermes/settings'
 import { useTheme, type BrightnessMode } from '@/composables/useTheme'
 import { requestCompletionNotificationPermission, showCompletionNotification, type CompletionNotificationPermissionResult } from '@/utils/completion-notification'
 import SettingRow from './SettingRow.vue'
+import { useMessage } from '@/composables/useAppMessage'
 
 const settingsStore = useSettingsStore()
 const message = useMessage()

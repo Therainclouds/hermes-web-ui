@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
-import { NSelect, NButton, NSpin, useMessage } from 'naive-ui'
+import { NSelect, NButton, NSpin } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { fetchLogFiles, fetchLogs, type LogEntry } from '@/api/hermes/logs'
+import { useMessage } from '@/composables/useAppMessage'
 
 const { t } = useI18n()
 const message = useMessage()

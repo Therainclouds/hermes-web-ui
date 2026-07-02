@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, onUnmounted } from 'vue'
-import { NModal, NButton, useMessage } from 'naive-ui'
+import { NModal, NButton } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { startCodexLogin, pollCodexLogin } from '@/api/hermes/codex-auth'
 import { copyToClipboard } from '@/utils/clipboard'
+import { useMessage } from '@/composables/useAppMessage'
 
 const { t } = useI18n()
 const emit = defineEmits<{ close: []; success: [] }>()

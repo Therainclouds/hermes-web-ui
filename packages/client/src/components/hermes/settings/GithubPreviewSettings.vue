@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { NAlert, NButton, NDescriptions, NDescriptionsItem, NSelect, NSpace, NTag, useMessage } from 'naive-ui'
+import { NAlert, NButton, NDescriptions, NDescriptionsItem, NSelect, NSpace, NTag } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import {
   fetchPreviewStatus,
@@ -13,6 +13,7 @@ import {
   type PreviewStatus,
   type PreviewTag,
 } from '@/api/hermes/system'
+import { useMessage } from '@/composables/useAppMessage'
 
 const { t } = useI18n()
 const message = useMessage()

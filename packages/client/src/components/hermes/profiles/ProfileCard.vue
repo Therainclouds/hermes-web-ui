@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { NButton, NTag, NSpin, useMessage, useDialog } from 'naive-ui'
+import { NButton, NTag, NSpin, useDialog } from 'naive-ui'
 import type { HermesProfile, HermesProfileDetail } from '@/api/hermes/profiles'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useExpertsStore } from '@/stores/hermes/experts'
 import { useI18n } from 'vue-i18n'
 import ProfileAvatar from './ProfileAvatar.vue'
+import { useMessage } from '@/composables/useAppMessage'
 
 const props = defineProps<{ profile: HermesProfile }>()
 const emit = defineEmits<{}>()

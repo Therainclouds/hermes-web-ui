@@ -5,7 +5,7 @@
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NButton, NEmpty, NPopconfirm, NSpin, NTabPane, NTabs, NTag, useMessage } from 'naive-ui'
+import { NButton, NEmpty, NPopconfirm, NSpin, NTabPane, NTabs, NTag } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useExpertsStore } from '@/stores/hermes/experts'
 import { useProfilesStore } from '@/stores/hermes/profiles'
@@ -14,6 +14,7 @@ import { useAppStore } from '@/stores/hermes/app'
 import * as expertsApi from '@/api/hermes/experts'
 import type { ExpertDetail, ExpertManifest } from '@/api/hermes/experts'
 import { ExpertCover, ExpertStarterPrompts } from '@/views/hermes/experts'
+import { useMessage } from '@/composables/useAppMessage'
 
 const route = useRoute()
 const router = useRouter()
