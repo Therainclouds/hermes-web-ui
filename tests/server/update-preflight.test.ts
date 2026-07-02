@@ -20,7 +20,7 @@ describe('update preflight', () => {
     expect(result.issues).toHaveLength(0)
   })
 
-  it('warns but allows the legacy hermes_data compatibility layout', () => {
+  it('allows the default hermes_data layout without warnings', () => {
     const result = runUpdatePreflight('source-deploy', {
       deployDir: '/opt/hermes-web-ui',
       webUiHome: '/home/hermesui/.hermes-web-ui',
@@ -33,9 +33,10 @@ describe('update preflight', () => {
       minFreeSpaceBytes: 1024,
     })
 
-    expect(result.riskLevel).toBe('medium')
+    expect(result.riskLevel).toBe('low')
     expect(result.shouldBlock).toBe(false)
-    expect(result.warningText).toContain('legacy compatibility layout')
+    expect(result.warningText).toBe('')
+    expect(result.issues).toHaveLength(0)
   })
 
   it('blocks when the web-ui data directory is inside the deploy directory', () => {

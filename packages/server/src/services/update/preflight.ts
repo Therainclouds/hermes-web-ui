@@ -143,14 +143,14 @@ export function runUpdatePreflight(
   if (paths.hermesHome && isSameOrWithin(paths.deployDir, paths.hermesHome)) {
     const compatibilityPath = join(paths.deployDir, 'hermes_data')
     const isCompatibilityLayout = normalizePath(paths.hermesHome) === normalizePath(compatibilityPath)
-    issues.push(buildIssue(
-      'medium',
-      'hermes-home-in-deploy-dir',
-      paths.hermesHome,
-      isCompatibilityLayout
-        ? `Hermes data directory is using the legacy compatibility layout inside the deploy directory and will be preserved during updates: ${paths.hermesHome}`
-        : `Hermes data directory is inside the deploy directory. Updates will preserve it, but the layout should be reviewed: ${paths.hermesHome}`,
-    ))
+    if (!isCompatibilityLayout) {
+      issues.push(buildIssue(
+        'medium',
+        'hermes-home-in-deploy-dir',
+        paths.hermesHome,
+        `Hermes data directory is inside the deploy directory. Updates will preserve it, but the layout should be reviewed: ${paths.hermesHome}`,
+      ))
+    }
   }
 
   if (process.platform !== 'win32') {
