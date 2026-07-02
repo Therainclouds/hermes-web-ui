@@ -2,16 +2,18 @@ import { execFile, execFileSync, spawn, type ChildProcess } from 'child_process'
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { createServer } from 'net'
 import { delimiter, dirname, extname, join, resolve } from 'path'
-import { config, getWebUiHome, hasConfiguredUpdateExecution } from '../config'
+import { config, getWebUiHome, hasConfiguredManifestCheck, hasConfiguredUpdateExecution } from '../config'
 import { UpdateError } from '../services/update/errors'
 import { getLocalWebUiVersion, readPackageInfo } from '../services/update/package-info'
 import { assertDevicePackageCompatibility, assertDevicePackageExecution, buildDevicePackageInstallEnv, downloadAndVerifyDevicePackage, getDevicePackageExecutionMessage, resolveDevicePackageManifest } from '../services/update/strategies/device-package'
+import { resolveManifestCheckResult } from '../services/update/manifest-client'
 import { runUpdatePreflight } from '../services/update/preflight'
 import { resolveUpdateRuntimePaths } from '../services/update/runtime-paths'
 import { assertNpmPackageExecution, buildNpmPackageInstallArgs, getNpmPackageExecutionMessage } from '../services/update/strategies/npm-package'
 import { assertSourceDeployExecution, buildSourceDeployEnv, getSourceDeployExecutionMessage } from '../services/update/strategies/source-deploy'
 import { updateTaskStore } from '../services/update/task-store'
-import type { DevicePackageManifest, UpdateRuntimePaths, UpdateStrategy } from '../services/update/types'
+import type { DevicePackageManifest, UpdateCapabilities, UpdateCheckResult, UpdatePreflightResult, UpdateRuntimePaths, UpdateStrategy } from '../services/update/types'
+import { isRemoteVersionNewer } from '../services/update/version-compare'
 
 let updateInProgress = false
 let managedUpdateTaskId = ''
@@ -64,6 +66,7 @@ const UPDATE_RUNNER_ENV_KEYS = [
   'HERMES_WEB_UI_HOME',
   'HERMES_WEBUI_STATE_DIR',
   'UPLOAD_DIR',
+  'HERMES_WEB_UI_UPDATE_AUTO_INSTALL_DEPENDENCIES',
   'HERMES_WEB_UI_UPDATE_INCLUDE_AGENT_UPGRADE',
   'HERMES_WEB_UI_UPDATE_VERSION',
   'HERMES_WEB_UI_UPDATE_PACKAGE',
@@ -1171,6 +1174,81 @@ function appendPreflightWarning(message: string, warningText: string): string {
   return warningText ? `${message} Warning: ${warningText}` : message
 }
 
+function buildPreflight(runtimePaths: UpdateRuntimePaths, requiredFreeSpaceBytes?: number): UpdatePreflightResult {
+  return runUpdatePreflight(config.update.strategy, runtimePaths, {
+    stagingDir: config.update.stagingDir,
+    logDir: config.update.logDir,
+    stateFile: config.update.stateFile,
+    minFreeSpaceBytes: config.update.minFreeSpaceBytes,
+    requiredFreeSpaceBytes: requiredFreeSpaceBytes
+      ?? (config.update.packageType === 'device-package'
+        ? config.update.minFreeSpaceBytes
+        : Math.floor(config.update.minFreeSpaceBytes / 2)),
+  })
+}
+
+async function resolveUpdateCheckSummary(): Promise<{ result: UpdateCheckResult | null; remoteError: string }> {
+  if (!config.update.enabled || !hasConfiguredManifestCheck(config.update)) {
+    return { result: null, remoteError: '' }
+  }
+  try {
+    return {
+      result: await resolveManifestCheckResult(config.update),
+      remoteError: '',
+    }
+  } catch (error) {
+    return {
+      result: null,
+      remoteError: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
+
+async function buildUpdateCapabilitiesPayload(): Promise<UpdateCapabilities> {
+  const runtimePaths = resolveUpdateRuntimePaths()
+  const preflight = buildPreflight(runtimePaths)
+  const currentVersion = getLocalWebUiVersion()
+  const { result, remoteError } = await resolveUpdateCheckSummary()
+
+  return {
+    enabled: config.update.enabled,
+    strategy: config.update.strategy,
+    packageType: config.update.packageType,
+    channel: result?.channel || config.update.channel,
+    sourceLabel: result?.sourceLabel || config.update.sourceLabel,
+    currentVersion,
+    latestVersion: result?.latestVersion || '',
+    updateAvailable: Boolean(result?.latestVersion && isRemoteVersionNewer(currentVersion, result.latestVersion)),
+    detectionSource: result?.detectionSource || 'none',
+    remoteError,
+    supports: {
+      versionCheck: hasConfiguredManifestCheck(config.update),
+      fullPackage: true,
+      deltaPackage: false,
+      resumableDownload: false,
+      checksumVerification: config.update.packageType === 'device-package',
+      rollback: config.update.packageType === 'device-package',
+      healthcheck: true,
+      silentInstall: true,
+      promptedInstall: true,
+      crossPlatformShell: process.platform === 'win32' || process.platform === 'linux',
+    },
+    runtime: {
+      manifestConfigured: hasConfiguredManifestCheck(config.update),
+      executionConfigured: hasConfiguredUpdateExecution(config.update),
+      runnerManaged: config.update.strategy === 'source-deploy' || config.update.strategy === 'device-package',
+      autoInstallDependencies: config.update.autoInstallDependencies,
+      includeAgentUpgrade: config.update.includeAgentUpgrade,
+      stateFile: config.update.stateFile,
+      logDir: config.update.logDir,
+      stagingDir: config.update.stagingDir,
+      backupDir: config.update.backupDir,
+      minFreeSpaceBytes: config.update.minFreeSpaceBytes,
+    },
+    preflight,
+  }
+}
+
 function formatUpdateTaskError(message: string, details?: unknown): string {
   if (details == null) return message
   try {
@@ -1208,6 +1286,11 @@ function managedUpdateAcceptedResponse(message: string) {
 export async function updateStatus(ctx: any) {
   syncUpdateTaskState()
   ctx.body = updateTaskStore.getStatus()
+}
+
+export async function updateCapabilities(ctx: any) {
+  syncUpdateTaskState()
+  ctx.body = await buildUpdateCapabilitiesPayload()
 }
 
 export async function clearStaleUpdateStatus(ctx: any) {
@@ -1279,7 +1362,7 @@ export async function handleUpdate(ctx: any) {
   }
 
   const runtimePaths = resolveUpdateRuntimePaths()
-  const preflight = runUpdatePreflight(config.update.strategy, runtimePaths)
+  const preflight = buildPreflight(runtimePaths)
   if (preflight.shouldBlock) {
     ctx.status = 409
     ctx.body = {
@@ -1299,14 +1382,33 @@ export async function handleUpdate(ctx: any) {
       assertDevicePackageExecution(config.update)
       const task = updateTaskStore.createTask('device-package', 'Checking device package update.')
       managedUpdateTaskId = task.id
+      updateTaskStore.updateCurrentStage('preflighting', 'Running update preflight checks.', {
+        warning: preflight.warningText,
+      })
       updateTaskStore.updateCurrentStage('checking', 'Checking device package update.', {
         warning: preflight.warningText,
       })
 
       const manifest = await resolveDevicePackageManifest(config.update)
+      const manifestPreflight = buildPreflight(
+        runtimePaths,
+        Math.max(config.update.minFreeSpaceBytes, (manifest.size || 0) * 2),
+      )
+      if (manifestPreflight.shouldBlock) {
+        throw new UpdateError(
+          manifestPreflight.issues.some(issue => issue.code === 'insufficient-disk-space')
+            ? 'update_preflight_space'
+            : 'update_preflight_permissions',
+          manifestPreflight.blockingText || 'Update blocked by device package preflight checks.',
+          409,
+          {
+            issues: manifestPreflight.issues,
+          },
+        )
+      }
       updateTaskStore.updateCurrentStage('resolving_version', `Resolved device package ${manifest.version}.`, {
         targetVersion: manifest.version,
-        warning: preflight.warningText,
+        warning: manifestPreflight.warningText || preflight.warningText,
         healthcheckUrl: manifest.healthcheckUrl || config.update.healthcheckUrl,
       })
 
@@ -1314,13 +1416,13 @@ export async function handleUpdate(ctx: any) {
 
       updateTaskStore.updateCurrentStage('downloading', `Downloading device package ${manifest.version}.`, {
         targetVersion: manifest.version,
-        warning: preflight.warningText,
+        warning: manifestPreflight.warningText || preflight.warningText,
         healthcheckUrl: manifest.healthcheckUrl || config.update.healthcheckUrl,
       })
       const { artifactPath } = await downloadAndVerifyDevicePackage(config.update, manifest)
       updateTaskStore.updateCurrentStage('verifying', `Verified device package ${manifest.version}.`, {
         targetVersion: manifest.version,
-        warning: preflight.warningText,
+        warning: manifestPreflight.warningText || preflight.warningText,
         healthcheckUrl: manifest.healthcheckUrl || config.update.healthcheckUrl,
       })
 
@@ -1334,7 +1436,7 @@ export async function handleUpdate(ctx: any) {
       }
       updateTaskStore.updateCurrentStage('starting', `Starting device package update ${manifest.version}.`, {
         targetVersion: manifest.version,
-        warning: preflight.warningText,
+        warning: manifestPreflight.warningText || preflight.warningText,
         healthcheckUrl: manifest.healthcheckUrl || config.update.healthcheckUrl,
       })
       observeDetachedUpdateProcess(updateChild, 'managed device package update service', {
@@ -1353,6 +1455,11 @@ export async function handleUpdate(ctx: any) {
       const version = await resolveRegistryUpdateVersion()
       const task = updateTaskStore.createTask('source-deploy', `Preparing source deployment update ${version}.`)
       managedUpdateTaskId = task.id
+      updateTaskStore.updateCurrentStage('preflighting', 'Running update preflight checks.', {
+        warning: preflight.warningText,
+        targetVersion: version,
+        healthcheckUrl: config.update.healthcheckUrl,
+      })
       updateTaskStore.updateCurrentStage('starting', `Starting source deployment update ${version}.`, {
         targetVersion: version,
         warning: preflight.warningText,
@@ -1382,7 +1489,11 @@ export async function handleUpdate(ctx: any) {
     const version = await resolveRegistryUpdateVersion()
     const task = updateTaskStore.createTask('npm-package', `Installing ${config.update.packageName}@${version}.`)
     managedUpdateTaskId = task.id
-    updateTaskStore.updateCurrentStage('installing', `Installing ${config.update.packageName}@${version}.`, {
+    updateTaskStore.updateCurrentStage('preflighting', 'Running update preflight checks.', {
+      targetVersion: version,
+      warning: preflight.warningText,
+    })
+    updateTaskStore.updateCurrentStage('installing_dependencies', `Installing dependencies for ${config.update.packageName}@${version}.`, {
       targetVersion: version,
       warning: preflight.warningText,
     })

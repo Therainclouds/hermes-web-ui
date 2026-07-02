@@ -75,6 +75,8 @@ describe('source deploy strategy', () => {
         healthcheckIntervalMs: 2_000,
         healthcheckRetries: 15,
         healthcheckInitialDelayMs: 5_000,
+        autoInstallDependencies: true,
+        minFreeSpaceBytes: 1024,
       },
       { PATH: process.env.PATH || '' },
       '0.6.30',
@@ -86,6 +88,7 @@ describe('source deploy strategy', () => {
       },
     )).toEqual(expect.objectContaining({
       HERMES_WEB_UI_UPDATE_VERSION: '0.6.30',
+      HERMES_WEB_UI_UPDATE_AUTO_INSTALL_DEPENDENCIES: 'true',
       HERMES_WEB_UI_UPDATE_INCLUDE_AGENT_UPGRADE: 'false',
     }))
   })

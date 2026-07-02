@@ -6,6 +6,7 @@ const mockSystemApi = vi.hoisted(() => ({
   checkHealth: vi.fn(),
   clearStaleUpdateStatus: vi.fn(),
   fetchAvailableModels: vi.fn(),
+  fetchUpdateCapabilities: vi.fn(),
   fetchUpdateStatus: vi.fn(),
   addCustomModel: vi.fn(),
   removeCustomModel: vi.fn(),
@@ -27,6 +28,50 @@ describe('App Store', () => {
     mockSystemApi.addCustomModel.mockResolvedValue({ success: true, custom_models: {} })
     mockSystemApi.removeCustomModel.mockResolvedValue({ success: true, custom_models: {} })
     mockSystemApi.clearStaleUpdateStatus.mockResolvedValue({ success: true, currentTask: null, lastTask: null })
+    mockSystemApi.fetchUpdateCapabilities.mockResolvedValue({
+      enabled: true,
+      strategy: 'device-package',
+      packageType: 'device-package',
+      channel: 'stable',
+      sourceLabel: 'Device Manifest',
+      currentVersion: '0.6.10',
+      latestVersion: '0.6.17',
+      updateAvailable: true,
+      detectionSource: 'manifest',
+      remoteError: '',
+      supports: {
+        versionCheck: true,
+        fullPackage: true,
+        deltaPackage: false,
+        resumableDownload: false,
+        checksumVerification: true,
+        rollback: true,
+        healthcheck: true,
+        silentInstall: true,
+        promptedInstall: true,
+        crossPlatformShell: true,
+      },
+      runtime: {
+        manifestConfigured: true,
+        executionConfigured: true,
+        runnerManaged: true,
+        autoInstallDependencies: true,
+        includeAgentUpgrade: false,
+        stateFile: '/tmp/update-task-state.json',
+        logDir: '/tmp/update-logs',
+        stagingDir: '/tmp/update-staging',
+        backupDir: '/tmp/update-backups',
+        minFreeSpaceBytes: 1024,
+      },
+      preflight: {
+        strategy: 'device-package',
+        riskLevel: 'low',
+        issues: [],
+        shouldBlock: false,
+        warningText: '',
+        blockingText: '',
+      },
+    })
     mockSystemApi.fetchUpdateStatus.mockResolvedValue({ currentTask: null, lastTask: null })
     window.localStorage.clear()
   })
@@ -188,6 +233,80 @@ describe('App Store', () => {
     expect(store.updateChannel).toBe('stable')
     expect(store.updateStrategy).toBe('device-package')
     expect(store.updatePackageType).toBe('device-package')
+  })
+
+  it('stores update capability warnings from the dedicated capabilities endpoint', async () => {
+    mockSystemApi.checkHealth.mockResolvedValue({
+      status: 'ok',
+      webui_version: '0.6.10',
+      webui_latest: '0.6.17',
+      webui_update_enabled: true,
+      webui_update_available: true,
+      webui_update_source_label: 'Device Manifest',
+      webui_update_channel: 'stable',
+      webui_update_strategy: 'device-package',
+      webui_update_package_type: 'device-package',
+    })
+    mockSystemApi.fetchUpdateCapabilities.mockResolvedValue({
+      enabled: true,
+      strategy: 'device-package',
+      packageType: 'device-package',
+      channel: 'stable',
+      sourceLabel: 'Device Manifest',
+      currentVersion: '0.6.10',
+      latestVersion: '0.6.17',
+      updateAvailable: true,
+      detectionSource: 'manifest',
+      remoteError: '',
+      supports: {
+        versionCheck: true,
+        fullPackage: true,
+        deltaPackage: false,
+        resumableDownload: false,
+        checksumVerification: true,
+        rollback: true,
+        healthcheck: true,
+        silentInstall: true,
+        promptedInstall: true,
+        crossPlatformShell: true,
+      },
+      runtime: {
+        manifestConfigured: true,
+        executionConfigured: true,
+        runnerManaged: true,
+        autoInstallDependencies: true,
+        includeAgentUpgrade: false,
+        stateFile: '/tmp/update-task-state.json',
+        logDir: '/tmp/update-logs',
+        stagingDir: '/tmp/update-staging',
+        backupDir: '/tmp/update-backups',
+        minFreeSpaceBytes: 1024,
+      },
+      preflight: {
+        strategy: 'device-package',
+        riskLevel: 'medium',
+        issues: [
+          {
+            code: 'hermes-home-in-deploy-dir',
+            level: 'medium',
+            path: '/opt/hermes-web-ui/hermes_data',
+            message: 'Hermes data directory is inside the deploy directory.',
+          },
+        ],
+        shouldBlock: false,
+        warningText: 'Hermes data directory is inside the deploy directory.',
+        blockingText: '',
+      },
+    })
+    const store = useAppStore()
+
+    await store.checkConnection()
+
+    expect(mockSystemApi.fetchUpdateCapabilities).toHaveBeenCalledTimes(1)
+    expect(store.updateRiskLevel).toBe('medium')
+    expect(store.updateCapabilitiesWarning).toContain('Hermes data directory')
+    expect(store.updateRollbackSupported).toBe(true)
+    expect(store.updateChecksumVerification).toBe(true)
   })
 
   it('waits for the restarted server after triggering self-update', async () => {

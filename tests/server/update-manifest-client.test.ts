@@ -33,6 +33,8 @@ describe('update manifest client', () => {
       healthcheckIntervalMs: 2_000,
       healthcheckRetries: 15,
       healthcheckInitialDelayMs: 5_000,
+      autoInstallDependencies: true,
+      minFreeSpaceBytes: 1024,
     }
   }
 

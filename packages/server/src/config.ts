@@ -46,6 +46,8 @@ import type { UpdatePackageType, UpdateStrategy } from './services/update/types'
  * - WEBUI_UPDATE_PACKAGE_TIMEOUT_MS: Timeout for device package downloads. Default: 300000.
  * - WEBUI_UPDATE_DOWNLOAD_RETRIES: Retries for transient update downloads. Default: 3.
  * - WEBUI_UPDATE_DOWNLOAD_RETRY_DELAY_MS: Base delay between retries. Default: 2000.
+ * - WEBUI_UPDATE_AUTO_INSTALL_DEPENDENCIES: Whether runtime reconcile installs npm dependencies before restart. Default: true.
+ * - WEBUI_UPDATE_MIN_FREE_SPACE_BYTES: Minimum free disk space required before updates proceed. Default: 1073741824 (1 GiB).
  * - WEBUI_UPDATE_INCLUDE_AGENT_UPGRADE: Whether an in-app update may also upgrade Hermes Agent.
  *   Default: false. Keep Hermes Agent upgrades explicit unless the release plan requires them.
  */
@@ -199,6 +201,7 @@ export const config = {
     enabled: parseBoolean(process.env.WEBUI_UPDATE_ENABLED),
     strategy: normalizeUpdateStrategy(process.env.WEBUI_UPDATE_STRATEGY),
     includeAgentUpgrade: parseBoolean(process.env.WEBUI_UPDATE_INCLUDE_AGENT_UPGRADE),
+    autoInstallDependencies: parseBoolean(process.env.WEBUI_UPDATE_AUTO_INSTALL_DEPENDENCIES, true),
     packageName: updatePackageName,
     registry: updateRegistry,
     sourceLabel: (process.env.WEBUI_UPDATE_SOURCE_LABEL || '').trim()
@@ -231,6 +234,7 @@ export const config = {
     healthcheckIntervalMs: parsePositiveInteger(process.env.WEBUI_UPDATE_HEALTHCHECK_INTERVAL_MS, 2_000),
     healthcheckRetries: parsePositiveInteger(process.env.WEBUI_UPDATE_HEALTHCHECK_RETRIES, 15),
     healthcheckInitialDelayMs: parsePositiveInteger(process.env.WEBUI_UPDATE_HEALTHCHECK_INITIAL_DELAY_MS, 5_000),
+    minFreeSpaceBytes: parsePositiveInteger(process.env.WEBUI_UPDATE_MIN_FREE_SPACE_BYTES, 1_073_741_824),
   },
 }
 

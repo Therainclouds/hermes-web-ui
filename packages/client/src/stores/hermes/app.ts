@@ -4,6 +4,7 @@ import {
   checkHealth,
   clearStaleUpdateStatus as clearStaleUpdateStatusRequest,
   fetchAvailableModels,
+  fetchUpdateCapabilities,
   fetchUpdateStatus,
   addCustomModel as persistCustomModel,
   removeCustomModel as deletePersistedCustomModel,
@@ -17,6 +18,7 @@ import {
   type UpdateTaskRecord,
   type UpdateTaskStage,
   type UpdateTaskStatus,
+  type UpdateCapabilitiesResponse,
   type ProfileAvailableModels,
   type ModelVisibility,
   type ModelVisibilityRule,
@@ -56,6 +58,17 @@ export const useAppStore = defineStore('app', () => {
   const updateTaskMessage = ref('')
   const updateTaskWarning = ref('')
   const updateTaskError = ref('')
+  const updateRiskLevel = ref<'low' | 'medium' | 'high'>('low')
+  const updateBlockingText = ref('')
+  const updateCapabilitiesWarning = ref('')
+  const updateCapabilitiesRemoteError = ref('')
+  const updateAutoInstallDependencies = ref(true)
+  const updateRollbackSupported = ref(false)
+  const updateChecksumVerification = ref(false)
+  const updateStateFile = ref('')
+  const updateLogDir = ref('')
+  const updateStagingDir = ref('')
+  const updateBackupDir = ref('')
   const modelGroups = ref<AvailableModelGroup[]>([])
   const profileModelGroups = ref<ProfileAvailableModels[]>([])
   const selectedModel = ref('')
@@ -186,6 +199,35 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  function applyUpdateCapabilities(res: UpdateCapabilitiesResponse) {
+    updateRiskLevel.value = res.preflight?.riskLevel || 'low'
+    updateBlockingText.value = res.preflight?.blockingText || ''
+    updateCapabilitiesWarning.value = res.preflight?.warningText || ''
+    updateCapabilitiesRemoteError.value = res.remoteError || ''
+    updateAutoInstallDependencies.value = !!res.runtime?.autoInstallDependencies
+    updateRollbackSupported.value = !!res.supports?.rollback
+    updateChecksumVerification.value = !!res.supports?.checksumVerification
+    updateStateFile.value = res.runtime?.stateFile || ''
+    updateLogDir.value = res.runtime?.logDir || ''
+    updateStagingDir.value = res.runtime?.stagingDir || ''
+    updateBackupDir.value = res.runtime?.backupDir || ''
+  }
+
+  async function refreshUpdateCapabilities() {
+    if (!updateEnabled.value) {
+      updateRiskLevel.value = 'low'
+      updateBlockingText.value = ''
+      updateCapabilitiesWarning.value = ''
+      updateCapabilitiesRemoteError.value = ''
+      return
+    }
+    try {
+      applyUpdateCapabilities(await fetchUpdateCapabilities())
+    } catch (err) {
+      updateCapabilitiesRemoteError.value = err instanceof Error ? err.message : String(err)
+    }
+  }
+
   async function checkConnection() {
     try {
       const res = await checkHealth()
@@ -201,6 +243,7 @@ export const useAppStore = defineStore('app', () => {
       updatePackageType.value = res.webui_update_package_type || ''
       updateAvailable.value = !!res.webui_update_available
       if (res.node_version) nodeVersion.value = res.node_version
+      await refreshUpdateCapabilities()
     } catch {
       connected.value = false
       clientOutdated.value = false
@@ -210,6 +253,10 @@ export const useAppStore = defineStore('app', () => {
       updateChannel.value = ''
       updateStrategy.value = ''
       updatePackageType.value = ''
+      updateRiskLevel.value = 'low'
+      updateBlockingText.value = ''
+      updateCapabilitiesWarning.value = ''
+      updateCapabilitiesRemoteError.value = ''
     }
   }
 
@@ -489,6 +536,17 @@ export const useAppStore = defineStore('app', () => {
     updateTaskMessage,
     updateTaskWarning,
     updateTaskError,
+    updateRiskLevel,
+    updateBlockingText,
+    updateCapabilitiesWarning,
+    updateCapabilitiesRemoteError,
+    updateAutoInstallDependencies,
+    updateRollbackSupported,
+    updateChecksumVerification,
+    updateStateFile,
+    updateLogDir,
+    updateStagingDir,
+    updateBackupDir,
     doUpdate,
     clearStaleUpdateStatus,
     reloadClient,
@@ -518,5 +576,6 @@ export const useAppStore = defineStore('app', () => {
     startHealthPolling,
     stopHealthPolling,
     checkUpdateStatus,
+    refreshUpdateCapabilities,
   }
 })

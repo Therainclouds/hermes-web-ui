@@ -30,6 +30,7 @@ export function buildSourceDeployEnv(
     HERMES_WEB_UI_UPDATE_PACKAGE: update.packageName || '',
     HERMES_WEB_UI_UPDATE_REGISTRY: update.registry || '',
     HERMES_WEB_UI_UPDATE_DIST_TAG: update.distTag || 'latest',
+    HERMES_WEB_UI_UPDATE_AUTO_INSTALL_DEPENDENCIES: update.autoInstallDependencies ? 'true' : 'false',
     HERMES_WEB_UI_UPDATE_INCLUDE_AGENT_UPGRADE: update.includeAgentUpgrade ? 'true' : 'false',
   }
 }

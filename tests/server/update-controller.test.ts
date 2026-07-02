@@ -742,6 +742,55 @@ describe('update controller', () => {
     })
   })
 
+  it('returns update capabilities with preflight details', async () => {
+    process.env.WEBUI_UPDATE_STRATEGY = 'device-package'
+    process.env.WEBUI_UPDATE_MANIFEST_URL = 'https://updates.example.com/stable/manifest.json'
+    process.env.WEBUI_UPDATE_INSTALLER_SCRIPT = '/opt/hermes-web-ui/scripts/install-device-package.sh'
+    process.env.WEBUI_UPDATE_PACKAGE_TYPE = 'device-package'
+    process.env.WEBUI_UPDATE_CHANNEL = 'stable'
+    process.env.WEBUI_UPDATE_MIN_FREE_SPACE_BYTES = '1024'
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      url: 'https://updates.example.com/stable/manifest.json',
+      arrayBuffer: async () => Buffer.from(JSON.stringify({
+        version: PUBLISHED_VERSION,
+        channel: 'stable',
+        sourceLabel: 'Device Manifest',
+        packageType: 'device-package',
+      })),
+    }))
+    const { updateCapabilities } = await loadUpdateController()
+    const ctx = createMockCtx()
+
+    await updateCapabilities(ctx)
+
+    expect(ctx.status).toBe(200)
+    expect(ctx.body).toEqual(expect.objectContaining({
+      enabled: true,
+      strategy: 'device-package',
+      packageType: 'device-package',
+      sourceLabel: 'Device Manifest',
+      channel: 'stable',
+      latestVersion: PUBLISHED_VERSION,
+      supports: expect.objectContaining({
+        fullPackage: true,
+        deltaPackage: false,
+        resumableDownload: false,
+        checksumVerification: true,
+        rollback: true,
+      }),
+      runtime: expect.objectContaining({
+        autoInstallDependencies: true,
+        includeAgentUpgrade: false,
+      }),
+      preflight: expect.objectContaining({
+        strategy: 'device-package',
+        riskLevel: expect.any(String),
+      }),
+    }))
+  })
+
   it('loads the persisted update task state from disk when serving status', async () => {
     const persistedState = {
       currentTask: null,

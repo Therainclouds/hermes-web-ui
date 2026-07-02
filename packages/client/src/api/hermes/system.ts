@@ -69,6 +69,62 @@ export interface UpdateStatusResponse {
   lastTask: UpdateTaskRecord | null
 }
 
+export type UpdateRiskLevel = 'low' | 'medium' | 'high'
+
+export interface UpdatePreflightIssue {
+  code: string
+  level: UpdateRiskLevel
+  path: string
+  message: string
+}
+
+export interface UpdatePreflightResult {
+  strategy: 'npm-package' | 'source-deploy' | 'device-package' | string
+  riskLevel: UpdateRiskLevel
+  issues: UpdatePreflightIssue[]
+  shouldBlock: boolean
+  warningText: string
+  blockingText: string
+}
+
+export interface UpdateCapabilitiesResponse {
+  enabled: boolean
+  strategy: 'npm-package' | 'source-deploy' | 'device-package' | string
+  packageType: 'npm-package' | 'source-deploy' | 'device-package' | string
+  channel: string
+  sourceLabel: string
+  currentVersion: string
+  latestVersion: string
+  updateAvailable: boolean
+  detectionSource: 'manifest' | 'npm-registry' | 'none'
+  remoteError: string
+  supports: {
+    versionCheck: boolean
+    fullPackage: boolean
+    deltaPackage: boolean
+    resumableDownload: boolean
+    checksumVerification: boolean
+    rollback: boolean
+    healthcheck: boolean
+    silentInstall: boolean
+    promptedInstall: boolean
+    crossPlatformShell: boolean
+  }
+  runtime: {
+    manifestConfigured: boolean
+    executionConfigured: boolean
+    runnerManaged: boolean
+    autoInstallDependencies: boolean
+    includeAgentUpgrade: boolean
+    stateFile: string
+    logDir: string
+    stagingDir: string
+    backupDir: string
+    minFreeSpaceBytes: number
+  }
+  preflight: UpdatePreflightResult
+}
+
 export interface TriggerUpdateResponse {
   success: boolean
   message: string
@@ -205,6 +261,10 @@ export async function triggerUpdate(): Promise<TriggerUpdateResponse> {
 
 export async function fetchUpdateStatus(): Promise<UpdateStatusResponse> {
   return request<UpdateStatusResponse>('/api/hermes/update/status')
+}
+
+export async function fetchUpdateCapabilities(): Promise<UpdateCapabilitiesResponse> {
+  return request<UpdateCapabilitiesResponse>('/api/hermes/update/capabilities')
 }
 
 export async function clearStaleUpdateStatus(): Promise<ClearStaleUpdateStatusResponse> {

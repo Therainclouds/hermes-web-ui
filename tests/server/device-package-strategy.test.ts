@@ -44,6 +44,8 @@ function createUpdateConfig(overrides: Partial<UpdateConfig> = {}): UpdateConfig
     healthcheckIntervalMs: 2_000,
     healthcheckRetries: 15,
     healthcheckInitialDelayMs: 5_000,
+    autoInstallDependencies: true,
+    minFreeSpaceBytes: 1024,
     ...overrides,
   }
 }
@@ -321,6 +323,7 @@ describe('device package strategy', () => {
       DEPLOY_DIR: '/opt/hermes-web-ui',
       HERMES_WEB_UI_UPDATE_PACKAGE_ARCHIVE: artifactPath,
       HERMES_WEB_UI_UPDATE_EXPECTED_SHA256: manifest.sha256,
+      HERMES_WEB_UI_UPDATE_AUTO_INSTALL_DEPENDENCIES: 'true',
       HERMES_WEB_UI_UPDATE_INCLUDE_AGENT_UPGRADE: 'false',
     }))
   })

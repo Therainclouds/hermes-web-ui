@@ -68,6 +68,12 @@ function getUpdateStageLabel(stage: string) {
 const updateStageLabel = computed(() => getUpdateStageLabel(appStore.updateTaskStage));
 const updateDetailText = computed(() => appStore.updateTaskWarning || appStore.updateTaskMessage || '');
 const updateErrorText = computed(() => appStore.updateTaskError || appStore.updateTaskMessage || t('sidebar.updateFailed'));
+const updateGuardText = computed(() =>
+  appStore.updateBlockingText
+  || appStore.updateCapabilitiesWarning
+  || appStore.updateCapabilitiesRemoteError
+  || '',
+);
 
 function toggleGroup(key: string) {
   collapsedGroups[key] = !collapsedGroups[key];
@@ -379,7 +385,7 @@ async function handleClearStaleUpdateClick() {
       >
         <button
           class="sidebar-update-btn"
-          :disabled="appStore.updating"
+          :disabled="appStore.updating || !!appStore.updateBlockingText"
           @click="handleUpdateClick"
         >
           <span class="sidebar-update-label">
@@ -393,7 +399,7 @@ async function handleClearStaleUpdateClick() {
       >
         <button
           class="sidebar-update-btn"
-          :disabled="appStore.updating"
+          :disabled="appStore.updating || !!appStore.updateBlockingText"
           @click="handleReloadClick"
         >
           <span class="sidebar-update-label">
@@ -417,6 +423,9 @@ async function handleClearStaleUpdateClick() {
             ? t('sidebar.updateSourceWithChannel', { source: appStore.updateSourceLabel, channel: appStore.updateChannel })
             : t('sidebar.updateSource', { source: appStore.updateSourceLabel })
         }}
+      </div>
+      <div v-if="updateGuardText" class="update-source update-source-warning">
+        {{ updateGuardText }}
       </div>
       <div v-else-if="!appStore.updateEnabled" class="update-source">
         {{ t('sidebar.updateManagedInternally') }}
@@ -721,6 +730,16 @@ async function handleClearStaleUpdateClick() {
 
 .version-info :deep(.theme-switch-container) {
   flex-shrink: 0;
+}
+
+.update-source {
+  font-size: 12px;
+  line-height: 1.4;
+  color: $text-muted;
+}
+
+.update-source-warning {
+  color: $warning;
 }
 
 .update-btn {

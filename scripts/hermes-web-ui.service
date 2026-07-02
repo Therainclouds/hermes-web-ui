@@ -13,6 +13,7 @@ EnvironmentFile={{SERVICE_ENV_FILE}}
 ExecStart={{NODE_BIN}} {{DEPLOY_DIR}}/dist/server/index.js
 Restart=always
 RestartSec=5
+KillMode=control-group
 StandardOutput=journal
 StandardError=journal
 KillSignal=SIGINT

@@ -8,6 +8,11 @@ describe('update preflight', () => {
       webUiHome: '/home/hermesui/.hermes-web-ui',
       uploadDir: '/home/hermesui/.hermes-web-ui/upload',
       hermesHome: '/srv/hermes-data',
+    }, {
+      stagingDir: '/tmp/hermes-update-staging',
+      logDir: '/tmp/hermes-update-logs',
+      stateFile: '/tmp/hermes-update-state.json',
+      minFreeSpaceBytes: 1024,
     })
 
     expect(result.riskLevel).toBe('low')
@@ -21,6 +26,11 @@ describe('update preflight', () => {
       webUiHome: '/home/hermesui/.hermes-web-ui',
       uploadDir: '/home/hermesui/.hermes-web-ui/upload',
       hermesHome: '/opt/hermes-web-ui/hermes_data',
+    }, {
+      stagingDir: '/tmp/hermes-update-staging',
+      logDir: '/tmp/hermes-update-logs',
+      stateFile: '/tmp/hermes-update-state.json',
+      minFreeSpaceBytes: 1024,
     })
 
     expect(result.riskLevel).toBe('medium')
@@ -34,11 +44,34 @@ describe('update preflight', () => {
       webUiHome: '/opt/hermes-web-ui/state',
       uploadDir: '/opt/hermes-web-ui/state/upload',
       hermesHome: '/srv/hermes-data',
+    }, {
+      stagingDir: '/tmp/hermes-update-staging',
+      logDir: '/tmp/hermes-update-logs',
+      stateFile: '/tmp/hermes-update-state.json',
+      minFreeSpaceBytes: 1024,
     })
 
     expect(result.riskLevel).toBe('high')
     expect(result.shouldBlock).toBe(true)
     expect(result.blockingText).toContain('Web UI data directory is inside the deploy directory')
     expect(result.issues.some(issue => issue.code === 'upload-dir-in-deploy-dir')).toBe(true)
+  })
+
+  it.runIf(process.platform !== 'win32')('blocks when the device does not meet the minimum free-space requirement', () => {
+    const result = runUpdatePreflight('device-package', {
+      deployDir: '/opt/hermes-web-ui',
+      webUiHome: '/home/hermesui/.hermes-web-ui',
+      uploadDir: '/home/hermesui/.hermes-web-ui/upload',
+      hermesHome: '/srv/hermes-data',
+    }, {
+      stagingDir: '/tmp/hermes-update-staging',
+      logDir: '/tmp/hermes-update-logs',
+      stateFile: '/tmp/hermes-update-state.json',
+      minFreeSpaceBytes: Number.MAX_SAFE_INTEGER,
+    })
+
+    expect(result.riskLevel).toBe('high')
+    expect(result.shouldBlock).toBe(true)
+    expect(result.issues.some(issue => issue.code === 'insufficient-disk-space')).toBe(true)
   })
 })
