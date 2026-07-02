@@ -13,6 +13,24 @@ backend, and an Electron desktop distribution around Hermes Agent.
 | Tests | `tests` | Vitest unit/integration tests and Playwright browser tests. |
 | CI | `.github/workflows` | Build, e2e, lockfile, Docker, and desktop release automation. |
 
+## Product Boundaries
+
+Treat these as separate products even when they ship from one monorepo:
+
+- `Web UI Product` — the browser client, the Koa backend, Web UI state, and the in-app update entry points.
+- `Hermes Agent Product` — the Hermes runtime, profiles, and CLI lifecycle.
+- `Device Runtime Product` — host-level concerns such as users, Node.js, systemd, sudoers, deploy directories, and health recovery.
+- `Release And Distribution Product` — npm packages, device packages, manifests, GitHub Releases, OSS objects, and workflow-generated metadata.
+- `Desktop Product` — the Electron shell, bundled runtime assets, and desktop auto-update flow.
+
+Boundary rules:
+
+- Keep `Web UI Product` concerns out of host bootstrap code.
+- Keep `Hermes Agent Product` lifecycle decisions explicit instead of hiding them behind Web UI update flows.
+- Keep `Device Runtime Product` concerns in controlled installers or runners, not in ordinary request handlers.
+- Keep `Release And Distribution Product` metadata as a single contract that runtime code consumes instead of redefining.
+- Keep the `Desktop Product` update path separate from device in-app updates.
+
 ## Request Flow
 
 1. The browser loads the Vite-built client from the Koa server.
@@ -49,6 +67,8 @@ Architecture rules:
 - Keep auth behavior centralized in `packages/server/src/services/auth.ts`.
 - Prefer `execFile` or `spawn` with argument arrays over shell command strings.
 - Use structured file and YAML/JSON parsers when editing structured data.
+- Keep update controllers thin: version discovery, plan generation, task orchestration, privileged execution, and runtime reconciliation should not collapse into one file.
+- Treat in-app updates as orchestration only. Host bootstrap, privileged install, and repair flows belong behind controlled seams.
 
 ## Client Structure
 
@@ -82,6 +102,27 @@ Desktop packaging is intentionally split:
 Do not make a Windows job require macOS `.dmg` files or a Linux job require
 Windows installers. Keep `fail_on_unmatched_files: true` where platform-specific
 artifact lists make the expectation explicit.
+
+## Update And Deploy Boundaries
+
+The repository currently supports multiple update shapes. Keep them distinct:
+
+- `npm-package` is a distribution shape, not a device-runtime policy.
+- `source-deploy` is a runtime reconciliation path for source-based installs.
+- `device-package` is a device-targeted release artifact with its own manifest and checksum contract.
+- `bootstrap` means preparing a host for the first install.
+- `runtime reconcile` means applying a known artifact to an already prepared host and restoring health.
+- `Hermes Agent upgrade` is a separate lifecycle step, not the default side effect of every Web UI update.
+
+Do not let one script remain the long-term owner of bootstrap, day-two updates, repair, and Hermes Agent upgrade. Those concerns belong to different seams even if they temporarily share implementation.
+Do not let in-app updates silently expand into host bootstrap or Agent lifecycle changes without an explicit release decision and runtime flag.
+
+For the current device update design and its evolving rules, see:
+
+- `docs/update-distribution/README.md`
+- `docs/update-distribution/10-development-rules.md`
+- `docs/update-distribution/11-product-boundaries-and-dependencies.md`
+- `docs/update-distribution/12-runtime-module-split-plan.md`
 
 ## Validation Surface
 

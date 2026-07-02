@@ -29,6 +29,7 @@ HEALTHCHECK_TIMEOUT_MS="${HERMES_WEB_UI_UPDATE_HEALTHCHECK_TIMEOUT_MS:-2000}"
 HEALTHCHECK_INTERVAL_MS="${HERMES_WEB_UI_UPDATE_HEALTHCHECK_INTERVAL_MS:-2000}"
 HEALTHCHECK_RETRIES="${HERMES_WEB_UI_UPDATE_HEALTHCHECK_RETRIES:-15}"
 HEALTHCHECK_INITIAL_DELAY_MS="${HERMES_WEB_UI_UPDATE_HEALTHCHECK_INITIAL_DELAY_MS:-5000}"
+INCLUDE_AGENT_UPGRADE_RAW="${HERMES_WEB_UI_UPDATE_INCLUDE_AGENT_UPGRADE:-false}"
 APP_USER="${APP_USER:-hermesui}"
 PORT="${PORT:-8648}"
 SYSTEMD_SERVICE_NAME="${SYSTEMD_SERVICE_NAME:-hermes-web-ui}"
@@ -55,6 +56,13 @@ fi
 
 run() {
   "${SUDO[@]}" "$@"
+}
+
+is_truthy() {
+  case "${1,,}" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 millis_to_sleep() {
@@ -615,14 +623,23 @@ run_hermes_agent_update() {
 
 main() {
   parse_args "$@"
+  if is_truthy "${INCLUDE_AGENT_UPGRADE_RAW}"; then
+    INCLUDE_AGENT_UPGRADE=true
+  else
+    INCLUDE_AGENT_UPGRADE=false
+  fi
   init_logging
   trap 'on_error $? $LINENO "$BASH_COMMAND"' ERR
   trap cleanup_workdir EXIT
   build_preserve_names
   prepare_workdirs
   extract_package
-  update_task_stage "updating_runtime" "Upgrading Hermes Agent before applying ${TARGET_VERSION}"
-  run_hermes_agent_update
+  if [[ "${INCLUDE_AGENT_UPGRADE}" == "true" ]]; then
+    update_task_stage "updating_runtime" "Upgrading Hermes Agent before applying ${TARGET_VERSION}"
+    run_hermes_agent_update
+  else
+    info "Skipping Hermes Agent upgrade for device package ${TARGET_VERSION}"
+  fi
   update_task_stage "backing_up" "Creating program backup for ${TARGET_VERSION}"
   backup_current_deploy
   prune_old_backups "${BACKUP_RETENTION_COUNT}" "${BACKUP_ROOT}"

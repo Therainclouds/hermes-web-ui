@@ -16,6 +16,8 @@ Use this checklist before pushing or updating a pull request.
 - Web UI state uses `config.appHome` or documented helpers.
 - Hermes Agent state and Web UI state remain separate.
 - Subprocess calls use argument arrays instead of shell string construction.
+- In-app update changes do not silently expand into bootstrap or Hermes Agent lifecycle work.
+- Update, deploy, and release contract fields stay aligned across workflow, controller, runner, and scripts.
 
 ## Tests And Validation
 
@@ -33,6 +35,7 @@ Use this checklist before pushing or updating a pull request.
   own expected artifact list.
 - Package manifest changes have matching lockfile changes when dependencies
   change.
+- Update/deploy changes call out rollback behavior, affected product boundary, and any required operator action.
 
 ## Before Merge
 

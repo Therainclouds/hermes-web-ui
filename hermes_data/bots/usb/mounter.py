@@ -46,17 +46,27 @@ class MountResult:
     status: str
     error: str | None = None
     already_mounted: bool = False
+    read_only: bool = False
 
 
-def run_command(args: list[str], *, check: bool = False) -> subprocess.CompletedProcess[str]:
-    LOGGER.debug("running command: %s", args)
+def run_command(
+    args: list[str],
+    *,
+    check: bool = False,
+    timeout: float | None = None,
+    use_sudo: bool = False,
+    sudo_command: str = "/usr/bin/sudo",
+) -> subprocess.CompletedProcess[str]:
+    command = [sudo_command, "-n", *args] if use_sudo else list(args)
+    LOGGER.debug("running command: %s", command)
     return subprocess.run(
-        args,
+        command,
         check=check,
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
+        timeout=timeout,
     )
 
 
@@ -95,7 +105,13 @@ def _read_sys_block_size_bytes(device_node: str) -> int | None:
 
 
 def probe_device(device_node: str, config: USBMonitorConfig) -> DeviceProbe:
-    result = run_command([config.blkid_command, "-o", "export", device_node], check=False)
+    result = run_command(
+        [config.blkid_command, "-o", "export", device_node],
+        check=False,
+        timeout=config.mount_timeout_seconds,
+        use_sudo=config.use_sudo,
+        sudo_command=config.sudo_command,
+    )
     payload = parse_blkid_export(result.stdout or "")
     uuid = payload.get("UUID") or payload.get("PARTUUID") or _fallback_uuid(device_node)
     fs_type = payload.get("TYPE")
@@ -113,23 +129,23 @@ def probe_device(device_node: str, config: USBMonitorConfig) -> DeviceProbe:
     )
 
 
-def _parse_proc_mounts() -> list[tuple[str, str, str]]:
-    mounts: list[tuple[str, str, str]] = []
+def _parse_proc_mounts() -> list[tuple[str, str, str, str]]:
+    mounts: list[tuple[str, str, str, str]] = []
     proc_mounts = Path("/proc/mounts")
     if not proc_mounts.exists():
         return mounts
     for raw_line in proc_mounts.read_text(encoding="utf-8", errors="replace").splitlines():
         parts = raw_line.split()
-        if len(parts) < 3:
+        if len(parts) < 4:
             continue
-        mounts.append((parts[0], parts[1], parts[2]))
+        mounts.append((parts[0], parts[1], parts[2], parts[3]))
     return mounts
 
 
-def find_mount_for_device(device_node: str) -> tuple[str, str] | None:
-    for mounted_device, mount_point, fs_type in _parse_proc_mounts():
+def find_mount_for_device(device_node: str) -> tuple[str, str, str] | None:
+    for mounted_device, mount_point, fs_type, mount_options in _parse_proc_mounts():
         if mounted_device == device_node:
-            return mount_point, fs_type
+            return mount_point, fs_type, mount_options
     return None
 
 
@@ -173,22 +189,34 @@ def _cleanup_empty_dir(path: Path) -> None:
         LOGGER.debug("skipped cleanup for mount dir %s", path, exc_info=True)
 
 
+def _is_read_only_mount(mount_options: str | None) -> bool:
+    if not mount_options:
+        return False
+    return "ro" in {segment.strip().lower() for segment in mount_options.split(",") if segment.strip()}
+
+
+def _mount_result_from_existing(probe: DeviceProbe, mount_point: str, fs_type: str | None, mount_options: str | None) -> MountResult:
+    return MountResult(
+        device_node=probe.device_node,
+        uuid=probe.uuid,
+        fs_type=probe.fs_type or fs_type,
+        label=probe.label or probe.part_label,
+        size_bytes=probe.size_bytes,
+        mount_point=mount_point,
+        status="mounted",
+        error=READ_ONLY_ERROR if _is_read_only_mount(mount_options) else None,
+        already_mounted=True,
+        read_only=_is_read_only_mount(mount_options),
+    )
+
+
 def ensure_mounted(device_node: str, config: USBMonitorConfig) -> MountResult:
     probe = probe_device(device_node, config)
     existing = find_mount_for_device(device_node)
     target_mount_point = mount_point_for_uuid(probe, config)
     if existing is not None:
-        existing_mount_point, existing_fs_type = existing
-        return MountResult(
-            device_node=device_node,
-            uuid=probe.uuid,
-            fs_type=probe.fs_type or existing_fs_type,
-            label=probe.label or probe.part_label,
-            size_bytes=probe.size_bytes,
-            mount_point=existing_mount_point,
-            status="mounted",
-            already_mounted=True,
-        )
+        existing_mount_point, existing_fs_type, existing_mount_options = existing
+        return _mount_result_from_existing(probe, existing_mount_point, existing_fs_type, existing_mount_options)
 
     if probe.fs_type and not is_supported_filesystem(probe.fs_type, config.supported_filesystems):
         return MountResult(
@@ -214,8 +242,14 @@ def ensure_mounted(device_node: str, config: USBMonitorConfig) -> MountResult:
             str(target_mount_point),
         ],
         check=False,
+        timeout=config.mount_timeout_seconds,
+        use_sudo=config.use_sudo,
+        sudo_command=config.sudo_command,
     )
     if first_attempt.returncode == 0:
+        mounted = find_mount_for_device(device_node)
+        if mounted is not None:
+            return _mount_result_from_existing(probe, mounted[0], mounted[1], mounted[2])
         return MountResult(
             device_node=device_node,
             uuid=probe.uuid,
@@ -238,8 +272,14 @@ def ensure_mounted(device_node: str, config: USBMonitorConfig) -> MountResult:
                 str(target_mount_point),
             ],
             check=False,
+            timeout=config.mount_timeout_seconds,
+            use_sudo=config.use_sudo,
+            sudo_command=config.sudo_command,
         )
         if retry_attempt.returncode == 0:
+            mounted = find_mount_for_device(device_node)
+            if mounted is not None:
+                return _mount_result_from_existing(probe, mounted[0], mounted[1], mounted[2])
             return MountResult(
                 device_node=device_node,
                 uuid=probe.uuid,
@@ -270,18 +310,41 @@ def cleanup_removed_mount(uuid_value: str, config: USBMonitorConfig) -> None:
     _cleanup_empty_dir(config.mount_root / sanitize_uuid_segment(uuid_value))
 
 
+def _iter_device_chain(device: Any, *, max_depth: int = 8):
+    current = device
+    for _ in range(max_depth):
+        if current is None:
+            break
+        yield current
+        current = getattr(current, "parent", None)
+
+
+def _matches_usb_hint(device: Any) -> bool:
+    for current in _iter_device_chain(device):
+        subsystem = str(getattr(current, "subsystem", "") or current.get("SUBSYSTEM") or "").strip().lower()
+        device_type = str(getattr(current, "device_type", "") or current.get("DEVTYPE") or "").strip().lower()
+        id_bus = str(current.get("ID_BUS") or "").strip().lower()
+        id_path = str(current.get("ID_PATH") or current.get("ID_PATH_TAG") or "").strip().lower()
+        devpath = str(current.get("DEVPATH") or "").strip().lower()
+        if subsystem == "usb" or device_type == "usb_device" or id_bus == "usb":
+            return True
+        if "usb" in id_path or "/usb" in devpath:
+            return True
+    return False
+
+
 def device_metadata_from_pyudev(device: Any) -> dict[str, str | None]:
     vendor = None
     model = None
     serial = None
-    try:
-        usb_parent = device.find_parent("usb", "usb_device")
-    except Exception:
-        usb_parent = None
-    if usb_parent is not None:
-        vendor = (usb_parent.get("ID_VENDOR_FROM_DATABASE") or usb_parent.get("ID_VENDOR") or "").strip() or None
-        model = (usb_parent.get("ID_MODEL_FROM_DATABASE") or usb_parent.get("ID_MODEL") or "").strip() or None
-        serial = (usb_parent.get("ID_SERIAL_SHORT") or usb_parent.get("ID_SERIAL") or "").strip() or None
+    for current in _iter_device_chain(device):
+        if not _matches_usb_hint(current):
+            continue
+        vendor = (current.get("ID_VENDOR_FROM_DATABASE") or current.get("ID_VENDOR") or "").strip() or vendor
+        model = (current.get("ID_MODEL_FROM_DATABASE") or current.get("ID_MODEL") or "").strip() or model
+        serial = (current.get("ID_SERIAL_SHORT") or current.get("ID_SERIAL") or "").strip() or serial
+        if vendor or model or serial:
+            break
     return {
         "vendor": vendor,
         "model": model,
@@ -295,7 +358,7 @@ def is_usb_storage_partition(device: Any) -> bool:
             return False
         if not str(device.device_node or "").strip():
             return False
-        if device.find_parent("usb", "usb_device") is None:
+        if not _matches_usb_hint(device):
             return False
     except Exception:
         return False

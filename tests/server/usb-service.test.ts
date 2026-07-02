@@ -1,6 +1,8 @@
+import { EventEmitter } from 'events'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { resolve } from 'path'
+import { PassThrough } from 'stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 describe('usb service', () => {
@@ -141,6 +143,63 @@ describe('usb service', () => {
     await expect(service.copyFileToWorkspace('1234-ABCD', '/docs/nested.txt', workspace, '../escape.txt')).rejects.toMatchObject({
       code: 'invalid_path',
     })
+
+    await service.stop()
+  })
+
+  it('injects explicit USB monitor runtime env when spawning the python monitor', async () => {
+    const monitorDir = resolve(tempRoot, 'hermes_data', 'bots', 'usb')
+    mkdirSync(monitorDir, { recursive: true })
+    writeFileSync(resolve(monitorDir, 'usb_monitor.py'), 'print("usb monitor")\n', 'utf-8')
+
+    const spawnMock = vi.fn(() => {
+      const child = new EventEmitter() as EventEmitter & {
+        stdout: PassThrough
+        stderr: PassThrough
+        exitCode: number | null
+        killed: boolean
+        kill: ReturnType<typeof vi.fn>
+      }
+      child.stdout = new PassThrough()
+      child.stderr = new PassThrough()
+      child.exitCode = null
+      child.killed = false
+      child.kill = vi.fn(() => {
+        child.killed = true
+        child.exitCode = 0
+        child.emit('exit', 0, null)
+        return true
+      })
+      return child
+    })
+
+    vi.doMock('child_process', async () => {
+      const actual = await vi.importActual<typeof import('child_process')>('child_process')
+      return {
+        ...actual,
+        spawn: spawnMock,
+      }
+    })
+
+    const { USBService } = await import('../../packages/server/src/services/usb/USBService')
+    const service = new USBService({
+      platform: 'linux',
+      deployDir: tempRoot,
+      appHome: tempRoot,
+      env: {
+        USB_MONITOR_PYTHON_BIN: 'python3',
+      },
+      cleanupIntervalMs: 60_000,
+    })
+
+    service.start()
+
+    expect(spawnMock).toHaveBeenCalledTimes(1)
+    const spawnOptions = spawnMock.mock.calls[0]?.[2]
+    expect(spawnOptions?.env?.PYTHONUNBUFFERED).toBe('1')
+    expect(spawnOptions?.env?.USB_USE_SUDO).toBe('1')
+    expect(spawnOptions?.env?.HERMES_WEB_UI_HOME).toBe(tempRoot)
+    expect(spawnOptions?.env?.HERMES_WEBUI_STATE_DIR).toBe(tempRoot)
 
     await service.stop()
   })

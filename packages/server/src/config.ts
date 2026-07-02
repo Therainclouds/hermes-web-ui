@@ -46,6 +46,8 @@ import type { UpdatePackageType, UpdateStrategy } from './services/update/types'
  * - WEBUI_UPDATE_PACKAGE_TIMEOUT_MS: Timeout for device package downloads. Default: 300000.
  * - WEBUI_UPDATE_DOWNLOAD_RETRIES: Retries for transient update downloads. Default: 3.
  * - WEBUI_UPDATE_DOWNLOAD_RETRY_DELAY_MS: Base delay between retries. Default: 2000.
+ * - WEBUI_UPDATE_INCLUDE_AGENT_UPGRADE: Whether an in-app update may also upgrade Hermes Agent.
+ *   Default: false. Keep Hermes Agent upgrades explicit unless the release plan requires them.
  */
 
 export function getListenHost(env: Record<string, string | undefined> = process.env): string {
@@ -196,6 +198,7 @@ export const config = {
   update: {
     enabled: parseBoolean(process.env.WEBUI_UPDATE_ENABLED),
     strategy: normalizeUpdateStrategy(process.env.WEBUI_UPDATE_STRATEGY),
+    includeAgentUpgrade: parseBoolean(process.env.WEBUI_UPDATE_INCLUDE_AGENT_UPGRADE),
     packageName: updatePackageName,
     registry: updateRegistry,
     sourceLabel: (process.env.WEBUI_UPDATE_SOURCE_LABEL || '').trim()

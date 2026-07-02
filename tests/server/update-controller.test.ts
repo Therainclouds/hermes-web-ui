@@ -162,6 +162,7 @@ describe('update controller', () => {
   const originalUpdatePackageTimeoutMs = process.env.WEBUI_UPDATE_PACKAGE_TIMEOUT_MS
   const originalUpdateDownloadRetries = process.env.WEBUI_UPDATE_DOWNLOAD_RETRIES
   const originalUpdateDownloadRetryDelayMs = process.env.WEBUI_UPDATE_DOWNLOAD_RETRY_DELAY_MS
+  const originalIncludeAgentUpgrade = process.env.WEBUI_UPDATE_INCLUDE_AGENT_UPGRADE
   const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
 
   beforeEach(() => {
@@ -189,6 +190,7 @@ describe('update controller', () => {
     delete process.env.WEBUI_UPDATE_PACKAGE_TIMEOUT_MS
     delete process.env.WEBUI_UPDATE_DOWNLOAD_RETRIES
     delete process.env.WEBUI_UPDATE_DOWNLOAD_RETRY_DELAY_MS
+    delete process.env.WEBUI_UPDATE_INCLUDE_AGENT_UPGRADE
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -252,6 +254,8 @@ describe('update controller', () => {
     else process.env.WEBUI_UPDATE_DOWNLOAD_RETRIES = originalUpdateDownloadRetries
     if (originalUpdateDownloadRetryDelayMs === undefined) delete process.env.WEBUI_UPDATE_DOWNLOAD_RETRY_DELAY_MS
     else process.env.WEBUI_UPDATE_DOWNLOAD_RETRY_DELAY_MS = originalUpdateDownloadRetryDelayMs
+    if (originalIncludeAgentUpgrade === undefined) delete process.env.WEBUI_UPDATE_INCLUDE_AGENT_UPGRADE
+    else process.env.WEBUI_UPDATE_INCLUDE_AGENT_UPGRADE = originalIncludeAgentUpgrade
     delete process.env.HERMES_WEB_UI_PREVIEW_REPO
   })
 
@@ -504,6 +508,7 @@ describe('update controller', () => {
         HERMES_WEB_UI_UPDATE_TASK_ID: expect.any(String),
         HERMES_WEB_UI_UPDATE_VERSION: PUBLISHED_VERSION,
         HERMES_WEB_UI_UPDATE_EXPECTED_SHA256: sha256,
+        HERMES_WEB_UI_UPDATE_INCLUDE_AGENT_UPGRADE: 'false',
       }),
     }))
     expect(mocks.spawn).toHaveBeenCalledWith(

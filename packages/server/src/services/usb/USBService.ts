@@ -24,6 +24,7 @@ const HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000
 const HISTORY_CLEANUP_INTERVAL_MS = 60 * 60 * 1000
 const MONITOR_RESTART_DELAY_MS = 3_000
 const MAX_READ_SIZE_BYTES = 100 * 1024 * 1024
+const MONITOR_READY_TIMEOUT_MS = 8_000
 
 export type USBServiceOptions = {
   eventStore?: USBEventStore
@@ -73,6 +74,7 @@ export class USBService extends EventEmitter {
   private monitor: ChildProcessByStdio<null, Readable, Readable> | null = null
   private cleanupTimer: NodeJS.Timeout | null = null
   private restartTimer: NodeJS.Timeout | null = null
+  private readyTimer: NodeJS.Timeout | null = null
   private stopRequested = false
   private runtimeStatus: USBServiceRuntimeStatus
 
@@ -131,6 +133,10 @@ export class USBService extends EventEmitter {
     if (this.restartTimer) {
       clearTimeout(this.restartTimer)
       this.restartTimer = null
+    }
+    if (this.readyTimer) {
+      clearTimeout(this.readyTimer)
+      this.readyTimer = null
     }
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer)
@@ -258,6 +264,7 @@ export class USBService extends EventEmitter {
 
   ingestMonitorMessage(message: USBMonitorMessage): void {
     if (message.type === 'ready') {
+      this.clearReadyTimer()
       this.runtimeStatus.state = 'running'
       this.runtimeStatus.lastReadyAt = message.ts
       for (const event of message.existing_devices || []) {
@@ -271,6 +278,7 @@ export class USBService extends EventEmitter {
       return
     }
     if (message.type === 'heartbeat') {
+      this.clearReadyTimer()
       this.runtimeStatus.lastHeartbeatAt = message.ts
       if (this.runtimeStatus.state !== 'unsupported') this.runtimeStatus.state = 'running'
       this.emit('heartbeat', {
@@ -305,10 +313,13 @@ export class USBService extends EventEmitter {
           ...this.env,
           HERMES_WEB_UI_HOME: this.appHome,
           HERMES_WEBUI_STATE_DIR: this.appHome,
+          PYTHONUNBUFFERED: '1',
+          USB_USE_SUDO: this.env.USB_USE_SUDO ?? '1',
         },
         stdio: ['ignore', 'pipe', 'pipe'],
       })
       this.monitor = child
+      this.armReadyTimer()
 
       const stdout = createInterface({ input: child.stdout })
       stdout.on('line', (line) => this.handleMonitorLine(line))
@@ -323,6 +334,7 @@ export class USBService extends EventEmitter {
 
       child.once('error', (error) => {
         this.monitor = null
+        this.clearReadyTimer()
         this.runtimeStatus.state = 'error'
         this.runtimeStatus.lastError = error instanceof Error ? error.message : String(error)
         logger.warn({ err: error }, '[usb] monitor process error')
@@ -331,6 +343,7 @@ export class USBService extends EventEmitter {
 
       child.once('exit', (code, signal) => {
         this.monitor = null
+        this.clearReadyTimer()
         if (this.stopRequested) return
         this.runtimeStatus.state = 'error'
         this.runtimeStatus.lastError = `USB monitor exited (code=${String(code)} signal=${String(signal)})`
@@ -352,6 +365,22 @@ export class USBService extends EventEmitter {
       if (!this.stopRequested) this.start()
     }, MONITOR_RESTART_DELAY_MS)
     this.restartTimer.unref?.()
+  }
+
+  private armReadyTimer(): void {
+    this.clearReadyTimer()
+    this.readyTimer = setTimeout(() => {
+      if (this.runtimeStatus.state !== 'starting') return
+      this.runtimeStatus.lastError = `USB monitor did not emit ready within ${MONITOR_READY_TIMEOUT_MS}ms`
+      logger.warn({ scriptPath: this.runtimeStatus.monitorScriptPath }, '[usb] monitor ready timeout')
+    }, MONITOR_READY_TIMEOUT_MS)
+    this.readyTimer.unref?.()
+  }
+
+  private clearReadyTimer(): void {
+    if (!this.readyTimer) return
+    clearTimeout(this.readyTimer)
+    this.readyTimer = null
   }
 
   private handleMonitorLine(line: string): void {

@@ -9,7 +9,7 @@
   automate jobs, inspect files, run coding agents, and keep everything local.
   A full-featured web dashboard for Hermes Agent.<br/>
   Manage AI chat sessions, monitor usage & costs, configure platform channels,<br/>
-  schedule cron jobs, browse skills â€?all from a clean, responsive web interface.
+  schedule cron jobs, browse skills ï¿½?all from a clean, responsive web interface.
 </p>
 
 <p align="center">
@@ -31,17 +31,17 @@
 ### AI Chat
 
 - Real-time chat streaming over Socket.IO `/chat-run`; chat runs execute through the Hermes agent bridge
-- Multi-session management â€?create, rename, delete, switch between sessions
-- **Self-built session database** â€?local SQLite storage for Web UI sessions; Hermes state.db remains a read-only source for Hermes history APIs
+- Multi-session management ï¿½?create, rename, delete, switch between sessions
+- **Self-built session database** ï¿½?local SQLite storage for Web UI sessions; Hermes state.db remains a read-only source for Hermes history APIs
 - Session grouping by source (Telegram, Discord, Slack, etc.) with collapsible accordion
-- Active session indicator â€?live sessions pin to top with spinner icon
+- Active session indicator ï¿½?live sessions pin to top with spinner icon
 - Sessions sorted by latest message time
 - Markdown rendering with syntax highlighting and code copy
 - Tool call detail expansion (arguments / result)
 - Profile-scoped file uploads
-- File download support â€?download uploaded files and agent-generated files by resolved path across local, Docker, SSH, and Singularity backends
-- Session search â€?Ctrl+K search across the Web UI local session database; read-only Hermes history sessions are not included
-- Profile-aware model selector â€?discovers models available to the signed-in account through authorized Hermes profiles
+- File download support ï¿½?download uploaded files and agent-generated files by resolved path across local, Docker, SSH, and Singularity backends
+- Session search ï¿½?Ctrl+K search across the Web UI local session database; read-only Hermes history sessions are not included
+- Profile-aware model selector ï¿½?discovers models available to the signed-in account through authorized Hermes profiles
 - Per-session model display badge and context token usage
 
 ### Platform Channels
@@ -111,11 +111,11 @@ Unified configuration for **8 platforms** in one page:
 ### Group Chat
 
 - Multi-agent chat rooms with real-time messaging via Socket.IO
-- @mention routing â€?mention an agent to trigger a contextual reply
-- Context compression â€?automatic conversation summarization when history exceeds token threshold
+- @mention routing ï¿½?mention an agent to trigger a contextual reply
+- Context compression ï¿½?automatic conversation summarization when history exceeds token threshold
 - Typing status and reply progress indicators
 - Room creation, deletion, and invite code management
-- Agent management â€?add/remove agents from rooms with per-agent profiles
+- Agent management ï¿½?add/remove agents from rooms with per-agent profiles
 - SQLite message persistence
 - Mobile responsive with collapsible sidebar
 
@@ -185,9 +185,9 @@ When the login page reports that the IP is locked (HTTP 429/503), the same opera
 - MiMo supports preset voices, voice design prompts, and voice clone reference audio (`.mp3`/`.wav`, max 10 MB) with selectable auth header mode (`Authorization`, `api-key`, or both).
 - Edge/OpenAI-compatible/custom/MiMo playback uses the Web UI backend's unified `/api/hermes/tts/synthesize` endpoint, so stop/pause state is shared and in-flight fetches are aborted when possible.
 - Provider API keys and MiMo clone reference audio are saved in server-side TTS settings, with only masked secret status shown back to the browser.
-- Save provider settings in Settings â†?Voice before using OpenAI/custom/MiMo playback. Message playback sends text and non-secret playback options; the backend reads the stored per-user secret when synthesizing.
+- Save provider settings in Settings ï¿½?Voice before using OpenAI/custom/MiMo playback. Message playback sends text and non-secret playback options; the backend reads the stored per-user secret when synthesizing.
 - Turn-based voice input is available from the chat input mic control: start/stop a voice turn, transcribe it, stage the transcript in the current input box for editing, then send it with the normal Send button.
-- Voice input / STT can use browser speech recognition when available or a server-backed provider configured in Settings â†?Voice.
+- Voice input / STT can use browser speech recognition when available or a server-backed provider configured in Settings ï¿½?Voice.
 - Starting a new voice turn while assistant audio is playing stops playback first. This barge-in boundary does not implicitly cancel an active agent run; stopping a run remains an explicit action.
 - For supported settings, security notes, and current non-goals, see [`docs/voice-dialogue.md`](./docs/voice-dialogue.md).
 - Limitation: external TTS providers may continue processing a request after the browser/server aborts; custom/OpenAI-compatible and MiMo base URLs must be public `http`/`https` endpoints and cannot target localhost/private networks.
@@ -195,7 +195,7 @@ When the login page reports that the IP is locked (HTTP 429/503), the same opera
 ### Web Terminal
 
 - Integrated terminal powered by node-pty and @xterm/xterm
-- Multi-session support â€?create, switch between, and close terminal sessions
+- Multi-session support ï¿½?create, switch between, and close terminal sessions
 - Real-time keyboard input and PTY output streaming via WebSocket
 - Window resize support
 
@@ -267,6 +267,15 @@ For Armbian / Ubuntu host-level source deployment, review [`docs/work-log.md`](.
 - The 2026-05-19 log records a real failure where Hermes was installed under `root` while `hermes-web-ui.service` ran as `hermesui`
 - That mismatch caused the agent bridge to fail with `run_agent.py not found`, and chat requests then hit `ENOENT /tmp/hermes-agent-bridge.sock`
 - After source deployment, verify that `/home/hermesui/.local/bin/hermes` belongs to `hermesui` rather than linking into `/root/.local/...`
+
+### Update And Deployment Guardrails
+
+- Treat `Web UI update`, `Hermes Agent upgrade`, `bootstrap`, and `runtime reconcile` as separate responsibilities.
+- Keep in-app updates orchestration-only by default; do not silently expand them into host bootstrap or Hermes Agent lifecycle work.
+- Only allow an in-app update to upgrade Hermes Agent when the release plan explicitly approves it and runtime flags enable it.
+- For manual recovery or fixed-version rollout, use the target version `manifest.json` rather than a moving `stable/latest.json`.
+- During source-based repair or manual recovery, preserve the existing `PORT`, `BIND_HOST`, and state directory settings.
+- See [`DEVELOPMENT.md`](./DEVELOPMENT.md) and [`docs/update-distribution/10-development-rules.md`](./docs/update-distribution/10-development-rules.md) for the full project rules.
 
 ### Hermes Agent Runtime Discovery
 
@@ -384,18 +393,20 @@ npm run build   # outputs to dist/
 
 See [DEVELOPMENT.md](./DEVELOPMENT.md) for project development guidelines.
 
+For update, release, and deployment work, also review [`docs/update-distribution/README.md`](./docs/update-distribution/README.md) before implementation or rollout.
+
 ## Architecture
 
 ```
-Browser â†?BFF (Koa, :6060) â†?Socket.IO /chat-run
-                â†?        Hermes agent bridge â†?Hermes Agent runtime
-                â†?           Hermes CLI / profiles
+Browser ï¿½?BFF (Koa, :6060) ï¿½?Socket.IO /chat-run
+                ï¿½?        Hermes agent bridge ï¿½?Hermes Agent runtime
+                ï¿½?           Hermes CLI / profiles
            profile config.yaml    (channel/provider behavior)
            profile auth.json      (credential pool)
            Tencent iLink API      (WeChat QR login)
 ```
 
-The frontend is designed with **multi-agent extensibility** â€?all Hermes-specific code is namespaced under `hermes/` directories (API, components, views, stores), making it straightforward to add new agent integrations alongside.
+The frontend is designed with **multi-agent extensibility** ï¿½?all Hermes-specific code is namespaced under `hermes/` directories (API, components, views, stores), making it straightforward to add new agent integrations alongside.
 
 The BFF layer handles Socket.IO chat streaming, the Hermes agent bridge, profile-aware file upload and path-based download (multi-backend: local/Docker/SSH/Singularity), session CRUD, account- and profile-scoped management, config/credential management, WeChat QR login, model discovery, skills/memory/plugin management, TTS/STT, coding-agent proxies, MCP/runtime management, log reading, and static file serving.
 

@@ -5,6 +5,7 @@ export type UpdatePackageType = 'device-package' | 'npm-package' | 'source-deplo
 export interface UpdateConfig {
   enabled: boolean
   strategy: UpdateStrategy
+  includeAgentUpgrade: boolean
   packageName: string
   registry: string
   sourceLabel: string

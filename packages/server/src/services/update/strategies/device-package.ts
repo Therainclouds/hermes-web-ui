@@ -179,6 +179,7 @@ export function buildDevicePackageInstallEnv(
     HERMES_WEB_UI_UPDATE_HEALTHCHECK_RETRIES: String(update.healthcheckRetries),
     HERMES_WEB_UI_UPDATE_HEALTHCHECK_INITIAL_DELAY_MS: String(update.healthcheckInitialDelayMs),
     HERMES_WEB_UI_UPDATE_EXPECTED_SHA256: manifest.sha256,
+    HERMES_WEB_UI_UPDATE_INCLUDE_AGENT_UPGRADE: update.includeAgentUpgrade ? 'true' : 'false',
   }
 }
 

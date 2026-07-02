@@ -7,6 +7,7 @@ describe('update manifest client', () => {
     return {
       enabled: true,
       strategy: 'device-package' as const,
+      includeAgentUpgrade: false,
       packageName: '',
       registry: '',
       sourceLabel: 'Fallback Source',

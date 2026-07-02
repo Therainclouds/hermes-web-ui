@@ -202,6 +202,15 @@ docker compose logs -f hermes-webui
 - 这种安装归属错位会导�?agent bridge �?`run_agent.py not found`，随后聊天链路出�?`ENOENT /tmp/hermes-agent-bridge.sock`
 - 源码部署完成后，请优先检�?`/home/hermesui/.local/bin/hermes` 是否归属 `hermesui`，不要链接到 `/root/.local/...`
 
+### 更新与部署守则
+
+- 必须把 `Web UI update`、`Hermes Agent upgrade`、`bootstrap`、`runtime reconcile` 视为 4 类独立职责。
+- 页面内更新默认只做编排，不得无提示扩大为宿主机初始化或 Hermes Agent 生命周期变更。
+- 只有在版本方案明确批准且运行时显式开启开关时，页面内更新才允许同时升级 Hermes Agent。
+- 手工恢复或固定版本发布时，必须使用目标版本的 `manifest.json`，不能使用持续漂移的 `stable/latest.json`。
+- 源码修复部署或手工恢复时，必须保留现有 `PORT`、`BIND_HOST` 以及状态目录配置。
+- 完整规则请查看 [`DEVELOPMENT.md`](./DEVELOPMENT.md) 和 [`docs/update-distribution/10-development-rules.md`](./docs/update-distribution/10-development-rules.md)。
+
 ### Hermes Agent 运行时发�?
 Web UI 启动后端聊天能力时，会优先使用包�?`run_agent.py` 的源码目录，例如
 `~/.hermes/hermes-agent`。如果找不到源码目录，会退回到已安�?`hermes` 命令所使用
@@ -306,6 +315,8 @@ npm run build   # 构建输出�?dist/
 ```
 
 项目开发规范见：[DEVELOPMENT.md](./DEVELOPMENT.md)�?
+
+涉及更新、发布、部署的改动，开发或执行前还应先阅读 [`docs/update-distribution/README.md`](./docs/update-distribution/README.md)�?
 ## 架构
 
 ```

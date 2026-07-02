@@ -62,13 +62,18 @@ class USBMonitor:
         self.context = pyudev.Context()
         self.stop_event = threading.Event()
         self.cache_by_node: dict[str, dict[str, Any]] = {}
-        self.observer: pyudev.MonitorObserver | None = None
+        self.monitor: Any | None = None
         self.heartbeat_thread: threading.Thread | None = None
 
     def emit(self, payload: dict[str, Any]) -> None:
         print(json.dumps(payload, ensure_ascii=False), flush=True)
 
-    def _build_add_payload(self, device: Any) -> dict[str, Any] | None:
+    def _remember_device(self, payload: dict[str, Any]) -> None:
+        device_node = str(payload.get("device_node") or "").strip()
+        if device_node:
+            self.cache_by_node[device_node] = payload
+
+    def _build_add_payload(self, device: Any, *, remember: bool = True) -> dict[str, Any] | None:
         device_node = str(device.device_node or "").strip()
         if not device_node:
             return None
@@ -93,7 +98,8 @@ class USBMonitor:
         }
         if mount_result.error:
             payload["error"] = mount_result.error
-        self.cache_by_node[device_node] = payload
+        if remember:
+            self._remember_device(payload)
         return payload
 
     def _build_remove_payload(self, device: Any) -> dict[str, Any] | None:
@@ -124,7 +130,11 @@ class USBMonitor:
             )
         return is_usb_storage_partition(device)
 
-    def _handle_monitor_event(self, action: str, device: Any) -> None:
+    def _handle_monitor_device(self, device: Any) -> None:
+        action = str(getattr(device, "action", "") or device.get("ACTION") or "").strip().lower()
+        if not action:
+            LOGGER.debug("skipping usb event without action device=%s", getattr(device, "device_node", None))
+            return
         if not self._is_relevant_event(action, device):
             return
         try:
@@ -149,12 +159,49 @@ class USBMonitor:
                 }
             )
 
+    def _collect_cold_scan_existing_devices(self) -> list[dict[str, Any]]:
+        if not self.config.enable_cold_scan:
+            return []
+
+        results: list[dict[str, Any]] = []
+        errors: list[BaseException] = []
+        finished = threading.Event()
+        state = {"timed_out": False}
+
+        def runner() -> None:
+            try:
+                scanned = self._scan_existing_devices()
+                if state["timed_out"]:
+                    for payload in scanned:
+                        self._remember_device(payload)
+                    if not self.stop_event.is_set():
+                        self.emit({"type": "ready", "ts": utc_now_iso(), "existing_devices": scanned})
+                    return
+                results.extend(scanned)
+            except BaseException as exc:  # pragma: no cover - defensive runtime guard
+                errors.append(exc)
+            finally:
+                finished.set()
+
+        thread = threading.Thread(target=runner, name="hermes-usb-cold-scan", daemon=True)
+        thread.start()
+        if finished.wait(self.config.cold_scan_timeout_seconds):
+            if errors:
+                raise errors[0]
+            for payload in results:
+                self._remember_device(payload)
+            return results
+
+        state["timed_out"] = True
+        LOGGER.warning("cold scan timed out after %.1fs; continuing with empty ready payload", self.config.cold_scan_timeout_seconds)
+        return []
+
     def _scan_existing_devices(self) -> list[dict[str, Any]]:
         existing_devices: list[dict[str, Any]] = []
         for device in self.context.list_devices(subsystem="block", DEVTYPE="partition"):
             if not is_usb_storage_partition(device):
                 continue
-            payload = self._build_add_payload(device)
+            payload = self._build_add_payload(device, remember=False)
             if payload is not None:
                 existing_devices.append(payload)
         return existing_devices
@@ -171,27 +218,39 @@ class USBMonitor:
 
     def start(self) -> None:
         LOGGER.info("starting usb monitor with config=%s", config_summary(self.config))
-        existing_devices = self._scan_existing_devices() if self.config.enable_cold_scan else []
-        self.emit({"type": "ready", "ts": utc_now_iso(), "existing_devices": existing_devices})
-
         monitor = pyudev.Monitor.from_netlink(self.context)
         monitor.filter_by(subsystem="block")
-        self.observer = pyudev.MonitorObserver(monitor, callback=self._handle_monitor_event, name="hermes-usb-monitor")
-        self.observer.start()
+        try:
+            monitor.start()
+        except Exception:
+            LOGGER.debug("monitor.start() not available or failed; falling back to poll-only mode", exc_info=True)
+        self.monitor = monitor
 
         self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True, name="hermes-usb-heartbeat")
         self.heartbeat_thread.start()
 
-        while not self.stop_event.wait(0.5):
-            pass
+        try:
+            existing_devices = self._collect_cold_scan_existing_devices()
+        except Exception:
+            LOGGER.exception("cold scan failed; continuing with empty ready payload")
+            existing_devices = []
+        self.emit({"type": "ready", "ts": utc_now_iso(), "existing_devices": existing_devices})
+
+        while not self.stop_event.is_set():
+            try:
+                device = monitor.poll(timeout=0.5)
+            except Exception:
+                LOGGER.exception("usb monitor poll failed")
+                if not self.stop_event.wait(1.0):
+                    continue
+                break
+            if device is None:
+                continue
+            self._handle_monitor_device(device)
 
     def stop(self) -> None:
         self.stop_event.set()
-        if self.observer is not None:
-            try:
-                self.observer.stop()
-            except Exception:
-                LOGGER.debug("failed to stop monitor observer cleanly", exc_info=True)
+        self.monitor = None
 
 
 def install_signal_handlers(monitor: USBMonitor) -> None:
