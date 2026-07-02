@@ -35,6 +35,7 @@ export interface UpdateConfig {
   healthcheckRetries: number
   healthcheckInitialDelayMs: number
   minFreeSpaceBytes: number
+  taskHeartbeatTimeoutMs: number
 }
 
 export interface UpdateRuntimePaths {
@@ -82,6 +83,8 @@ export interface UpdatePreflightOptions {
 
 export type UpdateTaskStatus = 'idle' | 'queued' | 'running' | 'succeeded' | 'failed'
 
+export type UpdateTaskOwner = 'controller' | 'runtime'
+
 export type UpdateTaskStage =
   | 'idle'
   | 'queued'
@@ -105,6 +108,7 @@ export type UpdateTaskStage =
 export interface UpdateTaskRecord {
   id: string
   strategy: UpdateStrategy
+  owner: UpdateTaskOwner
   status: UpdateTaskStatus
   stage: UpdateTaskStage
   message: string
@@ -114,6 +118,7 @@ export interface UpdateTaskRecord {
   logPath: string
   rollbackMessage: string
   healthcheckUrl: string
+  heartbeatAt: string
   startedAt: string
   finishedAt: string | null
 }

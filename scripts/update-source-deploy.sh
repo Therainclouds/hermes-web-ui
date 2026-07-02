@@ -2,6 +2,8 @@
 set -Eeuo pipefail
 
 SELF_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TASK_STATE_HELPER="${SCRIPT_DIR}/update-task-state.py"
 LOG_FILE="${HERMES_WEB_UI_UPDATE_LOG:-/var/log/hermes-web-ui-update.log}"
 DEPLOY_DIR="${DEPLOY_DIR:-/opt/hermes-web-ui}"
 APP_USER="${APP_USER:-hermesui}"
@@ -11,8 +13,14 @@ SERVICE_ENV_FILE="${SERVICE_ENV_FILE:-/etc/default/hermes-web-ui}"
 HERMES_HOME_DIR="${HERMES_HOME_DIR:-${HERMES_HOME:-${DEPLOY_DIR}/hermes_data}}"
 HERMES_WEB_UI_HOME="${HERMES_WEB_UI_HOME:-${HERMES_WEBUI_STATE_DIR:-}}"
 UPLOAD_DIR="${UPLOAD_DIR:-}"
+RUNTIME_HOME="${HERMES_WEB_UI_HOME:-${HOME:-/tmp}}"
+UPDATE_STATE_FILE="${HERMES_WEB_UI_UPDATE_STATE_FILE:-${RUNTIME_HOME}/updates/update-task-state.json}"
+UPDATE_LOG_DIR="${HERMES_WEB_UI_UPDATE_LOG_DIR:-${RUNTIME_HOME}/updates/logs}"
+TASK_ID="${HERMES_WEB_UI_UPDATE_TASK_ID:-}"
+HEALTHCHECK_URL="${HERMES_WEB_UI_UPDATE_HEALTHCHECK_URL:-}"
 INCLUDE_AGENT_UPGRADE_RAW="${HERMES_WEB_UI_UPDATE_INCLUDE_AGENT_UPGRADE:-false}"
 PRESERVE_NAMES=("hermes_data" ".git" ".runtime-hermes" ".runtime-home")
+TASK_FINISHED=0
 
 info() { printf '[update-source-deploy] %s\n' "$*"; }
 warn() { printf '[update-source-deploy] WARNING: %s\n' "$*"; }
@@ -31,6 +39,69 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+
+init_logging() {
+  local version_segment timestamp
+  version_segment="${TARGET_VERSION//[^A-Za-z0-9._-]/_}"
+  timestamp="$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "${UPDATE_LOG_DIR}"
+  if [[ -n "${TASK_ID}" ]]; then
+    LOG_FILE="${UPDATE_LOG_DIR}/${TASK_ID}.log"
+  else
+    LOG_FILE="${UPDATE_LOG_DIR}/source-deploy-${version_segment}-${timestamp}.log"
+  fi
+}
+
+write_task_state() {
+  local action="$1"
+  local status="$2"
+  local stage="$3"
+  local message="$4"
+  local error_message="${5:-}"
+
+  env \
+    STATE_FILE="${UPDATE_STATE_FILE}" \
+    TASK_ID="${TASK_ID}" \
+    TASK_STRATEGY="source-deploy" \
+    TASK_OWNER="runtime" \
+    TARGET_VERSION="${TARGET_VERSION}" \
+    LOG_PATH="${LOG_FILE}" \
+    HEALTHCHECK_URL="${HEALTHCHECK_URL}" \
+    APP_USER="${APP_USER}" \
+    TASK_ACTION="${action}" \
+    TASK_STATUS="${status}" \
+    TASK_STAGE="${stage}" \
+    TASK_MESSAGE="${message}" \
+    TASK_ERROR="${error_message}" \
+    python3 "${TASK_STATE_HELPER}"
+}
+
+update_task_stage() {
+  [[ -n "${TASK_ID}" ]] || return 0
+  write_task_state patch running "$1" "$2"
+}
+
+finish_task_succeeded() {
+  [[ -n "${TASK_ID}" ]] || return 0
+  TASK_FINISHED=1
+  write_task_state finish succeeded succeeded "$1"
+}
+
+finish_task_failed() {
+  [[ -n "${TASK_ID}" ]] || return 0
+  TASK_FINISHED=1
+  write_task_state finish failed failed "$1" "${2:-$1}"
+}
+
+handle_failure() {
+  local exit_code=$?
+  local line_no="${1:-unknown}"
+  if [[ "${TASK_FINISHED}" -eq 0 ]]; then
+    finish_task_failed "Source deployment update failed for ${TARGET_VERSION:-unknown}." "Source deployment update failed near line ${line_no} with exit code ${exit_code}."
+  fi
+  exit "${exit_code}"
+}
+trap 'handle_failure "${LINENO}"' ERR
 
 ensure_root() {
   if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
@@ -344,18 +415,24 @@ else
 fi
 
 ensure_root "$@"
+parse_args "$@"
+init_logging
 mkdir -p "$(dirname "${LOG_FILE}")"
 exec >>"${LOG_FILE}" 2>&1
 
 info "Starting source deployment update"
-parse_args "$@"
 build_preserve_names
+update_task_stage "downloading" "Downloading source deployment archive ${TARGET_TAG}"
 download_source_archive
 if [[ "${INCLUDE_AGENT_UPGRADE}" == "true" ]]; then
+  update_task_stage "starting_runtime" "Upgrading Hermes Agent before applying ${TARGET_VERSION}"
   run_hermes_agent_update
 else
   info "Skipping Hermes Agent upgrade for this source deployment update"
 fi
+update_task_stage "installing" "Syncing source tree for ${TARGET_VERSION}"
 sync_source_tree
+update_task_stage "restarting" "Rebuilding and restarting services for ${TARGET_VERSION}"
 run_deploy_script
+finish_task_succeeded "Source deployment update completed for ${TARGET_VERSION}"
 info "Source deployment update completed: ${TARGET_TAG}"

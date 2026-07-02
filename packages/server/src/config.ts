@@ -48,6 +48,7 @@ import type { UpdatePackageType, UpdateStrategy } from './services/update/types'
  * - WEBUI_UPDATE_DOWNLOAD_RETRY_DELAY_MS: Base delay between retries. Default: 2000.
  * - WEBUI_UPDATE_AUTO_INSTALL_DEPENDENCIES: Whether runtime reconcile installs npm dependencies before restart. Default: true.
  * - WEBUI_UPDATE_MIN_FREE_SPACE_BYTES: Minimum free disk space required before updates proceed. Default: 1073741824 (1 GiB).
+ * - WEBUI_UPDATE_TASK_HEARTBEAT_TIMEOUT_MS: How long a runtime-owned task can stay quiet before it is treated as interrupted. Default: 7200000 (2 hours).
  * - WEBUI_UPDATE_INCLUDE_AGENT_UPGRADE: Whether an in-app update may also upgrade Hermes Agent.
  *   Default: false. Keep Hermes Agent upgrades explicit unless the release plan requires them.
  */
@@ -235,6 +236,7 @@ export const config = {
     healthcheckRetries: parsePositiveInteger(process.env.WEBUI_UPDATE_HEALTHCHECK_RETRIES, 15),
     healthcheckInitialDelayMs: parsePositiveInteger(process.env.WEBUI_UPDATE_HEALTHCHECK_INITIAL_DELAY_MS, 5_000),
     minFreeSpaceBytes: parsePositiveInteger(process.env.WEBUI_UPDATE_MIN_FREE_SPACE_BYTES, 1_073_741_824),
+    taskHeartbeatTimeoutMs: parsePositiveInteger(process.env.WEBUI_UPDATE_TASK_HEARTBEAT_TIMEOUT_MS, 7_200_000),
   },
 }
 

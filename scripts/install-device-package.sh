@@ -12,6 +12,8 @@ warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 err()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 step()  { echo -e "${BLUE}[STEP]${NC} $*"; }
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TASK_STATE_HELPER="${SCRIPT_DIR}/update-task-state.py"
 DEPLOY_DIR="${DEPLOY_DIR:-/opt/hermes-web-ui}"
 PACKAGE_ARCHIVE="${HERMES_WEB_UI_UPDATE_PACKAGE_ARCHIVE:-}"
 TARGET_VERSION="${HERMES_WEB_UI_UPDATE_VERSION:-}"
@@ -184,6 +186,8 @@ write_task_state() {
   env \
     STATE_FILE="${UPDATE_STATE_FILE}" \
     TASK_ID="${TASK_ID}" \
+    TASK_STRATEGY="device-package" \
+    TASK_OWNER="runtime" \
     TARGET_VERSION="${TARGET_VERSION}" \
     LOG_PATH="${LOG_PATH}" \
     HEALTHCHECK_URL="${HEALTHCHECK_URL}" \
@@ -194,95 +198,7 @@ write_task_state() {
     TASK_MESSAGE="${message}" \
     TASK_ERROR="${error_message}" \
     TASK_ROLLBACK_MESSAGE="${rollback_message}" \
-    python3 <<'PY'
-import json
-import os
-import pwd
-import tempfile
-from datetime import datetime, timezone
-from pathlib import Path
-
-state_file = os.environ.get("STATE_FILE", "").strip()
-task_id = os.environ.get("TASK_ID", "").strip()
-if not state_file or not task_id:
-    raise SystemExit(0)
-
-path = Path(state_file)
-data = {"currentTask": None, "lastTask": None}
-if path.exists():
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(payload, dict):
-            data["currentTask"] = payload.get("currentTask")
-            data["lastTask"] = payload.get("lastTask")
-    except Exception:
-        data = {"currentTask": None, "lastTask": None}
-
-record = data.get("currentTask")
-if not isinstance(record, dict) or record.get("id") != task_id:
-    last = data.get("lastTask")
-    if isinstance(last, dict) and last.get("id") == task_id:
-      record = dict(last)
-    else:
-      record = {
-          "id": task_id,
-          "strategy": "device-package",
-          "status": "queued",
-          "stage": "queued",
-          "message": "",
-          "targetVersion": "",
-          "warning": "",
-          "error": "",
-          "logPath": "",
-          "rollbackMessage": "",
-          "healthcheckUrl": "",
-          "startedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-          "finishedAt": None,
-      }
-else:
-    record = dict(record)
-
-record["strategy"] = "device-package"
-record["status"] = os.environ.get("TASK_STATUS", record.get("status", "running"))
-record["stage"] = os.environ.get("TASK_STAGE", record.get("stage", "installing"))
-record["message"] = os.environ.get("TASK_MESSAGE", record.get("message", ""))
-record["targetVersion"] = os.environ.get("TARGET_VERSION", record.get("targetVersion", ""))
-record["error"] = os.environ.get("TASK_ERROR", record.get("error", ""))
-record["rollbackMessage"] = os.environ.get("TASK_ROLLBACK_MESSAGE", record.get("rollbackMessage", ""))
-record["logPath"] = os.environ.get("LOG_PATH", record.get("logPath", ""))
-record["healthcheckUrl"] = os.environ.get("HEALTHCHECK_URL", record.get("healthcheckUrl", ""))
-
-action = os.environ.get("TASK_ACTION", "patch")
-if action == "finish":
-    record["finishedAt"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    data["currentTask"] = None
-    data["lastTask"] = record
-else:
-    record["finishedAt"] = None
-    data["currentTask"] = record
-
-app_user = os.environ.get("APP_USER", "").strip()
-pw_record = None
-if app_user:
-    try:
-        pw_record = pwd.getpwnam(app_user)
-    except KeyError:
-        pw_record = None
-
-path.parent.mkdir(parents=True, exist_ok=True)
-if pw_record is not None:
-    os.chown(path.parent, pw_record.pw_uid, pw_record.pw_gid)
-os.chmod(path.parent, 0o775)
-with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False) as handle:
-    json.dump(data, handle, indent=2)
-    handle.write("\n")
-tmp_path = Path(handle.name)
-tmp_path.replace(path)
-
-if pw_record is not None:
-    os.chown(path, pw_record.pw_uid, pw_record.pw_gid)
-os.chmod(path, 0o664)
-PY
+    python3 "${TASK_STATE_HELPER}"
 }
 
 update_task_stage() {

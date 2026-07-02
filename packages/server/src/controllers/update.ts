@@ -21,9 +21,19 @@ let managedUpdateTaskId = ''
 function syncUpdateTaskState() {
   const hadInMemoryLock = updateInProgress
   updateTaskStore.syncFromDisk()
-  const currentTask = updateTaskStore.getCurrentTask()
+  let currentTask = updateTaskStore.getCurrentTask()
+  if (
+    currentTask
+    && currentTask.owner === 'controller'
+    && currentTask.stage === 'restarting'
+    && currentTask.targetVersion
+    && getLocalWebUiVersion() === currentTask.targetVersion
+  ) {
+    updateTaskStore.completeCurrentTask('succeeded', `Updated Hermes Web UI to ${currentTask.targetVersion}.`)
+    currentTask = updateTaskStore.getCurrentTask()
+  }
   const recoveredTask = currentTask && currentTask.id !== managedUpdateTaskId
-    ? updateTaskStore.recoverInterruptedTask()
+    ? updateTaskStore.recoverInterruptedTaskIfStale()
     : null
   if (recoveredTask) {
     console.warn('[update] recovered interrupted update task %s (%s)', recoveredTask.id, recoveredTask.targetVersion || recoveredTask.strategy)
@@ -1088,12 +1098,12 @@ async function spawnRestart(port: string) {
   })
 }
 
-function spawnSourceDeployUpdate(version: string, runtimePaths: UpdateRuntimePaths) {
+function spawnSourceDeployUpdate(version: string, runtimePaths: UpdateRuntimePaths, taskId: string) {
   if (!config.update.script || !config.update.runnerService || !config.update.runnerRequestFile) {
     throw new UpdateError('update_execution_misconfigured', getSourceDeployExecutionMessage())
   }
 
-  const env = buildSourceDeployEnv(config.update, getCurrentNodeEnv(), version, runtimePaths)
+  const env = buildSourceDeployEnv(config.update, getCurrentNodeEnv(), version, runtimePaths, taskId)
   writeUpdateRunnerRequest('source-deploy', env)
   return spawnManagedUpdateService()
 }
@@ -1439,10 +1449,16 @@ export async function handleUpdate(ctx: any) {
         warning: manifestPreflight.warningText || preflight.warningText,
         healthcheckUrl: manifest.healthcheckUrl || config.update.healthcheckUrl,
       })
+      updateTaskStore.handoffCurrentTaskToRuntime({
+        stage: 'starting',
+        message: `Handed off device package update ${manifest.version} to runtime.`,
+        targetVersion: manifest.version,
+        warning: manifestPreflight.warningText || preflight.warningText,
+        healthcheckUrl: manifest.healthcheckUrl || config.update.healthcheckUrl,
+      })
       observeDetachedUpdateProcess(updateChild, 'managed device package update service', {
         onSuccess: () => {
           managedUpdateTaskId = ''
-          updateTaskStore.completeCurrentTask('succeeded', `Updated Hermes Web UI to ${manifest.version}.`)
         },
         onFailure: message => failCurrentUpdateTask(`Failed to start device package update ${manifest.version}.`, message),
       })
@@ -1468,16 +1484,22 @@ export async function handleUpdate(ctx: any) {
 
       let updateChild: ChildProcess
       try {
-        updateChild = spawnSourceDeployUpdate(version, runtimePaths)
+        updateChild = spawnSourceDeployUpdate(version, runtimePaths, task.id)
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err)
         failCurrentUpdateTask(`Failed to start source deployment update ${version}.`, error)
         throw err
       }
+      updateTaskStore.handoffCurrentTaskToRuntime({
+        stage: 'starting',
+        message: `Handed off source deployment update ${version} to runtime.`,
+        targetVersion: version,
+        warning: preflight.warningText,
+        healthcheckUrl: config.update.healthcheckUrl,
+      })
       observeDetachedUpdateProcess(updateChild, 'managed source deployment update service', {
         onSuccess: () => {
           managedUpdateTaskId = ''
-          updateTaskStore.completeCurrentTask('succeeded', `Updated Hermes Web UI to ${version}.`)
         },
         onFailure: message => failCurrentUpdateTask(`Failed to start source deployment update ${version}.`, message),
       })

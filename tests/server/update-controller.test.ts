@@ -553,7 +553,7 @@ describe('update controller', () => {
     })
   })
 
-  it('marks the device package task succeeded when the detached runner exits with SIGINT', async () => {
+  it('keeps the device package task running when the detached launcher exits after handing off to runtime', async () => {
     process.env.WEBUI_UPDATE_STRATEGY = 'device-package'
     process.env.WEBUI_UPDATE_MANIFEST_URL = 'https://updates.example.com/stable/manifest.json'
     process.env.WEBUI_UPDATE_INSTALLER_SCRIPT = '/opt/hermes-web-ui/scripts/install-device-package.sh'
@@ -617,19 +617,20 @@ describe('update controller', () => {
     await updateStatus(statusCtx)
 
     expect(statusCtx.body).toEqual({
-      currentTask: null,
-      lastTask: expect.objectContaining({
+      currentTask: expect.objectContaining({
         strategy: 'device-package',
-        status: 'succeeded',
-        stage: 'succeeded',
-        message: `Updated Hermes Web UI to ${PUBLISHED_VERSION}.`,
+        status: 'running',
+        stage: 'starting',
+        owner: 'runtime',
+        targetVersion: PUBLISHED_VERSION,
       }),
+      lastTask: null,
     })
     expect(errorSpy).not.toHaveBeenCalled()
     errorSpy.mockRestore()
   })
 
-  it('marks the source deployment task succeeded when the detached runner exits with SIGINT', async () => {
+  it('keeps the source deployment task running when the detached launcher exits after handing off to runtime', async () => {
     process.env.WEBUI_UPDATE_STRATEGY = 'source-deploy'
     process.env.WEBUI_UPDATE_SCRIPT = UPDATE_SCRIPT
     const handlers = new Map<string, (...args: any[]) => void>()
@@ -658,13 +659,13 @@ describe('update controller', () => {
       stage: 'starting',
     }))
     expect(statusCtx.body).toEqual({
-      currentTask: null,
-      lastTask: expect.objectContaining({
+      currentTask: expect.objectContaining({
         strategy: 'source-deploy',
-        status: 'succeeded',
-        stage: 'succeeded',
-        message: `Updated Hermes Web UI to ${PUBLISHED_VERSION}.`,
+        status: 'running',
+        stage: 'starting',
+        targetVersion: PUBLISHED_VERSION,
       }),
+      lastTask: null,
     })
     expect(errorSpy).not.toHaveBeenCalled()
     errorSpy.mockRestore()
@@ -700,6 +701,48 @@ describe('update controller', () => {
         error: 'managed source deployment update service exited before replacing server: code=null signal=SIGSEGV',
       }),
     })
+  })
+
+  it('survives 10 managed source deployment handoffs without misclassifying launcher exit as success or failure', async () => {
+    process.env.WEBUI_UPDATE_STRATEGY = 'source-deploy'
+    process.env.WEBUI_UPDATE_SCRIPT = UPDATE_SCRIPT
+
+    for (let round = 0; round < 10; round += 1) {
+      const handlers = new Map<string, (...args: any[]) => void>()
+      const fsMocks = createStatefulFsMocks()
+      const unref = vi.fn()
+      const updateChild = {
+        unref,
+        on: vi.fn((event: string, handler: (...args: any[]) => void) => {
+          handlers.set(event, handler)
+          return updateChild
+        }),
+      }
+      const spawn = vi.fn(() => updateChild)
+      const { handleUpdate, updateStatus } = await loadUpdateController({ ...fsMocks, spawn, unref })
+      const ctx = createMockCtx()
+      const statusCtx = createMockCtx()
+
+      await handleUpdate(ctx)
+      handlers.get('exit')?.(0, null)
+      await updateStatus(statusCtx)
+
+      expect(ctx.body).toEqual(expect.objectContaining({
+        success: true,
+        status: 'running',
+        stage: 'starting',
+      }))
+      expect(statusCtx.body).toEqual({
+        currentTask: expect.objectContaining({
+          strategy: 'source-deploy',
+          owner: 'runtime',
+          status: 'running',
+          stage: 'starting',
+          targetVersion: PUBLISHED_VERSION,
+        }),
+        lastTask: null,
+      })
+    }
   })
 
   it('blocks updates when protected web-ui data would be inside the deploy directory', async () => {
@@ -797,6 +840,7 @@ describe('update controller', () => {
       lastTask: {
         id: 'update-persisted',
         strategy: 'device-package',
+        owner: 'controller',
         status: 'failed',
         stage: 'rolled_back',
         message: 'Device package update failed and was rolled back',
@@ -806,6 +850,7 @@ describe('update controller', () => {
         logPath: '/tmp/hermes-update.log',
         rollbackMessage: 'Restored previous deploy from backup',
         healthcheckUrl: 'http://127.0.0.1:6060/health',
+        heartbeatAt: '2026-06-09T00:00:00.000Z',
         startedAt: '2026-06-09T00:00:00.000Z',
         finishedAt: '2026-06-09T00:05:00.000Z',
       },
@@ -829,7 +874,7 @@ describe('update controller', () => {
     expect(ctx.body).toEqual(persistedState)
   })
 
-  it('recovers a persisted running task into a failed lastTask when serving status', async () => {
+  it('keeps a runtime-owned running task active when serving status', async () => {
     const fsMocks = createStatefulFsMocks({
       currentTask: {
         id: 'update-running',
@@ -843,29 +888,28 @@ describe('update controller', () => {
         logPath: '',
         rollbackMessage: '',
         healthcheckUrl: 'http://127.0.0.1:6060/health',
+        owner: 'runtime',
+        heartbeatAt: '2099-06-11T14:35:00.000Z',
         startedAt: '2026-06-11T14:34:00.000Z',
         finishedAt: null,
       },
       lastTask: null,
     })
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const { updateStatus } = await loadUpdateController(fsMocks)
     const ctx = createMockCtx()
 
     await updateStatus(ctx)
 
     expect(ctx.body).toEqual({
-      currentTask: null,
-      lastTask: expect.objectContaining({
+      currentTask: expect.objectContaining({
         id: 'update-running',
-        status: 'failed',
-        stage: 'failed',
+        status: 'running',
+        stage: 'downloading',
         targetVersion: '0.6.17',
-        error: 'Previous update task was interrupted during downloading.',
-        finishedAt: expect.any(String),
+        owner: 'runtime',
       }),
+      lastTask: null,
     })
-    warnSpy.mockRestore()
   })
 
   it('allows a new update request after recovering a persisted running task', async () => {

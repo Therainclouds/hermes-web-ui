@@ -77,6 +77,7 @@ describe('source deploy strategy', () => {
         healthcheckInitialDelayMs: 5_000,
         autoInstallDependencies: true,
         minFreeSpaceBytes: 1024,
+        taskHeartbeatTimeoutMs: 7_200_000,
       },
       { PATH: process.env.PATH || '' },
       '0.6.30',
@@ -86,8 +87,10 @@ describe('source deploy strategy', () => {
         uploadDir: '/home/hermesui/.hermes-web-ui/upload',
         hermesHome: '/opt/hermes-web-ui/hermes_data',
       },
+      'update-task-123',
     )).toEqual(expect.objectContaining({
       HERMES_WEB_UI_UPDATE_VERSION: '0.6.30',
+      HERMES_WEB_UI_UPDATE_TASK_ID: 'update-task-123',
       HERMES_WEB_UI_UPDATE_AUTO_INSTALL_DEPENDENCIES: 'true',
       HERMES_WEB_UI_UPDATE_INCLUDE_AGENT_UPGRADE: 'false',
     }))
