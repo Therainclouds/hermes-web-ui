@@ -159,6 +159,10 @@ export const useExpertsStore = defineStore('experts', () => {
     return installed.value.find((it) => it.expert_slug === slug)
   }
 
+  function findReadyInstalled(slug: string): InstalledExpertRow | undefined {
+    return installed.value.find((it) => it.expert_slug === slug && it.status === 'installed')
+  }
+
   function bindingsForProfile(profileName: string): ExpertProfileBindingRow | undefined {
     return bindings.value.find((b) => b.profile_name === profileName)
   }
@@ -189,6 +193,7 @@ export const useExpertsStore = defineStore('experts', () => {
     upgrade,
     uninstall,
     findInstalled,
+    findReadyInstalled,
     bindingsForProfile,
   }
 })

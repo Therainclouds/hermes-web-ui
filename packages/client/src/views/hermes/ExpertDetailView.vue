@@ -28,7 +28,8 @@ const appStore = useAppStore()
 const slug = computed(() => String(route.params.slug || ''))
 const detail = ref<ExpertDetail | null>(null)
 const manifest = ref<ExpertManifest | null>(null)
-const installed = computed(() => expertsStore.findInstalled(slug.value))
+const installedRow = computed(() => expertsStore.findInstalled(slug.value))
+const installed = computed(() => expertsStore.findReadyInstalled(slug.value))
 const detailLoading = ref(false)
 const manifestLoading = ref(false)
 const activeTab = ref<'overview' | 'team' | 'manifest'>('overview')
@@ -282,13 +283,13 @@ const hasUpgrade = computed(() =>
               <span class="side-k">{{ t('experts.detail.metaCategory') }}</span>
               <span class="side-v">{{ detail.category }}</span>
             </div>
-            <div v-if="installed" class="side-row">
+            <div v-if="installedRow" class="side-row">
               <span class="side-k">{{ t('experts.detail.metaInstalled') }}</span>
-              <span class="side-v">{{ installed.installed_version }}</span>
+              <span class="side-v">{{ installedRow.installed_version }}</span>
             </div>
-            <div v-if="installed" class="side-row">
+            <div v-if="installedRow" class="side-row">
               <span class="side-k">{{ t('experts.detail.metaStatus') }}</span>
-              <span class="side-v">{{ installed.status }}</span>
+              <span class="side-v">{{ installedRow.status }}</span>
             </div>
             <div v-if="hasUpgrade" class="side-upgrade">
               ★ {{ t('experts.upgradeAvailable') }}

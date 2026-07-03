@@ -53,6 +53,8 @@ const version = computed(() => {
   return (props.item as InstalledExpertRow).installed_version
 })
 
+const installedReady = computed(() => props.installed?.status === 'installed')
+
 const hasUpgrade = computed(() => {
   if (!props.installed || isCatalog.value) return false
   const latest = (props.item as ExpertCatalogItem)?.latest_version?.version
@@ -115,7 +117,7 @@ function handleStartChat(e: Event) {
           <NTag v-if="statusInfo" size="tiny" :bordered="false" :type="statusInfo.type">
             {{ statusInfo.label }}
           </NTag>
-          <NTag v-else-if="installed" size="tiny" :bordered="false" type="info">
+          <NTag v-else-if="installedReady" size="tiny" :bordered="false" type="info">
             {{ t('experts.status.installed') }}
           </NTag>
           <NTag v-if="hasUpgrade" size="tiny" :bordered="false" type="warning">
@@ -124,7 +126,7 @@ function handleStartChat(e: Event) {
         </div>
 
         <NButton
-          v-if="installed"
+          v-if="installedReady"
           size="tiny"
           type="primary"
           class="quick-start"

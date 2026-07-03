@@ -209,6 +209,16 @@ export function listBindingsByExpert(slug: string): ExpertProfileBindingRow[] {
   return rows.map(mapBinding)
 }
 
+export function listBindingsByParentTeam(slug: string): ExpertProfileBindingRow[] {
+  const db = requireDb()
+  const rows = db
+    .prepare(
+      `SELECT * FROM ${EXPERT_PROFILE_BINDINGS_TABLE} WHERE parent_team_slug = ?`,
+    )
+    .all(slug) as Record<string, unknown>[]
+  return rows.map(mapBinding)
+}
+
 export function getBindingByProfile(profileName: string): ExpertProfileBindingRow | null {
   const db = requireDb()
   const row = db
@@ -269,6 +279,14 @@ export function deleteBindingsByExpert(slug: string): number {
   const db = requireDb()
   const result = db
     .prepare(`DELETE FROM ${EXPERT_PROFILE_BINDINGS_TABLE} WHERE expert_slug = ?`)
+    .run(slug)
+  return Number(result.changes)
+}
+
+export function deleteInstalledExpertsByTeam(slug: string): number {
+  const db = requireDb()
+  const result = db
+    .prepare(`DELETE FROM ${INSTALLED_EXPERTS_TABLE} WHERE team_slug = ?`)
     .run(slug)
   return Number(result.changes)
 }

@@ -10,12 +10,14 @@ import {
 } from './installer'
 import { activateFromInstallDir, deactivateExpert } from './activator'
 import {
+  deleteInstalledExpertsByTeam,
   deleteBindingByProfile,
   deleteBindingsByExpert,
   deleteInstalledExpert,
   getInstalledExpert,
   listBindings,
   listBindingsByExpert,
+  listBindingsByParentTeam,
   listInstalledExperts,
   upsertBinding,
   upsertInstalledExpert,
@@ -45,6 +47,7 @@ export async function installExpertFlow(input: {
     version,
     installResult.installDir,
     installResult.manifest,
+    clientId,
   )
 
   // 只有"至少一个 profile 激活成功"才标记 installed；否则一律 failed
@@ -104,8 +107,11 @@ export async function upgradeExpertFlow(input: { slug: string; clientId: string 
 
 export async function uninstallExpertFlow(input: { slug: string }) {
   const { slug } = input
-  const bindings = listBindingsByExpert(slug)
-  const profileNames = bindings.map(b => b.profile_name)
+  const directBindings = listBindingsByExpert(slug)
+  const memberBindings = listBindingsByParentTeam(slug)
+  const bindings = [...directBindings, ...memberBindings]
+  const profileNames = Array.from(new Set(bindings.map(b => b.profile_name)))
+  const memberSlugs = Array.from(new Set(memberBindings.map(b => b.expert_slug).filter(Boolean)))
   // eslint-disable-next-line no-console
   console.log('[experts.uninstall] profiles to remove:', profileNames)
 
@@ -117,6 +123,12 @@ export async function uninstallExpertFlow(input: { slug: string }) {
     deleteBindingByProfile(name)
   }
   deleteBindingsByExpert(slug)
+  for (const memberSlug of memberSlugs) {
+    deleteBindingsByExpert(memberSlug)
+    await uninstallExpertPackage(memberSlug)
+    deleteInstalledExpert(memberSlug)
+  }
+  deleteInstalledExpertsByTeam(slug)
   const diskCleanup = await uninstallExpertPackage(slug)
   deleteInstalledExpert(slug)
   return {

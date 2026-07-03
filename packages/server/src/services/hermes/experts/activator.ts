@@ -6,7 +6,8 @@
  */
 import { promises as fs } from 'fs'
 import { join } from 'path'
-import { fetchDetail, type ExpertManifest } from './marketplace-client'
+import { fetchDetail, fetchLatest, type ExpertManifest } from './marketplace-client'
+import { InstallError, installExpertPackage } from './installer'
 import {
   upsertBinding,
   upsertInstalledExpert,
@@ -89,6 +90,7 @@ export async function activateFromInstallDir(
   version: string,
   installDir: string,
   manifest: ExpertManifest,
+  clientId?: string,
 ): Promise<ActivateResult> {
   const out: ActivateResult = { installed: [], failed: [] }
 
@@ -122,28 +124,50 @@ export async function activateFromInstallDir(
   }
 
   for (const m of members) {
-    const memberVersion = m.latest_version
+    let memberVersion = m.latest_version
+    if (!memberVersion) {
+      try {
+        memberVersion = (await fetchLatest(m.slug))?.version ?? null
+      } catch (err) {
+        out.failed.push({ slug: m.slug, reason: err instanceof Error ? err.message : 'fetch member latest failed' })
+        continue
+      }
+    }
     if (!memberVersion) {
       out.failed.push({ slug: m.slug, reason: 'member has no published version' })
       continue
     }
     try {
-      const memberManifest = (await import('./marketplace-client')).fetchManifest
-      const man = await memberManifest(m.slug, memberVersion)
-      const memberDir = join(installDir, '..', `${m.slug}@${memberVersion}`)
-      // 若本地已存在 installed 记录则复用其路径
-      // 简化：直接放在独立目录
-      const item = await activateOne(m.slug, memberVersion, memberDir, man, 'member', slug)
+      if (!clientId) {
+        throw new InstallError('download', 'team member install requires clientId', 400)
+      }
+      const memberInstall = await installExpertPackage(m.slug, memberVersion, clientId)
+      const item = await activateOne(
+        m.slug,
+        memberVersion,
+        memberInstall.installDir,
+        memberInstall.manifest,
+        'member',
+        slug,
+      )
       out.installed.push(item)
       upsertInstalledExpert({
         expert_slug: m.slug,
         installed_version: memberVersion,
         status: 'installed',
-        local_path: memberDir,
-        manifest_json: JSON.stringify(man),
+        local_path: memberInstall.installDir,
+        manifest_json: JSON.stringify(memberInstall.manifest),
         team_slug: slug,
       })
     } catch (err) {
+      upsertInstalledExpert({
+        expert_slug: m.slug,
+        installed_version: memberVersion,
+        status: 'failed',
+        last_error: err instanceof Error ? err.message : 'member activate failed',
+        last_error_stage: err instanceof InstallError ? err.stage : 'activate',
+        team_slug: slug,
+      })
       out.failed.push({ slug: m.slug, reason: err instanceof Error ? err.message : 'member activate failed' })
     }
   }

@@ -2,7 +2,7 @@
 # 启动 dev 时 Node 会自动加载本文件
 # 重启后需重新加载；不要提交到 git
 
-baseUrl: "https://klback.quantclaw.vip"
+baseUrl: "https://market.quant-speed.com/"
 
 cacheTtlSeconds: 30
 

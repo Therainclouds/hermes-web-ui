@@ -5,7 +5,7 @@
  */
 import { computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { NEmpty, NSpin } from 'naive-ui'
+import { NEmpty, NSpin, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useExpertsStore } from '@/stores/hermes/experts'
 import * as expertsApi from '@/api/hermes/experts'
@@ -15,7 +15,6 @@ import {
   ExpertFeaturedCarousel,
   ExpertHero,
 } from '@/views/hermes/experts'
-import { useMessage } from '@/composables/useAppMessage'
 
 const router = useRouter()
 const message = useMessage()
@@ -111,7 +110,7 @@ function openDetail(slug: string) {
 }
 
 async function handleStartChat(slug: string) {
-  const installed = expertsStore.findInstalled(slug)
+  const installed = expertsStore.findReadyInstalled(slug)
   if (!installed) return
   const binding = expertsStore.bindings.find((b) => b.expert_slug === slug)
   if (!binding) {
@@ -213,18 +212,13 @@ function setCategory(cat: string | null) {
               :key="item.slug"
               :item="item"
               :mode="activeTab === 'team' ? 'team' : 'published'"
-              :installed="expertsStore.findInstalled(item.slug)"
+              :installed="expertsStore.findReadyInstalled(item.slug)"
               @open="openDetail"
               @start-chat="handleStartChat"
             />
           </template>
         </div>
       </NSpin>
-    </div>
-
-    <!-- 临时占位遮罩：后端未就绪时遮住整个专家页面，业务代码保留。后端就绪后删除此节点即可。 -->
-    <div class="experts-placeholder-overlay" aria-hidden="true">
-      <div class="experts-placeholder-text">敬请期待</div>
     </div>
   </div>
 </template>
@@ -233,7 +227,6 @@ function setCategory(cat: string | null) {
 @use '@/styles/variables' as *;
 
 .experts-view {
-  position: relative;
   display: flex;
   flex-direction: column;
   padding: 0 20px 20px;
@@ -326,34 +319,5 @@ function setCategory(cat: string | null) {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr));
   gap: 12px;
-}
-
-// 临时占位遮罩样式：仅覆盖 experts-view 容器，不影响外层布局。后端就绪后可整体删除。
-.experts-placeholder-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 10;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(6px);
-  pointer-events: auto;
-}
-
-.experts-placeholder-text {
-  font-size: 96px;
-  font-weight: 800;
-  letter-spacing: 12px;
-  color: $accent-primary;
-  text-shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
-  user-select: none;
-}
-
-@media (max-width: 768px) {
-  .experts-placeholder-text {
-    font-size: 56px;
-    letter-spacing: 6px;
-  }
 }
 </style>
