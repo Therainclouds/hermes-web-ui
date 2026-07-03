@@ -245,6 +245,47 @@ describe('copyModelProviderAuthForClone', () => {
     expect(clonedAuth.credential_pool.anthropic).toBeUndefined()
   })
 
+  it('supports copying auth from an explicit source profile', () => {
+    process.env.HERMES_HOME = tmpDir
+    writeFileSync(join(tmpDir, 'active_profile'), 'other\n')
+    const defaultDir = tmpDir
+    const otherDir = join(tmpDir, 'profiles', 'other')
+    mkdirSync(otherDir, { recursive: true })
+    writeFileSync(join(defaultDir, 'auth.json'), JSON.stringify({
+      providers: {
+        'claude-oauth': { access_token: 'default-claude-token' },
+        anthropic: { access_token: 'default-anthropic-token' },
+      },
+      credential_pool: {
+        'claude-oauth': [{ access_token: 'default-claude-pool-token' }],
+        anthropic: [{ access_token: 'default-anthropic-pool-token' }],
+      },
+    }, null, 2))
+    writeFileSync(join(otherDir, 'auth.json'), JSON.stringify({
+      providers: {
+        'claude-oauth': { access_token: 'other-claude-token' },
+        anthropic: { access_token: 'other-anthropic-token' },
+      },
+    }, null, 2))
+    const cloneDir = join(tmpDir, 'profiles', 'cloned')
+    mkdirSync(cloneDir, { recursive: true })
+    writeFileSync(join(cloneDir, 'config.yaml'), [
+      'model:',
+      '  provider: claude-oauth',
+      '  default: claude-sonnet-4',
+      '',
+    ].join('\n'))
+
+    const copied = copyModelProviderAuthForClone('cloned', 'default')
+
+    expect(copied.sort()).toEqual(['anthropic', 'claude-oauth'])
+    const clonedAuth = JSON.parse(readFileSync(join(cloneDir, 'auth.json'), 'utf-8'))
+    expect(clonedAuth.providers['claude-oauth']).toEqual({ access_token: 'default-claude-token' })
+    expect(clonedAuth.providers.anthropic).toEqual({ access_token: 'default-anthropic-token' })
+    expect(clonedAuth.credential_pool['claude-oauth']).toEqual([{ access_token: 'default-claude-pool-token' }])
+    expect(clonedAuth.credential_pool.anthropic).toEqual([{ access_token: 'default-anthropic-pool-token' }])
+  })
+
   it('copies the Claude OAuth runtime alias needed for chat execution', () => {
     process.env.HERMES_HOME = tmpDir
     writeFileSync(join(tmpDir, 'active_profile'), 'default\n')

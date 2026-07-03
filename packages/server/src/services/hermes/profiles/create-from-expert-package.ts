@@ -9,9 +9,11 @@ import { join, dirname } from 'path'
 import { createProfile, deleteProfile } from '../hermes-cli'
 import { detectHermesRootHome } from '../hermes-path'
 import {
+  PROVIDER_ENV_MAP,
   readConfigYamlForProfile,
+  saveEnvValueForProfile,
 } from '../../config-helpers'
-import { getActiveProfileName } from '../hermes-profile'
+import { copyModelProviderAuthForClone } from '../profile-credentials'
 import yaml from 'js-yaml'
 
 function profileDir(name: string): string {
@@ -121,8 +123,8 @@ export async function createExpertProfile(
 
   await writeMarker(profileDirPath, input)
 
-  // Q2: 复制当前激活 profile 的 default model/provider 到专家 profile
-  await copyModelFromActiveProfile(input.profileName)
+  // 专家 profile 继承 default profile 的模型与对应 provider 认证，避免 UI/运行态出现“已配置模型但仍无可用模型”的错位。
+  await hydrateExpertModelContext(input.profileName)
 
   return {
     profileName: input.profileName,
@@ -137,7 +139,7 @@ export async function createExpertProfile(
  * - 来源优先级：default profile > PROVIDER_PRESETS 兜底（首个有模型的 provider）
  * - 不论 active 是否 == target，都强制复制，保证新建专家始终有模型
  */
-async function copyModelFromActiveProfile(targetProfile: string): Promise<void> {
+async function hydrateExpertModelContext(targetProfile: string): Promise<void> {
   try {
     const defaultCfg = await readConfigYamlForProfile('default')
     // eslint-disable-next-line no-console
@@ -191,10 +193,53 @@ async function copyModelFromActiveProfile(targetProfile: string): Promise<void> 
     console.log('[experts.copyModel] written yaml=\n', yamlStr)
     // eslint-disable-next-line no-console
     console.log('[experts.copyModel] done: copied default=', defaultModel, 'provider=', defaultProvider, 'to=', targetProfile)
+
+    const copiedEnvKeys = await copyProviderEnvFromProfile('default', targetProfile, defaultProvider)
+    // eslint-disable-next-line no-console
+    console.log('[experts.copyModelEnv] copied keys=', copiedEnvKeys.join(',') || '(none)', 'target=', targetProfile, 'source=default', 'provider=', defaultProvider)
+
+    const copiedAuthProviders = copyModelProviderAuthForClone(targetProfile, 'default')
+    // eslint-disable-next-line no-console
+    console.log('[experts.copyModelAuth] copied providers=', copiedAuthProviders.join(',') || '(none)', 'target=', targetProfile, 'source=default')
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('[experts.copyModel] failed', err)
   }
+}
+
+function parseEnvMap(raw: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const eqIndex = trimmed.indexOf('=')
+    if (eqIndex <= 0) continue
+    const key = trimmed.slice(0, eqIndex).trim()
+    const value = trimmed.slice(eqIndex + 1)
+    if (key) out[key] = value
+  }
+  return out
+}
+
+async function copyProviderEnvFromProfile(sourceProfile: string, targetProfile: string, provider: string): Promise<string[]> {
+  const envMapping = PROVIDER_ENV_MAP[provider]
+  if (!envMapping) return []
+
+  const sourceEnvRaw = await fs.readFile(join(profileDir(sourceProfile), '.env'), 'utf-8').catch(() => '')
+  const targetEnvRaw = await fs.readFile(join(profileDir(targetProfile), '.env'), 'utf-8').catch(() => '')
+  const sourceEnv = parseEnvMap(sourceEnvRaw)
+  const targetEnv = parseEnvMap(targetEnvRaw)
+  const copiedKeys: string[] = []
+
+  for (const key of [envMapping.api_key_env, envMapping.base_url_env].filter(Boolean)) {
+    const sourceValue = String(sourceEnv[key] || '').trim()
+    const targetValue = String(targetEnv[key] || '').trim()
+    if (!sourceValue || targetValue) continue
+    await saveEnvValueForProfile(targetProfile, key, sourceValue)
+    copiedKeys.push(key)
+  }
+
+  return copiedKeys
 }
 
 async function loadFirstProviderPreset(): Promise<{ provider: string; model: string } | null> {
