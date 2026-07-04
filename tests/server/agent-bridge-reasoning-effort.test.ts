@@ -57,4 +57,42 @@ describe('AgentBridgeClient.chat reasoning_effort forwarding', () => {
     expect(call).toBeDefined()
     expect(call).not.toHaveProperty('reasoning_effort')
   })
+
+  it('forwards workspace to chat and context estimate requests', async () => {
+    const { AgentBridgeClient } = await import('../../packages/server/src/services/hermes/agent-bridge/client')
+    const client = new AgentBridgeClient({ endpoint: 'tcp://127.0.0.1:1', connectRetryMs: 0, timeoutMs: 1 })
+    const request = vi.spyOn(client, 'request')
+      .mockResolvedValueOnce({
+        ok: true,
+        run_id: 'r-workspace',
+        session_id: 's-workspace',
+        status: 'running',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        session_id: 's-workspace',
+        token_count: 0,
+        message_count: 0,
+        tool_count: 0,
+        system_prompt_chars: 0,
+      })
+
+    await client.chat('s-workspace', 'hello', undefined, undefined, 'default', {
+      workspace: 'C:\\Users\\tester\\workspace',
+    })
+    await client.contextEstimate('s-workspace', [], undefined, 'default', {
+      workspace: 'C:\\Users\\tester\\workspace',
+    })
+
+    expect(request.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+      action: 'chat',
+      session_id: 's-workspace',
+      workspace: 'C:\\Users\\tester\\workspace',
+    }))
+    expect(request.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+      action: 'context_estimate',
+      session_id: 's-workspace',
+      workspace: 'C:\\Users\\tester\\workspace',
+    }))
+  })
 })

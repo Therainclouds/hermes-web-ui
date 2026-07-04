@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { NButton, NTag, NSpin, useMessage, useDialog } from 'naive-ui'
 import type { HermesProfile, HermesProfileDetail } from '@/api/hermes/profiles'
 import { useProfilesStore } from '@/stores/hermes/profiles'
@@ -15,6 +16,7 @@ const profilesStore = useProfilesStore()
 const expertsStore = useExpertsStore()
 const message = useMessage()
 const dialog = useDialog()
+const router = useRouter()
 
 const expanded = ref(false)
 const detailLoading = ref(false)
@@ -98,6 +100,16 @@ async function handleExport() {
     exporting.value = false
   }
 }
+
+function handleEditConfig() {
+  void router.push({
+    name: 'hermes.files',
+    query: {
+      profile: props.profile.name,
+      file: 'config.yaml',
+    },
+  })
+}
 </script>
 
 <template>
@@ -169,6 +181,9 @@ async function handleExport() {
     </div>
 
     <div class="card-actions">
+      <NButton size="tiny" quaternary @click="handleEditConfig">
+        {{ t('profiles.editConfig') }}
+      </NButton>
       <NButton
         v-if="!profile.active"
         size="tiny"

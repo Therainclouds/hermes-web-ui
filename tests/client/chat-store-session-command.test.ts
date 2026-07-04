@@ -44,9 +44,12 @@ vi.mock('@/api/client', () => ({
 }))
 
 vi.mock('@/api/hermes/sessions', () => ({
+  archiveSession: vi.fn(),
   deleteSession: vi.fn(),
   fetchSession: vi.fn(),
   fetchSessions: vi.fn(),
+  fetchWorkspaceRunChangesForSession: vi.fn(async () => []),
+  fetchWorkspaceRunChangeFile: vi.fn(async () => null),
   setSessionModel: vi.fn(),
 }))
 
@@ -249,6 +252,147 @@ describe('chat store session.command fanout', () => {
     })
 
     expect(store.isStreaming).toBe(false)
+  })
+
+  it('settles stale runtime tool rows when terminal session commands complete', () => {
+    const store = useChatStore()
+    const session = makeSession()
+    session.messages = [
+      { id: 'tool-1', role: 'tool', content: '', timestamp: 1, toolName: 'shell', toolStatus: 'running' },
+    ]
+    store.sessions = [session]
+    store.activeSessionId = 'session-1'
+    store.activeSession = session
+
+    chatApi.sessionCommandHandlers[0]({
+      event: 'session.command',
+      session_id: 'session-1',
+      command: 'status',
+      action: 'status',
+      message: 'Status: idle',
+      terminal: true,
+    })
+
+    expect(store.messages[0]).toEqual(expect.objectContaining({
+      role: 'tool',
+      toolName: 'shell',
+      toolStatus: 'done',
+    }))
+    expect(store.isStreaming).toBe(false)
+  })
+
+  it('settles stale runtime tool rows before sending an idle slash command', async () => {
+    const store = useChatStore()
+    const session = makeSession()
+    session.source = 'cli'
+    session.messages = [
+      { id: 'tool-1', role: 'tool', content: '', timestamp: 1, toolName: 'weather', toolStatus: 'running' },
+    ]
+    store.sessions = [session]
+    store.activeSessionId = 'session-1'
+    store.activeSession = session
+
+    await store.sendMessage('/status')
+
+    expect(store.messages[0]).toEqual(expect.objectContaining({
+      role: 'tool',
+      toolName: 'weather',
+      toolStatus: 'done',
+    }))
+    expect(store.messages[1]).toEqual(expect.objectContaining({
+      role: 'command',
+      content: '/status',
+    }))
+  })
+
+  it('adds peer command messages to the transcript even after the session command marks the run live', () => {
+    const store = useChatStore()
+    const session = makeSession()
+    session.source = 'cli'
+    store.sessions = [session]
+    store.activeSessionId = 'session-1'
+    store.activeSession = session
+
+    chatApi.sessionCommandHandlers.forEach(handler => handler({
+      event: 'session.command',
+      session_id: 'session-1',
+      command: 'moa',
+      action: 'moa',
+      message: 'MoA one-shot queued with preset default.',
+      started: true,
+      terminal: false,
+    }))
+    chatApi.peerUserMessageHandlers.forEach(handler => handler({
+      event: 'run.peer_user_message',
+      session_id: 'session-1',
+      message: {
+        id: 'queue-moa',
+        role: 'command',
+        content: '/moa test',
+        timestamp: 2,
+      },
+    }))
+
+    expect(store.queuedUserMessages.get('session-1')).toBeUndefined()
+    expect(store.messages).toEqual([
+      expect.objectContaining({
+        role: 'command',
+        content: 'MoA one-shot queued with preset default.',
+        commandAction: 'moa',
+      }),
+      expect.objectContaining({
+        id: 'queue-moa',
+        role: 'command',
+        content: '/moa test',
+        queued: false,
+      }),
+    ])
+  })
+
+  it('moves an existing peer command queue entry into the transcript when the command starts', () => {
+    const store = useChatStore()
+    const session = makeSession()
+    session.source = 'cli'
+    store.sessions = [session]
+    store.activeSessionId = 'session-1'
+    store.activeSession = session
+
+    chatApi.sessionCommandHandlers.forEach(handler => handler({
+      event: 'session.command',
+      session_id: 'session-1',
+      action: 'moa',
+      started: true,
+      terminal: false,
+    }))
+    chatApi.registerSessionHandlers.mock.calls.at(-1)?.[1]?.onRunQueued?.({
+      event: 'run.queued',
+      session_id: 'session-1',
+      queue_length: 1,
+      queued_messages: [
+        { id: 'queue-moa', role: 'command', content: '/moa test', timestamp: 2, queued: true },
+      ],
+    })
+
+    chatApi.peerUserMessageHandlers.forEach(handler => handler({
+      event: 'run.peer_user_message',
+      session_id: 'session-1',
+      message: {
+        id: 'queue-moa',
+        role: 'command',
+        content: '/moa test',
+        timestamp: 3,
+      },
+    }))
+
+    expect(store.queuedUserMessages.get('session-1')).toBeUndefined()
+    expect(store.messages).toEqual([
+      expect.objectContaining({
+        id: 'queue-moa',
+        role: 'command',
+        content: '/moa test',
+        queued: false,
+      }),
+    ])
   })
 
   it('adds and switches to a branched child session from session.command branch events', async () => {

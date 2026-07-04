@@ -76,16 +76,16 @@ const formattedThinkingElapsed = computed(() => formatElapsed(thinkingElapsedMs.
 
 const currentToolCalls = computed(() => {
   const msgs = chatStore.messages;
-  // Find the last user message index
-  let lastUserIdx = -1;
+  // Slash commands are also user input boundaries for the live tool strip.
+  let lastInputIdx = -1;
   for (let i = msgs.length - 1; i >= 0; i--) {
-    if (msgs[i].role === "user") {
-      lastUserIdx = i;
+    if (msgs[i].role === "user" || msgs[i].role === "command") {
+      lastInputIdx = i;
       break;
     }
   }
-  // Only tool calls after the last user message, newest on top
-  const tools = msgs.filter((m, i) => m.role === "tool" && i > lastUserIdx);
+  // Only tool calls after the last user input, newest on top.
+  const tools = msgs.filter((m, i) => m.role === "tool" && i > lastInputIdx);
   return [...tools].reverse();
 });
 
@@ -95,7 +95,7 @@ const visibleToolCalls = computed(() =>
 
 const emptyState = computed(() => {
   const session = chatStore.activeSession;
-  const codingAgentId = session?.codingAgentId || (session?.agent === "codex" ? "codex" : session?.agent === "claude" ? "claude-code" : undefined);
+  const codingAgentId = session?.codingAgentId || (session?.agent === "codex" ? "codex" : session?.agent === "claude" ? "claude-code" : session?.agent === "ekko-agent" ? "ekko-agent" : undefined);
   if (codingAgentId === "codex") {
     return {
       logo: "/coding-agents/codex-openai.png",
@@ -108,6 +108,13 @@ const emptyState = computed(() => {
       logo: "/coding-agents/claude-code.svg",
       alt: "Claude Code",
       text: t("chat.emptyStateAgent", { agent: "Claude Code" }),
+    };
+  }
+  if (codingAgentId === "ekko-agent") {
+    return {
+      logo: "/coding-agents/ekko-agent.png",
+      alt: "Ekko Agent",
+      text: t("chat.emptyStateAgent", { agent: "Ekko Agent" }),
     };
   }
   return {

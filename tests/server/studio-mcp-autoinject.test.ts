@@ -32,6 +32,7 @@ describe('studio MCP autoinject', () => {
     vi.resetModules()
     vi.clearAllMocks()
     delete process.env.HERMES_DESKTOP
+    delete process.env.HERMES_AGENT_NODE
     delete process.env.AUTH_TOKEN
     delete process.env.HERMES_WEB_UI_DISABLE_MCP_AUTOINJECT
     delete process.env.HERMES_WEB_UI_ALLOW_TRANSIENT_MCP_AUTOINJECT
@@ -205,17 +206,24 @@ describe('studio MCP autoinject', () => {
     expect(updated.data.mcp_servers['hermes-studio-use'].args).toEqual([join(process.cwd(), 'bin/hermes-studio-mcp.mjs'), 'use'])
   })
 
-  it('uses the desktop command in desktop runtime', async () => {
+  it('uses the desktop runtime node for bundled MCP servers when available', async () => {
     process.env.HERMES_DESKTOP = 'true'
+    process.env.HERMES_AGENT_NODE = '/runtime/node'
     const { injectBundledMcpServer } = await import('../../packages/server/src/services/hermes/studio-mcp-autoinject')
 
     await injectBundledMcpServer()
 
     const injected = await updateConfigYamlForProfileMock.mock.calls[0][1]({})
-    expect(injected.data.mcp_servers['hermes-studio-api'].command).toBe('hermes-studio-mcp')
-    expect(injected.data.mcp_servers['hermes-studio-api'].args).toEqual(['api'])
-    expect(injected.data.mcp_servers['hermes-studio-devices'].args).toEqual(['devices'])
-    expect(injected.data.mcp_servers['hermes-studio-use'].args).toEqual(['use'])
+    expect(injected.data.mcp_servers['hermes-studio-api'].command).toBe('/runtime/node')
+    expect(injected.data.mcp_servers['hermes-studio-api'].args).toEqual([
+      join(process.cwd(), 'bin/hermes-studio-mcp.mjs'), 'api',
+    ])
+    expect(injected.data.mcp_servers['hermes-studio-devices'].args).toEqual([
+      join(process.cwd(), 'bin/hermes-studio-mcp.mjs'), 'devices',
+    ])
+    expect(injected.data.mcp_servers['hermes-studio-use'].args).toEqual([
+      join(process.cwd(), 'bin/hermes-studio-mcp.mjs'), 'use',
+    ])
   })
 
   it('removes stale injected tokens from managed server config', async () => {

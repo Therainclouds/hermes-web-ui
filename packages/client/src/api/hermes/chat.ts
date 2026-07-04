@@ -1,5 +1,6 @@
 import { io, type Socket } from 'socket.io-client'
 import { getBaseUrlValue, getApiKey } from '../client'
+import type { ChatCodingAgentId } from '../coding-agents'
 import type { ProviderApiMode } from './system'
 
 export type ContentBlock =
@@ -23,8 +24,8 @@ export interface StartRunRequest {
   queue_id?: string
   source?: 'api_server' | 'cli' | 'coding_agent' | 'global_agent' | 'workflow'
   session_source?: 'global_agent' | 'workflow'
-  coding_agent_id?: 'claude-code' | 'codex'
-  agent_id?: 'claude-code' | 'codex'
+  coding_agent_id?: ChatCodingAgentId
+  agent_id?: ChatCodingAgentId
   mode?: 'scoped' | 'global'
   workspace?: string | null
   baseUrl?: string
@@ -50,6 +51,17 @@ export interface RunEvent {
   delta?: string
   /** Payload text for `reasoning.delta` / `thinking.delta` / `reasoning.available` events. */
   text?: string
+  /** MoA reference metadata forwarded as display-only reasoning. */
+  label?: string
+  index?: number
+  count?: number
+  aggregator?: string
+  preset?: string
+  moa?: {
+    preset?: string
+    reference_models?: string[]
+    aggregator?: string
+  }
   tool?: string
   name?: string
   preview?: string
@@ -58,6 +70,8 @@ export interface RunEvent {
   /** Final response text on `run.completed`. May be empty/null if the agent
    * silently swallowed an upstream error — see chat store for fallback. */
   output?: string | null
+  /** Run-level workspace diff summary attached to terminal run events. */
+  workspace_run_change?: unknown
   usage?: {
     input_tokens: number
     output_tokens: number
@@ -133,6 +147,7 @@ const sessionEventHandlers = new Map<string, {
   onReasoningAvailable: (event: RunEvent) => void
   onToolStarted: (event: RunEvent) => void
   onToolCompleted: (event: RunEvent) => void
+  onWorkspaceDiffCompleted?: (event: RunEvent) => void
   onSubagentEvent?: (event: RunEvent) => void
   onRunStarted: (event: RunEvent) => void
   onRunCompleted: (event: RunEvent) => void
@@ -234,6 +249,16 @@ function globalToolCompletedHandler(event: RunEvent): void {
   const handlers = sessionEventHandlers.get(sid)
   if (handlers?.onToolCompleted) {
     handlers.onToolCompleted(event)
+  }
+}
+
+function globalWorkspaceDiffCompletedHandler(event: RunEvent): void {
+  const sid = event.session_id
+  if (!sid) return
+
+  const handlers = sessionEventHandlers.get(sid)
+  if (handlers?.onWorkspaceDiffCompleted) {
+    handlers.onWorkspaceDiffCompleted(event)
   }
 }
 
@@ -507,6 +532,7 @@ export function registerSessionHandlers(
     onReasoningAvailable: (event: RunEvent) => void
     onToolStarted: (event: RunEvent) => void
     onToolCompleted: (event: RunEvent) => void
+    onWorkspaceDiffCompleted?: (event: RunEvent) => void
     onSubagentEvent?: (event: RunEvent) => void
     onRunStarted: (event: RunEvent) => void
     onRunCompleted: (event: RunEvent) => void
@@ -654,10 +680,13 @@ export function connectChatRun(requestedProfile?: string | null, transport: Chat
     chatRunSocket.on('reasoning.delta', globalReasoningDeltaHandler)
     chatRunSocket.on('thinking.delta', globalThinkingDeltaHandler)
     chatRunSocket.on('reasoning.available', globalReasoningAvailableHandler)
+    chatRunSocket.on('moa.reference', globalReasoningDeltaHandler)
+    chatRunSocket.on('moa.aggregating', globalAgentEventHandler)
 
     // Tool events
     chatRunSocket.on('tool.started', globalToolStartedHandler)
     chatRunSocket.on('tool.completed', globalToolCompletedHandler)
+    chatRunSocket.on('workspace.diff.completed', globalWorkspaceDiffCompletedHandler)
     chatRunSocket.on('subagent.start', globalSubagentEventHandler)
     chatRunSocket.on('subagent.tool', globalSubagentEventHandler)
     chatRunSocket.on('subagent.progress', globalSubagentEventHandler)
@@ -855,6 +884,10 @@ export function startRunViaSocket(
       onEvent(evt)
     },
     onToolCompleted: (evt: RunEvent) => {
+      if (closed) return
+      onEvent(evt)
+    },
+    onWorkspaceDiffCompleted: (evt: RunEvent) => {
       if (closed) return
       onEvent(evt)
     },

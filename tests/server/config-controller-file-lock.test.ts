@@ -480,6 +480,79 @@ describe('config controller locked file updates', () => {
     expect(readCtx.body.platforms.matrix.extra.password).toBe('matrix-secret')
   })
 
+  it('round-trips platform proxy URLs through env-backed channel settings', async () => {
+    await writeFile(join(hermesHome, 'config.yaml'), 'platforms: {}\n', 'utf-8')
+    await writeFile(join(hermesHome, '.env'), 'OPENROUTER_API_KEY=keep\n', 'utf-8')
+    const { updateCredentials, getConfig } = await loadController()
+
+    await updateCredentials(makeCtx({
+      platform: 'telegram',
+      values: { proxy: 'socks5://127.0.0.1:7890' },
+    }))
+    await updateCredentials(makeCtx({
+      platform: 'discord',
+      values: { proxy: 'http://127.0.0.1:8080' },
+    }))
+    await updateCredentials(makeCtx({
+      platform: 'matrix',
+      values: { proxy: 'https://proxy.example:8443' },
+    }))
+
+    const env = await readFile(join(hermesHome, '.env'), 'utf-8')
+    expect(env).toContain('OPENROUTER_API_KEY=keep')
+    expect(env).toContain('TELEGRAM_PROXY=socks5://127.0.0.1:7890')
+    expect(env).toContain('DISCORD_PROXY=http://127.0.0.1:8080')
+    expect(env).toContain('MATRIX_PROXY=https://proxy.example:8443')
+
+    const readCtx = makeCtx({})
+    await getConfig(readCtx)
+    expect(readCtx.body.platforms.telegram.proxy).toBe('socks5://127.0.0.1:7890')
+    expect(readCtx.body.platforms.discord.proxy).toBe('http://127.0.0.1:8080')
+    expect(readCtx.body.platforms.matrix.proxy).toBe('https://proxy.example:8443')
+
+    await updateCredentials(makeCtx({
+      platform: 'discord',
+      values: { proxy: '' },
+    }))
+    const clearedEnv = await readFile(join(hermesHome, '.env'), 'utf-8')
+    expect(clearedEnv).not.toContain('DISCORD_PROXY=')
+  })
+
+  it('round-trips global proxy env settings and restarts the gateway', async () => {
+    await writeFile(join(hermesHome, 'config.yaml'), 'model:\n  default: glm-5.1\n', 'utf-8')
+    await writeFile(join(hermesHome, '.env'), 'OPENROUTER_API_KEY=keep\nHTTP_PROXY=http://old.example:8080\n', 'utf-8')
+    const { updateConfig, getConfig } = await loadController()
+
+    await updateConfig(makeCtx({
+      section: 'proxy',
+      values: {
+        HTTPS_PROXY: 'http://127.0.0.1:7890',
+        HTTP_PROXY: '',
+        ALL_PROXY: 'socks5://127.0.0.1:7891',
+        NO_PROXY: 'localhost,127.0.0.1,.local',
+      },
+    }))
+
+    expect(mockRestartGateway).toHaveBeenCalledWith('default')
+    const env = await readFile(join(hermesHome, '.env'), 'utf-8')
+    expect(env).toContain('OPENROUTER_API_KEY=keep')
+    expect(env).toContain('HTTPS_PROXY=http://127.0.0.1:7890')
+    expect(env).not.toContain('HTTP_PROXY=')
+    expect(env).toContain('ALL_PROXY=socks5://127.0.0.1:7891')
+    expect(env).toContain('NO_PROXY=localhost,127.0.0.1,.local')
+
+    const ctx = makeCtx({})
+    await getConfig(ctx)
+    expect(ctx.body.proxy).toEqual({
+      HTTPS_PROXY: 'http://127.0.0.1:7890',
+      ALL_PROXY: 'socks5://127.0.0.1:7891',
+      NO_PROXY: 'localhost,127.0.0.1,.local',
+    })
+    const config = YAML.load(await readFile(join(hermesHome, 'config.yaml'), 'utf-8')) as any
+    expect(config.proxy).toBeUndefined()
+    expect(config.model.default).toBe('glm-5.1')
+  })
+
   it('reads and writes channel settings in the request-scoped profile only', async () => {
     const researchDir = join(hermesHome, 'profiles', 'research')
     await mkdir(researchDir, { recursive: true })

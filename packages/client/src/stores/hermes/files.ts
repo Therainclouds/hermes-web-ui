@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import * as filesApi from '@/api/hermes/files'
+import { readSessionWorkspaceFile, writeSessionWorkspaceFile } from '@/api/hermes/sessions'
 import type { FileEntry } from '@/api/hermes/files'
 
 const EXT_LANG_MAP: Record<string, string> = {
@@ -113,8 +114,14 @@ function isAffected(targetPath: string, changedPath: string, changedIsDir: boole
   return false
 }
 
+function normalizeProfile(profile?: string | null): string | null {
+  const value = typeof profile === 'string' ? profile.trim() : ''
+  return value || null
+}
+
 export const useFilesStore = defineStore('files', () => {
   const currentPath = ref('')
+  const currentProfile = ref<string | null>(null)
   const entries = ref<FileEntry[]>([])
   const loading = ref(false)
   const sortBy = ref<'name' | 'size' | 'modTime'>('name')
@@ -125,10 +132,13 @@ export const useFilesStore = defineStore('files', () => {
     content: string
     originalContent: string
     language: string
+    workspaceSessionId?: string
+    workspaceRelativePath?: string
   } | null>(null)
 
   const previewFile = ref<{
     path: string
+    profile?: string | null
     type: 'image' | 'markdown' | 'text'
     content?: string
     language?: string
@@ -154,17 +164,23 @@ export const useFilesStore = defineStore('files', () => {
     return copy
   })
 
-  async function fetchEntries(path?: string) {
+  function resolveProfile(profile?: string | null): string | null {
+    return profile === undefined ? currentProfile.value : normalizeProfile(profile)
+  }
+
+  async function fetchEntries(path?: string, options: { profile?: string | null } = {}) {
     if (path !== undefined && path !== currentPath.value) {
       // Switching directory invalidates the current preview; close it so the
       // file list becomes visible again. The editor has its own dirty-check
       // (see hasUnsavedChanges), so we leave editingFile alone here.
       previewFile.value = null
     }
+    const nextProfile = resolveProfile(options.profile)
+    currentProfile.value = nextProfile
     if (path !== undefined) currentPath.value = path
     loading.value = true
     try {
-      const result = await filesApi.listFiles(currentPath.value)
+      const result = await filesApi.listFiles(currentPath.value, nextProfile)
       entries.value = result.entries
     } catch (err) {
       console.error('Failed to fetch files:', err)
@@ -174,15 +190,17 @@ export const useFilesStore = defineStore('files', () => {
     }
   }
 
-  function navigateTo(path: string) { return fetchEntries(path) }
-  function navigateUp() {
+  function navigateTo(path: string, options: { profile?: string | null } = {}) { return fetchEntries(path, options) }
+  function navigateUp(options: { profile?: string | null } = {}) {
     const parts = currentPath.value.split('/').filter(Boolean)
     parts.pop()
-    return fetchEntries(parts.join('/'))
+    return fetchEntries(parts.join('/'), options)
   }
 
-  async function openEditor(filePath: string) {
-    const result = await filesApi.readFile(filePath)
+  async function openEditor(filePath: string, options: { profile?: string | null } = {}) {
+    const profile = resolveProfile(options.profile)
+    currentProfile.value = profile
+    const result = await filesApi.readFile(filePath, profile)
     editingFile.value = {
       path: filePath,
       content: result.content,
@@ -191,24 +209,47 @@ export const useFilesStore = defineStore('files', () => {
     }
   }
 
+  async function openSessionWorkspaceEditor(sessionId: string, filePath: string) {
+    const result = await readSessionWorkspaceFile(sessionId, filePath)
+    editingFile.value = {
+      path: result.path,
+      content: result.content,
+      originalContent: result.content,
+      language: getLanguageFromPath(result.path),
+      workspaceSessionId: sessionId,
+      workspaceRelativePath: result.path,
+    }
+  }
+
   async function saveEditor() {
     if (!editingFile.value) return
-    await filesApi.writeFile(editingFile.value.path, editingFile.value.content)
+    if (editingFile.value.workspaceSessionId && editingFile.value.workspaceRelativePath) {
+      await writeSessionWorkspaceFile(
+        editingFile.value.workspaceSessionId,
+        editingFile.value.workspaceRelativePath,
+        editingFile.value.content,
+      )
+    } else {
+      await filesApi.writeFile(editingFile.value.path, editingFile.value.content, currentProfile.value)
+    }
     editingFile.value.originalContent = editingFile.value.content
   }
 
   function closeEditor() { editingFile.value = null }
 
-  async function openPreview(entry: FileEntry) {
+  async function openPreview(entry: FileEntry, options: { profile?: string | null } = {}) {
+    const profile = resolveProfile(options.profile)
+    currentProfile.value = profile
     if (isImageFile(entry.name)) {
-      previewFile.value = { path: entry.path, type: 'image' }
+      previewFile.value = { path: entry.path, profile, type: 'image' }
     } else if (isMarkdownFile(entry.name)) {
-      const result = await filesApi.readFile(entry.path)
-      previewFile.value = { path: entry.path, type: 'markdown', content: result.content }
+      const result = await filesApi.readFile(entry.path, profile)
+      previewFile.value = { path: entry.path, profile, type: 'markdown', content: result.content }
     } else if (isTextFile(entry.name)) {
-      const result = await filesApi.readFile(entry.path)
+      const result = await filesApi.readFile(entry.path, profile)
       previewFile.value = {
         path: entry.path,
+        profile,
         type: 'text',
         content: result.content,
         language: getLanguageFromPath(entry.path),
@@ -220,48 +261,48 @@ export const useFilesStore = defineStore('files', () => {
 
   async function createDir(name: string, targetPath = currentPath.value) {
     const path = targetPath ? `${targetPath}/${name}` : name
-    await filesApi.mkDir(path)
-    await fetchEntries()
+    await filesApi.mkDir(path, currentProfile.value)
+    await fetchEntries(undefined)
   }
 
   async function createFile(name: string) {
     const path = currentPath.value ? `${currentPath.value}/${name}` : name
-    await filesApi.writeFile(path, '')
-    await fetchEntries()
+    await filesApi.writeFile(path, '', currentProfile.value)
+    await fetchEntries(undefined)
   }
 
   async function deleteEntry(entry: FileEntry) {
-    await filesApi.deleteFile(entry.path, entry.isDir)
+    await filesApi.deleteFile(entry.path, entry.isDir, currentProfile.value)
     if (previewFile.value && isAffected(previewFile.value.path, entry.path, entry.isDir)) {
       previewFile.value = null
     }
     if (editingFile.value && isAffected(editingFile.value.path, entry.path, entry.isDir)) {
       editingFile.value = null
     }
-    await fetchEntries()
+    await fetchEntries(undefined)
   }
 
   async function renameEntry(entry: FileEntry, newName: string) {
     const parentPath = entry.path.includes('/') ? entry.path.slice(0, entry.path.lastIndexOf('/')) : ''
     const newPath = parentPath ? `${parentPath}/${newName}` : newName
-    await filesApi.renameFile(entry.path, newPath)
+    await filesApi.renameFile(entry.path, newPath, currentProfile.value)
     if (previewFile.value && isAffected(previewFile.value.path, entry.path, entry.isDir)) {
       previewFile.value = null
     }
     if (editingFile.value && isAffected(editingFile.value.path, entry.path, entry.isDir)) {
       editingFile.value = null
     }
-    await fetchEntries()
+    await fetchEntries(undefined)
   }
 
   async function copyEntry(entry: FileEntry, destPath: string) {
-    await filesApi.copyFile(entry.path, destPath)
-    await fetchEntries()
+    await filesApi.copyFile(entry.path, destPath, currentProfile.value)
+    await fetchEntries(undefined)
   }
 
   async function uploadFiles(files: File[]) {
-    await filesApi.uploadFiles(currentPath.value, files)
-    await fetchEntries()
+    await filesApi.uploadFiles(currentPath.value, files, currentProfile.value)
+    await fetchEntries(undefined)
   }
 
   function setSort(by: 'name' | 'size' | 'modTime') {
@@ -279,11 +320,11 @@ export const useFilesStore = defineStore('files', () => {
   })
 
   return {
-    currentPath, entries, loading, sortBy, sortOrder,
+    currentPath, currentProfile, entries, loading, sortBy, sortOrder,
     editingFile, previewFile,
     pathSegments, sortedEntries, hasUnsavedChanges,
     fetchEntries, navigateTo, navigateUp,
-    openEditor, saveEditor, closeEditor,
+    openEditor, openSessionWorkspaceEditor, saveEditor, closeEditor,
     openPreview, closePreview,
     createDir, createFile, deleteEntry, renameEntry, copyEntry,
     uploadFiles, setSort,

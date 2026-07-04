@@ -12,6 +12,7 @@ const FUN_CODEX_PROVIDER = 'fun-codex'
 const LONGCAT_PROVIDER = 'longcat'
 const KIMI_CODING_PROVIDER = 'kimi-coding'
 const KIMI_CODING_CN_PROVIDER = 'kimi-coding-cn'
+const GLM_CODING_PLAN_PROVIDER = 'glm'
 const ALIBABA_CODING_PLAN_PROVIDER = 'alibaba-coding-plan'
 const MINIMAX_PROVIDER = 'minimax'
 const MINIMAX_CN_PROVIDER = 'minimax-cn'
@@ -86,6 +87,19 @@ describe('provider presets', () => {
     expect(SERVER_PROVIDER_PRESETS.find(candidate => candidate.value === KIMI_CODING_CN_PROVIDER)?.base_url).toBe('https://api.kimi.cn/coding/v1')
     expect(SERVER_PROVIDER_PRESETS.find(candidate => candidate.value === KIMI_CODING_CN_PROVIDER)?.label).toBe('Kimi for Coding China')
     expect(SERVER_PROVIDER_PRESETS.find(candidate => candidate.value === 'moonshot')).toBeUndefined()
+  })
+
+  it('aligns GLM Coding Plan with Hermes Agent China coding endpoint', () => {
+    const preset = SERVER_PROVIDER_PRESETS.find(candidate => candidate.value === GLM_CODING_PLAN_PROVIDER)
+    expect(preset?.base_url).toBe('https://open.bigmodel.cn/api/coding/paas/v4')
+    expect(preset?.api_mode).toBeUndefined()
+    expect(PROVIDER_ENV_MAP[GLM_CODING_PLAN_PROVIDER]).toEqual({ api_key_env: 'GLM_API_KEY', base_url_env: '' })
+    expect(modelsForProvider(SERVER_PROVIDER_PRESETS, GLM_CODING_PLAN_PROVIDER)).toEqual([
+      'glm-5.2',
+      'glm-5.1',
+      'glm-5v-turbo',
+      'glm-4.7',
+    ])
   })
 
   it('includes Qwen 3.7 Plus in the Alibaba Coding Plan fallback catalog', () => {

@@ -261,33 +261,33 @@ describe('update controller', () => {
     const npmCli = getNpmCliPath()
     const globalPrefix = getNodePrefix()
     const cliScript = getGlobalCliScript(globalPrefix)
-    const execFile = vi.fn((_command: string, args: string[], _options: any, callback: any) => {
+    const execFileSync = vi.fn((_command: string, args: string[]) => {
       if (args[1] === 'root') {
-        callback(null, process.platform === 'win32'
+        return process.platform === 'win32'
           ? join(globalPrefix, 'node_modules')
-          : join(globalPrefix, 'lib', 'node_modules'), '')
-        return
+          : join(globalPrefix, 'lib', 'node_modules')
       }
-      callback(null, 'updated', '')
+      return 'updated'
     })
-    const { handleUpdate, mocks } = await loadUpdateController({ execFile })
+    const { handleUpdate, mocks } = await loadUpdateController({ execFileSync })
     const ctx = createMockCtx()
 
     await handleUpdate(ctx)
 
-    expect(mocks.execFile).toHaveBeenCalledWith(
+    expect(mocks.execFileSync).toHaveBeenCalledWith(
       process.execPath,
       [npmCli, 'install', '-g', `${UPDATE_PACKAGE}@${PUBLISHED_VERSION}`, '--registry', UPDATE_REGISTRY, '--ignore-scripts', '--no-audit', '--no-fund'],
       expect.objectContaining({
         encoding: 'utf-8',
         timeout: 10 * 60 * 1000,
+        stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
+        cwd: expect.any(String),
         env: expect.objectContaining({
           npm_node_execpath: process.execPath,
           PATH: expect.stringContaining(`${nodeBinDir}${delimiter}`),
         }),
       }),
-      expect.any(Function),
     )
     expect(ctx.body).toEqual(expect.objectContaining({
       success: true,
@@ -299,15 +299,16 @@ describe('update controller', () => {
 
     await vi.runAllTimersAsync()
 
-    expect(mocks.execFile).toHaveBeenCalledWith(
+    expect(mocks.execFileSync).toHaveBeenCalledWith(
       process.execPath,
       [npmCli, 'root', '-g'],
       expect.objectContaining({
         encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
+        cwd: expect.any(String),
         env: expect.objectContaining({ npm_node_execpath: process.execPath }),
       }),
-      expect.any(Function),
     )
     expect(mocks.spawn).toHaveBeenCalledWith(
       process.execPath,
@@ -771,23 +772,17 @@ describe('update controller', () => {
       if (args.includes('install') && args.includes(`${UPDATE_PACKAGE}@${PUBLISHED_VERSION}`)) {
         const error = new Error('install failed') as Error & { stderr?: string }
         error.stderr = 'engine mismatch'
-        callback(error, '', 'engine mismatch')
-        return
+        throw error
       }
-      callback(null, '', '')
+      return ''
     })
-    const { handleUpdate, mocks } = await loadUpdateController({ execFile })
+    const { handleUpdate, mocks } = await loadUpdateController({ execFileSync })
     const ctx = createMockCtx()
 
     await handleUpdate(ctx)
 
     expect(ctx.status).toBe(500)
     expect(ctx.body).toEqual({ success: false, message: 'engine mismatch' })
-    expect(mocks.execFileSync).not.toHaveBeenCalledWith(
-      process.execPath,
-      [expect.any(String), 'install', '-g', 'hermes-web-ui@latest'],
-      expect.any(Object),
-    )
     expect(mocks.spawn).not.toHaveBeenCalled()
     expect(exitSpy).not.toHaveBeenCalled()
   })

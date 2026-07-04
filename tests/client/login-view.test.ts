@@ -6,6 +6,7 @@ const mockReplace = vi.hoisted(() => vi.fn())
 const mockFetchAuthStatus = vi.hoisted(() => vi.fn())
 const mockLoginWithPassword = vi.hoisted(() => vi.fn())
 const mockSetApiKey = vi.hoisted(() => vi.fn())
+const mockClearApiKey = vi.hoisted(() => vi.fn())
 const mockHasApiKey = vi.hoisted(() => vi.fn())
 const mockClearLoginLocks = vi.hoisted(() => vi.fn())
 const mockResetDefaultLogin = vi.hoisted(() => vi.fn())
@@ -24,6 +25,7 @@ vi.mock('vue-i18n', () => ({
 
 vi.mock('@/api/client', () => ({
   setApiKey: mockSetApiKey,
+  clearApiKey: mockClearApiKey,
   hasApiKey: mockHasApiKey,
 }))
 
@@ -43,10 +45,30 @@ describe('LoginView password login', () => {
   beforeEach(() => {
     delete (window as any).__LOGIN_TOKEN__
     vi.clearAllMocks()
+    mockIsDesktopShell.mockReturnValue(false)
     mockHasApiKey.mockReturnValue(false)
     mockFetchAuthStatus.mockResolvedValue({ hasPasswordLogin: true, username: 'quanthermes' })
     // Clean up any modals portaled to document.body from previous tests.
     document.body.innerHTML = ''
+  })
+
+  it('keeps the web login redirect when a token already exists', () => {
+    mockHasApiKey.mockReturnValue(true)
+
+    mount(LoginView)
+
+    expect(mockClearApiKey).not.toHaveBeenCalled()
+    expect(mockReplace).toHaveBeenCalledWith('/hermes/chat')
+  })
+
+  it('clears stale tokens when the desktop login page is opened', () => {
+    mockIsDesktopShell.mockReturnValue(true)
+    mockHasApiKey.mockReturnValue(true)
+
+    mount(LoginView)
+
+    expect(mockClearApiKey).toHaveBeenCalledOnce()
+    expect(mockReplace).not.toHaveBeenCalledWith('/hermes/chat')
   })
 
   it('logs in with username and password', async () => {

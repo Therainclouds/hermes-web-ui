@@ -374,6 +374,28 @@ function getCurrentNodeEnv() {
   }
 }
 
+function getUpdateCommandCwd() {
+  const cwd = getWebUiHome()
+  mkdirSync(cwd, { recursive: true })
+  return cwd
+}
+
+function runNpmSync(args: string[], options: { timeout?: number; env?: NodeJS.ProcessEnv } = {}) {
+  const env = {
+    ...getCurrentNodeEnv(),
+    ...options.env,
+  }
+  const execution = npmExecution(args, env)
+  return execFileSync(execution.command, execution.args, {
+    cwd: getUpdateCommandCwd(),
+    encoding: 'utf-8',
+    timeout: options.timeout,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env,
+    windowsHide: true,
+  }).trim()
+}
+
 async function runNpmAsync(args: string[], options: { timeout?: number; cwd?: string; logLabel?: string; env?: NodeJS.ProcessEnv } = {}) {
   const env = {
     ...getCurrentNodeEnv(),
@@ -1003,13 +1025,13 @@ async function checkoutPreview(ref: string) {
   appendPreviewActionLog(`preview tag ready: ${ref}`)
 }
 
-async function getGlobalRootAsync() {
-  return runNpmAsync(['root', '-g'])
+function getGlobalRoot() {
+  return runNpmSync(['root', '-g'])
 }
 
 async function getGlobalCliScriptAsync() {
   const cli = getGlobalPackageBin(
-    await getGlobalRootAsync(),
+    await getGlobalRoot(),
     config.update.packageName,
     config.update.cliBin,
   )
@@ -1053,7 +1075,7 @@ async function resolveRegistryUpdateVersion() {
 
 async function runUpdateInstall(versionOrTag: string) {
   try {
-    await runNpmAsync(['cache', 'clean', '--force'], { timeout: 2 * 60 * 1000 })
+    runNpmSync(['cache', 'clean', '--force'], { timeout: 2 * 60 * 1000 })
   } catch (err) {
     console.warn('[update] failed to clean npm cache, continuing update:', err)
   }
@@ -1391,20 +1413,14 @@ export async function handleUpdate(ctx: any) {
 
         restart.on('error', (err) => {
           updateInProgress = false
-          failCurrentUpdateTask(`Failed to restart Hermes Web UI after updating to ${version}.`, err instanceof Error ? err.message : String(err))
           console.error('[update] restart process failed:', err)
         })
         restart.on('exit', (code, signal) => {
           updateInProgress = false
           const failed = (typeof code === 'number' && code !== 0) || Boolean(signal)
           if (failed) {
-            const message = `[update] restart process exited before replacing server: code=${code} signal=${signal}`
-            failCurrentUpdateTask(`Restart exited before completing update ${version}.`, message)
-            console.error(message)
-            return
+            console.error(`[update] restart process exited before replacing server: code=${code} signal=${signal}`)
           }
-          managedUpdateTaskId = ''
-          updateTaskStore.completeCurrentTask('succeeded', `Updated Hermes Web UI to ${version}.`)
         })
         restart.unref()
       })()

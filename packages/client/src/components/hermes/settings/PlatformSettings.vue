@@ -268,6 +268,9 @@ watch(
         <SettingRow :label="t('platform.botToken')" :hint="t('platform.botTokenHint')">
           <NInput :value="credentialDraft('telegram').token || ''" :loading="isSavingPlatform('telegram')" clearable size="small" class="input-lg" placeholder="123456:ABC-DEF..." @update:value="v => setCredentialDraft('telegram', { token: v })" />
         </SettingRow>
+        <SettingRow :label="t('platform.proxyUrl')" :hint="t('platform.proxyUrlHint')">
+          <NInput :value="credentialDraft('telegram').proxy || ''" :loading="isSavingPlatform('telegram')" clearable size="small" class="input-lg" placeholder="socks5://127.0.0.1:7890" @update:value="v => setCredentialDraft('telegram', { proxy: v })" />
+        </SettingRow>
         <SettingRow :label="t('platform.requireMention')" :hint="t('platform.requireMentionGroup')">
           <NSwitch :value="configDraft('telegram').require_mention" :loading="isSavingPlatform('telegram')" @update:value="v => setConfigDraft('telegram', { require_mention: v })" />
         </SettingRow>
@@ -286,6 +289,9 @@ watch(
       <template v-if="p.key === 'discord'">
         <SettingRow :label="t('platform.botToken')" :hint="t('platform.botTokenHint')">
           <NInput :value="credentialDraft('discord').token || ''" :loading="isSavingPlatform('discord')" clearable size="small" class="input-lg" placeholder="Bot token..." @update:value="v => setCredentialDraft('discord', { token: v })" />
+        </SettingRow>
+        <SettingRow :label="t('platform.proxyUrl')" :hint="t('platform.proxyUrlHint')">
+          <NInput :value="credentialDraft('discord').proxy || ''" :loading="isSavingPlatform('discord')" clearable size="small" class="input-lg" placeholder="socks5://127.0.0.1:7890" @update:value="v => setCredentialDraft('discord', { proxy: v })" />
         </SettingRow>
         <SettingRow :label="t('platform.requireMention')" :hint="t('platform.requireMentionChannel')">
           <NSwitch :value="configDraft('discord').require_mention" :loading="isSavingPlatform('discord')" @update:value="v => setConfigDraft('discord', { require_mention: v })" />
@@ -355,6 +361,9 @@ watch(
         </SettingRow>
         <SettingRow :label="t('platform.homeserver')" :hint="t('platform.homeserverHint')">
           <NInput :value="credentialDraft('matrix').extra?.homeserver || ''" :loading="isSavingPlatform('matrix')" clearable size="small" class="input-lg" placeholder="https://matrix.org" @update:value="v => setCredentialDraft('matrix', { extra: { ...credentialDraft('matrix').extra, homeserver: v } })" />
+        </SettingRow>
+        <SettingRow :label="t('platform.proxyUrl')" :hint="t('platform.proxyUrlHint')">
+          <NInput :value="credentialDraft('matrix').proxy || ''" :loading="isSavingPlatform('matrix')" clearable size="small" class="input-lg" placeholder="socks5://127.0.0.1:7890" @update:value="v => setCredentialDraft('matrix', { proxy: v })" />
         </SettingRow>
         <SettingRow :label="t('platform.requireMention')" :hint="t('platform.requireMentionRoom')">
           <NSwitch :value="configDraft('matrix').require_mention" :loading="isSavingPlatform('matrix')" @update:value="v => setConfigDraft('matrix', { require_mention: v })" />

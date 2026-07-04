@@ -106,8 +106,13 @@ vi.mock('naive-ui', async () => {
 
 import AppSidebar from '@/components/layout/AppSidebar.vue'
 
+function fakeJwt(payload: Record<string, unknown>) {
+  return `header.${btoa(JSON.stringify(payload)).replace(/=/g, '')}.signature`
+}
+
 describe('AppSidebar navigation', () => {
   beforeEach(() => {
+    localStorage.clear()
     openSessionSearchMock.mockClear()
     mockAppStore.serverVersion = 'test'
     mockAppStore.latestVersion = ''
@@ -224,5 +229,23 @@ describe('AppSidebar navigation', () => {
 
     await agentGroup.find('.nav-group-label').trigger('click')
     expect(agentGroup.find('.nav-group-items').attributes('style')).toContain('display: none')
+  })
+
+  it('keeps MCP visible for admins while hiding device management', () => {
+    localStorage.setItem('hermes_api_key', fakeJwt({ sub: '2', role: 'admin' }))
+    const wrapper = mount(AppSidebar, {
+      global: {
+        stubs: {
+          ProfileSelector: true,
+          ModelSelector: true,
+          LanguageSwitch: true,
+          ThemeSwitch: true,
+          NButton: true,
+        },
+      },
+    })
+
+    expect(wrapper.text()).toContain('sidebar.mcp')
+    expect(wrapper.text()).not.toContain('sidebar.devices')
   })
 })

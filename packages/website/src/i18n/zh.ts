@@ -18,6 +18,7 @@ export default {
     home: '首页',
     docs: '文档',
     github: 'GitHub',
+    x: 'X',
   },
   hero: {
     navLabel: '主视觉导航',
@@ -152,6 +153,7 @@ export default {
     license: 'BSL-1.1 许可证',
     madeWith: '基于 Vue 3、Naive UI 和 TypeScript 构建。',
     github: '打开 GitHub',
+    x: '打开 X',
     douyin: '打开抖音',
     xiaohongshu: '打开小红书',
   },

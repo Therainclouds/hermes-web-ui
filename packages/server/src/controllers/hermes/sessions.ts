@@ -7,6 +7,7 @@ import {
   getSessionDetail as localGetSessionDetail,
   deleteSession as localDeleteSession,
   renameSession as localRenameSession,
+  setSessionArchived as localSetSessionArchived,
   createSession as localCreateSession,
   addMessages as localAddMessages,
   updateSession as localUpdateSession,
@@ -15,9 +16,10 @@ import {
 import { ExportCompressor } from '../../lib/context-compressor/export-compressor'
 import { deleteUsage, getUsage, getUsageBatch } from '../../db/hermes/usage-store'
 import type { UsageStatsModelRow, UsageStatsDailyRow } from '../../db/hermes/usage-store'
+import { deleteWorkspaceRunChangesForSession, getWorkspaceRunChangeFile as getWorkspaceRunChangeFileFromDb, listWorkspaceRunChangesForSession } from '../../db/hermes/workspace-run-changes-store'
 import { getModelContextLength } from '../../services/hermes/model-context'
 import { getActiveProfileName, listProfileNamesFromDisk } from '../../services/hermes/hermes-profile'
-import { isPathWithin } from '../../services/hermes/hermes-path'
+import { isNearestExistingRealPathWithin, isPathWithin, isRealPathWithin } from '../../services/hermes/hermes-path'
 import { getGroupChatServer } from '../../routes/hermes/group-chat'
 import { logger } from '../../services/logger'
 import type { ConversationSummary } from '../../services/hermes/conversations'
@@ -26,6 +28,9 @@ import { readConfigYamlForProfile } from '../../services/config-helpers'
 import { codingAgentRunManager } from '../../services/agent-runner/coding-agent-run-manager'
 import { AgentBridgeClient, getAgentBridgeManager } from '../../services/hermes/agent-bridge'
 import { ensureHermesRunWorkspace } from '../../services/hermes/run-chat/workspace'
+import { isSensitivePath, MAX_EDIT_SIZE } from '../../services/hermes/file-provider'
+import { readFile, stat as fsStat, writeFile } from 'fs/promises'
+import { normalize as pathNormalize, resolve as pathResolve, win32 as pathWin32 } from 'path'
 
 function getPendingDeletedSessionIds(): Set<string> {
   return getGroupChatServer()?.getStorage().getPendingDeletedSessionIds() || new Set<string>()
@@ -39,6 +44,16 @@ function filterPendingDeletedSessions<T extends { id: string }>(items: T[]): T[]
 
 function filterPendingDeletedConversationSummaries(items: ConversationSummary[]): ConversationSummary[] {
   return filterPendingDeletedSessions(items)
+}
+
+function isArchivedSession(session?: { is_archived?: number | boolean | null } | null): boolean {
+  if (!session) return false
+  if (typeof session.is_archived === 'boolean') return session.is_archived
+  return Number(session.is_archived || 0) !== 0
+}
+
+function filterArchivedSessions<T extends { is_archived?: number | boolean | null }>(items: T[]): T[] {
+  return items.filter(item => !isArchivedSession(item))
 }
 
 function requestedProfile(ctx: any): string | undefined {
@@ -332,6 +347,7 @@ export async function listConversations(ctx: any) {
     cost_status: s.cost_status,
     preview: s.preview,
     workspace: s.workspace || null,
+    is_archived: s.is_archived || 0,
     is_active: s.ended_at == null && (Date.now() / 1000 - s.last_active) <= 300,
     thread_session_count: 1,
   }))
@@ -378,10 +394,10 @@ export async function list(ctx: any) {
   const allSessions = localListSessions(profile, source, effectiveLimit)
   const knownProfiles = profile ? null : new Set(listProfileNamesFromDisk())
   ctx.body = {
-    sessions: filterPendingDeletedSessions(filterByAllowedProfiles(ctx, allSessions).filter(s =>
+    sessions: filterPendingDeletedSessions(filterArchivedSessions(filterByAllowedProfiles(ctx, allSessions).filter(s =>
       isRequestedSessionSource(source, s.source) &&
       (!knownProfiles || knownProfiles.has(s.profile || 'default')),
-    )),
+    ))),
   }
 }
 
@@ -390,10 +406,10 @@ export async function count(ctx: any) {
   const profile = explicitProfileFilter(ctx)
   const allSessions = localListSessions(profile, source, 2147483647)
   const knownProfiles = profile ? null : new Set(listProfileNamesFromDisk())
-  const sessions = filterPendingDeletedSessions(filterByAllowedProfiles(ctx, allSessions).filter(s =>
+  const sessions = filterPendingDeletedSessions(filterArchivedSessions(filterByAllowedProfiles(ctx, allSessions).filter(s =>
     isRequestedSessionSource(source, s.source) &&
     (!knownProfiles || knownProfiles.has(s.profile || 'default')),
-  ))
+  )))
   ctx.body = { count: sessions.length }
 }
 
@@ -407,13 +423,42 @@ export async function listHermesSessions(ctx: any) {
   const profile = requestedProfile(ctx)
   const effectiveLimit = limit && limit > 0 ? limit : 2000
 
-  const importedIds = new Set(localListSessions(profile, undefined, effectiveLimit).map(session => session.id))
+  const localSessions = localListSessions(profile, undefined, effectiveLimit)
+  const importedIds = new Set(localSessions.map(session => session.id))
   const allSessions = (await listSessionSummaries(source, effectiveLimit, profile))
     .map(session => ({
       ...(profile ? { ...session, profile } : session),
       webui_imported: importedIds.has(session.id),
     }))
-  ctx.body = { sessions: filterPendingDeletedSessions(filterByAllowedProfiles(ctx, allSessions).filter(s => isHermesHistorySessionSource(s.source))) }
+  const historySessionsById = new Map<string, any>()
+  for (const session of allSessions) historySessionsById.set(session.id, session)
+
+  // Hermes state.db does not carry Web UI local archive state. When a CLI or
+  // api_server session exists in both databases, the state.db row is inserted
+  // first and would otherwise hide the local `is_archived` flag from History,
+  // preventing archived sessions from rendering the unarchive action.
+  const localSessionsById = new Map(localSessions.map(session => [session.id, session]))
+  for (const [id, session] of historySessionsById) {
+    const localSession = localSessionsById.get(id)
+    if (localSession?.is_archived != null) {
+      session.is_archived = localSession.is_archived
+    }
+  }
+
+  for (const session of localSessions) {
+    if (historySessionsById.has(session.id)) continue
+    // Surface local-only sessions that are absent from the Hermes state.db
+    // (e.g. coding_agent runs started via the Web UI such as Claude Code /
+    // Codex). Without this, the History view cannot list or open them, and the
+    // chat panel's "view in history" link dead-ends to an empty list.
+    if (!isArchivedSession(session) && !isHermesHistorySessionSource(session.source)) continue
+    historySessionsById.set(session.id, { ...session, webui_imported: true })
+  }
+  ctx.body = {
+    sessions: filterPendingDeletedSessions(filterByAllowedProfiles(ctx, [...historySessionsById.values()]).filter(s =>
+      isHermesHistorySessionSource(s.source) || (isArchivedSession(s) && s.source !== 'global_agent'),
+    )),
+  }
 }
 
 export async function search(ctx: any) {
@@ -424,10 +469,10 @@ export async function search(ctx: any) {
   const results = localSearchSessions(profile, q, limit && limit > 0 ? limit : 20)
   const knownProfiles = profile ? null : new Set(listProfileNamesFromDisk())
   ctx.body = {
-    results: filterPendingDeletedSessions(filterByAllowedProfiles(ctx, results).filter(s =>
+    results: filterPendingDeletedSessions(filterArchivedSessions(filterByAllowedProfiles(ctx, results).filter(s =>
       isRequestedSessionSource(source, s.source) &&
       (!knownProfiles || knownProfiles.has(s.profile || 'default')),
-    )),
+    ))),
   }
 }
 
@@ -440,6 +485,118 @@ export async function get(ctx: any) {
   }
   if (denySessionAccess(ctx, session)) return
   ctx.body = { session }
+}
+
+export async function listWorkspaceRunChanges(ctx: any) {
+  const session = localGetSession(ctx.params.id)
+  if (!session) {
+    ctx.status = 404
+    ctx.body = { error: 'Session not found' }
+    return
+  }
+  if (denySessionAccess(ctx, session)) return
+  ctx.body = { changes: listWorkspaceRunChangesForSession(ctx.params.id) }
+}
+
+export async function getWorkspaceRunChangeFile(ctx: any) {
+  const session = localGetSession(ctx.params.id)
+  if (!session) {
+    ctx.status = 404
+    ctx.body = { error: 'Session not found' }
+    return
+  }
+  if (denySessionAccess(ctx, session)) return
+  const fileId = Number.parseInt(String(ctx.params.fileId || ''), 10)
+  if (!Number.isFinite(fileId) || fileId <= 0) {
+    ctx.status = 400
+    ctx.body = { error: 'Invalid file id' }
+    return
+  }
+  const file = getWorkspaceRunChangeFileFromDb(ctx.params.id, ctx.params.changeId, fileId)
+  if (!file) {
+    ctx.status = 404
+    ctx.body = { error: 'Workspace change file not found' }
+    return
+  }
+  ctx.body = { file }
+}
+
+function normalizeWorkspaceRelativePath(value: unknown): string {
+  const raw = typeof value === 'string' ? value.trim() : ''
+  if (!raw) throw Object.assign(new Error('Missing path parameter'), { code: 'missing_path', status: 400 })
+  if (raw.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(raw)) {
+    throw Object.assign(new Error('Invalid file path'), { code: 'invalid_path', status: 400 })
+  }
+  const normalized = pathNormalize(raw).replace(/\\/g, '/')
+  if (normalized === '..' || normalized.startsWith('../') || normalized.includes('/../')) {
+    throw Object.assign(new Error('Invalid file path'), { code: 'invalid_path', status: 400 })
+  }
+  return normalized
+}
+
+function resolveSessionWorkspaceFile(ctx: any, relativePathValue: unknown): { session: ReturnType<typeof localGetSession>; relativePath: string; fullPath: string; workspace: string } {
+  const session = localGetSession(ctx.params.id)
+  if (!session) throw Object.assign(new Error('Session not found'), { code: 'not_found', status: 404 })
+  if (denySessionAccess(ctx, session)) throw Object.assign(new Error('Forbidden'), { code: 'forbidden', status: 403, handled: true })
+  const workspace = String(session.workspace || '').trim()
+  if (!workspace) throw Object.assign(new Error('Session workspace not found'), { code: 'workspace_not_found', status: 404 })
+  const relativePath = normalizeWorkspaceRelativePath(relativePathValue)
+  const fullPath = pathResolve(workspace, relativePath)
+  if (!isPathWithin(fullPath, workspace)) {
+    throw Object.assign(new Error('Invalid file path'), { code: 'invalid_path', status: 400 })
+  }
+  return { session, relativePath, fullPath, workspace }
+}
+
+function handleWorkspaceFileError(ctx: any, err: any): void {
+  if (err?.handled) return
+  const status = Number(err?.status || 0)
+  ctx.status = status >= 400 ? status : err?.code === 'ENOENT' ? 404 : 500
+  ctx.body = { error: err?.message || 'Failed to access workspace file', code: err?.code || 'workspace_file_error' }
+}
+
+export async function readWorkspaceFile(ctx: any) {
+  try {
+    const { relativePath, fullPath } = resolveSessionWorkspaceFile(ctx, ctx.query.path)
+    const info = await fsStat(fullPath)
+    if (!info.isFile()) {
+      ctx.status = 400
+      ctx.body = { error: 'Not a file', code: 'not_a_file' }
+      return
+    }
+    if (info.size > MAX_EDIT_SIZE) {
+      ctx.status = 413
+      ctx.body = { error: 'File too large to edit', code: 'file_too_large' }
+      return
+    }
+    const data = await readFile(fullPath)
+    ctx.body = { content: data.toString('utf-8'), path: relativePath, size: data.length }
+  } catch (err: any) {
+    handleWorkspaceFileError(ctx, err)
+  }
+}
+
+export async function writeWorkspaceFile(ctx: any) {
+  const body = ctx.request.body as { path?: unknown; content?: unknown }
+  try {
+    const { relativePath, fullPath } = resolveSessionWorkspaceFile(ctx, body?.path)
+    if (isSensitivePath(relativePath)) {
+      ctx.status = 403
+      ctx.body = { error: 'Cannot modify sensitive file', code: 'permission_denied' }
+      return
+    }
+    const content = typeof body?.content === 'string' ? body.content : ''
+    const data = Buffer.from(content, 'utf-8')
+    if (data.length > MAX_EDIT_SIZE) {
+      ctx.status = 413
+      ctx.body = { error: 'Content too large', code: 'file_too_large' }
+      return
+    }
+    await writeFile(fullPath, data)
+    ctx.body = { ok: true, path: relativePath }
+  } catch (err: any) {
+    handleWorkspaceFileError(ctx, err)
+  }
 }
 
 function cleanSessionContextMessages(messages: any[]): Array<{
@@ -642,6 +799,7 @@ export async function remove(ctx: any) {
     return
   }
   deleteUsage(sessionId)
+  deleteWorkspaceRunChangesForSession(sessionId)
   ctx.body = { ok: true, deleted: Boolean(existing), hermes }
 }
 
@@ -717,6 +875,7 @@ export async function batchRemove(ctx: any) {
       const ok = localDeleteSession(id)
       if (ok) {
         deleteUsage(id)
+        deleteWorkspaceRunChangesForSession(id)
         results.deleted++
       } else {
         results.failed++
@@ -939,19 +1098,130 @@ export async function usageStats(ctx: any) {
   }
 }
 
+function workspaceBaseOverride(): string {
+  return process.env.WORKSPACE_BASE?.trim() || ''
+}
+
+function useWindowsDriveWorkspaceMode(): boolean {
+  return process.platform === 'win32' && !workspaceBaseOverride()
+}
+
+function windowsDriveRoot(pathValue: string): string | null {
+  const match = /^([a-zA-Z]:)[\\/]?$/.exec(pathValue.trim())
+  return match ? `${match[1].toUpperCase()}\\` : null
+}
+
+function normalizeWindowsWorkspacePath(inputPath: string): { base: string; fullPath: string } | null {
+  const raw = String(inputPath || '').trim()
+  if (!/^[a-zA-Z]:[\\/]/.test(raw)) return null
+  const fullPath = pathWin32.resolve(raw)
+  const root = windowsDriveRoot(pathWin32.parse(fullPath).root)
+  if (!root) return null
+  const rel = pathWin32.relative(root, fullPath)
+  if (rel.startsWith('..') || pathWin32.isAbsolute(rel)) return null
+  return { base: root, fullPath }
+}
+
+async function listWindowsWorkspaceDrives() {
+  const { existsSync } = await import('fs')
+  const drives = []
+  for (let code = 65; code <= 90; code += 1) {
+    const root = `${String.fromCharCode(code)}:\\`
+    if (!existsSync(root)) continue
+    drives.push({
+      name: root,
+      path: root,
+      fullPath: root,
+      readonly: true,
+    })
+  }
+  return drives
+}
+
+async function isWorkspaceListPathAllowed(fullPath: string, basePath: string, statFn: any): Promise<boolean> {
+  try {
+    const info = await statFn(fullPath)
+    if (!info.isDirectory()) return false
+    if (process.platform === 'win32') return true
+    return await isRealPathWithin(fullPath, basePath)
+  } catch {
+    return false
+  }
+}
+
+async function isSafeWorkspaceFolderEntry(entry: any, fullPath: string, basePath: string, statFn: any): Promise<boolean> {
+  if (!entry.isDirectory() && !(typeof entry.isSymbolicLink === 'function' && entry.isSymbolicLink())) {
+    return false
+  }
+
+  return isWorkspaceListPathAllowed(fullPath, basePath, statFn)
+}
+
 /**
- * List folders under workspace base path for folder picker.
- * GET /api/hermes/workspace/folders?path=<relative_path>
- * Base: current user's home directory (overridable via WORKSPACE_BASE env)
+ * List folders for the workspace folder picker.
+ * GET /api/hermes/workspace/folders?path=<path>
+ *
+ * By default this is rooted at the current user's home directory, or at
+ * WORKSPACE_BASE when configured. On native Windows without WORKSPACE_BASE, the
+ * picker can browse any available drive letter, while each request remains
+ * constrained to the selected drive root.
  */
 export async function listWorkspaceFolders(ctx: any) {
-  const { resolve, join } = await import('path')
-  const { readdir } = await import('fs/promises')
+  const { resolve, join, win32 } = await import('path')
+  const { readdir, stat } = await import('fs/promises')
   const { existsSync } = await import('fs')
   const { homedir } = await import('os')
 
-  const WORKSPACE_BASE = process.env.WORKSPACE_BASE?.trim() || homedir()
   const subPath = (ctx.query.path as string) || ''
+  if (useWindowsDriveWorkspaceMode()) {
+    if (!subPath) {
+      const drives = await listWindowsWorkspaceDrives()
+      ctx.body = { base: '', current: '', roots: drives, folders: drives }
+      return
+    }
+
+    const resolved = normalizeWindowsWorkspacePath(subPath)
+    if (!resolved) {
+      ctx.status = 403
+      ctx.body = { error: 'Access denied' }
+      return
+    }
+
+    if (!existsSync(resolved.fullPath)) {
+      ctx.status = 404
+      ctx.body = { error: 'Path not found', folders: [] }
+      return
+    }
+
+    if (!await isWorkspaceListPathAllowed(resolved.fullPath, resolved.base, stat)) {
+      ctx.status = 403
+      ctx.body = { error: 'Access denied' }
+      return
+    }
+
+    try {
+      const entries = await readdir(resolved.fullPath, { withFileTypes: true })
+      const folders = (await Promise.all(entries.map(async (entry) => {
+        const fullPath = win32.join(resolved.fullPath, entry.name)
+        if (!await isSafeWorkspaceFolderEntry(entry, fullPath, resolved.base, stat)) return null
+        return {
+          name: entry.name,
+          path: fullPath,
+          fullPath,
+        }
+      })))
+        .filter((entry): entry is { name: string; path: string; fullPath: string } => !!entry)
+        .sort((a, b) => a.name.localeCompare(b.name))
+
+      ctx.body = { base: resolved.base, current: resolved.fullPath, folders }
+    } catch (err: any) {
+      ctx.status = 500
+      ctx.body = { error: err.message }
+    }
+    return
+  }
+
+  const WORKSPACE_BASE = workspaceBaseOverride() || homedir()
 
   // Security: prevent path traversal
   const fullPath = resolve(join(WORKSPACE_BASE, subPath))
@@ -967,15 +1237,24 @@ export async function listWorkspaceFolders(ctx: any) {
     return
   }
 
+  if (!await isWorkspaceListPathAllowed(fullPath, WORKSPACE_BASE, stat)) {
+    ctx.status = 403
+    ctx.body = { error: 'Access denied' }
+    return
+  }
+
   try {
     const entries = await readdir(fullPath, { withFileTypes: true })
-    const folders = entries
-      .filter(e => e.isDirectory() && !e.name.startsWith('.'))
-      .map(e => ({
-        name: e.name,
-        path: subPath ? `${subPath}/${e.name}` : e.name,
-        fullPath: join(fullPath, e.name),
-      }))
+    const folders = (await Promise.all(entries.map(async (entry) => {
+      const entryFullPath = join(fullPath, entry.name)
+      if (!await isSafeWorkspaceFolderEntry(entry, entryFullPath, WORKSPACE_BASE, stat)) return null
+      return {
+        name: entry.name,
+        path: subPath ? `${subPath}/${entry.name}` : entry.name,
+        fullPath: entryFullPath,
+      }
+    })))
+      .filter((entry): entry is { name: string; path: string; fullPath: string } => !!entry)
       .sort((a, b) => a.name.localeCompare(b.name))
 
     ctx.body = { base: WORKSPACE_BASE, current: subPath, folders }
@@ -997,7 +1276,17 @@ function invalidWorkspaceFolderName(name: string): boolean {
 async function resolveWorkspaceFolderPath(ctx: any, inputPath: string) {
   const { resolve, join } = await import('path')
   const { homedir } = await import('os')
-  const WORKSPACE_BASE = process.env.WORKSPACE_BASE?.trim() || homedir()
+  if (useWindowsDriveWorkspaceMode()) {
+    const resolved = normalizeWindowsWorkspacePath(inputPath)
+    if (!resolved) {
+      ctx.status = 403
+      ctx.body = { error: 'Access denied' }
+      return null
+    }
+    return resolved
+  }
+
+  const WORKSPACE_BASE = workspaceBaseOverride() || homedir()
   const fullPath = resolve(join(WORKSPACE_BASE, inputPath || ''))
   if (!isPathWithin(fullPath, WORKSPACE_BASE)) {
     ctx.status = 403
@@ -1022,6 +1311,11 @@ export async function createWorkspaceFolder(ctx: any) {
   if (!resolvedParent) return
   const targetPath = join(resolvedParent.fullPath, folderName)
   if (!isPathWithin(targetPath, resolvedParent.base)) {
+    ctx.status = 403
+    ctx.body = { error: 'Access denied' }
+    return
+  }
+  if (!await isNearestExistingRealPathWithin(targetPath, resolvedParent.base)) {
     ctx.status = 403
     ctx.body = { error: 'Access denied' }
     return
@@ -1062,6 +1356,12 @@ export async function renameWorkspaceFolder(ctx: any) {
     ctx.body = { error: 'Access denied' }
     return
   }
+  if (!await isNearestExistingRealPathWithin(resolvedCurrent.fullPath, resolvedCurrent.base) ||
+    !await isNearestExistingRealPathWithin(targetPath, resolvedCurrent.base)) {
+    ctx.status = 403
+    ctx.body = { error: 'Access denied' }
+    return
+  }
 
   try {
     const info = await stat(resolvedCurrent.fullPath)
@@ -1093,6 +1393,11 @@ export async function deleteWorkspaceFolder(ctx: any) {
   if (resolvedCurrent.fullPath === resolvedCurrent.base) {
     ctx.status = 400
     ctx.body = { error: 'Cannot delete workspace root' }
+    return
+  }
+  if (!await isNearestExistingRealPathWithin(resolvedCurrent.fullPath, resolvedCurrent.base)) {
+    ctx.status = 403
+    ctx.body = { error: 'Access denied' }
     return
   }
 
@@ -1220,6 +1525,7 @@ export async function getConversationMessagesPaginated(ctx: any) {
       started_at: session.started_at,
       ended_at: session.ended_at,
       last_active: session.last_active,
+      is_archived: (session as any).is_archived || 0,
       message_count: session.message_count,
       input_tokens: session.input_tokens,
       output_tokens: session.output_tokens,

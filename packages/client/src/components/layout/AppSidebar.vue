@@ -167,6 +167,15 @@ async function handleReloadClick() {
             </svg>
             <span>{{ t("sidebar.mcp") }}</span>
           </RouteLinkItem>
+          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.petdex' }" :active="selectedKey === 'hermes.petdex'">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3l7 4v6c0 4-3 7-7 8-4-1-7-4-7-8V7l7-4z" />
+              <path d="M9 11h.01" />
+              <path d="M15 11h.01" />
+              <path d="M9.5 15c1.6 1.1 3.4 1.1 5 0" />
+            </svg>
+            <span>{{ t("sidebar.petdex") }}</span>
+          </RouteLinkItem>
           <RouteLinkItem class="nav-item" :to="{ name: 'hermes.memory' }" :active="selectedKey === 'hermes.memory'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M9 18h6" />
@@ -225,6 +234,16 @@ async function handleReloadClick() {
             </svg>
             <span>{{ t("sidebar.performance") }}</span>
           </RouteLinkItem>
+          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.journey' }" :active="selectedKey === 'hermes.journey'">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3.5a8.5 8.5 0 1 0 8.5 8.5" />
+              <path d="M4.4 15.4c3.2 1.1 7.4.4 10.8-2.1 3.1-2.3 4.9-5.5 4.5-8.1" />
+              <path d="M6.3 6.6c2.5-.9 6.1-.4 9.2 1.5 3.2 2 5.2 5 5 7.6" />
+              <circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none" />
+              <circle cx="19.5" cy="4.5" r="1.2" fill="currentColor" stroke="none" />
+            </svg>
+            <span>{{ t("sidebar.journey") }}</span>
+          </RouteLinkItem>
           <RouteLinkItem class="nav-item" :to="{ name: 'hermes.skillsUsage' }" :active="selectedKey === 'hermes.skillsUsage'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21.21 15.89A10 10 0 1 1 8.11 2.79" />
@@ -263,7 +282,7 @@ async function handleReloadClick() {
             </svg>
             <span>{{ t("sidebar.versionPreview") }}</span>
           </RouteLinkItem>
-          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.devices' }" :active="selectedKey === 'hermes.devices'">
+          <RouteLinkItem v-if="isSuperAdmin" class="nav-item" :to="{ name: 'hermes.devices' }" :active="selectedKey === 'hermes.devices'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <rect x="3" y="4" width="18" height="12" rx="2" />
               <path d="M8 20h8" />

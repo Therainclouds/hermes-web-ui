@@ -221,7 +221,7 @@ describe('outbound relay client', () => {
     localSocket.__handlers.get('run.completed')?.({})
 
     await vi.waitFor(() => {
-      expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('tts-synthesize-failed-xiaohe.s16le.pcm'))
+      expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('tts-failed-24k.s16le.pcm'))
     })
     const ttsCalls = fetchImpl.mock.calls.filter(([url]: [string]) => url.includes('/api/hermes/tts/synthesize'))
     expect(ttsCalls).toHaveLength(2)
@@ -234,20 +234,79 @@ describe('outbound relay client', () => {
     const enqueuePayload = JSON.parse(
       ws.send.mock.calls
         .map(([payload]: [string]) => payload)
-        .find((payload: string) => payload.includes('tts-synthesize-failed-xiaohe.s16le.pcm')),
+        .find((payload: string) => payload.includes('tts-failed-24k.s16le.pcm')),
     )
     expect(enqueuePayload).toMatchObject({
       type: 'audio.enqueue',
       interactionId: 'voice-tts-fail',
       segmentId: 'voice-tts-fail-tts-1-failed-prompt',
       text: '当前文字转语音失败了，请配置下文字转语音再使用哦',
-      url: 'https://ekko-hermes-studio.oss-cn-beijing.aliyuncs.com/tts-synthesize-failed-xiaohe.s16le.pcm',
+      url: '/api/hermes/mcu/audio/tts-failed-24k.s16le.pcm',
       mimeType: 'audio/x-pcm',
       format: 's16le',
       channels: 1,
-      sampleRate: 16000,
+      sampleRate: 24000,
     })
     expect(enqueuePayload).not.toHaveProperty('completionManagedByServer')
+  })
+
+  it('aborts in-flight websocket MCU TTS synthesis when playback is interrupted', async () => {
+    let ttsSignal: AbortSignal | undefined
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes('/api/hermes/mcu/voice-turn')) {
+        return new Response(JSON.stringify({ ok: true, transcript: '你好' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      ttsSignal = init?.signal || undefined
+      return await new Promise<Response>((_resolve, reject) => {
+        ttsSignal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
+      })
+    })
+    const { startOutboundRelayClient } = await import('../../packages/server/src/services/global-agent/outbound-relay-client')
+
+    startOutboundRelayClient({
+      relayUrl: 'ws://device.local:8787/',
+      relayProtocol: 'websocket',
+      userToken: 'user-jwt',
+      localBaseUrl: 'http://127.0.0.1:8648',
+      fetchImpl: fetchImpl as any,
+    })
+
+    const ws = mockWebSockets[0]
+    ws.__handlers.get('open')?.()
+    ws.__handlers.get('message')?.(JSON.stringify({
+      type: 'voice.recorded',
+      interactionId: 'voice-abort',
+      mimeType: 'audio/wav',
+      profile: 'research',
+    }), false)
+    ws.__handlers.get('message')?.(Buffer.from('wav-audio'), true)
+
+    await vi.waitFor(() => {
+      expect(mockIo).toHaveBeenCalledWith('http://127.0.0.1:8648/chat-run', expect.any(Object))
+    })
+    const localSocket = sockets.at(-1)
+    localSocket.__handlers.get('connect')?.()
+    localSocket.__handlers.get('message.delta')?.({ delta: '这段正在合成。' })
+
+    await vi.waitFor(() => {
+      expect(ttsSignal).toBeDefined()
+    })
+    expect(ttsSignal?.aborted).toBe(false)
+
+    ws.__handlers.get('message')?.(JSON.stringify({
+      type: 'audio.interrupted',
+      interactionId: 'voice-abort',
+      segmentId: 'voice-abort-tts-1',
+    }), false)
+
+    await vi.waitFor(() => {
+      expect(ttsSignal?.aborted).toBe(true)
+    })
+    expect(localSocket.emit).toHaveBeenCalledWith('abort', { session_id: 'mcu-device-research' })
+    expect(ws.send).not.toHaveBeenCalledWith(expect.stringContaining('"audio.enqueue"'))
   })
 
   it('forwards an allowed HTTP request to the local Web UI server', async () => {
