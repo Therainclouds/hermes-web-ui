@@ -407,50 +407,120 @@ PY
     warn "Failed to resolve Hermes Agent wheel from ${HERMES_AGENT_UPDATE_MANIFEST_URL}. Falling back to GitHub release metadata."
   fi
 
-  step "Resolve latest stable Hermes Agent wheel"
-  local resolved_url
+  step "Resolve latest stable Hermes Agent wheel from PyPI"
+  local resolved_url resolved_version
   resolved_url="$(
-    python3 - "${HERMES_AGENT_RELEASES_API_URL}" <<'PY'
+    python3 - "${HERMES_AGENT_PYPI_SIMPLE_URL:-https://pypi.org/simple/hermes-agent/}" "${HERMES_AGENT_RELEASES_API_URL}" <<'PY'
 import json
+import re
 import sys
 import urllib.request
 
-api_url = sys.argv[1]
-request = urllib.request.Request(
-    api_url,
-    headers={
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "hermes-web-ui-deploy-source-armbian",
-    },
-)
-with urllib.request.urlopen(request, timeout=20) as response:
-    payload = json.load(response)
+simple_url = sys.argv[1]
+pypi_json_url = sys.argv[2]
+USER_AGENT = "hermes-web-ui-deploy-source-armbian"
 
-assets = payload.get("assets") or []
-candidates = []
-for asset in assets:
-    name = str(asset.get("name") or "")
-    url = str(asset.get("browser_download_url") or "")
-    if not url:
-        continue
-    if name.startswith("hermes_agent-") and name.endswith("-py3-none-any.whl"):
-        candidates.append((name, url))
+WHEEL_RE = re.compile(r"hermes_agent-(\d+(?:\.\d+)+(?:[a-z0-9\.\-\+]*)?)-py3-none-any\.whl", re.IGNORECASE)
 
-if not candidates:
-    raise SystemExit(
-        f"No stable hermes-agent wheel asset found in release payload from {api_url}"
+
+def parse_version(tag):
+    parts = []
+    for chunk in re.split(r"[^0-9a-zA-Z]+", tag):
+        if not chunk:
+            continue
+        if chunk.isdigit():
+            parts.append((0, int(chunk)))
+        else:
+            parts.append((1, chunk))
+    return tuple(parts)
+
+
+def from_simple_index(url):
+    request = urllib.request.Request(
+        url,
+        headers={"Accept": "application/vnd.pypi.simple.v1+html, text/html", "User-Agent": USER_AGENT},
     )
+    with urllib.request.urlopen(request, timeout=20) as response:
+        body = response.read().decode("utf-8", errors="replace")
 
-candidates.sort()
-print(candidates[0][1])
+    candidates = []
+    for match in re.finditer(r'href="([^"]+)"[^>]*>\s*([A-Za-z0-9._\-+]+)\s*</a>', body):
+        href, name = match.group(1), match.group(2)
+        m = WHEEL_RE.match(name)
+        if not m:
+            continue
+        # Strip the `#sha256=...` fragment from the URL
+        clean_url = href.split("#", 1)[0]
+        candidates.append((parse_version(m.group(1)), clean_url, m.group(1)))
+
+    if not candidates:
+        raise SystemExit(f"No stable hermes-agent wheel found in PyPI simple index: {url}")
+    candidates.sort(key=lambda c: c[0])
+    best = candidates[-1]
+    return best[1], best[2]
+
+
+def from_pypi_json(url):
+    request = urllib.request.Request(
+        url,
+        headers={"Accept": "application/json", "User-Agent": USER_AGENT},
+    )
+    with urllib.request.urlopen(request, timeout=20) as response:
+        payload = json.load(response)
+
+    urls = payload.get("urls") or []
+    candidates = []
+    for asset in urls:
+        name = str(asset.get("filename") or "")
+        link = str(asset.get("url") or "")
+        m = WHEEL_RE.match(name)
+        if not m or not link:
+            continue
+        candidates.append((parse_version(m.group(1)), link, m.group(1)))
+
+    if not candidates:
+        raise SystemExit(f"No stable hermes-agent wheel found in PyPI JSON payload: {url}")
+    candidates.sort(key=lambda c: c[0])
+    best = candidates[-1]
+    return best[1], best[2]
+
+
+# Try PyPI simple index first (lightweight, always lists every wheel).
+try:
+    url, version = from_simple_index(simple_url)
+    print(url)
+    print(version)
+    sys.exit(0)
+except Exception as exc:
+    sys.stderr.write(f"PyPI simple index lookup failed: {exc}\n")
+
+# Fallback: explicit PyPI JSON API (used when caller overrides).
+try:
+    url, version = from_pypi_json(pypi_json_url)
+    print(url)
+    print(version)
+    sys.exit(0)
+except Exception as exc:
+    sys.stderr.write(f"PyPI JSON API lookup failed: {exc}\n")
+
+raise SystemExit("Unable to resolve a stable hermes-agent wheel from PyPI.")
 PY
-  )"
+  )" || {
+    err "Failed to resolve the latest stable Hermes Agent wheel URL."
+    exit 1
+  }
+  resolved_url="$(printf '%s\n' "${resolved_url}" | sed -n '1p')"
+  resolved_version="$(printf '%s\n' "${resolved_url}" | sed -n '2p')"
   if [[ -z "${resolved_url}" ]]; then
     err "Failed to resolve the latest stable Hermes Agent wheel URL."
     exit 1
   fi
   HERMES_AGENT_WHEEL_URL="${resolved_url}"
-  info "Resolved latest stable Hermes Agent wheel: ${HERMES_AGENT_WHEEL_URL}"
+  if [[ -n "${resolved_version}" ]]; then
+    info "Resolved latest stable Hermes Agent wheel ${resolved_version}: ${HERMES_AGENT_WHEEL_URL}"
+  else
+    info "Resolved latest stable Hermes Agent wheel: ${HERMES_AGENT_WHEEL_URL}"
+  fi
 }
 
 install_node() {
@@ -1479,7 +1549,7 @@ OSS_PUBLIC_BASE_URL="${OSS_PUBLIC_BASE_URL:-https://tangledup-ai-staging.oss-cn-
 DEFAULT_HERMES_AGENT_WHEEL_URL="https://files.pythonhosted.org/packages/e3/e2/d18d5ec6735b412fde47ecac3b6a63874c824c83e9821e1c1f4a07bcff85/hermes_agent-0.17.0-py3-none-any.whl"
 HERMES_AGENT_WHEEL_URL="${HERMES_AGENT_WHEEL_URL:-${DEFAULT_HERMES_AGENT_WHEEL_URL}}"
 HERMES_AGENT_WHEELHOUSE_URL="${HERMES_AGENT_WHEELHOUSE_URL:-${OSS_PUBLIC_BASE_URL}/hermes-agent/wheelhouse/}"
-HERMES_AGENT_RELEASES_API_URL="${HERMES_AGENT_RELEASES_API_URL:-https://api.github.com/repos/NousResearch/hermes-agent/releases/latest}"
+HERMES_AGENT_RELEASES_API_URL="${HERMES_AGENT_RELEASES_API_URL:-https://pypi.org/pypi/hermes-agent/json}"
 HERMES_AGENT_UPDATE_MANIFEST_URL="${HERMES_AGENT_UPDATE_MANIFEST_URL:-${OSS_PUBLIC_BASE_URL}/hermes-agent/stable/latest.json}"
 HERMES_AGENT_UPDATE_LATEST_STABLE="${HERMES_AGENT_UPDATE_LATEST_STABLE:-false}"
 HERMES_ANTHROPIC_VERSION="${HERMES_ANTHROPIC_VERSION:-}"
