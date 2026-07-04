@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { NAlert, NButton, NEmpty, NInput, NSelect, NSpin, NTag, useMessage } from 'naive-ui'
+import { NAlert, NButton, NEmpty, NInput, NSelect, NSpin, NTag } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { fetchPlugins, setPluginEnabled, type HermesPluginInfo, type HermesPluginsMetadata } from '@/api/hermes/plugins'
 import { useProfilesStore } from '@/stores/hermes/profiles'

@@ -1,19 +1,18 @@
 <script setup lang="ts">
 /**
  * ExpertsView - 专家中心列表页
- * 结构：Hero + 分类 Chips + Featured 轮播 + Tabs + 卡片网格
+ * 结构：page-header + 分类 Chips + Featured 轮播 + NTabs + 卡片网格
  */
 import { computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
-import { NEmpty, NSpin, useMessage } from 'naive-ui'
+import { NEmpty, NInput, NSpin, NTabPane, NTabs, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { useExpertsStore } from '@/stores/hermes/experts'
 import * as expertsApi from '@/api/hermes/experts'
 import type { ExpertCatalogItem, InstalledExpertRow } from '@/api/hermes/experts'
 import {
   ExpertCard,
   ExpertFeaturedCarousel,
-  ExpertHero,
 } from '@/views/hermes/experts'
 
 const router = useRouter()
@@ -68,9 +67,6 @@ const visiblePublished = computed(() => applyFeaturedFilter(applyCategoryFilter(
 const visibleTeam = computed(() => applyFeaturedFilter(applyCategoryFilter(applySearchFilter(teamItems.value))))
 const visibleInstalled = computed(() => filterInstalled(installedItems.value))
 
-// Only used by the v-else branch (published + team tabs). The installed
-// tab renders its own <template> above. Typed explicitly so the template
-// can access catalog-only fields (slug) without TS widening to the union.
 const currentItems = computed<ExpertCatalogItem[]>(() => {
   if (activeTab.value === 'team') return visibleTeam.value
   return visiblePublished.value
@@ -89,6 +85,8 @@ const emptyDescription = computed(() => {
   if (expertsStore.searchQuery.trim()) return t('experts.emptySearch')
   return t('experts.empty')
 })
+
+const totalExperts = computed(() => publishedItems.value.length + teamItems.value.length + installedItems.value.length)
 
 onMounted(async () => {
   await expertsStore.fetchConfig()
@@ -110,7 +108,7 @@ function openDetail(slug: string) {
 }
 
 async function handleStartChat(slug: string) {
-  const installed = expertsStore.findInstalled(slug)
+  const installed = expertsStore.findReadyInstalled(slug)
   if (!installed) return
   const binding = expertsStore.bindings.find((b) => b.expert_slug === slug)
   if (!binding) {
@@ -130,100 +128,170 @@ async function handleStartChat(slug: string) {
 function setCategory(cat: string | null) {
   expertsStore.categoryFilter = cat
 }
+
+function clearSearch() {
+  expertsStore.searchQuery = ''
+}
 </script>
 
 <template>
   <div class="experts-view">
-    <ExpertHero
-      :search="expertsStore.searchQuery"
-      :loading="expertsStore.loading"
-      @update:search="(v) => (expertsStore.searchQuery = v)"
-      @refresh="handleRefresh"
-    />
-
-    <div class="chips">
-      <button
-        class="chip"
-        :class="{ active: !expertsStore.categoryFilter }"
-        @click="setCategory(null)"
-      >
-        {{ t('experts.allCategories') }}
-      </button>
-      <button
-        v-for="cat in expertsStore.categories"
-        :key="cat"
-        class="chip"
-        :class="{ active: expertsStore.categoryFilter === cat }"
-        @click="setCategory(cat)"
-      >
-        {{ cat }}
-      </button>
-      <span class="chip-divider" />
-      <button
-        class="chip featured"
-        :class="{ active: expertsStore.featuredOnly }"
-        @click="expertsStore.featuredOnly = !expertsStore.featuredOnly"
-      >
-        ★ {{ t('experts.featured') }}
-      </button>
-    </div>
-
-    <ExpertFeaturedCarousel
-      v-if="!expertsStore.featuredOnly && activeTab === 'published'"
-      :items="expertsStore.catalog"
-      @open="openDetail"
-    />
-
-    <div class="tab-bar">
-      <button class="tab" :class="{ active: activeTab === 'published' }" @click="activeTab = 'published'">
-        {{ t('experts.tabPublished') }}
-        <span class="tab-count">({{ publishedItems.length }})</span>
-      </button>
-      <button class="tab" :class="{ active: activeTab === 'team' }" @click="activeTab = 'team'">
-        {{ t('experts.tabTeam') }}
-        <span class="tab-count">({{ teamItems.length }})</span>
-      </button>
-      <button class="tab" :class="{ active: activeTab === 'installed' }" @click="activeTab = 'installed'">
-        {{ t('experts.tabInstalled') }}
-        <span class="tab-count">({{ installedItems.length }})</span>
-      </button>
-      <span v-if="activeCategoryLabel" class="active-filter">
-        {{ t('experts.filteredBy') }}: <strong>{{ activeCategoryLabel }}</strong>
-      </span>
-    </div>
+    <header class="page-header">
+      <div class="header-title-block">
+        <h2 class="header-title">{{ t('experts.title') }}</h2>
+        <span class="header-subtitle">{{ t('experts.subtitle') }}</span>
+      </div>
+      <div class="header-actions">
+        <NInput
+          :value="expertsStore.searchQuery"
+          :placeholder="t('experts.searchPlaceholder')"
+          clearable
+          size="small"
+          class="header-search"
+          @update:value="(v: string) => (expertsStore.searchQuery = v)"
+        >
+          <template #prefix>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="11" cy="11" r="8" />
+              <path d="m21 21-4.3-4.3" />
+            </svg>
+          </template>
+        </NInput>
+        <span class="header-count">{{ totalExperts }}</span>
+        <button
+          type="button"
+          class="n-btn-base"
+          :disabled="expertsStore.loading"
+          @click="handleRefresh"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10" />
+            <polyline points="1 20 1 14 7 14" />
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+          </svg>
+          <span>{{ t('experts.refresh') }}</span>
+        </button>
+      </div>
+    </header>
 
     <div class="experts-content">
-      <NSpin :show="expertsStore.loading">
-        <NEmpty v-if="showEmpty" :description="emptyDescription" />
-        <div v-else class="cards">
-          <template v-if="activeTab === 'installed'">
-            <ExpertCard
-              v-for="row in visibleInstalled"
-              :key="row.expert_slug"
-              :item="row"
-              mode="installed"
-              :installed="row"
-              @open="openDetail"
-            />
-          </template>
-          <template v-else>
-            <ExpertCard
-              v-for="item in currentItems"
-              :key="item.slug"
-              :item="item"
-              :mode="activeTab === 'team' ? 'team' : 'published'"
-              :installed="expertsStore.findInstalled(item.slug)"
-              @open="openDetail"
-              @start-chat="handleStartChat"
-            />
-          </template>
-        </div>
-      </NSpin>
-    </div>
+      <div class="chips">
+        <button
+          type="button"
+          class="chip"
+          :class="{ active: !expertsStore.categoryFilter }"
+          @click="setCategory(null)"
+        >
+          {{ t('experts.allCategories') }}
+        </button>
+        <button
+          v-for="cat in expertsStore.categories"
+          :key="cat"
+          type="button"
+          class="chip"
+          :class="{ active: expertsStore.categoryFilter === cat }"
+          @click="setCategory(cat)"
+        >
+          {{ cat }}
+        </button>
+        <span class="chip-divider" />
+        <button
+          type="button"
+          class="chip featured"
+          :class="{ active: expertsStore.featuredOnly }"
+          @click="expertsStore.featuredOnly = !expertsStore.featuredOnly"
+        >
+          ★ {{ t('experts.featured') }}
+        </button>
+        <button
+          v-if="expertsStore.searchQuery"
+          type="button"
+          class="chip clear"
+          @click="clearSearch"
+        >
+          ✕ {{ t('common.cancel') }}
+        </button>
+      </div>
 
-    <!-- 临时占位遮罩：后端未就绪时遮住整个专家页面，业务代码保留。后端就绪后删除此节点即可。 -->
-    <div class="experts-placeholder-overlay" aria-hidden="true">
-      <div class="experts-placeholder-text">敬请期待</div>
+      <ExpertFeaturedCarousel
+        v-if="!expertsStore.featuredOnly && activeTab === 'published'"
+        :items="expertsStore.catalog"
+        @open="openDetail"
+      />
+
+      <NTabs
+        v-model:value="activeTab"
+        type="line"
+        animated
+        class="experts-tabs"
+      >
+        <NTabPane
+          name="published"
+          :tab="`${t('experts.tabPublished')} (${publishedItems.length})`"
+        >
+          <NSpin :show="expertsStore.loading">
+            <NEmpty v-if="showEmpty && activeCategoryLabel == null && !expertsStore.searchQuery.trim()" :description="emptyDescription" />
+            <NEmpty v-else-if="showEmpty" :description="emptyDescription">
+              <template #extra>
+                <button type="button" class="n-btn-base" @click="setCategory(null)">
+                  {{ t('experts.allCategories') }}
+                </button>
+              </template>
+            </NEmpty>
+            <div v-else class="cards">
+              <ExpertCard
+                v-for="item in currentItems"
+                :key="item.slug"
+                :item="item"
+                mode="published"
+                :installed="expertsStore.findReadyInstalled(item.slug)"
+                @open="openDetail"
+                @start-chat="handleStartChat"
+              />
+            </div>
+          </NSpin>
+        </NTabPane>
+
+        <NTabPane
+          name="team"
+          :tab="`${t('experts.tabTeam')} (${teamItems.length})`"
+        >
+          <NSpin :show="expertsStore.loading">
+            <NEmpty v-if="visibleTeam.length === 0" :description="emptyDescription" />
+            <div v-else class="cards">
+              <ExpertCard
+                v-for="item in visibleTeam"
+                :key="item.slug"
+                :item="item"
+                mode="team"
+                :installed="expertsStore.findReadyInstalled(item.slug)"
+                @open="openDetail"
+                @start-chat="handleStartChat"
+              />
+            </div>
+          </NSpin>
+        </NTabPane>
+
+        <NTabPane
+          name="installed"
+          :tab="`${t('experts.tabInstalled')} (${installedItems.length})`"
+        >
+          <NSpin :show="expertsStore.loading">
+            <NEmpty v-if="visibleInstalled.length === 0" :description="emptyDescription" />
+            <div v-else class="cards">
+              <ExpertCard
+                v-for="row in visibleInstalled"
+                :key="row.expert_slug"
+                :item="row"
+                mode="installed"
+                :installed="row"
+                @open="openDetail"
+              />
+            </div>
+          </NSpin>
+        </NTabPane>
+      </NTabs>
     </div>
   </div>
 </template>
@@ -232,25 +300,95 @@ function setCategory(cat: string | null) {
 @use '@/styles/variables' as *;
 
 .experts-view {
-  position: relative;
   display: flex;
   flex-direction: column;
-  padding: 0 20px 20px;
-  min-height: calc(100 * var(--vh));
+  height: calc(100 * var(--vh));
 }
 
+// ── page-header 增强（保持全局 .page-header 的视觉基线） ───────────────
+.header-title-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.header-subtitle {
+  font-size: 12px;
+  color: $text-muted;
+  line-height: 1.4;
+}
+
+.header-actions {
+  gap: 10px;
+}
+
+.header-search {
+  width: 280px;
+}
+
+.header-count {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  color: $text-muted;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+// 复用项目原生 n 按钮视觉，仅在 scoped 内提供 layout helper
+.n-btn-base {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  font-size: 12.5px;
+  font-family: inherit;
+  color: $text-secondary;
+  background: transparent;
+  border: 1px solid $border-color;
+  border-radius: $radius-sm;
+  cursor: pointer;
+  transition: all $transition-fast;
+
+  &:hover:not(:disabled) {
+    color: $text-primary;
+    background: var(--bg-secondary);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
+
+// ── 内容区 ────────────────────────────────────────────────────────────
+.experts-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 20px 20px;
+}
+
+// ── chips 行 ──────────────────────────────────────────────────────────
 .chips {
   display: flex;
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-  padding: 4px 0 14px;
+  padding: 4px 0 12px;
 }
 
 .chip {
   height: 28px;
   padding: 0 12px;
   font-size: 12.5px;
+  font-family: inherit;
   color: $text-secondary;
   background: transparent;
   border: 1px solid $border-light;
@@ -258,7 +396,10 @@ function setCategory(cat: string | null) {
   cursor: pointer;
   transition: all $transition-fast;
 
-  &:hover { color: $text-primary; border-color: $border-color; }
+  &:hover {
+    color: $text-primary;
+    border-color: $border-color;
+  }
 
   &.active {
     color: var(--text-on-accent);
@@ -266,7 +407,20 @@ function setCategory(cat: string | null) {
     border-color: $accent-primary;
   }
 
-  &.featured.active { background: var(--warning); border-color: var(--warning); }
+  &.featured.active {
+    color: var(--text-on-accent);
+    background: $warning;
+    border-color: $warning;
+  }
+
+  &.clear {
+    color: $text-muted;
+    border-style: dashed;
+
+    &:hover {
+      color: $text-primary;
+    }
+  }
 }
 
 .chip-divider {
@@ -276,83 +430,32 @@ function setCategory(cat: string | null) {
   margin: 0 4px;
 }
 
-.tab-bar {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  border-bottom: 1px solid $border-color;
-  margin-bottom: 14px;
+// ── NTabs 主题对齐 ───────────────────────────────────────────────────
+.experts-tabs :deep(.n-tabs-nav) {
+  padding-bottom: 1px;
 }
 
-.tab {
-  border: none;
-  background: transparent;
-  color: $text-secondary;
+.experts-tabs :deep(.n-tabs-tab) {
   font-size: 13px;
   padding: 8px 12px;
-  cursor: pointer;
-  border-bottom: 2px solid transparent;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  transition: color $transition-fast;
 }
 
-.tab:hover { color: $text-primary; }
-
-.tab.active {
-  color: $accent-primary;
-  border-bottom-color: $accent-primary;
-}
-
-.tab-count {
-  font-size: 11px;
-  color: $text-muted;
-}
-
-.active-filter {
-  margin-left: auto;
-  font-size: 12px;
-  color: $text-muted;
-}
-
-.experts-content {
-  flex: 1;
-  padding-bottom: 30px;
-}
-
+// ── 卡片网格 ─────────────────────────────────────────────────────────
 .cards {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr));
   gap: 12px;
+  padding-top: 4px;
 }
 
-// 临时占位遮罩样式：仅覆盖 experts-view 容器，不影响外层布局。后端就绪后可整体删除。
-.experts-placeholder-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 10;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(6px);
-  pointer-events: auto;
-}
+// ── 响应式 ────────────────────────────────────────────────────────────
+@media (max-width: $breakpoint-mobile) {
+  .header-search {
+    width: 100%;
+  }
 
-.experts-placeholder-text {
-  font-size: 96px;
-  font-weight: 800;
-  letter-spacing: 12px;
-  color: $accent-primary;
-  text-shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
-  user-select: none;
-}
-
-@media (max-width: 768px) {
-  .experts-placeholder-text {
-    font-size: 56px;
-    letter-spacing: 6px;
+  .chips {
+    padding-bottom: 8px;
   }
 }
 </style>

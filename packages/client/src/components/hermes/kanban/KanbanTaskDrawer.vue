@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { NDrawer, NDrawerContent, NButton, NSelect, NInput, NSpin, NModal, useMessage } from 'naive-ui'
+import { NDrawer, NDrawerContent, NButton, NSelect, NInput, NSpin, NModal } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { request } from '@/api/client'
@@ -10,6 +10,7 @@ import { withDefaultAssignee } from '@/utils/hermes/kanban-assignees'
 import HistoryMessageList from '@/components/hermes/chat/HistoryMessageList.vue'
 import type { Session, Message } from '@/stores/hermes/chat'
 import type { KanbanTaskDetail } from '@/api/hermes/kanban'
+import { useMessage } from '@/composables/useAppMessage'
 
 const RUN_HISTORY_PAGE_SIZE = 10
 

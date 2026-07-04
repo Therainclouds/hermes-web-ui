@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { NButton, NSpin, NEmpty, useMessage } from 'naive-ui'
+import { NButton, NSpin, NEmpty } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useFilesStore, isPreviewableFile, isTextFile } from '@/stores/hermes/files'
 import { downloadFile } from '@/api/hermes/download'
 import type { FileEntry } from '@/api/hermes/files'
+import { useMessage } from '@/composables/useAppMessage'
 
 const { t } = useI18n()
 const message = useMessage()

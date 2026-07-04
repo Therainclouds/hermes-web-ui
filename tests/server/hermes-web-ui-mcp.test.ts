@@ -765,6 +765,16 @@ describe('hermes-web-ui MCP server', () => {
         res.end(JSON.stringify({ devices: [{ id: 'device-1' }] }))
         return
       }
+      if (req.url === '/api/usb/devices') {
+        res.setHeader('content-type', 'application/json')
+        res.end(JSON.stringify({ runtime: { state: 'running' }, devices: [{ uuid: 'usb-1', mountPoint: '/mnt/usb-1' }] }))
+        return
+      }
+      if (req.url === '/api/usb/devices/usb-1/read?path=%2Fnotes.txt') {
+        res.setHeader('content-type', 'application/json')
+        res.end(JSON.stringify({ uuid: 'usb-1', path: '/notes.txt', encoding: 'utf-8', content: 'hello usb' }))
+        return
+      }
       res.statusCode = 404
       res.end('{}')
     })
@@ -798,12 +808,21 @@ describe('hermes-web-ui MCP server', () => {
       name: 'hermes_lan_devices_list',
       arguments: {},
     })
+    writeRpc(child, 5, 'tools/call', {
+      name: 'hermes_usb_devices_list',
+      arguments: {},
+    })
+    writeRpc(child, 6, 'tools/call', {
+      name: 'hermes_usb_file_read',
+      arguments: { uuid: 'usb-1', path: '/notes.txt' },
+    })
 
     const initialized = await waitForRpc(responses, 1)
     expect(initialized.result.serverInfo).toMatchObject({ toolset: 'devices' })
 
     const list = await waitForRpc(responses, 2)
     expect(list.result.tools.some((tool: any) => tool.name === 'hermes_studio_lan_devices_list')).toBe(true)
+    expect(list.result.tools.some((tool: any) => tool.name === 'hermes_studio_usb_devices_list')).toBe(true)
     expect(list.result.tools.some((tool: any) => tool.name === 'hermes_studio_api_request')).toBe(false)
 
     const hiddenCall = await waitForRpc(responses, 3)
@@ -813,6 +832,14 @@ describe('hermes-web-ui MCP server', () => {
     const legacyDevicesCall = await waitForRpc(responses, 4)
     const legacyDevicesPayload = JSON.parse(legacyDevicesCall.result.content[0].text)
     expect(legacyDevicesPayload.devices[0].id).toBe('device-1')
+
+    const legacyUsbDevicesCall = await waitForRpc(responses, 5)
+    const legacyUsbDevicesPayload = JSON.parse(legacyUsbDevicesCall.result.content[0].text)
+    expect(legacyUsbDevicesPayload.devices[0].uuid).toBe('usb-1')
+
+    const usbReadCall = await waitForRpc(responses, 6)
+    const usbReadPayload = JSON.parse(usbReadCall.result.content[0].text)
+    expect(usbReadPayload.content).toBe('hello usb')
 
     await new Promise<void>(resolve => server.close(() => resolve()))
   })

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { UpdateError } from '../../packages/server/src/services/update/errors'
-import { buildSourceDeployCommand } from '../../packages/server/src/services/update/strategies/source-deploy'
+import { buildSourceDeployCommand, buildSourceDeployEnv } from '../../packages/server/src/services/update/strategies/source-deploy'
 
 describe('source deploy strategy', () => {
   afterEach(() => {
@@ -40,5 +40,59 @@ describe('source deploy strategy', () => {
       '0.6.13',
       () => undefined,
     )).toThrow(/requires bash, but no bash executable was found in PATH/)
+  })
+
+  it('builds source deploy env with explicit agent upgrade scope', () => {
+    expect(buildSourceDeployEnv(
+      {
+        enabled: true,
+        strategy: 'source-deploy',
+        includeAgentUpgrade: false,
+        packageName: '@quanthermes/hermes-web-ui',
+        registry: 'https://registry.npmjs.org',
+        sourceLabel: 'npm',
+        distTag: 'latest',
+        cliBin: 'hermes-web-ui.mjs',
+        script: '/opt/hermes-web-ui/scripts/update-source-deploy.sh',
+        runnerService: 'hermes-web-ui-update.service',
+        runnerRequestFile: '/home/hermesui/.hermes-web-ui/updates/update-runner-request.json',
+        channel: 'stable',
+        manifestUrl: '',
+        manifestUrls: [],
+        manifestBaseUrl: '',
+        packageType: 'source-deploy',
+        installerScript: '',
+        stagingDir: '/tmp/staging',
+        backupDir: '/tmp/backups',
+        healthcheckUrl: 'http://127.0.0.1:6060/health',
+        stateFile: '/tmp/update-state.json',
+        logDir: '/tmp/update-logs',
+        manifestTimeoutMs: 100,
+        packageTimeoutMs: 100,
+        downloadRetries: 0,
+        downloadRetryDelayMs: 1,
+        healthcheckTimeoutMs: 2_000,
+        healthcheckIntervalMs: 2_000,
+        healthcheckRetries: 15,
+        healthcheckInitialDelayMs: 5_000,
+        autoInstallDependencies: true,
+        minFreeSpaceBytes: 1024,
+        taskHeartbeatTimeoutMs: 7_200_000,
+      },
+      { PATH: process.env.PATH || '' },
+      '0.6.32',
+      {
+        deployDir: '/opt/hermes-web-ui',
+        webUiHome: '/home/hermesui/.hermes-web-ui',
+        uploadDir: '/home/hermesui/.hermes-web-ui/upload',
+        hermesHome: '/opt/hermes-web-ui/hermes_data',
+      },
+      'update-task-123',
+    )).toEqual(expect.objectContaining({
+      HERMES_WEB_UI_UPDATE_VERSION: '0.6.32',
+      HERMES_WEB_UI_UPDATE_TASK_ID: 'update-task-123',
+      HERMES_WEB_UI_UPDATE_AUTO_INSTALL_DEPENDENCIES: 'true',
+      HERMES_WEB_UI_UPDATE_INCLUDE_AGENT_UPGRADE: 'false',
+    }))
   })
 })

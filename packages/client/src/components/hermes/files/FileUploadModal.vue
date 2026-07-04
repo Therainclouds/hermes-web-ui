@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { NModal, NButton, NSpace, useMessage } from 'naive-ui'
+import { NModal, NButton, NSpace } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useFilesStore } from '@/stores/hermes/files'
+import { useMessage } from '@/composables/useAppMessage'
 
 const { t } = useI18n()
 const message = useMessage()

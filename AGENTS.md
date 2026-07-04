@@ -40,6 +40,9 @@ Use the smallest relevant check while iterating. Before a broad PR, run
 - Keep routes thin: put request handling in controllers and reusable behavior in services.
 - Keep Web UI state under `HERMES_WEB_UI_HOME` or `HERMES_WEBUI_STATE_DIR`.
 - Keep Hermes Agent state separate from Web UI state.
+- Keep in-app updates orchestration-only unless a release plan explicitly enables a wider scope.
+- Do not make Hermes Agent upgrades the default side effect of Web UI updates.
+- Treat bootstrap, runtime reconcile, Web UI update, and Hermes Agent upgrade as separate seams.
 - Register local API routes before proxy catch-all routes.
 - Use structured APIs and argument arrays instead of shell string construction.
 - Add user-facing strings to every locale file.

@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿# Development Guidelines
+﻿﻿﻿﻿﻿﻿﻿# Development Guidelines
 
 This document defines project-level development rules for Hermes Web UI. It is tool-agnostic and applies to all contributors and coding agents.
 
@@ -46,6 +46,7 @@ npm run build
 - Do not reintroduce deprecated compatibility switches without a current caller.
 - Use structured APIs and parsers for structured data instead of ad hoc string edits when possible.
 - Add comments only where they explain non-obvious behavior or constraints.
+- For update, deploy, and release changes, document the touched product boundary and whether Hermes Agent lifecycle behavior changes.
 
 ## Frontend Rules
 
@@ -65,6 +66,15 @@ npm run build
 - Use `getActiveProfileDir()` or related profile helpers for Hermes profile files.
 - Avoid shell string construction for CLI calls; prefer `execFile`/`spawn` with argument arrays.
 
+## Update And Deploy Rules
+
+- Treat `Web UI update`, `Hermes Agent upgrade`, `bootstrap`, and `runtime reconcile` as separate responsibilities.
+- Keep in-app updates orchestration-only by default; do not silently expand them into host bootstrap or Hermes Agent lifecycle work.
+- Require an explicit release decision and runtime flag before letting an in-app update also upgrade Hermes Agent.
+- Keep update, runner, installer, and workflow contract fields aligned through shared types and documented rules.
+- Use fixed-version manifests for manual bootstrap or incident recovery; do not use moving `stable/latest.json` when the target version must stay pinned.
+- Preserve existing runtime configuration such as `PORT`, `BIND_HOST`, and state directory paths during manual recovery or source-based deploy repairs.
+
 ## Testing Rules
 
 - Add focused Vitest coverage for server and store logic changes.
@@ -78,6 +88,8 @@ npm run test:coverage
 npm run test:e2e
 npm run build
 ```
+
+- For update or deploy changes, also verify the relevant update tests and release/deploy docs stayed aligned.
 
 ## Commit And PR Rules
 
@@ -112,4 +124,3 @@ Closes #123
 - `npm run test:coverage`
 - `npm run build`
 ```
-

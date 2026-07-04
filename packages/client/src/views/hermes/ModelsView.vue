@@ -9,6 +9,7 @@ import ProviderFormModal from '@/components/hermes/models/ProviderFormModal.vue'
 import { useModelsStore } from '@/stores/hermes/models'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { checkCopilotToken } from '@/api/hermes/copilot-auth'
+import { useMessage } from '@/composables/useAppMessage'
 
 const { t } = useI18n()
 const modelsStore = useModelsStore()

@@ -1,13 +1,20 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs'
 import { dirname } from 'path'
 import { config } from '../../config'
-import type { UpdateTaskRecord, UpdateTaskStage, UpdateTaskStatus, UpdateTaskStatusResponse, UpdateStrategy } from './types'
+import type {
+  UpdateTaskOwner,
+  UpdateTaskRecord,
+  UpdateTaskStage,
+  UpdateTaskStatus,
+  UpdateTaskStatusResponse,
+  UpdateStrategy,
+} from './types'
 
 export const INTERRUPTED_UPDATE_TASK_ERROR_PREFIX = 'Previous update task was interrupted'
 
 type UpdateTaskPatch = Partial<Pick<
   UpdateTaskRecord,
-  'status' | 'stage' | 'message' | 'targetVersion' | 'warning' | 'error' | 'logPath' | 'rollbackMessage' | 'healthcheckUrl' | 'finishedAt'
+  'owner' | 'status' | 'stage' | 'message' | 'targetVersion' | 'warning' | 'error' | 'logPath' | 'rollbackMessage' | 'healthcheckUrl' | 'heartbeatAt' | 'finishedAt'
 >>
 
 interface PersistedUpdateTaskState {
@@ -20,6 +27,7 @@ function isTaskRecord(value: unknown): value is UpdateTaskRecord {
   const record = value as Record<string, unknown>
   return typeof record.id === 'string'
     && typeof record.strategy === 'string'
+    && (record.owner === undefined || typeof record.owner === 'string')
     && typeof record.status === 'string'
     && typeof record.stage === 'string'
     && typeof record.message === 'string'
@@ -29,8 +37,23 @@ function isTaskRecord(value: unknown): value is UpdateTaskRecord {
     && typeof record.logPath === 'string'
     && typeof record.rollbackMessage === 'string'
     && typeof record.healthcheckUrl === 'string'
+    && (record.heartbeatAt === undefined || typeof record.heartbeatAt === 'string')
     && typeof record.startedAt === 'string'
     && (typeof record.finishedAt === 'string' || record.finishedAt === null)
+}
+
+function normalizeTaskOwner(value: unknown): UpdateTaskOwner {
+  return value === 'runtime' ? 'runtime' : 'controller'
+}
+
+function normalizeTaskRecord(record: UpdateTaskRecord): UpdateTaskRecord {
+  return {
+    ...record,
+    owner: normalizeTaskOwner(record.owner),
+    heartbeatAt: typeof record.heartbeatAt === 'string' && record.heartbeatAt
+      ? record.heartbeatAt
+      : record.startedAt,
+  }
 }
 
 function normalizePersistedState(payload: unknown): PersistedUpdateTaskState {
@@ -39,8 +62,8 @@ function normalizePersistedState(payload: unknown): PersistedUpdateTaskState {
   }
   const candidate = payload as Record<string, unknown>
   return {
-    currentTask: isTaskRecord(candidate.currentTask) ? candidate.currentTask : null,
-    lastTask: isTaskRecord(candidate.lastTask) ? candidate.lastTask : null,
+    currentTask: isTaskRecord(candidate.currentTask) ? normalizeTaskRecord(candidate.currentTask) : null,
+    lastTask: isTaskRecord(candidate.lastTask) ? normalizeTaskRecord(candidate.lastTask) : null,
   }
 }
 
@@ -50,6 +73,16 @@ function isRunningTask(task: UpdateTaskRecord | null): task is UpdateTaskRecord 
 
 function interruptedTaskMessage(stage: UpdateTaskStage): string {
   return `Previous update task was interrupted during ${stage}.`
+}
+
+function isRuntimeOwnedTask(task: UpdateTaskRecord | null): task is UpdateTaskRecord {
+  return Boolean(task && task.owner === 'runtime')
+}
+
+function isTaskHeartbeatStale(task: UpdateTaskRecord, timeoutMs: number): boolean {
+  const heartbeatAt = Date.parse(task.heartbeatAt || task.startedAt)
+  if (!Number.isFinite(heartbeatAt)) return true
+  return (Date.now() - heartbeatAt) > timeoutMs
 }
 
 function isInterruptedTaskRecord(task: UpdateTaskRecord | null): task is UpdateTaskRecord {
@@ -119,8 +152,31 @@ export class UpdateTaskStore {
     return this.getLastTask()
   }
 
+  recoverInterruptedTaskIfStale(timeoutMs = config.update.taskHeartbeatTimeoutMs): UpdateTaskRecord | null {
+    if (!isRunningTask(this.currentTask)) {
+      return null
+    }
+    if (isRuntimeOwnedTask(this.currentTask) && !isTaskHeartbeatStale(this.currentTask, timeoutMs)) {
+      return null
+    }
+    return this.recoverInterruptedTask()
+  }
+
   clearRecoveredInterruptedTask(): UpdateTaskRecord | null {
     if (this.currentTask || !isInterruptedTaskRecord(this.lastTask)) {
+      return null
+    }
+
+    const clearedTask = this.getLastTask()
+    this.lastTask = null
+    if (existsSync(this.stateFilePath)) {
+      unlinkSync(this.stateFilePath)
+    }
+    return clearedTask
+  }
+
+  clearStaleFinishedTask(): UpdateTaskRecord | null {
+    if (this.currentTask || !this.lastTask?.finishedAt) {
       return null
     }
 
@@ -136,6 +192,7 @@ export class UpdateTaskStore {
     const task: UpdateTaskRecord = {
       id: `update-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       strategy,
+      owner: 'controller',
       status: 'queued',
       stage: 'queued',
       message: initialMessage,
@@ -145,6 +202,7 @@ export class UpdateTaskStore {
       logPath: '',
       rollbackMessage: '',
       healthcheckUrl: '',
+      heartbeatAt: new Date().toISOString(),
       startedAt: new Date().toISOString(),
       finishedAt: null,
     }
@@ -173,9 +231,11 @@ export class UpdateTaskStore {
     const sanitizedPatch = Object.fromEntries(
       Object.entries(patch).filter(([, value]) => value !== undefined),
     ) as UpdateTaskPatch
+    const nextHeartbeatAt = sanitizedPatch.heartbeatAt ?? new Date().toISOString()
     this.currentTask = {
       ...this.currentTask,
       ...sanitizedPatch,
+      heartbeatAt: nextHeartbeatAt,
     }
     this.persist()
     return this.getCurrentTask()
@@ -195,6 +255,21 @@ export class UpdateTaskStore {
       error: overrides.error,
       logPath: overrides.logPath,
       rollbackMessage: overrides.rollbackMessage,
+      healthcheckUrl: overrides.healthcheckUrl,
+    })
+  }
+
+  handoffCurrentTaskToRuntime(
+    overrides: Partial<Pick<UpdateTaskRecord, 'message' | 'stage' | 'targetVersion' | 'warning' | 'logPath' | 'healthcheckUrl'>> = {},
+  ): UpdateTaskRecord | null {
+    return this.patchCurrentTask({
+      owner: 'runtime',
+      status: 'running',
+      stage: overrides.stage,
+      message: overrides.message,
+      targetVersion: overrides.targetVersion,
+      warning: overrides.warning,
+      logPath: overrides.logPath,
       healthcheckUrl: overrides.healthcheckUrl,
     })
   }

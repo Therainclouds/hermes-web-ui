@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount } from 'vue'
-import { NButton, NSpace, useMessage, useDialog } from 'naive-ui'
+import { NButton, NSpace, useDialog } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useFilesStore } from '@/stores/hermes/files'
 import * as monaco from 'monaco-editor'
+import { useMessage } from '@/composables/useAppMessage'
 
 // Configure Monaco workers using import.meta.url
 ;(self as any).MonacoEnvironment = {

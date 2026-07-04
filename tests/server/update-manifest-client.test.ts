@@ -7,6 +7,7 @@ describe('update manifest client', () => {
     return {
       enabled: true,
       strategy: 'device-package' as const,
+      includeAgentUpgrade: false,
       packageName: '',
       registry: '',
       sourceLabel: 'Fallback Source',
@@ -32,6 +33,8 @@ describe('update manifest client', () => {
       healthcheckIntervalMs: 2_000,
       healthcheckRetries: 15,
       healthcheckInitialDelayMs: 5_000,
+      autoInstallDependencies: true,
+      minFreeSpaceBytes: 1024,
     }
   }
 

@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { NModal, NUpload, NButton, NInput, NRadioGroup, NRadio, useMessage } from 'naive-ui'
+import { NModal, NUpload, NButton, NInput, NRadioGroup, NRadio } from 'naive-ui'
 import type { UploadFileInfo } from 'naive-ui'
 import { importSkill } from '@/api/hermes/skills'
 import { useI18n } from 'vue-i18n'
+import { useMessage } from '@/composables/useAppMessage'
 
 const emit = defineEmits<{
   close: []

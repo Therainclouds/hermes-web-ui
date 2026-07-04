@@ -407,50 +407,120 @@ PY
     warn "Failed to resolve Hermes Agent wheel from ${HERMES_AGENT_UPDATE_MANIFEST_URL}. Falling back to GitHub release metadata."
   fi
 
-  step "Resolve latest stable Hermes Agent wheel"
-  local resolved_url
+  step "Resolve latest stable Hermes Agent wheel from PyPI"
+  local resolved_url resolved_version
   resolved_url="$(
-    python3 - "${HERMES_AGENT_RELEASES_API_URL}" <<'PY'
+    python3 - "${HERMES_AGENT_PYPI_SIMPLE_URL:-https://pypi.org/simple/hermes-agent/}" "${HERMES_AGENT_RELEASES_API_URL}" <<'PY'
 import json
+import re
 import sys
 import urllib.request
 
-api_url = sys.argv[1]
-request = urllib.request.Request(
-    api_url,
-    headers={
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "hermes-web-ui-deploy-source-armbian",
-    },
-)
-with urllib.request.urlopen(request, timeout=20) as response:
-    payload = json.load(response)
+simple_url = sys.argv[1]
+pypi_json_url = sys.argv[2]
+USER_AGENT = "hermes-web-ui-deploy-source-armbian"
 
-assets = payload.get("assets") or []
-candidates = []
-for asset in assets:
-    name = str(asset.get("name") or "")
-    url = str(asset.get("browser_download_url") or "")
-    if not url:
-        continue
-    if name.startswith("hermes_agent-") and name.endswith("-py3-none-any.whl"):
-        candidates.append((name, url))
+WHEEL_RE = re.compile(r"hermes_agent-(\d+(?:\.\d+)+(?:[a-z0-9\.\-\+]*)?)-py3-none-any\.whl", re.IGNORECASE)
 
-if not candidates:
-    raise SystemExit(
-        f"No stable hermes-agent wheel asset found in release payload from {api_url}"
+
+def parse_version(tag):
+    parts = []
+    for chunk in re.split(r"[^0-9a-zA-Z]+", tag):
+        if not chunk:
+            continue
+        if chunk.isdigit():
+            parts.append((0, int(chunk)))
+        else:
+            parts.append((1, chunk))
+    return tuple(parts)
+
+
+def from_simple_index(url):
+    request = urllib.request.Request(
+        url,
+        headers={"Accept": "application/vnd.pypi.simple.v1+html, text/html", "User-Agent": USER_AGENT},
     )
+    with urllib.request.urlopen(request, timeout=20) as response:
+        body = response.read().decode("utf-8", errors="replace")
 
-candidates.sort()
-print(candidates[0][1])
+    candidates = []
+    for match in re.finditer(r'href="([^"]+)"[^>]*>\s*([A-Za-z0-9._\-+]+)\s*</a>', body):
+        href, name = match.group(1), match.group(2)
+        m = WHEEL_RE.match(name)
+        if not m:
+            continue
+        # Strip the `#sha256=...` fragment from the URL
+        clean_url = href.split("#", 1)[0]
+        candidates.append((parse_version(m.group(1)), clean_url, m.group(1)))
+
+    if not candidates:
+        raise SystemExit(f"No stable hermes-agent wheel found in PyPI simple index: {url}")
+    candidates.sort(key=lambda c: c[0])
+    best = candidates[-1]
+    return best[1], best[2]
+
+
+def from_pypi_json(url):
+    request = urllib.request.Request(
+        url,
+        headers={"Accept": "application/json", "User-Agent": USER_AGENT},
+    )
+    with urllib.request.urlopen(request, timeout=20) as response:
+        payload = json.load(response)
+
+    urls = payload.get("urls") or []
+    candidates = []
+    for asset in urls:
+        name = str(asset.get("filename") or "")
+        link = str(asset.get("url") or "")
+        m = WHEEL_RE.match(name)
+        if not m or not link:
+            continue
+        candidates.append((parse_version(m.group(1)), link, m.group(1)))
+
+    if not candidates:
+        raise SystemExit(f"No stable hermes-agent wheel found in PyPI JSON payload: {url}")
+    candidates.sort(key=lambda c: c[0])
+    best = candidates[-1]
+    return best[1], best[2]
+
+
+# Try PyPI simple index first (lightweight, always lists every wheel).
+try:
+    url, version = from_simple_index(simple_url)
+    print(url)
+    print(version)
+    sys.exit(0)
+except Exception as exc:
+    sys.stderr.write(f"PyPI simple index lookup failed: {exc}\n")
+
+# Fallback: explicit PyPI JSON API (used when caller overrides).
+try:
+    url, version = from_pypi_json(pypi_json_url)
+    print(url)
+    print(version)
+    sys.exit(0)
+except Exception as exc:
+    sys.stderr.write(f"PyPI JSON API lookup failed: {exc}\n")
+
+raise SystemExit("Unable to resolve a stable hermes-agent wheel from PyPI.")
 PY
-  )"
+  )" || {
+    err "Failed to resolve the latest stable Hermes Agent wheel URL."
+    exit 1
+  }
+  resolved_url="$(printf '%s\n' "${resolved_url}" | sed -n '1p')"
+  resolved_version="$(printf '%s\n' "${resolved_url}" | sed -n '2p')"
   if [[ -z "${resolved_url}" ]]; then
     err "Failed to resolve the latest stable Hermes Agent wheel URL."
     exit 1
   fi
   HERMES_AGENT_WHEEL_URL="${resolved_url}"
-  info "Resolved latest stable Hermes Agent wheel: ${HERMES_AGENT_WHEEL_URL}"
+  if [[ -n "${resolved_version}" ]]; then
+    info "Resolved latest stable Hermes Agent wheel ${resolved_version}: ${HERMES_AGENT_WHEEL_URL}"
+  else
+    info "Resolved latest stable Hermes Agent wheel: ${HERMES_AGENT_WHEEL_URL}"
+  fi
 }
 
 install_node() {
@@ -626,6 +696,233 @@ EOF
   info "Wrote ${APP_USER_HOME}/.npmrc"
 }
 
+resolve_host_dependency_manifest_file() {
+  local manifest_path="${DEPLOY_DIR}/${HOST_DEPENDENCY_MANIFEST_RELATIVE_PATH}"
+  [[ -f "${manifest_path}" ]] || return 1
+  printf '%s\n' "${manifest_path}"
+}
+
+load_managed_host_dependency_packages() {
+  local manifest_path parsed_packages
+
+  if ! manifest_path="$(resolve_host_dependency_manifest_file)"; then
+    MANAGED_HOST_DEPENDENCY_MANIFEST_FILE=""
+    MANAGED_HOST_APT_PACKAGES=()
+    info "No managed host dependency manifest found at ${DEPLOY_DIR}/${HOST_DEPENDENCY_MANIFEST_RELATIVE_PATH}; skipping host dependency reconcile."
+    return 0
+  fi
+
+  parsed_packages="$(
+    python3 - "${manifest_path}" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+manifest_path = Path(sys.argv[1])
+payload = json.loads(manifest_path.read_text(encoding='utf-8'))
+if not isinstance(payload, dict):
+    raise SystemExit(f"Host dependency manifest must be a JSON object: {manifest_path}")
+
+schema = int(payload.get('schema') or 0)
+if schema != 1:
+    raise SystemExit(f"Host dependency manifest schema must be 1: {manifest_path}")
+
+apt_packages = []
+seen = set()
+for entry in payload.get('aptPackages') or []:
+    normalized = str(entry or '').strip()
+    if not normalized or normalized in seen:
+        continue
+    seen.add(normalized)
+    apt_packages.append(normalized)
+
+if not apt_packages:
+    raise SystemExit(f"Host dependency manifest aptPackages must contain at least one package: {manifest_path}")
+
+print("\n".join(apt_packages))
+PY
+  )" || {
+    err "Failed to parse managed host dependency manifest: ${manifest_path}"
+    exit 1
+  }
+
+  MANAGED_HOST_DEPENDENCY_MANIFEST_FILE="${manifest_path}"
+  MANAGED_HOST_APT_PACKAGES=()
+  while IFS= read -r package_name; do
+    [[ -n "${package_name}" ]] && MANAGED_HOST_APT_PACKAGES+=("${package_name}")
+  done <<< "${parsed_packages}"
+
+  info "Loaded managed host dependencies from ${manifest_path}: ${MANAGED_HOST_APT_PACKAGES[*]}"
+}
+
+is_apt_package_installed() {
+  local package_name="$1"
+  dpkg-query -W -f='${db:Status-Status}' "${package_name}" 2>/dev/null | grep -qx 'installed'
+}
+
+reconcile_host_dependencies() {
+  local package_name
+  local -a missing_packages=()
+
+  load_managed_host_dependency_packages
+  if [[ ${#MANAGED_HOST_APT_PACKAGES[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  for package_name in "${MANAGED_HOST_APT_PACKAGES[@]}"; do
+    if ! is_apt_package_installed "${package_name}"; then
+      missing_packages+=("${package_name}")
+    fi
+  done
+
+  if [[ ${#missing_packages[@]} -eq 0 ]]; then
+    info "Managed host dependencies are already installed."
+    return 0
+  fi
+
+  step "Install managed host dependencies"
+  info "Installing missing host dependencies from ${MANAGED_HOST_DEPENDENCY_MANIFEST_FILE}: ${missing_packages[*]}"
+  apt_update
+  run apt-get install -y "${missing_packages[@]}"
+}
+
+resolve_dependency_snapshot_file() {
+  local webui_home
+  webui_home="${HERMES_WEB_UI_HOME:-${APP_USER_HOME}/.hermes-web-ui}"
+  printf '%s\n' "${HERMES_WEB_UI_DEPENDENCY_SNAPSHOT_FILE:-${webui_home}/updates/dependency-manifest.json}"
+}
+
+detect_update_package_manager() {
+  if [[ -f "${DEPLOY_DIR}/pnpm-lock.yaml" ]]; then
+    UPDATE_DEPENDENCY_MANAGER="pnpm"
+  elif [[ -f "${DEPLOY_DIR}/yarn.lock" ]]; then
+    UPDATE_DEPENDENCY_MANAGER="yarn"
+  else
+    UPDATE_DEPENDENCY_MANAGER="npm"
+  fi
+}
+
+capture_dependency_snapshot() {
+  DEPENDENCY_SNAPSHOT_JSON="$(
+    python3 - "${DEPLOY_DIR}" "${UPDATE_DEPENDENCY_MANAGER}" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+deploy_dir = Path(sys.argv[1])
+package_manager = sys.argv[2]
+tracked_files = [
+    'package.json',
+    'package-lock.json',
+    'npm-shrinkwrap.json',
+    'pnpm-lock.yaml',
+    'yarn.lock',
+]
+
+payload = {
+    'packageManager': package_manager,
+    'files': {},
+}
+for relative_path in tracked_files:
+    path = deploy_dir / relative_path
+    if not path.is_file():
+        continue
+    payload['files'][relative_path] = hashlib.sha256(path.read_bytes()).hexdigest()
+
+print(json.dumps(payload, sort_keys=True))
+PY
+  )"
+}
+
+evaluate_dependency_snapshot() {
+  local snapshot_file compare_result
+  snapshot_file="$(resolve_dependency_snapshot_file)"
+
+  detect_update_package_manager
+  capture_dependency_snapshot
+
+  if [[ ! -f "${snapshot_file}" ]]; then
+    DEPENDENCY_SNAPSHOT_CHANGED=true
+    DEPENDENCY_INSTALL_REASON="No previous dependency snapshot found; running a full ${UPDATE_DEPENDENCY_MANAGER} install."
+    return 0
+  fi
+
+  compare_result="$(
+    python3 - "${snapshot_file}" "${DEPENDENCY_SNAPSHOT_JSON}" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+snapshot_path = Path(sys.argv[1])
+current = json.loads(sys.argv[2])
+previous = json.loads(snapshot_path.read_text(encoding='utf-8'))
+
+previous_manager = str(previous.get('packageManager') or '').strip()
+current_manager = str(current.get('packageManager') or '').strip()
+if previous_manager != current_manager:
+    print('changed')
+    print(f'Package manager changed from {previous_manager or "unknown"} to {current_manager or "unknown"}; reinstalling dependencies.')
+    raise SystemExit(0)
+
+previous_files = previous.get('files') or {}
+current_files = current.get('files') or {}
+if previous_files != current_files:
+    changed_files = sorted({
+        *previous_files.keys(),
+        *current_files.keys(),
+    })
+    print('changed')
+    print(f'Dependency manifests changed ({", ".join(changed_files)}); reinstalling dependencies.')
+    raise SystemExit(0)
+
+print('unchanged')
+print(f'Dependency manifests are unchanged; reinstalling {current_manager or "npm"} dependencies for a clean runtime cutover.')
+PY
+  )"
+
+  DEPENDENCY_SNAPSHOT_CHANGED=true
+  if [[ "$(printf '%s\n' "${compare_result}" | sed -n '1p')" == "unchanged" ]]; then
+    DEPENDENCY_SNAPSHOT_CHANGED=false
+  fi
+  DEPENDENCY_INSTALL_REASON="$(printf '%s\n' "${compare_result}" | sed -n '2p')"
+}
+
+persist_dependency_snapshot() {
+  local snapshot_file snapshot_dir
+  snapshot_file="$(resolve_dependency_snapshot_file)"
+  snapshot_dir="$(dirname "${snapshot_file}")"
+  run mkdir -p "${snapshot_dir}"
+  printf '%s\n' "${DEPENDENCY_SNAPSHOT_JSON}" | run tee "${snapshot_file}" >/dev/null
+  run chown -R "${APP_USER}:${APP_USER}" "${snapshot_dir}"
+  info "Recorded dependency snapshot: ${snapshot_file}"
+}
+
+run_dependency_install_command() {
+  local path_env="$1"
+  case "${UPDATE_DEPENDENCY_MANAGER}" in
+    npm)
+      run_as_app_user "cd '${DEPLOY_DIR}' && PATH='${path_env}' npm install --include=dev --ignore-scripts"
+      ;;
+    pnpm)
+      run_as_app_user "cd '${DEPLOY_DIR}' && PATH='${path_env}' corepack pnpm install --frozen-lockfile --ignore-scripts"
+      ;;
+    yarn)
+      run_as_app_user "cd '${DEPLOY_DIR}' && PATH='${path_env}' corepack yarn install --frozen-lockfile --ignore-scripts --non-interactive"
+      ;;
+    *)
+      err "Unsupported package manager for update dependency install: ${UPDATE_DEPENDENCY_MANAGER}"
+      exit 1
+      ;;
+  esac
+}
+
 install_webui_dependencies() {
   if [[ -n "${WEBUI_BUNDLE_URL}" ]]; then
     step "Install hermes-web-ui from bundle"
@@ -645,12 +942,20 @@ install_webui_dependencies() {
   local path_env
   path_env="${NODE_INSTALL_DIR}/bin:${APP_USER_HOME}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
+  evaluate_dependency_snapshot
   run chown -R "${APP_USER}:${APP_USER}" "${DEPLOY_DIR}"
+  if [[ "${WEBUI_UPDATE_AUTO_INSTALL_DEPENDENCIES}" != "true" ]]; then
+    err "Automatic dependency installation is disabled, but update-only deploys require node_modules to be rebuilt."
+    exit 1
+  fi
+  info "${DEPENDENCY_INSTALL_REASON}"
   # Use --ignore-scripts so the root `prepare` hook (which calls `npm run build`
   # itself) does not race with build_webui below and leave a stale `dist/` from
-  # an older source tree.  build_webui is the single source of truth for the
+  # an older source tree. build_webui is the single source of truth for the
   # deploy build.
-  run_as_app_user "cd '${DEPLOY_DIR}' && PATH='${path_env}' npm install --include=dev --ignore-scripts && PATH='${path_env}' npm ls --depth=0 @vscode/markdown-it-katex naive-ui typescript vite vue-tsc >/dev/null"
+  run_dependency_install_command "${path_env}"
+  run_as_app_user "cd '${DEPLOY_DIR}' && PATH='${path_env}' npm ls --depth=0 @vscode/markdown-it-katex naive-ui typescript vite vue-tsc >/dev/null"
+  persist_dependency_snapshot
 }
 
 check_webui_dependencies() {
@@ -717,11 +1022,15 @@ EOF
   local update_env_name update_env_value
   for update_env_name in \
     UPLOAD_DIR \
+    HERMES_AGENT_SERVICE_NAME \
+    HERMES_AGENT_BRIDGE_ENDPOINT \
+    HERMES_AGENT_BRIDGE_KILL_STALE_IPC \
     HERMES_AGENT_WHEEL_URL \
     HERMES_AGENT_WHEELHOUSE_URL \
     HERMES_AGENT_RELEASES_API_URL \
     HERMES_AGENT_UPDATE_MANIFEST_URL \
     HERMES_ANTHROPIC_VERSION \
+    WEBUI_UPDATE_AUTO_INSTALL_DEPENDENCIES \
     WEBUI_UPDATE_ENABLED \
     WEBUI_UPDATE_PACKAGE \
     WEBUI_UPDATE_REGISTRY \
@@ -749,7 +1058,9 @@ EOF
     WEBUI_UPDATE_HEALTHCHECK_TIMEOUT_MS \
     WEBUI_UPDATE_HEALTHCHECK_INTERVAL_MS \
     WEBUI_UPDATE_HEALTHCHECK_RETRIES \
-    WEBUI_UPDATE_HEALTHCHECK_INITIAL_DELAY_MS
+    WEBUI_UPDATE_HEALTHCHECK_INITIAL_DELAY_MS \
+    HERMES_WEB_UI_UPDATE_AUTO_INSTALL_DEPENDENCIES \
+    HERMES_WEB_UI_UPDATE_RESTART_AGENT_RUNTIME
   do
     update_env_value="${!update_env_name:-}"
     if [[ -z "${update_env_value}" ]]; then
@@ -759,6 +1070,15 @@ EOF
           ;;
         WEBUI_UPDATE_RUNNER_REQUEST_FILE)
           update_env_value="${update_runner_request_file}"
+          ;;
+        WEBUI_UPDATE_AUTO_INSTALL_DEPENDENCIES|HERMES_WEB_UI_UPDATE_AUTO_INSTALL_DEPENDENCIES)
+          update_env_value="${WEBUI_UPDATE_AUTO_INSTALL_DEPENDENCIES}"
+          ;;
+        HERMES_WEB_UI_UPDATE_RESTART_AGENT_RUNTIME)
+          update_env_value="${RESTART_AGENT_RUNTIME}"
+          ;;
+        HERMES_AGENT_BRIDGE_KILL_STALE_IPC)
+          update_env_value="1"
           ;;
       esac
     fi
@@ -770,6 +1090,185 @@ EOF
   done
 
   info "Wrote ${SERVICE_ENV_FILE}"
+}
+
+systemd_unit_exists() {
+  local unit_name="$1"
+  systemctl cat "${unit_name}" >/dev/null 2>&1
+}
+
+cleanup_stale_agent_runtime() {
+  local bridge_endpoint="${HERMES_AGENT_BRIDGE_ENDPOINT:-ipc:///tmp/hermes-agent-bridge.sock}"
+  local removed_any=false
+
+  if [[ "${bridge_endpoint}" != ipc://* ]]; then
+    info "Skipping stale bridge cleanup for non-IPC endpoint: ${bridge_endpoint}"
+    return 0
+  fi
+
+  python3 - "${bridge_endpoint}" "${APP_USER}" <<'PY'
+from __future__ import annotations
+
+import os
+import pwd
+import signal
+import sys
+import time
+from pathlib import Path
+
+endpoint, app_user = sys.argv[1:3]
+sock_path = endpoint.replace('ipc://', '', 1)
+if not sock_path:
+    raise SystemExit(0)
+
+socket_paths = {sock_path}
+worker_dir = Path(sock_path).parent / 'hermes-agent-bridge-workers'
+if worker_dir.is_dir():
+    for entry in worker_dir.iterdir():
+        socket_paths.add(str(entry))
+
+uid = None
+if app_user:
+    try:
+        uid = pwd.getpwnam(app_user).pw_uid
+    except KeyError:
+        uid = None
+
+patterns = (
+    'hermes_bridge.py',
+    'bridge_server.py',
+    'bridge_broker.py',
+    'hermes-agent-bridge',
+)
+
+def process_uid(pid: int) -> int | None:
+    try:
+        for line in Path(f'/proc/{pid}/status').read_text(encoding='utf-8').splitlines():
+            if line.startswith('Uid:'):
+                return int(line.split()[1])
+    except Exception:
+        return None
+    return None
+
+def process_cmdline(pid: int) -> str:
+    try:
+        return Path(f'/proc/{pid}/cmdline').read_bytes().decode('utf-8', errors='ignore').replace('\x00', ' ')
+    except Exception:
+        return ''
+
+def process_has_socket(pid: int) -> bool:
+    fd_dir = Path(f'/proc/{pid}/fd')
+    if not fd_dir.is_dir():
+        return False
+    for fd in fd_dir.iterdir():
+        try:
+            target = os.readlink(fd)
+        except OSError:
+            continue
+        if target in socket_paths:
+            return True
+    return False
+
+def pid_exists(pid: int) -> bool:
+    return Path(f'/proc/{pid}').exists()
+
+pids: list[int] = []
+for entry in Path('/proc').iterdir():
+    if not entry.name.isdigit():
+        continue
+    pid = int(entry.name)
+    if pid == os.getpid():
+        continue
+    if uid is not None and process_uid(pid) != uid:
+        continue
+    cmdline = process_cmdline(pid)
+    if process_has_socket(pid) or any(pattern in cmdline for pattern in patterns):
+        pids.append(pid)
+
+if pids:
+    print(f"[INFO] stopping stale agent runtime pids: {', '.join(str(pid) for pid in pids)}")
+for pid in sorted(set(pids), reverse=True):
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        continue
+    except PermissionError:
+        continue
+
+time.sleep(0.5)
+for pid in sorted(set(pids), reverse=True):
+    if not pid_exists(pid):
+        continue
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        continue
+    except PermissionError:
+        continue
+
+for path_str in socket_paths:
+    path = Path(path_str)
+    try:
+        if path.exists() or path.is_socket():
+            path.unlink()
+            print(f"[INFO] removed stale bridge socket: {path}")
+    except FileNotFoundError:
+        continue
+    except Exception as exc:
+        print(f"[WARN] failed to remove stale bridge socket {path}: {exc}", file=sys.stderr)
+PY
+
+  if [[ -d "$(dirname "${bridge_endpoint#ipc://}")/hermes-agent-bridge-workers" ]]; then
+    run find "$(dirname "${bridge_endpoint#ipc://}")/hermes-agent-bridge-workers" -mindepth 1 -delete || true
+    removed_any=true
+  fi
+
+  if [[ "${removed_any}" == "true" ]]; then
+    info "Cleaned stale agent bridge worker sockets."
+  fi
+}
+
+stop_runtime_for_update_cutover() {
+  step "Stop runtime services before update cutover"
+
+  if systemctl is-active --quiet "${SYSTEMD_SERVICE_NAME}" >/dev/null 2>&1; then
+    WEBUI_SERVICE_WAS_ACTIVE=true
+    run systemctl stop "${SYSTEMD_SERVICE_NAME}"
+    info "Stopped ${SYSTEMD_SERVICE_NAME} before update cutover."
+  else
+    info "${SYSTEMD_SERVICE_NAME} was already stopped before update cutover."
+  fi
+
+  HERMES_AGENT_SERVICE_EXISTS=false
+  HERMES_AGENT_SERVICE_WAS_ACTIVE=false
+  if [[ "${RESTART_AGENT_RUNTIME}" == "true" && -n "${HERMES_AGENT_SERVICE_NAME}" ]] && systemd_unit_exists "${HERMES_AGENT_SERVICE_NAME}"; then
+    HERMES_AGENT_SERVICE_EXISTS=true
+    if systemctl is-active --quiet "${HERMES_AGENT_SERVICE_NAME}" >/dev/null 2>&1; then
+      HERMES_AGENT_SERVICE_WAS_ACTIVE=true
+      run systemctl stop "${HERMES_AGENT_SERVICE_NAME}"
+      info "Stopped ${HERMES_AGENT_SERVICE_NAME} before Web UI restart."
+    else
+      info "${HERMES_AGENT_SERVICE_NAME} is installed but inactive; leaving it stopped."
+    fi
+  elif [[ "${RESTART_AGENT_RUNTIME}" == "true" ]]; then
+    warn "Hermes Agent service unit not found: ${HERMES_AGENT_SERVICE_NAME}. Falling back to stale-process cleanup only."
+  else
+    info "Hermes Agent runtime restart is disabled for this deploy."
+  fi
+
+  cleanup_stale_agent_runtime
+}
+
+start_runtime_after_update_cutover() {
+  if [[ "${RESTART_AGENT_RUNTIME}" != "true" ]]; then
+    return 0
+  fi
+  if [[ "${HERMES_AGENT_SERVICE_EXISTS}" != "true" || "${HERMES_AGENT_SERVICE_WAS_ACTIVE}" != "true" ]]; then
+    return 0
+  fi
+  step "Start Hermes Agent runtime after Web UI restart"
+  run systemctl start "${HERMES_AGENT_SERVICE_NAME}"
+  info "Started ${HERMES_AGENT_SERVICE_NAME} after Web UI restart."
 }
 
 wait_for_http_ready() {
@@ -887,16 +1386,20 @@ PY
     info "Update configuration check passed."
   fi
 
+  if [[ "${HERMES_AGENT_SERVICE_WAS_ACTIVE}" == "true" ]]; then
+    if ! run systemctl is-active --quiet "${HERMES_AGENT_SERVICE_NAME}"; then
+      err "Hermes Agent service did not come back after update: ${HERMES_AGENT_SERVICE_NAME}"
+      run systemctl status "${HERMES_AGENT_SERVICE_NAME}" --no-pager || true
+      return 1
+    fi
+    info "Hermes Agent service is active after update: ${HERMES_AGENT_SERVICE_NAME}"
+  fi
+
   check_bridge_status
 }
 
 install_systemd_service() {
-  local was_active=false
   step "Install systemd service"
-
-  if systemctl is-active --quiet "${SYSTEMD_SERVICE_NAME}" >/dev/null 2>&1; then
-    was_active=true
-  fi
 
   local rendered_service
   rendered_service="$(mktemp)"
@@ -927,13 +1430,8 @@ PY
   rm -f "${rendered_service}"
   run systemctl daemon-reload
   run systemctl enable "${SYSTEMD_SERVICE_NAME}"
-  if [[ "${was_active}" == "true" ]]; then
-    run systemctl restart "${SYSTEMD_SERVICE_NAME}"
-    info "systemd service restarted: ${SYSTEMD_SERVICE_NAME}"
-  else
-    run systemctl start "${SYSTEMD_SERVICE_NAME}"
-    info "systemd service started: ${SYSTEMD_SERVICE_NAME}"
-  fi
+  run systemctl start "${SYSTEMD_SERVICE_NAME}"
+  info "systemd service started: ${SYSTEMD_SERVICE_NAME}"
 }
 
 install_update_runner_script() {
@@ -1051,7 +1549,7 @@ OSS_PUBLIC_BASE_URL="${OSS_PUBLIC_BASE_URL:-https://tangledup-ai-staging.oss-cn-
 DEFAULT_HERMES_AGENT_WHEEL_URL="https://files.pythonhosted.org/packages/e3/e2/d18d5ec6735b412fde47ecac3b6a63874c824c83e9821e1c1f4a07bcff85/hermes_agent-0.17.0-py3-none-any.whl"
 HERMES_AGENT_WHEEL_URL="${HERMES_AGENT_WHEEL_URL:-${DEFAULT_HERMES_AGENT_WHEEL_URL}}"
 HERMES_AGENT_WHEELHOUSE_URL="${HERMES_AGENT_WHEELHOUSE_URL:-${OSS_PUBLIC_BASE_URL}/hermes-agent/wheelhouse/}"
-HERMES_AGENT_RELEASES_API_URL="${HERMES_AGENT_RELEASES_API_URL:-https://api.github.com/repos/NousResearch/hermes-agent/releases/latest}"
+HERMES_AGENT_RELEASES_API_URL="${HERMES_AGENT_RELEASES_API_URL:-https://pypi.org/pypi/hermes-agent/json}"
 HERMES_AGENT_UPDATE_MANIFEST_URL="${HERMES_AGENT_UPDATE_MANIFEST_URL:-${OSS_PUBLIC_BASE_URL}/hermes-agent/stable/latest.json}"
 HERMES_AGENT_UPDATE_LATEST_STABLE="${HERMES_AGENT_UPDATE_LATEST_STABLE:-false}"
 HERMES_ANTHROPIC_VERSION="${HERMES_ANTHROPIC_VERSION:-}"
@@ -1075,11 +1573,24 @@ WEBUI_UPDATE_STRATEGY="${WEBUI_UPDATE_STRATEGY:-source-deploy}"
 WEBUI_UPDATE_SCRIPT="${WEBUI_UPDATE_SCRIPT:-${DEPLOY_DIR}/scripts/update-source-deploy.sh}"
 WEBUI_UPDATE_REPO="${WEBUI_UPDATE_REPO:-https://github.com/tangledup-ai/hermes-web-ui}"
 WEBUI_UPDATE_MANIFEST_BASE_URL="${WEBUI_UPDATE_MANIFEST_BASE_URL:-${OSS_PUBLIC_BASE_URL}/releases}"
+WEBUI_UPDATE_AUTO_INSTALL_DEPENDENCIES_RAW="${HERMES_WEB_UI_UPDATE_AUTO_INSTALL_DEPENDENCIES:-${WEBUI_UPDATE_AUTO_INSTALL_DEPENDENCIES:-true}}"
+RESTART_AGENT_RUNTIME_RAW="${HERMES_WEB_UI_UPDATE_RESTART_AGENT_RUNTIME:-true}"
+HERMES_AGENT_SERVICE_NAME="${HERMES_AGENT_SERVICE_NAME:-hermes-agent.service}"
 UPDATE_ONLY_RAW="${DEPLOY_UPDATE_ONLY:-false}"
 AGENT_ONLY_RAW="${DEPLOY_HERMES_AGENT_ONLY:-false}"
 USE_CONFIGURED_DEPLOY_DIR_RAW="${DEPLOY_USE_CONFIGURED_DIR:-false}"
 APP_USER_HOME=""
 NODE_ARCH=""
+WEBUI_SERVICE_WAS_ACTIVE=false
+HERMES_AGENT_SERVICE_EXISTS=false
+HERMES_AGENT_SERVICE_WAS_ACTIVE=false
+UPDATE_DEPENDENCY_MANAGER="npm"
+DEPENDENCY_SNAPSHOT_CHANGED=true
+DEPENDENCY_INSTALL_REASON=""
+DEPENDENCY_SNAPSHOT_JSON=""
+HOST_DEPENDENCY_MANIFEST_RELATIVE_PATH="release/device-host-dependencies.json"
+MANAGED_HOST_DEPENDENCY_MANIFEST_FILE=""
+MANAGED_HOST_APT_PACKAGES=()
 
 case "${UPDATE_ONLY_RAW,,}" in
   1|true|yes|on)
@@ -1108,6 +1619,24 @@ case "${USE_CONFIGURED_DEPLOY_DIR_RAW,,}" in
     ;;
 esac
 
+case "${WEBUI_UPDATE_AUTO_INSTALL_DEPENDENCIES_RAW,,}" in
+  0|false|no|off)
+    WEBUI_UPDATE_AUTO_INSTALL_DEPENDENCIES=false
+    ;;
+  *)
+    WEBUI_UPDATE_AUTO_INSTALL_DEPENDENCIES=true
+    ;;
+esac
+
+case "${RESTART_AGENT_RUNTIME_RAW,,}" in
+  0|false|no|off)
+    RESTART_AGENT_RUNTIME=false
+    ;;
+  *)
+    RESTART_AGENT_RUNTIME=true
+    ;;
+esac
+
 require_safe_env_value "PORT" "${PORT}"
 require_safe_env_value "BIND_HOST" "${BIND_HOST}"
 require_safe_env_value "APP_USER" "${APP_USER}"
@@ -1124,6 +1653,7 @@ require_safe_env_value "WEBUI_UPDATE_DIST_TAG" "${WEBUI_UPDATE_DIST_TAG}"
 require_safe_env_value "WEBUI_UPDATE_STRATEGY" "${WEBUI_UPDATE_STRATEGY}"
 require_safe_env_value "WEBUI_UPDATE_SCRIPT" "${WEBUI_UPDATE_SCRIPT}"
 require_safe_env_value "WEBUI_UPDATE_REPO" "${WEBUI_UPDATE_REPO}"
+require_safe_env_value "HERMES_AGENT_SERVICE_NAME" "${HERMES_AGENT_SERVICE_NAME}"
 
 echo
 echo "hermes / hermes-web-ui source deployment"
@@ -1157,12 +1687,15 @@ if [[ "${UPDATE_ONLY}" != "true" ]]; then
 fi
 write_npmrc
 install_webui_dependencies
+reconcile_host_dependencies
 check_webui_dependencies
 build_webui
 write_service_env
 install_update_runner_script
 install_update_runner_service
 install_update_runner_sudoers
+stop_runtime_for_update_cutover
 install_systemd_service
+start_runtime_after_update_cutover
 post_deploy_self_check
 show_summary

@@ -30,6 +30,7 @@ import { startGlobalAgentServer } from './services/global-agent/server'
 import { WorkflowSocketServer } from './services/workflow-socket'
 import { PetStateSocketServer } from './services/hermes/pet-state-socket'
 import { logger } from './services/logger'
+import { startUSBService } from './services/usb'
 import { createStaticCompressionMiddleware } from './middleware/static-compression'
 import { requireUserJwt, resolveUserProfile } from './middleware/user-auth'
 import { createCorsOriginResolver, securityHeaders } from './security'
@@ -293,6 +294,13 @@ export async function bootstrap() {
   const { initAllStores } = await import('./db/hermes/init')
   initAllStores()
   console.log('[bootstrap] all stores initialized')
+  try {
+    startUSBService()
+    console.log('[bootstrap] usb service initialized')
+  } catch (err) {
+    logger.warn(err, '[bootstrap] failed to initialize usb service')
+    console.warn('[bootstrap] failed to initialize usb service:', err instanceof Error ? err.message : err)
+  }
 
   app.use(securityHeaders())
   app.use(cors({ origin: createCorsOriginResolver(config.corsOrigins) }))
@@ -400,7 +408,7 @@ export async function bootstrap() {
     })
   })
 
-  desktopShutdownHandler = bindShutdown(servers, groupChatServer, chatRunServer, agentBridgeManager)
+  desktopShutdownHandler = bindShutdown(servers, groupChatServer, chatRunServer, agentBridgeManager, usbSocketServer)
   startVersionCheck()
 }
 

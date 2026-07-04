@@ -7,6 +7,7 @@ import { useAppStore } from '@/stores/hermes/app'
 import { useChatStore } from '@/stores/hermes/chat'
 import { checkCopilotToken, disableCopilot } from '@/api/hermes/copilot-auth'
 import { useI18n } from 'vue-i18n'
+import { useMessage } from '@/composables/useAppMessage'
 
 const props = defineProps<{ provider: AvailableModelGroup }>()
 

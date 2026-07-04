@@ -2,7 +2,9 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import {
   checkHealth,
+  clearStaleUpdateStatus as clearStaleUpdateStatusRequest,
   fetchAvailableModels,
+  fetchUpdateCapabilities,
   fetchUpdateStatus,
   addCustomModel as persistCustomModel,
   removeCustomModel as deletePersistedCustomModel,
@@ -16,6 +18,7 @@ import {
   type UpdateTaskRecord,
   type UpdateTaskStage,
   type UpdateTaskStatus,
+  type UpdateCapabilitiesResponse,
   type ProfileAvailableModels,
   type ModelVisibility,
   type ModelVisibilityRule,
@@ -27,7 +30,10 @@ const WEB_UI_VERSION = __APP_VERSION__
 const SIDEBAR_COLLAPSED_KEY = 'hermes_sidebar_collapsed'
 const ACTIVE_PROFILE_STORAGE_KEY = 'hermes_active_profile_name'
 const MODELS_CACHE_TTL_MS = 30000
-const UPDATE_RELOAD_TIMEOUT_MS = 10 * 60 * 1000
+// Source deployment updates on real devices can take well beyond 10 minutes.
+// Keep polling long enough for slow installs, rebuilds, and service restarts
+// before surfacing a timeout to the UI.
+const UPDATE_RELOAD_TIMEOUT_MS = 30 * 60 * 1000
 const UPDATE_POLL_INTERVAL_MS = 3000
 
 export const useAppStore = defineStore('app', () => {
@@ -52,6 +58,17 @@ export const useAppStore = defineStore('app', () => {
   const updateTaskMessage = ref('')
   const updateTaskWarning = ref('')
   const updateTaskError = ref('')
+  const updateRiskLevel = ref<'low' | 'medium' | 'high'>('low')
+  const updateBlockingText = ref('')
+  const updateCapabilitiesWarning = ref('')
+  const updateCapabilitiesRemoteError = ref('')
+  const updateAutoInstallDependencies = ref(true)
+  const updateRollbackSupported = ref(false)
+  const updateChecksumVerification = ref(false)
+  const updateStateFile = ref('')
+  const updateLogDir = ref('')
+  const updateStagingDir = ref('')
+  const updateBackupDir = ref('')
   const modelGroups = ref<AvailableModelGroup[]>([])
   const profileModelGroups = ref<ProfileAvailableModels[]>([])
   const selectedModel = ref('')
@@ -169,6 +186,48 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  async function clearStaleUpdateStatus(): Promise<boolean> {
+    try {
+      await clearStaleUpdateStatusRequest()
+      updating.value = false
+      resetUpdateTaskState()
+      await checkUpdateStatus()
+      return true
+    } catch (err) {
+      console.error('Failed to clear stale update status:', err)
+      return false
+    }
+  }
+
+  function applyUpdateCapabilities(res: UpdateCapabilitiesResponse) {
+    updateRiskLevel.value = res.preflight?.riskLevel || 'low'
+    updateBlockingText.value = res.preflight?.blockingText || ''
+    updateCapabilitiesWarning.value = res.preflight?.warningText || ''
+    updateCapabilitiesRemoteError.value = res.remoteError || ''
+    updateAutoInstallDependencies.value = !!res.runtime?.autoInstallDependencies
+    updateRollbackSupported.value = !!res.supports?.rollback
+    updateChecksumVerification.value = !!res.supports?.checksumVerification
+    updateStateFile.value = res.runtime?.stateFile || ''
+    updateLogDir.value = res.runtime?.logDir || ''
+    updateStagingDir.value = res.runtime?.stagingDir || ''
+    updateBackupDir.value = res.runtime?.backupDir || ''
+  }
+
+  async function refreshUpdateCapabilities() {
+    if (!updateEnabled.value) {
+      updateRiskLevel.value = 'low'
+      updateBlockingText.value = ''
+      updateCapabilitiesWarning.value = ''
+      updateCapabilitiesRemoteError.value = ''
+      return
+    }
+    try {
+      applyUpdateCapabilities(await fetchUpdateCapabilities())
+    } catch (err) {
+      updateCapabilitiesRemoteError.value = err instanceof Error ? err.message : String(err)
+    }
+  }
+
   async function checkConnection() {
     try {
       const res = await checkHealth()
@@ -184,6 +243,7 @@ export const useAppStore = defineStore('app', () => {
       updatePackageType.value = res.webui_update_package_type || ''
       updateAvailable.value = !!res.webui_update_available
       if (res.node_version) nodeVersion.value = res.node_version
+      await refreshUpdateCapabilities()
     } catch {
       connected.value = false
       clientOutdated.value = false
@@ -193,6 +253,10 @@ export const useAppStore = defineStore('app', () => {
       updateChannel.value = ''
       updateStrategy.value = ''
       updatePackageType.value = ''
+      updateRiskLevel.value = 'low'
+      updateBlockingText.value = ''
+      updateCapabilitiesWarning.value = ''
+      updateCapabilitiesRemoteError.value = ''
     }
   }
 
@@ -472,7 +536,19 @@ export const useAppStore = defineStore('app', () => {
     updateTaskMessage,
     updateTaskWarning,
     updateTaskError,
+    updateRiskLevel,
+    updateBlockingText,
+    updateCapabilitiesWarning,
+    updateCapabilitiesRemoteError,
+    updateAutoInstallDependencies,
+    updateRollbackSupported,
+    updateChecksumVerification,
+    updateStateFile,
+    updateLogDir,
+    updateStagingDir,
+    updateBackupDir,
     doUpdate,
+    clearStaleUpdateStatus,
     reloadClient,
     modelGroups,
     profileModelGroups,
@@ -500,5 +576,6 @@ export const useAppStore = defineStore('app', () => {
     startHealthPolling,
     stopHealthPolling,
     checkUpdateStatus,
+    refreshUpdateCapabilities,
   }
 })

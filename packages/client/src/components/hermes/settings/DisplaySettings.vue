@@ -7,6 +7,7 @@ import { useTheme, type BrightnessMode } from '@/composables/useTheme'
 import { requestCompletionNotificationPermission, showCompletionNotification, type CompletionNotificationPermissionResult } from '@/utils/completion-notification'
 import { clampChatInputHeight, MAX_CHAT_INPUT_HEIGHT, MIN_CHAT_INPUT_HEIGHT } from '@/utils/chat-input-height'
 import SettingRow from './SettingRow.vue'
+import { useMessage } from '@/composables/useAppMessage'
 
 const settingsStore = useSettingsStore()
 const message = useMessage()

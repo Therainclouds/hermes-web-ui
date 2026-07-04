@@ -5,6 +5,8 @@ export type UpdatePackageType = 'device-package' | 'npm-package' | 'source-deplo
 export interface UpdateConfig {
   enabled: boolean
   strategy: UpdateStrategy
+  includeAgentUpgrade: boolean
+  autoInstallDependencies: boolean
   packageName: string
   registry: string
   sourceLabel: string
@@ -32,6 +34,8 @@ export interface UpdateConfig {
   healthcheckIntervalMs: number
   healthcheckRetries: number
   healthcheckInitialDelayMs: number
+  minFreeSpaceBytes: number
+  taskHeartbeatTimeoutMs: number
 }
 
 export interface UpdateRuntimePaths {
@@ -47,6 +51,10 @@ export type UpdatePreflightIssueCode =
   | 'webui-home-in-deploy-dir'
   | 'upload-dir-in-deploy-dir'
   | 'hermes-home-in-deploy-dir'
+  | 'update-state-dir-not-writable'
+  | 'update-staging-dir-not-writable'
+  | 'update-log-dir-not-writable'
+  | 'insufficient-disk-space'
 
 export interface UpdatePreflightIssue {
   code: UpdatePreflightIssueCode
@@ -65,19 +73,33 @@ export interface UpdatePreflightResult {
   blockingText: string
 }
 
+export interface UpdatePreflightOptions {
+  stagingDir?: string
+  logDir?: string
+  stateFile?: string
+  minFreeSpaceBytes?: number
+  requiredFreeSpaceBytes?: number
+}
+
 export type UpdateTaskStatus = 'idle' | 'queued' | 'running' | 'succeeded' | 'failed'
+
+export type UpdateTaskOwner = 'controller' | 'runtime'
 
 export type UpdateTaskStage =
   | 'idle'
   | 'queued'
+  | 'preflighting'
   | 'checking'
   | 'resolving_version'
   | 'downloading'
   | 'verifying'
   | 'backing_up'
   | 'starting'
+  | 'installing_dependencies'
   | 'installing'
+  | 'stopping_runtime'
   | 'restarting'
+  | 'starting_runtime'
   | 'health_checking'
   | 'succeeded'
   | 'failed'
@@ -86,6 +108,7 @@ export type UpdateTaskStage =
 export interface UpdateTaskRecord {
   id: string
   strategy: UpdateStrategy
+  owner: UpdateTaskOwner
   status: UpdateTaskStatus
   stage: UpdateTaskStage
   message: string
@@ -95,6 +118,7 @@ export interface UpdateTaskRecord {
   logPath: string
   rollbackMessage: string
   healthcheckUrl: string
+  heartbeatAt: string
   startedAt: string
   finishedAt: string | null
 }
@@ -132,4 +156,42 @@ export interface UpdateCheckResult {
   packageType: UpdatePackageType
   strategy: UpdateStrategy
   detectionSource: 'manifest' | 'npm-registry'
+}
+
+export interface UpdateCapabilities {
+  enabled: boolean
+  strategy: UpdateStrategy
+  packageType: UpdatePackageType
+  channel: string
+  sourceLabel: string
+  currentVersion: string
+  latestVersion: string
+  updateAvailable: boolean
+  detectionSource: UpdateCheckResult['detectionSource'] | 'none'
+  remoteError: string
+  supports: {
+    versionCheck: boolean
+    fullPackage: boolean
+    deltaPackage: boolean
+    resumableDownload: boolean
+    checksumVerification: boolean
+    rollback: boolean
+    healthcheck: boolean
+    silentInstall: boolean
+    promptedInstall: boolean
+    crossPlatformShell: boolean
+  }
+  runtime: {
+    manifestConfigured: boolean
+    executionConfigured: boolean
+    runnerManaged: boolean
+    autoInstallDependencies: boolean
+    includeAgentUpgrade: boolean
+    stateFile: string
+    logDir: string
+    stagingDir: string
+    backupDir: string
+    minFreeSpaceBytes: number
+  }
+  preflight: UpdatePreflightResult
 }

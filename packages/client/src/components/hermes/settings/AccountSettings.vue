@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
-import { NButton, NInput, NModal, NForm, NFormItem, NPopconfirm, useMessage } from "naive-ui";
+import { NButton, NInput, NModal, NForm, NFormItem, NPopconfirm } from "naive-ui";
+import { useMessage } from "@/composables/useAppMessage";
 import { useI18n } from "vue-i18n";
 import { changePassword, changeUsername, fetchCurrentUser, fetchLockedIps, unlockSpecificIp, unlockAllIps, fetchMyAvatar, updateMyAvatar, resetMyAvatar } from "@/api/auth";
 import type { LockedIp, UserAvatar } from "@/api/auth";

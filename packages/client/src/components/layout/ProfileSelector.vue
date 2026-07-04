@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { NButton, NModal, NSpin, useMessage } from 'naive-ui'
+import { NButton, NModal, NSpin } from 'naive-ui'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import {
   fetchProfileRuntimeStatusesWithMeta,
@@ -12,6 +12,7 @@ import {
 } from '@/api/hermes/profiles'
 import ProfileAvatarView from '@/components/hermes/profiles/ProfileAvatar.vue'
 import { useI18n } from 'vue-i18n'
+import { useMessage } from '@/composables/useAppMessage'
 
 const emit = defineEmits<{
   'modal-show-change': [show: boolean]

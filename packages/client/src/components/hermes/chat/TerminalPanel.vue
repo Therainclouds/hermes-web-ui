@@ -5,7 +5,8 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import { getApiKey, getBaseUrlValue } from "@/api/client";
-import { NButton, NPopconfirm, NTooltip, NSelect, useMessage } from "naive-ui";
+import { NButton, NPopconfirm, NTooltip, NSelect } from "naive-ui";
+import { useMessage } from "@/composables/useAppMessage";
 import { useI18n } from "vue-i18n";
 import type { ITheme } from "@xterm/xterm";
 

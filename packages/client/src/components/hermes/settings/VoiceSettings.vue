@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { NButton, NInput, NSelect, useMessage } from 'naive-ui'
+import { NButton, NInput, NSelect } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useSpeech, type MimoTtsOptions, type OpenaiTtsOptions } from '@/composables/useSpeech'
 import { useMicRecorder } from '@/composables/useMicRecorder'
@@ -12,6 +12,7 @@ import VoiceApiFormModal from './voice/VoiceApiFormModal.vue'
 import VoiceApiConfigurator from './voice/VoiceApiConfigurator.vue'
 import type { VoiceApiConnection, VoiceApiKind, VoiceApiProvider, VoiceApiSavePayload } from '@/types/voice-api'
 import type { StoredSttProvider } from '@/api/hermes/stt-settings'
+import { useMessage } from '@/composables/useAppMessage'
 
 interface VoiceApiFormSavedPayload extends VoiceApiSavePayload {
   preset: {

@@ -35,14 +35,18 @@ export type UpdateTaskStatus = 'idle' | 'queued' | 'running' | 'succeeded' | 'fa
 export type UpdateTaskStage =
   | 'idle'
   | 'queued'
+  | 'preflighting'
   | 'checking'
   | 'resolving_version'
   | 'downloading'
   | 'verifying'
   | 'backing_up'
   | 'starting'
+  | 'installing_dependencies'
   | 'installing'
+  | 'stopping_runtime'
   | 'restarting'
+  | 'starting_runtime'
   | 'health_checking'
   | 'succeeded'
   | 'failed'
@@ -51,6 +55,7 @@ export type UpdateTaskStage =
 export interface UpdateTaskRecord {
   id: string
   strategy: 'npm-package' | 'source-deploy' | 'device-package'
+  owner?: 'controller' | 'runtime'
   status: UpdateTaskStatus
   stage: UpdateTaskStage
   message: string
@@ -60,6 +65,7 @@ export interface UpdateTaskRecord {
   logPath?: string
   rollbackMessage?: string
   healthcheckUrl?: string
+  heartbeatAt?: string
   startedAt: string
   finishedAt: string | null
 }
@@ -69,6 +75,62 @@ export interface UpdateStatusResponse {
   lastTask: UpdateTaskRecord | null
 }
 
+export type UpdateRiskLevel = 'low' | 'medium' | 'high'
+
+export interface UpdatePreflightIssue {
+  code: string
+  level: UpdateRiskLevel
+  path: string
+  message: string
+}
+
+export interface UpdatePreflightResult {
+  strategy: 'npm-package' | 'source-deploy' | 'device-package' | string
+  riskLevel: UpdateRiskLevel
+  issues: UpdatePreflightIssue[]
+  shouldBlock: boolean
+  warningText: string
+  blockingText: string
+}
+
+export interface UpdateCapabilitiesResponse {
+  enabled: boolean
+  strategy: 'npm-package' | 'source-deploy' | 'device-package' | string
+  packageType: 'npm-package' | 'source-deploy' | 'device-package' | string
+  channel: string
+  sourceLabel: string
+  currentVersion: string
+  latestVersion: string
+  updateAvailable: boolean
+  detectionSource: 'manifest' | 'npm-registry' | 'none'
+  remoteError: string
+  supports: {
+    versionCheck: boolean
+    fullPackage: boolean
+    deltaPackage: boolean
+    resumableDownload: boolean
+    checksumVerification: boolean
+    rollback: boolean
+    healthcheck: boolean
+    silentInstall: boolean
+    promptedInstall: boolean
+    crossPlatformShell: boolean
+  }
+  runtime: {
+    manifestConfigured: boolean
+    executionConfigured: boolean
+    runnerManaged: boolean
+    autoInstallDependencies: boolean
+    includeAgentUpgrade: boolean
+    stateFile: string
+    logDir: string
+    stagingDir: string
+    backupDir: string
+    minFreeSpaceBytes: number
+  }
+  preflight: UpdatePreflightResult
+}
+
 export interface TriggerUpdateResponse {
   success: boolean
   message: string
@@ -76,6 +138,13 @@ export interface TriggerUpdateResponse {
   status?: UpdateTaskStatus
   stage?: UpdateTaskStage
   warning?: string
+}
+
+export interface ClearStaleUpdateStatusResponse extends UpdateStatusResponse {
+  success: boolean
+  message: string
+  clearedTaskId?: string
+  code?: string
 }
 
 export interface PreviewTag {
@@ -198,6 +267,16 @@ export async function triggerUpdate(): Promise<TriggerUpdateResponse> {
 
 export async function fetchUpdateStatus(): Promise<UpdateStatusResponse> {
   return request<UpdateStatusResponse>('/api/hermes/update/status')
+}
+
+export async function fetchUpdateCapabilities(): Promise<UpdateCapabilitiesResponse> {
+  return request<UpdateCapabilitiesResponse>('/api/hermes/update/capabilities')
+}
+
+export async function clearStaleUpdateStatus(): Promise<ClearStaleUpdateStatusResponse> {
+  return request<ClearStaleUpdateStatusResponse>('/api/hermes/update/status/clear-stale', {
+    method: 'POST',
+  })
 }
 
 export async function fetchPreviewStatus(): Promise<PreviewStatus> {

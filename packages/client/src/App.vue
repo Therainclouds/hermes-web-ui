@@ -14,6 +14,7 @@ import AuthEventListener from '@/components/auth/AuthEventListener.vue'
 import DefaultCredentialPrompt from '@/components/auth/DefaultCredentialPrompt.vue'
 import WebPet from '@/components/hermes/pets/WebPet.vue'
 import { desktopBridge } from '@/utils/desktop-bridge'
+import USBEventBridge from '@/components/hermes/usb/USBEventBridge.vue'
 
 const { isDark, isComic } = useTheme()
 const { t } = useI18n()
@@ -74,6 +75,7 @@ useKeyboard()
   <NConfigProvider :theme="naiveTheme" :theme-overrides="themeOverrides">
     <NMessageProvider>
       <AuthEventListener />
+      <USBEventBridge />
       <NDialogProvider>
         <NNotificationProvider>
           <router-view v-if="isDesktopPetRoute" />

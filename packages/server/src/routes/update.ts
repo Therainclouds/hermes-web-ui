@@ -9,6 +9,7 @@ export const updateRoutes = new Router()
 // /api/hermes/update/preview/* when needed.
 updateRoutes.post('/api/hermes/update', ctrl.handleUpdate)
 updateRoutes.get('/api/hermes/update/status', ctrl.updateStatus)
+updateRoutes.get('/api/hermes/update/capabilities', ctrl.updateCapabilities)
 updateRoutes.post('/api/hermes/update/status/clear-stale', ctrl.clearStaleUpdateStatus)
 updateRoutes.get('/api/hermes/update/preview', ctrl.previewStatus)
 updateRoutes.get('/api/hermes/update/preview/tags', ctrl.previewTags)

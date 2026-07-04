@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { NButton, NSpin, useMessage } from 'naive-ui'
+import { NButton, NSpin } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { fetchPerformanceRuntime, type PerformanceRuntimeSnapshot } from '@/api/hermes/performance-monitor'
+import { useMessage } from '@/composables/useAppMessage'
 
 const { t } = useI18n()
 const message = useMessage()

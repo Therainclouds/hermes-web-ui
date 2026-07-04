@@ -35,12 +35,14 @@ const appStore = useAppStore()
 const profilesStore = useProfilesStore()
 const profileName = computed(() => props.session.profile || 'default')
 const profileAvatar = computed(() => profilesStore.profiles.find(profile => profile.name === profileName.value)?.avatar)
+const profileModelsEntry = computed(() =>
+  appStore.profileModelGroups.find(profile => profile.profile === profileName.value),
+)
 const profileHasModels = computed(() => {
-  const profileModels = appStore.profileModelGroups.find(profile => profile.profile === profileName.value)
-  return !!profileModels?.groups?.some(group => group.models.length > 0)
+  return !!profileModelsEntry.value?.groups?.some(group => group.models.length > 0)
 })
 const profileModelsMissing = computed(() =>
-  appStore.profileModelGroups.length > 0 && !profileHasModels.value,
+  !!profileModelsEntry.value && !profileHasModels.value,
 )
 const isGlobalAgentSession = computed(() => props.session.source === 'global_agent')
 const sessionAgentLogo = computed(() => {
@@ -238,18 +240,18 @@ onUnmounted(() => {
 }
 
 .session-item.missing-models {
-  color: #b42318;
-  background: rgba(220, 38, 38, 0.08);
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.12);
 }
 
 .session-item.missing-models .session-item-title,
 .session-item.missing-models .session-item-profile-name,
 .session-item.missing-models .session-item-time {
-  color: #b42318;
+  color: #b45309;
 }
 
 .session-item.missing-models:hover {
-  background: rgba(220, 38, 38, 0.12);
+  background: rgba(245, 158, 11, 0.18);
 }
 
 .session-item-content {

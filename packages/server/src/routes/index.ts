@@ -8,6 +8,7 @@ import { updateRoutes } from './update'
 import { authPublicRoutes, authProtectedRoutes } from './auth'
 import { recoveryPublicRoutes } from './recovery'
 import { devicePublicRoutes, deviceRoutes } from './devices'
+import { usbRoutes } from './usb'
 import { codingAgentRoutes } from './coding-agents'
 import { apiDocsRoutes } from './api-docs'
 import { claudeCodeProxyRoutes } from './claude-code-proxy'
@@ -75,6 +76,7 @@ export function registerRoutes(app: any, authMiddleware: Array<(ctx: Context, ne
   // --- Protected routes (auth required) ---
   app.use(authProtectedRoutes.routes())
   app.use(deviceRoutes.routes())
+  app.use(usbRoutes.routes())
   app.use(uploadRoutes.routes())
   app.use(updateRoutes.routes())           // Must be before proxy (proxy catch-all matches everything)
   app.use(codingAgentRoutes.routes())

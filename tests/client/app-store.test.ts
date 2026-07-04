@@ -4,7 +4,9 @@ import { createPinia, setActivePinia } from 'pinia'
 
 const mockSystemApi = vi.hoisted(() => ({
   checkHealth: vi.fn(),
+  clearStaleUpdateStatus: vi.fn(),
   fetchAvailableModels: vi.fn(),
+  fetchUpdateCapabilities: vi.fn(),
   fetchUpdateStatus: vi.fn(),
   addCustomModel: vi.fn(),
   removeCustomModel: vi.fn(),
@@ -25,6 +27,51 @@ describe('App Store', () => {
     vi.clearAllMocks()
     mockSystemApi.addCustomModel.mockResolvedValue({ success: true, custom_models: {} })
     mockSystemApi.removeCustomModel.mockResolvedValue({ success: true, custom_models: {} })
+    mockSystemApi.clearStaleUpdateStatus.mockResolvedValue({ success: true, currentTask: null, lastTask: null })
+    mockSystemApi.fetchUpdateCapabilities.mockResolvedValue({
+      enabled: true,
+      strategy: 'device-package',
+      packageType: 'device-package',
+      channel: 'stable',
+      sourceLabel: 'Device Manifest',
+      currentVersion: '0.6.10',
+      latestVersion: '0.6.17',
+      updateAvailable: true,
+      detectionSource: 'manifest',
+      remoteError: '',
+      supports: {
+        versionCheck: true,
+        fullPackage: true,
+        deltaPackage: false,
+        resumableDownload: false,
+        checksumVerification: true,
+        rollback: true,
+        healthcheck: true,
+        silentInstall: true,
+        promptedInstall: true,
+        crossPlatformShell: true,
+      },
+      runtime: {
+        manifestConfigured: true,
+        executionConfigured: true,
+        runnerManaged: true,
+        autoInstallDependencies: true,
+        includeAgentUpgrade: false,
+        stateFile: '/tmp/update-task-state.json',
+        logDir: '/tmp/update-logs',
+        stagingDir: '/tmp/update-staging',
+        backupDir: '/tmp/update-backups',
+        minFreeSpaceBytes: 1024,
+      },
+      preflight: {
+        strategy: 'device-package',
+        riskLevel: 'low',
+        issues: [],
+        shouldBlock: false,
+        warningText: '',
+        blockingText: '',
+      },
+    })
     mockSystemApi.fetchUpdateStatus.mockResolvedValue({ currentTask: null, lastTask: null })
     window.localStorage.clear()
   })
@@ -188,6 +235,80 @@ describe('App Store', () => {
     expect(store.updatePackageType).toBe('device-package')
   })
 
+  it('stores update capability warnings from the dedicated capabilities endpoint', async () => {
+    mockSystemApi.checkHealth.mockResolvedValue({
+      status: 'ok',
+      webui_version: '0.6.10',
+      webui_latest: '0.6.17',
+      webui_update_enabled: true,
+      webui_update_available: true,
+      webui_update_source_label: 'Device Manifest',
+      webui_update_channel: 'stable',
+      webui_update_strategy: 'device-package',
+      webui_update_package_type: 'device-package',
+    })
+    mockSystemApi.fetchUpdateCapabilities.mockResolvedValue({
+      enabled: true,
+      strategy: 'device-package',
+      packageType: 'device-package',
+      channel: 'stable',
+      sourceLabel: 'Device Manifest',
+      currentVersion: '0.6.10',
+      latestVersion: '0.6.17',
+      updateAvailable: true,
+      detectionSource: 'manifest',
+      remoteError: '',
+      supports: {
+        versionCheck: true,
+        fullPackage: true,
+        deltaPackage: false,
+        resumableDownload: false,
+        checksumVerification: true,
+        rollback: true,
+        healthcheck: true,
+        silentInstall: true,
+        promptedInstall: true,
+        crossPlatformShell: true,
+      },
+      runtime: {
+        manifestConfigured: true,
+        executionConfigured: true,
+        runnerManaged: true,
+        autoInstallDependencies: true,
+        includeAgentUpgrade: false,
+        stateFile: '/tmp/update-task-state.json',
+        logDir: '/tmp/update-logs',
+        stagingDir: '/tmp/update-staging',
+        backupDir: '/tmp/update-backups',
+        minFreeSpaceBytes: 1024,
+      },
+      preflight: {
+        strategy: 'device-package',
+        riskLevel: 'medium',
+        issues: [
+          {
+            code: 'hermes-home-in-deploy-dir',
+            level: 'medium',
+            path: '/opt/hermes-web-ui/hermes_data',
+            message: 'Hermes data directory is inside the deploy directory.',
+          },
+        ],
+        shouldBlock: false,
+        warningText: 'Hermes data directory is inside the deploy directory.',
+        blockingText: '',
+      },
+    })
+    const store = useAppStore()
+
+    await store.checkConnection()
+
+    expect(mockSystemApi.fetchUpdateCapabilities).toHaveBeenCalledTimes(1)
+    expect(store.updateRiskLevel).toBe('medium')
+    expect(store.updateCapabilitiesWarning).toContain('Hermes data directory')
+    expect(store.updateRollbackSupported).toBe(true)
+    expect(store.updateChecksumVerification).toBe(true)
+  })
+
   it('waits for the restarted server after triggering self-update', async () => {
     vi.useFakeTimers()
     mockSystemApi.triggerUpdate.mockResolvedValue({
@@ -253,6 +374,60 @@ describe('App Store', () => {
     expect(mockSystemApi.fetchUpdateStatus).toHaveBeenCalled()
   })
 
+  it('keeps polling slow self-updates past the old 10 minute timeout before failing', async () => {
+    vi.useFakeTimers()
+    mockSystemApi.triggerUpdate.mockResolvedValue({
+      success: true,
+      message: 'ok',
+      taskId: 'task-2',
+      status: 'queued',
+      stage: 'queued',
+    })
+    mockSystemApi.checkHealth.mockResolvedValue({
+      status: 'ok',
+      webui_version: 'test',
+      webui_latest: '0.6.29',
+      webui_update_enabled: true,
+      webui_update_available: false,
+      webui_update_source_label: 'Quanthermes Device Releases',
+      webui_update_channel: 'stable',
+      webui_update_strategy: 'source-deploy',
+      webui_update_package_type: 'npm-package',
+    })
+    mockSystemApi.fetchUpdateStatus.mockResolvedValue({
+      currentTask: {
+        id: 'task-2',
+        strategy: 'source-deploy',
+        status: 'running',
+        stage: 'installing',
+        message: 'installing',
+        targetVersion: '0.6.29',
+        warning: '',
+        error: '',
+        startedAt: '2026-07-01T00:00:00.000Z',
+        finishedAt: null,
+      },
+      lastTask: null,
+    })
+    const store = useAppStore()
+    store.updateEnabled = true
+
+    const ok = await store.doUpdate()
+    await Promise.resolve()
+    await vi.advanceTimersByTimeAsync(10 * 60 * 1000 + 3000)
+
+    expect(ok).toBe(true)
+    expect(store.updating).toBe(true)
+    expect(store.updateTaskStatus).toBe('running')
+    expect(store.updateTaskStage).toBe('installing')
+
+    await vi.advanceTimersByTimeAsync(20 * 60 * 1000 + 3000)
+
+    expect(store.updating).toBe(false)
+    expect(store.updateTaskStatus).toBe('failed')
+    expect(store.updateTaskError).toBe('Update status polling timed out')
+  })
+
   it('does not mark the client stale when the served Web UI version matches this bundle', async () => {
     mockSystemApi.checkHealth.mockResolvedValue({
       status: 'ok',
@@ -266,6 +441,28 @@ describe('App Store', () => {
 
     expect(store.serverVersion).toBe('test')
     expect(store.clientOutdated).toBe(false)
+  })
+
+  it('clears a stale failed update status through the store action', async () => {
+    mockSystemApi.fetchUpdateStatus.mockResolvedValueOnce({
+      currentTask: null,
+      lastTask: null,
+    })
+    const store = useAppStore()
+    store.updateTaskId = 'task-stale'
+    store.updateTaskStatus = 'failed'
+    store.updateTaskStage = 'failed'
+    store.updateTaskMessage = 'Failed to start source deployment update 0.6.29.'
+    store.updateTaskError = 'managed source deployment update service exited before replacing server: code=null signal=SIGINT'
+
+    const ok = await store.clearStaleUpdateStatus()
+
+    expect(ok).toBe(true)
+    expect(mockSystemApi.clearStaleUpdateStatus).toHaveBeenCalledTimes(1)
+    expect(store.updateTaskId).toBe('')
+    expect(store.updateTaskStatus).toBe('idle')
+    expect(store.updateTaskStage).toBe('idle')
+    expect(store.updateTaskError).toBe('')
   })
 
   it('clears the updating state and reports failure when self-update request fails', async () => {

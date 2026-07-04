@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "aptPackages": [
+    "python3-pyudev",
+    "ntfs-3g",
+    "exfatprogs",
+    "util-linux"
+  ]
+}

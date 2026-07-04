@@ -151,6 +151,11 @@ const router = createRouter({
       meta: { requiresSuperAdmin: true },
     },
     {
+      path: '/hermes/usb',
+      name: 'hermes.usb',
+      component: () => import('@/views/hermes/USBView.vue'),
+    },
+    {
       path: '/hermes/group-chat',
       name: 'hermes.groupChat',
       component: () => import('@/views/hermes/GroupChatView.vue'),

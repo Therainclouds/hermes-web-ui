@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { NAlert, NButton, NForm, NFormItem, NInput, NModal, NRadioButton, NRadioGroup, NSelect, NSpace, NSpin, NTag, useMessage } from 'naive-ui'
+import { NAlert, NButton, NForm, NFormItem, NInput, NModal, NRadioButton, NRadioGroup, NSelect, NSpace, NSpin, NTag } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import {
   deleteCodingAgent,
@@ -21,6 +21,7 @@ import {
 import { fetchAvailableModelsForProfile, type AvailableModelGroup } from '@/api/hermes/system'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import TerminalPanel from '@/components/hermes/chat/TerminalPanel.vue'
+import { useMessage } from '@/composables/useAppMessage'
 
 type CodingAgentBlock = {
   id: CodingAgentId

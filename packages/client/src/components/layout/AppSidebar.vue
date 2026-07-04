@@ -68,6 +68,12 @@ function getUpdateStageLabel(stage: string) {
 const updateStageLabel = computed(() => getUpdateStageLabel(appStore.updateTaskStage));
 const updateDetailText = computed(() => appStore.updateTaskWarning || appStore.updateTaskMessage || '');
 const updateErrorText = computed(() => appStore.updateTaskError || appStore.updateTaskMessage || t('sidebar.updateFailed'));
+const updateGuardText = computed(() =>
+  appStore.updateBlockingText
+  || appStore.updateCapabilitiesWarning
+  || appStore.updateCapabilitiesRemoteError
+  || '',
+);
 
 function toggleGroup(key: string) {
   collapsedGroups[key] = !collapsedGroups[key];
@@ -105,6 +111,10 @@ async function handleUpdateClick() {
 
 async function handleReloadClick() {
   appStore.reloadClient();
+}
+
+async function handleClearStaleUpdateClick() {
+  await appStore.clearStaleUpdateStatus();
 }
 </script>
 
@@ -292,6 +302,16 @@ async function handleReloadClick() {
             </svg>
             <span>{{ t("sidebar.devices") }}</span>
           </RouteLinkItem>
+          <RouteLinkItem v-if="hasRoute('hermes.usb')" class="nav-item" :to="{ name: 'hermes.usb' }" :active="selectedKey === 'hermes.usb'">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M8 7v5a4 4 0 0 0 8 0V7" />
+              <path d="M12 3v12" />
+              <path d="M8 4h8" />
+              <path d="M10 17h4" />
+              <path d="M9 21h6" />
+            </svg>
+            <span>{{ t("sidebar.usb") }}</span>
+          </RouteLinkItem>
         </div>
       </div>
 
@@ -384,7 +404,7 @@ async function handleReloadClick() {
       >
         <button
           class="sidebar-update-btn"
-          :disabled="appStore.updating"
+          :disabled="appStore.updating || !!appStore.updateBlockingText"
           @click="handleUpdateClick"
         >
           <span class="sidebar-update-label">
@@ -398,7 +418,7 @@ async function handleReloadClick() {
       >
         <button
           class="sidebar-update-btn"
-          :disabled="appStore.updating"
+          :disabled="appStore.updating || !!appStore.updateBlockingText"
           @click="handleReloadClick"
         >
           <span class="sidebar-update-label">
@@ -412,6 +432,9 @@ async function handleReloadClick() {
       </div>
       <div v-else-if="appStore.updateTaskStatus === 'failed'" class="sidebar-update-action sidebar-update-progress sidebar-update-error">
         <span class="sidebar-update-label">{{ t('sidebar.updateFailedWithReason', { reason: updateErrorText }) }}</span>
+        <button class="sidebar-update-clear-btn" @click="handleClearStaleUpdateClick">
+          {{ t('sidebar.updateClearStale') }}
+        </button>
       </div>
       <div v-if="appStore.updateSourceLabel" class="update-source">
         {{
@@ -419,6 +442,9 @@ async function handleReloadClick() {
             ? t('sidebar.updateSourceWithChannel', { source: appStore.updateSourceLabel, channel: appStore.updateChannel })
             : t('sidebar.updateSource', { source: appStore.updateSourceLabel })
         }}
+      </div>
+      <div v-if="updateGuardText" class="update-source update-source-warning">
+        {{ updateGuardText }}
       </div>
       <div v-else-if="!appStore.updateEnabled" class="update-source">
         {{ t('sidebar.updateManagedInternally') }}
@@ -472,6 +498,29 @@ async function handleReloadClick() {
   padding: 8px 12px 20px;
   flex-shrink: 0;
   transition: width $transition-normal;
+}
+
+.sidebar-update-action {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sidebar-update-btn,
+.sidebar-update-clear-btn {
+  width: 100%;
+  border: 1px solid var(--n-border-color, rgba(255, 255, 255, 0.12));
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  border-radius: 10px;
+  padding: 8px 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sidebar-update-clear-btn {
+  text-align: center;
+  font-size: 12px;
 }
 
 .sidebar-nav {
@@ -700,6 +749,16 @@ async function handleReloadClick() {
 
 .version-info :deep(.theme-switch-container) {
   flex-shrink: 0;
+}
+
+.update-source {
+  font-size: 12px;
+  line-height: 1.4;
+  color: $text-muted;
+}
+
+.update-source-warning {
+  color: $warning;
 }
 
 .update-btn {

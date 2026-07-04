@@ -145,12 +145,12 @@ function scrollBy(delta: number) {
   border-radius: $radius-md;
   cursor: pointer;
   scroll-snap-align: start;
-  transition: all $transition-fast;
+  transition: border-color $transition-fast, box-shadow $transition-fast, transform $transition-fast;
 
   &:hover,
   &:focus-visible {
     border-color: $border-color;
-    box-shadow: 0 6px 18px rgba(var(--text-primary-rgb), 0.06);
+    box-shadow: 0 4px 14px rgba(var(--text-primary-rgb), 0.05);
     transform: translateY(-1px);
   }
 }

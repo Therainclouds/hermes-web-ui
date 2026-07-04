@@ -268,6 +268,15 @@ For Armbian / Ubuntu host-level source deployment, review [`docs/work-log.md`](.
 - That mismatch caused the agent bridge to fail with `run_agent.py not found`, and chat requests then hit `ENOENT /tmp/hermes-agent-bridge.sock`
 - After source deployment, verify that `/home/hermesui/.local/bin/hermes` belongs to `hermesui` rather than linking into `/root/.local/...`
 
+### Update And Deployment Guardrails
+
+- Treat `Web UI update`, `Hermes Agent upgrade`, `bootstrap`, and `runtime reconcile` as separate responsibilities.
+- Keep in-app updates orchestration-only by default; do not silently expand them into host bootstrap or Hermes Agent lifecycle work.
+- Only allow an in-app update to upgrade Hermes Agent when the release plan explicitly approves it and runtime flags enable it.
+- For manual recovery or fixed-version rollout, use the target version `manifest.json` rather than a moving `stable/latest.json`.
+- During source-based repair or manual recovery, preserve the existing `PORT`, `BIND_HOST`, and state directory settings.
+- See [`DEVELOPMENT.md`](./DEVELOPMENT.md) and [`docs/update-distribution/10-development-rules.md`](./docs/update-distribution/10-development-rules.md) for the full project rules.
+
 ### Hermes Agent Runtime Discovery
 
 When Web UI starts backend chat features, it prefers a source checkout that
@@ -383,6 +392,8 @@ npm run build   # outputs to dist/
 ```
 
 See [DEVELOPMENT.md](./DEVELOPMENT.md) for project development guidelines.
+
+For update, release, and deployment work, also review [`docs/update-distribution/README.md`](./docs/update-distribution/README.md) before implementation or rollout.
 
 ## Architecture
 

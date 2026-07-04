@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import { Handle, Position, type NodeProps } from '@vue-flow/core'
 import { NodeResizer } from '@vue-flow/node-resizer'
-import { NInput, NSelect, NTooltip, useMessage } from 'naive-ui'
+import { NInput, NSelect, NTooltip } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import WorkflowModelSelector from './WorkflowModelSelector.vue'
 import type { WorkflowAgentNodeData, WorkflowAgentNodeEditableData } from './types'
@@ -11,6 +11,7 @@ import type { ProviderApiMode } from '@/api/hermes/system'
 import { getFileDownloadUrl } from '@/api/hermes/files'
 
 import '@vue-flow/node-resizer/dist/style.css'
+import { useMessage } from '@/composables/useAppMessage'
 
 const props = defineProps<NodeProps<WorkflowAgentNodeData>>()
 const { t } = useI18n()

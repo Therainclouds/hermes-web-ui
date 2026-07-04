@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { ref, reactive, onUnmounted, watch } from 'vue'
-import { NSwitch, NInput, NButton, NSpin, useMessage } from 'naive-ui'
+import { NSwitch, NInput, NButton, NSpin } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useSettingsStore } from '@/stores/hermes/settings'
 import { saveCredentials as saveCredsApi, fetchWeixinQrCode, pollWeixinQrStatus, saveWeixinCredentials } from '@/api/hermes/config'
 import PlatformCard from './PlatformCard.vue'
 import SettingRow from './SettingRow.vue'
+import { useMessage } from '@/composables/useAppMessage'
 
 const settingsStore = useSettingsStore()
 const message = useMessage()

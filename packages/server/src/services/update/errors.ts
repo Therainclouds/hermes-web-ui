@@ -1,6 +1,8 @@
 export type UpdateErrorCode =
   | 'update_execution_misconfigured'
   | 'update_dangerous_layout'
+  | 'update_preflight_permissions'
+  | 'update_preflight_space'
   | 'update_manifest_fetch_failed'
   | 'update_manifest_invalid'
   | 'update_incompatible_node'

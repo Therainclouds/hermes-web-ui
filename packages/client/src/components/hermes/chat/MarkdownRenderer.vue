@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { NDrawer, NDrawerContent, NSpin, useMessage } from 'naive-ui'
+import { NDrawer, NDrawerContent, NSpin } from 'naive-ui'
 import type MarkdownIt from 'markdown-it'
 import MarkdownItConstructor from 'markdown-it'
 import katex from 'katex'
@@ -18,6 +18,7 @@ import {
   SUPPORT_PREVIEW_FILE_TYPES,
 } from './mermaidRenderer'
 import { downloadFile, getDownloadUrl, fetchFileText } from '@/api/hermes/download'
+import { useMessage } from '@/composables/useAppMessage'
 
 const LATEX_FENCE_LANGS = new Set(['latex', 'tex', 'math', 'katex'])
 const PREVIEW_AREA_WIDTH = 'min(800px, 100vw)'

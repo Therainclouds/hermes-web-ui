@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { NButton, NDrawer, NDrawerContent, NInput, NModal, NPopconfirm, NSpin, NTag, useMessage } from 'naive-ui'
+import { NButton, NDrawer, NDrawerContent, NInput, NModal, NPopconfirm, NSpin, NTag } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { copyToClipboard } from '@/utils/clipboard'
 import {
@@ -20,6 +20,7 @@ import {
   type LanDiscoveryState,
   type LanEndpointKind,
 } from '@/api/hermes/devices'
+import { useMessage } from '@/composables/useAppMessage'
 
 const { t } = useI18n()
 const message = useMessage()

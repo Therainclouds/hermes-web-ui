@@ -3,7 +3,8 @@ import { computed, ref, watch } from 'vue'
 import MarkdownRenderer from '@/components/hermes/chat/MarkdownRenderer.vue'
 import { fetchSkillContent, fetchSkillFiles, pinSkillApi, saveSkillContent, type SkillFileEntry, type SkillTarget } from '@/api/hermes/skills'
 import { useI18n } from 'vue-i18n'
-import { useMessage } from 'naive-ui'
+import { useMessage } from '@/composables/useAppMessage'
+
 
 const { t } = useI18n()
 const message = useMessage()

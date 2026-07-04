@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useMessage } from 'naive-ui'
+import { useMessage } from '@/composables/useAppMessage'
+
 
 const message = useMessage()
 const { t } = useI18n()

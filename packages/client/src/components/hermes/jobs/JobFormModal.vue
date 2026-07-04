@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
-import { NModal, NForm, NFormItem, NInput, NButton, NSelect, NInputNumber, useMessage } from 'naive-ui'
+import { NModal, NForm, NFormItem, NInput, NButton, NSelect, NInputNumber } from 'naive-ui'
 import { useJobsStore } from '@/stores/hermes/jobs'
 import { useSettingsStore } from '@/stores/hermes/settings'
 import {
@@ -13,6 +13,7 @@ import type { CreateJobRequest, Job } from '@/api/hermes/jobs'
 import { fetchSkills } from '@/api/hermes/skills'
 import type { SkillInfo } from '@/api/hermes/skills'
 import { useI18n } from 'vue-i18n'
+import { useMessage } from '@/composables/useAppMessage'
 
 const { t } = useI18n()
 

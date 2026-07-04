@@ -139,6 +139,57 @@ describe('update task store', () => {
     })
   })
 
+  it('keeps a runtime-owned running task active while its heartbeat is fresh', () => {
+    const store = createStore()
+
+    store.createTask('device-package', 'accepted')
+    store.handoffCurrentTaskToRuntime({
+      stage: 'downloading',
+      message: 'downloading package',
+      targetVersion: '0.6.17',
+    })
+
+    const recoveredTask = store.recoverInterruptedTaskIfStale(60_000)
+
+    expect(recoveredTask).toBeNull()
+    expect(store.getStatus()).toEqual({
+      currentTask: expect.objectContaining({
+        owner: 'runtime',
+        status: 'running',
+        stage: 'downloading',
+      }),
+      lastTask: null,
+    })
+  })
+
+  it('recovers a stale runtime-owned task after the heartbeat times out', () => {
+    const store = createStore()
+
+    store.createTask('device-package', 'accepted')
+    store.handoffCurrentTaskToRuntime({
+      stage: 'downloading',
+      message: 'downloading package',
+      targetVersion: '0.6.17',
+    })
+    store.patchCurrentTask({ heartbeatAt: '2026-01-01T00:00:00.000Z' })
+
+    const recoveredTask = store.recoverInterruptedTaskIfStale(1)
+
+    expect(recoveredTask).toEqual(expect.objectContaining({
+      owner: 'runtime',
+      status: 'failed',
+      stage: 'failed',
+      error: 'Previous update task was interrupted during downloading.',
+    }))
+    expect(store.getStatus()).toEqual({
+      currentTask: null,
+      lastTask: expect.objectContaining({
+        owner: 'runtime',
+        status: 'failed',
+      }),
+    })
+  })
+
   it('clears only recovered interrupted history', () => {
     const store = createStore()
 

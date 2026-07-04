@@ -225,25 +225,25 @@ const MODEL_AUTH_PROVIDERS = new Set([
 ])
 
 /**
- * Copy the source profile's OAuth auth for the cloned profile's configured model
- * provider only.
+ * Copy the source profile's OAuth auth for the target profile's configured
+ * model provider only.
  *
  * Hermes CLI `profile create --clone` copies config/.env/SOUL/skills, but not
  * `auth.json`. OAuth-only model providers such as `openai-codex` then look
  * configured in the cloned profile while `/available-models?profile=<clone>`
- * returns no groups because the profile-local auth file is missing. Copying only
- * the provider keys required by the cloned `model.provider` preserves model
- * access without copying unrelated provider or platform credentials across
- * profiles. Claude OAuth also copies its `anthropic` runtime alias because chat
- * execution rewrites `claude-oauth` to `anthropic`.
+ * returns no groups because the profile-local auth file is missing. Copying
+ * only the provider keys required by the target profile's `model.provider`
+ * preserves model access without copying unrelated provider or platform
+ * credentials across profiles. Claude OAuth also copies its `anthropic`
+ * runtime alias because chat execution rewrites `claude-oauth` to `anthropic`.
  */
-export function copyModelProviderAuthForClone(profileName: string): string[] {
+export function copyModelProviderAuthForClone(profileName: string, sourceProfileName?: string): string[] {
   if (!profileName || profileName === 'default') return []
   const targetDir = profileDir(profileName)
   const provider = configuredModelProvider(join(targetDir, 'config.yaml'))
   if (!MODEL_AUTH_PROVIDERS.has(provider)) return []
 
-  const sourceDir = profileDir(activeProfileName())
+  const sourceDir = profileDir(sourceProfileName || activeProfileName())
   const sourceAuth = readAuthJson(join(sourceDir, 'auth.json'))
   const targetAuthPath = join(targetDir, 'auth.json')
   const targetAuth = readAuthJson(targetAuthPath)
