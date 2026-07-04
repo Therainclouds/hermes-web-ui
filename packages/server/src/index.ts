@@ -31,6 +31,7 @@ import { WorkflowSocketServer } from './services/workflow-socket'
 import { PetStateSocketServer } from './services/hermes/pet-state-socket'
 import { logger } from './services/logger'
 import { startUSBService } from './services/usb'
+import { USBSocketServer } from './services/usb/USBSocketServer'
 import { createStaticCompressionMiddleware } from './middleware/static-compression'
 import { requireUserJwt, resolveUserProfile } from './middleware/user-auth'
 import { createCorsOriginResolver, securityHeaders } from './security'
@@ -62,6 +63,7 @@ let chatRunServer: any = null
 let workflowSocketServer: WorkflowSocketServer | null = null
 let petStateSocketServer: PetStateSocketServer | null = null
 let agentBridgeManager: any = null
+let usbSocketServer: USBSocketServer | null = null
 let desktopShutdownHandler: ShutdownHandler | null = null
 
 interface ListenResult {
@@ -361,6 +363,11 @@ export async function bootstrap() {
   petStateSocketServer = new PetStateSocketServer(groupChatServer.getIO())
   petStateSocketServer.init()
 
+  // USB socket bridge shares the same io instance and reports to /usb namespace
+  usbSocketServer = new USBSocketServer(groupChatServer.getIO())
+  usbSocketServer.init()
+  startUSBService()
+
   const loopbackBaseUrl = getLoopbackBaseUrl(server)
   startGlobalAgentServer(groupChatServer.getIO(), { localBaseUrl: loopbackBaseUrl })
   console.log('[bootstrap] global agent server ready')
@@ -408,7 +415,7 @@ export async function bootstrap() {
     })
   })
 
-  desktopShutdownHandler = bindShutdown(servers, groupChatServer, chatRunServer, agentBridgeManager, usbSocketServer)
+  desktopShutdownHandler = bindShutdown(servers, groupChatServer, chatRunServer, agentBridgeManager, usbSocketServer as any)
   startVersionCheck()
 }
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { NButton, NTag, NSpin, useMessage, useDialog } from 'naive-ui'
+import { NButton, NTag, NSpin, useDialog } from 'naive-ui'
 import type { HermesProfile, HermesProfileDetail } from '@/api/hermes/profiles'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useExpertsStore } from '@/stores/hermes/experts'

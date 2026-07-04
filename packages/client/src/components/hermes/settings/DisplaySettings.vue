@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { NButton, NSwitch, NSelect, NInputNumber, useMessage } from 'naive-ui'
+import { NButton, NSwitch, NSelect, NInputNumber } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useSettingsStore } from '@/stores/hermes/settings'
 import { useTheme, type BrightnessMode } from '@/composables/useTheme'

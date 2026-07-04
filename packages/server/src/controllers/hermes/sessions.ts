@@ -932,6 +932,28 @@ export async function rename(ctx: any) {
 }
 
 /**
+ * 把当前 session 标记为已归档 (合并遗漏补回；保持与原 db 接口语义一致)
+ */
+export async function archive(ctx: any) {
+  const existing = localGetSession(ctx.params.id)
+  if (denySessionAccess(ctx, existing)) return
+  const ok = localSetSessionArchived(ctx.params.id, true)
+  ctx.status = ok ? 200 : 404
+  ctx.body = ok ? { ok: true } : { error: 'Session not found' }
+}
+
+/**
+ * 把当前 session 取消归档 (合并遗漏补回)
+ */
+export async function unarchive(ctx: any) {
+  const existing = localGetSession(ctx.params.id)
+  if (denySessionAccess(ctx, existing)) return
+  const ok = localSetSessionArchived(ctx.params.id, false)
+  ctx.status = ok ? 200 : 404
+  ctx.body = ok ? { ok: true } : { error: 'Session not found' }
+}
+
+/**
  * 显式创建一个空 session（用于专家系统立即聊天等场景，避免被 ChatView.loadSessions 覆盖）
  * - 入参：{ id, profile, title?, source?, agent?, model?, provider? }
  * - 行为：upsert（已存在则忽略），返回 { id, profile }
