@@ -130,16 +130,14 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   },
   {
     label: 'GLM-Coding-Plan',
-    value: 'glm-coding-plan',
+    value: 'glm',
     builtin: true,
-    base_url: 'https://api.z.ai/api/anthropic',
-    api_mode: 'anthropic_messages',
+    base_url: 'https://open.bigmodel.cn/api/coding/paas/v4',
     models: [
+      'glm-5.2',
       'glm-5.1',
-      'glm-4.5-air',
-      'glm-5-turbo',
-      'glm-4.7',
       'glm-5v-turbo',
+      'glm-4.7',
     ],
   },
   {

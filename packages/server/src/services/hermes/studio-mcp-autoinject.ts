@@ -88,14 +88,23 @@ function bundledMcpScriptPath(): string | null {
   return candidateBundledMcpScripts().find(candidate => existsSync(candidate)) || null
 }
 
-function managedCommandConfig(toolset: string): Record<string, unknown> {
-  if (isDesktopRuntime()) {
-    return { command: 'hermes-studio-mcp', args: [toolset] }
-  }
+function runtimeNodePath(): string | null {
+  const node = process.env.HERMES_AGENT_NODE?.trim()
+  return node || null
+}
 
+function managedCommandConfig(toolset: string): Record<string, unknown> {
+  // Prefer the bundled script with an absolute path over a bare command name.
+  // On Windows (especially desktop builds), `hermes-studio-mcp` may not be in
+  // PATH even though the bundled .mjs script exists on disk.  Desktop provides
+  // HERMES_AGENT_NODE for the packaged runtime node; fall back to process.execPath.
   const bundledScript = bundledMcpScriptPath()
   if (bundledScript) {
-    return { command: process.execPath, args: [bundledScript, toolset] }
+    return { command: runtimeNodePath() || process.execPath, args: [bundledScript, toolset] }
+  }
+
+  if (isDesktopRuntime()) {
+    return { command: 'hermes-studio-mcp', args: [toolset] }
   }
 
   logger.warn({ candidates: candidateBundledMcpScripts() }, '[mcp-autoinject] bundled MCP script not found; falling back to PATH command')

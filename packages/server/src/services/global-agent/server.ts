@@ -8,8 +8,9 @@ import { authenticateUserToken, type AuthenticatedUser } from '../../middleware/
 import { userCanAccessProfile } from '../../db/hermes/users-store'
 import { config } from '../../config'
 import { getChatRunServer } from '../../routes/hermes/chat-run'
-import { cleanTtsText } from '../hermes/tts-providers/text'
 import { transcodeToPcmS16le } from '../hermes/stt-providers/audio-convert'
+import { MCU_TTS_SAMPLE_RATE, mcuPromptText, mcuPromptUrl } from '../hermes/mcu-prompts'
+import { createMcuSpeechSegmenter, normalizeMcuSpeechText } from './mcu-speech-segmenter'
 import type {
   RelayHttpRequest,
   RelayHttpResponse,
@@ -21,15 +22,11 @@ import type {
 
 const GLOBAL_AGENT_NAMESPACE = '/global-agent'
 const DEFAULT_GLOBAL_AGENT_TIMEOUT_MS = 30_000
-const MCU_TTS_SAMPLE_RATE = 16_000
 const MCU_TTS_OPTIONS = {
   mcuPlayback: true,
   sampleRate: MCU_TTS_SAMPLE_RATE,
 } as const
 const MCU_INTERRUPT_DEBOUNCE_MS = 280
-const MCU_TTS_FAILED_PROMPT_TEXT = '当前文字转语音失败了，请配置下文字转语音再使用哦'
-const MCU_TTS_FAILED_PROMPT_PCM_URL =
-  'https://ekko-hermes-studio.oss-cn-beijing.aliyuncs.com/tts-synthesize-failed-xiaohe.s16le.pcm'
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 const MAX_REQUEST_TIMEOUT_MS = 120_000
 const MAX_REQUEST_BODY_BYTES = 5 * 1024 * 1024
@@ -69,6 +66,7 @@ const CHAT_RUN_SERVER_EVENTS = [
   'reasoning.available',
   'tool.started',
   'tool.completed',
+  'workspace.diff.completed',
   'run.completed',
   'run.failed',
   'compression.started',
@@ -281,14 +279,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
-function normalizeMcuSpeechText(text: string): string {
-  return cleanTtsText(text)
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-    .replace(/[*_#>]+/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
 function chooseMcuApprovalChoice(event: Record<string, unknown>): 'once' | 'session' | 'always' | null {
   const rawChoices = Array.isArray(event.choices) ? event.choices.map(choice => String(choice)) : []
   const choices = rawChoices.length > 0 ? rawChoices : ['once', 'session', 'deny']
@@ -402,6 +392,7 @@ export class GlobalAgentServer {
   private readonly mcuAudioWaiters = new Map<string, McuAudioWaiter>()
   private readonly mcuVoiceStreams = new Map<string, McuVoiceStreamState>()
   private readonly interruptedMcuInteractions = new Set<string>()
+  private readonly mcuTtsAbortControllers = new Map<string, Set<AbortController>>()
   private readonly recentlyInterruptedMcuSessions = new Map<string, number>()
   private readonly pendingMcuInterrupts = new Map<string, PendingMcuInterrupt>()
   private readonly authToken = randomBytes(32).toString('hex')
@@ -514,7 +505,7 @@ export class GlobalAgentServer {
     let ttsQueue = Promise.resolve()
     let settled = false
     let output = ''
-    let spokenOutputLength = 0
+    const speechSegmenter = createMcuSpeechSegmenter()
 
     const finish = () => {
       if (settled) return
@@ -559,8 +550,8 @@ export class GlobalAgentServer {
             type: 'audio.enqueue',
             interactionId: options.interactionId,
             segmentId: `${segmentId}-failed-prompt`,
-            text: MCU_TTS_FAILED_PROMPT_TEXT,
-            url: MCU_TTS_FAILED_PROMPT_PCM_URL,
+            text: mcuPromptText('tts-failed'),
+            url: mcuPromptUrl('tts-failed'),
             mimeType: 'audio/x-pcm',
             format: 's16le',
             channels: 1,
@@ -569,9 +560,8 @@ export class GlobalAgentServer {
         })
     }
     const flushCompletedAssistantMessage = () => {
-      const text = output.slice(spokenOutputLength)
-      spokenOutputLength = output.length
-      enqueueSpeech(text)
+      const text = speechSegmenter.flush()
+      if (text) enqueueSpeech(text)
     }
     const timer = setTimeout(() => {
       fail('chat-run timed out')
@@ -629,10 +619,25 @@ export class GlobalAgentServer {
     socket.on('message.delta', (event: Record<string, unknown> = {}) => {
       if (typeof event.delta !== 'string') return
       output += event.delta
+      for (const segment of speechSegmenter.pushDelta(event.delta)) {
+        enqueueSpeech(segment)
+      }
     })
     socket.on('run.completed', (event: Record<string, unknown> = {}) => {
-      if (typeof event.output === 'string' && event.output.trim()) output = event.output
-      if (spokenOutputLength > output.length) spokenOutputLength = 0
+      if (typeof event.output === 'string' && event.output.trim()) {
+        if (!output) {
+          output = event.output
+          for (const segment of speechSegmenter.pushDelta(event.output)) {
+            enqueueSpeech(segment)
+          }
+        } else if (event.output.startsWith(output) && event.output.length > output.length) {
+          const tail = event.output.slice(output.length)
+          output = event.output
+          for (const segment of speechSegmenter.pushDelta(tail)) {
+            enqueueSpeech(segment)
+          }
+        }
+      }
       flushCompletedAssistantMessage()
       ttsQueue.finally(() => {
         if (this.interruptedMcuInteractions.has(options.interactionId)) {
@@ -1078,7 +1083,7 @@ export class GlobalAgentServer {
     return `mcu-${instance}-${profileId}`
   }
 
-  private async synthesizeMcuSpeech(text: string, userToken: string, profile: string): Promise<{ url: string }> {
+  private async synthesizeMcuSpeech(text: string, userToken: string, profile: string, signal?: AbortSignal): Promise<{ url: string }> {
     const headers = {
       Authorization: `Bearer ${userToken}`,
       'Content-Type': 'application/json',
@@ -1087,6 +1092,7 @@ export class GlobalAgentServer {
     const requestTts = (provider?: 'edge') => this.fetchImpl(`${this.localBaseUrl}/api/hermes/tts/synthesize`, {
       method: 'POST',
       headers,
+      signal,
       body: JSON.stringify({
         ...(provider ? { provider } : {}),
         text,
@@ -1134,6 +1140,7 @@ export class GlobalAgentServer {
         const fallback = await this.fetchImpl(`${this.localBaseUrl}/api/hermes/tts/synthesize`, {
           method: 'POST',
           headers,
+          signal,
           body: JSON.stringify({
             provider: 'edge',
             text,
@@ -1160,22 +1167,30 @@ export class GlobalAgentServer {
   private async enqueueMcuSpeechSegment(options: McuVoiceChatTurnOptions, segmentId: string, text: string): Promise<void> {
     if (this.interruptedMcuInteractions.has(options.interactionId)) return
     this.emitMcuEvent({ type: 'interaction.status', interactionId: options.interactionId, status: 'speaking' }, { clientId: options.clientId })
-    const audio = await this.synthesizeMcuSpeech(text, options.userToken, options.profile)
-    if (this.interruptedMcuInteractions.has(options.interactionId)) return
-    const waitForDone = this.waitForMcuAudioDone(segmentId, Math.max(90_000, Math.min(text.length * 1200, 300_000)))
-    this.emitMcuEvent({
-      type: 'audio.enqueue',
-      interactionId: options.interactionId,
-      segmentId,
-      text: '',
-      url: audio.url,
-      mimeType: 'audio/x-pcm',
-      channels: 1,
-      sampleRate: MCU_TTS_SAMPLE_RATE,
-      durationMs: Math.max(1200, Math.min(text.length * 180, 12_000)),
-      completionManagedByServer: true,
-    }, { clientId: options.clientId })
-    await waitForDone
+    const controller = this.registerMcuTtsAbortController(options.interactionId)
+    try {
+      const audio = await this.synthesizeMcuSpeech(text, options.userToken, options.profile, controller.signal)
+      if (this.interruptedMcuInteractions.has(options.interactionId) || controller.signal.aborted) return
+      const waitForDone = this.waitForMcuAudioDone(segmentId, Math.max(90_000, Math.min(text.length * 1200, 300_000)))
+      this.emitMcuEvent({
+        type: 'audio.enqueue',
+        interactionId: options.interactionId,
+        segmentId,
+        text: '',
+        url: audio.url,
+        mimeType: 'audio/x-pcm',
+        channels: 1,
+        sampleRate: MCU_TTS_SAMPLE_RATE,
+        durationMs: Math.max(1200, Math.min(text.length * 180, 12_000)),
+        completionManagedByServer: true,
+      }, { clientId: options.clientId })
+      await waitForDone
+    } catch (err) {
+      if (controller.signal.aborted) throw new Error('audio.interrupted')
+      throw err
+    } finally {
+      this.releaseMcuTtsAbortController(options.interactionId, controller)
+    }
   }
 
   private waitForMcuAudioDone(segmentId: string, timeoutMs: number): Promise<void> {
@@ -1190,6 +1205,7 @@ export class GlobalAgentServer {
 
   private abortActiveMcuRun(interactionId: string): void {
     this.interruptedMcuInteractions.add(interactionId)
+    this.abortMcuTts(interactionId)
     const active = this.activeMcuRuns.get(interactionId)
     if (!active) return
     logger.info({ interactionId, sessionId: active.sessionId }, '[global-agent] aborting MCU chat-run after audio interrupt')
@@ -1227,11 +1243,13 @@ export class GlobalAgentServer {
     const sessionRun = this.mcuSessionRuns.get(sessionId)
     if (sessionRun) {
       this.interruptedMcuInteractions.add(sessionRun.interactionId)
+      this.abortMcuTts(sessionRun.interactionId)
       this.activeMcuRuns.delete(sessionRun.interactionId)
       this.mcuSessionRuns.delete(sessionId)
     }
     if (interactionId) {
       this.interruptedMcuInteractions.add(interactionId)
+      this.abortMcuTts(interactionId)
       const active = this.activeMcuRuns.get(interactionId)
       if (active?.sessionId === sessionId) {
         this.activeMcuRuns.delete(interactionId)
@@ -1243,10 +1261,14 @@ export class GlobalAgentServer {
   private interruptMcuSession(clientId: string, profile: string, interactionId?: string): void {
     const sessionId = this.mcuSessionId(clientId, profile)
     this.recentlyInterruptedMcuSessions.set(sessionId, Date.now())
-    if (interactionId) this.interruptedMcuInteractions.add(interactionId)
+    if (interactionId) {
+      this.interruptedMcuInteractions.add(interactionId)
+      this.abortMcuTts(interactionId)
+    }
     const sessionRun = this.mcuSessionRuns.get(sessionId)
     if (sessionRun) {
       this.interruptedMcuInteractions.add(sessionRun.interactionId)
+      this.abortMcuTts(sessionRun.interactionId)
       logger.info({ interactionId: sessionRun.interactionId, sessionId }, '[global-agent] aborting MCU chat-run after interrupt')
       sessionRun.socket.emit('abort', { session_id: sessionId })
       this.activeMcuRuns.delete(sessionRun.interactionId)
@@ -1254,6 +1276,34 @@ export class GlobalAgentServer {
       return
     }
     if (interactionId) this.abortActiveMcuRun(interactionId)
+  }
+
+  private registerMcuTtsAbortController(interactionId: string): AbortController {
+    const controller = new AbortController()
+    if (this.interruptedMcuInteractions.has(interactionId)) {
+      controller.abort()
+      return controller
+    }
+    const controllers = this.mcuTtsAbortControllers.get(interactionId) || new Set<AbortController>()
+    controllers.add(controller)
+    this.mcuTtsAbortControllers.set(interactionId, controllers)
+    return controller
+  }
+
+  private releaseMcuTtsAbortController(interactionId: string, controller: AbortController): void {
+    const controllers = this.mcuTtsAbortControllers.get(interactionId)
+    if (!controllers) return
+    controllers.delete(controller)
+    if (controllers.size === 0) this.mcuTtsAbortControllers.delete(interactionId)
+  }
+
+  private abortMcuTts(interactionId: string): void {
+    const controllers = this.mcuTtsAbortControllers.get(interactionId)
+    if (!controllers) return
+    for (const controller of controllers) {
+      if (!controller.signal.aborted) controller.abort()
+    }
+    this.mcuTtsAbortControllers.delete(interactionId)
   }
 
   private clearMcuSession(clientId: string, profile: string, interactionId?: string): void {

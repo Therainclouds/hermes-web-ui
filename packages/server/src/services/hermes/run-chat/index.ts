@@ -17,15 +17,16 @@ import { getAgentBridgeManager } from '../agent-bridge/manager'
 import { redactAgentBridgeError } from '../agent-bridge/redact'
 import { handleBridgeRun, resumeBridgeRun } from './handle-bridge-run'
 import { handleCodingAgentRun } from './handle-coding-agent-run'
+import { handleEkkoAgentRun } from './handle-ekko-agent-run'
 import { handleAbort } from './abort'
 import { getOrCreateSession } from './compression'
 import { loadSessionStateFromDb, resolveRunSource } from './load-state'
 import { handleSessionCommand, isSessionCommand, parseSessionCommand } from './session-command'
 import { contentBlocksToString } from './content-blocks'
-import type { ContentBlock, QueuedRun, SessionState } from './types'
+import type { ChatCodingAgentId, ContentBlock, QueuedRun, SessionState } from './types'
 import { authenticateUserToken, isAuthEnabled, type AuthenticatedUser } from '../../../middleware/user-auth'
 import { userCanAccessProfile } from '../../../db/hermes/users-store'
-import { ensureHermesRunWorkspace } from './workspace'
+import { observeRunChatPetEvent } from '../pet-state-socket'
 
 export type { ContentBlock } from './types'
 
@@ -53,11 +54,11 @@ function isHermesWorkerBackedSession(session?: { source?: string | null; agent?:
   if (!source || source === 'cli' || source === 'api_server') return true
   if (source === 'workflow') {
     const agent = String(session?.agent || '').trim()
-    return agent !== 'claude' && agent !== 'codex' && !session?.agent_session_id
+    return agent !== 'claude' && agent !== 'codex' && agent !== 'ekko-agent' && !session?.agent_session_id
   }
   if (source !== 'global_agent') return false
   const agent = String(session?.agent || '').trim()
-  return agent !== 'claude' && agent !== 'codex' && !session?.agent_session_id
+  return agent !== 'claude' && agent !== 'codex' && agent !== 'ekko-agent' && !session?.agent_session_id
 }
 
 function isBridgeRunSource(source?: string): boolean {
@@ -84,6 +85,10 @@ export async function ensureBridgeReadyForChatRun(): Promise<{ ok: true } | { ok
 
 function isCodingAgentExecution(source: string | undefined, data?: { coding_agent_id?: string; agent_id?: string }): boolean {
   return source === 'coding_agent' || (source === 'workflow' && Boolean(data?.coding_agent_id || data?.agent_id))
+}
+
+function isEkkoAgentExecution(data?: { coding_agent_id?: string; agent_id?: string }): boolean {
+  return data?.coding_agent_id === 'ekko-agent' || data?.agent_id === 'ekko-agent'
 }
 
 export interface ChatRunAndWaitResult {
@@ -185,8 +190,8 @@ export class ChatRunSocket {
       workspace?: string | null
       source?: string
       session_source?: 'global_agent' | 'workflow'
-      coding_agent_id?: 'claude-code' | 'codex'
-      agent_id?: 'claude-code' | 'codex'
+      coding_agent_id?: ChatCodingAgentId
+      agent_id?: ChatCodingAgentId
       mode?: 'scoped' | 'global'
       baseUrl?: string
       base_url?: string
@@ -195,6 +200,7 @@ export class ChatRunSocket {
       apiMode?: string
       api_mode?: string
       profile?: string
+      allow_command_passthrough?: boolean
       // Local patch (reasoning-effort): per-session reasoning effort override.
       reasoning_effort?: string
     }) => {
@@ -215,7 +221,7 @@ export class ChatRunSocket {
         const command = parseSessionCommand(data.input)
         if (command && (isBridgeRunSource(source) || command.name === 'branch')) {
           try {
-            await handleSessionCommand(data.session_id, command, {
+            const handled = await handleSessionCommand(data.session_id, command, {
               nsp: this.nsp,
               socket,
               sessionMap: this.sessionMap,
@@ -228,6 +234,8 @@ export class ChatRunSocket {
               queueId: data.queue_id,
               runQueuedItem: this.runQueuedItem.bind(this),
             })
+            if (handled !== false) return
+            data.allow_command_passthrough = true
           } catch (err) {
             this.emitToSession(socket, data.session_id, 'session.command', {
               event: 'session.command',
@@ -261,6 +269,7 @@ export class ChatRunSocket {
             api_key: data.api_key,
             apiMode: data.apiMode,
             api_mode: data.api_mode,
+            commandPassthrough: data.allow_command_passthrough,
             originSocketId: socket.id,
           })
           this.nsp.to(`session:${data.session_id}`).emit('run.queued', {
@@ -386,8 +395,8 @@ export class ChatRunSocket {
       session_source?: 'global_agent' | 'workflow'
       queue_id?: string
       peerExcludeSocketId?: string
-      coding_agent_id?: 'claude-code' | 'codex'
-      agent_id?: 'claude-code' | 'codex'
+      coding_agent_id?: ChatCodingAgentId
+      agent_id?: ChatCodingAgentId
       mode?: 'scoped' | 'global'
       baseUrl?: string
       base_url?: string
@@ -395,13 +404,15 @@ export class ChatRunSocket {
       api_key?: string
       apiMode?: string
       api_mode?: string
+      one_shot_model?: boolean
+      allow_command_passthrough?: boolean
       onEvent?: (event: string, payload: any) => void
     },
     profile: string,
     skipUserMessage = false,
   ) {
     const source = resolveRunSource(data.source, data.session_id)
-    if (data.session_id && isBridgeRunSource(source) && isSessionCommand(data.input)) return
+    if (data.session_id && isBridgeRunSource(source) && isSessionCommand(data.input) && data.allow_command_passthrough !== true) return
 
     if (!isCodingAgentExecution(source, data)) {
       const bridgeReady = await ensureBridgeReadyForChatRun()
@@ -446,14 +457,6 @@ export class ChatRunSocket {
       let fullInstructions = data.instructions
         ? `${getSystemPrompt(undefined, { source })}\n${data.instructions}`
         : getSystemPrompt(undefined, { source })
-      if (data.session_id) {
-        const sessionRow = getSession(data.session_id)
-        const workspace = await ensureHermesRunWorkspace(profile, sessionRow?.workspace || data.workspace)
-        if (workspace) {
-          const workspaceCtx = `[Current working directory: ${workspace}]`
-          fullInstructions = `\n${workspaceCtx}\n${fullInstructions}`
-        }
-      }
 
       await handleBridgeRun(
         this.nsp, socket, { ...data, instructions: fullInstructions }, profile,
@@ -461,6 +464,19 @@ export class ChatRunSocket {
         skipUserMessage,
         loadSessionStateFromDb,
         this.dequeueNextQueuedRun.bind(this),
+      )
+      return
+    }
+
+    if (isEkkoAgentExecution(data)) {
+      await handleEkkoAgentRun(
+        this.nsp,
+        socket,
+        data,
+        profile,
+        this.sessionMap,
+        this.dequeueNextQueuedRun.bind(this),
+        skipUserMessage,
       )
       return
     }
@@ -546,6 +562,7 @@ export class ChatRunSocket {
           instructions,
           model: session?.model,
           provider: session?.provider,
+          workspace: session?.workspace,
           source,
         },
         this.sessionMap,
@@ -583,11 +600,7 @@ export class ChatRunSocket {
 
   private resumeInstructionsForSession(sessionId: string): string {
     const sessionRow = getSession(sessionId)
-    let fullInstructions = getSystemPrompt(undefined, { source: sessionRow?.source })
-    if (sessionRow?.workspace) {
-      fullInstructions = `\n[Current working directory: ${sessionRow.workspace}]\n${fullInstructions}`
-    }
-    return fullInstructions
+    return getSystemPrompt(undefined, { source: sessionRow?.source })
   }
 
   // --- Queue ---
@@ -638,6 +651,8 @@ export class ChatRunSocket {
       api_key: next.api_key,
       apiMode: next.apiMode,
       api_mode: next.api_mode,
+      one_shot_model: next.oneShotModel,
+      allow_command_passthrough: next.commandPassthrough,
     }, next.profile || fallbackProfile, skipUserMessage)
   }
 
@@ -658,8 +673,8 @@ export class ChatRunSocket {
       source?: string
       session_source?: 'global_agent' | 'workflow'
       queue_id?: string
-      coding_agent_id?: 'claude-code' | 'codex'
-      agent_id?: 'claude-code' | 'codex'
+      coding_agent_id?: ChatCodingAgentId
+      agent_id?: ChatCodingAgentId
       mode?: 'scoped' | 'global'
       baseUrl?: string
       base_url?: string
@@ -820,6 +835,8 @@ export class ChatRunSocket {
 
   emitExternalEvent(sessionId: string, event: string, payload: any) {
     const tagged = { ...payload, session_id: sessionId }
+    const profile = this.resolvePetEventProfile(sessionId, tagged)
+    this.observePetEvent(profile, event, tagged)
     const state = this.sessionMap.get(sessionId)
     if (state?.isWorking) {
       state.events.push({ event, data: tagged })
@@ -952,6 +969,8 @@ export class ChatRunSocket {
 
   private emitToSession(socket: Socket, sessionId: string, event: string, payload: any) {
     const tagged = { ...payload, session_id: sessionId }
+    const profile = this.resolvePetEventProfile(sessionId, tagged)
+    this.observePetEvent(profile, event, tagged)
     this.nsp.to(`session:${sessionId}`).emit(event, tagged)
     if (!this.nsp.adapter.rooms.get(`session:${sessionId}`)?.size && socket.connected) {
       socket.emit(event, tagged)
@@ -985,5 +1004,22 @@ export class ChatRunSocket {
     }
     this.sessionMap.clear()
     logger.info('[chat-run-socket] closed all connections and cleared state')
+  }
+
+  private resolvePetEventProfile(sessionId: string, payload: Record<string, unknown>): string {
+    const payloadProfile = typeof payload.profile === 'string' ? payload.profile.trim() : ''
+    if (payloadProfile) return payloadProfile
+    const stateProfile = this.sessionMap.get(sessionId)?.profile
+    if (stateProfile) return stateProfile
+    const storedProfile = getSession(sessionId)?.profile
+    return storedProfile || 'default'
+  }
+
+  private observePetEvent(profile: string, event: string, payload: Record<string, unknown>): void {
+    try {
+      observeRunChatPetEvent(profile, event, payload)
+    } catch (err) {
+      logger.debug(err, '[chat-run-socket] failed to update pet state')
+    }
   }
 }

@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { mkdir, mkdtemp, rm, symlink } from 'fs/promises'
+import { tmpdir } from 'os'
+import { join } from 'path'
 
 const listConversationSummariesFromDbMock = vi.fn()
 const getConversationDetailFromDbMock = vi.fn()
@@ -16,6 +19,7 @@ const localGetSessionDetailMock = vi.fn()
 const localSearchSessionsMock = vi.fn()
 const localDeleteSessionMock = vi.fn()
 const localRenameSessionMock = vi.fn()
+const localSetSessionArchivedMock = vi.fn()
 const localCreateSessionMock = vi.fn()
 const localUpdateSessionMock = vi.fn()
 const localAddMessagesMock = vi.fn()
@@ -73,6 +77,7 @@ vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
   getSessionDetail: localGetSessionDetailMock,
   deleteSession: localDeleteSessionMock,
   renameSession: localRenameSessionMock,
+  setSessionArchived: localSetSessionArchivedMock,
   createSession: localCreateSessionMock,
   addMessages: localAddMessagesMock,
   getSession: getSessionMock,
@@ -101,6 +106,7 @@ vi.mock('../../packages/server/src/services/hermes/model-context', () => ({
 
 vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
   getActiveProfileName: getActiveProfileNameMock,
+  getActiveProfileDir: () => '/tmp/hermes-test/default',
   getProfileDir: (name: string) => `/tmp/hermes-test/${name || 'default'}`,
   listProfileNamesFromDisk: () => ['default', 'travel'],
 }))
@@ -156,6 +162,7 @@ describe('session conversations controller', () => {
     localSearchSessionsMock.mockReset()
     localDeleteSessionMock.mockReset()
     localRenameSessionMock.mockReset()
+    localSetSessionArchivedMock.mockReset()
     localCreateSessionMock.mockReset()
     localUpdateSessionMock.mockReset()
     localAddMessagesMock.mockReset()
@@ -208,6 +215,249 @@ describe('session conversations controller', () => {
     expect(localListSessionsMock).toHaveBeenCalledWith(undefined, undefined, 5)
     expect(listConversationSummariesMock).not.toHaveBeenCalled()
     expect(ctx.body.sessions[0]).toMatchObject({ id: 'local-conversation', source: 'cli', title: 'Local' })
+  })
+
+  it('lists Windows drive roots for the workspace folder picker', async () => {
+    const originalPlatform = process.platform
+    const originalWorkspaceBase = process.env.WORKSPACE_BASE
+    const readdirMock = vi.fn(async (path: string) => {
+      if (path === 'D:\\') {
+        return [
+          { name: 'Projects', isDirectory: () => true },
+          { name: 'notes.txt', isDirectory: () => false },
+        ]
+      }
+      return []
+    })
+
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    delete process.env.WORKSPACE_BASE
+    vi.doMock('fs', () => ({
+      existsSync: (path: string) => path === 'C:\\' || path === 'D:\\',
+    }))
+    vi.doMock('fs/promises', () => ({
+      readdir: readdirMock,
+      stat: vi.fn(async () => ({ isDirectory: () => true })),
+      realpath: vi.fn(async (path: string) => path),
+    }))
+
+    try {
+      const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+      const rootCtx: any = { query: {}, body: null }
+
+      await mod.listWorkspaceFolders(rootCtx)
+
+      expect(rootCtx.body.folders).toEqual([
+        { name: 'C:\\', path: 'C:\\', fullPath: 'C:\\', readonly: true },
+        { name: 'D:\\', path: 'D:\\', fullPath: 'D:\\', readonly: true },
+      ])
+
+      const driveCtx: any = { query: { path: 'D:\\' }, body: null }
+      await mod.listWorkspaceFolders(driveCtx)
+
+      expect(readdirMock).toHaveBeenCalledWith('D:\\', { withFileTypes: true })
+      expect(driveCtx.body).toMatchObject({
+        base: 'D:\\',
+        current: 'D:\\',
+        folders: [{ name: 'Projects', path: 'D:\\Projects', fullPath: 'D:\\Projects' }],
+      })
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform })
+      if (originalWorkspaceBase === undefined) delete process.env.WORKSPACE_BASE
+      else process.env.WORKSPACE_BASE = originalWorkspaceBase
+      vi.doUnmock('fs')
+      vi.doUnmock('fs/promises')
+    }
+  })
+
+  it('lists Windows junction-like workspace folders even when their target realpath leaves WORKSPACE_BASE', async () => {
+    const originalPlatform = process.platform
+    const originalWorkspaceBase = process.env.WORKSPACE_BASE
+    const workspaceBase = await mkdtemp(join(tmpdir(), 'hermes-workspace-win-picker-'))
+    const outsideRoot = await mkdtemp(join(tmpdir(), 'hermes-workspace-win-picker-outside-'))
+
+    try {
+      const outsideTarget = join(outsideRoot, 'drive-target')
+      const outsideChild = join(outsideTarget, 'project')
+      const outsideLink = join(workspaceBase, 'DrivesD')
+
+      await mkdir(outsideChild, { recursive: true })
+      await symlink(outsideTarget, outsideLink)
+      Object.defineProperty(process, 'platform', { value: 'win32' })
+      process.env.WORKSPACE_BASE = workspaceBase
+
+      const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+      const rootCtx: any = { query: {}, body: null }
+      await mod.listWorkspaceFolders(rootCtx)
+
+      expect(rootCtx.status).toBeUndefined()
+      expect(rootCtx.body.folders).toContainEqual({
+        name: 'DrivesD',
+        path: 'DrivesD',
+        fullPath: outsideLink,
+      })
+
+      const nestedCtx: any = { query: { path: 'DrivesD' }, body: null }
+      await mod.listWorkspaceFolders(nestedCtx)
+
+      expect(nestedCtx.status).toBeUndefined()
+      expect(nestedCtx.body.folders).toEqual([
+        { name: 'project', path: 'DrivesD/project', fullPath: join(outsideLink, 'project') },
+      ])
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform })
+      if (originalWorkspaceBase === undefined) delete process.env.WORKSPACE_BASE
+      else process.env.WORKSPACE_BASE = originalWorkspaceBase
+      await rm(workspaceBase, { recursive: true, force: true })
+      await rm(outsideRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('lists symlinked workspace folders that resolve within WORKSPACE_BASE and blocks escaped links', async () => {
+    const originalWorkspaceBase = process.env.WORKSPACE_BASE
+    const workspaceBase = await mkdtemp(join(tmpdir(), 'hermes-workspace-picker-'))
+    const outsideRoot = await mkdtemp(join(tmpdir(), 'hermes-workspace-picker-outside-'))
+
+    try {
+      const safeTarget = join(workspaceBase, 'workspace-target')
+      const safeChild = join(safeTarget, 'nested-child')
+      const safeLink = join(workspaceBase, 'linked-workspace')
+      const outsideTarget = join(outsideRoot, 'external-target')
+      const outsideLink = join(workspaceBase, 'linked-external')
+
+      await mkdir(safeChild, { recursive: true })
+      await mkdir(outsideTarget, { recursive: true })
+      await symlink(safeTarget, safeLink)
+      await symlink(outsideTarget, outsideLink)
+      process.env.WORKSPACE_BASE = workspaceBase
+
+      const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+      const rootCtx: any = { query: {}, body: null }
+      await mod.listWorkspaceFolders(rootCtx)
+
+      expect(rootCtx.status).toBeUndefined()
+      expect(rootCtx.body).toEqual({
+        base: workspaceBase,
+        current: '',
+        folders: [
+          { name: 'linked-workspace', path: 'linked-workspace', fullPath: safeLink },
+          { name: 'workspace-target', path: 'workspace-target', fullPath: safeTarget },
+        ],
+      })
+
+      const nestedCtx: any = { query: { path: 'linked-workspace' }, body: null }
+      await mod.listWorkspaceFolders(nestedCtx)
+
+      expect(nestedCtx.status).toBeUndefined()
+      expect(nestedCtx.body).toEqual({
+        base: workspaceBase,
+        current: 'linked-workspace',
+        folders: [
+          { name: 'nested-child', path: 'linked-workspace/nested-child', fullPath: join(safeLink, 'nested-child') },
+        ],
+      })
+
+      const escapedCtx: any = { query: { path: 'linked-external' }, body: null }
+      await mod.listWorkspaceFolders(escapedCtx)
+
+      expect(escapedCtx.status).toBe(403)
+      expect(escapedCtx.body).toEqual({ error: 'Access denied' })
+    } finally {
+      if (originalWorkspaceBase === undefined) delete process.env.WORKSPACE_BASE
+      else process.env.WORKSPACE_BASE = originalWorkspaceBase
+      await rm(workspaceBase, { recursive: true, force: true })
+      await rm(outsideRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('lists dot-prefixed workspace folders under WORKSPACE_BASE', async () => {
+    const originalWorkspaceBase = process.env.WORKSPACE_BASE
+    const workspaceBase = await mkdtemp(join(tmpdir(), 'hermes-workspace-dot-picker-'))
+
+    try {
+      const hermesDir = join(workspaceBase, '.hermes')
+      const codexDir = join(workspaceBase, '.codex')
+      const hiddenChildDir = join(hermesDir, '.plugins')
+      const visibleChildDir = join(hermesDir, 'workspace')
+
+      await mkdir(hiddenChildDir, { recursive: true })
+      await mkdir(visibleChildDir, { recursive: true })
+      await mkdir(codexDir, { recursive: true })
+      process.env.WORKSPACE_BASE = workspaceBase
+
+      const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+      const rootCtx: any = { query: {}, body: null }
+      await mod.listWorkspaceFolders(rootCtx)
+
+      expect(rootCtx.status).toBeUndefined()
+      expect(rootCtx.body).toEqual({
+        base: workspaceBase,
+        current: '',
+        folders: [
+          { name: '.codex', path: '.codex', fullPath: codexDir },
+          { name: '.hermes', path: '.hermes', fullPath: hermesDir },
+        ],
+      })
+
+      const nestedCtx: any = { query: { path: '.hermes' }, body: null }
+      await mod.listWorkspaceFolders(nestedCtx)
+
+      expect(nestedCtx.status).toBeUndefined()
+      expect(nestedCtx.body).toEqual({
+        base: workspaceBase,
+        current: '.hermes',
+        folders: [
+          { name: '.plugins', path: '.hermes/.plugins', fullPath: hiddenChildDir },
+          { name: 'workspace', path: '.hermes/workspace', fullPath: visibleChildDir },
+        ],
+      })
+    } finally {
+      if (originalWorkspaceBase === undefined) delete process.env.WORKSPACE_BASE
+      else process.env.WORKSPACE_BASE = originalWorkspaceBase
+      await rm(workspaceBase, { recursive: true, force: true })
+    }
+  })
+
+  it('blocks workspace folder mutations through symlinked ancestors that escape WORKSPACE_BASE', async () => {
+    const originalWorkspaceBase = process.env.WORKSPACE_BASE
+    const workspaceBase = await mkdtemp(join(tmpdir(), 'hermes-workspace-mutation-'))
+    const outsideRoot = await mkdtemp(join(tmpdir(), 'hermes-workspace-mutation-outside-'))
+
+    try {
+      const outsideTarget = join(outsideRoot, 'external-target')
+      const escapeLink = join(workspaceBase, 'escape-link')
+
+      await mkdir(outsideTarget, { recursive: true })
+      await symlink(outsideTarget, escapeLink)
+      process.env.WORKSPACE_BASE = workspaceBase
+
+      const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+
+      const createCtx: any = { request: { body: { parentPath: 'escape-link', name: 'created' } }, body: null }
+      await mod.createWorkspaceFolder(createCtx)
+      expect(createCtx.status).toBe(403)
+      expect(createCtx.body).toEqual({ error: 'Access denied' })
+
+      const renameCtx: any = { request: { body: { path: 'escape-link', name: 'renamed-link' } }, body: null }
+      await mod.renameWorkspaceFolder(renameCtx)
+      expect(renameCtx.status).toBe(403)
+      expect(renameCtx.body).toEqual({ error: 'Access denied' })
+
+      const deleteCtx: any = { request: { body: { path: 'escape-link' } }, body: null }
+      await mod.deleteWorkspaceFolder(deleteCtx)
+      expect(deleteCtx.status).toBe(403)
+      expect(deleteCtx.body).toEqual({ error: 'Access denied' })
+
+      const { access } = await import('fs/promises')
+      await expect(access(escapeLink)).resolves.toBeUndefined()
+      await expect(access(join(outsideTarget, 'created'))).rejects.toMatchObject({ code: 'ENOENT' })
+      await expect(access(join(workspaceBase, 'renamed-link'))).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally {
+      if (originalWorkspaceBase === undefined) delete process.env.WORKSPACE_BASE
+      else process.env.WORKSPACE_BASE = originalWorkspaceBase
+      await rm(workspaceBase, { recursive: true, force: true })
+      await rm(outsideRoot, { recursive: true, force: true })
+    }
   })
 
   it('returns clean session context without tool calls or tool results', async () => {
@@ -390,6 +640,19 @@ describe('session conversations controller', () => {
     expect(ctx.body.sessions).toEqual([expect.objectContaining({ id: 'global-1', source: 'global_agent' })])
   })
 
+  it('filters archived sessions from the single-chat session list', async () => {
+    localListSessionsMock.mockReturnValue([
+      { id: 'visible-session', profile: 'default', source: 'cli', is_archived: 0 },
+      { id: 'archived-session', profile: 'default', source: 'cli', is_archived: 1 },
+    ])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = { query: {}, state: {}, body: null }
+    await mod.list(ctx)
+
+    expect(ctx.body.sessions.map((session: any) => session.id)).toEqual(['visible-session'])
+  })
+
   it('hides workflow sessions from the default list but allows explicit workflow filtering', async () => {
     localListSessionsMock.mockReturnValue([
       { id: 'workflow-1', profile: 'default', source: 'workflow' },
@@ -421,6 +684,7 @@ describe('session conversations controller', () => {
     localListSessionsMock.mockReturnValue([
       { id: 'default-session', profile: 'default', source: 'cli' },
       { id: 'travel-session', profile: 'travel', source: 'coding_agent' },
+      { id: 'archived-session', profile: 'default', source: 'cli', is_archived: 1 },
       { id: 'secret-session', profile: 'secret', source: 'cli' },
       { id: 'unknown-profile-session', profile: 'missing', source: 'cli' },
       { id: 'api-session', profile: 'default', source: 'api_server' },
@@ -516,6 +780,150 @@ describe('session conversations controller', () => {
       expect.objectContaining({ id: 'cli-1', profile: 'travel', webui_imported: true }),
       expect.objectContaining({ id: 'cli-2', profile: 'travel', webui_imported: false }),
     ])
+  })
+
+  it.each(['cli', 'api_server'])('keeps archived %s sessions visible in Hermes history', async (source) => {
+    localListSessionsMock.mockReturnValue([{ id: `${source}-archived`, profile: 'travel', source, is_archived: 1 }])
+    listSessionSummariesMock.mockResolvedValue([
+      {
+        id: `${source}-archived`,
+        source,
+        model: 'gpt-5',
+        title: 'Archived imported history',
+        started_at: 1,
+        ended_at: null,
+        last_active: 2,
+        message_count: 1,
+        tool_call_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        billing_provider: null,
+        estimated_cost_usd: 0,
+        actual_cost_usd: null,
+        cost_status: '',
+        preview: '',
+      },
+    ])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = { query: { profile: 'travel' }, state: {}, body: null }
+
+    await mod.listHermesSessions(ctx)
+
+    expect(ctx.body.sessions).toEqual([
+      expect.objectContaining({
+        id: `${source}-archived`,
+        source,
+        profile: 'travel',
+        webui_imported: true,
+        is_archived: 1,
+      }),
+    ])
+  })
+
+  it('keeps archived coding-agent sessions visible in Hermes history', async () => {
+    localListSessionsMock.mockReturnValue([{
+      id: 'codex-archived',
+      profile: 'travel',
+      source: 'coding_agent',
+      agent: 'codex',
+      model: 'gpt-5',
+      title: 'Archived Codex',
+      started_at: 1,
+      ended_at: null,
+      last_active: 2,
+      message_count: 1,
+      tool_call_count: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      reasoning_tokens: 0,
+      billing_provider: null,
+      estimated_cost_usd: 0,
+      actual_cost_usd: null,
+      cost_status: '',
+      preview: '',
+      is_archived: 1,
+    }])
+    listSessionSummariesMock.mockResolvedValue([])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = { query: { profile: 'travel' }, state: {}, body: null }
+
+    await mod.listHermesSessions(ctx)
+
+    expect(ctx.body.sessions).toEqual([
+      expect.objectContaining({ id: 'codex-archived', source: 'coding_agent', agent: 'codex', webui_imported: true }),
+    ])
+  })
+
+  it('archives an existing accessible session', async () => {
+    getSessionMock.mockReturnValue({ id: 'session-1', profile: 'default', source: 'cli' })
+    localSetSessionArchivedMock.mockReturnValue(true)
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = { params: { id: 'session-1' }, state: {}, body: null }
+
+    await mod.archive(ctx)
+
+    expect(localSetSessionArchivedMock).toHaveBeenCalledWith('session-1', true)
+    expect(ctx.body).toEqual({ ok: true })
+  })
+
+  it('rejects archiving global-agent sessions', async () => {
+    getSessionMock.mockReturnValue({ id: 'global-1', profile: 'default', source: 'global_agent' })
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = { params: { id: 'global-1' }, state: {}, body: null }
+
+    await mod.archive(ctx)
+
+    expect(localSetSessionArchivedMock).not.toHaveBeenCalled()
+    expect(ctx.status).toBe(400)
+    expect(ctx.body).toEqual({ error: 'Global agent sessions cannot be archived' })
+  })
+
+  it('returns 404 when archiving a missing session', async () => {
+    getSessionMock.mockReturnValue(null)
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = { params: { id: 'missing' }, state: {}, body: null }
+
+    await mod.archive(ctx)
+
+    expect(localSetSessionArchivedMock).not.toHaveBeenCalled()
+    expect(ctx.status).toBe(404)
+    expect(ctx.body).toEqual({ error: 'Session not found' })
+  })
+
+  it('unarchives an existing accessible session', async () => {
+    getSessionMock.mockReturnValue({ id: 'session-1', profile: 'default', source: 'coding_agent', is_archived: 1 })
+    localSetSessionArchivedMock.mockReturnValue(true)
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = { params: { id: 'session-1' }, state: {}, body: null }
+
+    await mod.unarchive(ctx)
+
+    expect(localSetSessionArchivedMock).toHaveBeenCalledWith('session-1', false)
+    expect(ctx.body).toEqual({ ok: true })
+  })
+
+  it('returns 404 when unarchiving a missing session', async () => {
+    getSessionMock.mockReturnValue(null)
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = { params: { id: 'missing' }, state: {}, body: null }
+
+    await mod.unarchive(ctx)
+
+    expect(localSetSessionArchivedMock).not.toHaveBeenCalled()
+    expect(ctx.status).toBe(404)
+    expect(ctx.body).toEqual({ error: 'Session not found' })
   })
 
   it('searches all account-accessible single-chat sessions unless profile is explicit', async () => {

@@ -28,7 +28,7 @@ import { scanLanDevices, startLanDiscoveryResponder } from './services/lan-disco
 import { getLanPeerSocketManager, getLanPeerSocketPath } from './services/lan-peer-socket'
 import { startGlobalAgentServer } from './services/global-agent/server'
 import { WorkflowSocketServer } from './services/workflow-socket'
-import { USBSocketServer } from './services/usb/USBSocketServer'
+import { PetStateSocketServer } from './services/hermes/pet-state-socket'
 import { logger } from './services/logger'
 import { startUSBService } from './services/usb'
 import { createStaticCompressionMiddleware } from './middleware/static-compression'
@@ -60,7 +60,7 @@ let server: any = null
 let servers: any[] = []
 let chatRunServer: any = null
 let workflowSocketServer: WorkflowSocketServer | null = null
-let usbSocketServer: USBSocketServer | null = null
+let petStateSocketServer: PetStateSocketServer | null = null
 let agentBridgeManager: any = null
 let desktopShutdownHandler: ShutdownHandler | null = null
 
@@ -358,8 +358,8 @@ export async function bootstrap() {
   workflowSocketServer = new WorkflowSocketServer(groupChatServer.getIO())
   workflowSocketServer.init()
 
-  usbSocketServer = new USBSocketServer(groupChatServer.getIO())
-  usbSocketServer.init()
+  petStateSocketServer = new PetStateSocketServer(groupChatServer.getIO())
+  petStateSocketServer.init()
 
   const loopbackBaseUrl = getLoopbackBaseUrl(server)
   startGlobalAgentServer(groupChatServer.getIO(), { localBaseUrl: loopbackBaseUrl })

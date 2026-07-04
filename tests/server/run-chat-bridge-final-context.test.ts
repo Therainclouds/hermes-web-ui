@@ -37,6 +37,7 @@ const ensureOpenBridgeAssistantMessageMock = vi.fn()
 const syncBridgeReasoningToMessageMock = vi.fn()
 const recordBridgeToolStartedMock = vi.fn()
 const recordBridgeToolCompletedMock = vi.fn()
+const recordBridgeMoaDisplayToolMock = vi.fn()
 const resolveBridgeRunModelConfigMock = vi.fn()
 const issueModelRunJwtMock = vi.fn(async () => 'model-run-token')
 const homes: string[] = []
@@ -86,6 +87,7 @@ vi.mock('../../packages/server/src/services/hermes/run-chat/bridge-message', () 
   syncBridgeReasoningToMessage: syncBridgeReasoningToMessageMock,
   recordBridgeToolStarted: recordBridgeToolStartedMock,
   recordBridgeToolCompleted: recordBridgeToolCompletedMock,
+  recordBridgeMoaDisplayTool: recordBridgeMoaDisplayToolMock,
 }))
 
 vi.mock('../../packages/server/src/services/hermes/run-chat/model-config', () => ({
@@ -145,6 +147,29 @@ describe('bridge run final context usage', () => {
     buildSnapshotAwareHistoryMock.mockImplementation(async (_sessionId: string, _profile: string, history: any[]) => history)
     calcAndUpdateUsageMock.mockResolvedValue({ inputTokens: 11, outputTokens: 7 })
     estimateUsageTokensFromMessagesMock.mockReturnValue({ inputTokens: 11, outputTokens: 7 })
+    ensureOpenBridgeAssistantMessageMock.mockImplementation((state: any, sessionId: string, runMarker: string) => {
+      const existing = [...state.messages].reverse().find((message: any) => (
+        message.runMarker === runMarker &&
+        message.role === 'assistant' &&
+        message.finish_reason == null
+      ))
+      if (existing) return existing
+      const message = {
+        id: state.messages.length + 1,
+        session_id: sessionId,
+        runMarker,
+        role: 'assistant',
+        content: '',
+        timestamp: 0,
+      }
+      state.messages.push(message)
+      return message
+    })
+    syncBridgeReasoningToMessageMock.mockImplementation((message: any, reasoning?: string) => {
+      if (!reasoning) return
+      message.reasoning = reasoning
+      message.reasoning_content = reasoning
+    })
     getCachedBridgeContextOverheadMock.mockImplementation((state: any) => {
       const fixed = state?.bridgeContext?.fixedContextTokens
       return typeof fixed === 'number' ? fixed : undefined
@@ -202,10 +227,15 @@ describe('bridge run final context usage', () => {
       [],
       expect.not.stringContaining('[Current Hermes profile:'),
       'default',
-      { model: 'gpt-test', provider: 'openai' },
+      {
+        model: 'gpt-test',
+        provider: 'openai',
+        workspace: '/tmp/hermes-bridge-final-context/default/workspace',
+      },
     )
     expect(bridge.contextEstimate.mock.calls[0][2]).toContain('system prompt')
     expect(bridge.contextEstimate.mock.calls[0][2]).toContain('X-Hermes-Profile')
+    expect(bridge.contextEstimate.mock.calls[0][2]).not.toContain('Current working directory')
     expect(state.contextTokens).toBe(12345)
     expect(emit).toHaveBeenCalledWith('usage.updated', expect.objectContaining({
       inputTokens: 11,
@@ -216,6 +246,179 @@ describe('bridge run final context usage', () => {
       inputTokens: 11,
       outputTokens: 7,
       contextTokens: 12345,
+    }))
+  })
+
+  it('forwards MoA reference and aggregating events from bridge chunks', async () => {
+    const emit = vi.fn()
+    const nsp = makeNamespace(emit)
+    const socket = makeSocket()
+    const state = makeState()
+    const sessionMap = new Map([['session-1', state]])
+    const bridge = {
+      chat: vi.fn().mockResolvedValue({ run_id: 'run-1', status: 'started' }),
+      contextEstimate: vi.fn().mockResolvedValue({
+        token_count: 12345,
+        fixed_context_tokens: 12327,
+        message_count: 2,
+        tool_count: 4,
+        system_prompt_chars: 13,
+      }),
+      streamOutput: vi.fn(async function* () {
+        yield {
+          run_id: 'run-1',
+          done: false,
+          status: 'running',
+          events: [
+            { event: 'moa.reference', label: 'grok-4.3', text: 'ref answer', index: 1, count: 2 },
+            { event: 'moa.aggregating', aggregator: 'deepseek-v4-pro' },
+          ],
+        }
+        yield { run_id: 'run-1', done: true, status: 'completed', output: 'final answer' }
+      }),
+    } as any
+
+    const { handleBridgeRun } = await import('../../packages/server/src/services/hermes/run-chat/handle-bridge-run')
+    await handleBridgeRun(
+      nsp,
+      socket,
+      { input: 'hello', session_id: 'session-1' },
+      'default',
+      sessionMap,
+      bridge,
+      false,
+      vi.fn(),
+      vi.fn(),
+    )
+
+    expect(pushStateMock).toHaveBeenCalledWith(sessionMap, 'session-1', 'moa.reference', expect.objectContaining({
+      event: 'moa.reference',
+      label: 'grok-4.3',
+      text: 'ref answer',
+      index: 1,
+      count: 2,
+    }))
+    expect(replaceStateMock).toHaveBeenCalledWith(sessionMap, 'session-1', 'moa.aggregating', expect.objectContaining({
+      event: 'moa.aggregating',
+      aggregator: 'deepseek-v4-pro',
+    }))
+    expect(emit).toHaveBeenCalledWith('moa.reference', expect.objectContaining({
+      label: 'grok-4.3',
+      text: 'ref answer',
+      index: 1,
+      count: 2,
+    }))
+    expect(emit).toHaveBeenCalledWith('moa.aggregating', expect.objectContaining({
+      aggregator: 'deepseek-v4-pro',
+    }))
+    expect(recordBridgeMoaDisplayToolMock).toHaveBeenCalledWith(
+      state,
+      'session-1',
+      expect.any(String),
+      'moa_reference',
+      'moa:reference:run-1:1',
+      JSON.stringify({ label: 'grok-4.3', preview: '1/2 grok-4.3', text: 'ref answer', index: 1, count: 2 }),
+    )
+    expect(recordBridgeMoaDisplayToolMock).toHaveBeenCalledWith(
+      state,
+      'session-1',
+      expect.any(String),
+      'moa_aggregating',
+      'moa:aggregating:run-1',
+      JSON.stringify({ aggregator: 'deepseek-v4-pro', preview: 'deepseek-v4-pro', text: 'deepseek-v4-pro' }),
+    )
+  })
+
+  it('uses result.final_response for moa when a terminal bridge chunk has no streamed output', async () => {
+    resolveBridgeRunModelConfigMock.mockResolvedValueOnce({ model: 'default', provider: 'moa' })
+    const emit = vi.fn()
+    const nsp = makeNamespace(emit)
+    const socket = makeSocket()
+    const state = makeState()
+    const sessionMap = new Map([['session-1', state]])
+    const bridge = {
+      chat: vi.fn().mockResolvedValue({ run_id: 'run-1', status: 'started' }),
+      contextEstimate: vi.fn().mockResolvedValue({
+        token_count: 12345,
+        fixed_context_tokens: 12327,
+        message_count: 2,
+        tool_count: 4,
+        system_prompt_chars: 13,
+      }),
+      streamOutput: vi.fn(async function* () {
+        yield {
+          run_id: 'run-1',
+          done: true,
+          status: 'completed',
+          output: '',
+          result: { final_response: '你好呀！' },
+        }
+      }),
+    } as any
+
+    const { handleBridgeRun } = await import('../../packages/server/src/services/hermes/run-chat/handle-bridge-run')
+    await handleBridgeRun(
+      nsp,
+      socket,
+      { input: 'hello', session_id: 'session-1' },
+      'default',
+      sessionMap,
+      bridge,
+      false,
+      vi.fn(),
+      vi.fn(),
+    )
+
+    expect(state.bridgeOutput).toBe('你好呀！')
+    expect(state.messages.find((message: any) => message.role === 'assistant')?.content).toBe('你好呀！')
+    expect(emit).toHaveBeenCalledWith('run.completed', expect.objectContaining({
+      output: '你好呀！',
+    }))
+  })
+
+  it('does not synthesize non-moa assistant output from result.final_response', async () => {
+    const emit = vi.fn()
+    const nsp = makeNamespace(emit)
+    const socket = makeSocket()
+    const state = makeState()
+    const sessionMap = new Map([['session-1', state]])
+    const bridge = {
+      chat: vi.fn().mockResolvedValue({ run_id: 'run-1', status: 'started' }),
+      contextEstimate: vi.fn().mockResolvedValue({
+        token_count: 12345,
+        fixed_context_tokens: 12327,
+        message_count: 2,
+        tool_count: 4,
+        system_prompt_chars: 13,
+      }),
+      streamOutput: vi.fn(async function* () {
+        yield {
+          run_id: 'run-1',
+          done: true,
+          status: 'completed',
+          output: '',
+          result: { final_response: 'non-moa fallback' },
+        }
+      }),
+    } as any
+
+    const { handleBridgeRun } = await import('../../packages/server/src/services/hermes/run-chat/handle-bridge-run')
+    await handleBridgeRun(
+      nsp,
+      socket,
+      { input: 'hello', session_id: 'session-1' },
+      'default',
+      sessionMap,
+      bridge,
+      false,
+      vi.fn(),
+      vi.fn(),
+    )
+
+    expect(state.bridgeOutput).toBe('')
+    expect(state.messages.find((message: any) => message.role === 'assistant')).toBeUndefined()
+    expect(emit).toHaveBeenCalledWith('run.completed', expect.objectContaining({
+      output: '',
     }))
   })
 
@@ -315,6 +518,7 @@ describe('bridge run final context usage', () => {
     expect(issueModelRunJwtMock).toHaveBeenCalledWith({ id: 1, username: 'admin', role: 'super_admin' })
     expect(readFileSync(join(process.env.HERMES_WEB_UI_HOME || '', 'profiles', 'default', '.model-run-token'), 'utf-8').trim()).toBe('model-run-token')
     expect(instructions).not.toContain('[Current Hermes profile:')
+    expect(instructions).not.toContain('Current working directory')
     expect(instructions).not.toContain('pass the current Hermes profile as the profile argument')
     expect(instructions).not.toContain('model-run-token')
     expect(instructions).not.toContain('Current Hermes Web UI model run token')
@@ -363,6 +567,61 @@ describe('bridge run final context usage', () => {
       workspace: '/tmp/hermes-bridge-final-context/default/workspace',
     }))
     expect(state.source).toBe('global_agent')
+  })
+
+  it('passes the workflow workspace through to bridge runs', async () => {
+    const emit = vi.fn()
+    const nsp = makeNamespace(emit)
+    const socket = makeSocket()
+    const state = makeState()
+    const sessionMap = new Map([['workflow-session', state]])
+    const bridge = {
+      chat: vi.fn().mockResolvedValue({ run_id: 'run-workflow', status: 'started' }),
+      contextEstimate: vi.fn().mockResolvedValue({
+        token_count: 42,
+        message_count: 1,
+        tool_count: 0,
+        system_prompt_chars: 13,
+      }),
+      streamOutput: vi.fn(async function* () {
+        yield { run_id: 'run-workflow', done: true, status: 'completed', output: 'done' }
+      }),
+    } as any
+
+    getSessionMock.mockReturnValue(undefined)
+
+    const { handleBridgeRun } = await import('../../packages/server/src/services/hermes/run-chat/handle-bridge-run')
+    await handleBridgeRun(
+      nsp,
+      socket,
+      {
+        input: 'run workflow node',
+        session_id: 'workflow-session',
+        source: 'workflow',
+        workspace: '/tmp/hermes-workflow-workspace',
+      },
+      'default',
+      sessionMap,
+      bridge,
+      false,
+      vi.fn(),
+      vi.fn(),
+    )
+
+    expect(createSessionMock).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'workflow-session',
+      source: 'workflow',
+      workspace: '/tmp/hermes-workflow-workspace',
+    }))
+    expect(bridge.chat).toHaveBeenCalledWith(
+      'workflow-session',
+      'run workflow node',
+      expect.any(Array),
+      expect.any(String),
+      'default',
+      expect.objectContaining({ workspace: '/tmp/hermes-workflow-workspace' }),
+    )
+    expect(state.source).toBe('workflow')
   })
 
   it('evaluates active goals after a successful bridge run and queues continuation prompts', async () => {
@@ -747,7 +1006,73 @@ describe('bridge run final context usage', () => {
       expect.any(Array),
       expect.any(String),
       'default',
-      expect.objectContaining({ storage_message: '/plan build the feature' }),
+      expect.objectContaining({
+        storage_message: '/plan build the feature',
+        workspace: '/tmp/hermes-bridge-final-context/default/workspace',
+      }),
+    )
+  })
+
+  it('persists the visible moa command while sending only the prompt to the bridge', async () => {
+    resolveBridgeRunModelConfigMock.mockResolvedValueOnce({ model: 'default', provider: 'moa' })
+    const emit = vi.fn()
+    const nsp = makeNamespace(emit)
+    const socket = makeSocket()
+    const state = makeState()
+    const sessionMap = new Map([['session-1', state]])
+    const bridge = {
+      chat: vi.fn().mockResolvedValue({ run_id: 'run-1', status: 'started' }),
+      contextEstimate: vi.fn().mockResolvedValue({
+        token_count: 12345,
+        message_count: 2,
+        tool_count: 4,
+        system_prompt_chars: 13,
+      }),
+      streamOutput: vi.fn(async function* () {
+        yield { run_id: 'run-1', done: true, status: 'completed', output: 'moa answer' }
+      }),
+    } as any
+
+    const { handleBridgeRun } = await import('../../packages/server/src/services/hermes/run-chat/handle-bridge-run')
+    await handleBridgeRun(
+      nsp,
+      socket,
+      {
+        input: '都有什么模型参加讨论',
+        display_input: '/moa 都有什么模型参加讨论',
+        display_role: 'command',
+        storage_message: '/moa 都有什么模型参加讨论',
+        session_id: 'session-1',
+        model: 'default',
+        provider: 'moa',
+      },
+      'default',
+      sessionMap,
+      bridge,
+      false,
+      vi.fn(),
+      vi.fn(),
+    )
+
+    expect(state.messages.find((message: any) => message.role === 'command')).toEqual(expect.objectContaining({
+      role: 'command',
+      content: '/moa 都有什么模型参加讨论',
+    }))
+    expect(addMessageMock).toHaveBeenCalledWith(expect.objectContaining({
+      role: 'command',
+      content: '/moa 都有什么模型参加讨论',
+    }))
+    expect(bridge.chat).toHaveBeenCalledWith(
+      'session-1',
+      '都有什么模型参加讨论',
+      expect.any(Array),
+      expect.any(String),
+      'default',
+      expect.objectContaining({
+        model: 'default',
+        provider: 'moa',
+        storage_message: '/moa 都有什么模型参加讨论',
+      }),
     )
   })
 
@@ -806,7 +1131,10 @@ describe('bridge run final context usage', () => {
       expect.any(Array),
       expect.any(String),
       'default',
-      expect.objectContaining({ storage_message: '[IMPORTANT: expanded skill prompt]' }),
+      expect.objectContaining({
+        storage_message: '[IMPORTANT: expanded skill prompt]',
+        workspace: '/tmp/hermes-bridge-final-context/default/workspace',
+      }),
     )
   })
 

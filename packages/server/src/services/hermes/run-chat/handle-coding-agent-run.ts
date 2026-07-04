@@ -3,11 +3,12 @@ import { codingAgentRunManager } from '../../agent-runner/coding-agent-run-manag
 import {
   sendCodingAgentRunInput,
   startCodingAgentRun,
-  type CodingAgentId,
+  type CodingAgentId as ExternalCodingAgentId,
 } from '../../coding-agents'
 import { getOrCreateSession } from './compression'
 import { contentBlocksToString } from './content-blocks'
 import type { ContentBlock, SessionState } from './types'
+import type { ChatCodingAgentId } from './types'
 import { writeModelRunProfileToken } from './model-run-prompt'
 import type { AuthenticatedUser } from '../../../middleware/user-auth'
 import { getSystemPrompt } from '../../../lib/llm-prompt'
@@ -19,8 +20,8 @@ export interface CodingAgentRunSocketData {
   profile?: string
   provider?: string
   model?: string
-  coding_agent_id?: CodingAgentId
-  agent_id?: CodingAgentId
+  coding_agent_id?: ChatCodingAgentId
+  agent_id?: ChatCodingAgentId
   mode?: 'scoped' | 'global'
   workspace?: string | null
   source?: string
@@ -33,7 +34,7 @@ export interface CodingAgentRunSocketData {
   session_source?: 'global_agent' | 'workflow'
 }
 
-function codingAgentId(data: CodingAgentRunSocketData): CodingAgentId {
+function codingAgentId(data: CodingAgentRunSocketData): ExternalCodingAgentId {
   const value = data.coding_agent_id || data.agent_id || 'claude-code'
   return value === 'codex' ? 'codex' : 'claude-code'
 }

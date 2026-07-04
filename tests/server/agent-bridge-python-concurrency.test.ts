@@ -46,7 +46,36 @@ def _get_approval_callback():
 
 terminal_tool.set_approval_callback = set_approval_callback
 terminal_tool._get_approval_callback = _get_approval_callback
+terminal_tool._task_env_overrides = {}
+
+def register_task_env_overrides(task_id, overrides):
+    terminal_tool._task_env_overrides[task_id] = dict(overrides or {})
+
+terminal_tool.register_task_env_overrides = register_task_env_overrides
 sys.modules["tools.terminal_tool"] = terminal_tool
+
+agent_pkg = types.ModuleType("agent")
+agent_pkg.__path__ = []
+sys.modules["agent"] = agent_pkg
+
+runtime_cwd = types.ModuleType("agent.runtime_cwd")
+runtime_cwd._cwd = contextvars.ContextVar("runtime_cwd", default="")
+runtime_cwd._cleared = []
+
+def set_session_cwd(cwd):
+    runtime_cwd._cwd.set(cwd or "")
+
+def clear_session_cwd():
+    runtime_cwd._cleared.append(runtime_cwd._cwd.get())
+    runtime_cwd._cwd.set("")
+
+def resolve_agent_cwd():
+    return runtime_cwd._cwd.get()
+
+runtime_cwd.set_session_cwd = set_session_cwd
+runtime_cwd.clear_session_cwd = clear_session_cwd
+runtime_cwd.resolve_agent_cwd = resolve_agent_cwd
+sys.modules["agent.runtime_cwd"] = runtime_cwd
 
 approval = types.ModuleType("tools.approval")
 approval._session_key = contextvars.ContextVar("approval_session_key", default="")
@@ -94,8 +123,8 @@ def save_permanent_allowlist(patterns):
 def load_permanent_allowlist():
     return set(approval._permanent_approved)
 
-def check_execute_code_guard(code, env_type):
-    approval._check_execute_code_calls.append((code, env_type))
+def check_execute_code_guard(code, env_type, has_host_access=False):
+    approval._check_execute_code_calls.append((code, env_type, has_host_access))
     return {"approved": False, "message": "upstream prompt"}
 
 approval.set_current_session_key = set_current_session_key
@@ -156,7 +185,7 @@ def make_pool():
     pool._db = FakeDbHolder(fake_db)
     return pool, fake_db
 
-def start_manual_run(pool, session_id, agent, message=None):
+def start_manual_run(pool, session_id, agent, message=None, workspace=None):
     session = bridge.AgentSession(session_id=session_id, agent=agent)
     run_id = f"run-{session_id}"
     record = bridge.RunRecord(run_id=run_id, session_id=session_id)
@@ -167,7 +196,7 @@ def start_manual_run(pool, session_id, agent, message=None):
         pool._runs[run_id] = record
     thread = threading.Thread(
         target=pool._run_chat,
-        args=(session, record, message or f"message:{session_id}", None, None, [], "default", False, "api_server"),
+        args=(session, record, message or f"message:{session_id}", None, None, [], "default", False, workspace, "api_server"),
         daemon=True,
     )
     thread.start()
@@ -390,11 +419,15 @@ bridge._install_execute_code_approval_memory_patch()
 token = approval.set_current_session_key("session-c")
 try:
     approval.approve_session("session-c", "execute_code")
-    check_result = approval.check_execute_code_guard("print(3)", "local")
+    check_result = approval.check_execute_code_guard("print(3)", "local", has_host_access=True)
     assert check_result["approved"] is True
     assert approval._check_execute_code_calls == []
 finally:
     approval.reset_current_session_key(token)
+
+check_result = approval.check_execute_code_guard("print(4)", "local", has_host_access=True)
+assert check_result["approved"] is False
+assert approval._check_execute_code_calls == [("print(4)", "local", True)]
 `)
   })
 
@@ -1202,6 +1235,102 @@ assert events == [
     ("lock-free-during-shutdown", True),
     "shutdown-finished",
 ], events
+`)
+  })
+
+  it('shuts down MCP servers before worker shutdown exits', () => {
+    runPython(String.raw`
+${harness}
+
+events = []
+
+class FakeBridgeServer(bridge.BridgeServer):
+    def _shutdown_all_mcp_servers(self):
+        events.append("mcp-shutdown")
+        return 2
+
+server = FakeBridgeServer("tcp://127.0.0.1:1")
+response = server.handle({"action": "shutdown"})
+
+assert response == {"status": "shutting_down"}, response
+assert events == ["mcp-shutdown"], events
+assert server._stop.is_set(), "shutdown should stop worker after MCP shutdown"
+`)
+  })
+
+  it('requests worker shutdown before terminating the worker process', () => {
+    runPython(String.raw`
+${harness}
+
+events = []
+
+class FakeProcess:
+    def __init__(self):
+        self.terminated = False
+
+    def poll(self):
+        return None
+
+    def terminate(self):
+        events.append("terminate")
+        self.terminated = True
+
+    def wait(self, timeout=None):
+        events.append(("wait", timeout))
+
+worker = bridge.WorkerProcess("default", "default", "tcp://127.0.0.1:1", None, None)
+worker.process = FakeProcess()
+
+def fake_request(req, timeout=None):
+    events.append(("request", req, timeout))
+    return {"status": "shutting_down"}
+
+worker.request = fake_request
+worker.stop()
+
+assert events == [
+    ("request", {"action": "shutdown"}, worker.SHUTDOWN_REQUEST_TIMEOUT_SECONDS),
+    "terminate",
+    ("wait", 3),
+], events
+`)
+  })
+
+  it('binds workspace cwd per running session without process-wide cwd state', () => {
+    runPython(String.raw`
+${harness}
+
+class WorkspaceAgent:
+    def __init__(self):
+        self.seen = []
+
+    def run_conversation(self, message, session_id=None, stream_callback=None, **kwargs):
+        from agent.runtime_cwd import resolve_agent_cwd
+
+        cwd = resolve_agent_cwd()
+        self.seen.append((session_id, cwd))
+        if stream_callback:
+            stream_callback(cwd)
+        time.sleep(0.05)
+        return {"output": cwd}
+
+pool, _fake_db = make_pool()
+agent_a = WorkspaceAgent()
+agent_b = WorkspaceAgent()
+
+session_a, record_a, thread_a = start_manual_run(pool, "session-a", agent_a, "a", "/repo/a")
+session_b, record_b, thread_b = start_manual_run(pool, "session-b", agent_b, "b", "/repo/b")
+
+thread_a.join(timeout=2)
+thread_b.join(timeout=2)
+assert not thread_a.is_alive(), record_a.result
+assert not thread_b.is_alive(), record_b.result
+
+assert [cwd for _session_id, cwd in agent_a.seen] == ["/repo/a"], agent_a.seen
+assert [cwd for _session_id, cwd in agent_b.seen] == ["/repo/b"], agent_b.seen
+assert terminal_tool._task_env_overrides["session-a"] == {"cwd": "/repo/a"}, terminal_tool._task_env_overrides
+assert terminal_tool._task_env_overrides["session-b"] == {"cwd": "/repo/b"}, terminal_tool._task_env_overrides
+assert runtime_cwd.resolve_agent_cwd() == "", runtime_cwd.resolve_agent_cwd()
 `)
   })
 })

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { renameSession, setSessionWorkspace, batchDeleteSessions, exportSession } from "@/api/hermes/sessions";
 import type { AvailableModelGroup } from "@/api/hermes/system";
-import { fetchCodingAgentsStatus, inferCodingAgentApiMode, normalizeCodingAgentApiMode, type CodingAgentApiMode, type CodingAgentId } from "@/api/coding-agents";
+import { fetchCodingAgentsStatus, inferCodingAgentApiMode, normalizeCodingAgentApiMode, type ChatCodingAgentId, type CodingAgentApiMode, type CodingAgentId } from "@/api/coding-agents";
 import { useChatStore, type Session } from "@/stores/hermes/chat";
 import { useAppStore } from "@/stores/hermes/app";
 import { useProfilesStore } from "@/stores/hermes/profiles";
@@ -317,7 +317,7 @@ const headerTitle = computed(() =>
 );
 
 const showNewChatModal = ref(false);
-const newChatAgent = ref<"hermes" | "claude-code" | "codex">("hermes");
+const newChatAgent = ref<"hermes" | ChatCodingAgentId>("hermes");
 const newChatAgentMode = ref<"global" | "scoped">("scoped");
 const newChatProfile = ref<string>("default");
 const newChatProvider = ref<string>("");
@@ -358,7 +358,8 @@ function isCodingAgentAuthProvider(provider?: string) {
 }
 
 function isNewChatProviderAllowed(group: AvailableModelGroup) {
-  if (!(newChatAgent.value !== "hermes" && newChatAgentMode.value === "scoped")) return true;
+  const mode = newChatAgent.value === "ekko-agent" ? "scoped" : newChatAgentMode.value;
+  if (!(newChatAgent.value !== "hermes" && mode === "scoped")) return true;
   return !isCodingAgentAuthProvider(group.provider);
 }
 
@@ -433,15 +434,19 @@ const selectedNewChatProviderGroup = computed(() =>
 );
 
 const isNewChatCodingAgent = computed(() => newChatAgent.value !== "hermes");
+const isNewChatExternalCodingAgent = computed(() => newChatAgent.value === "claude-code" || newChatAgent.value === "codex");
+const effectiveNewChatAgentMode = computed(() =>
+  newChatAgent.value === "ekko-agent" ? "scoped" : newChatAgentMode.value,
+);
 const isNewChatGlobalCodingAgent = computed(() =>
-  isNewChatCodingAgent.value && newChatAgentMode.value === "global",
+  isNewChatCodingAgent.value && effectiveNewChatAgentMode.value === "global",
 );
 const newChatUsesProviderModel = computed(() => !isNewChatGlobalCodingAgent.value);
 const newChatNeedsBaseUrl = computed(() =>
-  isNewChatCodingAgent.value && newChatAgentMode.value === "scoped" && !selectedNewChatProviderGroup.value?.base_url,
+  isNewChatCodingAgent.value && effectiveNewChatAgentMode.value === "scoped" && !selectedNewChatProviderGroup.value?.base_url,
 );
 const newChatNeedsApiKey = computed(() =>
-  isNewChatCodingAgent.value && newChatAgentMode.value === "scoped" && !selectedNewChatProviderGroup.value?.api_key,
+  isNewChatCodingAgent.value && effectiveNewChatAgentMode.value === "scoped" && !selectedNewChatProviderGroup.value?.api_key,
 );
 const canConfirmNewChat = computed(() => {
   if (!newChatProfile.value) return false;
@@ -528,7 +533,7 @@ function handleNewChatProviderChange(value: string) {
 }
 
 async function confirmNewChat() {
-  if (newChatAgent.value !== "hermes") {
+  if (isNewChatExternalCodingAgent.value) {
     newChatLoading.value = true;
     try {
       const agentId = newChatAgent.value as CodingAgentId;
@@ -551,11 +556,14 @@ async function confirmNewChat() {
 
   const group = selectedNewChatProviderGroup.value;
   const source = newChatAgent.value === "hermes" ? "cli" : "coding_agent";
-  const isGlobalCodingAgent = source === "coding_agent" && newChatAgentMode.value === "global";
+  const codingAgentMode = effectiveNewChatAgentMode.value;
+  const isGlobalCodingAgent = source === "coding_agent" && codingAgentMode === "global";
   const agent = newChatAgent.value === "codex"
     ? "codex"
     : newChatAgent.value === "claude-code"
       ? "claude"
+      : newChatAgent.value === "ekko-agent"
+        ? "ekko-agent"
       : "hermes";
   const session = chatStore.newChat({
     profile: newChatProfile.value,
@@ -564,7 +572,7 @@ async function confirmNewChat() {
     source,
     agent,
     codingAgentId: newChatAgent.value === "hermes" ? undefined : newChatAgent.value,
-    codingAgentMode: source === "coding_agent" ? newChatAgentMode.value : undefined,
+    codingAgentMode: source === "coding_agent" ? codingAgentMode : undefined,
     workspace: newChatWorkspace.value || null,
     baseUrl: source === "coding_agent" && !isGlobalCodingAgent ? group?.base_url || newChatBaseUrl.value.trim() || undefined : undefined,
     apiKey: source === "coding_agent" && !isGlobalCodingAgent ? group?.api_key || newChatApiKey.value.trim() || undefined : undefined,
@@ -726,8 +734,13 @@ const contextMenuOptions = computed(() => {
     label: t(contextSessionPinned.value ? "chat.unpin" : "chat.pin"),
     key: "pin",
   },
-  { label: t("chat.rename"), key: "rename" },
-  { label: t("chat.setWorkspace"), key: "workspace" }]
+  { label: t("chat.rename"), key: "rename" }]
+
+  if (contextSession.value?.source !== "global_agent") {
+    options.push({ label: t("chat.archiveSession"), key: "archive" })
+  }
+
+  options.push({ label: t("chat.setWorkspace"), key: "workspace" })
 
   if (contextSession.value?.source === "cli" || contextSession.value?.source === "coding_agent") {
     options.push({ label: t("chat.setModel"), key: "model" })
@@ -798,6 +811,19 @@ async function handleContextMenuSelect(key: string) {
     copySessionId(contextSessionId.value);
   } else if (key === "open-link") {
     openSessionInNewTab(contextSessionId.value);
+  } else if (key === "archive") {
+    const archivedSession = contextSession.value;
+    const ok = await chatStore.archiveSession(contextSessionId.value);
+    if (ok) {
+      sessionBrowserPrefsStore.removePinned(contextSessionId.value);
+      if (archivedSession) {
+        selectedSessionKeys.value.delete(sessionSelectionKey(archivedSession));
+        selectedSessionKeys.value = new Set(selectedSessionKeys.value);
+      }
+      message.success(t("chat.sessionArchived"));
+    } else {
+      message.error(t("chat.archiveSessionFailed"));
+    }
   } else if (parseExportKey(key)) {
     const { mode, ext } = parseExportKey(key)!;
     const loadingMsg = mode === "compressed" ? message.loading(t("chat.exportCompressing"), { duration: 0 }) : null;
@@ -1459,7 +1485,7 @@ async function handleSessionModelCustomSubmit() {
               :disabled="newChatLoading"
             />
           </label>
-          <label v-if="isNewChatCodingAgent" class="new-chat-field">
+          <label v-if="isNewChatExternalCodingAgent" class="new-chat-field">
             <span class="new-chat-label">{{ t("codingAgents.launchModeScope") }}</span>
             <NRadioGroup v-model:value="newChatAgentMode" name="new-chat-coding-agent-mode">
               <NRadioButton
@@ -1498,7 +1524,7 @@ async function handleSessionModelCustomSubmit() {
               filterable
             />
           </label>
-          <label v-if="isNewChatCodingAgent && newChatAgentMode === 'scoped'" class="new-chat-field">
+          <label v-if="isNewChatCodingAgent && effectiveNewChatAgentMode === 'scoped'" class="new-chat-field">
             <span class="new-chat-label">{{ t("codingAgents.protocolScope") }}</span>
             <NSelect
               v-model:value="newChatApiMode"
@@ -1535,7 +1561,7 @@ async function handleSessionModelCustomSubmit() {
               :disabled="!canConfirmNewChat"
               @click="confirmNewChat"
             >
-              {{ t("chat.newChat") }}
+              {{ t("common.create") }}
             </NButton>
           </div>
         </template>
@@ -1670,37 +1696,6 @@ async function handleSessionModelCustomSubmit() {
               </template>
               {{ t("chat.copySessionId") }}
             </NTooltip>
-            <NButton
-              class="header-model-button"
-              size="small"
-              :circle="isMobile"
-              :title="activeSessionModelLabel"
-              @click="handleHeaderModelClick"
-            >
-              <template #icon>
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.8"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                >
-                  <circle cx="12" cy="12" r="3" />
-                  <path d="M12 1v4" />
-                  <path d="M12 19v4" />
-                  <path d="M1 12h4" />
-                  <path d="M19 12h4" />
-                  <path d="M4.22 4.22l2.83 2.83" />
-                  <path d="M16.95 16.95l2.83 2.83" />
-                  <path d="M4.22 19.78l2.83-2.83" />
-                  <path d="M16.95 7.05l2.83-2.83" />
-                </svg>
-              </template>
-              <template v-if="!isMobile">{{ activeSessionModelLabel }}</template>
-            </NButton>
           </template>
         </div>
       </header>
@@ -1717,7 +1712,11 @@ async function handleSessionModelCustomSubmit() {
         >
           <div class="chat-main-content">
             <MessageList ref="messageListRef" />
-            <ChatInput ref="chatInputRef" />
+            <ChatInput
+              ref="chatInputRef"
+              :model-label="activeSessionModelLabel"
+              @model-click="handleHeaderModelClick"
+            />
           </div>
           <OutlinePanel
             v-if="showOutline"
@@ -2358,6 +2357,18 @@ async function handleSessionModelCustomSubmit() {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  background-color: $bg-card;
+  animation: chat-surface-fade-in 1.5s ease both;
+}
+
+@keyframes chat-surface-fade-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 .chat-header {
@@ -2405,17 +2416,6 @@ async function handleSessionModelCustomSubmit() {
   flex-shrink: 0;
 }
 
-.header-model-button {
-  max-width: 220px;
-}
-
-.header-model-button :deep(.n-button__content) {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .chat-mode-toggle {
   display: flex;
   align-items: center;
@@ -2429,6 +2429,10 @@ async function handleSessionModelCustomSubmit() {
   }
 
   .header-sidebar-toggle {
+    display: none;
+  }
+
+  .header-session-title {
     display: none;
   }
 

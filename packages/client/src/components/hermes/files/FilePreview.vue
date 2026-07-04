@@ -14,7 +14,7 @@ const filesStore = useFilesStore()
 
 function getImageUrl(): string {
   if (!filesStore.previewFile) return ''
-  return getFileDownloadUrl(filesStore.previewFile.path)
+  return getFileDownloadUrl(filesStore.previewFile.path, undefined, filesStore.previewFile.profile)
 }
 
 const highlightedPreview = computed(() => {

@@ -7,6 +7,7 @@ const chatApi = vi.hoisted(() => ({
   socketEmit: vi.fn(),
 }))
 const sessionsApi = vi.hoisted(() => ({
+  archiveSession: vi.fn(),
   deleteSession: vi.fn(),
   fetchSessionMessagesPage: vi.fn(),
   fetchSessions: vi.fn(),
@@ -133,6 +134,163 @@ describe('chat store reasoning/tool boundaries', () => {
     }))
   })
 
+  it('renders MoA reference and aggregating events as tools before the final assistant message', async () => {
+    const store = useChatStore()
+    const session = makeSession()
+    store.sessions = [session]
+    store.activeSessionId = 'session-1'
+    store.activeSession = session
+
+    await store.sendMessage('你好')
+
+    const onEvent = chatApi.startRunViaSocket.mock.calls[0][1] as (event: RunEvent) => void
+    onEvent({
+      event: 'session.command',
+      session_id: 'session-1',
+      action: 'moa',
+      started: true,
+      terminal: false,
+      preset: 'default',
+      moa: {
+        preset: 'default',
+        reference_models: ['xai-oauth:grok-4.3', 'custom:fun-codex:gpt-5.5'],
+        aggregator: 'glm:glm-5.2',
+      },
+    } as RunEvent)
+    onEvent({ event: 'run.started', session_id: 'session-1' })
+    onEvent({
+      event: 'moa.reference',
+      session_id: 'session-1',
+      label: 'grok-4.3',
+      text: 'reference answer',
+      index: 1,
+      count: 2,
+    })
+    onEvent({
+      event: 'moa.aggregating',
+      session_id: 'session-1',
+      aggregator: 'deepseek-v4-pro',
+    })
+    onEvent({ event: 'run.completed', session_id: 'session-1', output: 'final answer' })
+
+    expect(store.messages.map(message => message.role)).toEqual(['user', 'tool', 'tool', 'assistant'])
+    expect(store.messages[1]).toEqual(expect.objectContaining({
+      role: 'tool',
+      toolName: 'moa_reference',
+      toolPreview: '1/2 grok-4.3',
+      toolStatus: 'done',
+      toolResult: 'reference answer',
+    }))
+    expect(store.messages[2]).toEqual(expect.objectContaining({
+      role: 'tool',
+      toolName: 'moa_aggregating',
+      toolPreview: 'deepseek-v4-pro',
+      toolStatus: 'done',
+      toolArgs: { aggregator: 'deepseek-v4-pro' },
+    }))
+    expect(store.messages[3]).toEqual(expect.objectContaining({
+      role: 'assistant',
+      content: 'final answer',
+    }))
+    expect(store.messages.some(message => message.role === 'system' && message.content.includes('Agent returned no output'))).toBe(false)
+  })
+
+  it('does not add a front-end MoA discussion placeholder from session.command start', async () => {
+    const store = useChatStore()
+    const session = makeSession()
+    store.sessions = [session]
+    store.activeSessionId = 'session-1'
+    store.activeSession = session
+
+    await store.sendMessage('你好')
+
+    const onEvent = chatApi.startRunViaSocket.mock.calls[0][1] as (event: RunEvent) => void
+    onEvent({
+      event: 'session.command',
+      session_id: 'session-1',
+      action: 'moa',
+      started: true,
+      terminal: false,
+      preset: 'default',
+      moa: { preset: 'default', reference_models: ['a:model'], aggregator: 'agg:model' },
+    } as RunEvent)
+
+    expect(store.messages.some(message => message.toolName === 'moa_discussion')).toBe(false)
+    expect(store.messages.map(message => message.role)).toEqual(['user'])
+  })
+
+  it('restores persisted MoA tool rows from session history', async () => {
+    const store = useChatStore()
+    const session = makeSession()
+    store.sessions = [session]
+    store.activeSessionId = 'session-1'
+    store.activeSession = session
+    sessionsApi.fetchSessionMessagesPage.mockResolvedValue({
+      session: { id: 'session-1', title: 'session' },
+      messages: [
+        {
+          id: 1,
+          role: 'command',
+          content: '/moa 你好',
+          timestamp: 1,
+        },
+        {
+          id: 2,
+          role: 'moa',
+          display_role: 'tool',
+          content: JSON.stringify({
+            label: 'xai-oauth:grok-4.3',
+            preview: '1/2 xai-oauth:grok-4.3',
+            text: 'reference answer',
+            index: 1,
+            count: 2,
+          }),
+          tool_name: 'moa_reference',
+          tool_call_id: 'moa:reference:run-1:1',
+          timestamp: 2,
+        },
+        {
+          id: 3,
+          role: 'moa',
+          display_role: 'tool',
+          content: JSON.stringify({
+            aggregator: 'glm:glm-5.2',
+            preview: 'glm:glm-5.2',
+            text: 'glm:glm-5.2',
+          }),
+          tool_name: 'moa_aggregating',
+          tool_call_id: 'moa:aggregating:run-1',
+          timestamp: 3,
+        },
+      ],
+      total: 3,
+      hasMore: false,
+    })
+
+    await store.refreshActiveSession()
+
+    expect(store.messages).toEqual([
+      expect.objectContaining({
+        role: 'command',
+        content: '/moa 你好',
+      }),
+      expect.objectContaining({
+        role: 'tool',
+        toolName: 'moa_reference',
+        toolPreview: '1/2 xai-oauth:grok-4.3',
+        toolResult: 'reference answer',
+        toolStatus: 'done',
+      }),
+      expect.objectContaining({
+        role: 'tool',
+        toolName: 'moa_aggregating',
+        toolPreview: 'glm:glm-5.2',
+        toolResult: 'glm:glm-5.2',
+        toolStatus: 'done',
+      }),
+    ])
+  })
+
   it('settles running coding-agent tools when the run completes without a tool.completed event', async () => {
     const store = useChatStore()
     const session = makeSession()
@@ -254,6 +412,38 @@ describe('chat store reasoning/tool boundaries', () => {
         content: '/terminal pwd',
         queued: true,
         systemType: undefined,
+      }),
+    ])
+    expect(store.messages).toEqual([
+      expect.objectContaining({
+        role: 'user',
+        content: 'first input',
+        queued: false,
+      }),
+    ])
+  })
+
+  it('queues /moa commands in active bridge sessions without adding a visible command echo', async () => {
+    const store = useChatStore()
+    const session = makeSession()
+    session.source = 'cli'
+    store.sessions = [session]
+    store.activeSessionId = 'session-1'
+    store.activeSession = session
+
+    await store.sendMessage('first input')
+    const onEvent = chatApi.startRunViaSocket.mock.calls[0][1] as (event: RunEvent) => void
+    onEvent({ event: 'run.started', session_id: 'session-1' })
+
+    await store.sendMessage('/moa 你好')
+
+    expect(chatApi.startRunViaSocket).toHaveBeenCalledTimes(2)
+    expect(store.queuedUserMessages.get('session-1')).toEqual([
+      expect.objectContaining({
+        role: 'command',
+        content: '/moa 你好',
+        queued: true,
+        systemType: 'command',
       }),
     ])
     expect(store.messages).toEqual([

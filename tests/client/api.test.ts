@@ -16,7 +16,7 @@ import { getApiKey, setApiKey, clearApiKey, hasApiKey, getStoredUserRole, isStor
 import { getDownloadUrl } from '../../packages/client/src/api/hermes/download'
 import { uploadFiles } from '../../packages/client/src/api/hermes/files'
 import { importSkill } from '../../packages/client/src/api/hermes/skills'
-import { batchDeleteSessions, importHermesSession } from '../../packages/client/src/api/hermes/sessions'
+import { archiveSession, batchDeleteSessions, importHermesSession, unarchiveSession } from '../../packages/client/src/api/hermes/sessions'
 import router from '@/router'
 
 function fakeJwt(payload: Record<string, unknown>) {
@@ -205,6 +205,18 @@ describe('API Client', () => {
       expect(url.searchParams.get('token')).toBe('secret-key')
     })
 
+    it('uses an explicit profile selector for direct download URLs', () => {
+      setApiKey('secret-key')
+      localStorage.setItem('hermes_active_profile_name', 'research')
+
+      const url = new URL(getDownloadUrl('/tmp/reviewer.txt', 'reviewer.txt', 'reviewer'), 'http://localhost')
+
+      expect(url.searchParams.get('path')).toBe('/tmp/reviewer.txt')
+      expect(url.searchParams.get('name')).toBe('reviewer.txt')
+      expect(url.searchParams.get('profile')).toBe('reviewer')
+      expect(url.searchParams.get('token')).toBe('secret-key')
+    })
+
     it('handles raw percent signs in download paths and filenames', () => {
       const url = new URL(getDownloadUrl('/tmp/100% ready.txt', '100% ready.txt'), 'http://localhost')
 
@@ -233,6 +245,23 @@ describe('API Client', () => {
       expect(options.headers.Authorization).toBe('Bearer secret-key')
       expect(options.headers['X-Hermes-Profile']).toBe('research')
       expect(options.body).toBeInstanceOf(FormData)
+    })
+
+    it('uses an explicit profile selector instead of the active profile header', async () => {
+      setApiKey('secret-key')
+      localStorage.setItem('hermes_active_profile_name', 'research')
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ files: [] }),
+      })
+
+      await uploadFiles('notes', [new File(['hello'], 'hello.txt', { type: 'text/plain' })], 'reviewer')
+
+      const [url, options] = mockFetch.mock.calls[0]
+      expect(url).toBe('/api/hermes/files/upload?path=notes&profile=reviewer')
+      expect(options.headers.Authorization).toBe('Bearer secret-key')
+      expect(options.headers['X-Hermes-Profile']).toBeUndefined()
     })
 
     it('adds auth and active profile headers when importing skills', async () => {
@@ -294,6 +323,36 @@ describe('API Client', () => {
 
       const [url, options] = mockFetch.mock.calls[0]
       expect(url).toBe('/api/hermes/sessions/hermes/cli-1/import?profile=travel')
+      expect(options.method).toBe('POST')
+    })
+
+    it('archives a session through the local session endpoint', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ ok: true }),
+      })
+
+      const ok = await archiveSession('session-1')
+
+      const [url, options] = mockFetch.mock.calls[0]
+      expect(ok).toBe(true)
+      expect(url).toBe('/api/hermes/sessions/session-1/archive')
+      expect(options.method).toBe('POST')
+    })
+
+    it('unarchives a session through the local session endpoint', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ ok: true }),
+      })
+
+      const ok = await unarchiveSession('session-1')
+
+      const [url, options] = mockFetch.mock.calls[0]
+      expect(ok).toBe(true)
+      expect(url).toBe('/api/hermes/sessions/session-1/unarchive')
       expect(options.method).toBe('POST')
     })
   })
