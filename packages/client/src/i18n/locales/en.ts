@@ -2479,6 +2479,7 @@ export default {
 
   // Changelog
   changelog: {
+    new_0_6_33_1: 'Merged the upstream rebuild branch into 0.6.33, bringing in the latest chat, models, workflows, MCP, USB, and desktop integration updates',
     new_0_6_25_1: 'Fixed execute_code failures with Hermes Agent 0.18.0 by forwarding the new has_host_access guard parameter through the Agent Bridge approval memory wrapper',
     new_0_6_24_1: 'This release covers the PRs merged after 0.6.23, focusing on chat input polish, workspace visibility, plugin management, model defaults, and workspace diff review',
     new_0_6_24_2: 'Chat and group chat inputs now use a refreshed toolbar with compact model controls, grouped input settings, clearer context usage, mobile-friendly chrome, and restored manual single-chat input resizing',

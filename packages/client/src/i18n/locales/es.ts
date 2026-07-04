@@ -1992,6 +1992,7 @@ jobTriggered: 'Job ejecutado',
 
   // Registro de cambios
   changelog: {
+    new_0_6_33_1: 'La rama upstream rebuild se fusiono como 0.6.33 e incluye las ultimas actualizaciones de chat, modelos, workflows, MCP, USB e integracion de escritorio',
     new_0_6_25_1: 'Corrige fallos de execute_code con Hermes Agent 0.18.0 al reenviar el nuevo parametro has_host_access desde el wrapper de memoria de aprobaciones de Agent Bridge',
     new_0_6_24_1: 'Esta version cubre los PR fusionados despues de 0.6.23 y mejora la entrada de chat, la visibilidad de workspaces, la gestion de plugins, los modelos predeterminados y la revision de diffs',
     new_0_6_24_2: 'Las entradas de chat individual y grupal usan una barra integrada, controles de modelo compactos, ajustes agrupados, uso de contexto mas claro, mejor vista movil y restaura el redimensionado manual del chat individual',

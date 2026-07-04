@@ -1991,6 +1991,7 @@ export default {
 
   // 更新履歴
   changelog: {
+    new_0_6_33_1: 'upstream の rebuild ブランチを 0.6.33 として統合し、chat、models、workflows、MCP、USB、desktop integration の最新更新を取り込みました',
     new_0_6_25_1: 'Hermes Agent 0.18.0 で Agent Bridge の approval memory wrapper が新しい has_host_access パラメータを転送せず execute_code が失敗する問題を修正しました',
     new_0_6_24_1: 'このリリースは 0.6.23 以降にマージされた PR を反映し、チャット入力、workspace 表示、plugin 管理、default model、workspace diff 確認を改善しました',
     new_0_6_24_2: '単独チャットとグループチャットの入力欄は統合ツールバー、コンパクトな model 操作、まとまった入力設定、見やすい context 使用量、mobile chrome、単独チャットの手動リサイズ復旧に対応しました',

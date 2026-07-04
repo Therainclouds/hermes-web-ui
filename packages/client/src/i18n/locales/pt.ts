@@ -1992,6 +1992,7 @@ jobTriggered: 'Job acionado',
 
   // Registro de alteracoes
   changelog: {
+    new_0_6_33_1: 'A branch upstream rebuild foi mesclada como 0.6.33 com as atualizacoes mais recentes de chat, modelos, workflows, MCP, USB e integracao desktop',
     new_0_6_25_1: 'Corrige falhas de execute_code com Hermes Agent 0.18.0 ao encaminhar o novo parametro has_host_access pelo wrapper de memoria de aprovacoes do Agent Bridge',
     new_0_6_24_1: 'Esta versao cobre os PRs mesclados depois da 0.6.23 e melhora entrada de chat, visibilidade de workspaces, gestao de plugins, modelos padrao e revisao de diffs',
     new_0_6_24_2: 'As entradas de chat individual e em grupo usam uma barra integrada, controles compactos de modelo, configuracoes agrupadas, uso de contexto mais claro, melhor mobile chrome e redimensionamento manual restaurado no chat individual',

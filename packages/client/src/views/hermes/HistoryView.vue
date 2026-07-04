@@ -15,6 +15,7 @@ import OutlinePanel from '@/components/hermes/chat/OutlinePanel.vue'
 import PageSidebarNav from '@/components/layout/PageSidebarNav.vue'
 import PageSidebarFooter from '@/components/layout/PageSidebarFooter.vue'
 import { batchDeleteSessions, deleteSession, fetchHermesSessions, fetchHermesSession, fetchSessionMessagesPage, importHermesSession, unarchiveSession, type HermesMessage, type SessionSummary } from '@/api/hermes/sessions'
+import { useMessage } from '@/composables/useAppMessage'
 
 const appStore = useAppStore()
 const profilesStore = useProfilesStore()

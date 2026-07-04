@@ -1992,6 +1992,7 @@ jobTriggered: 'Job ausgelost',
 
   // Anderungsprotokoll
   changelog: {
+    new_0_6_33_1: 'Der upstream rebuild Branch wurde als 0.6.33 zusammengefuehrt und bringt die neuesten Updates fuer Chat, Modelle, Workflows, MCP, USB und die Desktop Integration',
     new_0_6_25_1: 'Behebt execute_code-Fehler mit Hermes Agent 0.18.0, indem der neue Parameter has_host_access durch den Agent-Bridge-Approval-Memory-Wrapper weitergereicht wird',
     new_0_6_24_1: 'Diese Version umfasst die nach 0.6.23 gemergten PRs und verbessert Chat-Eingabe, Workspace-Sichtbarkeit, Plugin-Verwaltung, Standardmodelle und Workspace-Diff-Ansicht',
     new_0_6_24_2: 'Einzel- und Gruppenchat-Eingaben nutzen eine integrierte Toolbar, kompakte Modellsteuerung, gebuendelte Eingabeeinstellungen, klarere Context-Nutzung, stabileres Mobile Chrome und wiederhergestelltes manuelles Resize im Einzelchat',
