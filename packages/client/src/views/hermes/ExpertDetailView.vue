@@ -11,10 +11,12 @@ import { useExpertsStore } from '@/stores/hermes/experts'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useChatStore } from '@/stores/hermes/chat'
 import { useAppStore } from '@/stores/hermes/app'
+import { useGroupChatStore } from '@/stores/hermes/group-chat'
 import * as expertsApi from '@/api/hermes/experts'
 import type { ExpertDetail, ExpertManifest } from '@/api/hermes/experts'
 import { ExpertCover, ExpertStarterPrompts } from '@/views/hermes/experts'
 import { useMessage } from '@/composables/useAppMessage'
+import { buildExpertTeamRoomAgents, buildExpertTeamWelcomeEntries } from '@/utils/hermes/expert-team-room'
 
 const route = useRoute()
 const router = useRouter()
@@ -24,6 +26,7 @@ const expertsStore = useExpertsStore()
 const profilesStore = useProfilesStore()
 const chatStore = useChatStore()
 const appStore = useAppStore()
+const groupChatStore = useGroupChatStore()
 
 const slug = computed(() => String(route.params.slug || ''))
 const detail = ref<ExpertDetail | null>(null)
@@ -108,7 +111,91 @@ function findChatProfileName(): string | null {
   return expertBindings[0].profile_name
 }
 
+function formatAgentFailures(results?: Array<{ ok: boolean; profile: string; error?: string; reason?: string }>): string | null {
+  const failed = results?.filter((result) => !result.ok) || []
+  if (failed.length === 0) return null
+  const details = failed.map((result) => result.reason || result.error || result.profile).join('; ')
+  return t('groupChat.agentAddFailedCount', { count: failed.length, details })
+}
+
+function generateInviteCode(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+  let code = ''
+  for (let i = 0; i < 6; i += 1) {
+    code += chars[Math.floor(Math.random() * chars.length)]
+  }
+  return code
+}
+
+async function handleStartTeamChat() {
+  const teamDetail = detail.value
+  if (!teamDetail) {
+    message.warning(t('experts.detail.noBinding'))
+    return
+  }
+  const agents = buildExpertTeamRoomAgents(slug.value, teamDetail, expertsStore.bindings)
+  if (agents.length === 0) {
+    message.warning(t('experts.detail.noBinding'))
+    return
+  }
+
+  const result = await groupChatStore.createNewRoom(teamDetail.name, generateInviteCode(), agents)
+  const manifestBySlug: Record<string, ExpertManifest | null | undefined> = {
+    [slug.value]: manifest.value,
+  }
+  const memberLoads = (teamDetail.team_members || [])
+    .filter((member) => !member.is_captain)
+    .map(async (member) => {
+      if (!member.latest_version) return
+      try {
+        manifestBySlug[member.slug] = await expertsStore.fetchManifest(member.slug, member.latest_version)
+      } catch {
+        manifestBySlug[member.slug] = null
+      }
+    })
+  await Promise.all(memberLoads)
+
+  const welcomeEntries = buildExpertTeamWelcomeEntries(
+    slug.value,
+    teamDetail,
+    expertsStore.bindings,
+    manifestBySlug,
+  )
+  const failedProfiles = new Set(
+    (result.agentResults || [])
+      .filter((entry) => !entry.ok)
+      .map((entry) => entry.profile),
+  )
+  groupChatStore.queueRoomWelcomeMessages(
+    result.room.id,
+    welcomeEntries
+      .filter((entry) => !failedProfiles.has(entry.profile))
+      .map((entry, index) => ({
+      id: `expert-team-welcome:${result.room.id}:${entry.profile}`,
+      senderId: entry.senderId,
+      senderName: entry.senderName,
+      content: entry.content,
+      role: 'assistant',
+      timestamp: Date.now() + index,
+      })),
+  )
+
+  const failureMessage = formatAgentFailures(result.agentResults)
+  if (failureMessage) message.warning(failureMessage)
+  else message.success(t('groupChat.roomCreated'))
+  await router.push({ name: 'hermes.groupChatRoom', params: { roomId: result.room.id } })
+}
+
 async function handleStartChat() {
+  if (detail.value?.kind === 'team') {
+    try {
+      await handleStartTeamChat()
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : t('common.saveFailed'))
+    }
+    return
+  }
+
   const profileName = findChatProfileName()
   if (!profileName) {
     message.warning(t('experts.detail.noBinding'))

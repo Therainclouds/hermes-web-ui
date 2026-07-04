@@ -128,6 +128,15 @@ export interface GroupPendingApproval {
     requestedAt: number
 }
 
+export interface PendingGroupWelcomeMessage {
+    id: string
+    senderId: string
+    senderName: string
+    content: string
+    role?: string
+    timestamp?: number
+}
+
 export const useGroupChatStore = defineStore('groupChat', () => {
     // ─── State ─────────────────────────────────────────────
     const connected = ref(false)
@@ -143,6 +152,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
     const contextStatuses = ref<Map<string, { agentName: string; status: string }>>(new Map())
     const autoPlaySpeechEnabled = ref(false)
     const pendingApprovals = ref<Map<string, GroupPendingApproval>>(new Map())
+    const pendingWelcomeMessages = ref<Map<string, PendingGroupWelcomeMessage[]>>(new Map())
     const totalMessages = ref(0)
     const loadedMessageCount = ref(0)
     const hasMoreBefore = ref(false)
@@ -167,6 +177,36 @@ const currentUserAvatar = ref('')
 
     function setAutoPlaySpeech(enabled: boolean) {
         autoPlaySpeechEnabled.value = enabled
+    }
+
+    function queueRoomWelcomeMessages(roomId: string, welcomeMessages: PendingGroupWelcomeMessage[]) {
+        if (!roomId || welcomeMessages.length === 0) return
+        pendingWelcomeMessages.value.set(roomId, welcomeMessages)
+        pendingWelcomeMessages.value = new Map(pendingWelcomeMessages.value)
+    }
+
+    function applyPendingWelcomeMessages(roomId: string) {
+        const queued = pendingWelcomeMessages.value.get(roomId)
+        if (!queued?.length) return
+        const existingIds = new Set(messages.value.map(message => message.id))
+        const synthetic = queued
+            .filter(message => !existingIds.has(message.id))
+            .map((message, index) => ({
+                id: message.id,
+                roomId,
+                senderId: message.senderId,
+                senderName: message.senderName,
+                content: message.content,
+                timestamp: message.timestamp ?? (Date.now() + index),
+                role: message.role || 'assistant',
+            }))
+        if (synthetic.length > 0) {
+            messages.value = [...messages.value, ...synthetic]
+            loadedMessageCount.value = messages.value.length
+            totalMessages.value = Math.max(totalMessages.value, loadedMessageCount.value)
+        }
+        pendingWelcomeMessages.value.delete(roomId)
+        pendingWelcomeMessages.value = new Map(pendingWelcomeMessages.value)
     }
 
     function playMessageSpeech(messageId: string, content: string) {
@@ -577,6 +617,7 @@ const currentUserAvatar = ref('')
             applyMessagePaging(res)
             agents.value = res.agents
             members.value = res.members || []
+            applyPendingWelcomeMessages(res.room.id)
         } catch (err: any) {
             error.value = err.message
             throw err
@@ -826,6 +867,7 @@ const currentUserAvatar = ref('')
         pendingApprovals,
         activePendingApproval,
         autoPlaySpeechEnabled,
+        pendingWelcomeMessages,
         totalMessages,
         loadedMessageCount,
         hasMoreBefore,
@@ -844,6 +886,7 @@ const currentUserAvatar = ref('')
         disconnect,
         setUserInfo,
         setAutoPlaySpeech,
+        queueRoomWelcomeMessages,
         joinRoom,
         loadOlderMessages,
         sendMessage,
