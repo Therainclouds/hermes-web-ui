@@ -23,9 +23,9 @@ function eventTitle(event: USBEventRecord): string {
     : t('usb.page.history.mounted')
 }
 
-function eventType(event: USBEventRecord): 'success' | 'warning' | 'error' | 'info' | 'default' {
-  if (event.status === 'mount_failed') return 'error'
-  return event.action === 'remove' ? 'warning' : 'success'
+function eventToneClass(event: USBEventRecord): string {
+  if (event.status === 'mount_failed') return 'is-error'
+  return event.action === 'remove' ? 'is-warning' : 'is-success'
 }
 
 function eventLabel(event: USBEventRecord): string {
@@ -40,12 +40,10 @@ function formatTime(ts: number): string {
 
 <template>
   <section class="usb-history">
-    <div class="section-header">
-      <div class="section-title-wrap">
-        <span class="section-kicker">Activity</span>
-        <h3>{{ t('usb.page.history.title') }}</h3>
-      </div>
-      <span class="section-meta">{{ t('usb.page.history.count', { count: recentEvents.length }) }}</span>
+    <div class="history-head">
+      <span class="history-kicker">Activity</span>
+      <h3>{{ t('usb.page.history.title') }}</h3>
+      <span class="history-meta">{{ t('usb.page.history.count', { count: recentEvents.length }) }}</span>
     </div>
 
     <div v-if="recentEvents.length === 0" class="empty-wrap">
@@ -53,11 +51,15 @@ function formatTime(ts: number): string {
     </div>
 
     <div v-else class="history-list">
-      <article v-for="event in recentEvents" :key="event.id" class="history-item">
-        <div class="history-line"></div>
+      <article
+        v-for="event in recentEvents"
+        :key="event.id"
+        class="history-item"
+        :class="eventToneClass(event)"
+      >
         <div class="history-main">
           <div class="history-top">
-            <NTag size="small" :type="eventType(event)">
+            <NTag size="small" :type="eventToneClass(event) === 'is-error' ? 'error' : eventToneClass(event) === 'is-warning' ? 'warning' : 'success'">
               {{ eventTitle(event) }}
             </NTag>
             <span class="history-time">{{ formatTime(event.ts) }}</span>
@@ -82,91 +84,70 @@ function formatTime(ts: number): string {
 .usb-history {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
   min-height: 0;
 }
 
-.section-header {
+.history-head {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
-.section-title-wrap {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.section-kicker {
-  color: rgba(151, 216, 255, 0.78);
-  font-size: 11px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
-
-.section-header h3 {
-  margin: 0;
-  font-size: 16px;
-}
-
-.section-meta {
-  color: rgba(202, 214, 226, 0.5);
-  font-size: 11px;
-  text-transform: uppercase;
+.history-kicker {
+  font-size: 10.5px;
   letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: $text-muted;
+}
+
+.history-head h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: $text-primary;
+}
+
+.history-meta {
+  font-size: 11px;
+  color: $text-muted;
+  font-variant-numeric: tabular-nums;
 }
 
 .empty-wrap {
-  padding: 20px 0;
+  padding: 16px 0;
 }
 
 .history-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .history-item {
+  --usb-event-line: #{$text-muted};
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  padding: 14px 14px 14px 18px;
-  border: 1px solid rgba(157, 204, 255, 0.1);
-  border-radius: 18px;
-  background: linear-gradient(180deg, rgba(10, 16, 24, 0.86), rgba(8, 12, 19, 0.92));
-  position: relative;
-}
+  padding: 10px 12px 10px 14px;
+  background: $bg-card;
+  border: 1px solid $border-light;
+  border-left: 2px solid var(--usb-event-line);
+  border-radius: $radius-sm;
 
-.history-item::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(135deg, rgba(157, 204, 255, 0.06), transparent 36%, transparent 68%, rgba(157, 204, 255, 0.04));
-}
-
-.history-line {
-  position: relative;
-  z-index: 1;
-  flex: 0 0 auto;
-  width: 2px;
-  align-self: stretch;
-  border-radius: 999px;
-  background: linear-gradient(180deg, rgba(127, 212, 255, 0.9), rgba(127, 212, 255, 0.15));
-  box-shadow: 0 0 16px rgba(127, 212, 255, 0.35);
+  &.is-success { --usb-event-line: #{$success}; }
+  &.is-warning { --usb-event-line: #{$warning}; }
+  &.is-error { --usb-event-line: #{$error}; }
 }
 
 .history-main {
-  position: relative;
-  z-index: 1;
   min-width: 0;
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
 .history-top {
@@ -176,26 +157,34 @@ function formatTime(ts: number): string {
   flex-wrap: wrap;
 }
 
-.history-time,
+.history-time {
+  color: $text-muted;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
 .history-path {
-  color: rgba(205, 217, 229, 0.56);
-  font-size: 12px;
+  color: $text-muted;
+  font-size: 11.5px;
   word-break: break-all;
+  font-family: $font-code;
 }
 
 .history-label {
   font-weight: 600;
-  color: #eef5fc;
+  color: $text-primary;
+  font-size: 13px;
 }
 
 .history-error {
   color: $error;
+  font-size: 12px;
   word-break: break-word;
 }
 
 .history-action {
-  position: relative;
-  z-index: 1;
+  flex: 0 0 auto;
+  align-self: center;
 }
 
 @media (max-width: $breakpoint-mobile) {

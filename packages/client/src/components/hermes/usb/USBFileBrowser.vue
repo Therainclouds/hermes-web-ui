@@ -223,9 +223,9 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="usb-browser">
-    <div class="browser-header">
+    <div class="browser-head">
       <div class="browser-heading">
-        <div class="browser-kicker">Workspace</div>
+        <span class="browser-kicker">Workspace</span>
         <h3>{{ t('usb.page.browser.title') }}</h3>
         <span v-if="device" class="browser-path">{{ selectedAbsolutePath || device.mountPoint }}</span>
       </div>
@@ -280,12 +280,9 @@ onBeforeUnmount(() => {
       </NBreadcrumb>
 
       <div class="browser-content">
-        <div class="entry-panel">
+        <div class="entry-panel surface-card">
           <div class="panel-head">
-            <div>
-              <span class="panel-kicker">Explorer</span>
-              <strong>{{ t('usb.page.browser.title') }}</strong>
-            </div>
+            <span class="panel-title">{{ t('usb.page.browser.title') }}</span>
             <span class="panel-meta">{{ entries.length }}</span>
           </div>
           <NSpin :show="loading">
@@ -317,12 +314,9 @@ onBeforeUnmount(() => {
           </NSpin>
         </div>
 
-        <div class="preview-panel">
+        <div class="preview-panel surface-card">
           <div class="panel-head">
-            <div>
-              <span class="panel-kicker">Preview</span>
-              <strong>{{ selectedFileName || t('usb.page.browser.selectFile') }}</strong>
-            </div>
+            <span class="panel-title">{{ selectedFileName || t('usb.page.browser.selectFile') }}</span>
             <span class="panel-meta">{{ selectedStat?.isDir ? t('usb.page.browser.folder') : t('usb.page.browser.file') }}</span>
           </div>
           <NSpin :show="previewLoading">
@@ -330,24 +324,24 @@ onBeforeUnmount(() => {
               <NEmpty :description="t('usb.page.browser.selectFile')" />
             </div>
             <div v-else class="preview-wrap">
-              <div class="stat-grid">
+              <dl class="stat-grid">
                 <div>
-                  <span class="stat-label">{{ t('usb.page.name') }}</span>
-                  <strong>{{ selectedStat?.name || selectedEntry.name }}</strong>
+                  <dt>{{ t('usb.page.name') }}</dt>
+                  <dd>{{ selectedStat?.name || selectedEntry.name }}</dd>
                 </div>
                 <div>
-                  <span class="stat-label">{{ t('usb.page.type') }}</span>
-                  <strong>{{ selectedStat?.isDir ? t('usb.page.browser.folder') : t('usb.page.browser.file') }}</strong>
+                  <dt>{{ t('usb.page.type') }}</dt>
+                  <dd>{{ selectedStat?.isDir ? t('usb.page.browser.folder') : t('usb.page.browser.file') }}</dd>
                 </div>
                 <div>
-                  <span class="stat-label">{{ t('usb.page.size') }}</span>
-                  <strong>{{ formatBytes(selectedStat?.size ?? selectedEntry.size) }}</strong>
+                  <dt>{{ t('usb.page.size') }}</dt>
+                  <dd>{{ formatBytes(selectedStat?.size ?? selectedEntry.size) }}</dd>
                 </div>
                 <div>
-                  <span class="stat-label">{{ t('usb.page.modifiedAt') }}</span>
-                  <strong>{{ selectedStat ? formatTime(selectedStat.modTime) : formatTime(selectedEntry.modTime) }}</strong>
+                  <dt>{{ t('usb.page.modifiedAt') }}</dt>
+                  <dd>{{ selectedStat ? formatTime(selectedStat.modTime) : formatTime(selectedEntry.modTime) }}</dd>
                 </div>
-              </div>
+              </dl>
 
               <div v-if="previewImageUrl" class="image-preview">
                 <img :src="previewImageUrl" :alt="selectedFileName" />
@@ -370,17 +364,25 @@ onBeforeUnmount(() => {
 .usb-browser {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 14px;
   min-height: 0;
+  padding: 14px 16px;
+  background: $bg-card;
+  border: 1px solid $border-light;
+  border-radius: $radius-md;
 }
 
-.browser-header,
+.browser-head,
 .usage-top,
 .panel-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.browser-head {
+  align-items: flex-start;
 }
 
 .browser-heading {
@@ -390,18 +392,18 @@ onBeforeUnmount(() => {
   gap: 4px;
 }
 
-.browser-kicker,
-.panel-kicker {
-  color: rgba(151, 216, 255, 0.78);
+.browser-kicker {
   font-size: 11px;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
+  color: $text-muted;
 }
 
 .browser-heading h3 {
   margin: 0;
-  font-size: 18px;
-  letter-spacing: -0.01em;
+  font-size: 14px;
+  font-weight: 600;
+  color: $text-primary;
 }
 
 .browser-actions {
@@ -411,68 +413,70 @@ onBeforeUnmount(() => {
 }
 
 .browser-path {
-  color: rgba(205, 217, 229, 0.6);
-  font-size: 12px;
+  color: $text-muted;
+  font-size: 11px;
   word-break: break-all;
+  font-family: $font-code;
 }
 
 .usage-card {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 14px 16px;
-  border: 1px solid rgba(157, 204, 255, 0.1);
-  border-radius: 18px;
-  background: linear-gradient(180deg, rgba(11, 18, 27, 0.82), rgba(8, 13, 20, 0.86));
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--bg-secondary);
+  border: 1px solid $border-light;
+  border-radius: $radius-sm;
 }
 
 .usage-label {
-  color: rgba(202, 214, 226, 0.52);
   font-size: 11px;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  color: $text-muted;
 }
 
 .usage-value {
-  color: #eff6fd;
+  color: $text-primary;
   font-size: 13px;
+  font-variant-numeric: tabular-nums;
 }
 
 .browser-content {
   display: grid;
   grid-template-columns: minmax(260px, 1fr) minmax(320px, 1.1fr);
-  gap: 16px;
-  min-height: 420px;
+  gap: 12px;
+  min-height: 360px;
 }
 
 .entry-panel,
 .preview-panel {
   display: flex;
   flex-direction: column;
-  border: 1px solid rgba(157, 204, 255, 0.1);
-  border-radius: 20px;
-  background: linear-gradient(180deg, rgba(9, 14, 21, 0.88), rgba(8, 12, 18, 0.95));
+  background: $bg-card;
+  border: 1px solid $border-light;
+  border-radius: $radius-sm;
   min-height: 0;
   overflow: hidden;
 }
 
 .panel-head {
-  padding: 14px 16px;
-  border-bottom: 1px solid rgba(157, 204, 255, 0.08);
+  padding: 10px 14px;
+  border-bottom: 1px solid $border-light;
+  background: var(--bg-secondary);
 }
 
-.panel-head strong {
-  display: block;
-  color: #edf4fb;
-  font-size: 14px;
+.panel-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: $text-primary;
   word-break: break-word;
 }
 
 .panel-meta {
-  color: rgba(202, 214, 226, 0.48);
   font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  color: $text-muted;
+  font-variant-numeric: tabular-nums;
 }
 
 .entry-list {
@@ -483,21 +487,26 @@ onBeforeUnmount(() => {
 .entry-item {
   width: 100%;
   border: none;
-  border-bottom: 1px solid rgba(157, 204, 255, 0.08);
+  border-bottom: 1px solid $border-light;
   background: transparent;
   color: inherit;
-  padding: 12px 14px;
+  padding: 10px 14px;
   text-align: left;
+  font-family: inherit;
   cursor: pointer;
-  transition: background 0.18s ease, border-color 0.18s ease;
-}
+  transition: background $transition-fast;
 
-.entry-item:hover {
-  background: rgba(120, 194, 255, 0.05);
-}
+  &:last-child {
+    border-bottom: none;
+  }
 
-.entry-item.active {
-  background: rgba(120, 194, 255, 0.08);
+  &:hover {
+    background: var(--bg-secondary);
+  }
+
+  &.active {
+    background: var(--bg-secondary);
+  }
 }
 
 .entry-main {
@@ -511,72 +520,90 @@ onBeforeUnmount(() => {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 
 .entry-name {
   font-weight: 600;
-  color: #eff5fc;
+  color: $text-primary;
+  font-size: 13px;
   word-break: break-word;
+}
+
+.entry-meta {
+  color: $text-muted;
+  font-size: 11.5px;
 }
 
 .entry-badge {
   flex: 0 0 auto;
-  padding: 3px 8px;
+  padding: 2px 8px;
   border-radius: 999px;
-  background: rgba(120, 194, 255, 0.08);
-  border: 1px solid rgba(120, 194, 255, 0.12);
-  color: rgba(213, 232, 249, 0.76);
-  font-size: 11px;
+  background: var(--bg-primary);
+  border: 1px solid $border-light;
+  color: $text-muted;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
-.entry-meta,
-.entry-time,
-.stat-label,
-.preview-placeholder {
-  color: rgba(205, 217, 229, 0.56);
-  font-size: 12px;
+.entry-time {
+  color: $text-muted;
+  font-size: 11.5px;
+  margin-top: 4px;
+  display: block;
 }
 
 .preview-wrap {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 16px;
+  gap: 14px;
+  padding: 14px;
   min-height: 100%;
 }
 
 .stat-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
+  gap: 8px;
+  margin: 0;
 
-.stat-grid > div {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  padding: 12px;
-  border-radius: 14px;
-  border: 1px solid rgba(157, 204, 255, 0.08);
-  background: rgba(255, 255, 255, 0.015);
-}
+  div {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding: 10px 12px;
+    border: 1px solid $border-light;
+    border-radius: $radius-sm;
+    background: var(--bg-secondary);
+  }
 
-.stat-grid strong {
-  color: #eef5fc;
-  font-size: 13px;
-  word-break: break-word;
+  dt {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: $text-muted;
+  }
+
+  dd {
+    margin: 0;
+    font-size: 12.5px;
+    color: $text-primary;
+    word-break: break-word;
+  }
 }
 
 .text-preview {
   margin: 0;
-  max-height: 420px;
+  max-height: 360px;
   overflow: auto;
-  padding: 14px;
-  border-radius: 14px;
-  border: 1px solid rgba(157, 204, 255, 0.08);
-  background: rgba(6, 10, 16, 0.92);
-  color: #d9e5f2;
+  padding: 12px;
+  border-radius: $radius-sm;
+  border: 1px solid $border-light;
+  background: var(--bg-input);
+  color: $text-primary;
+  font-family: $font-code;
+  font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -584,25 +611,31 @@ onBeforeUnmount(() => {
 .image-preview {
   display: flex;
   justify-content: center;
-  padding: 12px;
-  border: 1px dashed rgba(157, 204, 255, 0.18);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.012);
+  padding: 10px;
+  border: 1px dashed $border-color;
+  border-radius: $radius-sm;
+  background: var(--bg-secondary);
+
+  img {
+    max-width: 100%;
+    max-height: 360px;
+    object-fit: contain;
+  }
 }
 
-.image-preview img {
-  max-width: 100%;
-  max-height: 420px;
-  object-fit: contain;
+.preview-placeholder {
+  padding: 24px;
+  text-align: center;
+  color: $text-muted;
+  font-size: 12.5px;
 }
 
 .panel-empty,
-.browser-empty,
-.preview-placeholder {
+.browser-empty {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 220px;
+  min-height: 200px;
   padding: 16px;
 }
 
@@ -612,7 +645,7 @@ onBeforeUnmount(() => {
     grid-template-columns: 1fr;
   }
 
-  .browser-header,
+  .browser-head,
   .usage-top,
   .panel-head {
     flex-direction: column;
