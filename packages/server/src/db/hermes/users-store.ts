@@ -1,9 +1,10 @@
-﻿import { randomBytes, scryptSync, timingSafeEqual } from 'crypto'
+import { randomBytes, scryptSync, timingSafeEqual } from 'crypto'
 import { getDb } from '../index'
 import { USER_PROFILES_TABLE, USERS_TABLE } from './schemas'
 
 export type UserRole = 'super_admin' | 'admin'
 export type UserStatus = 'active' | 'disabled'
+export type ModelGuideStatus = 'pending' | 'skipped' | 'completed'
 export type UserId = number | string
 
 export interface UserRecord {
@@ -16,6 +17,7 @@ export interface UserRecord {
   updated_at: number
   last_login_at: number | null
   avatar: string
+  model_guide_status: ModelGuideStatus
 }
 
 export interface UserProfileRecord {
@@ -35,6 +37,7 @@ export interface UserSummary {
   created_at: number
   updated_at: number
   last_login_at: number | null
+  model_guide_status: ModelGuideStatus
 }
 
 export const DEFAULT_USERNAME = 'quanthermes'
@@ -198,6 +201,16 @@ export function setUserAvatar(userId: UserId, avatarJson: string): boolean {
   if (!id) return false
   const result = db.prepare(`UPDATE ${USERS_TABLE} SET avatar = ?, updated_at = ? WHERE id = ?`)
     .run(avatarJson ?? '', Date.now(), id)
+  return result.changes > 0
+}
+
+export function updateUserModelGuideStatus(userId: UserId, status: ModelGuideStatus): boolean {
+  const db = getDb()
+  if (!db) return false
+  const id = normalizeUserId(userId)
+  if (!id) return false
+  const result = db.prepare(`UPDATE ${USERS_TABLE} SET model_guide_status = ?, updated_at = ? WHERE id = ?`)
+    .run(status, Date.now(), id)
   return result.changes > 0
 }
 

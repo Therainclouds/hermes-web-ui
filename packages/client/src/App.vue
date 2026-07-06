@@ -12,6 +12,7 @@ import { useAppStore } from '@/stores/hermes/app'
 import SessionSearchModal from '@/components/hermes/chat/SessionSearchModal.vue'
 import AuthEventListener from '@/components/auth/AuthEventListener.vue'
 import DefaultCredentialPrompt from '@/components/auth/DefaultCredentialPrompt.vue'
+import FirstRunModelGuide from '@/components/auth/FirstRunModelGuide.vue'
 import WebPet from '@/components/hermes/pets/WebPet.vue'
 import { desktopBridge } from '@/utils/desktop-bridge'
 import USBEventBridge from '@/components/hermes/usb/USBEventBridge.vue'
@@ -97,6 +98,7 @@ useKeyboard()
           </div>
           <WebPet v-if="showWebPet" />
           <SessionSearchModal v-if="!isDesktopPetRoute" />
+          <FirstRunModelGuide v-if="!isDesktopPetRoute" />
           <DefaultCredentialPrompt v-if="!isDesktopPetRoute" />
         </NNotificationProvider>
       </NDialogProvider>

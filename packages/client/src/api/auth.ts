@@ -36,8 +36,12 @@ export interface CurrentUser {
   updated_at: number
   last_login_at: number | null
   avatar?: string
+  modelGuideStatus?: ModelGuideStatus
+  shouldShowModelGuide?: boolean
   requiresCredentialChange?: boolean
 }
+
+export type ModelGuideStatus = 'pending' | 'skipped' | 'completed'
 
 export interface UserAvatar {
   type: 'image' | 'default'
@@ -48,6 +52,13 @@ export interface UserAvatar {
 export async function fetchCurrentUser(): Promise<CurrentUser> {
   const res = await request<{ user: CurrentUser }>('/api/auth/me')
   return res.user
+}
+
+export async function updateMyModelGuideStatus(status: Exclude<ModelGuideStatus, 'pending'>): Promise<void> {
+  await request('/api/auth/model-guide', {
+    method: 'POST',
+    body: JSON.stringify({ status }),
+  })
 }
 
 export async function fetchMyAvatar(): Promise<UserAvatar | null> {

@@ -14,10 +14,12 @@ import {
   listUserProfiles,
   listUsers,
   setUserAvatar,
+  updateUserModelGuideStatus,
   updateUser,
   updateUsername,
   updateUserPassword,
   verifyPassword,
+  type ModelGuideStatus,
   type UserRole,
   type UserRecord,
   type UserStatus,
@@ -59,10 +61,57 @@ export async function currentUser(ctx: Context) {
       updated_at: user.updated_at,
       last_login_at: user.last_login_at,
       avatar: user.avatar || '',
+      modelGuideStatus: user.model_guide_status || 'pending',
+      shouldShowModelGuide: process.env.HERMES_DESKTOP === 'true'
+        ? false
+        : user.username === DEFAULT_USERNAME && (user.model_guide_status || 'pending') === 'pending',
       requiresCredentialChange: process.env.HERMES_DESKTOP === 'true'
         ? false
         : user.username === DEFAULT_USERNAME && verifyPassword(DEFAULT_PASSWORD, user.password_hash),
     },
+  }
+}
+
+function normalizeModelGuideStatus(value: unknown): ModelGuideStatus | null {
+  return value === 'pending' || value === 'skipped' || value === 'completed' ? value : null
+}
+
+/**
+ * POST /api/auth/model-guide
+ * Update the authenticated user's model onboarding guide status.
+ */
+export async function updateMyModelGuideStatus(ctx: Context) {
+  const userId = ctx.state.user?.id
+  if (!userId) {
+    ctx.status = 401
+    ctx.body = { error: 'Unauthorized' }
+    return
+  }
+
+  const body = ctx.request.body as { status?: unknown }
+  const status = normalizeModelGuideStatus(body?.status)
+  if (!status || status === 'pending') {
+    ctx.status = 400
+    ctx.body = { error: 'status must be "skipped" or "completed"' }
+    return
+  }
+
+  const user = findUserById(userId)
+  if (!user) {
+    ctx.status = 404
+    ctx.body = { error: 'User not found' }
+    return
+  }
+
+  if (!updateUserModelGuideStatus(userId, status)) {
+    ctx.status = 500
+    ctx.body = { error: 'Failed to update model guide status' }
+    return
+  }
+
+  ctx.body = {
+    success: true,
+    status,
   }
 }
 

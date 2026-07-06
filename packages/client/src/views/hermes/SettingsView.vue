@@ -118,7 +118,9 @@ onMounted(() => {
             <PrivacySettings />
           </NTabPane>
           <NTabPane name="models" :tab="t('settings.tabs.models')">
-            <ModelSettings />
+            <div data-guide-id="settings-models-panel">
+              <ModelSettings />
+            </div>
           </NTabPane>
           <NTabPane name="voice" :tab="t('settings.tabs.voice')">
             <VoiceSettings />

@@ -56,6 +56,42 @@ export default {
     defaultCredentialLater: 'Remind me later',
   },
 
+  modelGuide: {
+    progress: 'Step {current}/{total}',
+    skip: 'Skip tutorial',
+    previous: 'Previous',
+    next: 'Next',
+    complete: 'Finish setup',
+    steps: {
+      welcome: {
+        title: 'Welcome to model setup',
+        description: 'This is the first sign-in for the quanthermes account. Follow these five steps to connect your LLM provider and start chatting.',
+        hint: 'You can skip this tutorial, but once skipped it will not appear automatically again.',
+      },
+      settings: {
+        title: 'Open model settings first',
+        description: 'This is the fastest place to get started. You can paste an API key for an existing provider and finish the basic setup here.',
+        hint: 'If you already know which provider to use, start from this panel.',
+      },
+      addProvider: {
+        title: 'Add a model provider',
+        description: 'Next, go to the full models page. Here you can add a provider, choose the integration mode, and manage model platforms in one place.',
+        hint: 'Click "Add Provider" and fill in the credentials for your provider.',
+      },
+      providerList: {
+        title: 'Confirm the provider is available',
+        description: 'After saving the credentials, the provider list should show available models. Refresh the model cache if you need to reload the provider catalog.',
+        hint: 'If the list is empty, check your API key, network, and billing status.',
+      },
+      complete: {
+        title: 'Set the default model',
+        description: 'Once at least one provider is available and a default model is selected, you can finish the first-run guide.',
+        hint: 'After completion, this account will not show the tutorial automatically again.',
+        pending: 'No usable default model has been detected yet. Finish the provider setup and select a default model first.',
+      },
+    },
+  },
+
   users: {
     title: 'Account Management',
     description: 'Create users, assign roles, and control which profiles regular admins can access.',

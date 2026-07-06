@@ -14,6 +14,7 @@ import { showCompletionNotification } from '@/utils/completion-notification'
 import { detectThinkingBoundary } from '@/utils/thinking-parser'
 import { isKnownBridgeSessionCommand } from '@/utils/hermes/bridge-session-commands'
 import { responseErrorMessage } from '@/utils/http-error'
+import { classifyModelProviderError } from '@/utils/model-provider-error'
 
 // Re-export ContentBlock for convenience
 export type ContentBlock = ContentBlockImport
@@ -194,6 +195,22 @@ function errorMessageText(error: unknown): string {
   } catch {
     return String(error)
   }
+}
+
+function friendlyAgentErrorMessage(error: unknown): string {
+  const message = errorMessageText(error)
+  const providerError = classifyModelProviderError(message)
+  if (!providerError) return message
+  if (providerError.kind === 'billing_required') {
+    return '当前配置的大模型账号可能已欠费、余额不足或额度用尽，请前往模型设置页续费或更换可用的 API Key。'
+  }
+  if (providerError.kind === 'auth_invalid') {
+    return '当前配置的大模型凭据校验失败，请检查模型设置中的 API Key、权限和账号状态。'
+  }
+  if (providerError.kind === 'quota_exceeded') {
+    return '当前配置的大模型请求额度已触发限制，请稍后重试，或前往模型设置页检查额度与计费状态。'
+  }
+  return message
 }
 
 async function uploadFiles(attachments: Attachment[]): Promise<{ name: string; path: string }[]> {
@@ -1728,7 +1745,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function addAgentErrorMessage(sessionId: string, error?: unknown) {
-    const message = errorMessageText(error)
+    const message = friendlyAgentErrorMessage(error)
     const content = message ? `Error: ${message}` : 'Run failed'
     const msgs = getSessionMsgs(sessionId)
     const last = msgs[msgs.length - 1]

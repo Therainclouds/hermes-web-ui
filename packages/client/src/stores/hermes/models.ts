@@ -34,6 +34,16 @@ export const useModelsStore = defineStore('models', () => {
     ),
   )
 
+  const hasConfiguredProvider = computed(() =>
+    providers.value.some(group => group.models.length > 0),
+  )
+
+  const hasCompletedInitialSetup = computed(() =>
+    hasConfiguredProvider.value
+    && defaultProvider.value.trim().length > 0
+    && defaultModel.value.trim().length > 0,
+  )
+
   async function fetchProviders() {
     if (!hasApiKey()) return
     loading.value = true
@@ -106,6 +116,8 @@ export const useModelsStore = defineStore('models', () => {
     customProviders,
     builtinProviders,
     allModels,
+    hasConfiguredProvider,
+    hasCompletedInitialSetup,
     fetchProviders,
     refreshModelCache,
     setDefaultModel,

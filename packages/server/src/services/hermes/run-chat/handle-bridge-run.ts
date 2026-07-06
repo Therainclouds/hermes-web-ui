@@ -132,6 +132,18 @@ function looksLikeAgentFailure(value: string): boolean {
     || /(?:无可用渠道|渠道不可用|认证失败|鉴权失败|额度不足|余额不足|请求失败|接口调用失败|限流)/i.test(text)
 }
 
+function friendlyProviderFailure(value: string): string {
+  const text = value.replace(/\s+/g, ' ').trim()
+  if (!text) return value
+  const billingIssue = /\b(?:401|402|403|429)\b.{0,120}\b(?:billing|payment|credit|quota|balance|subscription|insufficient_balance)\b/i.test(text)
+    || /\b(?:billing|payment|credit|quota|balance|subscription|insufficient_balance)\b.{0,120}\b(?:401|402|403|429)\b/i.test(text)
+    || /(?:欠费|余额不足|额度不足|请充值|账单异常|订阅失效|已停用计费)/i.test(text)
+  if (billingIssue) {
+    return 'Model provider billing issue: account may be unpaid, out of balance, or out of quota.'
+  }
+  return value
+}
+
 export function bridgeTerminalError(chunk: Pick<AgentBridgeOutput, 'status' | 'error' | 'result'>): string | null {
   const result = chunk.result && typeof chunk.result === 'object' && !Array.isArray(chunk.result)
     ? chunk.result as Record<string, unknown>
@@ -144,16 +156,16 @@ export function bridgeTerminalError(chunk: Pick<AgentBridgeOutput, 'status' | 'e
   const finalResponse = result ? stringValue(result.final_response) : ''
 
   if (chunk.status === 'error') {
-    return stringValue(chunk.error) || resultError || resultMessage || finalResponse || 'Agent run failed'
+    return friendlyProviderFailure(stringValue(chunk.error) || resultError || resultMessage || finalResponse || 'Agent run failed')
   }
 
   if (result?.failed === true || result?.completed === false) {
-    return resultError || resultMessage || finalResponse || 'Agent reported failure'
+    return friendlyProviderFailure(resultError || resultMessage || finalResponse || 'Agent reported failure')
   }
 
-  if (resultError && looksLikeAgentFailure(resultError)) return resultError
-  if (!finalResponse && resultMessage && looksLikeAgentFailure(resultMessage)) return resultMessage
-  if (finalResponse && looksLikeAgentFailure(finalResponse)) return finalResponse
+  if (resultError && looksLikeAgentFailure(resultError)) return friendlyProviderFailure(resultError)
+  if (!finalResponse && resultMessage && looksLikeAgentFailure(resultMessage)) return friendlyProviderFailure(resultMessage)
+  if (finalResponse && looksLikeAgentFailure(finalResponse)) return friendlyProviderFailure(finalResponse)
 
   return null
 }

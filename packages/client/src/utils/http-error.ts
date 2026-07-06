@@ -20,6 +20,10 @@ function errorMessageText(error: unknown): string {
   }
 }
 
+export function errorMessageTextFromUnknown(error: unknown): string {
+  return errorMessageText(error)
+}
+
 export async function responseErrorMessage(
   response: Response,
   fallbackPrefix = 'Request failed',

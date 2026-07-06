@@ -56,6 +56,42 @@ export default {
     defaultCredentialLater: '稍后提醒',
   },
 
+  modelGuide: {
+    progress: '步骤 {current}/{total}',
+    skip: '跳过教程',
+    previous: '上一步',
+    next: '下一步',
+    complete: '完成配置',
+    steps: {
+      welcome: {
+        title: '欢迎开始模型配置',
+        description: '这是 quanthermes 账号首次登录，我会用 5 步带你完成大模型接入，配置完成后就能直接开始聊天。',
+        hint: '你可以随时跳过，但跳过后这个教程将不会再次自动出现。',
+      },
+      settings: {
+        title: '先看模型设置入口',
+        description: '这里是最直接的模型设置入口。你可以先为已有 Provider 填入 API Key，快速完成基础配置。',
+        hint: '如果你已经知道要接哪个平台，可以先从这里开始。',
+      },
+      addProvider: {
+        title: '添加一个模型 Provider',
+        description: '接下来跳到模型管理页。这里可以新增 Provider、切换接入方式，也能对不同模型平台做统一管理。',
+        hint: '请点击“添加 Provider”，选择你要接入的平台并填写凭据。',
+      },
+      providerList: {
+        title: '确认 Provider 已经可用',
+        description: '配置完成后，Provider 列表里应该能看到可用模型。必要时可以刷新模型缓存，确认平台返回了模型目录。',
+        hint: '如果列表为空，请检查 API Key、网络和账号计费状态。',
+      },
+      complete: {
+        title: '完成默认模型设置',
+        description: '当系统检测到已有可用 Provider，并且已经设置默认模型后，你就可以完成本次首登引导。',
+        hint: '完成后此账号将不再自动弹出本教程。',
+        pending: '还没有检测到可用的默认模型，请先完成 Provider 配置并确保默认模型已设置。',
+      },
+    },
+  },
+
   users: {
     title: '账户管理',
     description: '创建用户、分配角色，并控制普通管理员可访问的配置。',

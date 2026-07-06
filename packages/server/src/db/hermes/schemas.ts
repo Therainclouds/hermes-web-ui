@@ -258,6 +258,7 @@ export const USERS_SCHEMA: Record<string, string> = {
   updated_at: 'INTEGER NOT NULL',
   last_login_at: 'INTEGER',
   avatar: "TEXT NOT NULL DEFAULT ''",
+  model_guide_status: "TEXT NOT NULL DEFAULT 'pending'",
 }
 
 export const USER_PROFILES_TABLE = 'user_profiles'

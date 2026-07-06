@@ -65,6 +65,7 @@ async function handleRefreshModelCache() {
       <h2 class="header-title">{{ t('models.title') }}</h2>
       <div v-if="activeTab === 'general'" class="header-actions">
         <NButton
+          data-guide-id="models-refresh-cache"
           size="small"
           :loading="modelsStore.refreshingModelCache"
           :disabled="modelsStore.loading"
@@ -78,6 +79,7 @@ async function handleRefreshModelCache() {
           <span class="header-action-label">{{ t('models.refreshModelCache') }}</span>
         </NButton>
         <NButton
+          data-guide-id="models-add-provider"
           type="primary"
           size="small"
           :aria-label="t('models.addProvider')"
@@ -96,7 +98,9 @@ async function handleRefreshModelCache() {
       <NTabs v-model:value="activeTab" type="line" animated>
         <NTabPane name="general" :tab="t('models.generalTitle')">
           <NSpin :show="modelsStore.loading && modelsStore.providers.length === 0">
-            <ProvidersPanel />
+            <div data-guide-id="models-provider-list">
+              <ProvidersPanel />
+            </div>
           </NSpin>
         </NTabPane>
         <NTabPane name="auxiliary" :tab="t('models.auxiliaryTitle')">
