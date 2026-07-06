@@ -1991,6 +1991,12 @@ export default {
 
   // 변경 이력
   changelog: {
+    new_0_7_0_1: 'Added a first-login tutorial to guide the initial model setup flow',
+    new_0_7_0_2: 'Improved billing and quota warnings for model providers so renewal issues are easier to understand',
+    new_0_7_0_3: 'Added the pet system for a more lively companion experience',
+    new_0_7_0_4: 'Refined page layouts and overall interaction flow for a smoother interface experience',
+    new_0_7_0_5: 'Added USB device recognition to support more external hardware scenarios',
+    new_0_7_0_6: 'Added the workflow system for clearer orchestration and execution paths',
     new_0_6_33_1: 'upstream rebuild 브랜치를 0.6.33으로 통합해 chat, models, workflows, MCP, USB, desktop integration의 최신 업데이트를 반영했습니다',
     new_0_6_25_1: 'Hermes Agent 0.18.0에서 Agent Bridge 승인 메모리 wrapper가 새 has_host_access 매개변수를 전달하지 않아 execute_code가 실패하던 문제를 수정했습니다',
     new_0_6_24_1: '이번 릴리스는 0.6.23 이후 병합된 PR을 반영하며 채팅 입력, workspace 표시, 플러그인 관리, 기본 모델, workspace diff 확인을 개선합니다',

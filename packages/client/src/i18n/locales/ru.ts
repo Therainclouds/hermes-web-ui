@@ -2136,6 +2136,12 @@ export default {
   },
 
   changelog: {
+    new_0_7_0_1: 'Added a first-login tutorial to guide the initial model setup flow',
+    new_0_7_0_2: 'Improved billing and quota warnings for model providers so renewal issues are easier to understand',
+    new_0_7_0_3: 'Added the pet system for a more lively companion experience',
+    new_0_7_0_4: 'Refined page layouts and overall interaction flow for a smoother interface experience',
+    new_0_7_0_5: 'Added USB device recognition to support more external hardware scenarios',
+    new_0_7_0_6: 'Added the workflow system for clearer orchestration and execution paths',
     new_0_6_33_1: 'Ветка upstream rebuild объединена в релиз 0.6.33 и включает последние обновления чата, моделей, workflows, MCP, USB и desktop интеграции',
     new_0_6_25_1: 'Исправлен сбой execute_code с Hermes Agent 0.18.0: Agent Bridge теперь передает новый параметр has_host_access через wrapper памяти подтверждений',
     new_0_6_24_1: 'Этот релиз включает PR после 0.6.23 и улучшает ввод чата, видимость workspace, управление plugins, модели по умолчанию и просмотр workspace diff',

@@ -1991,6 +1991,12 @@ export default {
 
   // 更新履歴
   changelog: {
+    new_0_7_0_1: 'Added a first-login tutorial to guide the initial model setup flow',
+    new_0_7_0_2: 'Improved billing and quota warnings for model providers so renewal issues are easier to understand',
+    new_0_7_0_3: 'Added the pet system for a more lively companion experience',
+    new_0_7_0_4: 'Refined page layouts and overall interaction flow for a smoother interface experience',
+    new_0_7_0_5: 'Added USB device recognition to support more external hardware scenarios',
+    new_0_7_0_6: 'Added the workflow system for clearer orchestration and execution paths',
     new_0_6_33_1: 'upstream の rebuild ブランチを 0.6.33 として統合し、chat、models、workflows、MCP、USB、desktop integration の最新更新を取り込みました',
     new_0_6_25_1: 'Hermes Agent 0.18.0 で Agent Bridge の approval memory wrapper が新しい has_host_access パラメータを転送せず execute_code が失敗する問題を修正しました',
     new_0_6_24_1: 'このリリースは 0.6.23 以降にマージされた PR を反映し、チャット入力、workspace 表示、plugin 管理、default model、workspace diff 確認を改善しました',

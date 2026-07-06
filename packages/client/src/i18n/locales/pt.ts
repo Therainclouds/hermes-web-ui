@@ -1992,6 +1992,12 @@ jobTriggered: 'Job acionado',
 
   // Registro de alteracoes
   changelog: {
+    new_0_7_0_1: 'Added a first-login tutorial to guide the initial model setup flow',
+    new_0_7_0_2: 'Improved billing and quota warnings for model providers so renewal issues are easier to understand',
+    new_0_7_0_3: 'Added the pet system for a more lively companion experience',
+    new_0_7_0_4: 'Refined page layouts and overall interaction flow for a smoother interface experience',
+    new_0_7_0_5: 'Added USB device recognition to support more external hardware scenarios',
+    new_0_7_0_6: 'Added the workflow system for clearer orchestration and execution paths',
     new_0_6_33_1: 'A branch upstream rebuild foi mesclada como 0.6.33 com as atualizacoes mais recentes de chat, modelos, workflows, MCP, USB e integracao desktop',
     new_0_6_25_1: 'Corrige falhas de execute_code com Hermes Agent 0.18.0 ao encaminhar o novo parametro has_host_access pelo wrapper de memoria de aprovacoes do Agent Bridge',
     new_0_6_24_1: 'Esta versao cobre os PRs mesclados depois da 0.6.23 e melhora entrada de chat, visibilidade de workspaces, gestao de plugins, modelos padrao e revisao de diffs',
