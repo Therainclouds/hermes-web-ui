@@ -802,10 +802,6 @@ function runUpdateInstall(npm) {
   })
 }
 
-function getDaemonStopGraceMs({ restart } = {}) {
-  return restart ? DAEMON_RESTART_GRACE_MS : DAEMON_STOP_GRACE_MS
-}
-
 if (process.argv[1] && realpathSync(resolve(process.argv[1])) === __filename) {
   main().catch(err => {
     console.error(`  鉁?${err?.message || err}`)
