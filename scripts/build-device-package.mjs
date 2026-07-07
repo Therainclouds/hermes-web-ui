@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { create as createTar, list as listTar } from 'tar'
+import { assertTerminalRuntimeBundle } from './verify-terminal-runtime.mjs'
 
 const DEFAULT_SOURCE_LABEL = 'Quanthermes Device Releases'
 const DEFAULT_HEALTHCHECK_URL = 'http://127.0.0.1:6060/health'
@@ -364,6 +365,10 @@ export async function buildDevicePackageRelease(options = {}) {
     mkdirSync(latestDir, { recursive: true })
 
     copyPackageEntries(stageRoot, packageEntries)
+    assertTerminalRuntimeBundle(
+      resolve(stageRoot, 'dist', 'server', 'index.js'),
+      'device package stage dist/server/index.js',
+    )
 
     await createTar({
       cwd: stageRoot,

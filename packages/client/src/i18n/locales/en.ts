@@ -2334,6 +2334,8 @@ export default {
     connectionFailed: 'Terminal service connection failed',
     connectionClosed: 'Terminal connection closed',
     connectionError: 'Terminal connection error',
+    runtimeDisabled: 'Terminal service is not ready on this device yet. Check the device runtime and try again.',
+    runtimeDisabledNodePty: 'Terminal service is unavailable because the device failed to load the node-pty runtime.',
   },
 
   // Group Chat

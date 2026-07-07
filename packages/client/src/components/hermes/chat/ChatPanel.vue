@@ -1705,10 +1705,10 @@ async function handleSessionModelCustomSubmit() {
           ref="chatContentWrapperRef"
           class="chat-content-wrapper"
           :class="{ 'chat-content-wrapper--drop-active': isChatDropActive }"
-          @dragover="handleChatDragOver"
-          @dragenter="handleChatDragEnter"
-          @dragleave="handleChatDragLeave"
-          @drop="handleChatDrop"
+          @dragover.capture="handleChatDragOver"
+          @dragenter.capture="handleChatDragEnter"
+          @dragleave.capture="handleChatDragLeave"
+          @drop.capture="handleChatDrop"
         >
           <div class="chat-main-content">
             <MessageList ref="messageListRef" />
@@ -1717,6 +1717,28 @@ async function handleSessionModelCustomSubmit() {
               :model-label="activeSessionModelLabel"
               @model-click="handleHeaderModelClick"
             />
+          </div>
+          <div v-if="isChatDropActive" class="chat-drop-overlay" aria-hidden="true">
+            <div class="chat-drop-overlay__card">
+              <div class="chat-drop-overlay__icon">
+                <svg
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M12 3v12" />
+                  <path d="m7 10 5 5 5-5" />
+                  <path d="M5 19h14" />
+                </svg>
+              </div>
+              <div class="chat-drop-overlay__title">{{ t("chat.attachFiles") }}</div>
+              <div class="chat-drop-overlay__hint">{{ t("chat.dragDropHint") }}</div>
+            </div>
           </div>
           <OutlinePanel
             v-if="showOutline"
@@ -2349,6 +2371,53 @@ async function handleSessionModelCustomSubmit() {
   border: 2px dashed var(--accent-info);
   border-radius: 8px;
   background: rgba(var(--accent-info-rgb), 0.05);
+}
+
+.chat-drop-overlay {
+  position: absolute;
+  inset: 12px;
+  z-index: 31;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.chat-drop-overlay__card {
+  min-width: 220px;
+  max-width: min(360px, 100%);
+  padding: 18px 22px;
+  border-radius: 16px;
+  border: 1px solid rgba(var(--accent-info-rgb), 0.25);
+  background: rgba(15, 23, 42, 0.9);
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.24);
+  backdrop-filter: blur(8px);
+  text-align: center;
+}
+
+.chat-drop-overlay__icon {
+  width: 48px;
+  height: 48px;
+  margin: 0 auto 10px;
+  border-radius: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(var(--accent-info-rgb), 0.14);
+  color: var(--accent-info);
+}
+
+.chat-drop-overlay__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.96);
+}
+
+.chat-drop-overlay__hint {
+  margin-top: 6px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.72);
 }
 
 .chat-main-content {

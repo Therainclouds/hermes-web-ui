@@ -49,7 +49,7 @@
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
-    "test:device-package-release": "vitest run tests/server/build-device-package-script.test.ts tests/server/device-package-contract.test.ts tests/server/device-package-strategy.test.ts tests/server/update-manifest-client.test.ts",
+    "test:device-package-release": "vitest run tests/server/build-device-package-script.test.ts tests/server/device-package-contract.test.ts tests/server/device-package-strategy.test.ts tests/server/update-manifest-client.test.ts tests/server/verify-terminal-runtime.test.ts",
     "dev:website": "vite --config vite.config.website.ts",
     "build:website": "vite build --config vite.config.website.ts",
     "preview:website": "vite preview --config vite.config.website.ts",

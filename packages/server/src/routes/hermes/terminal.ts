@@ -9,6 +9,10 @@ import { authenticateUserToken, isAuthEnabled } from '../../middleware/user-auth
 import { logger } from '../../services/logger'
 import { config } from '../../config'
 import { shouldRejectUpgradeOrigin, writeForbiddenOrigin } from '../../security'
+import {
+  markTerminalRuntimeReady,
+  markTerminalRuntimeUnavailable,
+} from '../../services/terminal/runtime-state'
 
 let pty: any = null
 
@@ -46,6 +50,7 @@ try {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   pty = require('node-pty')
 } catch (err: any) {
+  markTerminalRuntimeUnavailable('node_pty_failed_to_load')
   logger.warn(err, 'node-pty failed to load, terminal feature disabled')
 }
 
@@ -141,6 +146,7 @@ function createSession(shell: string): PtySession {
 
 export function setupTerminalWebSocket(httpServers: HttpServer | HttpServer[]) {
   if (!pty) {
+    markTerminalRuntimeUnavailable('node_pty_failed_to_load')
     logger.warn('node-pty not available, skipping terminal WebSocket setup')
     return
   }
@@ -371,4 +377,5 @@ export function setupTerminalWebSocket(httpServers: HttpServer | HttpServer[]) {
   })
 
   logger.info('WebSocket ready at /terminal (shell: %s, transport: node-pty)', defaultShell)
+  markTerminalRuntimeReady()
 }

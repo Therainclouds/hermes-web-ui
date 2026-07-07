@@ -1308,6 +1308,17 @@ check_runtime_artifacts() {
   info "Node, Hermes, and build artifacts look good."
 }
 
+check_terminal_runtime_ready() {
+  local probe_url="http://127.0.0.1:${PORT}"
+  step "Check terminal runtime readiness"
+  if ! wait_for_http_ready "${probe_url}/health" "\"terminal\":{\"enabled\":true,\"ready\":true"; then
+    err "Terminal runtime check failed: ${probe_url}/health did not report terminal.ready=true"
+    run journalctl -u "${SYSTEMD_SERVICE_NAME}" -n 120 --no-pager || true
+    return 1
+  fi
+  info "Terminal runtime check passed."
+}
+
 check_bridge_status() {
   local bridge_log="${APP_USER_HOME}/.hermes-web-ui/logs/bridge.log"
   step "Check agent bridge log"
@@ -1385,6 +1396,8 @@ PY
     fi
     info "Update configuration check passed."
   fi
+
+  check_terminal_runtime_ready
 
   if [[ "${HERMES_AGENT_SERVICE_WAS_ACTIVE}" == "true" ]]; then
     if ! run systemctl is-active --quiet "${HERMES_AGENT_SERVICE_NAME}"; then

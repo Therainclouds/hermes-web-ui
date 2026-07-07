@@ -67,7 +67,11 @@ describe('build-device-package script', () => {
     mkdirSync(resolve(repoRoot, 'release'), { recursive: true })
     mkdirSync(resolve(repoRoot, 'scripts'), { recursive: true })
 
-    writeFileSync(resolve(repoRoot, 'dist', 'server', 'index.js'), 'console.log("server")\n', 'utf-8')
+    writeFileSync(
+      resolve(repoRoot, 'dist', 'server', 'index.js'),
+      'console.log("/api/hermes/terminal"); console.log("node-pty failed to load, terminal feature disabled"); console.log("WebSocket ready at /terminal")\n',
+      'utf-8',
+    )
     writeFileSync(resolve(repoRoot, 'dist', 'client', 'index.html'), '<html></html>\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'deploy-source-armbian.sh'), '#!/usr/bin/env bash\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui-update-runner.sh'), '#!/usr/bin/env bash\n', 'utf-8')
@@ -173,7 +177,11 @@ describe('build-device-package script', () => {
     mkdirSync(resolve(repoRoot, 'scripts'), { recursive: true })
     mkdirSync(resolve(repoRoot, '.github'), { recursive: true })
 
-    writeFileSync(resolve(repoRoot, 'dist', 'server', 'index.js'), 'console.log("server")\n', 'utf-8')
+    writeFileSync(
+      resolve(repoRoot, 'dist', 'server', 'index.js'),
+      'console.log("/api/hermes/terminal"); console.log("node-pty failed to load, terminal feature disabled"); console.log("WebSocket ready at /terminal")\n',
+      'utf-8',
+    )
     writeFileSync(resolve(repoRoot, 'dist', 'client', 'index.html'), '<html></html>\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'deploy-source-armbian.sh'), '#!/usr/bin/env bash\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui-update-runner.sh'), '#!/usr/bin/env bash\n', 'utf-8')
@@ -229,7 +237,11 @@ describe('build-device-package script', () => {
     mkdirSync(resolve(repoRoot, 'scripts'), { recursive: true })
     mkdirSync(resolve(repoRoot, '.github'), { recursive: true })
 
-    writeFileSync(resolve(repoRoot, 'dist', 'server', 'index.js'), 'console.log("server")\n', 'utf-8')
+    writeFileSync(
+      resolve(repoRoot, 'dist', 'server', 'index.js'),
+      'console.log("/api/hermes/terminal"); console.log("node-pty failed to load, terminal feature disabled"); console.log("WebSocket ready at /terminal")\n',
+      'utf-8',
+    )
     writeFileSync(resolve(repoRoot, 'dist', 'client', 'index.html'), '<html></html>\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'deploy-source-armbian.sh'), '#!/usr/bin/env bash\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui.service'), '[Service]\nExecStart=node dist/server/index.js\n', 'utf-8')
@@ -279,7 +291,11 @@ describe('build-device-package script', () => {
     mkdirSync(resolve(repoRoot, 'scripts'), { recursive: true })
     mkdirSync(resolve(repoRoot, '.github'), { recursive: true })
 
-    writeFileSync(resolve(repoRoot, 'dist', 'server', 'index.js'), 'console.log("server")\n', 'utf-8')
+    writeFileSync(
+      resolve(repoRoot, 'dist', 'server', 'index.js'),
+      'console.log("/api/hermes/terminal"); console.log("node-pty failed to load, terminal feature disabled"); console.log("WebSocket ready at /terminal")\n',
+      'utf-8',
+    )
     writeFileSync(resolve(repoRoot, 'dist', 'client', 'index.html'), '<html></html>\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'deploy-source-armbian.sh'), '#!/usr/bin/env bash\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui.service'), '[Service]\nExecStart=node dist/server/index.js\n', 'utf-8')
@@ -329,7 +345,11 @@ describe('build-device-package script', () => {
     mkdirSync(resolve(repoRoot, 'scripts'), { recursive: true })
     mkdirSync(resolve(repoRoot, '.github'), { recursive: true })
 
-    writeFileSync(resolve(repoRoot, 'dist', 'server', 'index.js'), 'console.log("server")\n', 'utf-8')
+    writeFileSync(
+      resolve(repoRoot, 'dist', 'server', 'index.js'),
+      'console.log("/api/hermes/terminal"); console.log("node-pty failed to load, terminal feature disabled"); console.log("WebSocket ready at /terminal")\n',
+      'utf-8',
+    )
     writeFileSync(resolve(repoRoot, 'dist', 'client', 'index.html'), '<html></html>\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'deploy-source-armbian.sh'), '#!/usr/bin/env bash\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui.service'), '[Service]\nExecStart=node dist/server/index.js\n', 'utf-8')

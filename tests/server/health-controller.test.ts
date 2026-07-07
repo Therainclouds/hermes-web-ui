@@ -19,6 +19,13 @@ type LoadHealthControllerOptions = {
   bridgeReadinessError?: Error
   managerError?: Error
   runtimeStateError?: Error
+  terminalStatus?: {
+    enabled: boolean
+    ready: boolean
+    transport: 'node-pty' | 'disabled'
+    reason: 'ready' | 'websocket_not_initialized' | 'node_pty_failed_to_load'
+    requiresSuperAdmin: boolean
+  }
 }
 
 const defaultBridgeReadiness = {
@@ -34,6 +41,14 @@ const defaultBridgeReadiness = {
   restartScheduled: false,
   restartAttempts: 0,
   pid: 4321,
+}
+
+const defaultTerminalStatus = {
+  enabled: true,
+  ready: true,
+  transport: 'node-pty' as const,
+  reason: 'ready' as const,
+  requiresSuperAdmin: true,
 }
 
 async function loadHealthController(options: LoadHealthControllerOptions = {}) {
@@ -63,6 +78,10 @@ async function loadHealthController(options: LoadHealthControllerOptions = {}) {
 
   vi.doMock('../../packages/server/src/services/hermes/agent-bridge/manager', () => ({
     getAgentBridgeManager,
+  }))
+
+  vi.doMock('../../packages/server/src/services/terminal/runtime-state', () => ({
+    getTerminalRuntimeStatus: vi.fn(() => options.terminalStatus || defaultTerminalStatus),
   }))
 
   const health = await import('../../packages/server/src/controllers/health')
@@ -156,6 +175,39 @@ describe('health controller version metadata', () => {
     await healthCheck(ctx)
 
     expect(ctx.body.webui_version).toBe('9.9.9-test')
+  })
+
+  it('surfaces terminal runtime readiness in the health payload', async () => {
+    const { healthCheck } = await loadHealthControllerWithInjectedVersion('9.9.9-test')
+    const ctx = createMockCtx()
+
+    await healthCheck(ctx)
+
+    expect(ctx.body.terminal).toEqual(defaultTerminalStatus)
+  })
+
+  it('reports terminal startup failures so device installs can fail fast', async () => {
+    const { healthCheck } = await loadHealthController({
+      injectedVersion: '9.9.9-test',
+      terminalStatus: {
+        enabled: false,
+        ready: false,
+        transport: 'disabled',
+        reason: 'node_pty_failed_to_load',
+        requiresSuperAdmin: true,
+      },
+    })
+    const ctx = createMockCtx()
+
+    await healthCheck(ctx)
+
+    expect(ctx.body.terminal).toEqual({
+      enabled: false,
+      ready: false,
+      transport: 'disabled',
+      reason: 'node_pty_failed_to_load',
+      requiresSuperAdmin: true,
+    })
   })
 
   it('does not probe the npm registry when only package/registry env vars are set', async () => {
@@ -304,7 +356,7 @@ describe('health controller version metadata', () => {
     expect(aheadCtx.body.webui_update_available).toBe(false)
   })
 
-  it('does not report a registry version lower than the local build as an update', async () => {
+  it('ignores legacy registry payloads when manifest detection is not configured', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
@@ -318,7 +370,7 @@ describe('health controller version metadata', () => {
     const ctx = createMockCtx()
     await healthCheck(ctx)
 
-    expect(ctx.body.webui_latest).toBe('0.6.17')
+    expect(ctx.body.webui_latest).toBe('')
     expect(ctx.body.webui_update_available).toBe(false)
     expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining('Update available'))
   })

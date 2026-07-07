@@ -2,6 +2,7 @@ import * as esbuild from 'esbuild'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'fs'
+import { assertTerminalRuntimeBundle } from './verify-terminal-runtime.mjs'
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const pkg = JSON.parse(readFileSync(resolve(rootDir, 'package.json'), 'utf-8'))
@@ -27,6 +28,8 @@ await esbuild.build({
   treeShaking: true,
   logLevel: 'info',
 })
+
+assertTerminalRuntimeBundle(resolve(serverOutDir, 'index.js'), 'dist/server/index.js')
 
 const bridgeOutDir = resolve(serverOutDir, 'agent-bridge', 'python')
 const bridgeSrcDir = resolve(rootDir, 'packages/server/src/services/hermes/agent-bridge/python')

@@ -2,6 +2,7 @@ import * as hermesCli from '../services/hermes/hermes-cli'
 import { config, hasConfiguredManifestCheck, hasConfiguredUpdateCheck, hasConfiguredUpdateExecution } from '../config'
 import { getAgentBridgeManager } from '../services/hermes/agent-bridge/manager'
 import { redactAgentBridgeError } from '../services/hermes/agent-bridge/redact'
+import { getTerminalRuntimeStatus } from '../services/terminal/runtime-state'
 import { resolveManifestCheckResult } from '../services/update/manifest-client'
 import { getLocalWebUiVersion } from '../services/update/package-info'
 import type { UpdateCheckResult } from '../services/update/types'
@@ -159,6 +160,7 @@ export async function healthCheck(ctx: any) {
   const updateCheckConfigured = hasConfiguredUpdateCheck(config.update)
   const updateCheckDisabled = isUpdateCheckDisabled()
   const agentBridge = await getAgentBridgeHealth()
+  const terminal = getTerminalRuntimeStatus()
   ctx.body = {
     status: 'ok',
     platform: 'hermes-agent',
@@ -176,5 +178,6 @@ export async function healthCheck(ctx: any) {
       : isRemoteVersionNewer(LOCAL_VERSION, cachedUpdateInfo.latestVersion),
     node_version: process.versions.node,
     agent_bridge: agentBridge,
+    terminal,
   }
 }

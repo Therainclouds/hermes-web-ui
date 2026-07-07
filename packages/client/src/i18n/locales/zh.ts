@@ -2336,6 +2336,8 @@ export default {
     connectionFailed: '终端服务连接失败',
     connectionClosed: '终端连接已关闭',
     connectionError: '终端连接错误',
+    runtimeDisabled: '终端服务当前未就绪，请检查设备端服务状态后重试',
+    runtimeDisabledNodePty: '终端服务未启动：设备端 node-pty 运行时加载失败',
   },
 
   // 群聊

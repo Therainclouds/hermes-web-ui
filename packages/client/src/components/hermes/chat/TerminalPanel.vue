@@ -87,6 +87,14 @@ interface SessionInfo {
   exited: boolean;
 }
 
+interface TerminalRuntimeStatus {
+  enabled: boolean;
+  ready: boolean;
+  transport: "node-pty" | "disabled";
+  reason: "ready" | "websocket_not_initialized" | "node_pty_failed_to_load";
+  requiresSuperAdmin: boolean;
+}
+
 // ─── State ──────────────────────────────────────────────────────
 
 const terminalRef = ref<HTMLDivElement | null>(null);
@@ -160,9 +168,43 @@ function buildWsUrl(): string {
   return `${wsProtocol}//${host}/api/hermes/terminal${token ? `?token=${encodeURIComponent(token)}` : ""}`;
 }
 
-function connect() {
+async function fetchTerminalRuntimeStatus(): Promise<TerminalRuntimeStatus | null> {
+  try {
+    const base = getBaseUrlValue();
+    const healthUrl = base ? new URL("/health", base).toString() : "/health";
+    const headers: Record<string, string> = {};
+    const token = getApiKey();
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+    const res = await fetch(healthUrl, { headers });
+    if (!res.ok) return null;
+    const payload = await res.json() as { terminal?: TerminalRuntimeStatus };
+    return payload.terminal ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function terminalRuntimeError(status: TerminalRuntimeStatus | null): string | null {
+  if (!status || status.ready) return null;
+  if (status.reason === "node_pty_failed_to_load") {
+    return t("terminal.runtimeDisabledNodePty");
+  }
+  return t("terminal.runtimeDisabled");
+}
+
+async function connect() {
   if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
     connectionError.value = t('terminal.connectionFailed');
+    isConnecting.value = false;
+    return;
+  }
+
+  const runtimeStatus = await fetchTerminalRuntimeStatus();
+  const runtimeError = terminalRuntimeError(runtimeStatus);
+  if (runtimeError) {
+    connectionError.value = runtimeError;
     isConnecting.value = false;
     return;
   }
@@ -200,7 +242,9 @@ function connect() {
     }
 
     // 其他情况尝试重连
-    setTimeout(connect, 3000);
+    setTimeout(() => {
+      void connect();
+    }, 3000);
   };
 
   ws.onerror = (error) => {
@@ -441,7 +485,7 @@ let hasConnected = false;
 watch(() => props.visible, (visible) => {
   if (visible && !hasConnected && !ws) {
     hasConnected = true;
-    connect();
+    void connect();
   }
 }, { immediate: true });
 
