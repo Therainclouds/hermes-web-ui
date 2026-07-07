@@ -2136,6 +2136,7 @@ export default {
   },
 
   changelog: {
+    new_0_7_1_1: 'Improved the device upgrade channel so existing devices can move to v0.7.1 first and then switch to OSS device-package updates automatically',
     new_0_7_0_1: 'Added a first-login tutorial to guide the initial model setup flow',
     new_0_7_0_2: 'Improved billing and quota warnings for model providers so renewal issues are easier to understand',
     new_0_7_0_3: 'Added the pet system for a more lively companion experience',

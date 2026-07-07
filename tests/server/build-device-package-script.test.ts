@@ -122,7 +122,6 @@ describe('build-device-package script', () => {
     )
     expect(manifest.packageUrls).toEqual([
       'https://example-bucket.oss-cn-shanghai.aliyuncs.com/hermes-web-ui/releases/v1.2.3/hermes-web-ui-device-v1.2.3.tar.gz',
-      'https://github.com/example/hermes-web-ui/releases/download/v1.2.3/hermes-web-ui-device-v1.2.3.tar.gz',
     ])
     expect(manifest.compatibleNodeRange).toBe('>=23.0.0')
     expect(manifest.minCurrentVersion).toBe('1.0.0')
