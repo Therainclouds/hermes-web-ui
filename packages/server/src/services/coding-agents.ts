@@ -28,7 +28,7 @@ const CODEX_CATALOG_BASE_INSTRUCTIONS = 'You are Codex, a coding agent. Be preci
 const NODE_ENVIRONMENT_MISSING_CODE = 'node_environment_missing'
 const POSIX_LAUNCHER_FILE = 'launch.sh'
 const WINDOWS_LAUNCHER_FILE = 'launch.ps1'
-const CODING_AGENT_SCOPED_AUTH_PROVIDERS = new Set(['openai-codex', 'copilot', 'xai-oauth', 'nous', 'google-gemini-cli', 'claude-oauth'])
+const CODING_AGENT_SCOPED_AUTH_PROVIDERS = new Set(['openai-codex', 'copilot', 'xai-oauth', 'qwen-oauth', 'nous', 'claude-oauth'])
 const CLAUDE_CODE_SKIP_PERMISSIONS_ARGS = ['--dangerously-skip-permissions']
 const CLAUDE_CODE_ROOT_PERMISSION_ARGS = ['--permission-mode', 'auto']
 const HERMES_MCP_SERVERS = [
@@ -110,6 +110,7 @@ export interface CodingAgentLaunchInput extends CodingAgentConfigScope {
   baseUrl?: string
   apiKey?: string
   apiMode?: ApiMode
+  reasoningEffort?: string
   sessionId?: string
   agentSessionId?: string
   agentNativeSessionId?: string
@@ -123,6 +124,7 @@ export interface CodingAgentLaunchResult {
   profile: string
   provider: string
   model: string
+  apiMode?: ApiMode
   rootDir: string
   workspaceDir: string
   command: string
@@ -130,6 +132,7 @@ export interface CodingAgentLaunchResult {
   env: Record<string, string>
   shellCommand: string
   files: Array<{ key: string; path: string; absolutePath: string }>
+  reasoningEffort?: string
 }
 
 export interface CodingAgentNativeLaunchResult extends CodingAgentLaunchResult {
@@ -163,7 +166,7 @@ const TOOL_DEFINITIONS: CodingAgentDefinition[] = [
 const CONFIG_FILE_DEFINITIONS: Record<CodingAgentId, Array<Omit<CodingAgentConfigFileDefinition, 'absolutePath'> & { scopedPath: string }>> = {
   'claude-code': [
     { key: 'settings', path: '~/.claude/settings.json', scopedPath: 'settings.json', language: 'json' },
-    { key: 'mcp', path: '~/.claude.json', scopedPath: 'mcp.json', language: 'json' },
+    { key: 'mcp', path: '~/.claude/mcp.json', scopedPath: 'mcp.json', language: 'json' },
     { key: 'prompt', path: '~/.claude/hermes-rules.md', scopedPath: 'hermes-rules.md', language: 'markdown' },
   ],
   codex: [
@@ -498,12 +501,17 @@ async function resolveStoredProviderLaunchInput(
   if (input.mode === 'global') return input
 
   const profile = String(input.profile || existingSession?.profile || 'default').trim() || 'default'
-  const provider = String(input.provider || existingSession?.provider || '').trim()
+  const inputProvider = String(input.provider || '').trim()
+  const storedProvider = String(existingSession?.provider || '').trim()
+  const provider = String(inputProvider || storedProvider).trim()
   const model = String(input.model || existingSession?.model || '').trim()
   const workspace = input.workspace || existingSession?.workspace || undefined
   let baseUrl = String(input.baseUrl || '').trim()
   let apiKey = String(input.apiKey || '').trim()
-  let apiMode = input.apiMode
+  const storedApiMode = !inputProvider || inputProvider === storedProvider
+    ? normalizeStoredLaunchApiMode(existingSession?.api_mode)
+    : undefined
+  let apiMode = input.apiMode || storedApiMode
   let canonicalProvider = provider
   const ignoredStaleProviderRuntime = belongsToDifferentBuiltinProvider(provider, baseUrl)
   if (ignoredStaleProviderRuntime) {
@@ -575,15 +583,24 @@ async function resolveStoredProviderLaunchInput(
   }
 }
 
+function normalizeStoredLaunchApiMode(value: unknown): ApiMode | undefined {
+  if (!value) return undefined
+  try {
+    return normalizeLaunchApiMode(value, 'chat_completions')
+  } catch {
+    return undefined
+  }
+}
+
 function normalizeLaunchApiMode(value: unknown, fallback: ApiMode): ApiMode {
   if (!value) return fallback
   const mode = String(value).trim() as ApiMode
-  if (!LAUNCH_API_MODES.has(mode)) {
-    const err = new Error('Invalid API protocol')
-    ;(err as any).status = 400
-    throw err
-  }
-  return mode
+  if (LAUNCH_API_MODES.has(mode)) return mode
+  if (mode === 'codex_app_server') return 'codex_responses'
+
+  const err = new Error('Invalid API protocol')
+  ;(err as any).status = 400
+  throw err
 }
 
 function storedCodingAgentMode(session: HermesSessionRow | null): 'scoped' | 'global' {
@@ -637,6 +654,8 @@ function codexCatalogEntry(input: {
     description: input.displayName,
     default_reasoning_level: 'medium',
     supported_reasoning_levels: [
+      { effort: 'none', description: 'Disable provider-side reasoning when supported' },
+      { effort: 'minimal', description: 'Use the smallest provider-side reasoning budget when supported' },
       { effort: 'low', description: 'Fast responses with lighter reasoning' },
       { effort: 'medium', description: 'Balances speed and reasoning depth for everyday tasks' },
       { effort: 'high', description: 'Greater reasoning depth for complex problems' },
@@ -849,31 +868,105 @@ function isManagedHermesMcpServer(value: unknown): boolean {
   return typeof server.command === 'string' && LEGACY_HERMES_MCP_COMMANDS.has(server.command)
 }
 
+function normalizeClaudeMcpServer(server: unknown): unknown {
+  if (!server || typeof server !== 'object' || Array.isArray(server)) return server
+  const normalized = { ...(server as Record<string, unknown>) }
+  if (normalized.type === 'streamableHttp') normalized.type = 'http'
+  return normalized
+}
+
 function parseClaudeMcpServers(existingContent: string | null | undefined = ''): Record<string, unknown> {
   if (!existingContent?.trim()) return {}
   try {
     const parsed = JSON.parse(existingContent)
     if (!parsed?.mcpServers || typeof parsed.mcpServers !== 'object' || Array.isArray(parsed.mcpServers)) return {}
-    return Object.fromEntries(Object.entries(parsed.mcpServers).filter(([name, server]) => {
-      if (HERMES_MCP_SERVER_NAMES.has(name)) return false
-      if (LEGACY_HERMES_MCP_SERVER_NAMES.has(name)) return false
-      return !isManagedHermesMcpServer(server)
-    }))
+    return Object.fromEntries(Object.entries(parsed.mcpServers)
+      .filter(([name, server]) => {
+        if (HERMES_MCP_SERVER_NAMES.has(name)) return false
+        if (LEGACY_HERMES_MCP_SERVER_NAMES.has(name)) return false
+        return !isManagedHermesMcpServer(server)
+      })
+      .map(([name, server]) => [name, normalizeClaudeMcpServer(server)]))
   } catch {
     return {}
   }
 }
 
-function claudeMcpConfigJson(profile: string, existingContent: string | null | undefined = ''): string {
-  const mcpServers = parseClaudeMcpServers(existingContent)
+function inheritClaudeSettings(existingContent: string | null | undefined = ''): Record<string, unknown> {
+  if (!existingContent?.trim()) return {}
+  try {
+    const parsed = JSON.parse(existingContent)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    const inherited: Record<string, unknown> = {}
+    const enabledServers = (parsed as any).enabledMcpjsonServers
+    if (Array.isArray(enabledServers)) inherited.enabledMcpjsonServers = enabledServers.map(String).filter(Boolean)
+    const plugins = (parsed as any).plugins
+    if (plugins && typeof plugins === 'object' && !Array.isArray(plugins)) inherited.plugins = plugins
+    const enabledPlugins = (parsed as any).enabledPlugins
+    if (enabledPlugins && typeof enabledPlugins === 'object' && !Array.isArray(enabledPlugins)) inherited.enabledPlugins = enabledPlugins
+    return inherited
+  } catch {
+    return {}
+  }
+}
+
+function claudeMcpConfigJson(profile: string, ...existingContents: Array<string | null | undefined>): string {
+  const mcpServers: Record<string, unknown> = {}
+  for (const content of existingContents) {
+    Object.assign(mcpServers, parseClaudeMcpServers(content))
+  }
   for (const server of HERMES_MCP_SERVERS) {
     mcpServers[server.name] = hermesMcpServerConfig(profile, server.name, server.toolset)
   }
   return `${JSON.stringify({ mcpServers }, null, 2)}\n`
 }
 
-function codexMcpConfigToml(profile: string): string {
-  const blocks: string[] = []
+function parseCodexExternalMcpBlocks(...contents: Array<string | null | undefined>): string[] {
+  const blockByServer = new Map<string, string>()
+
+  for (const content of contents) {
+    if (!content?.trim()) continue
+    let currentServer = ''
+    let currentLines: string[] = []
+    const flush = () => {
+      if (!currentServer || currentLines.length === 0) return
+      const block = currentLines.join('\n').trim()
+      const isManaged = block.includes(`${HERMES_MCP_MANAGED_ENV_KEY}`)
+      if (!HERMES_MCP_SERVER_NAMES.has(currentServer) && !LEGACY_HERMES_MCP_SERVER_NAMES.has(currentServer) && !isManaged) {
+        blockByServer.set(currentServer, block)
+      }
+    }
+
+    for (const line of content.split(/\r?\n/)) {
+      const mcpMatch = line.match(/^\s*\[mcp_servers\.([^\].]+)(\.[^\]]+)?\]\s*$/)
+      if (mcpMatch) {
+        const nextServer = mcpMatch[1]
+        const isSubtable = Boolean(mcpMatch[2])
+        if (currentServer && nextServer === currentServer && isSubtable) {
+          currentLines.push(line)
+          continue
+        }
+        flush()
+        currentServer = nextServer
+        currentLines = [line]
+        continue
+      }
+      if (/^\s*\[/.test(line)) {
+        flush()
+        currentServer = ''
+        currentLines = []
+        continue
+      }
+      if (currentServer) currentLines.push(line)
+    }
+    flush()
+  }
+
+  return Array.from(blockByServer.values()).filter(Boolean)
+}
+
+function codexMcpConfigToml(profile: string, ...externalContents: Array<string | null | undefined>): string {
+  const blocks: string[] = [...parseCodexExternalMcpBlocks(...externalContents)]
   for (const item of HERMES_MCP_SERVERS) {
     const server = hermesMcpServerConfig(profile, item.name, item.toolset)
     const lines = [
@@ -1565,6 +1658,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
   const baseUrl = String(input.baseUrl || '').trim()
   const preset = PROVIDER_PRESETS.find(item => item.value === provider)
   const apiMode = normalizeLaunchApiMode(input.apiMode, preset?.api_mode || 'chat_completions')
+  const reasoningEffort = String(input.reasoningEffort || '').trim()
   const rootDir = getScopedConfigRoot(tool.id, scope)
   const workspaceDir = resolveLaunchWorkspaceRoot(scope, input.workspace)
   await mkdir(rootDir, { recursive: true })
@@ -1590,6 +1684,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
           baseUrl,
           apiKey,
           apiMode,
+          reasoningEffort,
           agentId: tool.id,
           agentSessionId: input.agentSessionId,
           chatSessionId: input.sessionId,
@@ -1598,7 +1693,10 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
     const claudeBaseUrl = proxyTarget?.baseUrl || baseUrl
     const claudeApiKey = proxyTarget?.token || apiKey
     const modelName = displayNameForModel(model)
+    const globalSettingsPath = getLiveConfigFileDefinition(tool.id, 'settings')?.absolutePath
+    const inheritedSettings = inheritClaudeSettings(globalSettingsPath ? await safeReadFile(globalSettingsPath) : '')
     const settings = {
+      ...inheritedSettings,
       model,
       env: {
         ...(claudeApiKey ? { ANTHROPIC_API_KEY: claudeApiKey } : {}),
@@ -1616,9 +1714,11 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
     }
     env = settings.env
     await writeScopedFile('settings', `${JSON.stringify(settings, null, 2)}\n`)
+    const globalMcpPath = getLiveConfigFileDefinition(tool.id, 'mcp')?.absolutePath
     const existingMcpPath = getScopedConfigFileDefinition(tool.id, 'mcp', scope)?.absolutePath
+    const globalMcpConfig = globalMcpPath ? await safeReadFile(globalMcpPath) : ''
     const existingMcpConfig = existingMcpPath ? await safeReadFile(existingMcpPath) : ''
-    await writeScopedFile('mcp', claudeMcpConfigJson(scope.profile, existingMcpConfig))
+    await writeScopedFile('mcp', claudeMcpConfigJson(scope.profile, globalMcpConfig, existingMcpConfig))
     await writeScopedFile('prompt', hermesPromptDocument())
 
     const settingsPath = join(rootDir, 'settings.json')
@@ -1648,6 +1748,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
           baseUrl,
           apiKey,
           apiMode,
+          reasoningEffort,
           agentId: tool.id,
           agentSessionId: input.agentSessionId,
           chatSessionId: input.sessionId,
@@ -1662,6 +1763,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
       `model_provider = ${JSON.stringify(providerId)}`,
       `model = ${JSON.stringify(model)}`,
       'model_reasoning_summary = "auto"',
+      ...(reasoningEffort ? [`model_reasoning_effort = ${JSON.stringify(reasoningEffort)}`] : []),
       `developer_instructions = ${tomlMultilineString(getSystemPrompt().trim())}`,
       'disable_response_storage = true',
       '',
@@ -1672,7 +1774,11 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
       'requires_openai_auth = false',
       ...(codexApiKey ? [`experimental_bearer_token = ${JSON.stringify(codexApiKey)}`] : []),
       '',
-      codexMcpConfigToml(scope.profile),
+      codexMcpConfigToml(
+        scope.profile,
+        await safeReadFile(getLiveConfigFileDefinition(tool.id, 'config')?.absolutePath || ''),
+        await safeReadFile(getScopedConfigFileDefinition(tool.id, 'config', scope)?.absolutePath || ''),
+      ),
     ].join('\n')
     const catalog = buildCodexModelCatalog({
       profile: scope.profile,
@@ -1686,7 +1792,10 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
     await writeScopedFile('auth', `${JSON.stringify({}, null, 2)}\n`)
 
     env = { CODEX_HOME: rootDir }
-    args = ['--model', model]
+    args = [
+      '--model', model,
+      ...(reasoningEffort ? ['-c', `model_reasoning_effort=${JSON.stringify(reasoningEffort)}`] : []),
+    ]
   }
 
   let shellCommand = buildLaunchShellCommand({
@@ -1715,6 +1824,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
     profile: scope.profile,
     provider: scope.provider,
     model,
+    apiMode,
     rootDir,
     workspaceDir,
     command: tool.command,
@@ -1722,6 +1832,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
     env,
     shellCommand,
     files,
+    reasoningEffort,
   }
 }
 
@@ -1761,7 +1872,8 @@ export async function startCodingAgentRun(
     ? storedCodingAgentMode(existingSession) === requestedMode &&
       (existingSession.agent === (id === 'codex' ? 'codex' : 'claude') || !existingSession.agent) &&
       String(existingSession.provider || '').trim() === String(resolvedInput.provider || '').trim() &&
-      String(existingSession.model || '').trim() === String(resolvedInput.model || '').trim()
+      String(existingSession.model || '').trim() === String(resolvedInput.model || '').trim() &&
+      (!String(existingSession.api_mode || '').trim() || String(existingSession.api_mode || '').trim() === String(resolvedInput.apiMode || '').trim())
     : false
   const existingNativeSessionId = canResumeNativeSession ? existingSession?.agent_native_session_id || '' : ''
   const agentNativeSessionId = resolvedInput.agentNativeSessionId || existingNativeSessionId || (id === 'claude-code' ? randomUUID() : '')
@@ -1788,6 +1900,7 @@ export async function startCodingAgentRun(
     profile: launch.profile,
     provider: persistedProvider,
     model: launch.model,
+    apiMode: launch.apiMode,
     sessionId,
     agentNativeSessionId,
     nativeResume: Boolean(existingNativeSessionId),
@@ -1797,6 +1910,7 @@ export async function startCodingAgentRun(
     workspaceDir: launch.workspaceDir,
     env: runtimeEnv,
     state,
+    reasoningEffort: launch.reasoningEffort,
     sessionSource: sessionSource === 'global_agent' || sessionSource === 'workflow' ? sessionSource : undefined,
   })
   updateSession(sessionId, {
@@ -1807,6 +1921,7 @@ export async function startCodingAgentRun(
     agent_native_session_id: agentNativeSessionId,
     model: launch.model,
     provider: persistedProvider,
+    api_mode: launch.apiMode || '',
     workspace: launch.workspaceDir,
   })
   return {

@@ -1,21 +1,24 @@
 import type { Server, Socket } from 'socket.io'
+import { createHash, randomUUID } from 'crypto'
 import { inspect } from 'util'
 import {
-  AgentRuntime,
   createModelClient,
+  resolveModelProviderConfigs,
   type AgentMessage,
   type AgentToolCall,
   type ModelClient,
   type ModelEvent,
   type AgentRuntimeEvent,
   type ModelProviderConfig,
-  type ModelProviderType,
   type ModelRequest,
   type ModelResponse,
-  type ModelRequestStyle,
 } from '../../../../../ekko-agent/src'
-import { createSession, addMessage, getSession, updateSessionStats } from '../../../db/hermes/session-store'
+import { getGlobalEkkoAgent } from '../../ekko-agent/manager'
+import { resolveEkkoMcpServers } from '../../ekko-agent/mcp'
+import { resolveEkkoAuthorizedProviderCredentials } from '../../ekko-agent/auth-providers'
+import { createSession, addMessage, getSession, updateSession, updateSessionStats } from '../../../db/hermes/session-store'
 import { logger } from '../../logger'
+import { recordSessionUsage } from '../../usage-recorder'
 import { getProfileDir } from '../hermes-profile'
 import { observeRunChatPetEvent } from '../pet-state-socket'
 import { contentBlocksToString, extractTextForPreview } from './content-blocks'
@@ -45,6 +48,8 @@ export interface EkkoAgentRunSocketData {
   api_key?: string
   apiMode?: string
   api_mode?: string
+  mcpServers?: Record<string, unknown>
+  mcp_servers?: Record<string, unknown>
   peerExcludeSocketId?: string
   queue_id?: string
   onEvent?: (event: string, payload: any) => void
@@ -54,35 +59,106 @@ function isEkkoAgentId(data: EkkoAgentRunSocketData): boolean {
   return data.coding_agent_id === 'ekko-agent' || data.agent_id === 'ekko-agent'
 }
 
-function requestStyleForConfig(provider: string, baseUrl: string, apiMode?: string): ModelRequestStyle {
-  const key = provider.toLowerCase()
-  const url = baseUrl.toLowerCase()
-  if (apiMode === 'codex_responses') return 'openai-responses'
-  if (apiMode === 'anthropic_messages') return 'anthropic-messages'
-  if (key.includes('gemini') || key.includes('google') || url.includes('generativelanguage.googleapis.com')) return 'gemini-contents'
-  return 'openai-chat'
+function parseJsonRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  return value as Record<string, unknown>
 }
 
-function providerTypeForStyle(provider: string, style: ModelRequestStyle): ModelProviderType {
-  const key = provider.toLowerCase()
-  if (style === 'anthropic-messages') return 'anthropic'
-  if (style === 'gemini-contents') return 'gemini'
-  if (key.includes('ollama')) return 'ollama'
-  if (key === 'openai') return 'openai'
-  return 'openai-compatible'
+function parseToolArguments(raw: unknown): { arguments: Record<string, unknown>; rawArguments?: string } {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) return { arguments: raw as Record<string, unknown> }
+  const rawArguments = typeof raw === 'string' ? raw : JSON.stringify(raw ?? {})
+  try {
+    const parsed = JSON.parse(rawArguments)
+    return {
+      arguments: parseJsonRecord(parsed) || {},
+      rawArguments,
+    }
+  } catch {
+    return { arguments: {}, rawArguments }
+  }
+}
+
+function normalizeStoredToolCall(raw: unknown): AgentToolCall | null {
+  const record = parseJsonRecord(raw)
+  if (!record) return null
+  const functionRecord = parseJsonRecord(record.function)
+  const id = String(record.id || record.call_id || record.tool_call_id || '').trim()
+  const name = String(record.name || functionRecord?.name || '').trim()
+  if (!id || !name) return null
+  const parsed = parseToolArguments(record.arguments ?? functionRecord?.arguments)
+  return {
+    id,
+    name,
+    arguments: parsed.arguments,
+    rawArguments: parsed.rawArguments,
+  }
+}
+
+function normalizeStoredToolCalls(value: unknown): AgentToolCall[] | undefined {
+  const rawCalls = Array.isArray(value)
+    ? value
+    : typeof value === 'string' && value.trim()
+      ? JSON.parse(value)
+      : []
+  if (!Array.isArray(rawCalls)) return undefined
+  const calls = rawCalls
+    .map(normalizeStoredToolCall)
+    .filter((call): call is AgentToolCall => !!call)
+  return calls.length ? calls : undefined
 }
 
 function toAgentMessages(messages: SessionState['messages']): AgentMessage[] {
-  return messages
-    .filter(message => message.role === 'user' || message.role === 'assistant' || message.role === 'system' || message.role === 'command')
-    .map((message): AgentMessage => {
-      const role: AgentMessage['role'] = message.role === 'assistant' || message.role === 'system' ? message.role : 'user'
-      return {
-        role,
-        content: contentBlocksToString(message.content as any),
+  const toolCallIds = new Set<string>()
+  const result: AgentMessage[] = []
+
+  for (const message of messages) {
+    if (message.role === 'user' || message.role === 'command' || message.role === 'system') {
+      const content = contentBlocksToString(message.content as any)
+      if (content.trim()) {
+        result.push({
+          role: message.role === 'system' ? 'system' : 'user',
+          content,
+        })
       }
-    })
-    .filter(message => message.content.trim().length > 0)
+      continue
+    }
+
+    if (message.role === 'assistant') {
+      let toolCalls: AgentToolCall[] | undefined
+      try {
+        toolCalls = normalizeStoredToolCalls(message.tool_calls)
+      } catch {
+        toolCalls = undefined
+      }
+      for (const call of toolCalls || []) toolCallIds.add(call.id)
+      const agentMessage: AgentMessage = {
+        role: 'assistant',
+        content: contentBlocksToString(message.content as any),
+        reasoning: message.reasoning || message.reasoning_content || undefined,
+        toolCalls,
+      }
+      if (agentMessage.content.trim() || (agentMessage.reasoning?.trim().length ?? 0) > 0 || toolCalls?.length) {
+        result.push(agentMessage)
+      }
+      continue
+    }
+
+    if (message.role === 'tool') {
+      const toolCallId = String(message.tool_call_id || '').trim()
+      if (!toolCallId || !toolCallIds.has(toolCallId)) continue
+      const content = contentBlocksToString(message.content as any)
+      if (!content.trim()) continue
+      result.push({
+        role: 'tool',
+        content,
+        toolCallId,
+        name: message.tool_name || undefined,
+      })
+      toolCallIds.delete(toolCallId)
+    }
+  }
+
+  return result
 }
 
 function appendStateEvent(state: SessionState, event: string, payload: any): void {
@@ -94,14 +170,27 @@ function appendStateEvent(state: SessionState, event: string, payload: any): voi
 function redactProviderConfig(config: ModelProviderConfig): ModelProviderConfig {
   return {
     ...config,
-    apiKey: config.apiKey ? '[redacted]' : undefined,
+    apiKey: config.apiKey ? apiKeyDebugInfo(config.apiKey) : undefined,
     headers: config.headers
       ? Object.fromEntries(Object.entries(config.headers).map(([key, value]) => [
           key,
-          /authorization|api[-_]?key|token/i.test(key) ? '[redacted]' : value,
+          /authorization|api[-_]?key|token/i.test(key) ? headerSecretDebugInfo(value) : value,
         ]))
       : undefined,
   }
+}
+
+function apiKeyDebugInfo(apiKey: string): string {
+  return `[present length=${apiKey.length} last4=${apiKey.slice(-4)} sha256=${createHash('sha256').update(apiKey).digest('hex').slice(0, 12)}]`
+}
+
+function headerSecretDebugInfo(value: unknown): string {
+  const raw = String(value ?? '')
+  if (!raw) return '[empty]'
+  const token = raw.replace(/^Bearer\s+/i, '')
+  return raw.startsWith('Bearer ')
+    ? `Bearer ${apiKeyDebugInfo(token)}`
+    : apiKeyDebugInfo(raw)
 }
 
 function consolePayload(value: unknown): string {
@@ -148,6 +237,11 @@ function requestForProvider(request: ModelRequest, config: ModelProviderConfig):
   }
 }
 
+function shouldFallbackProtocol(err: unknown): boolean {
+  const statusCode = (err as { statusCode?: number } | null)?.statusCode
+  return statusCode === 400 || statusCode === 404 || statusCode === 405 || statusCode === 415 || statusCode === 422
+}
+
 function toStoredToolCall(toolCall: AgentToolCall) {
   return {
     id: toolCall.id,
@@ -159,7 +253,17 @@ function toStoredToolCall(toolCall: AgentToolCall) {
   }
 }
 
-function createConsoleModelClient(client: ModelClient, context: { sessionId: string; providerConfig: ModelProviderConfig }): ModelClient {
+function createConsoleModelClient(
+  client: ModelClient,
+  context: {
+    sessionId: string
+    providerConfig: ModelProviderConfig
+    fallback?: {
+      client: ModelClient
+      providerConfig: ModelProviderConfig
+    }
+  },
+): ModelClient {
   return {
     ...client,
     provider: client.provider,
@@ -188,6 +292,33 @@ function createConsoleModelClient(client: ModelClient, context: { sessionId: str
           request_style: client.requestStyle,
           error: errorPayload(err),
         }))
+        if (context.fallback && context.fallback.providerConfig.requestStyle !== context.providerConfig.requestStyle && shouldFallbackProtocol(err)) {
+          const fallbackRequest = requestForProvider(request, context.fallback.providerConfig)
+          console.warn('[ekko-agent] model request protocol fallback', consolePayload({
+            session_id: context.sessionId,
+            from_request_style: context.providerConfig.requestStyle,
+            to_request_style: context.fallback.providerConfig.requestStyle,
+            provider_config: redactProviderConfig(context.fallback.providerConfig),
+            request: fallbackRequest,
+          }))
+          try {
+            const response = await context.fallback.client.create(fallbackRequest)
+            console.log('[ekko-agent] model request fallback success', consolePayload({
+              session_id: context.sessionId,
+              provider: context.fallback.client.provider,
+              request_style: context.fallback.client.requestStyle,
+              response,
+            }))
+            return response
+          } catch (fallbackErr) {
+            console.error('[ekko-agent] model request fallback failed', consolePayload({
+              session_id: context.sessionId,
+              provider: context.fallback.client.provider,
+              request_style: context.fallback.client.requestStyle,
+              error: errorPayload(fallbackErr),
+            }))
+          }
+        }
         throw err
       }
     },
@@ -214,6 +345,34 @@ function createConsoleModelClient(client: ModelClient, context: { sessionId: str
           request_style: client.requestStyle,
           error: errorPayload(err),
         }))
+        if (context.fallback && context.fallback.providerConfig.requestStyle !== context.providerConfig.requestStyle && shouldFallbackProtocol(err)) {
+          const fallbackRequest = requestForProvider(request, context.fallback.providerConfig)
+          console.warn('[ekko-agent] model stream protocol fallback', consolePayload({
+            session_id: context.sessionId,
+            from_request_style: context.providerConfig.requestStyle,
+            to_request_style: context.fallback.providerConfig.requestStyle,
+            provider_config: redactProviderConfig(context.fallback.providerConfig),
+            request: fallbackRequest,
+          }))
+          try {
+            for await (const event of context.fallback.client.stream(fallbackRequest)) {
+              yield event
+            }
+            console.log('[ekko-agent] model stream fallback success', consolePayload({
+              session_id: context.sessionId,
+              provider: context.fallback.client.provider,
+              request_style: context.fallback.client.requestStyle,
+            }))
+            return
+          } catch (fallbackErr) {
+            console.error('[ekko-agent] model stream fallback failed', consolePayload({
+              session_id: context.sessionId,
+              provider: context.fallback.client.provider,
+              request_style: context.fallback.client.requestStyle,
+              error: errorPayload(fallbackErr),
+            }))
+          }
+        }
         throw err
       }
     },
@@ -246,6 +405,8 @@ export async function handleEkkoAgentRun(
   state.profile = profile
   state.source = data.source === 'workflow' ? 'workflow' : 'coding_agent'
   state.events = []
+  const abortController = new AbortController()
+  state.abortController = abortController
 
   const storedSession = getSession(sessionId)
   const modelConfig = await resolveBridgeRunModelConfig({
@@ -290,6 +451,11 @@ export async function handleEkkoAgentRun(
       workspace,
     })
   }
+  try {
+    updateSession(sessionId, { ended_at: null, end_reason: null, last_active: now })
+  } catch (err) {
+    logger.warn(err, '[chat-run-socket] failed to reopen ekko-agent session %s', sessionId)
+  }
 
   if (shouldPersistUserMessage) {
     const role = data.display_role === 'command' ? 'command' : 'user'
@@ -321,37 +487,42 @@ export async function handleEkkoAgentRun(
     })
   }
 
-  const baseUrl = data.baseUrl || data.base_url || ''
-  const requestStyle = requestStyleForConfig(modelConfig.provider, baseUrl, data.apiMode || data.api_mode)
-  const providerConfig: ModelProviderConfig = {
-    id: modelConfig.provider || 'openai',
-    type: providerTypeForStyle(modelConfig.provider, requestStyle),
-    requestStyle,
-    baseUrl: baseUrl || undefined,
-    apiKey: data.apiKey || data.api_key || undefined,
-    defaultModel: modelConfig.model,
+  const authorizedCredentials = await resolveEkkoAuthorizedProviderCredentials(
+    profile,
+    modelConfig.provider,
+  )
+  const baseUrl = data.baseUrl || data.base_url || authorizedCredentials.baseUrl || ''
+  const apiMode = data.apiMode || data.api_mode
+  const apiKey = data.apiKey || data.api_key || authorizedCredentials.apiKey
+  const { providerConfig, fallbackProviderConfig } = resolveModelProviderConfigs({
+    provider: modelConfig.provider,
+    baseUrl,
+    apiKey,
+    model: modelConfig.model,
+    apiMode,
     timeoutMs: 120_000,
-  }
+  })
+  const mcpServers = resolveEkkoMcpServers(profile, data.mcpServers || data.mcp_servers)
   const modelClient = createConsoleModelClient(createModelClient(providerConfig), {
     sessionId,
     providerConfig,
+    fallback: fallbackProviderConfig
+      ? {
+          client: createModelClient(fallbackProviderConfig),
+          providerConfig: fallbackProviderConfig,
+        }
+      : undefined,
   })
-  const runtime = new AgentRuntime({
-    modelClient,
-    toolContext: {
-      cwd: workspace,
-      workspaceRoot: workspace,
-      timeoutMs: 120_000,
-    },
-    modelDefaults: {
-      model: modelConfig.model,
-    },
-  })
+  const agent = getGlobalEkkoAgent()
+  const memoryUsageBatchId = randomUUID()
 
   let assistantText = ''
+  let assistantReasoning = ''
   let runId = ''
   let usageInput = 0
   let usageOutput = 0
+  let usageCallIndex = 0
+  let contextEstimate: any
   const handleRuntimeEvent = (event: AgentRuntimeEvent) => {
     if ('runId' in event) runId = event.runId
     if (event.type === 'run.started') {
@@ -362,19 +533,69 @@ export async function handleEkkoAgentRun(
         model: modelConfig.model,
         provider: modelConfig.provider,
       })
+    } else if (event.type === 'context.estimated') {
+      contextEstimate = event.estimate
+      emit('context.estimated', {
+        event: 'context.estimated',
+        run_id: event.runId,
+        contextTokens: event.estimate.contextTokens,
+        context_tokens: event.estimate.contextTokens,
+        systemPromptTokens: event.estimate.systemPromptTokens,
+        toolTokens: event.estimate.toolTokens,
+        messageTokens: event.estimate.messageTokens,
+        toolCount: event.estimate.toolCount,
+      })
     } else if (event.type === 'model.message') {
       const text = event.message.content || ''
       if (text && !event.message.toolCalls?.length) {
+        const shouldEmitFullMessage = assistantText.length === 0
         assistantText = text
-        emit('message.delta', {
-          event: 'message.delta',
-          run_id: event.runId,
-          delta: text,
-        })
+        if (shouldEmitFullMessage) {
+          emit('message.delta', {
+            event: 'message.delta',
+            run_id: event.runId,
+            delta: text,
+          })
+        }
       }
-      if (event.message.usage) {
-        usageInput += event.message.usage.inputTokens || 0
-        usageOutput += event.message.usage.outputTokens || 0
+    } else if (event.type === 'model.delta') {
+      assistantText += event.text
+      emit('message.delta', {
+        event: 'message.delta',
+        run_id: event.runId,
+        delta: event.text,
+      })
+    } else if (event.type === 'model.usage') {
+      usageInput += event.usage.inputTokens || 0
+      usageOutput += event.usage.outputTokens || 0
+      usageCallIndex += 1
+      recordSessionUsage({
+        sessionId,
+        runId: `${event.runId}:step:${event.step}:call:${usageCallIndex}`,
+        source: 'ekko_agent',
+        agent: 'ekko_agent',
+        usageScope: 'model_call',
+        apiCalls: 1,
+        usage: event.usage,
+        profile,
+        model: modelConfig.model,
+        provider: modelConfig.provider,
+        isEstimated: false,
+      })
+    } else if (event.type === 'model.context') {
+      emit('context.updated', {
+        event: 'context.updated',
+        run_id: event.runId,
+        context: event.context,
+      })
+    } else if (event.type === 'model.reasoning') {
+      if (event.text) {
+        assistantReasoning += event.text
+        emit('reasoning.delta', {
+          event: 'reasoning.delta',
+          run_id: event.runId,
+          delta: event.text,
+        })
       }
     } else if (event.type === 'tool.started') {
       emit('tool.started', {
@@ -382,6 +603,7 @@ export async function handleEkkoAgentRun(
         run_id: event.runId,
         tool: event.toolName,
         name: event.toolName,
+        arguments: event.arguments,
         preview: JSON.stringify(event.arguments || {}),
         tool_call_id: event.toolCallId,
       })
@@ -391,8 +613,10 @@ export async function handleEkkoAgentRun(
         run_id: event.runId,
         tool: event.toolName,
         name: event.toolName,
+        output: event.result.content,
         preview: event.result.content,
         tool_call_id: event.toolCallId,
+        duration: Math.round(event.durationMs / 10) / 100,
         error: event.result.error,
       })
     }
@@ -400,17 +624,47 @@ export async function handleEkkoAgentRun(
 
   try {
     logger.info('[chat-run-socket] starting ekko-agent run for session %s', sessionId)
-    const result = await runtime.run({
+    const authenticatedUserId = socket.data?.user?.id == null ? undefined : String(socket.data.user.id)
+    const result = await agent.run({
+      modelClient,
       model: modelConfig.model,
+      modelDefaults: {
+        model: modelConfig.model,
+      },
       messages: toAgentMessages(state.messages),
+      signal: abortController.signal,
       onEvent: handleRuntimeEvent,
+      onMemoryUsage: event => {
+        recordSessionUsage({
+          sessionId,
+          runId: `memory-summary:${memoryUsageBatchId}:call:${event.callIndex}`,
+          source: 'ekko_agent',
+          agent: 'ekko_agent',
+          usageScope: 'model_call',
+          purpose: event.purpose,
+          apiCalls: 1,
+          usage: event.usage,
+          profile,
+          model: event.model || modelConfig.model,
+          provider: modelConfig.provider,
+          isEstimated: false,
+        })
+      },
       toolContext: {
         cwd: workspace,
         workspaceRoot: workspace,
+        workspaceId: workspace,
+        userId: authenticatedUserId,
+        sessionId,
+        browserSessionId: sessionId,
+        mcpServers,
         timeoutMs: 120_000,
+        signal: abortController.signal,
       },
       metadata: {
         session_id: sessionId,
+        workspace_id: workspace,
+        user_id: authenticatedUserId,
         profile,
       },
     })
@@ -431,6 +685,8 @@ export async function handleEkkoAgentRun(
           tool_calls: toolCalls,
           timestamp,
           finish_reason: 'tool_calls',
+          reasoning: step.message.reasoning || null,
+          reasoning_content: step.message.reasoning || null,
         })
         state.messages.push({
           id: assistantId || state.messages.length + 1,
@@ -440,6 +696,8 @@ export async function handleEkkoAgentRun(
           tool_calls: toolCalls,
           timestamp,
           finish_reason: 'tool_calls',
+          reasoning: step.message.reasoning || null,
+          reasoning_content: step.message.reasoning || null,
         })
       } else if (step.type === 'tool') {
         const timestamp = Math.floor(Date.now() / 1000)
@@ -450,6 +708,7 @@ export async function handleEkkoAgentRun(
           tool_call_id: step.toolCallId,
           tool_name: step.toolName,
           timestamp,
+          finish_reason: step.result.ok ? null : 'error',
         })
         state.messages.push({
           id: toolId || state.messages.length + 1,
@@ -459,16 +718,46 @@ export async function handleEkkoAgentRun(
           tool_call_id: step.toolCallId,
           tool_name: step.toolName,
           timestamp,
+          finish_reason: step.result.ok ? null : 'error',
         })
       }
     }
-    if (assistantText.trim()) {
+    assistantReasoning = result.output.reasoning || assistantReasoning
+    const hadToolActivity = result.steps.some(step => step.type === 'tool')
+    if (!assistantText.trim() && !assistantReasoning.trim() && !hadToolActivity) {
+      const error = 'Model provider returned an empty response after streaming and non-streaming attempts.'
+      logger.warn({
+        session_id: sessionId,
+        provider_config: redactProviderConfig(providerConfig),
+        response: result.output,
+      }, '[chat-run-socket] ekko-agent model returned empty output')
+      if (state.queue.length === 0) {
+        try {
+          updateSession(sessionId, {
+            ended_at: Math.floor(Date.now() / 1000),
+            end_reason: 'error',
+          })
+        } catch (err) {
+          logger.warn(err, '[chat-run-socket] failed to write ekko-agent empty-response end marker for %s', sessionId)
+        }
+      }
+      emit('run.failed', {
+        event: 'run.failed',
+        run_id: runId || result.runId,
+        error,
+        queue_remaining: state.queue.length,
+      })
+      return
+    }
+    if (assistantText.trim() || assistantReasoning.trim()) {
       const assistantId = addMessage({
         session_id: sessionId,
         role: 'assistant',
         content: assistantText,
         timestamp: Math.floor(Date.now() / 1000),
         finish_reason: result.output.finishReason || null,
+        reasoning: assistantReasoning || null,
+        reasoning_content: assistantReasoning || null,
       })
       state.messages.push({
         id: assistantId || state.messages.length + 1,
@@ -477,6 +766,8 @@ export async function handleEkkoAgentRun(
         content: assistantText,
         timestamp: Math.floor(Date.now() / 1000),
         finish_reason: result.output.finishReason || null,
+        reasoning: assistantReasoning || null,
+        reasoning_content: assistantReasoning || null,
       })
     }
     if (!usageInput && !usageOutput) {
@@ -489,18 +780,35 @@ export async function handleEkkoAgentRun(
     }
     state.inputTokens = (state.inputTokens || 0) + usageInput
     state.outputTokens = (state.outputTokens || 0) + usageOutput
+    if (contextEstimate?.contextTokens != null) state.contextTokens = contextEstimate.contextTokens
     updateSessionStats(sessionId)
+    if (state.queue.length === 0) {
+      try {
+        updateSession(sessionId, {
+          ended_at: Math.floor(Date.now() / 1000),
+          end_reason: 'complete',
+        })
+      } catch (err) {
+        logger.warn(err, '[chat-run-socket] failed to write ekko-agent session end marker for %s', sessionId)
+      }
+    }
     emit('usage.updated', {
       event: 'usage.updated',
       run_id: runId || result.runId,
       input_tokens: state.inputTokens || 0,
       output_tokens: state.outputTokens || 0,
       total_tokens: (state.inputTokens || 0) + (state.outputTokens || 0),
+      contextTokens: contextEstimate?.contextTokens ?? state.contextTokens,
+      context_tokens: contextEstimate?.contextTokens ?? state.contextTokens,
     })
     emit('run.completed', {
       event: 'run.completed',
       run_id: runId || result.runId,
       output: assistantText,
+      context: result.context,
+      contextTokens: contextEstimate?.contextTokens,
+      context_tokens: contextEstimate?.contextTokens,
+      contextEstimate,
       usage: {
         input_tokens: usageInput,
         output_tokens: usageOutput,
@@ -509,8 +817,22 @@ export async function handleEkkoAgentRun(
       queue_remaining: state.queue.length,
     })
   } catch (err) {
+    if (abortController.signal.aborted || isAbortError(err)) {
+      logger.info('[chat-run-socket] ekko-agent run aborted for session %s', sessionId)
+      return
+    }
     const error = err instanceof Error ? err.message : String(err)
     logger.warn(err, '[chat-run-socket] ekko-agent run failed for session %s', sessionId)
+    if (state.queue.length === 0) {
+      try {
+        updateSession(sessionId, {
+          ended_at: Math.floor(Date.now() / 1000),
+          end_reason: 'error',
+        })
+      } catch (updateErr) {
+        logger.warn(updateErr, '[chat-run-socket] failed to write ekko-agent error end marker for %s', sessionId)
+      }
+    }
     emit('run.failed', {
       event: 'run.failed',
       run_id: runId,
@@ -518,16 +840,22 @@ export async function handleEkkoAgentRun(
       queue_remaining: state.queue.length,
     })
   } finally {
-    state.isWorking = false
-    state.isAborting = false
-    state.runId = undefined
-    state.abortController = undefined
-    state.activeRunMarker = undefined
-    state.responseRun = undefined
-    state.profile = undefined
-    state.events = []
-    if (state.queue.length > 0) {
-      dequeueNextQueuedRun(socket, sessionId, profile)
+    if (!abortController.signal.aborted || state.abortController === abortController) {
+      state.isWorking = false
+      state.isAborting = false
+      state.runId = undefined
+      state.abortController = undefined
+      state.activeRunMarker = undefined
+      state.responseRun = undefined
+      state.profile = undefined
+      state.events = []
+      if (state.queue.length > 0) {
+        dequeueNextQueuedRun(socket, sessionId, profile)
+      }
     }
   }
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && (error.name === 'AbortError' || error.message === 'Run aborted.')
 }

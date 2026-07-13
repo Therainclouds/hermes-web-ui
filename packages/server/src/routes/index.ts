@@ -7,6 +7,7 @@ import { uploadRoutes } from './upload'
 import { updateRoutes } from './update'
 import { authPublicRoutes, authProtectedRoutes } from './auth'
 import { devicePublicRoutes, deviceRoutes } from './devices'
+import { mcuDeviceRoutes } from './mcu-devices'
 import { codingAgentRoutes } from './coding-agents'
 import { apiDocsRoutes } from './api-docs'
 import { claudeCodeProxyRoutes } from './claude-code-proxy'
@@ -27,7 +28,6 @@ import { nousAuthRoutes } from './hermes/nous-auth'
 import { copilotAuthRoutes } from './hermes/copilot-auth'
 import { xaiAuthRoutes } from './hermes/xai-auth'
 import { anthropicAuthRoutes } from './hermes/anthropic-auth'
-import { geminiAuthRoutes } from './hermes/gemini-auth'
 import { weixinRoutes } from './hermes/weixin'
 import { fileRoutes } from './hermes/files'
 import { downloadRoutes } from './hermes/download'
@@ -72,6 +72,7 @@ export function registerRoutes(app: any, authMiddleware: Array<(ctx: Context, ne
   // --- Protected routes (auth required) ---
   app.use(authProtectedRoutes.routes())
   app.use(deviceRoutes.routes())
+  app.use(mcuDeviceRoutes.routes())
   app.use(uploadRoutes.routes())
   app.use(updateRoutes.routes())           // Must be before proxy (proxy catch-all matches everything)
   app.use(codingAgentRoutes.routes())
@@ -89,7 +90,6 @@ export function registerRoutes(app: any, authMiddleware: Array<(ctx: Context, ne
   app.use(copilotAuthRoutes.routes())
   app.use(xaiAuthRoutes.routes())
   app.use(anthropicAuthRoutes.routes())
-  app.use(geminiAuthRoutes.routes())
   app.use(weixinRoutes.routes())
   app.use(chatRunRoutes.routes())
   app.use(groupChatRoutes.routes())

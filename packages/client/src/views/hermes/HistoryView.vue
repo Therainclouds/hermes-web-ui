@@ -166,7 +166,7 @@ function mapHistoryMessages(messages: HermesMessage[]): Session['messages'] {
         ? JSON.stringify(m.tool_calls[0].function.arguments)
         : undefined
       msg.toolPreview = moaPayload?.preview
-      msg.toolStatus = 'done'
+      msg.toolStatus = m.finish_reason === 'error' ? 'error' : 'done'
       msg.toolResult = moaPayload ? moaPayload.result : (m.content || undefined)
       msg.content = ''
     }

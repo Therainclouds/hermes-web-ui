@@ -19,6 +19,7 @@ export type AgentMessageRole = 'system' | 'user' | 'assistant' | 'tool'
 export interface AgentMessage {
   role: AgentMessageRole
   content: string
+  reasoning?: string
   name?: string
   toolCallId?: string
   toolCalls?: AgentToolCall[]
@@ -41,31 +42,39 @@ export interface ModelUsage {
   inputTokens?: number
   outputTokens?: number
   totalTokens?: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  reasoningTokens?: number
 }
 
 export interface ModelRequest {
   model?: string
   messages: AgentMessage[]
+  signal?: AbortSignal
   temperature?: number
   maxTokens?: number
   tools?: AgentToolDefinition[]
   toolChoice?: 'auto' | 'none' | 'required'
   stream?: boolean
   metadata?: Record<string, unknown>
+  context?: unknown
 }
 
 export interface ModelResponse {
   id?: string
   model?: string
   content: string
+  reasoning?: string
   toolCalls?: AgentToolCall[]
   usage?: ModelUsage
   finishReason?: string
+  context?: unknown
   raw?: unknown
 }
 
 export type ModelEvent =
   | { type: 'text-delta'; text: string }
+  | { type: 'reasoning-delta'; text: string }
   | { type: 'tool-call'; toolCall: AgentToolCall }
   | { type: 'usage'; usage: ModelUsage }
   | { type: 'done'; response?: Partial<ModelResponse> }

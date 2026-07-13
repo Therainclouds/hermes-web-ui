@@ -1,4 +1,3 @@
-import type { AgentToolDefinition } from '../model/types'
 import type { AgentSkill } from '../skills/types'
 
 export interface SystemPromptInput {
@@ -6,7 +5,7 @@ export interface SystemPromptInput {
   runtimeInstructions?: string[]
   userSystemMessages?: string[]
   skills?: AgentSkill[]
-  tools?: AgentToolDefinition[]
+  memoryContext?: string
   context?: {
     cwd?: string
     workspaceRoot?: string
@@ -39,11 +38,8 @@ export function buildSystemPrompt(input: SystemPromptInput = {}): string {
     ].filter(Boolean).join('\n')).join('\n\n')))
   }
 
-  if (input.tools?.length) {
-    sections.push(section('Available Tools', input.tools.map(tool => {
-      const description = tool.description ? `: ${tool.description}` : ''
-      return `- ${tool.name}${description}`
-    }).join('\n')))
+  if (input.memoryContext?.trim()) {
+    sections.push(input.memoryContext.trim())
   }
 
   if (input.userSystemMessages?.length) {
