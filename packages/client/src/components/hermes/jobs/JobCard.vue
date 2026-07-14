@@ -38,6 +38,8 @@ const statusType = computed(() => {
 })
 
 const scheduleExpr = computed(() => scheduleToDisplayText(props.job.schedule, props.job.schedule_display || '—'))
+const providerLabel = computed(() => props.job.provider || '—')
+const modelLabel = computed(() => props.job.model || '—')
 
 const formatTime = (t?: string | null) => {
   if (!t) return '—'
@@ -100,8 +102,12 @@ function handleCardClick(e: MouseEvent) {
         <code class="info-value mono">{{ scheduleExpr }}</code>
       </div>
       <div class="info-row">
+        <span class="info-label">{{ t('jobs.info.provider') }}</span>
+        <span class="info-value mono">{{ providerLabel }}</span>
+      </div>
+      <div class="info-row">
         <span class="info-label">{{ t('jobs.info.model') }}</span>
-        <span class="info-value mono">{{ job.model || '—' }}</span>
+        <span class="info-value mono">{{ modelLabel }}</span>
       </div>
       <div class="info-row">
         <span class="info-label">{{ t('jobs.info.lastRun') }}</span>

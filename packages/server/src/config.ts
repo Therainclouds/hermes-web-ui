@@ -23,6 +23,8 @@ import type { UpdatePackageType, UpdateStrategy } from './services/update/types'
  *
  * Runtime behavior:
  * - PROFILE: Initial Hermes profile name. Default: default.
+ * - HERMES_REMOTE_RELAY_URL / REMOTE_RELAY_URL: Fixed remote relay base URL for official MCU remote login.
+ *   Default: https://api.hermes-studio.ai.
  * - HERMES_GATEWAY_URL / GATEWAY_URL: Explicit Hermes gateway upstream URL for proxy routes.
  * - GATEWAY_HOST: Default Hermes gateway upstream host. Default: 127.0.0.1.
  * - GATEWAY_PORT: Default Hermes gateway upstream port. Default: 8642.
@@ -190,6 +192,9 @@ const updateManifestUrl = normalizeOptionalUrl(process.env.WEBUI_UPDATE_MANIFEST
 const updateManifestBaseUrl = normalizeUrl(process.env.WEBUI_UPDATE_MANIFEST_BASE_URL)
 const updateManifestUrls = parseUrlList(process.env.WEBUI_UPDATE_MANIFEST_URLS)
 const updateManifestBaseUrls = parseUrlList(process.env.WEBUI_UPDATE_MANIFEST_BASE_URLS)
+const remoteRelay = {
+  url: normalizeUrl(process.env.HERMES_REMOTE_RELAY_URL || process.env.REMOTE_RELAY_URL || 'https://api.hermes-studio.ai'),
+}
 
 export const config = {
   port: parseInt(process.env.PORT || '6060', 10),
@@ -199,6 +204,7 @@ export const config = {
   uploadDir: getUploadDir(),
   dataDir: resolve(__dirname, '..', 'data'),
   corsOrigins: getCorsOrigins(),
+  remoteRelay,
   update: {
     enabled: parseBoolean(process.env.WEBUI_UPDATE_ENABLED),
     strategy: normalizeUpdateStrategy(process.env.WEBUI_UPDATE_STRATEGY),

@@ -12,6 +12,7 @@ import type {
   ModelResponse,
   ModelUsage,
 } from '../types'
+import { ModelProviderError } from '../errors'
 import { isPlainRecord, parseJson, postJson, postStream, providerUrl, readServerSentEvents, requestHeaders } from '../http'
 
 interface AnthropicPayload {
@@ -34,6 +35,7 @@ interface AnthropicPayload {
 
 type AnthropicContentBlock =
   | { type: 'text'; text: string }
+  | { type: 'thinking'; thinking: string }
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
   | { type: 'tool_result'; tool_use_id: string; content: string }
 
@@ -44,6 +46,8 @@ interface AnthropicResponse {
   usage?: {
     input_tokens?: number
     output_tokens?: number
+    cache_read_input_tokens?: number
+    cache_creation_input_tokens?: number
   }
   stop_reason?: string
 }
@@ -78,7 +82,9 @@ export class AnthropicMessagesModelClient implements ModelClient {
       anthropicUrl(this.config),
       toAnthropicMessagesPayload(this.config, { ...request, stream: false }),
       anthropicHeaders(this.config),
+      request.signal,
     )
+    assertAnthropicSuccess(this.config, response)
     return normalizeAnthropicResponse(response)
   }
 
@@ -89,14 +95,24 @@ export class AnthropicMessagesModelClient implements ModelClient {
       anthropicUrl(this.config),
       toAnthropicMessagesPayload(this.config, { ...request, stream: true }),
       anthropicHeaders(this.config),
+      request.signal,
     )
 
     const toolCallBlocks = new Map<number, { id: string; name: string; argumentsText: string }>()
     let finishReason: string | undefined
+    let usage: ModelUsage | undefined
 
     for await (const event of readServerSentEvents(response)) {
       const chunk = parseJson<Record<string, unknown>>(event)
       if (!chunk) continue
+
+      if (chunk.type === 'message_start' && isPlainRecord(chunk.message) && isPlainRecord(chunk.message.usage)) {
+        usage = mergeUsage(usage, normalizeUsage(chunk.message.usage as NonNullable<AnthropicResponse['usage']>))
+      }
+
+      if (chunk.type === 'message_delta' && isPlainRecord(chunk.usage)) {
+        usage = mergeUsage(usage, normalizeUsage(chunk.usage as NonNullable<AnthropicResponse['usage']>))
+      }
 
       if (chunk.type === 'content_block_start' && isPlainRecord(chunk.content_block)) {
         const index = typeof chunk.index === 'number' ? chunk.index : 0
@@ -109,6 +125,9 @@ export class AnthropicMessagesModelClient implements ModelClient {
       if (chunk.type === 'content_block_delta' && isPlainRecord(chunk.delta)) {
         if (chunk.delta.type === 'text_delta' && typeof chunk.delta.text === 'string') {
           yield { type: 'text-delta', text: chunk.delta.text }
+        }
+        if (chunk.delta.type === 'thinking_delta' && typeof chunk.delta.thinking === 'string') {
+          yield { type: 'reasoning-delta', text: chunk.delta.thinking }
         }
         if (chunk.delta.type === 'input_json_delta' && typeof chunk.delta.partial_json === 'string') {
           const index = typeof chunk.index === 'number' ? chunk.index : 0
@@ -125,6 +144,7 @@ export class AnthropicMessagesModelClient implements ModelClient {
         for (const toolCall of toolCallBlocks.values()) {
           yield { type: 'tool-call', toolCall: normalizeToolCall(toolCall.id, toolCall.name, toolCall.argumentsText) }
         }
+        if (usage) yield { type: 'usage', usage }
         yield { type: 'done', response: { finishReason } }
         return
       }
@@ -150,6 +170,7 @@ export function normalizeAnthropicResponse(response: AnthropicResponse): ModelRe
     id: response.id,
     model: response.model,
     content: response.content?.filter(block => block.type === 'text').map(block => block.text).join('') ?? '',
+    reasoning: response.content?.filter(block => block.type === 'thinking').map(block => block.thinking).join('') || undefined,
     toolCalls: response.content?.filter(block => block.type === 'tool_use').map(block => ({
       id: block.id,
       name: block.name,
@@ -211,16 +232,62 @@ function normalizeUsage(usage: NonNullable<AnthropicResponse['usage']>): ModelUs
     inputTokens: usage.input_tokens,
     outputTokens: usage.output_tokens,
     totalTokens: (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0),
+    cacheReadTokens: usage.cache_read_input_tokens,
+    cacheWriteTokens: usage.cache_creation_input_tokens,
+  }
+}
+
+function mergeUsage(current: ModelUsage | undefined, next: ModelUsage): ModelUsage {
+  const merged = {
+    inputTokens: next.inputTokens ?? current?.inputTokens,
+    outputTokens: next.outputTokens ?? current?.outputTokens,
+    cacheReadTokens: next.cacheReadTokens ?? current?.cacheReadTokens,
+    cacheWriteTokens: next.cacheWriteTokens ?? current?.cacheWriteTokens,
+    reasoningTokens: next.reasoningTokens ?? current?.reasoningTokens,
+  }
+  return {
+    ...merged,
+    totalTokens: (merged.inputTokens ?? 0) + (merged.outputTokens ?? 0),
   }
 }
 
 function anthropicUrl(config: ModelProviderConfig): string {
-  return providerUrl(config, 'https://api.anthropic.com/v1', config.endpointPath ?? 'messages')
+  return providerUrl(config, 'https://api.anthropic.com/v1', config.endpointPath ?? defaultAnthropicEndpointPath(config))
 }
 
 function anthropicHeaders(config: ModelProviderConfig): HeadersInit {
   const headers = requestHeaders(config, { 'anthropic-version': '2023-06-01' }) as Record<string, string>
-  delete headers.authorization
+  if (isOfficialAnthropicBaseUrl(config.baseUrl)) delete headers.authorization
   if (config.apiKey) headers['x-api-key'] = config.apiKey
   return headers
+}
+
+function isOfficialAnthropicBaseUrl(baseUrl: string | undefined): boolean {
+  return !baseUrl || baseUrl.includes('api.anthropic.com')
+}
+
+function defaultAnthropicEndpointPath(config: ModelProviderConfig): string {
+  const baseUrl = (config.baseUrl || '').replace(/\/+$/, '')
+  return baseUrl.endsWith('/anthropic') ? 'v1/messages' : 'messages'
+}
+
+function assertAnthropicSuccess(config: ModelProviderConfig, response: AnthropicResponse): void {
+  const payload = response as unknown
+  if (!isPlainRecord(payload)) return
+  const hasAnthropicContent = Array.isArray(payload.content)
+  const failed = payload.success === false || (!hasAnthropicContent && ('code' in payload || 'error' in payload))
+  if (!failed) return
+
+  const error = isPlainRecord(payload.error) ? payload.error : undefined
+  const message = typeof error?.message === 'string'
+    ? error.message
+    : typeof payload.msg === 'string'
+      ? payload.msg
+      : typeof payload.message === 'string'
+        ? payload.message
+        : 'Model provider returned an error response.'
+  throw new ModelProviderError(message, {
+    provider: config.id,
+    details: payload,
+  })
 }

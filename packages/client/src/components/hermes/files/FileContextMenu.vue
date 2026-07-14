@@ -48,7 +48,9 @@ function getOptions() {
     if (isPreviewableFile(entry.name)) {
       options.push({ label: t('files.preview'), key: 'preview' })
     }
-    options.push({ label: t('files.download'), key: 'download' })
+    if (!filesStore.currentWorkspaceSessionId) {
+      options.push({ label: t('files.download'), key: 'download' })
+    }
   }
   options.push({ type: 'divider', key: 'd1' })
   options.push({ label: t('files.copyPath'), key: 'copyPath' })
@@ -75,6 +77,7 @@ async function handleSelect(key: string) {
       try { await filesStore.openPreview(entry) } catch { message.error(t('files.backendError')) }
       break
     case 'download':
+      if (filesStore.currentWorkspaceSessionId) return
       try { await downloadFile(entry.path, entry.name, filesStore.currentProfile) } catch (err: any) { message.error(err.message) }
       break
     case 'copyPath': {

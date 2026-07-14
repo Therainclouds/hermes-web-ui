@@ -3,7 +3,7 @@ import { readdirSync, readFileSync } from 'fs'
 import { join, relative } from 'path'
 
 import { changelog } from '@/data/changelog'
-import { messages, supportedLocales } from '@/i18n/messages'
+import { mergeMessagesWithFallback, supportedLocales } from '@/i18n/messages'
 import en from '@/i18n/locales/en'
 import zh from '@/i18n/locales/zh'
 import zhTW from '@/i18n/locales/zh-TW'
@@ -31,6 +31,13 @@ const rawMessages: Record<string, Record<string, unknown>> = {
   de,
   pt,
   ru,
+}
+
+const messages: Record<string, Record<string, unknown>> = {}
+for (const [locale, localeMessages] of Object.entries(rawMessages)) {
+  messages[locale] = locale === 'en'
+    ? localeMessages
+    : mergeMessagesWithFallback(en, localeMessages)
 }
 
 function walkFiles(dir: string, files: string[] = []): string[] {
@@ -129,6 +136,10 @@ const APPROVAL_AND_WRITE_GATE_LOCALIZED_KEYS = [
   'settings.session.requireAuth',
   'settings.session.memoryWriteApproval',
   'settings.session.skillsWriteApproval',
+]
+
+const JOURNEY_DISTINCT_LOCALIZED_KEYS = [
+  'journey.nodeKinds',
 ]
 
 const PLATFORM_SETTINGS_LOCALE_SPECIFIC_LOCALIZED_KEYS: Record<string, string[]> = {
@@ -270,6 +281,20 @@ describe('i18n locale coverage', () => {
         const localeValue = getPath(localeMessages, key)
         if (typeof localeValue === 'undefined') return [`${locale}: ${key} missing`]
         return localeValue === getPath(englishMessages, key) ? [`${locale}: ${key}`] : []
+      })
+    })
+
+    expect(untranslated).toEqual([])
+  })
+
+  it('localizes Journey node-kind copy in every raw non-English locale', () => {
+    const untranslated = Object.entries(rawMessages).flatMap(([locale, localeMessages]) => {
+      if (locale === 'en') return []
+
+      return JOURNEY_DISTINCT_LOCALIZED_KEYS.flatMap((key) => {
+        const localeValue = getPath(localeMessages, key)
+        if (typeof localeValue === 'undefined') return [`${locale}: ${key} missing`]
+        return localeValue === getPath(en, key) ? [`${locale}: ${key}`] : []
       })
     })
 

@@ -147,6 +147,45 @@ class AgentPool:
         self._exec_ask_depth = 0
         self._exec_ask_previous: str | None = None
 
+    def _install_usage_hook(self) -> None:
+        """Observe exact per-request model usage without requiring a user plugin."""
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+
+            manager = get_plugin_manager()
+            hooks = getattr(manager, "_hooks", None)
+            if not isinstance(hooks, dict):
+                raise RuntimeError("Hermes plugin manager does not expose its hook registry")
+            callbacks = hooks.setdefault("post_api_request", [])
+            callback = self._post_api_request_usage_hook
+            if callback not in callbacks:
+                callbacks.append(callback)
+        except Exception as exc:
+            print(
+                f"[hermes_bridge] failed to install model usage hook: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    def _post_api_request_usage_hook(self, **kwargs: Any) -> None:
+        session_id = str(kwargs.get("session_id") or "").strip()
+        usage = kwargs.get("usage")
+        if not session_id or not isinstance(usage, dict):
+            return
+        self._append_event(session_id, {
+            "event": "model.usage",
+            "api_request_id": str(kwargs.get("api_request_id") or "").strip(),
+            "turn_id": str(kwargs.get("turn_id") or "").strip(),
+            "api_call_count": kwargs.get("api_call_count"),
+            "usage": usage,
+            "model": kwargs.get("response_model") or kwargs.get("model"),
+            "provider": kwargs.get("provider"),
+            "api_mode": kwargs.get("api_mode"),
+            "api_duration": kwargs.get("api_duration"),
+            "started_at": kwargs.get("started_at"),
+            "ended_at": kwargs.get("ended_at"),
+        })
+
     def get_or_create(
         self,
         session_id: str,
@@ -258,7 +297,11 @@ class AgentPool:
                         "requested_session_id": session_id,
                         "profile": profile or "default",
                         "model": resolved_model,
-                        "provider": runtime.get("provider"),
+                        # Keep the user-facing provider selector (for example
+                        # custom:liuzheng) separate from the normalized runtime
+                        # provider (custom). Otherwise the next request sees a
+                        # false provider change and rebuilds the client.
+                        "provider": requested_provider or runtime.get("provider"),
                         "base_url": runtime.get("base_url"),
                         "api_mode": runtime.get("api_mode"),
                         "platform": _bridge_platform(),
@@ -324,6 +367,45 @@ class AgentPool:
             runtime = _resolve_runtime(requested_model, requested_provider or None)
 
         resolved_provider = str(runtime.get("provider") or requested_provider or "")
+        effective_provider = requested_provider or resolved_provider
+        current_agent_provider = str(getattr(session.agent, "provider", "") or "")
+        current_agent_model = str(getattr(session.agent, "model", "") or "")
+        current_base_url = str(getattr(session.agent, "base_url", "") or "").rstrip("/")
+        resolved_base_url = str(runtime.get("base_url") or "").rstrip("/")
+        current_api_mode = str(getattr(session.agent, "api_mode", "") or "")
+        resolved_api_mode = str(runtime.get("api_mode") or "")
+        current_api_key = getattr(session.agent, "api_key", None)
+        resolved_api_key = runtime.get("api_key")
+
+        # Provider selectors such as custom:liuzheng normalize to the runtime
+        # provider "custom". Re-selecting that same runtime must not rebuild the
+        # client: switch_model reconstructs _client_kwargs, and affected Hermes
+        # runtimes lose model.default_headers during that reconstruction.
+        runtime_unchanged = (
+            requested_model == current_agent_model
+            and resolved_provider == current_agent_provider
+            and resolved_base_url == current_base_url
+            and resolved_api_mode == current_api_mode
+            and resolved_api_key == current_api_key
+        )
+        if runtime_unchanged:
+            session.config.update({
+                "profile": target_profile,
+                "model": requested_model,
+                "provider": effective_provider,
+                "base_url": runtime.get("base_url"),
+                "api_mode": runtime.get("api_mode"),
+            })
+            session.config.pop("pending_model_switch", None)
+            session.last_used_at = time.time()
+            return {
+                "switched": True,
+                "deferred": False,
+                "session_id": session.session_id,
+                "model": requested_model,
+                "provider": effective_provider,
+            }
+
         switch_model = getattr(session.agent, "switch_model", None)
         if not callable(switch_model):
             raise RuntimeError("loaded agent does not support switch_model")
@@ -340,7 +422,7 @@ class AgentPool:
         session.config.update({
             "profile": target_profile,
             "model": requested_model,
-            "provider": resolved_provider,
+            "provider": effective_provider,
             "base_url": runtime.get("base_url"),
             "api_mode": runtime.get("api_mode"),
         })
@@ -361,7 +443,7 @@ class AgentPool:
         return {
             "session_id": session.session_id,
             "model": requested_model,
-            "provider": resolved_provider,
+            "provider": effective_provider,
             "loaded": True,
             "switched": True,
         }
@@ -1119,6 +1201,10 @@ class AgentPool:
         reasoning_effort: str | None = None,
     ) -> RunRecord:
         session = self.get_or_create(session_id, profile=profile, model=model, provider=provider)
+        # Install after agent construction so any runtime plugin initialization
+        # has completed. Rechecking on every run also recovers from a forced
+        # plugin reload that clears the manager's callback registry.
+        self._install_usage_hook()
         with session.lock:
             if session.running:
                 raise RuntimeError(f"session {session_id} is already running")

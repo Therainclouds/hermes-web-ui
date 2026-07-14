@@ -51,6 +51,8 @@ interface GeminiResponse {
     promptTokenCount?: number
     candidatesTokenCount?: number
     totalTokenCount?: number
+    cachedContentTokenCount?: number
+    thoughtsTokenCount?: number
   }
 }
 
@@ -83,6 +85,8 @@ export class GeminiContentsModelClient implements ModelClient {
       this.fetchImpl,
       geminiUrl(this.config, request.model, false),
       toGeminiContentsPayload(this.config, request),
+      undefined,
+      request.signal,
     )
     return normalizeGeminiResponse(response, request.model ?? this.config.defaultModel)
   }
@@ -93,6 +97,8 @@ export class GeminiContentsModelClient implements ModelClient {
       this.fetchImpl,
       geminiUrl(this.config, request.model, true),
       toGeminiContentsPayload(this.config, request),
+      undefined,
+      request.signal,
     )
 
     for await (const event of readServerSentEvents(response)) {
@@ -176,6 +182,8 @@ function normalizeUsage(usage: NonNullable<GeminiResponse['usageMetadata']>): Mo
     inputTokens: usage.promptTokenCount,
     outputTokens: usage.candidatesTokenCount,
     totalTokens: usage.totalTokenCount,
+    cacheReadTokens: usage.cachedContentTokenCount,
+    reasoningTokens: usage.thoughtsTokenCount,
   }
 }
 

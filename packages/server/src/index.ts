@@ -5,7 +5,7 @@ import bodyParser from '@koa/bodyparser'
 import serve from 'koa-static'
 import send from 'koa-send'
 import os from 'os'
-import { resolve } from 'path'
+import { relative, resolve } from 'path'
 import { mkdir } from 'fs/promises'
 import { readFileSync } from 'fs'
 import { config, shouldCreateWebUiDataDir } from './config'
@@ -33,6 +33,7 @@ import { logger } from './services/logger'
 import { startUSBService } from './services/usb'
 import { USBSocketServer } from './services/usb/USBSocketServer'
 import { createStaticCompressionMiddleware } from './middleware/static-compression'
+import { getStaticCacheControl, SPA_ENTRY_CACHE_CONTROL } from './middleware/static-cache'
 import { requireUserJwt, resolveUserProfile } from './middleware/user-auth'
 import { createCorsOriginResolver, securityHeaders } from './security'
 import type { ShutdownHandler } from './services/shutdown'
@@ -326,12 +327,18 @@ export async function bootstrap() {
   // SPA fallback
   const distDir = resolve(__dirname, '..', 'client')
   app.use(createStaticCompressionMiddleware())
-  app.use(serve(distDir))
+  app.use(serve(distDir, {
+    setHeaders(res, filePath) {
+      const cacheControl = getStaticCacheControl(relative(distDir, filePath))
+      if (cacheControl) res.setHeader('Cache-Control', cacheControl)
+    },
+  }))
   app.use(async (ctx) => {
     if (!ctx.path.startsWith('/api') &&
       ctx.path !== '/health' &&
       ctx.path !== '/upload' &&
       ctx.path !== '/webhook') {
+      ctx.set('Cache-Control', SPA_ENTRY_CACHE_CONTROL)
       await send(ctx, 'index.html', { root: distDir })
     }
   })

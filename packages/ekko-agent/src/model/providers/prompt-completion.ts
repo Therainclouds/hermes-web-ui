@@ -62,6 +62,8 @@ export class PromptCompletionModelClient implements ModelClient {
       this.fetchImpl,
       completionsUrl(this.config),
       toPromptCompletionPayload(this.config, { ...request, stream: false }),
+      undefined,
+      request.signal,
     )
     return normalizePromptCompletionResponse(response)
   }
@@ -72,6 +74,8 @@ export class PromptCompletionModelClient implements ModelClient {
       this.fetchImpl,
       completionsUrl(this.config),
       toPromptCompletionPayload(this.config, { ...request, stream: true }),
+      undefined,
+      request.signal,
     )
 
     for await (const event of readServerSentEvents(response)) {

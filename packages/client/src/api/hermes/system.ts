@@ -14,6 +14,7 @@ export interface HealthResponse {
   webui_update_strategy?: 'npm-package' | 'source-deploy' | 'device-package' | string
   webui_update_package_type?: 'npm-package' | 'source-deploy' | 'device-package' | string
   node_version?: string
+  is_docker?: boolean
   agent_bridge?: {
     status: string
     reachable: boolean

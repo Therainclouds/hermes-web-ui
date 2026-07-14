@@ -199,6 +199,8 @@ export class ChatRunSocket {
       api_key?: string
       apiMode?: string
       api_mode?: string
+      mcpServers?: Record<string, unknown>
+      mcp_servers?: Record<string, unknown>
       profile?: string
       allow_command_passthrough?: boolean
       // Local patch (reasoning-effort): per-session reasoning effort override.
@@ -269,6 +271,8 @@ export class ChatRunSocket {
             api_key: data.api_key,
             apiMode: data.apiMode,
             api_mode: data.api_mode,
+            mcpServers: data.mcpServers,
+            mcp_servers: data.mcp_servers,
             commandPassthrough: data.allow_command_passthrough,
             originSocketId: socket.id,
           })
@@ -404,6 +408,8 @@ export class ChatRunSocket {
       api_key?: string
       apiMode?: string
       api_mode?: string
+      mcpServers?: Record<string, unknown>
+      mcp_servers?: Record<string, unknown>
       one_shot_model?: boolean
       allow_command_passthrough?: boolean
       onEvent?: (event: string, payload: any) => void
@@ -515,6 +521,7 @@ export class ChatRunSocket {
       parentTitle: sessionDetail?.parent_title || null,
       parentLastMessage: sessionDetail?.parent_last_message || null,
       parentLastMessageRole: sessionDetail?.parent_last_message_role || null,
+      workspace: sessionDetail?.workspace || null,
       isWorking: state.isWorking,
       isAborting: state.isAborting || false,
       events: resumeEvents,
@@ -651,6 +658,8 @@ export class ChatRunSocket {
       api_key: next.api_key,
       apiMode: next.apiMode,
       api_mode: next.api_mode,
+      mcpServers: next.mcpServers,
+      mcp_servers: next.mcp_servers,
       one_shot_model: next.oneShotModel,
       allow_command_passthrough: next.commandPassthrough,
     }, next.profile || fallbackProfile, skipUserMessage)
@@ -682,6 +691,8 @@ export class ChatRunSocket {
       api_key?: string
       apiMode?: string
       api_mode?: string
+      mcpServers?: Record<string, unknown>
+      mcp_servers?: Record<string, unknown>
       profile?: string
       reasoning_effort?: string
     },
