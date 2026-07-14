@@ -1000,6 +1000,66 @@ describe('coding agent run state', () => {
     manager.shutdown()
   })
 
+  it('deduplicates a Codex CLI final snapshot already completed by the proxy stream', () => {
+    initAllHermesTables()
+    const manager = new CodingAgentRunManager()
+    const state: any = { messages: [], isWorking: false, events: [], queue: [] }
+    const emitted: Array<{ event: string; payload: any }> = []
+    ;(manager as any).emitToChat = (_sessionId: string, event: string, payload: any) => {
+      emitted.push({ event, payload })
+    }
+    ;(manager as any).markChatRunCompleted = () => {}
+    const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    const agentSessionId = `agent-session-codex-proxy-cli-dedupe-${suffix}`
+    const chatSessionId = `chat-session-codex-proxy-cli-dedupe-${suffix}`
+    manager.start({
+      agentSessionId,
+      agentId: 'codex',
+      profile: 'default',
+      provider: 'test-provider',
+      model: 'gpt-5-codex',
+      sessionId: chatSessionId,
+      command: 'codex',
+      args: ['--model', 'gpt-5-codex'],
+      shellCommand: 'codex --model gpt-5-codex',
+      workspaceDir: process.cwd(),
+      state,
+    })
+    const run = (manager as any).runs.get(agentSessionId)
+    run.printResponseId = 'resp_codex_proxy_cli_dedupe'
+    run.printMessageId = 'msg_resp_codex_proxy_cli_dedupe'
+    run.printTextStarted = false
+    run.printText = ''
+    run.printCompleted = false
+    run.responseStartEmitted = false
+    run.terminalEventHandled = false
+    run.codexToolBlocks = new Map()
+    run.codexChatText = ''
+    ;(manager as any).handleClaudePrintResponseEvent(run, {
+      type: 'response.created',
+      data: { response: { id: 'resp_codex_proxy_cli_dedupe', status: 'in_progress', model: 'gpt-5-codex', output: [] } },
+    })
+
+    const text = '好的，我来帮你查询厦门的天气。'
+    manager.handleResponseEvent(agentSessionId, {
+      type: 'response.output_text.delta',
+      data: { type: 'response.output_text.delta', delta: text },
+    })
+    manager.handleResponseEvent(agentSessionId, {
+      type: 'response.output_text.done',
+      data: { type: 'response.output_text.done', text },
+    })
+    ;(manager as any).handleCodexExecLine(run, JSON.stringify({
+      type: 'item.completed',
+      item: { type: 'agent_message', text },
+    }))
+
+    const textMessages = state.messages.filter((message: any) => message.role === 'assistant' && !message.tool_calls?.length)
+    expect(textMessages.map((message: any) => message.content)).toEqual([text])
+    expect(emitted.filter(event => event.event === 'message.delta').map(event => event.payload.delta)).toEqual([text])
+    manager.shutdown()
+  })
+
   it('keeps repeated short Codex streaming deltas', () => {
     initAllHermesTables()
     const manager = new CodingAgentRunManager()

@@ -481,6 +481,15 @@ export default {
     files: 'ワークスペース',
   },
 
+  realtimeVoice: {
+    title: 'リアルタイム音声', mode: '音声モード', open: 'リアルタイム音声を開く', back: 'チャットに戻る', connected: '音声リンク準備完了',
+    turnMode: 'リアルタイムプレビュー · ターン方式', browserStt: 'ブラウザ', browserTts: 'ブラウザ', untitledSession: '無題の会話',
+    sessionMissing: '会話を利用できません。', networkUnavailableNoFallback: 'ブラウザ音声認識がオフラインで、利用可能な予備 STT も設定されていません。', liveTranscript: 'リアルタイム文字起こし', transcriptPlaceholder: '音声コアをタップして話し始めてください',
+    recentTurns: '最近の会話', you: 'あなた', mute: '出力をミュート', unmute: 'ミュート解除', finishTurn: '発話を終了', speak: '話し始める', end: '終了',
+    status: { idle: '準備完了', paused: 'マイクはオフです', listening: '聞き取り中', processing: '文字起こし中', thinking: '{agent} が考えています', speaking: '{agent} が話しています', error: '音声リンクが中断しました' },
+    hint: { idle: '中央をタップして音声ターンを開始', paused: '準備ができたらマイクをオンにしてください', listening: '自然に間を置くと送信、またはタップで終了', listeningManual: '録音中です。中央をもう一度タップして停止し、文字起こしします', processing: '音声をテキストに変換しています', thinking: '現在の会話にメッセージを送信しました', speaking: 'いつでも中断できます', error: '中央をタップして再試行' },
+  },
+
   // チャット
   chat: {
     contextRemaining: '残り',
@@ -1004,6 +1013,10 @@ export default {
   models: {
     title: 'モデル',
     addProvider: 'プロバイダーを追加',
+    noProviderPromptTitle: 'モデルプロバイダーが設定されていません',
+    noProviderPromptMessage: '現在のプロファイル「{profile}」にはモデルプロバイダーが設定されていません。モデル設定を開きますか？',
+    noProviderPromptLater: '後で',
+    noProviderPromptAction: '設定を開く',
     refreshModelCache: 'モデルキャッシュを更新',
     refreshModelCacheLoading: 'モデルキャッシュを更新中...',
     refreshModelCacheSuccess: 'モデルキャッシュを更新しました',

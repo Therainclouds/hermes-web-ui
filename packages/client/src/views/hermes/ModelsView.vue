@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { NButton, NSpin, NTabPane, NTabs, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import AuxiliaryModelsPanel from '@/components/hermes/models/AuxiliaryModelsPanel.vue'
@@ -14,6 +15,8 @@ const { t } = useI18n()
 const modelsStore = useModelsStore()
 const profilesStore = useProfilesStore()
 const message = useMessage()
+const route = useRoute()
+const router = useRouter()
 const showModal = ref(false)
 const activeTab = ref<'general' | 'auxiliary' | 'combination'>('general')
 
@@ -34,6 +37,15 @@ onMounted(async () => {
 function openCreateModal() {
   showModal.value = true
 }
+
+watch(() => route.query.addProvider, (addProvider) => {
+  if (addProvider !== '1') return
+  activeTab.value = 'general'
+  showModal.value = true
+  const query = { ...route.query }
+  delete query.addProvider
+  void router.replace({ query })
+}, { immediate: true })
 
 function handleModalClose() {
   showModal.value = false

@@ -481,6 +481,15 @@ export default {
     files: 'Espaço de trabalho',
   },
 
+  realtimeVoice: {
+    title: 'Voz em tempo real', mode: 'Modo de voz', open: 'Abrir voz em tempo real', back: 'Voltar ao chat', connected: 'Conexão de voz pronta',
+    turnMode: 'Prévia em tempo real · por turnos', browserStt: 'Navegador', browserTts: 'Navegador', untitledSession: 'Conversa sem título',
+    sessionMissing: 'A conversa não está disponível.', networkUnavailableNoFallback: 'O reconhecimento de voz do navegador está offline e não há um STT alternativo utilizável configurado.', liveTranscript: 'Transcrição ao vivo', transcriptPlaceholder: 'Toque no núcleo de voz e comece a falar',
+    recentTurns: 'Turnos recentes', you: 'Você', mute: 'Silenciar saída', unmute: 'Ativar som', finishTurn: 'Concluir turno', speak: 'Começar a falar', end: 'Encerrar',
+    status: { idle: 'Pronto', paused: 'Microfone desligado', listening: 'Ouvindo', processing: 'Transcrevendo', thinking: '{agent} está pensando', speaking: '{agent} está falando', error: 'Conexão de voz interrompida' },
+    hint: { idle: 'Toque no centro para iniciar um turno de voz', paused: 'Ligue o microfone quando estiver pronto', listening: 'Faça uma pausa para enviar ou toque para concluir', listeningManual: 'Gravando. Toque novamente no centro para parar e transcrever', processing: 'Convertendo sua voz em texto', thinking: 'Sua mensagem foi enviada à conversa atual', speaking: 'Você pode interromper a qualquer momento', error: 'Toque no centro para tentar novamente' },
+  },
+
   // Chat
   chat: {
     contextRemaining: 'restante',
@@ -1004,6 +1013,10 @@ jobTriggered: 'Job acionado',
   models: {
     title: 'Modelos',
     addProvider: 'Adicionar provedor',
+    noProviderPromptTitle: 'Nenhum provedor de modelos configurado',
+    noProviderPromptMessage: 'O perfil atual "{profile}" nao tem nenhum provedor de modelos configurado. Deseja abrir as configuracoes de modelos?',
+    noProviderPromptLater: 'Agora nao',
+    noProviderPromptAction: 'Ir para configuracoes',
     refreshModelCache: 'Atualizar cache de modelos',
     refreshModelCacheLoading: 'Atualizando cache de modelos...',
     refreshModelCacheSuccess: 'Cache de modelos atualizado',

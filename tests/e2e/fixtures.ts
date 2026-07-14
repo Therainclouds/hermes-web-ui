@@ -34,7 +34,7 @@ interface MockHermesApiOptions {
   skills?: MockSkillsPayload
 }
 
-const sampleModelGroup = {
+export const TEST_MODEL_GROUP = {
   provider: 'test-provider',
   label: 'Test Provider',
   base_url: 'https://example.invalid/v1',
@@ -231,8 +231,8 @@ export async function mockHermesApi(page: Page, options: MockHermesApiOptions = 
       await route.fulfill(jsonResponse({
         default: 'test-model',
         default_provider: 'test-provider',
-        groups: [sampleModelGroup],
-        allProviders: [sampleModelGroup],
+        groups: [TEST_MODEL_GROUP],
+        allProviders: [TEST_MODEL_GROUP],
         model_aliases: {},
         model_visibility: {},
       }))

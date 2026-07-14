@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, h } from 'vue'
+import { computed, defineAsyncComponent, h } from 'vue'
 import { NButton, NIcon, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useFilesStore } from '@/stores/hermes/files'
 import { getFileDownloadUrl } from '@/api/hermes/files'
-import MarkdownRenderer from '@/components/hermes/chat/MarkdownRenderer.vue'
 import { handleCodeBlockCopyClick, renderHighlightedCodeBlock } from '@/components/hermes/chat/highlight'
+
+const MarkdownRenderer = defineAsyncComponent(async () => (await import('@/components/hermes/chat/MarkdownRenderer.vue')).default)
 
 const { t } = useI18n()
 const message = useMessage()

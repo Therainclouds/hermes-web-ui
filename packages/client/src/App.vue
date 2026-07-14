@@ -1,24 +1,28 @@
 <script setup lang="ts">
-import { onUnmounted, computed, watch } from 'vue'
+import { computed, defineAsyncComponent, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { darkTheme, NConfigProvider, NMessageProvider, NDialogProvider, NNotificationProvider } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { getThemeOverrides } from '@/styles/theme'
 import { useTheme } from '@/composables/useTheme'
-import AppSidebar from '@/components/layout/AppSidebar.vue'
-import DesktopTitleBar from '@/components/layout/DesktopTitleBar.vue'
 import { useKeyboard } from '@/composables/useKeyboard'
+import { useSessionSearch } from '@/composables/useSessionSearch'
 import { useAppStore } from '@/stores/hermes/app'
-import SessionSearchModal from '@/components/hermes/chat/SessionSearchModal.vue'
 import AuthEventListener from '@/components/auth/AuthEventListener.vue'
-import DefaultCredentialPrompt from '@/components/auth/DefaultCredentialPrompt.vue'
-import WebPet from '@/components/hermes/pets/WebPet.vue'
 import { desktopBridge } from '@/utils/desktop-bridge'
+
+const AppSidebar = defineAsyncComponent(async () => (await import('@/components/layout/AppSidebar.vue')).default)
+const DesktopTitleBar = defineAsyncComponent(async () => (await import('@/components/layout/DesktopTitleBar.vue')).default)
+const SessionSearchModal = defineAsyncComponent(async () => (await import('@/components/hermes/chat/SessionSearchModal.vue')).default)
+const DefaultCredentialPrompt = defineAsyncComponent(async () => (await import('@/components/auth/DefaultCredentialPrompt.vue')).default)
+const ProviderConfigurationPrompt = defineAsyncComponent(async () => (await import('@/components/hermes/models/ProviderConfigurationPrompt.vue')).default)
+const WebPet = defineAsyncComponent(async () => (await import('@/components/hermes/pets/WebPet.vue')).default)
 
 const { isDark, isComic } = useTheme()
 const { t } = useI18n()
 const appStore = useAppStore()
 const route = useRoute()
+const { sessionSearchOpen } = useSessionSearch()
 
 const themeOverrides = computed(() => getThemeOverrides(isDark.value, isComic.value))
 const naiveTheme = computed(() => isDark.value ? darkTheme : null)
@@ -94,8 +98,9 @@ useKeyboard()
             </div>
           </div>
           <WebPet v-if="showWebPet" />
-          <SessionSearchModal v-if="!isDesktopPetRoute" />
+          <SessionSearchModal v-if="!isDesktopPetRoute && sessionSearchOpen" />
           <DefaultCredentialPrompt v-if="!isDesktopPetRoute" />
+          <ProviderConfigurationPrompt v-if="!isDesktopPetRoute" />
         </NNotificationProvider>
       </NDialogProvider>
     </NMessageProvider>

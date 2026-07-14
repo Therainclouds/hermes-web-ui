@@ -38,6 +38,7 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   modelClick: []
+  voiceClick: []
 }>()
 
 const reasoningEffortOptions = computed(() => [
@@ -398,16 +399,14 @@ function startResize(e: MouseEvent) {
   document.addEventListener('mouseup', onMouseUp)
 }
 
-// 自动播放语音开关
-const autoPlaySpeech = ref(false)
 const inputSettingsOptions = computed<DropdownOption[]>(() => [
   {
-    label: t('chat.autoPlaySpeech'),
-    key: 'autoPlaySpeech',
+    label: t('realtimeVoice.mode'),
+    key: 'voiceMode',
     icon: () => h('span', {
-      class: ['settings-check', { active: autoPlaySpeech.value }],
+      class: 'settings-voice-mode-icon',
       'aria-hidden': 'true',
-    }, autoPlaySpeech.value ? '✓' : ''),
+    }, '◉'),
   },
   {
     label: t('chat.showToolCalls'),
@@ -456,12 +455,6 @@ function saveDraftForActiveSession(value: string) {
 // 从 localStorage 读取设置
 onMounted(() => {
   loadDraftForActiveSession()
-  const saved = localStorage.getItem('autoPlaySpeech')
-  if (saved !== null) {
-    autoPlaySpeech.value = saved === 'true'
-    // 同步到 chat store
-    chatStore.setAutoPlaySpeech(autoPlaySpeech.value)
-  }
   syncViewport()
   window.addEventListener('resize', syncViewport)
   nextTick(() => {
@@ -469,16 +462,9 @@ onMounted(() => {
   })
 })
 
-// 监听变化并保存
-watch(autoPlaySpeech, (value) => {
-  localStorage.setItem('autoPlaySpeech', String(value))
-  // 通知 chat store
-  chatStore.setAutoPlaySpeech(value)
-})
-
 function handleInputSettingsSelect(key: string | number) {
-  if (key === 'autoPlaySpeech') {
-    autoPlaySpeech.value = !autoPlaySpeech.value
+  if (key === 'voiceMode') {
+    if (chatStore.activeSessionId) emit('voiceClick')
     return
   }
 

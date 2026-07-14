@@ -739,9 +739,10 @@ export class CodingAgentRunManager {
         : ''
     if (!text) return event
     const existing = run.codexChatText || ''
-    const delta = text.length >= 16 ? appendedTextDelta(existing, text) : text
+    const baseline = existing || (run.acceptingPrintEvent ? '' : run.printText || '')
+    const delta = text.length >= 16 ? appendedTextDelta(baseline, text) : text
     if (!delta) return null
-    run.codexChatText = `${existing}${delta}`
+    run.codexChatText = `${baseline}${delta}`
     if (delta === text) return event
     return {
       ...event,
@@ -1682,6 +1683,21 @@ export class CodingAgentRunManager {
 
   private appendCodexFinalText(run: ManagedCodingAgentRun, text: string) {
     if (!text) return
+    const streamedText = run.codexChatText || ''
+    const streamedTrimmed = streamedText.trimEnd()
+    const finalTrimmed = text.trimEnd()
+    if (streamedTrimmed) {
+      if (
+        finalTrimmed === streamedTrimmed ||
+        streamedTrimmed.endsWith(finalTrimmed) ||
+        streamedTrimmed.startsWith(finalTrimmed)
+      ) return
+      if (finalTrimmed.startsWith(streamedTrimmed)) {
+        run.printText = streamedText
+        this.appendCodexText(run, text)
+        return
+      }
+    }
     const existing = run.printText || ''
     if (!existing) {
       this.appendCodexText(run, text)

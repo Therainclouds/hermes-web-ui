@@ -481,6 +481,15 @@ export default {
     files: '작업 공간',
   },
 
+  realtimeVoice: {
+    title: '실시간 음성', mode: '음성 모드', open: '실시간 음성 열기', back: '채팅으로 돌아가기', connected: '음성 연결 준비됨',
+    turnMode: '실시간 미리보기 · 턴 방식', browserStt: '브라우저', browserTts: '브라우저', untitledSession: '제목 없는 대화',
+    sessionMissing: '대화를 사용할 수 없습니다.', networkUnavailableNoFallback: '브라우저 음성 인식이 오프라인이며 사용 가능한 대체 STT가 설정되지 않았습니다.', liveTranscript: '실시간 텍스트', transcriptPlaceholder: '음성 코어를 누르고 말해 보세요',
+    recentTurns: '최근 대화', you: '나', mute: '출력 음소거', unmute: '음소거 해제', finishTurn: '말하기 완료', speak: '말하기 시작', end: '종료',
+    status: { idle: '준비됨', paused: '마이크 꺼짐', listening: '듣는 중', processing: '변환 중', thinking: '{agent}가 생각 중', speaking: '{agent}가 말하는 중', error: '음성 연결이 중단됨' },
+    hint: { idle: '중앙을 눌러 음성 턴을 시작하세요', paused: '준비되면 마이크를 다시 켜세요', listening: '자연스럽게 멈추면 전송되며 눌러서 끝낼 수도 있습니다', listeningManual: '녹음 중입니다. 중앙을 다시 눌러 중지하고 텍스트로 변환하세요', processing: '음성을 텍스트로 변환하고 있습니다', thinking: '현재 대화로 메시지를 보냈습니다', speaking: '언제든지 응답을 중단할 수 있습니다', error: '중앙을 눌러 다시 시도하세요' },
+  },
+
   // 채팅
   chat: {
     contextRemaining: '남음',
@@ -1004,6 +1013,10 @@ export default {
   models: {
     title: '모델',
     addProvider: 'Provider 추가',
+    noProviderPromptTitle: '모델 Provider가 설정되지 않음',
+    noProviderPromptMessage: '현재 Profile "{profile}"에 모델 Provider가 설정되어 있지 않습니다. 모델 설정을 여시겠습니까?',
+    noProviderPromptLater: '나중에',
+    noProviderPromptAction: '설정으로 이동',
     refreshModelCache: '모델 캐시 새로고침',
     refreshModelCacheLoading: '모델 캐시를 새로고침하는 중...',
     refreshModelCacheSuccess: '모델 캐시를 새로고침했습니다',

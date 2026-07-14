@@ -9,6 +9,16 @@ describe('ChatPanel session clicks', () => {
     expect(source).toContain('await chatStore.switchSession(sessionId)')
   })
 
+  it('replays the whole chat surface fade without remounting the input', () => {
+    const source = readFileSync('packages/client/src/components/hermes/chat/ChatPanel.vue', 'utf8')
+
+    expect(source).toContain('ref="chatMainContentRef" class="chat-main-content"')
+    expect(source).toContain('() => chatStore.activeSessionId')
+    expect(source).toContain('sessionFadeAnimation = surface.animate(')
+    expect(source).toContain('sessionFadeAnimation?.cancel()')
+    expect(source).not.toContain(':key="chatStore.activeSessionId" class="chat-main-content"')
+  })
+
   it('allows session model switching for coding agent sessions', () => {
     const source = readFileSync('packages/client/src/components/hermes/chat/ChatPanel.vue', 'utf8')
 

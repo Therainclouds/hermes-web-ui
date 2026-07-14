@@ -3,7 +3,7 @@ import { readdirSync, readFileSync } from 'fs'
 import { join, relative } from 'path'
 
 import { changelog } from '@/data/changelog'
-import { messages, supportedLocales } from '@/i18n/messages'
+import { mergeMessagesWithFallback, supportedLocales } from '@/i18n/messages'
 import en from '@/i18n/locales/en'
 import zh from '@/i18n/locales/zh'
 import zhTW from '@/i18n/locales/zh-TW'
@@ -31,6 +31,13 @@ const rawMessages: Record<string, Record<string, unknown>> = {
   de,
   pt,
   ru,
+}
+
+const messages: Record<string, Record<string, unknown>> = {}
+for (const [locale, localeMessages] of Object.entries(rawMessages)) {
+  messages[locale] = locale === 'en'
+    ? localeMessages
+    : mergeMessagesWithFallback(en, localeMessages)
 }
 
 function walkFiles(dir: string, files: string[] = []): string[] {

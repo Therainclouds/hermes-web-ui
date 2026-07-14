@@ -5,7 +5,6 @@ import { useI18n } from "vue-i18n";
 import { NButton, NDrawer, NDrawerContent, NSpin, useMessage } from "naive-ui";
 import { downloadFile, getDownloadUrl } from "@/api/hermes/download";
 import { copyToClipboard } from "@/utils/clipboard";
-import MarkdownRenderer from "./MarkdownRenderer.vue";
 import { parseThinking, countThinkingChars } from "@/utils/thinking-parser";
 import { useChatStore } from "@/stores/hermes/chat";
 import { useFilesStore } from "@/stores/hermes/files";
@@ -26,6 +25,7 @@ import { formatChatTimestamp } from "@/utils/chat-timestamp";
 import type { WorkspaceRunChangeFileSummary } from "@/api/hermes/sessions";
 
 const FileEditor = defineAsyncComponent(() => import("@/components/hermes/files/FileEditor.vue"));
+const MarkdownRenderer = defineAsyncComponent(async () => (await import("./MarkdownRenderer.vue")).default);
 
 const TOOL_PAYLOAD_DISPLAY_LIMIT = 1000;
 const JSON_STRING_DISPLAY_LIMIT = 200;

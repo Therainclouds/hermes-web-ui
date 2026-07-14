@@ -28,6 +28,7 @@ import { useI18n } from "vue-i18n";
 import { copyToClipboard } from "@/utils/clipboard";
 import FolderPicker from "./FolderPicker.vue";
 import ChatInput from "./ChatInput.vue";
+import RealtimeVoiceStage from "./RealtimeVoiceStage.vue";
 import ConversationMonitorPane from "./ConversationMonitorPane.vue";
 import MessageList from "./MessageList.vue";
 import SessionListItem from "./SessionListItem.vue";
@@ -50,9 +51,12 @@ const { t } = useI18n();
 const isSuperAdmin = computed(() => isStoredSuperAdmin());
 
 const showOutline = ref(false);
+const showRealtimeVoice = ref(false);
 const messageListRef = ref<InstanceType<typeof MessageList> | null>(null);
 const chatInputRef = ref<(InstanceType<typeof ChatInput> & { addFiles?: (files: File[]) => void }) | null>(null);
 const chatContentWrapperRef = ref<HTMLElement | null>(null);
+const chatMainContentRef = ref<HTMLElement | null>(null);
+let sessionFadeAnimation: Animation | null = null;
 const chatDropCounter = ref(0);
 const isChatDropActive = ref(false);
 const showToolPanel = ref(false);
@@ -88,6 +92,15 @@ const isMobile = ref(false);
 const toolPanelStyle = computed(() => ({
   width: isMobile.value ? "100%" : `${toolPanelWidth.value}px`,
 }));
+
+function openRealtimeVoice() {
+  if (!chatStore.activeSessionId) return;
+  showRealtimeVoice.value = true;
+}
+
+function closeRealtimeVoice() {
+  showRealtimeVoice.value = false;
+}
 
 function sessionHref(sessionId: string) {
   return router.resolve({
@@ -238,11 +251,37 @@ onMounted(() => {
   }
 });
 
+watch(
+  () => chatStore.activeSessionId,
+  async (sessionId, previousSessionId) => {
+    if (!sessionId || !previousSessionId || sessionId === previousSessionId) return;
+
+    await nextTick();
+    const surface = chatMainContentRef.value;
+    if (!surface || typeof surface.animate !== "function") return;
+
+    sessionFadeAnimation?.cancel();
+    sessionFadeAnimation = surface.animate(
+      [
+        { opacity: 0 },
+        { opacity: 1 },
+      ],
+      {
+        duration: 1500,
+        easing: "ease",
+      },
+    );
+  },
+  { flush: "post" },
+);
+
 onUnmounted(() => {
   mobileQuery?.removeEventListener("change", handleMobileChange);
   window.removeEventListener("hermes:open-page-sidebar", openPageSidebar);
   window.removeEventListener("resize", handleToolPanelViewportResize);
   stopToolResize();
+  sessionFadeAnimation?.cancel();
+  sessionFadeAnimation = null;
 });
 watch(showToolPanel, async (visible) => {
   if (!visible || isMobile.value) return;
@@ -1953,12 +1992,16 @@ async function handleSessionModelCustomSubmit() {
           @dragleave="handleChatDragLeave"
           @drop="handleChatDrop"
         >
-          <div class="chat-main-content">
-            <MessageList ref="messageListRef" />
+          <div ref="chatMainContentRef" class="chat-main-content">
+            <MessageList
+              ref="messageListRef"
+              :approval-portal-to-body="showRealtimeVoice"
+            />
             <ChatInput
               ref="chatInputRef"
               :model-label="activeSessionModelLabel"
               @model-click="handleHeaderModelClick"
+              @voice-click="openRealtimeVoice"
             />
           </div>
           <OutlinePanel
@@ -2018,6 +2061,12 @@ async function handleSessionModelCustomSubmit() {
         :human-only="sessionBrowserPrefsStore.humanOnly"
       />
     </div>
+    <Teleport to="body">
+      <RealtimeVoiceStage
+        v-if="showRealtimeVoice"
+        @close="closeRealtimeVoice"
+      />
+    </Teleport>
   </div>
 </template>
 

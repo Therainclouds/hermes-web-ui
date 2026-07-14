@@ -408,6 +408,15 @@ export default {
     files: 'Рабочая область',
   },
 
+  realtimeVoice: {
+    title: 'Голос в реальном времени', mode: 'Голосовой режим', open: 'Открыть голосовой режим', back: 'Вернуться в чат', connected: 'Голосовая связь готова',
+    turnMode: 'Предпросмотр · по очереди', browserStt: 'Браузер', browserTts: 'Браузер', untitledSession: 'Разговор без названия',
+    sessionMissing: 'Разговор недоступен.', networkUnavailableNoFallback: 'Распознавание речи браузера недоступно по сети, и резервный STT не настроен.', liveTranscript: 'Живая расшифровка', transcriptPlaceholder: 'Нажмите на голосовое ядро и начните говорить',
+    recentTurns: 'Последние реплики', you: 'Вы', mute: 'Выключить звук', unmute: 'Включить звук', finishTurn: 'Закончить реплику', speak: 'Начать говорить', end: 'Завершить',
+    status: { idle: 'Готово', paused: 'Микрофон выключен', listening: 'Слушаю', processing: 'Распознавание', thinking: '{agent} думает', speaking: '{agent} говорит', error: 'Голосовая связь прервана' },
+    hint: { idle: 'Нажмите в центре, чтобы начать голосовую реплику', paused: 'Включите микрофон, когда будете готовы', listening: 'Сделайте паузу для отправки или нажмите для завершения', listeningManual: 'Идет запись. Нажмите в центре еще раз, чтобы остановить и распознать речь', processing: 'Преобразую речь в текст', thinking: 'Сообщение отправлено в текущий разговор', speaking: 'Ответ можно прервать в любое время', error: 'Нажмите в центре, чтобы повторить' },
+  },
+
 
   chat: {
     contextRemaining: 'Осталось',
@@ -1130,6 +1139,10 @@ export default {
     noResults: 'Нет результатов',
     noModels: 'Нет моделей',
     addProvider: 'Добавить провайдера',
+    noProviderPromptTitle: 'Провайдер модели не настроен',
+    noProviderPromptMessage: 'В текущем профиле «{profile}» не настроен провайдер модели. Открыть настройки моделей?',
+    noProviderPromptLater: 'Не сейчас',
+    noProviderPromptAction: 'Перейти к настройкам',
     refreshModelCache: 'Обновить кеш моделей',
     refreshModelCacheLoading: 'Обновление кеша моделей...',
     refreshModelCacheSuccess: 'Кеш моделей обновлен',

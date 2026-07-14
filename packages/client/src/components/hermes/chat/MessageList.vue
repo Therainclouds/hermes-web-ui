@@ -24,6 +24,12 @@ import { LIVE_CHAT_MAX_LOADED_MESSAGES, useChatStore, type Message } from "@/sto
 import thinkingImage from "@/assets/thinking.gif";
 import { useToolTraceVisibility } from "@/composables/useToolTraceVisibility";
 
+const props = withDefaults(defineProps<{
+  approvalPortalToBody?: boolean
+}>(), {
+  approvalPortalToBody: false,
+})
+
 const chatStore = useChatStore();
 const { t } = useI18n();
 const { toolTraceVisible } = useToolTraceVisibility();
@@ -732,8 +738,13 @@ defineExpose({
       v-if="visibleApproval || visibleClarify || queuedMessages.length > 0"
       class="message-float-stack"
     >
+    <Teleport to="body" :disabled="!props.approvalPortalToBody">
       <Transition name="queue-float">
-        <div v-if="visibleApproval" class="approval-float-panel">
+        <div
+          v-if="visibleApproval"
+          class="approval-float-panel"
+          :class="{ 'approval-float-panel--global': props.approvalPortalToBody }"
+        >
           <div class="float-panel-header">
             <span class="approval-float-icon" aria-hidden="true">
               <svg
@@ -800,6 +811,7 @@ defineExpose({
           </div>
         </div>
       </Transition>
+    </Teleport>
       <Transition name="queue-float">
         <div v-if="!visibleApproval && visibleClarify" class="approval-float-panel">
           <div class="float-panel-header">
@@ -957,6 +969,14 @@ defineExpose({
 
 .approval-float-panel {
   border-color: rgba(var(--accent-primary-rgb), 0.24);
+}
+
+.approval-float-panel--global {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 2147483000;
+  width: min(720px, calc(100vw - 32px));
 }
 
 .queue-float-panel {
@@ -1173,6 +1193,13 @@ defineExpose({
   .queue-float-panel {
     padding: 7px;
     border-radius: 14px;
+  }
+
+  .approval-float-panel--global {
+    left: 8px;
+    right: 8px;
+    bottom: max(8px, env(safe-area-inset-bottom));
+    width: auto;
   }
 
   .queue-float-header {

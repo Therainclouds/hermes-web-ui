@@ -1,10 +1,9 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import router from './router'
-import { i18n } from './i18n'
+import { i18nReady } from './i18n'
 import App from './App.vue'
 import './styles/global.scss'
-import 'katex/dist/katex.min.css'
 import { desktopBridge } from '@/utils/desktop-bridge'
 
 // Apply theme classes before mount to prevent FOUC (Flash of Unstyled Content)
@@ -43,10 +42,14 @@ if (urlToken) {
   ;(window as any).__LOGIN_TOKEN__ = urlToken
 }
 
-const app = createApp(App)
-app.use(createPinia())
-app.use(i18n)
-app.use(router)
-router.isReady().finally(() => {
+async function mountApp(): Promise<void> {
+  const i18n = await i18nReady
+  const app = createApp(App)
+  app.use(createPinia())
+  app.use(i18n)
+  app.use(router)
+  await router.isReady().catch(() => undefined)
   app.mount('#app')
-})
+}
+
+void mountApp()

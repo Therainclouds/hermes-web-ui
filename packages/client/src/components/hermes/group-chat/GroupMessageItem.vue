@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useMessage } from 'naive-ui'
-import MarkdownRenderer from '../chat/MarkdownRenderer.vue'
 import ProfileAvatar from '@/components/hermes/profiles/ProfileAvatar.vue'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import {
@@ -19,6 +18,8 @@ import { speedToEdgeRate, hzToEdgePitch } from '@/utils/ttsHelpers'
 import { getDownloadUrl } from '@/api/hermes/download'
 import { formatChatTimestamp } from '@/utils/chat-timestamp'
 import type { ChatMessage, RoomAgent, MemberInfo } from '@/api/hermes/group-chat'
+
+const MarkdownRenderer = defineAsyncComponent(async () => (await import('../chat/MarkdownRenderer.vue')).default)
 
 const TOOL_PAYLOAD_DISPLAY_LIMIT = 1000
 const JSON_STRING_DISPLAY_LIMIT = 200

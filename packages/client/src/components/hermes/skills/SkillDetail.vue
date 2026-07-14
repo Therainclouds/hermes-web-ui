@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import MarkdownRenderer from '@/components/hermes/chat/MarkdownRenderer.vue'
+import { computed, defineAsyncComponent, ref, watch } from 'vue'
 import { fetchSkillContent, fetchSkillFiles, pinSkillApi, saveSkillContent, type SkillFileEntry, type SkillTarget } from '@/api/hermes/skills'
 import { useI18n } from 'vue-i18n'
 import { useMessage } from 'naive-ui'
+
+const MarkdownRenderer = defineAsyncComponent(async () => (await import('@/components/hermes/chat/MarkdownRenderer.vue')).default)
 
 const { t } = useI18n()
 const message = useMessage()
