@@ -2061,16 +2061,6 @@ jobTriggered: 'Job ejecutado',
     otherSkills: 'Otras habs.',
   },
 
-  workflow: {
-    node: {
-      approvalRequired: 'Aprobacion tras nodo',
-    },
-    status: {
-      pending_approval: 'Pendiente de aprobacion',
-      approval_rejected: 'Aprobacion rechazada',
-    },
-  },
-
   // Registro de cambios
   changelog: {
     new_0_7_1_1: 'Improved the device upgrade channel so existing devices can move to v0.7.1 first and then switch to OSS device-package updates automatically',
@@ -2347,6 +2337,7 @@ jobTriggered: 'Job ejecutado',
       agent: 'Agent',
       model: 'Model',
       apiMode: 'Modo API',
+      approvalRequired: 'Aprobacion tras el nodo',
       input: 'Input',
       promptPlaceholder: 'Describe what this agent should do...',
       skillsPlaceholder: 'Skills, Enter para agregar',
@@ -2359,6 +2350,8 @@ jobTriggered: 'Job ejecutado',
       completed: 'Completado',
       failed: 'Fallido',
       canceled: 'Cancelado',
+      pending_approval: 'Pendiente de aprobacion',
+      approval_rejected: 'Aprobacion rechazada',
     },
     runs: {
       title: 'Run Records',

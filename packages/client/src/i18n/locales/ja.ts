@@ -2060,16 +2060,6 @@ export default {
     otherSkills: 'その他',
   },
 
-  workflow: {
-    node: {
-      approvalRequired: '完了後承認',
-    },
-    status: {
-      pending_approval: '承認待ち',
-      approval_rejected: '承認拒否',
-    },
-  },
-
   // 更新履歴
   changelog: {
     new_0_7_1_1: 'Improved the device upgrade channel so existing devices can move to v0.7.1 first and then switch to OSS device-package updates automatically',
@@ -2346,6 +2336,7 @@ export default {
       agent: 'Agent',
       model: 'モデル',
       apiMode: 'API モード',
+      approvalRequired: '完了後承認',
       input: '入力',
       promptPlaceholder: 'このAgentが行うことを記述...',
       skillsPlaceholder: 'スキル、Enter で追加',
@@ -2358,6 +2349,8 @@ export default {
       completed: '完了',
       failed: '失敗',
       canceled: 'キャンセル済み',
+      pending_approval: '承認待ち',
+      approval_rejected: '承認拒否',
     },
     runs: {
       title: 'Run Records',

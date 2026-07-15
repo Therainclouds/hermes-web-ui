@@ -2061,16 +2061,6 @@ jobTriggered: 'Job ausgelost',
     otherSkills: 'Andere Skills',
   },
 
-  workflow: {
-    node: {
-      approvalRequired: 'Freigabe nach Lauf',
-    },
-    status: {
-      pending_approval: 'Wartet auf Freigabe',
-      approval_rejected: 'Freigabe abgelehnt',
-    },
-  },
-
   // Anderungsprotokoll
   changelog: {
     new_0_7_1_1: 'Improved the device upgrade channel so existing devices can move to v0.7.1 first and then switch to OSS device-package updates automatically',
@@ -2347,6 +2337,7 @@ jobTriggered: 'Job ausgelost',
       agent: 'Agent',
       model: 'Model',
       apiMode: 'API-Modus',
+      approvalRequired: 'Freigabe nach Lauf',
       input: 'Input',
       promptPlaceholder: 'Describe what this agent should do...',
       skillsPlaceholder: 'Skills, mit Enter hinzufügen',
@@ -2359,6 +2350,8 @@ jobTriggered: 'Job ausgelost',
       completed: 'Abgeschlossen',
       failed: 'Fehlgeschlagen',
       canceled: 'Abgebrochen',
+      pending_approval: 'Wartet auf Freigabe',
+      approval_rejected: 'Freigabe abgelehnt',
     },
     runs: {
       title: 'Run Records',

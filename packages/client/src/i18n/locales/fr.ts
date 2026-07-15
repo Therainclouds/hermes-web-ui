@@ -2061,16 +2061,6 @@ jobTriggered: 'Job declenche',
     otherSkills: 'Autres comp.',
   },
 
-  workflow: {
-    node: {
-      approvalRequired: 'Approbation apres noeud',
-    },
-    status: {
-      pending_approval: 'En attente d\'approbation',
-      approval_rejected: 'Approbation refusee',
-    },
-  },
-
   // Journal des modifications
   changelog: {
     new_0_7_1_1: 'Improved the device upgrade channel so existing devices can move to v0.7.1 first and then switch to OSS device-package updates automatically',
@@ -2347,6 +2337,7 @@ jobTriggered: 'Job declenche',
       agent: 'Agent',
       model: 'Model',
       apiMode: 'Mode API',
+      approvalRequired: 'Approbation apres noeud',
       input: 'Input',
       promptPlaceholder: 'Describe what this agent should do...',
       skillsPlaceholder: 'Skills, Entrée pour ajouter',
@@ -2359,6 +2350,8 @@ jobTriggered: 'Job declenche',
       completed: 'Terminé',
       failed: 'Échec',
       canceled: 'Annulé',
+      pending_approval: 'En attente d\'approbation',
+      approval_rejected: 'Approbation refusee',
     },
     runs: {
       title: 'Run Records',

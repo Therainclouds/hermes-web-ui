@@ -2060,16 +2060,6 @@ export default {
     otherSkills: '기타',
   },
 
-  workflow: {
-    node: {
-      approvalRequired: '완료 후 승인',
-    },
-    status: {
-      pending_approval: '승인 대기',
-      approval_rejected: '승인 거부',
-    },
-  },
-
   // 변경 이력
   changelog: {
     new_0_7_1_1: 'Improved the device upgrade channel so existing devices can move to v0.7.1 first and then switch to OSS device-package updates automatically',
@@ -2346,6 +2336,7 @@ export default {
       agent: 'Agent',
       model: '모델',
       apiMode: 'API 모드',
+      approvalRequired: '완료 후 승인',
       input: '입력',
       promptPlaceholder: '이 Agent가 수행할 작업을 설명하세요...',
       skillsPlaceholder: '스킬, Enter로 추가',
@@ -2358,6 +2349,8 @@ export default {
       completed: '완료',
       failed: '실패',
       canceled: '취소됨',
+      pending_approval: '승인 대기',
+      approval_rejected: '승인 거부',
     },
     runs: {
       title: 'Run Records',

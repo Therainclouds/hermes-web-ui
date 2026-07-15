@@ -526,7 +526,6 @@ export const useAppStore = defineStore('app', () => {
     nodeVersion,
     updateEnabled,
     isDocker,
-    updateEnabled,
     updateAvailable,
     updateSourceLabel,
     updateChannel,

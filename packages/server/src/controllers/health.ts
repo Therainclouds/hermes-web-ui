@@ -181,6 +181,5 @@ export async function healthCheck(ctx: any) {
     agent_bridge: agentBridge,
     terminal,
     is_docker: isDockerContainer(),
-    terminal,
   }
 }
