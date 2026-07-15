@@ -16,6 +16,7 @@ agent can discover without chat history.
 - `ARCHITECTURE.md` documents package boundaries and state ownership.
 - `DEVELOPMENT.md` remains the contributor rules and command reference.
 - `docs/harness/validation.md` maps change types to checks.
+- `docs/harness/upstream-sync-runbook.md` documents the standard upstream sync path to `main`.
 - `docs/harness/worktree-runbook.md` explains isolated worktree development.
 - `docs/harness/pr-review.md` provides a PR self-review checklist.
 - `scripts/harness-check.mjs` enforces baseline repository invariants.

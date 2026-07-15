@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createHash } from 'crypto'
 import { delimiter, dirname, join } from 'path'
+import { Writable } from 'stream'
 
 const UPDATE_PACKAGE = '@quanthermes/hermes-web-ui'
 const UPDATE_REGISTRY = 'https://registry.npmjs.org'
@@ -55,6 +56,11 @@ async function loadUpdateController(overrides: LoadUpdateControllerOptions = {})
   vi.doMock('fs', () => ({
     appendFileSync,
     closeSync: vi.fn(),
+    createWriteStream: vi.fn(() => new Writable({
+      write(_chunk, _encoding, callback) {
+        callback()
+      },
+    })),
     existsSync,
     mkdirSync: vi.fn(),
     openSync: vi.fn(() => 1),

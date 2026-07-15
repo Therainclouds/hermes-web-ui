@@ -9,6 +9,7 @@ and keep this file small enough to fit into every task context.
 - `ARCHITECTURE.md` - package boundaries, data ownership, and runtime flow.
 - `docs/harness/README.md` - how this repository is prepared for agent work.
 - `docs/harness/validation.md` - which checks to run for each change type.
+- `docs/harness/upstream-sync-runbook.md` - how to sync `upstream/main` into local `main` safely.
 - `docs/harness/worktree-runbook.md` - isolated local dev and test setup.
 - `docs/harness/pr-review.md` - self-review checklist before pushing.
 

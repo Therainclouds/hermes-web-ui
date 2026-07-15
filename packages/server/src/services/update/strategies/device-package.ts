@@ -1,10 +1,9 @@
-import { createHash } from 'crypto'
-import { mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { mkdirSync } from 'fs'
 import { basename, join, resolve } from 'path'
 import { isNodeVersionRangeSatisfied } from '../device-package-contract'
 import { UpdateError } from '../errors'
 import { fetchDevicePackageManifest } from '../manifest-client'
-import { describeUpdateNetworkError, fetchUpdateBinary } from '../network-client'
+import { describeUpdateNetworkError, downloadUpdateBinaryToFile, UpdateBinaryValidationError } from '../network-client'
 import { compareSemver } from '../version-compare'
 import type { DevicePackageManifest, UpdateConfig, UpdateRuntimePaths } from '../types'
 import { buildShellScriptCommand, type CommandResolver } from './script-command'
@@ -69,12 +68,6 @@ export function assertDevicePackageCompatibility(manifest: DevicePackageManifest
   }
 }
 
-function computeSha256(filePath: string): string {
-  const hash = createHash('sha256')
-  hash.update(readFileSync(filePath))
-  return hash.digest('hex')
-}
-
 export async function downloadAndVerifyDevicePackage(
   update: UpdateConfig,
   manifest: DevicePackageManifest,
@@ -86,15 +79,15 @@ export async function downloadAndVerifyDevicePackage(
 
   const packageUrls = [...new Set((manifest.packageUrls || [manifest.packageUrl]).filter(Boolean))]
   const failures: Array<Record<string, unknown>> = []
-  let response: Awaited<ReturnType<typeof fetchUpdateBinary>> | null = null
-  let resolvedPackageUrl = manifest.packageUrl
 
   for (const packageUrl of packageUrls) {
     try {
-      const candidate = await fetchUpdateBinary(packageUrl, {
+      const candidate = await downloadUpdateBinaryToFile(packageUrl, artifactPath, {
         timeoutMs: update.packageTimeoutMs,
         retries: update.downloadRetries,
         retryDelayMs: update.downloadRetryDelayMs,
+        expectedBytes: manifest.size > 0 ? manifest.size : undefined,
+        expectedSha256: manifest.sha256,
       })
       if (!candidate.ok) {
         failures.push({
@@ -105,10 +98,39 @@ export async function downloadAndVerifyDevicePackage(
         })
         continue
       }
-      response = candidate
-      resolvedPackageUrl = packageUrl
-      break
+      return { artifactPath }
     } catch (err) {
+      if (packageUrls.length === 1 && err instanceof UpdateBinaryValidationError) {
+        if (err.reason === 'sha256_mismatch') {
+          throw new UpdateError(
+            'update_sha256_mismatch',
+            `Downloaded device package checksum mismatch for ${manifest.version}.`,
+            409,
+            {
+              expectedSha256: manifest.sha256,
+              actualSha256: err.actualSha256,
+              actualBytes: err.actualBytes,
+              artifactPath,
+              packageUrl,
+            },
+          )
+        }
+
+        throw new UpdateError(
+          'update_download_failed',
+          `Downloaded device package validation failed for ${manifest.version}.`,
+          409,
+          {
+            reason: err.reason,
+            expectedBytes: err.expectedBytes,
+            actualBytes: err.actualBytes,
+            expectedSha256: err.expectedSha256,
+            actualSha256: err.actualSha256,
+            artifactPath,
+            packageUrl,
+          },
+        )
+      }
       failures.push({
         packageUrl,
         ...describeUpdateNetworkError(err),
@@ -116,37 +138,16 @@ export async function downloadAndVerifyDevicePackage(
     }
   }
 
-  if (!response) {
-    throw new UpdateError(
-      'update_package_fetch_failed',
-      `Failed to download device package ${manifest.version} from ${packageUrls[0] || manifest.packageUrl}.`,
-      502,
-      {
-        packageUrl: packageUrls[0] || manifest.packageUrl,
-        packageUrls,
-        failures,
-      },
-    )
-  }
-
-  writeFileSync(artifactPath, response.buffer)
-
-  const actualSha256 = computeSha256(artifactPath)
-  if (actualSha256 !== manifest.sha256) {
-    throw new UpdateError(
-      'update_sha256_mismatch',
-      `Downloaded device package checksum mismatch for ${manifest.version}.`,
-      409,
-      {
-        expectedSha256: manifest.sha256,
-        actualSha256,
-        artifactPath,
-        packageUrl: resolvedPackageUrl,
-      },
-    )
-  }
-
-  return { artifactPath }
+  throw new UpdateError(
+    'update_package_fetch_failed',
+    `Failed to download device package ${manifest.version} from ${packageUrls[0] || manifest.packageUrl}.`,
+    502,
+    {
+      packageUrl: packageUrls[0] || manifest.packageUrl,
+      packageUrls,
+      failures,
+    },
+  )
 }
 
 export function buildDevicePackageInstallEnv(

@@ -1,5 +1,5 @@
 import { createHash } from 'crypto'
-import { mkdtempSync, readFileSync, rmSync } from 'fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'http'
 import type { AddressInfo } from 'net'
 import { tmpdir } from 'os'
@@ -71,6 +71,27 @@ function createManifest(overrides: Partial<DevicePackageManifest> = {}): DeviceP
   }
 }
 
+function createFetchBinaryResponse(buffer: Buffer, overrides: {
+  ok?: boolean
+  status?: number
+  url?: string
+  contentLength?: number | string
+} = {}) {
+  return {
+    ok: overrides.ok ?? true,
+    status: overrides.status ?? 200,
+    url: overrides.url ?? 'https://updates.example.com/releases/v0.6.13/hermes-web-ui-device-v0.6.13.tar.gz',
+    headers: {
+      get(name: string) {
+        if (name.toLowerCase() !== 'content-length') return null
+        const value = overrides.contentLength
+        return value == null ? null : String(value)
+      },
+    },
+    arrayBuffer: async () => buffer,
+  }
+}
+
 describe('device package strategy', () => {
   let tempRoot = ''
 
@@ -123,10 +144,7 @@ describe('device package strategy', () => {
     tempRoot = mkdtempSync(join(tmpdir(), 'hermes-web-ui-device-package-'))
     const packageBuffer = Buffer.from('device package bytes')
     const sha256 = createHash('sha256').update(packageBuffer).digest('hex')
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      arrayBuffer: async () => packageBuffer,
-    }))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(createFetchBinaryResponse(packageBuffer)))
 
     const result = await downloadAndVerifyDevicePackage(
       createUpdateConfig({ stagingDir: join(tempRoot, 'staging') }),
@@ -138,10 +156,7 @@ describe('device package strategy', () => {
 
   it('fails when the downloaded checksum does not match the manifest', async () => {
     tempRoot = mkdtempSync(join(tmpdir(), 'hermes-web-ui-device-package-'))
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      arrayBuffer: async () => Buffer.from('wrong content'),
-    }))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(createFetchBinaryResponse(Buffer.from('wrong content'))))
 
     await expect(downloadAndVerifyDevicePackage(
       createUpdateConfig({ stagingDir: join(tempRoot, 'staging') }),
@@ -149,6 +164,21 @@ describe('device package strategy', () => {
     )).rejects.toMatchObject({
       code: 'update_sha256_mismatch',
     })
+  })
+
+  it('cleans the staged artifact when checksum validation fails', async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'hermes-web-ui-device-package-'))
+    const stagingDir = join(tempRoot, 'staging')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(createFetchBinaryResponse(Buffer.from('wrong content'))))
+
+    await expect(downloadAndVerifyDevicePackage(
+      createUpdateConfig({ stagingDir }),
+      createManifest({ sha256: 'f'.repeat(64) }),
+    )).rejects.toMatchObject({
+      code: 'update_sha256_mismatch',
+    })
+
+    expect(existsSync(join(stagingDir, 'device-package-0.6.13', 'hermes-web-ui-device-v0.6.13.tar.gz'))).toBe(false)
   })
 
   it('falls back to node-http when fetch fails during package download', async () => {
@@ -179,10 +209,38 @@ describe('device package strategy', () => {
     const sha256 = createHash('sha256').update(packageBuffer).digest('hex')
     const fetchMock = vi.fn()
       .mockRejectedValueOnce(Object.assign(new TypeError('fetch failed'), { code: 'ETIMEDOUT' }))
-      .mockResolvedValueOnce({
-        ok: true,
-        arrayBuffer: async () => packageBuffer,
-      })
+      .mockResolvedValueOnce(createFetchBinaryResponse(packageBuffer, {
+        url: 'https://github.com/example/device-package.tar.gz',
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await downloadAndVerifyDevicePackage(
+      createUpdateConfig({ stagingDir: join(tempRoot, 'staging') }),
+      createManifest({
+        packageUrl: 'https://oss.example.com/device-package.tar.gz',
+        packageUrls: [
+          'https://oss.example.com/device-package.tar.gz',
+          'https://github.com/example/device-package.tar.gz',
+        ],
+        sha256,
+      }),
+    )
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(readFileSync(result.artifactPath)).toEqual(packageBuffer)
+  })
+
+  it('tries the next package source when the primary payload fails checksum validation', async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'hermes-web-ui-device-package-'))
+    const packageBuffer = Buffer.from('device package via validated fallback source list')
+    const sha256 = createHash('sha256').update(packageBuffer).digest('hex')
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(createFetchBinaryResponse(Buffer.from('corrupted package bytes'), {
+        url: 'https://oss.example.com/device-package.tar.gz',
+      }))
+      .mockResolvedValueOnce(createFetchBinaryResponse(packageBuffer, {
+        url: 'https://github.com/example/device-package.tar.gz',
+      }))
     vi.stubGlobal('fetch', fetchMock)
 
     const result = await downloadAndVerifyDevicePackage(
@@ -229,10 +287,7 @@ describe('device package strategy', () => {
     const fetchMock = vi.fn()
       .mockRejectedValueOnce(Object.assign(new TypeError('fetch failed'), { code: 'ETIMEDOUT' }))
       .mockRejectedValueOnce(Object.assign(new TypeError('fetch failed'), { code: 'ECONNRESET' }))
-      .mockResolvedValue({
-        ok: true,
-        arrayBuffer: async () => packageBuffer,
-      })
+      .mockResolvedValue(createFetchBinaryResponse(packageBuffer))
     vi.stubGlobal('fetch', fetchMock)
 
     const result = await downloadAndVerifyDevicePackage(
@@ -246,6 +301,31 @@ describe('device package strategy', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(3)
     expect(readFileSync(result.artifactPath)).toEqual(packageBuffer)
+  })
+
+  it('fails when the downloaded size mismatches the manifest and cleans the partial artifact', async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'hermes-web-ui-device-package-'))
+    const stagingDir = join(tempRoot, 'staging')
+    const packageBuffer = Buffer.from('device package bytes with wrong size')
+    const sha256 = createHash('sha256').update(packageBuffer).digest('hex')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(createFetchBinaryResponse(packageBuffer, {
+      contentLength: packageBuffer.length + 10,
+    })))
+
+    await expect(downloadAndVerifyDevicePackage(
+      createUpdateConfig({ stagingDir }),
+      createManifest({
+        sha256,
+        size: packageBuffer.length,
+      }),
+    )).rejects.toMatchObject({
+      code: 'update_download_failed',
+      details: expect.objectContaining({
+        reason: 'content_length_mismatch',
+      }),
+    })
+
+    expect(existsSync(join(stagingDir, 'device-package-0.6.13', 'hermes-web-ui-device-v0.6.13.tar.gz'))).toBe(false)
   })
 
   it('builds installer command through a discovered bash executable on Linux', () => {
