@@ -495,6 +495,9 @@ defineExpose({
         <div class="empty-state">
           <img :src="emptyState.logo" :alt="emptyState.alt" class="empty-logo" />
           <p>{{ emptyState.text }}</p>
+          <div class="empty-state-extra">
+            <slot name="empty-actions" />
+          </div>
         </div>
       </template>
       <template #before>
@@ -1306,6 +1309,10 @@ defineExpose({
   p {
     font-size: 14px;
   }
+}
+
+.empty-state-extra {
+  width: min(720px, 100%);
 }
 
 .history-loader {

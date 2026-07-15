@@ -700,6 +700,8 @@ export default {
     searchPlaceholder: '搜索会话...',
     searchEmpty: '最近会话',
     searchRecent: '最近会话',
+    expert: '专家',
+    expertSwitchFailed: '切换专家失败',
     searchNoResults: '没有匹配的会话',
     searchNoSnippet: '没有可显示的摘要',
     searchEnterHint: 'Enter 打开 · Esc 关闭',

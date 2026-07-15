@@ -4,6 +4,7 @@ import { createHash } from 'crypto'
 import { rmSync, createWriteStream } from 'fs'
 import { Readable, Transform } from 'stream'
 import { pipeline } from 'stream/promises'
+import type { ReadableStream as NodeReadableStream } from 'stream/web'
 
 export type UpdateNetworkTransport = 'fetch' | 'node-http'
 export type UpdateNetworkResponseType = 'json' | 'binary'
@@ -453,7 +454,9 @@ async function downloadWithFetchToFile(
     }
     validateContentLength(response.url || url, contentLength, options.expectedBytes)
     const bodyStream = response.body
-      ? Readable.fromWeb(response.body as globalThis.ReadableStream)
+      // Node's fromWeb expects the stream/web definition, while fetch() here is typed
+      // against the global Web stream. Bridge the types without changing runtime behavior.
+      ? Readable.fromWeb(response.body as unknown as NodeReadableStream)
       : Readable.from([Buffer.from(await response.arrayBuffer())])
     const result = await writeBinaryPayloadToFile(
       bodyStream,

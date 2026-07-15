@@ -700,6 +700,8 @@ export default {
     searchPlaceholder: 'Search sessions...',
     searchEmpty: 'Recent sessions',
     searchRecent: 'Recent session',
+    expert: 'Expert',
+    expertSwitchFailed: 'Failed to switch expert',
     searchNoResults: 'No sessions match your search',
     searchNoSnippet: 'No snippet available',
     searchEnterHint: 'Enter to open · Esc to close',

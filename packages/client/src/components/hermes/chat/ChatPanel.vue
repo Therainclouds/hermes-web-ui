@@ -331,6 +331,12 @@ const unpinnedSessions = computed(() =>
   ),
 );
 
+const recentWorkbenchSessions = computed(() =>
+  sortSessionsForSidebar(
+    chatStore.sessions.filter((session) => session.id !== chatStore.activeSessionId),
+  ).slice(0, 4),
+);
+
 watch(
   () => [
     chatStore.sessionsLoaded,
@@ -353,6 +359,10 @@ const activeSessionModelLabel = computed(() => {
   if (!session?.model) return t("models.selectModel");
   return appStore.displayModelName(session.model, session.provider);
 });
+
+const workbenchProfileLabel = computed(
+  () => chatStore.activeSession?.profile || profilesStore.activeProfileName || "default",
+);
 
 const headerTitle = computed(() =>
   currentMode.value === "live"
@@ -941,6 +951,27 @@ const contextMenuOptions = computed(() => {
 
 function openSettingsPage() {
   router.push({ name: "hermes.settings" });
+}
+
+function openExpertsPage() {
+  router.push({ name: "hermes.experts" });
+}
+
+function openHistoryPage() {
+  router.push({ name: "hermes.history" });
+}
+
+function openUsbPage() {
+  router.push({ name: "hermes.usb" });
+}
+
+function openApiRelayPage() {
+  if (typeof window === "undefined") return;
+  window.open("https://market.quant-speed.com/skills", "_blank", "noopener,noreferrer");
+}
+
+function handleWorkbenchSessionOpen(sessionId: string) {
+  void handleSessionClick(sessionId);
 }
 
 function handleContextMenu(e: MouseEvent, sessionId: string) {
@@ -1994,7 +2025,108 @@ async function handleSessionModelCustomSubmit() {
             <MessageList
               ref="messageListRef"
               :approval-portal-to-body="showRealtimeVoice"
-            />
+            >
+              <template #empty-actions>
+                <div class="chat-workbench">
+                  <div class="chat-workbench-pills">
+                    <button
+                      class="chat-workbench-pill"
+                      type="button"
+                      @click="handleHeaderModelClick"
+                    >
+                      <span>{{ t("sidebar.models") }}</span>
+                      <strong>{{ activeSessionModelLabel }}</strong>
+                    </button>
+                    <span class="chat-workbench-pill chat-workbench-pill--static">
+                      <span>{{ t("sidebar.profiles") }}</span>
+                      <strong>{{ workbenchProfileLabel }}</strong>
+                    </span>
+                  </div>
+
+                  <div class="chat-workbench-grid">
+                    <button class="chat-workbench-card" type="button" @click="openExpertsPage">
+                      <span class="chat-workbench-card__icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M12 2l2.5 6 6.5.5-5 4.5L17.5 20 12 16.5 6.5 20 8 13 3 8.5 9.5 8z" />
+                        </svg>
+                      </span>
+                      <span class="chat-workbench-card__label">{{ t("experts.title") }}</span>
+                    </button>
+                    <button class="chat-workbench-card" type="button" @click="handleHeaderModelClick">
+                      <span class="chat-workbench-card__icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                          <circle cx="12" cy="12" r="3" />
+                          <path d="M12 1v4" />
+                          <path d="M12 19v4" />
+                          <path d="M1 12h4" />
+                          <path d="M19 12h4" />
+                          <path d="M4.22 4.22l2.83 2.83" />
+                          <path d="M16.95 16.95l2.83 2.83" />
+                          <path d="M4.22 19.78l2.83-2.83" />
+                          <path d="M16.95 7.05l2.83-2.83" />
+                        </svg>
+                      </span>
+                      <span class="chat-workbench-card__label">{{ t("sidebar.models") }}</span>
+                    </button>
+                    <button class="chat-workbench-card" type="button" @click="openUsbPage">
+                      <span class="chat-workbench-card__icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M12 2v10" />
+                          <path d="M9 5l3-3 3 3" />
+                          <path d="M12 12a3 3 0 1 0 3 3" />
+                          <path d="M15 15v5" />
+                          <path d="M15 20h4" />
+                          <circle cx="19" cy="20" r="1" fill="currentColor" stroke="none" />
+                        </svg>
+                      </span>
+                      <span class="chat-workbench-card__label">{{ t("sidebar.usb") }}</span>
+                    </button>
+                    <button class="chat-workbench-card" type="button" @click="openApiRelayPage">
+                      <span class="chat-workbench-card__icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                          <polyline points="15 3 21 3 21 9" />
+                          <line x1="10" y1="14" x2="21" y2="3" />
+                        </svg>
+                      </span>
+                      <span class="chat-workbench-card__label">{{ t("sidebar.apiRelay") }}</span>
+                    </button>
+                  </div>
+
+                  <div
+                    v-if="recentWorkbenchSessions.length > 0"
+                    class="chat-workbench-recent"
+                  >
+                    <div class="chat-workbench-recent__header">
+                      <span class="chat-workbench-recent__title">{{ t("chat.searchEmpty") }}</span>
+                      <button
+                        class="chat-workbench-recent__link"
+                        type="button"
+                        @click="openHistoryPage"
+                      >
+                        {{ t("chat.openHistory") }}
+                      </button>
+                    </div>
+                    <div class="chat-workbench-recent__list">
+                      <button
+                        v-for="session in recentWorkbenchSessions"
+                        :key="session.id"
+                        class="chat-workbench-session"
+                        type="button"
+                        @click="handleWorkbenchSessionOpen(session.id)"
+                      >
+                        <span class="chat-workbench-session__title">
+                          {{ session.title || t("chat.newChat") }}
+                        </span>
+                        <span class="chat-workbench-session__meta">
+                          {{ session.profile || "default" }}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </template>
+            </MessageList>
             <ChatInput
               ref="chatInputRef"
               :model-label="activeSessionModelLabel"
@@ -2732,6 +2864,210 @@ async function handleSessionModelCustomSubmit() {
   animation: chat-surface-fade-in 1.5s ease both;
 }
 
+.chat-workbench {
+  width: min(760px, 100%);
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.chat-workbench-pills {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.chat-workbench-pill {
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid rgba(var(--accent-primary-rgb), 0.16);
+  border-radius: 999px;
+  background: rgba(var(--accent-primary-rgb), 0.06);
+  padding: 8px 14px;
+  color: $text-secondary;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.2;
+  transition:
+    border-color $transition-fast,
+    background-color $transition-fast,
+    color $transition-fast,
+    transform $transition-fast;
+
+  strong {
+    min-width: 0;
+    max-width: 240px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: $text-primary;
+    font-weight: 600;
+  }
+}
+
+button.chat-workbench-pill {
+  cursor: pointer;
+
+  &:hover {
+    border-color: rgba(var(--accent-primary-rgb), 0.3);
+    background: rgba(var(--accent-primary-rgb), 0.1);
+    color: $text-primary;
+    transform: translateY(-1px);
+  }
+}
+
+.chat-workbench-pill--static {
+  cursor: default;
+}
+
+.chat-workbench-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.chat-workbench-card {
+  min-width: 0;
+  min-height: 88px;
+  border: 1px solid rgba(var(--accent-primary-rgb), 0.12);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(var(--accent-primary-rgb), 0.06), rgba(var(--accent-primary-rgb), 0.02)),
+    $bg-card;
+  color: $text-primary;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    transform $transition-fast,
+    border-color $transition-fast,
+    background-color $transition-fast,
+    box-shadow $transition-fast;
+
+  &:hover {
+    transform: translateY(-2px);
+    border-color: rgba(var(--accent-primary-rgb), 0.3);
+    box-shadow: 0 14px 32px rgba(15, 23, 42, 0.08);
+  }
+}
+
+.chat-workbench-card__icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent-primary);
+  background: rgba(var(--accent-primary-rgb), 0.12);
+
+  svg {
+    width: 17px;
+    height: 17px;
+  }
+}
+
+.chat-workbench-card__label {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.chat-workbench-recent {
+  border: 1px solid rgba(var(--accent-primary-rgb), 0.12);
+  border-radius: 18px;
+  background: rgba(var(--accent-primary-rgb), 0.03);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.chat-workbench-recent__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.chat-workbench-recent__title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: $text-muted;
+}
+
+.chat-workbench-recent__link {
+  border: none;
+  background: transparent;
+  color: var(--accent-primary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+}
+
+.chat-workbench-recent__list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.chat-workbench-session {
+  min-width: 0;
+  border: 1px solid rgba(var(--accent-primary-rgb), 0.08);
+  border-radius: 14px;
+  background: $bg-card;
+  padding: 12px 13px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color $transition-fast,
+    background-color $transition-fast,
+    transform $transition-fast;
+
+  &:hover {
+    border-color: rgba(var(--accent-primary-rgb), 0.24);
+    background: rgba(var(--accent-primary-rgb), 0.05);
+    transform: translateY(-1px);
+  }
+}
+
+.chat-workbench-session__title,
+.chat-workbench-session__meta {
+  min-width: 0;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-workbench-session__title {
+  font-size: 13px;
+  color: $text-primary;
+  font-weight: 600;
+}
+
+.chat-workbench-session__meta {
+  font-size: 11px;
+  color: $text-muted;
+}
+
 @keyframes chat-surface-fade-in {
   from {
     opacity: 0;
@@ -2795,6 +3131,32 @@ async function handleSessionModelCustomSubmit() {
 }
 
 @media (max-width: $breakpoint-mobile) {
+  .chat-workbench {
+    gap: 14px;
+  }
+
+  .chat-workbench-grid,
+  .chat-workbench-recent__list {
+    grid-template-columns: 1fr;
+  }
+
+  .chat-workbench-card {
+    min-height: 74px;
+    border-radius: 16px;
+    padding: 12px;
+  }
+
+  .chat-workbench-recent {
+    border-radius: 16px;
+    padding: 12px;
+  }
+
+  .chat-workbench-recent__header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+  }
+
   .chat-header {
     padding: calc(16px + env(safe-area-inset-top, 0px)) 12px 16px 52px;
   }

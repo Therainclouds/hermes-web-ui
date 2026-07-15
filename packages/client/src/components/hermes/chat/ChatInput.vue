@@ -69,6 +69,38 @@ function handleModelButtonClick() {
   emit('modelClick')
 }
 
+const currentExpertName = computed(() =>
+  chatStore.activeSession?.profile || profilesStore.activeProfileName || 'default',
+)
+
+const expertOptions = computed<DropdownOption[]>(() => {
+  const names = profilesStore.profiles.length > 0
+    ? profilesStore.profiles.map(profile => profile.name)
+    : ['default']
+
+  return names.map(name => ({
+    label: name,
+    value: name,
+  }))
+})
+
+const compactExpertLabel = computed(() => currentExpertName.value || 'default')
+
+async function handleExpertChange(value: string | number | null) {
+  const nextProfile = typeof value === 'string' && value ? value : 'default'
+  if (nextProfile === currentExpertName.value) return
+
+  if (chatStore.activeSession) {
+    chatStore.activeSession.profile = nextProfile
+    return
+  }
+
+  const ok = await profilesStore.switchProfile(nextProfile)
+  if (!ok) {
+    message.error(t('chat.expertSwitchFailed'))
+  }
+}
+
 const compactModelLabel = computed(() => {
   const label = props.modelLabel || t('models.selectModel')
   const parts = label.split('/').filter(Boolean)
@@ -456,6 +488,9 @@ function saveDraftForActiveSession(value: string) {
 onMounted(() => {
   loadDraftForActiveSession()
   syncViewport()
+  if (profilesStore.profiles.length === 0 && !profilesStore.loading) {
+    void profilesStore.fetchProfiles()
+  }
   window.addEventListener('resize', syncViewport)
   nextTick(() => {
     applyConfiguredTextareaHeight()
@@ -1082,6 +1117,33 @@ function isImage(type: string): boolean {
           </NTooltip>
 
           <NPopselect
+            :value="currentExpertName"
+            :options="expertOptions"
+            trigger="click"
+            @update:value="handleExpertChange"
+          >
+            <NTooltip trigger="hover" :disabled="isMobileViewport">
+              <template #trigger>
+                <NButton
+                  quaternary
+                  size="tiny"
+                  class="input-expert-button"
+                  :aria-label="`${t('chat.expert')}: ${compactExpertLabel}`"
+                >
+                  <template #icon>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M12 3l2.6 5.26 5.8.84-4.2 4.1.99 5.8L12 16.98 6.81 19l.99-5.8-4.2-4.1 5.8-.84L12 3z" />
+                    </svg>
+                  </template>
+                  <span class="input-expert-label">{{ compactExpertLabel }}</span>
+                  <svg class="toolbar-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+                </NButton>
+              </template>
+              {{ t('chat.expert') }}: {{ compactExpertLabel }}
+            </NTooltip>
+          </NPopselect>
+
+          <NPopselect
             :value="currentReasoningEffort"
             :options="reasoningEffortOptions"
             trigger="click"
@@ -1425,6 +1487,33 @@ function isImage(type: string): boolean {
   }
 }
 
+.input-expert-button {
+  color: $text-secondary;
+  border-radius: 999px;
+  max-width: 160px;
+  padding: 0 4px 0 6px;
+
+  :deep(.n-button__content) {
+    gap: 4px;
+    min-width: 0;
+  }
+
+  :deep(.n-button__state-border),
+  :deep(.n-button__border),
+  :deep(.n-button__ripple) {
+    display: none;
+  }
+}
+
+.input-expert-label {
+  display: inline-block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
 .input-model-button {
   color: $text-secondary;
   border-radius: 999px;
@@ -1598,7 +1687,17 @@ function isImage(type: string): boolean {
     padding: 0 4px 0 6px;
   }
 
+  .input-expert-button {
+    min-width: 35px;
+    max-width: 35px;
+    padding: 0 4px 0 6px;
+  }
+
   .input-model-label {
+    display: none;
+  }
+
+  .input-expert-label {
     display: none;
   }
 
