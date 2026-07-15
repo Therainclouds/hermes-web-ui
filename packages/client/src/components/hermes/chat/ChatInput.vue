@@ -38,6 +38,7 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   modelClick: []
+  voiceClick: []
 }>()
 
 const reasoningEffortOptions = computed(() => [
@@ -310,6 +311,11 @@ async function loadSkills() {
 
 // 自定义高度拖拽
 const textareaHeight = ref<number | null>(null) // null = auto
+const inputWrapperStyle = computed(() => {
+  const height = textareaHeight.value ?? configuredTextareaHeight.value
+  if (height === null) return {}
+  return { minHeight: `${height + 71}px` }
+})
 
 function syncViewport() {
   if (typeof window === 'undefined') return
@@ -325,6 +331,27 @@ function autoSizeTextarea(el: HTMLTextAreaElement | undefined = textareaRef.valu
   if (!el || textareaHeight.value !== null) return
   el.style.height = 'auto'
   el.style.height = `${Math.min(el.scrollHeight, 100)}px`
+}
+
+function focusTextareaFromInputWrapper(event: MouseEvent) {
+  if (event.defaultPrevented) return
+
+  const target = event.target instanceof Element ? event.target : null
+  if (!target) return
+
+  const interactiveTarget = target.closest([
+    'button',
+    'input',
+    'textarea',
+    '[role="button"]',
+    '.context-limit-editable',
+    '.input-toolbar',
+    '.resize-handle',
+  ].join(','))
+
+  if (interactiveTarget) return
+
+  textareaRef.value?.focus()
 }
 
 function applyConfiguredTextareaHeight() {
@@ -372,16 +399,14 @@ function startResize(e: MouseEvent) {
   document.addEventListener('mouseup', onMouseUp)
 }
 
-// 自动播放语音开关
-const autoPlaySpeech = ref(false)
 const inputSettingsOptions = computed<DropdownOption[]>(() => [
   {
-    label: t('chat.autoPlaySpeech'),
-    key: 'autoPlaySpeech',
+    label: t('realtimeVoice.mode'),
+    key: 'voiceMode',
     icon: () => h('span', {
-      class: ['settings-check', { active: autoPlaySpeech.value }],
+      class: 'settings-voice-mode-icon',
       'aria-hidden': 'true',
-    }, autoPlaySpeech.value ? '✓' : ''),
+    }, '◉'),
   },
   {
     label: t('chat.showToolCalls'),
@@ -430,12 +455,6 @@ function saveDraftForActiveSession(value: string) {
 // 从 localStorage 读取设置
 onMounted(() => {
   loadDraftForActiveSession()
-  const saved = localStorage.getItem('autoPlaySpeech')
-  if (saved !== null) {
-    autoPlaySpeech.value = saved === 'true'
-    // 同步到 chat store
-    chatStore.setAutoPlaySpeech(autoPlaySpeech.value)
-  }
   syncViewport()
   window.addEventListener('resize', syncViewport)
   nextTick(() => {
@@ -443,16 +462,9 @@ onMounted(() => {
   })
 })
 
-// 监听变化并保存
-watch(autoPlaySpeech, (value) => {
-  localStorage.setItem('autoPlaySpeech', String(value))
-  // 通知 chat store
-  chatStore.setAutoPlaySpeech(value)
-})
-
 function handleInputSettingsSelect(key: string | number) {
-  if (key === 'autoPlaySpeech') {
-    autoPlaySpeech.value = !autoPlaySpeech.value
+  if (key === 'voiceMode') {
+    if (chatStore.activeSessionId) emit('voiceClick')
     return
   }
 
@@ -473,6 +485,11 @@ watch(() => chatStore.activeSession?.id, () => {
 })
 
 watch(configuredTextareaHeight, () => {
+  applyConfiguredTextareaHeight()
+})
+
+watch(() => settingsStore.display.chat_input_height, () => {
+  manualTextareaResize.value = false
   applyConfiguredTextareaHeight()
 })
 
@@ -567,10 +584,8 @@ let contextLengthRequest: Promise<void> | null = null
 const showContextEditModal = ref(false)
 const editingContextLimit = ref(256000)
 const isSavingContextLimit = ref(false)
-const isCodingAgentSession = computed(() => chatStore.activeSession?.source === 'coding_agent')
 
 async function handleEditContextLimit() {
-  if (isCodingAgentSession.value) return
   editingContextLimit.value = contextLength.value
   showContextEditModal.value = true
 }
@@ -618,7 +633,6 @@ function currentContextLengthKey() {
 }
 
 async function loadContextLength() {
-  if (isCodingAgentSession.value) return
   const key = currentContextLengthKey()
   if (key === contextLengthLoadedKey) return
   if (key === contextLengthRequestKey && contextLengthRequest) return contextLengthRequest
@@ -662,14 +676,13 @@ watch(
 )
 
 const totalTokens = computed(() => {
-  if (isCodingAgentSession.value) return 0
   const context = chatStore.activeSession?.contextTokens
   if (typeof context === 'number' && Number.isFinite(context) && context > 0) return context
   const input = chatStore.activeSession?.inputTokens ?? 0
   const output = chatStore.activeSession?.outputTokens ?? 0
   return input + output
 })
-const showContextUsage = computed(() => totalTokens.value > 0)
+const showContextUsage = computed(() => !!chatStore.activeSession)
 
 const remainingTokens = computed(() => Math.max(0, contextLength.value - totalTokens.value))
 
@@ -997,10 +1010,12 @@ function isImage(type: string): boolean {
     <div
       class="input-wrapper"
       :class="{ 'drag-over': isDragging }"
+      :style="inputWrapperStyle"
       @dragover="handleDragOver"
       @dragenter="handleDragEnter"
       @dragleave="handleDragLeave"
       @drop="handleDrop"
+      @mousedown="focusTextareaFromInputWrapper"
     >
       <input
         ref="fileInputRef"
@@ -1067,7 +1082,6 @@ function isImage(type: string): boolean {
           </NTooltip>
 
           <NPopselect
-            v-if="!isCodingAgentSession"
             :value="currentReasoningEffort"
             :options="reasoningEffortOptions"
             trigger="click"
@@ -1316,6 +1330,10 @@ function isImage(type: string): boolean {
   border-top: 0;
   background-color: $bg-card;
   flex-shrink: 0;
+
+  .dark & {
+    background-color: #333333;
+  }
 }
 
 .input-top-bar {
@@ -1704,6 +1722,7 @@ function isImage(type: string): boolean {
   border-radius: 18px;
   padding: 22px 12px 9px;
   position: relative;
+  cursor: text;
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.08);
   transition: border-color $transition-fast, box-shadow $transition-fast;
 
@@ -1718,7 +1737,7 @@ function isImage(type: string): boolean {
   }
 
   .dark & {
-    background-color: $bg-card;
+    background-color: #333333;
     box-shadow: 0 8px 28px rgba(0, 0, 0, 0.32);
   }
 }
@@ -1740,7 +1759,7 @@ function isImage(type: string): boolean {
 
 .input-textarea {
   display: block;
-  flex: 0 0 auto;
+  flex: 1 1 auto;
   width: 100%;
   background: none;
   border: none;
@@ -1751,7 +1770,7 @@ function isImage(type: string): boolean {
   line-height: 1.5;
   resize: none;
   max-height: 400px;
-  min-height: 24px;
+  min-height: 44px;
   padding: 0;
   overflow-y: auto;
 

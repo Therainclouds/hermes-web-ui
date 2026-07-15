@@ -5,7 +5,6 @@ import { useI18n } from "vue-i18n";
 import { NButton, NDrawer, NDrawerContent, NSpin, useMessage } from "naive-ui";
 import { downloadFile, getDownloadUrl } from "@/api/hermes/download";
 import { copyToClipboard } from "@/utils/clipboard";
-import MarkdownRenderer from "./MarkdownRenderer.vue";
 import { parseThinking, countThinkingChars } from "@/utils/thinking-parser";
 import { useChatStore } from "@/stores/hermes/chat";
 import { useFilesStore } from "@/stores/hermes/files";
@@ -26,6 +25,7 @@ import { formatChatTimestamp } from "@/utils/chat-timestamp";
 import type { WorkspaceRunChangeFileSummary } from "@/api/hermes/sessions";
 
 const FileEditor = defineAsyncComponent(() => import("@/components/hermes/files/FileEditor.vue"));
+const MarkdownRenderer = defineAsyncComponent(async () => (await import("./MarkdownRenderer.vue")).default);
 
 const TOOL_PAYLOAD_DISPLAY_LIMIT = 1000;
 const JSON_STRING_DISPLAY_LIMIT = 200;
@@ -948,7 +948,24 @@ onBeforeUnmount(() => {
         @click="handleToolDetailClick"
       >
         <div class="tool-change-card">
-          <div class="tool-change-card-header">
+          <button
+            class="tool-change-card-header"
+            type="button"
+            :aria-expanded="toolExpanded"
+            @click.stop="toolExpanded = !toolExpanded"
+          >
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              class="tool-change-chevron"
+              :class="{ rotated: toolExpanded }"
+            >
+              <polyline points="9 18 15 12 9 6" />
+            </svg>
             <span class="tool-change-card-title">
               {{ t("chat.changedFiles", { files: toolChange?.files_changed || 0 }) }}
             </span>
@@ -956,28 +973,30 @@ onBeforeUnmount(() => {
               <span class="additions">+{{ toolChange?.additions || 0 }}</span>
               <span class="deletions">-{{ toolChange?.deletions || 0 }}</span>
             </span>
-          </div>
-          <button
-            v-for="file in toolChange?.files || []"
-            :key="file.id"
-            class="tool-change-file-row"
-            :class="{ selected: selectedToolChangeFileId === file.id }"
-            type="button"
-            @click.stop="openToolChangeFile(file)"
-          >
-            <span class="tool-change-file-main">
-              <span class="tool-change-file-badge" :class="fileBadgeClass(file.path)">
-                {{ fileExtension(file.path) }}
-              </span>
-              <span class="tool-change-file-name" :title="file.path">
-                {{ fileNameFromPath(file.path) }}
-              </span>
-            </span>
-            <span class="tool-change-file-stats">
-              <span class="additions">+{{ file.additions }}</span>
-              <span class="deletions">-{{ file.deletions }}</span>
-            </span>
           </button>
+          <div v-if="toolExpanded" class="tool-change-files">
+            <button
+              v-for="file in toolChange?.files || []"
+              :key="file.id"
+              class="tool-change-file-row"
+              :class="{ selected: selectedToolChangeFileId === file.id }"
+              type="button"
+              @click.stop="openToolChangeFile(file)"
+            >
+              <span class="tool-change-file-main">
+                <span class="tool-change-file-badge" :class="fileBadgeClass(file.path)">
+                  {{ fileExtension(file.path) }}
+                </span>
+                <span class="tool-change-file-name" :title="file.path">
+                  {{ fileNameFromPath(file.path) }}
+                </span>
+              </span>
+              <span class="tool-change-file-stats">
+                <span class="additions">+{{ file.additions }}</span>
+                <span class="deletions">-{{ file.deletions }}</span>
+              </span>
+            </button>
+          </div>
         </div>
       </div>
       <div v-else-if="toolExpanded && hasToolDetails" class="tool-details" @click="handleToolDetailClick">
@@ -1870,10 +1889,32 @@ onBeforeUnmount(() => {
 
 .tool-change-card-header {
   align-items: baseline;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
   display: flex;
   gap: 8px;
   justify-content: flex-start;
   min-width: 0;
+  padding: 0;
+  text-align: left;
+  width: 100%;
+}
+
+.tool-change-chevron {
+  align-self: center;
+  flex-shrink: 0;
+  transition: transform 0.15s ease;
+
+  &.rotated {
+    transform: rotate(90deg);
+  }
+}
+
+.tool-change-files {
+  display: grid;
+  gap: 10px;
 }
 
 .tool-change-card-title {

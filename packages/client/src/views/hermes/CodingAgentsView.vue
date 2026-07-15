@@ -22,6 +22,7 @@ import { fetchAvailableModelsForProfile, type AvailableModelGroup } from '@/api/
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import TerminalPanel from '@/components/hermes/chat/TerminalPanel.vue'
 import { useMessage } from '@/composables/useAppMessage'
+import { isAuthModelProvider } from '@/utils/codingAgentProviders'
 
 type CodingAgentBlock = {
   id: CodingAgentId
@@ -81,7 +82,6 @@ const launchResult = ref<CodingAgentLaunchResult | null>(null)
 const terminalVisible = ref(false)
 const terminalCommand = ref('')
 const terminalKey = ref(0)
-const CODING_AGENT_AUTH_PROVIDER_KEYS = new Set(['openai-codex', 'copilot', 'xai-oauth', 'nous', 'google-gemini-cli', 'claude-oauth'])
 
 const agentLogos: Record<CodingAgentBlock['tool'], string> = {
   'Claude Code': '/coding-agents/claude-code.svg',
@@ -141,8 +141,7 @@ const statusById = computed(() => {
 const activeProfileName = computed(() => profilesStore.activeProfileName || 'default')
 
 function isCodingAgentAuthProvider(provider: AvailableModelGroup) {
-  const providerKey = String(provider.provider || '').toLowerCase()
-  return CODING_AGENT_AUTH_PROVIDER_KEYS.has(providerKey)
+  return isAuthModelProvider(provider.provider)
 }
 
 const selectableLaunchProviders = computed(() => (

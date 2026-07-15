@@ -26,7 +26,11 @@ import type {
 
 interface OpenAIChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
-  content: string | null
+  content: string | null | Array<{
+    type: 'text'
+    text: string
+    cache_control?: { type: 'ephemeral' }
+  }>
   name?: string
   tool_call_id?: string
   tool_calls?: OpenAIToolCall[]
@@ -52,6 +56,14 @@ interface OpenAIToolDefinition {
 
 type OpenAIMessageContent = string | Array<{ type?: string; text?: string }> | null | undefined
 
+interface OpenAIChatResponseMessage {
+  content?: OpenAIMessageContent
+  reasoning?: string
+  reasoning_content?: string
+  reasoning_details?: unknown
+  tool_calls?: OpenAIToolCall[]
+}
+
 interface OpenAIChatPayload {
   model: string
   messages: OpenAIChatMessage[]
@@ -64,18 +76,18 @@ interface OpenAIChatPayload {
     include_usage: boolean
   }
   metadata?: Record<string, unknown>
+  vl_high_resolution_images?: true
 }
 
 interface OpenAIChatResponse {
   id?: string
   model?: string
   choices?: Array<{
-    message?: {
-      content?: OpenAIMessageContent
-      tool_calls?: OpenAIToolCall[]
-    }
+    message?: OpenAIChatResponseMessage
     delta?: {
       content?: string | null
+      reasoning?: string | null
+      reasoning_content?: string | null
       tool_calls?: Array<{
         index?: number
         id?: string
@@ -92,6 +104,8 @@ interface OpenAIChatResponse {
     prompt_tokens?: number
     completion_tokens?: number
     total_tokens?: number
+    prompt_tokens_details?: { cached_tokens?: number }
+    completion_tokens_details?: { reasoning_tokens?: number }
   } | null
   error?: {
     message?: string
@@ -128,13 +142,13 @@ export class OpenAICompatibleModelClient implements ModelClient {
 
   async create(request: ModelRequest): Promise<ModelResponse> {
     const payload = toOpenAIChatPayload(this.config, { ...request, stream: false })
-    const response = await this.postJson(payload)
+    const response = await this.postJson(payload, request.signal)
     return normalizeOpenAIChatResponse(this.provider, response)
   }
 
   async *stream(request: ModelRequest): AsyncIterable<ModelEvent> {
     const payload = toOpenAIChatPayload(this.config, { ...request, stream: true })
-    const response = await this.post(payload)
+    const response = await this.post(payload, request.signal)
 
     if (!response.body) {
       throw new ModelProviderError('Model provider returned an empty stream body.', {
@@ -185,6 +199,10 @@ export class OpenAICompatibleModelClient implements ModelClient {
           if (content) {
             yield { type: 'text-delta', text: content }
           }
+          const reasoning = choice.delta?.reasoning_content ?? choice.delta?.reasoning
+          if (reasoning) {
+            yield { type: 'reasoning-delta', text: reasoning }
+          }
 
           for (const toolCallDelta of choice.delta?.tool_calls ?? []) {
             const index = toolCallDelta.index ?? 0
@@ -210,17 +228,17 @@ export class OpenAICompatibleModelClient implements ModelClient {
     yield { type: 'done', response: { id: responseId, model: responseModel, finishReason } }
   }
 
-  private async postJson(payload: OpenAIChatPayload): Promise<OpenAIChatResponse> {
-    const response = await this.post(payload)
+  private async postJson(payload: OpenAIChatPayload, signal?: AbortSignal): Promise<OpenAIChatResponse> {
+    const response = await this.post(payload, signal)
     return parseResponseJson(this.provider, response)
   }
 
-  private async post(payload: OpenAIChatPayload): Promise<Response> {
+  private async post(payload: OpenAIChatPayload, signal?: AbortSignal): Promise<Response> {
     const response = await this.fetchImpl(chatCompletionsUrl(this.config), {
       method: 'POST',
       headers: requestHeaders(this.config),
       body: JSON.stringify(payload),
-      signal: abortSignal(this.config.timeoutMs),
+      signal: abortSignal(this.config.timeoutMs, signal),
     })
 
     if (!response.ok) {
@@ -232,9 +250,10 @@ export class OpenAICompatibleModelClient implements ModelClient {
 }
 
 export function toOpenAIChatPayload(config: ModelProviderConfig, request: ModelRequest): OpenAIChatPayload {
+  const isQwenOAuth = config.id === 'qwen-oauth'
   return {
     model: request.model ?? config.defaultModel,
-    messages: request.messages.map(toOpenAIChatMessage),
+    messages: request.messages.map(message => toOpenAIChatMessage(message, isQwenOAuth)),
     temperature: request.temperature,
     max_tokens: request.maxTokens,
     tools: request.tools?.map(toOpenAIToolDefinition),
@@ -242,6 +261,7 @@ export function toOpenAIChatPayload(config: ModelProviderConfig, request: ModelR
     stream: request.stream,
     stream_options: request.stream ? { include_usage: true } : undefined,
     metadata: request.metadata,
+    vl_high_resolution_images: isQwenOAuth ? true : undefined,
   }
 }
 
@@ -258,6 +278,7 @@ export function normalizeOpenAIChatResponse(provider: string, response: OpenAICh
     id: response.id,
     model: response.model,
     content: normalizeContent(choice?.message?.content),
+    reasoning: normalizeReasoning(choice?.message),
     toolCalls: choice?.message?.tool_calls?.map(toAgentToolCall),
     usage: response.usage ? normalizeUsage(response.usage) : undefined,
     finishReason: choice?.finish_reason ?? undefined,
@@ -265,10 +286,28 @@ export function normalizeOpenAIChatResponse(provider: string, response: OpenAICh
   }
 }
 
-function toOpenAIChatMessage(message: AgentMessage): OpenAIChatMessage {
+function normalizeReasoning(message: OpenAIChatResponseMessage | undefined): string | undefined {
+  if (!message) return undefined
+  if (typeof message.reasoning_content === 'string' && message.reasoning_content) return message.reasoning_content
+  if (typeof message.reasoning === 'string' && message.reasoning) return message.reasoning
+  if (message.reasoning_details !== undefined && message.reasoning_details !== null) return JSON.stringify(message.reasoning_details)
+  return undefined
+}
+
+function toOpenAIChatMessage(message: AgentMessage, qwenOAuth = false): OpenAIChatMessage {
+  const plainContent = message.role === 'assistant' && message.toolCalls?.length
+    ? message.content || null
+    : message.content
+  const content = qwenOAuth && typeof plainContent === 'string'
+    ? [{
+        type: 'text' as const,
+        text: plainContent,
+        ...(message.role === 'system' ? { cache_control: { type: 'ephemeral' as const } } : {}),
+      }]
+    : plainContent
   return {
     role: message.role,
-    content: message.role === 'assistant' && message.toolCalls?.length ? message.content || null : message.content,
+    content,
     name: message.name,
     tool_call_id: message.toolCallId,
     tool_calls: message.toolCalls?.map(toOpenAIToolCall),
@@ -316,10 +355,14 @@ function normalizeContent(content: OpenAIMessageContent): string {
 }
 
 function normalizeUsage(usage: NonNullable<OpenAIChatResponse['usage']>): ModelUsage {
+  const cacheReadTokens = usage.prompt_tokens_details?.cached_tokens ?? 0
+  const inputTokens = usage.prompt_tokens ?? 0
   return {
-    inputTokens: usage.prompt_tokens,
+    inputTokens: Math.max(0, inputTokens - cacheReadTokens),
     outputTokens: usage.completion_tokens,
     totalTokens: usage.total_tokens,
+    cacheReadTokens,
+    reasoningTokens: usage.completion_tokens_details?.reasoning_tokens,
   }
 }
 

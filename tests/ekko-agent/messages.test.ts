@@ -90,6 +90,8 @@ describe('ekko-agent unified messages', () => {
   it('collects stream events into one assistant output message', async () => {
     async function *events(): AsyncIterable<ModelEvent> {
       yield { type: 'text-delta', text: 'Hel' }
+      yield { type: 'reasoning-delta', text: 'thinking ' }
+      yield { type: 'reasoning-delta', text: 'step' }
       yield { type: 'text-delta', text: 'lo' }
       yield {
         type: 'tool-call',
@@ -106,6 +108,8 @@ describe('ekko-agent unified messages', () => {
     await expect(collectModelEvents(events())).resolves.toEqual({
       events: [
         { type: 'text-delta', text: 'Hel' },
+        { type: 'reasoning-delta', text: 'thinking ' },
+        { type: 'reasoning-delta', text: 'step' },
         { type: 'text-delta', text: 'lo' },
         {
           type: 'tool-call',
@@ -123,6 +127,7 @@ describe('ekko-agent unified messages', () => {
         id: 'res_1',
         model: 'stream-model',
         content: 'Hello',
+        reasoning: 'thinking step',
         toolCalls: [{
           id: 'call_1',
           name: 'lookup',

@@ -71,12 +71,6 @@ vi.mock('../../packages/server/src/shared/providers', () => ({
       models: ['anthropic/claude-opus-4.8'],
     },
     {
-      value: 'google-gemini-cli',
-      label: 'Google Gemini OAuth',
-      base_url: 'cloudcode-pa://google',
-      models: ['gemini-3.1-pro-preview', 'gemini-3-pro-preview'],
-    },
-    {
       value: 'claude-oauth',
       label: 'Claude OAuth',
       base_url: 'https://api.anthropic.com',
@@ -93,7 +87,6 @@ vi.mock('../../packages/server/src/services/config-helpers', () => ({
     'xai-oauth': { api_key_env: '', base_url_env: '' },
     copilot: { api_key_env: 'GITHUB_TOKEN', base_url_env: '' },
     nous: { api_key_env: '', base_url_env: '' },
-    'google-gemini-cli': { api_key_env: '', base_url_env: '' },
     'claude-oauth': { api_key_env: '', base_url_env: '' },
   },
   fetchProviderModels: mockFetchProviderModels,
@@ -170,6 +163,102 @@ describe('model catalog cache', () => {
     })
   })
 
+  it('resolves cached catalogs by source and authoritative manifest presence', async () => {
+    const { providerModelCatalogKey, resolveProviderCatalogModels } = await import(
+      '../../packages/server/src/services/hermes/model-catalog-cache'
+    )
+    const provider = 'xai'
+    const baseUrl = 'https://api.x.ai/v1'
+    const key = providerModelCatalogKey(provider, baseUrl)
+    const cachedModels = ['grok-4.3', 'grok-imagine-image']
+    const currentModels = ['grok-build-0.1', 'grok-4.3']
+    const fallbackEntry = {
+      provider,
+      label: 'xAI',
+      base_url: baseUrl,
+      models: cachedModels,
+      source: 'fallback' as const,
+      updated_at: '2026-01-01T00:00:00.000Z',
+    }
+    const fallbackCache = {
+      version: 1 as const,
+      updated_at: fallbackEntry.updated_at,
+      providers: { [key]: fallbackEntry },
+    }
+
+    expect(resolveProviderCatalogModels(
+      fallbackCache,
+      provider,
+      baseUrl,
+      currentModels,
+      { hasStaticManifest: true },
+    )).toEqual(currentModels)
+    expect(resolveProviderCatalogModels(
+      fallbackCache,
+      provider,
+      baseUrl,
+      [],
+      { hasStaticManifest: true },
+    )).toEqual([])
+    expect(resolveProviderCatalogModels(
+      fallbackCache,
+      provider,
+      baseUrl,
+      [],
+      { hasStaticManifest: false },
+    )).toEqual(cachedModels)
+    expect(resolveProviderCatalogModels(
+      { ...fallbackCache, providers: { [key]: { ...fallbackEntry, source: 'live' as const } } },
+      provider,
+      baseUrl,
+      currentModels,
+      { hasStaticManifest: true },
+    )).toEqual(cachedModels)
+    expect(resolveProviderCatalogModels(
+      { ...fallbackCache, providers: {} },
+      provider,
+      baseUrl,
+      currentModels,
+      { hasStaticManifest: true },
+    )).toEqual(currentModels)
+  })
+
+  it('preserves the last-good live catalog when a refresh returns no models', async () => {
+    const { providerModelCatalogKey, refreshProviderModelCatalog } = await import(
+      '../../packages/server/src/services/hermes/model-catalog-cache'
+    )
+    const provider = 'deepseek'
+    const baseUrl = 'https://api.deepseek.com/v1'
+    const key = providerModelCatalogKey(provider, baseUrl)
+    const lastGood = {
+      provider,
+      label: 'DeepSeek',
+      base_url: baseUrl,
+      models: ['deepseek-last-good'],
+      source: 'live' as const,
+      updated_at: '2026-06-01T12:00:00.000Z',
+      profiles: ['default'],
+    }
+    cacheText = JSON.stringify({
+      version: 1,
+      updated_at: lastGood.updated_at,
+      providers: { [key]: lastGood },
+    })
+    mockFetchProviderModels.mockResolvedValueOnce([])
+
+    await refreshProviderModelCatalog({
+      provider,
+      label: 'DeepSeek',
+      base_url: baseUrl,
+      api_key: 'failed-refresh-key',
+      fallback_models: ['deepseek-chat'],
+      profiles: ['default'],
+    })
+
+    const after = JSON.parse(cacheText)
+    expect(after.providers[key]).toEqual(lastGood)
+  })
+
   it('refreshes providers from all profiles and deduplicates identical catalogs', async () => {
     const { refreshConfiguredProviderModelCatalogs, providerModelCatalogKey } = await import(
       '../../packages/server/src/services/hermes/model-catalog-cache'
@@ -217,17 +306,6 @@ describe('model catalog cache', () => {
           }),
         }
       }
-      if (url === 'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota') {
-        return {
-          ok: true,
-          json: async () => ({
-            buckets: [
-              { modelId: 'gemini-3.1-pro-preview' },
-              { modelId: 'gemini-3-flash-preview' },
-            ],
-          }),
-        }
-      }
       return { ok: false, status: 404, json: async () => ({}) }
     })
     mockFetchProviderModels.mockImplementation(async (baseUrl: string, apiKey: string) => {
@@ -245,11 +323,6 @@ describe('model catalog cache', () => {
         return JSON.stringify({
           providers: {
             'openai-codex': { tokens: { access_token: 'codex-token' } },
-            'google-gemini-cli': {
-              access_token: 'gemini-access-token',
-              refresh_token: 'gemini-refresh-token',
-              base_url: 'cloudcode-pa://google',
-            },
             'claude-oauth': {
               tokens: {
                 access_token: 'claude-access-token',
@@ -302,12 +375,6 @@ describe('model catalog cache', () => {
     expect(cache.providers[providerModelCatalogKey('nous', 'https://inference-api.nousresearch.com/v1')]).toMatchObject({
       provider: 'nous',
       models: ['nous/live-a', 'nous/live-b'],
-      source: 'live',
-      profiles: ['default'],
-    })
-    expect(cache.providers[providerModelCatalogKey('google-gemini-cli', 'cloudcode-pa://google')]).toMatchObject({
-      provider: 'google-gemini-cli',
-      models: ['gemini-3.1-pro-preview', 'gemini-3-flash-preview'],
       source: 'live',
       profiles: ['default'],
     })

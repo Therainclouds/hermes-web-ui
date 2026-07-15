@@ -7,6 +7,7 @@ import { resolveManifestCheckResult } from '../services/update/manifest-client'
 import { getLocalWebUiVersion } from '../services/update/package-info'
 import type { UpdateCheckResult } from '../services/update/types'
 import { isRemoteVersionNewer } from '../services/update/version-compare'
+import { isDockerContainer } from '../services/runtime-environment'
 
 declare const __APP_VERSION__: string
 
@@ -179,5 +180,6 @@ export async function healthCheck(ctx: any) {
     node_version: process.versions.node,
     agent_bridge: agentBridge,
     terminal,
+    is_docker: isDockerContainer(),
   }
 }

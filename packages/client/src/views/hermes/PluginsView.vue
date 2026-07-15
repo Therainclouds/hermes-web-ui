@@ -297,8 +297,8 @@ watch(() => profilesStore.activeProfileName || 'default', () => {
 .summary-card {
   padding: 14px;
   border: 1px solid $border-color;
-  border-radius: 12px;
-  background: $bg-secondary;
+  border-radius: $radius-md;
+  background: $bg-card;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -331,8 +331,8 @@ watch(() => profilesStore.activeProfileName || 'default', () => {
 .plugins-table-wrap {
   overflow-x: auto;
   border: 1px solid $border-color;
-  border-radius: 12px;
-  background: $bg-secondary;
+  border-radius: $radius-md;
+  background: $bg-card;
 }
 
 .plugins-table {

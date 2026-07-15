@@ -14,5 +14,11 @@ export default defineConfig({
   test: {
     include: ['tests/**/*.test.ts'],
     setupFiles: ['tests/setup.ts'],
+    coverage: {
+      exclude: [
+        '**/dist/**',
+        'packages/desktop/release/**',
+      ],
+    },
   },
 })

@@ -39,6 +39,8 @@ export class CustomRuntimeModelClient implements ModelClient {
       this.fetchImpl,
       customRuntimeUrl(this.config),
       { ...request, model: request.model ?? this.config.defaultModel, stream: false },
+      undefined,
+      request.signal,
     )
   }
 
@@ -48,6 +50,8 @@ export class CustomRuntimeModelClient implements ModelClient {
       this.fetchImpl,
       customRuntimeUrl(this.config),
       { ...request, model: request.model ?? this.config.defaultModel, stream: true },
+      undefined,
+      request.signal,
     )
 
     for await (const event of readServerSentEvents(response)) {
