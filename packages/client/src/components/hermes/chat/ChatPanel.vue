@@ -336,7 +336,6 @@ const recentWorkbenchSessions = computed(() =>
     chatStore.sessions.filter((session) => session.id !== chatStore.activeSessionId),
   ).slice(0, 4),
 );
-
 watch(
   () => [
     chatStore.sessionsLoaded,
@@ -363,7 +362,6 @@ const activeSessionModelLabel = computed(() => {
 const workbenchProfileLabel = computed(
   () => chatStore.activeSession?.profile || profilesStore.activeProfileName || "default",
 );
-
 const headerTitle = computed(() =>
   currentMode.value === "live"
     ? t("chat.liveSessions")
@@ -973,7 +971,6 @@ function openApiRelayPage() {
 function handleWorkbenchSessionOpen(sessionId: string) {
   void handleSessionClick(sessionId);
 }
-
 function handleContextMenu(e: MouseEvent, sessionId: string) {
   e.preventDefault();
   contextSessionId.value = sessionId;

@@ -1699,7 +1699,6 @@ function isImage(type: string): boolean {
     max-width: 35px;
     padding: 0 4px 0 6px;
   }
-
   .input-model-label {
     display: none;
   }

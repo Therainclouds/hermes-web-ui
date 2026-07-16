@@ -5,7 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useSessionSearch } from '@/composables/useSessionSearch'
 
-type ActiveSection = 'chat' | 'history' | 'group' | 'global' | 'workflow'
+type ActiveSection = 'chat' | 'history' | 'group' | 'global' | 'workflow' | 'meeting'
 
 const props = defineProps<{
   active: ActiveSection
@@ -50,6 +50,10 @@ function openWorkflow() {
   void router.push({ name: 'hermes.workflow' })
 }
 
+function openMeeting() {
+  if (props.active === 'meeting') return
+  void router.push({ name: 'hermes.meeting' })
+}
 function openApiRelay() {
   if (typeof window === 'undefined') return
   window.open('https://market.quant-speed.com/skills', '_blank', 'noopener,noreferrer')
@@ -160,7 +164,7 @@ function openExperts() {
         <span>{{ t('sidebar.apiRelay') }}</span>
       </button>
     </div>
-    <div v-if="showModeSwitch" class="conversation-switch conversation-switch--three" role="tablist" aria-label="Conversation type">
+    <div v-if="showModeSwitch" class="conversation-switch conversation-switch--four" role="tablist" aria-label="Conversation type">
       <NTooltip trigger="hover" placement="top">
         <template #trigger>
           <button
@@ -221,6 +225,25 @@ function openExperts() {
           </button>
         </template>
         {{ t('sidebar.workflow') }}
+      </NTooltip>
+      <NTooltip trigger="hover" placement="top">
+        <template #trigger>
+          <button
+            class="conversation-switch-tab"
+            :class="{ active: active === 'meeting' }"
+            type="button"
+            role="tab"
+            :aria-label="t('sidebar.meeting')"
+            :aria-selected="active === 'meeting'"
+            @click="openMeeting"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/>
+              <path d="M8 12l3 3 5-5"/>
+            </svg>
+          </button>
+        </template>
+        {{ t('sidebar.meeting') }}
       </NTooltip>
     </div>
   </div>
@@ -293,6 +316,9 @@ function openExperts() {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.conversation-switch--four {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
 .conversation-switch-tab {
   width: 100%;
   min-width: 0;

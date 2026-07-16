@@ -4,7 +4,7 @@ import type { ProxyOptions } from 'vite'
 import { resolve } from 'path'
 import pkg from './package.json'
 
-const FRONTEND_PORT = Number(process.env.HERMES_WEB_UI_FRONTEND_PORT || 8649)
+const FRONTEND_PORT = Number(process.env.HERMES_WEB_UI_FRONTEND_PORT || 6060)
 const BACKEND_PORT = process.env.HERMES_WEB_UI_BACKEND_PORT || '6060'
 const BACKEND = `http://127.0.0.1:${BACKEND_PORT}`
 

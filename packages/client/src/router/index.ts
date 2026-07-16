@@ -62,6 +62,11 @@ const router = createRouter({
       component: () => import('@/views/hermes/WorkflowView.vue'),
     },
     {
+      path: '/hermes/meeting',
+      name: 'hermes.meeting',
+      component: () => import('@/views/hermes/MeetingView.vue'),
+    },
+    {
       path: '/hermes/models',
       name: 'hermes.models',
       component: () => import('@/views/hermes/ModelsView.vue'),

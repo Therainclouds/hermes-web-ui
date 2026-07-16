@@ -1314,7 +1314,6 @@ defineExpose({
 .empty-state-extra {
   width: min(720px, 100%);
 }
-
 .history-loader {
   height: 28px;
   display: flex;
