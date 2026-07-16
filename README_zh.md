@@ -138,6 +138,65 @@ hermes-web-ui reset-default-login
 ### 语音 / TTS / STT
 
 - 可在聊天和群聊消息中朗读 Assistant 回复�?- Provider 支持：浏览器 Web Speech、内�?Edge TTS、OpenAI 兼容 `/audio/speech`、自定义 OpenAI 兼容 TTS 端点、MiMo�?- MiMo 支持预置音色、音色设计提示词、音色复刻参考音频（`.mp3`/`.wav`，最�?10 MB），并可选择鉴权请求头模式（`Authorization`、`api-key` 或两者同时发送）�?- Edge / OpenAI 兼容 / 自定�?/ MiMo 播放统一�?Web UI 后端 `/api/hermes/tts/synthesize`，停�?暂停状态一致，并会在可行时中断进行中的 fetch�?- Provider API Key �?MiMo 复刻参考音频保存在服务�?TTS 设置中，浏览器只显示脱敏后的 secret 状态�?- 使用 OpenAI / 自定�?/ MiMo 播放前，先在 Settings �?Voice 保存 provider 设置。消息播放只发送文本和非敏感播放参数，后端合成时读取当前用户保存的私钥�?- 聊天输入框支持回合制语音输入：通过麦克风按钮开�?停止一轮录音，转写结果会先填入当前输入框，用户可以编辑后再用普通发送按钮发送�?- 语音输入 / STT 可在支持时使用浏览器语音识别，也可使用在 Settings �?Voice 中配置的服务�?provider�?- �?Assistant 音频正在播放时，开始新的语音输入会先停止播放。这�?barge-in 只打断音频，不会隐式取消正在运行�?Agent；停�?run 仍然需要显式操作�?- 支持的设置项、安全边界和当前非目标范围见 [`docs/voice-dialogue.md`](./docs/voice-dialogue.md)�?- 限制：浏览器/服务端中断后，外�?TTS Provider 仍可能继续处理请求；自定�?/ OpenAI 兼容 / MiMo base URL 必须是公�?`http`/`https` 端点，不能指�?localhost 或私网�?
+
+### 会议模式
+
+实时语音转写与 AI 会议分析功能，支持说话人分离和智能会议纪要生成。
+
+**核心功能：**
+
+| 功能 | 说明 |
+|---|---|
+| 实时语音转写 | 通过 WebSocket 连接 ASR 服务，实时将语音转为文字 |
+| 说话人分离 | 基于阿里云 DashScope Paraformer 模型，自动识别不同说话人 |
+| 说话人重命名 | 点击说话人标签可自定义名称，重命名后自动同步到所有相关句子 |
+| 说话人数设置 | 支持自动识别或手动指定 2-8 人，提升分离精准度 |
+| 音频录制与回放 | 录制会议音频，支持进度条拖拽、点击句子跳转播放 |
+| AI 分析 | 支持 Hermes Agent 或自定义模型分析，生成摘要、要点、待办事项 |
+| 多格式导出 | 支持下载音频（WebM）、转写文本（TXT）、JSON 结构化数据、HTML 报告 |
+
+**说话人分离模式：**
+
+- 开启说话人分离后，系统会自动识别不同说话人
+- 可手动设置说话人数（2-8 人）以提高识别准确度
+- 说话人 ID 会自动映射为可读名称（说话人 1、说话人 2...）
+- 支持重命名说话人，重命名后所有历史记录同步更新
+
+**JSON 导出格式：**
+
+```json
+{
+  "title": "会议标题",
+  "createdAt": "2026-07-17T10:00:00.000Z",
+  "speakers": [
+    { "id": "0", "displayName": "张三" },
+    { "id": "1", "displayName": "李四" }
+  ],
+  "sentences": [
+    {
+      "index": 1,
+      "text": "会议发言内容",
+      "startTimeMs": 1000,
+      "endTimeMs": 3500,
+      "speakerId": "0",
+      "speakerName": "张三"
+    }
+  ],
+  "analysis": {
+    "summary": "会议摘要",
+    "key_points": ["要点1", "要点2"],
+    "action_items": ["待办1", "待办2"],
+    "topics": ["主题1", "主题2"]
+  }
+}
+```
+
+**后端依赖：**
+
+- ASR 服务：`ws://localhost:8000/ws/asr`（实时语音识别）
+- 说话人分离服务：`ws://localhost:8001/ws/diarize`（需配置阿里云 OSS）
+- 详见 [meeting_asr_cloud](https://github.com/your-org/meeting_asr_cloud) 项目
+
 ### Web 终端
 
 - 集成终端，基�?node-pty �?@xterm/xterm

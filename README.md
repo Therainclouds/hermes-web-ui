@@ -192,6 +192,64 @@ When the login page reports that the IP is locked (HTTP 429/503), the same opera
 - For supported settings, security notes, and current non-goals, see [`docs/voice-dialogue.md`](./docs/voice-dialogue.md).
 - Limitation: external TTS providers may continue processing a request after the browser/server aborts; custom/OpenAI-compatible and MiMo base URLs must be public `http`/`https` endpoints and cannot target localhost/private networks.
 
+### Meeting Mode
+
+Real-time speech transcription with AI-powered meeting analysis, speaker diarization, and smart meeting minutes generation.
+
+**Core Features:**
+
+| Feature | Description |
+|---|---|
+| Real-time Speech Transcription | WebSocket connection to ASR service for live speech-to-text |
+| Speaker Diarization | Alibaba Cloud DashScope Paraformer model for automatic speaker identification |
+| Speaker Renaming | Click speaker labels to customize names, auto-syncs to all related sentences |
+| Speaker Count Setting | Auto-detect or manually specify 2-8 speakers for improved accuracy |
+| Audio Recording & Playback | Record meeting audio with progress bar, drag seek, and click-to-jump on sentences |
+| AI Analysis | Hermes Agent or custom model analysis for summaries, key points, and action items |
+| Multi-format Export | Download audio (WebM), transcript (TXT), structured JSON data, and HTML reports |
+
+**Speaker Diarization Mode:**
+
+- Enable speaker diarization to automatically identify different speakers
+- Manually set speaker count (2-8) to improve identification accuracy
+- Speaker IDs are automatically mapped to readable names (Speaker 1, Speaker 2...)
+- Rename speakers with auto-sync across all historical records
+
+**JSON Export Format:**
+
+```json
+{
+  "title": "Meeting Title",
+  "createdAt": "2026-07-17T10:00:00.000Z",
+  "speakers": [
+    { "id": "0", "displayName": "Alice" },
+    { "id": "1", "displayName": "Bob" }
+  ],
+  "sentences": [
+    {
+      "index": 1,
+      "text": "Meeting transcript content",
+      "startTimeMs": 1000,
+      "endTimeMs": 3500,
+      "speakerId": "0",
+      "speakerName": "Alice"
+    }
+  ],
+  "analysis": {
+    "summary": "Meeting summary",
+    "key_points": ["Point 1", "Point 2"],
+    "action_items": ["Task 1", "Task 2"],
+    "topics": ["Topic 1", "Topic 2"]
+  }
+}
+```
+
+**Backend Dependencies:**
+
+- ASR Service: `ws://localhost:8000/ws/asr` (real-time speech recognition)
+- Diarization Service: `ws://localhost:8001/ws/diarize` (requires Alibaba Cloud OSS configuration)
+- See [meeting_asr_cloud](https://github.com/your-org/meeting_asr_cloud) project
+
 ### Web Terminal
 
 - Integrated terminal powered by node-pty and @xterm/xterm
