@@ -1,13 +1,17 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, computed, nextTick, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NButton, NSpin, NTag, NTooltip, NInput, NPopconfirm, NModal, NSelect, NRadio, NRadioGroup, NPopover } from 'naive-ui'
 import PageSidebarNav from '@/components/layout/PageSidebarNav.vue'
 import PageSidebarFooter from '@/components/layout/PageSidebarFooter.vue'
+import MeetingAgentPanel from '@/components/hermes/meeting/MeetingAgentPanel.vue'
 import { useMeetingStore } from '@/stores/hermes/meeting'
-import type { MeetingSession, TranscriptSentence } from '@/stores/hermes/meeting'
+import type { MeetingSession, TranscriptSentence, AgentConfig } from '@/stores/hermes/meeting'
 import { useModelsStore } from '@/stores/hermes/models'
 import { useProfilesStore } from '@/stores/hermes/profiles'
+import { useMeetingAgent } from '@/composables/useMeetingAgent'
+import { meetingASRApi } from '@/utils/meeting-asr-api'
+import { meetingStorageApi } from '@/utils/meeting-storage-api'
 
 const { t } = useI18n()
 const meetingStore = useMeetingStore()
@@ -24,6 +28,23 @@ const newMeetingAnalysisMode = ref<'hermes' | 'custom'>('hermes')
 const newMeetingHermesProfile = ref('')
 const newMeetingCustomProvider = ref('')
 const newMeetingCustomModel = ref('')
+
+// --- Agent 配置 ---
+const newMeetingAgentType = ref<'hermes' | 'claude-code' | 'codex'>('hermes')
+const newMeetingCodingAgentMode = ref<'scoped' | 'global'>('scoped')
+
+// Agent 类型选项
+const agentTypeOptions = computed(() => [
+  { label: 'Hermes Agent', value: 'hermes', description: t('meeting.agentTypeHermesDesc') },
+  { label: 'Claude Code', value: 'claude-code', description: t('meeting.agentTypeClaudeCodeDesc') },
+  { label: 'Codex', value: 'codex', description: t('meeting.agentTypeCodexDesc') },
+])
+
+// Coding Agent 模式选项
+const codingAgentModeOptions = computed(() => [
+  { label: t('meeting.codingAgentModeScoped'), value: 'scoped', description: t('meeting.codingAgentModeScopedDesc') },
+  { label: t('meeting.codingAgentModeGlobal'), value: 'global', description: t('meeting.codingAgentModeGlobalDesc') },
+])
 
 // --- ASR 配置 ---
 const asrApiKey = ref(meetingStore.asrConfig.dashscopeApiKey)
@@ -57,9 +78,21 @@ const renamingKey = ref<string | null>(null)  // 格式: "speakerId:index"
 const renameInput = ref('')
 
 // --- 配置 ---
-const ASR_URL = 'ws://localhost:8000/ws/asr'
-const DIARIZE_URL = 'ws://localhost:8001/ws/diarize'
-const API_BASE = 'http://localhost:8000'
+const ASR_URL = computed(() => `ws://${window.location.hostname}:${asrServiceStatus.value.asrPort || 8000}/ws/asr`)
+const DIARIZE_URL = computed(() => `ws://${window.location.hostname}:${asrServiceStatus.value.diarizePort || 8001}/ws/diarize`)
+const API_BASE = computed(() => `http://${window.location.hostname}:${asrServiceStatus.value.asrPort || 8000}`)
+
+// --- ASR 服务状态 ---
+const asrServiceStatus = ref({
+  isRunning: false,
+  asrPort: null as number | null,
+  diarizePort: null as number | null,
+  pid: null as number | null,
+  uptime: null as number | null,
+  error: null as string | null,
+})
+const isStartingASR = ref(false)
+const asrServiceError = ref('')
 
 // --- WebSocket & Audio ---
 let ws: WebSocket | null = null
@@ -84,6 +117,12 @@ const htmlContent = ref('')
 const isAnalyzing = ref(false)
 const analysisInterval = ref(30)
 const showReport = ref(false)
+
+// --- Agent 分析相关 ---
+const showAgentPanel = ref(false)
+const agentAnalysisActive = ref(false)
+const agentMessages = ref<any[]>([])
+const agentStartAnalysisTrigger = ref(0)
 
 // --- 右侧面板 ---
 const showRightPanel = ref(true)
@@ -173,6 +212,8 @@ function openCreateModal() {
   newMeetingHermesProfile.value = profilesStore.activeProfileName || 'default'
   newMeetingCustomProvider.value = ''
   newMeetingCustomModel.value = ''
+  newMeetingAgentType.value = 'hermes'
+  newMeetingCodingAgentMode.value = 'scoped'
   asrApiKey.value = meetingStore.asrConfig.dashscopeApiKey
   showCreateModal.value = true
 }
@@ -186,38 +227,92 @@ function handleCreateMeeting() {
     meetingStore.updateASRConfig({ dashscopeApiKey: asrApiKey.value.trim() })
   }
   
+  // 构建 Agent 配置
+  const agentConfig: AgentConfig = {
+    agentType: newMeetingAgentType.value,
+    codingAgentMode: newMeetingCodingAgentMode.value,
+  }
+  
+  // 根据 Agent 类型设置配置
+  if (newMeetingAgentType.value === 'hermes') {
+    agentConfig.profile = newMeetingHermesProfile.value || 'default'
+  } else {
+    // Coding Agent (claude-code, codex)
+    if (newMeetingCodingAgentMode.value === 'scoped') {
+      agentConfig.provider = newMeetingCustomProvider.value
+      agentConfig.model = newMeetingCustomModel.value
+    }
+  }
+  
   meetingStore.createSession({
     title: newMeetingTitle.value.trim(),
-    analysisMode: newMeetingAnalysisMode.value,
-    hermesProfile: newMeetingAnalysisMode.value === 'hermes' ? newMeetingHermesProfile.value : undefined,
-    customProvider: newMeetingAnalysisMode.value === 'custom' ? newMeetingCustomProvider.value : undefined,
-    customModel: newMeetingAnalysisMode.value === 'custom' ? newMeetingCustomModel.value : undefined,
+    analysisMode: newMeetingAgentType.value === 'hermes' ? 'hermes' : 'custom',
+    hermesProfile: newMeetingAgentType.value === 'hermes' ? (newMeetingHermesProfile.value || 'default') : undefined,
+    customProvider: newMeetingAgentType.value !== 'hermes' && newMeetingCodingAgentMode.value === 'scoped' ? newMeetingCustomProvider.value : undefined,
+    customModel: newMeetingAgentType.value !== 'hermes' && newMeetingCodingAgentMode.value === 'scoped' ? newMeetingCustomModel.value : undefined,
+    agentConfig,
   })
   
   resetMeetingState()
   showCreateModal.value = false
 }
 
-function loadMeeting(session: MeetingSession) {
+async function loadMeeting(session: MeetingSession) {
   if (isRecording.value) {
     stopRecording()
   }
   meetingStore.setActiveSession(session.id)
-  finalSentences.value = [...session.sentences]
-  analysisResult.value = session.analysisResult
-  htmlContent.value = session.htmlContent
-  speakerMap.value = { ...session.speakerMap }
-  useDiarize.value = session.useDiarize
+  
+  // 从服务器加载数据
+  try {
+    const serverData = await meetingStorageApi.getMeeting(session.id)
+    if (serverData) {
+      finalSentences.value = serverData.sentences || []
+      analysisResult.value = serverData.analysisResult
+      htmlContent.value = serverData.htmlContent || ''
+      speakerMap.value = serverData.speakerMap || {}
+      useDiarize.value = serverData.useDiarize || false
+    } else {
+      // 如果服务器没有数据，使用本地数据
+      finalSentences.value = [...session.sentences]
+      analysisResult.value = session.analysisResult
+      htmlContent.value = session.htmlContent
+      speakerMap.value = { ...session.speakerMap }
+      useDiarize.value = session.useDiarize
+    }
+  } catch (err) {
+    console.error('Failed to load meeting from server:', err)
+    // 回退到本地数据
+    finalSentences.value = [...session.sentences]
+    analysisResult.value = session.analysisResult
+    htmlContent.value = session.htmlContent
+    speakerMap.value = { ...session.speakerMap }
+    useDiarize.value = session.useDiarize
+  }
+  
   partialText.value = ''
   errorMessage.value = ''
   highlightedSentenceIndex.value = -1
   stopAudio()
   
-  // 加载音频数据（异步，从 IndexedDB）
-  loadAudioForSession(session.id)
+  // 加载音频数据
+  await loadAudioForSession(session.id)
 }
 
 async function loadAudioForSession(sessionId: string) {
+  try {
+    // 从服务器加载音频
+    const blob = await meetingStorageApi.downloadAudio(sessionId)
+    if (blob) {
+      audioBlob.value = blob
+      audioUrl.value = URL.createObjectURL(blob)
+      return
+    }
+  } catch (err) {
+    console.error('Failed to load audio from server:', err)
+  }
+  
+  // 回退到 IndexedDB
   const blob = await meetingStore.getAudioBlob(sessionId)
   if (blob) {
     audioBlob.value = blob
@@ -228,7 +323,15 @@ async function loadAudioForSession(sessionId: string) {
   }
 }
 
-function deleteMeeting(id: string) {
+async function deleteMeeting(id: string) {
+  try {
+    // 删除服务器端数据
+    await meetingStorageApi.deleteMeeting(id)
+  } catch (err) {
+    console.error('Failed to delete meeting from server:', err)
+  }
+  
+  // 删除本地数据
   meetingStore.deleteSession(id)
   if (meetingStore.activeSessionId === id) {
     resetMeetingState()
@@ -250,16 +353,40 @@ function resetMeetingState() {
   stopAudio()
 }
 
-function saveCurrentMeeting() {
+async function saveCurrentMeeting() {
   if (!meetingStore.activeSessionId) return
-  meetingStore.updateSession(meetingStore.activeSessionId, {
+  
+  const sessionData = {
     sentences: [...finalSentences.value],
     analysisResult: analysisResult.value,
     htmlContent: htmlContent.value,
     speakerMap: { ...speakerMap.value },
     useDiarize: useDiarize.value,
     status: isRecording.value ? 'recording' : 'completed',
-  })
+  }
+  
+  // 保存到本地 store
+  meetingStore.updateSession(meetingStore.activeSessionId, sessionData)
+  
+  // 保存到服务器
+  try {
+    const meetingId = meetingStore.activeSessionId
+    const meeting = meetingStore.activeSession
+    
+    if (meeting) {
+      await meetingStorageApi.saveMeeting(meetingId, {
+        ...meeting,
+        ...sessionData,
+      })
+      
+      // 保存转写内容
+      if (finalSentences.value.length > 0) {
+        await meetingStorageApi.saveTranscript(meetingId, finalSentences.value)
+      }
+    }
+  } catch (err) {
+    console.error('Failed to save meeting to server:', err)
+  }
 }
 
 // --- 说话人重命名 ---
@@ -289,6 +416,74 @@ function cancelRenameSpeaker() {
   renameInput.value = ''
 }
 
+// --- ASR 服务管理 ---
+async function checkASRServiceStatus() {
+  try {
+    const status = await meetingASRApi.getStatus()
+    asrServiceStatus.value = status
+    return status
+  } catch (err) {
+    console.error('Failed to check ASR service status:', err)
+    return null
+  }
+}
+
+async function startASRService() {
+  if (asrServiceStatus.value.isRunning) return true
+
+  isStartingASR.value = true
+  asrServiceError.value = ''
+
+  try {
+    // Get ASR config from meeting store
+    const config = {
+      dashscopeApiKey: meetingStore.asrConfig.dashscopeApiKey || asrApiKey.value,
+    }
+
+    console.log('[meeting] Calling ASR start API with config:', { ...config, dashscopeApiKey: config.dashscopeApiKey ? '***' : 'not set' })
+    const result = await meetingASRApi.start(config)
+    console.log('[meeting] ASR start result:', result)
+
+    if (result.status === 'started' || result.status === 'already_running') {
+      asrServiceStatus.value = {
+        isRunning: true,
+        asrPort: result.asrPort,
+        diarizePort: result.diarizePort,
+        pid: result.pid,
+        uptime: result.uptime,
+        error: null,
+      }
+      return true
+    } else {
+      asrServiceError.value = result.error || 'Failed to start ASR service'
+      console.error('[meeting] ASR service failed to start:', asrServiceError.value)
+      return false
+    }
+  } catch (err: any) {
+    asrServiceError.value = err.message || 'Failed to start ASR service'
+    console.error('[meeting] ASR service start error:', err)
+    return false
+  } finally {
+    isStartingASR.value = false
+  }
+}
+
+async function stopASRService() {
+  try {
+    await meetingASRApi.stop()
+    asrServiceStatus.value = {
+      isRunning: false,
+      asrPort: null,
+      diarizePort: null,
+      pid: null,
+      uptime: null,
+      error: null,
+    }
+  } catch (err) {
+    console.error('Failed to stop ASR service:', err)
+  }
+}
+
 // --- 计算属性 ---
 const sentences = computed(() => finalSentences.value)
 
@@ -298,17 +493,20 @@ onMounted(async () => {
   await profilesStore.fetchProfiles()
   await modelsStore.fetchProviders()
   
-  // 如果没有活跃会议，打开创建对话框
-  if (!meetingStore.activeSession) {
-    openCreateModal()
-  } else {
+  // 检查 ASR 服务状态
+  await checkASRServiceStatus()
+  
+  // 如果有活跃会议，加载它
+  if (meetingStore.activeSession) {
     loadMeeting(meetingStore.activeSession)
   }
+  // 不再默认打开新建会议弹窗，用户需要点击"新建会议"按钮
 })
 
 onUnmounted(() => {
   stopRecording()
   stopAnalysis()
+  // Note: We don't stop the ASR service on unmount as it should persist across page navigations
 })
 
 // --- 音频处理 ---
@@ -317,6 +515,39 @@ async function startRecording() {
     errorMessage.value = ''
     isConnecting.value = true
     statusText.value = t('meeting.connecting')
+
+    // 检查并启动 ASR 服务
+    if (!asrServiceStatus.value.isRunning) {
+      statusText.value = t('meeting.startingASRService')
+      console.log('[meeting] Starting ASR service...')
+      const started = await startASRService()
+      if (!started) {
+        const errorMsg = asrServiceError.value || t('meeting.asrServiceStartError')
+        console.error('[meeting] Failed to start ASR service:', errorMsg)
+        errorMessage.value = errorMsg
+        isConnecting.value = false
+        return
+      }
+      console.log('[meeting] ASR service started, ports:', asrServiceStatus.value.asrPort, asrServiceStatus.value.diarizePort)
+      
+      // 等待服务完全就绪并验证
+      statusText.value = t('meeting.connecting')
+      await new Promise(resolve => setTimeout(resolve, 2000))
+      
+      // 验证服务是否真的启动了
+      try {
+        const healthCheck = await meetingASRApi.healthCheck()
+        console.log('[meeting] ASR service health check:', healthCheck)
+        if (healthCheck.status !== 'ok') {
+          throw new Error('ASR service health check failed')
+        }
+      } catch (err) {
+        console.error('[meeting] ASR service health check failed:', err)
+        errorMessage.value = t('meeting.asrServiceStartError')
+        isConnecting.value = false
+        return
+      }
+    }
 
     // 获取麦克风权限
     mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -362,7 +593,8 @@ async function startRecording() {
     mediaRecorder.start(1000) // 每秒收集一次数据
 
     // 连接 WebSocket
-    const wsUrl = useDiarize.value ? DIARIZE_URL : ASR_URL
+    const wsUrl = useDiarize.value ? DIARIZE_URL.value : ASR_URL.value
+    console.log('[meeting] Connecting to WebSocket:', wsUrl)
     ws = new WebSocket(wsUrl)
 
     ws.onopen = () => {
@@ -474,14 +706,22 @@ function stopRecording() {
   }
   analyser = null
 
-  // 保存音频数据到 IndexedDB
+  // 保存音频数据
   if (audioChunks.value.length > 0 && meetingStore.activeSessionId) {
     audioBlob.value = new Blob(audioChunks.value, { type: 'audio/webm' })
     audioUrl.value = URL.createObjectURL(audioBlob.value)
     
-    // 保存会议数据（包括音频到 IndexedDB）
+    // 保存会议数据
     saveCurrentMeeting()
-    meetingStore.saveAudioData(meetingStore.activeSessionId)
+    
+    // 保存音频到服务器
+    const meetingId = meetingStore.activeSessionId
+    meetingStorageApi.uploadAudio(meetingId, audioBlob.value)
+      .then(() => console.log('Audio saved to server'))
+      .catch(err => console.error('Failed to save audio to server:', err))
+    
+    // 同时保存到 IndexedDB 作为备份
+    meetingStore.saveAudioData(meetingId)
   }
 }
 
@@ -733,7 +973,28 @@ function highlightCurrentSentence(currentTimeSec: number) {
   }
 }
 
-function downloadAudio() {
+async function downloadAudio() {
+  if (!meetingStore.activeSessionId) return
+  
+  try {
+    // 尝试从服务器下载
+    const blob = await meetingStorageApi.downloadAudio(meetingStore.activeSessionId)
+    if (blob) {
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${meetingStore.activeSession?.title || 'meeting'}.webm`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+      return
+    }
+  } catch (err) {
+    console.error('Failed to download audio from server:', err)
+  }
+  
+  // 回退到本地 blob
   if (!audioBlob.value) return
   const url = URL.createObjectURL(audioBlob.value)
   const a = document.createElement('a')
@@ -745,8 +1006,35 @@ function downloadAudio() {
   URL.revokeObjectURL(url)
 }
 
-function downloadTranscript() {
-  if (!meetingStore.activeSession) return
+async function downloadTranscript() {
+  if (!meetingStore.activeSessionId || !meetingStore.activeSession) return
+  
+  try {
+    // 尝试从服务器下载
+    const sentences = await meetingStorageApi.getTranscript(meetingStore.activeSessionId)
+    if (sentences && sentences.length > 0) {
+      const content = sentences.map((s: any, i: number) => {
+        const time = s.startTime ? formatDuration(s.startTime / 1000) : new Date(s.timestamp).toLocaleTimeString('zh-CN')
+        const speaker = s.speaker ? `[${s.speaker}] ` : ''
+        return `${i + 1}. ${time} ${speaker}${s.text}`
+      }).join('\n')
+      
+      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${meetingStore.activeSession.title || 'meeting'}.txt`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+      return
+    }
+  } catch (err) {
+    console.error('Failed to download transcript from server:', err)
+  }
+  
+  // 回退到本地数据
   const session = meetingStore.activeSession
   const content = session.sentences.map((s, i) => {
     const time = s.startTime ? formatDuration(s.startTime / 1000) : new Date(s.timestamp).toLocaleTimeString('zh-CN')
@@ -765,8 +1053,29 @@ function downloadTranscript() {
   URL.revokeObjectURL(url)
 }
 
-function downloadJson() {
-  if (!meetingStore.activeSession) return
+async function downloadJson() {
+  if (!meetingStore.activeSessionId || !meetingStore.activeSession) return
+  
+  try {
+    // 尝试从服务器下载
+    const data = await meetingStorageApi.downloadJsonReport(meetingStore.activeSessionId)
+    if (data) {
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${meetingStore.activeSession.title || 'meeting'}.json`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+      return
+    }
+  } catch (err) {
+    console.error('Failed to download JSON from server:', err)
+  }
+  
+  // 回退到本地数据
   const session = meetingStore.activeSession
   
   const jsonData = {
@@ -797,7 +1106,29 @@ function downloadJson() {
   URL.revokeObjectURL(url)
 }
 
-function downloadReport() {
+async function downloadReport() {
+  if (!meetingStore.activeSessionId) return
+  
+  try {
+    // 尝试从服务器下载
+    const html = await meetingStorageApi.downloadHtmlReport(meetingStore.activeSessionId)
+    if (html) {
+      const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${meetingStore.activeSession?.title || 'meeting'}_report.html`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+      return
+    }
+  } catch (err) {
+    console.error('Failed to download report from server:', err)
+  }
+  
+  // 回退到本地数据
   if (!htmlContent.value) return
   const blob = new Blob([htmlContent.value], { type: 'text/html;charset=utf-8' })
   const url = URL.createObjectURL(blob)
@@ -828,93 +1159,14 @@ async function analyzeWithHermesAgent() {
     return
   }
   
-  isLoading.value = true
-  errorMessage.value = ''
+  // 切换到 Agent 面板
+  showAgentPanel.value = true
   
-  try {
-    // 使用 Hermes Agent 进行分析
-    const profile = session.hermesProfile || 'default'
-    
-    // 构建说话人信息
-    let speakerInfo = ''
-    if (session.speakers.length > 0) {
-      speakerInfo = `\n说话人信息：\n${session.speakers.map(s => `- ${s.id}: ${s.displayName}`).join('\n')}\n`
-    }
-    
-    // 构建分析提示词
-    const prompt = `请分析以下会议转写内容，生成会议纪要，包括：
-1. 会议摘要
-2. 关键要点
-3. 待办事项
-4. 会议主题
-5. 参与人员关系（如果有）
-${speakerInfo}
-转写内容（格式为 [说话人名称] 发言内容）：
-${transcript}
-
-请以 JSON 格式返回分析结果，格式如下：
-{
-  "summary": "会议摘要",
-  "key_points": ["要点1", "要点2"],
-  "action_items": ["待办1", "待办2"],
-  "topics": ["主题1", "主题2"],
-  "people_mentioned": ["人员1", "人员2"],
-  "relationships": [{"source": "人员1", "target": "人员2", "relation": "关系"}]
-}`
-
-    // 获取 API Key
-    const apiKey = localStorage.getItem('hermes_api_key') || ''
-    
-    // 调用 Hermes Web UI 的 chat-run API
-    const response = await fetch('/api/chat-run/runs', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        input: prompt,
-        profile,
-        timeout_ms: 60000,
-      }),
-    })
-    
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}))
-      throw new Error(errorData.error || 'Analysis failed')
-    }
-    
-    const result = await response.json()
-    
-    // 解析分析结果
-    try {
-      // 尝试从输出中提取 JSON
-      const output = result.output || ''
-      const jsonMatch = output.match(/\{[\s\S]*\}/)
-      if (jsonMatch) {
-        const analysis = JSON.parse(jsonMatch[0])
-        analysisResult.value = analysis
-        
-        // 保存分析结果
-        meetingStore.updateAnalysis(session.id, analysis)
-        
-        // 生成 HTML 报告
-        generateHtmlReport(analysis)
-      } else {
-        // 如果不是 JSON 格式，直接显示文本
-        analysisResult.value = { summary: output }
-      }
-    } catch (e) {
-      // 如果解析失败，直接显示文本
-      analysisResult.value = { summary: result.output || 'Analysis completed' }
-    }
-    
-  } catch (error: any) {
-    console.error('Hermes Agent analysis failed:', error)
-    errorMessage.value = error.message || t('meeting.analysisError')
-  } finally {
-    isLoading.value = false
-  }
+  // 等待面板渲染后启动分析
+  await nextTick()
+  
+  // 通过事件触发 Agent 面板的分析
+  agentStartAnalysisTrigger.value++
 }
 
 function generateHtmlReport(analysis: any) {
@@ -1057,6 +1309,11 @@ function generateHtmlReport(analysis: any) {
 
   htmlContent.value = html
   meetingStore.updateHtmlContent(session.id, html)
+  
+  // 保存到服务器
+  meetingStorageApi.saveHtmlReport(session.id, html)
+    .then(() => console.log('HTML report saved to server'))
+    .catch(err => console.error('Failed to save HTML report to server:', err))
 }
 
 function formatDuration(seconds: number): string {
@@ -1114,23 +1371,22 @@ async function startAnalysis() {
   const session = meetingStore.activeSession
   if (!session) return
   
-  // Hermes Agent 模式下不使用后端自动分析
+  // 检查是否有逐字稿
+  if (sentences.value.length === 0) {
+    errorMessage.value = t('meeting.noTranscript')
+    return
+  }
+  
+  // Hermes Agent 模式下，切换到 Agent 面板并启动分析
   if (session.analysisMode === 'hermes') {
-    isAnalyzing.value = true
-    errorMessage.value = ''
-    // Hermes Agent 模式下，用户手动触发分析
+    await analyzeWithHermesAgent()
     return
   }
   
   // 自定义模型模式下，调用后端自动分析
   try {
     isAnalyzing.value = true
-    const response = await fetch(`${API_BASE}/api/analysis/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ interval_seconds: analysisInterval.value }),
-    })
-    const result = await response.json()
+    const result = await meetingASRApi.startAnalysis(analysisInterval.value)
     console.log('Analysis started:', result)
 
     // 开始轮询结果
@@ -1150,7 +1406,7 @@ async function stopAnalysis() {
   // 自定义模型模式下，调用后端停止分析
   if (session.analysisMode === 'custom') {
     try {
-      await fetch(`${API_BASE}/api/analysis/stop`, { method: 'POST' })
+      await meetingASRApi.stopAnalysis()
     } catch (error) {
       console.error('Failed to stop analysis:', error)
     }
@@ -1168,8 +1424,7 @@ async function triggerAnalysis() {
     // 使用自定义模型分析（通过 meeting_asr_cloud 后端）
     try {
       isLoading.value = true
-      const response = await fetch(`${API_BASE}/api/analysis/trigger`, { method: 'POST' })
-      const result = await response.json()
+      const result = await meetingASRApi.triggerAnalysis()
       console.log('Analysis triggered:', result)
       await pollAnalysisResult()
     } catch (error) {
@@ -1183,12 +1438,9 @@ async function triggerAnalysis() {
 
 async function pollAnalysisResult() {
   try {
-    const response = await fetch(`${API_BASE}/api/analysis/result`)
-    if (response.ok) {
-      const result = await response.json()
-      if (result) {
-        analysisResult.value = result
-      }
+    const result = await meetingASRApi.getAnalysisResult()
+    if (result) {
+      analysisResult.value = result
     }
   } catch (error) {
     console.error('Failed to fetch analysis result:', error)
@@ -1197,7 +1449,7 @@ async function pollAnalysisResult() {
 
 async function clearTranscript() {
   try {
-    await fetch(`${API_BASE}/api/transcript/clear`, { method: 'POST' })
+    await meetingASRApi.clearTranscript()
   } catch (error) {
     console.error('Failed to clear transcript on backend:', error)
   }
@@ -1298,6 +1550,26 @@ async function clearTranscript() {
           <h1>{{ t('meeting.title') }}</h1>
         </div>
         <div class="meeting-controls">
+          <!-- Agent 切换按钮 -->
+          <NTooltip trigger="hover">
+            <template #trigger>
+              <NButton
+                size="small"
+                :type="showAgentPanel ? 'primary' : 'default'"
+                @click="showAgentPanel = !showAgentPanel"
+              >
+                <template #icon>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                    <path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"/>
+                    <path d="M16 14H8a4 4 0 0 0-4 4v2h16v-2a4 4 0 0 0-4-4z"/>
+                  </svg>
+                </template>
+                {{ t('meeting.agentChat') }}
+              </NButton>
+            </template>
+            {{ t('meeting.showAgentChat') }}
+          </NTooltip>
+
           <NTooltip trigger="hover">
             <template #trigger>
               <NButton
@@ -1491,23 +1763,46 @@ async function clearTranscript() {
         />
         <div class="right-panel-inner">
           <div class="right-panel-header">
-            <h2>{{ t('meeting.analysis') }}</h2>
+            <h2>{{ showAgentPanel ? t('meeting.agentChat') : t('meeting.analysis') }}</h2>
             <div class="right-panel-actions">
-              <NButton
-                size="tiny"
-                :type="isAnalyzing ? 'warning' : 'primary'"
-                @click="isAnalyzing ? stopAnalysis() : startAnalysis()"
-              >
-                {{ isAnalyzing ? t('meeting.stopAnalysis') : t('meeting.startAnalysis') }}
-              </NButton>
-              <NButton
-                size="tiny"
-                @click="triggerAnalysis"
-                :loading="isLoading"
-                :disabled="sentences.length === 0"
-              >
-                {{ t('meeting.triggerAnalysis') }}
-              </NButton>
+              <!-- Agent 切换按钮 -->
+              <NTooltip trigger="hover">
+                <template #trigger>
+                  <NButton
+                    size="tiny"
+                    :type="showAgentPanel ? 'primary' : 'default'"
+                    @click="showAgentPanel = !showAgentPanel"
+                  >
+                    <template #icon>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"/>
+                        <path d="M16 14H8a4 4 0 0 0-4 4v2h16v-2a4 4 0 0 0-4-4z"/>
+                      </svg>
+                    </template>
+                  </NButton>
+                </template>
+                {{ showAgentPanel ? t('meeting.showAnalysis') : t('meeting.showAgentChat') }}
+              </NTooltip>
+
+              <!-- 分析按钮（仅在非 Agent 面板时显示） -->
+              <template v-if="!showAgentPanel">
+                <NButton
+                  size="tiny"
+                  :type="isAnalyzing ? 'warning' : 'primary'"
+                  @click="isAnalyzing ? stopAnalysis() : startAnalysis()"
+                >
+                  {{ isAnalyzing ? t('meeting.stopAnalysis') : t('meeting.startAnalysis') }}
+                </NButton>
+                <NButton
+                  size="tiny"
+                  @click="triggerAnalysis"
+                  :loading="isLoading"
+                  :disabled="sentences.length === 0"
+                >
+                  {{ t('meeting.triggerAnalysis') }}
+                </NButton>
+              </template>
+
               <button
                 class="panel-close-btn"
                 @click="showRightPanel = false"
@@ -1520,117 +1815,158 @@ async function clearTranscript() {
             </div>
           </div>
 
-          <!-- 分析结果 -->
-          <div v-if="analysisResult" class="right-panel-content">
-            <!-- 音频播放和下载 -->
-            <div v-if="audioUrl" class="audio-section">
-              <div class="audio-player">
-                <button class="audio-play-btn" @click="togglePlayPause()">
-                  <svg v-if="!isPlaying" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M8 5v14l11-7z"/>
-                  </svg>
-                  <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                    <rect x="6" y="4" width="4" height="16"/>
-                    <rect x="14" y="4" width="4" height="16"/>
-                  </svg>
-                </button>
-                <div class="audio-info">
-                  <span class="audio-time">{{ formatDuration(playbackTime) }}</span>
-                  <div class="progress-track" @click="seekToPosition" @mousedown="startProgressDrag">
-                    <div class="progress-fill" :style="{ width: progressPercent + '%' }"></div>
-                    <div class="progress-thumb" :style="{ left: progressPercent + '%' }"></div>
+          <!-- Agent 面板 -->
+          <template v-if="showAgentPanel">
+            <MeetingAgentPanel
+              v-if="meetingStore.activeSessionId"
+              :session-id="meetingStore.activeSessionId"
+              :start-trigger="agentStartAnalysisTrigger"
+            />
+          </template>
+
+          <!-- 分析和下载面板 -->
+          <template v-else>
+            <div class="right-panel-content">
+              <!-- 下载区域 - 始终显示 -->
+              <div class="download-section">
+                <h3>{{ t('meeting.downloads') }}</h3>
+                <!-- 音频播放器 -->
+                <div v-if="audioUrl" class="audio-section">
+                  <div class="audio-player">
+                    <button class="audio-play-btn" @click="togglePlayPause()">
+                      <svg v-if="!isPlaying" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M8 5v14l11-7z"/>
+                      </svg>
+                      <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                        <rect x="6" y="4" width="4" height="16"/>
+                        <rect x="14" y="4" width="4" height="16"/>
+                      </svg>
+                    </button>
+                    <div class="audio-info">
+                      <span class="audio-time">{{ formatDuration(playbackTime) }}</span>
+                      <div class="progress-track" @click="seekToPosition" @mousedown="startProgressDrag">
+                        <div class="progress-fill" :style="{ width: progressPercent + '%' }"></div>
+                        <div class="progress-thumb" :style="{ left: progressPercent + '%' }"></div>
+                      </div>
+                      <span class="audio-time">{{ formatDuration(playbackDuration) }}</span>
+                    </div>
                   </div>
-                  <span class="audio-time">{{ formatDuration(playbackDuration) }}</span>
+                </div>
+                <!-- 下载按钮 -->
+                <div class="download-actions">
+                  <NButton size="small" @click="downloadAudio" :disabled="isRecording || !audioUrl">
+                    <template #icon>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="7 10 12 15 17 10"/>
+                        <line x1="12" y1="15" x2="12" y2="3"/>
+                      </svg>
+                    </template>
+                    {{ t('meeting.downloadAudio') }}
+                  </NButton>
+                  <NButton size="small" @click="downloadTranscript" :disabled="isRecording || sentences.length === 0">
+                    <template #icon>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                        <polyline points="14 2 14 8 20 8"/>
+                        <line x1="16" y1="13" x2="8" y2="13"/>
+                        <line x1="16" y1="17" x2="8" y2="17"/>
+                      </svg>
+                    </template>
+                    {{ t('meeting.downloadTranscript') }}
+                  </NButton>
+                  <NButton size="small" @click="downloadJson" :disabled="isRecording || sentences.length === 0">
+                    <template #icon>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                        <polyline points="14 2 14 8 20 8"/>
+                        <line x1="16" y1="13" x2="8" y2="13"/>
+                        <line x1="16" y1="17" x2="8" y2="17"/>
+                        <polyline points="10 9 9 9 8 9"/>
+                      </svg>
+                    </template>
+                    {{ t('meeting.downloadJson') }}
+                  </NButton>
+                  <NButton v-if="htmlContent" size="small" @click="downloadReport" :disabled="isRecording">
+                    <template #icon>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                        <polyline points="14 2 14 8 20 8"/>
+                        <line x1="16" y1="13" x2="8" y2="13"/>
+                        <line x1="16" y1="17" x2="8" y2="17"/>
+                      </svg>
+                    </template>
+                    {{ t('meeting.downloadReport') }}
+                  </NButton>
                 </div>
               </div>
-              <div class="audio-actions">
-                <NButton size="tiny" @click="downloadAudio" :disabled="isRecording">
-                  <template #icon>
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                      <polyline points="7 10 12 15 17 10"/>
-                      <line x1="12" y1="15" x2="12" y2="3"/>
-                    </svg>
-                  </template>
-                  {{ t('meeting.downloadAudio') }}
-                </NButton>
-                <NButton size="tiny" @click="downloadTranscript" :disabled="isRecording">
-                  <template #icon>
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                      <polyline points="14 2 14 8 20 8"/>
-                      <line x1="16" y1="13" x2="8" y2="13"/>
-                      <line x1="16" y1="17" x2="8" y2="17"/>
-                    </svg>
-                  </template>
-                  {{ t('meeting.downloadTranscript') }}
-                </NButton>
-                <NButton size="tiny" @click="downloadJson" :disabled="isRecording">
-                  <template #icon>
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                      <polyline points="14 2 14 8 20 8"/>
-                      <line x1="16" y1="13" x2="8" y2="13"/>
-                      <line x1="16" y1="17" x2="8" y2="17"/>
-                      <polyline points="10 9 9 9 8 9"/>
-                    </svg>
-                  </template>
-                  {{ t('meeting.downloadJson') }}
-                </NButton>
+
+              <!-- 分析结果区域 - 只在有分析结果时显示 -->
+              <template v-if="analysisResult">
+                <div v-if="analysisResult.summary" class="result-section">
+                  <h3>{{ t('meeting.summary') }}</h3>
+                  <p>{{ analysisResult.summary }}</p>
+                </div>
+
+                <div v-if="analysisResult.key_points?.length" class="result-section">
+                  <h3>{{ t('meeting.keyPoints') }}</h3>
+                  <ul>
+                    <li v-for="(point, i) in analysisResult.key_points" :key="i">{{ point }}</li>
+                  </ul>
+                </div>
+
+                <div v-if="analysisResult.action_items?.length" class="result-section">
+                  <h3>{{ t('meeting.actionItems') }}</h3>
+                  <ul class="action-list">
+                    <li v-for="(item, i) in analysisResult.action_items" :key="i">
+                      <input type="checkbox" />
+                      <span>{{ item }}</span>
+                    </li>
+                  </ul>
+                </div>
+
+                <div v-if="analysisResult.topics?.length" class="result-section">
+                  <h3>{{ t('meeting.topics') }}</h3>
+                  <div class="topic-tags">
+                    <NTag v-for="(topic, i) in analysisResult.topics" :key="i" type="info" size="small">
+                      {{ topic }}
+                    </NTag>
+                  </div>
+                </div>
+
+                <div class="result-section result-actions">
+                  <NButton type="primary" @click="showReport = true" block size="small" :disabled="!htmlContent">
+                    {{ t('meeting.viewReport') }}
+                  </NButton>
+                  <NButton v-if="htmlContent" @click="downloadReport" block size="small">
+                    {{ t('meeting.downloadReport') }}
+                  </NButton>
+                </div>
+              </template>
+
+              <!-- 提示区域 - 当有转写内容但没有分析结果时显示 -->
+              <div v-if="!analysisResult && sentences.length > 0" class="analysis-hint">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.5">
+                  <circle cx="12" cy="12" r="10"/>
+                  <path d="M12 16v-4"/>
+                  <path d="M12 8h.01"/>
+                </svg>
+                <p>{{ t('meeting.analysisHint') }}</p>
+              </div>
+
+              <!-- 空状态 -->
+              <div v-if="sentences.length === 0" class="right-panel-empty">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                  <polyline points="14 2 14 8 20 8"/>
+                  <line x1="16" y1="13" x2="8" y2="13"/>
+                  <line x1="16" y1="17" x2="8" y2="17"/>
+                  <polyline points="10 9 9 9 8 9"/>
+                </svg>
+                <p>{{ t('meeting.emptyState') }}</p>
               </div>
             </div>
-
-            <div v-if="analysisResult.summary" class="result-section">
-              <h3>{{ t('meeting.summary') }}</h3>
-              <p>{{ analysisResult.summary }}</p>
-            </div>
-
-            <div v-if="analysisResult.key_points?.length" class="result-section">
-              <h3>{{ t('meeting.keyPoints') }}</h3>
-              <ul>
-                <li v-for="(point, i) in analysisResult.key_points" :key="i">{{ point }}</li>
-              </ul>
-            </div>
-
-            <div v-if="analysisResult.action_items?.length" class="result-section">
-              <h3>{{ t('meeting.actionItems') }}</h3>
-              <ul class="action-list">
-                <li v-for="(item, i) in analysisResult.action_items" :key="i">
-                  <input type="checkbox" />
-                  <span>{{ item }}</span>
-                </li>
-              </ul>
-            </div>
-
-            <div v-if="analysisResult.topics?.length" class="result-section">
-              <h3>{{ t('meeting.topics') }}</h3>
-              <div class="topic-tags">
-                <NTag v-for="(topic, i) in analysisResult.topics" :key="i" type="info" size="small">
-                  {{ topic }}
-                </NTag>
-              </div>
-            </div>
-
-            <div class="result-section result-actions">
-              <NButton type="primary" @click="showReport = true" block size="small" :disabled="!htmlContent">
-                {{ t('meeting.viewReport') }}
-              </NButton>
-              <NButton v-if="htmlContent" @click="downloadReport" block size="small">
-                {{ t('meeting.downloadReport') }}
-              </NButton>
-            </div>
-          </div>
-
-          <div v-else class="right-panel-empty">
-            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-              <polyline points="14 2 14 8 20 8"/>
-              <line x1="16" y1="13" x2="8" y2="13"/>
-              <line x1="16" y1="17" x2="8" y2="17"/>
-              <polyline points="10 9 9 9 8 9"/>
-            </svg>
-            <p>{{ t('meeting.analysisEmpty') }}</p>
-          </div>
+          </template>
         </div>
       </aside>
       </div>
@@ -1641,7 +1977,7 @@ async function clearTranscript() {
       v-model:show="showCreateModal"
       preset="card"
       :title="t('meeting.createMeeting')"
-      :style="{ width: '520px' }"
+      :style="{ width: '580px' }"
       :bordered="false"
       :mask-closable="false"
     >
@@ -1671,60 +2007,71 @@ async function clearTranscript() {
             <div class="form-hint">{{ t('meeting.dashscopeApiKeyHint') }}</div>
           </div>
         </div>
-        
+
         <div class="form-section">
-          <div class="form-section-title">{{ t('meeting.analysisMode') }}</div>
-          <NRadioGroup v-model:value="newMeetingAnalysisMode">
-            <NRadio value="hermes">
-              <div class="radio-content">
-                <span class="radio-title">{{ t('meeting.hermesAgent') }}</span>
-                <span class="radio-desc">{{ t('meeting.hermesAgentDesc') }}</span>
-              </div>
-            </NRadio>
-            <NRadio value="custom">
-              <div class="radio-content">
-                <span class="radio-title">{{ t('meeting.customModel') }}</span>
-                <span class="radio-desc">{{ t('meeting.customModelDesc') }}</span>
-              </div>
-            </NRadio>
-          </NRadioGroup>
-        </div>
-
-        <div v-if="newMeetingAnalysisMode === 'hermes'" class="form-item">
-          <label class="form-label">{{ t('meeting.selectProfile') }}</label>
-          <NSelect
-            v-model:value="newMeetingHermesProfile"
-            :options="profileOptions"
-            :placeholder="t('meeting.selectProfilePlaceholder')"
-          />
-        </div>
-
-        <template v-if="newMeetingAnalysisMode === 'custom'">
+          <div class="form-section-title">{{ t('meeting.agentConfig') }}</div>
           <div class="form-item">
-            <label class="form-label">{{ t('meeting.selectProvider') }}</label>
+            <label class="form-label">{{ t('meeting.agentType') }}</label>
             <NSelect
-              v-model:value="newMeetingCustomProvider"
-              :options="providerOptions"
-              :placeholder="t('meeting.selectProviderPlaceholder')"
-              @update:value="newMeetingCustomModel = ''"
+              v-model:value="newMeetingAgentType"
+              :options="agentTypeOptions"
+              :placeholder="t('meeting.selectAgentType')"
             />
           </div>
-          <div v-if="newMeetingCustomProvider" class="form-item">
-            <label class="form-label">{{ t('meeting.selectModel') }}</label>
-            <NSelect
-              v-model:value="newMeetingCustomModel"
-              :options="modelOptions"
-              :placeholder="t('meeting.selectModelPlaceholder')"
-            />
-          </div>
-        </template>
+
+          <!-- Hermes Agent 配置 -->
+          <template v-if="newMeetingAgentType === 'hermes'">
+            <div class="form-item">
+              <label class="form-label">{{ t('meeting.selectProfile') }}</label>
+              <NSelect
+                v-model:value="newMeetingHermesProfile"
+                :options="profileOptions"
+                :placeholder="t('meeting.selectProfilePlaceholder')"
+              />
+            </div>
+          </template>
+
+          <!-- Coding Agent 配置 -->
+          <template v-if="newMeetingAgentType === 'claude-code' || newMeetingAgentType === 'codex'">
+            <div class="form-item">
+              <label class="form-label">{{ t('meeting.codingAgentMode') }}</label>
+              <NRadioGroup v-model:value="newMeetingCodingAgentMode">
+                <NRadio v-for="option in codingAgentModeOptions" :key="option.value" :value="option.value">
+                  <div class="radio-content">
+                    <span class="radio-title">{{ option.label }}</span>
+                    <span class="radio-desc">{{ option.description }}</span>
+                  </div>
+                </NRadio>
+              </NRadioGroup>
+            </div>
+            <template v-if="newMeetingCodingAgentMode === 'scoped'">
+              <div class="form-item">
+                <label class="form-label">{{ t('meeting.selectProvider') }}</label>
+                <NSelect
+                  v-model:value="newMeetingCustomProvider"
+                  :options="providerOptions"
+                  :placeholder="t('meeting.selectProviderPlaceholder')"
+                  @update:value="newMeetingCustomModel = ''"
+                />
+              </div>
+              <div v-if="newMeetingCustomProvider" class="form-item">
+                <label class="form-label">{{ t('meeting.selectModel') }}</label>
+                <NSelect
+                  v-model:value="newMeetingCustomModel"
+                  :options="modelOptions"
+                  :placeholder="t('meeting.selectModelPlaceholder')"
+                />
+              </div>
+            </template>
+          </template>
+        </div>
       </div>
       
       <template #action>
         <NButton @click="showCreateModal = false">{{ t('common.cancel') }}</NButton>
         <NButton
           type="primary"
-          :disabled="!newMeetingTitle.trim() || !asrApiKey.trim() && !meetingStore.hasASRConfig || (newMeetingAnalysisMode === 'custom' && !newMeetingCustomModel)"
+          :disabled="!newMeetingTitle.trim() || (!asrApiKey.trim() && !meetingStore.hasASRConfig)"
           @click="handleCreateMeeting"
         >
           {{ t('meeting.create') }}
@@ -2603,6 +2950,44 @@ async function clearTranscript() {
   flex-wrap: wrap;
 }
 
+.download-section {
+  padding: 12px;
+  background: rgba(var(--accent-primary-rgb), 0.03);
+  border-radius: 8px;
+  border: 1px solid rgba(var(--accent-primary-rgb), 0.1);
+  margin-bottom: 16px;
+  
+  h3 {
+    font-size: 13px;
+    font-weight: 600;
+    color: $text-secondary;
+    margin: 0 0 12px 0;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+}
+
+.download-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.analysis-hint {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  gap: 12px;
+  color: $text-secondary;
+  
+  p {
+    font-size: 13px;
+    text-align: center;
+  }
+}
+
 .result-actions {
   display: flex;
   flex-direction: column;
@@ -2740,5 +3125,128 @@ async function clearTranscript() {
 .radio-desc {
   font-size: 12px;
   color: $text-secondary;
+}
+
+// Agent 分析相关样式
+.agent-analysis-section {
+  border-bottom: 1px solid $border-color;
+  background: rgba($accent-primary, 0.02);
+}
+
+.agent-analysis-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: $text-primary;
+  transition: background 0.2s ease;
+
+  &:hover {
+    background: rgba($accent-primary, 0.05);
+  }
+
+  svg {
+    transition: transform 0.2s ease;
+    color: $accent-primary;
+  }
+}
+
+.agent-status {
+  margin-left: auto;
+  font-size: 12px;
+  color: $accent-primary;
+  font-weight: normal;
+}
+
+.agent-messages-container {
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 0 16px 12px;
+}
+
+.agent-message {
+  margin-bottom: 8px;
+  
+  &.role-tool {
+    padding: 6px 10px;
+    background: rgba(0, 0, 0, 0.03);
+    border-radius: 6px;
+    border-left: 3px solid $accent-primary;
+  }
+}
+
+.agent-thinking {
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  background: rgba($accent-primary, 0.05);
+  border-radius: 6px;
+  border-left: 3px solid $accent-primary;
+}
+
+.thinking-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: $accent-primary;
+  margin-bottom: 4px;
+}
+
+.thinking-content {
+  font-size: 12px;
+  color: $text-secondary;
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+
+.agent-tool {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tool-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.tool-spinner {
+  animation: spin 1s linear infinite;
+  color: $accent-primary;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.tool-done {
+  color: #22c55e;
+}
+
+.tool-error {
+  color: #ef4444;
+}
+
+.tool-name {
+  font-weight: 600;
+  color: $text-primary;
+}
+
+.tool-error-text {
+  color: #ef4444;
+  font-size: 11px;
+}
+
+.agent-content {
+  font-size: 13px;
+  line-height: 1.6;
+  color: $text-primary;
+  white-space: pre-wrap;
 }
 </style>

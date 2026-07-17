@@ -24,6 +24,9 @@ pnpm-workspace.yaml
 # Server data
 packages/server/data/
 packages/server/node_modules/
+
+# Local meeting recordings (user data — never commit)
+meetings/
 .hermes-web-ui/
 packages/desktop/dist/
 packages/desktop/release/

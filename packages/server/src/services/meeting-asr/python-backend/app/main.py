@@ -1,0 +1,390 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+from sse_starlette.sse import EventSourceResponse
+
+from .asr_proxy import ParaformerProxy
+from .config import settings
+from .html_generator import generate_html_report
+from .llm_service import llm_service
+from .models import (
+    AllConfig, ASRConfig, LLMConfig, AnalysisConfig,
+    AnalysisRequest, AnalysisResult, AnalysisStatus, DEFAULT_PROMPTS,
+)
+from .storage import storage
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+log = logging.getLogger("main")
+
+_analysis_task: asyncio.Task | None = None
+_analysis_running = False
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    config = storage.get_config()
+    log.info("backend ready, asr_model=%s llm_model=%s", config.asr.paraformer_model, config.llm.model)
+    yield
+    global _analysis_task
+    if _analysis_task and not _analysis_task.done():
+        _analysis_task.cancel()
+        try:
+            await _analysis_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+app = FastAPI(title="Meeting ASR Cloud Backend", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[settings.cors_origin, "http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.get("/healthz")
+async def healthz() -> dict[str, str]:
+    config = storage.get_config()
+    return {
+        "status": "ok",
+        "asr_model": config.asr.paraformer_model,
+        "llm_model": config.llm.model,
+    }
+
+
+@app.get("/api/config")
+async def get_all_config() -> dict:
+    return storage.get_config_safe()
+
+
+@app.post("/api/config")
+async def update_all_config(config: AllConfig) -> dict:
+    storage.update_config(config)
+    return {"status": "ok", "message": "配置已保存"}
+
+
+@app.get("/api/config/asr")
+async def get_asr_config() -> ASRConfig:
+    return storage.get_config().asr
+
+
+@app.post("/api/config/asr")
+async def update_asr_config(config: ASRConfig) -> dict:
+    storage.update_asr_config(config)
+    return {"status": "ok", "message": "ASR配置已保存"}
+
+
+@app.get("/api/config/llm")
+async def get_llm_config() -> dict:
+    data = storage.get_config().llm.model_dump()
+    key = data.get("api_key", "")
+    data["api_key_masked"] = key[:8] + "****" + key[-4:] if len(key) > 12 else ("****" if key else "")
+    return data
+
+
+@app.post("/api/config/llm")
+async def update_llm_config(config: LLMConfig) -> dict:
+    storage.update_llm_config(config)
+    return {"status": "ok", "message": "LLM配置已保存"}
+
+
+@app.get("/api/config/analysis")
+async def get_analysis_config() -> AnalysisConfig:
+    return storage.get_config().analysis
+
+
+@app.post("/api/config/analysis")
+async def update_analysis_config(config: AnalysisConfig) -> dict:
+    storage.update_analysis_config(config)
+    return {"status": "ok", "message": "分析配置已保存"}
+
+
+@app.get("/api/prompts")
+async def get_prompts() -> dict:
+    return {
+        name: {"name": p.name, "description": p.description, "template": p.template}
+        for name, p in DEFAULT_PROMPTS.items()
+    }
+
+
+@app.get("/api/analysis/status")
+async def get_analysis_status() -> AnalysisStatus:
+    return storage.get_status()
+
+
+@app.get("/api/analysis/result")
+async def get_analysis_result() -> AnalysisResult | None:
+    return storage.get_analysis()
+
+
+@app.get("/api/analysis/html")
+async def get_analysis_html() -> HTMLResponse:
+    analysis = storage.get_analysis()
+    if not analysis or not analysis.html_content:
+        return HTMLResponse(
+            content="<html><body><h1>暂无分析结果</h1><p>请先启动分析并等待生成。</p></body></html>",
+            status_code=200,
+        )
+    return HTMLResponse(content=analysis.html_content, status_code=200)
+
+
+@app.post("/api/analysis/start")
+async def start_analysis(request: AnalysisRequest) -> dict:
+    global _analysis_task, _analysis_running
+
+    if _analysis_running:
+        return {"status": "already_running", "message": "分析已在运行中"}
+
+    _analysis_running = True
+    storage.update_status(is_running=True, current_interval=request.interval_seconds)
+
+    async def analysis_loop():
+        global _analysis_running
+        while _analysis_running:
+            try:
+                result = await llm_service.run_analysis_cycle(request.custom_prompt)
+                if result:
+                    log.info("Analysis completed: %s", result.summary[:50] if result.summary else "no summary")
+            except Exception as e:
+                log.error("Analysis loop error: %s", e)
+
+            await asyncio.sleep(request.interval_seconds)
+
+    _analysis_task = asyncio.create_task(analysis_loop())
+    return {"status": "started", "interval": request.interval_seconds}
+
+
+@app.post("/api/analysis/stop")
+async def stop_analysis() -> dict:
+    global _analysis_task, _analysis_running
+
+    _analysis_running = False
+    if _analysis_task and not _analysis_task.done():
+        _analysis_task.cancel()
+        try:
+            await _analysis_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    storage.update_status(is_running=False)
+    return {"status": "stopped"}
+
+
+@app.post("/api/analysis/trigger")
+async def trigger_analysis() -> dict:
+    try:
+        result = await llm_service.run_analysis_cycle()
+        if result:
+            return {
+                "status": "ok",
+                "summary": result.summary,
+                "should_update_html": result.should_update_html,
+            }
+        return {"status": "skipped", "message": "无显著变化，跳过分析"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/analysis/stream")
+async def analysis_stream():
+    async def event_generator():
+        last_update = 0.0
+        while True:
+            status = storage.get_status()
+            analysis = storage.get_analysis()
+
+            if analysis and analysis.timestamp > last_update:
+                last_update = analysis.timestamp
+                yield {
+                    "event": "update",
+                    "data": json.dumps({
+                        "summary": analysis.summary,
+                        "key_points": analysis.key_points,
+                        "action_items": analysis.action_items,
+                        "people_count": len(analysis.people_mentioned),
+                        "topics": analysis.topics,
+                        "timestamp": analysis.timestamp,
+                        "has_html": analysis.html_content is not None,
+                    }, ensure_ascii=False),
+                }
+
+            yield {
+                "event": "status",
+                "data": json.dumps({
+                    "is_running": status.is_running,
+                    "total_analyses": status.total_analyses,
+                    "error": status.error,
+                }, ensure_ascii=False),
+            }
+
+            await asyncio.sleep(2)
+
+    return EventSourceResponse(event_generator())
+
+
+@app.post("/api/transcript")
+async def add_transcript(data: dict) -> dict:
+    text = data.get("text", "")
+    if text:
+        llm_service.add_transcript(text)
+    return {"status": "ok"}
+
+
+@app.get("/api/transcript")
+async def get_transcript() -> dict:
+    return {"transcript": llm_service.get_transcript()}
+
+
+@app.post("/api/transcript/clear")
+async def clear_transcript() -> dict:
+    llm_service.clear_transcript()
+    storage.clear_analysis()
+    return {"status": "ok"}
+
+
+@app.websocket("/ws/asr")
+async def ws_asr(ws: WebSocket) -> None:
+    await ws.accept()
+    proxy = ParaformerProxy()
+    upstream_task: asyncio.Task | None = None
+    closed = False
+
+    try:
+        first = await ws.receive()
+        if "text" not in first:
+            await ws.send_json({"type": "error", "message": "expected start frame"})
+            await ws.close()
+            return
+
+        try:
+            start_msg = json.loads(first["text"])
+        except json.JSONDecodeError:
+            await ws.send_json({"type": "error", "message": "invalid start frame json"})
+            await ws.close()
+            return
+
+        if start_msg.get("type") != "start":
+            await ws.send_json({"type": "error", "message": "first frame must be {\"type\":\"start\"}"})
+            await ws.close()
+            return
+
+        await proxy.connect()
+        await ws.send_json({"type": "ready", "task_id": proxy.task_id})
+
+        async def pump_upstream() -> None:
+            try:
+                async for event in proxy.upstream_events():
+                    header = event.get("header", {})
+                    name = header.get("event")
+                    payload = event.get("payload", {}) or {}
+                    sentence = (payload.get("output") or {}).get("sentence") or {}
+
+                    try:
+                        if name == "result-generated":
+                            text = sentence.get("text", "")
+                            if sentence.get("heartbeat"):
+                                continue
+                            is_final = bool(sentence.get("sentence_end"))
+                            await ws.send_json({
+                                "type": "partial" if not is_final else "final",
+                                "text": text,
+                                "begin_time": sentence.get("begin_time"),
+                                "end_time": sentence.get("end_time"),
+                                "sentence_end": is_final,
+                                "usage": payload.get("usage"),
+                            })
+                            if is_final and text:
+                                llm_service.add_transcript(text)
+                        elif name == "task-started":
+                            await ws.send_json({"type": "started"})
+                        elif name == "task-finished":
+                            await ws.send_json({"type": "stopped"})
+                        elif name == "task-failed":
+                            await ws.send_json({
+                                "type": "error",
+                                "code": header.get("error_code"),
+                                "message": header.get("error_message"),
+                            })
+                    except (WebSocketDisconnect, RuntimeError):
+                        return
+                    except Exception as exc:
+                        log.warning("upstream send failed: %s", exc)
+                        return
+            except Exception as exc:
+                log.exception("upstream pump error: %s", exc)
+
+        upstream_task = asyncio.create_task(pump_upstream())
+
+        while not closed:
+            try:
+                frame = await ws.receive()
+            except (WebSocketDisconnect, RuntimeError):
+                break
+            if "bytes" in frame:
+                data = frame["bytes"]
+                if data:
+                    try:
+                        await proxy.send_audio(data)
+                    except Exception as exc:
+                        log.exception("send_audio failed: %s", exc)
+                        try:
+                            await ws.send_json({"type": "error", "message": f"upstream send: {exc}"})
+                        except Exception:
+                            break
+            elif "text" in frame:
+                try:
+                    msg = json.loads(frame["text"])
+                except json.JSONDecodeError:
+                    continue
+                mtype = msg.get("type")
+                if mtype == "stop":
+                    await proxy.finish()
+                elif mtype == "ping":
+                    await ws.send_json({"type": "pong"})
+
+    except WebSocketDisconnect:
+        log.info("client disconnected")
+    except Exception as exc:
+        log.exception("ws_asr error: %s", exc)
+        try:
+            await ws.send_json({"type": "error", "message": str(exc)})
+        except Exception:
+            pass
+    finally:
+        if upstream_task is not None:
+            upstream_task.cancel()
+            try:
+                await upstream_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        await proxy.close()
+
+
+def main() -> None:
+    import uvicorn
+
+    uvicorn.run(
+        "app.main:app",
+        host=settings.host,
+        port=settings.port,
+        reload=False,
+        log_level="info",
+    )
+
+
+if __name__ == "__main__":
+    main()

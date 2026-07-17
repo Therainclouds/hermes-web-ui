@@ -51,6 +51,8 @@ import { writeGateRoutes } from './hermes/write-gate'
 import { petdexPublicRoutes, petdexRoutes } from './hermes/petdex'
 import { petRoutes } from './hermes/pets'
 import { expertsRoutes } from './hermes/experts'
+import { meetingASRRoutes } from './hermes/meeting-asr'
+import { meetingStorageRoutes } from './hermes/meeting-storage'
 
 /**
  * Register all routes on the Koa app.
@@ -118,4 +120,6 @@ export function registerRoutes(app: any, authMiddleware: Array<(ctx: Context, ne
   app.use(petdexRoutes.routes())
   app.use(petRoutes.routes())
   app.use(expertsRoutes.routes())               // Expert marketplace local bridge
+  app.use(meetingASRRoutes.routes())            // Meeting ASR service management
+  app.use(meetingStorageRoutes.routes())        // Meeting data storage
 }

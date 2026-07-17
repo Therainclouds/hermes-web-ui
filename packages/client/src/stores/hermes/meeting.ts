@@ -21,6 +21,33 @@ export interface MeetingSession {
   customModel?: string
   // 音频时长（音频数据存 IndexedDB）
   audioDuration: number
+  // Agent 交互相关
+  agentSessionId?: string
+  agentMessages: AgentMessage[]
+  agentStatus: 'idle' | 'connecting' | 'running' | 'completed' | 'error'
+  agentConfig: AgentConfig
+}
+
+export interface AgentConfig {
+  agentType: 'hermes' | 'claude-code' | 'codex'
+  profile?: string
+  provider?: string
+  model?: string
+  codingAgentMode?: 'scoped' | 'global'
+}
+
+export interface AgentMessage {
+  id: string
+  role: 'user' | 'assistant' | 'tool' | 'system'
+  content: string
+  timestamp: number
+  toolName?: string
+  toolStatus?: 'running' | 'done' | 'error'
+  toolArgs?: any
+  toolResult?: any
+  toolDuration?: number
+  reasoning?: string
+  status?: 'sending' | 'sent' | 'error'
 }
 
 export interface TranscriptSentence {
@@ -138,6 +165,7 @@ export const useMeetingStore = defineStore('meeting', () => {
     hermesProfile?: string
     customProvider?: string
     customModel?: string
+    agentConfig?: AgentConfig
   }): MeetingSession {
     const now = Date.now()
     const session: MeetingSession = {
@@ -157,6 +185,9 @@ export const useMeetingStore = defineStore('meeting', () => {
       customProvider: options?.customProvider,
       customModel: options?.customModel,
       audioDuration: 0,
+      agentMessages: [],
+      agentStatus: 'idle',
+      agentConfig: options?.agentConfig || { agentType: 'hermes', profile: 'default' },
     }
     sessions.value.unshift(session)
     activeSessionId.value = session.id
