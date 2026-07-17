@@ -1141,6 +1141,23 @@ async function downloadReport() {
   URL.revokeObjectURL(url)
 }
 
+// --- Agent 面板事件处理 ---
+function onAgentAnalysisResult(result: any) {
+  analysisResult.value = result
+  // 保存到 store
+  if (meetingStore.activeSessionId) {
+    meetingStore.updateAnalysis(meetingStore.activeSessionId, result)
+  }
+}
+
+function onAgentReportHtml(html: string) {
+  htmlContent.value = html
+  // 保存到 store
+  if (meetingStore.activeSessionId) {
+    meetingStore.updateHtmlContent(meetingStore.activeSessionId, html)
+  }
+}
+
 // --- Hermes Agent 分析 ---
 async function analyzeWithHermesAgent() {
   if (!meetingStore.activeSession) return
@@ -1821,6 +1838,8 @@ async function clearTranscript() {
               v-if="meetingStore.activeSessionId"
               :session-id="meetingStore.activeSessionId"
               :start-trigger="agentStartAnalysisTrigger"
+              @update:analysis-result="onAgentAnalysisResult"
+              @update:report-html="onAgentReportHtml"
             />
           </template>
 

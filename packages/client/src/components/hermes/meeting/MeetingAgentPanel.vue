@@ -12,6 +12,11 @@ const props = withDefaults(defineProps<{
   startTrigger: 0
 })
 
+const emit = defineEmits<{
+  (e: 'update:analysisResult', result: any): void
+  (e: 'update:reportHtml', html: string): void
+}>()
+
 const { t } = useI18n()
 const meetingStore = useMeetingStore()
 
@@ -100,6 +105,19 @@ function scrollToBottom() {
 // 监听消息变化，自动滚动
 watch(messages, scrollToBottom, { deep: true })
 
+// 监听分析结果变化，通知父组件
+watch(analysisResult, (newResult) => {
+  if (newResult) {
+    emit('update:analysisResult', newResult)
+  }
+}, { deep: true })
+
+watch(reportHtml, (newHtml) => {
+  if (newHtml) {
+    emit('update:reportHtml', newHtml)
+  }
+})
+
 // 监听外部触发的开始分析
 watch(() => props.startTrigger, async (newVal) => {
   if (newVal > 0 && session.value?.sentences.length && !isRunning.value) {
@@ -128,6 +146,48 @@ function handleResetPrompt() {
 // 格式化时间
 function formatTime(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+}
+
+// 格式化工具名称
+function formatToolName(name: string | undefined): string {
+  if (!name) return 'tool'
+  // 将 snake_case 或 camelCase 转换为可读格式
+  return name
+    .replace(/_/g, ' ')
+    .replace(/([A-Z])/g, ' $1')
+    .replace(/^./, str => str.toUpperCase())
+    .trim()
+}
+
+// 格式化工具内容
+function formatToolContent(content: any): string {
+  if (!content) return ''
+  if (typeof content === 'string') {
+    // 尝试解析 JSON
+    try {
+      const parsed = JSON.parse(content)
+      return JSON.stringify(parsed, null, 2)
+    } catch {
+      return content
+    }
+  }
+  try {
+    return JSON.stringify(content, null, 2)
+  } catch {
+    return String(content)
+  }
+}
+
+// 截断长文本
+function truncate(text: string, max: number = 100): string {
+  if (!text || text.length <= max) return text
+  return text.slice(0, max) + '...'
+}
+
+// 格式化执行时长
+function formatDuration(seconds: number): string {
+  if (seconds < 1) return `${Math.round(seconds * 1000)}ms`
+  return `${seconds.toFixed(1)}s`
 }
 </script>
 
@@ -238,23 +298,68 @@ function formatTime(timestamp: number): string {
             <div class="thinking-content">{{ msg.reasoning }}</div>
           </div>
 
-          <!-- Tool 调用 -->
-          <div v-if="msg.role === 'tool'" class="agent-tool">
-            <div class="tool-header">
-              <svg v-if="msg.toolStatus === 'running'" width="14" height="14" viewBox="0 0 24 24" class="tool-spinner">
-                <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="30 70"/>
-              </svg>
-              <svg v-else-if="msg.toolStatus === 'done'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="tool-done">
-                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-                <polyline points="22 4 12 14.01 9 11.01"/>
-              </svg>
-              <svg v-else-if="msg.toolStatus === 'error'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="tool-error">
-                <circle cx="12" cy="12" r="10"/>
-                <line x1="15" y1="9" x2="9" y2="15"/>
-                <line x1="9" y1="9" x2="15" y2="15"/>
-              </svg>
-              <span class="tool-name">{{ msg.toolName }}</span>
-              <span v-if="msg.toolStatus === 'error'" class="tool-error-text">{{ t('meeting.toolFailed') }}</span>
+          <!-- Tool 调用（可折叠） -->
+          <div v-if="msg.role === 'tool'" class="agent-tool" :class="{ 'tool-expanded': msg._expanded }">
+            <div class="tool-header" @click="msg._expanded = !msg._expanded">
+              <div class="tool-header-left">
+                <!-- 状态图标 -->
+                <svg v-if="msg.toolStatus === 'running'" width="14" height="14" viewBox="0 0 24 24" class="tool-spinner">
+                  <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="30 70"/>
+                </svg>
+                <svg v-else-if="msg.toolStatus === 'done'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="tool-done">
+                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                  <polyline points="22 4 12 14.01 9 11.01"/>
+                </svg>
+                <svg v-else-if="msg.toolStatus === 'error'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="tool-error">
+                  <circle cx="12" cy="12" r="10"/>
+                  <line x1="15" y1="9" x2="9" y2="15"/>
+                  <line x1="9" y1="9" x2="15" y2="15"/>
+                </svg>
+                <!-- 工具图标 -->
+                <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+                </svg>
+                <!-- 工具名称 -->
+                <span class="tool-name">{{ formatToolName(msg.toolName) }}</span>
+                <!-- 工具预览 -->
+                <span v-if="msg.toolPreview && !msg._expanded" class="tool-preview">{{ truncate(msg.toolPreview) }}</span>
+                <!-- 错误标记 -->
+                <span v-if="msg.toolStatus === 'error'" class="tool-error-badge">{{ t('meeting.toolFailed') }}</span>
+                <!-- 执行时长 -->
+                <span v-if="msg.toolDuration" class="tool-duration">{{ formatDuration(msg.toolDuration) }}</span>
+              </div>
+              <div class="tool-header-right">
+                <!-- 展开/折叠图标 -->
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="tool-chevron" :class="{ rotated: msg._expanded }">
+                  <polyline points="9 18 15 12 9 6"/>
+                </svg>
+              </div>
+            </div>
+            <!-- 展开的详细信息 -->
+            <div v-if="msg._expanded" class="tool-details">
+              <!-- 工具参数 -->
+              <div v-if="msg.toolArgs" class="tool-detail-section">
+                <div class="tool-detail-title">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="7 10 12 15 17 10"/>
+                    <line x1="12" y1="15" x2="12" y2="3"/>
+                  </svg>
+                  {{ t('meeting.toolArgs') }}
+                </div>
+                <pre class="tool-detail-content">{{ formatToolContent(msg.toolArgs) }}</pre>
+              </div>
+              <!-- 工具结果 -->
+              <div v-if="msg.toolResult" class="tool-detail-section">
+                <div class="tool-detail-title">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                    <polyline points="22 4 12 14.01 9 11.01"/>
+                  </svg>
+                  {{ t('meeting.toolResult') }}
+                </div>
+                <pre class="tool-detail-content" :class="{ 'tool-error-content': msg.toolStatus === 'error' }">{{ formatToolContent(msg.toolResult) }}</pre>
+              </div>
             </div>
           </div>
 
@@ -532,17 +637,45 @@ export default {
 }
 
 .agent-tool {
-  padding: 6px 10px;
-  background: rgba(0, 0, 0, 0.03);
-  border-radius: 6px;
-  border-left: 3px solid $accent-primary;
+  background: $bg-card;
+  border: 1px solid $border-color;
+  border-radius: 8px;
+  overflow: hidden;
+  transition: all 0.2s ease;
+
+  &:hover {
+    border-color: rgba($accent-primary, 0.3);
+  }
+
+  &.tool-expanded {
+    border-color: $accent-primary;
+  }
 }
 
 .tool-header {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
+  justify-content: space-between;
+  padding: 10px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.2s ease;
+
+  &:hover {
+    background: rgba($accent-primary, 0.02);
+  }
+}
+
+.tool-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.tool-header-right {
+  flex-shrink: 0;
 }
 
 .tool-spinner {
@@ -566,11 +699,90 @@ export default {
 .tool-name {
   font-weight: 600;
   color: $text-primary;
+  font-size: 13px;
 }
 
-.tool-error-text {
+.tool-preview {
+  color: $text-secondary;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-error-badge {
+  padding: 2px 6px;
+  background: rgba(#ef4444, 0.1);
   color: #ef4444;
+  border-radius: 4px;
   font-size: 11px;
+  font-weight: 500;
+}
+
+.tool-duration {
+  color: $text-secondary;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tool-chevron {
+  color: $text-secondary;
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+
+  &.rotated {
+    transform: rotate(90deg);
+  }
+}
+
+.tool-details {
+  border-top: 1px solid $border-color;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.01);
+}
+
+.tool-detail-section {
+  margin-bottom: 12px;
+
+  &:last-child {
+    margin-bottom: 0;
+  }
+}
+
+.tool-detail-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: $text-secondary;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+
+  svg {
+    opacity: 0.7;
+  }
+}
+
+.tool-detail-content {
+  font-size: 12px;
+  font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
+  background: rgba(0, 0, 0, 0.03);
+  padding: 10px 12px;
+  border-radius: 6px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+  line-height: 1.5;
+  color: $text-primary;
+
+  &.tool-error-content {
+    background: rgba(#ef4444, 0.05);
+    color: #ef4444;
+  }
 }
 
 .agent-assistant {

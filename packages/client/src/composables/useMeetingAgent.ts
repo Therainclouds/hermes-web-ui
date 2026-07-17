@@ -384,6 +384,7 @@ ${transcript}
           toolStatus: 'running',
           toolArgs: (evt as any).arguments,
           toolPreview: evt.preview,
+          _expanded: false, // 默认折叠
         })
         activeAssistantMessageId = null
       },

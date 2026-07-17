@@ -2894,5 +2894,7 @@ startAnalysisHint: '自动发送逐字稿给 Agent 分析',
     resetToDefault: '重置为默认',
     analysisReport: '分析报告',
     viewFullReport: '查看完整报告',
+    toolArgs: '参数',
+    toolResult: '结果',
   },
 }

@@ -2892,5 +2892,7 @@ startAnalysisHint: 'Auto-send transcript to Agent for analysis',
     resetToDefault: 'Reset to Default',
     analysisReport: 'Analysis Report',
     viewFullReport: 'View Full Report',
+    toolArgs: 'Arguments',
+    toolResult: 'Result',
   },
 }
