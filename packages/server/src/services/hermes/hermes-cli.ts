@@ -560,6 +560,7 @@ export interface HermesProfile {
   model: string
   gatewayStatus?: string
   alias: string
+  displayName?: string
 }
 
 export interface HermesProfileDetail {

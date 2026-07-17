@@ -6,6 +6,7 @@ export interface HermesProfile {
   model: string
   gatewayStatus?: string
   alias: string
+  displayName?: string
   avatar?: ProfileAvatar | null
 }
 

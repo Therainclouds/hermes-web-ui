@@ -15,6 +15,7 @@ import VoiceDialogueControls from './VoiceDialogueControls.vue'
 import { useMicRecorder } from '@/composables/useMicRecorder'
 import { useGlobalSpeech } from '@/composables/useSpeech'
 import { useVoiceDialogue } from '@/composables/useVoiceDialogue'
+import { getProfileDisplayName } from '@/utils/hermes/profile-display'
 import { transcribeSpeech } from '@/api/hermes/stt'
 import type { StoredSttProvider } from '@/api/hermes/stt-settings'
 import { useSttSettings } from '@/composables/useSttSettings'
@@ -73,18 +74,24 @@ const currentExpertName = computed(() =>
   chatStore.activeSession?.profile || profilesStore.activeProfileName || 'default',
 )
 
-const expertOptions = computed<DropdownOption[]>(() => {
-  const names = profilesStore.profiles.length > 0
-    ? profilesStore.profiles.map(profile => profile.name)
-    : ['default']
+const currentExpertProfile = computed(() =>
+  profilesStore.profiles.find(p => p.name === currentExpertName.value),
+)
 
-  return names.map(name => ({
-    label: name,
-    value: name,
+const expertOptions = computed<DropdownOption[]>(() => {
+  const items = profilesStore.profiles.length > 0
+    ? profilesStore.profiles
+    : []
+
+  return items.map(profile => ({
+    label: getProfileDisplayName(profile),
+    value: profile.name,
   }))
 })
 
-const compactExpertLabel = computed(() => currentExpertName.value || 'default')
+const compactExpertLabel = computed(() =>
+  getProfileDisplayName(currentExpertProfile.value) || currentExpertName.value || 'default',
+)
 
 async function handleExpertChange(value: string | number | null) {
   const nextProfile = typeof value === 'string' && value ? value : 'default'

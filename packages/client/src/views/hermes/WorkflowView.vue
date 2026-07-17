@@ -48,6 +48,7 @@ import {
   type WorkflowRuntimeStatus,
 } from '@/api/hermes/workflow-socket'
 import { fetchSkills } from '@/api/hermes/skills'
+import { getProfileDisplayName } from '@/utils/hermes/profile-display'
 import { fetchSession } from '@/api/hermes/sessions'
 import { inferCodingAgentApiMode, normalizeCodingAgentApiMode } from '@/api/coding-agents'
 import { buildWorkflowSkillOptions, workflowAgentToSkillTarget } from '@/utils/hermes/workflow-skills'
@@ -184,7 +185,7 @@ const defaultWorkflowProfile = computed(() =>
 
 const workflowProfileOptions = computed(() => {
   const profiles = profilesStore.profiles.length > 0
-    ? profilesStore.profiles.map(profile => ({ label: profile.name, value: profile.name }))
+    ? profilesStore.profiles.map(profile => ({ label: getProfileDisplayName(profile), value: profile.name }))
     : [{ label: 'default', value: 'default' }]
   return profiles
 })

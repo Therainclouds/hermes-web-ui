@@ -80,6 +80,12 @@ function listProfilesFromDisk(activeProfileName: string): HermesProfile[] {
     model: '—',
     alias: '',
   }]
+
+  const defaultMeta = readProfileMeta('default')
+  if (defaultMeta.displayName) {
+    profiles[0] = { ...profiles[0], displayName: defaultMeta.displayName }
+  }
+
   const profilesDir = join(base, 'profiles')
   if (!existsSync(profilesDir)) return profiles
   for (const entry of readdirSync(profilesDir, { withFileTypes: true })) {
@@ -87,11 +93,13 @@ function listProfilesFromDisk(activeProfileName: string): HermesProfile[] {
     const name = entry.name
     const dir = join(profilesDir, name)
     if (!existsSync(join(dir, 'config.yaml')) && !existsSync(dir)) continue
+    const meta = readProfileMeta(name)
     profiles.push({
       name,
       active: name === activeProfileName,
       model: '—',
       alias: readExpertAlias(dir),
+      displayName: meta.displayName || '',
     })
   }
   return profiles
@@ -200,6 +208,19 @@ function profileAvatarMetaPath(name: string): string {
 
 function profileAvatarImagePath(name: string, file = 'avatar.bin'): string {
   return join(profileMetadataDir(name), file)
+}
+
+/**
+ * 读取 profile 元数据（显示名等），存储在 Web UI 独立元数据目录下
+ */
+function readProfileMeta(name: string): { displayName?: string } {
+  const metaPath = join(profileMetadataDir(name), 'meta.json')
+  if (!existsSync(metaPath)) return {}
+  try {
+    return JSON.parse(readFileSync(metaPath, 'utf-8'))
+  } catch {
+    return {}
+  }
 }
 
 function readProfileAvatar(name: string): ProfileAvatarResponse | null {

@@ -11,6 +11,7 @@ import {
   type ProfileRuntimeStatus,
 } from '@/api/hermes/profiles'
 import ProfileAvatarView from '@/components/hermes/profiles/ProfileAvatar.vue'
+import { getProfileDisplayName } from '@/utils/hermes/profile-display'
 import { useI18n } from 'vue-i18n'
 import { useMessage } from '@/composables/useAppMessage'
 
@@ -221,7 +222,7 @@ onMounted(() => {
     <div class="selector-label">{{ t('sidebar.profiles') }}</div>
     <div class="profile-display" data-testid="profile-selector-select" @click="openProfileModal">
       <ProfileAvatarView class="profile-avatar" :name="displayName" :avatar="activeProfile?.avatar" :size="24" />
-      <span class="profile-name">{{ displayName }}</span>
+      <span class="profile-name">{{ activeProfile ? getProfileDisplayName(activeProfile) : displayName }}</span>
     </div>
 
     <NModal
@@ -253,7 +254,7 @@ onMounted(() => {
               <ProfileAvatarView class="profile-runtime-avatar" :name="profile.name" :avatar="profile.avatar" :size="34" />
               <div class="profile-runtime-info">
                 <div class="profile-runtime-name-row">
-                  <span class="profile-runtime-name">{{ profile.name }}</span>
+                  <span class="profile-runtime-name">{{ getProfileDisplayName(profile) }}</span>
                   <span v-if="profile.name === displayName" class="active-badge">{{ t('profiles.runtime.activeTag') }}</span>
                 </div>
                 <div class="runtime-status-grid">
