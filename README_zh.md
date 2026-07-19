@@ -191,6 +191,24 @@ hermes-web-ui reset-default-login
 }
 ```
 
+**分析流水线（v0.74）：**
+
+- **可配置触发模式。** 每个会议可选择三种触发方式：
+  - `sentences`：每 N 句自动分析一次（默认 10，范围 1–100）。
+  - `time`：每 N 秒自动分析一次（默认 60，范围 10–600）。
+  - `both`：满足任一条件即触发。
+  在右侧面板工具栏的齿轮按钮中配置，或通过 `MeetingSession` 上的 `analysisTriggerMode` / `analysisIntervalSentences` / `analysisIntervalSeconds` 字段设置。
+- **会议类型识别。** LLM 先判断会议属于 *会议纪要* / *客户回访* / *头脑风暴* / *项目汇报* / *培训分享* / *其他*，并按类型输出对应字段（decisions / feedback / risks / learnings）。
+- **结构化待办事项。** `action_items` 现在为 `[{ task, assignee, deadline }]`，前端 store 和 Python 后端一致；旧的 `string[]` 数据依旧能渲染，保持向后兼容。
+- **HTML 报告生成。** 服务端在每次分析后输出一份完整的自包含 HTML 文档（CSS/JS 内联，仅在含 `relationships` 时引入 ECharts），风格根据会议类型自适应。客户端缓存 `html_content`，Agent 面板提供"查看 HTML"快捷入口和报告已就绪的提示横幅。
+- **复用工具。** `useMeetingAnalysis`（`packages/client/src/composables/useMeetingAnalysis.ts`）负责从 Agent 输出中提取平衡 JSON、转义 HTML、识别分析结构，由 `tests/client/useMeetingAnalysis.test.ts` 覆盖。
+
+**稳定性补丁（v0.74.1）：**
+
+- **更稳健的 HTML 报告提取。** `useMeetingAgent.ts` 现在从三类来源抽取 AI 生成的 HTML 报告——工具调用参数（`write_file` 及其他）、对应的工具执行结果、以及 assistant 消息中的 ` ```html ` 代码块（包括需要拼接多条 assistant 消息才能完整取出的情况）。三者都不命中时才回退到内置模板，避免 agent 直接内联报告时报告查看区空白。
+- **防重入。** `sendMessage` 与 `runAgent` 在已经有 run 进行中时通过 `isRunning` 标志短路返回，防止重复点击触发器重复拉起 agent run，也避免 `isRunning` 状态被回调和并发调用互相覆盖。
+- **对齐 Python 端 LLM 配置访问器。** `meeting-asr/python-backend/app/llm_service.py` 将已废弃的 `storage.get_llm_config()` 切换为 `storage.get_config().llm`，与 v0.74 引入的存储重构保持一致；旧的访问器下线后，分析与 HTML 渲染流程不再会因为这一处不一致抛出错误。
+
 **后端依赖：**
 
 - ASR 服务：`ws://localhost:8000/ws/asr`（实时语音识别）

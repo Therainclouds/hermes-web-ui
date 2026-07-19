@@ -244,6 +244,24 @@ Real-time speech transcription with AI-powered meeting analysis, speaker diariza
 }
 ```
 
+**Analysis pipeline (v0.74):**
+
+- **Typed analysis triggers.** Each session picks one of three modes:
+  - `sentences` — auto-analyze every N sentences (default 10, range 1–100).
+  - `time` — auto-analyze every N seconds (default 60, range 10–600).
+  - `both` — trigger on either condition.
+  Configure from the right-panel toolbar (cog icon) or via the `analysisTriggerMode` / `analysisIntervalSentences` / `analysisIntervalSeconds` fields on `MeetingSession`.
+- **Meeting type classification.** The LLM first labels the meeting as one of *Minutes*, *Customer Follow-up*, *Brainstorm*, *Project Update*, *Training*, or *Other*, and emits type-specific fields (decisions / feedback / risks / learnings) accordingly.
+- **Structured action items.** `action_items` is now `[{ task, assignee, deadline }]` on both the client store and the Python backend. Legacy `string[]` values are still rendered for backward compatibility.
+- **HTML report pipeline.** When analysis runs, the server renders a complete, self-contained HTML document (CSS + JS inlined, ECharts only when `relationships` are present) tailored to the detected meeting type. The client caches `html_content`; the Agent panel shows a "View HTML" shortcut and a cached-report banner on the empty state.
+- **Composable utilities.** `useMeetingAnalysis` (`packages/client/src/composables/useMeetingAnalysis.ts`) extracts balanced JSON from agent output, escapes HTML, and detects analysis-shaped payloads. Covered by `tests/client/useMeetingAnalysis.test.ts`.
+
+**Reliability patch (v0.74.1):**
+
+- **Broader HTML report extraction.** `useMeetingAgent.ts` now pulls the AI-generated HTML from any of three sources — `write_file` (and similar) tool arguments, the matching tool result, or an assistant ` ```html ` code block (including blocks that only appear after concatenating multiple assistant messages). Falls back to the templated report only when none of the three contain a real HTML document. This stops the empty-state HTML viewer when the agent returns the report inline instead of writing a file.
+- **Reentry guards.** `sendMessage` and `runAgent` short-circuit while a run is already in flight (`isRunning` flag), so duplicate clicks on the trigger no longer spawn a second concurrent agent run or fight over the `isRunning` state previously owned by the run callbacks.
+- **Aligned Python LLM accessor.** `meeting-asr/python-backend/app/llm_service.py` switched from the deprecated `storage.get_llm_config()` to `storage.get_config().llm`, matching the storage refactor introduced in v0.74. Without this the ASR backend would raise on every analysis or HTML render once the legacy accessor was removed.
+
 **Backend Dependencies:**
 
 - ASR Service: `ws://localhost:8000/ws/asr` (real-time speech recognition)
