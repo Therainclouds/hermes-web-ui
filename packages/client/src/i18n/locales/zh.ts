@@ -2621,6 +2621,7 @@ export default {
 
   // 更新日志
   changelog: {
+    new_0_7_4_1: '合并会议模式（Meeting Mode），支持实时语音转写与 AI 分析',
     new_0_7_1_1: '优化设备升级通道，允许旧设备先升级到 v0.7.1，并在安装完成后自动切换到 OSS device-package 更新链路',
     new_0_7_0_1: '增加首次登录教程，引导用户完成大模型初始化配置',
     new_0_7_0_2: '优化大模型欠费与额度不足提示，帮助用户更快定位续费与配额问题',
@@ -2804,8 +2805,9 @@ export default {
     deleteConfirm: '确定删除此会议？',
     asrConfig: '语音识别配置',
     dashscopeApiKey: 'DashScope API Key',
+    howToGetApiKey: '如何获取？',
     dashscopeApiKeyPlaceholder: '输入阿里云百炼 API Key',
-    dashscopeApiKeyHint: '阿里云百炼工作空间 API Key，用于语音识别服务',
+    dashscopeApiKeyHint: '阿里云百炼工作空间 API Key，用于语音识别。前往 dashscope.aliyun.com → API-KEY 管理 创建',
     apiKeySaved: '已保存的 API Key（留空则使用已保存的）',
     configured: '已配置',
     analysisMode: '分析模式',
@@ -2834,6 +2836,9 @@ export default {
     start: '开始录音',
     connectionError: '连接失败，请检查后端服务',
     microphoneError: '无法访问麦克风',
+    micNotFound: '当前设备未检测到麦克风',
+    micPermissionDenied: '麦克风权限被拒绝，请在浏览器设置中允许访问麦克风',
+    micUnsupported: '当前浏览器不支持麦克风访问',
     unknownError: '未知错误',
     analysis: 'AI 分析',
     startAnalysis: '启动分析',

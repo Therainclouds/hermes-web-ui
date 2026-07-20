@@ -48,6 +48,8 @@ export interface AgentMessage {
   toolDuration?: number
   reasoning?: string
   status?: 'sending' | 'sent' | 'error'
+  _expanded?: boolean
+  toolPreview?: string
 }
 
 export interface TranscriptSentence {

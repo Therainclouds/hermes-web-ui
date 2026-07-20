@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NButton, NInput, NSpin, NTooltip, NModal } from 'naive-ui'
 import { useMeetingStore } from '@/stores/hermes/meeting'
@@ -52,8 +52,7 @@ const session = computed(() => {
 
 // Agent 类型显示
 const agentTypeLabel = computed(() => {
-  const config = agentConfig.value
-  switch (config.agentType) {
+  switch (agentConfig.value?.agentType) {
     case 'hermes': return 'Hermes Agent'
     case 'claude-code': return 'Claude Code'
     case 'codex': return 'Codex'
@@ -143,11 +142,6 @@ function handleResetPrompt() {
   editingTemplate.value = promptTemplate.value
 }
 
-// 格式化时间
-function formatTime(timestamp: number): string {
-  return new Date(timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-}
-
 // 格式化工具名称
 function formatToolName(name: string | undefined): string {
   if (!name) return 'tool'
@@ -201,7 +195,7 @@ function formatDuration(seconds: number): string {
           <path d="M16 14H8a4 4 0 0 0-4 4v2h16v-2a4 4 0 0 0-4-4z"/>
         </svg>
         <span class="agent-type">{{ agentTypeLabel }}</span>
-        <span v-if="agentConfig.profile" class="agent-profile">{{ agentConfig.profile }}</span>
+        <span v-if="agentConfig?.profile" class="agent-profile">{{ agentConfig.profile }}</span>
       </div>
       <div class="agent-actions">
         <!-- 编辑提示词 -->

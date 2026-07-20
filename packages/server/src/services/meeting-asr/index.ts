@@ -2,6 +2,7 @@ import { ChildProcess, spawn } from 'child_process'
 import { EventEmitter } from 'events'
 import path from 'path'
 import fs from 'fs/promises'
+import os from 'os'
 import { logger } from '../logger'
 
 export interface MeetingASRConfig {
@@ -75,19 +76,49 @@ export class MeetingASRService extends EventEmitter {
     return this._config.dataDir || path.join(process.cwd(), 'data', 'meeting-asr')
   }
 
+  private async findPython(): Promise<string> {
+    const candidates = os.platform() === 'win32'
+      ? ['python', 'python3', 'py -3', 'py']
+      : ['python3', 'python']
+
+    for (const cmd of candidates) {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const proc = spawn(cmd, ['--version'], { stdio: 'pipe' })
+          proc.on('close', (code) => {
+            if (code === 0) resolve()
+            else reject(new Error(`exit code ${code}`))
+          })
+          proc.on('error', reject)
+        })
+        return cmd
+      } catch {
+        continue
+      }
+    }
+    throw new Error('Python not found. Please install Python 3.')
+  }
+
+  private getVenvPythonPath(venvPath: string): string {
+    return os.platform() === 'win32'
+      ? path.join(venvPath, 'Scripts', 'python.exe')
+      : path.join(venvPath, 'bin', 'python')
+  }
+
   private async ensureVirtualEnv(): Promise<string> {
     const backendPath = this.getPythonBackendPath()
     const venvPath = path.join(backendPath, '.venv')
-    const pythonPath = path.join(venvPath, 'bin', 'python')
+    const pythonPath = this.getVenvPythonPath(venvPath)
 
     try {
       await fs.access(pythonPath)
       return pythonPath
     } catch {
       // Virtual env doesn't exist, create it
-      logger.info('[meeting-asr] Creating Python virtual environment...')
+      const pythonCmd = await this.findPython()
+      logger.info('[meeting-asr] Creating Python virtual environment with %s...', pythonCmd)
       await new Promise<void>((resolve, reject) => {
-        const proc = spawn('python3', ['-m', 'venv', venvPath], {
+        const proc = spawn(pythonCmd, ['-m', 'venv', venvPath], {
           cwd: backendPath,
           stdio: 'pipe',
         })

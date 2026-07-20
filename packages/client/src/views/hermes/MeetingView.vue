@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, nextTick, watch } from 'vue'
+import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NButton, NSpin, NTag, NTooltip, NInput, NPopconfirm, NModal, NSelect, NRadio, NRadioGroup, NPopover } from 'naive-ui'
 import PageSidebarNav from '@/components/layout/PageSidebarNav.vue'
@@ -9,7 +9,6 @@ import { useMeetingStore } from '@/stores/hermes/meeting'
 import type { MeetingSession, TranscriptSentence, AgentConfig } from '@/stores/hermes/meeting'
 import { useModelsStore } from '@/stores/hermes/models'
 import { useProfilesStore } from '@/stores/hermes/profiles'
-import { useMeetingAgent } from '@/composables/useMeetingAgent'
 import { meetingASRApi } from '@/utils/meeting-asr-api'
 import { meetingStorageApi } from '@/utils/meeting-storage-api'
 
@@ -61,6 +60,8 @@ const useDiarize = ref(false)
 const speakerCount = ref(0) // 0 = auto
 const errorMessage = ref('')
 
+const sentences = computed(() => finalSentences.value)
+
 // --- 说话人数选项 ---
 const speakerCountOptions = computed(() => [
   { label: t('meeting.speakerCountAuto'), value: 0 },
@@ -80,7 +81,8 @@ const renameInput = ref('')
 // --- 配置 ---
 const ASR_URL = computed(() => `ws://${window.location.hostname}:${asrServiceStatus.value.asrPort || 8000}/ws/asr`)
 const DIARIZE_URL = computed(() => `ws://${window.location.hostname}:${asrServiceStatus.value.diarizePort || 8001}/ws/diarize`)
-const API_BASE = computed(() => `http://${window.location.hostname}:${asrServiceStatus.value.asrPort || 8000}`)
+
+
 
 // --- ASR 服务状态 ---
 const asrServiceStatus = ref({
@@ -120,8 +122,6 @@ const showReport = ref(false)
 
 // --- Agent 分析相关 ---
 const showAgentPanel = ref(false)
-const agentAnalysisActive = ref(false)
-const agentMessages = ref<any[]>([])
 const agentStartAnalysisTrigger = ref(0)
 
 // --- 右侧面板 ---
@@ -362,7 +362,7 @@ async function saveCurrentMeeting() {
     htmlContent: htmlContent.value,
     speakerMap: { ...speakerMap.value },
     useDiarize: useDiarize.value,
-    status: isRecording.value ? 'recording' : 'completed',
+    status: isRecording.value ? 'recording' as const : 'completed' as const,
   }
   
   // 保存到本地 store
@@ -468,25 +468,6 @@ async function startASRService() {
   }
 }
 
-async function stopASRService() {
-  try {
-    await meetingASRApi.stop()
-    asrServiceStatus.value = {
-      isRunning: false,
-      asrPort: null,
-      diarizePort: null,
-      pid: null,
-      uptime: null,
-      error: null,
-    }
-  } catch (err) {
-    console.error('Failed to stop ASR service:', err)
-  }
-}
-
-// --- 计算属性 ---
-const sentences = computed(() => finalSentences.value)
-
 // --- 生命周期 ---
 onMounted(async () => {
   // 加载模型和配置
@@ -509,12 +490,39 @@ onUnmounted(() => {
   // Note: We don't stop the ASR service on unmount as it should persist across page navigations
 })
 
+// --- 麦克风检测 ---
+async function checkMicrophoneAvailability(): Promise<{ available: boolean; reason?: string }> {
+  if (typeof navigator === 'undefined' || !navigator.mediaDevices?.enumerateDevices) {
+    return { available: false, reason: 'micUnsupported' }
+  }
+
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices()
+    const hasAudioInput = devices.some(d => d.kind === 'audioinput')
+    if (!hasAudioInput) {
+      return { available: false, reason: 'micNotFound' }
+    }
+    return { available: true }
+  } catch {
+    // enumerateDevices 失败不影响 getUserMedia
+    return { available: true }
+  }
+}
+
 // --- 音频处理 ---
 async function startRecording() {
   try {
     errorMessage.value = ''
     isConnecting.value = true
     statusText.value = t('meeting.connecting')
+
+    // 第 1 阶段：麦克风检测
+    const micCheck = await checkMicrophoneAvailability()
+    if (!micCheck.available) {
+      errorMessage.value = t(`meeting.${micCheck.reason}`)
+      isConnecting.value = false
+      return
+    }
 
     // 检查并启动 ASR 服务
     if (!asrServiceStatus.value.isRunning) {
@@ -665,8 +673,24 @@ async function startRecording() {
     drawWaveform()
 
   } catch (error: any) {
-    console.error('Failed to start recording:', error)
-    errorMessage.value = error.message || t('meeting.microphoneError')
+    console.error('[meeting] Failed to start recording:', error)
+
+    // 按 DOMException.name 区分错误类型
+    switch (error.name) {
+      case 'NotFoundError':
+        errorMessage.value = t('meeting.micNotFound')
+        break
+      case 'NotAllowedError':
+        errorMessage.value = window.isSecureContext
+          ? t('meeting.micPermissionDenied')
+          : t('meeting.micUnsupported')
+        break
+      case 'NotReadableError':
+        errorMessage.value = t('meeting.micPermissionDenied')
+        break
+      default:
+        errorMessage.value = error.message || t('meeting.microphoneError')
+    }
     isConnecting.value = false
   }
 }
@@ -1184,153 +1208,6 @@ async function analyzeWithHermesAgent() {
   
   // 通过事件触发 Agent 面板的分析
   agentStartAnalysisTrigger.value++
-}
-
-function generateHtmlReport(analysis: any) {
-  const session = meetingStore.activeSession
-  if (!session) return
-  
-  const genTime = new Date().toLocaleString('zh-CN')
-  
-  const topicsHtml = (analysis.topics || []).map((t: string) => 
-    `<span class="topic-tag">${t}</span>`
-  ).join('')
-  
-  const keyPointsHtml = (analysis.key_points || []).map((p: string, i: number) => 
-    `<div class="key-point-card">
-      <div class="key-point-number">${i + 1}</div>
-      <div class="key-point-text">${p}</div>
-    </div>`
-  ).join('')
-  
-  const actionItemsHtml = (analysis.action_items || []).map((item: string) =>
-    `<div class="action-item">
-      <input type="checkbox" class="action-checkbox">
-      <span class="action-text">${item}</span>
-    </div>`
-  ).join('')
-  
-  const html = `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${session.title} - 会议分析报告</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      min-height: 100vh;
-      padding: 20px;
-    }
-    .container { max-width: 800px; margin: 0 auto; }
-    .header {
-      background: rgba(255, 255, 255, 0.95);
-      border-radius: 16px;
-      padding: 30px;
-      margin-bottom: 20px;
-      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
-    }
-    .header h1 { font-size: 28px; color: #1a1a2e; margin-bottom: 10px; }
-    .header .meta { color: #666; font-size: 14px; }
-    .summary-box {
-      background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-      border-radius: 12px;
-      padding: 20px;
-      margin-top: 15px;
-      font-size: 16px;
-      line-height: 1.6;
-      color: #333;
-    }
-    .topics-container { margin-top: 15px; display: flex; flex-wrap: wrap; gap: 8px; }
-    .topic-tag {
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: white;
-      padding: 6px 16px;
-      border-radius: 20px;
-      font-size: 14px;
-    }
-    .card {
-      background: rgba(255, 255, 255, 0.95);
-      border-radius: 16px;
-      padding: 24px;
-      margin-bottom: 20px;
-      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
-    }
-    .card h2 {
-      font-size: 20px;
-      color: #1a1a2e;
-      margin-bottom: 20px;
-    }
-    .key-point-card {
-      display: flex;
-      align-items: flex-start;
-      gap: 12px;
-      padding: 12px;
-      background: #f8f9fa;
-      border-radius: 8px;
-      margin-bottom: 10px;
-    }
-    .key-point-number {
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: white;
-      width: 28px;
-      height: 28px;
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 14px;
-      font-weight: bold;
-      flex-shrink: 0;
-    }
-    .key-point-text { font-size: 15px; line-height: 1.5; color: #333; }
-    .action-item {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      padding: 12px;
-      background: #fff3cd;
-      border-radius: 8px;
-      margin-bottom: 10px;
-      border-left: 4px solid #ffc107;
-    }
-    .action-checkbox { width: 20px; height: 20px; cursor: pointer; }
-    .action-text { font-size: 15px; color: #333; }
-    .footer { text-align: center; color: rgba(255, 255, 255, 0.8); font-size: 14px; padding: 20px; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <div class="header">
-      <h1>${session.title}</h1>
-      <div class="meta">生成时间：${genTime}</div>
-      <div class="summary-box">
-        <strong>摘要：</strong>${analysis.summary || '暂无摘要'}
-      </div>
-      ${topicsHtml ? `<div class="topics-container">${topicsHtml}</div>` : ''}
-    </div>
-    <div class="card">
-      <h2>关键要点</h2>
-      ${keyPointsHtml || '<p>暂无关键要点</p>'}
-    </div>
-    <div class="card">
-      <h2>待办事项</h2>
-      ${actionItemsHtml || '<p>暂无待办事项</p>'}
-    </div>
-    <div class="footer">会议分析报告 · 由 Hermes Agent 生成</div>
-  </div>
-</body>
-</html>`
-
-  htmlContent.value = html
-  meetingStore.updateHtmlContent(session.id, html)
-  
-  // 保存到服务器
-  meetingStorageApi.saveHtmlReport(session.id, html)
-    .then(() => console.log('HTML report saved to server'))
-    .catch(err => console.error('Failed to save HTML report to server:', err))
 }
 
 function formatDuration(seconds: number): string {
@@ -2015,6 +1892,13 @@ async function clearTranscript() {
           <div class="form-item">
             <label class="form-label">
               {{ t('meeting.dashscopeApiKey') }}
+              <a
+                href="https://dashscope.aliyun.com/"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="form-tutorial-link"
+                @click.stop
+              >{{ t('meeting.howToGetApiKey') }}</a>
               <span v-if="meetingStore.hasASRConfig" class="form-label-badge">{{ t('meeting.configured') }}</span>
             </label>
             <NInput
@@ -3121,6 +3005,21 @@ async function clearTranscript() {
   color: #22c55e;
   font-size: 11px;
   font-weight: 600;
+}
+
+.form-tutorial-link {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--color-primary, #667eea);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  opacity: 0.75;
+  transition: opacity 0.2s;
+}
+
+.form-tutorial-link:hover {
+  opacity: 1;
 }
 
 .form-hint {

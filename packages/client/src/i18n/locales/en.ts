@@ -2619,6 +2619,7 @@ export default {
 
   // Changelog
   changelog: {
+    new_0_7_4_1: 'Merged Meeting Mode with real-time transcription and AI analysis',
     new_0_7_1_1: 'Improved the device upgrade channel so existing devices can move to v0.7.1 first and then switch to OSS device-package updates automatically',
     new_0_7_0_1: 'Added a first-login tutorial to guide users through the initial model setup flow',
     new_0_7_0_2: 'Improved billing and quota warnings for model providers so renewal issues are easier to understand',
@@ -2802,8 +2803,9 @@ export default {
     deleteConfirm: 'Delete this meeting?',
     asrConfig: 'ASR Configuration',
     dashscopeApiKey: 'DashScope API Key',
+    howToGetApiKey: 'How to get?',
     dashscopeApiKeyPlaceholder: 'Enter Alibaba Cloud DashScope API Key',
-    dashscopeApiKeyHint: 'Alibaba Cloud DashScope workspace API Key for speech recognition',
+    dashscopeApiKeyHint: 'Alibaba Cloud DashScope workspace API Key for speech recognition. Visit dashscope.aliyun.com → API-KEY Management to create one',
     apiKeySaved: 'Saved API Key (leave empty to use saved one)',
     configured: 'Configured',
     analysisMode: 'Analysis Mode',
@@ -2832,6 +2834,9 @@ export default {
     start: 'Start Recording',
     connectionError: 'Connection failed. Please check the backend service',
     microphoneError: 'Cannot access microphone',
+    micNotFound: 'No microphone detected on this device',
+    micPermissionDenied: 'Microphone permission denied. Please allow microphone access in your browser settings',
+    micUnsupported: 'Microphone access is not supported in this browser',
     unknownError: 'Unknown error',
     analysis: 'AI Analysis',
     startAnalysis: 'Start Analysis',

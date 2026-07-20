@@ -46,8 +46,8 @@ export function useMeetingAgent(sessionId: string) {
   })
 
   // Agent 配置
-  const agentConfig = computed(() => {
-    return session.value?.agentConfig || { agentType: 'hermes', profile: 'default' }
+  const agentConfig = computed((): AgentConfig | undefined => {
+    return session.value?.agentConfig
   })
 
   // 加载提示词模板
@@ -289,24 +289,26 @@ ${transcript}
   async function sendToAgent(content: string, instructions?: string) {
     if (!session.value) return
 
-    const config = agentConfig.value
+    const config = agentConfig.value as AgentConfig | undefined
     const agentSessionId = session.value.agentSessionId || `meeting-agent-${sessionId}`
 
     if (!session.value.agentSessionId) {
       meetingStore.updateSession(sessionId, { agentSessionId: agentSessionId })
     }
 
+    const profile = config?.profile || profilesStore.activeProfileName || 'default'
+
     const payload: StartRunRequest = {
       input: content,
       session_id: agentSessionId,
-      profile: config.profile || profilesStore.activeProfileName || 'default',
-      model: config.model,
-      provider: config.provider,
-      source: config.agentType === 'hermes' ? 'cli' : 'coding_agent',
+      profile,
+      model: config?.model,
+      provider: config?.provider,
+      source: config?.agentType === 'hermes' ? 'cli' : 'coding_agent',
       instructions: instructions || promptTemplate.value,
     }
 
-    if (config.agentType === 'claude-code' || config.agentType === 'codex') {
+    if (config?.agentType === 'claude-code' || config?.agentType === 'codex') {
       const codingAgentId: ChatCodingAgentId = config.agentType === 'claude-code' ? 'claude-code' : 'codex'
       const codingAgentMode = config.codingAgentMode || 'scoped'
       
@@ -314,7 +316,7 @@ ${transcript}
       payload.mode = codingAgentMode
 
       if (codingAgentMode === 'scoped') {
-        const providerGroup = appStore.modelGroups.find(g => g.provider === config.provider)
+        const providerGroup = config.provider ? appStore.modelGroups.find(g => g.provider === config.provider) : undefined
         if (providerGroup) {
           payload.baseUrl = providerGroup.base_url
           payload.apiKey = providerGroup.api_key
@@ -402,7 +404,7 @@ ${transcript}
         isRunning.value = true
         activeAssistantMessageId = null
       },
-      onRunCompleted: (evt: RunEvent) => {
+      onRunCompleted: (_evt: RunEvent) => {
         isRunning.value = false
         activeAssistantMessageId = null
         cleanup()
