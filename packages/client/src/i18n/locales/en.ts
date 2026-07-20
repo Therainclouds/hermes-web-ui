@@ -2620,6 +2620,9 @@ export default {
 
   // Changelog
   changelog: {
+    new_0_7_6_1: 'All Web UI traffic now uses HTTPS on the standard 6060 port. HTTP fallback removed — certificate warning is shown on first LAN access (click "Advanced → Proceed").',
+    new_0_7_6_2: 'Fixed: red "Update failed" banner no longer sticks after a successful upgrade — when running version matches the latest published version, historical failed tasks are discarded.',
+    new_0_7_6_3: 'Fixed: deploy now restores the +x bit on shell and node scripts that git clone may strip — prevents systemd 203/EXEC auto-restart loops.',
     new_0_7_5_1: 'Fixed: update no longer fails when optional terminal feature (node-pty) is unavailable. Added: LAN HTTPS auto-adaptation for microphone access.',
     new_0_7_4_1: 'Merged Meeting Mode with real-time transcription and AI analysis',
     new_0_7_1_1: 'Improved the device upgrade channel so existing devices can move to v0.7.1 first and then switch to OSS device-package updates automatically',
@@ -2839,7 +2842,7 @@ export default {
     micNotFound: 'No microphone detected on this device',
     micPermissionDenied: 'Microphone permission denied. Please allow microphone access in your browser settings',
     micUnsupported: 'Microphone access is not supported in this browser',
-    micInsecureContext: 'Microphone requires HTTPS. Visit https://<device-ip> (click "Advanced → Proceed" on first-time cert warning), or use http://localhost:<port>',
+    micInsecureContext: 'Microphone requires HTTPS. Visit https://<device-ip>:<port> (click "Advanced → Proceed" on first-time cert warning)',
     unknownError: 'Unknown error',
     analysis: 'AI Analysis',
     startAnalysis: 'Start Analysis',

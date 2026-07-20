@@ -493,6 +493,11 @@ onUnmounted(() => {
 // --- 麦克风检测（仅做浏览器兼容性检查，不阻断 getUserMedia） ---
 async function checkMicrophoneAvailability(): Promise<{ available: boolean; reason?: string }> {
   if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+    // 某些浏览器在 HTTP 非安全上下文中直接隐藏 navigator.mediaDevices，
+    // 此时应提示 HTTPS 访问而非"浏览器不支持"，给用户一条可操作的路径。
+    if (typeof window !== 'undefined' && !window.isSecureContext) {
+      return { available: false, reason: 'micInsecureContext' }
+    }
     return { available: false, reason: 'micUnsupported' }
   }
 

@@ -116,6 +116,21 @@ export const useAppStore = defineStore('app', () => {
   }
 
   function getPreferredTask(status: UpdateStatusResponse): UpdateTaskRecord | null {
+    // If the running version matches the latest published version, discard
+    // historical failed tasks so the red error banner does not stay stuck
+    // after a successful upgrade. When webui_latest has not yet been probed
+    // (first launch), fall through to currentTask/lastTask as a safety net.
+    const versionUpToDate =
+      typeof status.webui_latest === 'string'
+      && status.webui_latest !== ''
+      && typeof status.webui_version === 'string'
+      && status.webui_version !== ''
+      && status.webui_latest === status.webui_version
+
+    if (versionUpToDate) {
+      return null
+    }
+
     return status.currentTask || status.lastTask
   }
 

@@ -74,6 +74,9 @@ export interface UpdateTaskRecord {
 export interface UpdateStatusResponse {
   currentTask: UpdateTaskRecord | null
   lastTask: UpdateTaskRecord | null
+  webui_version?: string
+  webui_latest?: string
+  webui_update_available?: boolean
 }
 
 export type UpdateRiskLevel = 'low' | 'medium' | 'high'

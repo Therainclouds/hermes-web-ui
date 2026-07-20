@@ -83,46 +83,39 @@ function listen(app: Koa, port: number, host: string): Promise<any> {
 
 async function listenWithFallback(app: Koa, port: number, host?: string): Promise<ListenResult> {
   const bindHost = host || '0.0.0.0'
-  const servers: any[] = []
-
-  // Always start HTTP — localhost is a secure context even over HTTP.
-  console.log(`[bootstrap] listening on ${bindHost}:${port}`)
-  const primary = await listen(app, port, bindHost)
-  servers.push(primary)
-
-  // Attempt HTTPS with self-signed certificate for LAN access.
+  const httpsPort = parseInt(process.env.HTTPS_PORT || String(port), 10)
   const certDir = resolve(__dirname, '../../certs')
   const certPath = join(certDir, 'server.crt')
   const keyPath = join(certDir, 'server.key')
-  if (existsSync(certPath) && existsSync(keyPath)) {
-    try {
-      const httpsOptions: https.ServerOptions = {
-        cert: readFileSync(certPath),
-        key: readFileSync(keyPath),
-      }
-      const httpsPort = parseInt(process.env.HTTPS_PORT || '443', 10)
-      const httpsServer = https.createServer(httpsOptions, app.callback())
-      await new Promise<void>((resolve, reject) => {
-        httpsServer.listen(httpsPort, bindHost)
-        httpsServer.once('listening', () => {
-          console.log(`[bootstrap] HTTPS listening on ${bindHost}:${httpsPort}`)
-          resolve()
-        })
-        httpsServer.once('error', reject)
-      })
-      servers.push(httpsServer)
-    } catch (err) {
-      console.warn('[bootstrap] HTTPS startup failed, fallback to HTTP only:', err instanceof Error ? err.message : err)
-    }
+
+  if (!existsSync(certPath) || !existsSync(keyPath)) {
+    throw new Error(
+      `[bootstrap] TLS certificate not found at ${certDir}. ` +
+      `Run scripts/generate-server-cert.sh before starting the service.`,
+    )
   }
 
-  return { primary, servers }
+  const httpsOptions: https.ServerOptions = {
+    cert: readFileSync(certPath),
+    key: readFileSync(keyPath),
+  }
+  const httpsServer = https.createServer(httpsOptions, app.callback())
+  const primary = await new Promise<any>((resolve, reject) => {
+    httpsServer.listen(httpsPort, bindHost)
+    httpsServer.once('listening', () => {
+      console.log(`[bootstrap] HTTPS listening on ${bindHost}:${httpsPort}`)
+      resolve(httpsServer)
+    })
+    httpsServer.once('error', reject)
+  })
+
+  return { primary, servers: [primary] }
 }
 
 function getLoopbackBaseUrl(httpServer: any): string {
   const address = httpServer?.address?.()
   const port = typeof address === 'object' && address?.port ? address.port : config.port
-  return `http://127.0.0.1:${port}`
+  return `https://127.0.0.1:${port}`
 }
 
 /**
@@ -433,10 +426,9 @@ export async function bootstrap() {
 
   const interfaces = safeNetworkInterfaces()
   const localIp = Object.values(interfaces).flat().find(i => i?.family === 'IPv4' && !i?.internal)?.address || 'localhost'
-  const httpsInfo = servers.length > 1 ? ` / https://${localIp}:${parseInt(process.env.HTTPS_PORT || '443', 10)}` : ''
-  console.log(`Server: http://localhost:${config.port} (LAN: http://${localIp}:${config.port}${httpsInfo})`)
+  console.log(`Server: https://localhost:${config.port} (LAN: https://${localIp}:${config.port})`)
   console.log(`Log: ${config.appHome}/logs/server.log`)
-  logger.info('Server: http://localhost:%d (LAN: http://%s:%d%s)', config.port, localIp, config.port, httpsInfo)
+  logger.info('Server: https://localhost:%d (LAN: https://%s:%d)', config.port, localIp, config.port)
   startLanDiscovery()
   refreshConfiguredProviderModelCatalogsInBackground('bootstrap')
 

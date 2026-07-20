@@ -47,13 +47,3 @@ chmod 644 "${CERT_FILE}"
 echo "${CURRENT_IP}" > "${IP_FILE}"
 
 echo "[generate-server-cert] self-signed certificate generated for IP ${CURRENT_IP}"
-
-# Allow Node.js to bind to privileged ports (< 1024) — one-shot, idempotent.
-if command -v setcap &>/dev/null; then
-  NODE_BIN="$(command -v node 2>/dev/null || echo '/opt/node-v23/bin/node')"
-  if setcap 'cap_net_bind_service=+ep' "${NODE_BIN}" 2>/dev/null; then
-    echo "[generate-server-cert] cap_net_bind_service applied to ${NODE_BIN}"
-  else
-    echo "[generate-server-cert] WARNING: setcap failed — port 443 binding may require root"
-  fi
-fi

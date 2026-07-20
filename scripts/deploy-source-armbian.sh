@@ -1421,6 +1421,16 @@ PY
 install_systemd_service() {
   step "Install systemd service"
 
+  # Fix: git clone / pull on filesystems with core.fileMode=true may reset
+  # the +x bit on .sh/.mjs files to 0664 (umask). Without this, systemd
+  # ExecStartPre=.../*.sh reports 203/EXEC and the service enters an
+  # auto-restart loop, which the update-runner then marks as failed.
+  if [[ -d "${DEPLOY_DIR}/scripts" ]]; then
+    find "${DEPLOY_DIR}/scripts" -maxdepth 1 -type f \
+      \( -name '*.sh' -o -name '*.mjs' \) \
+      -exec chmod +x {} +
+  fi
+
   local rendered_service
   rendered_service="$(mktemp)"
 
@@ -1526,6 +1536,18 @@ show_summary() {
   echo
   info "Source deployment completed"
   echo "----------------------------------------"
+
+  # Self-check: verify critical scripts are still executable before systemd
+  # tries to use them via ExecStartPre. If git drops the +x bit on us again,
+  # this catches it before the service silently enters an auto-restart loop.
+  local f
+  for f in scripts/generate-server-cert.sh scripts/update-source-deploy.sh scripts/hermes-web-ui-update-runner.sh; do
+    if [[ -f "${DEPLOY_DIR}/${f}" && ! -x "${DEPLOY_DIR}/${f}" ]]; then
+      err "DEPLOY BUG: ${f} missing +x bit — systemd ExecStartPre will fail with 203/EXEC"
+      exit 1
+    fi
+  done
+
   echo "Server URL: ${server_url}"
   echo "Local URL: http://127.0.0.1:${PORT}"
   echo "Source directory: ${DEPLOY_DIR}"

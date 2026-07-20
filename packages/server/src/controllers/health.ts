@@ -3,9 +3,8 @@ import { config, hasConfiguredManifestCheck, hasConfiguredUpdateCheck, hasConfig
 import { getAgentBridgeManager } from '../services/hermes/agent-bridge/manager'
 import { redactAgentBridgeError } from '../services/hermes/agent-bridge/redact'
 import { getTerminalRuntimeStatus } from '../services/terminal/runtime-state'
-import { resolveManifestCheckResult } from '../services/update/manifest-client'
+import { getSnapshot, refresh as refreshUpdateCheck } from '../services/update/update-check-cache'
 import { getLocalWebUiVersion } from '../services/update/package-info'
-import type { UpdateCheckResult } from '../services/update/types'
 import { isRemoteVersionNewer } from '../services/update/version-compare'
 import { isDockerContainer } from '../services/runtime-environment'
 
@@ -14,15 +13,6 @@ declare const __APP_VERSION__: string
 const BUILD_VERSION = typeof __APP_VERSION__ !== 'undefined'
   ? __APP_VERSION__
   : ''
-
-let cachedUpdateInfo: UpdateCheckResult = {
-  latestVersion: '',
-  sourceLabel: config.update.sourceLabel,
-  channel: config.update.channel,
-  packageType: config.update.packageType,
-  strategy: config.update.strategy,
-  detectionSource: 'manifest',
-}
 
 const LOCAL_VERSION = getLocalWebUiVersion(BUILD_VERSION)
 const AGENT_BRIDGE_HEALTH_FIRST_WAIT_MS = 75
@@ -73,12 +63,9 @@ export async function checkLatestVersion(): Promise<void> {
   if (!hasConfiguredManifestCheck(config.update)) return
 
   try {
-    const nextInfo = await resolveManifestCheckResult(config.update)
-    if (nextInfo?.latestVersion) {
-      cachedUpdateInfo = nextInfo
-      if (isRemoteVersionNewer(LOCAL_VERSION, nextInfo.latestVersion)) {
-        console.log(`Update available: ${LOCAL_VERSION} → ${nextInfo.latestVersion}`)
-      }
+    const { result } = await refreshUpdateCheck()
+    if (result?.latestVersion && isRemoteVersionNewer(LOCAL_VERSION, result.latestVersion)) {
+      console.log(`Update available: ${LOCAL_VERSION} → ${result.latestVersion}`)
     }
   } catch {
     // Manifest fetch failed; surface nothing instead of probing the registry.
@@ -162,21 +149,23 @@ export async function healthCheck(ctx: any) {
   const updateCheckDisabled = isUpdateCheckDisabled()
   const agentBridge = await getAgentBridgeHealth()
   const terminal = getTerminalRuntimeStatus()
+  const { result } = getSnapshot()
+  const cached = result || { latestVersion: '', sourceLabel: config.update.sourceLabel, channel: config.update.channel, packageType: config.update.packageType, detectionSource: 'manifest' as const }
   ctx.body = {
     status: 'ok',
     platform: 'hermes-agent',
     version: hermesVersion,
     gateway: 'running',
     webui_version: LOCAL_VERSION,
-    webui_latest: updateCheckDisabled ? '' : cachedUpdateInfo.latestVersion,
+    webui_latest: updateCheckDisabled ? '' : cached.latestVersion,
     webui_update_enabled: updateEnabled,
-    webui_update_source_label: updateCheckConfigured ? (cachedUpdateInfo.sourceLabel || config.update.sourceLabel) : '',
-    webui_update_channel: updateCheckConfigured ? (cachedUpdateInfo.channel || config.update.channel) : '',
+    webui_update_source_label: updateCheckConfigured ? (cached.sourceLabel || config.update.sourceLabel) : '',
+    webui_update_channel: updateCheckConfigured ? (cached.channel || config.update.channel) : '',
     webui_update_strategy: updateCheckConfigured ? config.update.strategy : '',
-    webui_update_package_type: updateCheckConfigured ? (cachedUpdateInfo.packageType || config.update.packageType) : '',
+    webui_update_package_type: updateCheckConfigured ? (cached.packageType || config.update.packageType) : '',
     webui_update_available: updateCheckDisabled
       ? false
-      : isRemoteVersionNewer(LOCAL_VERSION, cachedUpdateInfo.latestVersion),
+      : isRemoteVersionNewer(LOCAL_VERSION, cached.latestVersion),
     node_version: process.versions.node,
     agent_bridge: agentBridge,
     terminal,

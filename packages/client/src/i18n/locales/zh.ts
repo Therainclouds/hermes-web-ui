@@ -2622,6 +2622,9 @@ export default {
 
   // 更新日志
   changelog: {
+    new_0_7_6_1: 'Web UI 现已全面使用 HTTPS（标准 6060 端口），HTTP 入口移除。首次局域网访问会显示证书警告，点击"高级 → 继续访问"即可进入。',
+    new_0_7_6_2: '修复：升级成功后侧栏红色 "更新失败" 提示不再持续显示 — 当运行版本与最新发布版本一致时，自动丢弃历史失败任务。',
+    new_0_7_6_3: '修复：部署流程现在会恢复 git clone 可能剥离的脚本 +x 位 — 避免 systemd 203/EXEC 自动重启死循环。',
     new_0_7_5_1: '修复：更新不再因可选终端特性（node-pty）缺失而失败。新增：局域网 HTTPS 自适应方案，支持麦克风安全访问。',
     new_0_7_4_1: '合并会议模式（Meeting Mode），支持实时语音转写与 AI 分析',
     new_0_7_1_1: '优化设备升级通道，允许旧设备先升级到 v0.7.1，并在安装完成后自动切换到 OSS device-package 更新链路',
@@ -2841,7 +2844,7 @@ export default {
     micNotFound: '当前设备未检测到麦克风',
     micPermissionDenied: '麦克风权限被拒绝，请在浏览器设置中允许访问麦克风',
     micUnsupported: '当前浏览器不支持麦克风访问',
-    micInsecureContext: '麦克风需要 HTTPS 访问。通过 https://<设备IP> 访问（首次需点击"高级 → 继续访问"跳过证书警告），或使用 http://localhost:端口',
+    micInsecureContext: '麦克风需要 HTTPS 访问。请通过 https://<设备IP>:端口 访问（首次需点击"高级 → 继续访问"跳过证书警告）',
     unknownError: '未知错误',
     analysis: 'AI 分析',
     startAnalysis: '启动分析',
