@@ -2,26 +2,37 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 
-def _load_dotenv(path: str = ".env") -> None:
-    if not os.path.exists(path):
+def _load_dotenv(path: str | os.PathLike[str]) -> None:
+    p = Path(path)
+    if not p.exists():
         return
-    with open(path, "r", encoding="utf-8") as fh:
-        for raw in fh:
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            key = key.strip()
-            value = value.strip().strip('"').strip("'")
-            if key and key not in os.environ:
-                os.environ[key] = value
+    try:
+        with p.open("r", encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except OSError:
+        # Config file present but unreadable — don't crash startup; storage
+        # layer will surface a clearer error when the user tries to save.
+        pass
 
 
-_load_dotenv()
+# .env lives in DATA_DIR (not cwd), so secrets never end up in the install
+# directory, never get packaged into device updates, and survive across
+# re-deploys. Cwd can be anywhere under systemd.
+_data_dir_env = Path(os.environ.get("DATA_DIR", "data")).resolve()
+_load_dotenv(_data_dir_env / "config.env")
 
 
 @dataclass(frozen=True)
@@ -45,6 +56,9 @@ class Settings:
     asr_poll_interval_seconds: float = float(
         os.environ.get("ASR_POLL_INTERVAL_SECONDS", "0.2")
     )
+    # Configurable per-request. Env var sets the ceiling, but the runtime
+    # `meeting_max_audio_seconds` field (read from data/config.json) overrides
+    # it. Useful for short ad-hoc captures vs long board meetings.
     asr_max_audio_seconds: int = int(os.environ.get("ASR_MAX_AUDIO_SECONDS", "7200"))
     oss_bucket: str = os.environ.get("OSS_BUCKET", "")
     oss_access_key_id: str = os.environ.get("OSS_ACCESS_KEY_ID", "")

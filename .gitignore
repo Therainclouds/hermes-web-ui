@@ -15,6 +15,11 @@ dist-ssr
 coverage
 __pycache__/
 *.py[cod]
+# Python virtual environments (NEVER commit Windows/Linux venv into repo)
+*.venv/
+.venv/
+packages/server/src/services/meeting-asr/python-backend/.venv/
+packages/server/src/services/meeting-asr/python-backend/**/.venv/
 server/dist
 packages/server/dist
 *.local

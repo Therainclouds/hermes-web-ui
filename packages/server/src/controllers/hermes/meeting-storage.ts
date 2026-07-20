@@ -32,24 +32,36 @@ export async function listMeetings(ctx: Context): Promise<void> {
   ctx.body = { meetings }
 }
 
-// Audio
+// Audio upload limit. A 2-hour meeting at opus 32kbps is ~28 MB; we cap at
+// 200 MB to leave headroom for higher bitrate captures while keeping the
+// server safe from runaway uploads.
+const AUDIO_UPLOAD_MAX_BYTES = Number(process.env.MEETING_AUDIO_MAX_BYTES) || 200 * 1024 * 1024
+
 export async function uploadAudio(ctx: Context): Promise<void> {
   const { meetingId } = ctx.params
-  
+
+  // Reject early when the client declared an oversize Content-Length, before
+  // streaming any bytes.
+  const declared = Number(ctx.request.length ?? ctx.req.headers['content-length'] ?? 0)
+  if (declared && declared > AUDIO_UPLOAD_MAX_BYTES) {
+    ctx.status = 413
+    ctx.body = { error: `Audio too large: ${declared} > ${AUDIO_UPLOAD_MAX_BYTES} bytes` }
+    return
+  }
+
   try {
-    const chunks: Buffer[] = []
-    const body = ctx.req
-    
-    // Read the raw body as buffer
-    const chunks2: Buffer[] = []
-    for await (const chunk of body) {
-      chunks2.push(chunk)
+    const result = await meetingStorageService.saveAudioStream(
+      meetingId,
+      ctx.req as AsyncIterable<Buffer>,
+      AUDIO_UPLOAD_MAX_BYTES,
+    )
+    ctx.body = { status: 'ok', path: result.path, bytes: result.bytes }
+  } catch (err: any) {
+    if (/max size/.test(String(err?.message || ''))) {
+      ctx.status = 413
+      ctx.body = { error: err.message }
+      return
     }
-    const audioBuffer = Buffer.concat(chunks2)
-    
-    const filePath = await meetingStorageService.saveAudio(meetingId, audioBuffer)
-    ctx.body = { status: 'ok', path: filePath }
-  } catch (err) {
     ctx.status = 500
     ctx.body = { error: `Failed to upload audio: ${err}` }
   }

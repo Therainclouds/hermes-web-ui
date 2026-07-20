@@ -25,10 +25,6 @@ meetingASRRoutes.get('/api/meeting-asr/analysis/result', ctrl.getAnalysisResult)
 meetingASRRoutes.get('/api/meeting-asr/analysis/html', ctrl.getAnalysisHTML)
 meetingASRRoutes.get('/api/meeting-asr/analysis/stream', ctrl.proxyAnalysisStream)
 
-// Transcript APIs
-meetingASRRoutes.post('/api/meeting-asr/transcript', ctrl.addTranscript)
-meetingASRRoutes.get('/api/meeting-asr/transcript', ctrl.getTranscript)
-meetingASRRoutes.post('/api/meeting-asr/transcript/clear', ctrl.clearTranscript)
-
-// Prompts
-meetingASRRoutes.get('/api/meeting-asr/prompts', ctrl.getPrompts)
+// Note: transcript and prompts endpoints were removed as dead code (v0.7.6 audit #17).
+// Frontend manages transcripts locally via meetingStore; prompts are configured
+// via /api/meeting-asr/config and used directly by the Python analysis service.

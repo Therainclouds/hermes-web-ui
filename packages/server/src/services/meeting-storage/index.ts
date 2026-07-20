@@ -114,6 +114,38 @@ export class MeetingStorageService {
     return filePath
   }
 
+  /**
+   * Stream-based variant for large uploads. Caps total bytes written to prevent
+   * OOM on the server and to defend against malicious / buggy clients that
+   * stream gigabytes without a Content-Length.
+   */
+  async saveAudioStream(
+    meetingId: string,
+    source: AsyncIterable<Buffer>,
+    maxBytes: number,
+  ): Promise<{ path: string; bytes: number }> {
+    const dir = this.ensureMeetingDir(meetingId)
+    const fileName = `recording_${Date.now()}.webm`
+    const filePath = path.join(dir, fileName)
+    const fh = await fs.open(filePath, 'w')
+    let bytes = 0
+    try {
+      for await (const chunk of source) {
+        bytes += chunk.length
+        if (bytes > maxBytes) {
+          await fh.close()
+          await fs.unlink(filePath).catch(() => {})
+          throw new Error(`Audio upload exceeds max size ${maxBytes} bytes`)
+        }
+        await fh.write(chunk)
+      }
+    } finally {
+      await fh.close().catch(() => {})
+    }
+    logger.info('[meeting-storage] Saved audio (stream) for meeting %s: %s (%d bytes)', meetingId, fileName, bytes)
+    return { path: filePath, bytes }
+  }
+
   async getAudioPath(meetingId: string): Promise<string | null> {
     try {
       const dir = this.getMeetingDir(meetingId)

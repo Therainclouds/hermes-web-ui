@@ -62,7 +62,10 @@ export interface TranscriptSentence {
 }
 
 export interface AudioChunk {
-  data: string // base64 encoded
+  // Binary audio data stored as a Blob (not base64). Storing a Blob directly
+  // in IndexedDB avoids the 33% size penalty of base64 encoding and skips
+  // an extra atob/btoa round-trip on every save/load.
+  blob: Blob
   timestamp: number
   duration: number
 }
@@ -88,6 +91,10 @@ export interface ASRConfig {
   paraformerModel: string
   sampleRate: number
   languageHints: string
+  // Optional LLM analysis config (used when starting analysis on a transcript)
+  llmApiKey: string
+  llmBaseUrl: string
+  llmModel: string
 }
 
 export interface SpeakerEntry {
@@ -123,14 +130,70 @@ function saveSessions(sessions: MeetingSession[]) {
     // 不保存 audioChunks（已移除）和 speakers 到 localStorage
     const toSave = sessions.map(({ ...rest }) => rest)
     localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave))
-  } catch {}
+  } catch (e: any) {
+    // localStorage quota exceeded (~5MB). Trim transcript sentences from the
+    // oldest non-active sessions until we fit. Silent failure was previously
+    // masking new sessions never being persisted.
+    if (e?.name === 'QuotaExceededError' || /quota/i.test(String(e?.message))) {
+      console.warn('[meeting] localStorage quota exceeded; archiving oldest sessions')
+      archiveOldSessions(sessions)
+    } else {
+      console.warn('[meeting] Failed to save sessions to localStorage:', e)
+    }
+  }
+}
+
+/**
+ * Trim oldest sessions' transcript sentences (keep metadata + latest N
+ * sentences) so the JSON fits in localStorage. Audio + sentences are still
+ * recoverable from IndexedDB / server if user wants them back.
+ */
+function archiveOldSessions(sessions: MeetingSession[]) {
+  const sorted = [...sessions].sort((a, b) => a.updatedAt - b.updatedAt)
+  let changed = false
+  for (const s of sorted) {
+    if (s.sentences.length > 50) {
+      s.sentences = s.sentences.slice(-50)
+      changed = true
+    }
+  }
+  if (changed) {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions))
+    } catch {
+      // Still too big — nuke the oldest session entirely.
+      const oldest = sorted[0]
+      const next = sessions.filter(s => s.id !== oldest.id)
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
+        deleteAudioChunks(oldest.id).catch(() => {})
+        console.warn('[meeting] Dropped oldest session to recover quota:', oldest.id)
+      } catch {
+        // Last resort: clear everything. User can rebuild from server.
+        localStorage.removeItem(STORAGE_KEY)
+        console.error('[meeting] Cleared all sessions; localStorage unrecoverable')
+      }
+    }
+  }
 }
 
 function loadASRConfig(): ASRConfig {
   try {
     const saved = localStorage.getItem(ASR_CONFIG_KEY)
     if (saved) {
-      return JSON.parse(saved)
+      const parsed = JSON.parse(saved) as Partial<ASRConfig>
+      // Backfill defaults for fields added after first deploy so existing
+      // users don't see broken wizard fields on upgrade.
+      return {
+        dashscopeApiKey: parsed.dashscopeApiKey || '',
+        paraformerWsUrl: parsed.paraformerWsUrl || 'wss://ws-ldehaph6v8h68lwu.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference',
+        paraformerModel: parsed.paraformerModel || 'paraformer-realtime-v2',
+        sampleRate: parsed.sampleRate || 16000,
+        languageHints: parsed.languageHints || 'zh,en',
+        llmApiKey: parsed.llmApiKey || '',
+        llmBaseUrl: parsed.llmBaseUrl || 'https://api.deepseek.com',
+        llmModel: parsed.llmModel || 'deepseek-chat',
+      }
     }
   } catch {}
   return {
@@ -139,6 +202,9 @@ function loadASRConfig(): ASRConfig {
     paraformerModel: 'paraformer-realtime-v2',
     sampleRate: 16000,
     languageHints: 'zh,en',
+    llmApiKey: '',
+    llmBaseUrl: 'https://api.deepseek.com',
+    llmModel: 'deepseek-chat',
   }
 }
 
@@ -315,10 +381,19 @@ export const useMeetingStore = defineStore('meeting', () => {
     audioChunkBuffer.set(sessionId, [])
   }
 
-  async function saveAudioData(sessionId: string) {
+  async function saveAudioData(sessionId: string, blob?: Blob) {
     const session = sessions.value.find(s => s.id === sessionId)
     if (!session) return
-    await flushAudioChunks(sessionId)
+    if (blob) {
+      // Direct path: caller already has the combined audio blob (from
+      // MediaRecorder onstop). Wrap in a single-chunk array so the existing
+      // IDB schema works without changes.
+      await saveAudioChunks(sessionId, [
+        { blob, timestamp: Date.now(), duration: session.audioDuration },
+      ])
+    } else {
+      await flushAudioChunks(sessionId)
+    }
     saveSessions(sessions.value)
   }
 
@@ -329,16 +404,10 @@ export const useMeetingStore = defineStore('meeting', () => {
     const chunks = await loadAudioChunks(sessionId)
     if (chunks.length === 0) return null
 
-    const audioData = chunks.map(chunk => {
-      const binary = atob(chunk.data)
-      const array = new Uint8Array(binary.length)
-      for (let i = 0; i < binary.length; i++) {
-        array[i] = binary.charCodeAt(i)
-      }
-      return array
-    })
-
-    return new Blob(audioData, { type: 'audio/webm' })
+    // Chunks stored as native Blobs — concatenate without re-decoding.
+    // The Blob constructor accepts Blob[] directly and produces a single Blob
+    // with the same content type, no base64 round-trip needed.
+    return new Blob(chunks.map(c => c.blob), { type: chunks[0].blob.type || 'audio/webm' })
   }
 
   // --- 说话人管理 ---
@@ -378,6 +447,10 @@ export const useMeetingStore = defineStore('meeting', () => {
     return !!asrConfig.value.dashscopeApiKey
   })
 
+  const hasLLMConfig = computed(() => {
+    return !!asrConfig.value.llmApiKey
+  })
+
   function updateASRConfig(config: Partial<ASRConfig>) {
     asrConfig.value = { ...asrConfig.value, ...config }
     saveASRConfig(asrConfig.value)
@@ -390,6 +463,7 @@ export const useMeetingStore = defineStore('meeting', () => {
     sortedSessions,
     asrConfig,
     hasASRConfig,
+    hasLLMConfig,
     createSession,
     updateSession,
     deleteSession,

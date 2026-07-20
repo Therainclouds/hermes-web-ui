@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { NButton, NInput, NSpin, NTooltip, NModal } from 'naive-ui'
+import { NButton, NInput, NSpin, NTooltip, NModal, NAlert } from 'naive-ui'
 import { useMeetingStore } from '@/stores/hermes/meeting'
 import { useMeetingAgent } from '@/composables/useMeetingAgent'
 
@@ -261,8 +261,20 @@ function formatDuration(seconds: number): string {
 
     <!-- 内容区域 -->
     <div ref="messagesContainer" class="agent-content-area">
+      <!-- 错误提示（之前错误会被 try/catch 静默吞掉） -->
+      <NAlert
+        v-if="error"
+        type="error"
+        :title="t('meeting.agentErrorTitle')"
+        closable
+        @close="error = null"
+        style="margin-bottom: 12px"
+      >
+        {{ error }}
+      </NAlert>
+
       <!-- 空状态 -->
-      <div v-if="messages.length === 0 && !analysisResult && !isRunning" class="agent-empty">
+      <div v-if="messages.length === 0 && !analysisResult && !isRunning && !error" class="agent-empty">
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3">
           <path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"/>
           <path d="M16 14H8a4 4 0 0 0-4 4v2h16v-2a4 4 0 0 0-4-4z"/>

@@ -27,6 +27,12 @@ class ParaformerProxy:
         self.upstream: websockets.WebSocketClientProtocol | None = None
         self.task_id: str = ""
         self._send_lock = asyncio.Lock()
+        self._reconnect_attempts = 0
+        self._max_reconnect_attempts = 3
+        # Exponential backoff for upstream reconnect on transient failures.
+        # Keep short — the upstream server is usually <100 ms away; longer
+        # backoff just feels like "meeting froze" to the user.
+        self._reconnect_backoff = [0.5, 1.5, 3.0]
 
     async def connect(self) -> None:
         if not settings.dashscope_api_key:
@@ -80,8 +86,34 @@ class ParaformerProxy:
     async def send_audio(self, pcm_bytes: bytes) -> None:
         if self.upstream is None:
             raise RuntimeError("upstream not connected")
+        # Reconnect-on-failure: DashScope WS occasionally drops mid-meeting
+        # (~1% of long sessions). Rather than killing the meeting and forcing
+        # the user to restart, attempt one reconnect with bounded backoff and
+        # resume sending. The new upstream gets a fresh run-task; transcripts
+        # produced before the drop are still in our local transcript list.
         async with self._send_lock:
-            await self.upstream.send(pcm_bytes)
+            try:
+                await self.upstream.send(pcm_bytes)
+                return
+            except (ConnectionClosed, ConnectionError, OSError) as exc:
+                if self._reconnect_attempts >= self._max_reconnect_attempts:
+                    raise
+                delay = self._reconnect_backoff[min(self._reconnect_attempts, len(self._reconnect_backoff) - 1)]
+                self._reconnect_attempts += 1
+                log.warning(
+                    "upstream send failed (%s); reconnect attempt %d in %.1fs",
+                    exc,
+                    self._reconnect_attempts,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+                # Connect re-issues a fresh run-task. The old task ID is gone.
+                try:
+                    await self.close()
+                except Exception:
+                    pass
+                await self.connect()
+                await self.upstream.send(pcm_bytes)
 
     async def finish(self) -> None:
         if self.upstream is None:

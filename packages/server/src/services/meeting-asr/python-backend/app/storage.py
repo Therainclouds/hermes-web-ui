@@ -14,7 +14,9 @@ DATA_DIR = Path(os.environ.get("DATA_DIR", "data"))
 CONFIG_FILE = DATA_DIR / "config.json"
 ANALYSIS_FILE = DATA_DIR / "analysis.json"
 STATUS_FILE = DATA_DIR / "status.json"
-ENV_FILE = Path(".env")
+# .env lives in DATA_DIR (not cwd/install dir) so secrets don't leak into the
+# install directory or get packaged into device upgrade bundles.
+ENV_FILE = DATA_DIR / "config.env"
 
 
 def _ensure_dir() -> None:
@@ -111,20 +113,72 @@ class Storage:
         return data
 
     def update_config(self, config: AllConfig) -> None:
-        self._config = config
+        # Deep-merge: callers can send a partial config (e.g. only ASR fields)
+        # without wiping the other sections. Empty-string secrets are treated
+        # as "no change" so the frontend can safely round-trip without
+        # accidentally clobbering stored credentials.
+        self._config = self._merge_all(self._config, config)
         self._save_config()
 
     def update_asr_config(self, asr: ASRConfig) -> None:
-        self._config.asr = asr
+        self._config.asr = self._merge_asr(self._config.asr, asr)
         self._save_config()
 
     def update_llm_config(self, llm: LLMConfig) -> None:
-        self._config.llm = llm
+        self._config.llm = self._merge_llm(self._config.llm, llm)
         self._save_config()
 
     def update_analysis_config(self, analysis: AnalysisConfig) -> None:
-        self._config.analysis = analysis
+        self._config.analysis = self._merge_analysis(self._config.analysis, analysis)
         self._save_config()
+
+    @staticmethod
+    def _merge_asr(old: ASRConfig, new: ASRConfig) -> ASRConfig:
+        # Empty / None secrets fall back to old value — caller didn't intend
+        # to overwrite the credential, they just didn't fill the field.
+        def keep(field: str, default: str) -> str:
+            v = getattr(new, field, None)
+            return v if v else getattr(old, field, default)
+        return ASRConfig(
+            dashscope_api_key=keep("dashscope_api_key", ""),
+            paraformer_ws_url=getattr(new, "paraformer_ws_url", None) or old.paraformer_ws_url,
+            paraformer_model=getattr(new, "paraformer_model", None) or old.paraformer_model,
+            paraformer_sample_rate=int(getattr(new, "paraformer_sample_rate", 0) or old.paraformer_sample_rate),
+            paraformer_format=getattr(new, "paraformer_format", None) or old.paraformer_format,
+            paraformer_language_hints=getattr(new, "paraformer_language_hints", None) or old.paraformer_language_hints,
+            paraformer_semantic_punctuation=bool(
+                getattr(new, "paraformer_semantic_punctuation", old.paraformer_semantic_punctuation)
+            ),
+        )
+
+    @staticmethod
+    def _merge_llm(old: LLMConfig, new: LLMConfig) -> LLMConfig:
+        def keep(field: str, default: str) -> str:
+            v = getattr(new, field, None)
+            return v if v else getattr(old, field, default)
+        return LLMConfig(
+            api_key=keep("api_key", ""),
+            base_url=getattr(new, "base_url", None) or old.base_url,
+            model=getattr(new, "model", None) or old.model,
+            temperature=float(getattr(new, "temperature", 0.0) or old.temperature),
+            max_tokens=int(getattr(new, "max_tokens", 0) or old.max_tokens),
+        )
+
+    @staticmethod
+    def _merge_analysis(old: AnalysisConfig, new: AnalysisConfig) -> AnalysisConfig:
+        return AnalysisConfig(
+            interval_seconds=int(getattr(new, "interval_seconds", 0) or old.interval_seconds),
+            auto_start=bool(getattr(new, "auto_start", old.auto_start)),
+            custom_prompt=getattr(new, "custom_prompt", None),
+        )
+
+    @classmethod
+    def _merge_all(cls, old: AllConfig, new: AllConfig) -> AllConfig:
+        return AllConfig(
+            asr=cls._merge_asr(old.asr, new.asr),
+            llm=cls._merge_llm(old.llm, new.llm),
+            analysis=cls._merge_analysis(old.analysis, new.analysis),
+        )
 
     def _load_analysis(self) -> AnalysisResult | None:
         if ANALYSIS_FILE.exists():

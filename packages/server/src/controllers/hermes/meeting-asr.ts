@@ -205,20 +205,6 @@ export async function proxyAnalysisStream(ctx: Context): Promise<void> {
   }
 }
 
-// Transcript endpoints
-export async function addTranscript(ctx: Context): Promise<void> {
-  await proxyToBackend(ctx, '/api/transcript', 'POST', ctx.request.body)
-}
-
-export async function getTranscript(ctx: Context): Promise<void> {
-  await proxyToBackend(ctx, '/api/transcript')
-}
-
-export async function clearTranscript(ctx: Context): Promise<void> {
-  await proxyToBackend(ctx, '/api/transcript/clear', 'POST')
-}
-
-// Prompts
-export async function getPrompts(ctx: Context): Promise<void> {
-  await proxyToBackend(ctx, '/api/prompts')
-}
+// Note: transcripts and prompts were removed as dead code (v0.7.6 audit #17).
+// Frontend manages transcript locally via meetingStore; prompts are configured
+// via /api/meeting-asr/config and used by the Python analysis service directly.

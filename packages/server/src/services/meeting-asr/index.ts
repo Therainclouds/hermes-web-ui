@@ -41,6 +41,14 @@ export class MeetingASRService extends EventEmitter {
   private _error: string | null = null
   private _asrPort: number | null = null
   private _diarizePort: number | null = null
+  // Auto-restart: when true, an unexpected main-process exit triggers a
+  // bounded backoff restart loop. Disabled by stop() to avoid fighting
+  // deliberate shutdowns.
+  private _autoRestart = false
+  private _restartAttempts = 0
+  private _restartTimer: NodeJS.Timeout | null = null
+  private static readonly MAX_RESTART_ATTEMPTS = 5
+  private static readonly RESTART_BACKOFF_MS = [1000, 2000, 5000, 10000, 30000]
 
   private constructor() {
     super()
@@ -112,40 +120,90 @@ export class MeetingASRService extends EventEmitter {
 
     try {
       await fs.access(pythonPath)
+      // Verify the python binary actually executes — covers the case where
+      // .venv exists but is corrupted (partial install, wrong arch, etc.).
+      await new Promise<void>((resolve, reject) => {
+        const probe = spawn(pythonPath, ['-c', 'import sys; sys.exit(0)'], { stdio: 'pipe' })
+        probe.on('close', (code) => {
+          if (code === 0) resolve()
+          else reject(new Error(`venv python exited ${code}`))
+        })
+        probe.on('error', reject)
+      })
       return pythonPath
     } catch {
-      // Virtual env doesn't exist, create it
+      // Virtual env doesn't exist or is broken — recreate from scratch.
+      logger.info('[meeting-asr] Creating Python virtual environment at %s', venvPath)
       const pythonCmd = await this.findPython()
-      logger.info('[meeting-asr] Creating Python virtual environment with %s...', pythonCmd)
-      await new Promise<void>((resolve, reject) => {
-        const proc = spawn(pythonCmd, ['-m', 'venv', venvPath], {
-          cwd: backendPath,
-          stdio: 'pipe',
-        })
-        proc.on('close', (code) => {
-          if (code === 0) resolve()
-          else reject(new Error(`Failed to create venv, exit code: ${code}`))
-        })
-        proc.on('error', reject)
-      })
+      const createStderr = await this.runCaptured(pythonCmd, ['-m', 'venv', venvPath], backendPath)
+      if (createStderr.code !== 0) {
+        const hint = createStderr.stderr.includes('ensurepip')
+          ? ' On Debian/Ubuntu/Armbian, ensure python3-venv is installed: apt-get install -y python3-venv python3-dev'
+          : ''
+        throw new Error(
+          `Failed to create Python venv (exit ${createStderr.code}): ${createStderr.stderr.trim() || 'no stderr'}.${hint}`,
+        )
+      }
 
-      // Install requirements
-      logger.info('[meeting-asr] Installing Python dependencies...')
+      // Install requirements. May take 5-10 minutes on ARM64 — log progress.
+      logger.info('[meeting-asr] Installing Python dependencies (this may take several minutes on ARM64)...')
       const requirementsPath = path.join(__dirname, 'requirements.txt')
-      await new Promise<void>((resolve, reject) => {
-        const proc = spawn(pythonPath, ['-m', 'pip', 'install', '-r', requirementsPath], {
-          cwd: backendPath,
-          stdio: 'pipe',
-        })
-        proc.on('close', (code) => {
-          if (code === 0) resolve()
-          else reject(new Error(`Failed to install dependencies, exit code: ${code}`))
-        })
-        proc.on('error', reject)
-      })
+      const installStderr = await this.runCaptured(
+        pythonPath,
+        ['-m', 'pip', 'install', '--disable-pip-version-check', '-r', requirementsPath],
+        backendPath,
+      )
+      if (installStderr.code !== 0) {
+        throw new Error(
+          `Failed to install Python dependencies (exit ${installStderr.code}): ` +
+            `${installStderr.stderr.trim().slice(-500) || 'no stderr'}. ` +
+            `Verify the device has network access to PyPI.`,
+        )
+      }
 
       return pythonPath
     }
+  }
+
+  /**
+   * Run a child process to completion, capturing stderr so we can surface
+   * actionable errors instead of opaque exit codes.
+   */
+  private runCaptured(
+    cmd: string,
+    args: string[],
+    cwd: string,
+    timeoutMs = 15 * 60 * 1000,
+  ): Promise<{ code: number | null; stderr: string }> {
+    return new Promise((resolve, reject) => {
+      let stderr = ''
+      let proc: ChildProcess
+      try {
+        proc = spawn(cmd, args, { cwd, stdio: 'pipe' })
+      } catch (err) {
+        reject(err)
+        return
+      }
+      proc.stderr?.on('data', (d) => {
+        stderr += d.toString()
+        // Cap memory: only keep the last 64KB of stderr
+        if (stderr.length > 64 * 1024) {
+          stderr = stderr.slice(-64 * 1024)
+        }
+      })
+      const timer = setTimeout(() => {
+        proc.kill('SIGKILL')
+        reject(new Error(`Process ${cmd} ${args.join(' ')} timed out after ${timeoutMs}ms`))
+      }, timeoutMs)
+      proc.on('close', (code) => {
+        clearTimeout(timer)
+        resolve({ code, stderr })
+      })
+      proc.on('error', (err) => {
+        clearTimeout(timer)
+        reject(err)
+      })
+    })
   }
 
   async start(config: MeetingASRConfig = {}): Promise<void> {
@@ -158,6 +216,14 @@ export class MeetingASRService extends EventEmitter {
     this._error = null
 
     try {
+      // Reset restart counter for a deliberate start.
+      this._restartAttempts = 0
+      this._autoRestart = true
+      if (this._restartTimer) {
+        clearTimeout(this._restartTimer)
+        this._restartTimer = null
+      }
+
       // Ensure data directory exists
       const dataDir = this.getDataDir()
       await fs.mkdir(dataDir, { recursive: true })
@@ -233,6 +299,10 @@ export class MeetingASRService extends EventEmitter {
         logger.info('[meeting-asr] Main process exited with code %d', code ?? 0)
         this._isRunning = false
         this.emit('stopped', code ?? 0)
+        // Auto-restart on unexpected crash, unless explicitly stopped.
+        if (this._autoRestart && (code ?? 0) !== 0) {
+          this._scheduleRestart('main process exited unexpectedly')
+        }
       })
 
       // Start diarize process
@@ -283,32 +353,110 @@ export class MeetingASRService extends EventEmitter {
   }
 
   private async waitForReady(timeout = 60000): Promise<void> {
+    // Poll main (:8000) and diarize (:8001) healthz in parallel. Both must be
+    // healthy before we declare the service ready — silence on diarize means
+    // user-side speaker-diarization will silently hang without diagnostics.
     const startTime = Date.now()
-    let lastError: Error | null = null
+    let mainOk = false
+    let diarizeOk = false
+    let mainLastErr = ''
+    let diarizeLastErr = ''
 
     while (Date.now() - startTime < timeout) {
-      try {
-        const controller = new AbortController()
-        const timeoutId = setTimeout(() => controller.abort(), 2000)
-        
-        const response = await fetch(`http://127.0.0.1:${this._asrPort}/healthz`, {
-          signal: controller.signal
-        })
-        clearTimeout(timeoutId)
-        
-        if (response.ok) {
-          logger.info('[meeting-asr] Main service is ready')
-          return
+      if (!mainOk && this._asrPort) {
+        try {
+          const controller = new AbortController()
+          const timer = setTimeout(() => controller.abort(), 2000)
+          const response = await fetch(`http://127.0.0.1:${this._asrPort}/healthz`, {
+            signal: controller.signal,
+          })
+          clearTimeout(timer)
+          if (response.ok) {
+            mainOk = true
+            logger.info('[meeting-asr] Main service is ready on :%d', this._asrPort)
+          } else {
+            mainLastErr = `main healthz status ${response.status}`
+          }
+        } catch (err) {
+          mainLastErr = err instanceof Error ? err.message : String(err)
         }
-      } catch (err) {
-        lastError = err instanceof Error ? err : new Error(String(err))
-        // Service not ready yet, continue waiting
       }
-      await new Promise(resolve => setTimeout(resolve, 1000))
+
+      if (!diarizeOk && this._diarizePort) {
+        try {
+          const controller = new AbortController()
+          const timer = setTimeout(() => controller.abort(), 2000)
+          const response = await fetch(`http://127.0.0.1:${this._diarizePort}/healthz`, {
+            signal: controller.signal,
+          })
+          clearTimeout(timer)
+          if (response.ok) {
+            diarizeOk = true
+            logger.info('[meeting-asr] Diarize service is ready on :%d', this._diarizePort)
+          } else {
+            diarizeLastErr = `diarize healthz status ${response.status}`
+          }
+        } catch (err) {
+          diarizeLastErr = err instanceof Error ? err.message : String(err)
+        }
+      }
+
+      if (mainOk && diarizeOk) return
+
+      // Bail early if either process died unexpectedly
+      if (this.mainProcess?.exitCode !== null && this.mainProcess?.exitCode !== undefined) {
+        throw new Error(
+          `Main ASR process exited with code ${this.mainProcess.exitCode} during startup. ` +
+            `Check journald logs for traceback.`,
+        )
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 1000))
     }
 
-    logger.error('[meeting-asr] Timeout waiting for service. Last error: %s', lastError?.message || 'unknown')
-    throw new Error(`Timeout waiting for ASR service to be ready after ${timeout}ms. Last error: ${lastError?.message || 'unknown'}`)
+    const missing = [
+      mainOk ? null : `main(:${this._asrPort}): ${mainLastErr || 'no response'}`,
+      diarizeOk ? null : `diarize(:${this._diarizePort}): ${diarizeLastErr || 'no response'}`,
+    ]
+      .filter(Boolean)
+      .join('; ')
+    throw new Error(
+      `Timeout waiting for ASR services to be ready after ${timeout}ms. Not ready: ${missing}.`,
+    )
+  }
+
+  /**
+   * Send SIGTERM to a process, wait up to `graceMs` for graceful exit,
+   * then SIGKILL if still alive. Resolves to the eventual exit code.
+   */
+  private killGraceful(proc: ChildProcess | null, graceMs = 5000): Promise<number | null> {
+    return new Promise((resolve) => {
+      if (!proc || proc.exitCode !== null || proc.signalCode !== null) {
+        resolve(proc?.exitCode ?? null)
+        return
+      }
+      const onExit = (code: number | null) => {
+        clearTimeout(timer)
+        resolve(code)
+      }
+      const timer = setTimeout(() => {
+        if (proc.exitCode === null && proc.signalCode === null) {
+          logger.warn('[meeting-asr] Process did not exit within %dms; sending SIGKILL', graceMs)
+          try {
+            proc.kill('SIGKILL')
+          } catch {
+            /* already gone */
+          }
+        }
+      }, graceMs)
+      proc.once('exit', onExit)
+      try {
+        proc.kill('SIGTERM')
+      } catch {
+        clearTimeout(timer)
+        resolve(proc.exitCode ?? null)
+      }
+    })
   }
 
   async stop(): Promise<void> {
@@ -318,25 +466,62 @@ export class MeetingASRService extends EventEmitter {
 
     logger.info('[meeting-asr] Stopping services...')
 
-    // Stop diarize process
-    if (this.diarizeProcess) {
-      this.diarizeProcess.kill('SIGTERM')
-      this.diarizeProcess = null
-    }
+    // Disable auto-restart while we shut down deliberately.
+    this._autoRestart = false
 
-    // Stop main process
-    if (this.mainProcess) {
-      this.mainProcess.kill('SIGTERM')
-      this.mainProcess = null
-    }
+    // Stop diarize and main in parallel, each with SIGTERM → SIGKILL fallback.
+    const stops = await Promise.all([
+      this.diarizeProcess ? this.killGraceful(this.diarizeProcess) : Promise.resolve(null),
+      this.mainProcess ? this.killGraceful(this.mainProcess) : Promise.resolve(null),
+    ])
 
+    this.diarizeProcess = null
+    this.mainProcess = null
     this._isRunning = false
     this._startTime = null
     this._asrPort = null
     this._diarizePort = null
 
-    logger.info('[meeting-asr] Services stopped')
+    logger.info('[meeting-asr] Services stopped (main=%s diarize=%s)', stops[1], stops[0])
     this.emit('stopped', 0)
+  }
+
+  /**
+   * Schedule an auto-restart with exponential backoff. Bounded by
+   * MAX_RESTART_ATTEMPTS — after that we give up and surface the failure
+   * to the user via the status endpoint.
+   */
+  private _scheduleRestart(reason: string): void {
+    if (this._restartAttempts >= MeetingASRService.MAX_RESTART_ATTEMPTS) {
+      logger.error(
+        '[meeting-asr] Auto-restart exhausted after %d attempts (reason: %s). User must restart manually.',
+        this._restartAttempts,
+        reason,
+      )
+      this._error = `auto-restart exhausted: ${reason}`
+      this._autoRestart = false
+      this.emit('crashed', this._error)
+      return
+    }
+    const delay =
+      MeetingASRService.RESTART_BACKOFF_MS[
+        Math.min(this._restartAttempts, MeetingASRService.RESTART_BACKOFF_MS.length - 1)
+      ]
+    this._restartAttempts += 1
+    logger.warn(
+      '[meeting-asr] Auto-restart %d/%d scheduled in %dms (reason: %s)',
+      this._restartAttempts,
+      MeetingASRService.MAX_RESTART_ATTEMPTS,
+      delay,
+      reason,
+    )
+    this._restartTimer = setTimeout(() => {
+      this._restartTimer = null
+      this.start(this._config).catch((err) => {
+        logger.error('[meeting-asr] Auto-restart failed: %s', err?.message || err)
+        this._scheduleRestart(`restart attempt ${this._restartAttempts} failed`)
+      })
+    }, delay)
   }
 
   private async updateLLMConfig(config: MeetingASRConfig): Promise<void> {

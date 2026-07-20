@@ -127,35 +127,7 @@ export const meetingASRApi = {
     return response.text()
   },
 
-  // Transcript methods
-  async addTranscript(text: string): Promise<any> {
-    const response = await fetch(`${API_BASE}/transcript`, {
-      method: 'POST',
-      headers: getAuthHeaders(),
-      body: JSON.stringify({ text }),
-    })
-    return response.json()
-  },
-
-  async getTranscript(): Promise<{ transcript: string }> {
-    const response = await fetch(`${API_BASE}/transcript`, {
-      headers: getAuthHeaders(),
-    })
-    return response.json()
-  },
-
-  async clearTranscript(): Promise<any> {
-    const response = await fetch(`${API_BASE}/transcript/clear`, {
-      method: 'POST',
-      headers: getAuthHeaders(),
-    })
-    return response.json()
-  },
-
-  async getPrompts(): Promise<any> {
-    const response = await fetch(`${API_BASE}/prompts`, {
-      headers: getAuthHeaders(),
-    })
-    return response.json()
-  },
+  // Note: addTranscript / getTranscript / clearTranscript / getPrompts were
+  // removed as dead code (v0.7.6 audit #17). Frontend manages transcript
+  // locally via meetingStore; prompts are configured via updateConfig() above.
 }

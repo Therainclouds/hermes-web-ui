@@ -12,6 +12,9 @@ Environment=HOME={{APP_USER_HOME}}
 EnvironmentFile={{SERVICE_ENV_FILE}}
 ExecStartPre={{DEPLOY_DIR}}/scripts/generate-server-cert.sh {{DEPLOY_DIR}}
 ExecStart={{NODE_BIN}} {{DEPLOY_DIR}}/dist/server/index.js
+# Meeting mode first start may pip install a venv on ARM64 (3-10 min);
+# v0.7.6+ ensures Python venv pre-warmed at deploy time, but keep generous timeout as fallback.
+TimeoutStartSec=900
 Restart=always
 RestartSec=5
 KillMode=control-group

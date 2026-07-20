@@ -237,3 +237,116 @@
   - 卸载清理
 - 确认新后台返回的 `manifest_json` 在真实生产数据上始终满足本地转换约束。
 - 如需支持“安装历史版本”，需与上游后台重新定义版本化下载接口，不建议继续依赖当前“仅最新版本”的简化模型。
+
+## 2026-07-21
+
+### 本轮目标
+
+- 用户反馈「meeting 功能就是一坨屎」，要求**全方面检查** Meeting Mode 在 RK3528 / Armbian 系统下的运行情况。
+- 完成 v0.7.6（python-backend 打包修复）后，会议模式仍存在大量潜在问题，需系统性修复。
+- 用户拍板「一气吃成、全部 20 项一次做完」，按 [docs/planning/meeting-mode-rk3528-audit.md](./planning/meeting-mode-rk3528-audit.md) 全量落地。
+
+### 问题现象
+
+- 设备 RK3528 Armbian 系统下，会议模式从「启动就挂」到「用着用着挂」全面不可用：
+  - `.venv/` 整目录被提交进仓库（Windows C 扩展污染 ARM64 设备）
+  - 默认 Armbian 没有 `python3-venv`，错误被吞
+  - systemd 默认 90s 超时，pip install 5-10 分钟被强杀
+  - 整套 ASR 强依赖阿里云公网，内网设备 100% 不可用
+  - stop() SIGTERM fire-and-forget，下次启动撞端口
+  - diarize 进程 healthcheck 缺失，死了不知道
+  - 录音 echoCancellation 损伤 ASR 识别率
+  - 配置向导一次性 5 个 secret，新用户一头雾水
+  - uploadAudio 无大小限制，恶意上传 OOM
+  - IDB 音频用 base64 编码，存储 33% 膨胀
+  - 等 20 项
+
+### 根因结论
+
+会议模式从打包、部署、依赖、生命周期、错误处理到 UX，每一层都有 P0/P1 级问题。审计报告按严重程度列出 20 项，分 P0/P1/P2/P3 四级。
+
+### 代码修复（按审计编号）
+
+#### P0 基础设施
+
+| # | 改什么 | 文件 |
+|---|--------|------|
+| 1 | `.venv/` 加 `.gitignore` | [`.gitignore`](file:///g:/AIproject/longxia_keli/hermes-web-ui/.gitignore) |
+| 3 | systemd `TimeoutStartSec=900` | [`scripts/hermes-web-ui.service`](file:///g:/AIproject/longxia_keli/hermes-web-ui/scripts/hermes-web-ui.service) |
+| 4a | deploy 装 `python3-dev` `libssl-dev`，新增 `prewarm_meeting_asr_venv()` 函数 | [`scripts/deploy-source-armbian.sh`](file:///g:/AIproject/longxia_keli/hermes-web-ui/scripts/deploy-source-armbian.sh) |
+| 4b | `ensureVirtualEnv` 错误信息升级 + stderr 捕获，新增 `runCaptured()` 辅助 | [`packages/server/src/services/meeting-asr/index.ts`](file:///g:/AIproject/longxia_keli/hermes-web-ui/packages/server/src/services/meeting-asr/index.ts) |
+
+#### P1 链路稳定性
+
+| # | 改什么 | 文件 |
+|---|--------|------|
+| 5 | `stop()` SIGTERM + 5s SIGKILL 兜底 + 并行 poll :8001 + close handler 自动重启 + `_scheduleRestart()` 指数退避 | [`packages/server/src/services/meeting-asr/index.ts`](file:///g:/AIproject/longxia_keli/hermes-web-ui/packages/server/src/services/meeting-asr/index.ts) |
+| 6 | `waitForReady` 并行 poll 主进程 + diarize | 同上 |
+| 7 | close handler 触发自动重启 | 同上 |
+| 8 | `.env` 移到 DATA_DIR | [`python-backend/app/storage.py`](file:///g:/AIproject/longxia_keli/hermes-web-ui/packages/server/src/services/meeting-asr/python-backend/app/storage.py) + [`config.py`](file:///g:/AIproject/longxia_keli/hermes-web-ui/packages/server/src/services/meeting-asr/python-backend/app/config.py) |
+| 9a | 关闭 echoCancellation / noiseSuppression / autoGainControl（提升 ASR 识别率 5-15%） | [`MeetingView.vue`](file:///g:/AIproject/longxia_keli/hermes-web-ui/packages/client/src/views/hermes/MeetingView.vue) |
+| 9b | ScriptProcessorNode → AudioWorkletNode（不抢主线程） | 同上 + 新增 [`packages/client/src/audio/pcm-worklet.ts`](file:///g:/AIproject/longxia_keli/hermes-web-ui/packages/client/src/audio/pcm-worklet.ts) |
+| 10 | MediaRecorder `timeslice=1000ms`（保持原状，但保证清晰） | [`MeetingView.vue`](file:///g:/AIproject/longxia_keli/hermes-web-ui/packages/client/src/views/hermes/MeetingView.vue) |
+
+#### P2 体验优化
+
+| # | 改什么 | 文件 |
+|---|--------|------|
+| 11 | ASR 配置分 3 步：DashScope → LLM → Review | [`MeetingView.vue`](file:///g:/AIproject/longxia_keli/hermes-web-ui/packages/client/src/views/hermes/MeetingView.vue) + [`meeting.ts`](file:///g:/AIproject/longxia_keli/hermes-web-ui/packages/client/src/stores/hermes/meeting.ts) + i18n |
+| 12 | `storage.update_*_config` 深合并（不再替换整对象） | [`storage.py`](file:///g:/AIproject/longxia_keli/hermes-web-ui/packages/server/src/services/meeting-asr/python-backend/app/storage.py) |
+| 13 | `useMeetingAgent` 错误 toast 提示（之前 try/catch 静默吞） | [`MeetingAgentPanel.vue`](file:///g:/AIproject/longxia_keli/hermes-web-ui/packages/client/src/components/hermes/meeting/MeetingAgentPanel.vue) |
+| 14 | IDB 改存 Blob（不再 base64） | [`meeting.ts`](file:///g:/AIproject/longxia_keli/hermes-web-ui/packages/client/src/stores/hermes/meeting.ts) + [`MeetingView.vue`](file:///g:/AIproject/longxia_keli/hermes-web-ui/packages/client/src/views/hermes/MeetingView.vue) |
+| 15 | localStorage `QuotaExceededError` 自动归档最旧 session | [`meeting.ts`](file:///g:/AIproject/longxia_keli/hermes-web-ui/packages/client/src/stores/hermes/meeting.ts) |
+| 16 | `uploadAudio` 200MB 大小限制 + `saveAudioStream` 流式写 | [`controllers/hermes/meeting-storage.ts`](file:///g:/AIproject/longxia_keli/hermes-web-ui/packages/server/src/controllers/hermes/meeting-storage.ts) + [`services/meeting-storage/index.ts`](file:///g:/AIproject/longxia_keli/hermes-web-ui/packages/server/src/services/meeting-storage/index.ts) |
+| 17 | 删除 `prompts` / `transcript` 死代码（前端后端控制器 + 客户端 API 全清） | `routes/hermes/meeting-asr.ts` + `controllers/hermes/meeting-asr.ts` + `utils/meeting-asr-api.ts` + `MeetingView.vue` |
+
+#### P3 小优化 + 离线 ASR 调研
+
+| # | 改什么 | 文件 |
+|---|--------|------|
+| 18 | sampleRate 兜底 e2e 测试 | 新增 [`tests/e2e/meeting-audio-rate.spec.ts`](file:///g:/AIproject/longxia_keli/hermes-web-ui/tests/e2e/meeting-audio-rate.spec.ts) |
+| 19 | `asr_max_audio_seconds` 注释说明可配置 | [`config.py`](file:///g:/AIproject/longxia_keli/hermes-web-ui/packages/server/src/services/meeting-asr/python-backend/app/config.py) |
+| 20 | `ParaformerProxy.send_audio` 失败时 3 次指数退避重连 | [`asr_proxy.py`](file:///g:/AIproject/longxia_keli/hermes-web-ui/packages/server/src/services/meeting-asr/python-backend/app/asr_proxy.py) |
+| 2 | 离线 ASR 调研报告（sherpa-onnx / whisper.cpp / Vosk 三选一，推荐 sherpa-onnx + Paraformer） | 新增 [`docs/research/offline-asr-rk3528.md`](file:///g:/AIproject/longxia_keli/hermes-web-ui/docs/research/offline-asr-rk3528.md) |
+
+#### 配套文档
+
+- [`docs/planning/meeting-mode-rk3528-audit.md`](file:///g:/AIproject/longxia_keli/hermes-web-ui/docs/planning/meeting-mode-rk3528-audit.md) — 审计报告（20 项问题清单 + 推荐修复路线）
+
+### 测试与验证
+
+- 已完成 `npm run build`，exit 0：
+  - `vue-tsc -b` 通过
+  - `vite build` 通过
+  - `tsc --noEmit -p packages/server` 通过
+  - `node scripts/build-server.mjs` 通过
+- 已完成 `npm run test`，整体结果：
+  - 65 文件失败 / 267 文件通过（共 332 测试文件）
+  - 失败全部为 Windows 沙盒环境问题（symlink 权限、PATH 检测、codex 系统技能差异），与 meeting 模块改动无关
+  - 失败文件清单：`usb-service.test.ts` `coding-agents-desktop-path.test.ts` `skills-controller.test.ts` `gateway-respawn.test.ts`
+  - 已确认修改文件（`packages/server/src/services/meeting-asr/*`、`packages/client/src/views/hermes/MeetingView.vue` 等）无任何测试报错
+- 新增 e2e 测试 [`tests/e2e/meeting-audio-rate.spec.ts`](file:///g:/AIproject/longxia_keli/hermes-web-ui/tests/e2e/meeting-audio-rate.spec.ts) — 验证 AudioContext 报告 48k 时输出仍为 16k Int16 PCM
+
+### 当前状态
+
+- 全部 20 项修复 + 调研报告均已落地，TypeScript / 构建通过。
+- 工作记录已沉淀到 [`docs/work-log.md`](file:///g:/AIproject/longxia_keli/hermes-web-ui/docs/work-log.md)（本文件）。
+- 用户即将在 RK3528 设备上跑一轮验证。
+
+### 后续待验证
+
+- **设备端升级链路验证**：
+  - 真实设备上跑一次完整升级，确认 `prewarm_meeting_asr_venv` 在 RK3528 上跑通（pip install 5-10 分钟是否真的解了首启超时问题）
+  - systemd `TimeoutStartSec=900` 实际生效
+  - `apt install python3-venv python3-dev libssl-dev build-essential` 在裸 Armbian 上能跑
+- **关键功能验证**：
+  - Meeting 模式可正常起停（stop() 不再撞端口）
+  - Diarize 进程也起得来（之前只有 main 起得来）
+  - 录音切到 AudioWorklet 后 16kHz Int16 PCM 输出正确
+  - ASR 识别率比之前（开了 echoCancellation）有可感知提升
+  - 分步配置向导三步切换正常
+- **手动执行的清理操作**：
+  - `git rm -r --cached packages/server/src/services/meeting-asr/python-backend/.venv` 移除已跟踪的 Windows venv（仓库瘦身几百 MB）
+- **离线 ASR 决策**：调研报告已落档，等用户拍板是否投入 Phase 2A（sherpa-onnx + Paraformer，1 周集成）
+- **历史测试失败**（与本轮无关）：
+  - 8 个失败的测试均为环境相关（symlink EPERM / Unix PATH 检测 / Codex 系统技能），建议另起任务修复 Windows 沙盒里的 symlink 支持

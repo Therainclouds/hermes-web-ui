@@ -247,8 +247,10 @@ install_base_packages() {
     ffmpeg \
     git \
     gnupg \
+    libssl-dev \
     lsb-release \
     python3 \
+    python3-dev \
     python3-pip \
     python3-venv \
     build-essential \
@@ -995,6 +997,35 @@ build_webui() {
   run_as_app_user "cd '${DEPLOY_DIR}' && PATH='${path_env}' npm run build"
 }
 
+# Pre-warm the Python venv used by the meeting-asr backend so that the first
+# meeting start on ARM64 doesn't block 5-10 minutes on `pip install`.
+# Runs as the app user so the resulting .venv is owned correctly.
+prewarm_meeting_asr_venv() {
+  local python_backend_dir="${DEPLOY_DIR}/dist/server/python-backend"
+  local requirements_file="${DEPLOY_DIR}/dist/server/requirements.txt"
+  local venv_dir="${python_backend_dir}/.venv"
+
+  if [[ ! -d "${python_backend_dir}" ]]; then
+    info "Meeting ASR backend not packaged (no ${python_backend_dir}); skipping venv pre-warm."
+    return 0
+  fi
+  if [[ ! -f "${requirements_file}" ]]; then
+    info "Meeting ASR requirements.txt missing at ${requirements_file}; skipping venv pre-warm."
+    return 0
+  fi
+
+  step "Pre-warm Meeting ASR Python venv (ARM64 pip install may take several minutes)"
+  run_as_app_user "cd '${python_backend_dir}' && python3 -m venv .venv"
+  # Use the venv pip directly. Avoid printing the full install log on success;
+  # surface only tail on failure.
+  if ! run_as_app_user "cd '${python_backend_dir}' && .venv/bin/pip install --disable-pip-version-check -r '${requirements_file}'" 2>&1 | tail -20; then
+    warn "Meeting ASR venv pre-warm failed. The service will retry on first /api/meeting-asr/start."
+    warn "Check 'journalctl -u ${SYSTEMD_SERVICE_NAME}' for details."
+    return 0
+  fi
+  info "Meeting ASR venv pre-warmed successfully."
+}
+
 write_service_env() {
   step "Write service environment file"
   local hermes_bin
@@ -1735,6 +1766,7 @@ install_webui_dependencies
 reconcile_host_dependencies
 check_webui_dependencies
 build_webui
+prewarm_meeting_asr_venv
 write_service_env
 install_update_runner_script
 install_update_runner_service

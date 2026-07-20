@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { NButton, NSpin, NTag, NTooltip, NInput, NPopconfirm, NModal, NSelect, NRadio, NRadioGroup, NPopover } from 'naive-ui'
+import { NButton, NSpin, NTag, NTooltip, NInput, NPopconfirm, NModal, NSelect, NRadio, NRadioGroup, NPopover, NSteps, NStep, NAlert } from 'naive-ui'
 import PageSidebarNav from '@/components/layout/PageSidebarNav.vue'
 import PageSidebarFooter from '@/components/layout/PageSidebarFooter.vue'
 import MeetingAgentPanel from '@/components/hermes/meeting/MeetingAgentPanel.vue'
@@ -47,6 +47,10 @@ const codingAgentModeOptions = computed(() => [
 
 // --- ASR 配置 ---
 const asrApiKey = ref(meetingStore.asrConfig.dashscopeApiKey)
+const llmApiKey = ref(meetingStore.asrConfig.llmApiKey)
+const llmBaseUrl = ref(meetingStore.asrConfig.llmBaseUrl)
+const llmModel = ref(meetingStore.asrConfig.llmModel)
+const asrWizardStep = ref(1) // 1=DashScope, 2=LLM, 3=Review
 
 // --- 当前会议状态 ---
 const isRecording = ref(false)
@@ -215,6 +219,10 @@ function openCreateModal() {
   newMeetingAgentType.value = 'hermes'
   newMeetingCodingAgentMode.value = 'scoped'
   asrApiKey.value = meetingStore.asrConfig.dashscopeApiKey
+  llmApiKey.value = meetingStore.asrConfig.llmApiKey
+  llmBaseUrl.value = meetingStore.asrConfig.llmBaseUrl
+  llmModel.value = meetingStore.asrConfig.llmModel
+  asrWizardStep.value = meetingStore.hasASRConfig && meetingStore.hasLLMConfig ? 3 : 1
   showCreateModal.value = true
 }
 
@@ -225,6 +233,14 @@ function handleCreateMeeting() {
   // 保存 ASR API Key（如果有更新）
   if (asrApiKey.value.trim()) {
     meetingStore.updateASRConfig({ dashscopeApiKey: asrApiKey.value.trim() })
+  }
+  // 保存 LLM 配置（可选 — 没填也不阻塞创建）
+  if (llmApiKey.value.trim() || llmBaseUrl.value.trim() || llmModel.value.trim()) {
+    meetingStore.updateASRConfig({
+      llmApiKey: llmApiKey.value.trim(),
+      llmBaseUrl: llmBaseUrl.value.trim() || 'https://api.deepseek.com',
+      llmModel: llmModel.value.trim() || 'deepseek-chat',
+    })
   }
   
   // 构建 Agent 配置
@@ -436,8 +452,14 @@ async function startASRService() {
 
   try {
     // Get ASR config from meeting store
-    const config = {
+    const config: Record<string, unknown> = {
       dashscopeApiKey: meetingStore.asrConfig.dashscopeApiKey || asrApiKey.value,
+    }
+    // Pass LLM config if user provided it, so backend has it from the start.
+    if (meetingStore.asrConfig.llmApiKey || llmApiKey.value) {
+      config.llmApiKey = meetingStore.asrConfig.llmApiKey || llmApiKey.value
+      config.llmBaseUrl = meetingStore.asrConfig.llmBaseUrl || llmBaseUrl.value
+      config.llmModel = meetingStore.asrConfig.llmModel || llmModel.value
     }
 
     console.log('[meeting] Calling ASR start API with config:', { ...config, dashscopeApiKey: config.dashscopeApiKey ? '***' : 'not set' })
@@ -562,13 +584,16 @@ async function startRecording() {
       }
     }
 
-    // 获取麦克风权限
+    // 获取麦克风权限。ASR friendly: 关掉 echoCancellation / noiseSuppression /
+    // autoGainControl — 这些会在浏览器里扭曲语音频谱，损伤 ASR 识别率 5-15%。
+    // Kiosk 设备一般没有回声/噪音问题，原始信号对 ASR 才是最优。
     mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         sampleRate: 16000,
         channelCount: 1,
-        echoCancellation: true,
-        noiseSuppression: true,
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
       },
     })
 
@@ -586,15 +611,16 @@ async function startRecording() {
     analyser = audioContext.createAnalyser()
     analyser.fftSize = 256
 
-    // 创建 ScriptProcessorNode 用于音频数据处理
-    const bufferSize = 4096
-    const processor = audioContext.createScriptProcessor(bufferSize, 1, 1)
-
+    // AudioWorklet 替代 deprecated ScriptProcessorNode，跑在 audio 线程不抢主线程。
+    // Vite 通过 `new URL(...)` 处理 worklet 模块的引用。
+    const workletUrl = new URL('@/audio/pcm-worklet.ts', import.meta.url)
+    await audioContext.audioWorklet.addModule(workletUrl.href)
+    const pcmNode = new AudioWorkletNode(audioContext, 'pcm-processor')
     source.connect(analyser)
-    analyser.connect(processor)
-    processor.connect(audioContext.destination)
+    analyser.connect(pcmNode)
+    // 注意：worklet node 不能 connect 到 destination（会回声）。仅做 passthrough 处理。
 
-    // 开始录制音频用于保存
+    // 开始录制音频用于保存。timeslice=1000ms 切分，避免长会议占满内存。
     audioChunks.value = []
     recordingStartTime.value = Date.now()
     mediaRecorder = new MediaRecorder(mediaStream, { mimeType: 'audio/webm' })
@@ -645,23 +671,22 @@ async function startRecording() {
       }
     }
 
-    // 处理音频数据
-    processor.onaudioprocess = (e) => {
+    // 处理音频数据：通过 AudioWorklet 接收 Float32 buffer，主线程 resample + Int16 转换
+    pcmNode.port.onmessage = (event: MessageEvent<{ samples: Float32Array; sourceSampleRate: number }>) => {
       if (!ws || ws.readyState !== WebSocket.OPEN) return
-
-      const inputData = e.inputBuffer.getChannelData(0)
+      const { samples, sourceSampleRate } = event.data
 
       // 重采样到 16000 Hz（如果需要）
       let resampledData: Float32Array
-      if (audioContext!.sampleRate !== 16000) {
-        const ratio = audioContext!.sampleRate / 16000
-        const newLength = Math.round(inputData.length / ratio)
+      if (sourceSampleRate !== 16000) {
+        const ratio = sourceSampleRate / 16000
+        const newLength = Math.round(samples.length / ratio)
         resampledData = new Float32Array(newLength)
         for (let i = 0; i < newLength; i++) {
-          resampledData[i] = inputData[Math.round(i * ratio)]
+          resampledData[i] = samples[Math.round(i * ratio)]
         }
       } else {
-        resampledData = inputData
+        resampledData = samples
       }
 
       // 转换为 Int16 PCM
@@ -724,13 +749,13 @@ function stopRecording() {
   }
   ws = null
 
-  // 停止音频
+  // 停止音频 + 关闭 worklet
   if (mediaStream) {
     mediaStream.getTracks().forEach(track => track.stop())
     mediaStream = null
   }
   if (audioContext) {
-    audioContext.close()
+    audioContext.close().catch(() => { /* best effort */ })
     audioContext = null
   }
   analyser = null
@@ -749,8 +774,8 @@ function stopRecording() {
       .then(() => console.log('Audio saved to server'))
       .catch(err => console.error('Failed to save audio to server:', err))
     
-    // 同时保存到 IndexedDB 作为备份
-    meetingStore.saveAudioData(meetingId)
+    // 同时保存到 IndexedDB 作为备份（直接存 Blob，避免 base64 编码 33% 膨胀）
+    meetingStore.saveAudioData(meetingId, audioBlob.value)
   }
 }
 
@@ -1347,11 +1372,8 @@ async function pollAnalysisResult() {
 }
 
 async function clearTranscript() {
-  try {
-    await meetingASRApi.clearTranscript()
-  } catch (error) {
-    console.error('Failed to clear transcript on backend:', error)
-  }
+  // Backend transcript endpoint removed in v0.7.6 (audit #17). Local store
+  // already holds the canonical transcript; just clear the UI.
   finalSentences.value = []
   partialText.value = ''
   analysisResult.value = null
@@ -1894,7 +1916,14 @@ async function clearTranscript() {
 
         <div class="form-section">
           <div class="form-section-title">{{ t('meeting.asrConfig') }}</div>
-          <div class="form-item">
+          <NSteps :current="asrWizardStep" size="small" status="process" class="asr-wizard-steps">
+            <NStep :title="t('meeting.wizardStepAsr')" :description="meetingStore.hasASRConfig ? t('meeting.configured') : ''" />
+            <NStep :title="t('meeting.wizardStepLlm')" :description="meetingStore.hasLLMConfig ? t('meeting.configured') : t('meeting.optional')" />
+            <NStep :title="t('meeting.wizardStepReview')" />
+          </NSteps>
+
+          <!-- Step 1: DashScope API Key (required) -->
+          <div v-if="asrWizardStep === 1" class="form-item">
             <label class="form-label">
               {{ t('meeting.dashscopeApiKey') }}
               <a
@@ -1913,6 +1942,59 @@ async function clearTranscript() {
               :placeholder="meetingStore.hasASRConfig ? t('meeting.apiKeySaved') : t('meeting.dashscopeApiKeyPlaceholder')"
             />
             <div class="form-hint">{{ t('meeting.dashscopeApiKeyHint') }}</div>
+            <div class="wizard-actions">
+              <NButton type="primary" size="small" @click="asrWizardStep = 2">
+                {{ t('meeting.wizardNext') }}
+              </NButton>
+            </div>
+          </div>
+
+          <!-- Step 2: LLM Analysis Config (optional but recommended) -->
+          <div v-if="asrWizardStep === 2" class="form-item">
+            <NAlert type="info" :show-icon="false" style="margin-bottom: 12px">
+              {{ t('meeting.llmOptionalHint') }}
+            </NAlert>
+            <label class="form-label">{{ t('meeting.llmApiKey') }}</label>
+            <NInput
+              v-model:value="llmApiKey"
+              type="password"
+              show-password-on="click"
+              :placeholder="t('meeting.llmApiKeyPlaceholder')"
+            />
+            <label class="form-label" style="margin-top: 12px">{{ t('meeting.llmBaseUrl') }}</label>
+            <NInput v-model:value="llmBaseUrl" :placeholder="t('meeting.llmBaseUrlPlaceholder')" />
+            <label class="form-label" style="margin-top: 12px">{{ t('meeting.llmModel') }}</label>
+            <NInput v-model:value="llmModel" :placeholder="t('meeting.llmModelPlaceholder')" />
+            <div class="wizard-actions">
+              <NButton size="small" @click="asrWizardStep = 1">{{ t('meeting.wizardBack') }}</NButton>
+              <NButton type="primary" size="small" @click="asrWizardStep = 3">
+                {{ t('meeting.wizardNext') }}
+              </NButton>
+            </div>
+          </div>
+
+          <!-- Step 3: Review -->
+          <div v-if="asrWizardStep === 3" class="form-item">
+            <NAlert v-if="!meetingStore.hasASRConfig && !asrApiKey" type="warning" :show-icon="true" style="margin-bottom: 8px">
+              {{ t('meeting.wizardWarnMissingAsr') }}
+            </NAlert>
+            <NAlert v-if="!meetingStore.hasLLMConfig && !llmApiKey" type="info" :show-icon="false" style="margin-bottom: 8px">
+              {{ t('meeting.wizardWarnMissingLlm') }}
+            </NAlert>
+            <ul class="wizard-review-list">
+              <li>
+                <span class="wizard-review-label">{{ t('meeting.wizardStepAsr') }}:</span>
+                <span class="wizard-review-value">{{ (asrApiKey || meetingStore.asrConfig.dashscopeApiKey) ? '✓ ' + t('meeting.configured') : '— ' + t('meeting.notConfigured') }}</span>
+              </li>
+              <li>
+                <span class="wizard-review-label">{{ t('meeting.wizardStepLlm') }}:</span>
+                <span class="wizard-review-value">{{ (llmApiKey || meetingStore.asrConfig.llmApiKey) ? '✓ ' + t('meeting.configured') : '— ' + t('meeting.notConfigured') }}</span>
+              </li>
+            </ul>
+            <div class="wizard-actions">
+              <NButton size="small" @click="asrWizardStep = 2">{{ t('meeting.wizardBack') }}</NButton>
+              <NButton size="small" @click="asrWizardStep = 1">{{ t('meeting.wizardRestart') }}</NButton>
+            </div>
           </div>
         </div>
 
