@@ -9,6 +9,7 @@ import { assertDevicePackageCompatibility, assertDevicePackageExecution, buildDe
 import { resolveManifestCheckResult } from '../services/update/manifest-client'
 import { runUpdatePreflight } from '../services/update/preflight'
 import { resolveUpdateRuntimePaths } from '../services/update/runtime-paths'
+import { getSnapshot } from '../services/update/update-check-cache'
 import { assertNpmPackageExecution, buildNpmPackageInstallArgs, getNpmPackageExecutionMessage } from '../services/update/strategies/npm-package'
 import { assertSourceDeployExecution, buildSourceDeployEnv, getSourceDeployExecutionMessage } from '../services/update/strategies/source-deploy'
 import { updateTaskStore } from '../services/update/task-store'
@@ -1357,7 +1358,22 @@ function managedUpdateAcceptedResponse(message: string) {
 
 export async function updateStatus(ctx: any) {
   syncUpdateTaskState()
-  ctx.body = updateTaskStore.getStatus()
+  const updateCheckDisabled = !hasConfiguredManifestCheck(config.update)
+    || (() => {
+      const raw = (process.env.HERMES_WEB_UI_DISABLE_UPDATE_CHECK || '').trim().toLowerCase()
+      return raw === 'true' || raw === '1' || raw === 'on' || raw === 'yes'
+    })()
+  const { result: cachedResult } = getSnapshot()
+  const cached = cachedResult || { latestVersion: '', sourceLabel: config.update.sourceLabel, channel: config.update.channel, packageType: config.update.packageType, detectionSource: 'manifest' as const }
+  const localVersion = getLocalWebUiVersion()
+  const latestVersion = updateCheckDisabled ? '' : cached.latestVersion
+  const updateAvailable = Boolean(
+    !updateCheckDisabled
+    && latestVersion
+    && localVersion
+    && isRemoteVersionNewer(latestVersion, localVersion),
+  )
+  ctx.body = updateTaskStore.getStatus(localVersion, latestVersion, updateAvailable)
 }
 
 export async function updateCapabilities(ctx: any) {

@@ -2623,6 +2623,7 @@ export default {
     new_0_7_6_1: 'All Web UI traffic now uses HTTPS on the standard 6060 port. HTTP fallback removed — certificate warning is shown on first LAN access (click "Advanced → Proceed").',
     new_0_7_6_2: 'Fixed: red "Update failed" banner no longer sticks after a successful upgrade — when running version matches the latest published version, historical failed tasks are discarded.',
     new_0_7_6_3: 'Fixed: deploy now restores the +x bit on shell and node scripts that git clone may strip — prevents systemd 203/EXEC auto-restart loops.',
+    new_0_7_6_4: 'Fixed: meeting-asr Python backend (app/ + requirements.txt) is now bundled into the device package — Meeting Mode ASR service can start after upgrade.',
     new_0_7_5_1: 'Fixed: update no longer fails when optional terminal feature (node-pty) is unavailable. Added: LAN HTTPS auto-adaptation for microphone access.',
     new_0_7_4_1: 'Merged Meeting Mode with real-time transcription and AI analysis',
     new_0_7_1_1: 'Improved the device upgrade channel so existing devices can move to v0.7.1 first and then switch to OSS device-package updates automatically',

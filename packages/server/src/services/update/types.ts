@@ -126,6 +126,9 @@ export interface UpdateTaskRecord {
 export interface UpdateTaskStatusResponse {
   currentTask: UpdateTaskRecord | null
   lastTask: UpdateTaskRecord | null
+  webui_version?: string
+  webui_latest?: string
+  webui_update_available?: boolean
 }
 
 export interface ManifestUpdateInfo {

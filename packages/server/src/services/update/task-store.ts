@@ -219,10 +219,13 @@ export class UpdateTaskStore {
     return this.lastTask ? { ...this.lastTask } : null
   }
 
-  getStatus(): UpdateTaskStatusResponse {
+  getStatus(webuiVersion?: string, webuiLatest?: string, webuiUpdateAvailable?: boolean): UpdateTaskStatusResponse {
     return {
       currentTask: this.getCurrentTask(),
       lastTask: this.getLastTask(),
+      webui_version: webuiVersion,
+      webui_latest: webuiLatest,
+      webui_update_available: webuiUpdateAvailable,
     }
   }
 

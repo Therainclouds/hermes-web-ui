@@ -51,6 +51,37 @@ cpSync(
   resolve(serverOutDir, 'openapi.json'),
 )
 
+// Bundle the meeting-asr Python backend (FastAPI app + requirements) into
+// dist/server/python-backend/ + dist/server/requirements.txt, matching the
+// runtime layout that packages/server/src/services/meeting-asr/index.ts
+// expects via __dirname. Skip the platform-specific .venv/ and __pycache__/
+// artifacts that ship on the dev machine but cannot run on the target
+// device. The on-device runtime rebuilds .venv from requirements.txt via
+// ensureVirtualEnv().
+const meetingAsrSrcRoot = resolve(rootDir, 'packages/server/src/services/meeting-asr')
+const meetingAsrPythonSrc = resolve(meetingAsrSrcRoot, 'python-backend')
+const meetingAsrPythonOut = resolve(serverOutDir, 'python-backend')
+if (existsSync(meetingAsrPythonSrc)) {
+  rmSync(meetingAsrPythonOut, { recursive: true, force: true })
+  mkdirSync(meetingAsrPythonOut, { recursive: true })
+  cpSync(meetingAsrPythonSrc, meetingAsrPythonOut, {
+    recursive: true,
+    filter: (src) => {
+      const base = src.split(/[\\/]/).pop() || ''
+      if (base === '.venv' || base === '__pycache__') return false
+      if (base.endsWith('.pyc')) return false
+      return true
+    },
+  })
+}
+const requirementsSrc = resolve(meetingAsrSrcRoot, 'requirements.txt')
+if (existsSync(requirementsSrc)) {
+  cpSync(requirementsSrc, resolve(serverOutDir, 'requirements.txt'))
+}
+if (existsSync(meetingAsrPythonOut)) {
+  console.log('[build-server] meeting-asr python-backend bundled into dist/server/')
+}
+
 const skillsOutDir = resolve(rootDir, 'dist/skills')
 rmSync(skillsOutDir, { recursive: true, force: true })
 cpSync(

@@ -11,6 +11,7 @@
   "packageAllowlist": [
     "dist/client",
     "dist/server",
+    "packages/server/src/services/meeting-asr/python-backend",
     "hermes_data/bots/usb",
     "package.json",
     "package-lock.json",
