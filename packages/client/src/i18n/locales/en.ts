@@ -2620,6 +2620,7 @@ export default {
 
   // Changelog
   changelog: {
+    new_0_7_5_1: 'Fixed: update no longer fails when optional terminal feature (node-pty) is unavailable. Added: LAN HTTPS auto-adaptation for microphone access.',
     new_0_7_4_1: 'Merged Meeting Mode with real-time transcription and AI analysis',
     new_0_7_1_1: 'Improved the device upgrade channel so existing devices can move to v0.7.1 first and then switch to OSS device-package updates automatically',
     new_0_7_0_1: 'Added a first-login tutorial to guide users through the initial model setup flow',

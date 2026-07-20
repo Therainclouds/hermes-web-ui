@@ -351,6 +351,11 @@ sync_source_tree() {
 
 run_deploy_script() {
   info "Running deploy-source-armbian.sh in update-only mode"
+  # Suppress outer ERR trap so that failures inside deploy-source-armbian.sh
+  # are reported with their own exit code and message, not with the caller
+  # line number (which would be misleading — see Bug 3 in v0.7.5 fix).
+  set +e
+  trap - ERR
   env \
     DEPLOY_UPDATE_ONLY=true \
     DEPLOY_DIR="${DEPLOY_DIR}" \
@@ -382,6 +387,13 @@ run_deploy_script() {
     HERMES_AGENT_UPDATE_MANIFEST_URL="${HERMES_AGENT_UPDATE_MANIFEST_URL:-}" \
     HERMES_ANTHROPIC_VERSION="${HERMES_ANTHROPIC_VERSION:-}" \
     bash "${DEPLOY_DIR}/scripts/deploy-source-armbian.sh"
+  deploy_rc=$?
+  set -e
+  trap 'handle_failure "${LINENO}"' ERR
+  if [[ ${deploy_rc} -ne 0 ]]; then
+    err "deploy-source-armbian.sh exited with code ${deploy_rc}"
+    handle_failure "${LINENO}"
+  fi
 }
 
 run_hermes_agent_update() {

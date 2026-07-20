@@ -954,6 +954,13 @@ install_webui_dependencies() {
   # an older source tree. build_webui is the single source of truth for the
   # deploy build.
   run_dependency_install_command "${path_env}"
+
+  # Rebuild optional native bindings skipped by --ignore-scripts.
+  # node-pty is a native module (binding.gyp) that needs node-gyp + build-essential.
+  # Failure is non-fatal — terminal feature degrades gracefully.
+  run_as_app_user "cd '${DEPLOY_DIR}' && PATH='${path_env}' npm rebuild node-pty 2>/dev/null" || \
+    warn "Optional native binding node-pty rebuild failed (terminal feature will be disabled)"
+
   run_as_app_user "cd '${DEPLOY_DIR}' && PATH='${path_env}' npm ls --depth=0 @vscode/markdown-it-katex naive-ui typescript vite vue-tsc >/dev/null"
   persist_dependency_snapshot
 }
@@ -1311,12 +1318,12 @@ check_runtime_artifacts() {
 check_terminal_runtime_ready() {
   local probe_url="http://127.0.0.1:${PORT}"
   step "Check terminal runtime readiness"
-  if ! wait_for_http_ready "${probe_url}/health" "\"terminal\":{\"enabled\":true,\"ready\":true"; then
-    err "Terminal runtime check failed: ${probe_url}/health did not report terminal.ready=true"
-    run journalctl -u "${SYSTEMD_SERVICE_NAME}" -n 120 --no-pager || true
-    return 1
+  if wait_for_http_ready "${probe_url}/health" "\"terminal\":{\"enabled\":true,\"ready\":true" 2>/dev/null; then
+    info "Terminal runtime check passed."
+  else
+    warn "Terminal runtime not ready (likely missing native binding: node-pty). Terminal is optional — update continues."
   fi
-  info "Terminal runtime check passed."
+  return 0
 }
 
 check_bridge_status() {
