@@ -490,23 +490,23 @@ onUnmounted(() => {
   // Note: We don't stop the ASR service on unmount as it should persist across page navigations
 })
 
-// --- 麦克风检测 ---
+// --- 麦克风检测（仅做浏览器兼容性检查，不阻断 getUserMedia） ---
 async function checkMicrophoneAvailability(): Promise<{ available: boolean; reason?: string }> {
-  if (typeof navigator === 'undefined' || !navigator.mediaDevices?.enumerateDevices) {
+  if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
     return { available: false, reason: 'micUnsupported' }
   }
 
   try {
     const devices = await navigator.mediaDevices.enumerateDevices()
     const hasAudioInput = devices.some(d => d.kind === 'audioinput')
-    if (!hasAudioInput) {
-      return { available: false, reason: 'micNotFound' }
-    }
-    return { available: true }
+    if (hasAudioInput) return { available: true }
   } catch {
-    // enumerateDevices 失败不影响 getUserMedia
-    return { available: true }
+    // enumerateDevices 失败不阻断，让 getUserMedia 自己处理
   }
+
+  // enumerateDevices 在 HTTP 局域网 IP 下可能返回空数组
+  // 不做硬阻断，继续走 getUserMedia，让浏览器弹出权限请求或抛出 NotFoundError
+  return { available: true }
 }
 
 // --- 音频处理 ---
@@ -683,7 +683,7 @@ async function startRecording() {
       case 'NotAllowedError':
         errorMessage.value = window.isSecureContext
           ? t('meeting.micPermissionDenied')
-          : t('meeting.micUnsupported')
+          : t('meeting.micInsecureContext')
         break
       case 'NotReadableError':
         errorMessage.value = t('meeting.micPermissionDenied')

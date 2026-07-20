@@ -65,4 +65,19 @@ describe('hermes journey service', () => {
     const { getJourneyGraph } = await import('../../packages/server/src/services/hermes/journey')
     await expect(getJourneyGraph('default')).rejects.toThrow('Failed to load Hermes journey graph: database is locked')
   })
+
+  it('surfaces explicit version guidance without swallowing it', async () => {
+    // Regression guard: when a future Hermes release reports version guidance
+    // without one of the unsupported-command keywords (e.g. via a dedicated
+    // "minimum version" message), the service must surface the raw stderr
+    // instead of replacing it with the generic upgrade notice.
+    mockExecHermes.mockRejectedValueOnce(Object.assign(new Error('exit 3'), {
+      stderr: 'hermes: error: minimum version 0.18.0 required for `journey`',
+    }))
+
+    const { getJourneyGraph } = await import('../../packages/server/src/services/hermes/journey')
+    await expect(getJourneyGraph('default')).rejects.toThrow(
+      'Failed to load Hermes journey graph: hermes: error: minimum version 0.18.0 required for `journey`',
+    )
+  })
 })

@@ -19,6 +19,7 @@
     "scripts/hermes-web-ui-update-runner.sh",
     "scripts/hermes-web-ui-update.service",
     "scripts/hermes-web-ui.service",
-    "scripts/install-device-package.sh"
+    "scripts/install-device-package.sh",
+    "scripts/generate-server-cert.sh"
   ]
 }
