@@ -12,7 +12,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
+
+# Fix DNS resolution inside uvicorn on Windows (ProactorEventLoop + run_in_executor issue)
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
@@ -74,6 +79,10 @@ async def ws_diarize(ws: WebSocket) -> None:
 
 def main() -> None:
     import uvicorn
+
+    # Fix DNS resolution inside uvicorn on Windows (ProactorEventLoop + run_in_executor issue)
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
     uvicorn.run(
         "app.diarize_server:app",

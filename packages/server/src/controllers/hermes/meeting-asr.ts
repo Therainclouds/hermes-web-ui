@@ -1,5 +1,6 @@
 import type { Context } from 'koa'
 import { meetingASRService } from '../../services/meeting-asr'
+import { logger } from '../../services/logger'
 
 async function proxyToBackend(ctx: Context, path: string, method: 'GET' | 'POST' = 'GET', body?: any): Promise<any> {
   const status = meetingASRService.status
@@ -61,6 +62,13 @@ export async function startASRService(ctx: Context): Promise<void> {
         const storedConfig = JSON.parse(content)
         if (storedConfig.asr?.dashscope_api_key) {
           config.dashscopeApiKey = storedConfig.asr.dashscope_api_key
+          logger.info('[meeting-asr-ctrl] dashscopeApiKey from config.asr.dashscope_api_key')
+        } else if (storedConfig.llm?.api_key) {
+          // Fallback: DashScope key 同时用于 LLM 和 ASR
+          config.dashscopeApiKey = storedConfig.llm.api_key
+          logger.info('[meeting-asr-ctrl] dashscopeApiKey fallback from config.llm.api_key')
+        } else {
+          logger.warn('[meeting-asr-ctrl] no dashscopeApiKey found in any config path')
         }
         if (storedConfig.llm?.api_key) {
           config.llmApiKey = storedConfig.llm.api_key
@@ -72,8 +80,10 @@ export async function startASRService(ctx: Context): Promise<void> {
           config.llmModel = storedConfig.llm.model
         }
       } catch {
-        // Config file doesn't exist yet
+        logger.error('[meeting-asr-ctrl] failed to read config file: %s', configFile)
       }
+    } else {
+      logger.info('[meeting-asr-ctrl] dashscopeApiKey provided by frontend')
     }
 
     await meetingASRService.start(config)

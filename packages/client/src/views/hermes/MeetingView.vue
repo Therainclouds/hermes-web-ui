@@ -52,6 +52,13 @@ const llmBaseUrl = ref(meetingStore.asrConfig.llmBaseUrl)
 const llmModel = ref(meetingStore.asrConfig.llmModel)
 const asrWizardStep = ref(1) // 1=DashScope, 2=LLM, 3=Review
 
+// --- OSS 配置（说话人分离模式必填）---
+const ossBucket = ref(meetingStore.asrConfig.ossBucket)
+const ossAccessKeyId = ref(meetingStore.asrConfig.ossAccessKeyId)
+const ossAccessKeySecret = ref(meetingStore.asrConfig.ossAccessKeySecret)
+const ossEndpoint = ref(meetingStore.asrConfig.ossEndpoint)
+const ossPathPrefix = ref(meetingStore.asrConfig.ossPathPrefix)
+
 // --- 当前会议状态 ---
 const isRecording = ref(false)
 const isLoading = ref(false)
@@ -222,6 +229,11 @@ function openCreateModal() {
   llmApiKey.value = meetingStore.asrConfig.llmApiKey
   llmBaseUrl.value = meetingStore.asrConfig.llmBaseUrl
   llmModel.value = meetingStore.asrConfig.llmModel
+  ossBucket.value = meetingStore.asrConfig.ossBucket
+  ossAccessKeyId.value = meetingStore.asrConfig.ossAccessKeyId
+  ossAccessKeySecret.value = meetingStore.asrConfig.ossAccessKeySecret
+  ossEndpoint.value = meetingStore.asrConfig.ossEndpoint
+  ossPathPrefix.value = meetingStore.asrConfig.ossPathPrefix
   asrWizardStep.value = meetingStore.hasASRConfig && meetingStore.hasLLMConfig ? 3 : 1
   showCreateModal.value = true
 }
@@ -240,6 +252,16 @@ function handleCreateMeeting() {
       llmApiKey: llmApiKey.value.trim(),
       llmBaseUrl: llmBaseUrl.value.trim() || 'https://api.deepseek.com',
       llmModel: llmModel.value.trim() || 'deepseek-chat',
+    })
+  }
+  // 保存 OSS 配置（说话人分离用，可选）
+  if (ossBucket.value.trim() || ossAccessKeyId.value.trim() || ossAccessKeySecret.value.trim()) {
+    meetingStore.updateASRConfig({
+      ossBucket: ossBucket.value.trim(),
+      ossAccessKeyId: ossAccessKeyId.value.trim(),
+      ossAccessKeySecret: ossAccessKeySecret.value.trim(),
+      ossEndpoint: ossEndpoint.value.trim() || 'oss-cn-beijing.aliyuncs.com',
+      ossPathPrefix: ossPathPrefix.value.trim() || 'meeting-asr-uploads/',
     })
   }
   
@@ -445,7 +467,8 @@ async function checkASRServiceStatus() {
 }
 
 async function startASRService() {
-  if (asrServiceStatus.value.isRunning) return true
+  const hasOSS = meetingStore.asrConfig.ossBucket || meetingStore.asrConfig.ossAccessKeyId || meetingStore.asrConfig.ossAccessKeySecret
+  if (asrServiceStatus.value.isRunning && !hasOSS) return true
 
   isStartingASR.value = true
   asrServiceError.value = ''
@@ -460,6 +483,15 @@ async function startASRService() {
       config.llmApiKey = meetingStore.asrConfig.llmApiKey || llmApiKey.value
       config.llmBaseUrl = meetingStore.asrConfig.llmBaseUrl || llmBaseUrl.value
       config.llmModel = meetingStore.asrConfig.llmModel || llmModel.value
+    }
+    // Pass OSS config if user configured it (speaker diarization chunk flow).
+    const store = meetingStore.asrConfig
+    if (store.ossBucket || store.ossAccessKeyId || store.ossAccessKeySecret) {
+      config.ossBucket = store.ossBucket
+      config.ossAccessKeyId = store.ossAccessKeyId
+      config.ossAccessKeySecret = store.ossAccessKeySecret
+      config.ossEndpoint = store.ossEndpoint
+      config.ossPathPrefix = store.ossPathPrefix
     }
 
     console.log('[meeting] Calling ASR start API with config:', { ...config, dashscopeApiKey: config.dashscopeApiKey ? '***' : 'not set' })
@@ -584,16 +616,14 @@ async function startRecording() {
       }
     }
 
-    // 获取麦克风权限。ASR friendly: 关掉 echoCancellation / noiseSuppression /
-    // autoGainControl — 这些会在浏览器里扭曲语音频谱，损伤 ASR 识别率 5-15%。
-    // Kiosk 设备一般没有回声/噪音问题，原始信号对 ASR 才是最优。
+    // 获取麦克风权限。
+    // 注意：sampleRate 和 channelCount 不在此处约束（精确约束会触发 NotReadableError），
+    // 而是在下游 worklet handler 中做重采样到 16kHz / 转 Int16。
     mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: {
-        sampleRate: 16000,
-        channelCount: 1,
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false,
+        echoCancellation: { ideal: false },
+        noiseSuppression: { ideal: false },
+        autoGainControl: { ideal: false },
       },
     })
 
@@ -745,9 +775,14 @@ function stopRecording() {
   // 发送停止消息
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'stop' }))
-    setTimeout(() => ws?.close(), 500)
+    if (!useDiarize.value) {
+      // 非说话人分离模式：主 ASR 已在录音过程中流式返回结果，500ms 后安全关闭
+      setTimeout(() => ws?.close(), 500)
+    }
+    // 说话人分离模式：不主动关闭，等服务器处理完 PCM 后发回 transcript + stopped
+    // 由 handleWsMessage('stopped') 中的 stopRecording() 关闭
   }
-  ws = null
+  if (!useDiarize.value) ws = null
 
   // 停止音频 + 关闭 worklet
   if (mediaStream) {
@@ -852,6 +887,8 @@ function handleWsMessage(data: any) {
       stopRecording()
       break
     case 'stopped':
+      // 说话人分离模式下，服务器已处理完 PCM 并回传结果，关闭 WS
+      if (ws) { ws.close(); ws = null }
       stopRecording()
       break
   }
@@ -1942,6 +1979,35 @@ async function clearTranscript() {
               :placeholder="meetingStore.hasASRConfig ? t('meeting.apiKeySaved') : t('meeting.dashscopeApiKeyPlaceholder')"
             />
             <div class="form-hint">{{ t('meeting.dashscopeApiKeyHint') }}</div>
+
+            <!-- OSS 配置（说话人分离必填，可折叠） -->
+            <details class="oss-config-details">
+              <summary class="oss-config-summary">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+                  <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+                  <line x1="12" y1="22.08" x2="12" y2="12"/>
+                </svg>
+                {{ t('meeting.ossConfig') }}
+                <span v-if="meetingStore.asrConfig.ossBucket" class="form-label-badge">{{ t('meeting.configured') }}</span>
+              </summary>
+              <div class="oss-config-body">
+                <NAlert type="info" :show-icon="false" closable style="margin-bottom: 12px">
+                  {{ t('meeting.ossConfigHint') }}
+                </NAlert>
+                <label class="form-label">{{ t('meeting.ossBucket') }}</label>
+                <NInput v-model:value="ossBucket" :placeholder="t('meeting.ossBucketPlaceholder')" />
+                <label class="form-label" style="margin-top: 12px">{{ t('meeting.ossAccessKeyId') }}</label>
+                <NInput v-model:value="ossAccessKeyId" type="password" show-password-on="click" :placeholder="t('meeting.ossAccessKeyIdPlaceholder')" />
+                <label class="form-label" style="margin-top: 12px">{{ t('meeting.ossAccessKeySecret') }}</label>
+                <NInput v-model:value="ossAccessKeySecret" type="password" show-password-on="click" :placeholder="t('meeting.ossAccessKeySecretPlaceholder')" />
+                <label class="form-label" style="margin-top: 12px">{{ t('meeting.ossEndpoint') }}</label>
+                <NInput v-model:value="ossEndpoint" :placeholder="t('meeting.ossEndpointPlaceholder')" />
+                <label class="form-label" style="margin-top: 12px">{{ t('meeting.ossPathPrefix') }}</label>
+                <NInput v-model:value="ossPathPrefix" :placeholder="t('meeting.ossPathPrefixPlaceholder')" />
+              </div>
+            </details>
+
             <div class="wizard-actions">
               <NButton type="primary" size="small" @click="asrWizardStep = 2">
                 {{ t('meeting.wizardNext') }}
@@ -3113,6 +3179,45 @@ async function clearTranscript() {
   font-size: 12px;
   color: $text-secondary;
   line-height: 1.4;
+}
+
+.oss-config-details {
+  margin-top: 12px;
+  border: 1px solid rgba(var(--accent-primary-rgb), 0.15);
+  border-radius: $radius-sm;
+  overflow: hidden;
+}
+
+.oss-config-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 500;
+  color: $text-primary;
+  cursor: pointer;
+  user-select: none;
+  background: rgba(var(--accent-primary-rgb), 0.03);
+  transition: background 0.2s;
+
+  &:hover {
+    background: rgba(var(--accent-primary-rgb), 0.07);
+  }
+
+  svg {
+    flex-shrink: 0;
+    color: $accent-primary;
+  }
+
+  &::-webkit-details-marker {
+    display: none;
+  }
+}
+
+.oss-config-body {
+  padding: 10px;
+  border-top: 1px solid rgba(var(--accent-primary-rgb), 0.1);
 }
 
 .radio-content {

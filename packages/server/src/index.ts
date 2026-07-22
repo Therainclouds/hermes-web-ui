@@ -5,6 +5,7 @@ import bodyParser from '@koa/bodyparser'
 import serve from 'koa-static'
 import send from 'koa-send'
 import os from 'os'
+import http from 'http'
 import https from 'https'
 import { join, relative, resolve } from 'path'
 import { mkdir } from 'fs/promises'
@@ -88,34 +89,42 @@ async function listenWithFallback(app: Koa, port: number, host?: string): Promis
   const certPath = join(certDir, 'server.crt')
   const keyPath = join(certDir, 'server.key')
 
-  if (!existsSync(certPath) || !existsSync(keyPath)) {
-    throw new Error(
-      `[bootstrap] TLS certificate not found at ${certDir}. ` +
-      `Run scripts/generate-server-cert.sh before starting the service.`,
-    )
-  }
-
-  const httpsOptions: https.ServerOptions = {
-    cert: readFileSync(certPath),
-    key: readFileSync(keyPath),
-  }
-  const httpsServer = https.createServer(httpsOptions, app.callback())
-  const primary = await new Promise<any>((resolve, reject) => {
-    httpsServer.listen(httpsPort, bindHost)
-    httpsServer.once('listening', () => {
-      console.log(`[bootstrap] HTTPS listening on ${bindHost}:${httpsPort}`)
-      resolve(httpsServer)
+  if (existsSync(certPath) && existsSync(keyPath)) {
+    const httpsOptions: https.ServerOptions = {
+      cert: readFileSync(certPath),
+      key: readFileSync(keyPath),
+    }
+    const httpsServer = https.createServer(httpsOptions, app.callback())
+    const primary = await new Promise<any>((resolve, reject) => {
+      httpsServer.listen(httpsPort, bindHost)
+      httpsServer.once('listening', () => {
+        console.log(`[bootstrap] HTTPS listening on ${bindHost}:${httpsPort}`)
+        resolve(httpsServer)
+      })
+      httpsServer.once('error', reject)
     })
-    httpsServer.once('error', reject)
-  })
+    return { primary, servers: [primary] }
+  }
 
+  // Dev fallback: HTTP when certs not available
+  console.log('[bootstrap] TLS certs not found, falling back to HTTP')
+  const httpServer = http.createServer(app.callback())
+  const primary = await new Promise<any>((resolve, reject) => {
+    httpServer.listen(port, bindHost)
+    httpServer.once('listening', () => {
+      console.log(`[bootstrap] HTTP listening on ${bindHost}:${port}`)
+      resolve(httpServer)
+    })
+    httpServer.once('error', reject)
+  })
   return { primary, servers: [primary] }
 }
 
 function getLoopbackBaseUrl(httpServer: any): string {
   const address = httpServer?.address?.()
   const port = typeof address === 'object' && address?.port ? address.port : config.port
-  return `https://127.0.0.1:${port}`
+  const protocol = httpServer instanceof http.Server ? 'http' : 'https'
+  return `${protocol}://127.0.0.1:${port}`
 }
 
 /**
@@ -221,7 +230,16 @@ async function startRuntimeServicesBeforeListen(): Promise<void> {
   }
 
   try {
-    agentBridgeManager = await startAgentBridgeManager()
+    // Local dev: timeout the agent bridge start after 15s so the server
+    // isn't blocked when the Python process starts slowly or hangs.
+    const timeoutMs = parseInt(process.env.AGENT_BRIDGE_TIMEOUT || '15000', 10)
+    await Promise.race([
+      startAgentBridgeManager(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`agent bridge start timed out after ${timeoutMs}ms`)), timeoutMs),
+      ),
+    ])
+    agentBridgeManager = getAgentBridgeManager()
     console.log('[bootstrap] agent bridge started')
   } catch (err) {
     logger.warn(err, '[bootstrap] agent bridge failed to start')

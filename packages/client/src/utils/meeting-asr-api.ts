@@ -37,6 +37,11 @@ export interface MeetingASRConfig {
   host?: string
   asrPort?: number
   diarizePort?: number
+  ossBucket?: string
+  ossAccessKeyId?: string
+  ossAccessKeySecret?: string
+  ossEndpoint?: string
+  ossPathPrefix?: string
 }
 
 export const meetingASRApi = {

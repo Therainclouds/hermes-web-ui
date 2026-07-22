@@ -73,9 +73,14 @@ export interface AudioChunk {
 export interface AnalysisResult {
   summary?: string
   key_points?: string[]
-  action_items?: string[]
+  action_items?: string[] | Array<{ task: string; assignee?: string; deadline?: string }>
   topics?: string[]
   people_mentioned?: string[]
+  meeting_type?: string
+  feedback?: { positive?: string[]; negative?: string[] }
+  decisions?: string[]
+  risks?: string[]
+  learnings?: string[]
   relationships?: Array<{
     source: string
     target: string
@@ -95,6 +100,12 @@ export interface ASRConfig {
   llmApiKey: string
   llmBaseUrl: string
   llmModel: string
+  // Optional OSS config (speaker diarization chunk-based flow)
+  ossBucket: string
+  ossAccessKeyId: string
+  ossAccessKeySecret: string
+  ossEndpoint: string
+  ossPathPrefix: string
 }
 
 export interface SpeakerEntry {
@@ -193,6 +204,11 @@ function loadASRConfig(): ASRConfig {
         llmApiKey: parsed.llmApiKey || '',
         llmBaseUrl: parsed.llmBaseUrl || 'https://api.deepseek.com',
         llmModel: parsed.llmModel || 'deepseek-chat',
+        ossBucket: parsed.ossBucket || '',
+        ossAccessKeyId: parsed.ossAccessKeyId || '',
+        ossAccessKeySecret: parsed.ossAccessKeySecret || '',
+        ossEndpoint: parsed.ossEndpoint || 'oss-cn-beijing.aliyuncs.com',
+        ossPathPrefix: parsed.ossPathPrefix || 'meeting-asr-uploads/',
       }
     }
   } catch {}
@@ -205,6 +221,11 @@ function loadASRConfig(): ASRConfig {
     llmApiKey: '',
     llmBaseUrl: 'https://api.deepseek.com',
     llmModel: 'deepseek-chat',
+    ossBucket: '',
+    ossAccessKeyId: '',
+    ossAccessKeySecret: '',
+    ossEndpoint: 'oss-cn-beijing.aliyuncs.com',
+    ossPathPrefix: 'meeting-asr-uploads/',
   }
 }
 

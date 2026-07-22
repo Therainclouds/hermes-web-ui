@@ -4,6 +4,10 @@
     "python3-pyudev",
     "ntfs-3g",
     "exfatprogs",
-    "util-linux"
+    "util-linux",
+    "python3-venv",
+    "python3-dev",
+    "gcc",
+    "build-essential"
   ]
 }

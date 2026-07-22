@@ -78,6 +78,10 @@ docs/erro.txt
 docs/update-distribution
 docs/
 !hermes_data/
+
+# Local dev data (cache, tokens, profiles — never commit)
+.dev-data/
+.dev-data/**
 hermes_data/*
 !hermes_data/bots/
 hermes_data/bots/*

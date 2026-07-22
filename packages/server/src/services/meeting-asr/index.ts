@@ -20,6 +20,11 @@ export interface MeetingASRConfig {
   host?: string
   asrPort?: number
   diarizePort?: number
+  ossBucket?: string
+  ossAccessKeyId?: string
+  ossAccessKeySecret?: string
+  ossEndpoint?: string
+  ossPathPrefix?: string
 }
 
 export interface MeetingASRStatus {
@@ -208,8 +213,15 @@ export class MeetingASRService extends EventEmitter {
 
   async start(config: MeetingASRConfig = {}): Promise<void> {
     if (this._isRunning) {
-      logger.warn('[meeting-asr] Service is already running')
-      return
+      // If OSS config changed, restart with new config so the Python child
+      // process picks up the updated env vars (OSS_BUCKET / keys / etc.)
+      if (config.ossBucket || config.ossAccessKeyId || config.ossAccessKeySecret) {
+        logger.info('[meeting-asr] OSS config provided while running; restarting to pick up new credentials')
+        await this.stop()
+      } else {
+        logger.warn('[meeting-asr] Service is already running')
+        return
+      }
     }
 
     this._config = config
@@ -248,6 +260,18 @@ export class MeetingASRService extends EventEmitter {
 
       if (config.dashscopeApiKey) {
         env.DASHSCOPE_API_KEY = config.dashscopeApiKey
+      } else {
+        // Auto-restart fallback: try stored config
+        try {
+          const fs = require('fs') as typeof import('fs')
+          const p = require('path') as typeof import('path')
+          const storedPath = p.join(dataDir, 'config.json')
+          if (fs.existsSync(storedPath)) {
+            const stored = JSON.parse(fs.readFileSync(storedPath, 'utf-8'))
+            const key = stored.asr?.dashscope_api_key || stored.llm?.api_key
+            if (key) env.DASHSCOPE_API_KEY = key
+          }
+        } catch { /* best effort */ }
       }
       if (config.paraformerWsUrl) {
         env.PARAFORMER_WS_URL = config.paraformerWsUrl
@@ -266,6 +290,22 @@ export class MeetingASRService extends EventEmitter {
       }
       if (config.paraformerSemanticPunctuation !== undefined) {
         env.PARAFORMER_SEMANTIC_PUNCTUATION = String(config.paraformerSemanticPunctuation)
+      }
+      // OSS config for diarize OSS-based chunk flow (speaker diarization)
+      if (config.ossBucket) {
+        env.OSS_BUCKET = config.ossBucket
+      }
+      if (config.ossAccessKeyId) {
+        env.OSS_ACCESS_KEY_ID = config.ossAccessKeyId
+      }
+      if (config.ossAccessKeySecret) {
+        env.OSS_ACCESS_KEY_SECRET = config.ossAccessKeySecret
+      }
+      if (config.ossEndpoint) {
+        env.OSS_ENDPOINT = config.ossEndpoint
+      }
+      if (config.ossPathPrefix) {
+        env.OSS_PATH_PREFIX = config.ossPathPrefix
       }
       if (config.llmApiKey) {
         // LLM config is stored in the data dir config.json
@@ -315,11 +355,11 @@ export class MeetingASRService extends EventEmitter {
       })
 
       this.diarizeProcess.stdout?.on('data', (data) => {
-        logger.debug('[meeting-asr:diarize] %s', data.toString().trim())
+        logger.info('[meeting-asr:diarize:out] %s', data.toString().trim())
       })
 
       this.diarizeProcess.stderr?.on('data', (data) => {
-        logger.debug('[meeting-asr:diarize] %s', data.toString().trim())
+        logger.info('[meeting-asr:diarize:err] %s', data.toString().trim())
       })
 
       this.diarizeProcess.on('error', (err) => {

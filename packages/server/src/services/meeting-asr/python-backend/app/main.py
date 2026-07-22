@@ -3,8 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sys
 import time
 from contextlib import asynccontextmanager
+
+# Fix DNS resolution inside uvicorn on Windows (ProactorEventLoop + run_in_executor issue)
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -376,6 +381,10 @@ async def ws_asr(ws: WebSocket) -> None:
 
 def main() -> None:
     import uvicorn
+
+    # Fix DNS resolution inside uvicorn on Windows (ProactorEventLoop + run_in_executor issue)
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
     uvicorn.run(
         "app.main:app",
