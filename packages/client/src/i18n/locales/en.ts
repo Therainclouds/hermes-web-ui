@@ -2620,6 +2620,12 @@ export default {
 
   // Changelog
   changelog: {
+    new_0_7_7_1: 'Meeting Mode: OSS configuration UI added to ASR setup wizard — enable chunk-based speaker diarization by filling in OSS bucket and credentials.',
+    new_0_7_7_2: 'Meeting Mode: Speaker diarization now works in OSS chunk mode — real-time transcription returns speaker labels every ~15 seconds.',
+    new_0_7_7_3: 'Meeting Mode: OSS config auto-restarts the ASR service when changed — no need to manually restart.',
+    new_0_7_7_4: 'Meeting Mode: Fixed _process_chunk NameError that crashed diarization on stop in OSS mode.',
+    new_0_7_7_5: 'Host dependencies: added python3-venv + python3-dev + gcc + build-essential for reliable ARM64 pip install of oss2/crcmod C extensions.',
+    new_0_7_7_6: 'Gitignore: excluded .dev-data/ directory from version control; removed previously-committed .venv/ virtual environment from git tracking.',
     new_0_7_6_1_1: 'Meeting Mode stability hardening: systemd TimeoutStartSec=900, deploy-time Python venv pre-warm, actionable error messages pointing to apt install python3-venv — fixes the Armbian 90-second cold-start kill.',
     new_0_7_6_1_2: 'Meeting Mode ASR configuration is now a 3-step wizard: DashScope API Key → LLM config → Review — lowers the bar for first-time users.',
     new_0_7_6_1_3: 'Recording pipeline migrated to AudioWorklet; browser echoCancellation / noiseSuppression disabled — improves ASR accuracy by 5–15%.',

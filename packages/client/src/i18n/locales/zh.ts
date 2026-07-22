@@ -2622,6 +2622,12 @@ export default {
 
   // 更新日志
   changelog: {
+    new_0_7_7_1: '会议模式：ASR 向导新增 OSS 配置界面 — 填写 OSS 存储桶和密钥后可开启分块实时说话人分离。',
+    new_0_7_7_2: '会议模式：说话人分离 OSS 分块模式正式可用 — 每 ~15 秒返回一段带说话人标签的转写文字。',
+    new_0_7_7_3: '会议模式：OSS 配置变更后自动重启 ASR 服务，无需手动重启后端。',
+    new_0_7_7_4: '会议模式：修复 _process_chunk NameError 导致 OSS 模式停止时崩溃的问题。',
+    new_0_7_7_5: '部署依赖：新增 python3-venv + python3-dev + gcc + build-essential，确保 ARM64 上 oss2/crcmod 等 C 扩展可正常安装。',
+    new_0_7_7_6: 'Gitignore：新增 .dev-data/ 目录排除规则；移除之前被误提交的 .venv/ 虚拟环境跟踪。',
     new_0_7_6_1_1: '会议模式稳定性加固：systemd TimeoutStartSec=900，deploy 阶段预热 Python venv，错误信息明确指向 apt install python3-venv — 解 Armbian 首启 90 秒超时。',
     new_0_7_6_1_2: '会议模式 ASR 配置分 3 步：DashScope API Key → LLM 配置 → 确认，降低首次配置门槛。',
     new_0_7_6_1_3: '录音管线迁移到 AudioWorklet，并关闭浏览器 echoCancellation / noiseSuppression — 提升 ASR 识别率 5-15%。',
