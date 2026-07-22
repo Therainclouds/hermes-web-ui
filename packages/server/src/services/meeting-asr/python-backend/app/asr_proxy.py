@@ -10,6 +10,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 from .config import settings
+from ._log_helper import log_skip
 
 log = logging.getLogger("asr_proxy")
 
@@ -110,8 +111,8 @@ class ParaformerProxy:
                 # Connect re-issues a fresh run-task. The old task ID is gone.
                 try:
                     await self.close()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log_skip("upstream_close_in_reconnect", exc)
                 await self.connect()
                 await self.upstream.send(pcm_bytes)
 
@@ -150,6 +151,6 @@ class ParaformerProxy:
         if self.upstream is not None:
             try:
                 await self.upstream.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                log_skip("upstream_close", exc)
             self.upstream = None

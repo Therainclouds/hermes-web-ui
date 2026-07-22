@@ -2620,6 +2620,13 @@ export default {
 
   // Changelog
   changelog: {
+    new_0_7_8_1: 'Security: tightened CSP — removed data: and blob: from script-src, reducing XSS attack surface.',
+    new_0_7_8_2: 'Security: explicit worker-src directive — AudioWorklet and Monaco Worker loading now controlled.',
+    new_0_7_8_3: 'Meeting: new safe-storage utility — corrupted localStorage no longer crashes HistoryView.',
+    new_0_7_8_4: 'Meeting: Python bare `except Exception: pass` replaced with `log_skip()` — backend errors are now traceable.',
+    new_0_7_8_5: 'Meeting: save-analysis and upload-audio failures now surface a toast — users see what failed.',
+    new_0_7_8_6: 'Build: new `build:verify` guard script — detects `data:` URLs incorrectly passed to Worker / addModule / eval.',
+    new_0_7_8_7: 'Tests: new meeting-worklet-url / safe-storage / security-policy directive assertions — prevent regression.',
     new_0_7_7_1: 'Meeting Mode: OSS configuration UI added to ASR setup wizard — enable chunk-based speaker diarization by filling in OSS bucket and credentials.',
     new_0_7_7_2: 'Meeting Mode: Speaker diarization now works in OSS chunk mode — real-time transcription returns speaker labels every ~15 seconds.',
     new_0_7_7_3: 'Meeting Mode: OSS config auto-restarts the ASR service when changed — no need to manually restart.',
@@ -2836,6 +2843,10 @@ export default {
     ossEndpointPlaceholder: 'oss-cn-beijing.aliyuncs.com',
     ossPathPrefix: 'OSS Path Prefix',
     ossPathPrefixPlaceholder: 'meeting-asr-uploads/',
+    // Error toasts
+    errorSaveReportFailed: 'Failed to save analysis result — check network or server logs',
+    errorUploadAudioFailed: 'Failed to upload recording — please retry or check network',
+    errorDeleteAudioFailed: 'Failed to clean up old audio data; local storage may be full',
     apiKeySaved: 'Saved API Key (leave empty to use saved one)',
     configured: 'Configured',
     notConfigured: 'Not configured',

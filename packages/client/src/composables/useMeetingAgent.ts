@@ -1,10 +1,12 @@
 import { ref, computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useMeetingStore, type TranscriptSentence, type AgentMessage, type AgentConfig, type AnalysisResult } from '@/stores/hermes/meeting'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useAppStore } from '@/stores/hermes/app'
 import { startRunViaSocket, registerSessionHandlers, type RunEvent, type StartRunRequest } from '@/api/hermes/chat'
 import { inferCodingAgentApiMode, normalizeCodingAgentApiMode, type ChatCodingAgentId } from '@/api/coding-agents'
 import { meetingStorageApi } from '@/utils/meeting-storage-api'
+import { useMessage } from '@/composables/useAppMessage'
 import { tryParseJson, looksLikeHtmlDocument, escHtml, extractCorrections } from '@/composables/useMeetingAnalysis'
 
 // 默认提示词模板
@@ -77,6 +79,8 @@ export function useMeetingAgent(sessionId: string) {
   const meetingStore = useMeetingStore()
   const profilesStore = useProfilesStore()
   const appStore = useAppStore()
+  const message = useMessage()
+  const { t } = useI18n()
 
   const messages = ref<AgentMessage[]>([])
   const isRunning = ref(false)
@@ -579,7 +583,10 @@ export function useMeetingAgent(sessionId: string) {
           // 保存到服务器
           meetingStorageApi.saveJsonReport(sessionId, result)
             .then(() => console.log('Analysis result saved to server'))
-            .catch(err => console.error('Failed to save analysis result to server:', err))
+            .catch(err => {
+              console.error('Failed to save analysis result to server:', err)
+              message.error(t('meeting.errorSaveReportFailed'))
+            })
         }
 
         // 提取转录校正

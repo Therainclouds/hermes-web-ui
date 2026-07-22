@@ -109,6 +109,7 @@ export function securityHeaders(): Middleware {
       "object-src 'none'",
       "frame-ancestors 'none'",
       "script-src 'self' 'unsafe-inline'",
+      "worker-src 'self' blob: data:",
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: blob: https:",
       "font-src 'self' data:",

@@ -9,34 +9,15 @@
  * the first channel's Float32 buffer back to the main thread, where the
  * consumer resamples to 16 kHz and converts to Int16 PCM before forwarding
  * to the ASR websocket.
+ *
+ * IMPORTANT: This file is the compiled JS copy, kept in sync with the TS
+ * source at  packages/client/src/audio/pcm-worklet.ts.
+ * It lives in public/ so Vite copies it as a static asset, avoiding the
+ * build-time data: URL inline problem that breaks CSP with addModule().
  */
 
-// The AudioWorklet global types are not exposed in the project's default TS
-// lib set. Declare the minimum surface we need rather than pulling in a full
-// DOM lib for a single worker file.
-declare const sampleRate: number
-interface AudioWorkletNodeOptions {
-  numberOfInputs?: number
-  numberOfOutputs?: number
-  outputChannelCount?: number[]
-  processorOptions?: unknown
-}
-declare class AudioWorkletProcessor {
-  readonly port: MessagePort
-  constructor(options?: AudioWorkletNodeOptions)
-  process(
-    inputs: Float32Array[][],
-    outputs: Float32Array[][],
-    parameters: Record<string, Float32Array>,
-  ): boolean
-}
-declare function registerProcessor(
-  name: string,
-  processorCtor: new (options?: AudioWorkletNodeOptions) => AudioWorkletProcessor,
-): void
-
 class PCMProcessor extends AudioWorkletProcessor {
-  process(inputs: Float32Array[][]): boolean {
+  process(inputs) {
     const input = inputs[0]
     if (!input || input.length === 0) {
       return true
@@ -57,5 +38,3 @@ class PCMProcessor extends AudioWorkletProcessor {
 }
 
 registerProcessor('pcm-processor', PCMProcessor)
-
-export {}

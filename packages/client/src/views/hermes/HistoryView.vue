@@ -9,6 +9,7 @@ import { NButton, NDropdown, NPopconfirm, NTooltip, type DropdownOption } from '
 import { useI18n } from 'vue-i18n'
 import { getSourceLabel } from '@/shared/session-display'
 import { copyToClipboard } from '@/utils/clipboard'
+import { safeGetJSON } from '@/utils/safe-storage'
 import HistoryMessageList from '@/components/hermes/chat/HistoryMessageList.vue'
 import SessionListItem from '@/components/hermes/chat/SessionListItem.vue'
 import OutlinePanel from '@/components/hermes/chat/OutlinePanel.vue'
@@ -397,7 +398,7 @@ watch(() => profilesStore.activeProfileName, async () => {
   await openDefaultHistorySession(true)
 })
 
-const collapsedGroups = ref<Set<string>>(new Set(JSON.parse(localStorage.getItem('hermes_collapsed_groups') || '[]')))
+const collapsedGroups = ref<Set<string>>(new Set(safeGetJSON<string[]>('hermes_collapsed_groups', [])))
 
 // Convert SessionSummary to Session format
 function sessionSummaryToSession(summary: SessionSummary): Session {

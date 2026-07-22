@@ -68,7 +68,22 @@ describe('server security policy', () => {
     expect(response.headers.get('x-frame-options')).toBe('DENY')
     expect(response.headers.get('referrer-policy')).toBe('no-referrer')
     expect(response.headers.get('cross-origin-opener-policy')).toBe('same-origin-allow-popups')
-    expect(response.headers.get('content-security-policy')).toContain("default-src 'self'")
+    const csp = response.headers.get('content-security-policy') ?? ''
+    expect(csp).toContain("default-src 'self'")
+    expect(csp).toContain("base-uri 'self'")
+    expect(csp).toContain("object-src 'none'")
+    expect(csp).toContain("frame-ancestors 'none'")
+    // script-src must include 'self' for the SPA bootstrap. Must NOT include
+    // unsafe-eval. data:/blob: should not be present (v0.7.7 hardening, see
+    // docs/harness/meeting-asr-safety-audit.md).
+    expect(csp).toMatch(/script-src[^;]*'self'/)
+    expect(csp).not.toMatch(/script-src[^;]*'unsafe-eval'/)
+    expect(csp).not.toMatch(/script-src[^;]*\bdata:/)
+    expect(csp).not.toMatch(/script-src[^;]*\bblob:/)
+    // worker-src is required for AudioWorklet (the bug behind B-1/B-3).
+    expect(csp).toMatch(/worker-src[^;]*'self'/)
+    // WebSocket connections are required for ASR + chat streaming.
+    expect(csp).toMatch(/connect-src[^;]*\b(?:ws|wss):/)
     expect(response.headers.get('strict-transport-security')).toContain('max-age=31536000')
   })
 })

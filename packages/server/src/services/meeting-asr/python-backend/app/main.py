@@ -18,6 +18,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from .asr_proxy import ParaformerProxy
 from .config import settings
+from ._log_helper import log_skip
 from .html_generator import generate_html_report
 from .llm_service import llm_service
 from .models import (
@@ -348,7 +349,8 @@ async def ws_asr(ws: WebSocket) -> None:
                         log.exception("send_audio failed: %s", exc)
                         try:
                             await ws.send_json({"type": "error", "message": f"upstream send: {exc}"})
-                        except Exception:
+                        except Exception as exc:
+                            log_skip("asr_error_send", exc)
                             break
             elif "text" in frame:
                 try:
@@ -367,8 +369,8 @@ async def ws_asr(ws: WebSocket) -> None:
         log.exception("ws_asr error: %s", exc)
         try:
             await ws.send_json({"type": "error", "message": str(exc)})
-        except Exception:
-            pass
+        except Exception as send_exc:
+            log_skip("asr_top_error_send", send_exc)
     finally:
         if upstream_task is not None:
             upstream_task.cancel()

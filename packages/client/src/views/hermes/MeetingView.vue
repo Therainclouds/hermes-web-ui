@@ -10,9 +10,11 @@ import type { MeetingSession, TranscriptSentence, AgentConfig } from '@/stores/h
 import { useModelsStore } from '@/stores/hermes/models'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { meetingASRApi } from '@/utils/meeting-asr-api'
+import { useMessage } from '@/composables/useAppMessage'
 import { meetingStorageApi } from '@/utils/meeting-storage-api'
 
 const { t } = useI18n()
+const message = useMessage()
 const meetingStore = useMeetingStore()
 const modelsStore = useModelsStore()
 const profilesStore = useProfilesStore()
@@ -642,9 +644,8 @@ async function startRecording() {
     analyser.fftSize = 256
 
     // AudioWorklet 替代 deprecated ScriptProcessorNode，跑在 audio 线程不抢主线程。
-    // Vite 通过 `new URL(...)` 处理 worklet 模块的引用。
-    const workletUrl = new URL('@/audio/pcm-worklet.ts', import.meta.url)
-    await audioContext.audioWorklet.addModule(workletUrl.href)
+    // JS 副本在 public/audio/pcm-worklet.js（源文件 src/audio/pcm-worklet.ts）。
+    await audioContext.audioWorklet.addModule('/audio/pcm-worklet.js')
     const pcmNode = new AudioWorkletNode(audioContext, 'pcm-processor')
     source.connect(analyser)
     analyser.connect(pcmNode)
@@ -807,7 +808,10 @@ function stopRecording() {
     const meetingId = meetingStore.activeSessionId
     meetingStorageApi.uploadAudio(meetingId, audioBlob.value)
       .then(() => console.log('Audio saved to server'))
-      .catch(err => console.error('Failed to save audio to server:', err))
+      .catch(err => {
+        console.error('Failed to save audio to server:', err)
+        message.error(t('meeting.errorUploadAudioFailed'))
+      })
     
     // 同时保存到 IndexedDB 作为备份（直接存 Blob，避免 base64 编码 33% 膨胀）
     meetingStore.saveAudioData(meetingId, audioBlob.value)

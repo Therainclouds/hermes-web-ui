@@ -177,7 +177,7 @@ function archiveOldSessions(sessions: MeetingSession[]) {
       const next = sessions.filter(s => s.id !== oldest.id)
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
-        deleteAudioChunks(oldest.id).catch(() => {})
+        deleteAudioChunks(oldest.id).catch(err => console.warn('[meeting] deleteAudioChunks failed:', err))
         console.warn('[meeting] Dropped oldest session to recover quota:', oldest.id)
       } catch {
         // Last resort: clear everything. User can rebuild from server.
@@ -302,7 +302,7 @@ export const useMeetingStore = defineStore('meeting', () => {
     }
     saveSessions(sessions.value)
     // 清理 IndexedDB 音频数据
-    deleteAudioChunks(id).catch(() => {})
+    deleteAudioChunks(id).catch(err => console.warn('[meeting] deleteAudioChunks failed:', err))
   }
 
   function setActiveSession(id: string) {
@@ -365,7 +365,7 @@ export const useMeetingStore = defineStore('meeting', () => {
     session.updatedAt = Date.now()
     saveSessions(sessions.value)
     // 清理 IndexedDB 音频数据
-    deleteAudioChunks(sessionId).catch(() => {})
+    deleteAudioChunks(sessionId).catch(err => console.warn('[meeting] deleteAudioChunks failed:', err))
   }
 
   // --- 音频 IndexedDB 操作 ---

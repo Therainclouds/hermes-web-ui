@@ -24,6 +24,7 @@ from websockets.exceptions import ConnectionClosed
 
 from .config import settings
 from .diarize_proxy import DiarizeClient, new_session_id, parse_sentences, upload_wav_to_oss
+from ._log_helper import log_skip
 
 log = logging.getLogger("diarize_endpoint")
 
@@ -737,5 +738,5 @@ async def diarize_ws_handler(ws: WebSocket) -> None:
                 session._pending_tasks.clear()
         try:
             await _send(ws, {"type": "stopped"})
-        except Exception:
-            pass
+        except Exception as exc:
+            log_skip("diarize_stop_send", exc)

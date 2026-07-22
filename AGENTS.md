@@ -48,6 +48,7 @@ Use the smallest relevant check while iterating. Before a broad PR, run
 - Use structured APIs and argument arrays instead of shell string construction.
 - Add user-facing strings to every locale file.
 - Do not mix unrelated refactors into a bug fix.
+- **Building/CSP/Storage/Process**: see [meeting-asr-safety-audit.md](./docs/harness/meeting-asr-safety-audit.md) for hard rules derived from the v0.7.7 speaker-diarization incident.
 
 ## When The Agent Gets Stuck
 

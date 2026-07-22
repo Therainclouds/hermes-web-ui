@@ -1,6 +1,6 @@
 {
   "name": "@quanthermes/hermes-web-ui",
-  "version": "0.7.7",
+  "version": "0.7.8",
   "description": "Self-hosted AI chat dashboard for Hermes Agent — multi-model web UI with multi-platform integration",
   "repository": {
     "type": "git",
@@ -66,6 +66,7 @@
     "build:desktop:linux": "npm run build && npm run desktop:install && npm --prefix packages/desktop run dist -- --linux --publish never",
     "openapi:generate": "node scripts/generate-openapi.mjs",
     "build:device-package": "node scripts/build-device-package.mjs",
+    "build:verify": "node scripts/guard-no-inline-data-urls.mjs",
     "prepublishOnly": "npm run build",
     "release:npm": "npm publish --access public",
     "claude": "claude --dangerously-skip-permissions"

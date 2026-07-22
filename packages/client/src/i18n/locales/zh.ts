@@ -2622,6 +2622,13 @@ export default {
 
   // 更新日志
   changelog: {
+    new_0_7_8_1: '安全：收紧 CSP — 移除 script-src 中的 data: blob:，减少 XSS 攻击面',
+    new_0_7_8_2: '安全：新增显式 worker-src 指令 — AudioWorklet / Monaco Worker 加载可控',
+    new_0_7_8_3: '会议：新增 safe-storage 工具 — localStorage 损坏不再导致 HistoryView 组件崩溃',
+    new_0_7_8_4: '会议：Python except Exception: pass 改为 log_skip() — 后端错误可追踪，调试不再抓瞎',
+    new_0_7_8_5: '会议：保存分析结果 / 上传录音失败时显示 Toast — 用户能感知失败',
+    new_0_7_8_6: '构建：新增 build:verify 守卫脚本 — 检测 data: URL 是否被错误用于 Worker / addModule / eval',
+    new_0_7_8_7: '测试：新增 meeting-worklet-url / safe-storage / security-policy 指令断言 — 防回归',
     new_0_7_7_1: '会议模式：ASR 向导新增 OSS 配置界面 — 填写 OSS 存储桶和密钥后可开启分块实时说话人分离。',
     new_0_7_7_2: '会议模式：说话人分离 OSS 分块模式正式可用 — 每 ~15 秒返回一段带说话人标签的转写文字。',
     new_0_7_7_3: '会议模式：OSS 配置变更后自动重启 ASR 服务，无需手动重启后端。',
@@ -2838,6 +2845,10 @@ export default {
     ossEndpointPlaceholder: 'oss-cn-beijing.aliyuncs.com',
     ossPathPrefix: 'OSS 路径前缀',
     ossPathPrefixPlaceholder: 'meeting-asr-uploads/',
+    // 错误提示
+    errorSaveReportFailed: '保存分析结果失败，请检查网络或服务端日志',
+    errorUploadAudioFailed: '上传录音失败，请稍后重试或检查网络',
+    errorDeleteAudioFailed: '清理旧录音数据失败，本地存储可能已满',
     apiKeySaved: '已保存的 API Key（留空则使用已保存的）',
     configured: '已配置',
     notConfigured: '未配置',

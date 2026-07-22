@@ -17,6 +17,23 @@ npm run test:e2e
 npm run build
 ```
 
+## Meeting / ASR Changes
+
+When touching any file under `packages/client/src/views/hermes/MeetingView.vue`,
+`packages/client/src/audio/`, `packages/client/public/audio/`,
+`packages/server/src/services/meeting-asr/**`, or
+`packages/server/src/security.ts`, run:
+
+```bash
+npm run build && node scripts/guard-no-inline-data-urls.mjs
+npm run test:coverage -- tests/server/security-policy.test.ts
+npm run test:e2e -- tests/e2e/meeting-audio-rate.spec.ts
+pytest tests/python/test_meeting_asr_fallback.py
+```
+
+See [meeting-asr-safety-audit.md](./meeting-asr-safety-audit.md) for the
+incident-driven checklist (B-1 worklet, B-3 CSP, R-5 storage, R-7 UI feedback).
+
 ## Change-Type Matrix
 
 | Change | Minimum local validation |
