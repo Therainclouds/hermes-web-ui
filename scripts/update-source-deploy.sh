@@ -311,22 +311,86 @@ get_codeload_tag_url() {
   return 1
 }
 
+verify_source_archive_checksum() {
+  local archive_path="$1"
+  local expected_sha="$2"
+  if [[ -z "${expected_sha}" ]]; then
+    return 0
+  fi
+  if [[ ! -f "${archive_path}" ]]; then
+    return 1
+  fi
+  local actual_sha
+  actual_sha="$(sha256sum "${archive_path}" | awk '{print $1}')"
+  if [[ "${actual_sha}" != "${expected_sha}" ]]; then
+    err "Source archive checksum mismatch: expected ${expected_sha}, got ${actual_sha}"
+    return 1
+  fi
+  info "Source archive checksum verified: ${actual_sha}"
+  return 0
+}
+
+resolve_source_archive_urls() {
+  local urls=()
+  local raw="${HERMES_WEB_UI_UPDATE_SOURCE_PACKAGE_URLS:-}"
+  if [[ -n "${raw}" ]]; then
+    if command -v python3 >/dev/null 2>&1; then
+      while IFS= read -r url; do
+        if [[ -n "${url}" ]]; then urls+=("${url}"); fi
+      done < <(python3 -c "import json,sys; data=sys.argv[1]; items=json.loads(data) if data else []; [print(str(u)) for u in items if u]" "${raw}")
+    fi
+  fi
+  if [[ ${#urls[@]} -eq 0 && -n "${HERMES_WEB_UI_UPDATE_SOURCE_PACKAGE_URL:-}" ]]; then
+    urls+=("${HERMES_WEB_UI_UPDATE_SOURCE_PACKAGE_URL}")
+  fi
+  printf '%s\n' "${urls[@]}"
+}
+
 download_source_archive() {
-  REPO_URL="$(resolve_repo_url || true)"
-  if [[ -z "${REPO_URL}" ]]; then
-    err "Could not resolve WEBUI_UPDATE_REPO. Set WEBUI_UPDATE_REPO in the service environment."
+  TMP_DIR="$(mktemp -d)"
+  ARCHIVE_PATH="${TMP_DIR}/source.tar.gz"
+  local expected_sha="${HERMES_WEB_UI_UPDATE_SOURCE_PACKAGE_SHA256:-}"
+  local source_repo_fallback="${HERMES_WEB_UI_UPDATE_SOURCE_REPO_URL:-}"
+
+  mapfile -t SOURCE_URLS < <(resolve_source_archive_urls || true)
+  if [[ ${#SOURCE_URLS[@]} -gt 0 ]]; then
+    info "Resolving source archive from manifest URLs (count=${#SOURCE_URLS[@]})"
+    if download_file "${ARCHIVE_PATH}" "${SOURCE_URLS[@]}"; then
+      if verify_source_archive_checksum "${ARCHIVE_PATH}" "${expected_sha}"; then
+        SOURCE_DIR_FROM_MANIFEST=1
+        return 0
+      fi
+      err "Manifest URL source archive failed checksum verification."
+      rm -f "${ARCHIVE_PATH}"
+    else
+      err "All manifest source URLs failed: ${SOURCE_URLS[*]}"
+    fi
+  fi
+
+  local repo_url="${source_repo_fallback}"
+  if [[ -z "${repo_url}" ]]; then
+    repo_url="$(resolve_repo_url || true)"
+  fi
+  if [[ -z "${repo_url}" ]]; then
+    err "Could not resolve source repository. Set HERMES_WEB_UI_UPDATE_SOURCE_REPO_URL or WEBUI_UPDATE_REPO."
     exit 1
   fi
 
-  TMP_DIR="$(mktemp -d)"
-  ARCHIVE_PATH="${TMP_DIR}/source.tar.gz"
+  info "Falling back to git repository source archive: ${repo_url}"
   local archive_url codeload_url
-  archive_url="${REPO_URL%/}/archive/refs/tags/${TARGET_TAG}.tar.gz"
-  codeload_url="$(get_codeload_tag_url "${REPO_URL}" || true)"
+  archive_url="${repo_url%/}/archive/refs/tags/${TARGET_TAG}.tar.gz"
+  codeload_url="$(get_codeload_tag_url "${repo_url}" || true)"
   if ! download_file "${ARCHIVE_PATH}" "${archive_url}" "${codeload_url}"; then
     err "Failed to download source archive for ${TARGET_TAG}."
     exit 1
   fi
+  if [[ -n "${expected_sha}" ]]; then
+    warn "Source SHA256 from manifest cannot be verified against git fallback archive (no manifest bytes)."
+  fi
+  SOURCE_DIR_FROM_MANIFEST=0
+}
+
+extract_source_archive() {
   tar -xzf "${ARCHIVE_PATH}" -C "${TMP_DIR}"
   SOURCE_DIR="$(find "${TMP_DIR}" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
   if [[ -z "${SOURCE_DIR}" || ! -f "${SOURCE_DIR}/package.json" || ! -f "${SOURCE_DIR}/scripts/deploy-source-armbian.sh" ]]; then
@@ -436,6 +500,7 @@ info "Starting source deployment update"
 build_preserve_names
 update_task_stage "downloading" "Downloading source deployment archive ${TARGET_TAG}"
 download_source_archive
+extract_source_archive
 if [[ "${INCLUDE_AGENT_UPGRADE}" == "true" ]]; then
   update_task_stage "starting_runtime" "Upgrading Hermes Agent before applying ${TARGET_VERSION}"
   run_hermes_agent_update

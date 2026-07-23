@@ -339,6 +339,18 @@ export async function buildDevicePackageRelease(options = {}) {
   const packageEntries = buildPackageEntries(repoRoot, packageAllowlist)
   const ossPath = normalizeOptionalUrl(options.ossPath || releaseConfig.ossPath)
   const ossPublicBaseUrl = normalizeOptionalUrl(options.ossPublicBaseUrl || releaseConfig.ossPublicBaseUrl)
+  const sourcePathPrefix = (options.sourcePathPrefix || releaseConfig.sourcePathPrefix || 'sources').trim() || 'sources'
+  const sourceArtifactFormat = (options.sourceArtifactFormat || releaseConfig.sourceArtifactFormat || DEVICE_PACKAGE_ARTIFACT_FORMAT).trim() || DEVICE_PACKAGE_ARTIFACT_FORMAT
+  if (sourceArtifactFormat !== DEVICE_PACKAGE_ARTIFACT_FORMAT) {
+    throw new Error(`sourceArtifactFormat must be "${DEVICE_PACKAGE_ARTIFACT_FORMAT}": ${sourceArtifactFormat}`)
+  }
+  const sourceRepoUrl = (options.sourceRepoUrl || releaseConfig.sourceRepoUrl || '').trim()
+  const sourcePathAllowlist = Array.isArray(releaseConfig.sourcePathAllowlist) && releaseConfig.sourcePathAllowlist.length > 0
+    ? releaseConfig.sourcePathAllowlist
+    : null
+  const sourcePackageEntries = sourcePathAllowlist
+    ? buildPackageEntries(repoRoot, sourcePathAllowlist)
+    : []
   const manifestBranch = (options.manifestBranch || releaseConfig.manifestBranch || DEFAULT_MANIFEST_BRANCH).trim() || DEFAULT_MANIFEST_BRANCH
   const compatibleNodeRange = (
     options.compatibleNodeRange
@@ -352,9 +364,15 @@ export async function buildDevicePackageRelease(options = {}) {
   const releaseDir = resolve(outputDir, 'releases', tag)
   const latestDir = resolve(outputDir, 'releases', channel)
   const stageRoot = mkdtempSync(resolve(tmpdir(), 'hermes-web-ui-device-package-'))
+  const sourceStageRoot = sourcePackageEntries.length > 0
+    ? mkdtempSync(resolve(tmpdir(), 'hermes-web-ui-source-package-'))
+    : null
   const artifactName = `hermes-web-ui-device-${tag}.tar.gz`
+  const sourceArtifactName = `hermes-web-ui-source-${tag}.${sourceArtifactFormat}`
   const artifactPath = resolve(releaseDir, artifactName)
+  const sourceArtifactPath = sourceStageRoot ? resolve(releaseDir, sourceArtifactName) : ''
   const shaPath = `${artifactPath}.sha256`
+  const sourceShaPath = sourceArtifactPath ? `${sourceArtifactPath}.sha256` : ''
   const manifestPath = resolve(releaseDir, 'manifest.json')
   const latestPath = resolve(latestDir, 'latest.json')
   const metadataPath = resolve(outputDir, 'release-metadata.json')
@@ -383,13 +401,36 @@ export async function buildDevicePackageRelease(options = {}) {
     const sha256 = computeSha256(artifactPath)
     const size = statSync(artifactPath).size
     const releasedAt = new Date().toISOString()
+
+    let sourceSha256 = ''
+    let sourceSize = 0
+    if (sourceStageRoot && sourceArtifactPath) {
+      copyPackageEntries(sourceStageRoot, sourcePackageEntries)
+      await createTar({
+        cwd: sourceStageRoot,
+        file: sourceArtifactPath,
+        gzip: true,
+        portable: true,
+        noMtime: true,
+      }, ['.'])
+      sourceSha256 = computeSha256(sourceArtifactPath)
+      sourceSize = statSync(sourceArtifactPath).size
+    }
+
     const ossPackageUrl = buildOssObjectUrl(ossPublicBaseUrl, 'releases', tag, artifactName)
     const githubPackageUrl = buildReleaseAssetUrl(releaseRepo, tag, artifactName)
     const packageUrls = dedupeNonEmpty(ossPackageUrl ? [ossPackageUrl] : [githubPackageUrl])
     const packageUrl = packageUrls[0] || githubPackageUrl
+
+    const ossSourceUrl = buildOssObjectUrl(ossPublicBaseUrl, sourcePathPrefix, tag, sourceArtifactName)
+    const githubSourceUrl = buildReleaseAssetUrl(releaseRepo, tag, sourceArtifactName)
+    const sourceUrls = dedupeNonEmpty(ossSourceUrl ? [ossSourceUrl, githubSourceUrl] : [githubSourceUrl])
+    const sourceUrl = sourceUrls[0] || githubSourceUrl
+
     const ossManifestUrl = buildOssObjectUrl(ossPublicBaseUrl, 'releases', tag, 'manifest.json')
     const ossLatestUrl = buildOssObjectUrl(ossPublicBaseUrl, 'releases', channel, 'latest.json')
     const ossShaUrl = buildOssObjectUrl(ossPublicBaseUrl, 'releases', tag, `${artifactName}.sha256`)
+    const ossSourceShaUrl = buildOssObjectUrl(ossPublicBaseUrl, sourcePathPrefix, tag, `${sourceArtifactName}.sha256`)
     const manifest = {
       version,
       channel,
@@ -408,8 +449,19 @@ export async function buildDevicePackageRelease(options = {}) {
       hostDependenciesPath: hostDependencies.relativePath,
       hostDependencies: hostDependencies.manifest,
     }
+    if (sourceStageRoot) {
+      manifest.sourceArtifactFormat = sourceArtifactFormat
+      manifest.sourceUrl = sourceUrl
+      manifest.sourceUrls = sourceUrls
+      manifest.sourceSha256 = sourceSha256
+      manifest.sourceSize = sourceSize
+      if (sourceRepoUrl) manifest.sourceRepoUrl = sourceRepoUrl
+    }
 
     writeFileSync(shaPath, `${sha256}  ${basename(artifactPath)}\n`, 'utf-8')
+    if (sourceStageRoot && sourceShaPath) {
+      writeFileSync(sourceShaPath, `${sourceSha256}  ${basename(sourceArtifactPath)}\n`, 'utf-8')
+    }
     writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf-8')
     writeFileSync(latestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf-8')
     writeFileSync(metadataPath, `${JSON.stringify({
@@ -419,23 +471,35 @@ export async function buildDevicePackageRelease(options = {}) {
       releaseRepo,
       manifestBranch,
       packageAllowlist: packageEntries.map(entry => entry.path),
+      sourcePathAllowlist: sourcePackageEntries.map(entry => entry.path),
+      sourcePathPrefix,
+      sourceArtifactFormat,
+      sourceRepoUrl,
       hostDependenciesPath: hostDependencies.relativePath,
       hostDependencies: hostDependencies.manifest,
       artifactName,
       artifactPath,
+      sourceArtifactName,
+      sourceArtifactPath,
       shaPath,
+      sourceShaPath,
       manifestPath,
       latestPath,
       ossPath,
       ossPublicBaseUrl,
       ossArtifactPath: buildOssObjectPath(ossPath, 'releases', tag, artifactName),
       ossShaPath: buildOssObjectPath(ossPath, 'releases', tag, `${artifactName}.sha256`),
+      ossSourceArtifactPath: buildOssObjectPath(ossPath, sourcePathPrefix, tag, sourceArtifactName),
+      ossSourceShaPath: buildOssObjectPath(ossPath, sourcePathPrefix, tag, `${sourceArtifactName}.sha256`),
       ossManifestPath: buildOssObjectPath(ossPath, 'releases', tag, 'manifest.json'),
       ossLatestPath: buildOssObjectPath(ossPath, 'releases', channel, 'latest.json'),
       ossArtifactUrl: ossPackageUrl,
+      ossSourceUrl,
       ossShaUrl,
+      ossSourceShaUrl: ossSourceShaUrl,
       ossManifestUrl,
       ossLatestUrl,
+      githubSourceUrl,
       manifestBaseUrl: `https://raw.githubusercontent.com/${releaseRepo}/${manifestBranch}/releases`,
       latestUrl: `https://raw.githubusercontent.com/${releaseRepo}/${manifestBranch}/releases/${channel}/latest.json`,
     }, null, 2)}\n`, 'utf-8')
@@ -448,7 +512,10 @@ export async function buildDevicePackageRelease(options = {}) {
       manifestBranch,
       artifactName,
       artifactPath,
+      sourceArtifactName,
+      sourceArtifactPath,
       shaPath,
+      sourceShaPath,
       manifestPath,
       latestPath,
       metadataPath,
@@ -456,6 +523,7 @@ export async function buildDevicePackageRelease(options = {}) {
     }
   } finally {
     rmSync(stageRoot, { recursive: true, force: true })
+    if (sourceStageRoot) rmSync(sourceStageRoot, { recursive: true, force: true })
   }
 }
 

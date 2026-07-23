@@ -6,6 +6,8 @@ import { config, getWebUiHome, hasConfiguredManifestCheck, hasConfiguredUpdateEx
 import { UpdateError } from '../services/update/errors'
 import { getLocalWebUiVersion, readPackageInfo } from '../services/update/package-info'
 import { assertDevicePackageCompatibility, assertDevicePackageExecution, buildDevicePackageInstallEnv, downloadAndVerifyDevicePackage, getDevicePackageExecutionMessage, resolveDevicePackageManifest } from '../services/update/strategies/device-package'
+import { fetchSourcePackageManifest } from '../services/update/manifest-client'
+import { assertSourcePackageCompatibility } from '../services/update/strategies/source-package'
 import { resolveManifestCheckResult } from '../services/update/manifest-client'
 import { runUpdatePreflight } from '../services/update/preflight'
 import { resolveUpdateRuntimePaths } from '../services/update/runtime-paths'
@@ -13,7 +15,7 @@ import { getSnapshot } from '../services/update/update-check-cache'
 import { assertNpmPackageExecution, buildNpmPackageInstallArgs, getNpmPackageExecutionMessage } from '../services/update/strategies/npm-package'
 import { assertSourceDeployExecution, buildSourceDeployEnv, getSourceDeployExecutionMessage } from '../services/update/strategies/source-deploy'
 import { updateTaskStore } from '../services/update/task-store'
-import type { DevicePackageManifest, UpdateCapabilities, UpdateCheckResult, UpdatePreflightResult, UpdateRuntimePaths, UpdateStrategy } from '../services/update/types'
+import type { DevicePackageManifest, SourcePackageManifest, UpdateCapabilities, UpdateCheckResult, UpdatePreflightResult, UpdateRuntimePaths, UpdateStrategy } from '../services/update/types'
 import { isRemoteVersionNewer } from '../services/update/version-compare'
 import { isDockerContainer } from '../services/runtime-environment'
 
@@ -98,6 +100,10 @@ const UPDATE_RUNNER_ENV_KEYS = [
   'HERMES_WEB_UI_UPDATE_HEALTHCHECK_RETRIES',
   'HERMES_WEB_UI_UPDATE_HEALTHCHECK_INITIAL_DELAY_MS',
   'HERMES_WEB_UI_UPDATE_EXPECTED_SHA256',
+  'HERMES_WEB_UI_UPDATE_SOURCE_PACKAGE_URL',
+  'HERMES_WEB_UI_UPDATE_SOURCE_PACKAGE_URLS',
+  'HERMES_WEB_UI_UPDATE_SOURCE_PACKAGE_SHA256',
+  'HERMES_WEB_UI_UPDATE_SOURCE_REPO_URL',
 ] as const
 
 type PreviewTagRef = { name: string; sha: string }
@@ -1161,12 +1167,17 @@ async function spawnRestart(port: string) {
   })
 }
 
-function spawnSourceDeployUpdate(version: string, runtimePaths: UpdateRuntimePaths, taskId: string) {
+function spawnSourceDeployUpdate(
+  version: string,
+  runtimePaths: UpdateRuntimePaths,
+  taskId: string,
+  sourceManifest?: SourcePackageManifest,
+) {
   if (!config.update.script || !config.update.runnerService || !config.update.runnerRequestFile) {
     throw new UpdateError('update_execution_misconfigured', getSourceDeployExecutionMessage())
   }
 
-  const env = buildSourceDeployEnv(config.update, getCurrentNodeEnv(), version, runtimePaths, taskId)
+  const env = buildSourceDeployEnv(config.update, getCurrentNodeEnv(), version, runtimePaths, taskId, sourceManifest)
   writeUpdateRunnerRequest('source-deploy', env)
   return spawnManagedUpdateService()
 }
@@ -1560,23 +1571,38 @@ export async function handleUpdate(ctx: any) {
 
     if (config.update.strategy === 'source-deploy') {
       assertSourceDeployExecution(config.update)
-      const version = await resolveRegistryUpdateVersion()
+      let sourceManifest: SourcePackageManifest | null = null
+      let version = ''
+      let detectionSource: 'manifest' | 'npm-registry' = 'npm-registry'
+      if (hasConfiguredManifestCheck(config.update)) {
+        try {
+          sourceManifest = await fetchSourcePackageManifest(config.update)
+          assertSourcePackageCompatibility(sourceManifest, getLocalWebUiVersion())
+          version = sourceManifest.version
+          detectionSource = 'manifest'
+        } catch (err) {
+          console.warn('[update] source-deploy manifest lookup failed, falling back to npm registry:', err instanceof Error ? err.message : String(err))
+        }
+      }
+      if (!sourceManifest) {
+        version = await resolveRegistryUpdateVersion()
+      }
       const task = updateTaskStore.createTask('source-deploy', `Preparing source deployment update ${version}.`)
       managedUpdateTaskId = task.id
       updateTaskStore.updateCurrentStage('preflighting', 'Running update preflight checks.', {
         warning: preflight.warningText,
         targetVersion: version,
-        healthcheckUrl: config.update.healthcheckUrl,
+        healthcheckUrl: sourceManifest?.healthcheckUrl || config.update.healthcheckUrl,
       })
-      updateTaskStore.updateCurrentStage('starting', `Starting source deployment update ${version}.`, {
+      updateTaskStore.updateCurrentStage('starting', `Starting source deployment update ${version} (${detectionSource}).`, {
         targetVersion: version,
         warning: preflight.warningText,
-        healthcheckUrl: config.update.healthcheckUrl,
+        healthcheckUrl: sourceManifest?.healthcheckUrl || config.update.healthcheckUrl,
       })
 
       let updateChild: ChildProcess
       try {
-        updateChild = spawnSourceDeployUpdate(version, runtimePaths, task.id)
+        updateChild = spawnSourceDeployUpdate(version, runtimePaths, task.id, sourceManifest || undefined)
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err)
         failCurrentUpdateTask(`Failed to start source deployment update ${version}.`, error)
@@ -1587,7 +1613,7 @@ export async function handleUpdate(ctx: any) {
         message: `Handed off source deployment update ${version} to runtime.`,
         targetVersion: version,
         warning: preflight.warningText,
-        healthcheckUrl: config.update.healthcheckUrl,
+        healthcheckUrl: sourceManifest?.healthcheckUrl || config.update.healthcheckUrl,
       })
       observeDetachedUpdateProcess(updateChild, 'managed source deployment update service', {
         onSuccess: () => {

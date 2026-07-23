@@ -103,6 +103,14 @@ jobs:
           console.log(`oss_artifact_url=${metadata.ossArtifactUrl || ''}`)
           console.log(`oss_manifest_url=${metadata.ossManifestUrl || ''}`)
           console.log(`oss_latest_url=${metadata.ossLatestUrl || ''}`)
+          console.log(`source_artifact_path=${metadata.sourceArtifactPath || ''}`)
+          console.log(`source_sha_path=${metadata.sourceShaPath || ''}`)
+          console.log(`source_artifact_name=${metadata.sourceArtifactName || ''}`)
+          console.log(`oss_source_artifact_path=${metadata.ossSourceArtifactPath || ''}`)
+          console.log(`oss_source_sha_path=${metadata.ossSourceShaPath || ''}`)
+          console.log(`oss_source_url=${metadata.ossSourceUrl || ''}`)
+          console.log(`oss_source_sha_url=${metadata.ossSourceShaUrl || ''}`)
+          console.log(`github_source_url=${metadata.githubSourceUrl || ''}`)
           NODE
 
       - name: Read Hermes Agent stable config
@@ -149,10 +157,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          args=(
+            "${{ steps.metadata.outputs.artifact_path }}"
+            "${{ steps.metadata.outputs.sha_path }}"
+            "${{ steps.metadata.outputs.manifest_path }}"
+          )
+          if [ -n "${{ steps.metadata.outputs.source_artifact_path }}" ]; then
+            args+=(
+              "${{ steps.metadata.outputs.source_artifact_path }}"
+              "${{ steps.metadata.outputs.source_sha_path }}"
+            )
+          fi
           gh release upload "${RELEASE_TAG}" \
-            "${{ steps.metadata.outputs.artifact_path }}" \
-            "${{ steps.metadata.outputs.sha_path }}" \
-            "${{ steps.metadata.outputs.manifest_path }}" \
+            "${args[@]}" \
             --repo "${GITHUB_REPOSITORY}" \
             --clobber
 
@@ -211,6 +228,10 @@ jobs:
           ossutil -c "${HOME}/.ossutilconfig" cp -f "${{ steps.metadata.outputs.sha_path }}" "${{ steps.metadata.outputs.oss_sha_path }}"
           ossutil -c "${HOME}/.ossutilconfig" cp -f "${{ steps.metadata.outputs.manifest_path }}" "${{ steps.metadata.outputs.oss_manifest_path }}"
           ossutil -c "${HOME}/.ossutilconfig" cp -f "${{ steps.metadata.outputs.latest_path }}" "${{ steps.metadata.outputs.oss_latest_path }}"
+          if [ -n "${{ steps.metadata.outputs.source_artifact_path }}" ]; then
+            ossutil -c "${HOME}/.ossutilconfig" cp -f "${{ steps.metadata.outputs.source_artifact_path }}" "${{ steps.metadata.outputs.oss_source_artifact_path }}"
+            ossutil -c "${HOME}/.ossutilconfig" cp -f "${{ steps.metadata.outputs.source_sha_path }}" "${{ steps.metadata.outputs.oss_source_sha_path }}"
+          fi
 
       - name: Mirror Hermes Agent stable release to OSS
         if: steps.metadata.outputs.oss_path != ''
@@ -352,6 +373,19 @@ jobs:
             fi
           fi
 
+          source_url="$(node -e "const fs=require('node:fs'); const data=JSON.parse(fs.readFileSync('${{ steps.metadata.outputs.latest_path }}','utf8')); process.stdout.write(String(data.sourceUrls?.[0] || data.sourceUrl || ''))")"
+          source_expected_sha="$(node -e "const fs=require('node:fs'); const data=JSON.parse(fs.readFileSync('${{ steps.metadata.outputs.latest_path }}','utf8')); process.stdout.write(String(data.sourceSha256 || ''))")"
+          if [ -n "${source_url}" ]; then
+            curl -fsSL "${source_url}" > /tmp/source-package.tar.gz
+            if [ -n "${source_expected_sha}" ]; then
+              source_actual_sha="$(sha256sum /tmp/source-package.tar.gz | awk '{print $1}')"
+              if [ "${source_actual_sha}" != "${source_expected_sha}" ]; then
+                echo "Source package checksum mismatch for ${source_url}: expected ${source_expected_sha}, got ${source_actual_sha}" >&2
+                exit 1
+              fi
+            fi
+          fi
+
           hermes_agent_channel="${{ steps.hermes_agent.outputs.channel }}"
           hermes_agent_version="${{ steps.hermes_agent.outputs.version }}"
           hermes_agent_latest_url="${{ steps.metadata.outputs.oss_public_base_url }}/hermes-agent/${hermes_agent_channel}/latest.json"
@@ -374,6 +408,8 @@ jobs:
             ${{ steps.metadata.outputs.manifest_path }}
             ${{ steps.metadata.outputs.latest_path }}
             ${{ steps.metadata.outputs.sha_path }}
+            ${{ steps.metadata.outputs.source_artifact_path }}
+            ${{ steps.metadata.outputs.source_sha_path }}
 
       - name: Write workflow summary
         shell: bash
@@ -386,6 +422,12 @@ jobs:
             echo "- Manifest branch: \`${{ steps.metadata.outputs.manifest_branch }}\`"
             echo "- Manifest base URL: \`${{ steps.metadata.outputs.manifest_base_url }}\`"
             echo "- Latest URL: [latest.json](${{ steps.metadata.outputs.latest_url }})"
+            if [ -n "${{ steps.metadata.outputs.oss_source_url }}" ]; then
+              echo "- OSS source URL: \`${{ steps.metadata.outputs.oss_source_url }}\`"
+            fi
+            if [ -n "${{ steps.metadata.outputs.github_source_url }}" ]; then
+              echo "- GitHub source URL: \`${{ steps.metadata.outputs.github_source_url }}\`"
+            fi
             echo "- Hermes Agent stable: \`${{ steps.hermes_agent.outputs.version }}\`"
             echo "- Hermes Agent channel: \`${{ steps.hermes_agent.outputs.channel }}\`"
           } >> "$GITHUB_STEP_SUMMARY"

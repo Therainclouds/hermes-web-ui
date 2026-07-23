@@ -13,6 +13,8 @@ export type UpdateErrorCode =
   | 'update_package_fetch_failed'
   | 'update_sha256_mismatch'
   | 'update_install_spawn_failed'
+  | 'update_source_package_fetch_failed'
+  | 'update_source_package_checksum_mismatch'
 
 export class UpdateError extends Error {
   code: UpdateErrorCode

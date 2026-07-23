@@ -8,7 +8,14 @@ import {
 import { UpdateError } from './errors'
 import { describeUpdateNetworkError, fetchUpdateJson } from './network-client'
 import { parseSemver } from './version-compare'
-import type { DevicePackageManifest, ManifestUpdateInfo, UpdateCheckResult, UpdateConfig, UpdatePackageType } from './types'
+import type {
+  DevicePackageManifest,
+  ManifestUpdateInfo,
+  SourcePackageManifest,
+  UpdateCheckResult,
+  UpdateConfig,
+  UpdatePackageType,
+} from './types'
 
 interface RawManifestPayload {
   version?: unknown
@@ -26,6 +33,11 @@ interface RawManifestPayload {
   notesUrl?: unknown
   size?: unknown
   healthcheckUrl?: unknown
+  sourceUrl?: unknown
+  sourceUrls?: unknown
+  sourceSha256?: unknown
+  sourceRepoUrl?: unknown
+  sourceSize?: unknown
 }
 
 function toPackageType(value: unknown, fallback: UpdatePackageType): UpdatePackageType {
@@ -215,6 +227,53 @@ export async function fetchDevicePackageManifest(update: UpdateConfig = config.u
     minCurrentVersion,
     notesUrl: typeof payload.notesUrl === 'string' ? payload.notesUrl.trim() : '',
     size: typeof payload.size === 'number' && Number.isFinite(payload.size) ? payload.size : 0,
+    healthcheckUrl: typeof payload.healthcheckUrl === 'string' && payload.healthcheckUrl.trim()
+      ? payload.healthcheckUrl.trim()
+      : update.healthcheckUrl,
+  }
+}
+
+export async function fetchSourcePackageManifest(update: UpdateConfig = config.update): Promise<SourcePackageManifest> {
+  const { manifestUrl, payload } = await fetchRawManifest(update)
+  const info = normalizeBaseManifestInfo(payload, manifestUrl, update)
+  if (info.packageType !== 'source-deploy') {
+    throw new UpdateError('update_manifest_invalid', `Manifest packageType must be "source-deploy": ${manifestUrl}`)
+  }
+
+  const artifactFormat = requireStringField(payload.artifactFormat, 'artifactFormat', manifestUrl)
+  if (artifactFormat !== DEVICE_PACKAGE_ARTIFACT_FORMAT) {
+    throw new UpdateError(
+      'update_manifest_invalid',
+      `Manifest artifactFormat must be "${DEVICE_PACKAGE_ARTIFACT_FORMAT}": ${manifestUrl}`,
+    )
+  }
+
+  const sourceUrls = normalizeUrlListField(payload.sourceUrls)
+  const sourceUrl = sourceUrls[0] || requireStringField(payload.sourceUrl, 'sourceUrl', manifestUrl)
+  const sourceSha256 = requireStringField(payload.sourceSha256, 'sourceSha256', manifestUrl).toLowerCase()
+  if (!/^[a-f0-9]{64}$/.test(sourceSha256)) {
+    throw new UpdateError('update_manifest_invalid', `Manifest sourceSha256 must be a 64 character hex string: ${manifestUrl}`)
+  }
+
+  const releasedAt = requireStringField(payload.releasedAt, 'releasedAt', manifestUrl)
+  const minCurrentVersion = requireStringField(payload.minCurrentVersion, 'minCurrentVersion', manifestUrl)
+  if (!parseSemver(minCurrentVersion)) {
+    throw new UpdateError('update_manifest_invalid', `Manifest minCurrentVersion is not a valid semver: ${minCurrentVersion}`)
+  }
+  const sourceRepoUrl = typeof payload.sourceRepoUrl === 'string' ? payload.sourceRepoUrl.trim() : ''
+  const sourceSize = typeof payload.sourceSize === 'number' && Number.isFinite(payload.sourceSize) ? payload.sourceSize : 0
+
+  return {
+    ...info,
+    artifactFormat: DEVICE_PACKAGE_ARTIFACT_FORMAT,
+    sourceUrl,
+    sourceUrls: sourceUrls.length > 0 ? sourceUrls : undefined,
+    sourceSha256,
+    releasedAt,
+    minCurrentVersion,
+    notesUrl: typeof payload.notesUrl === 'string' ? payload.notesUrl.trim() : '',
+    sourceRepoUrl: sourceRepoUrl || undefined,
+    sourceSize,
     healthcheckUrl: typeof payload.healthcheckUrl === 'string' && payload.healthcheckUrl.trim()
       ? payload.healthcheckUrl.trim()
       : update.healthcheckUrl,

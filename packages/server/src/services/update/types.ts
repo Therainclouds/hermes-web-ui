@@ -19,6 +19,7 @@ export interface UpdateConfig {
   manifestUrl: string
   manifestUrls?: string[]
   manifestBaseUrl: string
+  sourceRepoUrl?: string
   packageType: UpdatePackageType
   installerScript: string
   stagingDir: string
@@ -149,6 +150,19 @@ export interface DevicePackageManifest extends ManifestUpdateInfo {
   minCurrentVersion: string
   notesUrl: string
   size: number
+  healthcheckUrl: string
+}
+
+export interface SourcePackageManifest extends ManifestUpdateInfo {
+  artifactFormat: 'tar.gz'
+  sourceUrl: string
+  sourceUrls?: string[]
+  sourceSha256: string
+  releasedAt: string
+  minCurrentVersion: string
+  notesUrl: string
+  sourceRepoUrl?: string
+  sourceSize: number
   healthcheckUrl: string
 }
 

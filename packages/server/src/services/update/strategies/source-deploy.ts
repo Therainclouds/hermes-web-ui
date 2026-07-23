@@ -1,4 +1,4 @@
-import type { UpdateConfig, UpdateRuntimePaths } from '../types'
+import type { SourcePackageManifest, UpdateConfig, UpdateRuntimePaths } from '../types'
 import { UpdateError } from '../errors'
 import { buildShellScriptCommand, type CommandResolver } from './script-command'
 
@@ -18,7 +18,13 @@ export function buildSourceDeployEnv(
   version: string,
   paths: UpdateRuntimePaths,
   taskId: string,
+  sourceManifest?: SourcePackageManifest,
 ): NodeJS.ProcessEnv {
+  const sourceUrls = sourceManifest
+    ? (Array.isArray(sourceManifest.sourceUrls) && sourceManifest.sourceUrls.length > 0
+      ? sourceManifest.sourceUrls
+      : [sourceManifest.sourceUrl])
+    : []
   return {
     ...baseEnv,
     APP_USER: baseEnv.APP_USER || 'hermesui',
@@ -44,6 +50,10 @@ export function buildSourceDeployEnv(
     HERMES_WEB_UI_UPDATE_DIST_TAG: update.distTag || 'latest',
     HERMES_WEB_UI_UPDATE_AUTO_INSTALL_DEPENDENCIES: update.autoInstallDependencies ? 'true' : 'false',
     HERMES_WEB_UI_UPDATE_INCLUDE_AGENT_UPGRADE: update.includeAgentUpgrade ? 'true' : 'false',
+    HERMES_WEB_UI_UPDATE_SOURCE_PACKAGE_URL: sourceManifest?.sourceUrl || '',
+    HERMES_WEB_UI_UPDATE_SOURCE_PACKAGE_URLS: JSON.stringify(sourceUrls),
+    HERMES_WEB_UI_UPDATE_SOURCE_PACKAGE_SHA256: sourceManifest?.sourceSha256 || '',
+    HERMES_WEB_UI_UPDATE_SOURCE_REPO_URL: sourceManifest?.sourceRepoUrl || update.sourceRepoUrl || '',
   }
 }
 
