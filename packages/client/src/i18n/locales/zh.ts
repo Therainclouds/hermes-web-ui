@@ -2622,6 +2622,12 @@ export default {
 
   // 更新日志
   changelog: {
+    new_0_7_10_1: '会议：ASR 后端默认启用 HTTPS — uvicorn 提供 wss://，Web UI（HTTPS）连接不再触发 Mixed Content 错误',
+    new_0_7_10_2: '会议：首次启动自动生成自签 TLS 证书（SAN 含 127.0.0.1 / 0.0.0.0 / localhost），缓存到 data/certs/，重启后证书指纹保持稳定',
+    new_0_7_10_3: '会议：Koa 代理改用 node:https + rejectUnauthorized:false 连接自签后端；status 接口暴露 https 字段',
+    new_0_7_10_4: '会议：后端绑定 0.0.0.0，LAN 浏览器可直接访问；HTTPS 模式下 spawn 参数自动追加 --ssl-keyfile / --ssl-certfile',
+    new_0_7_10_5: '会议：前端 WebSocket URL 根据 window.location.protocol 自动选 ws:// 或 wss://；Vite 产物 worklet URL 保持 .js 后缀以匹配 addModule()',
+    new_0_7_10_6: '会议：env MEETING_ASR_HTTPS=false 可回退到 HTTP 排障；启动探针改用 node:https.request 绕过自签证书校验',
     new_0_7_8_1: '安全：收紧 CSP — 移除 script-src 中的 data: blob:，减少 XSS 攻击面',
     new_0_7_8_2: '安全：新增显式 worker-src 指令 — AudioWorklet / Monaco Worker 加载可控',
     new_0_7_8_3: '会议：新增 safe-storage 工具 — localStorage 损坏不再导致 HistoryView 组件崩溃',

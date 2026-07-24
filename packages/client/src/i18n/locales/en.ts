@@ -2620,6 +2620,12 @@ export default {
 
   // Changelog
   changelog: {
+    new_0_7_10_1: 'Meeting: ASR backend defaults to HTTPS — uvicorn now serves wss:// so the Web UI (HTTPS) connects without Mixed Content errors.',
+    new_0_7_10_2: 'Meeting: self-signed TLS cert auto-generated on first start (SAN includes 127.0.0.1 / 0.0.0.0 / localhost); cached in data/certs/ so the cert fingerprint stays stable across restarts.',
+    new_0_7_10_3: 'Meeting: Koa proxy now uses node:https with rejectUnauthorized:false to reach the self-signed backend; status endpoint exposes the https flag.',
+    new_0_7_10_4: 'Meeting: backend binds to 0.0.0.0 so LAN browsers can reach it; spawn args automatically append --ssl-keyfile / --ssl-certfile when HTTPS is on.',
+    new_0_7_10_5: 'Meeting: frontend WebSocket URL picks ws:// vs wss:// based on window.location.protocol; Vite-built worklet URL keeps the .js extension to match addModule().',
+    new_0_7_10_6: 'Meeting: MEETING_ASR_HTTPS=false env reverts to HTTP for debugging; the readiness probe uses node:https.request so self-signed certs do not block startup.',
     new_0_7_8_1: 'Security: tightened CSP — removed data: and blob: from script-src, reducing XSS attack surface.',
     new_0_7_8_2: 'Security: explicit worker-src directive — AudioWorklet and Monaco Worker loading now controlled.',
     new_0_7_8_3: 'Meeting: new safe-storage utility — corrupted localStorage no longer crashes HistoryView.',
