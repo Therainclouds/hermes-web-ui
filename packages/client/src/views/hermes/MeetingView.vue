@@ -92,8 +92,11 @@ const renamingKey = ref<string | null>(null)  // 格式: "speakerId:index"
 const renameInput = ref('')
 
 // --- 配置 ---
-const ASR_URL = computed(() => `ws://${window.location.hostname}:${asrServiceStatus.value.asrPort || 8000}/ws/asr`)
-const DIARIZE_URL = computed(() => `ws://${window.location.hostname}:${asrServiceStatus.value.diarizePort || 8001}/ws/diarize`)
+// WebSocket protocol follows the page protocol — HTTPS page → wss://, HTTP page → ws://.
+// Using ws:// from an HTTPS page triggers Mixed Content errors in modern browsers.
+const WS_PROTOCOL = computed(() => (window.location.protocol === 'https:' ? 'wss:' : 'ws:'))
+const ASR_URL = computed(() => `${WS_PROTOCOL.value}//${window.location.hostname}:${asrServiceStatus.value.asrPort || 8000}/ws/asr`)
+const DIARIZE_URL = computed(() => `${WS_PROTOCOL.value}//${window.location.hostname}:${asrServiceStatus.value.diarizePort || 8001}/ws/diarize`)
 
 
 

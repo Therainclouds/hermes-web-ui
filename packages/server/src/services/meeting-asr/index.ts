@@ -3,6 +3,7 @@ import { EventEmitter } from 'events'
 import path from 'path'
 import fs from 'fs/promises'
 import os from 'os'
+import https from 'node:https'
 import { logger } from '../logger'
 
 export interface MeetingASRConfig {
@@ -34,6 +35,8 @@ export interface MeetingASRStatus {
   pid: number | null
   uptime: number | null
   error: string | null
+  /** Whether the backend is serving HTTPS (so the Koa proxy + browser use wss://). */
+  https: boolean
 }
 
 export class MeetingASRService extends EventEmitter {
@@ -46,6 +49,11 @@ export class MeetingASRService extends EventEmitter {
   private _error: string | null = null
   private _asrPort: number | null = null
   private _diarizePort: number | null = null
+  // HTTPS mode (default on so the Web UI can use wss:// without Mixed Content).
+  // Overridable via MEETING_ASR_HTTPS=false for debugging.
+  private _useHttps = false
+  private _sslKeyfile = ''
+  private _sslCertfile = ''
   // Auto-restart: when true, an unexpected main-process exit triggers a
   // bounded backoff restart loop. Disabled by stop() to avoid fighting
   // deliberate shutdowns.
@@ -78,6 +86,7 @@ export class MeetingASRService extends EventEmitter {
       pid: this.mainProcess?.pid || null,
       uptime: this._startTime ? Date.now() - this._startTime : null,
       error: this._error,
+      https: this._useHttps,
     }
   }
 
@@ -87,6 +96,53 @@ export class MeetingASRService extends EventEmitter {
 
   private getDataDir(): string {
     return this._config.dataDir || path.join(process.cwd(), 'data', 'meeting-asr')
+  }
+
+  /**
+   * Ensure a self-signed TLS cert/key pair exists for the ASR backend and
+   * return absolute paths. On first launch we generate via `openssl`; on
+   * subsequent launches we reuse the persisted files so browsers don't see
+   * a new fingerprint every restart.
+   *
+   * SAN covers loopback + 0.0.0.0 + localhost so both `127.0.0.1` (Koa
+   * health-check probe) and LAN IPs (browser on a phone) work after the
+   * user trusts the cert.
+   */
+  private async ensureSSLCerts(dataDir: string): Promise<{ keyfile: string; certfile: string }> {
+    const certsDir = path.join(dataDir, 'certs')
+    const keyfile = path.join(certsDir, 'key.pem')
+    const certfile = path.join(certsDir, 'cert.pem')
+
+    try {
+      await fs.access(keyfile)
+      await fs.access(certfile)
+      return { keyfile, certfile }
+    } catch {
+      // Missing — generate below.
+    }
+
+    await fs.mkdir(certsDir, { recursive: true })
+    logger.info('[meeting-asr] Generating self-signed TLS cert at %s', certsDir)
+
+    const subject = '/CN=meeting-asr-local'
+    const san = 'subjectAltName=IP:127.0.0.1,IP:0.0.0.0,DNS:localhost'
+    const result = await this.runCaptured(
+      'openssl',
+      [
+        'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+        '-keyout', keyfile, '-out', certfile,
+        '-days', '365', '-subj', subject, '-addext', san,
+      ],
+      certsDir,
+      30 * 1000,
+    )
+    if (result.code !== 0) {
+      throw new Error(
+        `Failed to generate self-signed TLS cert (exit ${result.code}): ${result.stderr.trim() || 'no stderr'}. ` +
+          `Install OpenSSL (Windows: Git for Windows ships one in PATH) or set MEETING_ASR_HTTPS=false to fall back to HTTP.`,
+      )
+    }
+    return { keyfile, certfile }
   }
 
   private async findPython(): Promise<string> {
@@ -240,6 +296,19 @@ export class MeetingASRService extends EventEmitter {
       const dataDir = this.getDataDir()
       await fs.mkdir(dataDir, { recursive: true })
 
+      // HTTPS mode: default ON so the Web UI (HTTPS) can use wss:// without
+      // Mixed Content errors. Override with MEETING_ASR_HTTPS=false to debug
+      // with plain HTTP (then browsers must also be on http://).
+      this._useHttps = (process.env.MEETING_ASR_HTTPS ?? 'true').toLowerCase() !== 'false'
+      if (this._useHttps) {
+        const certs = await this.ensureSSLCerts(dataDir)
+        this._sslKeyfile = certs.keyfile
+        this._sslCertfile = certs.certfile
+      } else {
+        this._sslKeyfile = ''
+        this._sslCertfile = ''
+      }
+
       // Get Python path
       const pythonPath = await this.ensureVirtualEnv()
       const backendPath = this.getPythonBackendPath()
@@ -252,7 +321,7 @@ export class MeetingASRService extends EventEmitter {
       const env: Record<string, string> = {
         ...process.env,
         DATA_DIR: dataDir,
-        BACKEND_HOST: config.host || '127.0.0.1',
+        BACKEND_HOST: config.host || '0.0.0.0',
         BACKEND_PORT: String(this._asrPort),
         DIARIZE_PORT: String(this._diarizePort),
         CORS_ORIGIN: `http://localhost:${process.env.PORT || 6060}`,
@@ -314,7 +383,11 @@ export class MeetingASRService extends EventEmitter {
 
       // Start main ASR process
       logger.info('[meeting-asr] Starting main ASR service on port %d...', this._asrPort)
-      this.mainProcess = spawn(pythonPath, ['-m', 'uvicorn', 'app.main:app', '--host', env.BACKEND_HOST, '--port', String(this._asrPort)], {
+      const mainUvicornArgs = ['-m', 'uvicorn', 'app.main:app', '--host', '0.0.0.0', '--port', String(this._asrPort)]
+      if (this._useHttps) {
+        mainUvicornArgs.push('--ssl-keyfile', this._sslKeyfile, '--ssl-certfile', this._sslCertfile)
+      }
+      this.mainProcess = spawn(pythonPath, mainUvicornArgs, {
         cwd: backendPath,
         env,
         stdio: 'pipe',
@@ -347,7 +420,11 @@ export class MeetingASRService extends EventEmitter {
 
       // Start diarize process
       logger.info('[meeting-asr] Starting diarize service on port %d...', this._diarizePort)
-      this.diarizeProcess = spawn(pythonPath, ['-m', 'uvicorn', 'app.diarize_server:app', '--host', env.BACKEND_HOST, '--port', String(this._diarizePort)], {
+      const diarizeUvicornArgs = ['-m', 'uvicorn', 'app.diarize_server:app', '--host', '0.0.0.0', '--port', String(this._diarizePort)]
+      if (this._useHttps) {
+        diarizeUvicornArgs.push('--ssl-keyfile', this._sslKeyfile, '--ssl-certfile', this._sslCertfile)
+      }
+      this.diarizeProcess = spawn(pythonPath, diarizeUvicornArgs, {
         cwd: backendPath,
         env,
         stdio: 'pipe',
@@ -396,6 +473,9 @@ export class MeetingASRService extends EventEmitter {
     // Poll main (:8000) and diarize (:8001) healthz in parallel. Both must be
     // healthy before we declare the service ready — silence on diarize means
     // user-side speaker-diarization will silently hang without diagnostics.
+    //
+    // When the backend is HTTPS, Node's native fetch rejects the self-signed
+    // cert, so we route through `node:https` with rejectUnauthorized:false.
     const startTime = Date.now()
     let mainOk = false
     let diarizeOk = false
@@ -404,40 +484,22 @@ export class MeetingASRService extends EventEmitter {
 
     while (Date.now() - startTime < timeout) {
       if (!mainOk && this._asrPort) {
-        try {
-          const controller = new AbortController()
-          const timer = setTimeout(() => controller.abort(), 2000)
-          const response = await fetch(`http://127.0.0.1:${this._asrPort}/healthz`, {
-            signal: controller.signal,
-          })
-          clearTimeout(timer)
-          if (response.ok) {
-            mainOk = true
-            logger.info('[meeting-asr] Main service is ready on :%d', this._asrPort)
-          } else {
-            mainLastErr = `main healthz status ${response.status}`
-          }
-        } catch (err) {
-          mainLastErr = err instanceof Error ? err.message : String(err)
+        const r = await this.probeHealthz(this._asrPort)
+        if (r.ok) {
+          mainOk = true
+          logger.info('[meeting-asr] Main service is ready on :%d', this._asrPort)
+        } else {
+          mainLastErr = r.err || `main healthz status ${r.status}`
         }
       }
 
       if (!diarizeOk && this._diarizePort) {
-        try {
-          const controller = new AbortController()
-          const timer = setTimeout(() => controller.abort(), 2000)
-          const response = await fetch(`http://127.0.0.1:${this._diarizePort}/healthz`, {
-            signal: controller.signal,
-          })
-          clearTimeout(timer)
-          if (response.ok) {
-            diarizeOk = true
-            logger.info('[meeting-asr] Diarize service is ready on :%d', this._diarizePort)
-          } else {
-            diarizeLastErr = `diarize healthz status ${response.status}`
-          }
-        } catch (err) {
-          diarizeLastErr = err instanceof Error ? err.message : String(err)
+        const r = await this.probeHealthz(this._diarizePort)
+        if (r.ok) {
+          diarizeOk = true
+          logger.info('[meeting-asr] Diarize service is ready on :%d', this._diarizePort)
+        } else {
+          diarizeLastErr = r.err || `diarize healthz status ${r.status}`
         }
       }
 
@@ -463,6 +525,56 @@ export class MeetingASRService extends EventEmitter {
     throw new Error(
       `Timeout waiting for ASR services to be ready after ${timeout}ms. Not ready: ${missing}.`,
     )
+  }
+
+  /**
+   * Single-port healthz probe. HTTP via fetch; HTTPS via node:https with
+   * rejectUnauthorized:false so the self-signed cert doesn't trip the
+   * verifier.
+   */
+  private async probeHealthz(
+    port: number,
+    timeoutMs = 2000,
+  ): Promise<{ ok: boolean; status?: number; err?: string }> {
+    if (!this._useHttps) {
+      try {
+        const controller = new AbortController()
+        const timer = setTimeout(() => controller.abort(), timeoutMs)
+        const response = await fetch(`http://127.0.0.1:${port}/healthz`, {
+          signal: controller.signal,
+        })
+        clearTimeout(timer)
+        return { ok: response.ok, status: response.status }
+      } catch (err) {
+        return { ok: false, err: err instanceof Error ? err.message : String(err) }
+      }
+    }
+
+    return new Promise((resolve) => {
+      const req = https.request(
+        {
+          host: '127.0.0.1',
+          port,
+          path: '/healthz',
+          method: 'GET',
+          rejectUnauthorized: false,
+          timeout: timeoutMs,
+        },
+        (res) => {
+          res.on('data', () => {})
+          res.on('end', () => {
+            const code = res.statusCode ?? 0
+            resolve({ ok: code >= 200 && code < 300, status: code })
+          })
+        },
+      )
+      req.on('error', (err) => resolve({ ok: false, err: err.message }))
+      req.on('timeout', () => {
+        req.destroy()
+        resolve({ ok: false, err: 'timeout' })
+      })
+      req.end()
+    })
   }
 
   /**
@@ -602,32 +714,68 @@ export class MeetingASRService extends EventEmitter {
       throw new Error('ASR service is not running')
     }
 
-    // Update via API
-    try {
-      const response = await fetch(`http://127.0.0.1:${this._asrPort}/api/config`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          asr: {
-            dashscope_api_key: config.dashscopeApiKey,
-            paraformer_ws_url: config.paraformerWsUrl,
-            paraformer_model: config.paraformerModel,
-            paraformer_sample_rate: config.paraformerSampleRate,
-            paraformer_format: config.paraformerFormat,
-            paraformer_language_hints: config.paraformerLanguageHints,
-            paraformer_semantic_punctuation: config.paraformerSemanticPunctuation,
-          },
-          llm: {
-            api_key: config.llmApiKey,
-            base_url: config.llmBaseUrl,
-            model: config.llmModel,
-          },
-        }),
-      })
+    const body = JSON.stringify({
+      asr: {
+        dashscope_api_key: config.dashscopeApiKey,
+        paraformer_ws_url: config.paraformerWsUrl,
+        paraformer_model: config.paraformerModel,
+        paraformer_sample_rate: config.paraformerSampleRate,
+        paraformer_format: config.paraformerFormat,
+        paraformer_language_hints: config.paraformerLanguageHints,
+        paraformer_semantic_punctuation: config.paraformerSemanticPunctuation,
+      },
+      llm: {
+        api_key: config.llmApiKey,
+        base_url: config.llmBaseUrl,
+        model: config.llmModel,
+      },
+    })
 
-      if (!response.ok) {
-        throw new Error(`Failed to update config: ${response.statusText}`)
+    try {
+      if (!this._useHttps) {
+        const response = await fetch(`http://127.0.0.1:${this._asrPort}/api/config`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+        })
+        if (!response.ok) {
+          throw new Error(`Failed to update config: ${response.statusText}`)
+        }
+        return
       }
+
+      // HTTPS branch: self-signed cert → rejectUnauthorized:false via node:https.
+      await new Promise<void>((resolve, reject) => {
+        const req = https.request(
+          {
+            host: '127.0.0.1',
+            port: this._asrPort!,
+            path: '/api/config',
+            method: 'POST',
+            rejectUnauthorized: false,
+            headers: {
+              'Content-Type': 'application/json',
+              'Content-Length': Buffer.byteLength(body),
+            },
+            timeout: 10000,
+          },
+          (res) => {
+            res.on('data', () => {})
+            res.on('end', () => {
+              const code = res.statusCode ?? 0
+              if (code >= 200 && code < 300) resolve()
+              else reject(new Error(`Failed to update config: HTTP ${code}`))
+            })
+          },
+        )
+        req.on('error', reject)
+        req.on('timeout', () => {
+          req.destroy()
+          reject(new Error('Failed to update config: timeout'))
+        })
+        req.write(body)
+        req.end()
+      })
     } catch (err) {
       logger.error('[meeting-asr] Failed to update config: %s', err)
       throw err
