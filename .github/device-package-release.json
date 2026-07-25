@@ -32,7 +32,6 @@
     "packages",
     "scripts",
     "release",
-    "tsconfig.base.json",
     "tsconfig.json",
     ".github/device-package-release.json"
   ]
