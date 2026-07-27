@@ -1,6 +1,4 @@
 import type { Context } from 'koa'
-import type { IncomingMessage } from 'node:http'
-import https from 'node:https'
 import { meetingASRService } from '../../services/meeting-asr'
 import { logger } from '../../services/logger'
 
@@ -13,58 +11,16 @@ async function proxyToBackend(ctx: Context, path: string, method: 'GET' | 'POST'
   }
 
   try {
-    // HTTP path uses Node's native fetch (cert verification isn't a concern).
-    // HTTPS path must use node:https with rejectUnauthorized:false because the
-    // ASR backend is fronted by a self-signed cert generated at start time.
-    let upstreamStatus: number
-    let upstreamBody: string
-
-    if (status.https) {
-      const reqBody = body && method === 'POST' ? JSON.stringify(body) : undefined
-      const result = await new Promise<{ status: number; body: string }>((resolve, reject) => {
-        const req = https.request(
-          {
-            host: '127.0.0.1',
-            port: status.asrPort!,
-            path,
-            method,
-            rejectUnauthorized: false,
-            headers: {
-              'Content-Type': 'application/json',
-              ...(reqBody ? { 'Content-Length': Buffer.byteLength(reqBody) } : {}),
-            },
-            timeout: 30000,
-          },
-          (res: IncomingMessage) => {
-            const chunks: Buffer[] = []
-            res.on('data', (c: Buffer) => chunks.push(c))
-            res.on('end', () =>
-              resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf-8') }),
-            )
-          },
-        )
-        req.on('error', reject)
-        req.on('timeout', () => {
-          req.destroy()
-          reject(new Error('upstream timeout'))
-        })
-        if (reqBody) req.write(reqBody)
-        req.end()
-      })
-      upstreamStatus = result.status
-      upstreamBody = result.body
-    } else {
-      const options: RequestInit = {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-      }
-      if (body && method === 'POST') {
-        options.body = JSON.stringify(body)
-      }
-      const response = await fetch(`http://127.0.0.1:${status.asrPort}${path}`, options)
-      upstreamStatus = response.status
-      upstreamBody = await response.text()
+    const options: RequestInit = {
+      method,
+      headers: { 'Content-Type': 'application/json' },
     }
+    if (body && method === 'POST') {
+      options.body = JSON.stringify(body)
+    }
+    const response = await fetch(`http://127.0.0.1:${status.asrPort}${path}`, options)
+    const upstreamStatus = response.status
+    const upstreamBody = await response.text()
 
     if (path === '/api/analysis/html') {
       ctx.type = 'text/html'
@@ -227,33 +183,6 @@ export async function proxyAnalysisStream(ctx: Context): Promise<void> {
   ctx.set('Connection', 'keep-alive')
 
   try {
-    if (status.https) {
-      // HTTPS stream: node:https IncomingMessage is a Node Readable; hand it
-      // straight to Koa which will pipe it to ctx.res.
-      const upstream = await new Promise<IncomingMessage>((resolve, reject) => {
-        const req = https.request(
-          {
-            host: '127.0.0.1',
-            port: status.asrPort!,
-            path: '/api/analysis/stream',
-            method: 'GET',
-            rejectUnauthorized: false,
-            timeout: 30000,
-          },
-          resolve,
-        )
-        req.on('error', reject)
-        req.on('timeout', () => {
-          req.destroy()
-          reject(new Error('upstream timeout'))
-        })
-        req.end()
-      })
-      ctx.status = upstream.statusCode ?? 502
-      ctx.body = upstream as unknown as NodeJS.ReadableStream
-      return
-    }
-
     const response = await fetch(`http://127.0.0.1:${status.asrPort}/api/analysis/stream`)
     ctx.status = response.status
 

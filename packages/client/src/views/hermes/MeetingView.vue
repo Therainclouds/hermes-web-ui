@@ -92,11 +92,11 @@ const renamingKey = ref<string | null>(null)  // 格式: "speakerId:index"
 const renameInput = ref('')
 
 // --- 配置 ---
-// WebSocket protocol follows the page protocol — HTTPS page → wss://, HTTP page → ws://.
-// Using ws:// from an HTTPS page triggers Mixed Content errors in modern browsers.
-const WS_PROTOCOL = computed(() => (window.location.protocol === 'https:' ? 'wss:' : 'ws:'))
-const ASR_URL = computed(() => `${WS_PROTOCOL.value}//${window.location.hostname}:${asrServiceStatus.value.asrPort || 8000}/ws/asr`)
-const DIARIZE_URL = computed(() => `${WS_PROTOCOL.value}//${window.location.hostname}:${asrServiceStatus.value.diarizePort || 8001}/ws/diarize`)
+// WebSocket goes through the Node server proxy (/ws/asr, /ws/diarize) so the
+// browser uses the same origin (wss://host:6060) — no Mixed Content, no
+// self-signed cert issues. The proxy forwards plaintext to the Python backend.
+const ASR_URL = '/ws/asr'
+const DIARIZE_URL = '/ws/diarize'
 
 
 

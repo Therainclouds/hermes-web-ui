@@ -32,6 +32,8 @@ import { startGlobalAgentServer } from './services/global-agent/server'
 import { WorkflowSocketServer } from './services/workflow-socket'
 import { PetStateSocketServer } from './services/hermes/pet-state-socket'
 import { logger } from './services/logger'
+import { meetingASRService } from './services/meeting-asr'
+import net from 'net'
 import { startUSBService } from './services/usb'
 import { USBSocketServer } from './services/usb/USBSocketServer'
 import { createStaticCompressionMiddleware } from './middleware/static-compression'
@@ -428,6 +430,37 @@ export async function bootstrap() {
   const activeProfile = process.env.PROFILE || 'default'
   sessionDeleter.start(activeProfile)
   console.log('[bootstrap] session deleter started, profile=%s', activeProfile)
+
+  // ASR/DIARIZE WebSocket proxy: forward browser WSS upgrade requests to the
+  // Python backend via plain TCP on loopback. Node terminates TLS so the
+  // backend does not need its own cert management.
+  servers.forEach((httpServer) => {
+    httpServer.on('upgrade', (req: http.IncomingMessage, socket: import('net').Socket, head: Buffer) => {
+      let targetPort: number | null = null
+      if (req.url === '/ws/asr') {
+        targetPort = meetingASRService.getASRPort() || 8000
+      } else if (req.url === '/ws/diarize') {
+        targetPort = meetingASRService.getDiarizePort() || 8001
+      }
+      if (!targetPort) return // fall through to catch-all
+
+      const upstream = net.connect(targetPort, '127.0.0.1', () => {
+        // Forward the raw HTTP upgrade request
+        const requestLine = `${req.method} ${req.url} HTTP/${req.httpVersion}\r\n`
+        const headers = Object.entries(req.headers)
+          .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
+          .join('\r\n')
+        upstream.write(`${requestLine}${headers}\r\n\r\n`)
+        if (head && head.length > 0) {
+          upstream.write(head)
+        }
+      })
+      upstream.pipe(socket)
+      socket.pipe(upstream)
+      upstream.on('error', () => socket.destroy())
+      socket.on('error', () => upstream.destroy())
+    })
+  })
 
   // Catch-all: destroy upgrade requests not handled by terminal or Socket.IO
   servers.forEach((httpServer) => {
