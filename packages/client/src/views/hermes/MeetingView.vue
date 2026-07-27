@@ -666,7 +666,7 @@ async function startRecording() {
     mediaRecorder.start(1000) // 每秒收集一次数据
 
     // 连接 WebSocket
-    const wsUrl = useDiarize.value ? DIARIZE_URL.value : ASR_URL.value
+    const wsUrl = useDiarize.value ? DIARIZE_URL : ASR_URL
     console.log('[meeting] Connecting to WebSocket:', wsUrl)
     ws = new WebSocket(wsUrl)
 
