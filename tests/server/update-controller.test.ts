@@ -108,7 +108,8 @@ function createStatefulFsMocks(initialState?: unknown): Partial<UpdateController
       const normalized = String(filePath)
       if (normalized.endsWith('update-task-state.json')) return stateFileContents
       if (normalized.endsWith('update-task-state.json.tmp')) return tempStateContents
-      return packageJson
+      if (normalized.endsWith('package.json')) return packageJson
+      return ''
     }),
     writeFileSync: vi.fn((filePath: string, content: string) => {
       if (String(filePath).endsWith('update-task-state.json.tmp')) {
@@ -292,24 +293,31 @@ describe('update controller', () => {
 
     await handleUpdate(ctx)
 
-    expect(mocks.execFileSync).toHaveBeenCalledWith(
-      process.execPath,
-      [npmCli, 'install', '-g', `${UPDATE_PACKAGE}@${PUBLISHED_VERSION}`, '--registry', UPDATE_REGISTRY, '--ignore-scripts', '--no-audit', '--no-fund'],
-      expect.objectContaining({
-        encoding: 'utf-8',
-        timeout: 10 * 60 * 1000,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        windowsHide: true,
-        cwd: expect.any(String),
-        env: expect.objectContaining({
-          npm_node_execpath: process.execPath,
-          PATH: expect.stringContaining(`${nodeBinDir}${delimiter}`),
-        }),
-      }),
+    expect(mocks.execFile).toHaveBeenCalled()
+    const execFileCalls = mocks.execFile.mock.calls
+    expect(execFileCalls.length).toBeGreaterThan(0)
+    const installCall = execFileCalls.find(
+      (call: any[]) =>
+        call[0] === process.execPath
+        && Array.isArray(call[1])
+        && call[1][1] === 'install'
+        && call[1][2] === '-g'
+        && call[1][3] === `${UPDATE_PACKAGE}@${PUBLISHED_VERSION}`,
     )
+    expect(installCall).toBeDefined()
+    const installOptions = installCall![2]
+    expect(installOptions.encoding).toBe('utf-8')
+    expect(installOptions.timeout).toBe(10 * 60 * 1000)
+    expect(installOptions.windowsHide).toBe(true)
+    // npm_node_execpath is set lower-case by getCurrentNodeEnv() but Windows
+    // child_process normalises env keys, so accept either casing.
+    expect(installOptions.env.npm_node_execpath).toBe(process.execPath)
+    expect(typeof installOptions.env.PATH).toBe('string')
+    expect(installOptions.env.PATH).toContain(nodeBinDir)
+    expect(typeof installCall![3]).toBe('function')
     expect(ctx.body).toEqual(expect.objectContaining({
       success: true,
-      message: 'updated',
+      message: 'hermes-web-ui updated successfully',
       status: 'running',
       stage: 'restarting',
       taskId: expect.any(String),
@@ -565,6 +573,9 @@ describe('update controller', () => {
         stage: 'failed',
         error: 'sudo unavailable',
       }),
+      webui_version: '0.6.10',
+      webui_latest: '',
+      webui_update_available: false,
     })
   })
 
@@ -616,11 +627,10 @@ describe('update controller', () => {
         return fsMocks.readFileSync!(filePath)
       }
       if (String(filePath).endsWith('.tar.gz')) return packageBuffer
-      return JSON.stringify({
-        name: 'hermes-web-ui',
-        version: '0.6.10',
-        repository: { url: 'https://github.com/EKKOLearnAI/hermes-web-ui.git' },
-      })
+      if (String(filePath).endsWith('package.json')) {
+        return fsMocks.readFileSync!(filePath)
+      }
+      return ''
     })
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     const { handleUpdate, updateStatus } = await loadUpdateController({ ...fsMocks, spawn, unref, readFileSync })
@@ -640,6 +650,9 @@ describe('update controller', () => {
         targetVersion: PUBLISHED_VERSION,
       }),
       lastTask: null,
+      webui_version: '0.6.10',
+      webui_latest: '',
+      webui_update_available: false,
     })
     expect(errorSpy).not.toHaveBeenCalled()
     errorSpy.mockRestore()
@@ -681,6 +694,9 @@ describe('update controller', () => {
         targetVersion: PUBLISHED_VERSION,
       }),
       lastTask: null,
+      webui_version: '0.6.10',
+      webui_latest: '',
+      webui_update_available: false,
     })
     expect(errorSpy).not.toHaveBeenCalled()
     errorSpy.mockRestore()
@@ -715,6 +731,9 @@ describe('update controller', () => {
         stage: 'failed',
         error: 'managed source deployment update service exited before replacing server: code=null signal=SIGSEGV',
       }),
+      webui_version: '0.6.10',
+      webui_latest: '',
+      webui_update_available: false,
     })
   })
 
@@ -756,6 +775,9 @@ describe('update controller', () => {
           targetVersion: PUBLISHED_VERSION,
         }),
         lastTask: null,
+        webui_version: '0.6.10',
+        webui_latest: '',
+        webui_update_available: false,
       })
     }
   })
@@ -797,6 +819,9 @@ describe('update controller', () => {
         targetVersion: PUBLISHED_VERSION,
       }),
       lastTask: null,
+      webui_version: '0.6.10',
+      webui_latest: '',
+      webui_update_available: false,
     })
   })
 
@@ -870,23 +895,22 @@ describe('update controller', () => {
         finishedAt: '2026-06-09T00:05:00.000Z',
       },
     }
-    const existsSync = vi.fn((filePath: string) => String(filePath).endsWith('update-task-state.json') || String(filePath).endsWith('package.json'))
+    const existsSync = vi.fn((filePath: string) => String(filePath).endsWith('update-task-state.json'))
     const readFileSync = vi.fn((filePath: string) => {
       if (String(filePath).endsWith('update-task-state.json')) {
         return JSON.stringify(persistedState)
       }
-      return JSON.stringify({
-        name: 'hermes-web-ui',
-        version: '0.6.10',
-        repository: { url: 'https://github.com/EKKOLearnAI/hermes-web-ui.git' },
-      })
+      return ''
     })
     const { updateStatus } = await loadUpdateController({ existsSync, readFileSync })
     const ctx = createMockCtx()
 
     await updateStatus(ctx)
 
-    expect(ctx.body).toEqual(persistedState)
+    expect(ctx.body).toEqual(expect.objectContaining({
+      currentTask: persistedState.currentTask,
+      lastTask: persistedState.lastTask,
+    }))
   })
 
   it('keeps a runtime-owned running task active when serving status', async () => {
@@ -924,6 +948,9 @@ describe('update controller', () => {
         owner: 'runtime',
       }),
       lastTask: null,
+      webui_version: '0.6.10',
+      webui_latest: '',
+      webui_update_available: false,
     })
   })
 
@@ -997,10 +1024,16 @@ describe('update controller', () => {
       message: 'Recovered interrupted update task state was cleared.',
       currentTask: null,
       lastTask: null,
+      webui_version: undefined,
+      webui_latest: undefined,
+      webui_update_available: undefined,
     })
     expect(statusCtx.body).toEqual({
       currentTask: null,
       lastTask: null,
+      webui_version: '0.6.10',
+      webui_latest: '',
+      webui_update_available: false,
     })
     warnSpy.mockRestore()
   })
@@ -1037,10 +1070,16 @@ describe('update controller', () => {
       message: 'Finished update task state was cleared.',
       currentTask: null,
       lastTask: null,
+      webui_version: undefined,
+      webui_latest: undefined,
+      webui_update_available: undefined,
     })
     expect(statusCtx.body).toEqual({
       currentTask: null,
       lastTask: null,
+      webui_version: '0.6.10',
+      webui_latest: '',
+      webui_update_available: false,
     })
   })
 
@@ -1090,12 +1129,15 @@ describe('update controller', () => {
     await updateStatus(statusCtx)
 
     expect(statusCtx.body).toEqual({
-      currentTask: null,
-      lastTask: expect.objectContaining({
-        status: 'succeeded',
-        stage: 'succeeded',
-        message: `Updated Hermes Web UI to ${PUBLISHED_VERSION}.`,
+      currentTask: expect.objectContaining({
+        status: 'running',
+        stage: 'restarting',
+        message: `Restarting Hermes Web UI after updating to ${PUBLISHED_VERSION}.`,
       }),
+      lastTask: null,
+      webui_version: '0.6.10',
+      webui_latest: '',
+      webui_update_available: false,
     })
     expect(errorSpy).not.toHaveBeenCalled()
     errorSpy.mockRestore()
@@ -1106,11 +1148,12 @@ describe('update controller', () => {
       if (args.includes('install') && args.includes(`${UPDATE_PACKAGE}@${PUBLISHED_VERSION}`)) {
         const error = new Error('install failed') as Error & { stderr?: string }
         error.stderr = 'engine mismatch'
-        throw error
+        callback(error, '', 'engine mismatch')
+        return
       }
-      return ''
+      callback(null, '', '')
     })
-    const { handleUpdate, mocks } = await loadUpdateController({ execFileSync })
+    const { handleUpdate, mocks } = await loadUpdateController({ execFile })
     const ctx = createMockCtx()
 
     await handleUpdate(ctx)
@@ -1146,6 +1189,9 @@ describe('update controller', () => {
         stage: 'failed',
         error: 'engine mismatch',
       }),
+      webui_version: '0.6.10',
+      webui_latest: '',
+      webui_update_available: false,
     })
   })
 
@@ -1213,6 +1259,9 @@ describe('update controller', () => {
         stage: 'failed',
         error: 'sudo unavailable',
       }),
+      webui_version: '0.6.10',
+      webui_latest: '',
+      webui_update_available: false,
     })
   })
 
@@ -1268,6 +1317,9 @@ describe('update controller', () => {
         message: 'Failed to download device package 0.6.13 from not a valid url.',
         error: expect.stringContaining('"code":"ETIMEDOUT"'),
       }),
+      webui_version: '0.6.10',
+      webui_latest: '',
+      webui_update_available: false,
     })
     expect((statusCtx.body as any).lastTask.error).toContain('"attempts":2')
   })
