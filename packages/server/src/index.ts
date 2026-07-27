@@ -462,14 +462,16 @@ export async function bootstrap() {
     })
   })
 
-  // Catch-all: destroy upgrade requests not handled by terminal or Socket.IO
+  // Catch-all: destroy upgrade requests not handled by terminal, Socket.IO, or ASR proxy
   servers.forEach((httpServer) => {
     httpServer.on('upgrade', (req: any, socket: any) => {
       const url = new URL(req.url || '', `http://${req.headers.host}`)
       if (url.pathname !== '/api/hermes/terminal' &&
         url.pathname !== '/api/hermes/kanban/events' &&
         url.pathname !== getLanPeerSocketPath() &&
-        !url.pathname.startsWith('/socket.io/')) {
+        !url.pathname.startsWith('/socket.io/') &&
+        url.pathname !== '/ws/asr' &&
+        url.pathname !== '/ws/diarize') {
         socket.destroy()
       }
     })

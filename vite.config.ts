@@ -78,6 +78,7 @@ export default defineConfig({
     port: FRONTEND_PORT,
     strictPort: true,
     proxy: {
+      '/ws': createProxyConfig(),
       '/api': createProxyConfig(),
       '/v1': createProxyConfig(),
       '/health': createProxyConfig(),
