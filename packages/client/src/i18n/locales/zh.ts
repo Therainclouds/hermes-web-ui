@@ -2622,6 +2622,11 @@ export default {
 
   // 更新日志
   changelog: {
+    new_0_7_12_1: '会议：移除 ASR 后端 TLS（uvicorn 不再带 --ssl-keyfile/--ssl-certfile），自签证书生成流程全部删除 — 浏览器信任 Node 主服务证书，问题更少',
+    new_0_7_12_2: '会议：Node 主服务新增 /ws/asr 和 /ws/diarize upgrade handler，使用 net.connect() 明文转发到 8000/8001 — 解决前后端 TLS 不匹配导致的 9ms 断连',
+    new_0_7_12_3: '会议：前端 WebSocket URL 改为相对路径 /ws/asr、/ws/diarize，走同源 WSS — 解决 Mixed Content 与自我签名证书不信任',
+    new_0_7_12_4: '会议：Vite 开发代理补 /ws 路径 — 本地开发同样走 Node 转发，无需直连后端',
+    new_0_7_12_5: '会议：catch-all upgrade handler 加入 /ws/asr、/ws/diarize 白名单 — 解决两个 listener 互相 destroy 同一 socket 的问题',
     new_0_7_10_1: '会议：ASR 后端默认启用 HTTPS — uvicorn 提供 wss://，Web UI（HTTPS）连接不再触发 Mixed Content 错误',
     new_0_7_10_2: '会议：首次启动自动生成自签 TLS 证书（SAN 含 127.0.0.1 / 0.0.0.0 / localhost），缓存到 data/certs/，重启后证书指纹保持稳定',
     new_0_7_10_3: '会议：Koa 代理改用 node:https + rejectUnauthorized:false 连接自签后端；status 接口暴露 https 字段',

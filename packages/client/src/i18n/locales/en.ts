@@ -2620,6 +2620,11 @@ export default {
 
   // Changelog
   changelog: {
+    new_0_7_12_1: 'Meeting: removed ASR backend TLS (uvicorn no longer uses --ssl-keyfile/--ssl-certfile); self-signed cert generation flow deleted — browsers trust the Node main cert, fewer moving parts.',
+    new_0_7_12_2: 'Meeting: Node main server gains /ws/asr and /ws/diarize upgrade handlers using net.connect() to forward plaintext to 8000/8001 — fixes the 9ms FIN caused by TLS/cleartext mismatch.',
+    new_0_7_12_3: 'Meeting: frontend WebSocket URLs now use relative paths /ws/asr, /ws/diarize via same-origin WSS — resolves Mixed Content and self-signed cert trust failures.',
+    new_0_7_12_4: 'Meeting: Vite dev proxy now covers /ws — local dev matches production routing, no direct backend connection.',
+    new_0_7_12_5: 'Meeting: catch-all upgrade handler whitelist extended with /ws/asr and /ws/diarize — fixes two listeners destroying the same socket.',
     new_0_7_10_1: 'Meeting: ASR backend defaults to HTTPS — uvicorn now serves wss:// so the Web UI (HTTPS) connects without Mixed Content errors.',
     new_0_7_10_2: 'Meeting: self-signed TLS cert auto-generated on first start (SAN includes 127.0.0.1 / 0.0.0.0 / localhost); cached in data/certs/ so the cert fingerprint stays stable across restarts.',
     new_0_7_10_3: 'Meeting: Koa proxy now uses node:https with rejectUnauthorized:false to reach the self-signed backend; status endpoint exposes the https flag.',
