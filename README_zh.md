@@ -329,6 +329,9 @@ Web UI 启动后端聊天能力时，会优先使用包�?`run_agent.py` 的源
 | `HERMES_WEB_UI_PREVIEW_AGENT_BRIDGE_ENDPOINT` | 隔离的预览 endpoint | 直接覆盖 Version Preview 的 broker endpoint。 |
 | `HERMES_WEB_UI_BACKEND_PORT` | `8648` | Vite dev proxy 使用的后端端口。 |
 | `HERMES_WEB_UI_FRONTEND_PORT` | `8649` | 前端 Vite dev server 端口。 |
+| `HERMES_WEB_UI_MEETING_ASR_TLS` | `false` | 设为 `true` 时，meeting ASR 的 Python 子进程将携带 `--ssl-keyfile/--ssl-certfile` 启动，Node WS 代理改为 `tls.connect`。设备镜像上 uvicorn 需要 TLS 时开启；本地开发保留默认 `false`。 |
+| `HERMES_WEB_UI_SSL_CERTFILE` | `{product_dir}/certs/server.crt` | 覆盖自签 TLS 证书路径。Node HTTPS server 与 meeting ASR uvicorn 子进程共用。 |
+| `HERMES_WEB_UI_SSL_KEYFILE` | `{product_dir}/certs/server.key` | 覆盖 TLS 私钥路径。 |
 
 ### CLI 命令
 

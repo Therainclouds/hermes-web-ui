@@ -400,6 +400,9 @@ These variables configure Hermes Web UI itself. Provider API keys and Hermes Age
 | `HERMES_WEB_UI_PREVIEW_AGENT_BRIDGE_ENDPOINT` | isolated preview endpoint | Directly overrides the Version Preview broker endpoint. |
 | `HERMES_WEB_UI_BACKEND_PORT` | `6060` | Backend port used by the Vite dev proxy. |
 | `HERMES_WEB_UI_FRONTEND_PORT` | `8649` | Frontend Vite dev server port. |
+| `HERMES_WEB_UI_MEETING_ASR_TLS` | `false` | When `true` the meeting ASR Python child process is spawned with `--ssl-keyfile/--ssl-certfile` and the Node WS proxy communicates over `tls.connect`. Set this on device images where uvicorn needs TLS; local dev keeps the default `false`. |
+| `HERMES_WEB_UI_SSL_CERTFILE` | `{product_dir}/certs/server.crt` | Override path for the self-signed TLS certificate shared by the Node HTTPS server and the meeting ASR uvicorn child. |
+| `HERMES_WEB_UI_SSL_KEYFILE` | `{product_dir}/certs/server.key` | Override path for the TLS private key. |
 
 ### CLI Commands
 

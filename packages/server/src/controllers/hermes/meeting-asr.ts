@@ -18,7 +18,15 @@ async function proxyToBackend(ctx: Context, path: string, method: 'GET' | 'POST'
     if (body && method === 'POST') {
       options.body = JSON.stringify(body)
     }
-    const response = await fetch(`http://127.0.0.1:${status.asrPort}${path}`, options)
+    // Follow the protocol chosen by the ASR service — see
+    // MeetingASRService.useTls. Hard-coding http:// breaks device images
+    // where uvicorn was spawned with --ssl-certfile.
+    if (status.useTls) {
+      const { Agent } = await import('node:https')
+      ;(options as any).dispatcher = new Agent({ rejectUnauthorized: false })
+    }
+    const scheme = status.useTls ? 'https' : 'http'
+    const response = await fetch(`${scheme}://127.0.0.1:${status.asrPort}${path}`, options)
     const upstreamStatus = response.status
     const upstreamBody = await response.text()
 
@@ -183,7 +191,13 @@ export async function proxyAnalysisStream(ctx: Context): Promise<void> {
   ctx.set('Connection', 'keep-alive')
 
   try {
-    const response = await fetch(`http://127.0.0.1:${status.asrPort}/api/analysis/stream`)
+    const scheme = status.useTls ? 'https' : 'http'
+    const init: RequestInit = {}
+    if (status.useTls) {
+      const { Agent } = await import('node:https')
+      ;(init as any).dispatcher = new Agent({ rejectUnauthorized: false })
+    }
+    const response = await fetch(`${scheme}://127.0.0.1:${status.asrPort}/api/analysis/stream`, init)
     ctx.status = response.status
 
     // HTTP stream: fetch returns a Web ReadableStream — wrap it for Koa.

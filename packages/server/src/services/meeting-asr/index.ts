@@ -43,6 +43,12 @@ export interface MeetingASRStatus {
   startupPhase: StartupPhase
   /** True iff the Python venv probe passed at least once this run. */
   isVenvReady: boolean
+  /**
+   * Whether the spawned uvicorn processes serve HTTPS. The Node WS proxy in
+   * bootstrap reads this so the upgrade handler picks `tls.connect` vs
+   * `net.connect` automatically — no deploy-time env coordination needed.
+   */
+  useTls: boolean
 }
 
 /**
@@ -86,6 +92,16 @@ export class MeetingASRService extends EventEmitter {
   private static readonly HEALTH_PROBE_TIMEOUT_MS = 5_000
   private static readonly HEALTH_FAILURES_BEFORE_RESTART = 3
 
+  // TLS mode is decided at construction from env so that:
+  //   1. spawn() can pass --ssl-keyfile/--ssl-certfile to uvicorn, and
+  //   2. the WS upgrade proxy in bootstrap/index.ts can pick the matching
+  //      transport (tls.connect vs net.connect) without an extra env hop.
+  // Default is plain HTTP (dev-friendly); device images set
+  // HERMES_WEB_UI_MEETING_ASR_TLS=true to use the shared self-signed cert
+  // under packages/server/certs/.
+  private readonly _useTls: boolean =
+    String(process.env.HERMES_WEB_UI_MEETING_ASR_TLS || '').toLowerCase() === 'true'
+
   private constructor() {
     super()
   }
@@ -111,11 +127,40 @@ export class MeetingASRService extends EventEmitter {
       error: this._error,
       startupPhase: this._startupPhase,
       isVenvReady: this._isVenvReady,
+      useTls: this._useTls,
     }
+  }
+
+  /**
+   * Public read-only view of the TLS decision so the WS upgrade proxy in
+   * bootstrap/index.ts can pick tls.connect vs net.connect without reading
+   * process.env on its own. Constant for the lifetime of the process — the
+   * env is sampled once at construction.
+   */
+  get useTls(): boolean {
+    return this._useTls
   }
 
   private getPythonBackendPath(): string {
     return path.join(__dirname, 'python-backend')
+  }
+
+  /**
+   * Build the `--ssl-*` argv pair for uvicorn when running in TLS mode.
+   *
+   * Path resolution matches the Node HTTPS server in bootstrap/index.ts so
+   * both sides use the same self-signed cert under packages/server/certs/.
+   * Env overrides exist for non-standard deploy layouts.
+   *
+   * Returns [] when TLS is off — the caller spreads these into uvicorn argv.
+   */
+  private _uvicornTlsArgs(): string[] {
+    if (!this._useTls) return []
+    const certPath = process.env.HERMES_WEB_UI_SSL_CERTFILE
+      || path.resolve(__dirname, '..', '..', 'certs', 'server.crt')
+    const keyPath = process.env.HERMES_WEB_UI_SSL_KEYFILE
+      || path.resolve(__dirname, '..', '..', 'certs', 'server.key')
+    return ['--ssl-certfile', certPath, '--ssl-keyfile', keyPath]
   }
 
   private getDataDir(): string {
@@ -403,7 +448,10 @@ export class MeetingASRService extends EventEmitter {
       this._startupPhase = 'starting'
       this.emit('phase', this._startupPhase)
       logger.info('[meeting-asr] Starting main ASR service on port %d...', this._asrPort)
-      const mainUvicornArgs = ['-m', 'uvicorn', 'app.main:app', '--host', '0.0.0.0', '--port', String(this._asrPort)]
+      const mainUvicornArgs = [
+        '-m', 'uvicorn', 'app.main:app', '--host', '0.0.0.0', '--port', String(this._asrPort),
+        ...this._uvicornTlsArgs(),
+      ]
       this.mainProcess = spawn(pythonPath, mainUvicornArgs, {
         cwd: backendPath,
         env,
@@ -438,7 +486,10 @@ export class MeetingASRService extends EventEmitter {
 
       // Start diarize process
       logger.info('[meeting-asr] Starting diarize service on port %d...', this._diarizePort)
-      const diarizeUvicornArgs = ['-m', 'uvicorn', 'app.diarize_server:app', '--host', '0.0.0.0', '--port', String(this._diarizePort)]
+      const diarizeUvicornArgs = [
+        '-m', 'uvicorn', 'app.diarize_server:app', '--host', '0.0.0.0', '--port', String(this._diarizePort),
+        ...this._uvicornTlsArgs(),
+      ]
       this.diarizeProcess = spawn(pythonPath, diarizeUvicornArgs, {
         cwd: backendPath,
         env,
@@ -551,8 +602,14 @@ export class MeetingASRService extends EventEmitter {
   }
 
   /**
-   * Single-port healthz probe via HTTP. The ASR backend runs in loopback so
-   * there is no need for TLS on this path — Node handles TLS externally.
+   * Single-port healthz probe. Matches the protocol chosen for uvicorn:
+   *   - dev (useTls=false) → plain http://
+   *   - device (useTls=true) → https:// with rejectUnauthorized:false because
+   *     the cert is the shared self-signed one under packages/server/certs/
+   *
+   * Earlier this hard-coded `http://` and assumed Node terminates TLS
+   * externally — true for the WS upgrade path, but not when uvicorn itself
+   * was spawned with --ssl-certfile (which is what `_useTls=true` implies).
    */
   private async probeHealthz(
     port: number,
@@ -561,9 +618,15 @@ export class MeetingASRService extends EventEmitter {
     try {
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), timeoutMs)
-      const response = await fetch(`http://127.0.0.1:${port}/healthz`, {
-        signal: controller.signal,
-      })
+      const scheme = this._useTls ? 'https' : 'http'
+      const url = `${scheme}://127.0.0.1:${port}/healthz`
+      // Dynamic import avoids loading node:https on the cold path for dev runs.
+      const init: RequestInit = { signal: controller.signal }
+      if (this._useTls) {
+        const { Agent } = await import('node:https')
+        ;(init as any).dispatcher = new Agent({ rejectUnauthorized: false })
+      }
+      const response = await fetch(url, init)
       clearTimeout(timer)
       return { ok: response.ok, status: response.status }
     } catch (err) {
@@ -783,11 +846,17 @@ export class MeetingASRService extends EventEmitter {
     })
 
     try {
-      const response = await fetch(`http://127.0.0.1:${this._asrPort}/api/config`, {
+      const scheme = this._useTls ? 'https' : 'http'
+      const init: RequestInit = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body,
-      })
+      }
+      if (this._useTls) {
+        const { Agent } = await import('node:https')
+        ;(init as any).dispatcher = new Agent({ rejectUnauthorized: false })
+      }
+      const response = await fetch(`${scheme}://127.0.0.1:${this._asrPort}/api/config`, init)
       if (!response.ok) {
         throw new Error(`Failed to update config: ${response.statusText}`)
       }
