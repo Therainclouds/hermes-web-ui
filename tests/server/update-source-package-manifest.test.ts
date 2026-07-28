@@ -239,6 +239,7 @@ describe('source-deploy manifest client', () => {
     ]))
     expect(env.HERMES_WEB_UI_UPDATE_SOURCE_PACKAGE_SHA256).toBe('e'.repeat(64))
     expect(env.HERMES_WEB_UI_UPDATE_SOURCE_REPO_URL).toBe('https://github.com/EKKOLearnAI/hermes-studio')
+    expect(env.HERMES_WEB_UI_UPDATE_HEALTHCHECK_URL).toBe('http://127.0.0.1:6060/health')
   })
 
   it('produces empty source fields when no manifest is supplied (legacy path)', async () => {

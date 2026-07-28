@@ -18,6 +18,10 @@ UPDATE_STATE_FILE="${HERMES_WEB_UI_UPDATE_STATE_FILE:-${RUNTIME_HOME}/updates/up
 UPDATE_LOG_DIR="${HERMES_WEB_UI_UPDATE_LOG_DIR:-${RUNTIME_HOME}/updates/logs}"
 TASK_ID="${HERMES_WEB_UI_UPDATE_TASK_ID:-}"
 HEALTHCHECK_URL="${HERMES_WEB_UI_UPDATE_HEALTHCHECK_URL:-}"
+HEALTHCHECK_TIMEOUT_MS="${HERMES_WEB_UI_UPDATE_HEALTHCHECK_TIMEOUT_MS:-2000}"
+HEALTHCHECK_INTERVAL_MS="${HERMES_WEB_UI_UPDATE_HEALTHCHECK_INTERVAL_MS:-2000}"
+HEALTHCHECK_RETRIES="${HERMES_WEB_UI_UPDATE_HEALTHCHECK_RETRIES:-15}"
+HEALTHCHECK_INITIAL_DELAY_MS="${HERMES_WEB_UI_UPDATE_HEALTHCHECK_INITIAL_DELAY_MS:-5000}"
 INCLUDE_AGENT_UPGRADE_RAW="${HERMES_WEB_UI_UPDATE_INCLUDE_AGENT_UPGRADE:-false}"
 PRESERVE_NAMES=("hermes_data" ".git" ".runtime-hermes" ".runtime-home")
 TASK_FINISHED=0
@@ -31,6 +35,14 @@ is_truthy() {
     1|true|yes|on) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+millis_to_sleep() {
+  python3 - "$1" <<'PY'
+import sys
+milliseconds = max(int(sys.argv[1] or "0"), 0)
+print(f"{milliseconds / 1000:.3f}")
+PY
 }
 
 cleanup() {
@@ -484,6 +496,48 @@ run_hermes_agent_update() {
     bash "${SOURCE_DIR}/scripts/deploy-source-armbian.sh"
 }
 
+run_healthcheck() {
+  local phase_label="$1"
+
+  if [[ -z "${HEALTHCHECK_URL}" ]]; then
+    warn "Skipping ${phase_label} health check because HERMES_WEB_UI_UPDATE_HEALTHCHECK_URL is not configured."
+    return 0
+  fi
+
+  info "Waiting ${HEALTHCHECK_INITIAL_DELAY_MS}ms before ${phase_label} health checks: ${HEALTHCHECK_URL}"
+  sleep "$(millis_to_sleep "${HEALTHCHECK_INITIAL_DELAY_MS}")"
+
+  python3 - "${HEALTHCHECK_URL}" "${HEALTHCHECK_TIMEOUT_MS}" "${HEALTHCHECK_INTERVAL_MS}" "${HEALTHCHECK_RETRIES}" "${phase_label}" <<'PY'
+import sys
+import time
+import urllib.error
+import urllib.request
+
+url, timeout_ms, interval_ms, retries, phase = sys.argv[1:6]
+timeout = max(int(timeout_ms), 1) / 1000
+interval = max(int(interval_ms), 1) / 1000
+attempts = max(int(retries), 1)
+last_error = ""
+
+for attempt in range(1, attempts + 1):
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            status = getattr(response, "status", None) or response.getcode()
+            if 200 <= status < 400:
+                print(f"[INFO] {phase} health check passed on attempt {attempt}: HTTP {status}")
+                raise SystemExit(0)
+            last_error = f"HTTP {status}"
+    except Exception as exc:
+        last_error = str(exc)
+    print(f"[WARN] {phase} health check attempt {attempt}/{attempts} failed: {last_error}", file=sys.stderr)
+    if attempt < attempts:
+        time.sleep(interval)
+
+print(f"[ERROR] {phase} health check failed after {attempts} attempts: {last_error}", file=sys.stderr)
+raise SystemExit(1)
+PY
+}
+
 if is_truthy "${INCLUDE_AGENT_UPGRADE_RAW}"; then
   INCLUDE_AGENT_UPGRADE=true
 else
@@ -511,5 +565,13 @@ update_task_stage "installing" "Syncing source tree for ${TARGET_VERSION}"
 sync_source_tree
 update_task_stage "restarting" "Rebuilding and restarting services for ${TARGET_VERSION}"
 run_deploy_script
+update_task_stage "health_checking" "Running health check for ${TARGET_VERSION}"
+if ! run_healthcheck "update"; then
+  finish_task_failed \
+    "Source deployment update failed during health check for ${TARGET_VERSION}" \
+    "Health check did not pass after source deployment update: ${HEALTHCHECK_URL:-<unconfigured>}"
+  err "Source deployment update aborted due to failed health check."
+  exit 1
+fi
 finish_task_succeeded "Source deployment update completed for ${TARGET_VERSION}"
 info "Source deployment update completed: ${TARGET_TAG}"

@@ -2858,6 +2858,17 @@ export default {
     errorSaveReportFailed: 'Failed to save analysis result — check network or server logs',
     errorUploadAudioFailed: 'Failed to upload recording — please retry or check network',
     errorDeleteAudioFailed: 'Failed to clean up old audio data; local storage may be full',
+    errorConfigUpdateFailed: 'Failed to push config update: service may be restarting, please retry',
+    errorServiceNotReady: 'Speech recognition service is not ready yet, please wait',
+    // Startup phase (mirrors MeetingASRService.startupPhase on the server)
+    startup: {
+      idle: 'Idle',
+      venv: 'Preparing Python virtual environment',
+      pipInstall: 'Installing dependencies (~3–10 minutes on ARM64)',
+      starting: 'Starting speech recognition service',
+      ready: 'Speech recognition service ready',
+      error: 'Service failed to start',
+    },
     apiKeySaved: 'Saved API Key (leave empty to use saved one)',
     configured: 'Configured',
     notConfigured: 'Not configured',

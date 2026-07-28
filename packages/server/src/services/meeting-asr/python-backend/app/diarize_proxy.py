@@ -78,7 +78,7 @@ class DiarizeClient:
 
     @property
     def submit_url(self) -> str:
-        return f"{settings.base_url}/api/v1/services/audio/asr/transcription"
+        return f"{_normalize_base_url(settings.base_url)}/api/v1/services/audio/asr/transcription"
 
     def submit_chunk(
         self,
@@ -119,7 +119,7 @@ class DiarizeClient:
         return task_id
 
     def poll(self, task_id: str, deadline_sec: float = 120.0) -> dict[str, Any]:
-        url = f"{settings.base_url}/api/v1/tasks/{task_id}"
+        url = f"{_normalize_base_url(settings.base_url)}/api/v1/tasks/{task_id}"
         # Note: query task endpoint does NOT require X-DashScope-Async header.
         # Sending it triggers a 403 "current user api does not support asynchronous calls".
         headers = {}
@@ -176,6 +176,26 @@ def parse_sentences(payload: dict[str, Any]) -> tuple[list[Sentence], list[int]]
             except (TypeError, ValueError):
                 continue
     return sentences, sorted(speakers)
+
+
+def _normalize_base_url(url: str) -> str:
+    """Strip a trailing `/v1` (with or without slash) from a base URL.
+
+    `settings.base_url` is meant to be the DashScope *root* domain, but
+    operators occasionally set BAILIAN_BASE_URL=https://dashscope.aliyuncs.com/v1
+    because that is the URL they see in the console. The submit/poll paths
+    below already include `/api/v1/...`, so the redundant `/v1` segment
+    produces a doubled `/v1/api/v1/...` path that 404s.
+
+    Idempotent: calling it twice has no effect, and it leaves URLs that do
+    not end in `/v1` untouched.
+    """
+    if not url:
+        return url
+    stripped = url.rstrip("/")
+    if stripped.endswith("/v1"):
+        return stripped[: -len("/v1")]
+    return url
 
 
 def new_session_id() -> str:

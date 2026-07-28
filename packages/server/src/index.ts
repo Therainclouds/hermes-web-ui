@@ -432,8 +432,11 @@ export async function bootstrap() {
   console.log('[bootstrap] session deleter started, profile=%s', activeProfile)
 
   // ASR/DIARIZE WebSocket proxy: forward browser WSS upgrade requests to the
-  // Python backend via plain TCP on loopback. Node terminates TLS so the
-  // backend does not need its own cert management.
+  // Python backend over TLS on loopback. Node already terminates browser-facing
+  // TLS; here we re-establish TLS to the Python child because uvicorn is
+  // launched with --ssl-keyfile/--ssl-certfile on device images (matches the
+  // shared self-signed cert used by the Node server). rejectUnauthorized:false
+  // is required because the cert is self-signed and loopback-only.
   servers.forEach((httpServer) => {
     httpServer.on('upgrade', (req: http.IncomingMessage, socket: import('net').Socket, head: Buffer) => {
       let targetPort: number | null = null
@@ -444,21 +447,31 @@ export async function bootstrap() {
       }
       if (!targetPort) return // fall through to catch-all
 
-      const upstream = net.connect(targetPort, '127.0.0.1', () => {
-        // Forward the raw HTTP upgrade request
-        const requestLine = `${req.method} ${req.url} HTTP/${req.httpVersion}\r\n`
-        const headers = Object.entries(req.headers)
-          .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
-          .join('\r\n')
-        upstream.write(`${requestLine}${headers}\r\n\r\n`)
-        if (head && head.length > 0) {
-          upstream.write(head)
-        }
+      // Lazy-import tls to keep top-level deps minimal and avoid paying the
+      // module load cost on cold paths that never touch ASR upgrade.
+      import('node:tls').then((tls) => {
+        const upstream = tls.connect(
+          { port: targetPort!, host: '127.0.0.1', rejectUnauthorized: false },
+          () => {
+            // Forward the raw HTTP upgrade request verbatim
+            const requestLine = `${req.method} ${req.url} HTTP/${req.httpVersion}\r\n`
+            const headers = Object.entries(req.headers)
+              .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
+              .join('\r\n')
+            upstream.write(`${requestLine}${headers}\r\n\r\n`)
+            if (head && head.length > 0) {
+              upstream.write(head)
+            }
+          },
+        )
+        upstream.pipe(socket)
+        socket.pipe(upstream)
+        upstream.on('error', () => socket.destroy())
+        socket.on('error', () => upstream.destroy())
+      }).catch((err) => {
+        logger.error('[bootstrap] failed to load node:tls for ASR proxy: %s', err?.message || err)
+        socket.destroy()
       })
-      upstream.pipe(socket)
-      socket.pipe(upstream)
-      upstream.on('error', () => socket.destroy())
-      socket.on('error', () => upstream.destroy())
     })
   })
 

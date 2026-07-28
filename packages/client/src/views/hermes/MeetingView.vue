@@ -477,6 +477,11 @@ async function startASRService() {
 
   isStartingASR.value = true
   asrServiceError.value = ''
+  // Reflect the most useful startup hint we have before the call returns.
+  // The service exposes finer-grained phases (venv / pip_install / starting)
+  // via /status, but those update asynchronously after this coroutine yields,
+  // so we pick a phase copy that stays accurate for the full call window.
+  statusText.value = t('meeting.startup.starting')
 
   try {
     // Get ASR config from meeting store
@@ -490,13 +495,19 @@ async function startASRService() {
       config.llmModel = meetingStore.asrConfig.llmModel || llmModel.value
     }
     // Pass OSS config if user configured it (speaker diarization chunk flow).
+    // Fallback to local refs (current modal input) when the persisted store
+    // is empty — without this, edits made in the wizard that haven't yet been
+    // flushed via updateASRConfig() would silently get dropped on the wire.
     const store = meetingStore.asrConfig
-    if (store.ossBucket || store.ossAccessKeyId || store.ossAccessKeySecret) {
-      config.ossBucket = store.ossBucket
-      config.ossAccessKeyId = store.ossAccessKeyId
-      config.ossAccessKeySecret = store.ossAccessKeySecret
-      config.ossEndpoint = store.ossEndpoint
-      config.ossPathPrefix = store.ossPathPrefix
+    const ossBucketValue = store.ossBucket || ossBucket.value.trim()
+    const ossAccessKeyIdValue = store.ossAccessKeyId || ossAccessKeyId.value.trim()
+    const ossAccessKeySecretValue = store.ossAccessKeySecret || ossAccessKeySecret.value.trim()
+    if (ossBucketValue || ossAccessKeyIdValue || ossAccessKeySecretValue) {
+      config.ossBucket = ossBucketValue
+      config.ossAccessKeyId = ossAccessKeyIdValue
+      config.ossAccessKeySecret = ossAccessKeySecretValue
+      config.ossEndpoint = store.ossEndpoint || ossEndpoint.value.trim() || 'oss-cn-beijing.aliyuncs.com'
+      config.ossPathPrefix = store.ossPathPrefix || ossPathPrefix.value.trim() || 'meeting-asr-uploads/'
     }
 
     console.log('[meeting] Calling ASR start API with config:', { ...config, dashscopeApiKey: config.dashscopeApiKey ? '***' : 'not set' })
@@ -514,13 +525,26 @@ async function startASRService() {
       }
       return true
     } else {
-      asrServiceError.value = result.error || 'Failed to start ASR service'
+      asrServiceError.value = result.error || t('meeting.startup.error')
       console.error('[meeting] ASR service failed to start:', asrServiceError.value)
+      message.error(asrServiceError.value)
       return false
     }
   } catch (err: any) {
-    asrServiceError.value = err.message || 'Failed to start ASR service'
+    // Backend annotates hot-config push failures with a "config push failed:"
+    // prefix (see MeetingASRService.start). Detect that distinctly so the user
+    // knows their updated key did not take effect — previously this was
+    // swallowed and the wrong key kept being used.
+    const raw = err?.message || String(err)
+    if (raw.includes('config push failed')) {
+      asrServiceError.value = t('meeting.errorConfigUpdateFailed')
+    } else if (/not running|not ready|timeout/i.test(raw)) {
+      asrServiceError.value = t('meeting.errorServiceNotReady')
+    } else {
+      asrServiceError.value = raw || t('meeting.startup.error')
+    }
     console.error('[meeting] ASR service start error:', err)
+    message.error(asrServiceError.value)
     return false
   } finally {
     isStartingASR.value = false

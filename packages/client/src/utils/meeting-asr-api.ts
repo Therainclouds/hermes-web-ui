@@ -20,6 +20,14 @@ export interface MeetingASRStatus {
   pid: number | null
   uptime: number | null
   error: string | null
+  /**
+   * Server-side startup lifecycle phase. Kept as `string` here (not a union)
+   * so older clients still parse; new UI keys in MeetingView only render
+   * known phases and silently fall through to "connecting" otherwise.
+   */
+  startupPhase?: string
+  /** Whether the Python venv has been probed at least once this run. */
+  isVenvReady?: boolean
 }
 
 export interface MeetingASRConfig {

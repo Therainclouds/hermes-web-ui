@@ -25,6 +25,10 @@ export function buildSourceDeployEnv(
       ? sourceManifest.sourceUrls
       : [sourceManifest.sourceUrl])
     : []
+  // Per-manifest healthcheck URL takes precedence so the runner executes the same
+  // address that the controller records on the task and that the UI surfaces to
+  // operators. Falls back to the global config when the manifest omits one.
+  const resolvedHealthcheckUrl = sourceManifest?.healthcheckUrl || update.healthcheckUrl
   return {
     ...baseEnv,
     APP_USER: baseEnv.APP_USER || 'hermesui',
@@ -40,7 +44,7 @@ export function buildSourceDeployEnv(
     HERMES_WEB_UI_UPDATE_STATE_FILE: update.stateFile,
     HERMES_WEB_UI_UPDATE_LOG_DIR: update.logDir,
     HERMES_WEB_UI_UPDATE_TASK_ID: taskId,
-    HERMES_WEB_UI_UPDATE_HEALTHCHECK_URL: update.healthcheckUrl,
+    HERMES_WEB_UI_UPDATE_HEALTHCHECK_URL: resolvedHealthcheckUrl,
     HERMES_WEB_UI_UPDATE_HEALTHCHECK_TIMEOUT_MS: String(update.healthcheckTimeoutMs),
     HERMES_WEB_UI_UPDATE_HEALTHCHECK_INTERVAL_MS: String(update.healthcheckIntervalMs),
     HERMES_WEB_UI_UPDATE_HEALTHCHECK_RETRIES: String(update.healthcheckRetries),

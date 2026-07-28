@@ -34,7 +34,28 @@ export interface MeetingASRStatus {
   pid: number | null
   uptime: number | null
   error: string | null
+  /**
+   * Where the service is in its startup lifecycle. Used by the UI to render
+   * phase-specific copy (e.g. "installing dependencies, ~3 min on ARM64")
+   * instead of a generic "connecting". Also surfaced while waiting for
+   * `isRunning=true` after the user clicks record.
+   */
+  startupPhase: StartupPhase
+  /** True iff the Python venv probe passed at least once this run. */
+  isVenvReady: boolean
 }
+
+/**
+ * Startup lifecycle phase. Exposed via MeetingASRStatus so the front-end can
+ * show actionable progress without inventing its own state machine.
+ */
+export type StartupPhase =
+  | 'idle'
+  | 'venv'           // probing / creating the Python virtual environment
+  | 'pip_install'    // installing requirements inside the venv (slow on ARM64)
+  | 'starting'       // spawning uvicorn for asr / diarize
+  | 'ready'          // both healthz endpoints respond OK
+  | 'error'
 
 export class MeetingASRService extends EventEmitter {
   private static instance: MeetingASRService | null = null
@@ -54,6 +75,16 @@ export class MeetingASRService extends EventEmitter {
   private _restartTimer: NodeJS.Timeout | null = null
   private static readonly MAX_RESTART_ATTEMPTS = 5
   private static readonly RESTART_BACKOFF_MS = [1000, 2000, 5000, 10000, 30000]
+
+  // Startup phase tracking + health monitor (added for v0.7.8 to surface
+  // long-running start phases and recover from silent OOM kills).
+  private _startupPhase: StartupPhase = 'idle'
+  private _isVenvReady = false
+  private _healthTimer: NodeJS.Timeout | null = null
+  private _healthFailures = 0
+  private static readonly HEALTH_PROBE_INTERVAL_MS = 30_000
+  private static readonly HEALTH_PROBE_TIMEOUT_MS = 5_000
+  private static readonly HEALTH_FAILURES_BEFORE_RESTART = 3
 
   private constructor() {
     super()
@@ -78,6 +109,8 @@ export class MeetingASRService extends EventEmitter {
       pid: this.mainProcess?.pid || null,
       uptime: this._startTime ? Date.now() - this._startTime : null,
       error: this._error,
+      startupPhase: this._startupPhase,
+      isVenvReady: this._isVenvReady,
     }
   }
 
@@ -122,11 +155,13 @@ export class MeetingASRService extends EventEmitter {
     const backendPath = this.getPythonBackendPath()
     const venvPath = path.join(backendPath, '.venv')
     const pythonPath = this.getVenvPythonPath(venvPath)
+    // Marker file written after a successful pip install — lets us skip the
+    // ~3-10 minute install on ARM64 after the first successful run. Treated
+    // as a hint, not a hard guarantee: the probe below still verifies that
+    // the binary actually executes.
+    const markerPath = path.join(venvPath, '.hermes-ready')
 
-    try {
-      await fs.access(pythonPath)
-      // Verify the python binary actually executes — covers the case where
-      // .venv exists but is corrupted (partial install, wrong arch, etc.).
+    const probePython = async (): Promise<void> => {
       await new Promise<void>((resolve, reject) => {
         const probe = spawn(pythonPath, ['-c', 'import sys; sys.exit(0)'], { stdio: 'pipe' })
         probe.on('close', (code) => {
@@ -135,9 +170,28 @@ export class MeetingASRService extends EventEmitter {
         })
         probe.on('error', reject)
       })
+    }
+
+    // Fast path: marker present + python executable + probe passes → reuse.
+    try {
+      await fs.access(pythonPath)
+      await fs.access(markerPath)
+      this._startupPhase = 'venv'
+      this.emit('phase', this._startupPhase)
+      await probePython()
+      this._isVenvReady = true
+      logger.info('[meeting-asr] Reusing existing Python virtual environment at %s', venvPath)
       return pythonPath
     } catch {
-      // Virtual env doesn't exist or is broken — recreate from scratch.
+      // fall through to slow path
+    }
+
+    // Slow path: venv missing, broken, or marker absent — recreate + install.
+    try {
+      await fs.access(pythonPath)
+    } catch {
+      this._startupPhase = 'venv'
+      this.emit('phase', this._startupPhase)
       logger.info('[meeting-asr] Creating Python virtual environment at %s', venvPath)
       const pythonCmd = await this.findPython()
       const createStderr = await this.runCaptured(pythonCmd, ['-m', 'venv', venvPath], backendPath)
@@ -149,25 +203,36 @@ export class MeetingASRService extends EventEmitter {
           `Failed to create Python venv (exit ${createStderr.code}): ${createStderr.stderr.trim() || 'no stderr'}.${hint}`,
         )
       }
-
-      // Install requirements. May take 5-10 minutes on ARM64 — log progress.
-      logger.info('[meeting-asr] Installing Python dependencies (this may take several minutes on ARM64)...')
-      const requirementsPath = path.join(__dirname, 'requirements.txt')
-      const installStderr = await this.runCaptured(
-        pythonPath,
-        ['-m', 'pip', 'install', '--disable-pip-version-check', '-r', requirementsPath],
-        backendPath,
-      )
-      if (installStderr.code !== 0) {
-        throw new Error(
-          `Failed to install Python dependencies (exit ${installStderr.code}): ` +
-            `${installStderr.stderr.trim().slice(-500) || 'no stderr'}. ` +
-            `Verify the device has network access to PyPI.`,
-        )
-      }
-
-      return pythonPath
     }
+
+    // Install requirements. May take 5-10 minutes on ARM64 — surface phase so
+    // the UI can show "installing dependencies (~3 min)…" instead of "connecting".
+    this._startupPhase = 'pip_install'
+    this.emit('phase', this._startupPhase)
+    logger.info('[meeting-asr] Installing Python dependencies (this may take several minutes on ARM64)...')
+    const requirementsPath = path.join(__dirname, 'requirements.txt')
+    const installStderr = await this.runCaptured(
+      pythonPath,
+      ['-m', 'pip', 'install', '--disable-pip-version-check', '-r', requirementsPath],
+      backendPath,
+    )
+    if (installStderr.code !== 0) {
+      throw new Error(
+        `Failed to install Python dependencies (exit ${installStderr.code}): ` +
+          `${installStderr.stderr.trim().slice(-500) || 'no stderr'}. ` +
+          `Verify the device has network access to PyPI.`,
+      )
+    }
+
+    // Write the marker so subsequent starts can take the fast path.
+    try {
+      await fs.writeFile(markerPath, new Date().toISOString(), 'utf-8')
+    } catch (err) {
+      logger.warn('[meeting-asr] Could not write venv marker %s: %s', markerPath, err)
+    }
+
+    this._isVenvReady = true
+    return pythonPath
   }
 
   /**
@@ -213,19 +278,38 @@ export class MeetingASRService extends EventEmitter {
 
   async start(config: MeetingASRConfig = {}): Promise<void> {
     if (this._isRunning) {
-      // If OSS config changed, restart with new config so the Python child
-      // process picks up the updated env vars (OSS_BUCKET / keys / etc.)
+      // Service is already up. Decide between restart and hot-config push:
+      //   - OSS_* fields require a restart because Python config.py reads
+      //     them from os.environ at import time (no runtime override).
+      //   - All other fields (DashScope key, Paraformer, LLM) are pushed via
+      //     updateConfig() → POST /api/config so we avoid interrupting the
+      //     user's recording session.
       if (config.ossBucket || config.ossAccessKeyId || config.ossAccessKeySecret) {
         logger.info('[meeting-asr] OSS config provided while running; restarting to pick up new credentials')
         await this.stop()
+        // Fall through to the normal start path below.
       } else {
-        logger.warn('[meeting-asr] Service is already running')
-        return
+        try {
+          await this.updateConfig(config)
+          logger.info('[meeting-asr] Hot-pushed non-OSS config to running service')
+          return
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          this._error = `config push failed: ${msg}`
+          logger.error('[meeting-asr] %s', this._error)
+          this.emit('error', err)
+          // Surface the failure to the caller instead of silently dropping
+          // the new config like v0.7.7 did — the user must know their
+          // updated key did not take effect.
+          throw err
+        }
       }
     }
 
     this._config = config
     this._error = null
+    this._startupPhase = 'venv'
+    this.emit('phase', this._startupPhase)
 
     try {
       // Reset restart counter for a deliberate start.
@@ -235,6 +319,9 @@ export class MeetingASRService extends EventEmitter {
         clearTimeout(this._restartTimer)
         this._restartTimer = null
       }
+      // Stop any leftover health monitor from a prior failed start.
+      this._stopHealthMonitor()
+      this._healthFailures = 0
 
       // Ensure data directory exists
       const dataDir = this.getDataDir()
@@ -313,6 +400,8 @@ export class MeetingASRService extends EventEmitter {
       }
 
       // Start main ASR process
+      this._startupPhase = 'starting'
+      this.emit('phase', this._startupPhase)
       logger.info('[meeting-asr] Starting main ASR service on port %d...', this._asrPort)
       const mainUvicornArgs = ['-m', 'uvicorn', 'app.main:app', '--host', '0.0.0.0', '--port', String(this._asrPort)]
       this.mainProcess = spawn(pythonPath, mainUvicornArgs, {
@@ -339,6 +428,7 @@ export class MeetingASRService extends EventEmitter {
       this.mainProcess.on('close', (code) => {
         logger.info('[meeting-asr] Main process exited with code %d', code ?? 0)
         this._isRunning = false
+        this._stopHealthMonitor()
         this.emit('stopped', code ?? 0)
         // Auto-restart on unexpected crash, unless explicitly stopped.
         if (this._autoRestart && (code ?? 0) !== 0) {
@@ -377,17 +467,25 @@ export class MeetingASRService extends EventEmitter {
 
       this._isRunning = true
       this._startTime = Date.now()
+      this._startupPhase = 'ready'
+      this.emit('phase', this._startupPhase)
 
       // Write LLM config if provided
       if (config.llmApiKey || config.llmBaseUrl || config.llmModel) {
         await this.updateLLMConfig(config)
       }
 
+      // Begin background health monitor — recovers from silent OOM kills
+      // by recycling through the existing _scheduleRestart pipeline.
+      this._startHealthMonitor()
+
       logger.info('[meeting-asr] Services started successfully')
       this.emit('started')
 
     } catch (err) {
       this._error = err instanceof Error ? err.message : String(err)
+      this._startupPhase = 'error'
+      this.emit('phase', this._startupPhase)
       logger.error('[meeting-asr] Failed to start services: %s', this._error)
       await this.stop()
       throw err
@@ -516,6 +614,7 @@ export class MeetingASRService extends EventEmitter {
 
     // Disable auto-restart while we shut down deliberately.
     this._autoRestart = false
+    this._stopHealthMonitor()
 
     // Stop diarize and main in parallel, each with SIGTERM → SIGKILL fallback.
     const stops = await Promise.all([
@@ -529,9 +628,65 @@ export class MeetingASRService extends EventEmitter {
     this._startTime = null
     this._asrPort = null
     this._diarizePort = null
+    this._startupPhase = 'idle'
+    this.emit('phase', this._startupPhase)
 
     logger.info('[meeting-asr] Services stopped (main=%s diarize=%s)', stops[1], stops[0])
     this.emit('stopped', 0)
+  }
+
+  /**
+   * Begin polling both healthz endpoints at a fixed interval. After
+   * HEALTH_FAILURES_BEFORE_RESTART consecutive failures we recycle through
+   * the same _scheduleRestart path used for unexpected crashes, so recovery
+   * is bounded and observable via status.error.
+   */
+  private _startHealthMonitor(): void {
+    if (this._healthTimer) return
+    this._healthTimer = setInterval(() => {
+      this._probeHealthBoth()
+        .then((ok) => {
+          if (ok) {
+            this._healthFailures = 0
+            return
+          }
+          this._healthFailures += 1
+          logger.warn(
+            '[meeting-asr] health probe failed %d/%d',
+            this._healthFailures,
+            MeetingASRService.HEALTH_FAILURES_BEFORE_RESTART,
+          )
+          if (this._healthFailures >= MeetingASRService.HEALTH_FAILURES_BEFORE_RESTART) {
+            this._healthFailures = 0
+            this._scheduleRestart('health monitor: repeated healthz failures')
+          }
+        })
+        .catch((err) => {
+          logger.error('[meeting-asr] health probe threw: %s', err?.message || err)
+        })
+    }, MeetingASRService.HEALTH_PROBE_INTERVAL_MS)
+  }
+
+  private _stopHealthMonitor(): void {
+    if (this._healthTimer) {
+      clearInterval(this._healthTimer)
+      this._healthTimer = null
+    }
+    this._healthFailures = 0
+  }
+
+  /**
+   * Probe main + diarize healthz concurrently. Returns true iff both report
+   * a healthy response within the per-probe timeout. Either child dying or
+   * a non-2xx response counts as failure.
+   */
+  private async _probeHealthBoth(): Promise<boolean> {
+    if (!this._asrPort || !this._diarizePort) return false
+    const results = await Promise.all([
+      this.probeHealthz(this._asrPort, MeetingASRService.HEALTH_PROBE_TIMEOUT_MS),
+      this.probeHealthz(this._diarizePort, MeetingASRService.HEALTH_PROBE_TIMEOUT_MS),
+    ])
+    return results.every((r) => r.ok)
   }
 
   /**

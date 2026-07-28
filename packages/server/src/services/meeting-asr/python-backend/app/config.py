@@ -38,6 +38,11 @@ _load_dotenv(_data_dir_env / "config.env")
 @dataclass(frozen=True)
 class Settings:
     dashscope_api_key: str = os.environ.get("DASHSCOPE_API_KEY", "")
+    # DashScope *root* domain — submit/poll code paths already include the
+    # `/api/v1/...` segment, so do NOT put a trailing `/v1` here. Operators
+    # that paste `https://dashscope.aliyuncs.com/v1` from the console will
+    # be normalized by diarize_proxy._normalize_base_url(), but the default
+    # below stays clean to keep logs and `config.current` readable.
     base_url: str = os.environ.get(
         "BAILIAN_BASE_URL",
         "https://ws-ldehaph6v8h68lwu.cn-beijing.maas.aliyuncs.com",
