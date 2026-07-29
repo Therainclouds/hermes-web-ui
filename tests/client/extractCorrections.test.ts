@@ -80,4 +80,57 @@ describe('extractCorrections', () => {
     expect(result).toHaveLength(2)
     expect(result![0]).toEqual({ index: 0, original: '在来', corrected: '再来', reason: '错别字：在→再' })
   })
+
+  it('parses array format without wrapper object', () => {
+    const content = `[{"index": 0, "original": "在", "corrected": "再"}, {"index": 1, "original": "权利", "corrected": "权力"}]`
+    const result = extractCorrections(content)
+    expect(result).toHaveLength(2)
+    expect(result![0]).toEqual({ index: 0, original: '在', corrected: '再' })
+    expect(result![1]).toEqual({ index: 1, original: '权利', corrected: '权力' })
+  })
+
+  it('parses corrections with alternative syntax', () => {
+    const content = `corrections = [{"index": 0, "original": "test", "corrected": "fixed"}]`
+    const result = extractCorrections(content)
+    expect(result).toEqual([{ index: 0, original: 'test', corrected: 'fixed' }])
+  })
+
+  it('handles response with mixed content and JSON', () => {
+    const content = `我检查了文本，发现以下错误：
+
+{"corrections": [{"index": 0, "original": "在来", "corrected": "再来", "reason": "错别字"}]}
+
+以上是修正结果。`
+    const result = extractCorrections(content)
+    expect(result).toEqual([{ index: 0, original: '在来', corrected: '再来', reason: '错别字' }])
+  })
+
+  it('returns null for invalid corrections format', () => {
+    const content = `{"corrections": [{"invalid": "format"}]}`
+    const result = extractCorrections(content)
+    expect(result).toBeNull()
+  })
+
+  it('handles empty corrections array', () => {
+    const content = `{"corrections": []}`
+    const result = extractCorrections(content)
+    expect(result).toEqual([])
+  })
+
+  it('parses JSON with extra whitespace', () => {
+    const content = `
+    {
+      "corrections": [
+        {
+          "index": 0,
+          "original": "在",
+          "corrected": "再",
+          "reason": "错别字"
+        }
+      ]
+    }
+    `
+    const result = extractCorrections(content)
+    expect(result).toEqual([{ index: 0, original: '在', corrected: '再', reason: '错别字' }])
+  })
 })

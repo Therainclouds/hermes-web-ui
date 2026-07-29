@@ -2,6 +2,23 @@ import { vi } from 'vitest'
 
 // Vite injects this at build time; unit tests need a stable fallback.
 ;(globalThis as any).__APP_VERSION__ = 'test'
+
+// useAppMessage builds discrete naive-ui apis (createDiscreteApi) at call time.
+// Many client tests stub 'naive-ui' with partial mocks that lack createDiscreteApi,
+// so provide a stable global stub for the composable instead.
+const feedbackApiStub = {
+  success: vi.fn(),
+  error: vi.fn(),
+  warning: vi.fn(),
+  info: vi.fn(),
+  loading: vi.fn(),
+  create: vi.fn(),
+  destroyAll: vi.fn(),
+}
+vi.mock('@/composables/useAppMessage', () => ({
+  useMessage: () => feedbackApiStub,
+  useNotification: () => feedbackApiStub,
+}))
 // Client-only setup (window/localStorage only exist in jsdom)
 if (typeof window !== 'undefined') {
   // Mock window.matchMedia

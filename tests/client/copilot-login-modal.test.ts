@@ -24,6 +24,10 @@ vi.mock('naive-ui', () => ({
   NSpin: { template: '<span class="spin" />' },
   useMessage: () => mockMessage,
 }))
+vi.mock('@/composables/useAppMessage', () => ({
+  useMessage: () => mockMessage,
+  useNotification: () => mockMessage,
+}))
 
 import CopilotLoginModal from '@/components/hermes/models/CopilotLoginModal.vue'
 

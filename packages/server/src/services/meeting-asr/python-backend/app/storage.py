@@ -31,25 +31,49 @@ class Storage:
         self._status = self._load_status()
 
     def _load_config(self) -> AllConfig:
+        # Env-var defaults — used when config.json is missing or when a
+        # specific field is absent from the file.  This keeps settings in sync
+        # with the env vars that the Node.js parent passed at spawn time,
+        # so the /api/config endpoint reflects the same key that the frozen
+        # `settings` object (config.py) is actually using for API calls.
+        env_asr = ASRConfig(
+            dashscope_api_key=os.environ.get("DASHSCOPE_API_KEY", ""),
+            paraformer_ws_url=os.environ.get("PARAFORMER_WS_URL", "wss://dashscope.aliyuncs.com/api-ws/v1/inference"),
+            paraformer_model=os.environ.get("PARAFORMER_MODEL", "paraformer-realtime-v2"),
+            paraformer_sample_rate=int(os.environ.get("PARAFORMER_SAMPLE_RATE", "16000")),
+            paraformer_format=os.environ.get("PARAFORMER_FORMAT", "pcm"),
+            paraformer_language_hints=os.environ.get("PARAFORMER_LANGUAGE_HINTS", "zh,en"),
+            paraformer_semantic_punctuation=os.environ.get("PARAFORMER_SEMANTIC_PUNCTUATION", "true").lower() in ("true", "1", "yes"),
+        )
         if CONFIG_FILE.exists():
             try:
                 data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-                return AllConfig(**data)
+                # Deep-merge: env-var defaults fill in any field that config.json
+                # doesn't explicitly provide.  This is critical because Node.js
+                # `updateLLMConfig` writes only the `llm` section — without this
+                # fallback the `asr` section would silently default to empty.
+                file_asr_data = data.get("asr", {})
+                merged_asr = ASRConfig(
+                    dashscope_api_key=file_asr_data.get("dashscope_api_key") or env_asr.dashscope_api_key,
+                    paraformer_ws_url=file_asr_data.get("paraformer_ws_url") or env_asr.paraformer_ws_url,
+                    paraformer_model=file_asr_data.get("paraformer_model") or env_asr.paraformer_model,
+                    paraformer_sample_rate=int(file_asr_data.get("paraformer_sample_rate") or env_asr.paraformer_sample_rate),
+                    paraformer_format=file_asr_data.get("paraformer_format") or env_asr.paraformer_format,
+                    paraformer_language_hints=file_asr_data.get("paraformer_language_hints") or env_asr.paraformer_language_hints,
+                    paraformer_semantic_punctuation=(
+                        file_asr_data.get("paraformer_semantic_punctuation")
+                        if file_asr_data.get("paraformer_semantic_punctuation") is not None
+                        else env_asr.paraformer_semantic_punctuation
+                    ),
+                )
+                return AllConfig(
+                    asr=merged_asr,
+                    llm=LLMConfig(**data.get("llm", {})),
+                    analysis=AnalysisConfig(**data.get("analysis", {})),
+                )
             except Exception as e:
                 log.warning("Failed to load config: %s", e)
-        return AllConfig(
-            asr=ASRConfig(
-                dashscope_api_key=os.environ.get("DASHSCOPE_API_KEY", ""),
-                paraformer_ws_url=os.environ.get("PARAFORMER_WS_URL", "wss://ws-ldehaph6v8h68lwu.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference"),
-                paraformer_model=os.environ.get("PARAFORMER_MODEL", "paraformer-realtime-v2"),
-                paraformer_sample_rate=int(os.environ.get("PARAFORMER_SAMPLE_RATE", "16000")),
-                paraformer_format=os.environ.get("PARAFORMER_FORMAT", "pcm"),
-                paraformer_language_hints=os.environ.get("PARAFORMER_LANGUAGE_HINTS", "zh,en"),
-                paraformer_semantic_punctuation=os.environ.get("PARAFORMER_SEMANTIC_PUNCTUATION", "true").lower() in ("true", "1", "yes"),
-            ),
-            llm=LLMConfig(),
-            analysis=AnalysisConfig(),
-        )
+        return AllConfig(asr=env_asr, llm=LLMConfig(), analysis=AnalysisConfig())
 
     def _save_config(self) -> None:
         try:

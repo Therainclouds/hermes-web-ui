@@ -26,6 +26,11 @@ vi.mock('@/api/hermes/plugins', () => ({
   setPluginEnabled: setPluginEnabledMock,
 }))
 
+vi.mock('@/composables/useAppMessage', () => ({
+  useMessage: () => messageMock,
+  useNotification: () => messageMock,
+}))
+
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
     t: (key: string, values?: Record<string, any>) => values?.name ? `${key}:${values.name}` : key,

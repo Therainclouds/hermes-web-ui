@@ -98,25 +98,42 @@ export function escHtml(s: any): string {
 
 // 检查字符串是否像完整的 HTML 文档
 export function looksLikeHtmlDocument(s: any): boolean {
-  return typeof s === 'string' && /<html[\s>]/i.test(s) && s.length > 200
+  if (typeof s !== 'string') return false
+  // 检查是否包含 HTML 标签
+  const hasHtmlTag = /<html[\s>]/i.test(s) || /<!DOCTYPE html>/i.test(s)
+  // 放宽长度限制，允许更短的 HTML 文档
+  return hasHtmlTag && s.length > 100
 }
 
 // 从文本中提取 corrections JSON（用于 ASR 纠错）
 export function extractCorrections(content: string): Array<{index: number, original: string, corrected: string, reason?: string}> | null {
   if (!content) return null
 
+  // 验证是否是有效的 correction 格式
+  function isValidCorrection(item: any): boolean {
+    return item && typeof item === 'object' && 
+           typeof item.index === 'number' && 
+           typeof item.original === 'string' && 
+           typeof item.corrected === 'string'
+  }
+
+  // 验证数组是否是有效的 corrections 格式
+  function isValidCorrectionsArray(arr: any[]): boolean {
+    return arr.every(isValidCorrection)
+  }
+
   // 1) 尝试 ```json ... ``` 代码块
   const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i)
   if (fenced) {
     try {
       const parsed = JSON.parse(fenced[1].trim())
-      if (parsed.corrections && Array.isArray(parsed.corrections)) {
+      if (parsed.corrections && Array.isArray(parsed.corrections) && isValidCorrectionsArray(parsed.corrections)) {
         return parsed.corrections
       }
     } catch {}
   }
 
-  // 2) 尝试平衡大括号
+  // 2) 尝试平衡大括号（支持多个 JSON 对象）
   const start = content.search(/\{/)
   if (start !== -1) {
     let depth = 0
@@ -141,13 +158,42 @@ export function extractCorrections(content: string): Array<{index: number, origi
         if (depth === 0 && openIdx !== -1) {
           try {
             const parsed = JSON.parse(content.slice(openIdx, i + 1))
-            if (parsed.corrections && Array.isArray(parsed.corrections)) {
+            if (parsed.corrections && Array.isArray(parsed.corrections) && isValidCorrectionsArray(parsed.corrections)) {
               return parsed.corrections
             }
           } catch {}
           openIdx = -1
         }
       }
+    }
+  }
+
+  // 3) 尝试提取数组格式 [{"index": 0, ...}]
+  const arrayMatch = content.match(/\[\s*\{[\s\S]*\}\s*\]/)
+  if (arrayMatch) {
+    try {
+      const parsed = JSON.parse(arrayMatch[0])
+      if (Array.isArray(parsed) && parsed.length > 0 && isValidCorrectionsArray(parsed)) {
+        return parsed
+      }
+    } catch {}
+  }
+
+  // 4) 尝试从文本中提取单个 JSON 对象（更宽松的匹配）
+  const jsonPatterns = [
+    /"corrections"\s*:\s*(\[[\s\S]*?\])/,
+    /corrections\s*[=:]\s*(\[[\s\S]*?\])/i,
+  ]
+  
+  for (const pattern of jsonPatterns) {
+    const match = content.match(pattern)
+    if (match) {
+      try {
+        const parsed = JSON.parse(match[1])
+        if (Array.isArray(parsed) && isValidCorrectionsArray(parsed)) {
+          return parsed
+        }
+      } catch {}
     }
   }
 

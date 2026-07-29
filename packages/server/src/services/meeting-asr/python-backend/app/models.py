@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 class ASRConfig(BaseModel):
     dashscope_api_key: str = ""
-    paraformer_ws_url: str = "wss://ws-ldehaph6v8h68lwu.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference"
+    paraformer_ws_url: str = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
     paraformer_model: str = "paraformer-realtime-v2"
     paraformer_sample_rate: int = 16000
     paraformer_format: str = "pcm"

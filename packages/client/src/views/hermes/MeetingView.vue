@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
+import { ref, watch, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NButton, NSpin, NTag, NTooltip, NInput, NPopconfirm, NModal, NSelect, NRadio, NRadioGroup, NPopover, NSteps, NStep, NAlert } from 'naive-ui'
 import PageSidebarNav from '@/components/layout/PageSidebarNav.vue'
@@ -60,6 +60,26 @@ const ossAccessKeyId = ref(meetingStore.asrConfig.ossAccessKeyId)
 const ossAccessKeySecret = ref(meetingStore.asrConfig.ossAccessKeySecret)
 const ossEndpoint = ref(meetingStore.asrConfig.ossEndpoint)
 const ossPathPrefix = ref(meetingStore.asrConfig.ossPathPrefix)
+const newMeetingAsrModel = ref('paraformer-v2')
+
+// ASR 模型选项
+const asrModelOptions = computed(() => [
+  { 
+    label: 'Paraformer V2', 
+    value: 'paraformer-v2',
+    description: t('meeting.asrModelParaformerDesc')
+  },
+  { 
+    label: 'Fun-ASR', 
+    value: 'fun-asr',
+    description: t('meeting.asrModelFunAsrDesc')
+  },
+  { 
+    label: 'Fun-ASR MTL', 
+    value: 'fun-asr-mtl',
+    description: t('meeting.asrModelFunAsrMtlDesc')
+  },
+])
 
 // --- 当前会议状态 ---
 const isRecording = ref(false)
@@ -70,6 +90,7 @@ const partialText = ref('')
 const finalSentences = ref<TranscriptSentence[]>([])
 const speakerMap = ref<Record<string, string>>({})
 const useDiarize = ref(false)
+const saveMode = ref(true)  // 节省模式：只走说话人分离，不走实时ASR
 const speakerCount = ref(0) // 0 = auto
 const errorMessage = ref('')
 
@@ -114,6 +135,7 @@ const asrServiceError = ref('')
 
 // --- WebSocket & Audio ---
 let ws: WebSocket | null = null
+let diarizeWs: WebSocket | null = null  // 说话人分离专用WebSocket
 let audioContext: AudioContext | null = null
 let mediaStream: MediaStream | null = null
 let analyser: AnalyserNode | null = null
@@ -128,6 +150,27 @@ const audioUrl = ref('')
 const isPlaying = ref(false)
 const playbackTime = ref(0)
 const playbackDuration = ref(0)
+
+watch(audioUrl, (url) => {
+  if (url) {
+    const tempAudio = new Audio(url)
+    tempAudio.onloadedmetadata = () => {
+      if (isFinite(tempAudio.duration)) {
+        playbackDuration.value = tempAudio.duration
+      } else {
+        tempAudio.currentTime = 1e10
+        tempAudio.ondurationchange = () => {
+          if (isFinite(tempAudio.duration)) {
+            playbackDuration.value = tempAudio.duration
+            tempAudio.ondurationchange = null
+          }
+        }
+      }
+    }
+  } else {
+    playbackDuration.value = 0
+  }
+})
 
 // --- 分析相关 ---
 const analysisResult = ref<any>(null)
@@ -289,6 +332,7 @@ function handleCreateMeeting() {
   
   meetingStore.createSession({
     title: newMeetingTitle.value.trim(),
+    asrModel: newMeetingAsrModel.value,
     analysisMode: newMeetingAgentType.value === 'hermes' ? 'hermes' : 'custom',
     hermesProfile: newMeetingAgentType.value === 'hermes' ? (newMeetingHermesProfile.value || 'default') : undefined,
     customProvider: newMeetingAgentType.value !== 'hermes' && newMeetingCodingAgentMode.value === 'scoped' ? newMeetingCustomProvider.value : undefined,
@@ -445,10 +489,11 @@ function confirmRenameSpeaker() {
   const speakerId = renamingKey.value?.split(':')[0]
   if (!speakerId || !renameInput.value.trim() || !meetingStore.activeSessionId) return
   meetingStore.renameSpeaker(meetingStore.activeSessionId, speakerId, renameInput.value.trim())
-  // 更新本地 finalSentences
+  // 更新本地 finalSentences 和 speakerMap
   const session = meetingStore.activeSession
   if (session) {
     finalSentences.value = [...session.sentences]
+    speakerMap.value = { ...session.speakerMap }
   }
   renamingKey.value = null
   renameInput.value = ''
@@ -472,7 +517,15 @@ async function checkASRServiceStatus() {
 }
 
 async function startASRService() {
-  const hasOSS = meetingStore.asrConfig.ossBucket || meetingStore.asrConfig.ossAccessKeyId || meetingStore.asrConfig.ossAccessKeySecret
+  // Check both the persisted store AND the current wizard input refs — when
+  // the browser origin changes (different dev port, incognito, etc.)
+  // localStorage is empty but the user may have just re-entered OSS config
+  // in the wizard. Without checking the local refs we'd skip restart and
+  // keep using the already-running (OSS-less) service.
+  const hasOSS =
+    meetingStore.asrConfig.ossBucket || ossBucket.value.trim() ||
+    meetingStore.asrConfig.ossAccessKeyId || ossAccessKeyId.value.trim() ||
+    meetingStore.asrConfig.ossAccessKeySecret || ossAccessKeySecret.value.trim()
   if (asrServiceStatus.value.isRunning && !hasOSS) return true
 
   isStartingASR.value = true
@@ -484,9 +537,11 @@ async function startASRService() {
   statusText.value = t('meeting.startup.starting')
 
   try {
-    // Get ASR config from meeting store
+    // Get ASR config from meeting store and current session
+    const activeSession = meetingStore.activeSession
     const config: Record<string, unknown> = {
       dashscopeApiKey: meetingStore.asrConfig.dashscopeApiKey || asrApiKey.value,
+      asrModel: activeSession?.asrModel || 'paraformer-v2',
     }
     // Pass LLM config if user provided it, so backend has it from the start.
     if (meetingStore.asrConfig.llmApiKey || llmApiKey.value) {
@@ -612,37 +667,35 @@ async function startRecording() {
       return
     }
 
-    // 检查并启动 ASR 服务
-    if (!asrServiceStatus.value.isRunning) {
-      statusText.value = t('meeting.startingASRService')
-      console.log('[meeting] Starting ASR service...')
-      const started = await startASRService()
-      if (!started) {
-        const errorMsg = asrServiceError.value || t('meeting.asrServiceStartError')
-        console.error('[meeting] Failed to start ASR service:', errorMsg)
-        errorMessage.value = errorMsg
-        isConnecting.value = false
-        return
+    // 检查并启动 ASR 服务（服务已运行时也会调用，确保 OSS 配置变更后重启进程）
+    statusText.value = t('meeting.startingASRService')
+    console.log('[meeting] Ensuring ASR service is running with current config...')
+    const started = await startASRService()
+    if (!started) {
+      const errorMsg = asrServiceError.value || t('meeting.asrServiceStartError')
+      console.error('[meeting] Failed to start ASR service:', errorMsg)
+      errorMessage.value = errorMsg
+      isConnecting.value = false
+      return
+    }
+    console.log('[meeting] ASR service ready, ports:', asrServiceStatus.value.asrPort, asrServiceStatus.value.diarizePort)
+    
+    // 等待服务完全就绪并验证
+    statusText.value = t('meeting.connecting')
+    await new Promise(resolve => setTimeout(resolve, 2000))
+    
+    // 验证服务是否真的启动了
+    try {
+      const healthCheck = await meetingASRApi.healthCheck()
+      console.log('[meeting] ASR service health check:', healthCheck)
+      if (healthCheck.status !== 'ok') {
+        throw new Error('ASR service health check failed')
       }
-      console.log('[meeting] ASR service started, ports:', asrServiceStatus.value.asrPort, asrServiceStatus.value.diarizePort)
-      
-      // 等待服务完全就绪并验证
-      statusText.value = t('meeting.connecting')
-      await new Promise(resolve => setTimeout(resolve, 2000))
-      
-      // 验证服务是否真的启动了
-      try {
-        const healthCheck = await meetingASRApi.healthCheck()
-        console.log('[meeting] ASR service health check:', healthCheck)
-        if (healthCheck.status !== 'ok') {
-          throw new Error('ASR service health check failed')
-        }
-      } catch (err) {
-        console.error('[meeting] ASR service health check failed:', err)
-        errorMessage.value = t('meeting.asrServiceStartError')
-        isConnecting.value = false
-        return
-      }
+    } catch (err) {
+      console.error('[meeting] ASR service health check failed:', err)
+      errorMessage.value = t('meeting.asrServiceStartError')
+      isConnecting.value = false
+      return
     }
 
     // 获取麦克风权限。
@@ -689,49 +742,163 @@ async function startRecording() {
     }
     mediaRecorder.start(1000) // 每秒收集一次数据
 
-    // 连接 WebSocket
-    const wsUrl = useDiarize.value ? DIARIZE_URL : ASR_URL
-    console.log('[meeting] Connecting to WebSocket:', wsUrl)
-    ws = new WebSocket(wsUrl)
+    // 根据模式决定连接哪些 WebSocket
+    const isSaveMode = useDiarize.value && saveMode.value
+    
+    if (isSaveMode) {
+      // 节省模式：只连接 Diarize WebSocket，不走实时ASR
+      console.log('[meeting] Save mode: only connecting to Diarize WebSocket:', DIARIZE_URL)
+      diarizeWs = new WebSocket(DIARIZE_URL)
 
-    ws.onopen = () => {
-      console.log('WebSocket connected')
-      isConnecting.value = false
-      isRecording.value = true
-      statusText.value = t('meeting.recording')
-
-      // 发送开始消息
-      const startMsg = useDiarize.value
-        ? { type: 'start', sample_rate: 16000, speaker_count: speakerCount.value || 'auto' }
-        : { type: 'start' }
-      ws?.send(JSON.stringify(startMsg))
-    }
-
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data)
-        handleWsMessage(data)
-      } catch (e) {
-        console.error('Failed to parse WS message:', e)
+      diarizeWs.onopen = () => {
+        console.log('Diarize WebSocket connected (save mode)')
+        isConnecting.value = false
+        isRecording.value = true
+        statusText.value = t('meeting.recording')
+        diarizeWs?.send(JSON.stringify({ 
+          type: 'start', 
+          sample_rate: 16000, 
+          speaker_count: speakerCount.value || 'auto' 
+        }))
       }
-    }
 
-    ws.onerror = (error) => {
-      console.error('WebSocket error:', error)
-      errorMessage.value = t('meeting.connectionError')
-      stopRecording()
-    }
+      diarizeWs.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data)
+          handleWsMessage(data, 'diarize')
+        } catch (e) {
+          console.error('Failed to parse Diarize WS message:', e)
+        }
+      }
 
-    ws.onclose = () => {
-      console.log('WebSocket closed')
-      if (isRecording.value) {
+      diarizeWs.onerror = (error) => {
+        console.error('Diarize WebSocket error:', error)
+        errorMessage.value = t('meeting.connectionError')
         stopRecording()
       }
+
+      diarizeWs.onclose = () => {
+        console.log('Diarize WebSocket closed')
+        if (isRecording.value) {
+          stopRecording()
+        }
+      }
+
+      // 音频统一由下方共享的 AudioWorklet handler 发送
+    } else if (useDiarize.value) {
+      // 启用说话人分离的正常模式：连接 ASR + Diarize 两个 WebSocket
+      console.log('[meeting] Diarize mode: connecting to both ASR and Diarize WebSockets')
+      
+      // 连接 ASR WebSocket (实时转写)
+      console.log('[meeting] Connecting to ASR WebSocket:', ASR_URL)
+      ws = new WebSocket(ASR_URL)
+
+      ws.onopen = () => {
+        console.log('ASR WebSocket connected')
+        isConnecting.value = false
+        isRecording.value = true
+        statusText.value = t('meeting.recording')
+        ws?.send(JSON.stringify({ type: 'start' }))
+      }
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data)
+          handleWsMessage(data, 'asr')
+        } catch (e) {
+          console.error('Failed to parse ASR WS message:', e)
+        }
+      }
+
+      ws.onerror = (error) => {
+        console.error('ASR WebSocket error:', error)
+        errorMessage.value = t('meeting.connectionError')
+        stopRecording()
+      }
+
+      ws.onclose = () => {
+        console.log('ASR WebSocket closed')
+        if (isRecording.value) {
+          stopRecording()
+        }
+      }
+
+      // 同时连接 Diarize WebSocket (说话人分离)
+      console.log('[meeting] Connecting to Diarize WebSocket:', DIARIZE_URL)
+      diarizeWs = new WebSocket(DIARIZE_URL)
+
+      diarizeWs.onopen = () => {
+        console.log('Diarize WebSocket connected')
+        diarizeWs?.send(JSON.stringify({ 
+          type: 'start', 
+          sample_rate: 16000, 
+          speaker_count: speakerCount.value || 'auto' 
+        }))
+      }
+
+      diarizeWs.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data)
+          handleWsMessage(data, 'diarize')
+        } catch (e) {
+          console.error('Failed to parse Diarize WS message:', e)
+        }
+      }
+
+      diarizeWs.onerror = (error) => {
+        console.error('Diarize WebSocket error:', error)
+      }
+
+      diarizeWs.onclose = () => {
+        console.log('Diarize WebSocket closed')
+      }
+
+      // 音频由下方共享的 AudioWorklet handler 同时发给 ASR 和 Diarize
+    } else {
+      // 仅 ASR 模式：只连接 ASR WebSocket（不启用说话人分离）
+      console.log('[meeting] ASR only mode: connecting to ASR WebSocket only')
+      
+      const asrUrl = ASR_URL
+      console.log('[meeting] Connecting to ASR WebSocket:', asrUrl)
+      ws = new WebSocket(asrUrl)
+
+      ws.onopen = () => {
+        console.log('ASR WebSocket connected')
+        isConnecting.value = false
+        isRecording.value = true
+        statusText.value = t('meeting.recording')
+        ws?.send(JSON.stringify({ type: 'start' }))
+      }
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data)
+          handleWsMessage(data, 'asr')
+        } catch (e) {
+          console.error('Failed to parse ASR WS message:', e)
+        }
+      }
+
+      ws.onerror = (error) => {
+        console.error('ASR WebSocket error:', error)
+        errorMessage.value = t('meeting.connectionError')
+        stopRecording()
+      }
+
+      ws.onclose = () => {
+        console.log('ASR WebSocket closed')
+        if (isRecording.value) {
+          stopRecording()
+        }
+      }
     }
 
-    // 处理音频数据：通过 AudioWorklet 接收 Float32 buffer，主线程 resample + Int16 转换
+    // 处理音频数据：通过 AudioWorklet 接收 Float32 buffer，主线程 resample + Int16 转换，
+    // 再分发给当前已打开的 socket（ASR / Diarize）
     pcmNode.port.onmessage = (event: MessageEvent<{ samples: Float32Array; sourceSampleRate: number }>) => {
-      if (!ws || ws.readyState !== WebSocket.OPEN) return
+      const wsOpen = !!ws && ws.readyState === WebSocket.OPEN
+      const diarizeOpen = !!diarizeWs && diarizeWs.readyState === WebSocket.OPEN
+      if (!wsOpen && !diarizeOpen) return
       const { samples, sourceSampleRate } = event.data
 
       // 重采样到 16000 Hz（如果需要）
@@ -754,7 +921,8 @@ async function startRecording() {
         int16Data[i] = s < 0 ? s * 0x8000 : s * 0x7FFF
       }
 
-      ws.send(int16Data.buffer)
+      if (wsOpen) ws!.send(int16Data.buffer)
+      if (diarizeOpen) diarizeWs!.send(int16Data.buffer)
     }
 
     // 开始可视化
@@ -800,17 +968,19 @@ function stopRecording() {
   }
   mediaRecorder = null
 
-  // 发送停止消息
+  // 发送停止消息给 ASR（ASR 已在录音过程中流式返回结果，500ms 后安全关闭）
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'stop' }))
-    if (!useDiarize.value) {
-      // 非说话人分离模式：主 ASR 已在录音过程中流式返回结果，500ms 后安全关闭
-      setTimeout(() => ws?.close(), 500)
-    }
-    // 说话人分离模式：不主动关闭，等服务器处理完 PCM 后发回 transcript + stopped
-    // 由 handleWsMessage('stopped') 中的 stopRecording() 关闭
+    setTimeout(() => ws?.close(), 500)
   }
-  if (!useDiarize.value) ws = null
+  ws = null
+
+  // 发送停止消息给 Diarize
+  if (diarizeWs && diarizeWs.readyState === WebSocket.OPEN) {
+    diarizeWs.send(JSON.stringify({ type: 'stop' }))
+    setTimeout(() => diarizeWs?.close(), 500)
+  }
+  diarizeWs = null
 
   // 停止音频 + 关闭 worklet
   if (mediaStream) {
@@ -845,19 +1015,24 @@ function stopRecording() {
   }
 }
 
-function handleWsMessage(data: any) {
+function handleWsMessage(data: any, source: 'asr' | 'diarize' = 'asr') {
   switch (data.type) {
     case 'ready':
-      console.log('Session ready:', data.session_id || data.task_id)
+      console.log(`[${source}] Session ready:`, data.session_id || data.task_id)
       break
     case 'started':
-      statusText.value = t('meeting.recording')
+      if (source === 'asr') {
+        statusText.value = t('meeting.recording')
+      }
       break
     case 'partial':
-      partialText.value = data.text || ''
+      if (source === 'asr') {
+        partialText.value = data.text || ''
+      }
       break
     case 'final':
-      if (data.text) {
+      // ASR实时转写结果 - 无说话人标签
+      if (source === 'asr' && data.text) {
         const sentence: TranscriptSentence = {
           text: data.text,
           timestamp: Date.now(),
@@ -881,48 +1056,180 @@ function handleWsMessage(data: any) {
       break
     case 'transcript':
       // 说话人分离结果
-      if (data.sentences) {
-        for (const sentence of data.sentences) {
-          const speakerId = String(sentence.speaker_id || 'unknown')
-          if (!speakerMap.value[speakerId]) {
-            speakerMap.value[speakerId] = `说话人 ${Object.keys(speakerMap.value).length + 1}`
-          }
-          // 检查是否有已注册的显示名称
-          const session = meetingStore.activeSession
-          const registeredName = session?.speakers.find(s => s.id === speakerId)?.displayName
-          const speakerName = registeredName || speakerMap.value[speakerId]
-          
-          const sentenceObj: TranscriptSentence = {
-            text: sentence.text,
-            timestamp: Date.now(),
-            startTime: sentence.begin_ms,
-            endTime: sentence.end_ms,
-            speaker: speakerName,
-            speakerId: speakerId,
-          }
-          finalSentences.value.push(sentenceObj)
-          
-          // 保存到 store
-          if (meetingStore.activeSessionId) {
-            meetingStore.addSentence(meetingStore.activeSessionId, sentenceObj)
-          }
+      if (source === 'diarize' && data.sentences) {
+        const offsetSec = data.offset_sec || 0
+        const isSaveMode = useDiarize.value && saveMode.value
+        
+        if (isSaveMode) {
+          // 节省模式：直接添加结果（带说话人标签）
+          addDiarizeResultDirectly(data.sentences, offsetSec)
+        } else {
+          // 正常模式：匹配回填到已有ASR句子
+          matchAndMergeDiarizeResult(data.sentences, offsetSec)
         }
-        nextTick(() => {
-          const container = document.getElementById('transcript-container')
-          if (container) container.scrollTop = container.scrollHeight
-        })
+      }
+      break
+    case 'chunk_queued':
+    case 'chunk_submitted':
+      // 说话人分离进度提示（可选显示）
+      if (source === 'diarize') {
+        console.log(`[diarize] Chunk ${data.chunk_index} processing...`)
       }
       break
     case 'error':
-      errorMessage.value = data.message || t('meeting.unknownError')
-      stopRecording()
+      if (source === 'asr') {
+        errorMessage.value = data.message || t('meeting.unknownError')
+        stopRecording()
+      } else {
+        // Diarize错误只记录日志，不中断录音
+        console.error('[diarize] Error:', data.message)
+      }
       break
     case 'stopped':
-      // 说话人分离模式下，服务器已处理完 PCM 并回传结果，关闭 WS
-      if (ws) { ws.close(); ws = null }
-      stopRecording()
+      if (source === 'asr') {
+        stopRecording()
+      }
       break
   }
+}
+
+function addDiarizeResultDirectly(diarizeSentences: any[], offsetSec: number = 0) {
+  // 节省模式：直接添加 Diarize 结果（带说话人标签）
+  console.log('[diarize-save] Adding', diarizeSentences.length, 'sentences directly')
+  
+  for (const diarizeSent of diarizeSentences) {
+    const diarizeStartMs = offsetSec * 1000 + (diarizeSent.begin_ms || 0)
+    const diarizeEndMs = offsetSec * 1000 + (diarizeSent.end_ms || 0)
+    const speakerId = String(diarizeSent.speaker_id || 'unknown')
+    
+    // 获取或创建说话人显示名称
+    if (!speakerMap.value[speakerId]) {
+      speakerMap.value[speakerId] = `说话人 ${Object.keys(speakerMap.value).length + 1}`
+    }
+    const session = meetingStore.activeSession
+    const registeredName = session?.speakers.find(s => s.id === speakerId)?.displayName
+    const speakerName = registeredName || speakerMap.value[speakerId]
+    
+    // 检查是否是重复的文本（避免overlap导致的重复）
+    const isDuplicate = finalSentences.value.some(s => 
+      s.text === diarizeSent.text && 
+      Math.abs((s.startTime || 0) - diarizeStartMs) < 2000
+    )
+    
+    if (!isDuplicate && diarizeSent.text) {
+      const sentenceObj: TranscriptSentence = {
+        text: diarizeSent.text,
+        timestamp: Date.now(),
+        startTime: diarizeStartMs,
+        endTime: diarizeEndMs,
+        speaker: speakerName,
+        speakerId: speakerId,
+      }
+      finalSentences.value.push(sentenceObj)
+      
+      if (meetingStore.activeSessionId) {
+        meetingStore.addSentence(meetingStore.activeSessionId, sentenceObj)
+      }
+    }
+  }
+  
+  // 按时间戳排序
+  finalSentences.value.sort((a, b) => (a.startTime || 0) - (b.startTime || 0))
+  
+  // 自动滚动到底部
+  nextTick(() => {
+    const container = document.getElementById('transcript-container')
+    if (container) container.scrollTop = container.scrollHeight
+  })
+}
+
+function matchAndMergeDiarizeResult(diarizeSentences: any[], offsetSec: number = 0) {
+  // 将说话人分离结果与已有的ASR句子按时间戳匹配
+  // offsetSec: chunk在整个音频中的偏移量（秒）
+  const timeThreshold = 2000 // 2秒容差（考虑ASR和Diarize的时间戳差异）
+  
+  console.log('[diarize] Processing', diarizeSentences.length, 'sentences with offset', offsetSec, 'sec')
+  
+  for (const diarizeSent of diarizeSentences) {
+    // 计算绝对时间（毫秒）
+    const diarizeStartMs = offsetSec * 1000 + (diarizeSent.begin_ms || 0)
+    const diarizeEndMs = offsetSec * 1000 + (diarizeSent.end_ms || 0)
+    const speakerId = String(diarizeSent.speaker_id || 'unknown')
+    
+    // 获取或创建说话人显示名称
+    if (!speakerMap.value[speakerId]) {
+      speakerMap.value[speakerId] = `说话人 ${Object.keys(speakerMap.value).length + 1}`
+    }
+    const session = meetingStore.activeSession
+    const registeredName = session?.speakers.find(s => s.id === speakerId)?.displayName
+    const speakerName = registeredName || speakerMap.value[speakerId]
+    
+    console.log('[diarize] Sentence:', diarizeSent.text?.substring(0, 20), 'speaker:', speakerName, 'time:', diarizeStartMs, '-', diarizeEndMs)
+    
+    // 查找匹配的ASR句子
+    let matched = false
+    for (const asrSent of finalSentences.value) {
+      // 如果ASR句子已经有说话人标签，跳过
+      if (asrSent.speakerId) continue
+      
+      // 按时间戳匹配
+      const asrStartMs = asrSent.startTime || 0
+      const asrEndMs = asrSent.endTime || 0
+      
+      // 计算时间差
+      const startDiff = Math.abs(asrStartMs - diarizeStartMs)
+      const endDiff = Math.abs(asrEndMs - diarizeEndMs)
+      
+      if (startDiff < timeThreshold && endDiff < timeThreshold) {
+        // 匹配成功，回填说话人信息
+        asrSent.speaker = speakerName
+        asrSent.speakerId = speakerId
+        matched = true
+        console.log('[diarize] Matched ASR sentence:', asrSent.text?.substring(0, 20))
+        
+        // 同步更新到 store
+        if (meetingStore.activeSessionId) {
+          meetingStore.updateSentence(meetingStore.activeSessionId, asrSent)
+        }
+        break
+      }
+    }
+    
+    // 如果没有匹配到已有句子，可能是新的句子（边界情况）
+    if (!matched && diarizeSent.text) {
+      // 检查是否是重复的文本（避免overlap导致的重复）
+      const isDuplicate = finalSentences.value.some(s => 
+        s.text === diarizeSent.text && 
+        Math.abs((s.startTime || 0) - diarizeStartMs) < timeThreshold
+      )
+      
+      if (!isDuplicate) {
+        const sentenceObj: TranscriptSentence = {
+          text: diarizeSent.text,
+          timestamp: Date.now(),
+          startTime: diarizeStartMs,
+          endTime: diarizeEndMs,
+          speaker: speakerName,
+          speakerId: speakerId,
+        }
+        finalSentences.value.push(sentenceObj)
+        console.log('[diarize] Added new sentence from diarize:', diarizeSent.text?.substring(0, 20))
+        
+        if (meetingStore.activeSessionId) {
+          meetingStore.addSentence(meetingStore.activeSessionId, sentenceObj)
+        }
+      }
+    }
+  }
+  
+  // 按时间戳排序
+  finalSentences.value.sort((a, b) => (a.startTime || 0) - (b.startTime || 0))
+  
+  // 自动滚动到底部
+  nextTick(() => {
+    const container = document.getElementById('transcript-container')
+    if (container) container.scrollTop = container.scrollHeight
+  })
 }
 
 // --- 音频播放 ---
@@ -967,7 +1274,7 @@ function playAudio() {
   }
   
   audioElement.value.onloadedmetadata = () => {
-    if (audioElement.value) {
+    if (audioElement.value && isFinite(audioElement.value.duration)) {
       playbackDuration.value = audioElement.value.duration
     }
   }
@@ -1280,6 +1587,18 @@ function onAgentReportHtml(html: string) {
   }
 }
 
+function onAgentCompleted() {
+  // 分析完成后自动切换到报告视图
+  if (htmlContent.value) {
+    showAgentPanel.value = false
+  }
+}
+
+function onAgentCorrected(corrected: any[]) {
+  // 更新本地字幕
+  finalSentences.value = [...corrected]
+}
+
 // --- Hermes Agent 分析 ---
 async function analyzeWithHermesAgent() {
   if (!meetingStore.activeSession) return
@@ -1581,6 +1900,25 @@ async function clearTranscript() {
             {{ t('meeting.diarizeHint') }}
           </NTooltip>
 
+          <NTooltip v-if="useDiarize" trigger="hover">
+            <template #trigger>
+              <NButton
+                size="small"
+                :type="saveMode ? 'warning' : 'default'"
+                @click="saveMode = !saveMode"
+                :disabled="isRecording"
+              >
+                <template #icon>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                    <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+                  </svg>
+                </template>
+                {{ saveMode ? t('meeting.saveMode') : t('meeting.normalMode') }}
+              </NButton>
+            </template>
+            {{ saveMode ? t('meeting.saveModeHint') : t('meeting.normalModeHint') }}
+          </NTooltip>
+
           <NSelect
             v-if="useDiarize"
             v-model:value="speakerCount"
@@ -1812,6 +2150,8 @@ async function clearTranscript() {
               :start-trigger="agentStartAnalysisTrigger"
               @update:analysis-result="onAgentAnalysisResult"
               @update:report-html="onAgentReportHtml"
+              @completed="onAgentCompleted"
+              @corrected="onAgentCorrected"
             />
           </template>
 
@@ -2092,6 +2432,15 @@ async function clearTranscript() {
               <NButton size="small" @click="asrWizardStep = 2">{{ t('meeting.wizardBack') }}</NButton>
               <NButton size="small" @click="asrWizardStep = 1">{{ t('meeting.wizardRestart') }}</NButton>
             </div>
+          </div>
+          <div class="form-item">
+            <label class="form-label">{{ t('meeting.asrModel') }}</label>
+            <NSelect
+              v-model:value="newMeetingAsrModel"
+              :options="asrModelOptions"
+              :placeholder="t('meeting.selectAsrModel')"
+            />
+            <div class="form-hint">{{ t('meeting.asrModelHint') }}</div>
           </div>
         </div>
 

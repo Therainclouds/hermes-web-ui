@@ -262,6 +262,32 @@ Real-time speech transcription with AI-powered meeting analysis, speaker diariza
 - **Reentry guards.** `sendMessage` and `runAgent` short-circuit while a run is already in flight (`isRunning` flag), so duplicate clicks on the trigger no longer spawn a second concurrent agent run or fight over the `isRunning` state previously owned by the run callbacks.
 - **Aligned Python LLM accessor.** `meeting-asr/python-backend/app/llm_service.py` switched from the deprecated `storage.get_llm_config()` to `storage.get_config().llm`, matching the storage refactor introduced in v0.74. Without this the ASR backend would raise on every analysis or HTML render once the legacy accessor was removed.
 
+**Transcript correction (v0.74.2):**
+
+- **AI transcript correction.** A new "Correct Transcript" action in the agent panel sends the current sentences to Hermes as an ASR proofreading task. The agent returns a JSON `{index, original, corrected}` array; the client applies the changes back into the active session and refreshes `finalSentences`. Implemented by `correctTranscript()` in `useMeetingAgent.ts`, surfaced as a button in `MeetingAgentPanel.vue`, and wired into the session store from `MeetingView.vue` (`onAgentCorrectTranscript`).
+- **Auto-close on completion.** The panel now emits a `completed` event when an analysis run finishes; `MeetingView.onAgentCompleted` closes the panel if an HTML report was produced, so the report view takes over without an extra click.
+- **Locale strings.** `meeting.correctTranscript` and `meeting.correctTranscriptHint` are added to the English and Chinese locale files. Other locales fall back to the English strings until translated.
+
+**ASR model picker & save-mode (v0.74.3):**
+
+- **Per-meeting ASR model selection.** The create-meeting dialog now exposes an ASR model picker with three options — `paraformer-v2`, `fun-asr`, `fun-asr-mtl` — each with a short description in both locales. The selected model is stored on `MeetingSession.asrModel` and forwarded to the ASR websocket as part of the runtime config.
+- **Save mode (diarize-only).** A new `saveMode` toggle on `MeetingView` opens a dedicated `diarize` websocket instead of the live ASR stream. Audio is uploaded to the diarize backend and speaker labels come back asynchronously, which is enough for later analysis/HTML report generation and skips DashScope's per-second ASR billing for users on tight quotas.
+- **ASR-only branch.** `startRecording` now splits the websocket setup into three explicit branches — `saveMode` (diarize-only), `useDiarize` (ASR + diarize side-by-side), and the new plain ASR-only path — so users who don't need speaker labels skip the diarize websocket entirely.
+- **Speaker rename sync.** `confirmRenameSpeaker` now mirrors the updated `speakerMap` from the store back into the live `MeetingView` refs in addition to `finalSentences`, so a rename reflects immediately without a session reload.
+
+**Transcript correction hardening (v0.74.3):**
+
+- **Robust correction extraction.** `extractCorrections()` in `useMeetingAnalysis.ts` now validates every parsed item (`index` number + `original`/`corrected` strings) and tolerates three extra shapes the LLM occasionally emits: a bare JSON array, a `corrections = [...]` assignment-style line, and a JSON block wrapped in surrounding prose. Invalid payloads return `null` instead of a half-populated array.
+- **Stricter proofreading prompt.** The correction prompt in `useMeetingAgent.correctTranscript` was rewritten to be explicit about the proofreading role and to forbid tool calls. A pinned `instructions` is now sent alongside the run so Hermes does not detour into web search or file writes mid-correction.
+- **Coverage.** `tests/client/extractCorrections.test.ts` adds 6 cases covering the new shapes and the validation guard (16/16 green).
+
+**Agent panel polish (v0.74.4):**
+
+- **Session-switch reload.** `MeetingAgentPanel.vue` now `watch`es `sessionId` and reloads `messages`, `analysisResult`, and `reportHtml` from the new session, plus resets `isRunning` / `error` / `completed` / `correctedSentences`. Previously the panel kept showing the previous meeting's conversation after the user switched sessions in `MeetingView`.
+- **Markdown rendering for assistant content.** The plain-text `<div class="assistant-content">{{ msg.content }}</div>` is replaced with an async-loaded `MarkdownRenderer` so analysis output is rendered as actual Markdown (headings, lists, tables, code blocks) instead of escaped text.
+- **Smarter report prompt.** `useMeetingAgent.generateReport` now passes a pinned `instructions` payload to Hermes, includes the session title, and folds in any prior `analysisResult` plus the previous assistant/system messages as `### Previous analysis result` / `### Previous conversation` blocks. This keeps a re-run of "Generate Report" idempotent instead of re-analyzing from scratch, and the strict instructions enforce the `write_file + ```html code block` contract that `extractHtml` looks for.
+- **Looser HTML detection.** `looksLikeHtmlDocument` now also accepts `<!DOCTYPE html>` prefixes and drops the minimum-length threshold from 200 to 100 characters, so shorter ECharts-free reports are still recognized as full HTML documents.
+
 **Backend Dependencies:**
 
 - ASR Service: `ws://localhost:8000/ws/asr` (real-time speech recognition)

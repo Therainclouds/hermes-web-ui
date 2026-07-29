@@ -8,6 +8,29 @@ import { prepareCodingAgentLaunch } from '../../packages/server/src/services/cod
 
 const homes: string[] = []
 
+const isWindows = process.platform === 'win32'
+const LAUNCHER_FILE = isWindows ? 'launch.ps1' : 'launch.sh'
+
+function shellQuote(value: string): string {
+  if (/^[A-Za-z0-9_./:=@+-]+$/.test(value)) return value
+  return `'${value.replace(/'/g, `'\\''`)}'`
+}
+
+function powerShellQuote(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`
+}
+
+// Mirrors buildLaunchShellCommand in packages/server/src/services/coding-agents.ts
+function expectedShellCommand(workspaceDir: string, command: string, args: string[]): string {
+  if (isWindows) {
+    return [
+      `Set-Location -LiteralPath ${powerShellQuote(workspaceDir)}`,
+      `& ${powerShellQuote(command)} ${args.map(powerShellQuote).join(' ')}`.trim(),
+    ].join('; ')
+  }
+  return `cd ${shellQuote(workspaceDir)} && ${[shellQuote(command), ...args.map(shellQuote)].join(' ')}`
+}
+
 function mockProcessUid(uid: number) {
   vi.stubGlobal('process', Object.assign(process, {
     getuid: vi.fn(() => uid),
@@ -75,7 +98,11 @@ describe('coding agent launch preparation', () => {
         '--dangerously-skip-permissions',
       ],
       env: {},
-      shellCommand: `cd ${join(home, 'coding-agent', 'workspace', 'default', 'global')} && claude --append-system-prompt-file ${join(home, 'global-home', '.claude', 'hermes-rules.md')} --dangerously-skip-permissions`,
+      shellCommand: expectedShellCommand(
+        join(home, 'coding-agent', 'workspace', 'default', 'global'),
+        'claude',
+        ['--append-system-prompt-file', join(home, 'global-home', '.claude', 'hermes-rules.md'), '--dangerously-skip-permissions'],
+      ),
       files: [{
         key: 'prompt',
         path: '~/.claude/hermes-rules.md',
@@ -87,7 +114,7 @@ describe('coding agent launch preparation', () => {
     expect(prompt).toContain('# 输出格式规范')
   })
 
-  it('uses Claude Code auto permission mode instead of dangerous bypass when running as root', async () => {
+  it.skipIf(isWindows)('uses Claude Code auto permission mode instead of dangerous bypass when running as root', async () => {
     mockProcessUid(0)
     const home = makeHome()
 
@@ -130,7 +157,7 @@ describe('coding agent launch preparation', () => {
       command: 'codex',
       args: [],
       env: {},
-      shellCommand: `cd ${join(home, 'coding-agent', 'workspace', 'default', 'global')} && codex`,
+      shellCommand: expectedShellCommand(join(home, 'coding-agent', 'workspace', 'default', 'global'), 'codex', []),
       files: [],
     })
   })
@@ -189,13 +216,17 @@ describe('coding agent launch preparation', () => {
       join(result.rootDir, 'hermes-rules.md'),
       '--dangerously-skip-permissions',
     ])
-    expect(result.shellCommand).toContain(`cd ${join(home, 'coding-agent', 'workspace', 'default', 'openrouter')} &&`)
-    expect(result.shellCommand).toContain(join(result.rootDir, 'launch.sh'))
+    expect(result.shellCommand).toContain(
+      isWindows
+        ? `Set-Location -LiteralPath ${powerShellQuote(join(home, 'coding-agent', 'workspace', 'default', 'openrouter'))}`
+        : `cd ${join(home, 'coding-agent', 'workspace', 'default', 'openrouter')} &&`,
+    )
+    expect(result.shellCommand).toContain(join(result.rootDir, LAUNCHER_FILE))
     expect(result.shellCommand).not.toContain('ANTHROPIC_API_KEY')
     expect(result.shellCommand).not.toContain('hwui_')
     expect(result.shellCommand).not.toContain('--model')
-    const launcher = readFileSync(join(result.rootDir, 'launch.sh'), 'utf-8')
-    expect(launcher).toContain('exec claude --settings')
+    const launcher = readFileSync(join(result.rootDir, LAUNCHER_FILE), 'utf-8')
+    expect(launcher).toContain(isWindows ? "& 'claude' '--settings'" : 'exec claude --settings')
     expect(launcher).toContain('--dangerously-skip-permissions')
     expect(launcher).not.toContain('--model')
 
@@ -250,7 +281,7 @@ describe('coding agent launch preparation', () => {
 
     const prompt = readFileSync(join(result.rootDir, 'hermes-rules.md'), 'utf-8')
     expect(prompt).toContain('# 输出格式规范')
-    expect(prompt).toContain('当你的回复中包含图片、视频或文件引用�?)
+    expect(prompt).toContain('当你的回复中包含图片、视频或文件引用时')
   })
 
   it('uses the desktop runtime node for scoped Hermes Studio MCP configs when available', async () => {
@@ -463,12 +494,12 @@ describe('coding agent launch preparation', () => {
       '--dangerously-skip-permissions',
     ])
     expect(result.shellCommand).not.toContain('--setting-sources local')
-    const launcher = readFileSync(join(result.rootDir, 'launch.sh'), 'utf-8')
-    expect(launcher).toContain('--setting-sources local')
+    const launcher = readFileSync(join(result.rootDir, LAUNCHER_FILE), 'utf-8')
+    expect(launcher).toContain(isWindows ? "'--setting-sources' 'local'" : '--setting-sources local')
     expect(result.rootDir).toBe(join(home, 'coding-agent', 'model', 'default', 'openrouter', 'claude-code'))
   })
 
-  it('uses Claude Code auto permission mode for scoped root launches', async () => {
+  it.skipIf(isWindows)('uses Claude Code auto permission mode for scoped root launches', async () => {
     mockProcessUid(0)
     const home = makeHome()
 
@@ -535,7 +566,7 @@ describe('coding agent launch preparation', () => {
 
     const config = readFileSync(join(result.rootDir, 'config.toml'), 'utf-8')
     expect(config).toContain('requires_openai_auth = false')
-    expect(config).toContain(`model_catalog_json = "${join(result.rootDir, 'codex-model-catalog.json')}"`)
+    expect(config).toContain(`model_catalog_json = ${JSON.stringify(join(result.rootDir, 'codex-model-catalog.json'))}`)
     expect(config).toContain('model_reasoning_summary = "auto"')
     expect(config).toContain('developer_instructions = """')
     expect(config).toContain('Hermes Studio MCP usage')
@@ -543,11 +574,11 @@ describe('coding agent launch preparation', () => {
     expect(config).toContain('[mcp_servers.hermes-studio-api]')
     expect(config).toContain('[mcp_servers.hermes-studio-devices]')
     expect(config).toContain('[mcp_servers.hermes-studio-use]')
-    expect(config).toContain(`command = "${process.execPath}"`)
-    expect(config).toContain(`args = ["${join(process.cwd(), 'bin/hermes-studio-mcp.mjs')}", "api"]`)
-    expect(config).toContain(`args = ["${join(process.cwd(), 'bin/hermes-studio-mcp.mjs')}", "devices"]`)
-    expect(config).toContain(`args = ["${join(process.cwd(), 'bin/hermes-studio-mcp.mjs')}", "use"]`)
-    expect(config).toContain(`env = { HERMES_WEB_UI_URL = "http://127.0.0.1:8648", HERMES_WEB_UI_HOME = "${home}"`)
+    expect(config).toContain(`command = ${JSON.stringify(process.execPath)}`)
+    expect(config).toContain(`args = [${JSON.stringify(join(process.cwd(), 'bin/hermes-studio-mcp.mjs'))}, "api"]`)
+    expect(config).toContain(`args = [${JSON.stringify(join(process.cwd(), 'bin/hermes-studio-mcp.mjs'))}, "devices"]`)
+    expect(config).toContain(`args = [${JSON.stringify(join(process.cwd(), 'bin/hermes-studio-mcp.mjs'))}, "use"]`)
+    expect(config).toContain(`env = { HERMES_WEB_UI_URL = "http://127.0.0.1:${process.env.PORT || '6060'}", HERMES_WEB_UI_HOME = ${JSON.stringify(home)}`)
     expect(config).toContain('HERMES_WEBUI_STATE_DIR = "')
     expect(config).toContain('HERMES_WEB_UI_PROFILE = "default"')
     expect(config).toContain('HERMES_MCP_SERVER_NAME = "hermes-studio-api"')

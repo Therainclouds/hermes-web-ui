@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, defineAsyncComponent } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NButton, NInput, NSpin, NTooltip, NModal, NAlert } from 'naive-ui'
 import { useMeetingStore } from '@/stores/hermes/meeting'
 import { useMeetingAgent } from '@/composables/useMeetingAgent'
+
+const MarkdownRenderer = defineAsyncComponent(async () => (await import('@/components/hermes/chat/MarkdownRenderer.vue')).default)
 
 const props = withDefaults(defineProps<{
   sessionId: string
@@ -15,6 +17,8 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   (e: 'update:analysisResult', result: any): void
   (e: 'update:reportHtml', html: string): void
+  (e: 'completed'): void
+  (e: 'corrected', sentences: any[]): void
 }>()
 
 const { t } = useI18n()
@@ -27,12 +31,16 @@ const {
   error,
   analysisResult,
   reportHtml,
+  completed,
+  correctedSentences,
   agentConfig,
   promptTemplate,
   sendMessage,
   startAnalysis,
+  generateReport,
   abortRun,
   clearAll,
+  correctTranscript,
   savePromptTemplate,
   resetPromptTemplate,
 } = useMeetingAgent(props.sessionId)
@@ -49,6 +57,27 @@ const editingTemplate = ref('')
 const session = computed(() => {
   return meetingStore.sessions.find(s => s.id === props.sessionId)
 })
+
+// 监听 sessionId 变化，重新加载对应的会议数据
+watch(() => props.sessionId, (newSessionId, oldSessionId) => {
+  if (newSessionId !== oldSessionId) {
+    // 重新加载新会议的数据
+    const newSession = meetingStore.sessions.find(s => s.id === newSessionId)
+    if (newSession) {
+      // 更新 messages 为新会议的 agentMessages
+      messages.value = newSession.agentMessages ? [...newSession.agentMessages] : []
+      // 更新分析结果
+      analysisResult.value = newSession.analysisResult || null
+      // 更新 HTML 内容
+      reportHtml.value = newSession.htmlContent || ''
+      // 重置状态
+      isRunning.value = false
+      error.value = null
+      completed.value = false
+      correctedSentences.value = null
+    }
+  }
+}, { immediate: false })
 
 // Agent 类型显示
 const agentTypeLabel = computed(() => {
@@ -84,6 +113,18 @@ async function handleStartAnalysis() {
   await startAnalysis(session.value.sentences)
 }
 
+// 纠正字幕
+async function handleCorrectTranscript() {
+  if (!session.value?.sentences.length || isRunning.value) return
+  await correctTranscript(session.value.sentences)
+}
+
+// 生成报告
+async function handleGenerateReport() {
+  if (!session.value?.sentences.length || isRunning.value) return
+  await generateReport(session.value.sentences)
+}
+
 // 键盘事件
 function handleKeydown(e: KeyboardEvent) {
   if (e.key === 'Enter' && !e.shiftKey) {
@@ -114,6 +155,20 @@ watch(analysisResult, (newResult) => {
 watch(reportHtml, (newHtml) => {
   if (newHtml) {
     emit('update:reportHtml', newHtml)
+  }
+})
+
+// 监听分析完成，通知父组件
+watch(completed, (val) => {
+  if (val) {
+    emit('completed')
+  }
+})
+
+// 监听纠错完成，通知父组件更新字幕
+watch(correctedSentences, (val) => {
+  if (val) {
+    emit('corrected', val)
   }
 })
 
@@ -231,6 +286,49 @@ function formatDuration(seconds: number): string {
             </NButton>
           </template>
           {{ t('meeting.startAnalysisHint') }}
+        </NTooltip>
+
+        <!-- 纠错字幕 -->
+        <NTooltip trigger="hover">
+          <template #trigger>
+            <NButton
+              size="tiny"
+              :disabled="!session?.sentences.length || isRunning"
+              @click="handleCorrectTranscript"
+            >
+              <template #icon>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                </svg>
+              </template>
+              {{ t('meeting.correctTranscript') }}
+            </NButton>
+          </template>
+          {{ t('meeting.correctTranscriptHint') }}
+        </NTooltip>
+
+        <!-- 生成报告 -->
+        <NTooltip trigger="hover">
+          <template #trigger>
+            <NButton
+              size="tiny"
+              type="primary"
+              :disabled="!session?.sentences.length || isRunning"
+              @click="handleGenerateReport"
+            >
+              <template #icon>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                  <polyline points="14 2 14 8 20 8"/>
+                  <line x1="16" y1="13" x2="8" y2="13"/>
+                  <line x1="16" y1="17" x2="8" y2="17"/>
+                </svg>
+              </template>
+              {{ t('meeting.generateReport') }}
+            </NButton>
+          </template>
+          {{ t('meeting.generateReportHint') }}
         </NTooltip>
 
         <!-- 中止 -->
@@ -371,7 +469,7 @@ function formatDuration(seconds: number): string {
 
           <!-- Assistant 消息（分析内容） -->
           <div v-if="msg.role === 'assistant'" class="agent-assistant">
-            <div class="assistant-content">{{ msg.content }}</div>
+            <MarkdownRenderer v-if="msg.content" :content="msg.content" />
           </div>
 
           <!-- System 消息（错误） -->

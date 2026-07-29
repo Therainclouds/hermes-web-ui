@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: tests
+title: Test Suite (Unit, Integration, E2E & Python)
+scope:
+    - tests/
+source_files: []
+depends_on: []
+related_to: []

@@ -209,6 +209,32 @@ hermes-web-ui reset-default-login
 - **防重入。** `sendMessage` 与 `runAgent` 在已经有 run 进行中时通过 `isRunning` 标志短路返回，防止重复点击触发器重复拉起 agent run，也避免 `isRunning` 状态被回调和并发调用互相覆盖。
 - **对齐 Python 端 LLM 配置访问器。** `meeting-asr/python-backend/app/llm_service.py` 将已废弃的 `storage.get_llm_config()` 切换为 `storage.get_config().llm`，与 v0.74 引入的存储重构保持一致；旧的访问器下线后，分析与 HTML 渲染流程不再会因为这一处不一致抛出错误。
 
+**字幕纠错（v0.74.2）：**
+
+- **AI 字幕纠错。** Agent 面板新增 "纠错字幕" 按钮，把当前句子发给 Hermes 做 ASR 校对，agent 返回 `{index, original, corrected}` 数组，前端按序号回写到当前会话并刷新 `finalSentences`。由 `useMeetingAgent.ts` 的 `correctTranscript()` 实现，`MeetingAgentPanel.vue` 暴露按钮，`MeetingView.vue` 通过 `onAgentCorrectTranscript` 写回 store。
+- **完成自动关闭面板。** 分析 run 结束时面板会发出 `completed` 事件；`MeetingView.onAgentCompleted` 在已生成 HTML 报告时自动关闭面板，让报告视图直接顶上，省一次点击。
+- **多语言字符串。** `meeting.correctTranscript` 与 `meeting.correctTranscriptHint` 已加入中英文 locale 文件；其它 locale 暂以英文兜底，待后续翻译。
+
+**ASR 模型选择与节省模式（v0.74.3）：**
+
+- **会话级 ASR 模型选择。** 新建会议对话框新增 ASR 模型选择器，支持 `paraformer-v2` / `fun-asr` / `fun-asr-mtl` 三种模型，中英文 locale 都附带简短说明。选中的模型保存在 `MeetingSession.asrModel`，启动 ASR websocket 时随运行时配置下发。
+- **节省模式（仅说话人分离）。** `MeetingView` 新增 `saveMode` 开关：开启后改连独立的 `diarize` websocket，不再走实时 ASR 流。音频上传到说话人分离服务后端，扬声器标签异步回流，足以支撑后续分析与 HTML 报告生成；DashScope 按秒计费的实时 ASR 跳过，配额紧张的用户可以省下来。
+- **ASR-only 分支。** `startRecording` 把 websocket 接线分成三条显式分支——`saveMode`（仅说话人分离）、`useDiarize`（ASR + 说话人分离并行）、新增的纯 ASR-only——不需要说话人标签的用户可以彻底跳过 diarize websocket。
+- **重命名即时同步。** `confirmRenameSpeaker` 现在把 store 里更新后的 `speakerMap` 一并回写到 `MeetingView` 的本地 ref（之前只回写 `finalSentences`），重命名立刻可见，无需重载会话。
+
+**字幕纠错加固（v0.74.3）：**
+
+- **更稳健的纠错抽取。** `useMeetingAnalysis.ts` 的 `extractCorrections()` 现在对每条解析结果做 schema 校验（`index` 必须为数字、`original`/`corrected` 必须为字符串），并兼容 LLM 偶发的三种返回形态：纯 JSON 数组、`corrections = [...]` 赋值式行、夹杂在自然语言中的 JSON 块。校验失败的负载直接返回 `null`，不再返回残缺的数组。
+- **更严格的纠错 prompt。** `useMeetingAgent.correctTranscript` 中的 prompt 重写，明确 ASR 校对角色并禁止调用工具；运行参数中同时下发 pinned `instructions`，防止 Hermes 中途跑去搜网页或写文件。
+- **测试覆盖。** `tests/client/extractCorrections.test.ts` 新增 6 条用例覆盖上述形态与校验分支（16/16 全绿）。
+
+**Agent 面板优化（v0.74.4）：**
+
+- **切换会话重载。** `MeetingAgentPanel.vue` 现在 `watch` `sessionId`，切换时从 store 重新加载 `messages` / `analysisResult` / `reportHtml`，并重置 `isRunning` / `error` / `completed` / `correctedSentences`。之前用户在 `MeetingView` 切到另一个会话时，面板还停留在上一个会议的对话上。
+- **Assistant 内容走 Markdown 渲染。** 把 `<div class="assistant-content">{{ msg.content }}</div>` 替换为异步加载的 `MarkdownRenderer`，分析结果会按 Markdown 渲染（标题、列表、表格、代码块），不再是被转义的纯文本。
+- **报告生成 prompt 加固。** `useMeetingAgent.generateReport` 现在通过 `sendMessage` 的第二个参数下发 pinned `instructions`，带上会议标题，并把已有 `analysisResult` 以及之前 assistant/system 消息以 `### Previous analysis result` / `### Previous conversation` 块的形式拼进 prompt。再点一次 "生成报告" 会基于之前的分析结果增量补全，而不是从头再来；严格的 instructions 同时强制 `write_file + ```html` 契约，与 `extractHtml` 的抽取规则对齐。
+- **HTML 检测放宽。** `looksLikeHtmlDocument` 现在同时接受 `<!DOCTYPE html>` 开头，最小长度阈值从 200 字符降到 100 字符，短的（不含 ECharts 图表的）报告也能被识别为完整 HTML 文档。
+
 **后端依赖：**
 
 - ASR 服务：`ws://localhost:8000/ws/asr`（实时语音识别）

@@ -14,6 +14,8 @@ export interface MeetingSession {
   speakerMap: Record<string, string>
   speakers: SpeakerEntry[]
   status: 'idle' | 'recording' | 'paused' | 'completed'
+  // ASR 模型配置
+  asrModel?: string  // 'paraformer-v2' | 'fun-asr' | 'fun-asr-mtl'
   // 分析模型配置
   analysisMode: 'hermes' | 'custom'
   hermesProfile?: string
@@ -42,6 +44,7 @@ export interface AgentMessage {
   content: string
   timestamp: number
   toolName?: string
+  toolCallId?: string
   toolStatus?: 'running' | 'done' | 'error'
   toolArgs?: any
   toolResult?: any
@@ -197,7 +200,7 @@ function loadASRConfig(): ASRConfig {
       // users don't see broken wizard fields on upgrade.
       return {
         dashscopeApiKey: parsed.dashscopeApiKey || '',
-        paraformerWsUrl: parsed.paraformerWsUrl || 'wss://ws-ldehaph6v8h68lwu.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference',
+        paraformerWsUrl: parsed.paraformerWsUrl || 'wss://dashscope.aliyuncs.com/api-ws/v1/inference',
         paraformerModel: parsed.paraformerModel || 'paraformer-realtime-v2',
         sampleRate: parsed.sampleRate || 16000,
         languageHints: parsed.languageHints || 'zh,en',
@@ -214,7 +217,7 @@ function loadASRConfig(): ASRConfig {
   } catch {}
   return {
     dashscopeApiKey: '',
-    paraformerWsUrl: 'wss://ws-ldehaph6v8h68lwu.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference',
+    paraformerWsUrl: 'wss://dashscope.aliyuncs.com/api-ws/v1/inference',
     paraformerModel: 'paraformer-realtime-v2',
     sampleRate: 16000,
     languageHints: 'zh,en',
@@ -250,6 +253,7 @@ export const useMeetingStore = defineStore('meeting', () => {
 
   function createSession(options?: {
     title?: string
+    asrModel?: string
     analysisMode?: 'hermes' | 'custom'
     hermesProfile?: string
     customProvider?: string
@@ -269,6 +273,7 @@ export const useMeetingStore = defineStore('meeting', () => {
       speakerMap: {},
       speakers: [],
       status: 'idle',
+      asrModel: options?.asrModel || 'paraformer-v2',
       analysisMode: options?.analysisMode || 'hermes',
       hermesProfile: options?.hermesProfile,
       customProvider: options?.customProvider,
@@ -318,6 +323,21 @@ export const useMeetingStore = defineStore('meeting', () => {
     session.sentences.push(newSentence)
     session.updatedAt = Date.now()
     saveSessions(sessions.value)
+  }
+
+  function updateSentence(sessionId: string, sentence: TranscriptSentence) {
+    const session = sessions.value.find(s => s.id === sessionId)
+    if (!session) return
+    const index = session.sentences.findIndex(s => 
+      s.startTime === sentence.startTime && 
+      s.endTime === sentence.endTime &&
+      s.text === sentence.text
+    )
+    if (index !== -1) {
+      session.sentences[index] = { ...session.sentences[index], ...sentence }
+      session.updatedAt = Date.now()
+      saveSessions(sessions.value)
+    }
   }
 
   function updateAnalysis(sessionId: string, result: AnalysisResult) {
@@ -445,6 +465,9 @@ export const useMeetingStore = defineStore('meeting', () => {
       session.speakers.push({ id: speakerId, displayName })
     }
 
+    // 同步更新 speakerMap
+    session.speakerMap[speakerId] = displayName
+
     // 更新所有使用该 speakerId 的句子的 speaker 字段
     for (const sentence of session.sentences) {
       if (String(sentence.speakerId) === String(speakerId)) {
@@ -490,6 +513,7 @@ export const useMeetingStore = defineStore('meeting', () => {
     deleteSession,
     setActiveSession,
     addSentence,
+    updateSentence,
     updateAnalysis,
     updateHtmlContent,
     updateSpeakerMap,

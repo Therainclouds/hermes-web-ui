@@ -55,6 +55,14 @@ vi.mock('@/components/auth/DefaultCredentialPrompt.vue', () => ({
   default: { name: 'DefaultCredentialPrompt', template: '<div />' },
 }))
 
+vi.mock('@/components/auth/FirstRunModelGuide.vue', () => ({
+  default: { name: 'FirstRunModelGuide', template: '<div />' },
+}))
+
+vi.mock('@/components/hermes/models/ProviderConfigurationPrompt.vue', () => ({
+  default: { name: 'ProviderConfigurationPrompt', template: '<div />' },
+}))
+
 vi.mock('@/components/hermes/chat/SessionSearchModal.vue', () => ({
   default: { name: 'SessionSearchModal', template: '<div />' },
 }))
@@ -65,6 +73,10 @@ vi.mock('@/components/layout/AppSidebar.vue', () => ({
 
 vi.mock('@/components/layout/DesktopTitleBar.vue', () => ({
   default: { name: 'DesktopTitleBar', template: '<div />' },
+}))
+
+vi.mock('@/components/hermes/usb/USBEventBridge.vue', () => ({
+  default: { name: 'USBEventBridge', template: '<div />' },
 }))
 
 import App from '@/App.vue'
@@ -86,6 +98,7 @@ function mountApp() {
         DesktopTitleBar: true,
         SessionSearchModal: true,
         DefaultCredentialPrompt: true,
+        USBEventBridge: true,
         RouterView: { template: '<div class="router-view-test" />' },
       },
     },

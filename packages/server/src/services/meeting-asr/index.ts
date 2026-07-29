@@ -7,6 +7,7 @@ import { logger } from '../logger'
 
 export interface MeetingASRConfig {
   dashscopeApiKey?: string
+  asrModel?: string  // 'paraformer-v2' | 'fun-asr' | 'fun-asr-mtl'
   paraformerWsUrl?: string
   paraformerModel?: string
   paraformerSampleRate?: number
@@ -404,6 +405,9 @@ export class MeetingASRService extends EventEmitter {
             if (key) env.DASHSCOPE_API_KEY = key
           }
         } catch { /* best effort */ }
+      }
+      if (config.asrModel) {
+        env.ASR_MODEL = config.asrModel
       }
       if (config.paraformerWsUrl) {
         env.PARAFORMER_WS_URL = config.paraformerWsUrl

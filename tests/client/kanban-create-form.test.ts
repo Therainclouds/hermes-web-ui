@@ -76,6 +76,11 @@ vi.mock('naive-ui', () => ({
   useMessage: () => mockMessage,
 }))
 
+vi.mock('@/composables/useAppMessage', () => ({
+  useMessage: () => mockMessage,
+  useNotification: () => mockMessage,
+}))
+
 import KanbanCreateForm from '@/components/hermes/kanban/KanbanCreateForm.vue'
 
 describe('KanbanCreateForm', () => {

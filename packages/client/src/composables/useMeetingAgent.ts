@@ -88,7 +88,7 @@ export function useMeetingAgent(sessionId: string) {
   const analysisResult = ref<AnalysisResult | null>(null)
   const reportHtml = ref<string>('')
   const completed = ref(false)
-  const correctedSentences = ref<Array<{ index: number; original: string; corrected: string; reason?: string }> | null>(null)
+  const correctedSentences = ref<TranscriptSentence[] | null>(null)
 
   // 提示词模板
   const promptTemplate = ref(loadPromptTemplate())
@@ -552,6 +552,7 @@ export function useMeetingAgent(sessionId: string) {
           toolMsg.toolStatus = evt.error ? 'error' : 'done'
           toolMsg.toolResult = (evt as any).result
           toolMsg.toolDuration = (evt as any).duration
+          saveMessages()
         }
       },
       onRunStarted: () => {
@@ -589,14 +590,9 @@ export function useMeetingAgent(sessionId: string) {
             })
         }
 
-        // 提取转录校正
-        const allContent = messages.value.filter(m => m.role === 'assistant').map(m => m.content || '').join('\n')
-        const corrections = extractCorrections(allContent)
-        if (corrections) {
-          correctedSentences.value = corrections
-        }
-        
+        // 标记完成
         completed.value = true
+        saveMessages()
       },
       onRunFailed: (evt: RunEvent) => {
         const errorMsg = evt.error || '运行失败'
@@ -612,6 +608,7 @@ export function useMeetingAgent(sessionId: string) {
           timestamp: Date.now(),
           status: 'error'
         })
+        saveMessages()
       },
       onCompressionStarted: () => {},
       onCompressionCompleted: () => {},
@@ -652,6 +649,8 @@ export function useMeetingAgent(sessionId: string) {
     analysisResult.value = null
     reportHtml.value = ''
     error.value = null
+    completed.value = false
+    saveMessages()
 
     const prompt = buildAnalysisPrompt(sentences)
     await sendMessage(prompt)
@@ -662,12 +661,386 @@ export function useMeetingAgent(sessionId: string) {
     isRunning.value = false
   }
 
-  // 清空所有
+  // 清空所有（重置为全新对话）
   function clearAll() {
     messages.value = []
     analysisResult.value = null
     reportHtml.value = ''
     error.value = null
+    completed.value = false
+    // 重置 agent session ID，开启全新对话
+    if (session.value) {
+      meetingStore.updateSession(sessionId, {
+        agentMessages: [],
+        agentSessionId: undefined,
+        analysisResult: null,
+        htmlContent: '',
+      })
+    }
+  }
+
+  // 生成报告（调用 Agent 生成 HTML 报告和总结）
+  async function generateReport(sentences: TranscriptSentence[]) {
+    if (!sentences.length || isRunning.value) return
+
+    isRunning.value = true
+    error.value = null
+
+    const transcript = formatTranscript(sentences)
+    const meetingTitle = session.value?.title || '会议'
+    
+    // 获取之前的分析结果（如果有）
+    const existingAnalysis = analysisResult.value
+    const existingAnalysisJson = existingAnalysis ? JSON.stringify(existingAnalysis, null, 2) : ''
+    
+    // 获取之前的对话内容（如果有）
+    const previousMessages = messages.value
+      .filter(m => m.role === 'assistant' || m.role === 'system')
+      .map(m => `[${m.role}]: ${m.content}`)
+      .join('\n\n')
+
+    // 专门用于生成报告的 instructions
+    const reportInstructions = `你是一个专业的会议分析助手。你的任务是根据会议逐字稿和之前的分析内容，生成一份完整的 HTML 报告。
+
+## 必须完成的任务
+
+### 1. 参考之前的分析内容
+如果提供了之前的分析结果，请参考这些内容来生成报告，而不是重新分析。
+
+### 2. 生成 HTML 报告
+**这是最重要的任务。** 你必须：
+
+1. **使用 write_file 工具** 将完整的 HTML 报告保存为 \`meeting-report.html\`
+2. **在回复中** 以 \`\`\`html 代码块形式输出完整的 HTML 内容
+
+### 3. HTML 报告要求
+- 必须是完整的 HTML 文档（<!DOCTYPE html> 开头，</html> 结尾）
+- 包含所有内联 CSS 样式
+- 设计专业、美观
+- 包含会议摘要、关键要点、待办事项、决议等所有分析结果
+- 可以使用 ECharts 图表（CDN: https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js）
+
+### 4. 输出格式
+你的回复必须包含两部分：
+
+**第一部分：JSON 分析结果**
+\`\`\`json
+{
+  "meeting_type": "会议类型",
+  "summary": "会议摘要",
+  "key_points": ["关键要点"],
+  "action_items": [{"task": "待办", "assignee": "负责人", "deadline": "截止时间"}],
+  "decisions": ["决议"],
+  "risks": ["风险"],
+  "learnings": ["知识点"],
+  "people_mentioned": ["人物"],
+  "relationships": [{"source": "人物A", "target": "人物B", "relation": "关系"}],
+  "topics": ["主题"]
+}
+\`\`\`
+
+**第二部分：HTML 报告**
+\`\`\`html
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>${meetingTitle} - 会议分析报告</title>
+  <style>
+    /* 在这里添加 CSS 样式 */
+  </style>
+</head>
+<body>
+  <!-- 在这里添加 HTML 内容 -->
+</body>
+</html>
+\`\`\`
+
+**重要提示：**
+1. 你必须使用 write_file 工具保存 HTML 报告
+2. 你必须在回复中输出完整的 HTML 代码块
+3. JSON 和 HTML 两部分缺一不可
+4. 如果有之前的分析结果，请基于它生成报告，不要重复分析`
+
+    // 构建报告生成的 prompt，包含逐字稿和之前的分析内容
+    let reportPrompt = `请根据以下会议内容生成 HTML 报告。
+
+## 会议标题
+${meetingTitle}
+
+## 会议逐字稿
+${transcript}`
+
+    // 如果有之前的分析结果，添加到 prompt 中
+    if (existingAnalysisJson) {
+      reportPrompt += `\n\n## 之前的分析结果
+请参考以下分析结果来生成报告：
+\`\`\`json
+${existingAnalysisJson}
+\`\`\``
+    }
+
+    // 如果有之前的对话内容，添加到 prompt 中
+    if (previousMessages) {
+      reportPrompt += `\n\n## 之前的对话内容
+${previousMessages}`
+    }
+
+    reportPrompt += `\n\n请开始生成报告。`
+
+    await sendMessage(reportPrompt, reportInstructions)
+  }
+
+  // 纠正 ASR 字幕中的错别字
+  async function correctTranscript(sentences: TranscriptSentence[]): Promise<TranscriptSentence[] | null> {
+    if (!sentences.length || isRunning.value) return null
+
+    isRunning.value = true
+    error.value = null
+
+    const transcriptLines = sentences.map((s, i) => {
+      const speaker = s.speaker ? `[${s.speaker}] ` : ''
+      return `${i}: ${speaker}${s.text}`
+    })
+    const transcript = transcriptLines.join('\n')
+
+    const correctionPrompt = `你是一个专业的ASR纠错助手。请检查以下转写文本中的错别字、同音字、语法错误，并返回修正结果。
+
+## 任务说明
+- 仔细检查每一行文本的错别字、同音字、语法错误
+- 只返回有错误的条目，无错误的条目不要包含
+- 必须严格按照指定的JSON格式返回
+
+## 转写文本
+${transcript}
+
+## 返回格式
+请严格按照以下JSON格式返回，不要添加任何其他内容：
+
+\`\`\`json
+{"corrections": [{"index": 0, "original": "原文", "corrected": "纠正后", "reason": "原因"}]}
+\`\`\`
+
+如果没有错误，返回：
+\`\`\`json
+{"corrections": []}
+\`\`\`
+
+## 重要提示
+1. index 是行号（从0开始）
+2. original 是原文中的错误部分（必须是原文的子串）
+3. corrected 是修正后的文本
+4. reason 是修正原因（可选）
+5. 只返回JSON，不要返回其他任何文字说明`
+
+    const config = agentConfig.value
+    const correctionSessionId = `correct-${sessionId}-${Date.now()}`
+
+    const payload: StartRunRequest = {
+      input: correctionPrompt,
+      session_id: correctionSessionId,
+      profile: config.profile || profilesStore.activeProfileName || 'default',
+      model: config.model,
+      provider: config.provider,
+      source: 'cli',
+      // 添加明确的指令，防止agent调用其他工具
+      instructions: '你是一个ASR纠错助手。只分析文本中的错别字并返回JSON格式的修正结果。不要调用任何工具，只返回JSON。',
+    }
+
+    let activeAssistantMessageId: string | null = null
+    let responseContent = ''
+
+    const cleanup = registerSessionHandlers(correctionSessionId, {
+      onMessageDelta: (evt: RunEvent) => {
+        const text = evt.delta || ''
+        if (!text) return
+        responseContent += text
+
+        if (activeAssistantMessageId) {
+          const msg = messages.value.find(m => m.id === activeAssistantMessageId)
+          if (msg) {
+            msg.content += text
+          }
+        } else {
+          const newId = uid()
+          activeAssistantMessageId = newId
+          addMessage({
+            id: newId,
+            role: 'assistant',
+            content: text,
+            timestamp: Date.now(),
+            status: 'sent'
+          })
+        }
+      },
+      onReasoningDelta: (evt: RunEvent) => {
+        const text = evt.text || evt.delta || ''
+        if (!text) return
+        if (activeAssistantMessageId) {
+          const msg = messages.value.find(m => m.id === activeAssistantMessageId)
+          if (msg) {
+            msg.reasoning = (msg.reasoning || '') + text
+          }
+        }
+      },
+      onThinkingDelta: (evt: RunEvent) => {
+        const text = evt.text || evt.delta || ''
+        if (!text) return
+        if (activeAssistantMessageId) {
+          const msg = messages.value.find(m => m.id === activeAssistantMessageId)
+          if (msg) {
+            msg.reasoning = (msg.reasoning || '') + text
+          }
+        }
+      },
+      onReasoningAvailable: () => {},
+      onToolStarted: (evt: RunEvent) => {
+        // 如果agent尝试调用工具，记录但不阻止
+        const toolId = uid()
+        addMessage({
+          id: toolId,
+          role: 'tool',
+          content: '',
+          timestamp: Date.now(),
+          toolName: evt.tool || evt.name,
+          toolCallId: (evt as any).tool_call_id,
+          toolStatus: 'running',
+          toolArgs: (evt as any).arguments,
+          toolPreview: evt.preview,
+          _expanded: false,
+        })
+        activeAssistantMessageId = null
+      },
+      onToolCompleted: (evt: RunEvent) => {
+        const toolCallId = (evt as any).tool_call_id as string | undefined
+        const toolMsg = toolCallId
+          ? [...messages.value].reverse().find(m => m.role === 'tool' && m.toolCallId === toolCallId)
+          : [...messages.value].reverse().find(m => m.role === 'tool' && m.toolStatus === 'running' && m.toolName === (evt.tool || evt.name))
+        if (toolMsg) {
+          toolMsg.toolStatus = evt.error ? 'error' : 'done'
+          toolMsg.toolResult = (evt as any).output ?? (evt as any).result
+          toolMsg.toolDuration = (evt as any).duration
+        }
+      },
+      onRunStarted: () => {
+        activeAssistantMessageId = null
+      },
+      onRunCompleted: () => {
+        cleanup()
+
+        // 从响应中提取 corrections
+        const corrections = extractCorrections(responseContent)
+
+        if (corrections && corrections.length > 0) {
+          const corrected = [...sentences]
+          let appliedCount = 0
+          
+          for (const c of corrections) {
+            if (c.index >= 0 && c.index < corrected.length && c.corrected) {
+              const originalText = corrected[c.index].text
+              // 如果 original 存在且是原文的子串，做子字符串替换
+              if (c.original && originalText.includes(c.original)) {
+                corrected[c.index] = { ...corrected[c.index], text: originalText.replace(c.original, c.corrected) }
+              } else {
+                // 否则替换整个句子
+                corrected[c.index] = { ...corrected[c.index], text: c.corrected }
+              }
+              appliedCount++
+            }
+          }
+
+          const details = corrections
+            .filter(c => c.index >= 0 && c.index < sentences.length)
+            .map(c => {
+              const originalText = sentences[c.index].text
+              const before = c.original || originalText
+              const after = (c.original && originalText.includes(c.original)) 
+                ? originalText.replace(c.original, c.corrected) 
+                : c.corrected
+              return `第${c.index + 1}句: "${before}" → "${after}"${c.reason ? ` (${c.reason})` : ''}`
+            })
+            .join('\n')
+
+          addMessage({
+            id: uid(),
+            role: 'system',
+            content: `纠错完成，共修正 ${appliedCount} 处：\n${details}`,
+            timestamp: Date.now(),
+            status: 'sent'
+          })
+
+          correctedSentences.value = corrected
+          meetingStore.updateSession(sessionId, { sentences: corrected })
+          isRunning.value = false
+          saveMessages()
+        } else {
+          // 如果没有提取到corrections，可能是agent返回了其他格式
+          // 尝试解析整个响应内容
+          const fallbackCorrections = extractCorrections(responseContent)
+          
+          if (fallbackCorrections && fallbackCorrections.length > 0) {
+            // 使用备用解析结果
+            const corrected = [...sentences]
+            let appliedCount = 0
+            
+            for (const c of fallbackCorrections) {
+              if (c.index >= 0 && c.index < corrected.length && c.corrected) {
+                const originalText = corrected[c.index].text
+                if (c.original && originalText.includes(c.original)) {
+                  corrected[c.index] = { ...corrected[c.index], text: originalText.replace(c.original, c.corrected) }
+                } else {
+                  corrected[c.index] = { ...corrected[c.index], text: c.corrected }
+                }
+                appliedCount++
+              }
+            }
+
+            addMessage({
+              id: uid(),
+              role: 'system',
+              content: `纠错完成，共修正 ${appliedCount} 处`,
+              timestamp: Date.now(),
+              status: 'sent'
+            })
+
+            correctedSentences.value = corrected
+            meetingStore.updateSession(sessionId, { sentences: corrected })
+          } else {
+            addMessage({
+              id: uid(),
+              role: 'system',
+              content: '未发现需要纠正的错别字',
+              timestamp: Date.now(),
+              status: 'sent'
+            })
+          }
+          isRunning.value = false
+          saveMessages()
+        }
+      },
+      onRunFailed: (evt: RunEvent) => {
+        const errorMsg = evt.error || '纠错失败'
+        error.value = errorMsg
+        cleanup()
+        isRunning.value = false
+        saveMessages()
+      },
+      onCompressionStarted: () => {},
+      onCompressionCompleted: () => {},
+      onAbortStarted: () => {},
+      onAbortCompleted: () => {
+        cleanup()
+        isRunning.value = false
+      },
+      onUsageUpdated: () => {},
+    })
+
+    startRunViaSocket(payload, () => {}, () => {}, () => {
+      cleanup()
+      isRunning.value = false
+    })
+
+    return null
   }
 
   // 初始化
@@ -677,6 +1050,9 @@ export function useMeetingAgent(sessionId: string) {
     }
     if (session.value?.htmlContent) {
       reportHtml.value = session.value.htmlContent
+    }
+    if (session.value?.agentMessages?.length) {
+      messages.value = [...session.value.agentMessages]
     }
   }
 
@@ -694,8 +1070,10 @@ export function useMeetingAgent(sessionId: string) {
     promptTemplate,
     sendMessage,
     startAnalysis,
+    generateReport,
     abortRun,
     clearAll,
+    correctTranscript,
     savePromptTemplate,
     resetPromptTemplate,
   }

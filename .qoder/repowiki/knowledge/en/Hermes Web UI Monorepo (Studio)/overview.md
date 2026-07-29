@@ -1,0 +1,1 @@
+Monorepo shipping the Hermes Studio web dashboard, Koa backend, Electron desktop shell, MCP CLI, and a Python USB monitor bot around the Hermes Agent runtime.

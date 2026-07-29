@@ -272,7 +272,7 @@ describe('AppSidebar navigation', () => {
       },
     })
 
-    const button = wrapper.get('.update-btn')
+    const button = wrapper.get('.sidebar-update-btn')
     expect(button.classes()).not.toContain('docker-update-btn')
     expect(button.text()).toContain('sidebar.updateVersion')
 
@@ -297,7 +297,7 @@ describe('AppSidebar navigation', () => {
       },
     })
 
-    await wrapper.get('.update-btn').trigger('click')
+    await wrapper.get('.sidebar-update-btn').trigger('click')
 
     expect(mockAppStore.doUpdate).toHaveBeenCalledOnce()
     expect(wrapper.text()).not.toContain('sidebar.dockerUpdateGuide')

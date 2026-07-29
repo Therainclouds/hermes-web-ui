@@ -178,6 +178,30 @@ def parse_sentences(payload: dict[str, Any]) -> tuple[list[Sentence], list[int]]
     return sentences, sorted(speakers)
 
 
+def cleanup_session_files(session_id: str) -> int:
+    """Delete all OSS files uploaded for a given session. Returns count of deleted files."""
+    if not settings.oss_configured:
+        log.warning("OSS not configured, cannot cleanup session %s", session_id)
+        return 0
+
+    bucket = _build_oss_client()
+    prefix = f"{settings.oss_path_prefix.rstrip('/')}/{session_id}/"
+    deleted_count = 0
+
+    try:
+        # List all objects with the session prefix
+        for obj in oss2.ObjectIterator(bucket, prefix=prefix):
+            bucket.delete_object(obj.key)
+            deleted_count += 1
+            log.debug("Deleted OSS object: %s", obj.key)
+
+        log.info("Cleaned up %d files for session %s", deleted_count, session_id)
+    except Exception as exc:
+        log.error("Failed to cleanup session %s: %s", session_id, exc)
+
+    return deleted_count
+
+
 def _normalize_base_url(url: str) -> str:
     """Strip a trailing `/v1` (with or without slash) from a base URL.
 

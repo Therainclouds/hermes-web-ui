@@ -45,7 +45,7 @@ class Settings:
     # below stays clean to keep logs and `config.current` readable.
     base_url: str = os.environ.get(
         "BAILIAN_BASE_URL",
-        "https://ws-ldehaph6v8h68lwu.cn-beijing.maas.aliyuncs.com",
+        "https://dashscope.aliyuncs.com",
     )
     asr_model: str = os.environ.get("ASR_MODEL", "paraformer-v2")
     asr_sample_rate: int = int(os.environ.get("ASR_SAMPLE_RATE", "16000"))
@@ -72,7 +72,7 @@ class Settings:
     oss_path_prefix: str = os.environ.get("OSS_PATH_PREFIX", "meeting-asr-uploads/")
     paraformer_ws_url: str = os.environ.get(
         "PARAFORMER_WS_URL",
-        "wss://ws-ldehaph6v8h68lwu.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference",
+        "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
     )
     paraformer_model: str = os.environ.get("PARAFORMER_MODEL", "paraformer-realtime-v2")
     paraformer_format: str = os.environ.get("PARAFORMER_FORMAT", "pcm")

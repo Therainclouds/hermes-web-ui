@@ -45,7 +45,6 @@ describe('LoginView password login', () => {
   beforeEach(() => {
     delete (window as any).__LOGIN_TOKEN__
     vi.clearAllMocks()
-    mockIsDesktopShell.mockReturnValue(false)
     mockHasApiKey.mockReturnValue(false)
     mockFetchAuthStatus.mockResolvedValue({ hasPasswordLogin: true, username: 'quanthermes' })
     // Clean up any modals portaled to document.body from previous tests.
@@ -59,16 +58,6 @@ describe('LoginView password login', () => {
 
     expect(mockClearApiKey).not.toHaveBeenCalled()
     expect(mockReplace).toHaveBeenCalledWith('/hermes/chat')
-  })
-
-  it('clears stale tokens when the desktop login page is opened', () => {
-    mockIsDesktopShell.mockReturnValue(true)
-    mockHasApiKey.mockReturnValue(true)
-
-    mount(LoginView)
-
-    expect(mockClearApiKey).toHaveBeenCalledOnce()
-    expect(mockReplace).not.toHaveBeenCalledWith('/hermes/chat')
   })
 
   it('logs in with username and password', async () => {

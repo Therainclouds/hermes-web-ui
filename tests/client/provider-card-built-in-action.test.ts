@@ -145,6 +145,11 @@ vi.mock('naive-ui', () => ({
   useDialog: () => dialogMock,
 }))
 
+vi.mock('@/composables/useAppMessage', () => ({
+  useMessage: () => messageMock,
+  useNotification: () => messageMock,
+}))
+
 vi.mock('@/stores/hermes/models', () => ({ useModelsStore: () => modelsStoreMock }))
 vi.mock('@/stores/hermes/app', () => ({ useAppStore: () => appStoreMock }))
 vi.mock('@/stores/hermes/chat', () => ({ useChatStore: () => chatStoreMock }))

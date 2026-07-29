@@ -32,6 +32,7 @@ export interface MeetingASRStatus {
 
 export interface MeetingASRConfig {
   dashscopeApiKey?: string
+  asrModel?: string  // 'paraformer-v2' | 'fun-asr' | 'fun-asr-mtl'
   paraformerWsUrl?: string
   paraformerModel?: string
   paraformerSampleRate?: number

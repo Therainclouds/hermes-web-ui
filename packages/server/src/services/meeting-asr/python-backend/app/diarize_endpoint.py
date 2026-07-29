@@ -23,7 +23,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 from .config import settings
-from .diarize_proxy import DiarizeClient, new_session_id, parse_sentences, upload_wav_to_oss
+from .diarize_proxy import DiarizeClient, cleanup_session_files, new_session_id, parse_sentences, upload_wav_to_oss
 from ._log_helper import log_skip
 
 log = logging.getLogger("diarize_endpoint")
@@ -736,6 +736,15 @@ async def diarize_ws_handler(ws: WebSocket) -> None:
                     t.cancel()
                 await asyncio.gather(*session._pending_tasks, return_exceptions=True)
                 session._pending_tasks.clear()
+            # Cleanup OSS files for this session
+            try:
+                loop = asyncio.get_running_loop()
+                deleted_count = await loop.run_in_executor(
+                    None, cleanup_session_files, session.session_id
+                )
+                log.info("Cleaned up %d OSS files for session %s", deleted_count, session.session_id)
+            except Exception as cleanup_exc:
+                log.error("Failed to cleanup OSS files: %s", cleanup_exc)
         try:
             await _send(ws, {"type": "stopped"})
         except Exception as exc:
