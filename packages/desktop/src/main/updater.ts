@@ -13,8 +13,8 @@ let downloadedUpdate: UpdateDownloadedEvent | null = null
 let tryingFallbackFeed = false
 let recoveringPendingUpdate = false
 
-const CLOUDFLARE_LATEST_FEED_URL = 'https://download.ekkolearnai.com/latest'
-const GITHUB_LATEST_FEED_URL = 'https://github.com/EKKOLearnAI/hermes-studio/releases/latest/download'
+const CLOUDFLARE_LATEST_FEED_URL = 'https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/latest'
+const GITHUB_LATEST_FEED_URL = 'https://github.com/tangledup-ai/hermes-web-ui/releases/latest/download'
 const execFileAsync = promisify(execFile)
 
 interface AutoUpdaterOptions {

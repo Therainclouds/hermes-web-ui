@@ -32,8 +32,8 @@ import {
 import { extractTarGzipArchive } from './runtime-archive'
 import { t } from './desktop-i18n'
 
-const DEFAULT_RUNTIME_BASE_URL = 'https://download.ekkolearnai.com'
-const DEFAULT_RUNTIME_GITHUB_REPO = 'EKKOLearnAI/hermes-studio'
+const DEFAULT_RUNTIME_BASE_URL = 'https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui'
+const DEFAULT_RUNTIME_GITHUB_REPO = 'tangledup-ai/hermes-web-ui'
 const RUNTIME_MANIFEST_NAME = 'runtime-manifest.json'
 const PACKAGED_RUNTIME_RELEASE_NAME = 'runtime-release.json'
 const ACTIVE_RUNTIME_VERSION_NAME = 'active-version.json'

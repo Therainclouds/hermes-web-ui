@@ -117,8 +117,8 @@ describe('agent bridge manager command resolution', () => {
     const { buildAgentBridgeProcessEnv } = await import('../../packages/server/src/services/hermes/agent-bridge/manager')
     const env = buildAgentBridgeProcessEnv('ipc:///tmp/test.sock', '/tmp/hermes-home', '/tmp/hermes-agent')
 
-    expect(env.HERMES_OPENROUTER_APP_REFERER).toBe('https://hermes-studio.ai')
-    expect(env.HERMES_OPENROUTER_APP_TITLE).toBe('Hermes Studio')
+    expect(env.HERMES_OPENROUTER_APP_REFERER).toBe('https://github.com/tangledup-ai/hermes-web-ui')
+    expect(env.HERMES_OPENROUTER_APP_TITLE).toBe('Quanthermes Web UI')
     expect(env.HERMES_OPENROUTER_APP_CATEGORIES).toBe('cli-agent,personal-agent')
   })
 

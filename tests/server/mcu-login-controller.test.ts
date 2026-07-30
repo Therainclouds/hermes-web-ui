@@ -189,6 +189,7 @@ describe('MCU login controller', () => {
 
   it('uses the fixed remote relay when remote login is requested', async () => {
     const remoteRelayUrl = 'https://api.hermes-studio.ai'
+    vi.stubEnv('HERMES_REMOTE_RELAY_URL', remoteRelayUrl)
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 })))
     startOutboundRelayClientMock.mockReturnValue({ start: vi.fn() })
     const { ctrl, users } = await loadModules()

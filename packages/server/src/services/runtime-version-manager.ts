@@ -8,9 +8,9 @@ import { config } from '../config'
 import { getHermesWebUiVersion } from './system-info'
 
 const ACTIVE_VERSION_FILE = 'active-version.json'
-const DEFAULT_REMOTE_MANIFEST_URL = 'https://hermes-studio.ai/versions.json'
-const DEFAULT_DOWNLOAD_BASE_URL = 'https://download.ekkolearnai.com'
-const DEFAULT_GITHUB_REPO = 'EKKOLearnAI/hermes-studio'
+const DEFAULT_REMOTE_MANIFEST_URL = 'https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/versions.json'
+const DEFAULT_DOWNLOAD_BASE_URL = 'https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui'
+const DEFAULT_GITHUB_REPO = 'tangledup-ai/hermes-web-ui'
 
 export interface ActiveVersionManifest {
   schema: number

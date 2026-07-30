@@ -15,10 +15,10 @@ const activeTab = ref<'desktop' | 'npm' | 'docker' | 'source'>('desktop')
 
 const releaseVersion = __WEBSITE_DOWNLOAD_VERSION__.replace(/^v/, '')
 const releaseTag = `v${releaseVersion}`
-const releaseBaseUrl = 'https://github.com/EKKOLearnAI/hermes-studio/releases'
+const releaseBaseUrl = 'https://github.com/tangledup-ai/hermes-web-ui/releases'
 const releaseUrl = `${releaseBaseUrl}/tag/${releaseTag}`
 const githubDownloadUrl = `${releaseBaseUrl}/download/${releaseTag}`
-const cloudflareDownloadUrl = `https://download.ekkolearnai.com/${releaseTag}`
+const cloudflareDownloadUrl = `https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/${releaseTag}`
 const desktopDownloads = computed(() =>
   (tm('install.desktop.downloads') as DesktopDownload[]).map((item) => {
     const assetName = `Hermes.Studio-${releaseVersion}-${item.assetSuffix}`

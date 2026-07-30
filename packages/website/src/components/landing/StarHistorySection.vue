@@ -15,7 +15,7 @@ const chartSrc = computed(() => {
 
 onMounted(async () => {
   try {
-    const res = await fetch('https://api.github.com/repos/EKKOLearnAI/hermes-studio')
+    const res = await fetch('https://api.github.com/repos/tangledup-ai/hermes-web-ui')
     const data = await res.json()
     stars.value = Number.isFinite(data.stargazers_count) ? data.stargazers_count : null
   } catch {}
@@ -30,7 +30,7 @@ onMounted(async () => {
     <div class="star-badges reveal reveal-delay-1">
       <a
         class="star-btn"
-        href="https://github.com/EKKOLearnAI/hermes-studio"
+        href="https://github.com/tangledup-ai/hermes-web-ui"
         target="_blank"
         rel="noopener"
       >

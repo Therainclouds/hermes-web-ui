@@ -8,7 +8,7 @@ directories:
 
 publish:
   provider: generic
-  url: https://download.ekkolearnai.com
+  url: https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui
 
 # Don't auto-prune our root node_modules; we curate `files` and `extraResources` ourselves.
 buildDependenciesFromSource: false

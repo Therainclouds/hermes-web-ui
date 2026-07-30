@@ -135,7 +135,7 @@ export default {
     },
     source: {
       title: 'From Source',
-      cmd1: 'git clone https://github.com/EKKOLearnAI/hermes-studio.git',
+      cmd1: 'git clone https://github.com/tangledup-ai/hermes-web-ui.git',
       cmd2: 'cd hermes-web-ui && npm install && npm run dev',
     },
     prereq: 'Requires Node.js >= 23',
