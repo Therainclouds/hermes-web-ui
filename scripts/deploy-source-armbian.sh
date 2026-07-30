@@ -279,6 +279,91 @@ ensure_app_user() {
   run chown -R "${APP_USER}:${APP_USER}" "${APP_USER_HOME}"
 }
 
+prepare_usb_mount_environment() {
+  step "Prepare USB mount environment"
+
+  # 1. Install exfat userspace utilities (needed for mount -t exfat)
+  local -a exfat_pkgs=()
+  if ! is_apt_package_installed "exfat-fuse" 2>/dev/null; then
+    exfat_pkgs+=("exfat-fuse")
+  fi
+  # exfatprogs (newer) or exfat-utils (older) — install whichever is available
+  if ! is_apt_package_installed "exfatprogs" 2>/dev/null && ! is_apt_package_installed "exfat-utils" 2>/dev/null; then
+    if apt-cache show exfatprogs >/dev/null 2>&1; then
+      exfat_pkgs+=("exfatprogs")
+    elif apt-cache show exfat-utils >/dev/null 2>&1; then
+      exfat_pkgs+=("exfat-utils")
+    fi
+  fi
+  # ntfs-3g for NTFS USB drives
+  if ! is_apt_package_installed "ntfs-3g" 2>/dev/null; then
+    exfat_pkgs+=("ntfs-3g")
+  fi
+  if [[ ${#exfat_pkgs[@]} -gt 0 ]]; then
+    info "Installing USB filesystem packages: ${exfat_pkgs[*]}"
+    apt_update
+    run apt-get install -y "${exfat_pkgs[@]}" || warn "Failed to install some USB filesystem packages (non-fatal)."
+  else
+    info "USB filesystem packages already installed."
+  fi
+
+  # 2. Load exfat kernel module immediately
+  if run modprobe exfat 2>/dev/null; then
+    info "Loaded exfat kernel module."
+  else
+    warn "Could not load exfat kernel module now (may need a reboot or module is built-in)."
+  fi
+
+  # 3. Persist exfat module auto-load at boot
+  local modules_load_file="/etc/modules-load.d/hermes-usb-filesystems.conf"
+  if [[ ! -f "${modules_load_file}" ]] || ! grep -q "^exfat$" "${modules_load_file}" 2>/dev/null; then
+    run tee "${modules_load_file}" >/dev/null <<'EOF'
+# Hermes Web UI: auto-load USB filesystem kernel modules at boot
+exfat
+EOF
+    info "Persisted exfat module auto-load: ${modules_load_file}"
+  else
+    info "exfat module auto-load already configured."
+  fi
+
+  # 4. Add APP_USER to 'disk' group for block device read/write access
+  if getent group disk >/dev/null 2>&1; then
+    if ! id -nG "${APP_USER}" | grep -qw "disk"; then
+      run usermod -aG disk "${APP_USER}"
+      info "Added ${APP_USER} to 'disk' group for block device access."
+    else
+      info "${APP_USER} is already in the 'disk' group."
+    fi
+  fi
+
+  # 5. Install sudoers policy for USB mount operations (NOPASSWD)
+  local usb_sudoers_file="/etc/sudoers.d/hermes-usb-mount"
+  local mount_bin umount_bin modprobe_bin blkid_bin
+  mount_bin="$(command -v mount 2>/dev/null || echo /usr/bin/mount)"
+  umount_bin="$(command -v umount 2>/dev/null || echo /usr/bin/umount)"
+  modprobe_bin="$(command -v modprobe 2>/dev/null || echo /sbin/modprobe)"
+  blkid_bin="$(command -v blkid 2>/dev/null || echo /usr/sbin/blkid)"
+
+  local usb_sudoers_tmp
+  usb_sudoers_tmp="$(mktemp)"
+  cat >"${usb_sudoers_tmp}" <<EOF
+# Hermes Web UI: allow ${APP_USER} to mount/unmount USB devices and load filesystem modules
+${APP_USER} ALL=(root) NOPASSWD: ${mount_bin}, ${umount_bin}, ${modprobe_bin}, ${blkid_bin}
+EOF
+  run install -o root -g root -m 0440 "${usb_sudoers_tmp}" "${usb_sudoers_file}"
+  if command -v visudo >/dev/null 2>&1; then
+    run visudo -cf "${usb_sudoers_file}"
+  fi
+  rm -f "${usb_sudoers_tmp}"
+  info "Installed USB mount sudoers policy: ${usb_sudoers_file}"
+
+  # 6. Create USB mount root directory owned by APP_USER
+  local usb_mount_root="${APP_USER_HOME}/.hermes-web-ui/mnt/usb"
+  run mkdir -p "${usb_mount_root}"
+  run chown -R "${APP_USER}:${APP_USER}" "${APP_USER_HOME}/.hermes-web-ui/mnt"
+  info "USB mount root directory ready: ${usb_mount_root}"
+}
+
 resolve_repo_dir() {
   # caller-provided DEPLOY_DIR is the single source of truth. If it is set
   # (non-empty) we trust it as-is, regardless of USE_CONFIGURED_DEPLOY_DIR.
@@ -1098,7 +1183,8 @@ EOF
     WEBUI_UPDATE_HEALTHCHECK_RETRIES \
     WEBUI_UPDATE_HEALTHCHECK_INITIAL_DELAY_MS \
     HERMES_WEB_UI_UPDATE_AUTO_INSTALL_DEPENDENCIES \
-    HERMES_WEB_UI_UPDATE_RESTART_AGENT_RUNTIME
+    HERMES_WEB_UI_UPDATE_RESTART_AGENT_RUNTIME \
+    USB_USE_SUDO
   do
     update_env_value="${!update_env_name:-}"
     if [[ -z "${update_env_value}" ]]; then
@@ -1117,6 +1203,9 @@ EOF
           ;;
         HERMES_AGENT_BRIDGE_KILL_STALE_IPC)
           update_env_value="1"
+          ;;
+        USB_USE_SUDO)
+          update_env_value="true"
           ;;
       esac
     fi
@@ -1754,6 +1843,8 @@ if [[ "${AGENT_ONLY}" == "true" ]]; then
   info "Hermes Agent update completed"
   exit 0
 fi
+
+prepare_usb_mount_environment
 
 install_node
 if [[ "${UPDATE_ONLY}" != "true" ]]; then
