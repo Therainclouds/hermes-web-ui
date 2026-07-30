@@ -1,6 +1,83 @@
 # Work Log
 
-## 2026-06-16
+## 2026-07-29
+
+### 本轮目标
+
+- 修复会议 ASR 服务 WebSocket 403 错误。
+- 统一版本号为 v0.7.14 并准备发布。
+- 将所有更新源从原版 hermes-studio 切换到自有基础设施（tangledup-ai OSS）。
+- 确保旧设备更新后能自动切换到正确的更新源。
+
+### 已完成事项
+
+#### 1. 会议 ASR 403 修复
+
+- 根因：`paraformer_ws_url` 和 `base_url` 指向百炼工作空间 URL（`ws-ldehaph6v8h68lwu.cn-beijing.maas.aliyuncs.com`），该端点不支持 ASR 模型，返回 403。
+- 修复：将 4 个文件的默认值改为标准 DashScope 端点：
+  - `packages/server/src/services/meeting-asr/python-backend/app/config.py`
+  - `packages/server/src/services/meeting-asr/python-backend/app/models.py`
+  - `packages/server/src/services/meeting-asr/python-backend/app/storage.py`
+  - `packages/client/src/stores/hermes/meeting.ts`
+- 新默认值：
+  - `base_url` = `https://dashscope.aliyuncs.com`
+  - `paraformer_ws_url` = `wss://dashscope.aliyuncs.com/api-ws/v1/inference`
+
+#### 2. 版本号统一 → 0.7.14
+
+- `package.json` / `packages/desktop/package.json` / `package-lock.json` / `packages/desktop/package-lock.json` / `.github/device-package-release.json` 全部统一。
+
+#### 3. 更新源全面切换（17 个文件）
+
+| 组件 | 旧值 | 新值 |
+|------|------|------|
+| runtime-version-manager manifest | `hermes-studio.ai/versions.json` | `tangledup-ai-staging.oss.../versions.json` |
+| runtime-version-manager download | `download.ekkolearnai.com` | `tangledup-ai-staging.oss...` |
+| runtime-version-manager GitHub | `EKKOLearnAI/hermes-studio` | `tangledup-ai/hermes-web-ui` |
+| config.ts remoteRelay | `api.hermes-studio.ai` | 空（需显式配置） |
+| config.ts manifestBaseUrl | 无默认值 | `tangledup-ai-staging.oss.../releases`（代码级兜底） |
+| desktop updater feed | `download.ekkolearnai.com/latest` | `tangledup-ai-staging.oss.../latest` |
+| desktop runtime download | `download.ekkolearnai.com` | `tangledup-ai-staging.oss...` |
+| electron-builder publish | `download.ekkolearnai.com` | `tangledup-ai-staging.oss...` |
+| OpenRouter attribution | `hermes-studio.ai` / `Hermes Studio` | `tangledup-ai/hermes-web-ui` / `Quanthermes Web UI` |
+| website 所有链接 | `EKKOLearnAI/hermes-studio` | `tangledup-ai/hermes-web-ui` |
+| homepage | `hermes-studio.ai` | `github.com/tangledup-ai/hermes-web-ui` |
+
+#### 4. 旧设备更新源自动切换保障
+
+- 问题：npm-package 策略更新不会改写 `/etc/default/hermes-web-ui`，旧设备缺少 `WEBUI_UPDATE_MANIFEST_BASE_URL` 时检测不到更新。
+- 修复：在 `config.ts` 中添加 `DEFAULT_MANIFEST_BASE_URL` 代码级默认值，确保 v0.7.14 代码部署后无需手动配置即可检测更新。
+- 拼接结果：`.../quanthermes_web_ui/releases/stable/latest.json`
+
+#### 5. 设备端运维操作（69max-rk3528）
+
+- 在 `/etc/default/hermes-web-ui` 追加了 4 个环境变量：
+  - `WEBUI_UPDATE_MANIFEST_BASE_URL`（含 `/releases` 路径）
+  - `HERMES_WEB_UI_VERSION_MANIFEST_URL`
+  - `HERMES_WEB_UI_DOWNLOAD_BASE_URL`
+  - `HERMES_WEB_UI_DOWNLOAD_GITHUB_REPO`
+- 服务重启验证通过。
+
+### Git 提交记录
+
+- `9ed56302` fix(meeting-asr): DashScope 端点修复
+- `fcc97126` release: v0.7.14 版本号统一 + 更新源切换
+- `bf95d1cc` fix(update): manifestBaseUrl 代码级默认值
+
+### 当前发布口径
+
+- 版本号：`0.7.14`
+- npm 包名：`@quanthermes/hermes-web-ui`
+- 更新 manifest：`https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/releases/stable/latest.json`
+- 设备包 OSS：`oss://tangledup-ai-staging/quanthermes_pj/quanthermes_web_ui`
+- 源码仓库：`https://github.com/tangledup-ai/hermes-web-ui`
+
+### 待办
+
+- [ ] 发布 v0.7.14 到 npm registry（npmmirror 同步）
+- [ ] 确认 OSS `releases/stable/latest.json` 内容中 version 字段为 0.7.14
+- [ ] 验证旧设备通过 UI 检测到 0.7.14 更新
+- [ ] 验证会议 ASR 功能在新部署中正常工作
 
 ### 本轮目标
 
