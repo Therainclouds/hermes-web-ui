@@ -186,10 +186,11 @@ export function getCorsOrigins(env: Record<string, string | undefined> = process
 }
 
 const appHome = getWebUiHome()
+const DEFAULT_MANIFEST_BASE_URL = 'https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/releases'
 const updatePackageName = normalizePackageName(process.env.WEBUI_UPDATE_PACKAGE)
 const updateRegistry = normalizeUrl(process.env.WEBUI_UPDATE_REGISTRY)
 const updateManifestUrl = normalizeOptionalUrl(process.env.WEBUI_UPDATE_MANIFEST_URL)
-const updateManifestBaseUrl = normalizeUrl(process.env.WEBUI_UPDATE_MANIFEST_BASE_URL)
+const updateManifestBaseUrl = normalizeUrl(process.env.WEBUI_UPDATE_MANIFEST_BASE_URL) || DEFAULT_MANIFEST_BASE_URL
 const updateManifestUrls = parseUrlList(process.env.WEBUI_UPDATE_MANIFEST_URLS)
 const updateManifestBaseUrls = parseUrlList(process.env.WEBUI_UPDATE_MANIFEST_BASE_URLS)
 const remoteRelay = {
