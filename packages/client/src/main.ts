@@ -18,7 +18,6 @@ const isDark = savedBrightness === 'dark' || (savedBrightness === 'system' && pr
 const isComic = savedStyle === 'comic'
 const bridge = desktopBridge()
 const isDesktopShell = bridge?.isDesktop === true
-const isDesktopPetWindow = bridge?.windowKind === 'pet' || window.location.hash.startsWith('#/desktop-pet')
 
 // Apply classes to prevent FOUC
 if (isDark) {
@@ -29,9 +28,6 @@ if (isComic) {
 }
 if (isDesktopShell) {
   document.documentElement.classList.add('hermes-desktop-shell')
-}
-if (isDesktopPetWindow) {
-  document.documentElement.classList.add('hermes-desktop-pet-window')
 }
 
 // Read token from URL BEFORE router initializes (hash router strips params)

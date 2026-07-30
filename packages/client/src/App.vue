@@ -18,7 +18,6 @@ const SessionSearchModal = defineAsyncComponent(async () => (await import('@/com
 const DefaultCredentialPrompt = defineAsyncComponent(async () => (await import('@/components/auth/DefaultCredentialPrompt.vue')).default)
 const FirstRunModelGuide = defineAsyncComponent(async () => (await import('@/components/auth/FirstRunModelGuide.vue')).default)
 const ProviderConfigurationPrompt = defineAsyncComponent(async () => (await import('@/components/hermes/models/ProviderConfigurationPrompt.vue')).default)
-const WebPet = defineAsyncComponent(async () => (await import('@/components/hermes/pets/WebPet.vue')).default)
 
 const { isDark, isComic } = useTheme()
 const { t } = useI18n()
@@ -43,8 +42,6 @@ const nodeVersionLow = computed(() => {
 })
 
 const isDesktopShell = computed(() => desktopBridge()?.isDesktop === true)
-const isDesktopPetRoute = computed(() => route.name === 'desktop.pet')
-const showWebPet = computed(() => !isLoginPage.value && !isDesktopShell.value && !isDesktopPetRoute.value)
 const hasDesktopTitleBar = computed(() => {
   const platform = desktopBridge()?.platform
   return isDesktopShell.value && (platform === 'darwin' || platform === 'win32')
@@ -83,8 +80,7 @@ useKeyboard()
       <USBEventBridge />
       <NDialogProvider>
         <NNotificationProvider>
-          <router-view v-if="isDesktopPetRoute" />
-          <div v-else class="app-shell" :class="{ desktop: isDesktopShell, 'desktop-titlebar-host': hasDesktopTitleBar }">
+          <div class="app-shell" :class="{ desktop: isDesktopShell, 'desktop-titlebar-host': hasDesktopTitleBar }">
             <DesktopTitleBar v-if="isDesktopShell" />
             <div v-if="nodeVersionLow" class="node-warning-bar">
               {{ t('sidebar.nodeVersionWarning', { version: appStore.nodeVersion }) }}
@@ -100,11 +96,10 @@ useKeyboard()
               </main>
             </div>
           </div>
-          <WebPet v-if="showWebPet" />
-          <SessionSearchModal v-if="!isDesktopPetRoute && sessionSearchOpen" />
-          <FirstRunModelGuide v-if="!isDesktopPetRoute" />
-          <DefaultCredentialPrompt v-if="!isDesktopPetRoute" />
-          <ProviderConfigurationPrompt v-if="!isDesktopPetRoute" />
+          <SessionSearchModal v-if="sessionSearchOpen" />
+          <FirstRunModelGuide />
+          <DefaultCredentialPrompt />
+          <ProviderConfigurationPrompt />
         </NNotificationProvider>
       </NDialogProvider>
     </NMessageProvider>

@@ -56,10 +56,6 @@ vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
   getProfileDir: vi.fn(() => '/tmp/hermes-default'),
 }))
 
-vi.mock('../../packages/server/src/services/hermes/pet-state-socket', () => ({
-  observeRunChatPetEvent: vi.fn(),
-}))
-
 vi.mock('../../packages/server/src/services/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }))

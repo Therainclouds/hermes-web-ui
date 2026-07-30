@@ -20,7 +20,6 @@ import { createSession, addMessage, getSession, updateSession, updateSessionStat
 import { logger } from '../../logger'
 import { recordSessionUsage } from '../../usage-recorder'
 import { getProfileDir } from '../hermes-profile'
-import { observeRunChatPetEvent } from '../pet-state-socket'
 import { contentBlocksToString, extractTextForPreview } from './content-blocks'
 import { getOrCreateSession } from './compression'
 import { resolveBridgeRunModelConfig, type RunModelGroup } from './model-config'
@@ -427,7 +426,6 @@ export async function handleEkkoAgentRun(
   const now = Math.floor(Date.now() / 1000)
   const emit = (event: string, payload: any) => {
     const tagged = { ...payload, session_id: sessionId }
-    observeRunChatPetEvent(profile, event, tagged)
     data.onEvent?.(event, tagged)
     appendStateEvent(state, event, tagged)
     nsp.to(`session:${sessionId}`).emit(event, tagged)

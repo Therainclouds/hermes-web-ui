@@ -1,5 +1,70 @@
 # Work Log
 
+## 2026-07-30
+
+### 本轮目标
+
+- 修复设备 USB 挂载权限问题（CAP_SYS_ADMIN / CAP_SYS_MODULE）。
+- 版本号统一升级到 v0.7.15。
+- 建立上游合并规则文档，保护本地品牌化功能。
+- 完整移除宠物（Petdex）功能。
+
+### 已完成事项
+
+#### 1. USB 挂载环境自动准备
+
+- 问题：`hermesui` 用户无法执行 `mount`/`modprobe`（需要 Linux capabilities 而非组权限）。
+- 修复：在 `scripts/deploy-source-armbian.sh` 添加 `prepare_usb_mount_environment()` 函数：
+  - 安装 exfat-fuse / exfatprogs / ntfs-3g
+  - 加载 exfat 内核模块并持久化到 `/etc/modules-load.d/`
+  - 将 APP_USER 加入 disk 组
+  - 配置 sudoers NOPASSWD（mount/umount/modprobe/blkid）
+  - 创建 USB 挂载根目录
+- 环境变量 `USB_USE_SUDO=true` 默认写入服务 env。
+- 覆盖所有更新路径（source-deploy / device-package 均调用 deploy-source-armbian.sh）。
+
+#### 2. 版本号统一 → 0.7.15
+
+- `package.json` / `packages/desktop/package.json` / `package-lock.json` / `packages/desktop/package-lock.json` / `.github/device-package-release.json` 全部统一。
+
+#### 3. 上游合并规则文档
+
+- 新建 `docs/harness/upstream-merge-rules.md`：
+  - 品牌化功能清单（7 大类）
+  - 文件保护等级（LOCKED / BRANDED / ADAPTED / ACCEPT）
+  - 冲突解决优先级：本地品牌标识 > 本地自研功能 > 上游新功能 > 上游重构
+  - 合并后必检项（品牌残留 grep）
+- 更新 `docs/harness/upstream-sync-runbook.md` 添加引用。
+
+#### 4. 宠物功能完整移除
+
+- 删除 18 个文件：
+  - 客户端：PetdexView / DesktopPetView / WebPet 组件、pets/pet-state store、pets/pet-state/petdex API、pet-resize.svg
+  - 服务端：petdex/pets 路由+控制器+服务、pet-state-socket
+  - 测试：app-web-pet.test.ts、pets-service.test.ts
+- 修改 ~20 个文件：
+  - server index.ts / routes/index.ts：移除 PetStateSocketServer 和 pet 路由
+  - run-chat 三个文件：移除 observeRunChatPetEvent
+  - App.vue / router / AppSidebar：移除 WebPet 和 petdex 导航
+  - desktop main/preload：移除 pet window 管理（~130 行）
+  - desktop-bridge.ts / main.ts：移除 pet window 类型
+  - 全部 10 个 locale 文件：移除 petdex 翻译
+  - e2e fixtures / ekko test：移除 pet mock
+- 类型检查通过（vue-tsc + tsc）。
+
+### Git 提交记录
+
+- `dd454a20` feat(usb): 部署/更新脚本自动准备 USB 挂载环境 + version bump
+- 本次提交：移除宠物功能 + 合并规则文档 + v0.7.15 版本号补全
+
+### 当前发布口径
+
+- 版本号：`0.7.15`
+- npm 包名：`@quanthermes/hermes-web-ui`
+- 更新 manifest：`https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/releases/stable/latest.json`
+- 设备包 OSS：`oss://tangledup-ai-staging/quanthermes_pj/quanthermes_web_ui`
+- 源码仓库：`https://github.com/tangledup-ai/hermes-web-ui`
+
 ## 2026-07-29
 
 ### 本轮目标
