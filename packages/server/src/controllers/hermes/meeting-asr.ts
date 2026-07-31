@@ -1,4 +1,5 @@
 import type { Context } from 'koa'
+import { PassThrough } from 'node:stream'
 import { meetingASRService } from '../../services/meeting-asr'
 import { logger } from '../../services/logger'
 
@@ -275,6 +276,7 @@ export async function pushAssistSentence(ctx: Context): Promise<void> {
 
 // Report generation (SSE streaming)
 export async function streamReport(ctx: Context): Promise<void> {
+  console.log('[streamReport] 收到报告请求, method:', ctx.method)
   const { realtimeAssistService } = await import('../../services/meeting-asr/realtime-assist')
   const { sessionId, sceneTemplate, transcript } = (ctx.request.body as any) || {}
 
@@ -289,22 +291,24 @@ export async function streamReport(ctx: Context): Promise<void> {
   ctx.set('Connection', 'keep-alive')
   ctx.status = 200
 
-  ctx.body = new ReadableStream({
-    async start(controller) {
-      const encoder = new TextEncoder()
-      try {
-        const stream = realtimeAssistService.generateReportStream(sessionId, transcript, sceneTemplate)
-        for await (const chunk of stream) {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ text: chunk })}\n\n`))
-        }
-        controller.enqueue(encoder.encode('data: [DONE]\n\n'))
-      } catch (err) {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: String(err) })}\n\n`))
-      } finally {
-        controller.close()
+  // 使用 Node.js PassThrough 流（Koa 原生支持管道传输）。
+  // 注意：WHATWG Web ReadableStream 会被 Koa 序列化为 {}，不能直接用作 ctx.body。
+  const passthrough = new PassThrough()
+  ctx.body = passthrough
+
+  void (async () => {
+    try {
+      const stream = realtimeAssistService.generateReportStream(sessionId, transcript, sceneTemplate)
+      for await (const chunk of stream) {
+        passthrough.write(`data: ${JSON.stringify({ text: chunk })}\n\n`)
       }
-    },
-  })
+      passthrough.write('data: [DONE]\n\n')
+    } catch (err) {
+      passthrough.write(`data: ${JSON.stringify({ error: String(err) })}\n\n`)
+    } finally {
+      passthrough.end()
+    }
+  })()
 }
 
 // Note: transcripts and prompts were removed as dead code (v0.7.6 audit #17).
