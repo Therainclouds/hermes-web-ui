@@ -13,6 +13,7 @@ import { meetingASRApi } from '@/utils/meeting-asr-api'
 import { getApiKey } from '@/api/client'
 import { useMessage } from '@/composables/useAppMessage'
 import { meetingStorageApi } from '@/utils/meeting-storage-api'
+import { buildReportHtml } from '@/utils/report-html'
 
 const { t } = useI18n()
 const message = useMessage()
@@ -1615,37 +1616,38 @@ async function downloadJson() {
 
 async function downloadReport() {
   if (!meetingStore.activeSessionId) return
-  
+
+  let content = ''
   try {
     // 尝试从服务器下载
-    const html = await meetingStorageApi.downloadHtmlReport(meetingStore.activeSessionId)
-    if (html) {
-      const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `${meetingStore.activeSession?.title || 'meeting'}_report.html`
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
-      return
-    }
+    content = (await meetingStorageApi.downloadHtmlReport(meetingStore.activeSessionId)) || ''
   } catch (err) {
     console.error('Failed to download report from server:', err)
   }
-  
+
   // 回退到本地数据
-  if (!htmlContent.value) return
-  const blob = new Blob([htmlContent.value], { type: 'text/html;charset=utf-8' })
+  if (!content) content = htmlContent.value
+  if (!content) return
+
+  const title = meetingStore.activeSession?.title || '会议报告'
+  const html = toPrettyReportHtml(content, title)
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `${meetingStore.activeSession?.title || 'meeting'}_report.html`
+  a.download = `${title}_report.html`
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
+}
+
+// 报告内容若为 Markdown（实时辅助生成）则转换为精美 HTML 页面；若已是 HTML（Agent 生成）则直接包装
+function toPrettyReportHtml(content: string, title: string): string {
+  const trimmed = content.trim()
+  const looksLikeHtml = /^<(!doctype|html|div|h[1-6]|p\b)/i.test(trimmed)
+  if (looksLikeHtml) return content
+  return buildReportHtml(trimmed, title)
 }
 
 // --- Hermes Agent 分析 ---
