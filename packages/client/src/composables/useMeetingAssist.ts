@@ -2,16 +2,16 @@ import { ref, onUnmounted } from 'vue'
 import { io, type Socket } from 'socket.io-client'
 import { getApiKey, getBaseUrlValue } from '@/api/client'
 
-export interface AssistHint {
+export interface AnalysisRound {
   id: string
-  type: 'prediction' | 'atmosphere' | 'risk' | 'suggestion'
-  level: 'info' | 'warning' | 'critical'
-  text: string
+  context: string
+  priority: 'normal' | 'attention' | 'urgent'
+  analysis: string
   timestamp: number
 }
 
 export function useMeetingAssist(sessionId: string) {
-  const hints = ref<AssistHint[]>([])
+  const rounds = ref<AnalysisRound[]>([])
   const isConnected = ref(false)
   const isAnalyzing = ref(false)
   const error = ref<string | null>(null)
@@ -40,11 +40,11 @@ export function useMeetingAssist(sessionId: string) {
       isConnected.value = false
     })
 
-    socket.on('hints', (newHints: AssistHint[]) => {
-      hints.value.push(...newHints)
-      // Keep max 100 hints in memory
-      if (hints.value.length > 100) {
-        hints.value = hints.value.slice(-100)
+    socket.on('analysis', (round: AnalysisRound) => {
+      rounds.value.push(round)
+      // Keep max 50 rounds in memory
+      if (rounds.value.length > 50) {
+        rounds.value = rounds.value.slice(-50)
       }
     })
 
@@ -68,7 +68,7 @@ export function useMeetingAssist(sessionId: string) {
   }
 
   function clear() {
-    hints.value = []
+    rounds.value = []
     error.value = null
   }
 
@@ -77,7 +77,7 @@ export function useMeetingAssist(sessionId: string) {
   })
 
   return {
-    hints,
+    rounds,
     isConnected,
     isAnalyzing,
     error,

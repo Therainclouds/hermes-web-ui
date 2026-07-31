@@ -4,11 +4,11 @@ import path from 'path'
 import { logger } from '../logger'
 import { getSceneTemplateOrDefault } from './scene-templates'
 
-export interface AssistHint {
+export interface AnalysisRound {
   id: string
-  type: 'prediction' | 'atmosphere' | 'risk' | 'suggestion'
-  level: 'info' | 'warning' | 'critical'
-  text: string
+  context: string
+  priority: 'normal' | 'attention' | 'urgent'
+  analysis: string
   timestamp: number
 }
 
@@ -132,9 +132,9 @@ class RealtimeAssistService {
     this.nsp?.to(`meeting:${session.sessionId}`).emit('analyzing', true)
 
     try {
-      const hints = await this.analyzeBatch(sentences, session.sceneTemplate)
-      if (hints.length > 0) {
-        this.nsp?.to(`meeting:${session.sessionId}`).emit('hints', hints)
+      const round = await this.analyzeBatch(sentences, session.sceneTemplate)
+      if (round) {
+        this.nsp?.to(`meeting:${session.sessionId}`).emit('analysis', round)
       }
     } catch (err) {
       logger.error(err, '[meeting-assist] analysis failed for session %s', session.sessionId)
@@ -145,11 +145,11 @@ class RealtimeAssistService {
     }
   }
 
-  private async analyzeBatch(sentences: TranscriptSentence[], sceneTemplateId: string): Promise<AssistHint[]> {
+  private async analyzeBatch(sentences: TranscriptSentence[], sceneTemplateId: string): Promise<AnalysisRound | null> {
     const config = await this.loadLLMConfig()
     if (!config) {
       logger.warn('[meeting-assist] LLM config not available, skipping analysis')
-      return []
+      return null
     }
 
     const template = getSceneTemplateOrDefault(sceneTemplateId)
@@ -182,32 +182,33 @@ class RealtimeAssistService {
     }
 
     const data = await response.json() as any
-    const content = data?.choices?.[0]?.message?.content || '[]'
+    const content = data?.choices?.[0]?.message?.content || '{}'
 
-    return this.parseHints(content)
+    return this.parseAnalysis(content)
   }
 
-  private parseHints(raw: string): AssistHint[] {
+  private parseAnalysis(raw: string): AnalysisRound | null {
     try {
       // Strip markdown code fences if present
       const cleaned = raw.replace(/^```(?:json)?\s*/m, '').replace(/\s*```$/m, '').trim()
       const parsed = JSON.parse(cleaned)
-      if (!Array.isArray(parsed)) return []
+
+      // Skip empty analysis
+      if (!parsed || typeof parsed.analysis !== 'string' || !parsed.analysis.trim()) {
+        return null
+      }
 
       const now = Date.now()
-      return parsed
-        .filter((item: any) => item && typeof item.text === 'string')
-        .slice(0, 4)
-        .map((item: any, index: number): AssistHint => ({
-          id: `hint-${now}-${index}`,
-          type: (['prediction', 'atmosphere', 'risk', 'suggestion'].includes(item.type) ? item.type : 'suggestion') as AssistHint['type'],
-          level: (['info', 'warning', 'critical'].includes(item.level) ? item.level : 'info') as AssistHint['level'],
-          text: String(item.text).slice(0, 500),
-          timestamp: now,
-        }))
+      return {
+        id: `round-${now}`,
+        context: typeof parsed.context === 'string' ? parsed.context.slice(0, 200) : '',
+        priority: (['normal', 'attention', 'urgent'].includes(parsed.priority) ? parsed.priority : 'normal') as AnalysisRound['priority'],
+        analysis: parsed.analysis.slice(0, 800),
+        timestamp: now,
+      }
     } catch {
       logger.warn('[meeting-assist] failed to parse LLM response as JSON: %s', raw.slice(0, 100))
-      return []
+      return null
     }
   }
 

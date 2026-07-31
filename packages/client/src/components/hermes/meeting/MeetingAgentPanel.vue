@@ -2,7 +2,7 @@
 import { ref, computed, watch, nextTick, defineAsyncComponent, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NButton, NSpin, NEmpty } from 'naive-ui'
-import { useMeetingAssist, type AssistHint } from '@/composables/useMeetingAssist'
+import { useMeetingAssist } from '@/composables/useMeetingAssist'
 import { request, getApiKey } from '@/api/client'
 
 const MarkdownRenderer = defineAsyncComponent(async () => (await import('@/components/hermes/chat/MarkdownRenderer.vue')).default)
@@ -24,7 +24,7 @@ const { t } = useI18n()
 
 // Realtime assist composable
 const {
-  hints,
+  rounds,
   isConnected,
   isAnalyzing,
   error,
@@ -38,8 +38,8 @@ const reportMarkdown = ref('')
 const isGeneratingReport = ref(false)
 const reportError = ref<string | null>(null)
 
-// Hint container ref for auto-scroll
-const hintsContainer = ref<HTMLElement | null>(null)
+// Rounds container ref for auto-scroll
+const roundsContainer = ref<HTMLElement | null>(null)
 
 // Scene label
 const sceneLabel = computed(() => {
@@ -53,45 +53,20 @@ const sceneLabel = computed(() => {
   return map[props.sceneTemplate] || map.general
 })
 
-// Hint type config
-function hintTypeIcon(type: AssistHint['type']): string {
-  switch (type) {
-    case 'prediction': return '🔮'
-    case 'atmosphere': return '🌡️'
-    case 'risk': return '⚠️'
-    case 'suggestion': return '💡'
-    default: return '📌'
-  }
-}
-
-function hintTypeLabel(type: AssistHint['type']): string {
-  switch (type) {
-    case 'prediction': return t('meeting.assist.prediction')
-    case 'atmosphere': return t('meeting.assist.atmosphere')
-    case 'risk': return t('meeting.assist.risk')
-    case 'suggestion': return t('meeting.assist.suggestion')
-    default: return type
-  }
-}
-
-function hintLevelClass(level: AssistHint['level']): string {
-  return `level-${level}`
-}
-
 function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
-// Auto-scroll to bottom when new hints arrive
+// Auto-scroll to bottom when new rounds arrive
 function scrollToBottom() {
   nextTick(() => {
-    if (hintsContainer.value) {
-      hintsContainer.value.scrollTop = hintsContainer.value.scrollHeight
+    if (roundsContainer.value) {
+      roundsContainer.value.scrollTop = roundsContainer.value.scrollHeight
     }
   })
 }
 
-watch(hints, scrollToBottom, { deep: true })
+watch(rounds, scrollToBottom, { deep: true })
 
 // Start/stop assist based on recording state
 watch(() => props.isRecording, async (recording) => {
@@ -182,7 +157,7 @@ async function generateReport(transcript: string) {
   }
 }
 
-// Export report as HTML download
+// Export report as markdown download
 function exportReportHtml() {
   if (!reportMarkdown.value) return
   const blob = new Blob([reportMarkdown.value], { type: 'text/markdown;charset=utf-8' })
@@ -208,39 +183,49 @@ onUnmounted(() => {
     <div class="assist-header">
       <div class="assist-header-left">
         <span class="scene-badge">{{ sceneLabel }}</span>
-        <span class="status-dot" :class="{ active: isConnected && isRecording, analyzing: isAnalyzing }" />
-        <span class="status-text">
-          <template v-if="isAnalyzing">{{ t('meeting.assist.analyzing') }}</template>
-          <template v-else-if="isConnected && isRecording">{{ t('meeting.assist.listening') }}</template>
-          <template v-else>{{ t('meeting.assist.idle') }}</template>
+        <span class="status-indicator" :class="{ active: isConnected && isRecording, analyzing: isAnalyzing }">
+          <span class="status-dot" />
+          <span class="status-text">
+            <template v-if="isAnalyzing">{{ t('meeting.assist.analyzing') }}</template>
+            <template v-else-if="isConnected && isRecording">{{ t('meeting.assist.listening') }}</template>
+            <template v-else>{{ t('meeting.assist.idle') }}</template>
+          </span>
         </span>
       </div>
-      <NButton v-if="hints.length > 0" size="tiny" quaternary @click="clear()">
+      <NButton v-if="rounds.length > 0" size="tiny" quaternary @click="clear()">
         {{ t('meeting.assist.clearHints') }}
       </NButton>
     </div>
 
-    <!-- Hints stream -->
-    <div ref="hintsContainer" class="assist-hints-area">
+    <!-- Analysis rounds stream -->
+    <div ref="roundsContainer" class="assist-rounds-area">
       <!-- Empty state -->
-      <div v-if="hints.length === 0 && !isGeneratingReport && !reportMarkdown" class="assist-empty">
+      <div v-if="rounds.length === 0 && !isGeneratingReport && !reportMarkdown" class="assist-empty">
         <NEmpty :description="isRecording ? t('meeting.assist.waitingForHints') : t('meeting.assist.notRecording')" size="small" />
       </div>
 
-      <!-- Hint cards -->
-      <TransitionGroup name="hint-fade">
+      <!-- Analysis round cards -->
+      <TransitionGroup name="round-fade">
         <div
-          v-for="hint in hints"
-          :key="hint.id"
-          class="hint-card"
-          :class="[hintLevelClass(hint.level), `type-${hint.type}`]"
+          v-for="round in rounds"
+          :key="round.id"
+          class="round-card"
+          :class="`priority-${round.priority}`"
         >
-          <div class="hint-card-header">
-            <span class="hint-icon">{{ hintTypeIcon(hint.type) }}</span>
-            <span class="hint-type-label">{{ hintTypeLabel(hint.type) }}</span>
-            <span class="hint-time">{{ formatTime(hint.timestamp) }}</span>
+          <!-- Time + priority badge -->
+          <div class="round-meta">
+            <span class="round-time">{{ formatTime(round.timestamp) }}</span>
+            <span v-if="round.priority === 'urgent'" class="priority-badge urgent">紧急</span>
+            <span v-else-if="round.priority === 'attention'" class="priority-badge attention">注意</span>
           </div>
-          <div class="hint-card-body">{{ hint.text }}</div>
+
+          <!-- Context quote (original text) -->
+          <div v-if="round.context" class="round-context">
+            <span class="context-quote">「{{ round.context }}」</span>
+          </div>
+
+          <!-- Analysis body -->
+          <div class="round-analysis">{{ round.analysis }}</div>
         </div>
       </TransitionGroup>
 
@@ -291,40 +276,47 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--n-border-color, #e8e8e8);
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--n-border-color, rgba(255, 255, 255, 0.08));
   flex-shrink: 0;
 }
 
 .assist-header-left {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
 .scene-badge {
-  font-size: 12px;
+  font-size: 11px;
   padding: 2px 8px;
   border-radius: 10px;
-  background: var(--n-color-primary, #18a058);
-  color: #fff;
-  font-weight: 500;
+  background: rgba(24, 160, 88, 0.15);
+  color: #18a058;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 5px;
 }
 
 .status-dot {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  background: #999;
+  background: #555;
   transition: background 0.3s;
 }
 
-.status-dot.active {
+.status-indicator.active .status-dot {
   background: #18a058;
   animation: pulse 2s infinite;
 }
 
-.status-dot.analyzing {
+.status-indicator.analyzing .status-dot {
   background: #f0a020;
   animation: pulse 1s infinite;
 }
@@ -336,16 +328,16 @@ onUnmounted(() => {
 
 .status-text {
   font-size: 12px;
-  color: var(--n-text-color3, #999);
+  color: var(--n-text-color3, #888);
 }
 
-.assist-hints-area {
+.assist-rounds-area {
   flex: 1;
   overflow-y: auto;
-  padding: 12px;
+  padding: 14px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
 }
 
 .assist-empty {
@@ -355,67 +347,101 @@ onUnmounted(() => {
   height: 100%;
 }
 
-.hint-card {
-  border-radius: 8px;
-  padding: 10px 12px;
-  border-left: 3px solid #ccc;
-  background: var(--n-card-color, #fafafa);
+/* --- Analysis Round Card --- */
+.round-card {
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: var(--n-card-color, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--n-border-color, rgba(255, 255, 255, 0.06));
+  border-left: 3px solid rgba(99, 99, 99, 0.3);
   transition: all 0.3s ease;
 }
 
-.hint-card.level-info { border-left-color: #2080f0; }
-.hint-card.level-warning { border-left-color: #f0a020; }
-.hint-card.level-critical { border-left-color: #d03050; }
+.round-card.priority-normal {
+  border-left-color: rgba(99, 140, 200, 0.5);
+}
 
-.hint-card.type-prediction { background: rgba(32, 128, 240, 0.05); }
-.hint-card.type-atmosphere { background: rgba(240, 160, 32, 0.05); }
-.hint-card.type-risk { background: rgba(208, 48, 80, 0.05); }
-.hint-card.type-suggestion { background: rgba(24, 160, 88, 0.05); }
+.round-card.priority-attention {
+  border-left-color: #f0a020;
+  background: rgba(240, 160, 32, 0.04);
+}
 
-.hint-card-header {
+.round-card.priority-urgent {
+  border-left-color: #d03050;
+  background: rgba(208, 48, 80, 0.06);
+}
+
+.round-meta {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-bottom: 6px;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 
-.hint-icon {
-  font-size: 14px;
-}
-
-.hint-type-label {
+.round-time {
   font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  color: var(--n-text-color2, #666);
+  color: var(--n-text-color3, #777);
+  font-variant-numeric: tabular-nums;
 }
 
-.hint-time {
-  margin-left: auto;
+.priority-badge {
   font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 8px;
+  letter-spacing: 0.5px;
+}
+
+.priority-badge.attention {
+  background: rgba(240, 160, 32, 0.15);
+  color: #f0a020;
+}
+
+.priority-badge.urgent {
+  background: rgba(208, 48, 80, 0.15);
+  color: #d03050;
+}
+
+/* Context quote - references original speech */
+.round-context {
+  margin-bottom: 8px;
+}
+
+.context-quote {
+  font-size: 12px;
   color: var(--n-text-color3, #999);
+  font-style: italic;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
-.hint-card-body {
+/* Main analysis text */
+.round-analysis {
   font-size: 13px;
-  line-height: 1.5;
-  color: var(--n-text-color1, #333);
+  line-height: 1.7;
+  color: var(--n-text-color1, #e0e0e0);
+  word-break: break-word;
 }
 
+/* --- Analyzing indicator --- */
 .analyzing-indicator {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px;
+  padding: 10px 14px;
   font-size: 12px;
-  color: var(--n-text-color3, #999);
+  color: var(--n-text-color3, #888);
 }
 
+/* --- Report section --- */
 .assist-report-section {
-  border-top: 1px solid var(--n-border-color, #e8e8e8);
+  border-top: 1px solid var(--n-border-color, rgba(255, 255, 255, 0.08));
   max-height: 50%;
   overflow-y: auto;
-  padding: 12px;
+  padding: 14px;
   flex-shrink: 0;
 }
 
@@ -423,7 +449,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 
 .report-title {
@@ -436,7 +462,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   font-size: 12px;
-  color: var(--n-text-color3, #999);
+  color: var(--n-text-color3, #888);
 }
 
 .report-error {
@@ -451,19 +477,19 @@ onUnmounted(() => {
 }
 
 .assist-error {
-  padding: 8px 12px;
+  padding: 8px 14px;
   font-size: 12px;
   color: #d03050;
   border-top: 1px solid rgba(208, 48, 80, 0.2);
 }
 
-/* Transition */
-.hint-fade-enter-active {
-  transition: all 0.3s ease;
+/* --- Transition --- */
+.round-fade-enter-active {
+  transition: all 0.4s ease;
 }
 
-.hint-fade-enter-from {
+.round-fade-enter-from {
   opacity: 0;
-  transform: translateY(10px);
+  transform: translateY(12px);
 }
 </style>
