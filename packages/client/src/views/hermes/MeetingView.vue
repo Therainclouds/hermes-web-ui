@@ -685,6 +685,12 @@ async function checkMicrophoneAvailability(): Promise<{ available: boolean; reas
 
 // --- 音频处理 ---
 async function startRecording() {
+  // 没有活动会议时，先引导用户新建会议
+  if (!meetingStore.activeSessionId) {
+    openCreateModal()
+    return
+  }
+
   try {
     errorMessage.value = ''
     isConnecting.value = true
