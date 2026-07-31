@@ -116,7 +116,11 @@ watch(() => props.isRecording, async (recording) => {
 
 // Generate report after recording stops
 async function generateReport(transcript: string) {
-  if (!transcript || isGeneratingReport.value) return
+  console.log('[report] generateReport called:', { transcriptLen: transcript?.length ?? 0, isGenerating: isGeneratingReport.value })
+  if (!transcript || isGeneratingReport.value) {
+    console.warn('[report] generateReport early return')
+    return
+  }
 
   isGeneratingReport.value = true
   reportError.value = null
@@ -135,6 +139,7 @@ async function generateReport(transcript: string) {
         transcript,
       }),
     })
+    console.log('[report] fetch status:', response.status)
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`)
     }

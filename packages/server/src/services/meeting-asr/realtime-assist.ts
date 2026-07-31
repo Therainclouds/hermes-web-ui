@@ -251,6 +251,7 @@ class RealtimeAssistService {
 
     const decoder = new TextDecoder()
     let buffer = ''
+    let yieldedAny = false
 
     while (true) {
       const { done, value } = await reader.read()
@@ -262,18 +263,44 @@ class RealtimeAssistService {
 
       for (const line of lines) {
         const trimmed = line.trim()
-        if (!trimmed.startsWith('data: ')) continue
-        const payload = trimmed.slice(6)
-        if (payload === '[DONE]') return
+        // 兼容 "data: {...}" 和 "data:{...}" 两种格式
+        if (!trimmed.startsWith('data:')) continue
+        const payload = trimmed.slice(5).trim()
+        if (!payload || payload === '[DONE]') continue
 
         try {
           const chunk = JSON.parse(payload)
-          const delta = chunk?.choices?.[0]?.delta?.content
-          if (delta) yield delta
+          // 标准 OpenAI 流式：delta.content；部分端点：message.content
+          const delta = chunk?.choices?.[0]?.delta?.content ?? chunk?.choices?.[0]?.message?.content
+          if (delta) {
+            yieldedAny = true
+            yield delta
+          }
         } catch {
-          // skip malformed SSE chunks
+          console.warn('[report-stream] 无法解析的 SSE 块:', payload.slice(0, 200))
         }
       }
+    }
+
+    // 流式未产出任何内容时，回退到非流式调用（与分析接口相同的可靠路径）
+    if (!yieldedAny) {
+      console.warn('[report-stream] 流式响应为空，回退到非流式调用')
+      const fallbackBody = { ...body, stream: false }
+      const fallbackRes = await fetch(`${config.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${config.apiKey}`,
+        },
+        body: JSON.stringify(fallbackBody),
+      })
+      if (!fallbackRes.ok) {
+        const text = await fallbackRes.text().catch(() => '')
+        throw new Error(`LLM API error ${fallbackRes.status}: ${text.slice(0, 200)}`)
+      }
+      const data = await fallbackRes.json() as any
+      const content = data?.choices?.[0]?.message?.content
+      if (content) yield content
     }
   }
 

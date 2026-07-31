@@ -205,11 +205,19 @@ function onReportGenerated(markdown: string) {
 // 手动请求生成报告
 function onRequestReport() {
   const session = meetingStore.activeSession
+  console.log('[report] onRequestReport:', {
+    hasSession: !!session,
+    sentencesCount: session?.sentences.length ?? 0,
+    hasPanelRef: !!assistPanelRef.value,
+  })
   if (session && session.sentences.length > 0 && assistPanelRef.value) {
     const transcript = session.sentences
       .map(s => `${s.speaker ? `[${s.speaker}] ` : ''}${s.text}`)
       .join('\n')
+    console.log('[report] calling generateReport, transcript length:', transcript.length)
     assistPanelRef.value.generateReport(transcript)
+  } else {
+    console.warn('[report] guard failed, report not generated')
   }
 }
 
