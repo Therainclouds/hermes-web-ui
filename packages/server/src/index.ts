@@ -32,6 +32,7 @@ import { startGlobalAgentServer } from './services/global-agent/server'
 import { WorkflowSocketServer } from './services/workflow-socket'
 import { logger } from './services/logger'
 import { meetingASRService } from './services/meeting-asr'
+import { realtimeAssistService } from './services/meeting-asr/realtime-assist'
 import net from 'net'
 import { startUSBService } from './services/usb'
 import { USBSocketServer } from './services/usb/USBSocketServer'
@@ -414,6 +415,9 @@ export async function bootstrap() {
   usbSocketServer = new USBSocketServer(groupChatServer.getIO())
   usbSocketServer.init()
   startUSBService()
+
+  // Meeting realtime assist Socket.IO namespace
+  realtimeAssistService.init(groupChatServer.getIO())
 
   const loopbackBaseUrl = getLoopbackBaseUrl(server)
   startGlobalAgentServer(groupChatServer.getIO(), { localBaseUrl: loopbackBaseUrl })

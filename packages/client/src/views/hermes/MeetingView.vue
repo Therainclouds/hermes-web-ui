@@ -29,6 +29,16 @@ const newMeetingAnalysisMode = ref<'hermes' | 'custom'>('hermes')
 const newMeetingHermesProfile = ref('')
 const newMeetingCustomProvider = ref('')
 const newMeetingCustomModel = ref('')
+const newMeetingSceneTemplate = ref('general')
+
+// 场景模板选项
+const sceneTemplateOptions = computed(() => [
+  { label: t('meeting.scene.general'), value: 'general' },
+  { label: t('meeting.scene.legal'), value: 'legal' },
+  { label: t('meeting.scene.business'), value: 'business' },
+  { label: t('meeting.scene.medical'), value: 'medical' },
+  { label: t('meeting.scene.interview'), value: 'interview' },
+])
 
 // --- Agent 配置 ---
 const newMeetingAgentType = ref<'hermes' | 'claude-code' | 'codex'>('hermes')
@@ -175,13 +185,21 @@ watch(audioUrl, (url) => {
 // --- 分析相关 ---
 const analysisResult = ref<any>(null)
 const htmlContent = ref('')
-const isAnalyzing = ref(false)
-const analysisInterval = ref(30)
 const showReport = ref(false)
 
 // --- Agent 分析相关 ---
 const showAgentPanel = ref(false)
-const agentStartAnalysisTrigger = ref(0)
+const assistPanelRef = ref<InstanceType<typeof MeetingAgentPanel> | null>(null)
+
+// 当前活动会议
+const activeSession = computed(() => meetingStore.activeSession)
+
+// 报告生成完成回调
+function onReportGenerated(markdown: string) {
+  if (meetingStore.activeSessionId) {
+    meetingStore.updateSession(meetingStore.activeSessionId, { htmlContent: markdown })
+  }
+}
 
 // --- 右侧面板 ---
 const showRightPanel = ref(true)
@@ -273,6 +291,7 @@ function openCreateModal() {
   newMeetingCustomModel.value = ''
   newMeetingAgentType.value = 'hermes'
   newMeetingCodingAgentMode.value = 'scoped'
+  newMeetingSceneTemplate.value = 'general'
   asrApiKey.value = meetingStore.asrConfig.dashscopeApiKey
   llmApiKey.value = meetingStore.asrConfig.llmApiKey
   llmBaseUrl.value = meetingStore.asrConfig.llmBaseUrl
@@ -338,6 +357,7 @@ function handleCreateMeeting() {
     customProvider: newMeetingAgentType.value !== 'hermes' && newMeetingCodingAgentMode.value === 'scoped' ? newMeetingCustomProvider.value : undefined,
     customModel: newMeetingAgentType.value !== 'hermes' && newMeetingCodingAgentMode.value === 'scoped' ? newMeetingCustomModel.value : undefined,
     agentConfig,
+    sceneTemplate: newMeetingSceneTemplate.value,
   })
   
   resetMeetingState()
@@ -624,7 +644,6 @@ onMounted(async () => {
 
 onUnmounted(() => {
   stopRecording()
-  stopAnalysis()
   // Note: We don't stop the ASR service on unmount as it should persist across page navigations
 })
 
@@ -951,6 +970,20 @@ async function startRecording() {
   }
 }
 
+// 推送句子到实时辅助服务（fire-and-forget）
+function pushSentenceToAssist(sessionId: string, sentence: TranscriptSentence) {
+  fetch('/api/meeting-asr/assist/sentence', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionId,
+      speaker: sentence.speaker,
+      text: sentence.text,
+      timestamp: sentence.timestamp,
+    }),
+  }).catch(() => { /* best effort */ })
+}
+
 function stopRecording() {
   isRecording.value = false
   isConnecting.value = false
@@ -1013,6 +1046,15 @@ function stopRecording() {
     // 同时保存到 IndexedDB 作为备份（直接存 Blob，避免 base64 编码 33% 膨胀）
     meetingStore.saveAudioData(meetingId, audioBlob.value)
   }
+
+  // 录音停止后自动触发报告生成
+  const session = meetingStore.activeSession
+  if (session && session.sentences.length > 0 && assistPanelRef.value) {
+    const transcript = session.sentences
+      .map(s => `${s.speaker ? `[${s.speaker}] ` : ''}${s.text}`)
+      .join('\n')
+    assistPanelRef.value.generateReport(transcript)
+  }
 }
 
 function handleWsMessage(data: any, source: 'asr' | 'diarize' = 'asr') {
@@ -1045,6 +1087,11 @@ function handleWsMessage(data: any, source: 'asr' | 'diarize' = 'asr') {
         // 保存到 store
         if (meetingStore.activeSessionId) {
           meetingStore.addSentence(meetingStore.activeSessionId, sentence)
+        }
+        
+        // 推送到实时辅助服务
+        if (meetingStore.activeSessionId) {
+          pushSentenceToAssist(meetingStore.activeSessionId, sentence)
         }
         
         // 自动滚动到底部
@@ -1570,35 +1617,6 @@ async function downloadReport() {
   URL.revokeObjectURL(url)
 }
 
-// --- Agent 面板事件处理 ---
-function onAgentAnalysisResult(result: any) {
-  analysisResult.value = result
-  // 保存到 store
-  if (meetingStore.activeSessionId) {
-    meetingStore.updateAnalysis(meetingStore.activeSessionId, result)
-  }
-}
-
-function onAgentReportHtml(html: string) {
-  htmlContent.value = html
-  // 保存到 store
-  if (meetingStore.activeSessionId) {
-    meetingStore.updateHtmlContent(meetingStore.activeSessionId, html)
-  }
-}
-
-function onAgentCompleted() {
-  // 分析完成后自动切换到报告视图
-  if (htmlContent.value) {
-    showAgentPanel.value = false
-  }
-}
-
-function onAgentCorrected(corrected: any[]) {
-  // 更新本地字幕
-  finalSentences.value = [...corrected]
-}
-
 // --- Hermes Agent 分析 ---
 async function analyzeWithHermesAgent() {
   if (!meetingStore.activeSession) return
@@ -1617,14 +1635,12 @@ async function analyzeWithHermesAgent() {
     return
   }
   
-  // 切换到 Agent 面板
+  // 切换到 Agent 面板并触发报告生成
   showAgentPanel.value = true
-  
-  // 等待面板渲染后启动分析
   await nextTick()
-  
-  // 通过事件触发 Agent 面板的分析
-  agentStartAnalysisTrigger.value++
+  if (assistPanelRef.value) {
+    assistPanelRef.value.generateReport(transcript)
+  }
 }
 
 function formatDuration(seconds: number): string {
@@ -1677,85 +1693,9 @@ function drawWaveform() {
   draw()
 }
 
-// --- 分析功能 ---
-async function startAnalysis() {
-  const session = meetingStore.activeSession
-  if (!session) return
-  
-  // 检查是否有逐字稿
-  if (sentences.value.length === 0) {
-    errorMessage.value = t('meeting.noTranscript')
-    return
-  }
-  
-  // Hermes Agent 模式下，切换到 Agent 面板并启动分析
-  if (session.analysisMode === 'hermes') {
-    await analyzeWithHermesAgent()
-    return
-  }
-  
-  // 自定义模型模式下，调用后端自动分析
-  try {
-    isAnalyzing.value = true
-    const result = await meetingASRApi.startAnalysis(analysisInterval.value)
-    console.log('Analysis started:', result)
-
-    // 开始轮询结果
-    pollAnalysisResult()
-  } catch (error) {
-    console.error('Failed to start analysis:', error)
-    errorMessage.value = t('meeting.analysisStartError')
-  }
-}
-
-async function stopAnalysis() {
-  const session = meetingStore.activeSession
-  if (!session) return
-  
-  isAnalyzing.value = false
-  
-  // 自定义模型模式下，调用后端停止分析
-  if (session.analysisMode === 'custom') {
-    try {
-      await meetingASRApi.stopAnalysis()
-    } catch (error) {
-      console.error('Failed to stop analysis:', error)
-    }
-  }
-}
-
+// --- 分析功能（已迁移到实时辅助面板，保留 triggerAnalysis 供模板调用） ---
 async function triggerAnalysis() {
-  const session = meetingStore.activeSession
-  if (!session) return
-  
-  // 根据分析模式选择分析方式
-  if (session.analysisMode === 'hermes') {
-    await analyzeWithHermesAgent()
-  } else {
-    // 使用自定义模型分析（通过 meeting_asr_cloud 后端）
-    try {
-      isLoading.value = true
-      const result = await meetingASRApi.triggerAnalysis()
-      console.log('Analysis triggered:', result)
-      await pollAnalysisResult()
-    } catch (error) {
-      console.error('Failed to trigger analysis:', error)
-      errorMessage.value = t('meeting.analysisError')
-    } finally {
-      isLoading.value = false
-    }
-  }
-}
-
-async function pollAnalysisResult() {
-  try {
-    const result = await meetingASRApi.getAnalysisResult()
-    if (result) {
-      analysisResult.value = result
-    }
-  } catch (error) {
-    console.error('Failed to fetch analysis result:', error)
-  }
+  await analyzeWithHermesAgent()
 }
 
 async function clearTranscript() {
@@ -2111,22 +2051,16 @@ async function clearTranscript() {
                 {{ showAgentPanel ? t('meeting.showAnalysis') : t('meeting.showAgentChat') }}
               </NTooltip>
 
-              <!-- 分析按钮（仅在非 Agent 面板时显示） -->
+              <!-- 生成报告按钮（仅在非 Agent 面板时显示） -->
               <template v-if="!showAgentPanel">
                 <NButton
                   size="tiny"
-                  :type="isAnalyzing ? 'warning' : 'primary'"
-                  @click="isAnalyzing ? stopAnalysis() : startAnalysis()"
-                >
-                  {{ isAnalyzing ? t('meeting.stopAnalysis') : t('meeting.startAnalysis') }}
-                </NButton>
-                <NButton
-                  size="tiny"
+                  type="primary"
                   @click="triggerAnalysis"
                   :loading="isLoading"
                   :disabled="sentences.length === 0"
                 >
-                  {{ t('meeting.triggerAnalysis') }}
+                  {{ t('meeting.generateReport') }}
                 </NButton>
               </template>
 
@@ -2142,16 +2076,15 @@ async function clearTranscript() {
             </div>
           </div>
 
-          <!-- Agent 面板 -->
+          <!-- Agent 实时辅助面板 -->
           <template v-if="showAgentPanel">
             <MeetingAgentPanel
               v-if="meetingStore.activeSessionId"
+              ref="assistPanelRef"
               :session-id="meetingStore.activeSessionId"
-              :start-trigger="agentStartAnalysisTrigger"
-              @update:analysis-result="onAgentAnalysisResult"
-              @update:report-html="onAgentReportHtml"
-              @completed="onAgentCompleted"
-              @corrected="onAgentCorrected"
+              :scene-template="activeSession?.sceneTemplate || 'general'"
+              :is-recording="isRecording"
+              @report-generated="onReportGenerated"
             />
           </template>
 
@@ -2320,6 +2253,16 @@ async function clearTranscript() {
             :placeholder="t('meeting.meetingNamePlaceholder')"
             maxlength="50"
           />
+        </div>
+
+        <div class="form-item">
+          <label class="form-label">{{ t('meeting.scene.label') }}</label>
+          <NSelect
+            v-model:value="newMeetingSceneTemplate"
+            :options="sceneTemplateOptions"
+            :placeholder="t('meeting.scene.placeholder')"
+          />
+          <div class="form-hint">{{ t('meeting.scene.hint') }}</div>
         </div>
 
         <div class="form-section">

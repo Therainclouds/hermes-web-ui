@@ -2978,5 +2978,36 @@ export default {
     viewFullReport: '查看完整报告',
     toolArgs: '参数',
     toolResult: '结果',
+    // 场景模板
+    scene: {
+      label: '会议场景',
+      placeholder: '选择会议场景模板',
+      hint: 'AI 将根据所选场景提供针对性的实时辅助提示',
+      general: '通用会议',
+      legal: '法律沟通',
+      business: '商务谈判',
+      medical: '医疗问诊',
+      interview: '客户访谈',
+    },
+    // 实时辅助面板
+    assist: {
+      analyzing: '分析中...',
+      listening: '监听中',
+      idle: '待命',
+      clearHints: '清空',
+      waitingForHints: '等待 AI 分析结果...',
+      notRecording: '开始录音后 AI 将提供实时辅助',
+      thinking: 'AI 正在分析对话...',
+      prediction: '预测',
+      atmosphere: '氛围',
+      risk: '风险',
+      suggestion: '建议',
+    },
+    // 报告
+    reportPanel: {
+      title: '会议报告',
+      export: '导出',
+      generating: '正在生成报告...',
+    },
   },
 }

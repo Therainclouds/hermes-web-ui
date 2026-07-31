@@ -25,6 +25,17 @@ meetingASRRoutes.get('/api/meeting-asr/analysis/result', ctrl.getAnalysisResult)
 meetingASRRoutes.get('/api/meeting-asr/analysis/html', ctrl.getAnalysisHTML)
 meetingASRRoutes.get('/api/meeting-asr/analysis/stream', ctrl.proxyAnalysisStream)
 
+// Scene templates
+meetingASRRoutes.get('/api/meeting-asr/scenes', ctrl.getSceneTemplates)
+
+// Realtime assist
+meetingASRRoutes.post('/api/meeting-asr/assist/start', ctrl.startAssist)
+meetingASRRoutes.post('/api/meeting-asr/assist/stop', ctrl.stopAssist)
+meetingASRRoutes.post('/api/meeting-asr/assist/sentence', ctrl.pushAssistSentence)
+
+// Report generation (SSE streaming)
+meetingASRRoutes.get('/api/meeting-asr/report/stream', ctrl.streamReport)
+
 // Note: transcript and prompts endpoints were removed as dead code (v0.7.6 audit #17).
 // Frontend manages transcripts locally via meetingStore; prompts are configured
 // via /api/meeting-asr/config and used directly by the Python analysis service.

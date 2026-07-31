@@ -21,6 +21,8 @@ export interface MeetingSession {
   hermesProfile?: string
   customProvider?: string
   customModel?: string
+  // 场景模板（实时辅助）
+  sceneTemplate: string
   // 音频时长（音频数据存 IndexedDB）
   audioDuration: number
   // Agent 交互相关
@@ -259,6 +261,7 @@ export const useMeetingStore = defineStore('meeting', () => {
     customProvider?: string
     customModel?: string
     agentConfig?: AgentConfig
+    sceneTemplate?: string
   }): MeetingSession {
     const now = Date.now()
     const session: MeetingSession = {
@@ -278,6 +281,7 @@ export const useMeetingStore = defineStore('meeting', () => {
       hermesProfile: options?.hermesProfile,
       customProvider: options?.customProvider,
       customModel: options?.customModel,
+      sceneTemplate: options?.sceneTemplate || 'general',
       audioDuration: 0,
       agentMessages: [],
       agentStatus: 'idle',

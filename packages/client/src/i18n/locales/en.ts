@@ -2976,5 +2976,36 @@ export default {
     viewFullReport: 'View Full Report',
     toolArgs: 'Arguments',
     toolResult: 'Result',
+    // Scene templates
+    scene: {
+      label: 'Meeting Scene',
+      placeholder: 'Select a meeting scene template',
+      hint: 'AI will provide targeted real-time assistance based on the selected scene',
+      general: 'General Meeting',
+      legal: 'Legal Consultation',
+      business: 'Business Negotiation',
+      medical: 'Medical Consultation',
+      interview: 'Client Interview',
+    },
+    // Realtime assist panel
+    assist: {
+      analyzing: 'Analyzing...',
+      listening: 'Listening',
+      idle: 'Standby',
+      clearHints: 'Clear',
+      waitingForHints: 'Waiting for AI analysis...',
+      notRecording: 'AI will provide real-time assistance once recording starts',
+      thinking: 'AI is analyzing the conversation...',
+      prediction: 'Prediction',
+      atmosphere: 'Atmosphere',
+      risk: 'Risk',
+      suggestion: 'Suggestion',
+    },
+    // Report
+    reportPanel: {
+      title: 'Meeting Report',
+      export: 'Export',
+      generating: 'Generating report...',
+    },
   },
 }

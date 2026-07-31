@@ -226,6 +226,89 @@ export async function proxyAnalysisStream(ctx: Context): Promise<void> {
   }
 }
 
+// Scene templates
+export async function getSceneTemplates(ctx: Context): Promise<void> {
+  const { SCENE_TEMPLATES } = await import('../../services/meeting-asr/scene-templates')
+  ctx.body = SCENE_TEMPLATES.map(t => ({
+    id: t.id,
+    name: t.name,
+    description: t.description,
+  }))
+}
+
+// Realtime assist
+export async function startAssist(ctx: Context): Promise<void> {
+  const { realtimeAssistService } = await import('../../services/meeting-asr/realtime-assist')
+  const { sessionId, sceneTemplate } = ctx.request.body as any || {}
+  if (!sessionId) {
+    ctx.status = 400
+    ctx.body = { error: 'sessionId is required' }
+    return
+  }
+  await realtimeAssistService.startSession(sessionId, sceneTemplate || 'general')
+  ctx.body = { status: 'started', sessionId, sceneTemplate: sceneTemplate || 'general' }
+}
+
+export async function stopAssist(ctx: Context): Promise<void> {
+  const { realtimeAssistService } = await import('../../services/meeting-asr/realtime-assist')
+  const { sessionId } = ctx.request.body as any || {}
+  if (!sessionId) {
+    ctx.status = 400
+    ctx.body = { error: 'sessionId is required' }
+    return
+  }
+  realtimeAssistService.stopSession(sessionId)
+  ctx.body = { status: 'stopped', sessionId }
+}
+
+export async function pushAssistSentence(ctx: Context): Promise<void> {
+  const { realtimeAssistService } = await import('../../services/meeting-asr/realtime-assist')
+  const { sessionId, speaker, text, timestamp } = ctx.request.body as any || {}
+  if (!sessionId || !text) {
+    ctx.status = 400
+    ctx.body = { error: 'sessionId and text are required' }
+    return
+  }
+  realtimeAssistService.pushSentence(sessionId, { speaker, text, timestamp })
+  ctx.body = { status: 'ok' }
+}
+
+// Report generation (SSE streaming)
+export async function streamReport(ctx: Context): Promise<void> {
+  const { realtimeAssistService } = await import('../../services/meeting-asr/realtime-assist')
+  const sessionId = ctx.query.sessionId as string
+  const sceneTemplate = (ctx.query.sceneTemplate as string) || 'general'
+  const transcript = ctx.query.transcript as string
+
+  if (!sessionId || !transcript) {
+    ctx.status = 400
+    ctx.body = { error: 'sessionId and transcript are required' }
+    return
+  }
+
+  ctx.type = 'text/event-stream'
+  ctx.set('Cache-Control', 'no-cache')
+  ctx.set('Connection', 'keep-alive')
+  ctx.status = 200
+
+  ctx.body = new ReadableStream({
+    async start(controller) {
+      const encoder = new TextEncoder()
+      try {
+        const stream = realtimeAssistService.generateReportStream(sessionId, transcript, sceneTemplate)
+        for await (const chunk of stream) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ text: chunk })}\n\n`))
+        }
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+      } catch (err) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: String(err) })}\n\n`))
+      } finally {
+        controller.close()
+      }
+    },
+  })
+}
+
 // Note: transcripts and prompts were removed as dead code (v0.7.6 audit #17).
 // Frontend manages transcript locally via meetingStore; prompts are configured
 // via /api/meeting-asr/config and used by the Python analysis service directly.

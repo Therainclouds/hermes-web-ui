@@ -43,6 +43,7 @@ class LLMService:
         self._analysis_count = 0
 
     def _should_analyze(self, min_length: int = 50) -> bool:
+        """Deprecated: kept for backward compat with trigger endpoint."""
         current = self.get_transcript()
         if len(current) < min_length:
             return False
@@ -176,31 +177,9 @@ class LLMService:
             raise
 
     async def run_analysis_cycle(self, custom_prompt: str | None = None) -> AnalysisResult | None:
-        if not self._should_analyze():
-            log.debug("Skipping analysis: no significant changes")
-            return None
-
-        try:
-            result = await self.analyze(custom_prompt)
-
-            if result.should_update_html:
-                log.info("Generating HTML for analysis")
-                html = await self.generate_html(result)
-                result.html_content = html
-
-            storage.update_analysis(result)
-            storage.update_status(
-                last_update=time.time(),
-                total_analyses=storage.get_status().total_analyses + 1,
-                error=None,
-            )
-
-            return result
-
-        except Exception as e:
-            log.error("Analysis cycle failed: %s", e)
-            storage.update_status(error=str(e))
-            raise
+        """Deprecated: timed analysis removed in v0.7.16. Kept as no-op for API compat."""
+        log.info("run_analysis_cycle called but timed analysis is deprecated; use Node realtime-assist instead")
+        return None
 
 
 llm_service = LLMService()

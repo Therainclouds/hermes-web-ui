@@ -1,5 +1,56 @@
 # Work Log
 
+## 2026-07-30 · 会议 AI 实时辅助重构
+
+### 本轮目标
+
+- 将会议 AI 分析从事后批量 JSON/HTML 模式重构为录音期间的实时辅助面板。
+- 引入场景模板系统（通用/法律/商务/医疗/客户访谈）。
+- 报告仅在停止录音后生成，采用 SSE 流式输出。
+
+### 已完成事项
+
+#### 1. 场景模板系统
+
+- 新增 `packages/server/src/services/meeting-asr/scene-templates.ts`（124 行）。
+- 5 种内置场景，各含 `systemPrompt`（实时辅助）+ `reportPrompt`（报告生成）。
+- 会议创建弹窗增加场景 NSelect，`MeetingSession` store 增加 `sceneTemplate` 字段。
+
+#### 2. RealtimeAssistService
+
+- 新增 `packages/server/src/services/meeting-asr/realtime-assist.ts`（301 行）。
+- 滑动窗口缓冲（WINDOW_SIZE=5, WINDOW_INTERVAL=18s）→ LLM 调用 → Socket.IO emit。
+- Socket.IO 命名空间 `/meeting-assist`，room `meeting:{sessionId}`。
+- SSE 流式报告生成（AsyncGenerator + ReadableStream）。
+- 新增 5 个 API 路由 + 5 个控制器函数。
+
+#### 3. 前端实时面板
+
+- 新增 `packages/client/src/composables/useMeetingAssist.ts`（88 行）— Socket.IO composable。
+- 完全重写 `MeetingAgentPanel.vue`（1057 → 388 行）：提示卡片流 + 报告区域。
+- `MeetingView.vue`：集成场景选择、ASR 句子推送、停止录音自动触发报告。
+
+#### 4. 旧代码清理
+
+- 删除 `packages/client/src/composables/useMeetingAgent.ts`（1080 行）。
+- 移除 `startAnalysis / stopAnalysis / pollAnalysisResult` 等旧函数。
+- Python 后端 `run_analysis_cycle` 废弃为 no-op。
+
+#### 5. 国际化 + 类型检查
+
+- zh/en locale 新增 `meeting.scene.*` / `meeting.assist.*` / `meeting.reportPanel.*`。
+- `vue-tsc --noEmit` + `tsc --noEmit` 均 0 错误。
+
+### 变更文件清单
+
+| 类型 | 文件 |
+|------|------|
+| 新增 | scene-templates.ts, realtime-assist.ts, useMeetingAssist.ts |
+| 修改 | server/index.ts, routes/meeting-asr.ts, controllers/meeting-asr.ts, meeting store, MeetingView.vue, MeetingAgentPanel.vue, zh.ts, en.ts, llm_service.py |
+| 删除 | useMeetingAgent.ts |
+
+---
+
 ## 2026-07-30
 
 ### 本轮目标
