@@ -1191,6 +1191,8 @@ function addDiarizeResultDirectly(diarizeSentences: any[], offsetSec: number = 0
       
       if (meetingStore.activeSessionId) {
         meetingStore.addSentence(meetingStore.activeSessionId, sentenceObj)
+        // 推送到实时辅助服务
+        pushSentenceToAssist(meetingStore.activeSessionId, sentenceObj)
       }
     }
   }
