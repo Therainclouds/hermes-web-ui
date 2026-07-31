@@ -1618,6 +1618,7 @@ async function downloadReport() {
   if (!meetingStore.activeSessionId) return
 
   let content = ''
+  let source = 'server'
   try {
     // 尝试从服务器下载
     content = (await meetingStorageApi.downloadHtmlReport(meetingStore.activeSessionId)) || ''
@@ -1625,8 +1626,12 @@ async function downloadReport() {
     console.error('Failed to download report from server:', err)
   }
 
-  // 回退到本地数据
-  if (!content) content = htmlContent.value
+  // 回退到本地数据（store 是报告生成后的权威来源，局部 ref 可能未同步）
+  if (!content) {
+    source = 'local'
+    content = meetingStore.activeSession?.htmlContent || htmlContent.value
+  }
+  console.log('[downloadReport] 内容来源:', source, '长度:', content.length)
   if (!content) return
 
   const title = meetingStore.activeSession?.title || '会议报告'
@@ -1646,6 +1651,7 @@ async function downloadReport() {
 function toPrettyReportHtml(content: string, title: string): string {
   const trimmed = content.trim()
   const looksLikeHtml = /^<(!doctype|html|div|h[1-6]|p\b)/i.test(trimmed)
+  console.log('[downloadReport] looksLikeHtml:', looksLikeHtml, '内容开头:', JSON.stringify(trimmed.slice(0, 40)))
   if (looksLikeHtml) return content
   return buildReportHtml(trimmed, title)
 }
