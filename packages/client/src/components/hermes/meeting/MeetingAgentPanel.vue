@@ -75,7 +75,7 @@ watch(rounds, scrollToBottom, { deep: true })
 // Start/stop assist based on recording state
 watch(() => props.isRecording, async (recording) => {
   if (recording) {
-    clear()
+    // 保留同一会议的历史分析记录，仅重置报告状态
     reportMarkdown.value = ''
     reportError.value = null
     connect()
