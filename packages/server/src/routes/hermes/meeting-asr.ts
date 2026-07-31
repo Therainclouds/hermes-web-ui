@@ -34,7 +34,7 @@ meetingASRRoutes.post('/api/meeting-asr/assist/stop', ctrl.stopAssist)
 meetingASRRoutes.post('/api/meeting-asr/assist/sentence', ctrl.pushAssistSentence)
 
 // Report generation (SSE streaming)
-meetingASRRoutes.get('/api/meeting-asr/report/stream', ctrl.streamReport)
+meetingASRRoutes.post('/api/meeting-asr/report/stream', ctrl.streamReport)
 
 // Note: transcript and prompts endpoints were removed as dead code (v0.7.6 audit #17).
 // Frontend manages transcripts locally via meetingStore; prompts are configured

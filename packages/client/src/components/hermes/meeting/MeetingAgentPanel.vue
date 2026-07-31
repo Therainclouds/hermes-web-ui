@@ -123,16 +123,17 @@ async function generateReport(transcript: string) {
   reportMarkdown.value = ''
 
   try {
-    const params = new URLSearchParams({
-      sessionId: props.sessionId,
-      sceneTemplate: props.sceneTemplate,
-      transcript,
-    })
-
-    const response = await fetch(`/api/meeting-asr/report/stream?${params.toString()}`, {
+    const response = await fetch('/api/meeting-asr/report/stream', {
+      method: 'POST',
       headers: {
+        'Content-Type': 'application/json',
         ...(getApiKey() ? { Authorization: `Bearer ${getApiKey()}` } : {}),
       },
+      body: JSON.stringify({
+        sessionId: props.sessionId,
+        sceneTemplate: props.sceneTemplate,
+        transcript,
+      }),
     })
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`)
@@ -502,9 +503,13 @@ onUnmounted(() => {
 }
 
 .report-error {
-  font-size: 12px;
+  font-size: 13px;
   color: #d03050;
   margin-bottom: 8px;
+  padding: 8px 12px;
+  background: rgba(208, 48, 80, 0.08);
+  border-radius: 6px;
+  border: 1px solid rgba(208, 48, 80, 0.2);
 }
 
 .report-content {

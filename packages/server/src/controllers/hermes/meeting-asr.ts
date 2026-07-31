@@ -276,9 +276,7 @@ export async function pushAssistSentence(ctx: Context): Promise<void> {
 // Report generation (SSE streaming)
 export async function streamReport(ctx: Context): Promise<void> {
   const { realtimeAssistService } = await import('../../services/meeting-asr/realtime-assist')
-  const sessionId = ctx.query.sessionId as string
-  const sceneTemplate = (ctx.query.sceneTemplate as string) || 'general'
-  const transcript = ctx.query.transcript as string
+  const { sessionId, sceneTemplate, transcript } = (ctx.request.body as any) || {}
 
   if (!sessionId || !transcript) {
     ctx.status = 400
