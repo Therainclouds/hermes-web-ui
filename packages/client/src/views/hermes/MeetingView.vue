@@ -10,6 +10,7 @@ import type { MeetingSession, TranscriptSentence, AgentConfig } from '@/stores/h
 import { useModelsStore } from '@/stores/hermes/models'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { meetingASRApi } from '@/utils/meeting-asr-api'
+import { getApiKey } from '@/api/client'
 import { useMessage } from '@/composables/useAppMessage'
 import { meetingStorageApi } from '@/utils/meeting-storage-api'
 
@@ -974,7 +975,10 @@ async function startRecording() {
 function pushSentenceToAssist(sessionId: string, sentence: TranscriptSentence) {
   fetch('/api/meeting-asr/assist/sentence', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(getApiKey() ? { Authorization: `Bearer ${getApiKey()}` } : {}),
+    },
     body: JSON.stringify({
       sessionId,
       speaker: sentence.speaker,

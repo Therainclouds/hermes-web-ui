@@ -3,7 +3,7 @@ import { ref, computed, watch, nextTick, defineAsyncComponent, onUnmounted } fro
 import { useI18n } from 'vue-i18n'
 import { NButton, NSpin, NEmpty } from 'naive-ui'
 import { useMeetingAssist, type AssistHint } from '@/composables/useMeetingAssist'
-import { request } from '@/api/client'
+import { request, getApiKey } from '@/api/client'
 
 const MarkdownRenderer = defineAsyncComponent(async () => (await import('@/components/hermes/chat/MarkdownRenderer.vue')).default)
 
@@ -134,7 +134,11 @@ async function generateReport(transcript: string) {
       transcript,
     })
 
-    const response = await fetch(`/api/meeting-asr/report/stream?${params.toString()}`)
+    const response = await fetch(`/api/meeting-asr/report/stream?${params.toString()}`, {
+      headers: {
+        ...(getApiKey() ? { Authorization: `Bearer ${getApiKey()}` } : {}),
+      },
+    })
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`)
     }
