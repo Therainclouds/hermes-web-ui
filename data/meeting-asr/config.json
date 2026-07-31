@@ -2,6 +2,6 @@
   "llm": {
     "api_key": "sk-a294f382488d46a1aa0d7cd8e750729b",
     "base_url": "https://ws-ldehaph6v8h68lwu.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
-    "model": "Qwen3.6-Plus"
+    "model": "qwen-plus"
   }
 }
