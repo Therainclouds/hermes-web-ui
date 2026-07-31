@@ -1,5 +1,52 @@
 # Work Log
 
+## 2026-07-31 · 会议实时辅助迭代优化
+
+### 本轮目标
+
+- 修复实时辅助 API 401 认证问题。
+- 重新设计辅助面板 UI，解决卡片杂乱/类型跳动/无原文引用问题。
+- 停止录音后提供可见的「生成报告」入口。
+
+### 已完成事项
+
+#### 1. 修复 401 认证问题 (`1b2fd77f`)
+
+- 原因：`meetingASRRoutes` 注册在认证中间件之后，但 `pushSentenceToAssist` 和 `report/stream` 使用裸 `fetch()` 未携带 Authorization 头。
+- 修复：两处 fetch 添加 `Bearer ${getApiKey()}` 头。
+
+#### 2. 重新设计实时辅助面板 (`c9ebe208`)
+
+- **问题**：4 种类型卡片（预测/氛围/风险/建议）随机跳动，视觉混乱，无原文引用。
+- **方案**：
+  - LLM 输出从「多类型数组」改为「单条统一分析」：`{context, priority, analysis}`
+  - 每轮分析产出一张统一卡片：原文引用 + 自然语言分析正文
+  - 优先级仅 normal/attention/urgent 三档，左边框颜色区分
+  - 不再有类型标签跳动
+- **变更文件**：
+  - `scene-templates.ts`：5 个场景 systemPrompt 全部重写
+  - `realtime-assist.ts`：`AssistHint` → `AnalysisRound`，`parseHints` → `parseAnalysis`
+  - `useMeetingAssist.ts`：`hints` → `rounds`，监听 `analysis` 事件
+  - `MeetingAgentPanel.vue`：全新设计（统一卡片 + 原文引用 + 优先级徽标）
+
+#### 3. 停止录音后显示「生成会议报告」按钮 (`2f258a0f`)
+
+- 面板底部新增 `report-action-bar`，录音停止且无报告时可见。
+- 新增 `request-report` 事件，父组件构建 transcript 并调用 `generateReport`。
+- 补充 i18n：`meeting.reportPanel.generate`。
+
+### Git 提交记录
+
+- `1b2fd77f` fix(meeting): 修复实时辅助API请求缺少认证头导致401
+- `c9ebe208` refactor(meeting): 重新设计实时辅助面板 - 统一分析卡片取代杂乱类型卡片
+- `2f258a0f` fix(meeting): 停止录音后显示「生成会议报告」按钮
+
+### 待办
+
+- `data/meeting-asr/config.json` 中模型名 `Qwen3.6-Plus` 需改为用户 MaaS 端点实际可用模型。
+
+---
+
 ## 2026-07-30 · 会议 AI 实时辅助重构
 
 ### 本轮目标
