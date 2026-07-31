@@ -1,5 +1,61 @@
 # Work Log
 
+## 2026-07-31 · 会议报告生成修复与 HTML 导出美化
+
+### 本轮目标
+
+- 修复「生成会议报告」点击无响应/报告为空的问题。
+- AI 实时分析记录持久化，刷新不丢失。
+- 报告导出为精简美观的独立 HTML 页面。
+
+### 已完成事项
+
+#### 1. AI 分析记录持久化 (`1d68b985`)
+
+- `MeetingSession` 新增 `analysisRounds` 字段，随 session 存入 localStorage。
+- 面板挂载时加载历史记录，新分析到达时同步写入 store。
+- `loadSessions` 兼容旧数据补全 `analysisRounds: []`。
+
+#### 2. 修复报告生成无响应（三轮排查）
+
+- **第一轮** (`db289348`)：报告接口从 GET(query) 改为 POST(body)，避免长转写文本 URL 超限；5 个场景提示词优先级校准更克制（80% 以上为 normal）。
+- **第二轮** (`765656e0`)：SSE 解析兼容 `data:{...}` 无空格格式；`delta.content` 取不到时尝试 `message.content`；流式为空时回退非流式调用。
+- **第三轮·根因** (`4279ad30`)：`ctx.body = new ReadableStream(...)`（WHATWG Web 流）被 Koa 序列化为 `{}`，前端收到空对象。改用 `node:stream` 的 `PassThrough`，Koa 原生 pipe 传输 SSE。
+- **验证**：直接调用 MaaS 端点确认流式返回标准格式；服务端控制器入口加日志确认路由命中。
+
+#### 3. 报告导出为精美 HTML (`e59a5d73` / `5bee7200` / `4e904d6b`)
+
+- 新增 `utils/report-html.ts`：markdown-it 转换 + 内嵌样式（卡片布局/中文字体/打印适配/响应式）。
+- `downloadReport` 智能判断：Markdown 转精美 HTML，已是 HTML 则直接下载；优先读 store 权威数据源。
+- 修复报告面板「导出」按钮（`exportReportHtml` 名不副实，原下载原始 md）改为下载 `{标题}_报告.html`。
+
+#### 4. 报告提示词去除开场白 (`3a72ac0d`)
+
+- 5 个场景 `reportPrompt` 统一加约束：直接输出报告正文，不写“以下是一份…”这类前言。
+
+#### 5. LLM 模型名修正 (`8ec92110`)
+
+- `data/meeting-asr/config.json` 模型从 `Qwen3.6-Plus`（不存在）改为用户 MaaS 端点实际可用的 `qwen-plus`。
+
+### 关键经验
+
+- **Koa 不支持 WHATWG Web ReadableStream 作为 `ctx.body`**：会被序列化为 `{}`，必须用 `node:stream` 的 PassThrough/Readable。
+- 排查 SSE 问题应在前端流读取循环打印原始块，快速区分“服务端没发”还是“前端没解析”。
+
+### Git 提交记录
+
+- `1d68b985` feat(meeting): AI实时分析记录持久化到localStorage
+- `db289348` fix(meeting): 报告生成改为POST避免URL超长 + 优先级校准更克制
+- `765656e0` fix(meeting): 修复报告生成为空-SSE格式兼容+非流式回退
+- `4279ad30` fix(meeting): 报告SSE改用Node PassThrough流修复Koa序列化为{}的bug
+- `e59a5d73` feat(meeting): 报告导出为精简美观的独立HTML页面
+- `5bee7200` fix(meeting): 报告下载优先读store权威数据源+诊断日志
+- `4e904d6b` fix(meeting): 报告面板导出按钮改为下载精美HTML而非原始md
+- `3a72ac0d` refactor(meeting): 报告提示词要求直接输出正文去除开场白
+- `8ec92110` fix(meeting): LLM模型名改为用户MaaS端点可用的qwen-plus
+
+---
+
 ## 2026-07-31 · 会议实时辅助迭代优化
 
 ### 本轮目标
