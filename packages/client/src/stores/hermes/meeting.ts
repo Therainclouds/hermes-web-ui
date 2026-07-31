@@ -23,6 +23,8 @@ export interface MeetingSession {
   customModel?: string
   // 场景模板（实时辅助）
   sceneTemplate: string
+  // AI 实时分析记录（持久化）
+  analysisRounds: AnalysisRoundRecord[]
   // 音频时长（音频数据存 IndexedDB）
   audioDuration: number
   // Agent 交互相关
@@ -64,6 +66,14 @@ export interface TranscriptSentence {
   endTime?: number
   speaker?: string
   speakerId?: string
+}
+
+export interface AnalysisRoundRecord {
+  id: string
+  context: string
+  priority: 'normal' | 'attention' | 'urgent'
+  analysis: string
+  timestamp: number
 }
 
 export interface AudioChunk {
@@ -130,10 +140,11 @@ function loadSessions(): MeetingSession[] {
     const saved = localStorage.getItem(STORAGE_KEY)
     if (saved) {
       const sessions = JSON.parse(saved) as MeetingSession[]
-      // 兼容旧数据：补全 speakers 字段，移除 audioChunks
+      // 兼容旧数据：补全 speakers / analysisRounds 字段，移除 audioChunks
       return sessions.map(s => ({
         ...s,
         speakers: s.speakers || [],
+        analysisRounds: s.analysisRounds || [],
         audioChunks: undefined,
       }))
     }
@@ -282,6 +293,7 @@ export const useMeetingStore = defineStore('meeting', () => {
       customProvider: options?.customProvider,
       customModel: options?.customModel,
       sceneTemplate: options?.sceneTemplate || 'general',
+      analysisRounds: [],
       audioDuration: 0,
       agentMessages: [],
       agentStatus: 'idle',

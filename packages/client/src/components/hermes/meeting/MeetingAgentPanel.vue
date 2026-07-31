@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, defineAsyncComponent, onUnmounted } from 'vue'
+import { ref, computed, watch, nextTick, defineAsyncComponent, onUnmounted, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NButton, NSpin, NEmpty } from 'naive-ui'
 import { useMeetingAssist } from '@/composables/useMeetingAssist'
 import { request, getApiKey } from '@/api/client'
+import { useMeetingStore } from '@/stores/hermes/meeting'
 
 const MarkdownRenderer = defineAsyncComponent(async () => (await import('@/components/hermes/chat/MarkdownRenderer.vue')).default)
 
@@ -33,6 +34,21 @@ const {
   disconnect,
   clear,
 } = useMeetingAssist(props.sessionId)
+
+const meetingStore = useMeetingStore()
+
+// 加载已持久化的历史分析记录
+onMounted(() => {
+  const session = meetingStore.sessions.find(s => s.id === props.sessionId)
+  if (session?.analysisRounds?.length) {
+    rounds.value = [...session.analysisRounds]
+  }
+})
+
+// 新分析到达时同步持久化到 store
+watch(rounds, (newRounds) => {
+  meetingStore.updateSession(props.sessionId, { analysisRounds: [...newRounds] })
+}, { deep: true })
 
 // Report state
 const reportMarkdown = ref('')
