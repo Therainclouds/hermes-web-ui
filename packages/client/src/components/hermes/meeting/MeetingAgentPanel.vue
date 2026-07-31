@@ -5,6 +5,7 @@ import { NButton, NSpin, NEmpty } from 'naive-ui'
 import { useMeetingAssist } from '@/composables/useMeetingAssist'
 import { request, getApiKey } from '@/api/client'
 import { useMeetingStore } from '@/stores/hermes/meeting'
+import { buildReportHtml } from '@/utils/report-html'
 
 const MarkdownRenderer = defineAsyncComponent(async () => (await import('@/components/hermes/chat/MarkdownRenderer.vue')).default)
 
@@ -149,12 +150,15 @@ async function generateReport(transcript: string) {
 
     const decoder = new TextDecoder()
     let buffer = ''
+    let rawChunkCount = 0
 
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
 
-      buffer += decoder.decode(value, { stream: true })
+      const rawText = decoder.decode(value, { stream: true })
+      if (++rawChunkCount <= 3) console.log('[report] 原始SSE块 ' + rawChunkCount + ':', JSON.stringify(rawText.slice(0, 150)))
+      buffer += rawText
       const lines = buffer.split('\n')
       buffer = lines.pop() || ''
 
@@ -175,6 +179,7 @@ async function generateReport(transcript: string) {
       }
     }
 
+    console.log('[report] 流结束，共收到原始块:', rawChunkCount, '，报告长度:', reportMarkdown.value.length)
     emit('report-generated', reportMarkdown.value)
   } catch (err) {
     reportError.value = err instanceof Error ? err.message : String(err)
@@ -183,14 +188,16 @@ async function generateReport(transcript: string) {
   }
 }
 
-// Export report as markdown download
+// 导出报告：将 Markdown 转换为精简美观的独立 HTML 页面下载
 function exportReportHtml() {
   if (!reportMarkdown.value) return
-  const blob = new Blob([reportMarkdown.value], { type: 'text/markdown;charset=utf-8' })
+  const title = meetingStore.activeSession?.title || t('meeting.reportPanel.title')
+  const html = buildReportHtml(reportMarkdown.value, title)
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `meeting-report-${props.sessionId}.md`
+  a.download = `${title}_报告.html`
   a.click()
   URL.revokeObjectURL(url)
 }
