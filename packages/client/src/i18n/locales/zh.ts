@@ -3008,6 +3008,7 @@ export default {
       title: '会议报告',
       export: '导出',
       generating: '正在生成报告...',
+      generate: '生成会议报告',
     },
   },
 }

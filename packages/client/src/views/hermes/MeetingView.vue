@@ -202,6 +202,17 @@ function onReportGenerated(markdown: string) {
   }
 }
 
+// 手动请求生成报告
+function onRequestReport() {
+  const session = meetingStore.activeSession
+  if (session && session.sentences.length > 0 && assistPanelRef.value) {
+    const transcript = session.sentences
+      .map(s => `${s.speaker ? `[${s.speaker}] ` : ''}${s.text}`)
+      .join('\n')
+    assistPanelRef.value.generateReport(transcript)
+  }
+}
+
 // --- 右侧面板 ---
 const showRightPanel = ref(true)
 const rightPanelWidth = ref(360)
@@ -2089,6 +2100,7 @@ async function clearTranscript() {
               :scene-template="activeSession?.sceneTemplate || 'general'"
               :is-recording="isRecording"
               @report-generated="onReportGenerated"
+              @request-report="onRequestReport"
             />
           </template>
 

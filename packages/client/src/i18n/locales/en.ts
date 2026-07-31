@@ -3006,6 +3006,7 @@ export default {
       title: 'Meeting Report',
       export: 'Export',
       generating: 'Generating report...',
+      generate: 'Generate Report',
     },
   },
 }

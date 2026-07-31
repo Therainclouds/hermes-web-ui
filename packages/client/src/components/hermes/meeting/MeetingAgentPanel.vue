@@ -18,6 +18,7 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   (e: 'report-generated', markdown: string): void
+  (e: 'request-report'): void
 }>()
 
 const { t } = useI18n()
@@ -52,6 +53,9 @@ const sceneLabel = computed(() => {
   }
   return map[props.sceneTemplate] || map.general
 })
+
+// Whether there has been any content (rounds or recording happened)
+const hasContent = computed(() => rounds.value.length > 0 || reportMarkdown.value.length > 0)
 
 function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
@@ -234,6 +238,13 @@ onUnmounted(() => {
         <NSpin size="small" />
         <span>{{ t('meeting.assist.thinking') }}</span>
       </div>
+    </div>
+
+    <!-- Report action bar (shown when recording stopped and no report yet) -->
+    <div v-if="!isRecording && !reportMarkdown && !isGeneratingReport" class="report-action-bar">
+      <NButton type="primary" size="small" :disabled="!hasContent" @click="emit('request-report')">
+        {{ t('meeting.reportPanel.generate') }}
+      </NButton>
     </div>
 
     <!-- Report section (shown after recording stops) -->
@@ -434,6 +445,15 @@ onUnmounted(() => {
   padding: 10px 14px;
   font-size: 12px;
   color: var(--n-text-color3, #888);
+}
+
+/* --- Report action bar --- */
+.report-action-bar {
+  display: flex;
+  justify-content: center;
+  padding: 12px 14px;
+  border-top: 1px solid var(--n-border-color, rgba(255, 255, 255, 0.08));
+  flex-shrink: 0;
 }
 
 /* --- Report section --- */
