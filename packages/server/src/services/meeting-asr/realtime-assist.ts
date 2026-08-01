@@ -2,8 +2,10 @@ import type { Server, Namespace } from 'socket.io'
 import fs from 'fs/promises'
 import path from 'path'
 import { logger } from '../logger'
-import { getSceneTemplateOrDefault } from './scene-templates'
+import { getSceneTemplateOrDefault, type SceneTemplate } from './scene-templates'
 import { prepareAnalysisSkillSection } from './skill-resolver'
+import { getActiveProfileName } from '../hermes/hermes-profile'
+import type { AgentBridgeOutput } from '../hermes/agent-bridge/client'
 
 export interface AnalysisRound {
   id: string
@@ -37,6 +39,14 @@ interface ActiveSession {
 const WINDOW_SIZE = 5
 const WINDOW_INTERVAL_MS = 18_000
 const NAMESPACE = '/meeting-assist'
+
+function safeActiveProfileName(): string {
+  try {
+    return getActiveProfileName()
+  } catch {
+    return ''
+  }
+}
 
 class RealtimeAssistService {
   private io: Server | null = null
@@ -223,12 +233,85 @@ class RealtimeAssistService {
 
   /**
    * Generate final report using streaming. Returns an async generator of text chunks.
+   *
+   * 优先经过 Hermes Agent，这样可以复用用户为该 profile 训练好的系统提示词、技能与记忆；
+   * 当 bridge 不可用或尚未产出任何内容时，自动回退到直调 LLM，用户无感知。
    */
   async *generateReportStream(sessionId: string, transcript: string, sceneTemplateId: string, profile?: string): AsyncGenerator<string> {
+    const template = getSceneTemplateOrDefault(sceneTemplateId)
+    const resolvedProfile = (profile || safeActiveProfileName() || 'default').trim() || 'default'
+
+    let yieldedAny = false
+    try {
+      for await (const chunk of this.generateReportViaAgent(sessionId, transcript, template, resolvedProfile)) {
+        yieldedAny = true
+        yield chunk
+      }
+      return
+    } catch (err) {
+      // 已经向客户端流出过内容时不能再回退（避免重复输出），原样抛出。
+      if (yieldedAny) throw err
+      logger.warn('[meeting-assist] agent report path unavailable, falling back to direct LLM: %s', err instanceof Error ? err.message : String(err))
+    }
+
+    yield* this.generateReportViaDirectLLM(transcript, template, resolvedProfile)
+  }
+
+  /**
+   * 经过 Hermes Agent bridge 生成报告，复用用户训练好的 profile（系统提示词 / 技能 / 记忆）。
+   * 场景的 reportPrompt 作为任务级 instructions 叠加在用户 agent 之上。
+   */
+  private async *generateReportViaAgent(sessionId: string, transcript: string, template: SceneTemplate, profile: string): AsyncGenerator<string> {
+    const { AgentBridgeClient } = await import('../hermes/agent-bridge/client')
+    // 较短的连接重试窗口：bridge 不可用时快速失败，便于上层回退到直调 LLM。
+    const bridge = new AgentBridgeClient({ connectRetryMs: 1500 })
+    const agentSessionId = `meeting-report-${sessionId}`
+
+    try {
+      const started = await bridge.chat(
+        agentSessionId,
+        `以下是完整的会议转写内容：\n\n${transcript}`,
+        undefined,
+        template.reportPrompt,
+        profile,
+        { source: 'meeting-asr' },
+      )
+
+      let lastChunk: AgentBridgeOutput | null = null
+      let yieldedAny = false
+      for await (const chunk of bridge.streamOutput(started.run_id, { timeoutMs: 180_000 })) {
+        lastChunk = chunk
+        if (chunk.delta) {
+          yieldedAny = true
+          yield chunk.delta
+        }
+        if (chunk.done) break
+      }
+
+      if (lastChunk?.status === 'error') {
+        throw new Error(lastChunk.error || 'Agent report run failed')
+      }
+
+      // 部分 bridge/运行不会增量返回 delta，回退到从 result 提取最终文本。
+      if (!yieldedAny) {
+        const result = lastChunk?.result as { final_response?: string } | undefined
+        const finalText = (result?.final_response || lastChunk?.output || '').trim()
+        if (finalText) yield finalText
+        else throw new Error('Agent report produced no output')
+      }
+    } finally {
+      // 报告生成是一次性场景，结束后立即销毁临时会话，避免占用 bridge 资源。
+      void bridge.destroy(agentSessionId, profile).catch(() => {})
+    }
+  }
+
+  /**
+   * 回退路径：直接调用 LLM API 生成报告（不经过 Hermes Agent）。
+   * 保留 profile 下会议分析技能的动态注入。
+   */
+  private async *generateReportViaDirectLLM(transcript: string, template: SceneTemplate, profile: string): AsyncGenerator<string> {
     const config = await this.loadLLMConfig()
     if (!config) throw new Error('LLM config not available')
-
-    const template = getSceneTemplateOrDefault(sceneTemplateId)
 
     // 动态加载 profile 下的会议分析技能并追加到报告 system prompt。
     const skillSection = await prepareAnalysisSkillSection(profile)

@@ -1,5 +1,38 @@
 # Work Log
 
+## 2026-07-31 · 会议报告生成经过 Hermes Agent（自动回退直调 LLM）
+
+### 本轮目标
+
+- 报告生成改走 Hermes Agent，复用用户为该 profile 训练好的系统提示词、技能与记忆。
+- bridge 不可用时自动回退到直调 LLM，用户无感知。
+- 实时分析保持轻量直调路径（直调 LLM + 技能注入），不经过 Agent。
+
+### 背景
+
+上一轮把技能动态注入到直调路径，但用户可能已训练好自己的 agent（自定义系统提示词、技能、记忆），直调无法复用这些。报告生成是一次性、重量级场景，适合走 Agent；而实时分析（18s 一轮）要求低延迟，保持直调。
+
+### 已完成事项
+
+#### 1. `realtime-assist.ts` 报告生成重构
+
+- `generateReportStream` 改为编排器：先尝试 Agent 路径，未产出任何内容时失败则自动回退直调 LLM；已输出后出错则原样抛出（避免重复输出）。
+- 新增 `generateReportViaAgent`：`AgentBridgeClient`（connectRetryMs=1500 快速失败）+ `bridge.chat`（场景 reportPrompt 作为 instructions、source=meeting-asr）+ `streamOutput`（180s 超时）+ finally `destroy`（一次性会话结束即销毁）。
+  - 无增量 delta 时回退到从 `result.final_response` / `output` 提取最终文本。
+- 抽取 `generateReportViaDirectLLM`：原直调逻辑（含会议分析技能动态注入 + 流式 + 非流式回退），作为兜底路径。
+- profile 解析：优先传入值，其次当前激活 profile（`getActiveProfileName`，失败兜底 'default'）。
+
+#### 2. 测试
+
+- 新增 `tests/server/meeting-report-fallback.test.ts`（4 例）：Agent 路径成功、bridge 不可用自动回退、已输出后不回退（抛出）、无 delta 提取最终文本。全部通过。
+- `tests/server/meeting-skill-resolver.test.ts`（5 例）不受影响，全部通过。
+- 服务端 `tsc --noEmit` 通过。
+
+### 说明
+
+- Agent 路径复用用户 profile，用户训练好的系统提示词 / 技能 / 记忆会生效；场景 reportPrompt 作为任务级指令叠加其上。
+- 回退仅在“尚未输出任何内容”时发生；一旦流出过内容绝不回退，防止重复输出。
+
 ## 2026-07-31 · 会议分析接入技能系统（动态注入 + 自动安装）
 
 ### 本轮目标
