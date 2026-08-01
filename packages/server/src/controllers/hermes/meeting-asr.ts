@@ -240,14 +240,14 @@ export async function getSceneTemplates(ctx: Context): Promise<void> {
 // Realtime assist
 export async function startAssist(ctx: Context): Promise<void> {
   const { realtimeAssistService } = await import('../../services/meeting-asr/realtime-assist')
-  const { sessionId, sceneTemplate } = ctx.request.body as any || {}
+  const { sessionId, sceneTemplate, profile } = ctx.request.body as any || {}
   if (!sessionId) {
     ctx.status = 400
     ctx.body = { error: 'sessionId is required' }
     return
   }
-  await realtimeAssistService.startSession(sessionId, sceneTemplate || 'general')
-  ctx.body = { status: 'started', sessionId, sceneTemplate: sceneTemplate || 'general' }
+  await realtimeAssistService.startSession(sessionId, sceneTemplate || 'general', profile)
+  ctx.body = { status: 'started', sessionId, sceneTemplate: sceneTemplate || 'general', profile: profile || null }
 }
 
 export async function stopAssist(ctx: Context): Promise<void> {
@@ -278,7 +278,7 @@ export async function pushAssistSentence(ctx: Context): Promise<void> {
 export async function streamReport(ctx: Context): Promise<void> {
   console.log('[streamReport] 收到报告请求, method:', ctx.method)
   const { realtimeAssistService } = await import('../../services/meeting-asr/realtime-assist')
-  const { sessionId, sceneTemplate, transcript } = (ctx.request.body as any) || {}
+  const { sessionId, sceneTemplate, transcript, profile } = (ctx.request.body as any) || {}
 
   if (!sessionId || !transcript) {
     ctx.status = 400
@@ -298,7 +298,7 @@ export async function streamReport(ctx: Context): Promise<void> {
 
   void (async () => {
     try {
-      const stream = realtimeAssistService.generateReportStream(sessionId, transcript, sceneTemplate)
+      const stream = realtimeAssistService.generateReportStream(sessionId, transcript, sceneTemplate, profile)
       for await (const chunk of stream) {
         passthrough.write(`data: ${JSON.stringify({ text: chunk })}\n\n`)
       }

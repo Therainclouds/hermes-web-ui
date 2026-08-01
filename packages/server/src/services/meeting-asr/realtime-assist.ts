@@ -3,6 +3,7 @@ import fs from 'fs/promises'
 import path from 'path'
 import { logger } from '../logger'
 import { getSceneTemplateOrDefault } from './scene-templates'
+import { prepareAnalysisSkillSection } from './skill-resolver'
 
 export interface AnalysisRound {
   id: string
@@ -27,6 +28,7 @@ interface LLMConfig {
 interface ActiveSession {
   sessionId: string
   sceneTemplate: string
+  profile?: string
   buffer: TranscriptSentence[]
   timer: NodeJS.Timeout | null
   isAnalyzing: boolean
@@ -65,7 +67,7 @@ class RealtimeAssistService {
     logger.info('[meeting-assist] namespace registered: %s', NAMESPACE)
   }
 
-  async startSession(sessionId: string, sceneTemplate: string): Promise<void> {
+  async startSession(sessionId: string, sceneTemplate: string, profile?: string): Promise<void> {
     if (this.sessions.has(sessionId)) {
       logger.info('[meeting-assist] session %s already active, resetting buffer', sessionId)
       this.stopSession(sessionId)
@@ -74,12 +76,13 @@ class RealtimeAssistService {
     this.sessions.set(sessionId, {
       sessionId,
       sceneTemplate,
+      profile,
       buffer: [],
       timer: null,
       isAnalyzing: false,
     })
 
-    logger.info('[meeting-assist] session started: %s (scene: %s)', sessionId, sceneTemplate)
+    logger.info('[meeting-assist] session started: %s (scene: %s, profile: %s)', sessionId, sceneTemplate, profile || '(active)')
   }
 
   stopSession(sessionId: string): void {
@@ -132,7 +135,7 @@ class RealtimeAssistService {
     this.nsp?.to(`meeting:${session.sessionId}`).emit('analyzing', true)
 
     try {
-      const round = await this.analyzeBatch(sentences, session.sceneTemplate)
+      const round = await this.analyzeBatch(sentences, session.sceneTemplate, session.profile)
       if (round) {
         this.nsp?.to(`meeting:${session.sessionId}`).emit('analysis', round)
       }
@@ -145,7 +148,7 @@ class RealtimeAssistService {
     }
   }
 
-  private async analyzeBatch(sentences: TranscriptSentence[], sceneTemplateId: string): Promise<AnalysisRound | null> {
+  private async analyzeBatch(sentences: TranscriptSentence[], sceneTemplateId: string, profile?: string): Promise<AnalysisRound | null> {
     const config = await this.loadLLMConfig()
     if (!config) {
       logger.warn('[meeting-assist] LLM config not available, skipping analysis')
@@ -157,10 +160,16 @@ class RealtimeAssistService {
       .map(s => `${s.speaker ? `[${s.speaker}] ` : ''}${s.text}`)
       .join('\n')
 
+    // 动态加载 profile 下的会议分析技能并追加到 system prompt。
+    const skillSection = await prepareAnalysisSkillSection(profile)
+    const systemPrompt = skillSection
+      ? `${template.systemPrompt}\n\n${skillSection}`
+      : template.systemPrompt
+
     const body = {
       model: config.model,
       messages: [
-        { role: 'system', content: template.systemPrompt },
+        { role: 'system', content: systemPrompt },
         { role: 'user', content: `以下是最近的对话内容：\n\n${transcriptText}` },
       ],
       temperature: 0.3,
@@ -215,16 +224,22 @@ class RealtimeAssistService {
   /**
    * Generate final report using streaming. Returns an async generator of text chunks.
    */
-  async *generateReportStream(sessionId: string, transcript: string, sceneTemplateId: string): AsyncGenerator<string> {
+  async *generateReportStream(sessionId: string, transcript: string, sceneTemplateId: string, profile?: string): AsyncGenerator<string> {
     const config = await this.loadLLMConfig()
     if (!config) throw new Error('LLM config not available')
 
     const template = getSceneTemplateOrDefault(sceneTemplateId)
 
+    // 动态加载 profile 下的会议分析技能并追加到报告 system prompt。
+    const skillSection = await prepareAnalysisSkillSection(profile)
+    const reportPrompt = skillSection
+      ? `${template.reportPrompt}\n\n${skillSection}`
+      : template.reportPrompt
+
     const body = {
       model: config.model,
       messages: [
-        { role: 'system', content: template.reportPrompt },
+        { role: 'system', content: reportPrompt },
         { role: 'user', content: `以下是完整的会议转写内容：\n\n${transcript}` },
       ],
       temperature: 0.4,

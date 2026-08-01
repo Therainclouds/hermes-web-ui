@@ -46,6 +46,12 @@ onMounted(() => {
   }
 })
 
+// 解析本会议使用的 Hermes profile（供服务端加载该 profile 下的分析技能）
+function resolveProfile(): string | undefined {
+  const session = meetingStore.sessions.find(s => s.id === props.sessionId)
+  return session?.hermesProfile || undefined
+}
+
 // 新分析到达时同步持久化到 store
 watch(rounds, (newRounds) => {
   meetingStore.updateSession(props.sessionId, { analysisRounds: [...newRounds] })
@@ -100,7 +106,7 @@ watch(() => props.isRecording, async (recording) => {
     try {
       await request('/api/meeting-asr/assist/start', {
         method: 'POST',
-        body: JSON.stringify({ sessionId: props.sessionId, sceneTemplate: props.sceneTemplate }),
+        body: JSON.stringify({ sessionId: props.sessionId, sceneTemplate: props.sceneTemplate, profile: resolveProfile() }),
       })
     } catch { /* best effort */ }
   } else {
@@ -138,6 +144,7 @@ async function generateReport(transcript: string) {
         sessionId: props.sessionId,
         sceneTemplate: props.sceneTemplate,
         transcript,
+        profile: resolveProfile(),
       }),
     })
     console.log('[report] fetch status:', response.status)

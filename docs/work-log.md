@@ -1,5 +1,54 @@
 # Work Log
 
+## 2026-07-31 · 会议分析接入技能系统（动态注入 + 自动安装）
+
+### 本轮目标
+
+- 让会议分析（实时分析 + 报告生成）能够使用 Hermes 技能（skills）。
+- 分析 agent 对应的 profile 没有技能时自动安装内置技能，开箱即用。
+
+### 背景
+
+会议分析走的是服务端**直接 fetch LLM API** 的轻量路径，不经过 Hermes Agent，因此不会加载 profile 的技能。技能是 Hermes Agent 专属能力（只有走 agent-bridge 的聊天才加载）。所以“给分析 agent 装技能”本身不生效，需要把技能内容动态注入到直接调用的提示词中。
+
+### 已完成事项
+
+#### 1. 内置会议分析技能
+
+- 新增 `packages/skills/meeting-analysis/SKILL.md`：通用会议分析方法论（实时分析原则、优先级判断标准、报告结构方法论、通用准则），打上 `meeting` 标签。
+- 构建脚本 `build-server.mjs` 会将 `packages/skills` 复制到 `dist/skills`，生产模式可被技能源解析找到。
+
+#### 2. 技能解析服务 `skill-resolver.ts`
+
+- `ensureMeetingAnalysisSkill(profile)`：自动安装。profile 缺少 `meeting-analysis` 时从内置技能源复制。
+- `loadAnalysisSkills(profile)`：读取 profile 下所有带 `meeting` 标签（或名称含 meeting）且未被禁用的技能，解析 SKILL.md 正文。
+- `buildSkillInstructionsSection(skills)`：拼成可追加到 system prompt 的片段。
+- `prepareAnalysisSkillSection(profile)`：顶层入口，带 60s 缓存（实时分析 18s 一轮，避免重复读盘）。
+- frontmatter 解析显式使用 js-yaml `DEFAULT_SCHEMA`（安全 schema）并做结构校验。
+
+#### 3. 注入点
+
+- `realtime-assist.ts` 的 `analyzeBatch`（实时分析）与 `generateReportStream`（报告生成）在调 LLM 前把技能片段追加到 system prompt。
+- `ActiveSession` 新增 `profile` 字段；`startSession`/`generateReportStream` 增加 `profile?` 参数。
+
+#### 4. profile 传递链路
+
+- 前端 `MeetingAgentPanel.vue` 新增 `resolveProfile()`，从 session 的 `hermesProfile` 读取，随 `assist/start` 与 `report/stream` 传递。
+- 服务端控制器解析 `profile`；为空时兑底用当前激活 profile（`getActiveProfileName()`）。
+
+### 使用方式
+
+- 默认开箱即用：首次分析时自动安装内置 `meeting-analysis` 技能并注入。
+- 自定义：在技能的 SKILL.md frontmatter 加 `meeting` 标签（或名称含 meeting），安装到对应 profile 即可被会议分析使用；在技能管理页禁用可停用。
+
+### 验证
+
+- 服务端/客户端 tsc 类型检查通过。
+- 新增 `tests/server/meeting-skill-resolver.test.ts`（5 个用例：拼接、过滤+禁用、自动安装、端到端注入、命名 profile）全部通过。
+- 现有 `skill-injector.test.ts`（6 个用例）不受影响。
+
+---
+
 ## 2026-07-31 · 会议报告生成修复与 HTML 导出美化
 
 ### 本轮目标
