@@ -1,5 +1,49 @@
 # Work Log
 
+## 2026-07-31 · 法律场景接入法规查询 MCP（chinese-law-mcp）
+
+### 本轮目标
+
+- 为法律沟通会议场景接入开源法规查询 MCP，使 Agent 生成报告时能主动调用工具核实真实法条。
+- 解决 Windows 下 MCP server 启动失败（spawn npx ENOENT / 503）的问题。
+
+### 背景
+
+法律场景 reportPrompt 已引导 Agent"若有法规查询工具则主动调用"，但环境中尚无可用工具。选用 `@ansvar/chinese-law-mcp`（1188 部国家法律法规、62981 条文，数据源 flk.npc.gov.cn + cac.gov.cn）作为本地 MCP server。
+
+### 已完成事项
+
+#### 1. 法律场景 reportPrompt 增加法条引用工具调用引导（commit 6cbf5170）
+
+- `scene-templates.ts` 法律场景 reportPrompt 新增"法条引用要求"段落。
+- 与具体 MCP 解耦：仅描述"法律/法规查询工具"，无硬编码 server 名称。
+- 优雅降级：无工具或查询失败时标注"需人工核实"，绝不编造条文。
+- 仅影响 legal 场景，其他场景模板零改动。
+
+#### 2. Windows MCP 启动问题诊断与修复
+
+- **根因**：Windows 上 `spawn('npx')` → ENOENT（npx 是 .cmd 包装脚本）；`cmd /c npx -y ...` → 进程立即 exit 1（stdout 空）。
+- **方案**：改用 `node.exe 全路径 + 脚本全路径` 直接运行（与 bridge 里其他 3 个 hermes-studio MCP 同一模式）。
+- 全局安装需 `npm install -g @ansvar/chinese-law-mcp --ignore-scripts`（postinstall 用 Unix 命令，Windows 上失败；包自带 dist/ 和 database.db，无需 build）。
+
+#### 3. 配置写入并验证
+
+- 配置已写入 `C:\Users\DELL\AppData\Local\hermes\config.yaml` 的 `mcp_servers` 段：
+  ```yaml
+  chinese-law-mcp:
+    command: C:\Program Files\nodejs\node.exe
+    args:
+      - C:\Program Files\nodejs\node_modules\@ansvar\chinese-law-mcp\dist\index.js
+    enabled: true
+  ```
+- 验证通过：MCP initialize 握手成功（chinese-law-mcp v2.3.0，协议 2024-11-05）；tools/list 返回 8 个工具：search_legislation、get_provision、list_sources、validate_citation、build_legal_stance、format_citation、check_currency、about。
+
+### 使用说明
+
+- Web UI MCP 管理页点"重载"或重启 Agent 后 bridge 加载新配置。
+- 法律沟通场景生成报告时，Agent 会主动调用 `search_legislation` / `get_provision` 查询真实法条并引用。
+- 若 MCP server 未连接，报告仍可正常生成（走自身知识 + 标注"需人工核实"）。
+
 ## 2026-07-31 · 会议报告生成经过 Hermes Agent（自动回退直调 LLM）
 
 ### 本轮目标
