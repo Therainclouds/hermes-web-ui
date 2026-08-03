@@ -37,7 +37,7 @@
   - urgent：16px 加粗 + 红色文字 + 淡红背景
 - 优化颜色区分度：
   - **原文引用**（context）：改为淡青色 `#9fd4f0` + 青色左边框 `#70c0e8` + 淡青背景，一眼识别为“转写原话”。
-  - **分析说明**（analysis）：降为更淡的灰色 `#888`，作为 secondary 补充。
+  - **分析说明**（analysis）：改为 `#c8c8c8` 浅灰色，与深色背景拉开对比度，阅读更清晰。
   - **核心提示**（keyPoint）：保留醒目的橙/红/绿，并增加同色系左边框，强化层级。
 - 客户端接口 `useMeetingAssist.ts` 和 `stores/hermes/meeting.ts` 同步新增 keyPoint 字段。
 

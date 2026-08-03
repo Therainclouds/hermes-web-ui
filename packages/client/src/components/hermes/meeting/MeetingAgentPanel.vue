@@ -507,7 +507,7 @@ onUnmounted(() => {
 .round-analysis {
   font-size: 12px;
   line-height: 1.6;
-  color: var(--n-text-color3, #888);
+  color: #c8c8c8;
   word-break: break-word;
 }
 
