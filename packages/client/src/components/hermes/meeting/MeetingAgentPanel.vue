@@ -259,13 +259,18 @@ onUnmounted(() => {
             <span v-else-if="round.priority === 'attention'" class="priority-badge attention">注意</span>
           </div>
 
+          <!-- Key point (highlighted, prominent) -->
+          <div v-if="round.keyPoint" class="round-keypoint" :class="`priority-${round.priority}`">
+            {{ round.keyPoint }}
+          </div>
+
           <!-- Context quote (original text) -->
           <div v-if="round.context" class="round-context">
             <span class="context-quote">「{{ round.context }}」</span>
           </div>
 
-          <!-- Analysis body -->
-          <div class="round-analysis">{{ round.analysis }}</div>
+          <!-- Analysis body (secondary detail) -->
+          <div v-if="round.analysis" class="round-analysis">{{ round.analysis }}</div>
         </div>
       </TransitionGroup>
 
@@ -449,6 +454,33 @@ onUnmounted(() => {
   color: #d03050;
 }
 
+/* Key point - prominent, eye-catching highlight */
+.round-keypoint {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.5;
+  margin-bottom: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  word-break: break-word;
+}
+
+.round-keypoint.priority-normal {
+  color: #63e2b7;
+  background: rgba(99, 226, 183, 0.08);
+}
+
+.round-keypoint.priority-attention {
+  color: #f0a020;
+  background: rgba(240, 160, 32, 0.1);
+}
+
+.round-keypoint.priority-urgent {
+  color: #e88080;
+  background: rgba(208, 48, 80, 0.12);
+  font-size: 16px;
+}
+
 /* Context quote - references original speech */
 .round-context {
   margin-bottom: 8px;
@@ -465,11 +497,11 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-/* Main analysis text */
+/* Secondary analysis text */
 .round-analysis {
-  font-size: 13px;
-  line-height: 1.7;
-  color: var(--n-text-color1, #e0e0e0);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--n-text-color2, #aaa);
   word-break: break-word;
 }
 

@@ -1,5 +1,57 @@
 # Work Log
 
+## 2026-08-01 · 实时提示优化：快速响应 + keyPoint 醒目高亮
+
+### 本轮目标
+
+- 解决实时提示响应过慢的问题（法律场景每轮触发 Agent 慢路径，对话结束了才出提示）。
+- 提示内容过长不醒目，需要关键内容高亮放大，一眼可读。
+
+### 背景
+
+上一轮实现了实时分析走 Agent 的混合策略（法律关键词触发 Agent + MCP 工具查询），但实测发现法律会议中几乎每句话都含"合同"、"违约"等触发词，导致每轮都走 15-20s 慢路径，完全不适合实时场景。同时输出内容大段文字，用户难以快速获取关键信息。
+
+### 已完成事项
+
+#### 1. 实时提示回退为直调 LLM（不走 Agent）
+
+- `realtime-assist.ts` 的 `analyzeBatch` 改为始终走直调 LLM 快速路径（~3s），不再尝试 Agent。
+- Agent + MCP 工具查询仅保留在报告生成路径（需要真实法条核实的深度分析场景）。
+- 保留 `analyzeBatchViaAgent` 和 `SCENE_TOOL_TRIGGER` 代码（未删除），后续如有需要可重新启用。
+
+#### 2. 新增 keyPoint 字段 + 各场景 systemPrompt 精简
+
+- `AnalysisRound` 接口新增 `keyPoint: string` 字段（核心提醒，≤30 字）。
+- 全部 5 个场景的 systemPrompt 重构：
+  - keyPoint：一句简短有力的核心提醒（用户第一眼看到）
+  - context：原文引用（次要）
+  - analysis：1-2 句补充说明（降为次要文字）
+  - 输出 JSON 格式从 `{context,priority,analysis}` 变为 `{context,priority,keyPoint,analysis}`
+- `parseAnalysis` 更新：兼容 keyPoint 缺失的旧格式，keyPoint 和 analysis 均空时跳过。
+
+#### 3. 前端渲染优化：keyPoint 醒目高亮
+
+- `MeetingAgentPanel.vue` 新增 `.round-keypoint` 渲染区块，位于 context 和 analysis 之上。
+  - normal：15px 加粗 + 绿色文字 + 淡绿背景
+  - attention：15px 加粗 + 橙色文字 + 淡橙背景
+  - urgent：16px 加粗 + 红色文字 + 淡红背景
+- `.round-analysis` 降级为次要文字（12px 灰色）。
+- 客户端接口 `useMeetingAssist.ts` 和 `stores/hermes/meeting.ts` 同步新增 keyPoint 字段。
+
+#### 4. 各场景 reportPrompt 工具调用引导统一化
+
+- business：新增"数据核实要求"引导（合同条款/市场数据调工具核实，未核实标注"待确认"）。
+- medical：新增"医学信息核实要求"引导（药品剂量/禁忌调工具核实，查不到标注"需临床核实"）。
+- interview：新增"信息核实要求"引导（竞品/行业数据可调工具补充）。
+- legal：已有法条引用引导（上一轮 commit 6cbf5170）。
+- general：无（通用场景不需要专业工具）。
+
+### 设计原则
+
+- **实时提示 = 快速提醒**：直调 LLM，3s 出结果，keyPoint 一句话点出关键。
+- **报告生成 = 深度分析**：走 Agent + MCP 工具，查真实法条/数据，可接受 2-3 分钟。
+- 两条路径职责分离，互不影响。
+
 ## 2026-07-31 · 法律场景接入法规查询 MCP（chinese-law-mcp）
 
 ### 本轮目标

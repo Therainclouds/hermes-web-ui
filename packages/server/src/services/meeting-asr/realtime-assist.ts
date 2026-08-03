@@ -11,6 +11,7 @@ export interface AnalysisRound {
   id: string
   context: string
   priority: 'normal' | 'attention' | 'urgent'
+  keyPoint: string
   analysis: string
   timestamp: number
 }
@@ -39,6 +40,17 @@ interface ActiveSession {
 const WINDOW_SIZE = 5
 const WINDOW_INTERVAL_MS = 18_000
 const NAMESPACE = '/meeting-assist'
+
+/**
+ * 各场景下触发 Agent + MCP 工具查询的关键词正则。
+ * 匹配到这些信号说明对话涉及需要查询核实的专业内容，值得走慢路径。
+ * 未列出的场景（如 general）始终走快速直调路径。
+ */
+const SCENE_TOOL_TRIGGER: Record<string, RegExp> = {
+  legal: /第[\d一二三四五六七八九十百千]+条|第[\d一二三四五六七八九十百千]+款|民法典|刑法|劳动法|合同法|公司法|婚姻法|继承法|物权法|侵权法|司法解释|行政法规|部门规章|地方性法规|诉讼时效|追诉时效|仲裁时效|违约金|赔偿金|经济补偿|劳动报酬|知识产权|专利权|商标权|著作权|担保|抵押|质押|留置|不可抗力|情势变更|正当防卫|紧急避险/,
+  business: /合同条款|违约责任|保密协议|竞业禁止|独家代理|排他性|对赌|估值|市盈率|净利润|营收|毛利率|报价|底价|市场价|行业规范|招投标|政府采购|反垄断|商业贿赂|尽职调查|审计|税务|发票|税率/,
+  medical: /禁忌|不良反应|相互作用|配伍禁忌|剂量|用量|毫克|mg|毫升|ml|指南|共识|禁忌证|适应证|耐药|过敏|肝肾功能|孕妇|哺乳|儿童用药|药物相互作用|半衰期|血药浓度/,
+}
 
 function safeActiveProfileName(): string {
   try {
@@ -159,16 +171,79 @@ class RealtimeAssistService {
   }
 
   private async analyzeBatch(sentences: TranscriptSentence[], sceneTemplateId: string, profile?: string): Promise<AnalysisRound | null> {
+    const template = getSceneTemplateOrDefault(sceneTemplateId)
+    const transcriptText = sentences
+      .map(s => `${s.speaker ? `[${s.speaker}] ` : ''}${s.text}`)
+      .join('\n')
+
+    const resolvedProfile = (profile || safeActiveProfileName() || 'default').trim() || 'default'
+
+    // 实时提示始终走直调 LLM 快速路径（~3s），不走 Agent。
+    // Agent + MCP 工具查询仅用于报告生成（需要真实法条/数据核实的深度分析）。
+    return this.analyzeBatchViaDirectLLM(transcriptText, template, resolvedProfile)
+  }
+
+  /**
+   * 判断当前对话内容是否需要走 Agent + MCP 工具路径。
+   * 根据场景查找对应的触发正则，未配置的场景始终走快速路径。
+   */
+  private needsToolLookup(sceneTemplateId: string, transcriptText: string): boolean {
+    const re = SCENE_TOOL_TRIGGER[sceneTemplateId]
+    if (!re) return false
+    return re.test(transcriptText)
+  }
+
+  /**
+   * 经过 Hermes Agent 进行实时分析，可调用 MCP 工具（如法规查询）。
+   * 20s 超时限制，超时或 bridge 不可用时由上层回退到直调 LLM。
+   */
+  private async analyzeBatchViaAgent(transcriptText: string, template: SceneTemplate, profile: string): Promise<AnalysisRound | null> {
+    const { AgentBridgeClient } = await import('../hermes/agent-bridge/client')
+    const bridge = new AgentBridgeClient({ connectRetryMs: 1500 })
+    const agentSessionId = `meeting-analyze-${Date.now()}`
+
+    try {
+      const started = await bridge.chat(
+        agentSessionId,
+        `以下是最近的对话内容：\n\n${transcriptText}`,
+        undefined,
+        template.systemPrompt,
+        profile,
+        { source: 'meeting-asr' },
+      )
+
+      let finalText = ''
+      for await (const chunk of bridge.streamOutput(started.run_id, { timeoutMs: 20_000 })) {
+        if (chunk.delta) finalText += chunk.delta
+        if (chunk.done) {
+          // 部分 bridge 不增量返回 delta，从 result 提取
+          if (!finalText.trim()) {
+            const result = chunk.result as { final_response?: string } | undefined
+            finalText = result?.final_response || chunk.output || ''
+          }
+          break
+        }
+        if (chunk.status === 'error') {
+          throw new Error(chunk.error || 'Agent analysis run failed')
+        }
+      }
+
+      if (!finalText.trim()) throw new Error('Agent analysis produced no output')
+      return this.parseAnalysis(finalText)
+    } finally {
+      void bridge.destroy(agentSessionId, profile).catch(() => {})
+    }
+  }
+
+  /**
+   * 回退路径：直接调用 LLM API 进行实时分析（不经过 Agent）。
+   */
+  private async analyzeBatchViaDirectLLM(transcriptText: string, template: SceneTemplate, profile: string): Promise<AnalysisRound | null> {
     const config = await this.loadLLMConfig()
     if (!config) {
       logger.warn('[meeting-assist] LLM config not available, skipping analysis')
       return null
     }
-
-    const template = getSceneTemplateOrDefault(sceneTemplateId)
-    const transcriptText = sentences
-      .map(s => `${s.speaker ? `[${s.speaker}] ` : ''}${s.text}`)
-      .join('\n')
 
     // 动态加载 profile 下的会议分析技能并追加到 system prompt。
     const skillSection = await prepareAnalysisSkillSection(profile)
@@ -212,8 +287,11 @@ class RealtimeAssistService {
       const cleaned = raw.replace(/^```(?:json)?\s*/m, '').replace(/\s*```$/m, '').trim()
       const parsed = JSON.parse(cleaned)
 
-      // Skip empty analysis
-      if (!parsed || typeof parsed.analysis !== 'string' || !parsed.analysis.trim()) {
+      const keyPoint = typeof parsed.keyPoint === 'string' ? parsed.keyPoint.trim() : ''
+      const analysis = typeof parsed.analysis === 'string' ? parsed.analysis.trim() : ''
+
+      // Skip if both keyPoint and analysis are empty
+      if (!parsed || (!keyPoint && !analysis)) {
         return null
       }
 
@@ -222,7 +300,8 @@ class RealtimeAssistService {
         id: `round-${now}`,
         context: typeof parsed.context === 'string' ? parsed.context.slice(0, 200) : '',
         priority: (['normal', 'attention', 'urgent'].includes(parsed.priority) ? parsed.priority : 'normal') as AnalysisRound['priority'],
-        analysis: parsed.analysis.slice(0, 800),
+        keyPoint: keyPoint.slice(0, 120),
+        analysis: analysis.slice(0, 500),
         timestamp: now,
       }
     } catch {

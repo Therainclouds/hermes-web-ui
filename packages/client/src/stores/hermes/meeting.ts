@@ -72,6 +72,7 @@ export interface AnalysisRoundRecord {
   id: string
   context: string
   priority: 'normal' | 'attention' | 'urgent'
+  keyPoint: string
   analysis: string
   timestamp: number
 }
