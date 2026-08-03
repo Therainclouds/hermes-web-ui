@@ -35,7 +35,10 @@
   - normal：15px 加粗 + 绿色文字 + 淡绿背景
   - attention：15px 加粗 + 橙色文字 + 淡橙背景
   - urgent：16px 加粗 + 红色文字 + 淡红背景
-- `.round-analysis` 降级为次要文字（12px 灰色）。
+- 优化颜色区分度：
+  - **原文引用**（context）：改为淡青色 `#9fd4f0` + 青色左边框 `#70c0e8` + 淡青背景，一眼识别为“转写原话”。
+  - **分析说明**（analysis）：降为更淡的灰色 `#888`，作为 secondary 补充。
+  - **核心提示**（keyPoint）：保留醒目的橙/红/绿，并增加同色系左边框，强化层级。
 - 客户端接口 `useMeetingAssist.ts` 和 `stores/hermes/meeting.ts` 同步新增 keyPoint 字段。
 
 #### 4. 各场景 reportPrompt 工具调用引导统一化

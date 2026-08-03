@@ -468,29 +468,35 @@ onUnmounted(() => {
 .round-keypoint.priority-normal {
   color: #63e2b7;
   background: rgba(99, 226, 183, 0.08);
+  border-left: 3px solid #63e2b7;
 }
 
 .round-keypoint.priority-attention {
   color: #f0a020;
   background: rgba(240, 160, 32, 0.1);
+  border-left: 3px solid #f0a020;
 }
 
 .round-keypoint.priority-urgent {
   color: #e88080;
   background: rgba(208, 48, 80, 0.12);
+  border-left: 3px solid #d03050;
   font-size: 16px;
 }
 
 /* Context quote - references original speech */
 .round-context {
   margin-bottom: 8px;
+  padding: 6px 10px;
+  border-left: 3px solid #70c0e8;
+  background: rgba(112, 192, 232, 0.08);
+  border-radius: 0 6px 6px 0;
 }
 
 .context-quote {
   font-size: 12px;
-  color: var(--n-text-color3, #999);
-  font-style: italic;
-  line-height: 1.4;
+  color: #9fd4f0;
+  line-height: 1.5;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -501,7 +507,7 @@ onUnmounted(() => {
 .round-analysis {
   font-size: 12px;
   line-height: 1.6;
-  color: var(--n-text-color2, #aaa);
+  color: var(--n-text-color3, #888);
   word-break: break-word;
 }
 
