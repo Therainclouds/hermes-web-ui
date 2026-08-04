@@ -129,8 +129,10 @@ async function handleWeChatApproved(
     }
 
     // WeChat device users are regular admins. Offer to bind the account to the
-    // super administrator by verifying its credentials.
+    // super administrator by verifying its credentials. Set the session token
+    // first so the bind request carries the Authorization header.
     if (hermesResult.user.role !== "super_admin") {
+      setApiKey(hermesResult.token);
       showBindSuperAdmin.value = true;
       return;
     }
