@@ -43,6 +43,11 @@
 
 - `npm run build` 报 TS2353：本地群聊导入路由向 `saveRoom` 传入 `triggerTokens/maxHistoryTokens/tailMessageCount`，而上游已不再持久化 per-room token 预算（改用 schema 默认值）。已移除该 config 入参并加注释，全量 build 通过。
 
+### 补充：手动验收反馈修复
+
+- 聊天框显示裸文本 `scroll-scope="chat"`：`ChatPanel.vue` 合并残留的孤立属性行，已归位到 `<MessageList>` 标签。
+- 侧边栏品牌词回退：`sidebar.apiRelay` 被上游值覆盖（zh 为上游占位词“饲料”、zh-TW “中轉站”），已恢复品牌词“量迹市场”。
+
 ## 2026-08-01 · 实时提示优化：快速响应 + keyPoint 醒目高亮
 
 ### 本轮目标

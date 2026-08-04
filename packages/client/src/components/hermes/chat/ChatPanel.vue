@@ -2650,6 +2650,7 @@ async function handleSessionModelCustomSubmit() {
           <div ref="chatMainContentRef" class="chat-main-content">
             <MessageList
               ref="messageListRef"
+              scroll-scope="chat"
               :approval-portal-to-body="showRealtimeVoice"
             >
               <template #empty-actions>
@@ -2658,7 +2659,6 @@ async function handleSessionModelCustomSubmit() {
                 </div>
               </template>
             </MessageList>
-              scroll-scope="chat"
             <ChatInput
               ref="chatInputRef"
               :model-label="activeSessionModelLabel"
