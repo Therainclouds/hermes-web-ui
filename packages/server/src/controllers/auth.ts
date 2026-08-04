@@ -627,9 +627,35 @@ export async function bindSuperAdmin(ctx: Context) {
     return
   }
 
+  // Permanently reflect the bound WeChat identity on the default agent profile.
+  syncProfileIdentityFromUser(upgraded)
+
   const token = await issueUserJwt(upgraded)
   touchUserLogin(upgraded.id)
   ctx.body = { token, user: { id: upgraded.id, username: upgraded.username, role: upgraded.role } }
+}
+
+/**
+ * Sync the default agent profile's display name and avatar from the current
+ * user's persisted identity (WeChat name/avatar stored in the user record).
+ * Used when binding to super administrator so the change is permanent.
+ */
+function syncProfileIdentityFromUser(user: UserRecord): void {
+  let displayName = user.username || 'default'
+  let avatarUrl: string | null = null
+  const raw = getUserAvatar(user.id)
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw)
+      if (parsed && typeof parsed === 'object') {
+        if (typeof parsed.seed === 'string' && parsed.seed.trim()) displayName = parsed.seed.trim()
+        if (typeof parsed.dataUrl === 'string' && parsed.dataUrl.startsWith('http')) avatarUrl = parsed.dataUrl
+      }
+    } catch {
+      // ignore malformed avatar
+    }
+  }
+  syncProfileIdentity(displayName, avatarUrl)
 }
 
 /**

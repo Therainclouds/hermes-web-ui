@@ -10,6 +10,7 @@ import ProfileAvatar from './ProfileAvatar.vue'
 import { useMessage } from '@/composables/useAppMessage'
 import { unbindSuperAdmin } from '@/api/auth'
 import { isStoredSuperAdmin, setApiKey } from '@/api/client'
+import { getProfileDisplayName } from '@/utils/hermes/profile-display'
 
 const props = defineProps<{ profile: HermesProfile }>()
 const emit = defineEmits<{}>()
@@ -146,7 +147,7 @@ function handleEditConfig() {
     <div class="card-header">
       <div class="profile-title">
         <ProfileAvatar :name="profile.name" :avatar="profile.avatar" :size="28" />
-        <h3 class="profile-name">{{ isExpert && profile.alias ? profile.alias : profile.name }}</h3>
+        <h3 class="profile-name">{{ getProfileDisplayName(profile) }}</h3>
         <NTag
           v-if="isExpert"
           size="tiny"
