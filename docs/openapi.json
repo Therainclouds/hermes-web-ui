@@ -328,6 +328,139 @@
         }
       }
     },
+    "/api/auth/device-binding": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Get device-binding",
+        "description": "GET /api/auth/device-binding",
+        "operationId": "getDeviceBinding",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Delete device-binding",
+        "description": "DELETE /api/auth/device-binding",
+        "operationId": "clearDeviceBindingController",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/auth/device-login": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Create device-login",
+        "description": "POST /api/auth/device-login",
+        "operationId": "deviceLogin",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "api_base": {
+                    "type": "string"
+                  },
+                  "api_key": {
+                    "type": "string"
+                  },
+                  "device_id": {
+                    "type": "number"
+                  },
+                  "device_name": {
+                    "type": "string"
+                  },
+                  "models": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "api_base",
+                  "api_key"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/device-login/restore": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Create restore",
+        "description": "POST /api/auth/device-login/restore",
+        "operationId": "restoreDeviceLogin",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
     "/api/auth/locked-ips": {
       "get": {
         "tags": [

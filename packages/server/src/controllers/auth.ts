@@ -14,6 +14,7 @@ import {
   listUserProfiles,
   listUsers,
   setUserAvatar,
+  touchUserLogin,
   updateUserModelGuideStatus,
   updateUser,
   updateUsername,
@@ -30,6 +31,18 @@ import { startOutboundRelayClient, stopOutboundRelayClient } from '../services/g
 import { getLanEndpointKind } from '../services/lan-discovery'
 import { getPublicSystemInfo } from '../services/system-info'
 import { config } from '../config'
+import { randomUUID } from 'crypto'
+import {
+  fetchDeviceSelf,
+  verifyDeviceApiKey,
+  type TokenPlatformUserProfile,
+} from '../services/token-platform-client'
+import {
+  loadDeviceBinding,
+  saveDeviceBinding,
+  clearDeviceBinding,
+  type DeviceBinding,
+} from '../services/device-binding'
 
 /**
  * GET /api/auth/status
@@ -303,6 +316,204 @@ async function localRelayMachineInfo(url: string) {
     url,
     relay_url: config.remoteRelay.url,
   }
+}
+
+/**
+ * POST /api/auth/device-login
+ * Complete a Token Platform WeChat scan login from the Hermes device.
+ *
+ * The client already received {api_base, api_key, models, device_id} from the
+ * Token Platform device-login status endpoint (the user scanned the QR with
+ * WeChat). This endpoint validates the device API key, resolves the bound user
+ * profile, provisions a local Hermes user (auto-bootstrapping a super_admin on
+ * first run), issues a Hermes JWT, and persists the device binding so later
+ * boots can restore the session without re-scanning.
+ *
+ * Body: { api_base, api_key, device_id, device_name, models }.
+ */
+export async function deviceLogin(ctx: Context) {
+  const {
+    api_base: apiBaseRaw,
+    api_key: apiKey,
+    device_id: deviceId,
+    device_name: deviceName,
+    models,
+  } = ctx.request.body as {
+    api_base?: string
+    api_key?: string
+    device_id?: number | string
+    device_name?: string
+    models?: string[]
+  }
+
+  const apiBase = String(apiBaseRaw || '').trim()
+  const key = String(apiKey || '').trim()
+  if (!apiBase || !key) {
+    ctx.status = 400
+    ctx.body = { error: 'api_base and api_key are required' }
+    return
+  }
+
+  let profile: TokenPlatformUserProfile
+  try {
+    profile = await fetchDeviceSelf(apiBase, key)
+  } catch (err: any) {
+    ctx.status = 502
+    ctx.body = { error: err?.message || 'Token Platform profile verification failed' }
+    return
+  }
+  if (!profile?.id) {
+    ctx.status = 401
+    ctx.body = { error: 'Invalid Token Platform device key' }
+    return
+  }
+
+  // Verify the key can actually reach the relay models endpoint.
+  let verifiedModels: string[]
+  try {
+    verifiedModels = await verifyDeviceApiKey(apiBase, key)
+  } catch (err: any) {
+    ctx.status = 502
+    ctx.body = { error: err?.message || 'Token Platform model verification failed' }
+    return
+  }
+
+  const modelList = Array.isArray(models) && models.length > 0
+    ? models
+    : verifiedModels
+
+  const localUsername = `tp_${profile.id}`
+  let user = findUserByUsername(localUsername)
+  if (!user) {
+    if (countUsers() === 0) {
+      // First run: auto-bootstrap a super_admin bound to this device.
+      user = createUser({
+        username: localUsername,
+        password: randomUUID(),
+        role: 'super_admin',
+        status: 'active',
+      })
+    } else {
+      // Device already configured locally: link a regular admin account.
+      user = createUser({
+        username: localUsername,
+        password: randomUUID(),
+        role: 'admin',
+        status: 'active',
+      })
+    }
+  }
+  if (!user) {
+    ctx.status = 500
+    ctx.body = { error: 'Failed to provision local user' }
+    return
+  }
+
+  if (profile.display_name) {
+    setUserAvatar(user.id, JSON.stringify({
+      type: 'default',
+      seed: profile.display_name,
+    }))
+  }
+
+  const token = await issueUserJwt(user)
+  touchUserLogin(user.id)
+
+  const displayName = profile.display_name || profile.username || localUsername
+  const binding: DeviceBinding = {
+    device_id: String(deviceId ?? ''),
+    api_base: apiBase,
+    api_key: key,
+    models: modelList,
+    display_name: displayName,
+    username: profile.username || localUsername,
+    bound_at: Date.now(),
+  }
+  await saveDeviceBinding(binding)
+
+  ctx.body = {
+    token,
+    user: {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+      display_name: displayName,
+      bound_models: modelList,
+    },
+    binding: {
+      device_id: binding.device_id,
+      display_name: displayName,
+    },
+  }
+}
+
+/**
+ * GET /api/auth/device-binding
+ * Return whether this Hermes device has a persisted Token Platform binding.
+ * Used by the login page to offer "restore previous scan" without re-scanning.
+ */
+export async function getDeviceBinding(ctx: Context) {
+  const binding = await loadDeviceBinding()
+  if (!binding) {
+    ctx.body = { bound: false }
+    return
+  }
+  ctx.body = {
+    bound: true,
+    display_name: binding.display_name,
+    username: binding.username,
+    models: binding.models,
+    bound_at: binding.bound_at,
+  }
+}
+
+/**
+ * DELETE /api/auth/device-binding
+ * Forget the persisted Token Platform binding on this device.
+ */
+export async function clearDeviceBindingController(ctx: Context) {
+  await clearDeviceBinding()
+  ctx.body = { success: true }
+}
+
+/**
+ * POST /api/auth/device-login/restore
+ * Restore a previous Token Platform binding and re-issue a Hermes JWT without
+ * requiring a new WeChat scan. Verifies the stored api_key is still valid.
+ */
+export async function restoreDeviceLogin(ctx: Context) {
+  const binding = await loadDeviceBinding()
+  if (!binding?.api_key || !binding.api_base) {
+    ctx.status = 404
+    ctx.body = { error: 'No device binding found' }
+    return
+  }
+
+  let profile: TokenPlatformUserProfile
+  try {
+    profile = await fetchDeviceSelf(binding.api_base, binding.api_key)
+  } catch (err: any) {
+    ctx.status = 502
+    ctx.body = { error: err?.message || 'Token Platform verification failed' }
+    return
+  }
+  if (!profile?.id) {
+    ctx.status = 401
+    ctx.body = { error: 'Bound Token Platform key is no longer valid' }
+    return
+  }
+
+  const localUsername = `tp_${profile.id}`
+  const user = findUserByUsername(localUsername)
+  if (!user || user.status !== 'active') {
+    ctx.status = 401
+    ctx.body = { error: 'Bound local user no longer exists' }
+    return
+  }
+
+  const token = await issueUserJwt(user)
+  touchUserLogin(user.id)
+  ctx.body = { token, user: { id: user.id, username: user.username, role: user.role } }
 }
 
 /**
