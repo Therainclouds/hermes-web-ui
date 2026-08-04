@@ -37,7 +37,11 @@
 ### 遗留事项
 
 - RTL logical CSS 样式断言、少量环境类失败（symlink 权限/python3 缺失/POSIX 路径假设）待归档确认，均非本次合并引入。
-- 全量 `npm run test` 与 `npm run build` 的最终确认、核心功能手动验收进行中。
+- 全量 `npm run test` 最终确认与核心功能手动验收进行中（`npm run build` 已通过）。
+
+### 补充：build 阶段修复
+
+- `npm run build` 报 TS2353：本地群聊导入路由向 `saveRoom` 传入 `triggerTokens/maxHistoryTokens/tailMessageCount`，而上游已不再持久化 per-room token 预算（改用 schema 默认值）。已移除该 config 入参并加注释，全量 build 通过。
 
 ## 2026-08-01 · 实时提示优化：快速响应 + keyPoint 醒目高亮
 

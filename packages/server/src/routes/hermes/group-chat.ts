@@ -575,11 +575,9 @@ groupChatRoutes.post('/api/hermes/group-chat/rooms/import', async (ctx) => {
             // Generate new IDs to avoid conflicts
             const roomId = generateId()
             const inviteCode = room.inviteCode?.trim() || generateInviteCode()
-            storage.saveRoom(roomId, room.name, inviteCode, {
-                triggerTokens: room.triggerTokens,
-                maxHistoryTokens: room.maxHistoryTokens,
-                tailMessageCount: room.tailMessageCount,
-            })
+            // Upstream no longer persists per-room token budgets (triggerTokens/
+            // maxHistoryTokens/tailMessageCount); rooms use schema defaults.
+            storage.saveRoom(roomId, room.name, inviteCode)
 
             // Import messages
             if (data.messages?.length) {
