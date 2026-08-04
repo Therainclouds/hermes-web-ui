@@ -34,7 +34,7 @@
 - `MeetingAgentPanel.vue` 新增 `.round-keypoint` 渲染区块，位于 context 和 analysis 之上。
   - normal：15px 加粗 + 绿色文字 + 淡绿背景
   - attention：15px 加粗 + 橙色文字 + 淡橙背景
-  - urgent：16px 加粗 + 红色文字 + 淡红背景
+  - urgent：16px 加粗 + 深红色 `#ff4d4f` + 淡红背景 + 红左边框
 - 优化颜色区分度：
   - **原文引用**（context）：改为淡青色 `#9fd4f0` + 青色左边框 `#70c0e8` + 淡青背景，一眼识别为“转写原话”。
   - **分析说明**（analysis）：改为 `#c8c8c8` 浅灰色，与深色背景拉开对比度，阅读更清晰。

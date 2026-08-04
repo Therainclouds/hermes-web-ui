@@ -478,9 +478,9 @@ onUnmounted(() => {
 }
 
 .round-keypoint.priority-urgent {
-  color: #e88080;
-  background: rgba(208, 48, 80, 0.12);
-  border-left: 3px solid #d03050;
+  color: #ff4d4f;
+  background: rgba(255, 77, 79, 0.15);
+  border-left: 3px solid #ff4d4f;
   font-size: 16px;
 }
 
