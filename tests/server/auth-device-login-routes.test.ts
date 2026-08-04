@@ -6,6 +6,8 @@ vi.mock('../../packages/server/src/controllers/auth', () => ({
   microcontrollerLogin: vi.fn(async (ctx: any) => { ctx.body = { token: 'x', profiles: [] } }),
   deviceLogin: vi.fn(async (ctx: any) => { ctx.body = { token: 'jwt' } }),
   restoreDeviceLogin: vi.fn(async (ctx: any) => { ctx.body = { token: 'jwt' } }),
+  bindSuperAdmin: vi.fn(async (ctx: any) => { ctx.body = { token: 'jwt' } }),
+  unbindSuperAdmin: vi.fn(async (ctx: any) => { ctx.body = { token: 'jwt' } }),
   getDeviceBinding: vi.fn(async (ctx: any) => { ctx.body = { bound: false } }),
   clearDeviceBindingController: vi.fn(async (ctx: any) => { ctx.body = { success: true } }),
   setupPassword: vi.fn(async (ctx: any) => { ctx.body = { ok: true } }),

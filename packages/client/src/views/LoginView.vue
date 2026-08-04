@@ -8,6 +8,7 @@ import { clearLoginLocks, resetDefaultLogin } from "@/api/recovery";
 import RecoveryConfirmModal, {
   type RecoveryAction,
 } from "@/components/auth/RecoveryConfirmModal.vue";
+import BindSuperAdminModal from "@/components/auth/BindSuperAdminModal.vue";
 import WeChatQrPanel from "@/components/auth/WeChatQrPanel.vue";
 import {
   completeHermesDeviceLogin,
@@ -39,6 +40,10 @@ const {
 const wechatMode = ref(false);
 const wechatSyncing = ref(false);
 const wechatError = ref("");
+
+// Bind super admin prompt (only for non-super-admin WeChat device users)
+const showBindSuperAdmin = ref(false);
+const pendingLoginToken = ref("");
 
 // Recovery modal state
 type RecoveryModalState = { open: false } | { open: true; action: RecoveryAction };
@@ -101,7 +106,7 @@ async function handleWeChatApproved(
       device_name: "Hermes",
       models: result.api.models,
     });
-    setApiKey(hermesResult.token);
+    pendingLoginToken.value = hermesResult.token;
 
     // Sync the user's model capabilities into Hermes as the default provider.
     const models = hermesResult.user.bound_models?.length
@@ -123,12 +128,38 @@ async function handleWeChatApproved(
       }
     }
 
+    // WeChat device users are regular admins. Offer to bind the account to the
+    // super administrator by verifying its credentials.
+    if (hermesResult.user.role !== "super_admin") {
+      showBindSuperAdmin.value = true;
+      return;
+    }
+
+    setApiKey(hermesResult.token);
     router.replace("/hermes/chat");
   } catch (err: any) {
     wechatError.value = err?.message || t("login.deviceLoginFailed");
   } finally {
     wechatSyncing.value = false;
   }
+}
+
+function handleBindSuperAdminSkip() {
+  showBindSuperAdmin.value = false;
+  if (pendingLoginToken.value) {
+    setApiKey(pendingLoginToken.value);
+    router.replace("/hermes/chat");
+  }
+}
+
+function handleBindSuperAdminBound(
+  token: string,
+  _user: { id: number; username: string; role: string },
+) {
+  showBindSuperAdmin.value = false;
+  pendingLoginToken.value = token;
+  setApiKey(token);
+  router.replace("/hermes/chat");
 }
 
 function openRecoveryModal(action: RecoveryAction) {
@@ -272,6 +303,12 @@ async function handleRecoverySubmit(recoveryPassword: string) {
       :action="recoveryModal.action"
       @close="closeRecoveryModal"
       @submit="handleRecoverySubmit"
+    />
+
+    <BindSuperAdminModal
+      :open="showBindSuperAdmin"
+      @close="handleBindSuperAdminSkip"
+      @bound="handleBindSuperAdminBound"
     />
   </div>
 </template>

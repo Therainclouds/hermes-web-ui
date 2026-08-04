@@ -88,6 +88,36 @@ export async function resetMyAvatar(): Promise<void> {
   })
 }
 
+export interface BindSuperAdminResult {
+  token: string
+  user: { id: number; username: string; role: string }
+}
+
+/**
+ * Upgrade the current user to a super administrator after verifying the
+ * supplied super-admin credentials. Returns a fresh session token carrying the
+ * new role.
+ */
+export async function bindSuperAdmin(username: string, password: string): Promise<BindSuperAdminResult> {
+  const res = await request<BindSuperAdminResult>('/api/auth/bind-super-admin', {
+    method: 'POST',
+    body: JSON.stringify({ username, password }),
+  })
+  return res
+}
+
+/**
+ * Demote the current super administrator back to a regular admin and clear the
+ * WeChat identity from the default profile. Returns a fresh session token
+ * carrying the demoted role.
+ */
+export async function unbindSuperAdmin(): Promise<BindSuperAdminResult> {
+  const res = await request<BindSuperAdminResult>('/api/auth/unbind-super-admin', {
+    method: 'POST',
+  })
+  return res
+}
+
 export async function setupPassword(username: string, password: string): Promise<void> {
   return request('/api/auth/setup', {
     method: 'POST',

@@ -22,7 +22,7 @@ import { detectHermesRootHome } from '../../services/hermes/hermes-path'
 import { getActiveProfileName } from '../../services/hermes/hermes-profile'
 import { HermesSkillInjector } from '../../services/hermes/skill-injector'
 import type { HermesProfile } from '../../services/hermes/hermes-cli'
-import { listUserProfiles } from '../../db/hermes/users-store'
+import { listUserProfiles, replaceUserProfiles } from '../../db/hermes/users-store'
 
 const bridgeCleanupClient = () => new AgentBridgeClient({ connectRetryMs: 0, timeoutMs: 5000 })
 
@@ -483,6 +483,16 @@ export async function create(ctx: any) {
     }
 
     await injectBundledSkillsForProfile(name)
+
+    // A non-super-admin user keeps whatever they create: bind the new profile
+    // to the current user so it shows up in their own profile list.
+    const user = ctx.state?.user
+    if (user && user.role !== 'super_admin') {
+      const existing = listUserProfiles(user.id).map(p => p.profile_name)
+      if (!existing.includes(name)) {
+        replaceUserProfiles(user.id, [...existing, name], existing[0] || name)
+      }
+    }
 
     ctx.body = {
       success: true,

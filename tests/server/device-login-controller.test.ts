@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { DEFAULT_USERNAME, DEFAULT_PASSWORD } from '../../packages/server/src/db/hermes/users-store'
 
 const { fetchDeviceSelfMock, verifyDeviceApiKeyMock, saveDeviceBindingMock } = vi.hoisted(() => ({
   fetchDeviceSelfMock: vi.fn(),
@@ -244,5 +245,143 @@ describe('deviceLogin controller', () => {
     const avatar = JSON.parse(users.getUserAvatar(created!.id))
     expect(avatar.type).toBe('default')
     expect(avatar.seed).toBe('微信用户乙')
+  })
+
+  describe('bindSuperAdmin', () => {
+    function makeAuthedCtx(body: Record<string, unknown>, user: { id: number; username: string; role: string }) {
+      const ctx = makeCtx(body) as any
+      ctx.state = { user }
+      return ctx
+    }
+
+    it('upgrades the current admin to super_admin with valid credentials', async () => {
+      const { ctrl, users } = await loadModules()
+      users.createDefaultSuperAdmin()
+      const admin = users.createUser({ username: 'tp_20', password: 'x', role: 'admin' })
+      expect(admin!.role).toBe('admin')
+
+      const ctx = makeAuthedCtx(
+        { username: DEFAULT_USERNAME, password: DEFAULT_PASSWORD },
+        { id: admin!.id, username: 'tp_20', role: 'admin' },
+      )
+      await ctrl.bindSuperAdmin(ctx)
+
+      expect(ctx.status).toBe(200)
+      expect(ctx.body.token).toBeTruthy()
+      expect(ctx.body.user.role).toBe('super_admin')
+      expect(users.findUserById(admin!.id)!.role).toBe('super_admin')
+    })
+
+    it('rejects wrong super administrator password and keeps the user as admin', async () => {
+      const { ctrl, users } = await loadModules()
+      users.createDefaultSuperAdmin()
+      const admin = users.createUser({ username: 'tp_21', password: 'x', role: 'admin' })
+
+      const ctx = makeAuthedCtx(
+        { username: DEFAULT_USERNAME, password: 'wrong-password' },
+        { id: admin!.id, username: 'tp_21', role: 'admin' },
+      )
+      await ctrl.bindSuperAdmin(ctx)
+
+      expect(ctx.status).toBe(401)
+      expect(ctx.body).toEqual({ error: 'Invalid super administrator credentials' })
+      expect(users.findUserById(admin!.id)!.role).toBe('admin')
+    })
+
+    it('rejects when the provided account is not a super administrator', async () => {
+      const { ctrl, users } = await loadModules()
+      users.createDefaultSuperAdmin()
+      const admin = users.createUser({ username: 'tp_22', password: 'x', role: 'admin' })
+      users.createUser({ username: 'regular', password: 'y', role: 'admin' })
+
+      const ctx = makeAuthedCtx(
+        { username: 'regular', password: 'y' },
+        { id: admin!.id, username: 'tp_22', role: 'admin' },
+      )
+      await ctrl.bindSuperAdmin(ctx)
+
+      expect(ctx.status).toBe(401)
+      expect(users.findUserById(admin!.id)!.role).toBe('admin')
+    })
+
+    it('rejects when credentials are missing', async () => {
+      const { ctrl, users } = await loadModules()
+      const admin = users.createUser({ username: 'tp_23', password: 'x', role: 'admin' })
+
+      const ctx = makeAuthedCtx({}, { id: admin!.id, username: 'tp_23', role: 'admin' })
+      await ctrl.bindSuperAdmin(ctx)
+
+      expect(ctx.status).toBe(400)
+      expect(users.findUserById(admin!.id)!.role).toBe('admin')
+    })
+
+    it('requires an authenticated user', async () => {
+      const { ctrl } = await loadModules()
+      const ctx = makeCtx({ username: DEFAULT_USERNAME, password: DEFAULT_PASSWORD }) as any
+      ctx.state = { user: null }
+      await ctrl.bindSuperAdmin(ctx)
+
+      expect(ctx.status).toBe(401)
+      expect(ctx.body).toEqual({ error: 'Unauthorized' })
+    })
+  })
+
+  describe('unbindSuperAdmin', () => {
+    function makeAuthedCtx(user: { id: number; username: string; role: string }) {
+      const ctx = makeCtx({}) as any
+      ctx.state = { user }
+      return ctx
+    }
+
+    it('demotes the current super_admin to admin and re-issues a token', async () => {
+      const { ctrl, users } = await loadModules()
+      users.createDefaultSuperAdmin()
+      // A second super admin exists so the first one can be safely demoted.
+      const admin = users.createUser({ username: 'tp_30', password: 'x', role: 'admin' })
+      users.updateUser({ userId: admin!.id, role: 'super_admin' })
+
+      const ctx = makeAuthedCtx({ id: admin!.id, username: 'tp_30', role: 'super_admin' })
+      await ctrl.unbindSuperAdmin(ctx)
+
+      expect(ctx.status).toBe(200)
+      expect(ctx.body.token).toBeTruthy()
+      expect(ctx.body.user.role).toBe('admin')
+      expect(users.findUserById(admin!.id)!.role).toBe('admin')
+    })
+
+    it('rejects when the current user is not a super_admin', async () => {
+      const { ctrl, users } = await loadModules()
+      users.createDefaultSuperAdmin()
+      const admin = users.createUser({ username: 'tp_31', password: 'x', role: 'admin' })
+
+      const ctx = makeAuthedCtx({ id: admin!.id, username: 'tp_31', role: 'admin' })
+      await ctrl.unbindSuperAdmin(ctx)
+
+      expect(ctx.status).toBe(403)
+      expect(ctx.body).toEqual({ error: 'Only a super administrator can unbind' })
+      expect(users.findUserById(admin!.id)!.role).toBe('admin')
+    })
+
+    it('rejects when it would leave no active super administrator', async () => {
+      const { ctrl, users } = await loadModules()
+      const admin = users.createUser({ username: 'tp_32', password: 'x', role: 'super_admin' })
+
+      const ctx = makeAuthedCtx({ id: admin!.id, username: 'tp_32', role: 'super_admin' })
+      await ctrl.unbindSuperAdmin(ctx)
+
+      expect(ctx.status).toBe(400)
+      expect(ctx.body).toEqual({ error: 'At least one active super administrator is required' })
+      expect(users.findUserById(admin!.id)!.role).toBe('super_admin')
+    })
+
+    it('requires an authenticated user', async () => {
+      const { ctrl } = await loadModules()
+      const ctx = makeCtx({}) as any
+      ctx.state = { user: null }
+      await ctrl.unbindSuperAdmin(ctx)
+
+      expect(ctx.status).toBe(401)
+      expect(ctx.body).toEqual({ error: 'Unauthorized' })
+    })
   })
 })

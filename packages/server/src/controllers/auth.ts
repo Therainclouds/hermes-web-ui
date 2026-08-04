@@ -48,6 +48,7 @@ import {
   setProfileDisplayName,
   setProfileAvatarRemote,
   setProfileAvatarGenerated,
+  clearProfileIdentity,
 } from '../services/hermes/profile-metadata'
 import { getActiveProfileName } from '../services/hermes/hermes-profile'
 
@@ -561,6 +562,127 @@ export async function restoreDeviceLogin(ctx: Context) {
   touchUserLogin(user.id)
   syncProfileIdentity(profile.display_name || profile.username || localUsername, profile.avatar_url)
   ctx.body = { token, user: { id: user.id, username: user.username, role: user.role } }
+}
+
+/**
+ * POST /api/auth/bind-super-admin
+ * Upgrade the currently authenticated user to a super administrator, after
+ * verifying that they can provide valid super-admin credentials.
+ *
+ * Used by WeChat device-login users who are provisioned as regular admins:
+ * after scanning they can choose to bind to the super administrator account by
+ * entering its username/password. Wrong credentials are rejected and the user
+ * stays a regular admin. A fresh JWT is issued because the old token still
+ * carries the previous role.
+ *
+ * Body: { username, password }.
+ */
+export async function bindSuperAdmin(ctx: Context) {
+  const userId = ctx.state.user?.id
+  if (!userId) {
+    ctx.status = 401
+    ctx.body = { error: 'Unauthorized' }
+    return
+  }
+
+  const body = ctx.request.body as { username?: unknown; password?: unknown }
+  const username = String(body?.username || '').trim()
+  const password = String(body?.password || '')
+
+  if (!username || !password) {
+    ctx.status = 400
+    ctx.body = { error: 'Super administrator username and password are required' }
+    return
+  }
+
+  const target = findUserByUsername(username)
+  if (!target || target.role !== 'super_admin' || target.status !== 'active') {
+    ctx.status = 401
+    ctx.body = { error: 'Invalid super administrator credentials' }
+    return
+  }
+
+  if (!verifyPassword(password, target.password_hash)) {
+    ctx.status = 401
+    ctx.body = { error: 'Invalid super administrator credentials' }
+    return
+  }
+
+  const user = findUserById(userId)
+  if (!user) {
+    ctx.status = 404
+    ctx.body = { error: 'User not found' }
+    return
+  }
+
+  if (user.role === 'super_admin') {
+    ctx.body = { token: await issueUserJwt(user), user: { id: user.id, username: user.username, role: user.role } }
+    return
+  }
+
+  const upgraded = updateUser({ userId, role: 'super_admin' })
+  if (!upgraded) {
+    ctx.status = 500
+    ctx.body = { error: 'Failed to bind super administrator' }
+    return
+  }
+
+  const token = await issueUserJwt(upgraded)
+  touchUserLogin(upgraded.id)
+  ctx.body = { token, user: { id: upgraded.id, username: upgraded.username, role: upgraded.role } }
+}
+
+/**
+ * POST /api/auth/unbind-super-admin
+ * Demote the current super administrator back to a regular admin and clear the
+ * WeChat identity from the default profile.
+ *
+ * Only callable by the current super-admin user themselves (e.g. via the
+ * "解绑" button on the profile card). After unbinding, a future WeChat scan
+ * re-prompts the bind flow because the role is admin again.
+ */
+export async function unbindSuperAdmin(ctx: Context) {
+  const userId = ctx.state.user?.id
+  if (!userId) {
+    ctx.status = 401
+    ctx.body = { error: 'Unauthorized' }
+    return
+  }
+
+  const user = findUserById(userId)
+  if (!user) {
+    ctx.status = 404
+    ctx.body = { error: 'User not found' }
+    return
+  }
+
+  if (user.role !== 'super_admin') {
+    ctx.status = 403
+    ctx.body = { error: 'Only a super administrator can unbind' }
+    return
+  }
+
+  // Ensure at least one super administrator remains before demoting.
+  if (countActiveSuperAdmins(userId) === 0) {
+    ctx.status = 400
+    ctx.body = { error: 'At least one active super administrator is required' }
+    return
+  }
+
+  const demoted = updateUser({ userId, role: 'admin' })
+  if (!demoted) {
+    ctx.status = 500
+    ctx.body = { error: 'Failed to unbind super administrator' }
+    return
+  }
+
+  // Remove the WeChat name/avatar from the default agent profile so it falls
+  // back to its original identity.
+  clearProfileIdentity('default')
+
+  const token = await issueUserJwt(demoted)
+  touchUserLogin(demoted.id)
+  ctx.body = { token, user: { id: demoted.id, username: demoted.username, role: demoted.role } }
 }
 
 /**

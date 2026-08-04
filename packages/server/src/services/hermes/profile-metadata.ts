@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { getWebUiHome } from '../../config'
 
@@ -87,4 +87,20 @@ export function setProfileAvatarRemote(name: string, url: string): void {
  */
 export function setProfileAvatarGenerated(name: string, seed: string): void {
   writeProfileAvatar(name, { type: 'generated', seed: seed || name || 'default', updatedAt: Date.now() })
+}
+
+/**
+ * Clear the Web-UI display name and avatar for a profile, restoring the
+ * underlying profile's original identity. Used when a WeChat account unbinds
+ * from the super administrator.
+ */
+export function clearProfileIdentity(name: string): void {
+  const dir = profileMetadataDir(name)
+  const metaPath = profileMetaPath(name)
+  const avatarPath = profileAvatarMetaPath(name)
+  if (existsSync(metaPath)) rmSync(metaPath, { force: true })
+  if (existsSync(avatarPath)) rmSync(avatarPath, { force: true })
+  try {
+    if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
+  } catch { }
 }
