@@ -99,6 +99,23 @@ export async function pollTokenPlatformDeviceLoginStatus(
 }
 
 /**
+ * Build the WeChat qrconnect URL. Opening this URL in a new tab/page shows the
+ * real WeChat login QR (WeChat renders it server-side); the Hermes login page
+ * keeps polling the device-login status while the new tab handles the scan.
+ */
+export function buildWeChatQrConnectUrl(params: TokenPlatformDeviceLoginRequest): string {
+  return (
+    `https://open.weixin.qq.com/connect/qrconnect` +
+    `?appid=${encodeURIComponent(params.appid)}` +
+    `&scope=${encodeURIComponent(params.scope || 'snsapi_login')}` +
+    `&redirect_uri=${encodeURIComponent(params.redirect_uri)}` +
+    `&state=${encodeURIComponent(params.state)}` +
+    `&style=${encodeURIComponent(params.style || 'white')}` +
+    `&self_redirect=true`
+  )
+}
+
+/**
  * Complete the Hermes-side device login: validates the Token Platform device
  * key, provisions the local Hermes user, and returns a Hermes session token.
  */

@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { NButton, NSpin } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useMessage } from '@/composables/useAppMessage'
 import {
+  buildWeChatQrConnectUrl,
   pollTokenPlatformDeviceLoginStatus,
   requestTokenPlatformDeviceLogin,
   type TokenPlatformDeviceLoginStatus,
@@ -13,7 +14,6 @@ const { t } = useI18n()
 const message = useMessage()
 
 const HARDWARE_ID_KEY = 'hermes_device_hardware_id'
-const WXLOGIN_SCRIPT_ID = 'wxlogin-sdk-script'
 
 const emit = defineEmits<{
   approved: [result: Extract<TokenPlatformDeviceLoginStatus, { status: 'approved' }>]
@@ -21,15 +21,14 @@ const emit = defineEmits<{
 }>()
 
 const loading = ref(false)
+const qrUrl = ref('')
 const loginId = ref('')
 const polling = ref(false)
 const expired = ref(false)
 const errorMsg = ref('')
-const qrContainer = ref<HTMLDivElement | null>(null)
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let qrRequestId = 0
-let wxLoginInstance: { destroy?: () => void } | null = null
 
 function getHardwareId(): string {
   const existing = localStorage.getItem(HARDWARE_ID_KEY)
@@ -43,86 +42,37 @@ function deviceName(): string {
   return 'Hermes'
 }
 
-function loadWxLoginScript(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const existing = document.getElementById(WXLOGIN_SCRIPT_ID) as HTMLScriptElement | null
-    if (existing) {
-      if (existing.dataset.loaded === '1') {
-        resolve()
-        return
-      }
-      existing.addEventListener('load', () => resolve(), { once: true })
-      existing.addEventListener('error', () => reject(new Error('wxLogin.js load failed')), { once: true })
-      return
-    }
-    const script = document.createElement('script')
-    script.id = WXLOGIN_SCRIPT_ID
-    script.src = 'https://res.wx.qq.com/connect/zh_CN/htmledition/js/wxLogin.js'
-    script.async = true
-    script.onload = () => {
-      script.dataset.loaded = '1'
-      resolve()
-    }
-    script.onerror = () => reject(new Error('wxLogin.js load failed'))
-    document.head.appendChild(script)
-  })
-}
-
-function clearQrContainer() {
-  if (qrContainer.value) qrContainer.value.innerHTML = ''
-  if (wxLoginInstance?.destroy) {
-    try { wxLoginInstance.destroy() } catch { /* ignore */ }
-  }
-  wxLoginInstance = null
-}
-
-function createWxLogin(params: {
-  appid: string
-  scope?: string
-  state: string
-  redirect_uri: string
-  style?: string
-}) {
-  if (!qrContainer.value) return
-  const wxLogin = (window as any).WxLogin
-  if (!wxLogin) {
-    throw new Error('WxLogin SDK not available')
-  }
-  clearQrContainer()
-  wxLoginInstance = new wxLogin({
-    self_redirect: true, // 扫码后仅在二维码 iframe 内跳转 redirect_uri，保持 Hermes 页面不被替换
-    id: 'wechat-device-qr',
-    appid: params.appid,
-    scope: params.scope || 'snsapi_login',
-    redirect_uri: params.redirect_uri,
-    state: params.state,
-    style: params.style || 'white',
-    href: 'data:text/css;base64,' + window.btoa('.impowerBox .qrcode{width:220px;margin:0}'),
-  })
-}
-
 async function startScan() {
   loading.value = true
   errorMsg.value = ''
   expired.value = false
   const currentId = ++qrRequestId
   try {
-    await loadWxLoginScript()
-    if (currentId !== qrRequestId) return
     const params = await requestTokenPlatformDeviceLogin(
       getHardwareId(),
       deviceName(),
     )
     if (currentId !== qrRequestId) return
     loginId.value = params.login_id
-    await nextTick()
-    createWxLogin(params)
+    qrUrl.value = buildWeChatQrConnectUrl(params)
     startPolling(params.login_id)
+    openQrPage()
   } catch (err: any) {
     if (currentId !== qrRequestId) return
     errorMsg.value = err?.message || t('login.wechatQrFailed')
   } finally {
     if (currentId === qrRequestId) loading.value = false
+  }
+}
+
+// Open the WeChat login page (with the real QR) in a new tab. The Hermes login
+// page stays open and keeps polling the device-login status.
+function openQrPage() {
+  if (!qrUrl.value) return
+  const win = window.open(qrUrl.value, '_blank', 'noopener,noreferrer')
+  if (!win) {
+    // Popup blocked: show a manual link the user can click.
+    message.warning(t('login.wechatQrPopupBlocked'))
   }
 }
 
@@ -162,7 +112,7 @@ function stopPolling() {
 }
 
 function refresh() {
-  clearQrContainer()
+  qrUrl.value = ''
   void startScan()
 }
 
@@ -173,7 +123,6 @@ onMounted(() => {
 onBeforeUnmount(() => {
   qrRequestId++
   stopPolling()
-  clearQrContainer()
 })
 </script>
 
@@ -186,8 +135,18 @@ onBeforeUnmount(() => {
 
     <template v-else>
       <div v-if="!errorMsg" class="qr-wrap">
-        <div ref="qrContainer" id="wechat-device-qr" class="qr-container" />
-        <p class="qr-hint">{{ t('login.wechatQrHint') }}</p>
+        <div class="qr-guide">
+          <span class="qr-guide__icon">📱</span>
+          <p class="qr-guide__text">{{ t('login.wechatQrOpenedHint') }}</p>
+        </div>
+        <a
+          :href="qrUrl"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="qr-open-btn"
+        >
+          {{ t('login.wechatQrOpenPage') }}
+        </a>
         <div v-if="polling" class="qr-status">
           <span class="status-dot" />
           {{ t('login.wechatQrWaiting') }}
@@ -237,27 +196,47 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
 }
 
-.qr-container {
-  width: 220px;
-  height: 220px;
+.qr-guide {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 20px 24px;
+  border: 1px dashed $border-color;
   border-radius: $radius-sm;
-  border: 1px solid $border-color;
-  background: #fff;
-  overflow: hidden;
-
-  :deep(iframe) {
-    width: 220px;
-    height: 220px;
-  }
+  background: $bg-input;
 }
 
-.qr-hint {
+.qr-guide__icon {
+  font-size: 32px;
+}
+
+.qr-guide__text {
   margin: 0;
   font-size: 13px;
-  color: $text-muted;
+  color: $text-secondary;
+  text-align: center;
+  line-height: 1.6;
+}
+
+.qr-open-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 12px 20px;
+  border-radius: $radius-sm;
+  background: $accent-primary;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: opacity $transition-fast;
+
+  &:hover {
+    opacity: 0.92;
+  }
 }
 
 .qr-status {
