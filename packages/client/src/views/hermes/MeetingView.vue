@@ -14,6 +14,7 @@ import { getApiKey } from '@/api/client'
 import { useMessage } from '@/composables/useAppMessage'
 import { meetingStorageApi } from '@/utils/meeting-storage-api'
 import { buildReportHtml } from '@/utils/report-html'
+import { getProfileDisplayName } from '@/utils/hermes/profile-display'
 
 const { t } = useI18n()
 const message = useMessage()
@@ -285,7 +286,7 @@ const rightPanelStyle = computed(() => ({
 // --- 模型选择相关 ---
 const profileOptions = computed(() => {
   return profilesStore.profiles.map(p => ({
-    label: p.name,
+    label: getProfileDisplayName(p),
     value: p.name,
   }))
 })

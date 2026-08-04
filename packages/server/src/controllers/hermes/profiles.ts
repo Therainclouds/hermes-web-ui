@@ -2,7 +2,12 @@ import { createReadStream, existsSync, readFileSync, readdirSync, renameSync, rm
 import { mkdir, writeFile } from 'fs/promises'
 import { basename, join } from 'path'
 import { tmpdir } from 'os'
-import { getWebUiHome } from '../../config'
+import {
+  profileMetadataDir,
+  readProfileMeta,
+  readProfileAvatarMeta,
+  type ProfileAvatarMeta,
+} from '../../services/hermes/profile-metadata'
 import * as hermesCli from '../../services/hermes/hermes-cli'
 import { SessionDeleter } from '../../services/hermes/session-deleter'
 import { AgentBridgeClient } from '../../services/hermes/agent-bridge'
@@ -21,17 +26,10 @@ import { listUserProfiles } from '../../db/hermes/users-store'
 
 const bridgeCleanupClient = () => new AgentBridgeClient({ connectRetryMs: 0, timeoutMs: 5000 })
 
-interface ProfileAvatarMeta {
-  type: 'generated' | 'image'
-  seed?: string
-  file?: string
-  mime?: string
-  updatedAt?: number
-}
-
 interface ProfileAvatarResponse {
-  type: 'generated' | 'image'
+  type: 'generated' | 'image' | 'remote'
   seed?: string
+  url?: string
   dataUrl?: string
   updatedAt?: number
 }
@@ -193,15 +191,6 @@ function denyProfile(ctx: any, profileName: string): boolean {
   return true
 }
 
-function profileMetadataRoot(): string {
-  return join(getWebUiHome(), 'profile-metadata')
-}
-
-function profileMetadataDir(name: string): string {
-  const segment = Buffer.from(name || 'default', 'utf-8').toString('base64url')
-  return join(profileMetadataRoot(), segment)
-}
-
 function profileAvatarMetaPath(name: string): string {
   return join(profileMetadataDir(name), 'avatar.json')
 }
@@ -210,28 +199,21 @@ function profileAvatarImagePath(name: string, file = 'avatar.bin'): string {
   return join(profileMetadataDir(name), file)
 }
 
-/**
- * 读取 profile 元数据（显示名等），存储在 Web UI 独立元数据目录下
- */
-function readProfileMeta(name: string): { displayName?: string } {
-  const metaPath = join(profileMetadataDir(name), 'meta.json')
-  if (!existsSync(metaPath)) return {}
-  try {
-    return JSON.parse(readFileSync(metaPath, 'utf-8'))
-  } catch {
-    return {}
-  }
-}
-
 function readProfileAvatar(name: string): ProfileAvatarResponse | null {
-  const metaPath = profileAvatarMetaPath(name)
-  if (!existsSync(metaPath)) return null
+  const meta = readProfileAvatarMeta(name)
+  if (!meta) return null
   try {
-    const meta = JSON.parse(readFileSync(metaPath, 'utf-8')) as ProfileAvatarMeta
     if (meta.type === 'generated') {
       return {
         type: 'generated',
         seed: typeof meta.seed === 'string' ? meta.seed : name,
+        updatedAt: meta.updatedAt,
+      }
+    }
+    if (meta.type === 'remote' && meta.url) {
+      return {
+        type: 'remote',
+        url: meta.url,
         updatedAt: meta.updatedAt,
       }
     }
@@ -426,11 +408,27 @@ export async function list(ctx: any) {
       p.active = (p.name === activeProfileName)
     })
 
-    ctx.body = { profiles: attachProfileAvatars(profiles) }
+    ctx.body = { profiles: attachProfileAvatars(mergeProfileDisplayNames(profiles)) }
   } catch (err: any) {
     ctx.status = 500
     ctx.body = { error: err.message }
   }
+}
+
+/**
+ * Merge Web-UI displayName metadata (e.g. a WeChat name set at device login)
+ * into profiles returned by the Hermes CLI, which otherwise only knows the
+ * internal profile name.
+ */
+function mergeProfileDisplayNames<T extends HermesProfile>(profiles: T[]): T[] {
+  return profiles.map(profile => {
+    if (profile.displayName) return profile
+    const meta = readProfileMeta(profile.name)
+    if (meta.displayName) {
+      return { ...profile, displayName: meta.displayName }
+    }
+    return profile
+  })
 }
 
 export async function create(ctx: any) {
@@ -617,7 +615,7 @@ async function listProfilesForStatus(): Promise<HermesProfile[]> {
   } catch {
     profiles = listProfilesFromDisk(getActiveProfileName())
   }
-  return filterVisibleProfiles(profiles)
+  return filterVisibleProfiles(mergeProfileDisplayNames(profiles))
 }
 
 export async function restartGatewayForProfile(ctx: any) {

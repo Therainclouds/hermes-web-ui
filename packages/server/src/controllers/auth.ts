@@ -43,6 +43,12 @@ import {
   clearDeviceBinding,
   type DeviceBinding,
 } from '../services/device-binding'
+import {
+  setProfileDisplayName,
+  setProfileAvatarRemote,
+  setProfileAvatarGenerated,
+} from '../services/hermes/profile-metadata'
+import { getActiveProfileName } from '../services/hermes/hermes-profile'
 
 /**
  * GET /api/auth/status
@@ -422,6 +428,7 @@ export async function deviceLogin(ctx: Context) {
   touchUserLogin(user.id)
 
   const displayName = profile.display_name || profile.username || localUsername
+  syncProfileIdentity(displayName, profile.avatar_url)
   const binding: DeviceBinding = {
     device_id: String(deviceId ?? ''),
     api_base: apiBase,
@@ -446,6 +453,28 @@ export async function deviceLogin(ctx: Context) {
       device_id: binding.device_id,
       display_name: displayName,
     },
+  }
+}
+
+/**
+ * Reflect the Token Platform identity onto the active Hermes profile: the
+ * "default" agent profile is displayed by its internal name in the meeting,
+ * group chat, coding and profile selector surfaces. Writing the Web-UI
+ * displayName metadata (plus the WeChat avatar) makes every surface show the
+ * user's name instead of "default".
+ */
+function syncProfileIdentity(displayName: string, avatarUrl?: string | null): void {
+  // Apply to the active profile and the "default" agent profile, so the name
+  // shows up regardless of which profile the meeting/group-chat/coding surfaces
+  // are scoped to.
+  const names = new Set<string>([getActiveProfileName() || 'default', 'default'])
+  for (const profileName of names) {
+    setProfileDisplayName(profileName, displayName)
+    if (avatarUrl) {
+      setProfileAvatarRemote(profileName, avatarUrl)
+    } else {
+      setProfileAvatarGenerated(profileName, displayName)
+    }
   }
 }
 
@@ -515,6 +544,7 @@ export async function restoreDeviceLogin(ctx: Context) {
 
   const token = await issueUserJwt(user)
   touchUserLogin(user.id)
+  syncProfileIdentity(profile.display_name || profile.username || localUsername, profile.avatar_url)
   ctx.body = { token, user: { id: user.id, username: user.username, role: user.role } }
 }
 

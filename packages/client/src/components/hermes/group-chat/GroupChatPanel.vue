@@ -12,6 +12,7 @@ import FolderPicker from '@/components/hermes/chat/FolderPicker.vue'
 import ProfileAvatar from '@/components/hermes/profiles/ProfileAvatar.vue'
 import PageSidebarNav from '@/components/layout/PageSidebarNav.vue'
 import { copyToClipboard } from '@/utils/clipboard'
+import { getProfileDisplayName } from '@/utils/hermes/profile-display'
 import { useMessage } from '@/composables/useAppMessage'
 import type { Attachment } from '@/stores/hermes/chat'
 import type { RoomAgent, RoomInfo } from '@/api/hermes/group-chat'
@@ -48,7 +49,7 @@ const chatDropCounter = ref(0)
 const isChatDropActive = ref(false)
 
 const profileOptions = computed(() =>
-    profilesStore.profiles.map(p => ({ label: p.name, value: p.name }))
+    profilesStore.profiles.map(p => ({ label: getProfileDisplayName(p), value: p.name }))
 )
 
 function profileAvatarFor(profileName?: string) {

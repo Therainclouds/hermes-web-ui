@@ -23,6 +23,7 @@ import { useProfilesStore } from '@/stores/hermes/profiles'
 import TerminalPanel from '@/components/hermes/chat/TerminalPanel.vue'
 import { useMessage } from '@/composables/useAppMessage'
 import { isAuthModelProvider } from '@/utils/codingAgentProviders'
+import { getProfileDisplayName } from '@/utils/hermes/profile-display'
 
 type CodingAgentBlock = {
   id: CodingAgentId
@@ -139,6 +140,11 @@ const statusById = computed(() => {
 })
 
 const activeProfileName = computed(() => profilesStore.activeProfileName || 'default')
+
+const activeProfileDisplayName = computed(() => {
+  const profile = profilesStore.profiles.find(p => p.name === activeProfileName.value)
+  return getProfileDisplayName(profile) || activeProfileName.value
+})
 
 function isCodingAgentAuthProvider(provider: AvailableModelGroup) {
   return isAuthModelProvider(provider.provider)
@@ -572,7 +578,7 @@ onMounted(() => {
       <NSpin :show="launchLoading">
         <NForm label-placement="top">
           <NFormItem :label="t('codingAgents.profileScope')">
-            <NTag size="small">{{ activeProfileName }}</NTag>
+            <NTag size="small">{{ activeProfileDisplayName }}</NTag>
           </NFormItem>
           <NFormItem :label="t('codingAgents.launchModeScope')">
             <NRadioGroup
