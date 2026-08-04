@@ -13,6 +13,7 @@ import {
   getUserAvatar,
   listUserProfiles,
   listUsers,
+  replaceUserProfiles,
   setUserAvatar,
   touchUserLogin,
   updateUserModelGuideStatus,
@@ -401,13 +402,22 @@ export async function deviceLogin(ctx: Context) {
       })
     } else {
       // Device already configured locally: link a regular admin account.
+      // Bind the default agent profile so the user can access profile-scoped
+      // resources (profiles list, models, runtime status). Without this an
+      // admin with no bound profiles gets 403 everywhere.
       user = createUser({
         username: localUsername,
         password: randomUUID(),
         role: 'admin',
         status: 'active',
+        profiles: ['default'],
+        defaultProfile: 'default',
       })
     }
+  } else if (user.role !== 'super_admin' && listUserProfiles(user.id).length === 0) {
+    // A previously-provisioned device user without any profile binding: grant
+    // access to the default agent profile so login stays usable.
+    replaceUserProfiles(user.id, ['default'], 'default')
   }
   if (!user) {
     ctx.status = 500
@@ -540,6 +550,11 @@ export async function restoreDeviceLogin(ctx: Context) {
     ctx.status = 401
     ctx.body = { error: 'Bound local user no longer exists' }
     return
+  }
+
+  // Ensure a non-super-admin device user always has the default profile bound.
+  if (user.role !== 'super_admin' && listUserProfiles(user.id).length === 0) {
+    replaceUserProfiles(user.id, ['default'], 'default')
   }
 
   const token = await issueUserJwt(user)

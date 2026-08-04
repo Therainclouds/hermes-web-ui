@@ -135,6 +135,31 @@ describe('deviceLogin controller', () => {
     const created = users.findUserByUsername('tp_8')
     expect(created).not.toBeNull()
     expect(created!.role).toBe('admin')
+    // The device admin must be bound to the default profile so profile-scoped
+    // endpoints (models, profiles, runtime status) do not return 403.
+    const boundProfiles = users.listUserProfiles(created!.id).map(p => p.profile_name)
+    expect(boundProfiles).toContain('default')
+  })
+
+  it('grants the default profile to an existing admin that has no profile bindings', async () => {
+    const { ctrl, users } = await loadModules()
+    users.createUser({ username: 'tp_8', password: 'x', role: 'admin' })
+    expect(users.listUserProfiles(users.findUserByUsername('tp_8')!.id)).toHaveLength(0)
+
+    fetchDeviceSelfMock.mockResolvedValue({ id: 8, username: 'wechat_8', display_name: '新用户' })
+    verifyDeviceApiKeyMock.mockResolvedValue(['claude-3-5-sonnet'])
+
+    const ctx = makeCtx({
+      api_base: 'https://api.quantclaw.vip',
+      api_key: 'sk-good-2',
+      device_id: 43,
+    })
+    await ctrl.deviceLogin(ctx)
+
+    expect(ctx.status).toBe(200)
+    const created = users.findUserByUsername('tp_8')
+    const boundProfiles = users.listUserProfiles(created!.id).map(p => p.profile_name)
+    expect(boundProfiles).toContain('default')
   })
 
   it('reuses an existing local user bound to the same Token Platform id', async () => {
