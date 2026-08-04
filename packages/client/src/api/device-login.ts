@@ -4,8 +4,10 @@ export interface TokenPlatformDeviceLoginRequest {
   login_id: string
   expires_at: number
   appid: string
+  scope?: string
   state: string
   redirect_uri: string
+  style?: string
 }
 
 export type TokenPlatformDeviceLoginStatus =
@@ -94,20 +96,6 @@ export async function pollTokenPlatformDeviceLoginStatus(
     throw new Error(data?.message || 'Failed to poll device login status')
   }
   return data.data
-}
-
-/**
- * Build the WeChat qrconnect URL the device should render as a QR image.
- */
-export function buildWeChatQrConnectUrl(params: TokenPlatformDeviceLoginRequest): string {
-  return (
-    `https://open.weixin.qq.com/connect/qrconnect` +
-    `?appid=${encodeURIComponent(params.appid)}` +
-    `&scope=snsapi_login` +
-    `&redirect_uri=${encodeURIComponent(params.redirect_uri)}` +
-    `&state=${encodeURIComponent(params.state)}` +
-    `&style=white&self_redirect=true`
-  )
 }
 
 /**

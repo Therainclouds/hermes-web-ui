@@ -175,4 +175,49 @@ describe('deviceLogin controller', () => {
       models: ['gpt-4o', 'gpt-4o-mini'],
     }))
   })
+
+  it('syncs the WeChat avatar url and display name onto the local user', async () => {
+    fetchDeviceSelfMock.mockResolvedValue({
+      id: 11,
+      username: 'wechat_11',
+      display_name: '微信用户甲',
+      avatar_url: 'https://thirdwx.qlogo.cn/mmopen/xxx',
+    })
+    verifyDeviceApiKeyMock.mockResolvedValue(['gpt-4o'])
+
+    const { ctrl, users } = await loadModules()
+    const ctx = makeCtx({
+      api_base: 'https://api.quantclaw.vip',
+      api_key: 'sk-good-5',
+      device_id: 46,
+    })
+    await ctrl.deviceLogin(ctx)
+
+    expect(ctx.status).toBe(200)
+    const created = users.findUserByUsername('tp_11')
+    expect(created).not.toBeNull()
+    const avatar = JSON.parse(users.getUserAvatar(created!.id))
+    expect(avatar.type).toBe('image')
+    expect(avatar.dataUrl).toBe('https://thirdwx.qlogo.cn/mmopen/xxx')
+  })
+
+  it('falls back to a seeded multiavatar when no avatar url is present', async () => {
+    fetchDeviceSelfMock.mockResolvedValue({ id: 12, username: 'wechat_12', display_name: '微信用户乙' })
+    verifyDeviceApiKeyMock.mockResolvedValue(['gpt-4o'])
+
+    const { ctrl, users } = await loadModules()
+    const ctx = makeCtx({
+      api_base: 'https://api.quantclaw.vip',
+      api_key: 'sk-good-6',
+      device_id: 47,
+    })
+    await ctrl.deviceLogin(ctx)
+
+    expect(ctx.status).toBe(200)
+    const created = users.findUserByUsername('tp_12')
+    expect(created).not.toBeNull()
+    const avatar = JSON.parse(users.getUserAvatar(created!.id))
+    expect(avatar.type).toBe('default')
+    expect(avatar.seed).toBe('微信用户乙')
+  })
 })

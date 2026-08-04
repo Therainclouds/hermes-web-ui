@@ -33,6 +33,7 @@ export interface TokenPlatformUserProfile {
   id: number
   username: string
   display_name?: string
+  avatar_url?: string
   role?: number
   status?: number
   email?: string

@@ -1,11 +1,9 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { NButton, NSpin } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import QRCode from 'qrcode'
 import { useMessage } from '@/composables/useAppMessage'
 import {
-  buildWeChatQrConnectUrl,
   pollTokenPlatformDeviceLoginStatus,
   requestTokenPlatformDeviceLogin,
   type TokenPlatformDeviceLoginStatus,
@@ -15,6 +13,7 @@ const { t } = useI18n()
 const message = useMessage()
 
 const HARDWARE_ID_KEY = 'hermes_device_hardware_id'
+const WXLOGIN_SCRIPT_ID = 'wxlogin-sdk-script'
 
 const emit = defineEmits<{
   approved: [result: Extract<TokenPlatformDeviceLoginStatus, { status: 'approved' }>]
@@ -22,14 +21,15 @@ const emit = defineEmits<{
 }>()
 
 const loading = ref(false)
-const qrImage = ref('')
 const loginId = ref('')
 const polling = ref(false)
 const expired = ref(false)
 const errorMsg = ref('')
+const qrContainer = ref<HTMLDivElement | null>(null)
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let qrRequestId = 0
+let wxLoginInstance: { destroy?: () => void } | null = null
 
 function getHardwareId(): string {
   const existing = localStorage.getItem(HARDWARE_ID_KEY)
@@ -43,22 +43,80 @@ function deviceName(): string {
   return 'Hermes'
 }
 
+function loadWxLoginScript(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const existing = document.getElementById(WXLOGIN_SCRIPT_ID) as HTMLScriptElement | null
+    if (existing) {
+      if (existing.dataset.loaded === '1') {
+        resolve()
+        return
+      }
+      existing.addEventListener('load', () => resolve(), { once: true })
+      existing.addEventListener('error', () => reject(new Error('wxLogin.js load failed')), { once: true })
+      return
+    }
+    const script = document.createElement('script')
+    script.id = WXLOGIN_SCRIPT_ID
+    script.src = 'https://res.wx.qq.com/connect/zh_CN/htmledition/js/wxLogin.js'
+    script.async = true
+    script.onload = () => {
+      script.dataset.loaded = '1'
+      resolve()
+    }
+    script.onerror = () => reject(new Error('wxLogin.js load failed'))
+    document.head.appendChild(script)
+  })
+}
+
+function clearQrContainer() {
+  if (qrContainer.value) qrContainer.value.innerHTML = ''
+  if (wxLoginInstance?.destroy) {
+    try { wxLoginInstance.destroy() } catch { /* ignore */ }
+  }
+  wxLoginInstance = null
+}
+
+function createWxLogin(params: {
+  appid: string
+  scope?: string
+  state: string
+  redirect_uri: string
+  style?: string
+}) {
+  if (!qrContainer.value) return
+  const wxLogin = (window as any).WxLogin
+  if (!wxLogin) {
+    throw new Error('WxLogin SDK not available')
+  }
+  clearQrContainer()
+  wxLoginInstance = new wxLogin({
+    self_redirect: true, // 扫码后仅在二维码 iframe 内跳转 redirect_uri，保持 Hermes 页面不被替换
+    id: 'wechat-device-qr',
+    appid: params.appid,
+    scope: params.scope || 'snsapi_login',
+    redirect_uri: params.redirect_uri,
+    state: params.state,
+    style: params.style || 'white',
+    href: 'data:text/css;base64,' + window.btoa('.impowerBox .qrcode{width:220px;margin:0}'),
+  })
+}
+
 async function startScan() {
   loading.value = true
   errorMsg.value = ''
   expired.value = false
   const currentId = ++qrRequestId
   try {
+    await loadWxLoginScript()
+    if (currentId !== qrRequestId) return
     const params = await requestTokenPlatformDeviceLogin(
       getHardwareId(),
       deviceName(),
     )
     if (currentId !== qrRequestId) return
     loginId.value = params.login_id
-    qrImage.value = await QRCode.toDataURL(buildWeChatQrConnectUrl(params), {
-      width: 220,
-      margin: 1,
-    })
+    await nextTick()
+    createWxLogin(params)
     startPolling(params.login_id)
   } catch (err: any) {
     if (currentId !== qrRequestId) return
@@ -104,7 +162,7 @@ function stopPolling() {
 }
 
 function refresh() {
-  qrImage.value = ''
+  clearQrContainer()
   void startScan()
 }
 
@@ -115,6 +173,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   qrRequestId++
   stopPolling()
+  clearQrContainer()
 })
 </script>
 
@@ -126,8 +185,8 @@ onBeforeUnmount(() => {
     </div>
 
     <template v-else>
-      <div v-if="qrImage" class="qr-wrap">
-        <img :src="qrImage" alt="WeChat QR" class="qr-img" />
+      <div v-if="!errorMsg" class="qr-wrap">
+        <div ref="qrContainer" id="wechat-device-qr" class="qr-container" />
         <p class="qr-hint">{{ t('login.wechatQrHint') }}</p>
         <div v-if="polling" class="qr-status">
           <span class="status-dot" />
@@ -146,7 +205,7 @@ onBeforeUnmount(() => {
         </NButton>
       </div>
 
-      <div v-else-if="errorMsg" class="qr-error">
+      <div v-else class="qr-error">
         <p>{{ errorMsg }}</p>
         <NButton size="small" @click="refresh">{{ t('login.wechatQrRefresh') }}</NButton>
       </div>
@@ -181,11 +240,18 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
-.qr-img {
+.qr-container {
   width: 220px;
   height: 220px;
   border-radius: $radius-sm;
   border: 1px solid $border-color;
+  background: #fff;
+  overflow: hidden;
+
+  :deep(iframe) {
+    width: 220px;
+    height: 220px;
+  }
 }
 
 .qr-hint {

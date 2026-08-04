@@ -409,11 +409,13 @@ export async function deviceLogin(ctx: Context) {
     return
   }
 
-  if (profile.display_name) {
-    setUserAvatar(user.id, JSON.stringify({
-      type: 'default',
-      seed: profile.display_name,
-    }))
+  if (profile.display_name || profile.avatar_url) {
+    // Sync the WeChat avatar/name onto the local user: use the real avatar URL
+    // when present (rendered as an <img>), otherwise fall back to a seeded
+    // multiavatar derived from the display name.
+    setUserAvatar(user.id, profile.avatar_url
+      ? JSON.stringify({ type: 'image', dataUrl: profile.avatar_url, seed: profile.display_name || '' })
+      : JSON.stringify({ type: 'default', seed: profile.display_name || '' }))
   }
 
   const token = await issueUserJwt(user)
