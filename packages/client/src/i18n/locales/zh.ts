@@ -133,6 +133,9 @@ export default {
     newPasswordOptional: '新密码（留空不修改）',
     loadFailed: '用户列表加载失败',
     deleteConfirm: '确认删除该用户？',
+    export: '导出',
+    exportSuccess: '已导出用户 {username}',
+    exportFailed: '导出用户失败',
     enable: '启用',
     disable: '禁用',
     roles: {
@@ -1743,6 +1746,9 @@ export default {
     title: '设置',
     saved: '已保存',
     saveFailed: '保存失败',
+    setAccountPassword: '设置账号密码',
+    setAccountPasswordHint: '设置后可在此账号页面用用户名和密码登录；忘记密码时可重新微信扫码登录后再设置。',
+    passwordSet: '账号密码已设置',
     tabs: {
       display: '显示',
       account: '当前账户',

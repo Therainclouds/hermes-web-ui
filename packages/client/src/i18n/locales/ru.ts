@@ -97,6 +97,9 @@ export default {
     newPasswordOptional: 'Новый пароль (оставьте пустым, чтобы не менять)',
     loadFailed: 'Не удалось загрузить список пользователей',
     deleteConfirm: 'Подтвердите удаление этого пользователя?',
+    export: 'Export',
+    exportSuccess: 'Exported user {username}',
+    exportFailed: 'Failed to export user',
     enable: 'Включить',
     disable: 'Отключить',
     roles: {
@@ -1447,6 +1450,9 @@ export default {
     title: 'Настройки',
     saved: 'Сохранено',
     saveFailed: 'Ошибка сохранения',
+    setAccountPassword: 'Set Account Password',
+    setAccountPasswordHint: 'Once set, you can sign in with your username and password. Forgot it? Re-scan with WeChat and set a new one.',
+    passwordSet: 'Account password set',
     tabs: {
       display: 'Отображение',
       account: 'Текущий аккаунт',

@@ -833,6 +833,47 @@ export async function changePassword(ctx: Context) {
 }
 
 /**
+ * POST /api/auth/set-password
+ * Set or reset the current user's password without requiring the current
+ * password.
+ *
+ * Identity is already established by the caller (JWT issued after a WeChat
+ * scan login, or a normal password login). This lets WeChat device users set
+ * their own account password for the first time, or reset it after forgetting
+ * it by re-scanning with WeChat.
+ */
+export async function setPassword(ctx: Context) {
+  const { newPassword } = ctx.request.body as { newPassword?: unknown }
+  if (typeof newPassword !== 'string' || !newPassword) {
+    ctx.status = 400
+    ctx.body = { error: 'New password is required' }
+    return
+  }
+  if (newPassword.length < 6) {
+    ctx.status = 400
+    ctx.body = { error: 'New password must be at least 6 characters' }
+    return
+  }
+
+  const userId = ctx.state.user?.id
+  if (!userId) {
+    ctx.status = 401
+    ctx.body = { error: 'Unauthorized' }
+    return
+  }
+
+  const user = findUserById(userId)
+  if (!user) {
+    ctx.status = 404
+    ctx.body = { error: 'User not found' }
+    return
+  }
+
+  updateUserPassword(user.id, newPassword)
+  ctx.body = { success: true }
+}
+
+/**
  * POST /api/auth/change-username
  * Change username (protected).
  */
@@ -904,6 +945,48 @@ export async function listManagedUsers(ctx: Context) {
   ctx.body = {
     users: listUsers(),
     profiles: listProfileNamesFromDisk(),
+  }
+}
+
+/**
+ * GET /api/auth/users/:id/export
+ * Export a single user account as JSON (super admin only). Used by the user
+ * management table to back up an individual account's identity and profile
+ * bindings. The password hash is deliberately excluded.
+ */
+export async function exportManagedUser(ctx: Context) {
+  const rawId = String(ctx.params.id || '')
+  const user = findUserById(rawId)
+  if (!user) {
+    ctx.status = 404
+    ctx.body = { error: 'User not found' }
+    return
+  }
+
+  const profiles = listUserProfiles(user.id)
+  const avatarRaw = getUserAvatar(user.id)
+  let avatar: unknown = null
+  if (avatarRaw) {
+    try {
+      avatar = JSON.parse(avatarRaw)
+    } catch {
+      avatar = avatarRaw
+    }
+  }
+
+  ctx.body = {
+    exported_at: Date.now(),
+    user: {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+      status: user.status,
+      profiles: profiles.map(p => p.profile_name),
+      default_profile: profiles.find(p => p.is_default === 1)?.profile_name || null,
+      created_at: user.created_at,
+      last_login_at: user.last_login_at,
+      avatar,
+    },
   }
 }
 

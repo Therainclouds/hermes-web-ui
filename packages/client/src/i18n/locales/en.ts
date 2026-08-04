@@ -133,6 +133,9 @@ export default {
     newPasswordOptional: 'New Password (leave blank to keep)',
     loadFailed: 'Failed to load users',
     deleteConfirm: 'Delete this user?',
+    export: 'Export',
+    exportSuccess: 'Exported user {username}',
+    exportFailed: 'Failed to export user',
     enable: 'Enable',
     disable: 'Disable',
     roles: {
@@ -1751,6 +1754,9 @@ export default {
     title: 'Settings',
     saved: 'Saved',
     saveFailed: 'Save failed',
+    setAccountPassword: 'Set Account Password',
+    setAccountPasswordHint: 'Once set, you can sign in with your username and password. Forgot it? Re-scan with WeChat and set a new one.',
+    passwordSet: 'Account password set',
     tabs: {
       display: 'Display',
       account: 'Current Account',

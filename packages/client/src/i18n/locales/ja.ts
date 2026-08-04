@@ -97,6 +97,9 @@ export default {
     newPasswordOptional: '新しいパスワード（空欄なら変更なし）',
     loadFailed: 'ユーザー一覧の読み込みに失敗しました',
     deleteConfirm: 'このユーザーを削除しますか？',
+    export: 'Export',
+    exportSuccess: 'Exported user {username}',
+    exportFailed: 'Failed to export user',
     enable: '有効化',
     disable: '無効化',
     roles: {
@@ -1326,6 +1329,9 @@ export default {
     title: '設定',
     saved: '保存しました',
     saveFailed: '保存に失敗しました',
+    setAccountPassword: 'Set Account Password',
+    setAccountPasswordHint: 'Once set, you can sign in with your username and password. Forgot it? Re-scan with WeChat and set a new one.',
+    passwordSet: 'Account password set',
     tabs: {
       display: '表示',
       account: '現在のアカウント',

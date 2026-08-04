@@ -3,7 +3,7 @@ import { ref, onMounted } from "vue";
 import { NButton, NInput, NModal, NForm, NFormItem, NPopconfirm } from "naive-ui";
 import { useMessage } from "@/composables/useAppMessage";
 import { useI18n } from "vue-i18n";
-import { changePassword, changeUsername, fetchCurrentUser, fetchLockedIps, unlockSpecificIp, unlockAllIps, fetchMyAvatar, updateMyAvatar, resetMyAvatar } from "@/api/auth";
+import { changePassword, changeUsername, setPassword, fetchCurrentUser, fetchLockedIps, unlockSpecificIp, unlockAllIps, fetchMyAvatar, updateMyAvatar, resetMyAvatar } from "@/api/auth";
 import type { LockedIp, UserAvatar } from "@/api/auth";
 import ProfileAvatar from "@/components/hermes/profiles/ProfileAvatar.vue";
 import multiavatar from "@multiavatar/multiavatar";
@@ -121,6 +121,12 @@ const currentPasswordForPwd = ref("");
 const newPasswordVal = ref("");
 const newPasswordConfirm = ref("");
 
+// Set password form (WeChat device users: no current password required)
+const showSetPasswordModal = ref(false);
+const setNewPasswordVal = ref("");
+const setNewPasswordConfirm = ref("");
+const isWeChatDeviceUser = ref(false);
+
 // Change username form
 const showChangeUsernameModal = ref(false);
 const currentPasswordForName = ref("");
@@ -130,6 +136,7 @@ onMounted(async () => {
   try {
     const user = await fetchCurrentUser();
     username.value = user.username;
+    isWeChatDeviceUser.value = user.username.startsWith("tp_");
   } catch { /* ignore */ }
   try {
     const av = await fetchMyAvatar();
@@ -186,6 +193,35 @@ function openChangePasswordModal() {
   newPasswordVal.value = "";
   newPasswordConfirm.value = "";
   showChangePasswordModal.value = true;
+}
+
+function openSetPasswordModal() {
+  setNewPasswordVal.value = "";
+  setNewPasswordConfirm.value = "";
+  showSetPasswordModal.value = true;
+}
+
+async function handleSetPassword() {
+  if (setNewPasswordVal.value !== setNewPasswordConfirm.value) {
+    message.error(t("login.passwordMismatch"));
+    return;
+  }
+  if (setNewPasswordVal.value.length < 6) {
+    message.error(t("login.passwordTooShort"));
+    return;
+  }
+  loading.value = true;
+  try {
+    await setPassword(setNewPasswordVal.value);
+    showSetPasswordModal.value = false;
+    setNewPasswordVal.value = "";
+    setNewPasswordConfirm.value = "";
+    message.success(t("settings.passwordSet"));
+  } catch (err: any) {
+    message.error(err.message || t("common.saveFailed"));
+  } finally {
+    loading.value = false;
+  }
 }
 
 function openChangeUsernameModal() {
@@ -277,10 +313,12 @@ onMounted(() => { loadLockedIps(); });
       <div class="action-row">
         <span class="action-label">{{ t("login.passwordLoginConfigured", { username }) }}</span>
         <div class="action-buttons">
+          <NButton v-if="isWeChatDeviceUser" type="primary" @click="openSetPasswordModal">{{ t("settings.setAccountPassword") }}</NButton>
           <NButton @click="openChangePasswordModal">{{ t("login.changePassword") }}</NButton>
           <NButton @click="openChangeUsernameModal">{{ t("login.changeUsername") }}</NButton>
         </div>
       </div>
+      <p v-if="isWeChatDeviceUser" class="set-password-hint">{{ t("settings.setAccountPasswordHint") }}</p>
     </div>
 
     <!-- Locked IPs management -->
@@ -327,6 +365,22 @@ onMounted(() => { loadLockedIps(); });
       <template #action>
         <NButton @click="showChangePasswordModal = false">{{ t("common.cancel") }}</NButton>
         <NButton type="primary" :loading="loading" @click="handleChangePassword">{{ t("common.save") }}</NButton>
+      </template>
+    </NModal>
+
+    <!-- Set password modal (WeChat device user, no current password) -->
+    <NModal v-model:show="showSetPasswordModal" preset="dialog" :title="t('settings.setAccountPassword')">
+      <NForm label-placement="top">
+        <NFormItem :label="t('login.newPassword')">
+          <NInput v-model:value="setNewPasswordVal" type="password" show-password-on="click" :placeholder="t('login.newPassword')" />
+        </NFormItem>
+        <NFormItem :label="t('login.confirmPassword')">
+          <NInput v-model:value="setNewPasswordConfirm" type="password" show-password-on="click" :placeholder="t('login.confirmPassword')" @keyup.enter="handleSetPassword" />
+        </NFormItem>
+      </NForm>
+      <template #action>
+        <NButton @click="showSetPasswordModal = false">{{ t("common.cancel") }}</NButton>
+        <NButton type="primary" :loading="loading" @click="handleSetPassword">{{ t("common.save") }}</NButton>
       </template>
     </NModal>
 
@@ -378,6 +432,12 @@ onMounted(() => { loadLockedIps(); });
   display: flex;
   gap: 8px;
   flex-shrink: 0;
+}
+
+.set-password-hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: $text-muted;
 }
 
 .locked-ips-section {

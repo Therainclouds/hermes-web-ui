@@ -97,6 +97,9 @@ export default {
     newPasswordOptional: '新密碼（留空不修改）',
     loadFailed: '使用者列表載入失敗',
     deleteConfirm: '確認刪除此使用者？',
+    export: 'Export',
+    exportSuccess: 'Exported user {username}',
+    exportFailed: 'Failed to export user',
     enable: '啟用',
     disable: '停用',
     roles: {
@@ -1609,6 +1612,9 @@ export default {
     title: '設定',
     saved: '已儲存',
     saveFailed: '儲存失敗',
+    setAccountPassword: 'Set Account Password',
+    setAccountPasswordHint: 'Once set, you can sign in with your username and password. Forgot it? Re-scan with WeChat and set a new one.',
+    passwordSet: 'Account password set',
     tabs: {
       display: '顯示',
       account: '目前帳號',

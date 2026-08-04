@@ -384,4 +384,87 @@ describe('deviceLogin controller', () => {
       expect(ctx.body).toEqual({ error: 'Unauthorized' })
     })
   })
+
+  describe('setPassword', () => {
+    function makeAuthedCtx(body: Record<string, unknown>, user: { id: number; username: string; role: string }) {
+      const ctx = makeCtx(body) as any
+      ctx.state = { user }
+      return ctx
+    }
+
+    it('sets the password for the current user without requiring the current password', async () => {
+      const { ctrl, users } = await loadModules()
+      const user = users.createUser({ username: 'tp_40', password: 'old-pass', role: 'admin' })
+
+      const ctx = makeAuthedCtx({ newPassword: 'brand-new-pass' }, { id: user!.id, username: 'tp_40', role: 'admin' })
+      await ctrl.setPassword(ctx)
+
+      expect(ctx.status).toBe(200)
+      expect(ctx.body).toEqual({ success: true })
+      expect(users.verifyPassword('brand-new-pass', users.findUserById(user!.id)!.password_hash)).toBe(true)
+      expect(users.verifyPassword('old-pass', users.findUserById(user!.id)!.password_hash)).toBe(false)
+    })
+
+    it('rejects a password shorter than 6 characters', async () => {
+      const { ctrl, users } = await loadModules()
+      const user = users.createUser({ username: 'tp_41', password: 'old-pass', role: 'admin' })
+
+      const ctx = makeAuthedCtx({ newPassword: '123' }, { id: user!.id, username: 'tp_41', role: 'admin' })
+      await ctrl.setPassword(ctx)
+
+      expect(ctx.status).toBe(400)
+      expect(ctx.body).toEqual({ error: 'New password must be at least 6 characters' })
+    })
+
+    it('requires a new password', async () => {
+      const { ctrl, users } = await loadModules()
+      const user = users.createUser({ username: 'tp_42', password: 'old-pass', role: 'admin' })
+
+      const ctx = makeAuthedCtx({}, { id: user!.id, username: 'tp_42', role: 'admin' })
+      await ctrl.setPassword(ctx)
+
+      expect(ctx.status).toBe(400)
+      expect(ctx.body).toEqual({ error: 'New password is required' })
+    })
+
+    it('requires an authenticated user', async () => {
+      const { ctrl } = await loadModules()
+      const ctx = makeCtx({ newPassword: 'brand-new-pass' }) as any
+      ctx.state = { user: null }
+      await ctrl.setPassword(ctx)
+
+      expect(ctx.status).toBe(401)
+      expect(ctx.body).toEqual({ error: 'Unauthorized' })
+    })
+  })
+
+  describe('exportManagedUser', () => {
+    it('exports a single user as JSON without the password hash', async () => {
+      const { ctrl, users } = await loadModules()
+      users.createDefaultSuperAdmin()
+      const admin = users.createUser({ username: 'tp_50', password: 'x', role: 'admin', profiles: ['default'] })
+
+      const ctx = makeCtx({}) as any
+      ctx.params = { id: String(admin!.id) }
+      ctx.state = { user: { id: 1, username: DEFAULT_USERNAME, role: 'super_admin' } }
+      await ctrl.exportManagedUser(ctx)
+
+      expect(ctx.status).toBe(200)
+      expect(ctx.body.user.username).toBe('tp_50')
+      expect(ctx.body.user.role).toBe('admin')
+      expect(ctx.body.user.profiles).toContain('default')
+      expect(ctx.body.user.password_hash).toBeUndefined()
+    })
+
+    it('returns 404 for an unknown user', async () => {
+      const { ctrl } = await loadModules()
+      const ctx = makeCtx({}) as any
+      ctx.params = { id: '99999' }
+      ctx.state = { user: { id: 1, username: DEFAULT_USERNAME, role: 'super_admin' } }
+      await ctrl.exportManagedUser(ctx)
+
+      expect(ctx.status).toBe(404)
+      expect(ctx.body).toEqual({ error: 'User not found' })
+    })
+  })
 })

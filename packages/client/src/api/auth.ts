@@ -132,6 +132,38 @@ export async function changePassword(currentPassword: string, newPassword: strin
   })
 }
 
+/**
+ * Set or reset the current user's password without requiring the current
+ * password. Identity is already established by the session (e.g. WeChat scan
+ * login), so this lets device users set their own account password for the
+ * first time or reset it after forgetting it.
+ */
+export async function setPassword(newPassword: string): Promise<void> {
+  return request('/api/auth/set-password', {
+    method: 'POST',
+    body: JSON.stringify({ newPassword }),
+  })
+}
+
+export interface ManagedUserExport {
+  exported_at: number
+  user: {
+    id: number
+    username: string
+    role: UserRole
+    status: UserStatus
+    profiles: string[]
+    default_profile: string | null
+    created_at: number
+    last_login_at: number | null
+    avatar: unknown
+  }
+}
+
+export async function exportManagedUser(id: number): Promise<ManagedUserExport> {
+  return request<ManagedUserExport>(`/api/auth/users/${id}/export`)
+}
+
 export async function changeUsername(currentPassword: string, newUsername: string): Promise<void> {
   return request('/api/auth/change-username', {
     method: 'POST',

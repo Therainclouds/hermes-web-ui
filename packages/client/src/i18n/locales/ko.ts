@@ -97,6 +97,9 @@ export default {
     newPasswordOptional: '새 비밀번호 (비워두면 유지)',
     loadFailed: '사용자 목록을 불러오지 못했습니다',
     deleteConfirm: '이 사용자를 삭제하시겠습니까?',
+    export: 'Export',
+    exportSuccess: 'Exported user {username}',
+    exportFailed: 'Failed to export user',
     enable: '활성화',
     disable: '비활성화',
     roles: {
@@ -1326,6 +1329,9 @@ export default {
     title: '설정',
     saved: '저장됨',
     saveFailed: '저장 실패',
+    setAccountPassword: 'Set Account Password',
+    setAccountPasswordHint: 'Once set, you can sign in with your username and password. Forgot it? Re-scan with WeChat and set a new one.',
+    passwordSet: 'Account password set',
     tabs: {
       display: '표시',
       account: '현재 계정',
