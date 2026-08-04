@@ -168,6 +168,35 @@ hermes-web-ui reset-default-login
 
 When the login page reports that the IP is locked (HTTP 429/503), the same operations are available directly in the UI as two buttons — "Clear Login Lock" and "Reset Default Password" — protected by a single shared recovery password. By default the recovery password equals the shipped default admin password (`12345678`); override it with the `HERMES_WEB_UI_RECOVERY_PASSWORD` environment variable to use an independent value.
 
+### Device QR Login (Token Platform)
+
+Hardware Hermes devices (QuantClaw, 量迹龙虾盒子, etc.) can bind themselves to a [Token Platform](https://api.quantclaw.vip) account on first boot by scanning a WeChat QR code — no manual username/password typing on the device. Once bound, the device holds a dedicated API key + model whitelist and the binding is restored on every subsequent boot.
+
+Flow:
+
+1. Device boots for the first time and the LoginView renders a WeChat QR (`WeChatQrPanel.vue`).
+2. The BFF calls Token Platform `POST /api/device-login/request` with the device's stable `hardware_id` (a random UUID persisted under `HERMES_WEB_UI_HOME/device-id`, regenerated only if missing) and receives `{appid, state, redirect_uri}`.
+3. User scans the QR with WeChat and confirms on the phone.
+4. The device polls `GET /api/device-login/status?login_id=..`; on approval Token Platform returns `{api_base, api_key, models, device_id}` (one-shot, `KeyDelivered` flag prevents leak).
+5. The BFF (`POST /api/auth/device-login`) validates the device API key via `verifyDeviceApiKey`, resolves the bound user profile, auto-bootstraps a local `admin` super admin on first run, issues a Hermes JWT, and persists the binding to `${HERMES_WEB_UI_HOME}/device-binding.json` (`api_base / api_key / models / display_name / username / bound_at / expires_at`).
+6. On later boots, `useDeviceBinding` reads `device-binding.json` and calls `POST /api/auth/device-login/restore` to re-issue a Hermes JWT without re-scanning.
+
+Configuration:
+
+- `TOKEN_PLATFORM_BASE_URL` (default `https://api.quantclaw.vip`) — Token Platform base URL.
+- `HERMES_WEB_UI_HOME` — directory holding `device-id` and `device-binding.json`.
+
+Endpoints (Web UI BFF):
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| `POST` | `/api/auth/device-login` | none | Complete WeChat-scan login with `{api_base, api_key, device_id, device_name, models}`. |
+| `POST` | `/api/auth/device-login/restore` | none | Re-issue JWT from a persisted `device-binding.json` on later boots. |
+| `GET`  | `/api/auth/device-binding` | required | Read the currently persisted binding. |
+| `DELETE` | `/api/auth/device-binding` | required | Clear the binding so the next boot shows the QR panel again. |
+
+Unbind from the UI: **Settings → Device Binding → Unbind**, or call `DELETE /api/auth/device-binding`. Unbinding only clears the local binding file; the Token Platform account and its device API key remain active until you remove the device from `https://api.quantclaw.vip`.
+
 ### Settings
 
 - Display (streaming, compact mode, reasoning, cost display)
