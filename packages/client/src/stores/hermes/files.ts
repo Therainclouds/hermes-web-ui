@@ -4,6 +4,7 @@ import * as filesApi from '@/api/hermes/files'
 import {
   copySessionWorkspaceFile,
   deleteSessionWorkspaceFile,
+  fetchSessionWorkspaceFileText,
   listSessionWorkspaceFiles,
   mkdirSessionWorkspaceFile,
   readSessionWorkspaceFile,
@@ -11,106 +12,27 @@ import {
   writeSessionWorkspaceFile,
 } from '@/api/hermes/sessions'
 import type { FileEntry } from '@/api/hermes/files'
+import {
+  copyGroupWorkspaceFile,
+  deleteGroupWorkspaceFile,
+  fetchGroupWorkspaceFileText,
+  listGroupWorkspaceFiles,
+  mkdirGroupWorkspaceFile,
+  readGroupWorkspaceFile,
+  renameGroupWorkspaceFile,
+  writeGroupWorkspaceFile,
+} from '@/api/hermes/group-chat'
+import {
+  getFilePreviewKind,
+  getTextPreviewLanguage,
+  type FilePreviewKind,
+} from '@/utils/hermes/file-preview'
+import { fetchAuthenticatedBlob } from '@/api/hermes/binary-content'
 
-const EXT_LANG_MAP: Record<string, string> = {
-  '.js': 'javascript', '.jsx': 'javascript',
-  '.ts': 'typescript', '.tsx': 'typescript',
-  '.json': 'json', '.jsonc': 'json',
-  '.html': 'html', '.htm': 'html',
-  '.css': 'css', '.scss': 'scss', '.less': 'less',
-  '.md': 'markdown', '.markdown': 'markdown',
-  '.py': 'python',
-  '.yaml': 'yaml', '.yml': 'yaml',
-  '.xml': 'xml',
-  '.sh': 'shell', '.bash': 'shell', '.zsh': 'shell',
-  '.sql': 'sql',
-  '.go': 'go',
-  '.rs': 'rust',
-  '.java': 'java',
-  '.c': 'c', '.h': 'c',
-  '.cpp': 'cpp', '.hpp': 'cpp',
-  '.toml': 'ini',
-  '.ini': 'ini',
-  '.env': 'ini',
-  '.vue': 'html',
-  '.dockerfile': 'dockerfile',
-  '.graphql': 'graphql',
-  '.lua': 'lua',
-  '.r': 'r',
-  '.rb': 'ruby',
-  '.php': 'php',
-  '.swift': 'swift',
-  '.kt': 'kotlin',
-}
-
-const SPECIAL_FILE_LANG_MAP: Record<string, string> = {
-  Dockerfile: 'dockerfile',
-  Makefile: 'makefile',
-  'CMakeLists.txt': 'cmake',
-  '.gitignore': 'gitignore',
-  '.dockerignore': 'gitignore',
-}
-
-const TEXT_BASENAMES = new Set([
-  ...Object.keys(SPECIAL_FILE_LANG_MAP),
-  'README',
-  'LICENSE',
-  'NOTICE',
-  'CHANGELOG',
-  'CONTRIBUTING',
-])
-
-const TEXT_EXTS = new Set([
-  '.txt', '.text', '.log', '.csv', '.tsv',
-  '.js', '.jsx', '.mjs', '.cjs',
-  '.ts', '.tsx', '.mts', '.cts',
-  '.json', '.jsonc',
-  '.html', '.htm', '.css', '.scss', '.less',
-  '.md', '.markdown',
-  '.py', '.pyw',
-  '.yaml', '.yml', '.xml',
-  '.sh', '.bash', '.zsh', '.fish',
-  '.sql', '.go', '.rs', '.java',
-  '.c', '.h', '.cpp', '.hpp', '.cc', '.cxx', '.hh', '.hxx',
-  '.toml', '.ini', '.env', '.conf', '.cfg', '.properties',
-  '.vue', '.svelte', '.astro',
-  '.dockerfile', '.graphql', '.gql',
-  '.lua', '.r', '.rb', '.php', '.swift', '.kt', '.kts',
-  '.diff', '.patch', '.lock',
-])
+export { isImageFile, isMarkdownFile, isPreviewableFile, isTextFile } from '@/utils/hermes/file-preview'
 
 export function getLanguageFromPath(filePath: string): string {
-  const name = filePath.split('/').pop() || ''
-  const specialLanguage = SPECIAL_FILE_LANG_MAP[name]
-  if (specialLanguage) return specialLanguage
-  const ext = getFileExt(name)
-  return EXT_LANG_MAP[ext] || 'plaintext'
-}
-
-const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.bmp', '.ico'])
-
-function getFileExt(name: string): string {
-  const idx = name.lastIndexOf('.')
-  return idx >= 0 ? name.slice(idx).toLowerCase() : ''
-}
-
-export function isImageFile(name: string): boolean {
-  return IMAGE_EXTS.has(getFileExt(name))
-}
-
-export function isMarkdownFile(name: string): boolean {
-  const ext = getFileExt(name)
-  return ext === '.md' || ext === '.markdown'
-}
-
-export function isTextFile(name: string): boolean {
-  const basename = name.split('/').pop() || ''
-  if (TEXT_BASENAMES.has(basename) || basename.startsWith('.env.')) return true
-  return TEXT_EXTS.has(getFileExt(basename))
-}
-
-export function isPreviewableFile(name: string): boolean {
-  return isImageFile(name) || isMarkdownFile(name) || isTextFile(name)
+  return getTextPreviewLanguage(filePath) || 'plaintext'
 }
 
 // Returns true if `targetPath` is the same as `changedPath` or lives inside it
@@ -131,6 +53,7 @@ export const useFilesStore = defineStore('files', () => {
   const currentPath = ref('')
   const currentProfile = ref<string | null>(null)
   const currentWorkspaceSessionId = ref<string | null>(null)
+  const currentWorkspaceRoomId = ref<string | null>(null)
   const entries = ref<FileEntry[]>([])
   const loading = ref(false)
   const sortBy = ref<'name' | 'size' | 'modTime'>('name')
@@ -143,13 +66,19 @@ export const useFilesStore = defineStore('files', () => {
     originalContent: string
     language: string
     workspaceSessionId?: string
+    workspaceRoomId?: string
     workspaceRelativePath?: string
   } | null>(null)
 
   const previewFile = ref<{
     path: string
+    name: string
+    size: number
     profile?: string | null
-    type: 'image' | 'markdown' | 'text'
+    workspaceSessionId?: string | null
+    workspaceRoomId?: string | null
+    sourceUrl?: string
+    type: FilePreviewKind
     content?: string
     language?: string
   } | null>(null)
@@ -175,18 +104,23 @@ export const useFilesStore = defineStore('files', () => {
   })
 
   function resolveProfile(profile?: string | null): string | null {
-    return currentWorkspaceSessionId.value ? null : profile === undefined ? currentProfile.value : normalizeProfile(profile)
+    return currentWorkspaceSessionId.value || currentWorkspaceRoomId.value ? null : profile === undefined ? currentProfile.value : normalizeProfile(profile)
   }
 
   function resolveWorkspaceSessionId(sessionId?: string | null): string | null {
     return sessionId === undefined ? currentWorkspaceSessionId.value : normalizeProfile(sessionId)
   }
 
+  function resolveWorkspaceRoomId(roomId?: string | null): string | null {
+    return roomId === undefined ? currentWorkspaceRoomId.value : normalizeProfile(roomId)
+  }
+
   async function listEntries(path = currentPath.value): Promise<{ entries: FileEntry[]; path: string; absolutePath?: string }> {
     const workspaceSessionId = currentWorkspaceSessionId.value
-    return workspaceSessionId
-      ? listSessionWorkspaceFiles(workspaceSessionId, path)
-      : filesApi.listFiles(path, currentProfile.value)
+    const workspaceRoomId = currentWorkspaceRoomId.value
+    if (workspaceRoomId) return listGroupWorkspaceFiles(workspaceRoomId, path)
+    if (workspaceSessionId) return listSessionWorkspaceFiles(workspaceSessionId, path)
+    return filesApi.listFiles(path, currentProfile.value)
   }
 
   async function fetchDirectory(path: string, options: { profile?: string | null } = {}) {
@@ -194,7 +128,7 @@ export const useFilesStore = defineStore('files', () => {
     return filesApi.listFiles(path, profile)
   }
 
-  async function fetchEntries(path?: string, options: { profile?: string | null; workspaceSessionId?: string | null } = {}) {
+  async function fetchEntries(path?: string, options: { profile?: string | null; workspaceSessionId?: string | null; workspaceRoomId?: string | null } = {}) {
     const requestSeq = ++fetchRequestSeq
     if (path !== undefined && path !== currentPath.value) {
       // Switching directory invalidates the current preview; close it so the
@@ -203,15 +137,21 @@ export const useFilesStore = defineStore('files', () => {
       previewFile.value = null
     }
     const previousWorkspaceSessionId = currentWorkspaceSessionId.value
+    const previousWorkspaceRoomId = currentWorkspaceRoomId.value
     const previousProfile = currentProfile.value
     const previousPath = currentPath.value
-    const nextWorkspaceSessionId = resolveWorkspaceSessionId(options.workspaceSessionId)
+    let nextWorkspaceSessionId = resolveWorkspaceSessionId(options.workspaceSessionId)
+    let nextWorkspaceRoomId = resolveWorkspaceRoomId(options.workspaceRoomId)
+    if (options.workspaceSessionId !== undefined && nextWorkspaceSessionId) nextWorkspaceRoomId = null
+    if (options.workspaceRoomId !== undefined && nextWorkspaceRoomId) nextWorkspaceSessionId = null
     currentWorkspaceSessionId.value = nextWorkspaceSessionId
-    const nextProfile = nextWorkspaceSessionId ? null : resolveProfile(options.profile)
+    currentWorkspaceRoomId.value = nextWorkspaceRoomId
+    const nextProfile = nextWorkspaceSessionId || nextWorkspaceRoomId ? null : resolveProfile(options.profile)
     currentProfile.value = nextProfile
     if (path !== undefined) currentPath.value = path
     if (
       previousWorkspaceSessionId !== nextWorkspaceSessionId ||
+      previousWorkspaceRoomId !== nextWorkspaceRoomId ||
       previousProfile !== nextProfile ||
       previousPath !== currentPath.value
     ) {
@@ -225,21 +165,25 @@ export const useFilesStore = defineStore('files', () => {
     } catch (err) {
       if (requestSeq !== fetchRequestSeq) return
       console.error('Failed to fetch files:', err)
-      if (nextWorkspaceSessionId) entries.value = []
+      if (nextWorkspaceSessionId || nextWorkspaceRoomId) entries.value = []
       throw err
     } finally {
       if (requestSeq === fetchRequestSeq) loading.value = false
     }
   }
 
-  function navigateTo(path: string, options: { profile?: string | null; workspaceSessionId?: string | null } = {}) { return fetchEntries(path, options) }
-  function navigateUp(options: { profile?: string | null; workspaceSessionId?: string | null } = {}) {
+  function navigateTo(path: string, options: { profile?: string | null; workspaceSessionId?: string | null; workspaceRoomId?: string | null } = {}) { return fetchEntries(path, options) }
+  function navigateUp(options: { profile?: string | null; workspaceSessionId?: string | null; workspaceRoomId?: string | null } = {}) {
     const parts = currentPath.value.split('/').filter(Boolean)
     parts.pop()
     return fetchEntries(parts.join('/'), options)
   }
 
   async function openEditor(filePath: string, options: { profile?: string | null } = {}) {
+    if (currentWorkspaceRoomId.value) {
+      await openGroupWorkspaceEditor(currentWorkspaceRoomId.value, filePath)
+      return
+    }
     if (currentWorkspaceSessionId.value) {
       await openSessionWorkspaceEditor(currentWorkspaceSessionId.value, filePath)
       return
@@ -267,9 +211,27 @@ export const useFilesStore = defineStore('files', () => {
     }
   }
 
+  async function openGroupWorkspaceEditor(roomId: string, filePath: string) {
+    const result = await readGroupWorkspaceFile(roomId, filePath)
+    editingFile.value = {
+      path: result.path,
+      content: result.content,
+      originalContent: result.content,
+      language: getLanguageFromPath(result.path),
+      workspaceRoomId: roomId,
+      workspaceRelativePath: result.path,
+    }
+  }
+
   async function saveEditor() {
     if (!editingFile.value) return
-    if (editingFile.value.workspaceSessionId && editingFile.value.workspaceRelativePath) {
+    if (editingFile.value.workspaceRoomId && editingFile.value.workspaceRelativePath) {
+      await writeGroupWorkspaceFile(
+        editingFile.value.workspaceRoomId,
+        editingFile.value.workspaceRelativePath,
+        editingFile.value.content,
+      )
+    } else if (editingFile.value.workspaceSessionId && editingFile.value.workspaceRelativePath) {
       await writeSessionWorkspaceFile(
         editingFile.value.workspaceSessionId,
         editingFile.value.workspaceRelativePath,
@@ -286,45 +248,142 @@ export const useFilesStore = defineStore('files', () => {
   async function openPreview(entry: FileEntry, options: { profile?: string | null } = {}) {
     const profile = resolveProfile(options.profile)
     currentProfile.value = profile
-    if (isImageFile(entry.name)) {
-      previewFile.value = { path: entry.path, profile, type: 'image' }
-    } else if (isMarkdownFile(entry.name)) {
-      const result = currentWorkspaceSessionId.value
-        ? await readSessionWorkspaceFile(currentWorkspaceSessionId.value, entry.path)
-        : await filesApi.readFile(entry.path, profile)
-      previewFile.value = { path: entry.path, profile, type: 'markdown', content: result.content }
-    } else if (isTextFile(entry.name)) {
-      const result = currentWorkspaceSessionId.value
-        ? await readSessionWorkspaceFile(currentWorkspaceSessionId.value, entry.path)
-        : await filesApi.readFile(entry.path, profile)
+    const type = getFilePreviewKind(entry.name)
+    if (!type) return
+    const common = {
+      path: entry.path,
+      name: entry.name,
+      size: entry.size,
+      profile,
+      workspaceSessionId: currentWorkspaceSessionId.value,
+      ...(currentWorkspaceRoomId.value ? { workspaceRoomId: currentWorkspaceRoomId.value } : {}),
+      type,
+    }
+    if (type === 'markdown') {
+      const result = currentWorkspaceRoomId.value
+        ? await readGroupWorkspaceFile(currentWorkspaceRoomId.value, entry.path)
+        : currentWorkspaceSessionId.value
+          ? await readSessionWorkspaceFile(currentWorkspaceSessionId.value, entry.path)
+          : await filesApi.readFile(entry.path, profile)
+      previewFile.value = { ...common, content: result.content }
+    } else if (type === 'text') {
+      const result = currentWorkspaceRoomId.value
+        ? await readGroupWorkspaceFile(currentWorkspaceRoomId.value, entry.path)
+        : currentWorkspaceSessionId.value
+          ? await readSessionWorkspaceFile(currentWorkspaceSessionId.value, entry.path)
+          : await filesApi.readFile(entry.path, profile)
       previewFile.value = {
-        path: entry.path,
-        profile,
-        type: 'text',
+        ...common,
         content: result.content,
         language: getLanguageFromPath(entry.path),
       }
+    } else {
+      previewFile.value = common
     }
+  }
+
+  async function openSessionWorkspacePreview(
+    sessionId: string,
+    filePath: string,
+    fileName = filePath.split('/').pop() || filePath,
+    size = -1,
+  ) {
+    const type = getFilePreviewKind(fileName || filePath)
+    if (!type) return
+    const common = {
+      path: filePath,
+      name: fileName,
+      size,
+      profile: null,
+      workspaceSessionId: sessionId,
+      type,
+    }
+    if (type === 'markdown' || type === 'text') {
+      const result = await fetchSessionWorkspaceFileText(sessionId, filePath)
+      previewFile.value = type === 'markdown'
+        ? { ...common, size: result.size, content: result.content }
+        : {
+            ...common,
+            size: result.size,
+            content: result.content,
+            language: getLanguageFromPath(filePath),
+          }
+      return
+    }
+    previewFile.value = common
+  }
+
+  async function openGroupWorkspacePreview(
+    roomId: string,
+    filePath: string,
+    fileName = filePath.split('/').pop() || filePath,
+    size = -1,
+  ) {
+    const type = getFilePreviewKind(fileName || filePath)
+    if (!type) return
+    const common = {
+      path: filePath,
+      name: fileName,
+      size,
+      profile: null,
+      workspaceSessionId: null,
+      workspaceRoomId: roomId,
+      type,
+    }
+    if (type === 'markdown' || type === 'text') {
+      const result = await fetchGroupWorkspaceFileText(roomId, filePath)
+      previewFile.value = type === 'markdown'
+        ? { ...common, size: result.size, content: result.content }
+        : { ...common, size: result.size, content: result.content, language: getLanguageFromPath(filePath) }
+      return
+    }
+    previewFile.value = common
+  }
+
+  async function openRemotePreview(sourceUrl: string, fileName: string, size = -1): Promise<boolean> {
+    const type = getFilePreviewKind(fileName)
+    if (!type) return false
+    const common = {
+      path: fileName,
+      name: fileName,
+      size,
+      profile: null,
+      sourceUrl,
+      type,
+    }
+    if (type === 'markdown' || type === 'text') {
+      const blob = await fetchAuthenticatedBlob(sourceUrl, { profile: null })
+      const content = await blob.text()
+      previewFile.value = type === 'markdown'
+        ? { ...common, content }
+        : { ...common, content, language: getLanguageFromPath(fileName) }
+      return true
+    }
+    previewFile.value = common
+    return true
   }
 
   function closePreview() { previewFile.value = null }
 
   async function createDir(name: string, targetPath = currentPath.value) {
     const path = targetPath ? `${targetPath}/${name}` : name
-    if (currentWorkspaceSessionId.value) await mkdirSessionWorkspaceFile(currentWorkspaceSessionId.value, path)
+    if (currentWorkspaceRoomId.value) await mkdirGroupWorkspaceFile(currentWorkspaceRoomId.value, path)
+    else if (currentWorkspaceSessionId.value) await mkdirSessionWorkspaceFile(currentWorkspaceSessionId.value, path)
     else await filesApi.mkDir(path, currentProfile.value)
     await fetchEntries(undefined)
   }
 
   async function createFile(name: string) {
     const path = currentPath.value ? `${currentPath.value}/${name}` : name
-    if (currentWorkspaceSessionId.value) await writeSessionWorkspaceFile(currentWorkspaceSessionId.value, path, '')
+    if (currentWorkspaceRoomId.value) await writeGroupWorkspaceFile(currentWorkspaceRoomId.value, path, '')
+    else if (currentWorkspaceSessionId.value) await writeSessionWorkspaceFile(currentWorkspaceSessionId.value, path, '')
     else await filesApi.writeFile(path, '', currentProfile.value)
     await fetchEntries(undefined)
   }
 
   async function deleteEntry(entry: FileEntry) {
-    if (currentWorkspaceSessionId.value) await deleteSessionWorkspaceFile(currentWorkspaceSessionId.value, entry.path, entry.isDir)
+    if (currentWorkspaceRoomId.value) await deleteGroupWorkspaceFile(currentWorkspaceRoomId.value, entry.path, entry.isDir)
+    else if (currentWorkspaceSessionId.value) await deleteSessionWorkspaceFile(currentWorkspaceSessionId.value, entry.path, entry.isDir)
     else await filesApi.deleteFile(entry.path, entry.isDir, currentProfile.value)
     if (previewFile.value && isAffected(previewFile.value.path, entry.path, entry.isDir)) {
       previewFile.value = null
@@ -338,7 +397,8 @@ export const useFilesStore = defineStore('files', () => {
   async function renameEntry(entry: FileEntry, newName: string) {
     const parentPath = entry.path.includes('/') ? entry.path.slice(0, entry.path.lastIndexOf('/')) : ''
     const newPath = parentPath ? `${parentPath}/${newName}` : newName
-    if (currentWorkspaceSessionId.value) await renameSessionWorkspaceFile(currentWorkspaceSessionId.value, entry.path, newPath)
+    if (currentWorkspaceRoomId.value) await renameGroupWorkspaceFile(currentWorkspaceRoomId.value, entry.path, newPath)
+    else if (currentWorkspaceSessionId.value) await renameSessionWorkspaceFile(currentWorkspaceSessionId.value, entry.path, newPath)
     else await filesApi.renameFile(entry.path, newPath, currentProfile.value)
     if (previewFile.value && isAffected(previewFile.value.path, entry.path, entry.isDir)) {
       previewFile.value = null
@@ -350,13 +410,14 @@ export const useFilesStore = defineStore('files', () => {
   }
 
   async function copyEntry(entry: FileEntry, destPath: string) {
-    if (currentWorkspaceSessionId.value) await copySessionWorkspaceFile(currentWorkspaceSessionId.value, entry.path, destPath)
+    if (currentWorkspaceRoomId.value) await copyGroupWorkspaceFile(currentWorkspaceRoomId.value, entry.path, destPath)
+    else if (currentWorkspaceSessionId.value) await copySessionWorkspaceFile(currentWorkspaceSessionId.value, entry.path, destPath)
     else await filesApi.copyFile(entry.path, destPath, currentProfile.value)
     await fetchEntries(undefined)
   }
 
   async function uploadFiles(files: File[]) {
-    if (!currentWorkspaceSessionId.value) {
+    if (!currentWorkspaceSessionId.value && !currentWorkspaceRoomId.value) {
       await filesApi.uploadFiles(currentPath.value, files, currentProfile.value)
       await fetchEntries(undefined)
       return
@@ -364,7 +425,8 @@ export const useFilesStore = defineStore('files', () => {
     for (const file of files) {
       const path = currentPath.value ? `${currentPath.value}/${file.name}` : file.name
       const content = await file.text()
-      await writeSessionWorkspaceFile(currentWorkspaceSessionId.value, path, content)
+      if (currentWorkspaceRoomId.value) await writeGroupWorkspaceFile(currentWorkspaceRoomId.value, path, content)
+      else await writeSessionWorkspaceFile(currentWorkspaceSessionId.value!, path, content)
     }
     await fetchEntries(undefined)
   }
@@ -384,12 +446,12 @@ export const useFilesStore = defineStore('files', () => {
   })
 
   return {
-    currentPath, currentProfile, currentWorkspaceSessionId, entries, loading, sortBy, sortOrder,
+    currentPath, currentProfile, currentWorkspaceSessionId, currentWorkspaceRoomId, entries, loading, sortBy, sortOrder,
     editingFile, previewFile,
     pathSegments, sortedEntries, hasUnsavedChanges,
     fetchEntries, listEntries, fetchDirectory, navigateTo, navigateUp,
-    openEditor, openSessionWorkspaceEditor, saveEditor, closeEditor,
-    openPreview, closePreview,
+    openEditor, openSessionWorkspaceEditor, openGroupWorkspaceEditor, saveEditor, closeEditor,
+    openPreview, openSessionWorkspacePreview, openGroupWorkspacePreview, openRemotePreview, closePreview,
     createDir, createFile, deleteEntry, renameEntry, copyEntry,
     uploadFiles, setSort,
   }

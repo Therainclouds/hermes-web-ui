@@ -1,7 +1,9 @@
 import type { AgentTool, AgentToolContext, AgentToolProvider, AgentToolResult } from './types'
 import { createBrowserTools } from './browser'
+import { createDelegationTools } from './delegation'
 import { createFileTools } from './files'
 import { createMcpToolProvider } from './mcp'
+import { createSkillTools } from './skills'
 import { createTerminalTools } from './terminal'
 
 export class AgentToolRegistry {
@@ -66,9 +68,19 @@ export class AgentToolRegistry {
   }
 }
 
-export function createDefaultToolRegistry(): AgentToolRegistry {
+export interface DefaultToolRegistryOptions {
+  skillDirectory?: string
+}
+
+export function createDefaultToolRegistry(options: DefaultToolRegistryOptions = {}): AgentToolRegistry {
   const registry = new AgentToolRegistry()
-  for (const tool of [...createFileTools(), ...createTerminalTools(), ...createBrowserTools()]) {
+  for (const tool of [
+    ...createFileTools(),
+    ...createTerminalTools(),
+    ...createBrowserTools(),
+    ...createDelegationTools(),
+    ...createSkillTools(options.skillDirectory),
+  ]) {
     registry.register(tool)
   }
   registry.registerProvider(createMcpToolProvider())

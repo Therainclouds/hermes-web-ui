@@ -65,6 +65,10 @@ Built-in tools:
 - `read_file` reads a text file.
 - `write_file` writes text content and creates parent directories by default.
 - `terminal_exec` runs a command with an argument array and `shell: false`.
+- `skill_list` lists or searches skills under the agent's configured `skillDirectory`.
+- `skill_view` loads `SKILL.md` or an allowed support file for one skill in that directory.
+- `skill_manage` creates, patches, edits, archives, or manages support files when
+  `skillDirectory` is configured.
 
 Use `workspaceRoot` to keep file and terminal working directories inside a
 specific workspace.
@@ -95,25 +99,35 @@ const result = await tools.execute('terminal_exec', {
 events together. The default `maxSteps` is `90`, matching Hermes' regular agent
 turn budget.
 
-In development, Ekko Agent stores its SQLite database at
-`packages/ekko-agent/sql-data/ekko-agent.db`. It uses the same single-file
-SQLite/DELETE journal layout as `packages/server/data/hermes-web-ui.db`, so the
-database can be opened directly in Navicat. Tests remain isolated in temporary
-directories. While the production Ekko Agent entry remains hidden, the server
-starts Ekko Agent with memory disabled and does not create the `ekko` directory
-or `HERMES_WEB_UI_HOME/ekko/ekko.db`.
+When Ekko runs inside a host that owns conversation persistence, the host also
+owns context compression. `estimateContext()` exposes the provider-visible
+system, tool, message, and provider-context estimate needed for that external
+threshold decision without starting a model call. A standalone Ekko host can
+instead implement and own its internal compression lifecycle.
+
+Ekko owns one filesystem root through `EkkoDirectoryManager`. The manager takes
+one optional base directory (the user's home directory by default), creates
+`<base>/.ekko/skills` and `<base>/.ekko/workspace`, and keeps the SQLite database at
+`<base>/.ekko/ekko.db`. A running profile uses
+`<base>/.ekko/skills/<profile>` for its skills and
+`<base>/.ekko/logs/<profile>` for its log. Its default per-session workspace is
+`<base>/.ekko/workspace/<profile>/<session-id>`; an explicitly supplied
+`workspaceRoot` or `cwd` takes precedence. The server supplies its Web UI home as
+the base directory. For compatibility, the server supplies the Hermes root during
+initialization. If `.ekko/skills` does not exist yet, the manager imports
+the default profile from `<hermes>/skills` and every named profile from
+`<hermes>/profiles/<profile>/skills`. This is a one-time copy: once
+`.ekko/skills` exists, later startups do not resync or overwrite Ekko-owned
+skills.
 
 ```ts
-import { AgentRuntime, createDefaultToolRegistry } from './src/index'
+import { AgentRuntime, EkkoDirectoryManager } from './src/index'
 
+const directories = new EkkoDirectoryManager('/path/to/base')
+directories.initialize()
 const runtime = new AgentRuntime({
   modelClient: client,
-  tools: createDefaultToolRegistry(),
-  skills: [{
-    id: 'project',
-    name: 'Project Skill',
-    instructions: 'Follow the project conventions before editing files.',
-  }],
+  skillDirectory: directories.profileSkillsDirectory('default'),
 })
 
 const result = await runtime.run({
@@ -126,6 +140,48 @@ const result = await runtime.run({
   },
 })
 ```
+
+Set `toolsEnabled: false` to omit all tool sources (built-ins, MCP, memory,
+and skill tools). Set `skillsEnabled: false` to omit constructor and per-run
+skills. The switches are independent and default to `true`.
+
+## Skill Evolution
+
+Ekko exposes `skill_manage` to the foreground agent when `skillDirectory` is
+configured. Existing files must first be loaded through `skill_view` in the
+same run. The mutation is rejected if the file changed after it was viewed.
+Overwrites create a recoverable copy under
+`.ekko/skills/<profile>/.ekko-backups`, while confirmed skill deletion moves
+the directory under `.ekko/skills/<profile>/.ekko-archive`.
+
+After 10 cumulative tool calls in one session, the runtime schedules a
+background procedural review. The review uses a dedicated conservative prompt
+and only `skill_list`, `skill_view`, and `skill_manage`; it does not block the
+foreground response. It can create a reusable class-level skill, but can update
+only skills marked as created by Ekko and cannot delete. Set
+`skillReviewEveryToolCalls: 0` to disable this review or provide another positive
+threshold.
+
+## File Logging
+
+Each profile writes structured JSON Lines to one file:
+`.ekko/logs/<profile>/ekko-agent.jsonl`. The file is capped at 10 MiB. When the
+next event would exceed that cap, the existing content is discarded and
+logging continues in the same file; no rotated or per-session files are
+created.
+
+The persistent log is intentionally request-only. Every model-client request
+attempt writes one terminal `model.request` record after it completes or fails.
+That single record combines safe request metadata, status, duration, usage, and
+response sizes. Runtime events, streaming deltas, tool events, prompts, and
+response bodies are not written, so log volume tracks model calls instead of
+the much larger runtime event stream.
+
+Endpoints and common credential shapes are redacted, large strings are
+truncated, and base64 payloads are omitted. `EkkoFileLogReader.query()` can
+filter the current file by session, run, turn, category, level, event, time, or
+text without acquiring write ownership. The Hermes Web UI Logs page exposes the
+same file as the `ekko-agent` source for the selected profile.
 
 ## Commands
 

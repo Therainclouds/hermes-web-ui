@@ -127,6 +127,9 @@ describe('health controller version metadata', () => {
 
   beforeEach(() => {
     delete process.env.WEBUI_UPDATE_INSTALLER_SCRIPT
+    delete process.env.WEBUI_UPDATE_MANIFEST_TIMEOUT_MS
+    delete process.env.WEBUI_UPDATE_DOWNLOAD_RETRIES
+    delete process.env.WEBUI_UPDATE_DOWNLOAD_RETRY_DELAY_MS
   })
 
   afterEach(() => {
@@ -223,9 +226,13 @@ describe('health controller version metadata', () => {
     process.env.WEBUI_UPDATE_CLI_BIN = 'hermes-web-ui.mjs'
     process.env.WEBUI_UPDATE_SOURCE_LABEL = UPDATE_SOURCE_LABEL
     vi.spyOn(console, 'log').mockImplementation(() => {})
+    // The branded build configures a default manifest base URL, so the manifest
+    // check is always active; stub a full Response so no real network is used.
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      json: vi.fn().mockResolvedValue({ version: '99.99.99' }),
+      status: 200,
+      url: 'https://updates.example.com/stable/latest.json',
+      arrayBuffer: vi.fn().mockResolvedValue(Buffer.from(JSON.stringify({ version: '99.99.99', channel: 'stable' }))),
     })
     vi.stubGlobal('fetch', fetchMock)
 
@@ -241,8 +248,8 @@ describe('health controller version metadata', () => {
     const ctx = createMockCtx()
     await healthCheck(ctx)
 
-    expect(ctx.body.webui_latest).toBe('')
-    expect(ctx.body.webui_update_available).toBe(false)
+    expect(ctx.body.webui_latest).toBe('99.99.99')
+    expect(ctx.body.webui_update_available).toBe(true)
   })
 
   it('prefers manifest detection when a manifest URL is configured', async () => {
@@ -362,10 +369,16 @@ describe('health controller version metadata', () => {
 
   it('ignores legacy registry payloads when manifest detection is not configured', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      json: vi.fn().mockResolvedValue({ version: '0.6.17' }),
-    }))
+    // Branded builds always configure a default manifest URL; point it at an
+    // unreachable local port and reject fetch so both transports fail fast and
+    // offline, proving legacy registry payloads (mocked via `json`) never surface.
+    process.env.WEBUI_UPDATE_ENABLED = 'true'
+    process.env.WEBUI_UPDATE_MANIFEST_URL = 'http://127.0.0.1:9/manifest.json'
+    process.env.WEBUI_UPDATE_MANIFEST_BASE_URL = 'http://127.0.0.1:9'
+    process.env.WEBUI_UPDATE_MANIFEST_TIMEOUT_MS = '400'
+    process.env.WEBUI_UPDATE_DOWNLOAD_RETRIES = '1'
+    process.env.WEBUI_UPDATE_DOWNLOAD_RETRY_DELAY_MS = '1'
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')))
 
     const { checkLatestVersion, healthCheck } = await loadHealthControllerWithInjectedVersion('0.6.18')
 
@@ -388,9 +401,12 @@ describe('health controller version metadata', () => {
   })
 
   it('reports Docker while retaining version checks for upgrade guidance', async () => {
+    process.env.WEBUI_UPDATE_ENABLED = 'true'
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      json: vi.fn().mockResolvedValue({ version: '0.6.29' }),
+      status: 200,
+      url: 'https://updates.example.com/stable/latest.json',
+      arrayBuffer: vi.fn().mockResolvedValue(Buffer.from(JSON.stringify({ version: '0.6.29', channel: 'stable' }))),
     })
     vi.stubGlobal('fetch', fetchMock)
     const { checkLatestVersion, healthCheck } = await loadHealthController({

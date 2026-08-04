@@ -1,23 +1,35 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useGroupChatStore } from '@/stores/hermes/group-chat'
+import { groupAgentRunMessages, useGroupChatStore } from '@/stores/hermes/group-chat'
 import { useToolTraceVisibility } from '@/composables/useToolTraceVisibility'
 import GroupMessageItem from './GroupMessageItem.vue'
+import GroupAgentRunCard from './GroupAgentRunCard.vue'
 import VirtualMessageList from '../chat/VirtualMessageList.vue'
 
 const store = useGroupChatStore()
+const emit = defineEmits<{
+    mentionAgent: [agent: import('@/api/hermes/group-chat').RoomAgent]
+}>()
 const { t } = useI18n()
 const { toolTraceVisible } = useToolTraceVisibility()
 const listRef = ref<InstanceType<typeof VirtualMessageList> | null>(null)
 const showScrollBottomButton = ref(false)
-const displayMessages = computed(() => store.sortedMessages.filter(msg =>
+const emptyStateAgents = [
+    { name: 'Hermes', src: '/coding-agents/hermes.png' },
+    { name: 'Ekko', src: '/coding-agents/ekko-agent.png' },
+    { name: 'Codex', src: '/coding-agents/codex-openai.png' },
+    { name: 'Claude', src: '/coding-agents/claude-code.svg' },
+]
+const displayMessages = computed(() => groupAgentRunMessages(store.sortedMessages.filter(msg =>
     msg.role !== 'tool' ||
     toolTraceVisible.value ||
-    msg.toolStatus === 'running' ||
-    msg.toolName === 'workspace_diff' ||
-    msg.tool_name === 'workspace_diff',
-))
+    msg.toolStatus === 'running',
+)))
+const summaryAnchorMessageId = computed(() => {
+    const roomId = store.currentRoomId
+    return roomId ? String(store.roomSummaryStates.get(roomId)?.summaryThroughMessageId || '') : ''
+})
 const listPadding = computed(() => store.activePendingApproval ? '16px 20px 260px' : '16px 20px')
 let pendingInitialBottomRoomId: string | null = store.currentRoomId
 
@@ -32,6 +44,11 @@ function scrollToBottom(options?: BottomScrollOptions): void {
     }) | null
     list?.scrollToBottom(options)
     showScrollBottomButton.value = false
+}
+
+function containsSummaryAnchor(message: import('@/api/hermes/group-chat').ChatMessage): boolean {
+    const anchorId = summaryAnchorMessageId.value
+    return !!anchorId && (message.runItems || [message]).some(item => item.id === anchorId)
 }
 
 function updateScrollBottomButton(): void {
@@ -60,13 +77,15 @@ watch(() => store.currentRoomId, (roomId) => {
     pendingInitialBottomRoomId = roomId
 })
 
-watch(() => displayMessages.value.map(msg => [
-    msg.id,
-    msg.content?.length ?? 0,
-    msg.reasoning?.length ?? 0,
-    msg.reasoning_content?.length ?? 0,
-    msg.toolStatus ?? '',
-].join(':')).join('|'), async () => {
+watch(() => displayMessages.value.map(msg =>
+    (msg.runItems || [msg]).map(item => [
+        item.id,
+        item.content?.length ?? 0,
+        item.reasoning?.length ?? 0,
+        item.reasoning_content?.length ?? 0,
+        item.toolStatus ?? '',
+    ].join(':')).join(','),
+).join('|'), async () => {
     const shouldForceInitialBottom = !!store.currentRoomId &&
         pendingInitialBottomRoomId === store.currentRoomId &&
         displayMessages.value.length > 0
@@ -105,9 +124,17 @@ defineExpose({ scrollToBottom })
         >
             <template #empty>
                 <div class="empty-state">
-                <img :src="'/coding-agents/hermes.png'" alt="Hermes" class="empty-logo" />
-                <p>{{ t("chat.emptyState") }}</p>
-            </div>
+                    <div class="empty-agent-avatars">
+                        <span
+                            v-for="agent in emptyStateAgents"
+                            :key="agent.name"
+                            class="empty-agent-avatar"
+                        >
+                            <img :src="agent.src" :alt="agent.name" />
+                        </span>
+                    </div>
+                    <p>{{ t('groupChat.emptyState') }}</p>
+                </div>
             </template>
             <template #before>
                 <div
@@ -124,12 +151,43 @@ defineExpose({ scrollToBottom })
                 </div>
             </template>
             <template #item="{ message: msg }">
-                <GroupMessageItem
-                    :message="msg"
-                    :agents="store.agents"
-                    :members="store.members"
-                    :current-user-id="store.userId"
-                />
+                <div :data-group-message-id="msg.id">
+                    <GroupAgentRunCard
+                        v-if="msg.runItems?.length"
+                        :message="msg"
+                        :agents="store.agents"
+                        :members="store.members"
+                        :current-user-id="store.userId"
+                        @mention-agent="emit('mentionAgent', $event)"
+                    />
+                    <GroupMessageItem
+                        v-else
+                        :message="msg"
+                        :agents="store.agents"
+                        :members="store.members"
+                        :current-user-id="store.userId"
+                        @mention-agent="emit('mentionAgent', $event)"
+                    />
+                    <div
+                        v-if="containsSummaryAnchor(msg)"
+                        class="summary-anchor-divider"
+                        role="separator"
+                        :aria-label="t('groupChat.summaryMessagesAbove')"
+                        :data-summary-anchor-message-id="summaryAnchorMessageId"
+                    >
+                        <div class="summary-anchor-divider-line" aria-hidden="true"></div>
+                        <div class="summary-anchor-divider-pill">
+                            <span class="summary-anchor-divider-icon" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" focusable="false">
+                                    <path d="M6 3h12a2 2 0 0 1 2 2v16l-8-4-8 4V5a2 2 0 0 1 2-2z" />
+                                    <path d="m8.5 10.5 2 2 5-5" />
+                                </svg>
+                            </span>
+                            <span class="summary-anchor-divider-text">{{ t('groupChat.summaryMessagesAbove') }}</span>
+                        </div>
+                        <div class="summary-anchor-divider-line" aria-hidden="true"></div>
+                    </div>
+                </div>
             </template>
         </VirtualMessageList>
         <button
@@ -214,15 +272,89 @@ defineExpose({ scrollToBottom })
     gap: 12px;
     color: $text-muted;
 
-    .empty-logo {
-        width: 48px;
-        height: 48px;
-        opacity: 0.25;
-    }
-
     p {
+        margin: 0;
         font-size: 14px;
     }
+}
+
+.empty-agent-avatars {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding-inline-start: 8px;
+}
+
+.empty-agent-avatar {
+    width: 44px;
+    height: 44px;
+    margin-inline-start: -8px;
+    overflow: hidden;
+    border: 2px solid $bg-primary;
+    border-radius: 50%;
+    background: $bg-secondary;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+
+    img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+}
+
+.summary-anchor-divider {
+    display: grid;
+    grid-template-columns: minmax(24px, 1fr) auto minmax(24px, 1fr);
+    align-items: center;
+    gap: 12px;
+    width: min(760px, 100%);
+    margin: 12px auto 4px;
+    color: var(--text-secondary);
+}
+
+.summary-anchor-divider-line {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(var(--accent-primary-rgb), 0.26), transparent);
+}
+
+.summary-anchor-divider-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 7px 12px;
+    border: 1px solid rgba(var(--accent-primary-rgb), 0.22);
+    border-radius: 999px;
+    background: var(--bg-card);
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.05);
+    font-size: 12px;
+    line-height: 1.35;
+}
+
+.summary-anchor-divider-icon {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    color: var(--accent-primary);
+
+    svg {
+        width: 14px;
+        height: 14px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+    }
+}
+
+.summary-anchor-divider-text {
+    font-weight: 600;
+    letter-spacing: 0.02em;
 }
 
 .history-loader {
@@ -264,6 +396,17 @@ defineExpose({ scrollToBottom })
 @keyframes spin {
     to {
         transform: rotate(360deg);
+    }
+}
+
+@media (max-width: 640px) {
+    .summary-anchor-divider {
+        grid-template-columns: 1fr;
+        gap: 8px;
+    }
+
+    .summary-anchor-divider-line {
+        display: none;
     }
 }
 </style>

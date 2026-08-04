@@ -1,5 +1,44 @@
 # Work Log
 
+## 2026-08-04 · 合并 upstream/main（141 commits）至 integration/rebuild-from-upstream
+
+### 本轮目标
+
+- 将上游 `EKKOLearnAI/hermes-web-ui` 的 `main` 分支（141 个 commits）合并进本地 `integration/rebuild-from-upstream` 分支。
+- 合并原则：① 本地品牌化功能、更新功能、本地独有功能最高优先级；② 冲突优先考虑兼容性，宠物功能（Petdex/WebPet）默认在本分支已删除；③ 合并前做边界和整体函数引用范围确认，避免空函数和无关内容。
+
+### 已完成事项
+
+#### 1. 冲突解决与合并边界清理
+
+- 解决全部冲突文件：desktop main/preload、client 组件（useAppMessage 批量 15 个）、i18n 10 个 locale、server run-chat 三件套 + shutdown/providers、website/tests/docs/README 等。
+- 品牌化保留：包名 `@quanthermes/hermes-web-ui`、端口 6060、内置更新 manifest 默认 URL、凭据体系。
+- 删除 `group-chat.ts` 中旧本地版重复路由（GET /rooms 与 /rooms/join/:code），保留上游脱敏版与本地独有 export/import 路由，消除重复注册导致的路由遮蔽。
+- 宠物功能相关代码与测试（pets-store/petdex-service）整体移除，无空函数与悬空引用。
+
+#### 2. 编码损坏修复
+
+- 扫描发现 29 个冲突文件存在编码损坏，用 Node UTF-8 安全方式全部重建。
+- 修复 HEAD 已提交损坏：README/README_zh 重新组装；修 `generate-openapi.mjs` 2 行并重新生成 `openapi.json`。
+
+#### 3. 类型检查与静态校验
+
+- 修复 13 个文件共 59 个 vue-tsc 语义错误，`vue-tsc` 达到零错误。
+- `npm run harness:check` 通过（品牌 URL 对齐）。
+
+#### 4. 测试修复（Windows 环境适配 + 品牌适配）
+
+- 品牌期望修正：health/devices/updater/windows-main-window/user-auth 全部通过。
+- group-chat-member-sync 31/31；update-controller 29 过 / 1 skip（品牌默认值令该守卫不可达，已注释说明）。
+- Windows 路径类失败系统性修复：run-chat-bridge/ekko 上下文（`vi.hoisted` 分隔符构造 + JSON 转义断言）、model-catalog-cache（mock 路径归一化）、kanban-controller（`HERMES_KANBAN_ATTACHMENTS_ROOT` env 锚定）。
+- usb-service：固定时间戳 `2026-07-01` 已超出 24h 历史窗口，改为相对 `Date.now()` 的动态时间戳，4/4 通过。
+- coding-agent-resume-config：Windows 下启动 env 会合并宿主机 commandEnv（平台行为），断言按平台分支适配，10/10 通过。
+
+### 遗留事项
+
+- RTL logical CSS 样式断言、少量环境类失败（symlink 权限/python3 缺失/POSIX 路径假设）待归档确认，均非本次合并引入。
+- 全量 `npm run test` 与 `npm run build` 的最终确认、核心功能手动验收进行中。
+
 ## 2026-08-01 · 实时提示优化：快速响应 + keyPoint 醒目高亮
 
 ### 本轮目标

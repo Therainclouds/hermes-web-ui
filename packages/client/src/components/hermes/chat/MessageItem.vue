@@ -1,16 +1,23 @@
 <script setup lang="ts">
-import type { Message, ContentBlock } from "@/stores/hermes/chat";
+import {
+  formatReferencedContentForDisplay,
+  parseMessageReference,
+  type Message,
+  type ContentBlock,
+} from "@/stores/hermes/chat";
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watchEffect } from "vue";
 import { useI18n } from "vue-i18n";
-import { NButton, NDrawer, NDrawerContent, NSpin, useMessage } from "naive-ui";
+import { useMessage } from "naive-ui";
 import { downloadFile, getDownloadUrl } from "@/api/hermes/download";
 import { copyToClipboard } from "@/utils/clipboard";
 import { parseThinking, countThinkingChars } from "@/utils/thinking-parser";
 import { useChatStore } from "@/stores/hermes/chat";
 import { useFilesStore } from "@/stores/hermes/files";
+import { useToolPanelStore } from "@/stores/hermes/tool-panel";
 import { useProfilesStore } from "@/stores/hermes/profiles";
 import { useSettingsStore } from "@/stores/hermes/settings";
 import ProfileAvatar from "@/components/hermes/profiles/ProfileAvatar.vue";
+import ToolChangeCard from "./ToolChangeCard.vue";
 import {
   copyTextToClipboard,
   extractUnifiedDiffPayload,
@@ -22,9 +29,10 @@ import { useGlobalSpeech } from "@/composables/useSpeech";
 import { useVoiceSettings } from "@/composables/useVoiceSettings";
 import { speedToEdgeRate, hzToEdgePitch } from "@/utils/ttsHelpers";
 import { formatChatTimestamp } from "@/utils/chat-timestamp";
-import type { WorkspaceRunChangeFileSummary } from "@/api/hermes/sessions";
+import { openSubagentStream, subagentIdFromToolCall } from "@/utils/hermes/subagent-stream";
+import type { WorkspaceRunChangeSummary } from "@/api/hermes/sessions";
+import { isServerTtsProvider } from "@/api/hermes/tts";
 
-const FileEditor = defineAsyncComponent(() => import("@/components/hermes/files/FileEditor.vue"));
 const MarkdownRenderer = defineAsyncComponent(async () => (await import("./MarkdownRenderer.vue")).default);
 
 const TOOL_PAYLOAD_DISPLAY_LIMIT = 1000;
@@ -67,6 +75,7 @@ type DisplayContentFile = {
   name: string
   path?: string
   url?: string
+  context?: string
 }
 
 function getBlockText(block: any): string {
@@ -145,6 +154,14 @@ const displayText = computed(() => {
     .filter(Boolean)
     .join('\n');
 });
+const parsedMessageReference = computed(() =>
+  props.message.role === 'user' ? parseMessageReference(displayText.value) : null,
+)
+const referencedContentMarkdown = computed(() =>
+  parsedMessageReference.value
+    ? formatReferencedContentForDisplay(parsedMessageReference.value.content)
+    : '',
+)
 
 // Extract files from ContentBlock[]
 const contentFiles = computed<DisplayContentFile[] | null>(() => {
@@ -156,6 +173,7 @@ const contentFiles = computed<DisplayContentFile[] | null>(() => {
         type: 'image' as const,
         name: String((block as any).name || `image-${index + 1}`),
         path: String((block as any).path || ''),
+        context: typeof (block as any).context === 'string' ? (block as any).context : undefined,
       }].filter(file => file.path)
     }
     if (block.type === 'file') {
@@ -163,6 +181,7 @@ const contentFiles = computed<DisplayContentFile[] | null>(() => {
         type: 'file' as const,
         name: String((block as any).name || `file-${index + 1}`),
         path: String((block as any).path || ''),
+        context: typeof (block as any).context === 'string' ? (block as any).context : undefined,
       }].filter(file => file.path)
     }
     const imageUrl = getImageUrlFromBlock(block)
@@ -183,16 +202,13 @@ function getContentFileUrl(file: DisplayContentFile): string {
 }
 
 const toolExpanded = ref(false);
+const expandedWorkspaceChangeIds = ref(new Set<string>());
 const previewUrl = ref<string | null>(null);
 const selectedToolChangeFileId = ref<number | null>(null);
-const selectedToolChangePatch = ref("");
-const isLoadingToolChangePatch = ref(false);
-const toolChangeDrawerVisible = ref(false);
-const toolChangeDrawerMode = ref<"diff" | "edit">("diff");
-const toolChangeDrawerFile = ref<WorkspaceRunChangeFileSummary | null>(null);
 
 const chatStore = useChatStore();
 const filesStore = useFilesStore();
+const toolPanelStore = useToolPanelStore();
 const profilesStore = useProfilesStore();
 const settingsStore = useSettingsStore();
 const speech = useGlobalSpeech();
@@ -203,6 +219,11 @@ const assistantProfileAvatar = computed(() => profilesStore.profiles.find(profil
 // Copy entire bubble content
 const copyableContent = computed(() => {
   if (props.message.role === 'tool') return null
+  if (parsedMessageReference.value) {
+    return [referencedContentMarkdown.value, parsedMessageReference.value.reply]
+      .filter(Boolean)
+      .join('\n\n')
+  }
   const content = props.message.content || ''
   if (!content.trim()) return null
   return content
@@ -224,9 +245,30 @@ async function copyBubbleContent() {
   toast.error(t('chat.copyFailed'))
 }
 
+function referenceBubbleContent() {
+  const content = quotableContent.value
+  const sessionId = chatStore.activeSessionId
+  if (!content || !sessionId) return
+  chatStore.setMessageReference(sessionId, {
+    id: props.message.id,
+    role: props.message.role as 'user' | 'assistant',
+    content,
+    sender: props.message.role,
+  })
+}
+
 const parsedThinking = computed(() =>
   parseThinking(props.message.content || "", { streaming: !!props.message.isStreaming }),
 );
+
+const quotableContent = computed(() => {
+  if (props.message.role !== 'user' && props.message.role !== 'assistant') return null
+  if (props.message.isStreaming || isAgentError.value) return null
+  const content = props.message.role === 'assistant'
+    ? parsedThinking.value.body.trim()
+    : (parsedMessageReference.value?.reply || parsedMessageReference.value?.content || displayText.value).trim()
+  return content || null
+})
 
 // 优先使用来自 reasoning 字段/事件的思考文本；否则回退到从 content 解析的 <think> 标签。
 // 若两者共存，则拼接展示（罕见，但保持信息不丢）。
@@ -552,12 +594,28 @@ const hasAttachments = computed(
 
 const toolArgsPayload = computed(() => formatToolPayload(props.message.toolArgs));
 const toolResultPayload = computed(() => formatToolPayload(props.message.toolResult, true));
-const toolChange = computed(() => props.message.toolChange || null);
-const hasToolChange = computed(() => (toolChange.value?.files?.length || 0) > 0);
+const workspaceChanges = computed(() => props.message.workspaceChanges || []);
+
+function isWorkspaceChangeExpanded(changeId: string): boolean {
+  return expandedWorkspaceChangeIds.value.has(changeId);
+}
+
+function toggleWorkspaceChange(changeId: string): void {
+  const next = new Set(expandedWorkspaceChangeIds.value);
+  if (next.has(changeId)) next.delete(changeId);
+  else next.add(changeId);
+  expandedWorkspaceChangeIds.value = next;
+}
 
 const hasToolDetails = computed(
-  () => !!(toolArgsPayload.value.full || toolResultPayload.value.full || hasToolChange.value),
+  () => !!(
+    props.message.reasoning?.trim()
+    || toolArgsPayload.value.full
+    || toolResultPayload.value.full
+  ),
 );
+const isSubagentTool = computed(() => subagentIdFromToolCall(props.message.toolCallId) !== null);
+const hasInlineToolDetails = computed(() => hasToolDetails.value && !isSubagentTool.value);
 
 const fullToolArgs = computed(() => toolArgsPayload.value.full);
 const formattedToolArgs = computed(() => toolArgsPayload.value.display);
@@ -580,107 +638,23 @@ const renderedToolResult = computed(() => {
   );
 });
 
-const renderedToolChangePatch = computed(() => {
-  if (!selectedToolChangePatch.value) return "";
-  return renderToolPayload(selectedToolChangePatch.value, "diff", {
-    showCopyButton: false,
-  });
-});
-
-function fileNameFromPath(path: string): string {
-  return path.split(/[\\/]/).filter(Boolean).pop() || path;
-}
-
-function fileExtension(path: string): string {
-  const name = fileNameFromPath(path);
-  const index = name.lastIndexOf(".");
-  if (index >= 0) return name.slice(index + 1).toLowerCase();
-  const lower = name.toLowerCase();
-  if (lower === "dockerfile") return "docker";
-  if (lower === "makefile") return "make";
-  return "file";
-}
-
-function fileBadgeClass(path: string): string {
-  const ext = fileExtension(path);
-  if (ext === "js" || ext === "ts" || ext === "jsx" || ext === "tsx") return "script";
-  if (ext === "py" || ext === "rb" || ext === "php") return "dynamic";
-  if (ext === "java" || ext === "kt" || ext === "scala") return "jvm";
-  if (ext === "rs" || ext === "go" || ext === "c" || ext === "cc" || ext === "cpp" || ext === "h" || ext === "hpp") return "systems";
-  if (ext === "html" || ext === "vue") return "markup";
-  if (ext === "css" || ext === "scss" || ext === "sass" || ext === "less") return "style";
-  if (ext === "json" || ext === "yaml" || ext === "yml" || ext === "toml" || ext === "xml") return "data";
-  if (ext === "md" || ext === "mdx" || ext === "txt") return "doc";
-  if (ext === "sh" || ext === "bash" || ext === "zsh" || ext === "fish" || ext === "docker" || ext === "make") return "shell";
-  return "default";
-}
-
-const selectedToolChangeFileName = computed(() =>
-  toolChangeDrawerFile.value ? fileNameFromPath(toolChangeDrawerFile.value.path) : "",
-);
-
-const selectedToolChangeAbsolutePath = computed(() => {
-  const file = toolChangeDrawerFile.value;
-  const workspace = toolChange.value?.workspace || "";
-  if (!file || !workspace) return file?.path || "";
-  const separator = workspace.includes("\\") && !workspace.includes("/") ? "\\" : "/";
-  const cleanWorkspace = workspace.replace(/[\\/]+$/, "");
-  return `${cleanWorkspace}${separator}${file.path}`;
-});
-
-async function openToolChangeFile(file: WorkspaceRunChangeFileSummary): Promise<void> {
-  selectedToolChangeFileId.value = file.id;
-  toolChangeDrawerFile.value = file;
-  toolChangeDrawerMode.value = "diff";
-  toolChangeDrawerVisible.value = true;
-  selectedToolChangePatch.value = "";
-  if (file.binary) {
-    selectedToolChangePatch.value = t("chat.binaryFileDiffUnavailable");
+function handleToolLineClick() {
+  if (isSubagentTool.value) {
+    openSubagentStream(chatStore.activeSessionId, props.message.toolCallId);
     return;
   }
-  isLoadingToolChangePatch.value = true;
-  try {
-    const detail = await chatStore.loadWorkspaceRunChangeFile(file.session_id, file.change_id, file.id);
-    selectedToolChangePatch.value = detail?.patch || t("chat.diffUnavailable");
-  } finally {
-    isLoadingToolChangePatch.value = false;
-  }
+  if (hasInlineToolDetails.value) toolExpanded.value = !toolExpanded.value;
 }
 
-async function editSelectedToolChangeFile(): Promise<void> {
-  const file = toolChangeDrawerFile.value;
-  const sessionId = toolChange.value?.session_id || props.message.toolChange?.session_id || "";
-  if (!file || !sessionId) return;
-  isLoadingToolChangePatch.value = true;
-  try {
-    await filesStore.openSessionWorkspaceEditor(sessionId, file.path);
-    toolChangeDrawerMode.value = "edit";
-  } catch (err: any) {
-    toast.error(err?.message || t("chat.diffUnavailable"));
-  } finally {
-    isLoadingToolChangePatch.value = false;
-  }
-}
-
-function closeToolChangeDrawer() {
-  if (toolChangeDrawerMode.value === "edit" && filesStore.hasUnsavedChanges) {
-    toast.warning(t("files.unsavedChanges"));
-    return;
-  }
-  toolChangeDrawerVisible.value = false;
-  toolChangeDrawerMode.value = "diff";
-  if (filesStore.editingFile?.path === selectedToolChangeAbsolutePath.value && !filesStore.hasUnsavedChanges) {
-    filesStore.closeEditor();
-  }
-}
-
-function closeToolChangeEditor() {
-  if (filesStore.hasUnsavedChanges) {
-    toast.warning(t("files.unsavedChanges"));
-    return;
-  }
-  filesStore.closeEditor();
-  toolChangeDrawerMode.value = "diff";
+async function openAssistantWorkspaceChangeFile(
+  file: { id: string | number; path: string; additions: number; deletions: number },
+  change: WorkspaceRunChangeSummary,
+): Promise<void> {
+  const storedFile = change.files.find(candidate => String(candidate.id) === String(file.id));
+  if (!storedFile) return;
+  selectedToolChangeFileId.value = storedFile.id;
+  filesStore.closePreview();
+  await toolPanelStore.openWorkspaceDiff(storedFile, change.workspace || "");
 }
 
 // 语音播放相关
@@ -689,13 +663,13 @@ const canPlaySpeech = computed(() => {
   if (props.message.role !== 'assistant') return false
   if (!copyableContent.value) return false
   // OpenAI / Custom / Edge / MiMo / Doubao 不依赖浏览器 Web Speech API
-  if (voiceSettings.provider.value === 'openai' || voiceSettings.provider.value === 'custom' || voiceSettings.provider.value === 'edge' || voiceSettings.provider.value === 'mimo' || voiceSettings.provider.value === 'doubao') return true
+  if (isServerTtsProvider(voiceSettings.provider.value)) return true
   return speech.isSupported
 })
 
 const isPlayingThisMessage = computed(() => {
   // OpenAI / Custom / Edge / MiMo / Doubao 模式
-  if (voiceSettings.provider.value === 'openai' || voiceSettings.provider.value === 'custom' || voiceSettings.provider.value === 'edge' || voiceSettings.provider.value === 'mimo' || voiceSettings.provider.value === 'doubao') {
+  if (isServerTtsProvider(voiceSettings.provider.value)) {
     return speech.currentCustomMessageId.value === props.message.id && speech.isCustomPlaying.value
   }
   return speech.currentMessageId.value === props.message.id && speech.isPlaying.value
@@ -703,7 +677,7 @@ const isPlayingThisMessage = computed(() => {
 
 const isPausedThisMessage = computed(() => {
   // OpenAI / Custom / Edge / MiMo / Doubao 模式
-  if (voiceSettings.provider.value === 'openai' || voiceSettings.provider.value === 'custom' || voiceSettings.provider.value === 'edge' || voiceSettings.provider.value === 'mimo' || voiceSettings.provider.value === 'doubao') {
+  if (isServerTtsProvider(voiceSettings.provider.value)) {
     return speech.currentCustomMessageId.value === props.message.id && speech.isCustomPaused.value
   }
   return speech.currentMessageId.value === props.message.id && speech.isPaused.value
@@ -790,6 +764,13 @@ function handleSpeechToggle() {
     return
   }
 
+  if (isServerTtsProvider(voiceSettings.provider.value)) {
+    speech.openaiToggle(props.message.id, content, {
+      provider: voiceSettings.provider.value,
+    })
+    return
+  }
+
   // Web Speech API 模式
   if (voiceSettings.provider.value === 'webspeech') {
     speech.toggleBrowser(props.message.id, content, {
@@ -861,6 +842,10 @@ onMounted(() => {
           voice: voiceSettings.doubaoVoice.value,
           stylePrompt: voiceSettings.doubaoStylePrompt.value || undefined,
         }).catch(handleAutoplayTtsError)
+      } else if (isServerTtsProvider(voiceSettings.provider.value)) {
+        void speech.openaiPlay(props.message.id, content, {
+          provider: voiceSettings.provider.value,
+        }).catch(handleAutoplayTtsError)
       } else if (voiceSettings.provider.value === 'webspeech') {
         const text = speech.extractReadableText(content)
         if (text) {
@@ -891,18 +876,22 @@ onBeforeUnmount(() => {
 <template>
   <div
     class="message"
-    :class="[message.role, { highlight, 'tool-change-message': hasToolChange }]"
+    :class="[message.role, { highlight }]"
     :id="`message-${message.id}`"
   >
     <template v-if="message.role === 'tool'">
       <div
-        v-if="!hasToolChange"
         class="tool-line"
-        :class="{ expandable: hasToolDetails }"
-        @click="hasToolDetails && (toolExpanded = !toolExpanded)"
+        :class="{ expandable: hasInlineToolDetails || isSubagentTool, 'subagent-entry': isSubagentTool }"
+        :role="isSubagentTool ? 'button' : undefined"
+        :tabindex="isSubagentTool ? 0 : undefined"
+        :title="isSubagentTool ? t('subagent.open') : undefined"
+        @click="handleToolLineClick"
+        @keydown.enter.prevent="handleToolLineClick"
+        @keydown.space.prevent="handleToolLineClick"
       >
         <svg
-          v-if="hasToolDetails"
+          v-if="hasInlineToolDetails || isSubagentTool"
           width="10"
           height="10"
           viewBox="0 0 24 24"
@@ -910,7 +899,7 @@ onBeforeUnmount(() => {
           stroke="currentColor"
           stroke-width="2"
           class="tool-chevron"
-          :class="{ rotated: toolExpanded }"
+          :class="{ rotated: toolExpanded && !isSubagentTool }"
         >
           <polyline points="9 18 15 12 9 6" />
         </svg>
@@ -930,7 +919,7 @@ onBeforeUnmount(() => {
         </svg>
         <span class="tool-name">{{ message.toolName }}</span>
         <span
-          v-if="message.toolPreview && !toolExpanded"
+          v-if="message.toolPreview && (!toolExpanded || isSubagentTool)"
           class="tool-preview"
           >{{ message.toolPreview }}</span
         >
@@ -942,64 +931,13 @@ onBeforeUnmount(() => {
           t("chat.error")
         }}</span>
       </div>
-      <div
-        v-if="hasToolChange"
-        class="tool-detail-section tool-change-standalone"
-        @click="handleToolDetailClick"
-      >
-        <div class="tool-change-card">
-          <button
-            class="tool-change-card-header"
-            type="button"
-            :aria-expanded="toolExpanded"
-            @click.stop="toolExpanded = !toolExpanded"
-          >
-            <svg
-              width="12"
-              height="12"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              class="tool-change-chevron"
-              :class="{ rotated: toolExpanded }"
-            >
-              <polyline points="9 18 15 12 9 6" />
-            </svg>
-            <span class="tool-change-card-title">
-              {{ t("chat.changedFiles", { files: toolChange?.files_changed || 0 }) }}
-            </span>
-            <span class="tool-change-card-stats">
-              <span class="additions">+{{ toolChange?.additions || 0 }}</span>
-              <span class="deletions">-{{ toolChange?.deletions || 0 }}</span>
-            </span>
-          </button>
-          <div v-if="toolExpanded" class="tool-change-files">
-            <button
-              v-for="file in toolChange?.files || []"
-              :key="file.id"
-              class="tool-change-file-row"
-              :class="{ selected: selectedToolChangeFileId === file.id }"
-              type="button"
-              @click.stop="openToolChangeFile(file)"
-            >
-              <span class="tool-change-file-main">
-                <span class="tool-change-file-badge" :class="fileBadgeClass(file.path)">
-                  {{ fileExtension(file.path) }}
-                </span>
-                <span class="tool-change-file-name" :title="file.path">
-                  {{ fileNameFromPath(file.path) }}
-                </span>
-              </span>
-              <span class="tool-change-file-stats">
-                <span class="additions">+{{ file.additions }}</span>
-                <span class="deletions">-{{ file.deletions }}</span>
-              </span>
-            </button>
+      <div v-if="!isSubagentTool && toolExpanded && hasToolDetails" class="tool-details" @click="handleToolDetailClick">
+        <div v-if="message.reasoning?.trim()" class="tool-detail-section">
+          <div class="tool-detail-label">{{ t("chat.thinkingLabel") }}</div>
+          <div class="tool-detail-reasoning">
+            <MarkdownRenderer :content="message.reasoning" />
           </div>
         </div>
-      </div>
-      <div v-else-if="toolExpanded && hasToolDetails" class="tool-details" @click="handleToolDetailClick">
         <div v-if="formattedToolArgs" class="tool-detail-section" data-copy-source="tool-args">
           <div class="tool-detail-label">{{ t("chat.arguments") }}</div>
           <div class="tool-detail-code-block" v-html="renderedToolArgs"></div>
@@ -1035,7 +973,7 @@ onBeforeUnmount(() => {
                 v-for="att in message.attachments"
                 :key="att.id"
                 class="msg-attachment"
-                :class="{ image: isImage(att.type) }"
+                :class="{ image: isImage(att.type), 'has-context': !!att.context }"
               >
                 <template v-if="isImage(att.type) && att.url">
                   <img
@@ -1069,6 +1007,10 @@ onBeforeUnmount(() => {
                     </svg>
                   </div>
                 </template>
+                <details v-if="att.context" class="msg-attachment-context">
+                  <summary>{{ t('browser.selectionData') }}</summary>
+                  <pre>{{ att.context }}</pre>
+                </details>
               </div>
             </div>
             <div
@@ -1123,7 +1065,7 @@ onBeforeUnmount(() => {
                     v-for="(file, idx) in contentFiles"
                     :key="idx"
                     class="msg-attachment"
-                    :class="{ image: file.type === 'image' }"
+                    :class="{ image: file.type === 'image', 'has-context': !!file.context }"
                   >
                     <template v-if="file.type === 'image'">
                       <img
@@ -1147,12 +1089,18 @@ onBeforeUnmount(() => {
                         <span class="att-name">{{ file.name }}</span>
                       </div>
                     </template>
+                    <details v-if="file.context" class="msg-attachment-context">
+                      <summary>{{ t('browser.selectionData') }}</summary>
+                      <pre>{{ file.context }}</pre>
+                    </details>
                   </div>
                 </div>
-                <MarkdownRenderer v-if="displayText" :content="displayText" />
               </template>
-              <!-- Plain text format -->
-              <MarkdownRenderer v-else-if="message.content" :content="message.content" />
+              <template v-if="parsedMessageReference">
+                <MarkdownRenderer :content="referencedContentMarkdown" />
+                <MarkdownRenderer v-if="parsedMessageReference.reply" :content="parsedMessageReference.reply" />
+              </template>
+              <MarkdownRenderer v-else-if="displayText" :content="displayText" />
             </template>
 
             <!-- Render assistant message content -->
@@ -1160,6 +1108,21 @@ onBeforeUnmount(() => {
               v-if="message.role === 'assistant' && message.content && !parsedThinking.body"
               :content="message.content"
               :heading-id-prefix="effectiveHeadingIdPrefix"
+            />
+
+            <ToolChangeCard
+              v-for="change in workspaceChanges"
+              :key="change.change_id"
+              class="assistant-workspace-change"
+              :files="change.files || []"
+              :files-changed="change.files_changed || 0"
+              :additions="change.additions || 0"
+              :deletions="change.deletions || 0"
+              :expanded="isWorkspaceChangeExpanded(change.change_id)"
+              :selected-file-id="selectedToolChangeFileId"
+              :title="t('chat.changesThisTurn')"
+              @toggle="toggleWorkspaceChange(change.change_id)"
+              @select="file => openAssistantWorkspaceChangeFile(file, change)"
             />
 
             <!-- Render system message content -->
@@ -1217,6 +1180,17 @@ onBeforeUnmount(() => {
               </svg>
             </button>
             <button
+              v-if="quotableContent"
+              class="reference-bubble-btn"
+              @click="referenceBubbleContent"
+              :title="t('chat.referenceMessage')"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 17l-5-5 5-5" />
+                <path d="M20 18v-2a4 4 0 0 0-4-4H4" />
+              </svg>
+            </button>
+            <button
               v-if="showForkAction"
               class="fork-bubble-btn"
               @click="forkFromCurrentTail"
@@ -1236,46 +1210,6 @@ onBeforeUnmount(() => {
       </div>
     </template>
   </div>
-  <NDrawer
-    :show="toolChangeDrawerVisible"
-    placement="right"
-    width="min(760px, 100vw)"
-    @update:show="value => { if (!value) closeToolChangeDrawer(); else toolChangeDrawerVisible = value }"
-  >
-    <NDrawerContent
-      header-class="tool-change-drawer-header"
-      body-content-class="tool-change-drawer-body-content"
-      :title="selectedToolChangeFileName || t('chat.workspaceChanges')"
-      closable
-    >
-      <div class="tool-change-drawer">
-        <div class="tool-change-drawer-actions">
-          <NButton
-            size="small"
-            :type="toolChangeDrawerMode === 'edit' ? 'primary' : 'default'"
-            :disabled="toolChangeDrawerFile?.binary"
-            :loading="isLoadingToolChangePatch && toolChangeDrawerMode === 'diff'"
-            @click="editSelectedToolChangeFile"
-          >
-            {{ t("common.edit") }}
-          </NButton>
-        </div>
-        <div v-if="selectedToolChangeAbsolutePath" class="tool-change-drawer-path">
-          {{ selectedToolChangeAbsolutePath }}
-        </div>
-        <NSpin v-if="isLoadingToolChangePatch" class="tool-change-drawer-spin" />
-        <FileEditor
-          v-else-if="toolChangeDrawerMode === 'edit' && filesStore.editingFile"
-          :custom-close="closeToolChangeEditor"
-        />
-        <div
-          v-else-if="selectedToolChangePatch"
-          class="tool-detail-code-block tool-change-drawer-diff"
-          v-html="renderedToolChangePatch"
-        ></div>
-      </div>
-    </NDrawerContent>
-  </NDrawer>
   <Teleport to="body">
     <div v-if="previewUrl" class="image-preview-overlay" @click.self="previewUrl = null">
       <img :src="previewUrl" class="image-preview-img" @click="previewUrl = null" />
@@ -1344,10 +1278,6 @@ onBeforeUnmount(() => {
 
   &.tool {
     align-items: flex-start;
-
-    &.tool-change-message {
-      max-width: 100%;
-    }
   }
 
   &.system {
@@ -1396,7 +1326,7 @@ onBeforeUnmount(() => {
 
 .message-bubble {
   padding: 10px 14px;
-  font-size: 14px;
+  font-size: var(--font-size-base);
   line-height: 1.65;
   word-break: break-word;
   overflow-wrap: anywhere;
@@ -1407,14 +1337,14 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
 
   &.system {
-    border-left: 3px solid $warning;
+    border-inline-start: 3px solid $warning;
     border-radius: $radius-sm;
     max-width: 80%;
     background-color: rgba(var(--warning-rgb), 0.06);
   }
 
   &.command {
-    border-left: none;
+    border-inline-start: none;
     border: 1px solid rgba(var(--accent-primary-rgb), 0.12);
     background-color: rgba(var(--accent-primary-rgb), 0.04);
     color: $text-secondary;
@@ -1448,6 +1378,14 @@ onBeforeUnmount(() => {
       0 0 20px rgba(255, 107, 107, 0.2);
     animation: rainbow-glow 4s linear infinite;
   }
+}
+
+:global(html.theme-has-custom-background .message.user .message-bubble:not(.system):not(.command):not(.agent-error)),
+:global(html.theme-has-custom-background .message.assistant .message-bubble:not(.system):not(.command):not(.agent-error)) {
+  background-color: rgba(var(--bg-main-surface-rgb), 0.78);
+  border: 1px solid rgba(var(--text-primary-rgb), 0.18);
+  -webkit-backdrop-filter: blur(8px) saturate(110%);
+  backdrop-filter: blur(8px) saturate(110%);
 }
 
 .command-result {
@@ -1579,6 +1517,10 @@ onBeforeUnmount(() => {
   &.image {
     max-width: 200px;
   }
+
+  &.image.has-context {
+    max-width: 420px;
+  }
 }
 
 .msg-attachment-thumb {
@@ -1587,6 +1529,22 @@ onBeforeUnmount(() => {
   max-height: 160px;
   object-fit: contain;
   cursor: pointer;
+}
+
+.msg-attachment.has-context .msg-attachment-thumb {
+  max-width: 420px;
+  max-height: 280px;
+}
+
+.msg-attachment-context {
+  max-width: 420px;
+  padding: 7px 9px;
+  border-top: 1px solid $border-light;
+  color: $text-secondary;
+  font-size: 11px;
+
+  summary { cursor: pointer; user-select: none; }
+  pre { max-height: 200px; margin: 8px 0 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 10px/1.45 monospace; }
 }
 
 .msg-attachment-file {
@@ -1659,7 +1617,7 @@ onBeforeUnmount(() => {
   .thinking-body {
     margin-top: 6px;
     padding: 6px 10px;
-    border-left: 2px solid $border-light;
+    border-inline-start: 2px solid $border-light;
     font-size: 13px;
     opacity: 0.85;
     font-style: italic;
@@ -1674,6 +1632,7 @@ onBeforeUnmount(() => {
   gap: 6px;
   margin-top: 4px;
   padding: 0 4px;
+  color: $text-muted;
   opacity: 0;
   transition: opacity 0.15s ease;
 
@@ -1688,6 +1647,7 @@ onBeforeUnmount(() => {
 }
 
 .copy-bubble-btn,
+.reference-bubble-btn,
 .speech-bubble-btn,
 .fork-bubble-btn {
   display: flex;
@@ -1697,7 +1657,7 @@ onBeforeUnmount(() => {
   height: 24px;
   border: none;
   background: transparent;
-  color: $text-muted;
+  color: inherit;
   cursor: pointer;
   border-radius: $radius-sm;
   padding: 0;
@@ -1708,14 +1668,6 @@ onBeforeUnmount(() => {
     background: rgba(0, 0, 0, 0.06);
   }
 
-  .dark & {
-    color: #999999;
-
-    &:hover {
-      color: #cccccc;
-      background: rgba(255, 255, 255, 0.1);
-    }
-  }
 }
 
 .speech-bubble-btn {
@@ -1741,12 +1693,8 @@ onBeforeUnmount(() => {
 
 .message-time {
   font-size: 11px;
-  color: $text-muted;
+  color: inherit;
   user-select: none;
-
-  .dark & {
-    color: #999999;
-  }
 }
 
 .tool-line {
@@ -1761,10 +1709,22 @@ onBeforeUnmount(() => {
   max-width: 100%;
   box-sizing: border-box;
 
+  &.subagent-entry {
+    display: inline-flex;
+    width: fit-content;
+    max-width: min(560px, calc(100% - 8px));
+
+    .tool-preview {
+      flex-grow: 0;
+    }
+  }
+
   &.expandable {
     cursor: pointer;
 
-    &:hover {
+    &:hover,
+    &:focus-visible {
+      outline: none;
       background: rgba(0, 0, 0, 0.03);
     }
   }
@@ -1816,24 +1776,18 @@ onBeforeUnmount(() => {
   padding: 0 4px;
   border-radius: 3px;
   line-height: 14px;
-  margin-left: 4px;
+  margin-inline-start: 4px;
 }
 
 .tool-details {
-  margin-left: 16px;
+  margin-inline-start: 16px;
   margin-top: 2px;
-  border-left: 2px solid $border-light;
-  padding-left: 10px;
+  border-inline-start: 2px solid $border-light;
+  padding-inline-start: 10px;
 }
 
 .tool-detail-section {
   margin-bottom: 6px;
-}
-
-.tool-change-standalone {
-  max-width: 100%;
-  min-width: min(760px, calc(100vw - 40px));
-  width: min(900px, calc(100vw - 40px));
 }
 
 .tool-detail-label {
@@ -1870,189 +1824,23 @@ onBeforeUnmount(() => {
   }
 }
 
-.tool-change-card {
-  background: $bg-secondary;
+.tool-detail-reasoning {
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 8px 10px;
   border: 1px solid $border-light;
-  border-radius: 10px;
-  color: $text-primary;
-  display: grid;
-  gap: 10px;
-  padding: 12px 14px;
-  width: 100%;
-
-  .dark & {
-    background: #1f1f1f;
-    border-color: rgba(255, 255, 255, 0.14);
-    color: #f2f2f2;
-  }
-}
-
-.tool-change-card-header {
-  align-items: baseline;
-  background: transparent;
-  border: 0;
-  color: inherit;
-  cursor: pointer;
-  display: flex;
-  gap: 8px;
-  justify-content: flex-start;
-  min-width: 0;
-  padding: 0;
-  text-align: left;
-  width: 100%;
-}
-
-.tool-change-chevron {
-  align-self: center;
-  flex-shrink: 0;
-  transition: transform 0.15s ease;
-
-  &.rotated {
-    transform: rotate(90deg);
-  }
-}
-
-.tool-change-files {
-  display: grid;
-  gap: 10px;
-}
-
-.tool-change-card-title {
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.tool-change-card-stats,
-.tool-change-file-stats {
-  display: inline-flex;
-  flex-shrink: 0;
-  font-family: $font-code;
+  border-radius: $radius-sm;
+  background: rgba(var(--text-primary-rgb), 0.035);
+  color: $text-secondary;
   font-size: 12px;
-  gap: 6px;
 
-  .additions {
-    color: #00e676;
+  :deep(.markdown-body > :first-child) {
+    margin-top: 0;
   }
 
-  .deletions {
-    color: #ff3b58;
+  :deep(.markdown-body > :last-child) {
+    margin-bottom: 0;
   }
-}
-
-.tool-change-file-row {
-  align-items: center;
-  background: transparent;
-  border: 0;
-  color: $text-primary;
-  cursor: pointer;
-  display: flex;
-  gap: 12px;
-  justify-content: space-between;
-  min-width: 0;
-  padding: 4px 0;
-  text-align: left;
-
-  &:hover,
-  &.selected {
-    .tool-change-file-name {
-      color: $text-primary;
-      text-decoration: underline;
-      text-underline-offset: 3px;
-    }
-  }
-
-  .dark & {
-    color: #f2f2f2;
-
-    &:hover,
-    &.selected {
-      .tool-change-file-name {
-        color: #ffffff;
-      }
-    }
-  }
-}
-
-.tool-change-file-main {
-  align-items: center;
-  display: inline-flex;
-  gap: 8px;
-  min-width: 0;
-}
-
-.tool-change-file-badge {
-  align-items: center;
-  border-radius: 2px;
-  display: inline-flex;
-  flex: 0 0 13px;
-  font-family: $font-code;
-  font-size: 7px;
-  font-weight: 700;
-  height: 13px;
-  justify-content: center;
-  line-height: 1;
-  overflow: hidden;
-  text-transform: uppercase;
-  width: 13px;
-
-  &.script {
-    background: #f7df1e;
-    color: #1f1f1f;
-  }
-
-  &.dynamic {
-    background: #3776ab;
-    color: #ffffff;
-  }
-
-  &.jvm {
-    background: #f0642f;
-    color: #ffffff;
-  }
-
-  &.systems {
-    background: #5e63b6;
-    color: #ffffff;
-  }
-
-  &.markup {
-    background: #e34f26;
-    color: #ffffff;
-  }
-
-  &.style {
-    background: #8b5cf6;
-    color: #ffffff;
-  }
-
-  &.data {
-    background: #64748b;
-    color: #ffffff;
-  }
-
-  &.doc {
-    background: #0f766e;
-    color: #ffffff;
-  }
-
-  &.shell {
-    background: #111827;
-    color: #ffffff;
-  }
-
-  &.default {
-    background: #6b7280;
-    color: #ffffff;
-  }
-}
-
-.tool-change-file-name {
-  font-size: 13px;
-  font-weight: 600;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .tool-change-loading {
@@ -2060,61 +1848,8 @@ onBeforeUnmount(() => {
   font-size: 11px;
 }
 
-.tool-change-drawer-actions {
-  display: inline-flex;
-  gap: 8px;
-}
-
-.tool-change-drawer {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
-}
-
-.tool-change-drawer-path {
-  color: $text-muted;
-  flex: 0 0 auto;
-  font-family: $font-code;
-  font-size: 11px;
+.assistant-workspace-change {
   margin-top: 10px;
-  overflow: hidden;
-  padding: 0 0 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.tool-change-drawer-spin {
-  align-self: center;
-  margin-top: 24px;
-}
-
-.tool-change-drawer-diff {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-
-  :deep(.hljs-code-block),
-  :deep(pre),
-  :deep(code.hljs),
-  :deep(.hljs.language-diff) {
-    height: 100%;
-    max-height: none;
-  }
-
-  :deep(code.hljs),
-  :deep(.hljs.language-diff) {
-    overflow: auto;
-  }
-}
-
-:deep(.n-drawer-body-content-wrapper) {
-  height: 100%;
-}
-
-:deep(.tool-change-drawer .file-editor) {
-  height: 100%;
-  min-height: 0;
 }
 
 @keyframes spin {
@@ -2128,7 +1863,7 @@ onBeforeUnmount(() => {
   width: 2px;
   height: 1em;
   background-color: $text-muted;
-  margin-left: 2px;
+  margin-inline-start: 2px;
   vertical-align: text-bottom;
   animation: blink 0.8s infinite;
 }
@@ -2205,19 +1940,14 @@ onBeforeUnmount(() => {
     max-width: 100%;
   }
 
-  .tool-change-standalone {
-    min-width: 0;
-    width: calc(100vw - 24px);
-  }
-
   :global(.tool-change-drawer-header) {
-    padding-left: 12px !important;
-    padding-right: 12px !important;
+    padding-inline-start: 12px !important;
+    padding-inline-end: 12px !important;
   }
 
   :global(.tool-change-drawer-body-content) {
-    padding-left: 8px !important;
-    padding-right: 8px !important;
+    padding-inline-start: 8px !important;
+    padding-inline-end: 8px !important;
   }
 }
 </style>

@@ -111,6 +111,7 @@ _SERVER_PATCH_NAMES = (
     "AgentPool",
     "_agent_root",
     "_apply_profile_env",
+    "_ensure_agent_imports",
     "_hermes_home",
     "_install_stop_signal_handlers",
     "_jsonable",
@@ -118,6 +119,7 @@ _SERVER_PATCH_NAMES = (
     "_positive_int",
     "_profile_home",
     "_read_json_request",
+    "_resolve_runtime",
     "_restore_profile_env",
     "_start_parent_process_watchdog",
     "_worker_profile",
@@ -212,9 +214,16 @@ class AgentPool(_pool.AgentPool):
         profile: str | None = None,
         model: str | None = None,
         provider: str | None = None,
+        background_delegation_enabled: bool | None = None,
     ) -> AgentSession:
         _sync_pool_patches()
-        return super().get_or_create(session_id, profile, model, provider)
+        return super().get_or_create(
+            session_id,
+            profile,
+            model,
+            provider,
+            background_delegation_enabled,
+        )
 
     def start_chat(self, *args: Any, **kwargs: Any) -> RunRecord:
         _sync_pool_patches()

@@ -5,6 +5,9 @@ export interface ActiveVersionManifest {
   hermesRuntimeVersion?: string
   webUiVersion?: string
   runtimeDirectory?: string
+  runtimeRootDirectory?: string
+  pendingRuntimeRootDirectory?: string
+  runtimeMigrationError?: string
   webUiDirectory?: string
   platform?: string
   updatedAt?: string
@@ -54,7 +57,12 @@ export interface RuntimeVersionStatus {
   remoteError: string
   hermes: {
     activeVersion: string
+    agentVersion: string
     activeDirectory: string
+    storageDirectory: string
+    defaultStorageDirectory: string
+    pendingStorageDirectory: string
+    migrationError: string
     installed: InstalledRuntimeVersion[]
     remoteVersions: string[]
   }
@@ -75,6 +83,13 @@ export async function activateRuntimeVersion(version: string): Promise<{ success
   return request<{ success: boolean; active: ActiveVersionManifest }>('/api/hermes/runtime-versions/active-runtime', {
     method: 'POST',
     body: JSON.stringify({ version }),
+  })
+}
+
+export async function selectRuntimeRoot(directory: string): Promise<{ success: boolean; active: ActiveVersionManifest }> {
+  return request<{ success: boolean; active: ActiveVersionManifest }>('/api/hermes/runtime-versions/runtime-root', {
+    method: 'POST',
+    body: JSON.stringify({ directory }),
   })
 }
 

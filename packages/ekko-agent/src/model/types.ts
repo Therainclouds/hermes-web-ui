@@ -19,11 +19,16 @@ export type AgentMessageRole = 'system' | 'user' | 'assistant' | 'tool'
 export interface AgentMessage {
   role: AgentMessageRole
   content: string
+  contentParts?: AgentMessageContentPart[]
   reasoning?: string
   name?: string
   toolCallId?: string
   toolCalls?: AgentToolCall[]
 }
+
+export type AgentMessageContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image'; data: string; mimeType: string }
 
 export interface AgentToolDefinition {
   name: string
@@ -47,12 +52,25 @@ export interface ModelUsage {
   reasoningTokens?: number
 }
 
+export type ModelReasoningEffort =
+  | 'none'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+
+export type ModelReasoningSummary = 'auto' | 'concise' | 'detailed'
+
 export interface ModelRequest {
   model?: string
   messages: AgentMessage[]
   signal?: AbortSignal
   temperature?: number
   maxTokens?: number
+  reasoningEffort?: ModelReasoningEffort
+  reasoningSummary?: ModelReasoningSummary
   tools?: AgentToolDefinition[]
   toolChoice?: 'auto' | 'none' | 'required'
   stream?: boolean
@@ -106,6 +124,8 @@ export interface ModelClient {
   provider: string
   requestStyle: ModelRequestStyle
   capabilities: ModelCapabilities
+  /** Resolve the credential-free request target used for diagnostics. */
+  requestTarget?(request: ModelRequest): string
   create(request: ModelRequest): Promise<ModelResponse>
   stream(request: ModelRequest): AsyncIterable<ModelEvent>
 }

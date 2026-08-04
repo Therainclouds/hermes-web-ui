@@ -3,18 +3,17 @@ import { existsSync, accessSync, chmodSync, constants as fsConstants, readFileSy
 import { homedir } from 'os'
 import { spawn, type ChildProcess } from 'child_process'
 import { createSession, addMessage, getSession, updateSession, updateSessionStats } from '../../db/hermes/session-store'
-import type { ApiMode } from './types'
+import type { ApiMode, CodingAgentImageInput } from './types'
 import { logger } from '../logger'
 import { normalizeTokenUsage, recordSessionUsage } from '../usage-recorder'
 import { applyResponseStreamEvent, flushResponseRunToDb } from '../hermes/run-chat/response-stream'
-import { calcAndUpdateUsage, estimateUsageTokensFromMessages, updateContextTokenUsage } from '../hermes/run-chat/usage'
+import { calcAndUpdateUsage, updateContextTokenUsage } from '../hermes/run-chat/usage'
 import { extractResponseText } from '../hermes/run-chat/response-utils'
 import type { SessionState } from '../hermes/run-chat/types'
 import type { CanonicalResponsesEvent } from './adapters/responses-stream'
 import { mapCodingAgentResponseEvent } from './coding-agent-event-mapper'
 import { normalizeWindowsCommandPath, windowsCmdShimExecution, windowsCommandNeedsShell } from '../windows-command'
 import { completeWorkspaceRunCheckpoint, startWorkspaceRunCheckpoint } from '../hermes/run-chat/workspace-diff-tracker'
-import { buildDbHistory, buildSnapshotAwareHistory } from '../hermes/run-chat/compression'
 
 const DEFAULT_IDLE_MS = 30 * 60 * 1000
 const TERMINAL_OUTPUT_FLUSH_MS = 120
@@ -113,10 +112,13 @@ interface ManagedCodingAgentRun {
   pendingChatCompletionEvent?: 'run.completed' | 'run.failed'
   pendingChatCompletionPayload?: Record<string, unknown>
   memoryExportStarted?: boolean
+  assistantMessageId?: string
 }
 
 interface CodingAgentRunSendOptions {
   systemPrompt?: string
+  images?: CodingAgentImageInput[]
+  storageInput?: string
 }
 
 function nowSeconds(): number {
@@ -249,6 +251,45 @@ function normalizeCliPromptArgument(prompt: string): string {
     .join(' / ')
 }
 
+function normalizedImageMediaType(image: CodingAgentImageInput): string {
+  const mediaType = String(image.mediaType || '').trim().toLowerCase()
+  if (mediaType === 'image/jpg') return 'image/jpeg'
+  return mediaType.startsWith('image/') ? mediaType : 'image/png'
+}
+
+export function codexImageArgs(images: CodingAgentImageInput[]): string[] {
+  return images.flatMap((image) => {
+    const path = String(image.path || '').trim()
+    return path ? ['--image', path] : []
+  })
+}
+
+export function buildClaudeStreamJsonInput(input: string, images: CodingAgentImageInput[]): string {
+  const content: any[] = []
+  const text = String(input || '').trim()
+  if (text) content.push({ type: 'text', text })
+  for (const image of images) {
+    const path = String(image.path || '').trim()
+    if (!path) continue
+    content.push({
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: normalizedImageMediaType(image),
+        data: readFileSync(path).toString('base64'),
+      },
+    })
+  }
+  return JSON.stringify({
+    type: 'user',
+    message: {
+      role: 'user',
+      content,
+    },
+    parent_tool_use_id: null,
+  })
+}
+
 function hasArg(args: string[], name: string): boolean {
   return args.includes(name)
 }
@@ -266,6 +307,7 @@ function decodeChildChunk(chunk: Buffer): string {
 function spawnCodingAgentChild(command: string, args: string[], options: {
   cwd: string
   env: NodeJS.ProcessEnv
+  pipeStdin?: boolean
 }): ChildProcess {
   const normalizedCommand = process.platform === 'win32' ? normalizeWindowsCommandPath(command) : command
   if (process.platform === 'win32' && windowsCommandNeedsShell(command)) {
@@ -273,7 +315,7 @@ function spawnCodingAgentChild(command: string, args: string[], options: {
     return spawn(execution.command, execution.args, {
       cwd: options.cwd,
       env: options.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: options.pipeStdin ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
       windowsVerbatimArguments: execution.windowsVerbatimArguments,
       windowsHide: true,
     })
@@ -282,7 +324,7 @@ function spawnCodingAgentChild(command: string, args: string[], options: {
   return spawn(normalizedCommand, args, {
     cwd: options.cwd,
     env: options.env,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: options.pipeStdin ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
     detached: process.platform !== 'win32',
     windowsHide: process.platform === 'win32',
   })
@@ -547,19 +589,21 @@ export class CodingAgentRunManager {
     const run = this.getBySession(sessionId)
     if (!run) throw new Error('Coding agent session not found')
     const text = String(input || '').trim()
-    if (!text) throw new Error('Input is required')
+    const images = Array.isArray(options.images) ? options.images : []
+    if (!text && images.length === 0) throw new Error('Input is required')
     const systemPrompt = String(options.systemPrompt || '').trim()
     this.ensureDbSession(run)
-    this.addUserMessage(run, text)
+    run.assistantMessageId = undefined
+    this.addUserMessage(run, options.storageInput ?? text)
     this.touch(run)
     this.emitTerminalStatus(run, 'Input sent to coding agent.')
     this.startWorkspaceRunDiff(run)
     if (run.launch.agentId === 'claude-code') {
-      this.startClaudePrintTurn(run, text, systemPrompt)
+      this.startClaudePrintTurn(run, text, systemPrompt, images)
       return { runId: run.id }
     }
     if (run.launch.agentId === 'codex') {
-      this.startCodexExecTurn(run, text, systemPrompt)
+      this.startCodexExecTurn(run, text, systemPrompt, images)
       return { runId: run.id }
     }
     if (!run.pty) throw new Error('Coding agent terminal is not available')
@@ -623,7 +667,10 @@ export class CodingAgentRunManager {
     const responseEvent = this.normalizeCodexChatTextEvent(run, event)
     if (!responseEvent) return
     const storageSafeResponseEvent = truncateCodingAgentToolOutputEvent(responseEvent)
-    if (run.launch.agentId === 'claude-code' && run.currentChild && !run.acceptingPrintEvent && !isProxyToolEvent(event)) return
+    if (run.launch.agentId === 'claude-code' && !run.acceptingPrintEvent) {
+      if (run.terminalEventHandled) return
+      if (run.currentChild && !isProxyToolEvent(event)) return
+    }
     if (storageSafeResponseEvent.type === 'response.created') {
       if (run.responseStartEmitted) return
       run.responseStartEmitted = true
@@ -657,10 +704,9 @@ export class CodingAgentRunManager {
       this.emitToChat(run.launch.sessionId, mapped.event, mapped.payload)
     }
     if (isTerminalEvent) {
-      flushResponseRunToDb(run.state, run.launch.sessionId)
+      run.assistantMessageId = flushResponseRunToDb(run.state, run.launch.sessionId)
       run.state.responseRun = undefined
       updateSessionStats(run.launch.sessionId)
-      run.terminalUsageRefresh = this.refreshCodingAgentUsage(run)
       const final = (storageSafeResponseEvent.data as any).response || storageSafeResponseEvent.data
       if (run.launch.mode !== 'scoped' && final?.usage) {
         const usage = normalizeTokenUsage(final.usage)
@@ -679,6 +725,7 @@ export class CodingAgentRunManager {
           })
         }
       }
+      run.terminalUsageRefresh = this.refreshCodingAgentUsage(run)
       const finalText = extractResponseText(final)
       const terminalError = storageSafeResponseEvent.type === 'response.failed'
         ? responseErrorMessage(final?.error || (responseEvent.data as any).error) || 'Coding agent run failed'
@@ -704,29 +751,15 @@ export class CodingAgentRunManager {
     const emitUsage = (event: string, payload: any) => {
       this.emitToChat(run.launch.sessionId, event, payload)
     }
-    const usage = await calcAndUpdateUsage(run.launch.sessionId, run.state, emitUsage)
-    const contextTokens = await this.estimateCodingAgentContextTokens(run)
-    if (contextTokens != null) {
+    const usage = await calcAndUpdateUsage(run.launch.sessionId, run.state, emitUsage, {
+      nativeSource: 'coding_agent',
+    })
+    const contextTokens = usage.contextInputTokens != null || usage.contextOutputTokens != null
+      ? (usage.contextInputTokens || 0) + (usage.contextOutputTokens || 0)
+      : undefined
+    if (contextTokens != null && contextTokens > 0) {
       updateContextTokenUsage(run.launch.sessionId, run.state, emitUsage, contextTokens, usage)
     }
-  }
-
-  private async estimateCodingAgentContextTokens(run: ManagedCodingAgentRun): Promise<number | undefined> {
-    try {
-      const dbHistory = await buildDbHistory(run.launch.sessionId, { excludeLastUser: false })
-      const snapshotHistory = await buildSnapshotAwareHistory(
-        run.launch.sessionId,
-        run.launch.profile || 'default',
-        dbHistory,
-        { model: run.launch.model, provider: run.launch.provider },
-      )
-      const usage = estimateUsageTokensFromMessages(snapshotHistory)
-      const contextTokens = usage.inputTokens + usage.outputTokens
-      if (contextTokens > 0) return contextTokens
-    } catch (err) {
-      logger.warn(err, '[coding-agent-run] failed to calculate context tokens for session %s', run.launch.sessionId)
-    }
-    return undefined
   }
 
   private normalizeCodexChatTextEvent(run: ManagedCodingAgentRun, event: CanonicalResponsesEvent): CanonicalResponsesEvent | null {
@@ -843,7 +876,12 @@ export class CodingAgentRunManager {
     }
   }
 
-  private startClaudePrintTurn(run: ManagedCodingAgentRun, input: string, systemPrompt = '') {
+  private startClaudePrintTurn(
+    run: ManagedCodingAgentRun,
+    input: string,
+    systemPrompt = '',
+    images: CodingAgentImageInput[] = [],
+  ) {
     if (childIsRunning(run.currentChild)) {
       throw new Error('Claude Code is still processing the previous input')
     }
@@ -877,16 +915,18 @@ export class CodingAgentRunManager {
     const promptArgument = hasArg(run.launch.args, '--append-system-prompt-file')
       ? ''
       : normalizeCliPromptArgument(systemPrompt)
+    const streamInput = images.length > 0 ? buildClaudeStreamJsonInput(input, images) : ''
     const args = [
       ...run.launch.args,
       ...nativeSessionArgs,
       ...(promptArgument ? ['--append-system-prompt', promptArgument] : []),
       '-p',
+      ...(streamInput ? ['--input-format', 'stream-json'] : []),
       '--output-format',
       'stream-json',
       '--include-partial-messages',
       '--verbose',
-      input,
+      ...(streamInput ? [] : [input]),
     ]
     const child = spawnCodingAgentChild(run.launch.command, args, {
       cwd: existsSync(run.launch.workspaceDir) ? run.launch.workspaceDir : homedir(),
@@ -894,6 +934,7 @@ export class CodingAgentRunManager {
         ...process.env,
         ...(run.launch.env || {}),
       },
+      pipeStdin: Boolean(streamInput),
     })
     run.currentChild = child
 
@@ -911,6 +952,13 @@ export class CodingAgentRunManager {
       const text = appendChildStderr(run, chunk)
       if (text) logger.debug({ runId: run.id, sessionId: run.launch.sessionId, text }, '[coding-agent-run] claude print stderr')
     })
+
+    if (streamInput && child.stdin) {
+      child.stdin.on('error', (err) => {
+        logger.warn({ err, runId: run.id, sessionId: run.launch.sessionId }, '[coding-agent-run] claude stream input failed')
+      })
+      child.stdin.end(`${streamInput}\n`)
+    }
 
     child.on('error', (err) => {
       if (run.currentChildKillTimer) clearTimeout(run.currentChildKillTimer)
@@ -1286,7 +1334,12 @@ export class CodingAgentRunManager {
     })
   }
 
-  private startCodexExecTurn(run: ManagedCodingAgentRun, input: string, systemPrompt = '') {
+  private startCodexExecTurn(
+    run: ManagedCodingAgentRun,
+    input: string,
+    systemPrompt = '',
+    images: CodingAgentImageInput[] = [],
+  ) {
     if (childIsRunning(run.currentChild)) {
       throw new Error('Codex is still processing the previous input')
     }
@@ -1320,6 +1373,7 @@ export class CodingAgentRunManager {
       ...CODEX_REASONING_SUMMARY_ARGS,
       ...(promptArgument ? ['-c', `developer_instructions=${JSON.stringify(promptArgument)}`] : []),
       ...run.launch.args,
+      ...codexImageArgs(images),
       '--skip-git-repo-check',
       '--dangerously-bypass-approvals-and-sandbox',
     ]
@@ -1918,6 +1972,7 @@ export class CodingAgentRunManager {
         sessionId: run.launch.sessionId,
         runId: run.id,
         workspace: run.launch.workspaceDir,
+        assistantMessageId: run.assistantMessageId,
       })
       if (!change) return null
       this.emitToChat(run.launch.sessionId, 'workspace.diff.completed', {

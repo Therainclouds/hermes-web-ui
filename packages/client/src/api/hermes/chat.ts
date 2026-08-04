@@ -5,8 +5,8 @@ import type { ProviderApiMode } from './system'
 
 export type ContentBlock =
   | { type: 'text'; text: string }
-  | { type: 'image'; name: string; path: string; media_type: string }
-  | { type: 'file'; name: string; path: string; media_type?: string }
+  | { type: 'image'; name: string; path: string; media_type: string; context?: string }
+  | { type: 'file'; name: string; path: string; media_type?: string; context?: string }
 
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system'
@@ -15,6 +15,8 @@ export interface ChatMessage {
 
 export interface StartRunRequest {
   input: string | ContentBlock[]
+  /** Optional UI/storage representation when model input carries hidden metadata. */
+  display_input?: string | ContentBlock[] | null
   instructions?: string
   session_id?: string
   profile?: string
@@ -28,6 +30,7 @@ export interface StartRunRequest {
   agent_id?: ChatCodingAgentId
   mode?: 'scoped' | 'global'
   workspace?: string | null
+  category_id?: number | null
   baseUrl?: string
   base_url?: string
   apiKey?: string
@@ -53,6 +56,8 @@ export interface RunEvent {
   delta?: string
   /** Payload text for `reasoning.delta` / `thinking.delta` / `reasoning.available` events. */
   text?: string
+  /** Whether a `message.interim` payload was already delivered by message.delta. */
+  already_streamed?: boolean
   /** MoA reference metadata forwarded as display-only reasoning. */
   label?: string
   index?: number
@@ -89,6 +94,26 @@ export interface RunEvent {
   workspace?: string | null
   /** Queue length from run.queued event */
   queue_length?: number
+  /** Number of background delegations still running or awaiting delivery. */
+  background_pending?: number
+  /** True when this run was started by a delivered background completion. */
+  autonomous?: boolean
+  delegation_id?: string
+  subagent_id?: string
+  task_index?: number
+  task_count?: number
+  goal?: string
+  model?: string
+  status?: string
+  summary?: string
+  arguments?: unknown
+  tool_count?: number
+  duration_seconds?: number
+  background_seq?: number
+  api_calls?: number
+  input_tokens?: number
+  output_tokens?: number
+  cost_usd?: number
   /** Queue item that was just removed because it is starting now. */
   dequeued_queue_id?: string
   /** Queued user messages from run.queued/resume payloads. */
@@ -125,6 +150,8 @@ export interface ResumeSessionPayload {
   workspace?: string | null
   queueLength?: number
   queueMessages?: RunEvent['queued_messages']
+  backgroundTasks?: Array<Record<string, unknown>>
+  backgroundPending?: number
 }
 
 // ============================
@@ -149,6 +176,7 @@ const TRANSIENT_DISCONNECT_REASONS = new Set<string>([
  */
 const sessionEventHandlers = new Map<string, {
   onMessageDelta: (event: RunEvent) => void
+  onMessageInterim: (event: RunEvent) => void
   onReasoningDelta: (event: RunEvent) => void
   onThinkingDelta: (event: RunEvent) => void
   onReasoningAvailable: (event: RunEvent) => void
@@ -194,6 +222,13 @@ function globalMessageDeltaHandler(event: RunEvent): void {
   if (handlers?.onMessageDelta) {
     handlers.onMessageDelta(event)
   }
+}
+
+function globalMessageInterimHandler(event: RunEvent): void {
+  const sid = event.session_id
+  if (!sid) return
+
+  sessionEventHandlers.get(sid)?.onMessageInterim(event)
 }
 
 /**
@@ -307,7 +342,7 @@ function globalRunCompletedHandler(event: RunEvent): void {
   }
 
   // Auto-cleanup session handlers on completion (skip if more runs queued)
-  if ((event as any).queue_remaining > 0) return
+  if ((event as any).queue_remaining > 0 || (event.background_pending || 0) > 0) return
   sessionEventHandlers.delete(sid)
 }
 
@@ -324,7 +359,7 @@ function globalRunFailedHandler(event: RunEvent): void {
   }
 
   // Auto-cleanup session handlers on failure (skip if more runs queued)
-  if ((event as any).queue_remaining > 0) return
+  if ((event as any).queue_remaining > 0 || (event.background_pending || 0) > 0) return
   sessionEventHandlers.delete(sid)
 }
 
@@ -550,6 +585,7 @@ export function registerSessionHandlers(
   sessionId: string,
   handlers: {
     onMessageDelta: (event: RunEvent) => void
+    onMessageInterim: (event: RunEvent) => void
     onReasoningDelta: (event: RunEvent) => void
     onThinkingDelta: (event: RunEvent) => void
     onReasoningAvailable: (event: RunEvent) => void
@@ -708,6 +744,7 @@ export function connectChatRun(requestedProfile?: string | null, transport: Chat
   if (!globalListenersRegistered) {
     // Message events
     chatRunSocket.on('message.delta', globalMessageDeltaHandler)
+    chatRunSocket.on('message.interim', globalMessageInterimHandler)
     chatRunSocket.on('reasoning.delta', globalReasoningDeltaHandler)
     chatRunSocket.on('thinking.delta', globalThinkingDeltaHandler)
     chatRunSocket.on('reasoning.available', globalReasoningAvailableHandler)
@@ -722,7 +759,10 @@ export function connectChatRun(requestedProfile?: string | null, transport: Chat
     chatRunSocket.on('subagent.start', globalSubagentEventHandler)
     chatRunSocket.on('subagent.tool', globalSubagentEventHandler)
     chatRunSocket.on('subagent.progress', globalSubagentEventHandler)
+    chatRunSocket.on('subagent.text', globalSubagentEventHandler)
+    chatRunSocket.on('subagent.thinking', globalSubagentEventHandler)
     chatRunSocket.on('subagent.complete', globalSubagentEventHandler)
+    chatRunSocket.on('delegation.updated', globalSubagentEventHandler)
 
     // Run lifecycle events
     chatRunSocket.on('run.started', globalRunStartedHandler)
@@ -900,6 +940,10 @@ export function startRunViaSocket(
       if (closed) return
       onEvent(evt)
     },
+    onMessageInterim: (evt: RunEvent) => {
+      if (closed) return
+      onEvent(evt)
+    },
     onReasoningDelta: (evt: RunEvent) => {
       if (closed) return
       onEvent(evt)
@@ -937,6 +981,10 @@ export function startRunViaSocket(
       if (closed) return
       onEvent(evt)
       if ((evt as any).queue_remaining > 0) return
+      if ((evt.background_pending || 0) > 0) {
+        onDone()
+        return
+      }
       closed = true
       removeTerminalSocketListeners()
       onDone()
@@ -945,6 +993,10 @@ export function startRunViaSocket(
       if (closed) return
       onEvent(evt)
       if ((evt as any).queue_remaining > 0) return
+      if ((evt.background_pending || 0) > 0) {
+        onDone()
+        return
+      }
       closed = true
       removeTerminalSocketListeners()
       onDone()

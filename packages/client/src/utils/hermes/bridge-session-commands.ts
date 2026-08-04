@@ -1,9 +1,11 @@
 export type BridgeSessionCommandName =
   | 'usage'
   | 'status'
+  | 'yolo'
   | 'abort'
   | 'queue'
   | 'skill'
+  | 'bundles'
   | 'learn'
   | 'plan'
   | 'moa'
@@ -26,14 +28,19 @@ export interface BridgeSessionCommandDefinition {
   args?: string
   insertText?: string
   opensSkillPicker?: boolean
+  opensBundlePicker?: boolean
+  opensBundleCreator?: boolean
 }
 
 export const BRIDGE_SESSION_COMMAND_DEFINITIONS: BridgeSessionCommandDefinition[] = [
   { key: 'command:usage', name: 'usage', args: '', descriptionKey: 'chat.slashCommands.usage' },
   { key: 'command:status', name: 'status', args: '', descriptionKey: 'chat.slashCommands.status' },
+  { key: 'command:yolo', name: 'yolo', args: '', descriptionKey: 'chat.slashCommands.yolo' },
   { key: 'command:abort', name: 'abort', args: '', descriptionKey: 'chat.slashCommands.abort' },
   { key: 'command:queue', name: 'queue', argsKey: 'chat.slashCommandArgs.message', descriptionKey: 'chat.slashCommands.queue' },
   { key: 'command:skill', name: 'skill', args: '', descriptionKey: 'skills.title', opensSkillPicker: true },
+  { key: 'command:bundles', name: 'bundles', args: '', descriptionKey: 'chat.slashCommands.bundles', opensBundlePicker: true },
+  { key: 'command:bundles-create', name: 'bundles', args: 'create', insertText: 'bundles create', descriptionKey: 'chat.slashCommands.bundlesCreate', opensBundleCreator: true },
   { key: 'command:learn', name: 'learn', argsKey: 'chat.slashCommandArgs.text', descriptionKey: 'chat.slashCommands.learn' },
   { key: 'command:plan', name: 'plan', argsKey: 'chat.slashCommandArgs.text', descriptionKey: 'chat.slashCommands.plan' },
   { key: 'command:moa', name: 'moa', argsKey: 'chat.slashCommandArgs.text', descriptionKey: 'chat.slashCommands.moa' },

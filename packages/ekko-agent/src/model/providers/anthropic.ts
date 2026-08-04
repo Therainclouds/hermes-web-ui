@@ -35,9 +35,14 @@ interface AnthropicPayload {
 
 type AnthropicContentBlock =
   | { type: 'text'; text: string }
+  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
   | { type: 'thinking'; thinking: string }
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
-  | { type: 'tool_result'; tool_use_id: string; content: string }
+  | { type: 'tool_result'; tool_use_id: string; content: string | Array<AnthropicToolResultContent> }
+
+type AnthropicToolResultContent =
+  | { type: 'text'; text: string }
+  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
 
 interface AnthropicResponse {
   id?: string
@@ -55,7 +60,7 @@ interface AnthropicResponse {
 const capabilities: ModelCapabilities = {
   streaming: true,
   tools: true,
-  vision: false,
+  vision: true,
   jsonMode: false,
   systemPrompt: true,
 }
@@ -73,6 +78,10 @@ export class AnthropicMessagesModelClient implements ModelClient {
     this.provider = config.id
     this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis)
     this.capabilities = { ...capabilities, ...config.capabilities }
+  }
+
+  requestTarget(): string {
+    return anthropicUrl(this.config)
   }
 
   async create(request: ModelRequest): Promise<ModelResponse> {
@@ -153,14 +162,21 @@ export class AnthropicMessagesModelClient implements ModelClient {
 }
 
 export function toAnthropicMessagesPayload(config: ModelProviderConfig, request: ModelRequest): AnthropicPayload {
+  const tools = request.tools?.length ? request.tools.map(toAnthropicTool) : undefined
   return {
     model: request.model ?? config.defaultModel,
     system: request.messages.filter(message => message.role === 'system').map(message => message.content).join('\n\n') || undefined,
     messages: request.messages.filter(message => message.role !== 'system').map(toAnthropicMessage),
     max_tokens: request.maxTokens ?? 4096,
     temperature: request.temperature,
-    tools: request.tools?.map(toAnthropicTool),
-    tool_choice: request.toolChoice ? { type: request.toolChoice === 'required' ? 'any' : request.toolChoice } : undefined,
+    ...(tools
+      ? {
+          tools,
+          ...(request.toolChoice
+            ? { tool_choice: { type: request.toolChoice === 'required' ? 'any' : request.toolChoice } }
+            : {}),
+        }
+      : {}),
     stream: request.stream,
   }
 }
@@ -200,13 +216,37 @@ function toAnthropicMessage(message: AgentMessage): AnthropicPayload['messages']
   }
 
   if (message.role === 'tool') {
+    const images = message.contentParts?.filter(part => part.type === 'image') ?? []
     return {
       role: 'user',
-      content: [{ type: 'tool_result', tool_use_id: message.toolCallId ?? '', content: message.content }],
+      content: [{
+        type: 'tool_result',
+        tool_use_id: message.toolCallId ?? '',
+        content: images.length
+          ? [
+              { type: 'text', text: message.content },
+              ...images.map(image => ({ type: 'image' as const, source: { type: 'base64' as const, media_type: image.mimeType, data: image.data } })),
+            ]
+          : message.content,
+      }],
     }
   }
 
-  return { role: 'user', content: [{ type: 'text', text: message.content }] }
+  const images = message.contentParts?.filter(part => part.type === 'image') ?? []
+  return {
+    role: 'user',
+    content: [
+      ...(message.content ? [{ type: 'text' as const, text: message.content }] : []),
+      ...images.map(image => ({
+        type: 'image' as const,
+        source: {
+          type: 'base64' as const,
+          media_type: image.mimeType,
+          data: image.data,
+        },
+      })),
+    ],
+  }
 }
 
 function toAnthropicTool(tool: AgentToolDefinition): NonNullable<AnthropicPayload['tools']>[number] {
@@ -257,8 +297,9 @@ function anthropicUrl(config: ModelProviderConfig): string {
 
 function anthropicHeaders(config: ModelProviderConfig): HeadersInit {
   const headers = requestHeaders(config, { 'anthropic-version': '2023-06-01' }) as Record<string, string>
-  if (isOfficialAnthropicBaseUrl(config.baseUrl)) delete headers.authorization
-  if (config.apiKey) headers['x-api-key'] = config.apiKey
+  const usesBearerAuth = ['claude-oauth', 'minimax-oauth'].includes(config.id)
+  if (isOfficialAnthropicBaseUrl(config.baseUrl) && !usesBearerAuth) delete headers.authorization
+  if (config.apiKey && !usesBearerAuth) headers['x-api-key'] = config.apiKey
   return headers
 }
 

@@ -103,6 +103,48 @@ Do not make a Windows job require macOS `.dmg` files or a Linux job require
 Windows installers. Keep `fail_on_unmatched_files: true` where platform-specific
 artifact lists make the expectation explicit.
 
+### Desktop Hermes Runtime
+
+Hermes runtime assets are built separately by
+`.github/workflows/desktop-runtime.yml`. `packages/desktop/scripts/runtime-config.mjs`
+pins an upstream Hermes version, Git ref, and full commit; version overrides
+must supply the ref and commit together.
+
+The portable Node.js included in runtime assets is pinned independently from
+the GitHub Actions runner. Manual runtime dispatches take a target release tag;
+when the release does not exist, the upload step creates it with the workflow's
+`GITHUB_TOKEN`. Do not pre-publish runtime-only releases with a user token,
+because that emits `release.published` and starts the normal Web UI and Docker
+release workflows.
+
+The published runtime keeps this updateable layout:
+
+```text
+python/                 Hermes Agent Git checkout and source root
+  .git/
+  base/                 Windows python-build-standalone base runtime
+  venv/                 bundled Python environment
+    Scripts/python.exe  Windows PEP 405 venv interpreter
+  agent-browser/
+  node/                  browser CLI npm prefix
+  ms-playwright/
+node/                    bundled Node.js
+git/                     bundled MinGit on Windows
+runtime-manifest.json
+```
+
+`prepare:runtime` fetches the exact source commit and installs its locked
+dependencies into `python/venv`. On Windows, the standalone base interpreter is
+embedded at `python/base` and a sibling PEP 405 venv wraps it. Windows requires
+an absolute `pyvenv.cfg` home, so the build, package validation, extraction, and
+runtime migration paths rebase that value before launching Python. This lets
+upstream `hermes update` safely target the environment through `VIRTUAL_ENV`.
+The build also creates the upstream TUI/dashboard and verifies that the retained
+checkout is clean. `package:runtime` includes the source and Git metadata in the
+GitHub/CF archive and records them in schema 2 of the runtime manifest. Do not
+patch tracked Hermes source during this build:
+Studio-specific integration belongs in Studio, and the clean checkout is what
+allows users to run the upstream `hermes update` command directly.
 ## Update And Deploy Boundaries
 
 The repository currently supports multiple update shapes. Keep them distinct:

@@ -9,24 +9,6 @@ const mockMessage = vi.hoisted(() => ({
   error: vi.fn(),
 }))
 
-const mockSettingsStore = vi.hoisted(() => ({
-  platforms: {} as Record<string, any>,
-  fetchSettings: vi.fn(async () => {
-    mockSettingsStore.platforms = {
-      telegram: { token: 'telegram-token' },
-      discord: { token: 'discord-token' },
-      slack: { token: 'slack-token' },
-      whatsapp: { enabled: true },
-      matrix: { token: 'matrix-token' },
-      weixin: { token: 'weixin-token' },
-      wecom: { extra: { bot_id: 'wecom-bot' } },
-      feishu: { extra: { app_id: 'feishu-app' } },
-      dingtalk: { extra: { client_id: 'dingtalk-client' } },
-      qqbot: { extra: { app_id: 'qq-app', client_secret: 'qq-secret' } },
-    }
-  }),
-}))
-
 const mockJobsStore = vi.hoisted(() => ({
   createJob: vi.fn(),
   updateJob: vi.fn(),
@@ -56,9 +38,7 @@ const mockFetchSkills = vi.hoisted(() => vi.fn(async () => ({
   archived: [],
 })))
 
-vi.mock('@/stores/hermes/settings', () => ({
-  useSettingsStore: () => mockSettingsStore,
-}))
+const mockListJobDeliveryTargets = vi.hoisted(() => vi.fn())
 
 vi.mock('@/stores/hermes/jobs', () => ({
   useJobsStore: () => mockJobsStore,
@@ -73,6 +53,7 @@ vi.mock('@/api/hermes/jobs', async () => {
   return {
     ...actual,
     getJob: vi.fn(),
+    listJobDeliveryTargets: mockListJobDeliveryTargets,
   }
 })
 
@@ -84,6 +65,10 @@ vi.mock('vue-i18n', () => ({
   useI18n: () => ({
     t: (key: string) => key,
   }),
+}))
+
+vi.mock('@/composables/useAppMessage', () => ({
+  useMessage: () => mockMessage,
 }))
 
 vi.mock('naive-ui', () => ({
@@ -124,55 +109,59 @@ import JobFormModal from '@/components/hermes/jobs/JobFormModal.vue'
 describe('JobFormModal deliver targets', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockSettingsStore.platforms = {}
+    mockListJobDeliveryTargets.mockResolvedValue({ updated_at: null, targets: [] })
   })
 
-  it('loads platform settings when the store has not been hydrated', async () => {
+  it('loads delivery targets and models when opened', async () => {
     mount(JobFormModal, {
       props: { jobId: null },
     })
 
     await flushPromises()
 
-    expect(mockSettingsStore.fetchSettings).toHaveBeenCalledOnce()
+    expect(mockListJobDeliveryTargets).toHaveBeenCalledOnce()
     expect(mockAppStore.loadModels).toHaveBeenCalledOnce()
   })
 
-  it('shows every supported platform channel in deliver target options', async () => {
-    mockSettingsStore.platforms = {
-      telegram: { token: 'telegram-token' },
-      whatsapp: { enabled: false },
-      qqbot: { extra: { app_id: 'qq-app', client_secret: 'qq-secret' } },
-    }
+  it('shows discovered profile channels as explicit delivery targets', async () => {
+    mockListJobDeliveryTargets.mockResolvedValue({
+      updated_at: '2026-07-17T09:15:00+08:00',
+      targets: [
+        {
+          platform: 'weixin',
+          id: 'wx-user@im.wechat',
+          name: '微信私聊',
+          type: 'dm',
+          thread_id: null,
+          value: 'weixin:wx-user@im.wechat',
+        },
+        {
+          platform: 'feishu',
+          id: 'oc_example',
+          name: '研发群',
+          type: 'group',
+          thread_id: null,
+          value: 'feishu:oc_example',
+        },
+      ],
+    })
     const wrapper = mount(JobFormModal, {
       props: { jobId: null },
     })
 
     await flushPromises()
 
-    expect(mockSettingsStore.fetchSettings).not.toHaveBeenCalled()
     const labels = wrapper.findAll('.n-select-stub')[4].text()
-    expect(labels).toContain('Telegram')
-    expect(labels).toContain('Discord')
-    expect(labels).toContain('Slack')
-    expect(labels).toContain('WhatsApp')
-    expect(labels).toContain('Matrix')
-    expect(labels).toContain('WeChat')
-    expect(labels).toContain('WeCom')
-    expect(labels).toContain('Feishu')
-    expect(labels).toContain('DingTalk')
-    expect(labels).toContain('QQBot')
+    expect(labels).toContain('WeChat · 微信私聊 (dm)')
+    expect(labels).toContain('Feishu · 研发群 (group)')
 
     const options = wrapper.findAll('.n-select-stub')[4].findAll('option')
     const optionByValue = Object.fromEntries(options.map(option => [option.attributes('value'), option]))
-    expect(optionByValue.telegram.attributes('disabled')).toBeUndefined()
-    expect(optionByValue.qqbot.attributes('disabled')).toBeUndefined()
-    expect(optionByValue.discord.attributes('disabled')).toBe('')
-    expect(optionByValue.whatsapp.attributes('disabled')).toBe('')
+    expect(optionByValue['weixin:wx-user@im.wechat']).toBeTruthy()
+    expect(optionByValue['feishu:oc_example']).toBeTruthy()
   })
 
   it('submits selected skills when creating a job', async () => {
-    mockSettingsStore.platforms = { telegram: { token: 'telegram-token' } }
     mockJobsStore.createJob.mockResolvedValue({ id: 'job-1' })
     const wrapper = mount(JobFormModal, {
       props: { jobId: null },
@@ -191,7 +180,7 @@ describe('JobFormModal deliver targets', () => {
       name: 'Daily research',
       schedule: '0 9 * * *',
       prompt: 'summarize updates',
-      deliver: 'origin',
+      deliver: 'local',
       skills: ['planner', 'reviewer'],
       repeat: undefined,
       provider: undefined,
@@ -199,8 +188,24 @@ describe('JobFormModal deliver targets', () => {
     })
   })
 
+  it('requires a prompt before creating a job', async () => {
+    const wrapper = mount(JobFormModal, {
+      props: { jobId: null },
+    })
+
+    await flushPromises()
+    const inputs = wrapper.findAll('.n-input-stub')
+    await inputs[0].setValue('Daily research')
+    await inputs[1].setValue('0 9 * * *')
+    await wrapper.findAll('.n-button-stub')[1].trigger('click')
+    await flushPromises()
+
+    expect(mockMessage.warning).toHaveBeenCalledWith('jobs.promptRequired')
+    expect(mockJobsStore.createJob).not.toHaveBeenCalled()
+    expect(mockMessage.success).not.toHaveBeenCalled()
+  })
+
   it('submits selected provider and model when creating a job', async () => {
-    mockSettingsStore.platforms = { telegram: { token: 'telegram-token' } }
     mockJobsStore.createJob.mockResolvedValue({ id: 'job-1' })
     const wrapper = mount(JobFormModal, {
       props: { jobId: null },
@@ -220,6 +225,37 @@ describe('JobFormModal deliver targets', () => {
     expect(mockJobsStore.createJob).toHaveBeenCalledWith(expect.objectContaining({
       provider: 'openai',
       model: 'gpt-4.1-mini',
+    }))
+  })
+
+  it('submits the selected explicit delivery target when creating a job', async () => {
+    mockListJobDeliveryTargets.mockResolvedValue({
+      updated_at: null,
+      targets: [{
+        platform: 'weixin',
+        id: 'wx-user@im.wechat',
+        name: '微信私聊',
+        type: 'dm',
+        thread_id: null,
+        value: 'weixin:wx-user@im.wechat',
+      }],
+    })
+    mockJobsStore.createJob.mockResolvedValue({ id: 'job-1' })
+    const wrapper = mount(JobFormModal, {
+      props: { jobId: null },
+    })
+
+    await flushPromises()
+    const inputs = wrapper.findAll('.n-input-stub')
+    await inputs[0].setValue('WeChat hello')
+    await inputs[1].setValue('*/5 * * * *')
+    await inputs[2].setValue('say hello')
+    await wrapper.findAll('.n-select-stub')[4].setValue('weixin:wx-user@im.wechat')
+    await wrapper.findAll('.n-button-stub')[1].trigger('click')
+    await flushPromises()
+
+    expect(mockJobsStore.createJob).toHaveBeenCalledWith(expect.objectContaining({
+      deliver: 'weixin:wx-user@im.wechat',
     }))
   })
 })

@@ -1,5 +1,5 @@
 import { execFile } from 'child_process'
-import { randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import { existsSync, readdirSync, realpathSync } from 'fs'
 import { chmod, mkdir, readFile, stat, writeFile } from 'fs/promises'
 import { homedir } from 'os'
@@ -10,7 +10,7 @@ import { PROVIDER_ENV_MAP, readConfigYamlForProfile, safeReadFile } from './conf
 import { getCompatibleCustomProviders } from './hermes/custom-providers-compat'
 import { registerClaudeCodeProxyTarget } from './agent-runner/proxies/claude-code-proxy'
 import { registerCodexProxyTarget } from './agent-runner/proxies/codex-proxy'
-import type { ApiMode } from './agent-runner/types'
+import type { ApiMode, CodingAgentImageInput } from './agent-runner/types'
 import { PROVIDER_PRESETS } from '../shared/providers'
 import { getModelContextLength } from './hermes/model-context'
 import { getProfileDir } from './hermes/hermes-profile'
@@ -19,6 +19,7 @@ import { codingAgentRunManager } from './agent-runner/coding-agent-run-manager'
 import { getSession, updateSession, type HermesSessionRow } from '../db/hermes/session-store'
 import type { SessionState } from './hermes/run-chat/types'
 import { normalizeWindowsCommandPath, windowsCmdShimExecution, windowsCommandNeedsShell, type WindowsCommandExecution } from './windows-command'
+import { assertScopedCodingAgentProviderAllowed } from './coding-agent-provider-policy'
 
 const execFileAsync = promisify(execFile)
 const LAUNCH_API_MODES = new Set<ApiMode>(['chat_completions', 'codex_responses', 'anthropic_messages'])
@@ -28,14 +29,14 @@ const CODEX_CATALOG_BASE_INSTRUCTIONS = 'You are Codex, a coding agent. Be preci
 const NODE_ENVIRONMENT_MISSING_CODE = 'node_environment_missing'
 const POSIX_LAUNCHER_FILE = 'launch.sh'
 const WINDOWS_LAUNCHER_FILE = 'launch.ps1'
-const CODING_AGENT_SCOPED_AUTH_PROVIDERS = new Set(['openai-codex', 'copilot', 'xai-oauth', 'qwen-oauth', 'nous', 'claude-oauth'])
 const CLAUDE_CODE_SKIP_PERMISSIONS_ARGS = ['--dangerously-skip-permissions']
 const CLAUDE_CODE_ROOT_PERMISSION_ARGS = ['--permission-mode', 'auto']
-const HERMES_MCP_SERVERS = [
+const HERMES_MCP_SERVERS: ReadonlyArray<{ name: string; toolset: string }> = [
   { name: 'hermes-studio-api', toolset: 'api' },
+  { name: 'hermes-studio-browser', toolset: 'browser' },
   { name: 'hermes-studio-devices', toolset: 'devices' },
   { name: 'hermes-studio-use', toolset: 'use' },
-] as const
+]
 const HERMES_MCP_SERVER_NAMES: Set<string> = new Set(HERMES_MCP_SERVERS.map(server => server.name))
 const LEGACY_HERMES_MCP_SERVER_NAMES = new Set(['hermes-studio', 'hermes-studio-mcp', 'hermes-web-ui-mcp'])
 const LEGACY_HERMES_MCP_COMMANDS = new Set([
@@ -116,6 +117,11 @@ export interface CodingAgentLaunchInput extends CodingAgentConfigScope {
   agentNativeSessionId?: string
   isolateSettings?: boolean
   sessionSource?: 'global_agent' | 'workflow'
+  groupSystemPrompt?: string
+  groupRuntimeScope?: {
+    roomId: string
+    agentId: string
+  }
 }
 
 export interface CodingAgentLaunchResult {
@@ -385,6 +391,21 @@ function normalizeScopeSegment(value: string | undefined, fallback: string, labe
   return segment
 }
 
+function normalizeProviderIdentity(value: string | undefined): string {
+  const provider = String(value || '').trim() || 'default'
+  if (/[\x00-\x1f\x7f-\x9f]/.test(provider)) {
+    const err = new Error('Invalid provider')
+    ;(err as any).status = 400
+    throw err
+  }
+  if (provider.length > 128) {
+    const err = new Error('provider is too long')
+    ;(err as any).status = 400
+    throw err
+  }
+  return provider
+}
+
 function normalizeConfigScope(scope: CodingAgentConfigScope = {}): Required<CodingAgentConfigScope> {
   return {
     profile: normalizeScopeSegment(scope.profile, 'default', 'profile'),
@@ -479,19 +500,6 @@ function belongsToDifferentBuiltinProvider(provider: string, baseUrl: string): b
     item.value !== providerKey &&
     providerPresetHost(item.base_url) === inputHost
   ))
-}
-
-function isScopedCodingAgentAuthProvider(provider: string, apiKey = ''): boolean {
-  const providerKey = String(provider || '').trim().toLowerCase()
-  return CODING_AGENT_SCOPED_AUTH_PROVIDERS.has(providerKey)
-}
-
-function assertScopedCodingAgentProviderAllowed(mode: CodingAgentLaunchResult['mode'], provider: string, apiKey = ''): void {
-  if (mode === 'global') return
-  if (!isScopedCodingAgentAuthProvider(provider, apiKey)) return
-  const err = new Error('Coding agent scoped mode does not support OAuth/subscription providers. Use global mode or select an API-key provider.')
-  ;(err as any).status = 400
-  throw err
 }
 
 async function resolveStoredProviderLaunchInput(
@@ -616,6 +624,36 @@ function getScopedConfigRoot(id: CodingAgentId, scope: Required<CodingAgentConfi
   return join(getWebUiHome(), CODING_AGENT_HOME_DIR, 'model', scope.profile, scope.provider, id)
 }
 
+function getScopedRuntimeConfigRoot(
+  id: CodingAgentId,
+  scope: Required<CodingAgentConfigScope>,
+  input: Pick<CodingAgentLaunchInput, 'sessionId' | 'agentSessionId' | 'groupRuntimeScope'>,
+): string {
+  const groupRoomId = String(input.groupRuntimeScope?.roomId || '').trim()
+  const groupAgentId = String(input.groupRuntimeScope?.agentId || '').trim()
+  if (groupRoomId && groupAgentId) {
+    const stableSegment = (value: string) => {
+      const readable = value.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 48) || 'scope'
+      const digest = createHash('sha256').update(value).digest('hex').slice(0, 12)
+      return `${readable}_${digest}`
+    }
+    return join(
+      getScopedConfigRoot(id, scope),
+      'group-chat',
+      stableSegment(groupRoomId),
+      stableSegment(groupAgentId),
+    )
+  }
+  const rootDir = getScopedConfigRoot(id, scope)
+  const sessionId = String(input.sessionId || '').trim()
+  const agentSessionId = String(input.agentSessionId || '').trim()
+  if (!sessionId || !agentSessionId) return rootDir
+  const runtimeKey = createHash('sha256')
+    .update(JSON.stringify([sessionId, agentSessionId]))
+    .digest('hex')
+  return join(rootDir, 'runs', runtimeKey)
+}
+
 function getScopedWorkspaceRoot(scope: Required<CodingAgentConfigScope>): string {
   return join(getWebUiHome(), CODING_AGENT_HOME_DIR, 'workspace', scope.profile, scope.provider)
 }
@@ -660,6 +698,7 @@ function codexCatalogEntry(input: {
       { effort: 'medium', description: 'Balances speed and reasoning depth for everyday tasks' },
       { effort: 'high', description: 'Greater reasoning depth for complex problems' },
       { effort: 'xhigh', description: 'Extra high reasoning depth for complex problems' },
+      { effort: 'max', description: 'Maximum reasoning depth for the hardest quality-first tasks' },
     ],
     shell_type: 'shell_command',
     visibility: 'list',
@@ -694,7 +733,7 @@ function codexCatalogEntry(input: {
     max_context_window: input.contextWindow,
     effective_context_window_percent: 95,
     experimental_supported_tools: [],
-    input_modalities: ['text'],
+    input_modalities: ['text', 'image'],
     supports_search_tool: true,
   }
 }
@@ -733,10 +772,10 @@ function expandHomePath(path: string): string {
   return path
 }
 
-function hermesPromptDocument(): string {
+function hermesPromptDocument(systemPrompt = getSystemPrompt()): string {
   return [
     HERMES_PROMPT_BLOCK_BEGIN,
-    getSystemPrompt().trim(),
+    systemPrompt.trim(),
     HERMES_PROMPT_BLOCK_END,
     '',
   ].join('\n')
@@ -1195,13 +1234,18 @@ function getLiveConfigFileDefinition(id: string, key: string): CodingAgentConfig
   }
 }
 
-function getScopedConfigFileDefinition(id: string, key: string, scopeInput: CodingAgentConfigScope = {}): (CodingAgentConfigFileDefinition & Required<CodingAgentConfigScope> & { rootDir: string }) | null {
+function getScopedConfigFileDefinition(
+  id: string,
+  key: string,
+  scopeInput: CodingAgentConfigScope = {},
+  rootDirOverride?: string,
+): (CodingAgentConfigFileDefinition & Required<CodingAgentConfigScope> & { rootDir: string }) | null {
   const tool = getCodingAgentDefinition(id)
   if (!tool) return null
   const definition = CONFIG_FILE_DEFINITIONS[tool.id].find(file => file.key === key)
   if (!definition) return null
   const scope = normalizeConfigScope(scopeInput)
-  const rootDir = getScopedConfigRoot(tool.id, scope)
+  const rootDir = rootDirOverride || getScopedConfigRoot(tool.id, scope)
   return {
     key: definition.key,
     path: definition.path,
@@ -1644,11 +1688,11 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
     }
   }
 
-  const provider = normalizeScopeSegment(input.provider, 'default', 'provider')
+  const provider = normalizeProviderIdentity(input.provider)
   const scope = normalizeConfigScope({ profile: input.profile, provider })
   const model = String(input.model || '').trim()
   const apiKey = String(input.apiKey || '').trim()
-  assertScopedCodingAgentProviderAllowed(mode, provider, apiKey)
+  assertScopedCodingAgentProviderAllowed(mode, provider)
   if (!model) {
     const err = new Error('Model is required')
     ;(err as any).status = 400
@@ -1659,14 +1703,16 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
   const preset = PROVIDER_PRESETS.find(item => item.value === provider)
   const apiMode = normalizeLaunchApiMode(input.apiMode, preset?.api_mode || 'chat_completions')
   const reasoningEffort = String(input.reasoningEffort || '').trim()
-  const rootDir = getScopedConfigRoot(tool.id, scope)
+  const groupSystemPrompt = String(input.groupSystemPrompt || '').trim()
+  const scopedSystemPrompt = groupSystemPrompt || getSystemPrompt()
+  const rootDir = getScopedRuntimeConfigRoot(tool.id, scope, input)
   const workspaceDir = resolveLaunchWorkspaceRoot(scope, input.workspace)
   await mkdir(rootDir, { recursive: true })
   await mkdir(workspaceDir, { recursive: true })
 
   const files: Array<{ key: string; path: string; absolutePath: string }> = []
   const writeScopedFile = async (key: string, content: string) => {
-    const definition = getScopedConfigFileDefinition(tool.id, key, scope)
+    const definition = getScopedConfigFileDefinition(tool.id, key, scope, rootDir)
     if (!definition) return
     await mkdir(dirname(definition.absolutePath), { recursive: true })
     await writeFile(definition.absolutePath, content, 'utf-8')
@@ -1719,7 +1765,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
     const globalMcpConfig = globalMcpPath ? await safeReadFile(globalMcpPath) : ''
     const existingMcpConfig = existingMcpPath ? await safeReadFile(existingMcpPath) : ''
     await writeScopedFile('mcp', claudeMcpConfigJson(scope.profile, globalMcpConfig, existingMcpConfig))
-    await writeScopedFile('prompt', hermesPromptDocument())
+    await writeScopedFile('prompt', hermesPromptDocument(scopedSystemPrompt))
 
     const settingsPath = join(rootDir, 'settings.json')
     const mcpPath = join(rootDir, 'mcp.json')
@@ -1764,7 +1810,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
       `model = ${JSON.stringify(model)}`,
       'model_reasoning_summary = "auto"',
       ...(reasoningEffort ? [`model_reasoning_effort = ${JSON.stringify(reasoningEffort)}`] : []),
-      `developer_instructions = ${tomlMultilineString(getSystemPrompt().trim())}`,
+      `developer_instructions = ${tomlMultilineString(scopedSystemPrompt.trim())}`,
       'disable_response_storage = true',
       '',
       `[model_providers.${providerId}]`,
@@ -1822,7 +1868,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
     agentId: tool.id,
     mode,
     profile: scope.profile,
-    provider: scope.provider,
+    provider,
     model,
     apiMode,
     rootDir,
@@ -1857,11 +1903,7 @@ export async function startCodingAgentRun(
   const resolvedInput = await resolveStoredProviderLaunchInput(input, existingSession)
   const requestedMode = resolvedInput.mode === 'global' ? 'global' : 'scoped'
   const requestedProvider = String(resolvedInput.provider || '').trim().toLowerCase()
-  if (requestedMode !== 'global' && CODING_AGENT_SCOPED_AUTH_PROVIDERS.has(requestedProvider)) {
-    const err = new Error('Coding agent scoped mode does not support OAuth/subscription providers. Use global mode or select an API-key provider.')
-    ;(err as any).status = 400
-    throw err
-  }
+  assertScopedCodingAgentProviderAllowed(requestedMode, requestedProvider)
   if (requestedMode !== 'global' && (!String(resolvedInput.baseUrl || '').trim() || !String(resolvedInput.apiKey || '').trim())) {
     const err = new Error('Coding agent provider credentials are missing. Re-select the provider/model or update the provider API key before continuing this session.')
     ;(err as any).status = 400
@@ -1933,8 +1975,14 @@ export async function startCodingAgentRun(
   }
 }
 
-export function sendCodingAgentRunInput(sessionId: string, input: string, systemPrompt?: string): { runId: string } {
-  return codingAgentRunManager.send(sessionId, input, { systemPrompt })
+export function sendCodingAgentRunInput(
+  sessionId: string,
+  input: string,
+  systemPrompt?: string,
+  images: CodingAgentImageInput[] = [],
+  storageInput?: string,
+): { runId: string } {
+  return codingAgentRunManager.send(sessionId, input, { systemPrompt, images, storageInput })
 }
 
 export function stopCodingAgentRun(sessionId: string): { stopped: boolean } {

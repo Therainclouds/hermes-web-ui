@@ -1,8 +1,60 @@
-import { join } from 'node:path'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { basename, dirname, join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const updateConfigYamlForProfileMock = vi.fn()
 const listProfileNamesFromDiskMock = vi.fn()
+const fixtureRoots: string[] = []
+let stableLauncher = ''
+
+type GitMarker =
+  | 'directory'
+  | 'worktree'
+  | 'submodule'
+  | 'separate-worktrees'
+  | 'nested-submodule-worktrees'
+
+function createLauncherFixture(parent: string, gitMarker?: GitMarker): string {
+  const root = mkdtempSync(join(parent, '.studio-mcp-autoinject-test-'))
+  fixtureRoots.push(root)
+  if (gitMarker === 'directory') mkdirSync(join(root, '.git'))
+  if (gitMarker === 'worktree') {
+    const gitDir = join(root, '.git-common/worktrees/fixture')
+    mkdirSync(gitDir, { recursive: true })
+    writeFileSync(join(gitDir, 'commondir'), '../..\n')
+    writeFileSync(join(root, '.git'), `gitdir: ${gitDir}\n`)
+  }
+  if (gitMarker === 'submodule') {
+    const gitDir = join(root, '.git-common/modules/fixture')
+    mkdirSync(gitDir, { recursive: true })
+    writeFileSync(join(root, '.git'), `gitdir: ${gitDir}\n`)
+  }
+  if (gitMarker === 'separate-worktrees') {
+    const gitDir = join(root, '.git-common/worktrees/fixture')
+    mkdirSync(gitDir, { recursive: true })
+    writeFileSync(join(root, '.git'), `gitdir: ${gitDir}\n`)
+  }
+  if (gitMarker === 'nested-submodule-worktrees') {
+    const gitDir = join(root, '.git-common/modules/vendor/worktrees/fixture')
+    mkdirSync(gitDir, { recursive: true })
+    writeFileSync(join(root, '.git'), `gitdir: ${gitDir}\n`)
+  }
+  mkdirSync(join(root, 'bin'))
+  const launcher = join(root, 'bin/hermes-studio-mcp.mjs')
+  writeFileSync(launcher, '#!/usr/bin/env node\n')
+  return launcher
+}
+
+function createStableLauncherAlias(targetLauncher: string): string {
+  const root = mkdtempSync(join(process.cwd(), '.studio-mcp-autoinject-alias-'))
+  fixtureRoots.push(root)
+  mkdirSync(join(root, '.git'))
+  const aliasBin = join(root, 'bin')
+  symlinkSync(dirname(targetLauncher), aliasBin, process.platform === 'win32' ? 'junction' : 'dir')
+  return join(aliasBin, basename(targetLauncher))
+}
+
 const configMock = vi.hoisted(() => ({
   port: 6060,
   appHome: '/Users/test/.hermes-web-ui',
@@ -36,6 +88,9 @@ describe('studio MCP autoinject', () => {
     delete process.env.AUTH_TOKEN
     delete process.env.HERMES_WEB_UI_DISABLE_MCP_AUTOINJECT
     delete process.env.HERMES_WEB_UI_ALLOW_TRANSIENT_MCP_AUTOINJECT
+    delete process.env.HERMES_WEB_UI_MCP_BIN
+    stableLauncher = createLauncherFixture(process.cwd(), 'directory')
+    process.env.HERMES_WEB_UI_MCP_BIN = stableLauncher
     configMock.port = 6060
     configMock.appHome = '/Users/test/.hermes-web-ui'
     listProfileNamesFromDiskMock.mockReturnValue(['default', 'work'])
@@ -43,6 +98,11 @@ describe('studio MCP autoinject', () => {
       const updated = await updater({})
       return updated.result
     })
+  })
+
+  afterEach(() => {
+    delete process.env.HERMES_WEB_UI_MCP_BIN
+    for (const root of fixtureRoots.splice(0).reverse()) rmSync(root, { recursive: true, force: true })
   })
 
   it('injects bundled MCP server into every profile without relying on a global PATH shim', async () => {
@@ -55,7 +115,7 @@ describe('studio MCP autoinject', () => {
     const injectedDefault = await updateConfigYamlForProfileMock.mock.calls[0][1]({})
     expect(injectedDefault.data.mcp_servers['hermes-studio-api']).toEqual({
       command: process.execPath,
-      args: [join(process.cwd(), 'bin/hermes-studio-mcp.mjs'), 'api'],
+      args: [stableLauncher, 'api'],
       env: {
         HERMES_WEB_UI_URL: 'http://127.0.0.1:6060',
         HERMES_WEB_UI_HOME: '/Users/test/.hermes-web-ui',
@@ -67,9 +127,18 @@ describe('studio MCP autoinject', () => {
       },
       enabled: true,
     })
+    expect(injectedDefault.data.mcp_servers['hermes-studio-browser']).toMatchObject({
+      command: process.execPath,
+      args: [stableLauncher, 'browser'],
+      env: {
+        HERMES_MCP_SERVER_NAME: 'hermes-studio-browser',
+        HERMES_MCP_TOOLSET: 'browser',
+      },
+      enabled: true,
+    })
     expect(injectedDefault.data.mcp_servers['hermes-studio-devices']).toMatchObject({
       command: process.execPath,
-      args: [join(process.cwd(), 'bin/hermes-studio-mcp.mjs'), 'devices'],
+      args: [stableLauncher, 'devices'],
       env: {
         HERMES_MCP_SERVER_NAME: 'hermes-studio-devices',
         HERMES_MCP_TOOLSET: 'devices',
@@ -78,7 +147,7 @@ describe('studio MCP autoinject', () => {
     })
     expect(injectedDefault.data.mcp_servers['hermes-studio-use']).toMatchObject({
       command: process.execPath,
-      args: [join(process.cwd(), 'bin/hermes-studio-mcp.mjs'), 'use'],
+      args: [stableLauncher, 'use'],
       env: {
         HERMES_MCP_SERVER_NAME: 'hermes-studio-use',
         HERMES_MCP_TOOLSET: 'use',
@@ -87,7 +156,12 @@ describe('studio MCP autoinject', () => {
     })
     const injectedWork = await updateConfigYamlForProfileMock.mock.calls[1][1]({})
     expect(injectedWork.data.mcp_servers['hermes-studio-api'].env.HERMES_WEB_UI_PROFILE).toBe('work')
-    expect(result.serverNames).toEqual(['hermes-studio-api', 'hermes-studio-devices', 'hermes-studio-use'])
+    expect(result.serverNames).toEqual([
+      'hermes-studio-api',
+      'hermes-studio-browser',
+      'hermes-studio-devices',
+      'hermes-studio-use',
+    ])
     expect(result.command).toBe(process.execPath)
   })
 
@@ -99,6 +173,94 @@ describe('studio MCP autoinject', () => {
 
     expect(result.targets).toEqual([])
     expect(updateConfigYamlForProfileMock).not.toHaveBeenCalled()
+  })
+
+  it('keeps the same browser MCP entry in desktop mode', async () => {
+    process.env.HERMES_DESKTOP = 'true'
+    const { injectBundledMcpServer } = await import('../../packages/server/src/services/hermes/studio-mcp-autoinject')
+    const result = await injectBundledMcpServer()
+    const injected = await updateConfigYamlForProfileMock.mock.calls[0][1]({})
+    expect(injected.data.mcp_servers['hermes-studio-browser']).toMatchObject({
+      args: [stableLauncher, 'browser'],
+      env: { HERMES_MCP_SERVER_NAME: 'hermes-studio-browser', HERMES_MCP_TOOLSET: 'browser' },
+    })
+    expect(result.serverNames).toContain('hermes-studio-browser')
+  })
+
+  it('does not remove the desktop browser entry when a Web UI process resyncs the shared profile', async () => {
+    const { injectBundledMcpServer } = await import('../../packages/server/src/services/hermes/studio-mcp-autoinject')
+    await injectBundledMcpServer()
+
+    const updater = updateConfigYamlForProfileMock.mock.calls[0][1]
+    const desktopManaged = await updater({})
+    const browserBefore = structuredClone(desktopManaged.data.mcp_servers['hermes-studio-browser'])
+    const webUiResync = await updater(desktopManaged.data)
+
+    expect(webUiResync.write).toBe(false)
+    expect(webUiResync.result.status).toBe('unchanged')
+    expect(webUiResync.data.mcp_servers['hermes-studio-browser']).toEqual(browserBefore)
+  })
+
+  it('skips autoinject for a transient bundled launcher even with a stable app home', async () => {
+    process.env.HERMES_WEB_UI_MCP_BIN = createLauncherFixture(tmpdir())
+    const { injectBundledMcpServer } = await import('../../packages/server/src/services/hermes/studio-mcp-autoinject')
+
+    const result = await injectBundledMcpServer()
+
+    expect(result.targets).toEqual([])
+    expect(updateConfigYamlForProfileMock).not.toHaveBeenCalled()
+  })
+
+  it('skips autoinject for a bundled launcher inside a linked Git worktree', async () => {
+    process.env.HERMES_WEB_UI_MCP_BIN = createLauncherFixture(process.cwd(), 'worktree')
+    const { injectBundledMcpServer } = await import('../../packages/server/src/services/hermes/studio-mcp-autoinject')
+
+    const result = await injectBundledMcpServer()
+
+    expect(result.targets).toEqual([])
+    expect(updateConfigYamlForProfileMock).not.toHaveBeenCalled()
+  })
+
+  it('keeps autoinject enabled for a submodule-style Git checkout', async () => {
+    process.env.HERMES_WEB_UI_MCP_BIN = createLauncherFixture(process.cwd(), 'submodule')
+    const { injectBundledMcpServer } = await import('../../packages/server/src/services/hermes/studio-mcp-autoinject')
+
+    const result = await injectBundledMcpServer()
+
+    expect(result.targets.map(target => target.profile)).toEqual(['default', 'work'])
+    expect(updateConfigYamlForProfileMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not treat worktrees-shaped separate git dirs as linked worktrees', async () => {
+    const { injectBundledMcpServer } = await import('../../packages/server/src/services/hermes/studio-mcp-autoinject')
+
+    for (const marker of ['separate-worktrees', 'nested-submodule-worktrees'] as const) {
+      vi.clearAllMocks()
+      process.env.HERMES_WEB_UI_MCP_BIN = createLauncherFixture(process.cwd(), marker)
+
+      const result = await injectBundledMcpServer()
+
+      expect(result.targets.map(target => target.profile)).toEqual(['default', 'work'])
+      expect(updateConfigYamlForProfileMock).toHaveBeenCalledTimes(2)
+    }
+  })
+
+  it('skips stable-looking aliases that resolve to transient launchers', async () => {
+    const targets = [
+      createLauncherFixture(tmpdir()),
+      createLauncherFixture(process.cwd(), 'worktree'),
+    ]
+    const { injectBundledMcpServer } = await import('../../packages/server/src/services/hermes/studio-mcp-autoinject')
+
+    for (const target of targets) {
+      vi.clearAllMocks()
+      process.env.HERMES_WEB_UI_MCP_BIN = createStableLauncherAlias(target)
+
+      const result = await injectBundledMcpServer()
+
+      expect(result.targets).toEqual([])
+      expect(updateConfigYamlForProfileMock).not.toHaveBeenCalled()
+    }
   })
 
   it('allows transient preview autoinject when explicitly requested', async () => {
@@ -120,7 +282,7 @@ describe('studio MCP autoinject', () => {
       mcp_servers: {
         'hermes-studio-api': {
           command: process.execPath,
-          args: [join(process.cwd(), 'bin/hermes-studio-mcp.mjs'), 'api'],
+          args: [stableLauncher, 'api'],
           env: {
             HERMES_WEB_UI_URL: 'http://127.0.0.1:6060',
             HERMES_WEB_UI_HOME: '/Users/test/.hermes-web-ui',
@@ -166,6 +328,7 @@ describe('studio MCP autoinject', () => {
     })
     expect(updated.data.mcp_servers['hermes-studio']).toBeUndefined()
     expect(updated.data.mcp_servers['hermes-studio-api']).toBeDefined()
+    expect(updated.data.mcp_servers['hermes-studio-browser']).toBeDefined()
     expect(updated.data.mcp_servers['hermes-studio-devices']).toBeDefined()
     expect(updated.data.mcp_servers['hermes-studio-use']).toBeDefined()
   })
@@ -201,9 +364,10 @@ describe('studio MCP autoinject', () => {
     expect(updated.data.mcp_servers['hermes-studio']).toBeUndefined()
     expect(updated.data.mcp_servers['hermes-web-ui-mcp']).toBeUndefined()
     expect(updated.data.mcp_servers['hermes-studio-api'].command).toBe(process.execPath)
-    expect(updated.data.mcp_servers['hermes-studio-api'].args).toEqual([join(process.cwd(), 'bin/hermes-studio-mcp.mjs'), 'api'])
-    expect(updated.data.mcp_servers['hermes-studio-devices'].args).toEqual([join(process.cwd(), 'bin/hermes-studio-mcp.mjs'), 'devices'])
-    expect(updated.data.mcp_servers['hermes-studio-use'].args).toEqual([join(process.cwd(), 'bin/hermes-studio-mcp.mjs'), 'use'])
+    expect(updated.data.mcp_servers['hermes-studio-api'].args).toEqual([stableLauncher, 'api'])
+    expect(updated.data.mcp_servers['hermes-studio-browser'].args).toEqual([stableLauncher, 'browser'])
+    expect(updated.data.mcp_servers['hermes-studio-devices'].args).toEqual([stableLauncher, 'devices'])
+    expect(updated.data.mcp_servers['hermes-studio-use'].args).toEqual([stableLauncher, 'use'])
   })
 
   it('uses the desktop runtime node for bundled MCP servers when available', async () => {
@@ -216,13 +380,16 @@ describe('studio MCP autoinject', () => {
     const injected = await updateConfigYamlForProfileMock.mock.calls[0][1]({})
     expect(injected.data.mcp_servers['hermes-studio-api'].command).toBe('/runtime/node')
     expect(injected.data.mcp_servers['hermes-studio-api'].args).toEqual([
-      join(process.cwd(), 'bin/hermes-studio-mcp.mjs'), 'api',
+      stableLauncher, 'api',
+    ])
+    expect(injected.data.mcp_servers['hermes-studio-browser'].args).toEqual([
+      stableLauncher, 'browser',
     ])
     expect(injected.data.mcp_servers['hermes-studio-devices'].args).toEqual([
-      join(process.cwd(), 'bin/hermes-studio-mcp.mjs'), 'devices',
+      stableLauncher, 'devices',
     ])
     expect(injected.data.mcp_servers['hermes-studio-use'].args).toEqual([
-      join(process.cwd(), 'bin/hermes-studio-mcp.mjs'), 'use',
+      stableLauncher, 'use',
     ])
   })
 

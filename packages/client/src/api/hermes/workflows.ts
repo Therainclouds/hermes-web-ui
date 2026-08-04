@@ -53,12 +53,17 @@ export interface WorkflowRunRecord {
   status: WorkflowRunStatus
   snapshot_nodes: unknown[]
   snapshot_edges: unknown[]
+  compiled_loops: unknown[]
+  requested_timeout_ms?: number | null
+  deadline_at?: number | null
   started_at: number | null
   finished_at: number | null
   created_at: number
   updated_at?: number
   error: string | null
   node_sessions?: WorkflowRunNodeSessionRecord[]
+  edge_evaluations?: WorkflowRunEdgeEvaluationRecord[]
+  loop_epochs?: WorkflowRunLoopEpochRecord[]
 }
 
 export interface WorkflowRunNodeSessionRecord {
@@ -66,17 +71,67 @@ export interface WorkflowRunNodeSessionRecord {
   run_id: string
   workflow_id: string
   node_id: string
+  execution_id: string
+  iteration_path: unknown[]
+  consumed_edge_evaluation_ids: string[]
   session_id: string
   profile: string
   agent: string
   agent_mode: string
   status: WorkflowRunNodeStatus
   sequence: number
+  remaining_timeout_ms_at_start?: number | null
   started_at: number | null
   finished_at: number | null
   created_at: number
   updated_at: number
   error: string | null
+}
+
+export interface WorkflowRunEdgeEvaluationRecord {
+  id: string
+  run_id: string
+  workflow_id: string
+  edge_id: string
+  source_node_id: string
+  source_execution_id: string
+  iteration_path: unknown[]
+  target_node_id: string
+  source_outcome: 'success' | 'failure' | 'skipped'
+  status: 'taken' | 'not_taken' | 'error'
+  route: 'success' | 'failure' | 'always'
+  reason: string | null
+  sequence: number
+  orchestration: unknown
+  condition_evaluation: unknown | null
+  evaluated_at: number
+}
+
+export interface WorkflowRunLoopEpochRecord {
+  id: string
+  run_id: string
+  workflow_id: string
+  loop_id: string
+  iteration: number
+  iteration_path: unknown[]
+  status: 'completed' | 'failed' | 'canceled' | 'timed_out' | 'approval_rejected'
+  exit_reason: string | null
+  sequence: number
+  started_at: number
+  finished_at: number
+}
+
+export interface WorkflowExportEnvelope {
+  format: 'hermes-studio.workflow'
+  version: 1
+  definition: { name: string; nodes: unknown[]; edges: unknown[]; viewport: WorkflowViewport | Record<string, unknown> | null }
+}
+
+export interface WorkflowImportPreview {
+  token: string
+  digest: string
+  expiresAt: number
+  summary: { name: string; nodes: number; edges: number }
 }
 
 export interface WorkflowRunNowRequest {
@@ -145,11 +200,42 @@ export async function batchDeleteWorkflows(ids: string[]): Promise<WorkflowBatch
   })
 }
 
+export async function exportWorkflow(id: string): Promise<WorkflowExportEnvelope> {
+  return request<WorkflowExportEnvelope>(`/api/hermes/workflows/${encodeURIComponent(id)}/export`)
+}
+
+export async function previewWorkflowImport(document: string, profile?: string | null): Promise<WorkflowImportPreview> {
+  const res = await request<{ ok: true; preview: WorkflowImportPreview }>('/api/hermes/workflows/import/preview', {
+    method: 'POST', body: JSON.stringify({ document, profile }),
+  })
+  return res.preview
+}
+
+export async function cancelWorkflowImport(token: string, profile?: string | null): Promise<void> {
+  await request<{ ok: true }>('/api/hermes/workflows/import/cancel', {
+    method: 'POST', body: JSON.stringify({ token, profile }),
+  })
+}
+
+export async function confirmWorkflowImport(token: string, profile?: string | null): Promise<WorkflowRecord> {
+  const res = await request<{ ok: true; workflow: WorkflowRecord }>('/api/hermes/workflows/import/confirm', {
+    method: 'POST', body: JSON.stringify({ token, profile }),
+  })
+  return res.workflow
+}
+
 export async function listWorkflowRuns(id: string, limit = 100): Promise<WorkflowRunRecord[]> {
   const params = new URLSearchParams()
   params.set('limit', String(limit))
   const res = await request<{ runs: WorkflowRunRecord[] }>(`/api/hermes/workflows/${encodeURIComponent(id)}/runs?${params}`)
   return res.runs
+}
+
+export async function fetchWorkflowRun(id: string, runId: string): Promise<WorkflowRunRecord> {
+  const res = await request<{ run: WorkflowRunRecord }>(
+    `/api/hermes/workflows/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}`,
+  )
+  return res.run
 }
 
 export async function stopWorkflowRun(id: string, runId: string): Promise<WorkflowRunRecord> {
@@ -167,12 +253,12 @@ export async function deleteWorkflowRun(id: string, runId: string): Promise<void
   )
 }
 
-export async function approveWorkflowNode(id: string, runId: string, nodeId: string, approved: boolean): Promise<void> {
+export async function approveWorkflowNode(id: string, runId: string, nodeId: string, approved: boolean, executionId?: string): Promise<void> {
   await request<{ ok: true }>(
     `/api/hermes/workflows/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeId)}/approval`,
     {
       method: 'POST',
-      body: JSON.stringify({ approved }),
+      body: JSON.stringify({ approved, ...(executionId ? { executionId } : {}) }),
     },
   )
 }

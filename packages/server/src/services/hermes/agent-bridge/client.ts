@@ -43,6 +43,9 @@ export interface AgentBridgeRequestOptions {
 
 export interface AgentBridgeChatOptions {
   force_compress?: boolean
+  /** Agent-session creation policy. False keeps delegate_task available but
+   * makes background=true fall back to synchronous execution. */
+  background_delegation_enabled?: boolean
   storage_message?: AgentBridgeMessage
   model?: string
   provider?: string
@@ -115,6 +118,22 @@ export interface AgentBridgeContextEstimate extends AgentBridgeResponse {
   provider?: string
 }
 
+export interface AgentBridgeProviderCredentials extends AgentBridgeResponse {
+  resolved: boolean
+  requested_provider: string
+  provider?: string
+  api_key?: string
+  base_url?: string
+  api_mode?: string
+  source?: string
+  last_refresh?: string
+  expires_at?: string
+  expires_at_ms?: number
+  error?: string
+  code?: string
+  relogin_required?: boolean
+}
+
 export interface AgentBridgeCommandResult extends AgentBridgeResponse {
   session_id: string
   command: string
@@ -174,6 +193,48 @@ export interface AgentBridgeGoalPause extends AgentBridgeResponse {
   status?: string | null
   reason?: string
   message?: string
+}
+
+export interface AgentBridgeBackgroundTask {
+  subagent_id: string
+  status?: string
+  goal?: string
+  model?: string
+  last_event?: string
+  last_tool?: string
+  preview?: string
+  updated_at?: number
+  [key: string]: unknown
+}
+
+export interface AgentBridgeBackgroundSession {
+  session_id: string
+  profile: string
+  events: Array<Record<string, unknown>>
+  tasks: AgentBridgeBackgroundTask[]
+  running_count: number
+}
+
+export interface AgentBridgeBackgroundNotification {
+  delegation_id: string
+  session_id: string
+  profile: string
+  claim_id: string
+  status?: string
+  message: string
+  event: Record<string, unknown>
+}
+
+export interface AgentBridgeBackgroundPoll extends AgentBridgeResponse {
+  broker_id?: string
+  pending_count?: number
+  sessions: AgentBridgeBackgroundSession[]
+  notifications: AgentBridgeBackgroundNotification[]
+}
+
+export interface AgentBridgeBackgroundRoute {
+  profile: string
+  session_ids: string[]
 }
 
 export class AgentBridgeError extends Error {
@@ -362,7 +423,7 @@ export class AgentBridgeClient {
       const timeoutMs = options.timeoutMs || this.timeoutMs
       const startedAt = Date.now()
       const action = String(payload.action || '')
-      const shouldLogRequest = action !== 'get_output'
+      const shouldLogRequest = action !== 'get_output' && action !== 'background_poll'
       const runtimeContext = shouldLogRequest ? this.runtimeContext(payload) : undefined
       if (shouldLogRequest) {
         bridgeLogger.info({
@@ -396,7 +457,7 @@ export class AgentBridgeClient {
         }
         return response as T
       } catch (err: any) {
-        if (!(err instanceof AgentBridgeError)) {
+        if (!(err instanceof AgentBridgeError) && action !== 'background_poll') {
           bridgeLogger.error({
             durationMs: Date.now() - startedAt,
             err: { message: err?.message, name: err?.name },
@@ -444,6 +505,9 @@ export class AgentBridgeClient {
       ...(options.wait ? { wait: true } : {}),
       ...(options.timeout ? { timeout: options.timeout } : {}),
       ...(options.force_compress ? { force_compress: true } : {}),
+      ...(options.background_delegation_enabled !== undefined
+        ? { background_delegation_enabled: options.background_delegation_enabled }
+        : {}),
       // Local patch (reasoning-effort): per-session reasoning effort override.
       ...(options.reasoning_effort ? { reasoning_effort: options.reasoning_effort } : {}),
     })
@@ -454,7 +518,7 @@ export class AgentBridgeClient {
     messages: unknown[],
     instructions?: string,
     profile?: string,
-    options: Pick<AgentBridgeChatOptions, 'model' | 'provider' | 'workspace'> = {},
+    options: Pick<AgentBridgeChatOptions, 'model' | 'provider' | 'workspace' | 'background_delegation_enabled'> = {},
   ): Promise<AgentBridgeContextEstimate> {
     return this.request<AgentBridgeContextEstimate>({
       action: 'context_estimate',
@@ -465,6 +529,22 @@ export class AgentBridgeClient {
       ...(options.model ? { model: options.model } : {}),
       ...(options.provider ? { provider: options.provider } : {}),
       ...(options.workspace ? { workspace: options.workspace } : {}),
+      ...(options.background_delegation_enabled !== undefined
+        ? { background_delegation_enabled: options.background_delegation_enabled }
+        : {}),
+    })
+  }
+
+  providerCredentials(
+    profile: string,
+    provider: string,
+    model?: string,
+  ): Promise<AgentBridgeProviderCredentials> {
+    return this.request<AgentBridgeProviderCredentials>({
+      action: 'provider_credentials',
+      profile,
+      provider,
+      ...(model ? { model } : {}),
     })
   }
 
@@ -631,6 +711,46 @@ export class AgentBridgeClient {
       session_id: sessionId,
       ...(profile ? { profile } : {}),
     }, options)
+  }
+
+  backgroundPoll(
+    routes?: AgentBridgeBackgroundRoute[],
+    options: AgentBridgeRequestOptions = {},
+  ): Promise<AgentBridgeBackgroundPoll> {
+    return this.request<AgentBridgeBackgroundPoll>({
+      action: 'background_poll',
+      ...(routes?.length ? { routes } : {}),
+    }, options)
+  }
+
+  completeBackgroundNotification(
+    sessionId: string,
+    profile: string,
+    delegationId: string,
+    claimId: string,
+  ): Promise<AgentBridgeResponse> {
+    return this.request({
+      action: 'background_notification_complete',
+      session_id: sessionId,
+      profile,
+      delegation_id: delegationId,
+      claim_id: claimId,
+    })
+  }
+
+  releaseBackgroundNotification(
+    sessionId: string,
+    profile: string,
+    delegationId: string,
+    claimId: string,
+  ): Promise<AgentBridgeResponse> {
+    return this.request({
+      action: 'background_notification_release',
+      session_id: sessionId,
+      profile,
+      delegation_id: delegationId,
+      claim_id: claimId,
+    })
   }
 
   destroy(sessionId: string, profile?: string, workerKey?: string): Promise<AgentBridgeResponse> {

@@ -24,9 +24,10 @@ const routeProfile = computed(() => {
   return typeof value === 'string' && value.trim() ? value : null
 })
 
+const isStandaloneChat = computed(() => route.meta?.standaloneChat === true)
 const productTitle = 'Hermes Studio'
 const tabTitle = computed(() => {
-  if (route.name !== 'hermes.session') return productTitle
+  if (route.name !== 'hermes.session' && route.name !== 'desktop.chat') return productTitle
   return chatStore.activeSession?.title?.trim() || productTitle
 })
 
@@ -54,6 +55,7 @@ onMounted(async () => {
     profilesStore.fetchProfiles(),
     settingsStore.fetchSettings(),
   ])
+  chatStore.validateSessionProfileFilter(profilesStore.profiles.map(profile => profile.name))
   await loadRouteSession()
 })
 
@@ -76,8 +78,8 @@ watch([routeSessionId, routeProfile], async ([sessionId]) => {
 </script>
 
 <template>
-  <div class="chat-view">
-    <ChatPanel />
+  <div class="chat-view" :class="{ 'chat-view--standalone': isStandaloneChat }">
+    <ChatPanel :standalone="isStandaloneChat" />
   </div>
 </template>
 
@@ -86,5 +88,9 @@ watch([routeSessionId, routeProfile], async ([sessionId]) => {
   height: calc(100 * var(--vh));
   display: flex;
   flex-direction: column;
+
+  &--standalone {
+    height: 100%;
+  }
 }
 </style>

@@ -11,6 +11,7 @@ import {
   hermesHome,
   nodeBinDir,
   pythonDir,
+  pythonEnvironmentDir,
   webUiHome,
 } from './paths'
 import { HERMES_CLI_ARG } from './cli-constants'
@@ -50,6 +51,7 @@ export async function runBundledHermesCli(args: string[]): Promise<number> {
 
   const binDir = dirname(hermesCommand)
   const bundledNodeBin = nodeBinDir()
+  const bundledPythonEnvironment = pythonEnvironmentDir()
   const bundledAgentBrowserBin = process.platform === 'win32'
     ? join(pythonDir(), 'node')
     : join(pythonDir(), 'node', 'bin')
@@ -70,6 +72,12 @@ export async function runBundledHermesCli(args: string[]): Promise<number> {
     HERMES_AGENT_BRIDGE_PYTHON: pythonCommand,
     HERMES_AGENT_CLI_PYTHON: pythonCommand,
     HERMES_AGENT_ROOT: pythonDir(),
+    VIRTUAL_ENV: bundledPythonEnvironment,
+    UV_PROJECT_ENVIRONMENT: bundledPythonEnvironment,
+    // Keep uv pinned to the bundled interpreter when a terminal subprocess
+    // deliberately strips VIRTUAL_ENV to protect unrelated user projects.
+    UV_PYTHON: pythonCommand,
+    ...(process.platform === 'win32' ? {} : { UV_SYSTEM_PYTHON: '1' }),
     HERMES_AGENT_NODE: bundledNode(),
     HERMES_AGENT_NODE_ROOT: process.platform === 'win32' ? bundledNodeBin : dirname(bundledNodeBin),
     AGENT_BROWSER_HOME: process.env.AGENT_BROWSER_HOME?.trim() || bundledAgentBrowserHome(),
@@ -86,7 +94,7 @@ export async function runBundledHermesCli(args: string[]): Promise<number> {
     const child = spawn(invocation.command, [...invocation.argsPrefix, ...args], {
       env,
       stdio: 'inherit',
-      windowsHide: false,
+      windowsHide: true,
     })
     child.once('error', (err) => {
       console.error(`Failed to run bundled Hermes CLI: ${err.message}`)

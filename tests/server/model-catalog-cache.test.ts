@@ -10,7 +10,9 @@ const {
   mockGetProfileDir,
   mockReadAppConfig,
   mockResolveCopilotOAuthToken,
+  mockFetchCopilotModelsWithOAuthToken,
   mockGlobalFetch,
+  mockResolveAuthorizedCredentials,
 } = vi.hoisted(() => ({
   mockReadFile: vi.fn(),
   mockFetchProviderModels: vi.fn(),
@@ -21,7 +23,9 @@ const {
   mockGetProfileDir: vi.fn(),
   mockReadAppConfig: vi.fn(),
   mockResolveCopilotOAuthToken: vi.fn(),
+  mockFetchCopilotModelsWithOAuthToken: vi.fn(),
   mockGlobalFetch: vi.fn(),
+  mockResolveAuthorizedCredentials: vi.fn(),
 }))
 
 vi.mock('fs/promises', () => ({
@@ -76,6 +80,13 @@ vi.mock('../../packages/server/src/shared/providers', () => ({
       base_url: 'https://api.anthropic.com',
       models: ['claude-sonnet-4-6', 'claude-opus-4-7'],
     },
+    {
+      value: 'minimax-oauth',
+      label: 'MiniMax Coding Plan (OAuth)',
+      base_url: 'https://api.minimax.io/anthropic',
+      api_mode: 'anthropic_messages',
+      models: ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed'],
+    },
   ],
 }))
 
@@ -88,6 +99,7 @@ vi.mock('../../packages/server/src/services/config-helpers', () => ({
     copilot: { api_key_env: 'GITHUB_TOKEN', base_url_env: '' },
     nous: { api_key_env: '', base_url_env: '' },
     'claude-oauth': { api_key_env: '', base_url_env: '' },
+    'minimax-oauth': { api_key_env: '', base_url_env: '' },
   },
   fetchProviderModels: mockFetchProviderModels,
   readConfigYamlForProfile: mockReadConfigYamlForProfile,
@@ -99,6 +111,11 @@ vi.mock('../../packages/server/src/services/app-config', () => ({
 
 vi.mock('../../packages/server/src/services/hermes/copilot-models', () => ({
   resolveCopilotOAuthToken: mockResolveCopilotOAuthToken,
+  fetchCopilotModelsWithOAuthToken: mockFetchCopilotModelsWithOAuthToken,
+}))
+
+vi.mock('../../packages/server/src/services/hermes/authorized-provider-credentials', () => ({
+  resolveAuthorizedProviderRuntimeCredentials: mockResolveAuthorizedCredentials,
 }))
 
 vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
@@ -134,10 +151,14 @@ describe('model catalog cache', () => {
     })
     mockReadAppConfig.mockResolvedValue({})
     mockResolveCopilotOAuthToken.mockResolvedValue('')
+    mockFetchCopilotModelsWithOAuthToken.mockResolvedValue([])
     mockFetchProviderModels.mockResolvedValue([])
+    mockResolveAuthorizedCredentials.mockRejectedValue(new Error('not authenticated'))
     mockGlobalFetch.mockResolvedValue({ ok: false, status: 404, json: async () => ({}) })
     vi.stubGlobal('fetch', mockGlobalFetch)
-    mockReadFile.mockImplementation(async (path: string) => {
+    mockReadFile.mockImplementation(async (rawPath: string) => {
+      // Normalise Windows path separators so joined profile paths still match.
+      const path = String(rawPath).replace(/\\/g, '/')
       if (path === '/hermes/default/.env') return 'OPENROUTER_API_KEY=default-openrouter\n'
       if (path === '/hermes/team/.env') {
         return [
@@ -289,10 +310,57 @@ describe('model catalog cache', () => {
     })
   })
 
+  it('clears a stale profile catalog after a successful global refresh', async () => {
+    mockListProfileNamesFromDisk.mockReturnValue(['default'])
+    mockFetchProviderModels.mockImplementation(async (baseUrl: string) => (
+      baseUrl === 'https://openrouter.ai/api/v1'
+        ? ['openrouter/fresh-from-global']
+        : []
+    ))
+    const {
+      providerModelCatalogKey,
+      refreshConfiguredProviderModelCatalogs,
+      resolveProviderCatalogModels,
+      writeProviderModelCatalogEntry,
+    } = await import('../../packages/server/src/services/hermes/model-catalog-cache')
+    const scopedKey = providerModelCatalogKey(
+      'openrouter',
+      'https://openrouter.ai/api/v1',
+      true,
+      'default',
+    )
+    await writeProviderModelCatalogEntry({
+      provider: 'openrouter',
+      label: 'OpenRouter',
+      base_url: 'https://openrouter.ai/api/v1',
+      models: ['openrouter/stale-from-card'],
+      source: 'live',
+      free_only: true,
+      profile: 'default',
+      profiles: ['default'],
+    })
+
+    await refreshConfiguredProviderModelCatalogs({ force: true })
+
+    const cache = JSON.parse(cacheText)
+    expect(cache.providers[scopedKey]).toBeUndefined()
+    expect(resolveProviderCatalogModels(
+      cache,
+      'openrouter',
+      'https://openrouter.ai/api/v1',
+      [],
+      { freeOnly: true, profile: 'default' },
+    )).toEqual(['openrouter/fresh-from-global'])
+  })
+
   it('adds authorized providers to the catalog cache and fetches live models for compatible auth providers', async () => {
     mockListProfileNamesFromDisk.mockReturnValue(['default'])
     mockReadAppConfig.mockResolvedValue({ copilotEnabled: true })
     mockResolveCopilotOAuthToken.mockResolvedValue('gho-copilot')
+    mockFetchCopilotModelsWithOAuthToken.mockResolvedValue([
+      { id: 'gpt-5.6-copilot', preview: false, disabled: false },
+      { id: 'claude-sonnet-4.6', preview: false, disabled: false },
+    ])
     mockGlobalFetch.mockImplementation(async (url: string) => {
       if (url === 'https://chatgpt.com/backend-api/codex/models?client_version=1.0.0') {
         return {
@@ -315,9 +383,39 @@ describe('model catalog cache', () => {
       if (baseUrl === 'https://api.x.ai/v1' && apiKey === 'xai-access-token') {
         return ['grok-live-a', 'grok-live-b']
       }
+      if (baseUrl === 'https://api.minimaxi.com/anthropic' && apiKey === 'minimax-access-token') {
+        return ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.5']
+      }
       return []
     })
-    mockReadFile.mockImplementation(async (path: string) => {
+    mockResolveAuthorizedCredentials.mockImplementation(async ({ provider }: { provider: string }) => {
+      const credentials: Record<string, { apiKey: string; baseUrl: string }> = {
+        'openai-codex': {
+          apiKey: 'codex-token',
+          baseUrl: 'https://chatgpt.com/backend-api/codex',
+        },
+        'xai-oauth': {
+          apiKey: 'xai-access-token',
+          baseUrl: 'https://api.x.ai/v1',
+        },
+        nous: {
+          apiKey: 'nous-agent-key',
+          baseUrl: 'https://inference-api.nousresearch.com/v1',
+        },
+        'claude-oauth': {
+          apiKey: 'claude-access-token',
+          baseUrl: 'https://api.anthropic.com',
+        },
+        'minimax-oauth': {
+          apiKey: 'minimax-access-token',
+          baseUrl: 'https://api.minimaxi.com/anthropic',
+        },
+      }
+      if (!credentials[provider]) throw new Error('not authenticated')
+      return { provider, ...credentials[provider] }
+    })
+    mockReadFile.mockImplementation(async (rawPath: string) => {
+      const path = String(rawPath).replace(/\\/g, '/')
       if (path === '/hermes/default/.env') return ''
       if (path === '/hermes/default/auth.json') {
         return JSON.stringify({
@@ -329,6 +427,11 @@ describe('model catalog cache', () => {
                 refresh_token: 'claude-refresh-token',
               },
               base_url: 'https://api.anthropic.com',
+            },
+            'minimax-oauth': {
+              access_token: 'minimax-access-token',
+              refresh_token: 'minimax-refresh-token',
+              inference_base_url: 'https://api.minimaxi.com/anthropic',
             },
           },
           credential_pool: {
@@ -344,15 +447,31 @@ describe('model catalog cache', () => {
     })
     mockReadConfigYamlForProfile.mockResolvedValue({})
 
-    const { refreshConfiguredProviderModelCatalogs, providerModelCatalogKey } = await import(
+    const {
+      providerModelCatalogKey,
+      refreshConfiguredProviderModelCatalogs,
+      resolveProviderCatalogRefreshTarget,
+    } = await import(
       '../../packages/server/src/services/hermes/model-catalog-cache'
     )
 
     await refreshConfiguredProviderModelCatalogs({ force: true })
 
-    expect(mockFetchProviderModels).toHaveBeenCalledTimes(2)
+    await expect(resolveProviderCatalogRefreshTarget('default', 'openai-codex')).resolves.toMatchObject({
+      provider: 'openai-codex',
+      api_key: 'codex-token',
+      credential_kind: 'oauth',
+      profile: 'default',
+    })
+    expect(mockFetchProviderModels).toHaveBeenCalledTimes(3)
     expect(mockFetchProviderModels).toHaveBeenCalledWith('https://inference-api.nousresearch.com/v1', 'nous-agent-key', false)
     expect(mockFetchProviderModels).toHaveBeenCalledWith('https://api.x.ai/v1', 'xai-access-token', false)
+    expect(mockFetchProviderModels).toHaveBeenCalledWith('https://api.minimaxi.com/anthropic', 'minimax-access-token', false)
+    expect(mockResolveAuthorizedCredentials).toHaveBeenCalledWith({
+      profile: 'default',
+      provider: 'openai-codex',
+    })
+    expect(mockFetchCopilotModelsWithOAuthToken).toHaveBeenCalledWith('gho-copilot')
     const cache = JSON.parse(cacheText)
     expect(cache.providers[providerModelCatalogKey('openai-codex', 'https://chatgpt.com/backend-api/codex')]).toMatchObject({
       provider: 'openai-codex',
@@ -368,8 +487,8 @@ describe('model catalog cache', () => {
     })
     expect(cache.providers[providerModelCatalogKey('copilot', 'https://api.githubcopilot.com')]).toMatchObject({
       provider: 'copilot',
-      models: ['gpt-5.5', 'claude-sonnet-4.6'],
-      source: 'fallback',
+      models: ['gpt-5.6-copilot', 'claude-sonnet-4.6'],
+      source: 'live',
       profiles: ['default'],
     })
     expect(cache.providers[providerModelCatalogKey('nous', 'https://inference-api.nousresearch.com/v1')]).toMatchObject({
@@ -382,6 +501,71 @@ describe('model catalog cache', () => {
       provider: 'claude-oauth',
       models: ['claude-sonnet-4-6', 'claude-opus-4-7'],
       source: 'fallback',
+      profiles: ['default'],
+    })
+    expect(cache.providers[providerModelCatalogKey('minimax-oauth', 'https://api.minimaxi.com/anthropic')]).toMatchObject({
+      provider: 'minimax-oauth',
+      models: ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.5'],
+      source: 'live',
+      profiles: ['default'],
+    })
+  })
+
+  it.each([
+    ['global', 'https://api.minimax.io/anthropic'],
+    ['China', 'https://api.minimaxi.com/anthropic'],
+  ])('refreshes the MiniMax %s catalog against its authorized region URL', async (_region, baseUrl) => {
+    mockListProfileNamesFromDisk.mockReturnValue(['default'])
+    mockReadConfigYamlForProfile.mockResolvedValue({})
+    mockReadFile.mockImplementation(async (rawPath: string) => {
+      const path = String(rawPath).replace(/\\/g, '/')
+      if (path === '/hermes/default/.env') return ''
+      if (path === '/hermes/default/auth.json') {
+        return JSON.stringify({
+          providers: {
+            'minimax-oauth': {
+              access_token: 'minimax-access-token',
+              refresh_token: 'minimax-refresh-token',
+              inference_base_url: baseUrl,
+            },
+          },
+        })
+      }
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+    })
+    mockResolveAuthorizedCredentials.mockResolvedValue({
+      provider: 'minimax-oauth',
+      apiKey: 'minimax-access-token',
+      baseUrl,
+    })
+    mockFetchProviderModels.mockResolvedValue([
+      'MiniMax-M3',
+      'MiniMax-M2.7',
+      'MiniMax-M2.7-highspeed',
+      'MiniMax-M2.5',
+    ])
+
+    const { providerModelCatalogKey, refreshConfiguredProviderModelCatalogs } = await import(
+      '../../packages/server/src/services/hermes/model-catalog-cache'
+    )
+    await refreshConfiguredProviderModelCatalogs({ force: true })
+
+    expect(mockFetchProviderModels).toHaveBeenCalledWith(
+      baseUrl,
+      'minimax-access-token',
+      false,
+    )
+    const cache = JSON.parse(cacheText)
+    expect(cache.providers[providerModelCatalogKey('minimax-oauth', baseUrl)]).toMatchObject({
+      provider: 'minimax-oauth',
+      base_url: baseUrl,
+      models: [
+        'MiniMax-M3',
+        'MiniMax-M2.7',
+        'MiniMax-M2.7-highspeed',
+        'MiniMax-M2.5',
+      ],
+      source: 'live',
       profiles: ['default'],
     })
   })

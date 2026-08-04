@@ -4,18 +4,20 @@ import { logger } from '../../logger'
 import type { AgentBridgeClient } from '../agent-bridge'
 import { readConfigYamlForProfile } from '../../config-helpers'
 import { flushBridgePendingToDb } from './bridge-message'
-import { buildDbHistory, estimateSnapshotAwareHistoryUsage, forceCompressBridgeHistory, getOrCreateSession, replaceState } from './compression'
+import { buildDbSnapshotAwareHistory, forceCompressBridgeHistory, getOrCreateSession, replaceState } from './compression'
 import { handleAbort } from './abort'
-import { calcAndUpdateUsage, contextTokensWithCachedOverhead, updateMessageContextTokenUsage } from './usage'
+import { calcAndUpdateUsage, contextTokensWithCachedOverhead, estimateUsageTokensFromMessages, updateMessageContextTokenUsage } from './usage'
 import { contentBlocksToString } from './content-blocks'
 import type { ChatRunSource, ContentBlock, QueuedRun, SessionState } from './types'
 
 type CommandName =
   | 'usage'
   | 'status'
+  | 'yolo'
   | 'abort'
   | 'queue'
   | 'skill'
+  | 'bundles'
   | 'learn'
   | 'plan'
   | 'moa'
@@ -78,9 +80,11 @@ interface MoaPresetInfo {
 const COMMAND_ALIASES: Record<string, CommandName> = {
   usage: 'usage',
   status: 'status',
+  yolo: 'yolo',
   abort: 'abort',
   queue: 'queue',
   skill: 'skill',
+  bundles: 'bundles',
   learn: 'learn',
   plan: 'plan',
   moa: 'moa',
@@ -122,7 +126,7 @@ export async function handleSessionCommand(
   ctx.socket.join(`session:${sessionId}`)
   ensureCommandSession(sessionId, command, ctx)
   const isKnownCommand = Boolean(COMMAND_ALIASES[command.rawName])
-  if (command.name !== 'plan' && command.name !== 'skill' && command.name !== 'learn' && command.name !== 'branch' && command.name !== 'moa' && isKnownCommand) {
+  if (command.name !== 'plan' && command.name !== 'skill' && command.name !== 'bundles' && command.name !== 'learn' && command.name !== 'branch' && command.name !== 'moa' && isKnownCommand) {
     persistCommandMessage(sessionId, state, `/${command.rawName}${command.args ? ` ${command.args}` : ''}`)
   }
 
@@ -138,21 +142,35 @@ export async function handleSessionCommand(
     })
   }
 
-  if (command.name === 'skill') {
+  if (command.name === 'skill' || command.name === 'bundles') {
+    const isBundleCommand = command.name === 'bundles'
+    const action = isBundleCommand ? 'bundle' : 'skill'
+    const label = isBundleCommand ? 'Bundle' : 'Skill'
     const displayCommand = `/${command.rawName}${command.args ? ` ${command.args}` : ''}`
-    const skillParts = command.args.split(/\s+/, 2)
-    const skillName = skillParts[0]?.trim()
-    if (!skillName) {
+    const targetParts = command.args.split(/\s+/, 2)
+    const targetName = targetParts[0]?.trim()
+    if (!targetName) {
       emitCommand({
         ok: false,
-        action: 'skill',
+        action,
         terminal: !state.isWorking,
-        message: 'Usage: /skill <skill-name> [instructions]',
+        message: isBundleCommand
+          ? 'Usage: /bundles <bundle-name> [instructions]'
+          : 'Usage: /skill <skill-name> [instructions]',
       })
       return
     }
-    const rest = command.args.slice(skillName.length).trim()
-    const bridgeCommand = `/${skillName}${rest ? ` ${rest}` : ''}`
+    if (isBundleCommand && targetName.toLowerCase() === 'create') {
+      emitCommand({
+        ok: false,
+        action,
+        terminal: !state.isWorking,
+        message: 'Use /bundles create in Hermes Studio to open the bundle creator.',
+      })
+      return
+    }
+    const rest = command.args.slice(targetName.length).trim()
+    const bridgeCommand = `/${targetName}${rest ? ` ${rest}` : ''}`
     let result
     try {
       result = await ctx.bridge.command(sessionId, bridgeCommand, ctx.profile)
@@ -160,27 +178,29 @@ export async function handleSessionCommand(
       if (state.isWorking) emitQueuedState(ctx, sessionId, state)
       emitCommand({
         ok: false,
-        action: 'skill',
+        action,
         terminal: !state.isWorking,
-        message: `Skill command failed: ${err instanceof Error ? err.message : String(err)}`,
+        message: `${label} command failed: ${err instanceof Error ? err.message : String(err)}`,
       })
       return
     }
 
     const expandedPrompt = typeof result.message === 'string' ? result.message.trim() : ''
-    if (result.handled && expandedPrompt && (result.type === 'skill' || result.type === 'bundle')) {
+    if (result.handled && expandedPrompt && result.type === action) {
       logger.info(
-        '[chat-run-socket] /skill resolved session=%s profile=%s skill=%s bridge_type=%s',
+        '[chat-run-socket] /%s resolved session=%s profile=%s target=%s bridge_type=%s',
+        command.rawName,
         sessionId,
         ctx.profile,
-        skillName,
+        targetName,
         result.type,
       )
       logger.info(
-        '[chat-run-socket] /skill expanded prompt session=%s profile=%s skill=%s chars=%d expanded_prompt=%s',
+        '[chat-run-socket] /%s expanded prompt session=%s profile=%s target=%s chars=%d expanded_prompt=%s',
+        command.rawName,
         sessionId,
         ctx.profile,
-        skillName,
+        targetName,
         expandedPrompt.length,
         expandedPrompt,
       )
@@ -206,7 +226,7 @@ export async function handleSessionCommand(
       }
 
       emitCommand({
-        action: result.type === 'bundle' ? 'bundle' : 'skill',
+        action,
         terminal: false,
         started: true,
       })
@@ -215,19 +235,25 @@ export async function handleSessionCommand(
     }
 
     logger.warn(
-      '[chat-run-socket] /skill unresolved session=%s profile=%s skill=%s bridge_type=%s message=%s',
+      '[chat-run-socket] /%s unresolved session=%s profile=%s target=%s bridge_type=%s message=%s',
+      command.rawName,
       sessionId,
       ctx.profile,
-      skillName,
+      targetName,
       typeof result.type === 'string' ? result.type : '',
       typeof result.message === 'string' ? result.message : '',
     )
     if (state.isWorking) emitQueuedState(ctx, sessionId, state)
+    const typeMismatchMessage = result?.handled && result?.type && result.type !== action
+      ? isBundleCommand
+        ? `/${targetName} did not resolve to a Bundle.`
+        : `/${targetName} resolved to a Bundle. Use /bundles ${targetName} instead.`
+      : ''
     emitCommand({
       ok: false,
       action: 'error',
       terminal: !state.isWorking,
-      message: result?.message || `Unknown bridge command: /${command.rawName}`,
+      message: typeMismatchMessage || result?.message || `Unknown bridge command: /${targetName}`,
     })
     return
   }
@@ -400,6 +426,38 @@ export async function handleSessionCommand(
         runId,
         bridgeStatus,
       })
+      return
+    }
+
+    case 'yolo': {
+      try {
+        const result = await ctx.bridge.command(sessionId, 'yolo', ctx.profile)
+        if (!result.handled) {
+          emitCommand({
+            ok: false,
+            action: 'yolo',
+            terminal: !state.isWorking,
+            message: result.message || 'YOLO mode is not available in the running Hermes Agent runtime.',
+          })
+          return
+        }
+        const enabled = result.enabled === true
+        emitCommand({
+          action: 'yolo',
+          terminal: !state.isWorking,
+          enabled,
+          message: result.message || (enabled
+            ? '⚡ YOLO mode ON for this session — all commands auto-approved. Use with caution.'
+            : '⚠️ YOLO mode OFF for this session — dangerous commands will require approval.'),
+        })
+      } catch (err) {
+        emitCommand({
+          ok: false,
+          action: 'yolo',
+          terminal: !state.isWorking,
+          message: `YOLO command failed: ${err instanceof Error ? err.message : String(err)}`,
+        })
+      }
       return
     }
 
@@ -646,12 +704,19 @@ export async function handleSessionCommand(
       clearTransientRunState(state)
       const emit = (event: string, payload: any) => emitToSession(ctx.nsp, ctx.socket, sessionId, event, payload)
       try {
-        const history = await buildDbHistory(sessionId, { excludeLastUser: true })
-        const usageEstimate = estimateSnapshotAwareHistoryUsage(sessionId, history)
-        const beforeContextTokens = contextTokensWithCachedOverhead(state, usageEstimate.tokenCount)
+        const session = getSession(sessionId)
+        const history = await buildDbSnapshotAwareHistory(
+          sessionId,
+          ctx.profile,
+          { excludeLastUser: true },
+          { model: session?.model, provider: session?.provider },
+        )
+        const historyUsage = estimateUsageTokensFromMessages(history)
+        const beforeMessageTokens = historyUsage.inputTokens + historyUsage.outputTokens
+        const beforeContextTokens = contextTokensWithCachedOverhead(state, beforeMessageTokens)
         emit('compression.started', {
           event: 'compression.started',
-          message_count: usageEstimate.messageCount,
+          message_count: history.length,
           token_count: beforeContextTokens,
           source: 'command',
         })

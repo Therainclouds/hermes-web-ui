@@ -75,14 +75,14 @@ jobs:
                 "packages/desktop/release/latest*.yml"
               ;;
             darwin-arm64)
-              write_common_outputs "macOS arm64" "macos-14" "--mac dmg zip --arm64" "desktop-darwin-arm64" \
+              write_common_outputs "macOS arm64" "macos-26" "--mac dmg zip --arm64" "desktop-darwin-arm64" \
                 "packages/desktop/release/*.dmg" \
                 "packages/desktop/release/*.dmg.blockmap" \
                 "packages/desktop/release/*.zip" \
                 "packages/desktop/release/*.zip.blockmap"
               ;;
             darwin-x64)
-              write_common_outputs "macOS x64" "macos-15-intel" "--mac dmg zip --x64" "desktop-darwin-x64" \
+              write_common_outputs "macOS x64" "macos-26-intel" "--mac dmg zip --x64" "desktop-darwin-x64" \
                 "packages/desktop/release/*.dmg" \
                 "packages/desktop/release/*.dmg.blockmap" \
                 "packages/desktop/release/*.zip" \
@@ -131,6 +131,10 @@ jobs:
           npm ci --ignore-scripts
           npm rebuild node-pty
 
+      - name: Test Windows CLI shim
+        if: needs.validate.outputs.target_os == 'win32'
+        run: npm run test -- tests/desktop/cli-shim.test.ts
+
       - name: Build web UI
         run: npm run build
 
@@ -148,45 +152,13 @@ jobs:
 
       - name: Configure macOS signing
         if: needs.validate.outputs.target_os == 'darwin'
-        shell: bash
         env:
           MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
           MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
           MAC_APPLE_ID: ${{ secrets.APPLE_ID }}
           MAC_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           MAC_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          write_env() {
-            local name="$1"
-            local value="$2"
-            if [ -n "$value" ]; then
-              {
-                echo "$name<<EOF"
-                echo "$value"
-                echo "EOF"
-              } >> "$GITHUB_ENV"
-            fi
-          }
-
-          if [ -z "${MAC_CSC_LINK:-}" ]; then
-            echo "CSC_IDENTITY_AUTO_DISCOVERY=false" >> "$GITHUB_ENV"
-            echo "MAC_BUILD_EXTRA_ARGS=--config.mac.notarize=false" >> "$GITHUB_ENV"
-            echo "No macOS signing certificate configured; building unsigned and skipping notarization."
-            exit 0
-          fi
-
-          write_env "CSC_LINK" "$MAC_CSC_LINK"
-          write_env "CSC_KEY_PASSWORD" "$MAC_CSC_KEY_PASSWORD"
-
-          if [ -n "${MAC_APPLE_ID:-}" ] && [ -n "${MAC_APPLE_APP_SPECIFIC_PASSWORD:-}" ] && [ -n "${MAC_APPLE_TEAM_ID:-}" ]; then
-            write_env "APPLE_ID" "$MAC_APPLE_ID"
-            write_env "APPLE_APP_SPECIFIC_PASSWORD" "$MAC_APPLE_APP_SPECIFIC_PASSWORD"
-            write_env "APPLE_TEAM_ID" "$MAC_APPLE_TEAM_ID"
-            echo "macOS signing and notarization are configured."
-          else
-            echo "MAC_BUILD_EXTRA_ARGS=--config.mac.notarize=false" >> "$GITHUB_ENV"
-            echo "macOS signing certificate configured; Apple notarization credentials incomplete, skipping notarization."
-          fi
+        run: node packages/desktop/scripts/configure-macos-signing.mjs
 
       - name: Build desktop artifact
         shell: bash
@@ -196,6 +168,10 @@ jobs:
             echo "File descriptor limit: $(ulimit -n)"
           fi
           npm --prefix packages/desktop run dist -- ${{ needs.validate.outputs.electron_target }} ${MAC_BUILD_EXTRA_ARGS:-} --publish never
+
+      - name: Remove macOS signing keychain
+        if: always() && needs.validate.outputs.target_os == 'darwin'
+        run: node packages/desktop/scripts/configure-macos-signing.mjs --cleanup
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4

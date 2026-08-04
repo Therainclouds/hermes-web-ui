@@ -7,6 +7,7 @@ import {
 } from '../../services/hermes/file-provider'
 import { requireSuperAdmin } from '../../middleware/user-auth'
 import { MultipartParseError, parseMultipartBoundary, parseMultipartFilename, splitMultipart } from '../../lib/multipart'
+import * as ctrl from '../../controllers/hermes/file-preview'
 
 function requestedProfile(ctx: any): string | undefined {
   return ctx.state?.profile?.name
@@ -25,6 +26,8 @@ function withAbsolutePath<T extends { path: string }>(ctx: any, entry: T): T & {
 }
 
 export const fileRoutes = new Router()
+
+fileRoutes.get('/api/hermes/files/preview', ctrl.previewProfileFile)
 
 function handleError(ctx: any, err: any) {
   const code = err.code || 'unknown'

@@ -1,4 +1,3 @@
-export const MEMORY_SCOPES = ['session', 'workspace', 'user', 'global'] as const
 export const MEMORY_NODE_TYPES = [
   'preference',
   'fact',
@@ -10,10 +9,32 @@ export const MEMORY_NODE_TYPES = [
   'correction',
 ] as const
 export const MEMORY_NODE_STATUSES = ['active', 'superseded', 'expired', 'deleted'] as const
+export const MEMORY_KINDS = [
+  'interaction_contract',
+  'profile_name',
+  'home_location',
+  'occupation',
+  'timezone_preference',
+  'language_preference',
+  'accessibility_need',
+  'communication_preference',
+  'general_preference',
+  'workflow_preference',
+  'tool_preference',
+  'personal_relationship',
+  'habit_routine',
+  'environment_fact',
+  'project_context',
+  'long_term_goal',
+  'durable_decision',
+  'hard_constraint',
+  'food_avoidance',
+  'custom_fact',
+] as const
 
-export type MemoryScope = typeof MEMORY_SCOPES[number]
 export type MemoryNodeType = typeof MEMORY_NODE_TYPES[number]
 export type MemoryNodeStatus = typeof MEMORY_NODE_STATUSES[number]
+export type MemoryKind = typeof MEMORY_KINDS[number]
 export type MemoryMessageRole = 'system' | 'user' | 'assistant' | 'tool'
 
 export interface MemoryMessage {
@@ -47,14 +68,12 @@ export interface MemoryNode {
   id: string
   parentId?: string
   supersedesId?: string
-  sessionId?: string
-  workspaceId?: string
-  userId?: string
-  scope: MemoryScope
+  profileId: string
   domain: string
   categoryPath: string[]
   type: MemoryNodeType
-  key?: string
+  key: string
+  revision: number
   valueJson?: unknown
   title: string
   content: string
@@ -74,8 +93,7 @@ export interface MemoryAuditEvent {
   eventType: 'create' | 'update' | 'supersede' | 'expire' | 'delete' | 'extract' | 'summary'
   nodeId?: string
   sessionId?: string
-  workspaceId?: string
-  userId?: string
+  profileId: string
   actor: string
   reason: string
   payload?: Record<string, unknown>
@@ -83,13 +101,11 @@ export interface MemoryAuditEvent {
 }
 
 export interface MemoryQuery {
-  userId?: string
-  workspaceId?: string
-  sessionId?: string
-  scopes?: MemoryScope[]
+  profileId?: string
   domain?: string
   categoryPathPrefix?: string[]
   types?: MemoryNodeType[]
+  kinds?: MemoryKind[]
   key?: string
   valueJson?: unknown
   tags?: string[]
@@ -118,6 +134,8 @@ export interface MemoryContextDiagnostics {
   warnings: string[]
   retrievedNodeCount: number
   omittedNodeCount: number
+  tokenBudget?: number
+  usedTokens?: number
 }
 
 export interface MemoryContext {
@@ -133,8 +151,7 @@ export interface MemoryContext {
 
 export interface MemoryRuntimeIdentity {
   sessionId: string
-  workspaceId?: string
-  userId?: string
+  profileId?: string
 }
 
 export interface MemoryExtractionInput extends MemoryRuntimeIdentity {
@@ -144,7 +161,10 @@ export interface MemoryExtractionInput extends MemoryRuntimeIdentity {
 
 export interface MemoryExtractionOperation {
   operation: 'create' | 'update' | 'supersede' | 'expire' | 'ignore'
+  kind?: MemoryKind
+  itemKey?: string
   targetId?: string
+  expectedRevision?: number
   node: Partial<MemoryNode>
   reason: string
   explicitUserIntent?: boolean
@@ -170,7 +190,12 @@ export interface MemoryExtractor {
 
 export interface MemoryProposeUpdateInput {
   operation: 'create' | 'update' | 'supersede' | 'expire' | 'delete'
+  kind?: MemoryKind
+  itemKey?: string
   targetId?: string
+  expectedRevision?: number
+  valuePatch?: Record<string, unknown>
+  unsetValueFields?: string[]
   node: Partial<MemoryNode>
   reason: string
   actor?: string
@@ -181,12 +206,14 @@ export interface MemoryProposeUpdateInput {
 export interface MemoryProposeUpdateResult {
   accepted: boolean
   nodeId?: string
+  action?: 'created' | 'updated' | 'noop' | 'expired' | 'deleted'
+  node?: MemoryNode
   reason?: string
 }
 
 export interface MemoryForgetInput {
   id?: string
-  scope?: MemoryScope
+  expectedRevision?: number
   domain?: string
   categoryPathPrefix?: string[]
   type?: MemoryNodeType
@@ -201,6 +228,7 @@ export interface MemoryForgetInput {
 
 export interface MemoryForgetResult {
   deletedIds: string[]
+  deletedMemories?: MemoryNode[]
   mode: 'soft' | 'hard'
   requiresConfirmation?: boolean
   reason?: string
@@ -221,9 +249,9 @@ export interface MemoryStore {
   getLatestSummary(input: { sessionId: string }): Promise<MemorySummary | undefined>
   getNode(id: string): Promise<MemoryNode | undefined>
   upsertNode(node: MemoryNode, audit?: Omit<MemoryAuditEvent, 'id' | 'nodeId' | 'createdAt'>): Promise<void>
-  supersedeNode(input: { oldNodeId: string; newNode: MemoryNode; reason: string; actor: string }): Promise<void>
-  updateNodeStatus(input: { nodeId: string; status: MemoryNodeStatus; reason: string; actor: string }): Promise<boolean>
-  deleteNode(input: { nodeId: string; mode: 'soft' | 'hard'; reason: string; actor: string }): Promise<boolean>
+  supersedeNode(input: { oldNodeId: string; newNode: MemoryNode; reason: string; actor: string; sessionId?: string }): Promise<void>
+  updateNodeStatus(input: { nodeId: string; status: MemoryNodeStatus; reason: string; actor: string; expectedRevision?: number; sessionId?: string }): Promise<boolean>
+  deleteNode(input: { nodeId: string; mode: 'soft' | 'hard'; reason: string; actor: string; expectedRevision?: number; sessionId?: string }): Promise<boolean>
   queryNodes(query: MemoryQuery): Promise<MemoryNode[]>
   appendAuditEvent(event: MemoryAuditEvent): Promise<void>
   getSessionState(sessionId: string): Promise<MemorySessionState | undefined>

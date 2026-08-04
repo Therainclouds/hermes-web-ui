@@ -41,6 +41,14 @@ describe('Ekko MCP server context', () => {
       },
       enabled: true,
     })
+    expect(servers['hermes-studio-browser']).toMatchObject({
+      args: [join(process.cwd(), 'bin/hermes-studio-mcp.mjs'), 'browser'],
+      env: {
+        HERMES_WEB_UI_URL: 'http://127.0.0.1:8648',
+        HERMES_WEB_UI_PROFILE: 'work',
+        HERMES_MCP_TOOLSET: 'browser',
+      },
+    })
     expect(servers['hermes-studio-devices']).toMatchObject({
       args: [join(process.cwd(), 'bin/hermes-studio-mcp.mjs'), 'devices'],
       env: {
@@ -69,8 +77,17 @@ describe('Ekko MCP server context', () => {
 
     expect(servers?.['hermes-studio-api']).toEqual({ command: 'custom-api' })
     expect(servers?.custom).toEqual({ command: 'custom-mcp' })
+    expect(servers?.['hermes-studio-browser']).toBeDefined()
     expect(servers?.['hermes-studio-devices']).toBeDefined()
     expect(servers?.['hermes-studio-use']).toBeDefined()
+  })
+
+  it('keeps the browser toolset available for the Electron desktop runtime', async () => {
+    process.env.HERMES_DESKTOP = 'true'
+    const { buildManagedEkkoMcpServers } = await import('../../packages/server/src/services/ekko-agent/mcp')
+    const browser = buildManagedEkkoMcpServers('default')['hermes-studio-browser'] as any
+    expect(browser.args).toEqual([join(process.cwd(), 'bin/hermes-studio-mcp.mjs'), 'browser'])
+    expect(browser.env.HERMES_MCP_TOOLSET).toBe('browser')
   })
 
   it('does not add managed MCP servers when startup autoinject is disabled or skipped', async () => {

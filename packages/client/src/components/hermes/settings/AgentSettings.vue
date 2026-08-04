@@ -43,7 +43,7 @@ function debouncedSave(key: string, value: any) {
     <SettingRow :label="t('settings.agent.maxTurns')" :hint="t('settings.agent.maxTurnsHint')">
       <NInputNumber
         :value="settingsStore.agent.max_turns"
-        :min="1" :max="200" :step="5"
+        :min="1" :step="5"
         size="small" class="input-sm"
         @update:value="v => v != null && debouncedSave('max_turns', v)"
       />
@@ -51,7 +51,7 @@ function debouncedSave(key: string, value: any) {
     <SettingRow :label="t('settings.agent.gatewayTimeout')" :hint="t('settings.agent.gatewayTimeoutHint')">
       <NInputNumber
         :value="settingsStore.agent.gateway_timeout"
-        :min="60" :max="7200" :step="60"
+        :min="0" :max="7200" :step="60"
         size="small" class="input-sm"
         @update:value="v => v != null && debouncedSave('gateway_timeout', v)"
       />

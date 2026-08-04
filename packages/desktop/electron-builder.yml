@@ -14,6 +14,7 @@ publish:
 buildDependenciesFromSource: false
 nodeGypRebuild: false
 npmRebuild: false
+afterPack: "./scripts/verify-packaged-webui.mjs"
 
 files:
   - "dist/**/*"
@@ -31,7 +32,8 @@ extraResources:
     filter:
       - "icon.png"
       - "icon.ico"
-      - "trayTemplate.png"
+      - "trayMac.png"
+      - "trayMac@2x.png"
       - "trayWindows.png"
       - "runtime-release.json"
   - from: "../.."
@@ -40,18 +42,30 @@ extraResources:
       - "package.json"
       - "bin/**"
       - "dist/**"
-      - "node_modules/**"
-      # Drop other-platform node-pty prebuilds (saves ~45MB)
-      - "!node_modules/node-pty/prebuilds/!(${platform}-${arch})/**"
-      - "!node_modules/node-pty/build/**"
       - "!packages/desktop/**"
       - "!**/{.git,.github,docs,tests,playwright.config.ts,README*,scripts,*.map}"
-      - "!node_modules/**/*.md"
+  # electron-builder 26 deliberately skips a root-level node_modules directory
+  # when it is nested inside a broader matcher. Use node_modules itself as the
+  # source so the pruned production dependencies are copied into the Web UI.
+  - from: "../../node_modules"
+    to: "webui/node_modules"
+    filter:
+      - "**/*"
+      # Drop other-platform node-pty prebuilds (saves ~45MB)
+      - "!node-pty/prebuilds/!(${platform}-${arch})/**"
+      # Linux has no bundled prebuild and loads the native module compiled by
+      # `npm rebuild node-pty` from build/Release.
+      - "!node-pty/build/**"
+      - "node-pty/build/Release/pty.node"
+      - "!**/*.md"
 
 asarUnpack:
   - "**/*.node"
 
 mac:
+  # Xcode 26 compiles this Icon Composer source into Assets.car and also
+  # generates the legacy ICNS fallback for pre-Tahoe macOS releases.
+  icon: build/icon.icon
   target:
     - target: dmg
       arch: [arm64, x64]
@@ -61,9 +75,14 @@ mac:
   hardenedRuntime: true
   gatekeeperAssess: false
   notarize: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.inherit.plist
+  extendInfo:
+    NSMicrophoneUsageDescription: "Quanthermes Studio uses the microphone for voice conversations and speech transcription."
   artifactName: "Quanthermes.Studio-${version}-${arch}.${ext}"
 
 win:
+  icon: build/icon.ico
   target:
     - target: nsis
       arch: [x64]

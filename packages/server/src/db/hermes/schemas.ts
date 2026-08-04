@@ -39,6 +39,19 @@ export const USAGE_RUN_INDEX = `CREATE UNIQUE INDEX IF NOT EXISTS idx_session_us
 
 export const SESSIONS_TABLE = 'sessions'
 
+export const SESSION_CATEGORIES_TABLE = 'session_categories'
+
+export const SESSION_CATEGORIES_SCHEMA: Record<string, string> = {
+  id: 'INTEGER PRIMARY KEY AUTOINCREMENT',
+  name: 'TEXT NOT NULL COLLATE NOCASE',
+  created_at: 'INTEGER NOT NULL',
+  updated_at: 'INTEGER NOT NULL',
+}
+
+export const SESSION_CATEGORIES_INDEXES = {
+  uniq_session_categories_name: 'CREATE UNIQUE INDEX IF NOT EXISTS uniq_session_categories_name ON session_categories(name COLLATE NOCASE)',
+}
+
 export const SESSIONS_SCHEMA: Record<string, string> = {
   id: 'TEXT PRIMARY KEY',
   profile: 'TEXT NOT NULL DEFAULT \'default\'',
@@ -72,6 +85,12 @@ export const SESSIONS_SCHEMA: Record<string, string> = {
   last_active: 'INTEGER NOT NULL',
   is_archived: 'INTEGER NOT NULL DEFAULT 0',
   workspace: 'TEXT',
+  category_id: 'INTEGER',
+  history_revision: 'INTEGER NOT NULL DEFAULT 0',
+}
+
+export const SESSIONS_INDEXES = {
+  idx_sessions_category_id: 'CREATE INDEX IF NOT EXISTS idx_sessions_category_id ON sessions(category_id)',
 }
 
 export const MESSAGES_TABLE = 'messages'
@@ -106,6 +125,7 @@ export const WORKSPACE_RUN_CHANGES_SCHEMA: Record<string, string> = {
   change_id: 'TEXT PRIMARY KEY',
   room_id: "TEXT NOT NULL DEFAULT ''",
   message_id: "TEXT NOT NULL DEFAULT ''",
+  assistant_message_id: "TEXT NOT NULL DEFAULT ''",
   session_id: 'TEXT NOT NULL',
   run_id: 'TEXT NOT NULL DEFAULT \'\'',
   source: 'TEXT NOT NULL DEFAULT \'run\'',
@@ -186,6 +206,9 @@ export const WORKFLOW_RUNS_SCHEMA: Record<string, string> = {
   status: "TEXT NOT NULL DEFAULT 'queued'",
   snapshot_nodes_json: "TEXT NOT NULL DEFAULT '[]'",
   snapshot_edges_json: "TEXT NOT NULL DEFAULT '[]'",
+  compiled_loops_json: "TEXT NOT NULL DEFAULT '[]'",
+  requested_timeout_ms: 'INTEGER',
+  deadline_at: 'INTEGER',
   started_at: 'INTEGER',
   finished_at: 'INTEGER',
   created_at: 'INTEGER NOT NULL',
@@ -205,12 +228,16 @@ export const WORKFLOW_RUN_NODE_SESSIONS_SCHEMA: Record<string, string> = {
   run_id: 'TEXT NOT NULL',
   workflow_id: 'TEXT NOT NULL',
   node_id: 'TEXT NOT NULL',
+  execution_id: "TEXT NOT NULL DEFAULT ''",
+  iteration_path_json: "TEXT NOT NULL DEFAULT '[]'",
+  consumed_edge_evaluation_ids_json: "TEXT NOT NULL DEFAULT '[]'",
   session_id: 'TEXT NOT NULL',
   profile: "TEXT NOT NULL DEFAULT 'default'",
   agent: "TEXT NOT NULL DEFAULT ''",
   agent_mode: "TEXT NOT NULL DEFAULT ''",
   status: "TEXT NOT NULL DEFAULT 'queued'",
   sequence: 'INTEGER NOT NULL DEFAULT 0',
+  remaining_timeout_ms_at_start: 'INTEGER',
   started_at: 'INTEGER',
   finished_at: 'INTEGER',
   created_at: 'INTEGER NOT NULL',
@@ -225,7 +252,33 @@ export const WORKFLOW_RUN_NODE_SESSIONS_INDEXES = {
   idx_workflow_run_node_sessions_session: 'CREATE INDEX IF NOT EXISTS idx_workflow_run_node_sessions_session ON workflow_run_node_sessions(session_id)',
   idx_workflow_run_node_sessions_status: 'CREATE INDEX IF NOT EXISTS idx_workflow_run_node_sessions_status ON workflow_run_node_sessions(status)',
   idx_workflow_run_node_sessions_sequence: 'CREATE INDEX IF NOT EXISTS idx_workflow_run_node_sessions_sequence ON workflow_run_node_sessions(run_id, sequence)',
-  uniq_workflow_run_node_sessions_run_node: 'CREATE UNIQUE INDEX IF NOT EXISTS uniq_workflow_run_node_sessions_run_node ON workflow_run_node_sessions(run_id, node_id)',
+  uniq_workflow_run_node_sessions_run_execution: 'CREATE UNIQUE INDEX IF NOT EXISTS uniq_workflow_run_node_sessions_run_execution ON workflow_run_node_sessions(run_id, execution_id)',
+}
+
+export const WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE = 'workflow_run_edge_evaluations'
+
+export const WORKFLOW_RUN_EDGE_EVALUATIONS_SCHEMA: Record<string, string> = {
+  id: 'TEXT PRIMARY KEY', run_id: 'TEXT NOT NULL', workflow_id: 'TEXT NOT NULL', edge_id: 'TEXT NOT NULL',
+  source_node_id: 'TEXT NOT NULL', source_execution_id: "TEXT NOT NULL DEFAULT ''", iteration_path_json: "TEXT NOT NULL DEFAULT '[]'",
+  target_node_id: 'TEXT NOT NULL', source_outcome: 'TEXT NOT NULL',
+  status: 'TEXT NOT NULL', route: 'TEXT NOT NULL', reason: 'TEXT', sequence: 'INTEGER NOT NULL',
+  orchestration_json: "TEXT NOT NULL DEFAULT '{}'", condition_evaluation_json: 'TEXT', evaluated_at: 'INTEGER NOT NULL',
+}
+
+export const WORKFLOW_RUN_EDGE_EVALUATIONS_INDEXES = {
+  idx_workflow_run_edge_evaluations_run_sequence: 'CREATE INDEX IF NOT EXISTS idx_workflow_run_edge_evaluations_run_sequence ON workflow_run_edge_evaluations(run_id, sequence)',
+  idx_workflow_run_edge_evaluations_edge: 'CREATE INDEX IF NOT EXISTS idx_workflow_run_edge_evaluations_edge ON workflow_run_edge_evaluations(edge_id)',
+}
+
+export const WORKFLOW_RUN_LOOP_EPOCHS_TABLE = 'workflow_run_loop_epochs'
+export const WORKFLOW_RUN_LOOP_EPOCHS_SCHEMA: Record<string, string> = {
+  id: 'TEXT PRIMARY KEY', run_id: 'TEXT NOT NULL', workflow_id: 'TEXT NOT NULL', loop_id: 'TEXT NOT NULL',
+  iteration: 'INTEGER NOT NULL', iteration_path_json: "TEXT NOT NULL DEFAULT '[]'", status: 'TEXT NOT NULL',
+  exit_reason: 'TEXT', sequence: 'INTEGER NOT NULL', started_at: 'INTEGER NOT NULL', finished_at: 'INTEGER NOT NULL',
+}
+export const WORKFLOW_RUN_LOOP_EPOCHS_INDEXES = {
+  idx_workflow_run_loop_epochs_run_sequence: 'CREATE INDEX IF NOT EXISTS idx_workflow_run_loop_epochs_run_sequence ON workflow_run_loop_epochs(run_id, sequence)',
+  uniq_workflow_run_loop_epochs_identity: 'CREATE UNIQUE INDEX IF NOT EXISTS uniq_workflow_run_loop_epochs_identity ON workflow_run_loop_epochs(run_id, loop_id, iteration_path_json)',
 }
 
 // ============================================================================
@@ -239,6 +292,9 @@ export const COMPRESSION_SNAPSHOT_SCHEMA: Record<string, string> = {
   summary: 'TEXT NOT NULL DEFAULT \'\'',
   last_message_index: 'INTEGER NOT NULL DEFAULT 0',
   message_count_at_time: 'INTEGER NOT NULL DEFAULT 0',
+  compressed_through_message_id: 'INTEGER',
+  protected_head_through_message_id: 'INTEGER',
+  history_revision: 'INTEGER NOT NULL DEFAULT 0',
   updated_at: 'INTEGER NOT NULL',
 }
 
@@ -250,12 +306,43 @@ export const MODEL_CONTEXT_TABLE = 'model_context'
 
 export const MODEL_CONTEXT_SCHEMA: Record<string, string> = {
   id: 'INTEGER PRIMARY KEY AUTOINCREMENT',
+  profile: "TEXT NOT NULL DEFAULT 'default'",
   provider: 'TEXT NOT NULL',
   model: 'TEXT NOT NULL',
   context_limit: 'INTEGER NOT NULL',
 }
 
-export const MODEL_CONTEXT_INDEX = 'CREATE UNIQUE INDEX IF NOT EXISTS idx_model_context_provider_model ON model_context(provider, model)'
+export const MODEL_CONTEXT_INDEX = 'CREATE UNIQUE INDEX IF NOT EXISTS idx_model_context_profile_provider_model ON model_context(profile, provider, model)'
+export const LEGACY_MODEL_CONTEXT_INDEX = 'idx_model_context_provider_model'
+
+// ============================================================================
+// Provider Configuration Audit
+// ============================================================================
+
+export const PROVIDER_AUDIT_TABLE = 'provider_audit_events'
+
+export const PROVIDER_AUDIT_SCHEMA: Record<string, string> = {
+  id: 'INTEGER PRIMARY KEY AUTOINCREMENT',
+  created_at: 'INTEGER NOT NULL',
+  actor_user_id: 'INTEGER',
+  actor_username: "TEXT NOT NULL DEFAULT ''",
+  actor_role: "TEXT NOT NULL DEFAULT ''",
+  profile: "TEXT NOT NULL DEFAULT 'default'",
+  provider_id: 'TEXT NOT NULL',
+  provider_label: "TEXT NOT NULL DEFAULT ''",
+  action: 'TEXT NOT NULL',
+  fields_json: "TEXT NOT NULL DEFAULT '[]'",
+  result: "TEXT NOT NULL DEFAULT 'success'",
+  details_json: "TEXT NOT NULL DEFAULT '{}'",
+  revision_before: "TEXT NOT NULL DEFAULT ''",
+  revision_after: "TEXT NOT NULL DEFAULT ''",
+}
+
+export const PROVIDER_AUDIT_INDEXES = {
+  idx_provider_audit_created: 'CREATE INDEX IF NOT EXISTS idx_provider_audit_created ON provider_audit_events(created_at)',
+  idx_provider_audit_profile: 'CREATE INDEX IF NOT EXISTS idx_provider_audit_profile ON provider_audit_events(profile, created_at)',
+  idx_provider_audit_provider: 'CREATE INDEX IF NOT EXISTS idx_provider_audit_provider ON provider_audit_events(provider_id, created_at)',
+}
 
 // ============================================================================
 // Users and Profile Access
@@ -289,6 +376,20 @@ export const USER_PROFILES_INDEXES = {
   idx_user_profiles_user: 'CREATE INDEX IF NOT EXISTS idx_user_profiles_user ON user_profiles(user_id)',
   idx_user_profiles_profile: 'CREATE INDEX IF NOT EXISTS idx_user_profiles_profile ON user_profiles(profile_name)',
   idx_user_profiles_default: 'CREATE UNIQUE INDEX IF NOT EXISTS idx_user_profiles_default ON user_profiles(user_id) WHERE is_default = 1',
+}
+
+export const USER_THEMES_TABLE = 'user_themes'
+
+export const USER_THEMES_SCHEMA: Record<string, string> = {
+  user_id: 'INTEGER PRIMARY KEY',
+  font_size: 'INTEGER NOT NULL DEFAULT 14',
+  text_color: 'TEXT',
+  accent_color: 'TEXT',
+  background_filename: 'TEXT',
+  background_original_name: 'TEXT',
+  background_mime: 'TEXT',
+  created_at: 'INTEGER NOT NULL',
+  updated_at: 'INTEGER NOT NULL',
 }
 
 // ============================================================================
@@ -478,6 +579,11 @@ export const GC_ROOMS_SCHEMA: Record<string, string> = {
   id: 'TEXT PRIMARY KEY',
   name: 'TEXT NOT NULL',
   inviteCode: 'TEXT UNIQUE',
+  summaryProfile: "TEXT NOT NULL DEFAULT 'default'",
+  summaryProvider: "TEXT NOT NULL DEFAULT ''",
+  summaryModel: "TEXT NOT NULL DEFAULT ''",
+  summaryApiMode: "TEXT NOT NULL DEFAULT ''",
+  summaryEveryTurns: 'INTEGER NOT NULL DEFAULT 20',
   triggerTokens: 'INTEGER NOT NULL DEFAULT 100000',
   maxHistoryTokens: 'INTEGER NOT NULL DEFAULT 32000',
   tailMessageCount: 'INTEGER NOT NULL DEFAULT 10',
@@ -496,6 +602,7 @@ export const GC_MESSAGES_SCHEMA: Record<string, string> = {
   senderName: 'TEXT NOT NULL',
   content: 'TEXT NOT NULL',
   timestamp: 'INTEGER NOT NULL',
+  run_id: 'TEXT',
   role: "TEXT NOT NULL DEFAULT 'user'",
   tool_call_id: 'TEXT',
   tool_calls: 'TEXT',
@@ -512,9 +619,15 @@ export const GC_ROOM_AGENTS_SCHEMA: Record<string, string> = {
   id: 'TEXT PRIMARY KEY',
   roomId: 'TEXT NOT NULL',
   agentId: 'TEXT NOT NULL',
+  agent: "TEXT NOT NULL DEFAULT 'hermes'",
   profile: 'TEXT NOT NULL',
+  provider: "TEXT NOT NULL DEFAULT ''",
+  model: "TEXT NOT NULL DEFAULT ''",
+  apiMode: "TEXT NOT NULL DEFAULT ''",
+  reasoningEffort: "TEXT NOT NULL DEFAULT ''",
   name: 'TEXT NOT NULL',
   description: "TEXT NOT NULL DEFAULT ''",
+  avatar: "TEXT NOT NULL DEFAULT ''",
   invited: 'INTEGER NOT NULL DEFAULT 0',
 }
 
@@ -526,6 +639,20 @@ export const GC_CONTEXT_SNAPSHOTS_SCHEMA: Record<string, string> = {
   lastMessageId: 'TEXT NOT NULL',
   lastMessageTimestamp: 'INTEGER NOT NULL',
   updatedAt: 'INTEGER NOT NULL',
+}
+
+export const GC_ROOM_SUMMARIES_TABLE = 'gc_room_summaries'
+
+export const GC_ROOM_SUMMARIES_SCHEMA: Record<string, string> = {
+  roomId: 'TEXT PRIMARY KEY',
+  summary: "TEXT NOT NULL DEFAULT ''",
+  summaryThroughMessageId: "TEXT NOT NULL DEFAULT ''",
+  summaryThroughMessageTimestamp: 'INTEGER NOT NULL DEFAULT 0',
+  summarizedTurnCount: 'INTEGER NOT NULL DEFAULT 0',
+  status: "TEXT NOT NULL DEFAULT 'idle'",
+  version: 'INTEGER NOT NULL DEFAULT 0',
+  updatedAt: 'INTEGER NOT NULL DEFAULT 0',
+  lastError: 'TEXT',
 }
 
 export const GC_ROOM_MEMBERS_TABLE = 'gc_room_members'
@@ -677,6 +804,99 @@ function createIndexes(
 
   for (const indexSQL of Object.values(indexes)) {
     db.exec(indexSQL)
+  }
+}
+
+function indexExists(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  indexName: string,
+): boolean {
+  return Boolean(db.prepare(
+    `SELECT 1 FROM sqlite_master WHERE type='index' AND name=?`
+  ).get(indexName))
+}
+
+function syncWorkflowRunNodeSessions(
+  db: NonNullable<ReturnType<typeof getDb>>,
+): void {
+  if (!tableExists(db, WORKFLOW_RUN_NODE_SESSIONS_TABLE)) {
+    syncTable(WORKFLOW_RUN_NODE_SESSIONS_TABLE, WORKFLOW_RUN_NODE_SESSIONS_SCHEMA, {
+      indexes: WORKFLOW_RUN_NODE_SESSIONS_INDEXES,
+    })
+    return
+  }
+
+  const hasExecutionId = tableHasColumn(db, WORKFLOW_RUN_NODE_SESSIONS_TABLE, 'execution_id')
+  const hasBlankExecutionIds = hasExecutionId && Boolean(db.prepare(
+    `SELECT 1 FROM ${quoteIdentifier(WORKFLOW_RUN_NODE_SESSIONS_TABLE)} WHERE execution_id = '' LIMIT 1`
+  ).get())
+  const needsMigration =
+    !hasExecutionId ||
+    hasBlankExecutionIds ||
+    indexExists(db, 'uniq_workflow_run_node_sessions_run_node') ||
+    !indexExists(db, 'uniq_workflow_run_node_sessions_run_execution')
+
+  if (!needsMigration) {
+    syncTable(WORKFLOW_RUN_NODE_SESSIONS_TABLE, WORKFLOW_RUN_NODE_SESSIONS_SCHEMA)
+    return
+  }
+
+  db.exec('BEGIN')
+  try {
+    syncTable(WORKFLOW_RUN_NODE_SESSIONS_TABLE, WORKFLOW_RUN_NODE_SESSIONS_SCHEMA)
+    db.prepare(
+      `UPDATE ${quoteIdentifier(WORKFLOW_RUN_NODE_SESSIONS_TABLE)} ` +
+      `SET execution_id = node_id WHERE execution_id = ''`
+    ).run()
+    db.exec('DROP INDEX IF EXISTS uniq_workflow_run_node_sessions_run_node')
+    createIndexes(db, WORKFLOW_RUN_NODE_SESSIONS_INDEXES)
+    db.exec('COMMIT')
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
+}
+
+function syncWorkflowRunEdgeEvaluations(
+  db: NonNullable<ReturnType<typeof getDb>>,
+): void {
+  if (!tableExists(db, WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE)) {
+    syncTable(WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE, WORKFLOW_RUN_EDGE_EVALUATIONS_SCHEMA, {
+      indexes: WORKFLOW_RUN_EDGE_EVALUATIONS_INDEXES,
+    })
+    return
+  }
+
+  const hasIncompatibleLegacySchema =
+    !tableHasColumn(db, WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE, 'source_outcome') ||
+    !tableHasColumn(db, WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE, 'route')
+  if (!hasIncompatibleLegacySchema) {
+    syncTable(WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE, WORKFLOW_RUN_EDGE_EVALUATIONS_SCHEMA, {
+      indexes: WORKFLOW_RUN_EDGE_EVALUATIONS_INDEXES,
+    })
+    return
+  }
+
+  const archiveTable = `${WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE}__legacy_v1`
+  db.exec('BEGIN')
+  try {
+    if (tableExists(db, archiveTable)) {
+      throw new Error(`cannot archive legacy ${WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE}: ${archiveTable} already exists`)
+    }
+    db.exec(
+      `ALTER TABLE ${quoteIdentifier(WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE)} ` +
+      `RENAME TO ${quoteIdentifier(archiveTable)}`
+    )
+    for (const indexName of Object.keys(WORKFLOW_RUN_EDGE_EVALUATIONS_INDEXES)) {
+      db.exec(`DROP INDEX IF EXISTS ${quoteIdentifier(indexName)}`)
+    }
+    syncTable(WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE, WORKFLOW_RUN_EDGE_EVALUATIONS_SCHEMA, {
+      indexes: WORKFLOW_RUN_EDGE_EVALUATIONS_INDEXES,
+    })
+    db.exec('COMMIT')
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
   }
 }
 
@@ -846,6 +1066,59 @@ export function syncTable(
   addMissingSafeColumns(db, tableName, schema)
 }
 
+function cleanupHistoricalZeroLineWorkspaceDiffs(
+  db: NonNullable<ReturnType<typeof getDb>>,
+): void {
+  const zeroLinePredicate = 'additions = 0 AND deletions = 0'
+  const affectedRows = db.prepare(
+    `SELECT DISTINCT change_id FROM ${WORKSPACE_RUN_CHANGE_FILES_TABLE} WHERE ${zeroLinePredicate}`,
+  ).all() as Array<{ change_id: string }>
+  if (affectedRows.length === 0) return
+
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    db.prepare(`DELETE FROM ${WORKSPACE_RUN_CHANGE_FILES_TABLE} WHERE ${zeroLinePredicate}`).run()
+    const aggregate = db.prepare(
+      `SELECT COUNT(*) AS files_changed, COALESCE(SUM(additions), 0) AS additions,
+        COALESCE(SUM(deletions), 0) AS deletions, COALESCE(MAX(truncated), 0) AS truncated,
+        COALESCE(SUM(patch_bytes), 0) AS total_patch_bytes
+       FROM ${WORKSPACE_RUN_CHANGE_FILES_TABLE} WHERE change_id = ?`,
+    )
+    const updateParent = db.prepare(
+      `UPDATE ${WORKSPACE_RUN_CHANGES_TABLE}
+       SET files_changed = ?, additions = ?, deletions = ?, truncated = ?, total_patch_bytes = ?
+       WHERE change_id = ?`,
+    )
+    const deleteParent = db.prepare(`DELETE FROM ${WORKSPACE_RUN_CHANGES_TABLE} WHERE change_id = ?`)
+
+    for (const { change_id: changeId } of affectedRows) {
+      const totals = aggregate.get(changeId) as {
+        files_changed: number
+        additions: number
+        deletions: number
+        truncated: number
+        total_patch_bytes: number
+      }
+      if (totals.files_changed === 0) {
+        deleteParent.run(changeId)
+      } else {
+        updateParent.run(
+          totals.files_changed,
+          totals.additions,
+          totals.deletions,
+          totals.truncated,
+          totals.total_patch_bytes,
+          changeId,
+        )
+      }
+    }
+    db.exec('COMMIT')
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
+}
+
 // ============================================================================
 // Unified Initializer
 // ============================================================================
@@ -865,7 +1138,14 @@ export function initAllHermesTables(): void {
     db.exec(USAGE_RUN_INDEX)
 
     // Session store
-    syncTable(SESSIONS_TABLE, SESSIONS_SCHEMA)
+    syncTable(SESSION_CATEGORIES_TABLE, SESSION_CATEGORIES_SCHEMA, {
+      indexes: SESSION_CATEGORIES_INDEXES,
+    })
+    syncTable(SESSIONS_TABLE, SESSIONS_SCHEMA, {
+      indexes: SESSIONS_INDEXES,
+    })
+    createIndexes(db, SESSION_CATEGORIES_INDEXES)
+    createIndexes(db, SESSIONS_INDEXES)
     syncTable(MESSAGES_TABLE, MESSAGES_SCHEMA)
     db.exec(MESSAGES_INDEX)
     syncTable(WORKSPACE_RUN_CHANGES_TABLE, WORKSPACE_RUN_CHANGES_SCHEMA, {
@@ -874,6 +1154,7 @@ export function initAllHermesTables(): void {
     syncTable(WORKSPACE_RUN_CHANGE_FILES_TABLE, WORKSPACE_RUN_CHANGE_FILES_SCHEMA, {
       indexes: WORKSPACE_RUN_CHANGE_FILES_INDEXES,
     })
+    cleanupHistoricalZeroLineWorkspaceDiffs(db)
 
     // Workflow store
     syncTable(WORKFLOWS_TABLE, WORKFLOWS_SCHEMA, {
@@ -882,18 +1163,24 @@ export function initAllHermesTables(): void {
     syncTable(WORKFLOW_RUNS_TABLE, WORKFLOW_RUNS_SCHEMA, {
       indexes: WORKFLOW_RUNS_INDEXES,
     })
-    syncTable(WORKFLOW_RUN_NODE_SESSIONS_TABLE, WORKFLOW_RUN_NODE_SESSIONS_SCHEMA, {
-      indexes: WORKFLOW_RUN_NODE_SESSIONS_INDEXES,
+    syncWorkflowRunNodeSessions(db)
+    syncWorkflowRunEdgeEvaluations(db)
+    syncTable(WORKFLOW_RUN_LOOP_EPOCHS_TABLE, WORKFLOW_RUN_LOOP_EPOCHS_SCHEMA, {
+      indexes: WORKFLOW_RUN_LOOP_EPOCHS_INDEXES,
     })
 
     // Compression snapshot
     syncTable(COMPRESSION_SNAPSHOT_TABLE, COMPRESSION_SNAPSHOT_SCHEMA)
 
-    // Model context
-    syncTable(MODEL_CONTEXT_TABLE, MODEL_CONTEXT_SCHEMA, {
-      indexes: {
-        idx_model_context_provider_model: MODEL_CONTEXT_INDEX,
-      }
+    // Model context. Existing rows are assigned to the default profile; replace
+    // the legacy cross-profile uniqueness constraint with a profile-scoped one.
+    syncTable(MODEL_CONTEXT_TABLE, MODEL_CONTEXT_SCHEMA)
+    db.exec(`DROP INDEX IF EXISTS ${quoteIdentifier(LEGACY_MODEL_CONTEXT_INDEX)}`)
+    db.exec(MODEL_CONTEXT_INDEX)
+
+    // Provider configuration audit
+    syncTable(PROVIDER_AUDIT_TABLE, PROVIDER_AUDIT_SCHEMA, {
+      indexes: PROVIDER_AUDIT_INDEXES,
     })
 
     // Users and profile access
@@ -902,6 +1189,7 @@ export function initAllHermesTables(): void {
       primaryKey: 'user_id, profile_name',
       indexes: USER_PROFILES_INDEXES,
     })
+    syncTable(USER_THEMES_TABLE, USER_THEMES_SCHEMA)
 
     // LAN devices and link request status
     syncTable(DEVICES_TABLE, DEVICES_SCHEMA, {
@@ -955,6 +1243,7 @@ export function initAllHermesTables(): void {
     syncTable(GC_ROOMS_TABLE, GC_ROOMS_SCHEMA)
     syncTable(GC_MESSAGES_TABLE, GC_MESSAGES_SCHEMA)
     syncTable(GC_CONTEXT_SNAPSHOTS_TABLE, GC_CONTEXT_SNAPSHOTS_SCHEMA)
+    syncTable(GC_ROOM_SUMMARIES_TABLE, GC_ROOM_SUMMARIES_SCHEMA)
     syncTable(GC_PENDING_SESSION_DELETES_TABLE, GC_PENDING_SESSION_DELETES_SCHEMA)
     syncTable(GC_SESSION_PROFILES_TABLE, GC_SESSION_PROFILES_SCHEMA)
 

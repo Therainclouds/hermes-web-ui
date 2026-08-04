@@ -6,6 +6,8 @@ import { useModelsStore } from '@/stores/hermes/models'
 import { useAppStore } from '@/stores/hermes/app'
 import { useChatStore } from '@/stores/hermes/chat'
 import { checkCopilotToken, disableCopilot } from '@/api/hermes/copilot-auth'
+import { getStoredUserRole } from '@/api/client'
+import ProviderEditorModal from './ProviderEditorModal.vue'
 import { useI18n } from 'vue-i18n'
 import { useMessage } from '@/composables/useAppMessage'
 
@@ -23,7 +25,17 @@ const isCustom = computed(() => !props.provider.builtin && isCustomProviderKey.v
 const isConfigBackedProvider = computed(() => isCustomProviderKey.value || (!props.provider.builtin && !!props.provider.provider_source))
 const isCopilot = computed(() => props.provider.provider === 'copilot')
 const displayName = computed(() => props.provider.label)
+const userRole = getStoredUserRole()
+const canEditProvider = computed(() => (
+  props.provider.provider_editable === true && (userRole === 'super_admin' || userRole === 'admin')
+))
+const canRefreshModels = computed(() => (
+  props.provider.model_refreshable === true && (userRole === 'super_admin' || userRole === 'admin')
+))
+const showEditorModal = ref(false)
 const deleting = ref(false)
+const refreshingModels = ref(false)
+const restoringModels = ref(false)
 const destructiveActionLabel = computed(() => {
   if (isConfigBackedProvider.value) return t('common.delete')
   if (isCopilot.value) return t('models.disableProvider')
@@ -228,6 +240,57 @@ async function handleDelete() {
     },
   })
 }
+
+async function handleRefreshModels(confirm = false) {
+  refreshingModels.value = true
+  try {
+    const result = await modelsStore.refreshProviderModels(props.provider.provider, { confirm })
+    if (result.requires_confirmation && !confirm) {
+      dialog.warning({
+        title: t('models.refreshModelsConfirmTitle'),
+        content: t('models.refreshModelsConfirmContent', {
+          removed: result.diff.removed.length,
+          added: result.diff.added.length,
+          removedList: result.diff.removed.slice(0, 8).join(', ') || '-',
+        }),
+        positiveText: t('models.refreshModelsConfirmAction'),
+        negativeText: t('common.cancel'),
+        onPositiveClick: async () => {
+          await handleRefreshModels(true)
+        },
+      })
+      return
+    }
+    if (result.applied) {
+      message.success(t('models.refreshModelsSuccess', {
+        count: result.models.length,
+        unavailable: result.unavailable_models.length,
+      }))
+    } else {
+      message.error(t('models.refreshModelsFailed'))
+    }
+  } catch {
+    message.error(t('models.refreshModelsFailed'))
+  } finally {
+    refreshingModels.value = false
+  }
+}
+
+async function handleRestoreModels() {
+  restoringModels.value = true
+  try {
+    const result = await modelsStore.restoreProviderModels(props.provider.provider)
+    if (result.applied) {
+      message.success(t('models.restoreModelsSuccess', { count: result.models.length }))
+    } else {
+      message.error(t('models.restoreModelsFailed'))
+    }
+  } catch {
+    message.error(t('models.restoreModelsFailed'))
+  } finally {
+    restoringModels.value = false
+  }
+}
 </script>
 
 <template>
@@ -303,8 +366,34 @@ async function handleDelete() {
       </NButton>
       <NButton size="tiny" quaternary @click="showAliasListModal = true">{{ t('models.aliasManage') }}</NButton>
       <NButton size="tiny" quaternary @click="openVisibilityModal">{{ t('models.manageVisibleModels') }}</NButton>
+      <NButton
+        v-if="canRefreshModels"
+        size="tiny"
+        quaternary
+        :loading="refreshingModels"
+        :title="t('models.refreshModels')"
+        @click="handleRefreshModels(false)"
+      >
+        {{ t('models.refreshModels') }}
+      </NButton>
+      <NButton
+        v-if="canRefreshModels && provider.model_restore_available"
+        size="tiny"
+        quaternary
+        :loading="restoringModels"
+        @click="handleRestoreModels"
+      >
+        {{ t('models.restoreModels') }}
+      </NButton>
+      <NButton v-if="canEditProvider" size="tiny" quaternary @click="showEditorModal = true">{{ t('common.edit') }}</NButton>
       <NButton size="tiny" quaternary type="error" :loading="deleting" @click="handleDelete">{{ destructiveActionLabel }}</NButton>
     </div>
+
+    <ProviderEditorModal
+      v-if="canEditProvider"
+      v-model:show="showEditorModal"
+      :provider="provider"
+    />
 
     <NModal
       v-model:show="showAliasListModal"
@@ -553,7 +642,7 @@ async function handleDelete() {
 .model-tag-button {
   border: 0;
   cursor: pointer;
-  text-align: left;
+  text-align: start;
 
   &:hover {
     background: rgba(var(--accent-primary-rgb), 0.16);
@@ -694,7 +783,7 @@ async function handleDelete() {
 }
 
 .visibility-model-id {
-  margin-left: 6px;
+  margin-inline-start: 6px;
   color: $text-muted !important;
   font-size: 11px !important;
 }

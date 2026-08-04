@@ -246,25 +246,25 @@ async function handleRefresh() {
         <div v-if="filteredGroups.length === 0" class="model-empty">
           {{ searchQuery ? 'No results' : 'No models' }}
         </div>
-        <div class="model-custom">
-          <div class="model-custom-row">
-            <NSelect
-              v-model:value="customProvider"
-              :options="providerOptions"
-              size="small"
-              class="model-custom-provider"
-            />
-            <NInput
-              v-model:value="customInput"
-              :placeholder="t('models.customModelPlaceholder')"
-              size="small"
-              class="model-custom-input"
-              @keydown.enter="handleCustomSubmit"
-            />
-          </div>
-          <div class="model-custom-hint">
-            {{ t('models.customModelHint') }}
-          </div>
+      </div>
+      <div class="model-custom">
+        <div class="model-custom-row">
+          <NSelect
+            v-model:value="customProvider"
+            :options="providerOptions"
+            size="small"
+            class="model-custom-provider"
+          />
+          <NInput
+            v-model:value="customInput"
+            :placeholder="t('models.customModelPlaceholder')"
+            size="small"
+            class="model-custom-input"
+            @keydown.enter="handleCustomSubmit"
+          />
+        </div>
+        <div class="model-custom-hint">
+          {{ t('models.customModelHint') }}
         </div>
       </div>
     </NModal>
@@ -353,7 +353,7 @@ async function handleRefresh() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  text-align: left;
+  text-align: start;
 }
 
 .model-arrow {
@@ -413,7 +413,7 @@ async function handleRefresh() {
 }
 
 .model-group-items {
-  padding-left: 8px;
+  padding-inline-start: 8px;
 }
 
 .model-item {
@@ -488,7 +488,7 @@ async function handleRefresh() {
   background: $accent-primary;
   padding: 1px 5px;
   border-radius: 3px;
-  margin-right: 4px;
+  margin-inline-end: 4px;
   letter-spacing: 0.03em;
 }
 
@@ -519,7 +519,7 @@ async function handleRefresh() {
   background: #d97706;
   padding: 1px 5px;
   border-radius: 3px;
-  margin-right: 4px;
+  margin-inline-end: 4px;
   letter-spacing: 0.03em;
 }
 
@@ -532,7 +532,7 @@ async function handleRefresh() {
   border: 1px solid $border-color;
   padding: 0 5px;
   border-radius: 3px;
-  margin-right: 4px;
+  margin-inline-end: 4px;
   letter-spacing: 0.03em;
 }
 

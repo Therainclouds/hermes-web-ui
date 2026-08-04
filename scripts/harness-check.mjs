@@ -250,9 +250,15 @@ const desktopRuntimeWorkflow = await readText('.github/workflows/desktop-runtime
 const webuiReleaseWorkflow = await readText('.github/workflows/webui-release.yml')
 const dockerPublishWorkflow = await readText('.github/workflows/docker-publish.yml')
 const electronBuilderConfig = await readText('packages/desktop/electron-builder.yml')
+const desktopMacEntitlements = await readText('packages/desktop/build/entitlements.mac.plist')
+const desktopMacInheritedEntitlements = await readText('packages/desktop/build/entitlements.mac.inherit.plist')
 const desktopPackageJson = await readText('packages/desktop/package.json')
+const desktopNodeRuntimeConfig = await readText('packages/desktop/scripts/node-runtime-config.mjs')
+const desktopFetchNode = await readText('packages/desktop/scripts/fetch-node.mjs')
+const desktopFetchPython = await readText('packages/desktop/scripts/fetch-python.mjs')
+const desktopFetchHermes = await readText('packages/desktop/scripts/fetch-hermes.mjs')
 const desktopInstallHermes = await readText('packages/desktop/scripts/install-hermes.mjs')
-const desktopHermesPatches = await readText('packages/desktop/scripts/apply-hermes-patches.mjs')
+const desktopPackageRuntime = await readText('packages/desktop/scripts/package-runtime.mjs')
 const desktopWebuiServer = await readText('packages/desktop/src/main/webui-server.ts')
 const desktopMain = await readText('packages/desktop/src/main/index.ts')
 const desktopUpdater = await readText('packages/desktop/src/main/updater.ts')
@@ -290,6 +296,21 @@ if (!webuiReleaseWorkflow.includes('make_latest: false')) {
 
 if (!electronBuilderConfig.includes('icon: build/icons')) {
   fail('electron-builder.yml must configure the Linux icon set')
+}
+
+for (const entitlementFile of ['build/entitlements.mac.plist', 'build/entitlements.mac.inherit.plist']) {
+  if (!electronBuilderConfig.includes(entitlementFile)) {
+    fail(`electron-builder.yml must configure ${entitlementFile}`)
+  }
+}
+
+for (const [file, text] of [
+  ['entitlements.mac.plist', desktopMacEntitlements],
+  ['entitlements.mac.inherit.plist', desktopMacInheritedEntitlements],
+]) {
+  if (!text.includes('<key>com.apple.security.device.audio-input</key>')) {
+    fail(`${file} must allow microphone audio input`)
+  }
 }
 
 for (const target of ['target_os: darwin', 'target_os: win32', 'target_os: linux']) {
@@ -364,12 +385,28 @@ for (const phrase of [
 for (const phrase of [
   '"fetch:node"',
   '"fetch:git"',
+  '"fetch:hermes"',
   '"prepare:runtime"',
   '"package:runtime"',
   '"runtime:asset-name"',
 ]) {
   if (!desktopPackageJson.includes(phrase)) {
     fail(`packages/desktop/package.json must support runtime package publishing: ${phrase}`)
+  }
+}
+
+if (!desktopNodeRuntimeConfig.includes("DEFAULT_DESKTOP_NODE_VERSION = '22.22.0'")) {
+  fail('desktop runtime Node.js must stay pinned to the Hermes-compatible 22.22.0 release')
+}
+if (!desktopNodeRuntimeConfig.includes('HERMES_DESKTOP_NODE_VERSION')) {
+  fail('desktop runtime Node.js pin must keep an explicit environment override')
+}
+if (!desktopFetchNode.includes('desktopNodeVersion()')) {
+  fail('fetch-node.mjs must resolve the pinned desktop runtime Node.js version')
+}
+for (const inheritedVersion of ['process.env.NODE_VERSION', 'process.versions.node']) {
+  if (desktopFetchNode.includes(inheritedVersion)) {
+    fail(`fetch-node.mjs must not inherit the build runner Node.js version: ${inheritedVersion}`)
   }
 }
 
@@ -398,7 +435,8 @@ for (const phrase of [
   'AGENT_BROWSER_EXECUTABLE_PATH',
   'PLAYWRIGHT_BROWSERS_PATH',
   'ms-playwright',
-  'removeBrokenDashboardAuthPlugin',
+  '--require-hashes',
+  'editable_mode=compat',
 ]) {
   if (!desktopInstallHermes.includes(phrase)) {
     fail(`install-hermes.mjs must bundle Hermes browser runtime support: ${phrase}`)
@@ -406,17 +444,44 @@ for (const phrase of [
 }
 
 for (const phrase of [
-  'from pathlib import Path',
-  'browser stdout decode fallback is incomplete',
-  'def _hermes_read_browser_output',
-  'dingtalk AI Card webhook patches are incomplete',
-  "plugins', 'platforms', 'dingtalk', 'adapter.py",
-  "gateway', 'platforms', 'dingtalk.py",
-  'sitecustomize hidden subprocess patch marker exists',
-  'python compile check',
+  "git', ['fetch', '--depth', '1', 'origin', source.ref]",
+  "git', ['rev-parse', 'FETCH_HEAD^{commit}']",
+  "git', ['checkout', '-B', 'main', fetchedCommit]",
+  'Hermes source commit mismatch',
+  "git', ['status', '--porcelain']",
+  "resolve(SOURCE_DIR, '.git', 'info', 'exclude')",
+  "'/base/'",
 ]) {
-  if (!desktopHermesPatches.includes(phrase)) {
-    fail(`apply-hermes-patches.mjs must keep browser stdout fallback complete: ${phrase}`)
+  if (!desktopFetchHermes.includes(phrase)) {
+    fail(`fetch-hermes.mjs must retain a clean, updateable source checkout: ${phrase}`)
+  }
+}
+
+if (desktopPackageJson.includes('"patch:hermes"')) {
+  fail('packages/desktop/package.json must not mutate the retained Hermes source checkout')
+}
+
+for (const phrase of [
+  "resolve(OUT_DIR, '.python-base-staging')",
+  "'--relocatable'",
+  'configWithPythonHome',
+  'bundledBaseHomePath',
+  "resolve(OUT_DIR, 'base')",
+]) {
+  if (!desktopFetchPython.includes(phrase)) {
+    fail(`fetch-python.mjs must build a relocatable Windows PEP 405 venv: ${phrase}`)
+  }
+}
+
+for (const phrase of [
+  'schema: 2',
+  "installMethod: 'git'",
+  "cpSync(PY_DIR, join(stage, 'python')",
+  'Relocated Hermes version mismatch',
+  "git', ['status', '--porcelain']",
+]) {
+  if (!desktopPackageRuntime.includes(phrase)) {
+    fail(`package-runtime.mjs must publish and relocate-check the Hermes Git source: ${phrase}`)
   }
 }
 
@@ -459,8 +524,8 @@ for (const phrase of [
 }
 
 for (const phrase of [
-  'https://download.ekkolearnai.com/latest',
-  'https://github.com/EKKOLearnAI/hermes-studio/releases/latest/download',
+  'https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/latest',
+  'https://github.com/tangledup-ai/hermes-web-ui/releases/latest/download',
   'checkForUpdatesWithFallback()',
 ]) {
   if (!desktopUpdater.includes(phrase)) {
@@ -476,6 +541,8 @@ for (const phrase of [
   'HERMES_DESKTOP_RUNTIME_URL',
   'HERMES_DESKTOP_RUNTIME_BASE_URL',
   'runtime-manifest.json',
+  'updateable Hermes source files',
+  'repairMovedHermesRuntime',
 ]) {
   if (!desktopRuntimeManager.includes(phrase)) {
     fail(`desktop runtime manager must support downloadable runtime packages: ${phrase}`)

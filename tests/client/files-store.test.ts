@@ -21,11 +21,25 @@ const mockSessionsApi = vi.hoisted(() => ({
   listSessionWorkspaceFiles: vi.fn(),
   mkdirSessionWorkspaceFile: vi.fn(),
   readSessionWorkspaceFile: vi.fn(),
+  fetchSessionWorkspaceFileText: vi.fn(),
   renameSessionWorkspaceFile: vi.fn(),
   writeSessionWorkspaceFile: vi.fn(),
 }))
 
 vi.mock('@/api/hermes/sessions', () => mockSessionsApi)
+
+const mockGroupApi = vi.hoisted(() => ({
+  copyGroupWorkspaceFile: vi.fn(),
+  deleteGroupWorkspaceFile: vi.fn(),
+  fetchGroupWorkspaceFileText: vi.fn(),
+  listGroupWorkspaceFiles: vi.fn(),
+  mkdirGroupWorkspaceFile: vi.fn(),
+  readGroupWorkspaceFile: vi.fn(),
+  renameGroupWorkspaceFile: vi.fn(),
+  writeGroupWorkspaceFile: vi.fn(),
+}))
+
+vi.mock('@/api/hermes/group-chat', () => mockGroupApi)
 
 import { getLanguageFromPath, isPreviewableFile, isTextFile, useFilesStore } from '@/stores/hermes/files'
 import type { FileEntry } from '@/api/hermes/files'
@@ -86,7 +100,10 @@ describe('files store', () => {
     expect(mockFilesApi.readFile).toHaveBeenCalledWith('Dockerfile', null)
     expect(store.previewFile).toEqual({
       path: 'Dockerfile',
+      name: 'Dockerfile',
+      size: 27,
       profile: null,
+      workspaceSessionId: null,
       type: 'text',
       content: 'FROM node:20\nRUN npm test\n',
       language: 'dockerfile',
@@ -164,6 +181,34 @@ describe('files store', () => {
     expect(mockFilesApi.writeFile).toHaveBeenCalledWith('config.yaml', 'model:\n  default: gpt-5.4-mini\n', 'reviewer')
   })
 
+  it('uses the group room workspace for listing and generated-file previews', async () => {
+    const roomEntry: FileEntry = {
+      name: 'report.xlsx',
+      path: 'report.xlsx',
+      isDir: false,
+      size: 128,
+      modTime: '2026-07-17T00:00:00.000Z',
+    }
+    mockGroupApi.listGroupWorkspaceFiles.mockResolvedValue({ entries: [roomEntry], path: '' })
+    mockGroupApi.fetchGroupWorkspaceFileText.mockResolvedValue({ content: 'const answer = 42', size: 17 })
+    const store = useFilesStore()
+
+    await store.fetchEntries('', { workspaceRoomId: 'room-1' })
+    expect(store.currentWorkspaceRoomId).toBe('room-1')
+    expect(store.currentWorkspaceSessionId).toBeNull()
+    expect(store.entries).toEqual([roomEntry])
+    expect(mockGroupApi.listGroupWorkspaceFiles).toHaveBeenCalledWith('room-1', '')
+
+    await store.openGroupWorkspacePreview('room-1', '/tmp/generated.ts', 'generated.ts')
+    expect(mockGroupApi.fetchGroupWorkspaceFileText).toHaveBeenCalledWith('room-1', '/tmp/generated.ts')
+    expect(store.previewFile).toMatchObject({
+      path: '/tmp/generated.ts',
+      workspaceRoomId: 'room-1',
+      type: 'text',
+      language: 'typescript',
+    })
+  })
+
   it('opens image previews without reading file contents', async () => {
     const store = useFilesStore()
     const entry: FileEntry = {
@@ -179,7 +224,10 @@ describe('files store', () => {
     expect(mockFilesApi.readFile).not.toHaveBeenCalled()
     expect(store.previewFile).toEqual({
       path: 'diagram.png',
+      name: 'diagram.png',
+      size: 128,
       profile: null,
+      workspaceSessionId: null,
       type: 'image',
     })
   })

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { dirname, join } from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -262,6 +262,14 @@ describe('coding agent launch preparation', () => {
         HERMES_WEB_UI_MANAGED_MCP: '1',
       },
     })
+    expect(mcp.mcpServers['hermes-studio-browser']).toMatchObject({
+      command: process.execPath,
+      args: [join(process.cwd(), 'bin/hermes-studio-mcp.mjs'), 'browser'],
+      env: {
+        HERMES_MCP_SERVER_NAME: 'hermes-studio-browser',
+        HERMES_MCP_TOOLSET: 'browser',
+      },
+    })
     expect(mcp.mcpServers['hermes-studio-devices']).toMatchObject({
       command: process.execPath,
       args: [join(process.cwd(), 'bin/hermes-studio-mcp.mjs'), 'devices'],
@@ -307,6 +315,7 @@ describe('coding agent launch preparation', () => {
       },
     })
     expect(mcp.mcpServers['hermes-studio-devices'].command).toBe('/runtime/node')
+    expect(mcp.mcpServers['hermes-studio-browser'].command).toBe('/runtime/node')
     expect(mcp.mcpServers['hermes-studio-use'].command).toBe('/runtime/node')
   })
 
@@ -343,6 +352,7 @@ describe('coding agent launch preparation', () => {
     expect(claudeMcp.mcpServers['hermes-web-ui-mcp']).toBeUndefined()
     expect(claudeMcp.mcpServers.custom).toEqual({ command: 'custom-mcp' })
     expect(claudeMcp.mcpServers['hermes-studio-api']).toBeDefined()
+    expect(claudeMcp.mcpServers['hermes-studio-browser']).toBeDefined()
     expect(claudeMcp.mcpServers['hermes-studio-devices']).toBeDefined()
     expect(claudeMcp.mcpServers['hermes-studio-use']).toBeDefined()
 
@@ -368,6 +378,7 @@ describe('coding agent launch preparation', () => {
     expect(codexConfig).not.toContain('[mcp_servers.hermes-studio]')
     expect(codexConfig).not.toContain('[mcp_servers.hermes-web-ui-mcp]')
     expect(codexConfig).toContain('[mcp_servers.hermes-studio-api]')
+    expect(codexConfig).toContain('[mcp_servers.hermes-studio-browser]')
     expect(codexConfig).toContain('[mcp_servers.hermes-studio-devices]')
     expect(codexConfig).toContain('[mcp_servers.hermes-studio-use]')
   })
@@ -466,6 +477,7 @@ describe('coding agent launch preparation', () => {
     expect(codexConfig).not.toContain('command = "stale-managed"')
     expect(codexConfig).not.toContain('[model_providers.unrelated]')
     expect(codexConfig).toContain('[mcp_servers.hermes-studio-api]')
+    expect(codexConfig).toContain('[mcp_servers.hermes-studio-browser]')
     expect(codexConfig).toContain('[mcp_servers.hermes-studio-devices]')
     expect(codexConfig).toContain('[mcp_servers.hermes-studio-use]')
   })
@@ -497,6 +509,124 @@ describe('coding agent launch preparation', () => {
     const launcher = readFileSync(join(result.rootDir, LAUNCHER_FILE), 'utf-8')
     expect(launcher).toContain(isWindows ? "'--setting-sources' 'local'" : '--setting-sources local')
     expect(result.rootDir).toBe(join(home, 'coding-agent', 'model', 'default', 'openrouter', 'claude-code'))
+  })
+
+  it('writes group prompts only to the current hidden run files and preserves single-chat prompts', async () => {
+    const home = makeHome()
+    const sharedLaunch = {
+      profile: 'default',
+      provider: 'custom_group_prompt',
+      model: 'test-model',
+      baseUrl: 'https://provider.example/v1',
+      apiKey: 'sk-test',
+    }
+    const groupSystemPrompt = [
+      'GROUP_ONLY_DYNAMIC_PROMPT',
+      '当前房间：测试群聊',
+      '## 图片格式',
+    ].join('\n')
+
+    const groupClaude = await prepareCodingAgentLaunch('claude-code', {
+      ...sharedLaunch,
+      sessionId: 'gc-run-claude',
+      agentSessionId: 'gc-agent-claude',
+      groupSystemPrompt,
+      groupRuntimeScope: {
+        roomId: 'room-1',
+        agentId: 'room-agent-claude',
+      },
+    })
+    const singleClaude = await prepareCodingAgentLaunch('claude-code', {
+      ...sharedLaunch,
+      sessionId: 'single-run-claude',
+      agentSessionId: 'single-agent-claude',
+    })
+    const groupCodex = await prepareCodingAgentLaunch('codex', {
+      ...sharedLaunch,
+      sessionId: 'gc-run-codex',
+      agentSessionId: 'gc-agent-codex',
+      groupSystemPrompt,
+      groupRuntimeScope: {
+        roomId: 'room-1',
+        agentId: 'room-agent-codex',
+      },
+    })
+    const singleCodex = await prepareCodingAgentLaunch('codex', {
+      ...sharedLaunch,
+      sessionId: 'single-run-codex',
+      agentSessionId: 'single-agent-codex',
+    })
+
+    expect(groupClaude.rootDir).not.toBe(singleClaude.rootDir)
+    expect(groupCodex.rootDir).not.toBe(singleCodex.rootDir)
+    expect(groupClaude.rootDir).toContain(join('custom_group_prompt', 'claude-code', 'group-chat'))
+    expect(groupCodex.rootDir).toContain(join('custom_group_prompt', 'codex', 'group-chat'))
+    expect(groupClaude.rootDir).not.toContain(join('claude-code', 'runs'))
+    expect(groupCodex.rootDir).not.toContain(join('codex', 'runs'))
+
+    const groupClaudePrompt = readFileSync(join(groupClaude.rootDir, 'hermes-rules.md'), 'utf-8')
+    const singleClaudePrompt = readFileSync(join(singleClaude.rootDir, 'hermes-rules.md'), 'utf-8')
+    const groupCodexConfig = readFileSync(join(groupCodex.rootDir, 'config.toml'), 'utf-8')
+    const singleCodexConfig = readFileSync(join(singleCodex.rootDir, 'config.toml'), 'utf-8')
+
+    expect(groupClaudePrompt).toContain(groupSystemPrompt)
+    expect(groupCodexConfig).toContain('GROUP_ONLY_DYNAMIC_PROMPT')
+    expect(singleClaudePrompt).toContain('# 输出格式规范')
+    expect(singleCodexConfig).toContain('# 输出格式规范')
+    expect(singleClaudePrompt).not.toContain('GROUP_ONLY_DYNAMIC_PROMPT')
+    expect(singleCodexConfig).not.toContain('GROUP_ONLY_DYNAMIC_PROMPT')
+
+    expect(groupClaude.args).toContain('--append-system-prompt-file')
+    expect(groupClaude.args).not.toContain('--append-system-prompt')
+    expect(groupClaude.args.join(' ')).not.toContain('GROUP_ONLY_DYNAMIC_PROMPT')
+    expect(groupCodex.args.join(' ')).not.toContain('developer_instructions=')
+    expect(groupCodex.args.join(' ')).not.toContain('GROUP_ONLY_DYNAMIC_PROMPT')
+
+    const updatedGroupPrompt = `${groupSystemPrompt}\nUPDATED_SAME_FILE`
+    const nextGroupClaude = await prepareCodingAgentLaunch('claude-code', {
+      ...sharedLaunch,
+      sessionId: 'gc-run-claude-next',
+      agentSessionId: 'gc-agent-claude-next',
+      groupSystemPrompt: updatedGroupPrompt,
+      groupRuntimeScope: {
+        roomId: 'room-1',
+        agentId: 'room-agent-claude',
+      },
+    })
+    const nextGroupCodex = await prepareCodingAgentLaunch('codex', {
+      ...sharedLaunch,
+      sessionId: 'gc-run-codex-next',
+      agentSessionId: 'gc-agent-codex-next',
+      groupSystemPrompt: updatedGroupPrompt,
+      groupRuntimeScope: {
+        roomId: 'room-1',
+        agentId: 'room-agent-codex',
+      },
+    })
+
+    expect(nextGroupClaude.rootDir).toBe(groupClaude.rootDir)
+    expect(nextGroupCodex.rootDir).toBe(groupCodex.rootDir)
+    expect(readFileSync(join(nextGroupClaude.rootDir, 'hermes-rules.md'), 'utf-8')).toContain('UPDATED_SAME_FILE')
+    expect(readFileSync(join(nextGroupCodex.rootDir, 'config.toml'), 'utf-8')).toContain('UPDATED_SAME_FILE')
+
+    expect(existsSync(join(
+      home,
+      'coding-agent',
+      'model',
+      'default',
+      'custom_group_prompt',
+      'claude-code',
+      'hermes-rules.md',
+    ))).toBe(false)
+    expect(existsSync(join(
+      home,
+      'coding-agent',
+      'model',
+      'default',
+      'custom_group_prompt',
+      'codex',
+      'config.toml',
+    ))).toBe(false)
   })
 
   it.skipIf(isWindows)('uses Claude Code auto permission mode for scoped root launches', async () => {
@@ -548,6 +678,81 @@ describe('coding agent launch preparation', () => {
     expect(settings.env.ANTHROPIC_BASE_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/api\/claude-code-proxy\/.+$/)
   })
 
+  it('keeps canonical custom provider identity behind filesystem-safe Claude config paths', async () => {
+    const home = makeHome()
+    const provider = 'custom:compat-provider'
+    const result = await prepareCodingAgentLaunch('claude-code', {
+      profile: 'default',
+      provider,
+      model: 'review-model',
+      baseUrl: 'https://provider.example',
+      apiKey: 'provider-key',
+      apiMode: 'anthropic_messages',
+    })
+
+    expect(result.provider).toBe(provider)
+    expect(result.rootDir).toBe(join(home, 'coding-agent', 'model', 'default', 'custom_compat-provider', 'claude-code'))
+    const settings = JSON.parse(readFileSync(join(result.rootDir, 'settings.json'), 'utf-8'))
+    const proxyUrl = new URL(settings.env.ANTHROPIC_BASE_URL)
+    const routeKey = proxyUrl.pathname.split('/').filter(Boolean).at(-1) || ''
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        type: 'api_error',
+        request_id: '',
+        error: {
+          type: 'api_error',
+          message: 'The encrypted content opaque-value could not be verified. Reason: Encrypted content could not be decrypted or parsed.',
+        },
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'msg_retry_ok',
+        type: 'message',
+        role: 'assistant',
+        model: 'review-model',
+        content: [{ type: 'text', text: 'continued' }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 10, output_tokens: 1 },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const body = {
+      model: 'client-alias',
+      max_tokens: 64,
+      thinking: { type: 'adaptive' },
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: 'inspect the repository' }] },
+        {
+          role: 'assistant',
+          content: [
+            { type: 'thinking', thinking: '', signature: 'opaque-signature' },
+            { type: 'tool_use', id: 'tool-1', name: 'Read', input: { file_path: 'README.md' } },
+          ],
+        },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'contents' }] },
+      ],
+    }
+    const ctx = makeProxyContext(routeKey, settings.env.ANTHROPIC_API_KEY, body)
+    await claudeProxyMessages(ctx)
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(ctx.body.content).toEqual([{ type: 'text', text: 'continued' }])
+    const retryBody = JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit | undefined)?.body))
+    expect(retryBody.messages[1].content.map((block: any) => block.type)).toEqual(['tool_use'])
+  })
+
+  it('rejects control characters in canonical provider identities before proxy registration', async () => {
+    makeHome()
+
+    await expect(prepareCodingAgentLaunch('claude-code', {
+      profile: 'default',
+      provider: 'custom:x\0y',
+      model: 'review-model',
+      baseUrl: 'https://provider.example',
+      apiKey: 'provider-key',
+      apiMode: 'anthropic_messages',
+    })).rejects.toThrow('Invalid provider')
+  })
+
   it('keeps Codex model selection on the CLI while isolating CODEX_HOME', async () => {
     const home = makeHome()
 
@@ -570,6 +775,9 @@ describe('coding agent launch preparation', () => {
     expect(config).toContain('model_reasoning_summary = "auto"')
     expect(config).toContain('developer_instructions = """')
     expect(config).toContain('Hermes Studio MCP usage')
+    expect(config).toContain('hermes_studio_browser_toolset is available')
+    expect(config).toContain('call it with action=list')
+    expect(config).toContain('Browser MCP exposes a compact toolset rather than resources')
     expect(config).toContain('# 输出格式规范')
     expect(config).toContain('[mcp_servers.hermes-studio-api]')
     expect(config).toContain('[mcp_servers.hermes-studio-devices]')
@@ -596,6 +804,10 @@ describe('coding agent launch preparation', () => {
     expect(catalog.models[0]).toHaveProperty('base_instructions')
     expect(catalog.models[0]).toHaveProperty('model_messages')
     expect(catalog.models[0]).toHaveProperty('default_reasoning_summary', 'auto')
+    expect(catalog.models[0]).toHaveProperty('input_modalities', ['text', 'image'])
+    expect(catalog.models[0].supported_reasoning_levels).toEqual(expect.arrayContaining([
+      expect.objectContaining({ effort: 'max' }),
+    ]))
   })
 
   it('points Codex Chat Completions providers at the local Responses proxy', async () => {
@@ -701,7 +913,7 @@ describe('coding agent launch preparation', () => {
     expect(config).toContain(`base_url = "http://127.0.0.1:6060/api/codex-proxy/`)
     expect(config).toMatch(/experimental_bearer_token = "hwui_[^"]+"/)
     expect(config).not.toContain('base_url = "https://api.openai.com/v1"')
-    expect(result.rootDir).toBe(join(home, 'coding-agent', 'model', 'default', 'openai-api', 'codex'))
+    expect(dirname(dirname(result.rootDir))).toBe(join(home, 'coding-agent', 'model', 'default', 'openai-api', 'codex'))
   })
 
   it('points Codex Anthropic Messages providers at the local Responses proxy', async () => {
@@ -849,6 +1061,188 @@ describe('coding agent launch preparation', () => {
       arguments: '{"query":"repo"}',
     })
     expect(ctx.body.usage).toMatchObject({ input_tokens: 5, output_tokens: 2, total_tokens: 7 })
+  })
+
+  it('preserves deferred MCP discovery through the Codex Anthropic proxy', async () => {
+    makeHome()
+    const launch = await prepareCodingAgentLaunch('codex', {
+      profile: 'default',
+      provider: 'anthropic-compatible',
+      model: 'claude-sonnet-4-6',
+      baseUrl: 'https://api.example.com',
+      apiKey: 'sk-upstream',
+      apiMode: 'anthropic_messages',
+    })
+    const config = readFileSync(join(launch.rootDir, 'config.toml'), 'utf-8')
+    const routeKey = config.match(/\/api\/codex-proxy\/([^/]+)\/v1/)?.[1] || ''
+    const token = config.match(/experimental_bearer_token = "([^"]+)"/)?.[1] || ''
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'msg_search',
+        type: 'message',
+        role: 'assistant',
+        model: 'claude-sonnet-4-6',
+        content: [{
+          type: 'tool_use',
+          id: 'call_search',
+          name: 'tool_search',
+          input: { query: 'Hermes Studio browser tabs' },
+        }],
+        stop_reason: 'tool_use',
+        usage: { input_tokens: 3, output_tokens: 1 },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'msg_browser',
+        type: 'message',
+        role: 'assistant',
+        model: 'claude-sonnet-4-6',
+        content: [{
+          type: 'tool_use',
+          id: 'call_browser',
+          name: 'hermes_studio_browser_toolset',
+          input: { action: 'list' },
+        }],
+        stop_reason: 'tool_use',
+        usage: { input_tokens: 4, output_tokens: 1 },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const toolSearch = {
+      type: 'tool_search',
+      execution: 'client',
+      description: 'Search deferred MCP tools.',
+      parameters: {
+        type: 'object',
+        properties: { query: { type: 'string' } },
+        required: ['query'],
+        additionalProperties: false,
+      },
+    }
+    const firstCtx = makeProxyContext(routeKey, token, {
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'open a browser' }] }],
+      tools: [toolSearch],
+    })
+
+    await codexProxyResponses(firstCtx)
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).tools).toEqual([{
+      name: 'tool_search',
+      description: 'Search deferred MCP tools.',
+      input_schema: toolSearch.parameters,
+    }])
+    expect(firstCtx.body.output).toEqual([{
+      type: 'tool_search_call',
+      call_id: 'call_search',
+      status: 'completed',
+      execution: 'client',
+      arguments: { query: 'Hermes Studio browser tabs' },
+    }])
+
+    const secondCtx = makeProxyContext(routeKey, token, {
+      input: [
+        { role: 'user', content: [{ type: 'input_text', text: 'open a browser' }] },
+        {
+          type: 'tool_search_call',
+          call_id: 'call_search',
+          status: 'completed',
+          execution: 'client',
+          arguments: { query: 'Hermes Studio browser tabs' },
+        },
+        {
+          type: 'tool_search_output',
+          call_id: 'call_search',
+          status: 'completed',
+          execution: 'client',
+          tools: [{
+            type: 'namespace',
+            name: 'mcp__hermes_studio_browser',
+            tools: [{
+              type: 'function',
+              name: 'hermes_studio_browser_toolset',
+              description: 'Discover browser operations.',
+              parameters: { type: 'object', properties: { action: { type: 'string' } }, required: ['action'] },
+            }],
+          }],
+        },
+      ],
+      tools: [toolSearch],
+    })
+
+    await codexProxyResponses(secondCtx)
+
+    const secondRequestBody = JSON.parse(fetchMock.mock.calls[1][1].body)
+    expect(secondRequestBody.tools.map((tool: any) => tool.name)).toEqual([
+      'tool_search',
+      'hermes_studio_browser_toolset',
+    ])
+    expect(secondRequestBody.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: 'user',
+        content: [expect.objectContaining({ type: 'tool_result', tool_use_id: 'call_search' })],
+      }),
+    ]))
+    expect(secondCtx.body.output[0]).toMatchObject({
+      type: 'function_call',
+      call_id: 'call_browser',
+      name: 'hermes_studio_browser_toolset',
+      namespace: 'mcp__hermes_studio_browser',
+    })
+  })
+
+  it('exposes split Hermes MCP tools to Anthropic Codex runs and restores their namespace', async () => {
+    makeHome()
+    const launch = await prepareCodingAgentLaunch('codex', {
+      profile: 'default',
+      provider: 'anthropic-compatible',
+      model: 'claude-sonnet-4-6',
+      baseUrl: 'https://api.example.com',
+      apiKey: 'sk-upstream',
+      apiMode: 'anthropic_messages',
+    })
+    const config = readFileSync(join(launch.rootDir, 'config.toml'), 'utf-8')
+    const routeKey = config.match(/\/api\/codex-proxy\/([^/]+)\/v1/)?.[1] || ''
+    const token = config.match(/experimental_bearer_token = "([^"]+)"/)?.[1] || ''
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      id: 'msg_browser',
+      type: 'message',
+      role: 'assistant',
+      model: 'claude-sonnet-4-6',
+      content: [{
+        type: 'tool_use',
+        id: 'toolu_browser',
+        name: 'hermes_studio_browser_toolset',
+        input: { action: 'list' },
+      }],
+      stop_reason: 'tool_use',
+      usage: { input_tokens: 4, output_tokens: 1 },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const ctx = makeProxyContext(routeKey, token, {
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'open a browser' }] }],
+      tools: [{
+        type: 'namespace',
+        name: 'mcp__hermes_studio_browser',
+        description: 'Hermes Studio browser tools',
+      }],
+    })
+
+    await codexProxyResponses(ctx)
+
+    const requestBody = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(requestBody.tools).toEqual([expect.objectContaining({
+      name: 'hermes_studio_browser_toolset',
+      input_schema: expect.objectContaining({
+        required: ['action'],
+      }),
+    })])
+    expect(ctx.body.output[0]).toMatchObject({
+      type: 'function_call',
+      call_id: 'toolu_browser',
+      name: 'hermes_studio_browser_toolset',
+      arguments: '{"action":"list"}',
+      namespace: 'mcp__hermes_studio_browser',
+    })
   })
 
   it('streams Codex proxy text as complete Responses message events', async () => {
@@ -1206,6 +1600,40 @@ describe('coding agent launch preparation', () => {
 
     expect(first.routeKey).not.toBe(second.routeKey)
     expect(first.token).not.toBe(second.token)
+  })
+
+  it('keeps hidden session runtime configs separate for the same agent, provider, and model', async () => {
+    makeHome()
+    const common = {
+      profile: 'default',
+      provider: 'same-provider',
+      model: 'same-model',
+      baseUrl: 'https://api.example.com/v1',
+      apiKey: 'sk-upstream',
+      apiMode: 'codex_responses' as const,
+      isolateSettings: true,
+    }
+    const first = await prepareCodingAgentLaunch('claude-code', {
+      ...common,
+      sessionId: 'chat-one',
+      agentSessionId: 'agent-one',
+    })
+    const second = await prepareCodingAgentLaunch('claude-code', {
+      ...common,
+      sessionId: 'chat-two',
+      agentSessionId: 'agent-two',
+    })
+
+    expect(first.rootDir).not.toBe(second.rootDir)
+    const firstSettings = JSON.parse(readFileSync(join(first.rootDir, 'settings.json'), 'utf-8'))
+    const secondSettings = JSON.parse(readFileSync(join(second.rootDir, 'settings.json'), 'utf-8'))
+    const decodeTarget = (baseUrl: string) => JSON.parse(Buffer.from(
+      new URL(baseUrl).pathname.split('/').filter(Boolean).at(-1) || '',
+      'base64url',
+    ).toString('utf-8'))
+
+    expect(decodeTarget(firstSettings.env.ANTHROPIC_BASE_URL).slice(-2)).toEqual(['agent-one', 'chat-one'])
+    expect(decodeTarget(secondSettings.env.ANTHROPIC_BASE_URL).slice(-2)).toEqual(['agent-two', 'chat-two'])
   })
 
   it('keeps Codex proxy routes separate for the same model with different upstream URLs', () => {

@@ -15,6 +15,8 @@ const testState = vi.hoisted(() => ({
   recognitionStopResult: '',
   browserRecognition: null as any,
   recorder: null as any,
+  pcmRecorder: null as any,
+  pcmOnChunk: null as null | ((audio: Blob) => void),
   sttSettingsResponse: { providers: [], activeProvider: 'browser' } as any,
   transcribeSpeech: vi.fn(),
 }))
@@ -70,6 +72,32 @@ vi.mock('@/composables/useMicRecorder', async () => {
         testState.recorder.state.value = { status: 'idle', error: null, startedAt: null, mimeType: null }
       }),
     }),
+  }
+})
+
+vi.mock('@/composables/usePcmStreamRecorder', async () => {
+  const { ref, shallowRef } = await import('vue')
+  return {
+    usePcmStreamRecorder: (options: { onChunk?: (audio: Blob) => void }) => {
+      testState.pcmOnChunk = options.onChunk || null
+      return (testState.pcmRecorder = {
+        status: ref('idle'),
+        error: ref<Error | null>(null),
+        level: ref(0),
+        hasSpeech: ref(false),
+        stream: shallowRef(null),
+        start: vi.fn().mockImplementation(async () => {
+          testState.pcmRecorder.status.value = 'recording'
+        }),
+        stop: vi.fn().mockImplementation(async () => {
+          testState.pcmRecorder.status.value = 'idle'
+          return new Blob([new Uint8Array(256)], { type: 'audio/wav' })
+        }),
+        cancel: vi.fn().mockImplementation(() => {
+          testState.pcmRecorder.status.value = 'idle'
+        }),
+      })
+    },
   }
 })
 
@@ -194,6 +222,12 @@ describe('RealtimeVoiceStage prepared playback queue', () => {
     testState.recognitionStopResult = ''
     testState.browserRecognition = null
     testState.recorder = null
+    testState.pcmRecorder = null
+    testState.pcmOnChunk = null
+    testState.store.messages.splice(0)
+    testState.store.isStreaming = true
+    testState.store.sendMessage.mockReset()
+    testState.store.stopStreaming.mockReset()
     testState.sttSettingsResponse = { providers: [], activeProvider: 'browser' }
     testState.transcribeSpeech.mockReset()
     testState.transcribeSpeech.mockResolvedValue({
@@ -203,6 +237,10 @@ describe('RealtimeVoiceStage prepared playback queue', () => {
       durationMs: 10,
     })
     vi.stubGlobal('Audio', MockAudio)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: undefined,
+    })
     vi.stubGlobal('URL', {
       createObjectURL: vi.fn((blob: Blob) => `blob:voice-${blob.size}-${Math.random()}`),
       revokeObjectURL: vi.fn(),
@@ -216,10 +254,17 @@ describe('RealtimeVoiceStage prepared playback queue', () => {
   })
 
   it('prepares at most five segments concurrently but always plays and captions FIFO', async () => {
+    testState.recognitionStopResult = '播放队列测试'
     const wrapper = mount(RealtimeVoiceStage)
     expect(wrapper.find('.voice-stage__controls').exists()).toBe(false)
     expect(wrapper.find('.voice-stage__back').exists()).toBe(true)
     expect(wrapper.get('.voice-stage__identity span').text()).toBe('Codex')
+
+    await wrapper.get('[data-testid="realtime-voice-toggle"]').trigger('click')
+    await settle()
+    await wrapper.get('[data-testid="realtime-voice-toggle"]').trigger('click')
+    await settle()
+
     testState.store.messages.push({
       id: 'assistant-stream',
       role: 'assistant',
@@ -262,6 +307,72 @@ describe('RealtimeVoiceStage prepared playback queue', () => {
     expect(testState.store.stopStreaming).toHaveBeenCalledTimes(1)
     expect(testState.audioInstances[1].pause).toHaveBeenCalledTimes(1)
     expect(wrapper.classes()).toContain('voice-stage--idle')
+    wrapper.unmount()
+  })
+
+  it('does not restore the user transcript between assistant TTS segments', async () => {
+    testState.recognitionStopResult = '这是用户刚才说的话'
+    const wrapper = mount(RealtimeVoiceStage)
+
+    await wrapper.get('[data-testid="realtime-voice-toggle"]').trigger('click')
+    await settle()
+    await wrapper.get('[data-testid="realtime-voice-toggle"]').trigger('click')
+    await settle()
+
+    expect(wrapper.get('[data-testid="realtime-voice-caption"]').text()).toBe('这是用户刚才说的话')
+
+    testState.store.messages.push({
+      id: 'assistant-caption-gap',
+      role: 'assistant',
+      content: '第一句。第二句。',
+      timestamp: Date.now(),
+      isStreaming: true,
+    })
+    await settle()
+    resolveRequest(0)
+    await settle()
+
+    expect(wrapper.get('[data-testid="realtime-voice-caption"]').text()).toBe('第一句。')
+
+    testState.audioInstances[0].onended?.()
+    await settle()
+
+    expect(wrapper.classes()).toContain('voice-stage--thinking')
+    expect(wrapper.get('[data-testid="realtime-voice-caption"]').text()).toBe('realtimeVoice.hint.thinking')
+    expect(wrapper.get('[data-testid="realtime-voice-caption"]').text()).not.toContain('这是用户刚才说的话')
+
+    await wrapper.get('[data-testid="realtime-voice-toggle"]').trigger('click')
+    await settle()
+    wrapper.unmount()
+  })
+
+  it('never plays assistant messages that existed before the current voice turn', async () => {
+    testState.store.isStreaming = false
+    testState.store.messages.push(
+      {
+        id: 'historical-assistant-1',
+        role: 'assistant',
+        content: '第一条历史回复。',
+        timestamp: Date.now() - 2_000,
+        isStreaming: false,
+      },
+      {
+        id: 'historical-assistant-2',
+        role: 'assistant',
+        content: '第二条历史回复。',
+        timestamp: Date.now() - 1_000,
+        isStreaming: false,
+      },
+    )
+
+    const wrapper = mount(RealtimeVoiceStage)
+    await settle()
+
+    testState.store.messages[0].content = '第一条历史回复。 '
+    await settle()
+
+    expect(testState.requests).toHaveLength(0)
+    expect(testState.audioInstances).toHaveLength(0)
     wrapper.unmount()
   })
 
@@ -339,7 +450,7 @@ describe('RealtimeVoiceStage prepared playback queue', () => {
     },
   )
 
-  it('uses explicit manual backend recording on mobile even when desktop-site mode hides the mobile UA', async () => {
+  it('uses continuous backend WAV streaming on mobile even when desktop-site mode hides the mobile UA', async () => {
     vi.useFakeTimers()
     vi.stubGlobal('navigator', {
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/138 Safari/537.36',
@@ -361,17 +472,23 @@ describe('RealtimeVoiceStage prepared playback queue', () => {
     await vi.advanceTimersByTimeAsync(180)
     await settle()
 
-    expect(wrapper.classes()).toContain('voice-stage--idle')
+    expect(wrapper.classes()).toContain('voice-stage--listening')
     expect(testState.recorder.start).not.toHaveBeenCalled()
     expect(testState.browserRecognition.start).not.toHaveBeenCalled()
+    expect(testState.pcmRecorder.start).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[data-testid="realtime-voice-caption"]').text()).toBe('realtimeVoice.hint.listening')
 
-    await wrapper.get('[data-testid="realtime-voice-toggle"]').trigger('click')
+    testState.transcribeSpeech.mockResolvedValueOnce({
+      text: '实时字幕第一段',
+      provider: 'openai',
+      model: 'gpt-4o-transcribe',
+      durationMs: 10,
+    })
+    testState.pcmOnChunk?.(new Blob([new Uint8Array(256)], { type: 'audio/wav' }))
     await settle()
 
-    expect(wrapper.classes()).toContain('voice-stage--listening')
-    expect(wrapper.get('[data-testid="realtime-voice-caption"]').text()).toBe('realtimeVoice.hint.listeningManual')
-    expect(testState.recorder.start).toHaveBeenCalledTimes(1)
-    expect(testState.browserRecognition.start).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="realtime-voice-caption"]').text()).toBe('实时字幕第一段')
+    testState.pcmRecorder.stop.mockResolvedValueOnce(null)
 
     await wrapper.get('[data-testid="realtime-voice-toggle"]').trigger('click')
     await settle()
@@ -380,12 +497,170 @@ describe('RealtimeVoiceStage prepared playback queue', () => {
       provider: 'openai',
       language: 'zh-CN',
       prompt: '中英混合',
+      audio: expect.objectContaining({ type: 'audio/wav' }),
     }))
-    expect(testState.store.sendMessage).toHaveBeenCalledWith('备用识别文本')
+    expect(testState.store.sendMessage).toHaveBeenCalledWith('实时字幕第一段')
     wrapper.unmount()
   })
 
-  it('keeps restart-based browser capture on mobile when no backend STT is configured', async () => {
+  it('uses backend WAV streaming in Electron instead of browser speech or Opus recording', async () => {
+    vi.useFakeTimers()
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { isDesktop: true },
+    })
+    testState.sttSettingsResponse = {
+      activeProvider: 'openai',
+      providers: [{
+        provider: 'openai',
+        settings: { language: 'zh-CN' },
+        secrets: { apiKey: '[stored]' },
+        updatedAt: Date.now(),
+      }],
+    }
+    const wrapper = mount(RealtimeVoiceStage)
+
+    await vi.advanceTimersByTimeAsync(180)
+    await settle()
+
+    expect(wrapper.classes()).toContain('voice-stage--listening')
+    expect(testState.pcmRecorder.start).toHaveBeenCalledOnce()
+    expect(testState.browserRecognition.start).not.toHaveBeenCalled()
+    expect(testState.recorder.start).not.toHaveBeenCalled()
+
+    await wrapper.get('[data-testid="realtime-voice-toggle"]').trigger('click')
+    await settle()
+
+    expect(testState.transcribeSpeech).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'openai',
+      audio: expect.objectContaining({ type: 'audio/wav' }),
+    }))
+    expect(testState.store.sendMessage).toHaveBeenCalledWith('备用识别文本')
+    expect(wrapper.classes()).toContain('voice-stage--thinking')
+    expect(wrapper.get('[data-testid="realtime-voice-caption"]').text()).toBe('备用识别文本')
+    wrapper.unmount()
+  })
+
+  it('ignores backend no-speech chunks in Electron and keeps listening', async () => {
+    vi.useFakeTimers()
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { isDesktop: true },
+    })
+    testState.sttSettingsResponse = {
+      activeProvider: 'doubao',
+      providers: [{
+        provider: 'doubao',
+        settings: { language: 'zh-CN' },
+        secrets: { apiKey: '[stored]' },
+        updatedAt: Date.now(),
+      }],
+    }
+    testState.transcribeSpeech.mockRejectedValueOnce(
+      new Error('API Error 400: No speech detected in the audio'),
+    )
+    const wrapper = mount(RealtimeVoiceStage)
+
+    await vi.advanceTimersByTimeAsync(180)
+    await settle()
+    testState.pcmOnChunk?.(new Blob([new Uint8Array(256)], { type: 'audio/wav' }))
+    await settle()
+
+    expect(wrapper.classes()).toContain('voice-stage--listening')
+    expect(wrapper.classes()).not.toContain('voice-stage--error')
+    expect(wrapper.get('[data-testid="realtime-voice-caption"]').text()).toBe('realtimeVoice.hint.listening')
+    expect(testState.pcmRecorder.cancel).not.toHaveBeenCalled()
+
+    testState.transcribeSpeech.mockResolvedValueOnce({
+      text: '下一段可以识别',
+      provider: 'doubao',
+      model: 'volc.seedasr.auc',
+      durationMs: 10,
+    })
+    testState.pcmOnChunk?.(new Blob([new Uint8Array(256)], { type: 'audio/wav' }))
+    await settle()
+
+    expect(wrapper.get('[data-testid="realtime-voice-caption"]').text()).toBe('下一段可以识别')
+    wrapper.unmount()
+  })
+
+  it('does not leave listening mode for unconfirmed Electron startup noise', async () => {
+    vi.useFakeTimers()
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { isDesktop: true },
+    })
+    testState.sttSettingsResponse = {
+      activeProvider: 'doubao',
+      providers: [{
+        provider: 'doubao',
+        settings: { language: 'zh-CN' },
+        secrets: { apiKey: '[stored]' },
+        updatedAt: Date.now(),
+      }],
+    }
+    const wrapper = mount(RealtimeVoiceStage)
+
+    await vi.advanceTimersByTimeAsync(180)
+    await settle()
+    testState.pcmRecorder.level.value = 0.2
+    await settle()
+    await vi.advanceTimersByTimeAsync(2_500)
+    await settle()
+
+    expect(testState.pcmRecorder.stop).not.toHaveBeenCalled()
+    expect(testState.transcribeSpeech).not.toHaveBeenCalled()
+    expect(wrapper.classes()).toContain('voice-stage--listening')
+    expect(wrapper.classes()).not.toContain('voice-stage--processing')
+    expect(wrapper.classes()).not.toContain('voice-stage--error')
+
+    testState.pcmRecorder.stop.mockResolvedValueOnce(null)
+    await wrapper.get('[data-testid="realtime-voice-toggle"]').trigger('click')
+    await settle()
+    await vi.advanceTimersByTimeAsync(1_000)
+    await settle()
+
+    expect(wrapper.classes()).toContain('voice-stage--paused')
+    expect(wrapper.get('[data-testid="realtime-voice-caption"]').text()).toBe('realtimeVoice.hint.paused')
+    expect(testState.pcmRecorder.start).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('commits confirmed Electron speech after 1.5 seconds of silence', async () => {
+    vi.useFakeTimers()
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { isDesktop: true },
+    })
+    testState.sttSettingsResponse = {
+      activeProvider: 'doubao',
+      providers: [{
+        provider: 'doubao',
+        settings: { language: 'zh-CN' },
+        secrets: { apiKey: '[stored]' },
+        updatedAt: Date.now(),
+      }],
+    }
+    const wrapper = mount(RealtimeVoiceStage)
+
+    await vi.advanceTimersByTimeAsync(180)
+    await settle()
+    testState.pcmRecorder.hasSpeech.value = true
+    testState.pcmRecorder.level.value = 0.2
+    await settle()
+
+    await vi.advanceTimersByTimeAsync(1_499)
+    expect(testState.pcmRecorder.stop).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    await settle()
+
+    expect(testState.pcmRecorder.stop).toHaveBeenCalledOnce()
+    expect(testState.store.sendMessage).toHaveBeenCalledWith('备用识别文本')
+    expect(wrapper.classes()).toContain('voice-stage--thinking')
+    wrapper.unmount()
+  })
+
+  it('requires backend STT on mobile instead of falling back to browser recognition', async () => {
     vi.useFakeTimers()
     vi.stubGlobal('navigator', {
       userAgent: 'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/138 Mobile Safari/537.36',
@@ -398,17 +673,10 @@ describe('RealtimeVoiceStage prepared playback queue', () => {
     await vi.advanceTimersByTimeAsync(180)
     await settle()
 
-    expect(testState.browserRecognition.start).toHaveBeenCalledWith({
-      language: 'zh-CN',
-      continuous: false,
-    })
-
-    testState.recognitionStopResult = '移动端问题'
-    await wrapper.get('[data-testid="realtime-voice-toggle"]').trigger('click')
-    await settle()
-
-    expect(testState.store.sendMessage).toHaveBeenCalledWith('移动端问题')
-    expect(testState.browserRecognition.start).toHaveBeenCalledTimes(1)
+    expect(wrapper.classes()).toContain('voice-stage--error')
+    expect(wrapper.get('[data-testid="realtime-voice-caption"]').text()).toBe('realtimeVoice.backendStreamRequired')
+    expect(testState.browserRecognition.start).not.toHaveBeenCalled()
+    expect(testState.pcmRecorder.start).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 

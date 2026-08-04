@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useDialog } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
@@ -10,11 +10,12 @@ import FileBreadcrumb from '@/components/hermes/files/FileBreadcrumb.vue'
 import FileToolbar from '@/components/hermes/files/FileToolbar.vue'
 import FileList from '@/components/hermes/files/FileList.vue'
 import FileContextMenu from '@/components/hermes/files/FileContextMenu.vue'
-import FileEditor from '@/components/hermes/files/FileEditor.vue'
-import FilePreview from '@/components/hermes/files/FilePreview.vue'
 import FileUploadModal from '@/components/hermes/files/FileUploadModal.vue'
 import FileRenameModal from '@/components/hermes/files/FileRenameModal.vue'
 import type { FileEntry } from '@/api/hermes/files'
+
+const FileEditor = defineAsyncComponent(async () => (await import('@/components/hermes/files/FileEditor.vue')).default)
+const FilePreview = defineAsyncComponent(async () => (await import('@/components/hermes/files/FilePreview.vue')).default)
 
 const filesStore = useFilesStore()
 const profilesStore = useProfilesStore()
@@ -94,7 +95,11 @@ async function loadFromRoute() {
     : (firstQueryString(route.query.path) || '')
 
   if (!isProfileConfigEditor.value) {
-    await filesStore.fetchEntries(directoryPath, { profile })
+    await filesStore.fetchEntries(directoryPath, {
+      profile,
+      workspaceSessionId: null,
+      workspaceRoomId: null,
+    })
   }
 
   if (filePath) {
@@ -143,22 +148,24 @@ watch(
         <FileEditor v-if="filesStore.editingFile" :custom-close="closeProfileConfigEditor" />
       </div>
     </template>
-    <div v-else class="files-tree-panel">
-      <FileTree :profile="scopedProfile" />
-    </div>
-    <div v-if="!isProfileConfigEditor" class="files-main-panel">
-      <FileToolbar
-        @show-new-file="handleShowNewFile"
-        @show-new-folder="handleShowNewFolder"
-        @show-upload="showUpload = true"
-      />
-      <FileBreadcrumb />
-      <div class="files-content">
-        <FileEditor v-if="filesStore.editingFile" />
-        <FilePreview v-else-if="filesStore.previewFile" />
-        <FileList v-else @contextmenu-entry="handleContextMenu" />
+    <FilePreview v-else-if="filesStore.previewFile" />
+    <template v-else>
+      <div class="files-tree-panel">
+        <FileTree :profile="scopedProfile" />
       </div>
-    </div>
+      <div class="files-main-panel">
+        <FileToolbar
+          @show-new-file="handleShowNewFile"
+          @show-new-folder="handleShowNewFolder"
+          @show-upload="showUpload = true"
+        />
+        <FileBreadcrumb />
+        <div class="files-content">
+          <FileEditor v-if="filesStore.editingFile" />
+          <FileList v-else @contextmenu-entry="handleContextMenu" />
+        </div>
+      </div>
+    </template>
     <FileContextMenu
       ref="contextMenuRef"
       @rename="handleRename"
@@ -228,7 +235,7 @@ watch(
   width: 240px;
   min-width: 180px;
   max-width: 400px;
-  border-right: 1px solid $border-color;
+  border-inline-end: 1px solid $border-color;
   overflow-y: auto;
   flex-shrink: 0;
 }
@@ -256,7 +263,7 @@ watch(
     width: 100%;
     max-width: none;
     height: 200px;
-    border-right: none;
+    border-inline-end: none;
     border-bottom: 1px solid $border-color;
   }
 }

@@ -1,0 +1,135 @@
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+const state = vi.hoisted(() => ({ appHome: '' }))
+
+vi.mock('../../packages/server/src/config', () => ({
+  config: {
+    get appHome() {
+      return state.appHome
+    },
+  },
+}))
+
+vi.mock('../../packages/server/src/services/system-info', () => ({
+  getHermesAgentVersion: () => 'v2026.8.1',
+  getHermesWebUiVersion: () => '0.6.31',
+}))
+
+const originalEnv = { ...process.env }
+const tempDirs: string[] = []
+
+function tempDir(prefix: string): string {
+  const directory = mkdtempSync(join(tmpdir(), prefix))
+  tempDirs.push(directory)
+  return directory
+}
+
+describe('runtime version manager storage migration', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    process.env = { ...originalEnv }
+    delete process.env.HERMES_DESKTOP_RUNTIME_DIR
+    state.appHome = tempDir('hermes-runtime-version-home-')
+  })
+
+  afterEach(() => {
+    process.env = { ...originalEnv }
+    vi.unstubAllGlobals()
+    vi.resetModules()
+    for (const directory of tempDirs.splice(0)) {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('records a writable destination without changing the running Runtime', async () => {
+    const currentRuntime = join(state.appHome, 'desktop-runtime', 'hermes', '0.18.0', 'test-platform')
+    const activeVersionPath = join(state.appHome, 'desktop-runtime', 'active-version.json')
+    const destination = tempDir('hermes-runtime-version-destination-')
+    mkdirSync(join(state.appHome, 'desktop-runtime'), { recursive: true })
+    writeFileSync(activeVersionPath, JSON.stringify({
+      schema: 1,
+      hermesRuntimeVersion: '0.18.0',
+      runtimeDirectory: currentRuntime,
+      platform: 'test-platform',
+    }))
+
+    const { scheduleRuntimeRootMigration } = await import('../../packages/server/src/services/runtime-version-manager')
+    const active = scheduleRuntimeRootMigration(destination)
+    const persisted = JSON.parse(readFileSync(activeVersionPath, 'utf-8'))
+
+    expect(active.runtimeDirectory).toBe(currentRuntime)
+    expect(active.pendingRuntimeRootDirectory).toBe(resolve(destination))
+    expect(persisted.pendingRuntimeRootDirectory).toBe(resolve(destination))
+    expect(persisted.runtimeRootDirectory).toBeUndefined()
+  })
+
+  it('reports the installed Hermes Agent version separately from the Runtime package version', async () => {
+    const activeVersionPath = join(state.appHome, 'desktop-runtime', 'active-version.json')
+    mkdirSync(join(state.appHome, 'desktop-runtime'), { recursive: true })
+    writeFileSync(activeVersionPath, JSON.stringify({
+      schema: 1,
+      hermesRuntimeVersion: '0.19.1',
+      runtimeDirectory: join(state.appHome, 'desktop-runtime', 'hermes', '0.19.1', 'test-platform'),
+      platform: 'test-platform',
+    }))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ schema: 1, hermes: ['0.19.1'], webui: ['0.6.31'] }),
+    }))
+
+    const { getRuntimeVersionStatus } = await import('../../packages/server/src/services/runtime-version-manager')
+    const status = await getRuntimeVersionStatus()
+
+    expect(status.hermes.activeVersion).toBe('0.19.1')
+    expect(status.hermes.agentVersion).toBe('v2026.8.1')
+  })
+
+  it('rejects a destination nested inside the current Runtime storage root', async () => {
+    const nestedDestination = join(state.appHome, 'desktop-runtime', 'nested')
+    mkdirSync(nestedDestination, { recursive: true })
+
+    const { scheduleRuntimeRootMigration } = await import('../../packages/server/src/services/runtime-version-manager')
+
+    expect(() => scheduleRuntimeRootMigration(nestedDestination))
+      .toThrow('cannot be inside the current Runtime storage directory')
+  })
+
+  it('uses the desktop Runtime root for downloaded Web UI versions without scanning the legacy directory', async () => {
+    const storageRoot = tempDir('hermes-runtime-version-storage-')
+    const activeVersionPath = join(state.appHome, 'desktop-runtime', 'active-version.json')
+    const webUiDirectory = join(storageRoot, 'webui', '0.6.31')
+    const legacyWebUiDirectory = join(state.appHome, 'webui', '0.6.30')
+    mkdirSync(webUiDirectory, { recursive: true })
+    mkdirSync(legacyWebUiDirectory, { recursive: true })
+    mkdirSync(join(state.appHome, 'desktop-runtime'), { recursive: true })
+    writeFileSync(join(webUiDirectory, 'package.json'), JSON.stringify({ version: '0.6.31' }))
+    writeFileSync(join(legacyWebUiDirectory, 'package.json'), JSON.stringify({ version: '0.6.30' }))
+    writeFileSync(activeVersionPath, JSON.stringify({
+      schema: 1,
+      desktopAppVersion: '0.6.30',
+      runtimeRootDirectory: storageRoot,
+      platform: 'test-platform',
+    }))
+
+    const {
+      activateDownloadedWebUiVersion,
+      listInstalledWebUiVersions,
+    } = await import('../../packages/server/src/services/runtime-version-manager')
+
+    expect(listInstalledWebUiVersions()).toEqual([{
+      version: '0.6.31',
+      directory: webUiDirectory,
+      active: false,
+    }])
+    const activated = activateDownloadedWebUiVersion('0.6.31')
+    expect(activated.desktopAppVersion).toBe('0.6.30')
+    expect(activated.webUiVersion).toBe('0.6.31')
+    expect(activated.webUiDirectory).toBeUndefined()
+    expect(() => activateDownloadedWebUiVersion('0.6.30'))
+      .toThrow('Downloaded Web UI version not found')
+  })
+
+})

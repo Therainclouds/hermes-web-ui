@@ -272,6 +272,74 @@ describe('plan session command', () => {
     }))
   })
 
+  it('enables session YOLO before the first agent chat creates a bridge session', async () => {
+    getSessionMock.mockReturnValueOnce(null)
+    const state = { messages: [], isWorking: false, events: [], queue: [] }
+    const { bridge, namespaceEmit, nsp, runQueuedItem, sessionMap, socket } = makeContext(state, {
+      handled: true,
+      type: 'yolo',
+      action: 'yolo',
+      enabled: true,
+      message: '⚡ YOLO mode ON for this session — all commands auto-approved. Use with caution.',
+    })
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+    const command = parseSessionCommand('/yolo')!
+
+    await handleSessionCommand('session-1', command, {
+      nsp: nsp as any,
+      socket: socket as any,
+      sessionMap,
+      bridge: bridge as any,
+      profile: 'work',
+      runQueuedItem,
+    })
+
+    expect(createSessionMock).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'session-1',
+      profile: 'work',
+      source: 'cli',
+      title: '[yolo]',
+    }))
+    expect(bridge.command).toHaveBeenCalledWith('session-1', 'yolo', 'work')
+    expect(runQueuedItem).not.toHaveBeenCalled()
+    expect(namespaceEmit).toHaveBeenCalledWith('session.command', expect.objectContaining({
+      command: 'yolo',
+      action: 'yolo',
+      enabled: true,
+      terminal: true,
+    }))
+  })
+
+  it('toggles session YOLO immediately while an agent run is active', async () => {
+    const state = { messages: [], isWorking: true, events: [], queue: [] }
+    const { bridge, namespaceEmit, nsp, runQueuedItem, sessionMap, socket } = makeContext(state, {
+      handled: true,
+      type: 'yolo',
+      action: 'yolo',
+      enabled: false,
+      message: '⚠️ YOLO mode OFF for this session — dangerous commands will require approval.',
+    })
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+
+    await handleSessionCommand('session-1', parseSessionCommand('/yolo')!, {
+      nsp: nsp as any,
+      socket: socket as any,
+      sessionMap,
+      bridge: bridge as any,
+      profile: 'default',
+      runQueuedItem,
+    })
+
+    expect(bridge.command).toHaveBeenCalledWith('session-1', 'yolo', 'default')
+    expect(state.queue).toEqual([])
+    expect(runQueuedItem).not.toHaveBeenCalled()
+    expect(namespaceEmit).toHaveBeenCalledWith('session.command', expect.objectContaining({
+      action: 'yolo',
+      enabled: false,
+      terminal: false,
+    }))
+  })
+
   it('starts an idle /skill command with expanded storage and visible command display', async () => {
     const state = { messages: [], isWorking: false, events: [], queue: [] }
     const { bridge, namespaceEmit, nsp, runQueuedItem, sessionMap, socket } = makeContext(state, {
@@ -353,6 +421,103 @@ describe('plan session command', () => {
         role: 'command',
         content: '/skill review follow up',
       })],
+    }))
+  })
+
+  it('starts an idle /bundles command with optional user instructions', async () => {
+    const state = { messages: [], isWorking: false, events: [], queue: [] }
+    const { bridge, namespaceEmit, nsp, runQueuedItem, sessionMap, socket } = makeContext(state, {
+      handled: true,
+      type: 'bundle',
+      message: '[IMPORTANT: expanded bundle prompt]',
+    })
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+    const command = parseSessionCommand('/bundles review-team focus on auth')!
+
+    expect(command).toMatchObject({ name: 'bundles', args: 'review-team focus on auth' })
+
+    await handleSessionCommand('session-1', command, {
+      nsp: nsp as any,
+      socket: socket as any,
+      sessionMap,
+      bridge: bridge as any,
+      profile: 'work',
+      queueId: 'bundle-queue-id',
+      runQueuedItem,
+    })
+
+    expect(bridge.command).toHaveBeenCalledWith('session-1', '/review-team focus on auth', 'work')
+    expect(namespaceEmit).toHaveBeenCalledWith('session.command', expect.objectContaining({
+      action: 'bundle',
+      started: true,
+    }))
+    expect(runQueuedItem).toHaveBeenCalledWith(socket, 'session-1', expect.objectContaining({
+      queue_id: 'bundle-queue-id',
+      input: '[IMPORTANT: expanded bundle prompt]',
+      displayInput: '/bundles review-team focus on auth',
+      displayRole: 'command',
+      storageMessage: '[IMPORTANT: expanded bundle prompt]',
+      profile: 'work',
+    }), 'work')
+  })
+
+  it('queues /bundles commands while the bridge session is running', async () => {
+    const state = { messages: [], isWorking: true, events: [], queue: [] }
+    const { bridge, namespaceEmit, nsp, runQueuedItem, sessionMap, socket } = makeContext(state, {
+      handled: true,
+      type: 'bundle',
+      message: '[IMPORTANT: expanded bundle prompt]',
+    })
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+
+    await handleSessionCommand('session-1', parseSessionCommand('/bundles review-team')!, {
+      nsp: nsp as any,
+      socket: socket as any,
+      sessionMap,
+      bridge: bridge as any,
+      profile: 'default',
+      queueId: 'queued-bundle',
+      runQueuedItem,
+    })
+
+    expect(runQueuedItem).not.toHaveBeenCalled()
+    expect(state.queue).toEqual([expect.objectContaining({
+      queue_id: 'queued-bundle',
+      displayInput: '/bundles review-team',
+      input: '[IMPORTANT: expanded bundle prompt]',
+    })])
+    expect(namespaceEmit).toHaveBeenCalledWith('run.queued', expect.objectContaining({
+      queued_messages: [expect.objectContaining({
+        id: 'queued-bundle',
+        role: 'command',
+        content: '/bundles review-team',
+      })],
+    }))
+  })
+
+  it('keeps skill and bundle command types separate', async () => {
+    const state = { messages: [], isWorking: false, events: [], queue: [] }
+    const { bridge, namespaceEmit, nsp, runQueuedItem, sessionMap, socket } = makeContext(state, {
+      handled: true,
+      type: 'bundle',
+      message: '[IMPORTANT: bundle prompt must not run as a skill]',
+    })
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+
+    await handleSessionCommand('session-1', parseSessionCommand('/skill review-team')!, {
+      nsp: nsp as any,
+      socket: socket as any,
+      sessionMap,
+      bridge: bridge as any,
+      profile: 'default',
+      runQueuedItem,
+    })
+
+    expect(runQueuedItem).not.toHaveBeenCalled()
+    expect(namespaceEmit).toHaveBeenCalledWith('session.command', expect.objectContaining({
+      ok: false,
+      action: 'error',
+      message: '/review-team resolved to a Bundle. Use /bundles review-team instead.',
     }))
   })
 

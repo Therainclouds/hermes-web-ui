@@ -8,6 +8,9 @@ import { useSettingsStore } from '@/stores/hermes/settings'
 import ChatInput from '@/components/hermes/chat/ChatInput.vue'
 
 const fetchSkillsMock = vi.hoisted(() => vi.fn())
+const fetchSkillBundlesMock = vi.hoisted(() => vi.fn())
+const deleteSkillBundleApiMock = vi.hoisted(() => vi.fn())
+const dialogWarningMock = vi.hoisted(() => vi.fn())
 
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({ t: (key: string) => key }),
@@ -20,26 +23,26 @@ vi.mock('naive-ui', () => ({
   NDropdown: { template: '<div><slot /></div>' },
   NModal: { template: '<div><slot /><slot name="footer" /></div>' },
   NInputNumber: { template: '<input />' },
-  NPopselect: {
-    props: ['value', 'options'],
+  NPopover: {
+    template: '<div class="n-popover-stub"><slot name="trigger" /><slot /></div>',
+  },
+  NSlider: {
+    props: ['value', 'min', 'max', 'step'],
     emits: ['update:value'],
     template: `
-      <div class="n-popselect-stub">
-        <slot />
-        <button
-          v-for="option in options"
-          :key="option.value"
-          type="button"
-          class="n-popselect-option"
-          :data-value="option.value"
-          @click="$emit('update:value', option.value)"
-        >
-          {{ option.label }}
-        </button>
-      </div>
+      <input
+        class="n-slider-stub"
+        type="range"
+        :value="value"
+        :min="min"
+        :max="max"
+        :step="step"
+        @input="$emit('update:value', Number($event.target.value))"
+      />
     `,
   },
   useMessage: () => ({ error: vi.fn(), success: vi.fn() }),
+  useDialog: () => ({ warning: dialogWarningMock }),
 }))
 
 vi.mock('@/api/hermes/sessions', () => ({
@@ -52,6 +55,20 @@ vi.mock('@/api/hermes/model-context', () => ({
 
 vi.mock('@/api/hermes/skills', () => ({
   fetchSkills: fetchSkillsMock,
+}))
+
+vi.mock('@/api/hermes/skill-bundles', () => ({
+  fetchSkillBundles: fetchSkillBundlesMock,
+  deleteSkillBundleApi: deleteSkillBundleApiMock,
+}))
+
+vi.mock('@/components/hermes/chat/BundleCreateModal.vue', () => ({
+  default: {
+    name: 'BundleCreateModal',
+    props: ['profile'],
+    emits: ['close', 'created'],
+    template: '<div class="bundle-create-modal">{{ profile }}</div>',
+  },
 }))
 
 vi.mock('@/composables/useToolTraceVisibility', () => ({
@@ -81,6 +98,51 @@ describe('ChatInput draft persistence', () => {
     window.innerWidth = 1024
     fetchSkillsMock.mockReset()
     fetchSkillsMock.mockResolvedValue({ categories: [], archived: [] })
+    fetchSkillBundlesMock.mockReset()
+    fetchSkillBundlesMock.mockResolvedValue([])
+    deleteSkillBundleApiMock.mockReset()
+    deleteSkillBundleApiMock.mockResolvedValue(undefined)
+    dialogWarningMock.mockReset()
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: vi.fn(() => 'blob:chat-attachment'),
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: vi.fn(),
+    })
+  })
+
+  it('adds a pasted non-image file to the attachment list', async () => {
+    const wrapper = mountForSession('session-file-paste')
+    const file = new File(['hello'], 'notes.txt', { type: 'text/plain' })
+    const paste = new Event('paste', { bubbles: true, cancelable: true })
+    Object.defineProperty(paste, 'clipboardData', {
+      value: {
+        items: [{ kind: 'file', type: file.type, getAsFile: () => file }],
+        files: [file],
+      },
+    })
+
+    wrapper.get('textarea').element.dispatchEvent(paste)
+    await nextTick()
+
+    expect(paste.defaultPrevented).toBe(true)
+    expect(wrapper.get('.attachment-file').text()).toContain('notes.txt')
+  })
+
+  it('accepts a browser selection directly into the current composer', async () => {
+    const wrapper = mountForSession('session-browser-selection')
+    const image = new File(['png'], 'browser-element.png', { type: 'image/png' })
+    const context = '{"browser_selection":{"annotations":[{"marker":1,"mode":"element","note":"Make this element clearer"}]}}'
+
+    ;(wrapper.vm as unknown as { addBrowserAttachment: (file: File, context: string) => void }).addBrowserAttachment(image, context)
+    await nextTick()
+
+    expect(wrapper.get('.attachment-thumb').attributes('alt')).toBe('browser-element.png')
+    expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('')
+    expect(wrapper.get('.attachment-context').attributes('open')).toBeUndefined()
+    expect(wrapper.get('.attachment-context pre').text()).toBe(context)
   })
 
   it('restores unsent text for the active session after the chat view is remounted', async () => {
@@ -117,6 +179,27 @@ describe('ChatInput draft persistence', () => {
     const remountedA = mountForSession('session-a')
     await nextTick()
     expect((remountedA.get('textarea').element as HTMLTextAreaElement).value).toBe('draft for session a')
+  })
+
+  it('shows and cancels the active session message reference', async () => {
+    const wrapper = mountForSession('session-reference')
+    const chatStore = useChatStore()
+
+    chatStore.setMessageReference('session-reference', {
+      id: 'assistant-1',
+      role: 'assistant',
+      content: 'A referenced assistant response',
+    })
+    await nextTick()
+
+    expect(wrapper.get('.message-reference-preview').text()).toContain('A referenced assistant response')
+    expect(wrapper.get('.message-reference-preview').element.parentElement?.classList.contains('input-wrapper')).toBe(false)
+    expect(chatStore.activeMessageReference?.id).toBe('assistant-1')
+
+    await wrapper.get('.message-reference-remove').trigger('click')
+
+    expect(wrapper.find('.message-reference-preview').exists()).toBe(false)
+    expect(chatStore.activeMessageReference).toBeNull()
   })
 
   it('applies the configured desktop input height from display settings', async () => {
@@ -178,19 +261,46 @@ describe('ChatInput draft persistence', () => {
     })
     await nextTick()
 
-    expect(wrapper.find('.n-popselect-stub').exists()).toBe(true)
-    expect(wrapper.find('[data-value="high"]').exists()).toBe(true)
+    expect(wrapper.find('.n-popover-stub').exists()).toBe(true)
+    expect(wrapper.find('.n-slider-stub').exists()).toBe(true)
+    expect(wrapper.get('.n-slider-stub').attributes('min')).toBe('0')
+    expect(wrapper.get('.n-slider-stub').attributes('max')).toBe('7')
+  })
+
+  it('hides the reasoning effort selector for MoA sessions', async () => {
+    const wrapper = mountForSession('session-moa', {
+      provider: 'moa',
+      model: 'research-team',
+    })
+    await nextTick()
+
+    expect(wrapper.find('.n-popover-stub').exists()).toBe(false)
+  })
+
+  it('stores maximum reasoning effort for the active session', async () => {
+    const wrapper = mountForSession('session-reasoning-max')
+    const store = useChatStore()
+
+    await wrapper.get('.n-slider-stub').setValue('7')
+    await nextTick()
+
+    expect(store.sessions[0].reasoningEffort).toBe('max')
+    expect(localStorage.getItem('hermes:reasoning_effort:session-reasoning-max')).toBe('max')
+    expect(wrapper.get('.reasoning-effort-button').attributes('style')).toContain('--reasoning-effort-accent-color: #ef4444')
+    expect(wrapper.get('.n-slider-stub').classes()).toContain('reasoning-effort-slider--max')
   })
 
   it('stores the selected reasoning effort for the active session', async () => {
     const wrapper = mountForSession('session-reasoning')
     const store = useChatStore()
 
-    await wrapper.get('[data-value="high"]').trigger('click')
+    await wrapper.get('.n-slider-stub').setValue('5')
     await nextTick()
 
     expect(store.sessions[0].reasoningEffort).toBe('high')
     expect(localStorage.getItem('hermes:reasoning_effort:session-reasoning')).toBe('high')
+    expect(wrapper.get('.reasoning-effort-button').attributes('style')).toContain('--reasoning-effort-accent-color: #f9c33c')
+    expect(wrapper.get('.n-slider-stub').classes()).not.toContain('reasoning-effort-slider--max')
   })
 
   it('opens the skill picker from /skill and inserts the selected skill command', async () => {
@@ -226,6 +336,73 @@ describe('ChatInput draft persistence', () => {
     await nextTick()
 
     expect((textarea.element as HTMLTextAreaElement).value).toBe('/skill github-pr-review ')
+  })
+
+  it('opens the profile-scoped bundle picker from /bundles and inserts the selected bundle command', async () => {
+    fetchSkillBundlesMock.mockResolvedValue([
+      {
+        name: 'PR Review Team',
+        commandName: 'pr-review-team',
+        description: 'Review a pull request',
+        skills: ['github-pr-review', 'security-review'],
+      },
+    ])
+    const wrapper = mountForSession('session-bundles', { profile: 'work' })
+    const textarea = wrapper.get('textarea')
+
+    await textarea.setValue('/bundles')
+    await nextTick()
+    await wrapper.findAll('.slash-command-item')[0].trigger('mousedown')
+    await flushPromises()
+    await nextTick()
+
+    expect(fetchSkillBundlesMock).toHaveBeenCalledWith('work')
+    expect(wrapper.text()).toContain('/bundles pr-review-team')
+    expect(wrapper.text()).toContain('Review a pull request')
+    expect(wrapper.text()).toContain('github-pr-review, security-review')
+
+    await wrapper.get('.bundle-picker-select').trigger('click')
+    await nextTick()
+
+    expect((textarea.element as HTMLTextAreaElement).value).toBe('/bundles pr-review-team ')
+  })
+
+  it('opens the bundle creator when /bundles create is submitted', async () => {
+    const wrapper = mountForSession('session-bundle-create', { profile: 'research' })
+    const textarea = wrapper.get('textarea')
+
+    await textarea.setValue('/bundles create')
+    await nextTick()
+    await wrapper.get('.send-button').trigger('click')
+    await nextTick()
+
+    expect(wrapper.get('.bundle-create-modal').text()).toBe('research')
+  })
+
+  it('deletes a bundle from the current profile after confirmation', async () => {
+    fetchSkillBundlesMock.mockResolvedValue([
+      {
+        name: 'PR Review Team',
+        commandName: 'pr-review-team',
+        description: '',
+        skills: ['github-pr-review'],
+      },
+    ])
+    const wrapper = mountForSession('session-bundle-delete', { profile: 'work' })
+    const textarea = wrapper.get('textarea')
+
+    await textarea.setValue('/bundles')
+    await nextTick()
+    await wrapper.findAll('.slash-command-item')[0].trigger('mousedown')
+    await flushPromises()
+    await wrapper.get('.bundle-picker-delete').trigger('click')
+
+    expect(dialogWarningMock).toHaveBeenCalledOnce()
+    await dialogWarningMock.mock.calls[0][0].onPositiveClick()
+    await flushPromises()
+
+    expect(deleteSkillBundleApiMock).toHaveBeenCalledWith('work', 'pr-review-team')
+    expect(wrapper.text()).not.toContain('/bundles pr-review-team')
   })
 
   it('hides bridge autocomplete for non-Hermes slash prefixes', async () => {

@@ -5,12 +5,12 @@
 
 import type { Server, Socket } from 'socket.io'
 import { getSystemPrompt } from '../../../lib/llm-prompt'
-import { getSession, getSessionDetail, createSession, addMessage, updateSession, updateSessionStats } from '../../../db/hermes/session-store'
+import { getFirstSessionMessageByRole, getSession, getSessionMessageCountByRole, createSession, addMessage, updateSession, updateSessionStats } from '../../../db/hermes/session-store'
 import { logger, bridgeLogger } from '../../logger'
 import { normalizeTokenUsage, recordSessionUsage } from '../../usage-recorder'
 import { AgentBridgeClient, type AgentBridgeContextEstimate, type AgentBridgeMessage, type AgentBridgeOutput } from '../agent-bridge'
 import { contentBlocksToString, convertContentBlocksForAgent, extractTextForPreview, isContentBlockArray } from './content-blocks'
-import { buildCompressedHistory, buildDbHistory, buildSnapshotAwareHistory, forceCompressBridgeHistory, pushState, replaceState } from './compression'
+import { buildCompressedHistory, buildDbSnapshotAwareHistory, forceCompressBridgeHistory, pushState, replaceState } from './compression'
 import {
   calcAndUpdateUsage,
   contextTokensWithCachedOverhead,
@@ -27,7 +27,7 @@ import {
   recordBridgeMoaDisplayTool,
 } from './bridge-message'
 import { summarizeToolArguments } from './response-utils'
-import type { ContentBlock, QueuedRun, SessionState } from './types'
+import type { ChatRunSource, ContentBlock, QueuedRun, SessionState } from './types'
 import type { ChatMessage } from '../../../lib/context-compressor'
 import { resolveBridgeRunModelConfig, type RunModelGroup } from './model-config'
 import { filterBridgeToolCallMarkupDelta, flushPendingToolCallMarkup } from './bridge-delta'
@@ -42,8 +42,37 @@ const BRIDGE_TITLE_EVENT_POLL_INTERVAL_MS = 500
 const BRIDGE_TITLE_EVENT_POLL_TIMEOUT_MS = 45_000
 const BRIDGE_GOAL_EVALUATE_TIMEOUT_MS = 120_000
 
+type BridgeRunSource = Extract<ChatRunSource, 'cli' | 'global_agent' | 'workflow'>
+
+function normalizeBridgeRunSource(source?: string | null, sessionSource?: string | null): BridgeRunSource {
+  if (sessionSource === 'global_agent' || source === 'global_agent') return 'global_agent'
+  if (sessionSource === 'workflow' || source === 'workflow') return 'workflow'
+  return 'cli'
+}
+
 function stringValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+function parseBackgroundDelegation(
+  toolName: string,
+  output: string,
+): { delegationId: string; status: string; payload: Record<string, unknown> } | null {
+  if (toolName !== 'delegate_task') return null
+  try {
+    const payload = JSON.parse(output) as Record<string, unknown>
+    const delegationId = stringValue(payload.delegation_id)
+    if (!delegationId || payload.mode !== 'background') return null
+    return { delegationId, status: stringValue(payload.status) || 'dispatched', payload }
+  } catch {
+    return null
+  }
+}
+
+function backgroundPendingCount(state: SessionState): number {
+  return Object.values(state.backgroundDelegations || {})
+    .filter(delegation => delegation.status === 'running' || delegation.status === 'delivering')
+    .length
 }
 
 function normalizeTitleText(value: unknown): string {
@@ -58,19 +87,19 @@ function fallbackTitleFromText(text: string, limit: number, ellipsis: boolean): 
 }
 
 function isReplaceableLocalTitle(sessionId: string): boolean {
-  const detail = getSessionDetail(sessionId)
-  if (!detail) return false
-  const current = normalizeTitleText(detail.title)
+  const session = getSession(sessionId)
+  if (!session) return false
+  const current = normalizeTitleText(session.title)
   if (!current) return true
   const variants = new Set<string>([''])
-  const preview = normalizeTitleText(detail.preview)
+  const preview = normalizeTitleText(session.preview)
   if (preview) {
     variants.add(preview)
     variants.add(fallbackTitleFromText(preview, 40, true))
     variants.add(fallbackTitleFromText(preview, 63, false))
     variants.add(fallbackTitleFromText(preview, 100, false))
   }
-  const firstUser = detail.messages.find(message => message.role === 'user' && normalizeTitleText(message.content))
+  const firstUser = getFirstSessionMessageByRole(sessionId, 'user')
   const firstUserText = normalizeTitleText(firstUser?.content)
   if (firstUserText) {
     variants.add(firstUserText)
@@ -110,9 +139,7 @@ function syncBridgeGeneratedTitle(sessionId: string, title: unknown, emit: (even
 function shouldPollBridgeGeneratedTitle(sessionId: string): boolean {
   const session = getSession(sessionId)
   if (!session || !isBridgeSessionSource(session.source)) return false
-  const detail = getSessionDetail(sessionId)
-  if (!detail) return false
-  const userMessageCount = detail.messages.filter(message => message.role === 'user').length
+  const userMessageCount = getSessionMessageCountByRole(sessionId, 'user')
   return userMessageCount <= 2 && isReplaceableLocalTitle(sessionId)
 }
 
@@ -128,7 +155,17 @@ function looksLikeAgentFailure(value: string): boolean {
     || /\b(?:rate limit|too many requests|quota)\b.{0,100}\b429\b/i.test(text)
     || /\b(?:500|502|503|504)\b.{0,100}\b(?:server error|bad gateway|service unavailable|gateway timeout|upstream|provider|request failed|api)\b/i.test(text)
     || /\b(?:server error|bad gateway|service unavailable|gateway timeout|upstream|provider|request failed|api)\b.{0,100}\b(?:500|502|503|504)\b/i.test(text)
-    || /(?:无可用渠道|渠道不可用|认证失败|鉴权失败|额度不足|余额不足|请求失败|接口调用失败|限流)/i.test(text)
+    || /(?:无可用渠道|渠道不可用|认证失败|鉴权失败|额度不足|余额不足|请求失败|接口调用失败)/i.test(text)
+    || /(?:请求|接口|模型|渠道|API).{0,20}(?:被限流|触发限流|因限流失败)/i.test(text)
+    || /(?:限流|频率限制).{0,20}(?:失败|错误|重试|稍后)/i.test(text)
+}
+
+function looksLikeStandaloneAgentFailure(value: string): boolean {
+  const text = value.replace(/\s+/g, ' ').trim()
+  // A provider failure returned as final_response is normally a compact error.
+  // Do not scan an arbitrary long-form successful answer for incidental terms
+  // such as "登录限流" or documentation about HTTP error handling.
+  return text.length > 0 && text.length <= 2_000 && looksLikeAgentFailure(text)
 }
 
 function friendlyProviderFailure(value: string): string {
@@ -163,8 +200,9 @@ export function bridgeTerminalError(chunk: Pick<AgentBridgeOutput, 'status' | 'e
   }
 
   if (resultError && looksLikeAgentFailure(resultError)) return friendlyProviderFailure(resultError)
+  if (result?.completed === true) return null
   if (!finalResponse && resultMessage && looksLikeAgentFailure(resultMessage)) return friendlyProviderFailure(resultMessage)
-  if (finalResponse && looksLikeAgentFailure(finalResponse)) return friendlyProviderFailure(finalResponse)
+  if (finalResponse && looksLikeStandaloneAgentFailure(finalResponse)) return friendlyProviderFailure(finalResponse)
 
   return null
 }
@@ -237,6 +275,44 @@ function processBridgeTextDelta(
   })
 }
 
+function processBridgeInterimMessage(
+  state: SessionState,
+  sessionId: string,
+  runMarker: string,
+  runId: string,
+  text: string,
+  alreadyStreamed: boolean,
+  emit: (event: string, payload: any) => void,
+): void {
+  if (!text.trim()) return
+
+  // Hermes treats the interim payload as authoritative. A provider may have
+  // streamed only a prefix, or may have delivered commentary solely through
+  // this callback, so replace the current segment instead of appending text.
+  const message = ensureOpenBridgeAssistantMessage(state, sessionId, runMarker)
+  const previous = message.content || state.bridgePendingAssistantContent || ''
+  const output = state.bridgeOutput || ''
+  if (previous && output.endsWith(previous)) {
+    state.bridgeOutput = output.slice(0, -previous.length) + text
+  } else if (!previous) {
+    state.bridgeOutput = output + text
+  } else if (!output.endsWith(text)) {
+    state.bridgeOutput = output + text
+  }
+  state.bridgePendingAssistantContent = text
+  message.content = text
+  syncBridgeReasoningToMessage(message, state.bridgePendingReasoningContent)
+  flushBridgePendingToDb(state, sessionId, runMarker)
+
+  emit('message.interim', {
+    event: 'message.interim',
+    run_id: runId,
+    text,
+    already_streamed: alreadyStreamed,
+    output: state.bridgeOutput,
+  })
+}
+
 function finiteToken(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0
     ? Math.floor(value)
@@ -285,6 +361,7 @@ async function ensureBridgeFixedContext(args: {
   state: SessionState
   bridge: AgentBridgeClient
   refresh?: boolean
+  backgroundDelegationEnabled?: boolean
 }): Promise<number | undefined> {
   const cached = bridgeContextMatches(args.state, args)
     ? getCachedBridgeContextOverhead(args.state)
@@ -297,7 +374,14 @@ async function ensureBridgeFixedContext(args: {
       [],
       args.instructions,
       args.profile,
-      { model: args.model ?? undefined, provider: args.provider ?? undefined, workspace: args.workspace ?? undefined },
+      {
+        model: args.model ?? undefined,
+        provider: args.provider ?? undefined,
+        workspace: args.workspace ?? undefined,
+        ...(args.backgroundDelegationEnabled !== undefined
+          ? { background_delegation_enabled: args.backgroundDelegationEnabled }
+          : {}),
+      },
     )
     cacheBridgeContext(args.state, estimate, args.workspace)
     const fixedContextTokens = getCachedBridgeContextOverhead(args.state)
@@ -327,7 +411,7 @@ async function ensureBridgeFixedContext(args: {
 export async function handleBridgeRun(
   nsp: ReturnType<Server['of']>,
   socket: Socket,
-  data: { input: string | ContentBlock[]; display_input?: string | ContentBlock[] | null; display_role?: 'user' | 'command'; storage_message?: string; session_id?: string; model?: string; provider?: string; model_groups?: RunModelGroup[]; instructions?: string; workspace?: string | null; source?: string; session_source?: 'global_agent' | 'workflow'; queue_id?: string; peerExcludeSocketId?: string; reasoning_effort?: string; one_shot_model?: boolean; onEvent?: (event: string, payload: any) => void },
+  data: { input: string | ContentBlock[]; display_input?: string | ContentBlock[] | null; display_role?: 'user' | 'command'; storage_message?: string; session_id?: string; model?: string; provider?: string; model_groups?: RunModelGroup[]; instructions?: string; workspace?: string | null; category_id?: number | null; source?: string; session_source?: 'global_agent' | 'workflow'; queue_id?: string; peerExcludeSocketId?: string; reasoning_effort?: string; background_delegation_enabled?: boolean; one_shot_model?: boolean; background_delegation_id?: string; background_claim_id?: string; autonomous?: boolean; onEvent?: (event: string, payload: any) => void },
   profile: string,
   sessionMap: Map<string, SessionState>,
   bridge: AgentBridgeClient,
@@ -336,13 +420,13 @@ export async function handleBridgeRun(
   dequeueNextQueuedRun: (socket: Socket, sessionId: string, fallbackProfile?: string) => void,
 ) {
   const { input, session_id, instructions } = data
-  const runSource = data.session_source === 'global_agent' || data.source === 'global_agent'
-    ? 'global_agent'
-    : data.session_source === 'workflow' || data.source === 'workflow'
-      ? 'workflow'
-      : 'cli'
+  const runSource = normalizeBridgeRunSource(data.source, data.session_source)
+  // Ordinary single-chat Hermes agents enable background delegation by default.
+  // Workflow and group-chat callers pass false explicitly at their own creation
+  // boundaries and remain disabled independently of this default.
+  const backgroundDelegationEnabled = data.background_delegation_enabled !== false
   if (!session_id) {
-    socket.emit('run.failed', { event: 'run.failed', error: 'session_id is required for cli source' })
+    socket.emit('run.failed', { event: 'run.failed', queue_id: data.queue_id, error: 'session_id is required for cli source' })
     return
   }
 
@@ -404,6 +488,7 @@ export async function handleBridgeRun(
   state.abortController = undefined
   state.bridgeOutput = ''
   state.bridgePendingAssistantContent = ''
+  state.bridgeAssistantMessageId = undefined
   state.bridgePendingReasoningContent = ''
   state.bridgePendingToolCallMarkup = ''
   state.bridgeToolCounter = 0
@@ -439,7 +524,7 @@ export async function handleBridgeRun(
     if (!getSession(session_id)) {
       const previewText = extractTextForPreview(displayInput || input)
       const preview = previewText.replace(/[\r\n]/g, ' ').substring(0, 100)
-      createSession({ id: session_id, profile, source: runSource, model: resolvedModel, provider: resolvedProvider, title: preview, workspace })
+      createSession({ id: session_id, profile, source: runSource, model: resolvedModel, provider: resolvedProvider, title: preview, workspace, category_id: data.category_id })
     }
     messageId = addMessage({
       session_id,
@@ -452,7 +537,7 @@ export async function handleBridgeRun(
   } else if (!getSession(session_id)) {
     const previewText = displayInput === null ? extractTextForPreview(input) : extractTextForPreview(displayInput || input)
     const preview = previewText.replace(/[\r\n]/g, ' ').substring(0, 100)
-    createSession({ id: session_id, profile, source: runSource, model: resolvedModel, provider: resolvedProvider, title: preview, workspace })
+    createSession({ id: session_id, profile, source: runSource, model: resolvedModel, provider: resolvedProvider, title: preview, workspace, category_id: data.category_id })
   }
 
   socket.join(`session:${session_id}`)
@@ -504,6 +589,7 @@ export async function handleBridgeRun(
         state,
         bridge,
         refresh: true,
+        backgroundDelegationEnabled,
       })
       const contextTokens = fixedContextTokens == null
         ? localMessageTokens
@@ -522,6 +608,7 @@ export async function handleBridgeRun(
     currentInputTokens,
   )
   const bridgeHistory = history
+  let backgroundNotificationAccepted = false
 
   try {
     const bridgeInput = isContentBlockArray(input)
@@ -552,11 +639,23 @@ export async function handleBridgeRun(
         ...(resolvedModel ? { model: resolvedModel } : {}),
         ...(resolvedProvider ? { provider: resolvedProvider } : {}),
         ...(workspace ? { workspace } : {}),
+        // Creation fallback when this chat is the first operation for the
+        // cached AgentSession (for example if context estimation was skipped).
+        background_delegation_enabled: backgroundDelegationEnabled,
         // Local patch (reasoning-effort): per-session reasoning effort override.
         ...(data.reasoning_effort ? { reasoning_effort: data.reasoning_effort } : {}),
       },
     )
     state.runId = started.run_id
+    if (data.background_delegation_id && data.background_claim_id) {
+      await bridge.completeBackgroundNotification(
+        session_id,
+        profile,
+        data.background_delegation_id,
+        data.background_claim_id,
+      )
+      backgroundNotificationAccepted = true
+    }
     try {
       startWorkspaceRunCheckpoint({
         sessionId: session_id,
@@ -574,12 +673,18 @@ export async function handleBridgeRun(
     pushState(sessionMap, session_id, 'run.started', {
       event: 'run.started',
       run_id: started.run_id,
+      queue_id: data.queue_id,
       queue_length: state.queue.length || 0,
+      autonomous: data.autonomous === true,
+      delegation_id: data.background_delegation_id,
     })
     emit('run.started', {
       event: 'run.started',
       run_id: started.run_id,
+      queue_id: data.queue_id,
       queue_length: state.queue.length || 0,
+      autonomous: data.autonomous === true,
+      delegation_id: data.background_delegation_id,
     })
 
     let lastChunk: AgentBridgeOutput | null = null
@@ -600,10 +705,12 @@ export async function handleBridgeRun(
         dequeueNextQueuedRun,
         fullInstructions,
         { model: resolvedModel, provider: resolvedProvider },
+        runSource,
         workspace,
         currentInputTokens,
         shouldPersistUserMessage && displayRole === 'user',
         data.model_groups,
+        { autonomous: data.autonomous === true, delegationId: data.background_delegation_id, queueId: data.queue_id },
       )
       if (chunk.done) {
         sawTerminalChunk = true
@@ -644,13 +751,25 @@ export async function handleBridgeRun(
         dequeueNextQueuedRun,
         fullInstructions,
         { model: resolvedModel, provider: resolvedProvider },
+        runSource,
         workspace,
         currentInputTokens,
         shouldPersistUserMessage && displayRole === 'user',
         data.model_groups,
+        { autonomous: data.autonomous === true, delegationId: data.background_delegation_id, queueId: data.queue_id },
       )
     }
   } catch (err: any) {
+    if (data.background_delegation_id && data.background_claim_id && !backgroundNotificationAccepted) {
+      void bridge.releaseBackgroundNotification(
+        session_id,
+        profile,
+        data.background_delegation_id,
+        data.background_claim_id,
+      ).catch(releaseErr => {
+        bridgeLogger.warn(releaseErr, '[chat-run-socket] failed to release background notification claim %s', data.background_delegation_id)
+      })
+    }
     if (state.activeRunMarker !== runMarker) return
     if (!state.isWorking) return
     const queueLen = state.queue?.length ?? 0
@@ -661,7 +780,7 @@ export async function handleBridgeRun(
     state.activeRunMarker = undefined
     state.events = []
     state.bridgePendingToolCallMarkup = undefined
-    flushBridgePendingToDb(state, session_id)
+    flushBridgePendingToDb(state, session_id, runMarker)
     updateSessionStats(session_id)
     const message = err instanceof Error ? err.message : String(err)
     const errUsage = await calcAndUpdateUsage(session_id, state, emit)
@@ -684,6 +803,10 @@ export async function handleBridgeRun(
       outputTokens: errUsage.outputTokens,
       contextTokens: errContextTokens,
       queue_remaining: queueLen,
+      background_pending: backgroundPendingCount(state),
+      autonomous: data.autonomous === true,
+      delegation_id: data.background_delegation_id,
+      queue_id: data.queue_id,
     })
     if (queueLen > 0) {
       dequeueNextQueuedRun(socket, session_id)
@@ -723,6 +846,7 @@ export async function resumeBridgeRun(
   dequeueNextQueuedRun: (socket: Socket, sessionId: string, fallbackProfile?: string) => void,
 ) {
   const { sessionId, runId, profile, instructions } = args
+  const runSource = normalizeBridgeRunSource(args.source)
   let state = sessionMap.get(sessionId)
   if (!state) {
     state = { messages: [], isWorking: false, events: [], queue: [] }
@@ -733,7 +857,7 @@ export async function resumeBridgeRun(
   state.isWorking = true
   state.isAborting = state.isAborting === true
   state.profile = profile
-  state.source = args.source === 'global_agent' ? 'global_agent' : 'cli'
+  state.source = runSource
   state.runId = runId
   state.activeRunMarker = runMarker
   state.bridgeOutput = state.bridgeOutput || latestAssistantText(state)
@@ -797,6 +921,7 @@ export async function resumeBridgeRun(
         dequeueNextQueuedRun,
         instructions,
         { model: args.model, provider: args.provider },
+        runSource,
         args.workspace,
       )
     }
@@ -830,6 +955,7 @@ export async function resumeBridgeRun(
           dequeueNextQueuedRun,
           instructions,
           { model: args.model, provider: args.provider },
+          runSource,
           args.workspace,
         )
       }
@@ -873,11 +999,10 @@ async function refreshFinalContextUsage(args: {
   bridge: AgentBridgeClient
 }): Promise<number | undefined> {
   try {
-    const dbHistory = await buildDbHistory(args.sessionId, { excludeLastUser: false })
-    const finalHistory = await buildSnapshotAwareHistory(
+    const finalHistory = await buildDbSnapshotAwareHistory(
       args.sessionId,
       args.profile,
-      dbHistory,
+      { excludeLastUser: false },
       { model: args.model, provider: args.provider },
     )
     const finalMessageUsage = estimateUsageTokensFromMessages(finalHistory)
@@ -928,11 +1053,10 @@ async function estimateSnapshotAwareMessageTokens(args: {
   currentInputTokens?: number
   currentInputIncludedInDb?: boolean
 }): Promise<{ messageTokens: number; messages: number }> {
-  const dbHistory = await buildDbHistory(args.sessionId, { excludeLastUser: false })
-  const snapshotHistory = await buildSnapshotAwareHistory(
+  const snapshotHistory = await buildDbSnapshotAwareHistory(
     args.sessionId,
     args.profile,
-    dbHistory,
+    { excludeLastUser: false },
     { model: args.model, provider: args.provider },
   )
   const usage = estimateUsageTokensFromMessages(snapshotHistory)
@@ -1003,10 +1127,12 @@ async function applyBridgeChunkAsync(
   dequeueNextQueuedRun: (socket: Socket, sessionId: string, fallbackProfile?: string) => void,
   instructions: string,
   modelContext: { model?: string | null; provider?: string | null },
+  runSource: BridgeRunSource,
   workspace?: string | null,
   currentInputTokens = 0,
   currentInputIncludedInDb = true,
   modelGroups?: RunModelGroup[],
+  runMetadata?: { autonomous?: boolean; delegationId?: string; queueId?: string },
 ): Promise<void> {
   if (state.activeRunMarker !== runMarker) {
     bridgeLogger.info({
@@ -1033,7 +1159,20 @@ async function applyBridgeChunkAsync(
       processBridgeTextDelta(state, sessionId, runMarker, chunk.run_id, String((ev as any).delta || ''), emit)
       continue
     }
-    if (evType === 'model.usage') {
+    if (evType === 'message.interim') {
+      // Release any partial markup prefix before replacing the segment with
+      // Hermes' authoritative interim text, then seal it as its own message.
+      flushPendingToolMarkupToAssistant(state, runMarker, chunk.run_id, emit)
+      processBridgeInterimMessage(
+        state,
+        sessionId,
+        runMarker,
+        chunk.run_id,
+        String((ev as any).text || ''),
+        Boolean((ev as any).already_streamed),
+        emit,
+      )
+    } else if (evType === 'model.usage') {
       recordBridgeModelUsage(sessionId, chunk.run_id, ev, profile, modelContext)
     } else if (evType === 'session.title.updated') {
       syncBridgeGeneratedTitle(sessionId, (ev as any).title, emit)
@@ -1080,6 +1219,22 @@ async function applyBridgeChunkAsync(
     } else if (evType === 'tool.completed') {
       const toolName = (ev.tool_name as string) || ''
       const completed = recordBridgeToolCompleted(state, sessionId, runMarker, toolName, ev)
+      const backgroundDelegation = parseBackgroundDelegation(toolName, completed.output)
+      if (backgroundDelegation) {
+        state.backgroundDelegations = state.backgroundDelegations || {}
+        const existing = state.backgroundDelegations[backgroundDelegation.delegationId]
+        if (!existing || existing.status === 'running') {
+          state.backgroundDelegations[backgroundDelegation.delegationId] = {
+            delegationId: backgroundDelegation.delegationId,
+            status: 'running',
+            profile,
+            updatedAt: Date.now(),
+            toolCallId: completed.id,
+            messageId: completed.messageId,
+            dispatchPayload: backgroundDelegation.payload,
+          }
+        }
+      }
       const payload = {
         event: 'tool.completed',
         run_id: chunk.run_id,
@@ -1092,6 +1247,17 @@ async function applyBridgeChunkAsync(
       }
       pushState(sessionMap, sessionId, 'tool.completed', payload)
       emit('tool.completed', payload)
+      if (backgroundDelegation) {
+        const delegationPayload = {
+          event: 'delegation.updated',
+          run_id: chunk.run_id,
+          delegation_id: backgroundDelegation.delegationId,
+          status: 'running',
+          background_pending: backgroundPendingCount(state),
+        }
+        pushState(sessionMap, sessionId, 'delegation.updated', delegationPayload)
+        emit('delegation.updated', delegationPayload)
+      }
     } else if (evType?.startsWith('subagent.')) {
       const payload = {
         event: evType,
@@ -1107,6 +1273,7 @@ async function applyBridgeChunkAsync(
         tool_count: ev.tool_count,
         tool: ev.tool_name,
         name: ev.tool_name,
+        arguments: ev.args,
         preview: ev.text || ev.summary || ev.tool_preview || '',
         text: ev.text || '',
         status: ev.status,
@@ -1121,6 +1288,10 @@ async function applyBridgeChunkAsync(
         files_read: ev.files_read,
         files_written: ev.files_written,
         output_tail: ev.output_tail,
+        background_seq: ev.background_seq,
+        timestamp: ev.timestamp,
+        started_at: ev.started_at,
+        updated_at: ev.updated_at,
       }
       pushState(sessionMap, sessionId, evType, payload)
       emit(evType, payload)
@@ -1227,7 +1398,12 @@ async function applyBridgeChunkAsync(
       replaceState(sessionMap, sessionId, 'clarify.resolved', payload)
       emit('clarify.resolved', payload)
     } else if (evType === 'bridge.compression.requested') {
-      const bridgeHistory = await buildDbHistory(sessionId, { excludeLastUser: true })
+      const bridgeHistory = await buildDbSnapshotAwareHistory(
+        sessionId,
+        profile,
+        { excludeLastUser: true },
+        { model: modelContext.model, provider: modelContext.provider },
+      )
       const bridgeUsage = estimateUsageTokensFromMessages(bridgeHistory)
       const messageOnlyTokens = bridgeUsage.inputTokens + bridgeUsage.outputTokens
       const runInputTokens = typeof currentInputTokens === 'number' && Number.isFinite(currentInputTokens) && currentInputTokens > 0
@@ -1421,7 +1597,7 @@ async function applyBridgeChunkAsync(
   }
 
   flushPendingToolMarkupToAssistant(state, runMarker, chunk.run_id, emit)
-  flushBridgePendingToDb(state, sessionId)
+  flushBridgePendingToDb(state, sessionId, runMarker)
   finalResponse = bridgeFinalResponse(chunk, state, useMoaFinalResponse)
   state.bridgePendingToolCallMarkup = undefined
   updateSessionStats(sessionId)
@@ -1441,12 +1617,20 @@ async function applyBridgeChunkAsync(
   })
   const hadQueuedRunBeforeGoalEvaluation = state.queue.length > 0
   const eventName = terminalError ? 'run.failed' : 'run.completed'
+  if (runMetadata?.delegationId && state.backgroundDelegations?.[runMetadata.delegationId]) {
+    state.backgroundDelegations[runMetadata.delegationId] = {
+      ...state.backgroundDelegations[runMetadata.delegationId],
+      status: terminalError ? 'failed' : 'completed',
+      updatedAt: Date.now(),
+    }
+  }
   let workspaceRunChange: ReturnType<typeof completeWorkspaceRunCheckpoint> = null
   try {
     const change = completeWorkspaceRunCheckpoint({
       sessionId,
       runId: chunk.run_id,
       workspace,
+      assistantMessageId: state.bridgeAssistantMessageId,
     })
     workspaceRunChange = change
     if (change) {
@@ -1479,11 +1663,19 @@ async function applyBridgeChunkAsync(
     outputTokens: usage.outputTokens,
     contextTokens,
     queue_remaining: state.queue.length,
+    background_pending: backgroundPendingCount(state),
+    autonomous: runMetadata?.autonomous === true,
+    delegation_id: runMetadata?.delegationId,
+    queue_id: runMetadata?.queueId,
     workspace_run_change: workspaceRunChange,
   }
   emit(eventName, payload)
 
-  if (!terminalError) {
+  // Workflow node progression is owned by the DAG scheduler. Use the immutable
+  // source of the run being finalized: state.source may already describe the
+  // next queued run by this point. The standing-goal judge uses the same profile
+  // worker as chat runs and can otherwise delay the scheduler's next node.
+  if (!terminalError && runSource !== 'workflow') {
     await maybeEnqueueGoalContinuation({
       nsp,
       socket,
@@ -1495,6 +1687,7 @@ async function applyBridgeChunkAsync(
       modelGroups,
       instructions,
       finalResponse,
+      runSource,
     })
   }
 
@@ -1547,7 +1740,10 @@ function bridgeFinalResponse(chunk: AgentBridgeOutput, state: SessionState, useR
   const finalResponse = result && typeof result.final_response === 'string'
     ? result.final_response
     : ''
-  const streamedResponse = chunk.output || state.bridgeOutput || ''
+  // The reconciled state includes authoritative interim callbacks and filtered
+  // deltas. The bridge output is only the raw delta snapshot, so use it as a
+  // fallback when no reconciled output was produced locally.
+  const streamedResponse = state.bridgeOutput || chunk.output || ''
   return useResultFinalResponse ? finalResponse || streamedResponse : streamedResponse
 }
 
@@ -1566,6 +1762,7 @@ async function maybeEnqueueGoalContinuation(args: {
   modelGroups?: RunModelGroup[]
   instructions: string
   finalResponse: string
+  runSource: BridgeRunSource
 }) {
   const finalResponse = args.finalResponse || ''
   if (!finalResponse.trim()) return
@@ -1616,7 +1813,7 @@ async function maybeEnqueueGoalContinuation(args: {
     model_groups: args.modelGroups,
     instructions: undefined,
     profile: args.profile,
-    source: args.state.source === 'global_agent' ? 'global_agent' : 'cli',
+    source: args.runSource === 'global_agent' ? 'global_agent' : 'cli',
     goalContinuation: true,
   }
   args.state.queue.push(next)

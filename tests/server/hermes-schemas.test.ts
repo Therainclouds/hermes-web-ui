@@ -21,7 +21,7 @@ describe('Hermes schema initialization', () => {
   })
 
   it('initializes all tables with correct schemas', async () => {
-    const { initAllHermesTables, USAGE_TABLE, SESSIONS_TABLE, MESSAGES_TABLE, GC_ROOMS_TABLE, USERS_TABLE, USER_PROFILES_TABLE, DEVICES_TABLE, MCU_DEVICES_TABLE } =
+    const { initAllHermesTables, USAGE_TABLE, SESSIONS_TABLE, SESSION_CATEGORIES_TABLE, MESSAGES_TABLE, GC_ROOMS_TABLE, GC_MESSAGES_TABLE, GC_ROOM_AGENTS_TABLE, USERS_TABLE, USER_PROFILES_TABLE, DEVICES_TABLE, MCU_DEVICES_TABLE } =
       await import('../../packages/server/src/db/hermes/schemas')
 
     expect(() => initAllHermesTables()).not.toThrow()
@@ -30,8 +30,11 @@ describe('Hermes schema initialization', () => {
     const tables = db.prepare(`SELECT name FROM sqlite_master WHERE type='table'`).all() as Array<{ name: string }>
     expect(tables.map(t => t.name)).toContain(USAGE_TABLE)
     expect(tables.map(t => t.name)).toContain(SESSIONS_TABLE)
+    expect(tables.map(t => t.name)).toContain(SESSION_CATEGORIES_TABLE)
     expect(tables.map(t => t.name)).toContain(MESSAGES_TABLE)
     expect(tables.map(t => t.name)).toContain(GC_ROOMS_TABLE)
+    expect(tables.map(t => t.name)).toContain(GC_MESSAGES_TABLE)
+    expect(tables.map(t => t.name)).toContain(GC_ROOM_AGENTS_TABLE)
     expect(tables.map(t => t.name)).toContain(USERS_TABLE)
     expect(tables.map(t => t.name)).toContain(USER_PROFILES_TABLE)
     expect(tables.map(t => t.name)).toContain(DEVICES_TABLE)
@@ -47,6 +50,9 @@ describe('Hermes schema initialization', () => {
     const sessionCols = db.prepare(`PRAGMA table_info("${SESSIONS_TABLE}")`).all() as Array<{ name: string }>
     expect(sessionCols.some(c => c.name === 'source')).toBe(true)
     expect(sessionCols.some(c => c.name === 'agent')).toBe(true)
+    expect(sessionCols.some(c => c.name === 'category_id')).toBe(true)
+    const sessionIndexes = db.prepare(`PRAGMA index_list("${SESSIONS_TABLE}")`).all() as Array<{ name: string }>
+    expect(sessionIndexes.some(index => index.name === 'idx_sessions_category_id')).toBe(true)
 
     const userCols = db.prepare(`PRAGMA table_info("${USERS_TABLE}")`).all() as Array<{ name: string }>
     expect(userCols.some(c => c.name === 'id')).toBe(true)
@@ -58,6 +64,18 @@ describe('Hermes schema initialization', () => {
     expect(profileCols.some(c => c.name === 'user_id')).toBe(true)
     expect(profileCols.some(c => c.name === 'profile_name')).toBe(true)
     expect(profileCols.some(c => c.name === 'is_default')).toBe(true)
+
+    const roomAgentCols = db.prepare(`PRAGMA table_info("${GC_ROOM_AGENTS_TABLE}")`).all() as Array<{ name: string }>
+    expect(roomAgentCols.some(c => c.name === 'agent')).toBe(true)
+    expect(roomAgentCols.some(c => c.name === 'profile')).toBe(true)
+    expect(roomAgentCols.some(c => c.name === 'provider')).toBe(true)
+    expect(roomAgentCols.some(c => c.name === 'model')).toBe(true)
+    expect(roomAgentCols.some(c => c.name === 'apiMode')).toBe(true)
+    expect(roomAgentCols.some(c => c.name === 'reasoningEffort')).toBe(true)
+    expect(roomAgentCols.some(c => c.name === 'avatar')).toBe(true)
+
+    const groupMessageCols = db.prepare(`PRAGMA table_info("${GC_MESSAGES_TABLE}")`).all() as Array<{ name: string }>
+    expect(groupMessageCols.some(c => c.name === 'run_id')).toBe(true)
 
     const deviceCols = db.prepare(`PRAGMA table_info("${DEVICES_TABLE}")`).all() as Array<{ name: string }>
     expect(deviceCols.some(c => c.name === 'id')).toBe(true)
@@ -94,6 +112,86 @@ describe('Hermes schema initialization', () => {
     const cols = db.prepare(`PRAGMA table_info("${USAGE_TABLE}")`).all() as Array<{ name: string }>
     expect(cols.some(c => c.name === 'input_tokens')).toBe(true)
     expect(cols.some(c => c.name === 'output_tokens')).toBe(true)
+  })
+
+  it('adds room agent model configuration columns to a legacy group chat table', async () => {
+    const { initAllHermesTables, GC_ROOM_AGENTS_TABLE } =
+      await import('../../packages/server/src/db/hermes/schemas')
+
+    db.exec(`CREATE TABLE "${GC_ROOM_AGENTS_TABLE}" (
+      id TEXT PRIMARY KEY,
+      roomId TEXT NOT NULL,
+      agentId TEXT NOT NULL,
+      profile TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      invited INTEGER NOT NULL DEFAULT 0
+    )`)
+    db.prepare(
+      `INSERT INTO "${GC_ROOM_AGENTS_TABLE}" (id, roomId, agentId, profile, name, description, invited)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run('row-1', 'room-1', 'agent-1', 'default', 'Worker', '', 0)
+
+    expect(() => initAllHermesTables()).not.toThrow()
+
+    const row = db.prepare(`SELECT * FROM "${GC_ROOM_AGENTS_TABLE}" WHERE id = ?`).get('row-1')
+    expect(row).toMatchObject({
+      agent: 'hermes',
+      provider: '',
+      model: '',
+      apiMode: '',
+      reasoningEffort: '',
+      avatar: '',
+      name: 'Worker',
+    })
+  })
+
+  it('adds the category column and index to an existing sessions table', async () => {
+    const { initAllHermesTables, SESSIONS_SCHEMA, SESSIONS_TABLE } =
+      await import('../../packages/server/src/db/hermes/schemas')
+    const legacyColumns = Object.entries(SESSIONS_SCHEMA)
+      .filter(([name]) => name !== 'category_id')
+      .map(([name, definition]) => `"${name}" ${definition}`)
+      .join(', ')
+    db.exec(`CREATE TABLE "${SESSIONS_TABLE}" (${legacyColumns})`)
+
+    expect(() => initAllHermesTables()).not.toThrow()
+
+    const columns = db.prepare(`PRAGMA table_info("${SESSIONS_TABLE}")`).all() as Array<{ name: string }>
+    expect(columns.some(column => column.name === 'category_id')).toBe(true)
+    const indexes = db.prepare(`PRAGMA index_list("${SESSIONS_TABLE}")`).all() as Array<{ name: string }>
+    expect(indexes.some(index => index.name === 'idx_sessions_category_id')).toBe(true)
+  })
+
+  it('adds nullable Workflow budget evidence columns without losing legacy rows', async () => {
+    const {
+      initAllHermesTables,
+      WORKFLOW_RUNS_SCHEMA,
+      WORKFLOW_RUNS_TABLE,
+      WORKFLOW_RUN_NODE_SESSIONS_SCHEMA,
+      WORKFLOW_RUN_NODE_SESSIONS_TABLE,
+    } = await import('../../packages/server/src/db/hermes/schemas')
+    const createLegacyTable = (table: string, schema: Record<string, string>, omitted: string[]) => {
+      const columns = Object.entries(schema)
+        .filter(([name]) => !omitted.includes(name))
+        .map(([name, definition]) => `"${name}" ${definition}`)
+        .join(', ')
+      db.exec(`CREATE TABLE "${table}" (${columns})`)
+    }
+    createLegacyTable(WORKFLOW_RUNS_TABLE, WORKFLOW_RUNS_SCHEMA, ['requested_timeout_ms', 'deadline_at'])
+    createLegacyTable(WORKFLOW_RUN_NODE_SESSIONS_TABLE, WORKFLOW_RUN_NODE_SESSIONS_SCHEMA, ['remaining_timeout_ms_at_start'])
+
+    db.prepare(`INSERT INTO "${WORKFLOW_RUNS_TABLE}" (id, workflow_id, profile, workspace, start_node_ids_json, status, snapshot_nodes_json, snapshot_edges_json, compiled_loops_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run('legacy-run', 'workflow-1', 'default', '', '[]', 'completed', '[]', '[]', '[]', 1)
+    db.prepare(`INSERT INTO "${WORKFLOW_RUN_NODE_SESSIONS_TABLE}" (id, run_id, workflow_id, node_id, execution_id, iteration_path_json, consumed_edge_evaluation_ids_json, session_id, profile, agent, agent_mode, status, sequence, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run('legacy-node', 'legacy-run', 'workflow-1', 'node-1', 'node-1', '[]', '[]', 'session-1', 'default', 'hermes', '', 'completed', 0, 1, 1)
+
+    expect(() => initAllHermesTables()).not.toThrow()
+    expect(() => initAllHermesTables()).not.toThrow()
+    const run = db.prepare(`SELECT requested_timeout_ms, deadline_at FROM "${WORKFLOW_RUNS_TABLE}" WHERE id = ?`).get('legacy-run')
+    const node = db.prepare(`SELECT remaining_timeout_ms_at_start FROM "${WORKFLOW_RUN_NODE_SESSIONS_TABLE}" WHERE id = ?`).get('legacy-node')
+    expect(run).toEqual({ requested_timeout_ms: null, deadline_at: null })
+    expect(node).toEqual({ remaining_timeout_ms_at_start: null })
   })
 
   it('handles single-column primary key tables correctly', async () => {

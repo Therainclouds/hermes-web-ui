@@ -110,6 +110,112 @@ describe('client TTS unified synthesize flow', () => {
     expect(result.provider).toBe('openai')
   })
 
+  it('uses an explicit message profile and lets the server resolve that profile active provider', async () => {
+    localStorage.setItem('hermes_active_profile_name', 'current-ui-profile')
+    mockFetch.mockResolvedValue(new Response('profile-audio', {
+      status: 200,
+      headers: {
+        'X-TTS-Engine': 'edge',
+        'X-TTS-Provider': 'edge',
+        'Content-Type': 'audio/mpeg',
+      },
+    }))
+
+    const { synthesizeSpeech } = await import('../../packages/client/src/api/hermes/tts')
+    await synthesizeSpeech({
+      profile: 'group-agent-profile',
+      text: 'Profile-owned voice',
+    })
+
+    const [, options] = mockFetch.mock.calls[0]
+    expect(options.headers).toMatchObject({
+      'X-Hermes-Profile': 'group-agent-profile',
+    })
+    expect(JSON.parse(options.body)).toEqual({
+      text: 'Profile-owned voice',
+      options: {},
+    })
+  })
+
+  it('prepares different Profile TTS audio concurrently but plays it in message order', async () => {
+    const responseResolvers = new Map<string, (response: Response) => void>()
+    mockFetch.mockImplementation((_url, options: RequestInit) => {
+      const headers = options.headers as Record<string, string>
+      return new Promise<Response>((resolve) => {
+        responseResolvers.set(headers['X-Hermes-Profile'], resolve)
+      })
+    })
+
+    const { useSpeech } = await import('../../packages/client/src/composables/useSpeech')
+    const speech = useSpeech()
+
+    speech.enqueueProfileSpeech('group-msg-1', 'First group reply', 'profile-one')
+    speech.enqueueProfileSpeech('group-msg-2', 'Second group reply', 'profile-two')
+    await flushPromises()
+
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+    expect(audioInstances).toHaveLength(0)
+    expect(mockFetch.mock.calls[0][1].headers).toMatchObject({
+      'X-Hermes-Profile': 'profile-one',
+    })
+
+    responseResolvers.get('profile-two')?.(new Response(new Blob(['second'], { type: 'audio/mpeg' }), {
+      status: 200,
+      headers: { 'X-TTS-Provider': 'edge' },
+    }))
+    await flushPromises()
+    expect(audioInstances).toHaveLength(0)
+
+    responseResolvers.get('profile-one')?.(new Response(new Blob(['first'], { type: 'audio/mpeg' }), {
+      status: 200,
+      headers: { 'X-TTS-Provider': 'edge' },
+    }))
+    await flushPromises()
+
+    expect(audioInstances).toHaveLength(1)
+    expect(audioInstances[0].pause).not.toHaveBeenCalled()
+    expect(speech.currentCustomMessageId.value).toBe('group-msg-1')
+
+    audioInstances[0].onended?.()
+    await flushPromises()
+    await flushPromises()
+
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+    expect(audioInstances).toHaveLength(2)
+    expect(mockFetch.mock.calls[1][1].headers).toMatchObject({
+      'X-Hermes-Profile': 'profile-two',
+    })
+    expect(speech.currentCustomMessageId.value).toBe('group-msg-2')
+  })
+
+  it('keeps synthesis single-flight for messages using the same Profile TTS', async () => {
+    const responseResolvers: Array<(response: Response) => void> = []
+    mockFetch.mockImplementation(() => new Promise<Response>((resolve) => {
+      responseResolvers.push(resolve)
+    }))
+
+    const { useSpeech } = await import('../../packages/client/src/composables/useSpeech')
+    const speech = useSpeech()
+
+    speech.enqueueProfileSpeech('same-profile-1', 'First same-profile reply', 'shared-profile')
+    speech.enqueueProfileSpeech('same-profile-2', 'Second same-profile reply', 'shared-profile')
+    await flushPromises()
+
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+
+    responseResolvers[0](new Response(new Blob(['first'], { type: 'audio/mpeg' }), {
+      status: 200,
+      headers: { 'X-TTS-Provider': 'edge' },
+    }))
+    await flushPromises()
+
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+    expect(audioInstances).toHaveLength(1)
+    expect(speech.currentCustomMessageId.value).toBe('same-profile-1')
+
+    speech.stop()
+  })
+
   it('openaiPlay routes through the unified synthesize endpoint with provider=openai', async () => {
     mockFetch.mockResolvedValue(new Response(new Blob(['audio'], { type: 'audio/mpeg' }), {
       status: 200,
@@ -505,5 +611,15 @@ describe('client TTS autoplay call sites', () => {
     expect(groupMessageItem).not.toContain('if (!voiceSettings.mimoApiKey.value) return')
     expect(messageItem).toContain('apiKey: apiKey || undefined')
     expect(groupMessageItem).toContain('apiKey: apiKey || undefined')
+  })
+
+  it('keeps profile-aware serialized playback scoped to group chat messages', () => {
+    const messageItem = readFileSync('packages/client/src/components/hermes/chat/MessageItem.vue', 'utf8')
+    const groupMessageItem = readFileSync('packages/client/src/components/hermes/group-chat/GroupMessageItem.vue', 'utf8')
+
+    expect(groupMessageItem).toContain('speech.enqueueProfileSpeech')
+    expect(groupMessageItem).toContain('speech.profileToggle')
+    expect(messageItem).not.toContain('speech.enqueueProfileSpeech')
+    expect(messageItem).not.toContain('speech.profileToggle')
   })
 })

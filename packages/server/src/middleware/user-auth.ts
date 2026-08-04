@@ -104,7 +104,8 @@ const SERVER_TOKEN_EXACT_PATHS = new Set([
 ])
 
 function allowsServerTokenPath(path: string): boolean {
-  return SERVER_TOKEN_EXACT_PATHS.has(path)
+  return SERVER_TOKEN_EXACT_PATHS.has(path) ||
+    path.startsWith('/api/hermes/voice/proxy/')
 }
 
 function isLoopbackRequest(ctx: Context): boolean {
@@ -249,6 +250,16 @@ export async function requireSuperAdmin(ctx: Context, next: Next): Promise<void>
   if (ctx.state.user?.role !== 'super_admin') {
     ctx.status = 403
     ctx.body = { error: 'Super administrator privileges are required' }
+    return
+  }
+  await next()
+}
+
+export async function requireAdmin(ctx: Context, next: Next): Promise<void> {
+  const role = ctx.state.user?.role
+  if (role !== 'super_admin' && role !== 'admin') {
+    ctx.status = 403
+    ctx.body = { error: 'Administrator privileges are required' }
     return
   }
   await next()

@@ -1,8 +1,14 @@
+import { imageUrlToAnthropicSource, openAiImageUrl } from './multimodal'
+
 export interface ResponsesAdapterTarget {
   model: string
 }
 
 const HERMES_STUDIO_NAMESPACE = 'mcp__hermes_studio'
+const TOOL_SEARCH_NAME = 'tool_search'
+const RESPONSES_TOOL_OUTPUT_FORWARD_LIMIT = 32 * 1024
+const RESPONSES_TOOL_OUTPUT_HEAD_BYTES = 24 * 1024
+const RESPONSES_TOOL_OUTPUT_TAIL_BYTES = 7 * 1024
 
 const HERMES_STUDIO_MCP_TOOLS = [
   {
@@ -113,7 +119,53 @@ const HERMES_STUDIO_MCP_TOOLS = [
   },
 ]
 
-const HERMES_STUDIO_MCP_TOOL_NAMES = new Set(HERMES_STUDIO_MCP_TOOLS.map(tool => tool.name))
+const HERMES_STUDIO_SPLIT_MCP_TOOLS = new Map([
+  ['mcp__hermes_studio_api', [
+    {
+      name: 'hermes_studio_api_openapi_get',
+      description: 'Return the compact Hermes Studio API module index or filtered endpoint documentation. Call without filters first, then filter by tag, path, or method.',
+      inputSchema: inputSchema({
+        path: { type: 'string', description: 'Optional exact endpoint path filter.' },
+        method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'] },
+        tag: { type: 'string', description: 'Optional module or tag filter.' },
+        full: { type: 'boolean', description: 'Return the raw full OpenAPI JSON.' },
+      }),
+    },
+    {
+      name: 'hermes_studio_api_request',
+      description: 'Call a documented Hermes Studio API endpoint using its relative path and structured JSON fields.',
+      inputSchema: inputSchema({
+        method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'] },
+        path: { type: 'string', description: 'Relative /api/... or /health path. Full URLs are rejected.' },
+        body: { type: ['object', 'array', 'string', 'number', 'boolean', 'null'] },
+        query: { type: 'object', additionalProperties: true },
+        headers: {
+          type: 'object',
+          additionalProperties: { type: ['string', 'number', 'boolean', 'array'] },
+        },
+      }, ['path']),
+    },
+  ]],
+  ['mcp__hermes_studio_browser', [categoryToolset(
+    'hermes_studio_browser_toolset',
+    'Discover and invoke Hermes Studio Desktop browser operations. Covers tabs and leases, navigation, accessibility snapshots, interaction, screenshots, and console logs.',
+  )]],
+  ['mcp__hermes_studio_devices', [categoryToolset(
+    'hermes_studio_devices_toolset',
+    'Discover and invoke Hermes Studio LAN and remote-device operations. Covers discovery, peer connections, terminals, structured commands, and file transfer.',
+  )]],
+  ['mcp__hermes_studio_use', [categoryToolset(
+    'hermes_studio_use_toolset',
+    'Discover and invoke high-level Hermes Studio operations for explicit user-requested runs, sessions, usage, profiles, models, providers, workers, and workflows.',
+  )]],
+])
+
+const HERMES_STUDIO_MCP_TOOL_NAMESPACES = new Map<string, string>(
+  HERMES_STUDIO_MCP_TOOLS.map(tool => [tool.name, HERMES_STUDIO_NAMESPACE]),
+)
+for (const [namespace, tools] of HERMES_STUDIO_SPLIT_MCP_TOOLS) {
+  for (const tool of tools) HERMES_STUDIO_MCP_TOOL_NAMESPACES.set(tool.name, namespace)
+}
 
 function inputSchema(properties: Record<string, unknown> = {}, required: string[] = []) {
   return {
@@ -131,6 +183,32 @@ function inputSchema(properties: Record<string, unknown> = {}, required: string[
     },
     ...(required.length ? { required } : {}),
     additionalProperties: false,
+  }
+}
+
+function categoryToolset(name: string, description: string) {
+  return {
+    name,
+    description: `${description} Use action=list for the compact catalog, action=describe for one full schema, then action=call with that tool name and arguments.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['list', 'describe', 'call'],
+          description: 'List operations, describe one operation, or call one operation.',
+        },
+        query: { type: 'string', description: 'Optional operation filter for action=list.' },
+        tool: { type: 'string', description: 'Exact operation name required by describe and call.' },
+        arguments: {
+          type: 'object',
+          description: 'Arguments matching the described operation schema.',
+          additionalProperties: true,
+        },
+      },
+      required: ['action'],
+      additionalProperties: false,
+    },
   }
 }
 
@@ -159,17 +237,39 @@ function expandedResponseTools(tools: unknown): any[] {
       addFunctionTool(tool)
       continue
     }
-    if (tool?.type === 'namespace' && normalizedNamespaceName(tool?.name) === HERMES_STUDIO_NAMESPACE) {
-      for (const mcpTool of HERMES_STUDIO_MCP_TOOLS) {
-        addFunctionTool({
-          type: 'function',
-          name: mcpTool.name,
-          description: `${mcpTool.description} MCP namespace: ${HERMES_STUDIO_NAMESPACE}.`,
-          parameters: mcpTool.inputSchema,
-          namespace: HERMES_STUDIO_NAMESPACE,
-        })
-      }
+    if (tool?.type === 'tool_search') {
+      addFunctionTool({
+        type: 'function',
+        name: TOOL_SEARCH_NAME,
+        description: tool.description,
+        parameters: tool.parameters,
+      })
       continue
+    }
+    if (tool?.type === 'namespace') {
+      const namespace = normalizedNamespaceName(tool?.name)
+      if (Array.isArray(tool?.tools)) {
+        for (const nestedTool of tool.tools) {
+          if (nestedTool?.type !== 'function') continue
+          addFunctionTool({ ...nestedTool, namespace })
+        }
+        continue
+      }
+      const namespaceTools = namespace === HERMES_STUDIO_NAMESPACE
+        ? HERMES_STUDIO_MCP_TOOLS
+        : HERMES_STUDIO_SPLIT_MCP_TOOLS.get(namespace)
+      if (namespaceTools) {
+        for (const mcpTool of namespaceTools) {
+          addFunctionTool({
+            type: 'function',
+            name: mcpTool.name,
+            description: `${mcpTool.description} MCP namespace: ${namespace}.`,
+            parameters: mcpTool.inputSchema,
+            namespace,
+          })
+        }
+        continue
+      }
     }
     if (tool?.type === 'namespace') {
       const namespace = normalizedNamespaceName(tool?.name)
@@ -202,8 +302,145 @@ function expandedResponseTools(tools: unknown): any[] {
   return mapped
 }
 
+function responseInputItems(body: any): any[] {
+  return Array.isArray(body?.input) ? body.input : []
+}
+
+function utf8ByteLength(text: string): number {
+  return Buffer.byteLength(text, 'utf8')
+}
+
+function utf8Head(text: string, maxBytes: number): string {
+  if (maxBytes <= 0) return ''
+  let bytes = 0
+  let end = 0
+  for (const char of text) {
+    const nextBytes = utf8ByteLength(char)
+    if (bytes + nextBytes > maxBytes) break
+    bytes += nextBytes
+    end += char.length
+  }
+  return text.slice(0, end)
+}
+
+function utf8Tail(text: string, maxBytes: number): string {
+  if (maxBytes <= 0) return ''
+  let bytes = 0
+  let start = text.length
+  while (start > 0) {
+    let nextStart = start - 1
+    const code = text.charCodeAt(nextStart)
+    if (code >= 0xDC00 && code <= 0xDFFF && nextStart > 0) {
+      const prev = text.charCodeAt(nextStart - 1)
+      if (prev >= 0xD800 && prev <= 0xDBFF) nextStart -= 1
+    }
+    const char = text.slice(nextStart, start)
+    const nextBytes = utf8ByteLength(char)
+    if (bytes + nextBytes > maxBytes) break
+    bytes += nextBytes
+    start = nextStart
+  }
+  return text.slice(start)
+}
+
+function truncateResponsesToolOutputText(output: string): string {
+  const originalBytes = utf8ByteLength(output)
+  if (originalBytes <= RESPONSES_TOOL_OUTPUT_FORWARD_LIMIT) return output
+  const marker = `[Hermes Web UI: coding-agent tool output truncated before provider request; original_chars=${output.length}; original_bytes=${originalBytes}]`
+  const markerOverhead = utf8ByteLength(marker) + 4
+  const contentBudget = Math.max(0, RESPONSES_TOOL_OUTPUT_FORWARD_LIMIT - markerOverhead)
+  const tailBytes = Math.min(RESPONSES_TOOL_OUTPUT_TAIL_BYTES, Math.floor(contentBudget / 4))
+  const headBytes = Math.min(RESPONSES_TOOL_OUTPUT_HEAD_BYTES, Math.max(0, contentBudget - tailBytes))
+  const head = utf8Head(output, headBytes)
+  const tail = utf8Tail(output, tailBytes)
+  return [
+    head,
+    '',
+    marker,
+    '',
+    tail,
+  ].join('\n')
+}
+
+export function truncateResponsesToolOutputs(body: any): any {
+  const input = responseInputItems(body)
+  if (!input.length) return body
+
+  let changed = false
+  const nextInput = input.map((item: any) => {
+    if (!item || typeof item !== 'object' || item.type !== 'function_call_output' || typeof item.output !== 'string') {
+      return item
+    }
+    const nextOutput = truncateResponsesToolOutputText(item.output)
+    if (nextOutput === item.output) return item
+    changed = true
+    return { ...item, output: nextOutput }
+  })
+
+  return changed ? { ...body, input: nextInput } : body
+}
+
+function responsesAvailableTools(body: any): any[] {
+  const tools = Array.isArray(body?.tools) ? [...body.tools] : []
+  if (Array.isArray(body?.additional_tools)) tools.push(...body.additional_tools)
+  for (const item of responseInputItems(body)) {
+    if ((item?.type === 'tool_search_output' || item?.type === 'additional_tools') && Array.isArray(item.tools)) {
+      tools.push(...item.tools)
+    }
+  }
+  return tools
+}
+
+function toolSearchOutputText(item: any): string {
+  const names: string[] = []
+  for (const tool of Array.isArray(item?.tools) ? item.tools : []) {
+    if (tool?.type === 'namespace') {
+      const namespace = String(tool.name || '').trim()
+      for (const nestedTool of Array.isArray(tool.tools) ? tool.tools : []) {
+        const name = String(nestedTool?.name || '').trim()
+        if (name) names.push(namespace ? `${namespace}.${name}` : name)
+      }
+      if (!Array.isArray(tool.tools) || !tool.tools.length) names.push(namespace)
+      continue
+    }
+    const name = String(tool?.name || '').trim()
+    if (name) names.push(name)
+  }
+  return names.length
+    ? `Loaded deferred tools: ${names.join(', ')}`
+    : 'No deferred tools matched the search.'
+}
+
+function toolSearchArguments(value: unknown): Record<string, unknown> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>
+  return safeJsonParse(String(value || '{}'))
+}
+
+function responseToolCall(name: unknown, argumentsValue: unknown, id: unknown, index: number): any {
+  const rawName = String(name || 'tool')
+  const callId = String(id || `call_${index}`)
+  if (rawName === TOOL_SEARCH_NAME) {
+    return {
+      type: 'tool_search_call',
+      call_id: callId,
+      status: 'completed',
+      execution: 'client',
+      arguments: toolSearchArguments(argumentsValue),
+    }
+  }
+  const rawArguments = typeof argumentsValue === 'string'
+    ? argumentsValue
+    : JSON.stringify(argumentsValue || {})
+  return {
+    type: 'function_call',
+    id: String(id || `fc_${index}`),
+    call_id: callId,
+    ...normalizeResponseFunctionCall(rawName, rawArguments),
+  }
+}
+
 export function responseToolNamespaceForName(name: unknown): string | undefined {
-  return HERMES_STUDIO_MCP_TOOL_NAMES.has(String(name || '')) ? HERMES_STUDIO_NAMESPACE : undefined
+  return HERMES_STUDIO_MCP_TOOL_NAMESPACES.get(String(name || ''))
 }
 
 export function normalizeResponseFunctionCall(name: unknown, argumentsValue: unknown): { name: string; arguments: string; namespace?: string } {
@@ -237,7 +474,7 @@ export function normalizeResponseFunctionCall(name: unknown, argumentsValue: unk
 
 export function targetReasoningEffort(target: any): string {
   const effort = String(target?.reasoningEffort || '').trim()
-  return ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(effort) ? effort : ''
+  return ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(effort) ? effort : ''
 }
 
 function stringifyContent(value: unknown): string {
@@ -264,16 +501,66 @@ function safeJsonParse(value: string): any {
     return {}
   }
 }
-function responseContentToText(content: unknown): string {
+function responseContentToOpenAiChat(content: unknown): string | any[] {
   if (typeof content === 'string') return content
   if (!Array.isArray(content)) return stringifyContent(content)
-  return content.map((part: any) => {
-    if (typeof part === 'string') return part
-    if (part?.type === 'input_text' || part?.type === 'output_text' || part?.type === 'text') {
-      return String(part.text || '')
+  const parts: any[] = []
+  let hasImage = false
+  for (const part of content) {
+    if (typeof part === 'string') {
+      parts.push({ type: 'text', text: part })
+      continue
     }
-    return stringifyContent(part)
-  }).filter(Boolean).join('\n')
+    if (part?.type === 'input_text' || part?.type === 'output_text' || part?.type === 'text' || (part && typeof part === 'object' && 'text' in part)) {
+      parts.push({ type: 'text', text: String(part.text || '') })
+      continue
+    }
+    if (part?.type === 'input_image') {
+      const url = openAiImageUrl(part)
+      if (url) {
+        hasImage = true
+        const detail = typeof part.detail === 'string' ? part.detail : ''
+        parts.push({
+          type: 'image_url',
+          image_url: {
+            url,
+            ...(detail ? { detail } : {}),
+          },
+        })
+      }
+      continue
+    }
+    const text = stringifyContent(part)
+    if (text) parts.push({ type: 'text', text })
+  }
+  if (hasImage) return parts
+  return parts.map(part => String(part.text || '')).filter(Boolean).join('\n')
+}
+
+function responseToolOutputToOpenAiChat(output: unknown, toolName: string, callId: string): {
+  toolContent: string
+  imageMessageContent: any[]
+} {
+  const converted = responseContentToOpenAiChat(output)
+  if (typeof converted === 'string') {
+    return { toolContent: converted, imageMessageContent: [] }
+  }
+  const imageParts = converted.filter(part => part?.type === 'image_url')
+  const text = converted
+    .filter(part => part?.type === 'text')
+    .map(part => String(part.text || ''))
+    .filter(Boolean)
+    .join('\n')
+  if (!imageParts.length) {
+    return { toolContent: text, imageMessageContent: [] }
+  }
+  return {
+    toolContent: text || `[Image output attached for tool ${toolName}]`,
+    imageMessageContent: [
+      { type: 'text', text: `[Image output from tool ${toolName} (${callId})]` },
+      ...imageParts,
+    ],
+  }
 }
 
 function chatRoleForResponsesRole(role: unknown): string {
@@ -301,16 +588,30 @@ function responsesInputToChatMessages(body: any): any[] {
     if (!pendingToolCalls.length) return
     const outputs = pendingToolCalls.map(call => pendingToolOutputs.get(call.id))
     if (outputs.every(Boolean)) {
+      const imageMessageContent: any[] = []
       messages.push({
         role: 'assistant',
         content: null,
         tool_calls: pendingToolCalls,
       })
       for (let index = 0; index < pendingToolCalls.length; index += 1) {
+        const call = pendingToolCalls[index]
+        const converted = responseToolOutputToOpenAiChat(
+          outputs[index].output,
+          call.function.name,
+          call.id,
+        )
         messages.push({
           role: 'tool',
-          tool_call_id: pendingToolCalls[index].id,
-          content: stringifyContent(outputs[index].output),
+          tool_call_id: call.id,
+          content: converted.toolContent,
+        })
+        imageMessageContent.push(...converted.imageMessageContent)
+      }
+      if (imageMessageContent.length) {
+        messages.push({
+          role: 'user',
+          content: imageMessageContent,
         })
       }
     }
@@ -320,22 +621,26 @@ function responsesInputToChatMessages(body: any): any[] {
 
   for (const item of Array.isArray(input) ? input : []) {
     if (!item || typeof item !== 'object') continue
-    if (item.type === 'function_call') {
+    if (item.type === 'function_call' || item.type === 'tool_search_call') {
       const callId = String(item.call_id || item.id || `call_${messages.length}`)
       pendingToolCalls.push({
         id: callId,
         type: 'function',
         function: {
-          name: String(item.name || 'tool'),
-          arguments: String(item.arguments || '{}'),
+          name: item.type === 'tool_search_call' ? TOOL_SEARCH_NAME : String(item.name || 'tool'),
+          arguments: item.type === 'tool_search_call'
+            ? JSON.stringify(toolSearchArguments(item.arguments))
+            : String(item.arguments || '{}'),
         },
       })
       continue
     }
-    if (item.type === 'function_call_output') {
+    if (item.type === 'function_call_output' || item.type === 'tool_search_output') {
       const callId = String(item.call_id || '')
       if (pendingToolCalls.some(call => call.id === callId)) {
-        pendingToolOutputs.set(callId, item)
+        pendingToolOutputs.set(callId, item.type === 'tool_search_output'
+          ? { output: toolSearchOutputText(item) }
+          : item)
         if (pendingToolCalls.every(call => pendingToolOutputs.has(call.id))) {
           flushCompletedToolCalls()
         }
@@ -346,7 +651,7 @@ function responsesInputToChatMessages(body: any): any[] {
     if (item.role) {
       messages.push({
         role: chatRoleForResponsesRole(item.role),
-        content: responseContentToText(item.content),
+        content: responseContentToOpenAiChat(item.content),
       })
     }
   }
@@ -371,7 +676,7 @@ function responsesToolsToChatTools(tools: unknown): any[] | undefined {
 }
 
 export function responsesToOpenAiChat(body: any, target: ResponsesAdapterTarget, stream = false): any {
-  const tools = responsesToolsToChatTools(body?.tools)
+  const tools = responsesToolsToChatTools(responsesAvailableTools(body))
   const reasoningEffort = targetReasoningEffort(target)
   return {
     model: target.model,
@@ -393,12 +698,24 @@ function responsesContentToAnthropicContent(content: unknown, role: 'user' | 'as
   const parts = Array.isArray(content) ? content : [{ type: role === 'assistant' ? 'output_text' : 'input_text', text: stringifyContent(content) }]
   const mapped = parts.map((part: any) => {
     if (typeof part === 'string') return { type: 'text', text: part }
-    if (part?.type === 'input_text' || part?.type === 'output_text' || part?.type === 'text') {
+    if (part?.type === 'input_text' || part?.type === 'output_text' || part?.type === 'text' || (part && typeof part === 'object' && 'text' in part)) {
       return { type: 'text', text: String(part.text || '') }
+    }
+    if (part?.type === 'input_image') {
+      const url = openAiImageUrl(part)
+      const source = url ? imageUrlToAnthropicSource(url) : null
+      return source ? { type: 'image', source } : null
     }
     return null
   }).filter(Boolean)
   return mapped.length ? mapped : [{ type: 'text', text: '' }]
+}
+
+function responsesToolOutputToAnthropicContent(output: unknown): string | any[] {
+  if (typeof output === 'string') return output
+  const parts = responsesContentToAnthropicContent(output, 'user')
+  if (parts.some(part => part?.type === 'image')) return parts
+  return parts.map(part => String(part.text || '')).filter(Boolean).join('\n')
 }
 
 function responsesInputToAnthropicMessages(body: any): any[] {
@@ -408,25 +725,29 @@ function responsesInputToAnthropicMessages(body: any): any[] {
 
   for (const item of Array.isArray(input) ? input : []) {
     if (!item || typeof item !== 'object') continue
-    if (item.type === 'function_call') {
+    if (item.type === 'function_call' || item.type === 'tool_search_call') {
       messages.push({
         role: 'assistant',
         content: [{
           type: 'tool_use',
           id: String(item.call_id || item.id || `toolu_${messages.length}`),
-          name: String(item.name || 'tool'),
-          input: safeJsonParse(String(item.arguments || '{}')),
+          name: item.type === 'tool_search_call' ? TOOL_SEARCH_NAME : String(item.name || 'tool'),
+          input: item.type === 'tool_search_call'
+            ? toolSearchArguments(item.arguments)
+            : safeJsonParse(String(item.arguments || '{}')),
         }],
       })
       continue
     }
-    if (item.type === 'function_call_output') {
+    if (item.type === 'function_call_output' || item.type === 'tool_search_output') {
       messages.push({
         role: 'user',
         content: [{
           type: 'tool_result',
           tool_use_id: String(item.call_id || ''),
-          content: stringifyContent(item.output),
+          content: item.type === 'tool_search_output'
+            ? toolSearchOutputText(item)
+            : responsesToolOutputToAnthropicContent(item.output),
         }],
       })
       continue
@@ -456,7 +777,7 @@ function responsesToolsToAnthropicTools(tools: unknown): any[] | undefined {
 }
 
 export function responsesToAnthropicMessages(body: any, target: ResponsesAdapterTarget, stream = false): any {
-  const tools = responsesToolsToAnthropicTools(body?.tools)
+  const tools = responsesToolsToAnthropicTools(responsesAvailableTools(body))
   const reasoningEffort = targetReasoningEffort(target)
   return {
     model: target.model,
@@ -517,13 +838,12 @@ export function openAiChatToResponses(data: any, target: ResponsesAdapterTarget)
   }
 
   for (const call of Array.isArray(message.tool_calls) ? message.tool_calls : []) {
-    const normalizedCall = normalizeResponseFunctionCall(call.function?.name || 'tool', call.function?.arguments || '{}')
-    output.push({
-      type: 'function_call',
-      id: String(call.id || `fc_${output.length}`),
-      call_id: String(call.id || `call_${output.length}`),
-      ...normalizedCall,
-    })
+    output.push(responseToolCall(
+      call.function?.name || 'tool',
+      call.function?.arguments || '{}',
+      call.id,
+      output.length,
+    ))
   }
 
   return {
@@ -546,13 +866,12 @@ export function anthropicMessageToResponses(data: any, target: ResponsesAdapterT
     if (block?.type === 'thinking' && block.thinking) reasoningParts.push(String(block.thinking))
     if (block?.type === 'redacted_thinking') reasoningParts.push('[redacted thinking]')
     if (block?.type === 'tool_use') {
-      const normalizedCall = normalizeResponseFunctionCall(block.name || 'tool', JSON.stringify(block.input || {}))
-      output.push({
-        type: 'function_call',
-        id: String(block.id || `fc_${output.length}`),
-        call_id: String(block.id || `call_${output.length}`),
-        ...normalizedCall,
-      })
+      output.push(responseToolCall(
+        block.name || 'tool',
+        block.input || {},
+        block.id,
+        output.length,
+      ))
     }
   }
   if (textParts.length) {

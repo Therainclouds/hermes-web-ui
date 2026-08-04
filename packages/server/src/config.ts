@@ -196,6 +196,11 @@ const updateManifestBaseUrls = parseUrlList(process.env.WEBUI_UPDATE_MANIFEST_BA
 const remoteRelay = {
   url: normalizeUrl(process.env.HERMES_REMOTE_RELAY_URL || process.env.REMOTE_RELAY_URL || ''),
 }
+const appRelay = {
+  url: process.env.NODE_ENV === 'production'
+    ? 'https://api.hermes-studio.ai'
+    : 'http://127.0.0.1:8077',
+}
 
 export const config = {
   port: parseInt(process.env.PORT || '6060', 10),
@@ -206,6 +211,7 @@ export const config = {
   dataDir: resolve(__dirname, '..', 'data'),
   corsOrigins: getCorsOrigins(),
   remoteRelay,
+  appRelay,
   update: {
     enabled: parseBoolean(process.env.WEBUI_UPDATE_ENABLED),
     strategy: normalizeUpdateStrategy(process.env.WEBUI_UPDATE_STRATEGY),

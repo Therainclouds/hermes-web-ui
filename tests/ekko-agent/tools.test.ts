@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   AgentToolError,
+  DelegateTaskTool,
   ReadFileTool,
   TerminalExecTool,
   WriteFileTool,
@@ -145,8 +146,9 @@ describe('ekko-agent tools', () => {
 
   it('registers default tools and exposes model definitions', async () => {
     const registry = createDefaultToolRegistry()
+    const definitions = registry.definitions()
 
-    expect(registry.definitions().map(definition => definition.name).sort()).toEqual([
+    expect(definitions.map(definition => definition.name).sort()).toEqual([
       'browser_back',
       'browser_click',
       'browser_console',
@@ -157,10 +159,19 @@ describe('ekko-agent tools', () => {
       'browser_snapshot',
       'browser_type',
       'browser_vision',
+      'delegate_task',
       'read_file',
+      'skill_list',
+      'skill_view',
       'terminal_exec',
       'write_file',
     ])
+    for (const definition of definitions) {
+      expect(definition.description, definition.name).not.toMatch(/[\p{Script=Han}]/u)
+      for (const description of collectDescriptions(definition.parameters)) {
+        expect(description, definition.name).not.toMatch(/[\p{Script=Han}]/u)
+      }
+    }
 
     await expect(registry.execute('write_file', {
       path: 'from-registry.txt',
@@ -174,4 +185,71 @@ describe('ekko-agent tools', () => {
       content: 'ok',
     })
   })
+
+  it('delegates foreground and background tasks through the runtime callback', async () => {
+    const tool = new DelegateTaskTool()
+    const requests: unknown[] = []
+    const delegateTask = async (request: unknown) => {
+      requests.push(request)
+      return { ok: true, content: 'delegated' }
+    }
+
+    await expect(tool.execute({
+      goal: 'Inspect the failing test',
+      context: 'Only read files under tests/',
+      mode: 'foreground',
+    }, { delegateTask })).resolves.toMatchObject({
+      ok: true,
+      content: 'delegated',
+    })
+    await expect(tool.execute({
+      goal: 'Run the slow validation',
+      mode: 'background',
+    }, { delegateTask })).resolves.toMatchObject({
+      ok: true,
+      content: 'delegated',
+    })
+
+    expect(requests).toEqual([{
+      goal: 'Inspect the failing test',
+      context: 'Only read files under tests/',
+      mode: 'foreground',
+    }, {
+      goal: 'Run the slow validation',
+      mode: 'background',
+    }])
+  })
+
+  it('rejects recursive or unavailable delegation', async () => {
+    const tool = new DelegateTaskTool()
+
+    await expect(tool.execute({
+      goal: 'Delegate again',
+      mode: 'foreground',
+    }, {
+      delegationDepth: 1,
+      delegateTask: async () => ({ ok: true, content: 'unexpected' }),
+    })).resolves.toMatchObject({
+      ok: false,
+      error: 'Recursive delegation is disabled for Ekko subagents.',
+    })
+
+    await expect(tool.execute({
+      goal: 'No runtime callback',
+      mode: 'background',
+    })).resolves.toMatchObject({
+      ok: false,
+      error: 'Subtask delegation is unavailable in this runtime.',
+    })
+  })
 })
+
+function collectDescriptions(value: unknown): string[] {
+  if (!value || typeof value !== 'object') return []
+  if (Array.isArray(value)) return value.flatMap(collectDescriptions)
+  const record = value as Record<string, unknown>
+  return [
+    ...(typeof record.description === 'string' ? [record.description] : []),
+    ...Object.values(record).flatMap(collectDescriptions),
+  ]
+}

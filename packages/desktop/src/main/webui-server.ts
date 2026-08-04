@@ -1,4 +1,4 @@
-import { ChildProcess, execFile, spawn } from 'node:child_process'
+import { ChildProcess, execFile, execFileSync, spawn } from 'node:child_process'
 import { mkdirSync, readFileSync, writeFileSync, chmodSync, existsSync, readdirSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { homedir } from 'node:os'
@@ -10,6 +10,7 @@ import {
   bundledAgentBrowserHome,
   bundledGit,
   bundledNode,
+  bundledPython,
   gitPathDirs,
   clearActiveWebUiDirectory,
   defaultWebuiDir,
@@ -21,6 +22,7 @@ import {
   nodeBinDir,
   tokenFile,
   pythonDir,
+  pythonEnvironmentDir,
 } from './paths'
 
 const DEFAULT_PORT = 8748
@@ -28,6 +30,7 @@ const DEFAULT_READY_TIMEOUT_MS = 120_000
 const DEFAULT_FULL_STARTUP_WAIT_MS = 0
 const DEFAULT_STOP_TIMEOUT_MS = 20_000
 const DEFAULT_GRACEFUL_STOP_TIMEOUT_MS = 18_000
+const FORCE_KILL_COMMAND_TIMEOUT_MS = 5_000
 const AGENT_BRIDGE_STARTED_MARKER = '[bootstrap] agent bridge started'
 const AGENT_BRIDGE_FAILED_MARKER = '[bootstrap] agent bridge failed to start'
 const execFileAsync = promisify(execFile)
@@ -36,18 +39,54 @@ let serverProc: ChildProcess | null = null
 let cachedToken: string | null = null
 let currentServerPort = DEFAULT_PORT
 
+function posixDescendantPids(rootPid: number): number[] {
+  try {
+    const output = execFileSync('ps', ['-ax', '-o', 'pid=,ppid='], {
+      encoding: 'utf-8',
+      timeout: 5_000,
+    })
+    const children = new Map<number, number[]>()
+    for (const line of output.split(/\r?\n/)) {
+      const match = line.trim().match(/^(\d+)\s+(\d+)$/)
+      if (!match) continue
+      const pid = Number(match[1])
+      const parentPid = Number(match[2])
+      children.set(parentPid, [...(children.get(parentPid) || []), pid])
+    }
+    const descendants: number[] = []
+    const visit = (parentPid: number) => {
+      for (const pid of children.get(parentPid) || []) {
+        visit(pid)
+        descendants.push(pid)
+      }
+    }
+    visit(rootPid)
+    return descendants
+  } catch {
+    return []
+  }
+}
+
 function killProcessTree(proc: ChildProcess): void {
-  if (!proc.pid || proc.killed) return
+  if (!proc.pid) return
   if (process.platform === 'win32') {
     try {
-      const killer = spawn('taskkill.exe', ['/PID', String(proc.pid), '/T', '/F'], {
-        stdio: 'ignore',
+      execFileSync('taskkill.exe', ['/PID', String(proc.pid), '/T', '/F'], {
+        encoding: 'utf-8',
+        timeout: FORCE_KILL_COMMAND_TIMEOUT_MS,
         windowsHide: true,
       })
-      killer.once('error', () => undefined)
       return
     } catch {
       /* fall through */
+    }
+  } else {
+    for (const pid of posixDescendantPids(proc.pid)) {
+      try {
+        process.kill(pid, 'SIGKILL')
+      } catch {
+        /* already exited */
+      }
     }
   }
   try {
@@ -323,9 +362,8 @@ export async function startWebUiServer(port = DEFAULT_PORT): Promise<string> {
   // setup is a #!/bin/sh wrapper, not a python interpreter, so detection
   // resolves to /bin/sh and the bridge crashes (exit code 2) immediately.
   const isWin = process.platform === 'win32'
-  const bundledPython = isWin
-    ? join(pythonDir(), 'python.exe')
-    : join(pythonDir(), 'bin', 'python3')
+  const bundledPythonPath = bundledPython()
+  const bundledPythonEnvironment = pythonEnvironmentDir()
   const bundledAgentBrowserBin = isWin
     ? join(pythonDir(), 'node')
     : join(pythonDir(), 'node', 'bin')
@@ -359,9 +397,15 @@ export async function startWebUiServer(port = DEFAULT_PORT): Promise<string> {
     // The bridge and its per-profile workers need working stdout/stderr for
     // ready handshakes. Use python.exe on Windows and hide windows at the
     // process creation layer instead of switching the bridge to pythonw.exe.
-    HERMES_AGENT_BRIDGE_PYTHON: bundledPython,
-    HERMES_AGENT_CLI_PYTHON: bundledPython,
+    HERMES_AGENT_BRIDGE_PYTHON: bundledPythonPath,
+    HERMES_AGENT_CLI_PYTHON: bundledPythonPath,
     HERMES_AGENT_ROOT: pythonDir(),
+    VIRTUAL_ENV: bundledPythonEnvironment,
+    UV_PROJECT_ENVIRONMENT: bundledPythonEnvironment,
+    // Keep uv pinned to the bundled interpreter when a terminal subprocess
+    // deliberately strips VIRTUAL_ENV to protect unrelated user projects.
+    UV_PYTHON: bundledPythonPath,
+    ...(isWin ? {} : { UV_SYSTEM_PYTHON: '1' }),
     HERMES_AGENT_NODE: bundledNode(),
     HERMES_AGENT_NODE_ROOT: isWin ? bundledNodeBin : dirname(bundledNodeBin),
     AGENT_BROWSER_HOME: process.env.AGENT_BROWSER_HOME?.trim() || bundledAgentBrowserHome(),
@@ -529,7 +573,7 @@ async function requestGracefulShutdown(port: number, token: string): Promise<voi
 }
 
 export async function stopWebUiServer(): Promise<void> {
-  if (!serverProc || serverProc.killed) return
+  if (!serverProc) return
 
   const proc = serverProc
   const exited = new Promise<void>(resolve => {

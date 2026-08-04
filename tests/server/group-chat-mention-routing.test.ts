@@ -38,6 +38,14 @@ describe('group chat mention routing', () => {
     expect(isAgentMentioned('mailto@Alice.example', 'Alice')).toBe(false)
   })
 
+  it('routes mentions after CJK speaker prefixes, emoji, and punctuation', () => {
+    expect(isAgentMentioned('hermes：@Bob 老板喊你，出来露个脸。', 'Bob')).toBe(true)
+    expect(isAgentMentioned('老板喊你@Bob 出来露个脸。', 'Bob')).toBe(true)
+    expect(isAgentMentioned('🤖@Bob 出来露个脸。', 'Bob')).toBe(true)
+    expect(isAgentMentioned('(agent)@Bob 出来露个脸。', 'Bob')).toBe(true)
+    expect(isAgentMentioned('mailto@Bob.example', 'Bob')).toBe(false)
+  })
+
   it('routes @all to every room agent except the sender identity', () => {
     expect(resolveMentionTargets(agents, '@all summarize the options', 'socket-alice').map(a => a.name)).toEqual(['Bob', 'Regex.Bot'])
   })
@@ -78,6 +86,20 @@ describe('group chat mention routing', () => {
     expect(resolveMentionTargets(specialAgents, '@Bobcat inspect', 'human-1').map(a => a.name)).toEqual(['Bobcat'])
     expect(resolveMentionTargets(specialAgents, '@Bob inspect', 'human-1').map(a => a.name)).toEqual(['Bob'])
     expect(resolveMentionTargets(specialAgents, '@C++: inspect', 'human-1').map(a => a.name)).toEqual(['C++'])
+  })
+
+  it('ignores mentions inside a quoted message while preserving them as context', () => {
+    const content = [
+      '<quoted_message sender="Alice">',
+      '@Bob please review this',
+      '</quoted_message>',
+      '',
+      '@Regex.Bot what do you think?',
+    ].join('\n')
+
+    expect(resolveMentionTargets(agents, content, 'socket-alice').map(agent => agent.name)).toEqual(['Regex.Bot'])
+    expect(stripMentionRoutingTokens(content, 'Regex.Bot')).toContain('@Bob please review this')
+    expect(stripMentionRoutingTokens(content, 'Regex.Bot')).not.toContain('@Regex.Bot')
   })
 
   it('dedupes mixed @all and explicit mentions', () => {

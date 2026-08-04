@@ -341,11 +341,7 @@ export const useKanbanStore = defineStore('kanban', () => {
     const board = selectedBoard.value
     await kanbanApi.completeTasks(taskIds, summary, { board })
     if (board === selectedBoard.value) {
-      for (const id of taskIds) {
-        const task = tasks.value.find(t => t.id === id)
-        if (task) task.status = 'done'
-      }
-      await Promise.all([fetchStats(), fetchBoards()])
+      await Promise.all([fetchTasks(), fetchStats(), fetchBoards()])
     }
   }
 
@@ -353,9 +349,7 @@ export const useKanbanStore = defineStore('kanban', () => {
     const board = selectedBoard.value
     await kanbanApi.blockTask(taskId, reason, { board })
     if (board === selectedBoard.value) {
-      const task = tasks.value.find(t => t.id === taskId)
-      if (task) task.status = 'blocked'
-      await Promise.all([fetchStats(), fetchBoards()])
+      await Promise.all([fetchTasks(), fetchStats(), fetchBoards()])
     }
   }
 
@@ -363,11 +357,7 @@ export const useKanbanStore = defineStore('kanban', () => {
     const board = selectedBoard.value
     await kanbanApi.unblockTasks(taskIds, { board })
     if (board === selectedBoard.value) {
-      for (const id of taskIds) {
-        const task = tasks.value.find(t => t.id === id)
-        if (task) task.status = 'ready'
-      }
-      await Promise.all([fetchStats(), fetchBoards()])
+      await Promise.all([fetchTasks(), fetchStats(), fetchBoards()])
     }
   }
 
@@ -407,6 +397,15 @@ export const useKanbanStore = defineStore('kanban', () => {
     const board = selectedBoard.value
     const result = await kanbanApi.bulkUpdateTasks(data, { board })
     if (board === selectedBoard.value) await Promise.all([fetchTasks(true), fetchStats(), fetchBoards(), fetchAssignees()])
+    return result
+  }
+
+  async function archiveTasks(taskIds: string[]) {
+    const result = await bulkUpdateTasks({ ids: taskIds, archive: true })
+    const failure = result.results.find(item => !item.ok)
+    if (failure) {
+      throw new Error(failure.error || `Failed to archive kanban task ${failure.id}`)
+    }
     return result
   }
 
@@ -495,6 +494,7 @@ export const useKanbanStore = defineStore('kanban', () => {
     linkTasks,
     unlinkTasks,
     bulkUpdateTasks,
+    archiveTasks,
     getTaskLog,
     getDiagnostics,
     reclaimTask,

@@ -101,6 +101,7 @@ downloadRoutes.get('/api/hermes/download', async (ctx) => {
     ctx.set('Content-Disposition', `attachment; filename="${encodeURIComponent(name)}"; filename*=UTF-8''${encodeURIComponent(name)}`)
     ctx.set('Content-Length', String(data.length))
     ctx.set('Cache-Control', 'no-cache')
+    ctx.set('X-Content-Type-Options', 'nosniff')
     ctx.body = data
   } catch (err: any) {
     const code = err.code || 'unknown'

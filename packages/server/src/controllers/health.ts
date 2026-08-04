@@ -63,7 +63,7 @@ export async function checkLatestVersion(): Promise<void> {
   if (!hasConfiguredManifestCheck(config.update)) return
 
   try {
-    const { result } = await refreshUpdateCheck()
+    const { result } = await refreshUpdateCheck(true)
     if (result?.latestVersion && isRemoteVersionNewer(LOCAL_VERSION, result.latestVersion)) {
       console.log(`Update available: ${LOCAL_VERSION} → ${result.latestVersion}`)
     }

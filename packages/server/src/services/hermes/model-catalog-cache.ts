@@ -5,10 +5,11 @@ import { PROVIDER_PRESETS } from '../../shared/providers'
 import { fetchProviderModels, PROVIDER_ENV_MAP, readConfigYamlForProfile } from '../config-helpers'
 import { readAppConfig } from '../app-config'
 import { getCompatibleCustomProviders } from './custom-providers-compat'
-import { resolveCopilotOAuthToken } from './copilot-models'
+import { fetchCopilotModelsWithOAuthToken, resolveCopilotOAuthToken } from './copilot-models'
 import { logger } from '../logger'
 import { safeFileStore } from '../safe-file-store'
 import { getProfileDir, listProfileNamesFromDisk } from './hermes-profile'
+import { resolveAuthorizedProviderRuntimeCredentials } from './authorized-provider-credentials'
 
 export type ModelCatalogSource = 'live' | 'fallback'
 
@@ -21,6 +22,13 @@ export interface ProviderModelCatalogEntry {
   updated_at: string
   free_only?: boolean
   profiles?: string[]
+  /** Profile-scoped authoritative refresh may keep models that disappeared remotely. */
+  unavailable_models?: string[]
+  /** One-step restore snapshot for the previous authoritative list. */
+  previous_models?: string[]
+  previous_unavailable_models?: string[]
+  previous_updated_at?: string
+  profile?: string
 }
 
 export interface ProviderModelCatalogCache {
@@ -29,7 +37,7 @@ export interface ProviderModelCatalogCache {
   providers: Record<string, ProviderModelCatalogEntry>
 }
 
-interface RefreshCandidate {
+export interface ProviderCatalogRefreshTarget {
   provider: string
   label: string
   base_url: string
@@ -37,8 +45,12 @@ interface RefreshCandidate {
   fallback_models: string[]
   free_only?: boolean
   profile: string
+  api_mode?: string
+  credential_kind: 'api_key' | 'oauth' | 'copilot' | 'none'
   skip_live_fetch?: boolean
 }
+
+type RefreshCandidate = ProviderCatalogRefreshTarget
 
 interface StoredAuthCatalogCredential {
   hasAuth: boolean
@@ -56,6 +68,8 @@ const AUTH_CATALOG_PROVIDERS = new Set([
   'xai-oauth',
   'nous',
   'claude-oauth',
+  'qwen-oauth',
+  'minimax-oauth',
 ])
 let backgroundRefresh: Promise<void> | null = null
 
@@ -71,8 +85,15 @@ export function normalizeCatalogBaseUrl(baseUrl: string): string {
   return String(baseUrl || '').trim().replace(/\/+$/, '')
 }
 
-export function providerModelCatalogKey(provider: string, baseUrl: string, freeOnly = false): string {
-  return `${provider.trim()}|${normalizeCatalogBaseUrl(baseUrl)}|${freeOnly ? 'free' : 'all'}`
+export function providerModelCatalogKey(
+  provider: string,
+  baseUrl: string,
+  freeOnly = false,
+  profile?: string,
+): string {
+  const base = `${provider.trim()}|${normalizeCatalogBaseUrl(baseUrl)}|${freeOnly ? 'free' : 'all'}`
+  const scopedProfile = String(profile || '').trim()
+  return scopedProfile ? `profile:${scopedProfile}|${base}` : base
 }
 
 function uniqueModels(models: unknown): string[] {
@@ -100,6 +121,11 @@ function normalizeCache(raw: unknown): ProviderModelCatalogCache {
         updated_at: typeof value.updated_at === 'string' ? value.updated_at : new Date(0).toISOString(),
         ...(value.free_only === true ? { free_only: true } : {}),
         ...(Array.isArray(value.profiles) ? { profiles: uniqueModels(value.profiles) } : {}),
+        ...(Array.isArray(value.unavailable_models) ? { unavailable_models: uniqueModels(value.unavailable_models) } : {}),
+        ...(Array.isArray(value.previous_models) ? { previous_models: uniqueModels(value.previous_models) } : {}),
+        ...(Array.isArray(value.previous_unavailable_models) ? { previous_unavailable_models: uniqueModels(value.previous_unavailable_models) } : {}),
+        ...(typeof value.previous_updated_at === 'string' ? { previous_updated_at: value.previous_updated_at } : {}),
+        ...(typeof value.profile === 'string' && value.profile.trim() ? { profile: value.profile.trim() } : {}),
       }
     }
   }
@@ -122,18 +148,34 @@ export async function readProviderModelCatalogCache(): Promise<ProviderModelCata
   }
 }
 
+export function resolveProviderCatalogEntry(
+  cache: ProviderModelCatalogCache,
+  provider: string,
+  baseUrl: string,
+  options: { freeOnly?: boolean; profile?: string } = {},
+): ProviderModelCatalogEntry | undefined {
+  const freeOnly = options.freeOnly === true
+  const profile = String(options.profile || '').trim()
+  if (profile) {
+    const scoped = cache.providers[providerModelCatalogKey(provider, baseUrl, freeOnly, profile)]
+    if (scoped) return scoped
+  }
+  return cache.providers[providerModelCatalogKey(provider, baseUrl, freeOnly)]
+}
+
 export function resolveProviderCatalogModels(
   cache: ProviderModelCatalogCache,
   provider: string,
   baseUrl: string,
   staticModels: string[],
-  options: { freeOnly?: boolean; hasStaticManifest?: boolean } = {},
+  options: { freeOnly?: boolean; hasStaticManifest?: boolean; profile?: string } = {},
 ): string[] {
-  const entry = cache.providers[providerModelCatalogKey(provider, baseUrl, options.freeOnly === true)]
+  const entry = resolveProviderCatalogEntry(cache, provider, baseUrl, options)
   if (!entry || entry.models.length === 0) return [...staticModels]
   const hasStaticManifest = options.hasStaticManifest ?? staticModels.length > 0
   if (entry.source === 'fallback' && hasStaticManifest) return [...staticModels]
-  return [...entry.models]
+  const unavailable = uniqueModels(entry.unavailable_models || [])
+  return uniqueModels([...entry.models, ...unavailable])
 }
 
 export async function writeProviderModelCatalogEntry(input: {
@@ -144,12 +186,19 @@ export async function writeProviderModelCatalogEntry(input: {
   source: ModelCatalogSource
   free_only?: boolean
   profiles?: string[]
+  profile?: string
+  unavailable_models?: string[]
+  previous_models?: string[] | null
+  previous_unavailable_models?: string[] | null
+  previous_updated_at?: string | null
   overwriteExistingModels?: boolean
+  clear_profiles?: string[]
 }): Promise<ProviderModelCatalogEntry> {
   const provider = input.provider.trim()
   const baseUrl = normalizeCatalogBaseUrl(input.base_url)
   const models = uniqueModels(input.models)
-  const key = providerModelCatalogKey(provider, baseUrl, input.free_only === true)
+  const profile = String(input.profile || '').trim()
+  const key = providerModelCatalogKey(provider, baseUrl, input.free_only === true, profile || undefined)
   const now = new Date().toISOString()
   const entry: ProviderModelCatalogEntry = {
     provider,
@@ -160,6 +209,19 @@ export async function writeProviderModelCatalogEntry(input: {
     updated_at: now,
     ...(input.free_only === true ? { free_only: true } : {}),
     ...(input.profiles?.length ? { profiles: uniqueModels(input.profiles) } : {}),
+    ...(profile ? { profile } : {}),
+    ...(input.unavailable_models?.length ? { unavailable_models: uniqueModels(input.unavailable_models) } : {}),
+  }
+  if (input.previous_models !== undefined) {
+    if (input.previous_models && input.previous_models.length) entry.previous_models = uniqueModels(input.previous_models)
+  }
+  if (input.previous_unavailable_models !== undefined) {
+    if (input.previous_unavailable_models && input.previous_unavailable_models.length) {
+      entry.previous_unavailable_models = uniqueModels(input.previous_unavailable_models)
+    }
+  }
+  if (input.previous_updated_at !== undefined) {
+    if (input.previous_updated_at) entry.previous_updated_at = input.previous_updated_at
   }
 
   await safeFileStore.updateText(CACHE_PATH, (current) => {
@@ -171,8 +233,21 @@ export async function writeProviderModelCatalogEntry(input: {
     if (existing && existing.models.length > 0 && input.overwriteExistingModels === false) {
       const profiles = Array.from(new Set([...(existing.profiles || []), ...(entry.profiles || [])]))
       cache.providers[key] = { ...existing, ...(profiles.length ? { profiles } : {}) }
+    } else if (input.previous_models === undefined && existing) {
+      // Preserve restore snapshot unless the caller explicitly manages it.
+      cache.providers[key] = {
+        ...entry,
+        ...(existing.previous_models?.length ? { previous_models: existing.previous_models } : {}),
+        ...(existing.previous_unavailable_models?.length ? { previous_unavailable_models: existing.previous_unavailable_models } : {}),
+        ...(existing.previous_updated_at ? { previous_updated_at: existing.previous_updated_at } : {}),
+      }
     } else {
       cache.providers[key] = entry
+    }
+    if (!profile) {
+      for (const scopedProfile of uniqueModels(input.clear_profiles)) {
+        delete cache.providers[providerModelCatalogKey(provider, baseUrl, input.free_only === true, scopedProfile)]
+      }
     }
     cache.updated_at = now
     return JSON.stringify(cache, null, 2) + '\n'
@@ -189,12 +264,25 @@ export async function refreshProviderModelCatalog(input: {
   fallback_models?: string[]
   free_only?: boolean
   profiles?: string[]
+  profile?: string
+  api_mode?: string
+  credential_kind?: ProviderCatalogRefreshTarget['credential_kind']
 }): Promise<ProviderModelCatalogEntry | null> {
   const provider = input.provider.trim()
   const baseUrl = normalizeCatalogBaseUrl(input.base_url)
   if (!provider || !baseUrl) return null
 
-  const fetched = await fetchProviderModelsForCatalog(provider, baseUrl, input.api_key || '', input.free_only === true)
+  const fetched = await fetchProviderCatalogRefreshTargetModels({
+    provider,
+    label: input.label,
+    base_url: baseUrl,
+    api_key: input.api_key || '',
+    fallback_models: uniqueModels(input.fallback_models),
+    free_only: input.free_only,
+    profile: String(input.profile || input.profiles?.[0] || '').trim(),
+    api_mode: input.api_mode,
+    credential_kind: input.credential_kind || (input.api_key ? 'api_key' : 'none'),
+  })
   if (fetched.length > 0) {
     return writeProviderModelCatalogEntry({
       provider,
@@ -204,6 +292,7 @@ export async function refreshProviderModelCatalog(input: {
       source: 'live',
       free_only: input.free_only,
       profiles: input.profiles,
+      clear_profiles: input.profiles,
     })
   }
 
@@ -250,23 +339,11 @@ function mergeCandidate(candidates: Map<string, RefreshCandidate>, candidate: Re
   }
   existing.fallback_models = Array.from(new Set([...existing.fallback_models, ...candidate.fallback_models]))
   existing.profile = Array.from(new Set([existing.profile, candidate.profile])).join(',')
-  if (!existing.api_key && candidate.api_key) existing.api_key = candidate.api_key
+  if (!existing.api_key && candidate.api_key) {
+    existing.api_key = candidate.api_key
+    existing.credential_kind = candidate.credential_kind
+  }
   existing.skip_live_fetch = existing.skip_live_fetch === true && candidate.skip_live_fetch === true
-}
-
-function authCredentialToken(value: any): string {
-  return String(
-    value?.agent_key ||
-    value?.tokens?.access_token ||
-    value?.access_token ||
-    value?.tokens?.refresh_token ||
-    value?.refresh_token ||
-    '',
-  ).trim()
-}
-
-function authAccessToken(value: any): string {
-  return String(value?.tokens?.access_token || value?.access_token || '').trim()
 }
 
 async function fetchCodexOAuthModels(accessToken: string): Promise<string[]> {
@@ -298,9 +375,49 @@ async function fetchCodexOAuthModels(accessToken: string): Promise<string[]> {
   }
 }
 
-async function fetchProviderModelsForCatalog(provider: string, baseUrl: string, apiKey: string, freeOnly: boolean): Promise<string[]> {
-  if (provider === 'openai-codex') return fetchCodexOAuthModels(apiKey)
-  return fetchProviderModels(baseUrl, apiKey, freeOnly)
+async function fetchClaudeOAuthModels(baseUrl: string, accessToken: string): Promise<string[]> {
+  if (!accessToken) return []
+  const base = normalizeCatalogBaseUrl(baseUrl)
+  const modelsUrl = /\/v\d+(?:beta)?$/.test(base) ? `${base}/models` : `${base}/v1/models`
+  try {
+    const res = await fetch(modelsUrl, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'oauth-2025-04-20',
+      },
+      signal: AbortSignal.timeout(10000),
+    })
+    if (!res.ok) {
+      logger.warn('[model-catalog-cache] Claude OAuth models returned %d', res.status)
+      return []
+    }
+    const body = await res.json() as { data?: Array<{ id?: unknown }> }
+    return uniqueModels((Array.isArray(body.data) ? body.data : []).map(item => String(item.id || '')))
+  } catch (err) {
+    logger.warn(err, '[model-catalog-cache] Claude OAuth models fetch failed')
+    return []
+  }
+}
+
+export async function fetchProviderCatalogRefreshTargetModels(
+  target: ProviderCatalogRefreshTarget,
+): Promise<string[]> {
+  if (target.skip_live_fetch) return []
+  if (target.provider === 'openai-codex') return fetchCodexOAuthModels(target.api_key)
+  if (target.provider === 'copilot') {
+    try {
+      const models = await fetchCopilotModelsWithOAuthToken(target.api_key)
+      return uniqueModels(models.map(model => model.id))
+    } catch (err) {
+      logger.warn(err, '[model-catalog-cache] Copilot models fetch failed')
+      return []
+    }
+  }
+  if (target.provider === 'claude-oauth') {
+    return fetchClaudeOAuthModels(target.base_url, target.api_key)
+  }
+  return fetchProviderModels(target.base_url, target.api_key, target.free_only === true)
 }
 
 function hasOAuthCredential(value: any): boolean {
@@ -325,36 +442,34 @@ async function profileStoredAuthCredential(profile: string, provider: string): P
       poolEntry
     )
     if (!hasAuth) return { hasAuth: false }
-    const providerSupportsLiveCatalog = provider === 'nous' ||
-      provider === 'xai-oauth' ||
-      provider === 'openai-codex'
-    if (!providerSupportsLiveCatalog) return { hasAuth: true }
-    const apiKey = provider === 'nous'
-      ? authCredentialToken(providerEntry) || authCredentialToken(poolEntry)
-      : authAccessToken(providerEntry) || authAccessToken(poolEntry)
-    const baseUrl = String(
-      providerEntry?.inference_base_url ||
-      providerEntry?.base_url ||
-      poolEntry?.inference_base_url ||
-      poolEntry?.base_url ||
-      '',
-    ).trim()
-    return { hasAuth: true, ...(apiKey ? { api_key: apiKey } : {}), ...(baseUrl ? { base_url: baseUrl } : {}) }
+    try {
+      const credentials = await resolveAuthorizedProviderRuntimeCredentials({ profile, provider })
+      return {
+        hasAuth: true,
+        api_key: credentials.apiKey,
+        ...(credentials.baseUrl ? { base_url: credentials.baseUrl } : {}),
+      }
+    } catch (err) {
+      logger.warn(err, '[model-catalog-cache] failed to refresh authorized credentials profile=%s provider=%s', profile, provider)
+      return { hasAuth: true }
+    }
   } catch {
     return { hasAuth: false }
   }
 }
 
-async function collectRefreshCandidates(): Promise<RefreshCandidate[]> {
+async function collectRefreshCandidates(profiles = listProfileNamesFromDisk()): Promise<RefreshCandidate[]> {
   const candidates = new Map<string, RefreshCandidate>()
   const presetsByProvider = new Map(PROVIDER_PRESETS.map(preset => [preset.value, preset]))
   const appConfig = await readAppConfig().catch((): { copilotEnabled?: boolean } => ({}))
   const copilotEnabled = appConfig.copilotEnabled === true
 
-  for (const profile of listProfileNamesFromDisk()) {
+  for (const profile of profiles) {
     let env: Record<string, string> = {}
+    let envContent = ''
     try {
-      env = parseEnv(await readFile(join(getProfileDir(profile), '.env'), 'utf-8'))
+      envContent = await readFile(join(getProfileDir(profile), '.env'), 'utf-8')
+      env = parseEnv(envContent)
     } catch {}
 
     let configYaml: Record<string, any> = {}
@@ -366,13 +481,26 @@ async function collectRefreshCandidates(): Promise<RefreshCandidate[]> {
     for (const [provider, mapping] of Object.entries(PROVIDER_ENV_MAP)) {
       const preset = presetsByProvider.get(provider)
       if (!preset?.base_url) continue
+      if (provider === 'copilot') {
+        if (!copilotEnabled) continue
+        const oauthToken = await resolveCopilotOAuthToken(envContent)
+        if (!oauthToken) continue
+        mergeCandidate(candidates, {
+          provider,
+          label: preset.label,
+          base_url: normalizeCatalogBaseUrl(preset.base_url),
+          api_key: oauthToken,
+          fallback_models: preset.models,
+          profile,
+          api_mode: preset.api_mode,
+          credential_kind: 'copilot',
+        })
+        continue
+      }
       const apiKey = mapping.api_key_env ? env[mapping.api_key_env] || '' : ''
       let skipLiveFetch = false
       if (mapping.api_key_env && !apiKey) {
-        if (provider !== 'copilot' || !copilotEnabled || !(await resolveCopilotOAuthToken(Object.entries(env).map(([key, value]) => `${key}=${value}`).join('\n')))) {
-          continue
-        }
-        skipLiveFetch = true
+        continue
       }
       if (!mapping.api_key_env) {
         const keylessActive = KEYLESS_CATALOG_PROVIDERS.has(provider) && activeProvider === provider
@@ -391,6 +519,8 @@ async function collectRefreshCandidates(): Promise<RefreshCandidate[]> {
               fallback_models: preset.models,
               free_only: provider === 'openrouter',
               profile,
+              api_mode: preset.api_mode,
+              credential_kind: 'oauth',
             })
             continue
           }
@@ -407,6 +537,8 @@ async function collectRefreshCandidates(): Promise<RefreshCandidate[]> {
         fallback_models: preset.models,
         free_only: provider === 'openrouter',
         profile,
+        api_mode: preset.api_mode,
+        credential_kind: apiKey ? 'api_key' : 'none',
         skip_live_fetch: skipLiveFetch,
       })
     }
@@ -422,18 +554,29 @@ async function collectRefreshCandidates(): Promise<RefreshCandidate[]> {
       // those entries should always be reachable as fallbacks even before a
       // live `/v1/models` probe runs.
       const configuredModels = cp.models ? Object.keys(cp.models) : []
+      const apiKey = cp.key_env ? env[cp.key_env] || '' : cp.api_key || ''
       mergeCandidate(candidates, {
         provider,
         label: name,
         base_url: baseUrl,
-        api_key: cp.api_key || '',
+        api_key: apiKey,
         fallback_models: uniqueModels([cp.model, ...configuredModels, ...presetModels]),
         profile,
+        api_mode: cp.api_mode,
+        credential_kind: apiKey ? 'api_key' : 'none',
       })
     }
   }
 
   return [...candidates.values()]
+}
+
+export async function resolveProviderCatalogRefreshTarget(
+  profile: string,
+  provider: string,
+): Promise<ProviderCatalogRefreshTarget | null> {
+  const candidates = await collectRefreshCandidates([profile])
+  return candidates.find(candidate => candidate.provider === provider) || null
 }
 
 async function runLimited<T>(items: T[], limit: number, worker: (item: T) => Promise<void>): Promise<void> {
@@ -481,6 +624,9 @@ export async function refreshConfiguredProviderModelCatalogs(options: { force?: 
           fallback_models: candidate.fallback_models,
           free_only: candidate.free_only,
           profiles,
+          profile: candidate.profile,
+          api_mode: candidate.api_mode,
+          credential_kind: candidate.credential_kind,
         })
       }
     } catch (err) {

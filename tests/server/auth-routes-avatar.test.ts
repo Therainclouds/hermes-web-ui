@@ -7,6 +7,7 @@ vi.mock('../../packages/server/src/controllers/auth', () => ({
   microcontrollerLogin: vi.fn(async (ctx: any) => { ctx.body = { token: 'x', profiles: [] } }),
   setupPassword: vi.fn(async (ctx: any) => { ctx.body = { ok: true } }),
   currentUser: vi.fn(async (ctx: any) => { ctx.body = { user: {} } }),
+  updateMyModelGuideStatus: vi.fn(async (ctx: any) => { ctx.body = { ok: true } }),
   changePassword: vi.fn(async (ctx: any) => { ctx.body = { ok: true } }),
   changeUsername: vi.fn(async (ctx: any) => { ctx.body = { ok: true } }),
   getMyAvatar: vi.fn(async (ctx: any) => { ctx.body = { avatar: '' } }),

@@ -22,7 +22,8 @@ const { t } = useI18n()
 const message = useMessage()
 const pendingWrites = ref<PendingWriteRecord[]>([])
 const pendingLoading = ref(false)
-const pendingAction = ref('')
+const pendingActions = ref<Set<string>>(new Set())
+const resolvingWrite = ref(false)
 const expandedReviews = ref<Record<string, string>>({})
 const writeGateSupported = ref(true)
 const pendingCount = computed(() => pendingWrites.value.length)
@@ -117,36 +118,49 @@ async function toggleDiff(record: PendingWriteRecord) {
     expandedReviews.value = next
     return
   }
-  pendingAction.value = `${key}:diff`
+  const actionKey = `${key}:diff`
+  if (pendingActions.value.has(actionKey)) return
+  pendingActions.value.add(actionKey)
   try {
     const review = await fetchPendingWriteReview(record.subsystem, record.id)
     expandedReviews.value = { ...expandedReviews.value, [key]: buildReviewMarkdown(review) }
   } catch (err: any) {
     message.error(t('skills.writeApprovalDiffFailed'))
   } finally {
-    pendingAction.value = ''
+    pendingActions.value.delete(actionKey)
   }
 }
 
 async function resolvePendingWrite(record: PendingWriteRecord, decision: 'approve' | 'reject') {
+  if (resolvingWrite.value) return
+  resolvingWrite.value = true
   const key = pendingKey(record)
-  pendingAction.value = `${key}:${decision}`
+  const actionKey = `${key}:${decision}`
+  pendingActions.value.add(actionKey)
   try {
-    if (decision === 'approve') {
-      await approvePendingWrite(record.subsystem, record.id)
-      message.success(t('skills.writeApprovalApproved'))
+    const result = decision === 'approve'
+      ? await approvePendingWrite(record.subsystem, record.id)
+      : await rejectPendingWrite(record.subsystem, record.id)
+    if (!result.success) {
+      const failureMessage = t('skills.writeApprovalActionFailed')
+      message.error(result.output ? `${failureMessage}: ${result.output}` : failureMessage)
     } else {
-      await rejectPendingWrite(record.subsystem, record.id)
-      message.success(t('skills.writeApprovalRejected'))
+      message.success(decision === 'approve'
+        ? t('skills.writeApprovalApproved')
+        : t('skills.writeApprovalRejected'))
+      // Optimistic removal before re-fetch
+      pendingWrites.value = pendingWrites.value.filter(r => pendingKey(r) !== key)
+      emit('count-change', pendingWrites.value.length)
+      const nextReviews = { ...expandedReviews.value }
+      delete nextReviews[key]
+      expandedReviews.value = nextReviews
     }
-    const nextReviews = { ...expandedReviews.value }
-    delete nextReviews[key]
-    expandedReviews.value = nextReviews
     await loadPendingWrites()
   } catch (err: any) {
     message.error(t('skills.writeApprovalActionFailed'))
   } finally {
-    pendingAction.value = ''
+    pendingActions.value.delete(actionKey)
+    resolvingWrite.value = false
   }
 }
 
@@ -162,7 +176,7 @@ onMounted(() => {
         <h3>{{ t('skills.writeApprovalTitle') }}</h3>
         <p>{{ t('skills.writeApprovalDescription') }}</p>
       </div>
-      <NButton size="small" quaternary :loading="pendingLoading" @click="loadPendingWrites">
+      <NButton size="small" quaternary :loading="pendingLoading" :disabled="resolvingWrite" @click="loadPendingWrites">
         {{ t('skills.writeApprovalRefresh') }}
       </NButton>
     </div>
@@ -192,7 +206,8 @@ onMounted(() => {
           <NButton
             size="tiny"
             quaternary
-            :loading="pendingAction === `${pendingKey(record)}:diff`"
+            :loading="pendingActions.has(`${pendingKey(record)}:diff`)"
+            :disabled="resolvingWrite"
             @click="toggleDiff(record)"
           >
             {{ expandedReviews[pendingKey(record)] ? t('skills.writeApprovalHideDiff') : t('skills.writeApprovalViewDiff') }}
@@ -200,7 +215,8 @@ onMounted(() => {
           <NButton
             size="tiny"
             type="success"
-            :loading="pendingAction === `${pendingKey(record)}:approve`"
+            :loading="pendingActions.has(`${pendingKey(record)}:approve`)"
+            :disabled="resolvingWrite"
             @click="resolvePendingWrite(record, 'approve')"
           >
             {{ t('skills.writeApprovalApprove') }}
@@ -209,7 +225,8 @@ onMounted(() => {
             size="tiny"
             quaternary
             type="error"
-            :loading="pendingAction === `${pendingKey(record)}:reject`"
+            :loading="pendingActions.has(`${pendingKey(record)}:reject`)"
+            :disabled="resolvingWrite"
             @click="resolvePendingWrite(record, 'reject')"
           >
             {{ t('skills.writeApprovalReject') }}

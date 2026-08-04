@@ -5,10 +5,12 @@ import { NodeResizer } from '@vue-flow/node-resizer'
 import { NInput, NSelect, NSwitch, NTooltip } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import WorkflowModelSelector from './WorkflowModelSelector.vue'
+import WorkflowFieldHelp from './WorkflowFieldHelp.vue'
 import type { WorkflowAgentNodeData, WorkflowAgentNodeEditableData } from './types'
 import type { CodingAgentApiMode } from '@/api/coding-agents'
 import type { ProviderApiMode } from '@/api/hermes/system'
 import { getFileDownloadUrl } from '@/api/hermes/files'
+import { isAuthModelProvider } from '@/utils/codingAgentProviders'
 
 import '@vue-flow/node-resizer/dist/style.css'
 import { useMessage } from '@/composables/useAppMessage'
@@ -29,10 +31,25 @@ const statusTip = computed(() => (
     : ''
 ))
 const isCodingAgent = computed(() => props.data.agent !== 'hermes')
+const selectableModelGroups = computed(() => (
+  isCodingAgent.value
+    ? props.data.modelGroups.filter(group => !isAuthModelProvider(group.provider))
+    : props.data.modelGroups
+))
 const apiModeOptions = computed(() => [
   { label: t('codingAgents.protocolOpenAiChat'), value: 'chat_completions' },
   { label: t('codingAgents.protocolOpenAiResponses'), value: 'codex_responses' },
   { label: t('codingAgents.protocolAnthropicMessages'), value: 'anthropic_messages' },
+])
+const reasoningEffortOptions = computed(() => [
+  { label: t('chat.reasoningEffort.options.default'), value: 'default' },
+  { label: t('chat.reasoningEffort.options.none'), value: 'none' },
+  { label: t('chat.reasoningEffort.options.minimal'), value: 'minimal' },
+  { label: t('chat.reasoningEffort.options.low'), value: 'low' },
+  { label: t('chat.reasoningEffort.options.medium'), value: 'medium' },
+  { label: t('chat.reasoningEffort.options.high'), value: 'high' },
+  { label: t('chat.reasoningEffort.options.xhigh'), value: 'xhigh' },
+  { label: t('chat.reasoningEffort.options.max'), value: 'max' },
 ])
 const imageAttachments = computed(() => props.data.images.filter(isImagePath))
 const fileAttachments = computed(() => props.data.images.filter(path => !isImagePath(path)))
@@ -118,7 +135,8 @@ async function uploadImages(files: File[]) {
       handle-class-name="workflow-resize-handle"
       line-class-name="workflow-resize-line"
     />
-    <Handle id="input" type="target" :position="Position.Left" class="workflow-handle input-handle" />
+    <Handle id="input" type="source" :position="Position.Left" class="workflow-handle input-handle" />
+    <Handle id="top" type="source" :position="Position.Top" class="workflow-handle top-handle" />
 
     <div class="node-header">
       <NTooltip v-if="statusTip" trigger="hover" placement="top">
@@ -164,7 +182,7 @@ async function uploadImages(files: File[]) {
       <WorkflowModelSelector
         :provider="data.provider"
         :model="data.model"
-        :groups="data.modelGroups"
+        :groups="selectableModelGroups"
         :disabled="data.readonly"
         @select="handleModelSelect"
       />
@@ -177,6 +195,30 @@ async function uploadImages(files: File[]) {
         :placeholder="t('workflow.node.apiMode')"
         @update:value="value => updateField('apiMode', value as CodingAgentApiMode)"
       />
+      <NSelect
+        :value="data.reasoningEffort"
+        :options="reasoningEffortOptions"
+        size="small"
+        :disabled="data.readonly"
+        :placeholder="t('chat.reasoningEffort.tooltip')"
+        @update:value="value => updateField('reasoningEffort', value as string)"
+      />
+      <div class="node-field-row">
+        <span class="node-field-label-row">
+          <span>{{ t('workflow.node.join') }}</span>
+          <WorkflowFieldHelp
+            :text="data.orchestration?.join === 'any' ? t('workflow.node.joinAnyHelp') : t('workflow.node.joinAllHelp')"
+            test-id="workflow-node-join-help"
+          />
+        </span>
+        <NSelect
+          :value="data.orchestration?.join || 'all'"
+          :options="[{ label: t('workflow.node.joinAll'), value: 'all' }, { label: t('workflow.node.joinAny'), value: 'any' }]"
+          size="small"
+          :disabled="data.readonly"
+          @update:value="value => updateField('orchestration', { join: value as 'all' | 'any' })"
+        />
+      </div>
       <label class="node-toggle-row">
         <span>{{ t('workflow.node.approvalRequired') }}</span>
         <NSwitch
@@ -298,6 +340,7 @@ async function uploadImages(files: File[]) {
     </div>
 
     <Handle id="output" type="source" :position="Position.Right" class="workflow-handle output-handle" />
+    <Handle id="bottom" type="source" :position="Position.Bottom" class="workflow-handle bottom-handle" />
 
     <Teleport to="body">
       <div
@@ -437,6 +480,21 @@ async function uploadImages(files: File[]) {
   min-height: 0;
 }
 
+.node-field-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: $text-secondary;
+  font-size: 12px;
+}
+
+.node-field-label-row {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 4px;
+}
+
 .node-toggle-row {
   min-height: 28px;
   display: flex;
@@ -477,7 +535,7 @@ async function uploadImages(files: File[]) {
   gap: 8px;
   max-height: 180px;
   overflow-y: auto;
-  padding-right: 2px;
+  padding-inline-end: 2px;
 }
 
 .image-upload-input {
@@ -677,6 +735,16 @@ async function uploadImages(files: File[]) {
   height: 16px;
   border: 2px solid $bg-card;
   background: var(--accent-info);
+  opacity: 0.36;
+  transition: opacity $transition-fast, transform $transition-fast, box-shadow $transition-fast;
+}
+
+.workflow-agent-node:hover .workflow-handle,
+.workflow-agent-node.selected .workflow-handle,
+.workflow-handle.connecting,
+.workflow-handle.valid {
+  opacity: 1;
+  box-shadow: 0 0 0 3px rgba(var(--accent-info-rgb), 0.14);
 }
 
 .input-handle {
@@ -685,5 +753,13 @@ async function uploadImages(files: File[]) {
 
 .output-handle {
   right: -9px;
+}
+
+.top-handle {
+  top: -9px;
+}
+
+.bottom-handle {
+  bottom: -9px;
 }
 </style>

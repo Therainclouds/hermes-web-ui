@@ -14,6 +14,7 @@ import es from '@/i18n/locales/es'
 import de from '@/i18n/locales/de'
 import pt from '@/i18n/locales/pt'
 import ru from '@/i18n/locales/ru'
+import ar from '@/i18n/locales/ar'
 import { createI18n } from 'vue-i18n'
 
 const SOURCE_ROOT = join(process.cwd(), 'packages/client/src')
@@ -31,6 +32,7 @@ const rawMessages: Record<string, Record<string, unknown>> = {
   de,
   pt,
   ru,
+  ar,
 }
 
 const messages: Record<string, Record<string, unknown>> = {}
@@ -83,6 +85,27 @@ function getPath(messages: Record<string, unknown>, key: string): unknown {
 
 function hasPath(messages: Record<string, unknown>, key: string): boolean {
   return typeof getPath(messages, key) !== 'undefined'
+}
+
+function flattenLeafPaths(value: unknown, prefix = ''): Map<string, string> {
+  const leaves = new Map<string, string>()
+  if (!value || typeof value !== 'object') return leaves
+
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    const path = prefix ? `${prefix}.${key}` : key
+    if (child && typeof child === 'object') {
+      for (const [childPath, childValue] of flattenLeafPaths(child, path)) {
+        leaves.set(childPath, childValue)
+      }
+    } else {
+      leaves.set(path, String(child ?? ''))
+    }
+  }
+  return leaves
+}
+
+function interpolationNames(value: string): string[] {
+  return [...value.matchAll(/\{([^}]+)\}/g)].map(match => match[1]).sort()
 }
 
 const SKILLS_USAGE_LOCALIZED_KEYS = [
@@ -138,8 +161,27 @@ const APPROVAL_AND_WRITE_GATE_LOCALIZED_KEYS = [
   'settings.session.skillsWriteApproval',
 ]
 
+const KANBAN_ARCHIVE_LOCALIZED_KEYS = [
+  'kanban.board.defaultArchiveUnavailable',
+  'kanban.action.archive',
+  'kanban.action.archiveConfirm',
+  'kanban.message.taskArchived',
+]
+
 const JOURNEY_DISTINCT_LOCALIZED_KEYS = [
   'journey.nodeKinds',
+]
+
+const PROVIDER_MODEL_REFRESH_LOCALIZED_KEYS = [
+  'models.refreshModels',
+  'models.restoreModels',
+  'models.refreshModelsConfirmTitle',
+  'models.refreshModelsConfirmContent',
+  'models.refreshModelsConfirmAction',
+  'models.refreshModelsSuccess',
+  'models.refreshModelsFailed',
+  'models.restoreModelsSuccess',
+  'models.restoreModelsFailed',
 ]
 
 const PLATFORM_SETTINGS_LOCALE_SPECIFIC_LOCALIZED_KEYS: Record<string, string[]> = {
@@ -257,6 +299,48 @@ describe('i18n locale coverage', () => {
     expect(missing).toEqual([])
   })
 
+  it('fully defines the raw group-chat namespace in every locale', () => {
+    const englishGroupChat = flattenLeafPaths(en.groupChat)
+    const issues = Object.entries(rawMessages).flatMap(([locale, localeMessages]) => {
+      const localizedGroupChat = flattenLeafPaths(localeMessages.groupChat)
+      const missing = [...englishGroupChat.keys()]
+        .filter(key => !localizedGroupChat.has(key))
+        .map(key => `${locale}: missing groupChat.${key}`)
+      const extra = [...localizedGroupChat.keys()]
+        .filter(key => !englishGroupChat.has(key))
+        .map(key => `${locale}: extra groupChat.${key}`)
+      const interpolationMismatches = [...englishGroupChat.entries()].flatMap(([key, englishValue]) => {
+        const localizedValue = localizedGroupChat.get(key)
+        if (typeof localizedValue === 'undefined') return []
+        const expected = interpolationNames(englishValue)
+        const actual = interpolationNames(localizedValue)
+        return expected.join('|') === actual.join('|')
+          ? []
+          : [`${locale}: groupChat.${key} placeholders ${actual.join(',')} != ${expected.join(',')}`]
+      })
+      return [...missing, ...extra, ...interpolationMismatches]
+    })
+
+    expect(issues).toEqual([])
+  })
+
+  it('compiles every changelog message in every locale', () => {
+    for (const [locale, localeMessages] of Object.entries(rawMessages)) {
+      const i18n = createI18n({
+        legacy: false,
+        locale,
+        fallbackLocale: false,
+        messages: { [locale]: localeMessages },
+      })
+
+      for (const entry of changelog) {
+        for (const change of entry.changes) {
+          expect(() => i18n.global.t(change), `${locale}: ${change}`).not.toThrow()
+        }
+      }
+    }
+  })
+
   it('localizes Skills Usage page copy in every non-English locale instead of falling back to English', () => {
     const englishMessages = messages.en
     const untranslated = Object.entries(messages).flatMap(([locale, localeMessages]) => {
@@ -287,11 +371,39 @@ describe('i18n locale coverage', () => {
     expect(untranslated).toEqual([])
   })
 
+  it('localizes Kanban archive copy in every raw non-English locale', () => {
+    const untranslated = Object.entries(rawMessages).flatMap(([locale, localeMessages]) => {
+      if (locale === 'en') return []
+
+      return KANBAN_ARCHIVE_LOCALIZED_KEYS.flatMap((key) => {
+        const localeValue = getPath(localeMessages, key)
+        if (typeof localeValue === 'undefined') return [`${locale}: ${key} missing`]
+        return localeValue === getPath(en, key) ? [`${locale}: ${key}`] : []
+      })
+    })
+
+    expect(untranslated).toEqual([])
+  })
+
   it('localizes Journey node-kind copy in every raw non-English locale', () => {
     const untranslated = Object.entries(rawMessages).flatMap(([locale, localeMessages]) => {
       if (locale === 'en') return []
 
       return JOURNEY_DISTINCT_LOCALIZED_KEYS.flatMap((key) => {
+        const localeValue = getPath(localeMessages, key)
+        if (typeof localeValue === 'undefined') return [`${locale}: ${key} missing`]
+        return localeValue === getPath(en, key) ? [`${locale}: ${key}`] : []
+      })
+    })
+
+    expect(untranslated).toEqual([])
+  })
+
+  it('localizes provider model refresh copy in every raw non-English locale', () => {
+    const untranslated = Object.entries(rawMessages).flatMap(([locale, localeMessages]) => {
+      if (locale === 'en') return []
+
+      return PROVIDER_MODEL_REFRESH_LOCALIZED_KEYS.flatMap((key) => {
         const localeValue = getPath(localeMessages, key)
         if (typeof localeValue === 'undefined') return [`${locale}: ${key} missing`]
         return localeValue === getPath(en, key) ? [`${locale}: ${key}`] : []

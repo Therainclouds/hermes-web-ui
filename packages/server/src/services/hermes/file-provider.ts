@@ -12,7 +12,7 @@ const execFileAsync = promisify(execFile)
 const execOpts = { windowsHide: true }
 
 // Max download file size (default 200MB)
-const MAX_DOWNLOAD_SIZE = parseInt(process.env.MAX_DOWNLOAD_SIZE || '', 10) || 200 * 1024 * 1024
+export const MAX_DOWNLOAD_SIZE = parseInt(process.env.MAX_DOWNLOAD_SIZE || '', 10) || 200 * 1024 * 1024
 // Backend command timeout (default 30s)
 const BACKEND_TIMEOUT = 30_000
 
@@ -865,4 +865,4 @@ export async function createFileProvider(profile?: string): Promise<FileProvider
 
 // Always-available local provider for upload directory files
 const localProvider = new LocalFileProvider()
-export { localProvider, MAX_DOWNLOAD_SIZE }
+export { localProvider }

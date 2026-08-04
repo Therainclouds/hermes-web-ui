@@ -69,7 +69,7 @@ describe('MCU login controller', () => {
 
   it('rejects invalid existing account credentials', async () => {
     const { ctrl, users } = await loadModules()
-    users.bootstrapDefaultSuperAdmin('admin', '123456')
+    users.bootstrapDefaultSuperAdmin('quanthermes', '12345678')
     const ctx = makeCtx({
       token: 'relay-token',
       url: 'https://relay.example.com/global-agent',

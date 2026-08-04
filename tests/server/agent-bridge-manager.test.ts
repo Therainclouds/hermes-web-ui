@@ -43,6 +43,38 @@ describe('agent bridge manager command resolution', () => {
     if (tempDir) rmSync(tempDir, { recursive: true, force: true })
   })
 
+  it('prefers the Hermes Studio bundled runtime env over a user-installed Hermes command', async () => {
+    const bundledRoot = join(tempDir, 'studio-runtime')
+    const bundledPython = join(bundledRoot, 'bin', 'python3')
+    const installedBin = join(tempDir, 'user-install', 'bin')
+    const installedPython = join(installedBin, 'python3')
+    const installedHermes = join(installedBin, 'hermes')
+    const studioHome = join(tempDir, 'studio-home')
+    mkdirSync(join(bundledRoot, 'bin'), { recursive: true })
+    mkdirSync(installedBin, { recursive: true })
+    mkdirSync(studioHome, { recursive: true })
+    writeFileSync(join(bundledRoot, 'run_agent.py'), '')
+    writeFileSync(bundledPython, '#!/bin/sh\n')
+    writeFileSync(installedPython, '#!/bin/sh\n')
+    writeFileSync(installedHermes, `#!${installedPython}\n`)
+    chmodSync(bundledPython, 0o755)
+    chmodSync(installedPython, 0o755)
+    chmodSync(installedHermes, 0o755)
+    process.env.HERMES_AGENT_ROOT = bundledRoot
+    process.env.HERMES_AGENT_BRIDGE_PYTHON = bundledPython
+    process.env.HERMES_BIN = installedHermes
+    process.env.HERMES_HOME = studioHome
+
+    const { resolveAgentBridgeCommand } = await import('../../packages/server/src/services/hermes/agent-bridge/manager')
+
+    expect(resolveAgentBridgeCommand()).toEqual({
+      command: bundledPython,
+      argsPrefix: [],
+      agentRoot: bundledRoot,
+      hermesHome: studioHome,
+    })
+  })
+
   it('uses the installed hermes command Python when no source root exists', async () => {
     const binDir = join(tempDir, 'bin')
     const homeDir = join(tempDir, 'home')
@@ -404,6 +436,54 @@ describe('agent bridge manager command resolution', () => {
       })
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  })
+
+  it('force-stops the complete managed bridge process tree', async () => {
+    const { AgentBridgeManager } = await import('../../packages/server/src/services/hermes/agent-bridge/manager')
+    const manager = new AgentBridgeManager({ endpoint: 'tcp://127.0.0.1:6557' })
+    const child = createMockManagedChild(45678)
+    ;(manager as any).child = child
+    ;(manager as any).ready = true
+    const forceKillTree = vi.spyOn(manager as any, 'forceKillManagedChildTree').mockImplementation(() => {})
+
+    manager.forceStop()
+
+    expect(forceKillTree).toHaveBeenCalledWith(child)
+    expect(manager.getRuntimeState()).toMatchObject({
+      ready: false,
+      running: false,
+      attached: false,
+      stopping: true,
+      pid: undefined,
+    })
+  })
+
+  it('force-kills the managed bridge tree when graceful shutdown times out', async () => {
+    vi.useFakeTimers()
+    process.env.HERMES_AGENT_BRIDGE_SHUTDOWN_TIMEOUT_MS = '25'
+    try {
+      const { AgentBridgeManager } = await import('../../packages/server/src/services/hermes/agent-bridge/manager')
+      const manager = new AgentBridgeManager({ endpoint: 'tcp://127.0.0.1:6556' })
+      const child = createMockManagedChild(45679)
+      ;(manager as any).child = child
+      ;(manager as any).ready = true
+      const forceKillTree = vi.spyOn(manager as any, 'forceKillManagedChildTree').mockImplementation(() => {})
+
+      const stopping = manager.stop()
+      await vi.advanceTimersByTimeAsync(25)
+
+      expect(forceKillTree).toHaveBeenCalledWith(child)
+      child.emit('exit', null, 'SIGKILL')
+      await stopping
+      expect(manager.getRuntimeState()).toMatchObject({
+        ready: false,
+        running: false,
+        stopping: false,
+        pid: undefined,
+      })
+    } finally {
+      vi.useRealTimers()
     }
   })
 

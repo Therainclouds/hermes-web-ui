@@ -58,16 +58,19 @@ describe('buildExpertTeamRoomAgents', () => {
 
     expect(buildExpertTeamRoomAgents('content-team', detail, bindings)).toEqual([
       {
+        agent: 'hermes',
         profile: 'expert_team_content-team',
         name: '内容专家团',
         description: '内容策划协作团队',
       },
       {
+        agent: 'hermes',
         profile: 'expert_member_copywriter',
         name: '文案专家',
         description: 'Copy',
       },
       {
+        agent: 'hermes',
         profile: 'expert_member_product-manager',
         name: '产品经理',
         description: 'PRD',
@@ -121,11 +124,13 @@ describe('buildExpertTeamRoomAgents', () => {
 
     expect(buildExpertTeamRoomAgents('content-team', null, bindings)).toEqual([
       {
+        agent: 'hermes',
         profile: 'expert_team_content-team',
         name: 'expert_team_content-team',
         description: '',
       },
       {
+        agent: 'hermes',
         profile: 'expert_member_copywriter',
         name: 'expert_member_copywriter',
         description: '',

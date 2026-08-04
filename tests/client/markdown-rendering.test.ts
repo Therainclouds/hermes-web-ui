@@ -16,8 +16,16 @@ const downloadApiMock = vi.hoisted(() => ({
   getDownloadUrl: vi.fn((path: string) => `http://test.local/api/hermes/download?path=${encodeURIComponent(path)}`),
 }))
 
+const desktopBrowserMock = vi.hoisted(() => ({
+  openUrlInDesktopBrowser: vi.fn(() => Promise.resolve(false)),
+}))
+
 vi.mock('mermaid', () => ({
   default: mermaidMock,
+}))
+
+vi.mock('@/utils/desktop-browser', () => ({
+  openUrlInDesktopBrowser: desktopBrowserMock.openUrlInDesktopBrowser,
 }))
 
 async function flushMermaidRender(): Promise<void> {
@@ -81,6 +89,8 @@ describe('MarkdownRenderer', () => {
     downloadApiMock.downloadFile.mockClear()
     downloadApiMock.fetchFileText.mockClear()
     downloadApiMock.getDownloadUrl.mockClear()
+    desktopBrowserMock.openUrlInDesktopBrowser.mockReset()
+    desktopBrowserMock.openUrlInDesktopBrowser.mockResolvedValue(false)
     mermaidMock.render.mockImplementation(async (id: string, source: string) => ({
       svg: `<svg id="${id}" data-testid="mermaid-svg"><text>${source}</text></svg>`,
     }))
@@ -98,6 +108,47 @@ describe('MarkdownRenderer', () => {
         writeText: vi.fn().mockResolvedValue(undefined),
       },
     })
+  })
+
+  it('preserves ASCII quotes in prose without disabling other typographic replacements', () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: `Men's "quoted" -- ... (c)`,
+      },
+    })
+
+    expect(wrapper.get('.markdown-body').text()).toBe(`Men's "quoted" – … ©`)
+  })
+
+  it('opens message links in the embedded browser when the desktop bridge is available', async () => {
+    desktopBrowserMock.openUrlInDesktopBrowser.mockResolvedValue(true)
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null)
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: '[Hermes](https://example.com/docs)',
+      },
+    })
+
+    await wrapper.get('a').trigger('click')
+
+    expect(desktopBrowserMock.openUrlInDesktopBrowser).toHaveBeenCalledWith('https://example.com/docs')
+    expect(open).not.toHaveBeenCalled()
+    open.mockRestore()
+  })
+
+  it('keeps opening message links in a new tab in the Web UI', async () => {
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null)
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: '[Hermes](https://example.com/docs)',
+      },
+    })
+
+    await wrapper.get('a').trigger('click')
+
+    expect(desktopBrowserMock.openUrlInDesktopBrowser).toHaveBeenCalledWith('https://example.com/docs')
+    expect(open).toHaveBeenCalledWith('https://example.com/docs', '_blank', 'noopener,noreferrer')
+    open.mockRestore()
   })
 
   it('highlights vue fenced blocks instead of rendering them as plain text', () => {
@@ -304,6 +355,28 @@ describe('MarkdownRenderer', () => {
     expect(img.attributes('alt')).toBe('桌面截图')
   })
 
+  it('keeps inline image clicks in the image overlay instead of the file drawer', async () => {
+    const previewRequests: unknown[] = []
+    const handlePreview = (event: Event) => previewRequests.push((event as CustomEvent).detail)
+    window.addEventListener('hermes:preview-workspace-file', handlePreview)
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: '![preview](/tmp/preview.png)',
+      },
+    })
+
+    try {
+      await wrapper.find('img').trigger('click')
+      await nextTick()
+      expect(previewRequests).toEqual([])
+      expect(document.body.querySelector('.image-preview-overlay')).not.toBeNull()
+      expect(document.body.querySelector('.image-preview-img')?.getAttribute('src')).toContain('/api/hermes/download?path=')
+    } finally {
+      wrapper.unmount()
+      window.removeEventListener('hermes:preview-workspace-file', handlePreview)
+    }
+  })
+
   it('downloads local text files when the file card download icon is clicked', async () => {
     const wrapper = mount(MarkdownRenderer, {
       props: {
@@ -337,48 +410,74 @@ describe('MarkdownRenderer', () => {
     expect(downloadApiMock.downloadFile).toHaveBeenCalledWith('/tmp/report.md', 'report.md')
   })
 
-  it('opens text previews in a responsive drawer with a close control', async () => {
+  it('requests text previews through the shared workspace tool panel', async () => {
+    const previewRequests: Array<{ path: string; fileName: string }> = []
+    const handlePreview = (event: Event) => {
+      const customEvent = event as CustomEvent<{ path: string; fileName: string }>
+      previewRequests.push(customEvent.detail)
+      customEvent.preventDefault()
+    }
+    window.addEventListener('hermes:preview-workspace-file', handlePreview)
     const wrapper = mount(MarkdownRenderer, {
       props: {
         content: '[notes.txt](/tmp/notes.txt)',
       },
     })
 
-    await wrapper.find('.markdown-file-card').trigger('click')
-    await Promise.resolve()
-    await nextTick()
-
-    const drawer = wrapper.find('.n-drawer-stub')
-    expect(drawer.exists()).toBe(true)
-    expect(drawer.attributes('data-width')).toBe('min(800px, 100vw)')
-    expect(drawer.find('.n-drawer-content-stub').attributes('data-body-padding')).toBe('0')
-    expect(drawer.text()).toContain('download.contentDisplay')
-    expect(downloadApiMock.fetchFileText).toHaveBeenCalledWith('/tmp/notes.txt', 'notes.txt')
-
-    await drawer.find('.n-drawer-close-stub').trigger('click')
-    await nextTick()
-
-    expect(wrapper.find('.n-drawer-stub').exists()).toBe(false)
+    try {
+      await wrapper.find('.markdown-file-card').trigger('click')
+      expect(previewRequests).toEqual([{ path: '/tmp/notes.txt', fileName: 'notes.txt' }])
+      expect(downloadApiMock.fetchFileText).not.toHaveBeenCalled()
+      expect(downloadApiMock.downloadFile).not.toHaveBeenCalled()
+      expect(wrapper.find('.n-drawer-stub').exists()).toBe(false)
+    } finally {
+      window.removeEventListener('hermes:preview-workspace-file', handlePreview)
+    }
   })
 
-  it('renders markdown file previews as markdown content', async () => {
-    downloadApiMock.fetchFileText.mockResolvedValue('# Preview Title\n\n**bold text**')
+  it('unwraps existing download URLs before requesting a workspace preview', async () => {
+    const previewRequests: Array<{ path: string; fileName: string }> = []
+    const handlePreview = (event: Event) => {
+      const customEvent = event as CustomEvent<{ path: string; fileName: string }>
+      previewRequests.push(customEvent.detail)
+      customEvent.preventDefault()
+    }
+    window.addEventListener('hermes:preview-workspace-file', handlePreview)
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: '[notes.txt](/api/hermes/download?path=%2Ftmp%2Fnotes.txt)',
+      },
+    })
+
+    try {
+      await wrapper.find('.markdown-file-card').trigger('click')
+      expect(previewRequests).toEqual([{ path: '/tmp/notes.txt', fileName: 'notes.txt' }])
+    } finally {
+      window.removeEventListener('hermes:preview-workspace-file', handlePreview)
+    }
+  })
+
+  it('routes markdown file previews through the shared workspace tool panel', async () => {
+    const previewRequests: Array<{ path: string; fileName: string }> = []
+    const handlePreview = (event: Event) => {
+      const customEvent = event as CustomEvent<{ path: string; fileName: string }>
+      previewRequests.push(customEvent.detail)
+      customEvent.preventDefault()
+    }
+    window.addEventListener('hermes:preview-workspace-file', handlePreview)
     const wrapper = mount(MarkdownRenderer, {
       props: {
         content: '[notes.md](/tmp/notes.md)',
       },
     })
 
-    await wrapper.find('.markdown-file-card').trigger('click')
-    await Promise.resolve()
-    await nextTick()
-
-    const drawer = wrapper.find('.n-drawer-stub')
-    expect(drawer.exists()).toBe(true)
-    expect(drawer.find('.text-preview-markdown').exists()).toBe(true)
-    expect(drawer.find('.text-preview-body').exists()).toBe(false)
-    expect(drawer.find('.text-preview-markdown h1').text()).toBe('Preview Title')
-    expect(drawer.find('.text-preview-markdown strong').text()).toBe('bold text')
+    try {
+      await wrapper.find('.markdown-file-card').trigger('click')
+      expect(previewRequests).toEqual([{ path: '/tmp/notes.md', fileName: 'notes.md' }])
+      expect(wrapper.find('.n-drawer-stub').exists()).toBe(false)
+    } finally {
+      window.removeEventListener('hermes:preview-workspace-file', handlePreview)
+    }
   })
 
   it('keeps tilde-fenced markdown examples with nested tilde fences intact', () => {
