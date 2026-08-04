@@ -25,6 +25,10 @@ export interface MeetingSession {
   sceneTemplate: string
   // AI 实时分析记录（持久化）
   analysisRounds: AnalysisRoundRecord[]
+  // 分析触发配置
+  analysisTriggerMode: 'sentences' | 'time' | 'both'
+  analysisIntervalSentences: number
+  analysisIntervalSeconds: number
   // 音频时长（音频数据存 IndexedDB）
   audioDuration: number
   // Agent 交互相关
@@ -53,10 +57,10 @@ export interface AgentMessage {
   toolArgs?: any
   toolResult?: any
   toolDuration?: number
+  toolPreview?: string
   reasoning?: string
   status?: 'sending' | 'sent' | 'error'
   _expanded?: boolean
-  toolPreview?: string
 }
 
 export interface TranscriptSentence {
@@ -87,12 +91,12 @@ export interface AudioChunk {
 }
 
 export interface AnalysisResult {
+  meeting_type?: string
   summary?: string
   key_points?: string[]
   action_items?: string[] | Array<{ task: string; assignee?: string; deadline?: string }>
   topics?: string[]
   people_mentioned?: string[]
-  meeting_type?: string
   feedback?: { positive?: string[]; negative?: string[] }
   decisions?: string[]
   risks?: string[]
@@ -295,6 +299,9 @@ export const useMeetingStore = defineStore('meeting', () => {
       customModel: options?.customModel,
       sceneTemplate: options?.sceneTemplate || 'general',
       analysisRounds: [],
+      analysisTriggerMode: 'sentences',
+      analysisIntervalSentences: 10,
+      analysisIntervalSeconds: 60,
       audioDuration: 0,
       agentMessages: [],
       agentStatus: 'idle',

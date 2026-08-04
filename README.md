@@ -237,8 +237,15 @@ Real-time speech transcription with AI-powered meeting analysis, speaker diariza
   ],
   "analysis": {
     "summary": "Meeting summary",
+    "meeting_type": "Project Update",
     "key_points": ["Point 1", "Point 2"],
-    "action_items": ["Task 1", "Task 2"],
+    "action_items": [
+      { "task": "Draft the rollout plan", "assignee": "Alice", "deadline": "2026-07-25" }
+    ],
+    "decisions": ["Ship v0.74 behind a feature flag"],
+    "risks": ["ASR backend still single-node"],
+    "learnings": [],
+    "feedback": { "positive": [], "negative": [] },
     "topics": ["Topic 1", "Topic 2"]
   }
 }

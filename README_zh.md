@@ -184,8 +184,15 @@ hermes-web-ui reset-default-login
   ],
   "analysis": {
     "summary": "会议摘要",
+    "meeting_type": "项目汇报",
     "key_points": ["要点1", "要点2"],
-    "action_items": ["待办1", "待办2"],
+    "action_items": [
+      { "task": "撰写上线方案", "assignee": "张三", "deadline": "2026-07-25" }
+    ],
+    "decisions": ["v0.74 灰度发布，先开功能开关"],
+    "risks": ["ASR 后端仍是单节点"],
+    "learnings": [],
+    "feedback": { "positive": [], "negative": [] },
     "topics": ["主题1", "主题2"]
   }
 }

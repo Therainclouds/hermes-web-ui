@@ -409,6 +409,9 @@ export class MeetingASRService extends EventEmitter {
       if (config.asrModel) {
         env.ASR_MODEL = config.asrModel
       }
+      if (config.asrModel) {
+        env.ASR_MODEL = config.asrModel
+      }
       if (config.paraformerWsUrl) {
         env.PARAFORMER_WS_URL = config.paraformerWsUrl
       }

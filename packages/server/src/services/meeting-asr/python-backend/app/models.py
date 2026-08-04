@@ -23,6 +23,8 @@ class LLMConfig(BaseModel):
 
 class AnalysisConfig(BaseModel):
     interval_seconds: int = Field(default=60, ge=10, le=600)
+    interval_sentences: int = Field(default=10, ge=1, le=100)
+    trigger_mode: str = Field(default="sentences")  # "sentences" | "time" | "both"
     auto_start: bool = False
     custom_prompt: str | None = None
 
@@ -34,12 +36,17 @@ class AllConfig(BaseModel):
 
 
 class AnalysisResult(BaseModel):
+    meeting_type: str = "其他"
     summary: str = ""
     key_points: list[str] = Field(default_factory=list)
-    action_items: list[str] = Field(default_factory=list)
+    action_items: list[dict] = Field(default_factory=list)
     people_mentioned: list[str] = Field(default_factory=list)
     relationships: list[dict] = Field(default_factory=list)
     topics: list[str] = Field(default_factory=list)
+    feedback: dict = Field(default_factory=dict)
+    decisions: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    learnings: list[str] = Field(default_factory=list)
     should_update_html: bool = False
     html_content: str | None = None
     timestamp: float = 0.0
@@ -55,6 +62,8 @@ class AnalysisStatus(BaseModel):
 
 class AnalysisRequest(BaseModel):
     interval_seconds: int = Field(default=60, ge=10, le=600)
+    interval_sentences: int = Field(default=10, ge=1, le=100)
+    trigger_mode: str = Field(default="sentences")
     custom_prompt: str | None = None
 
 
@@ -68,21 +77,43 @@ DEFAULT_PROMPTS = {
     "meeting_analysis": PromptTemplate(
         name="会议分析",
         description="分析会议内容，提取关键信息",
-        template="""请分析以下会议转写内容，提取以下信息并以 JSON 格式返回：
+        template="""请分析以下会议转写内容，首先判断会议类型，然后根据类型生成相应的分析结果。
 
+会议类型判断指南：
+- **会议纪要**：包含议题、讨论、决议、待办事项和负责人
+- **客户回访**：包含客户反馈、满意度、问题、建议
+- **头脑风暴**：包含创意、想法、可行性分析
+- **项目汇报**：包含进度、风险、下一步计划
+- **培训分享**：包含知识点、要点、学习建议
+- **其他**：根据实际内容判断
+
+请以 JSON 格式返回：
 {
+  "meeting_type": "会议类型",
   "summary": "会议摘要（150字以内）",
   "key_points": ["关键要点1", "关键要点2", ...],
-  "action_items": ["待办事项1", "待办事项2", ...],
+  "action_items": [
+    {"task": "待办事项", "assignee": "负责人", "deadline": "截止时间（如有）"}
+  ],
   "people_mentioned": ["人名1", "人名2", ...],
   "relationships": [{"source": "人名A", "target": "人名B", "relation": "关系描述"}, ...],
-  "topics": ["主题1", "主题2", ...]
+  "topics": ["主题1", "主题2", ...],
+  "feedback": {
+    "positive": ["积极反馈1", ...],
+    "negative": ["消极反馈1", ...]
+  },
+  "decisions": ["决议1", ...],
+  "risks": ["风险1", ...],
+  "learnings": ["知识点1", ...]
 }
 
 注意：
-- 如果信息不明确，对应字段返回空数组
-- relationships 描述人物之间的协作、上下级等关系
-- topics 是会议讨论的主要话题分类
+- 根据会议类型，某些字段可以为空数组
+- 会议纪要类型：重点提取action_items和decisions
+- 客户回访类型：重点提取feedback
+- 头脑风暴类型：重点提取key_points和risks
+- 项目汇报类型：重点提取risks和action_items
+- 培训分享类型：重点提取learnings
 
 会议内容：
 {transcript}""",
@@ -92,21 +123,30 @@ DEFAULT_PROMPTS = {
         description="基于分析结果生成可视化HTML",
         template="""基于以下会议分析结果，生成一个完整的、可直接在浏览器中打开的 HTML 页面。
 
-要求：
-1. 使用 ECharts CDN (https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js)
-2. 包含以下可视化组件：
-   - 人物关系图（力导向图）：展示提到的人物及其关系
-   - 关键要点列表：带图标的卡片式布局
-   - 待办事项列表：可勾选的样式
-   - 词云或主题标签：展示会议主题
-3. 页面设计要求：
-   - 现代简洁的 UI 风格
+重要要求：
+1. **完全自由设计**：不要使用固定模板，根据会议类型和内容自由设计页面结构
+2. **内容驱动**：页面布局、组件、样式都应反映会议的实际内容
+3. **智能组件选择**：
+   - 如果有action_items，生成待办事项清单（带负责人和截止时间）
+   - 如果有feedback，生成客户反馈分析（积极/消极对比）
+   - 如果有decisions，生成决议列表
+   - 如果有risks，生成风险评估卡片
+   - 如果有learnings，生成知识点总结
+   - 如果有relationships，生成人物关系图（使用ECharts）
+4. **视觉设计**：
+   - 使用现代简洁的UI风格
    - 响应式布局
-   - 使用渐变色和阴影增加层次感
+   - 合理的配色和排版
    - 中文字体优化
-4. 页面标题：会议分析报告
-5. 顶部显示会议摘要
-6. 底部显示生成时间
+5. **技术要求**：
+   - 使用 ECharts CDN (https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js)（如需要）
+   - 所有CSS内联
+   - 所有JavaScript内联
+   - 页面标题：{meeting_type} - 分析报告
+6. **不要包含**：
+   - 任何模板化的结构
+   - 固定的卡片布局
+   - 不相关的占位内容
 
 只返回完整的 HTML 代码，不要有任何额外说明。
 

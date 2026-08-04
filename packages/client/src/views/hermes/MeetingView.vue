@@ -187,7 +187,13 @@ watch(audioUrl, (url) => {
 // --- 分析相关 ---
 const analysisResult = ref<any>(null)
 const htmlContent = ref('')
+const isAnalyzing = ref(false)
+const analysisInterval = ref(30)
+const analysisTriggerMode = ref<'sentences' | 'time' | 'both'>('sentences')
+const analysisIntervalSentences = ref(10)
+const agentStartAnalysisTrigger = ref(0)
 const showReport = ref(false)
+const showAnalysisConfig = ref(false)
 
 // --- Agent 分析相关 ---
 const showAgentPanel = ref(false)
@@ -417,6 +423,15 @@ async function loadMeeting(session: MeetingSession) {
     speakerMap.value = { ...session.speakerMap }
     useDiarize.value = session.useDiarize
   }
+  
+  // 同步句子到 store（供 Agent 面板读取）
+  meetingStore.updateSession(session.id, {
+    sentences: [...finalSentences.value],
+    analysisResult: analysisResult.value,
+    htmlContent: htmlContent.value,
+    speakerMap: { ...speakerMap.value },
+    useDiarize: useDiarize.value,
+  })
   
   partialText.value = ''
   errorMessage.value = ''
@@ -1656,6 +1671,35 @@ function toPrettyReportHtml(content: string, title: string): string {
   return buildReportHtml(trimmed, title)
 }
 
+function onAgentCompleted() {
+  // 分析完成后自动切换到报告视图
+  if (htmlContent.value) {
+    showAgentPanel.value = false
+  }
+}
+
+function onAgentCorrected(corrected: any[]) {
+  // 更新本地字幕
+  finalSentences.value = [...corrected]
+}
+
+// --- Agent 面板事件处理（meeting 分支合并） ---
+function onAgentAnalysisResult(result: any) {
+  analysisResult.value = result
+  // 保存到 store
+  if (meetingStore.activeSessionId) {
+    meetingStore.updateAnalysis(meetingStore.activeSessionId, result)
+  }
+}
+
+function onAgentReportHtml(html: string) {
+  htmlContent.value = html
+  // 保存到 store
+  if (meetingStore.activeSessionId) {
+    meetingStore.updateHtmlContent(meetingStore.activeSessionId, html)
+  }
+}
+
 // --- Hermes Agent 分析 ---
 async function analyzeWithHermesAgent() {
   if (!meetingStore.activeSession) return
@@ -1686,6 +1730,23 @@ function formatDuration(seconds: number): string {
   const m = Math.floor(seconds / 60)
   const s = Math.floor(seconds % 60)
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
+}
+
+// --- Action item formatters (support both string and object forms) ---
+function formatActionItem(item: any): string {
+  if (item == null) return ''
+  if (typeof item === 'string') return item
+  return item.task || item.text || ''
+}
+
+function formatActionAssignee(item: any): string {
+  if (item && typeof item === 'object') return item.assignee || ''
+  return ''
+}
+
+function formatActionDeadline(item: any): string {
+  if (item && typeof item === 'object') return item.deadline || ''
+  return ''
 }
 
 // --- 可视化 ---
@@ -1732,7 +1793,69 @@ function drawWaveform() {
   draw()
 }
 
-// --- 分析功能（已迁移到实时辅助面板，保留 triggerAnalysis 供模板调用） ---
+// --- 分析功能 ---
+async function startAnalysis() {
+  const session = meetingStore.activeSession
+  if (!session) return
+  
+  // 检查是否有逐字稿
+  if (sentences.value.length === 0) {
+    errorMessage.value = t('meeting.noTranscript')
+    return
+  }
+  
+  // Hermes Agent 模式下，切换到 Agent 面板并启动分析
+  if (session.analysisMode === 'hermes') {
+    await analyzeWithHermesAgent()
+    return
+  }
+  
+  // 自定义模型模式下，调用后端自动分析
+  try {
+    isAnalyzing.value = true
+    const config = {
+      interval_seconds: analysisInterval.value,
+      interval_sentences: analysisIntervalSentences.value,
+      trigger_mode: analysisTriggerMode.value,
+    }
+    const result = await meetingASRApi.startAnalysis(config)
+    console.log('Analysis started:', result)
+
+    // 开始轮询结果
+    pollAnalysisResult()
+  } catch (error) {
+    console.error('Failed to start analysis:', error)
+    errorMessage.value = t('meeting.analysisStartError')
+  }
+}
+
+async function stopAnalysis() {
+  const session = meetingStore.activeSession
+  if (!session) return
+  
+  isAnalyzing.value = false
+  
+  // 自定义模型模式下，调用后端停止分析
+  if (session.analysisMode === 'custom') {
+    try {
+      await meetingASRApi.stopAnalysis()
+    } catch (error) {
+      console.error('Failed to stop analysis:', error)
+    }
+  }
+}
+
+async function pollAnalysisResult() {
+  try {
+    const result = await meetingASRApi.getAnalysisResult()
+    if (result) {
+      analysisResult.value = result
+    }
+  } catch (error) {
+    console.error('Failed to fetch analysis result:', error)
+  }
+}
+
 async function triggerAnalysis() {
   await analyzeWithHermesAgent()
 }
@@ -2071,23 +2194,41 @@ async function clearTranscript() {
           <div class="right-panel-header">
             <h2>{{ showAgentPanel ? t('meeting.agentChat') : t('meeting.analysis') }}</h2>
             <div class="right-panel-actions">
-              <!-- Agent 切换按钮 -->
+              <!-- 关闭按钮：始终位于最右，确保不被遮挡 -->
+              <button
+                class="panel-close-btn"
+                :title="t('sidebar.collapse')"
+                @click="showRightPanel = false"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="18" y1="6" x2="6" y2="18"/>
+                  <line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <!-- 分析工具栏：独立一行，避免与标题互相挤压 -->
+          <div v-if="!showAgentPanel" class="right-panel-toolbar">
+            <div class="toolbar-actions">
               <NTooltip trigger="hover">
                 <template #trigger>
                   <NButton
                     size="tiny"
-                    :type="showAgentPanel ? 'primary' : 'default'"
-                    @click="showAgentPanel = !showAgentPanel"
+                    type="primary"
+                    :loading="isLoading && !isAnalyzing"
+                    :disabled="sentences.length === 0"
+                    @click="triggerAnalysis"
                   >
                     <template #icon>
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"/>
-                        <path d="M16 14H8a4 4 0 0 0-4 4v2h16v-2a4 4 0 0 0-4-4z"/>
+                        <polygon points="5 3 19 12 5 21 5 3"/>
                       </svg>
                     </template>
+                    {{ t('meeting.triggerAnalysis') }}
                   </NButton>
                 </template>
-                {{ showAgentPanel ? t('meeting.showAnalysis') : t('meeting.showAgentChat') }}
+                {{ sentences.length === 0 ? t('meeting.noTranscript') : '' }}
               </NTooltip>
 
               <!-- 生成报告按钮（仅在非 Agent 面板时显示） -->
@@ -2102,17 +2243,66 @@ async function clearTranscript() {
                   {{ t('meeting.generateReport') }}
                 </NButton>
               </template>
+              <NTooltip trigger="hover">
+                <template #trigger>
+                  <NButton
+                    size="tiny"
+                    :type="isAnalyzing ? 'warning' : 'default'"
+                    :disabled="sentences.length === 0"
+                    @click="isAnalyzing ? stopAnalysis() : startAnalysis()"
+                  >
+                    <template #icon>
+                      <svg v-if="!isAnalyzing" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"/>
+                        <polyline points="12 6 12 12 16 14"/>
+                      </svg>
+                      <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="6" y="4" width="4" height="16"/>
+                        <rect x="14" y="4" width="4" height="16"/>
+                      </svg>
+                    </template>
+                    {{ isAnalyzing ? t('meeting.stopAnalysis') : t('meeting.startAnalysis') }}
+                  </NButton>
+                </template>
+              </NTooltip>
 
-              <button
-                class="panel-close-btn"
-                @click="showRightPanel = false"
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <line x1="18" y1="6" x2="6" y2="18"/>
-                  <line x1="6" y1="6" x2="18" y2="18"/>
-                </svg>
-              </button>
+              <NTooltip trigger="hover">
+                <template #trigger>
+                  <NButton
+                    size="tiny"
+                    quaternary
+                    @click="showAnalysisConfig = true"
+                  >
+                    <template #icon>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"/>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                      </svg>
+                    </template>
+                  </NButton>
+                </template>
+                {{ t('meeting.analysisTriggerConfig') }}
+              </NTooltip>
             </div>
+
+            <!-- Agent 切换：靠右 -->
+            <NTooltip trigger="hover">
+              <template #trigger>
+                <NButton
+                  size="tiny"
+                  :type="showAgentPanel ? 'primary' : 'default'"
+                  @click="showAgentPanel = !showAgentPanel"
+                >
+                  <template #icon>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"/>
+                      <path d="M16 14H8a4 4 0 0 0-4 4v2h16v-2a4 4 0 0 0-4-4z"/>
+                    </svg>
+                  </template>
+                </NButton>
+              </template>
+              {{ showAgentPanel ? t('meeting.showAnalysis') : t('meeting.showAgentChat') }}
+            </NTooltip>
           </div>
 
           <!-- Agent 实时辅助面板 -->
@@ -2125,6 +2315,11 @@ async function clearTranscript() {
               :is-recording="isRecording"
               @report-generated="onReportGenerated"
               @request-report="onRequestReport"
+              :start-trigger="agentStartAnalysisTrigger"
+              @update:analysis-result="onAgentAnalysisResult"
+              @update:report-html="onAgentReportHtml"
+              @completed="onAgentCompleted"
+              @corrected="onAgentCorrected"
             />
           </template>
 
@@ -2224,9 +2419,81 @@ async function clearTranscript() {
                   <ul class="action-list">
                     <li v-for="(item, i) in analysisResult.action_items" :key="i">
                       <input type="checkbox" />
-                      <span>{{ item }}</span>
+                      <div class="action-body">
+                        <span class="action-text">{{ formatActionItem(item) }}</span>
+                        <span v-if="formatActionAssignee(item)" class="action-assignee">
+                          👤 {{ formatActionAssignee(item) }}
+                        </span>
+                        <span v-if="formatActionDeadline(item)" class="action-deadline">
+                          📅 {{ formatActionDeadline(item) }}
+                        </span>
+                      </div>
                     </li>
                   </ul>
+                </div>
+
+                <div v-if="analysisResult.decisions?.length" class="result-section">
+                  <h3>{{ t('meeting.decisions') }}</h3>
+                  <ol class="decision-list">
+                    <li v-for="(d, i) in analysisResult.decisions" :key="i">{{ d }}</li>
+                  </ol>
+                </div>
+
+                <div v-if="analysisResult.risks?.length" class="result-section">
+                  <h3>{{ t('meeting.risks') }}</h3>
+                  <ul>
+                    <li v-for="(r, i) in analysisResult.risks" :key="i">{{ r }}</li>
+                  </ul>
+                </div>
+
+                <div v-if="analysisResult.learnings?.length" class="result-section">
+                  <h3>{{ t('meeting.learnings') }}</h3>
+                  <ul>
+                    <li v-for="(l, i) in analysisResult.learnings" :key="i">{{ l }}</li>
+                  </ul>
+                </div>
+
+                <div v-if="analysisResult.feedback?.positive?.length || analysisResult.feedback?.negative?.length" class="result-section">
+                  <h3>{{ t('meeting.feedback') }}</h3>
+                  <div class="feedback-grid">
+                    <div v-if="analysisResult.feedback.positive?.length" class="feedback-positive">
+                      <h4>{{ t('meeting.feedbackPositive') }}</h4>
+                      <ul>
+                        <li v-for="(f, i) in analysisResult.feedback.positive" :key="i">{{ f }}</li>
+                      </ul>
+                    </div>
+                    <div v-if="analysisResult.feedback.negative?.length" class="feedback-negative">
+                      <h4>{{ t('meeting.feedbackNegative') }}</h4>
+                      <ul>
+                        <li v-for="(f, i) in analysisResult.feedback.negative" :key="i">{{ f }}</li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+
+                <div v-if="analysisResult.people_mentioned?.length" class="result-section">
+                  <h3>{{ t('meeting.peopleMentioned') }}</h3>
+                  <div class="people-container">
+                    <NTag v-for="(p, i) in analysisResult.people_mentioned" :key="i" type="info" size="small">
+                      {{ p }}
+                    </NTag>
+                  </div>
+                </div>
+
+                <div v-if="analysisResult.relationships?.length" class="result-section">
+                  <h3>{{ t('meeting.relationships') }}</h3>
+                  <div class="relationship-list">
+                    <div v-for="(r, i) in analysisResult.relationships" :key="i" class="relationship-item">
+                      <span class="rel-source">{{ r.source }}</span>
+                      <span class="rel-arrow">→</span>
+                      <span class="rel-target">{{ r.target }}</span>
+                      <span class="rel-desc">{{ r.relation }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div v-if="analysisResult.meeting_type" class="result-section meeting-type">
+                  <NTag type="primary" size="small">{{ analysisResult.meeting_type }}</NTag>
                 </div>
 
                 <div v-if="analysisResult.topics?.length" class="result-section">
@@ -2250,12 +2517,42 @@ async function clearTranscript() {
 
               <!-- 提示区域 - 当有转写内容但没有分析结果时显示 -->
               <div v-if="!analysisResult && sentences.length > 0" class="analysis-hint">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.5">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.5">
                   <circle cx="12" cy="12" r="10"/>
                   <path d="M12 16v-4"/>
                   <path d="M12 8h.01"/>
                 </svg>
                 <p>{{ t('meeting.analysisHint') }}</p>
+                <NButton
+                  type="primary"
+                  size="small"
+                  :loading="isLoading && !isAnalyzing"
+                  :disabled="sentences.length === 0"
+                  @click="triggerAnalysis"
+                >
+                  <template #icon>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <polygon points="5 3 19 12 5 21 5 3"/>
+                    </svg>
+                  </template>
+                  {{ t('meeting.triggerAnalysis') }}
+                </NButton>
+              </div>
+
+              <!-- 报告预览：有 htmlContent 时直接渲染，HTML 内容始终可见 -->
+              <div v-if="htmlContent" class="report-preview-section">
+                <div class="report-preview-header">
+                  <h3>{{ t('meeting.reportPreview') }}</h3>
+                  <div class="report-preview-actions">
+                    <NButton size="tiny" @click="showReport = true">
+                      {{ t('meeting.openReport') }}
+                    </NButton>
+                    <NButton size="tiny" @click="downloadReport" :disabled="isRecording">
+                      {{ t('meeting.downloadReport') }}
+                    </NButton>
+                  </div>
+                </div>
+                <iframe :srcdoc="htmlContent" class="report-preview-iframe"></iframe>
               </div>
 
               <!-- 空状态 -->
@@ -2425,6 +2722,15 @@ async function clearTranscript() {
             />
             <div class="form-hint">{{ t('meeting.asrModelHint') }}</div>
           </div>
+          <div class="form-item">
+            <label class="form-label">{{ t('meeting.asrModel') }}</label>
+            <NSelect
+              v-model:value="newMeetingAsrModel"
+              :options="asrModelOptions"
+              :placeholder="t('meeting.selectAsrModel')"
+            />
+            <div class="form-hint">{{ t('meeting.asrModelHint') }}</div>
+          </div>
         </div>
 
         <div class="form-section">
@@ -2496,6 +2802,57 @@ async function clearTranscript() {
           {{ t('meeting.create') }}
         </NButton>
       </template>
+    </NModal>
+
+    <!-- 分析触发配置弹窗 -->
+    <NModal
+      v-model:show="showAnalysisConfig"
+      :title="t('meeting.analysisTriggerConfig')"
+      preset="dialog"
+      :positive-text="t('common.confirm')"
+      :negative-text="t('common.cancel')"
+      @positive-click="showAnalysisConfig = false"
+    >
+      <div class="analysis-config-form">
+        <div class="config-field">
+          <label>{{ t('meeting.triggerMode') }}</label>
+          <select v-model="analysisTriggerMode" class="config-select">
+            <option value="sentences">{{ t('meeting.triggerModeSentences') }}</option>
+            <option value="time">{{ t('meeting.triggerModeTime') }}</option>
+            <option value="both">{{ t('meeting.triggerModeBoth') }}</option>
+          </select>
+        </div>
+        
+        <div class="config-field" v-if="analysisTriggerMode !== 'time'">
+          <label>{{ t('meeting.intervalSentences') }}</label>
+          <div class="config-input-group">
+            <input 
+              type="number" 
+              v-model="analysisIntervalSentences" 
+              :min="1" 
+              :max="100"
+              class="config-input"
+            />
+            <span class="config-unit">{{ t('meeting.sentencesUnit') }}</span>
+          </div>
+          <span class="config-hint">{{ t('meeting.intervalSentencesHint') }}</span>
+        </div>
+        
+        <div class="config-field" v-if="analysisTriggerMode !== 'sentences'">
+          <label>{{ t('meeting.intervalSeconds') }}</label>
+          <div class="config-input-group">
+            <input 
+              type="number" 
+              v-model="analysisInterval" 
+              :min="10" 
+              :max="600"
+              class="config-input"
+            />
+            <span class="config-unit">{{ t('meeting.secondsUnit') }}</span>
+          </div>
+          <span class="config-hint">{{ t('meeting.intervalSecondsHint') }}</span>
+        </div>
+      </div>
     </NModal>
 
     <!-- HTML 报告弹窗 -->
@@ -3080,7 +3437,7 @@ async function clearTranscript() {
   border-left: 1px solid $border-color;
   display: flex;
   min-height: 0;
-  overflow: visible;
+  overflow: hidden; // 改为 hidden，避免按钮溢出屏幕
 }
 
 .right-panel-resize-handle {
@@ -3155,21 +3512,62 @@ async function clearTranscript() {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 12px 16px;
+  padding: 10px 12px;
   border-bottom: 1px solid $border-color;
   flex-shrink: 0;
+  gap: 8px;
 
   h2 {
     font-size: 14px;
     font-weight: 600;
     margin: 0;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }
 
 .right-panel-actions {
   display: flex;
   align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+// 新增：分析工具栏（独立一行，承载触发/启动/配置 + Agent 切换）
+.right-panel-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid $border-color;
+  background: rgba($accent-primary, 0.02);
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+
+  // 让按钮在窄面板中优雅收缩
+  :deep(.n-button) {
+    flex-shrink: 0;
+  }
 }
 
 .panel-close-btn {
@@ -3269,6 +3667,127 @@ async function clearTranscript() {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+// 新增分析结果样式
+.decision-list {
+  margin: 0;
+  padding-left: 24px;
+
+  li {
+    font-size: 14px;
+    line-height: 1.7;
+    margin-bottom: 6px;
+    color: #2e7d32;
+  }
+}
+
+.feedback-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+
+  @media (max-width: 600px) {
+    grid-template-columns: 1fr;
+  }
+}
+
+.feedback-positive,
+.feedback-negative {
+  padding: 12px;
+  border-radius: 8px;
+
+  h4 {
+    font-size: 13px;
+    font-weight: 600;
+    margin: 0 0 8px 0;
+  }
+
+  ul {
+    margin: 0;
+    padding-left: 20px;
+
+    li {
+      font-size: 13px;
+      line-height: 1.6;
+      margin-bottom: 4px;
+    }
+  }
+}
+
+.feedback-positive {
+  background: rgba(76, 175, 80, 0.1);
+  border-left: 3px solid #4caf50;
+
+  h4 { color: #2e7d32; }
+  li { color: #2e7d32; }
+}
+
+.feedback-negative {
+  background: rgba(244, 67, 54, 0.1);
+  border-left: 3px solid #f44336;
+
+  h4 { color: #c62828; }
+  li { color: #c62828; }
+}
+
+.people-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.relationship-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.relationship-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: rgba(156, 39, 176, 0.05);
+  border-radius: 8px;
+  flex-wrap: wrap;
+}
+
+.rel-source,
+.rel-target {
+  font-weight: 600;
+  color: #6a1b9a;
+  font-size: 13px;
+}
+
+.rel-arrow {
+  color: #9c27b0;
+}
+
+.rel-desc {
+  color: $text-secondary;
+  font-size: 12px;
+  flex: 1;
+  min-width: 100px;
+}
+
+.action-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.action-assignee,
+.action-deadline {
+  font-size: 11px;
+  color: #856404;
+}
+
+.meeting-type {
+  display: flex;
+  justify-content: flex-start;
 }
 
 // 音频播放器样式
@@ -3397,14 +3916,61 @@ async function clearTranscript() {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 24px;
+  padding: 24px 16px;
   gap: 12px;
   color: $text-secondary;
-  
+
   p {
     font-size: 13px;
     text-align: center;
+    line-height: 1.5;
+    margin: 0;
   }
+}
+
+// 报告预览：直接内嵌 iframe 渲染已生成的 HTML
+.report-preview-section {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(var(--accent-primary-rgb), 0.2);
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 16px;
+  background: $bg-card;
+}
+
+.report-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(var(--accent-primary-rgb), 0.04);
+  border-bottom: 1px solid $border-color;
+  flex-shrink: 0;
+
+  h3 {
+    font-size: 12px;
+    font-weight: 600;
+    color: $text-secondary;
+    margin: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+}
+
+.report-preview-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.report-preview-iframe {
+  width: 100%;
+  height: 480px;
+  border: none;
+  background: white;
+  display: block;
 }
 
 .result-actions {
@@ -3721,5 +4287,74 @@ async function clearTranscript() {
   line-height: 1.6;
   color: $text-primary;
   white-space: pre-wrap;
+}
+
+// 分析配置弹窗表单样式
+.analysis-config-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 8px 0;
+}
+
+.config-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+
+  label {
+    font-size: 13px;
+    font-weight: 500;
+    color: $text-primary;
+  }
+}
+
+.config-select {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid $border-color;
+  border-radius: 6px;
+  font-size: 14px;
+  background: $bg-primary;
+  color: $text-primary;
+  cursor: pointer;
+
+  &:focus {
+    outline: none;
+    border-color: $accent-primary;
+  }
+}
+
+.config-input-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.config-input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid $border-color;
+  border-radius: 6px;
+  font-size: 14px;
+  background: $bg-primary;
+  color: $text-primary;
+
+  &:focus {
+    outline: none;
+    border-color: $accent-primary;
+  }
+}
+
+.config-unit {
+  font-size: 14px;
+  color: $text-secondary;
+  white-space: nowrap;
+}
+
+.config-hint {
+  font-size: 12px;
+  color: $text-secondary;
+  opacity: 0.8;
 }
 </style>
