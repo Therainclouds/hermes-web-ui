@@ -277,7 +277,7 @@ describe('ekko-agent runtime', () => {
           finishReason: 'tool_calls',
         }
       : { content: 'tool said from-tool', finishReason: 'stop' })
-    const runtime = new AgentRuntime({ modelClient: client, tools, toolDelayMs: 0 })
+    const runtime = new AgentRuntime({ modelClient: client, tools })
 
     const result = await runtime.run({ messages: ['use echo'] })
 
@@ -316,7 +316,7 @@ describe('ekko-agent runtime', () => {
       if (call === 2) return { content: 'Child inspection result', finishReason: 'stop' }
       return { content: 'Parent used the child result', finishReason: 'stop' }
     })
-    const runtime = new AgentRuntime({ modelClient: client, tools, toolDelayMs: 0 })
+    const runtime = new AgentRuntime({ modelClient: client, tools })
     const events: any[] = []
 
     const result = await runtime.run({
@@ -393,7 +393,7 @@ describe('ekko-agent runtime', () => {
       }),
       stream: vi.fn(),
     }
-    const runtime = new AgentRuntime({ modelClient: client, tools, toolDelayMs: 0 })
+    const runtime = new AgentRuntime({ modelClient: client, tools })
     const events: any[] = []
 
     const result = await runtime.run({
@@ -455,7 +455,7 @@ describe('ekko-agent runtime', () => {
       }
       return { content: 'Background delegation was unavailable.', finishReason: 'stop' }
     })
-    const runtime = new AgentRuntime({ modelClient: client, tools, toolDelayMs: 0 })
+    const runtime = new AgentRuntime({ modelClient: client, tools })
     const events: any[] = []
 
     const result = await runtime.run({
@@ -519,7 +519,7 @@ describe('ekko-agent runtime', () => {
       }),
       stream: vi.fn(),
     }
-    const runtime = new AgentRuntime({ modelClient: client, tools, toolDelayMs: 0 })
+    const runtime = new AgentRuntime({ modelClient: client, tools })
     const events: any[] = []
 
     await runtime.run({
@@ -573,7 +573,7 @@ describe('ekko-agent runtime', () => {
     })
 
     try {
-      const result = await new AgentRuntime({ modelClient: client, tools, toolDelayMs: 0 })
+      const result = await new AgentRuntime({ modelClient: client, tools })
         .run({ messages: ['list profiles'] })
       expect(result.output.content).toBe('done')
     } finally {
@@ -593,7 +593,7 @@ describe('ekko-agent runtime', () => {
       }
       return { content: 'done', finishReason: 'stop' }
     })
-    const runtime = new AgentRuntime({ modelClient: client, toolDelayMs: 0 })
+    const runtime = new AgentRuntime({ modelClient: client })
 
     const result = await runtime.run({
       messages: ['use mcp'],
@@ -623,7 +623,7 @@ describe('ekko-agent runtime', () => {
           toolCalls: [{ id: 'call_missing', name: 'missing_tool', arguments: {} }],
         }
       : { content: 'handled missing tool' })
-    const runtime = new AgentRuntime({ modelClient: client, tools: new AgentToolRegistry(), maxSteps: 2, toolDelayMs: 0 })
+    const runtime = new AgentRuntime({ modelClient: client, tools: new AgentToolRegistry(), maxSteps: 2 })
 
     const result = await runtime.run({ messages: ['call missing'] })
 
@@ -646,7 +646,6 @@ describe('ekko-agent runtime', () => {
       tools: new AgentToolRegistry(),
       maxConsecutiveToolFailures: 2,
       maxSteps: 10,
-      toolDelayMs: 0,
     })
     const events: string[] = []
 
@@ -892,7 +891,6 @@ describe('ekko-agent runtime', () => {
       modelClient: client,
       skillDirectory,
       skillReviewEveryToolCalls: 1,
-      toolDelayMs: 0,
     })
 
     try {
@@ -1091,6 +1089,10 @@ describe('ekko-agent runtime', () => {
     expect(prompt).toContain('## Tool Execution')
     expect(prompt).toContain('prerequisites named by a Skill as requirements, not proof that they are installed')
     expect(prompt).toContain('perform a lightweight availability check')
+    expect(prompt).toContain('use code_exec, including for one-line snippets')
+    expect(prompt).toContain('Do not probe Node or Python with terminal_exec first')
+    expect(prompt).toContain('Use terminal_exec for CLI commands')
+    expect(prompt).toContain('do not retry the operation through another tool or language runtime')
     expect(prompt).toContain('prefer a compatible installed or built-in alternative')
   })
 })
