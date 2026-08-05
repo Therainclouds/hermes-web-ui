@@ -348,6 +348,7 @@ describe('Group Chat member/agent identity sync', () => {
       to: vi.fn(() => ({ emit: vi.fn() })),
     }
     server.storage = { saveMessageAndRefreshRoom }
+    server.discussionRunner = { abortRoom: vi.fn(), isActive: vi.fn(() => false) }
 
     await server.deleteRoomRuntimeState('room-1')
     const ack = vi.fn()
@@ -1005,6 +1006,7 @@ describe('Group Chat member/agent identity sync', () => {
       ['agent-1', { name: '丫鬟', description: '' }],
     ])
     server.agentClients = { processMentions: vi.fn(async () => undefined) }
+    server.discussionRunner = { isActive: vi.fn(() => false) }
     const agentSessionId = groupBridgeSessionId('room-1', 'default', '丫鬟', 'seed-1')
     server.storage = {
       getRoom: vi.fn(() => ({ id: 'room-1', name: 'Room', sessionSeed: 'seed-1' })),

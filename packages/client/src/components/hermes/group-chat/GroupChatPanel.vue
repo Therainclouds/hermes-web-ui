@@ -13,6 +13,7 @@ import FolderPicker from '@/components/hermes/chat/FolderPicker.vue'
 import ProfileAvatar from '@/components/hermes/profiles/ProfileAvatar.vue'
 import PageSidebarNav from '@/components/layout/PageSidebarNav.vue'
 import { copyToClipboard } from '@/utils/clipboard'
+import { useDiscussionReportDownload } from '@/composables/useDiscussionReportDownload'
 import { useMessage } from '@/composables/useAppMessage'
 import type { Attachment } from '@/stores/hermes/chat'
 import type { MemberInfo, RoomAgent, RoomInfo, RoomSummaryAnchor, RoomSummaryConfig, RoomSummaryState } from '@/api/hermes/group-chat'
@@ -114,6 +115,147 @@ const groupChatInputRef = ref<(InstanceType<typeof GroupChatInput> & {
     insertMention?: (name: string) => void
 }) | null>(null)
 const summarySettingsSectionRef = ref<HTMLElement | null>(null)
+
+// ─── Free Discussion Mode ───────────────────────────────────
+const discussionFormVisible = ref(false)
+const discussionGoal = ref('')
+const discussionMaxRounds = ref(8)
+const discussionMaxMessages = ref(60)
+const discussionAgentOrder = ref<string[]>([])
+const discussionReporterId = ref('')
+const isStartingDiscussion = ref(false)
+const isStoppingDiscussion = ref(false)
+
+const liveDiscussion = computed(() => {
+    const roomId = store.currentRoomId
+    if (!roomId) return null
+    return store.discussionStates.get(roomId) || null
+})
+const discussionIsActive = computed(() => {
+    const state = liveDiscussion.value
+    return state ? state.status === 'pending' || state.status === 'running' || state.status === 'paused' : false
+})
+const lastJudgeNote = computed(() => {
+    const notes = liveDiscussion.value?.judgeNotes
+    return notes && notes.length ? notes[notes.length - 1] : null
+})
+const discussionAgentOptions = computed(() =>
+    store.agents.map(agent => ({ label: agent.name, value: agent.agentId })),
+)
+function discussionStatusLabel(status: string): string {
+    return t(`groupChat.discussion.status.${status}`)
+}
+function openDiscussionForm(): void {
+    discussionFormVisible.value = true
+    discussionGoal.value = ''
+    discussionAgentOrder.value = store.agents.map(agent => agent.agentId)
+    discussionReporterId.value = store.agents[0]?.agentId || ''
+}
+async function handleStartDiscussion(): Promise<void> {
+    const roomId = store.currentRoomId
+    const goal = discussionGoal.value.trim()
+    if (!roomId || !goal) return
+    isStartingDiscussion.value = true
+    try {
+        await store.beginDiscussion(roomId, {
+            goal,
+            agentOrder: discussionAgentOrder.value.length >= 2 ? discussionAgentOrder.value : undefined,
+            maxRounds: discussionMaxRounds.value,
+            maxMessages: discussionMaxMessages.value,
+            reporterId: discussionReporterId.value || undefined,
+        })
+        discussionFormVisible.value = false
+    } catch (err: any) {
+        message.error(err?.message || t('groupChat.discussion.startFailed'))
+    } finally {
+        isStartingDiscussion.value = false
+    }
+}
+async function handleStopDiscussion(): Promise<void> {
+    const roomId = store.currentRoomId
+    if (!roomId) return
+    isStoppingDiscussion.value = true
+    try {
+        await store.endDiscussion(roomId)
+    } catch (err: any) {
+        message.error(err?.message || t('groupChat.discussion.stopFailed'))
+    } finally {
+        isStoppingDiscussion.value = false
+    }
+}
+
+// ─── Report download (Word + Markdown) ─────────────────────
+const { isDownloading: isDownloadingReport, downloadReport: handleDownloadDiscussionReport } = useDiscussionReportDownload()
+
+// ─── Quick start from the chat input toolbar ───────────────
+const discussionQuickVisible = ref(false)
+const discussionQuickGoal = ref('')
+const discussionQuickOrder = ref<string[]>([])
+const isQuickStarting = ref(false)
+
+function openDiscussionQuick(): void {
+    discussionQuickVisible.value = true
+    discussionQuickGoal.value = ''
+    discussionQuickOrder.value = store.agents.map(agent => agent.agentId)
+}
+
+async function handleDiscussionQuickStart(): Promise<void> {
+    const roomId = store.currentRoomId
+    const goal = discussionQuickGoal.value.trim()
+    if (!roomId || !goal) return
+    if (!currentRoomCanManage.value) {
+        message.error(t('groupChat.discussion.managerOnly'))
+        return
+    }
+    if (discussionIsActive.value) {
+        message.warning(t('groupChat.discussion.inProgress'))
+        return
+    }
+    isQuickStarting.value = true
+    try {
+        await store.beginDiscussion(roomId, {
+            goal,
+            agentOrder: discussionQuickOrder.value.length >= 2 ? discussionQuickOrder.value : undefined,
+        })
+        discussionQuickVisible.value = false
+    } catch (err: any) {
+        message.error(err?.message || t('groupChat.discussion.startFailed'))
+    } finally {
+        isQuickStarting.value = false
+    }
+}
+
+// ─── Chat input command: /讨论 <goal> [@member...] ─────────
+function tryParseDiscussionCommand(content: string): { goal: string; agentOrder?: string[] } | null {
+    const match = content.trim().match(/^\/(?:讨论|discuss)\s+(.+)$/s)
+    if (!match) return null
+    const rest = match[1].trim()
+    const mentionNames = [...rest.matchAll(/@([^\s@]+)/g)].map(entry => entry[1])
+    const goal = rest.replace(/@[^\s@]+/g, '').replace(/\s+/g, ' ').trim()
+    if (!goal) return null
+    const order = mentionNames
+        .map(name => store.agents.find(agent => agent.name === name)?.agentId)
+        .filter((id): id is string => !!id)
+    return { goal, agentOrder: order.length >= 2 ? order : undefined }
+}
+
+async function handleDiscussionCommand(command: { goal: string; agentOrder?: string[] }): Promise<void> {
+    const roomId = store.currentRoomId
+    if (!roomId) return
+    if (!currentRoomCanManage.value) {
+        message.error(t('groupChat.discussion.managerOnly'))
+        return
+    }
+    if (discussionIsActive.value) {
+        message.warning(t('groupChat.discussion.inProgress'))
+        return
+    }
+    try {
+        await store.beginDiscussion(roomId, { goal: command.goal, agentOrder: command.agentOrder })
+    } catch (err: any) {
+        message.error(err?.message || t('groupChat.discussion.startFailed'))
+    }
+}
 const chatDropCounter = ref(0)
 const isChatDropActive = ref(false)
 const groupChatContentWrapperRef = ref<HTMLElement | null>(null)
@@ -863,6 +1005,11 @@ async function handleSelectRoom(roomId: string) {
 }
 
 async function handleSendMessage(content: string, attachments?: Attachment[]) {
+    const discussionCommand = tryParseDiscussionCommand(content)
+    if (discussionCommand) {
+        await handleDiscussionCommand(discussionCommand)
+        return
+    }
     try {
         await store.sendMessage(content, attachments)
     } catch (err: any) {
@@ -1569,6 +1716,21 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                     </button>
                 </aside>
                 <div ref="groupChatSurfaceRef" class="group-chat-surface">
+                    <Transition name="discussion-banner">
+                        <div v-if="discussionIsActive" class="discussion-banner">
+                            <span class="discussion-banner-dot" aria-hidden="true"></span>
+                            <div class="discussion-banner-info">
+                                <span class="discussion-banner-title">{{ t('groupChat.discussion.inProgress') }}</span>
+                                <span class="discussion-banner-round">
+                                    {{ t('groupChat.discussion.round', { current: liveDiscussion?.currentRound || 0, max: liveDiscussion?.maxRounds || 0 }) }}
+                                </span>
+                                <span v-if="lastJudgeNote" class="discussion-banner-note">{{ lastJudgeNote.assessment }}</span>
+                            </div>
+                            <NButton size="small" type="error" secondary :loading="isStoppingDiscussion" @click="handleStopDiscussion">
+                                {{ t('groupChat.discussion.stop') }}
+                            </NButton>
+                        </div>
+                    </Transition>
                     <div class="group-message-shell">
                         <GroupMessageList
                             @mention-agent="handleMentionAgent"
@@ -1663,6 +1825,7 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                         :send-blocked="currentRoomNeedsSummaryConfiguration"
                         @send="handleSendMessage"
                         @send-blocked="handleSummaryConfigurationRequired"
+                        @request-discussion="openDiscussionQuick"
                     />
                 </div>
                 <aside
@@ -2218,10 +2381,139 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                             </NButton>
                         </template>
                     </section>
+                    <section class="settings-section discussion-settings-section">
+                        <div class="summary-state-heading">
+                            <h4>{{ t('groupChat.discussion.title') }}</h4>
+                            <span v-if="liveDiscussion" class="discussion-status" :class="`is-${liveDiscussion.status}`">
+                                {{ discussionStatusLabel(liveDiscussion.status) }}
+                            </span>
+                        </div>
+                        <p class="form-hint">{{ t('groupChat.discussion.desc') }}</p>
+                        <template v-if="!discussionFormVisible">
+                            <NButton
+                                block
+                                :disabled="discussionIsActive || store.agents.length < 2"
+                                @click="openDiscussionForm"
+                            >
+                                {{ t('groupChat.discussion.start') }}
+                            </NButton>
+                            <p v-if="store.agents.length < 2" class="form-hint discussion-needs-agents">
+                                {{ t('groupChat.discussion.needsAgents') }}
+                            </p>
+                        </template>
+                        <template v-else>
+                            <div class="form-group">
+                                <label class="form-label">{{ t('groupChat.discussion.goal') }}</label>
+                                <NInput
+                                    v-model:value="discussionGoal"
+                                    type="textarea"
+                                    :rows="3"
+                                    :placeholder="t('groupChat.discussion.goalPlaceholder')"
+                                />
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">{{ t('groupChat.discussion.agentOrder') }}</label>
+                                <NSelect
+                                    v-model:value="discussionAgentOrder"
+                                    multiple
+                                    :options="discussionAgentOptions"
+                                    :placeholder="t('groupChat.discussion.agentOrderPlaceholder')"
+                                />
+                                <p class="form-hint">{{ t('groupChat.discussion.agentOrderDesc') }}</p>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">{{ t('groupChat.discussion.reporter') }}</label>
+                                <NSelect v-model:value="discussionReporterId" :options="discussionAgentOptions" />
+                            </div>
+                            <div class="discussion-limit-row">
+                                <div class="form-group">
+                                    <label class="form-label">{{ t('groupChat.discussion.maxRounds') }}</label>
+                                    <NInputNumber v-model:value="discussionMaxRounds" :min="1" :max="50" style="width: 100%" />
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">{{ t('groupChat.discussion.maxMessages') }}</label>
+                                    <NInputNumber v-model:value="discussionMaxMessages" :min="2" :max="500" style="width: 100%" />
+                                </div>
+                            </div>
+                            <p class="form-hint">{{ t('groupChat.discussion.judgeDesc') }}</p>
+                            <NSpace justify="end">
+                                <NButton @click="discussionFormVisible = false">{{ t('common.cancel') }}</NButton>
+                                <NButton
+                                    type="primary"
+                                    :disabled="!discussionGoal.trim() || discussionAgentOrder.length < 2"
+                                    :loading="isStartingDiscussion"
+                                    @click="handleStartDiscussion"
+                                >
+                                    {{ t('groupChat.discussion.start') }}
+                                </NButton>
+                            </NSpace>
+                        </template>
+                        <div v-if="liveDiscussion && !discussionIsActive" class="discussion-result">
+                            <div class="discussion-meta">
+                                <span>{{ t('groupChat.discussion.roundsDone', { rounds: liveDiscussion.currentRound }) }}</span>
+                                <span v-if="liveDiscussion.status === 'converged'" class="discussion-converged">
+                                    {{ t('groupChat.discussion.convergedLabel') }}
+                                </span>
+                            </div>
+                            <div v-if="lastJudgeNote" class="discussion-note">{{ lastJudgeNote.assessment }}</div>
+                            <div v-if="liveDiscussion.lastError" class="summary-error">{{ liveDiscussion.lastError }}</div>
+                            <div class="discussion-actions">
+                                <NButton
+                                    size="small"
+                                    secondary
+                                    type="primary"
+                                    :loading="isDownloadingReport"
+                                    @click="handleDownloadDiscussionReport"
+                                >
+                                    {{ t('groupChat.discussion.downloadReport') }}
+                                </NButton>
+                            </div>
+                        </div>
+                    </section>
                     </div>
                 </NDrawerContent>
             </NDrawer>
         </Teleport>
+
+        <NModal
+            v-model:show="discussionQuickVisible"
+            preset="card"
+            :title="t('groupChat.discussion.quickStartTitle')"
+            style="max-width: 480px"
+        >
+            <div class="discussion-quick-form">
+                <div class="form-group">
+                    <label class="form-label">{{ t('groupChat.discussion.quickStartGoal') }}</label>
+                    <NInput
+                        v-model:value="discussionQuickGoal"
+                        type="textarea"
+                        :rows="3"
+                        :placeholder="t('groupChat.discussion.quickStartGoalPlaceholder')"
+                    />
+                </div>
+                <div class="form-group">
+                    <label class="form-label">{{ t('groupChat.discussion.quickStartParticipants') }}</label>
+                    <NSelect
+                        v-model:value="discussionQuickOrder"
+                        multiple
+                        :options="discussionAgentOptions"
+                        :placeholder="t('groupChat.discussion.agentOrderPlaceholder')"
+                    />
+                </div>
+                <p class="form-hint">{{ t('groupChat.discussion.quickStartHint') }}</p>
+                <NSpace justify="end">
+                    <NButton @click="discussionQuickVisible = false">{{ t('common.cancel') }}</NButton>
+                    <NButton
+                        type="primary"
+                        :disabled="!discussionQuickGoal.trim() || discussionQuickOrder.length < 2"
+                        :loading="isQuickStarting"
+                        @click="handleDiscussionQuickStart"
+                    >
+                        {{ t('groupChat.discussion.quickStartStart') }}
+                    </NButton>
+                </NSpace>
+            </div>
+        </NModal>
 
     </div>
 </template>
@@ -3464,6 +3756,133 @@ export default defineComponent({ components: { CreateRoomForm } })
         color: #d03050;
         background: rgba(208, 48, 80, 0.12);
     }
+}
+
+.discussion-banner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0 0 8px;
+    padding: 8px 12px;
+    border-radius: $radius-sm;
+    border: 1px solid rgba(var(--accent-primary-rgb), 0.25);
+    background: rgba(var(--accent-primary-rgb), 0.08);
+
+    .discussion-banner-dot {
+        width: 8px;
+        height: 8px;
+        flex: none;
+        border-radius: 50%;
+        background: var(--accent-primary);
+        animation: discussion-pulse 1.6s ease-in-out infinite;
+    }
+
+    .discussion-banner-info {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        line-height: 1.5;
+    }
+
+    .discussion-banner-title {
+        flex: none;
+        font-weight: 600;
+        color: var(--accent-primary);
+    }
+
+    .discussion-banner-round {
+        flex: none;
+        color: $text-muted;
+    }
+
+    .discussion-banner-note {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: $text-secondary;
+    }
+}
+
+@keyframes discussion-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+}
+
+.discussion-status {
+    padding: 3px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    color: $text-muted;
+    background: rgba(var(--text-primary-rgb), 0.06);
+
+    &.is-running,
+    &.is-pending {
+        color: var(--accent-primary);
+        background: rgba(var(--accent-primary-rgb), 0.12);
+    }
+
+    &.is-converged {
+        color: #36ad6a;
+        background: rgba(54, 173, 106, 0.12);
+    }
+
+    &.is-stopped,
+    &.is-max_rounds,
+    &.is-failed {
+        color: #d03050;
+        background: rgba(208, 48, 80, 0.12);
+    }
+}
+
+.discussion-limit-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+
+.discussion-result {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(var(--text-primary-rgb), 0.08);
+
+    .discussion-meta {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 6px;
+        color: $text-muted;
+        font-size: 11px;
+    }
+
+    .discussion-converged {
+        color: #36ad6a;
+        font-weight: 600;
+    }
+
+    .discussion-note {
+        color: $text-secondary;
+        font-size: 12px;
+        line-height: 1.6;
+    }
+}
+
+.discussion-needs-agents {
+    margin-top: 8px;
+    text-align: center;
+}
+
+.discussion-banner-enter-active,
+.discussion-banner-leave-active {
+    transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.discussion-banner-enter-from,
+.discussion-banner-leave-to {
+    opacity: 0;
+    transform: translateY(-4px);
 }
 
 .summary-meta {

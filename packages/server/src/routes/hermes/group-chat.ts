@@ -9,6 +9,7 @@ import {
 } from '../../services/hermes/group-chat/access'
 import { setGroupChatRuntimeServer } from '../../services/hermes/group-chat/runtime'
 import * as ctrl from '../../controllers/hermes/group-chat-workspace'
+import * as discussionCtrl from '../../controllers/hermes/group-chat-discussion'
 
 export const groupChatRoutes = new Router()
 
@@ -1354,3 +1355,9 @@ groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId/export', async (ctx) =
         ctx.body = JSON.stringify({ room, messages, agents, members, exportedAt: new Date().toISOString() }, null, 2)
     }
 })
+
+// ─── Group Discussion (free discussion mode) ─────────────────
+
+groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/discussion', discussionCtrl.startDiscussion)
+groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId/discussion', discussionCtrl.getDiscussion)
+groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/discussion/stop', discussionCtrl.stopDiscussion)
