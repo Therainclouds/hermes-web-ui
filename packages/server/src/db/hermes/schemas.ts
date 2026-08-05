@@ -692,6 +692,29 @@ export const GC_SESSION_PROFILES_SCHEMA: Record<string, string> = {
   created_at: 'INTEGER NOT NULL',
 }
 
+export const GC_DISCUSSIONS_TABLE = 'gc_discussions'
+
+export const GC_DISCUSSIONS_SCHEMA: Record<string, string> = {
+  id: 'TEXT PRIMARY KEY',
+  roomId: 'TEXT NOT NULL',
+  goal: "TEXT NOT NULL DEFAULT ''",
+  agentOrder: "TEXT NOT NULL DEFAULT '[]'",
+  reporterId: "TEXT NOT NULL DEFAULT ''",
+  maxRounds: 'INTEGER NOT NULL DEFAULT 8',
+  maxMessages: 'INTEGER NOT NULL DEFAULT 60',
+  judgeProfile: "TEXT NOT NULL DEFAULT ''",
+  judgeProvider: "TEXT NOT NULL DEFAULT ''",
+  judgeModel: "TEXT NOT NULL DEFAULT ''",
+  judgeApiMode: "TEXT NOT NULL DEFAULT ''",
+  status: "TEXT NOT NULL DEFAULT 'pending'",
+  currentRound: 'INTEGER NOT NULL DEFAULT 0',
+  judgeNotes: "TEXT NOT NULL DEFAULT '[]'",
+  reportMessageId: "TEXT NOT NULL DEFAULT ''",
+  lastError: 'TEXT',
+  createdAt: 'INTEGER NOT NULL',
+  updatedAt: 'INTEGER NOT NULL',
+}
+
 // ============================================================================
 // Expert Marketplace (services/hermes/experts/*)
 // ============================================================================
@@ -1246,6 +1269,11 @@ export function initAllHermesTables(): void {
     syncTable(GC_ROOM_SUMMARIES_TABLE, GC_ROOM_SUMMARIES_SCHEMA)
     syncTable(GC_PENDING_SESSION_DELETES_TABLE, GC_PENDING_SESSION_DELETES_SCHEMA)
     syncTable(GC_SESSION_PROFILES_TABLE, GC_SESSION_PROFILES_SCHEMA)
+    syncTable(GC_DISCUSSIONS_TABLE, GC_DISCUSSIONS_SCHEMA, {
+      indexes: {
+        idx_gc_discussions_room: 'CREATE INDEX idx_gc_discussions_room ON gc_discussions(roomId)',
+      },
+    })
 
     // Group chat - single-column primary key tables (PRIMARY KEY in column definition)
     syncTable(GC_ROOM_AGENTS_TABLE, GC_ROOM_AGENTS_SCHEMA, {

@@ -79,6 +79,12 @@ docs/update-distribution
 docs/
 !hermes_data/
 
+# Local merge-analysis scratch files (never commit)
+tmp/
+
+# Tool-generated repo knowledge base (not source)
+.qoder/repowiki/
+
 # Local dev data (cache, tokens, profiles — never commit)
 .dev-data/
 .dev-data/**
