@@ -22,7 +22,7 @@ export default {
     tokenLogin: 'Token',
     usernamePlaceholder: 'Username',
     passwordPlaceholder: 'Password',
-    defaultCredentialsHint: 'Default username: admin. Default password: 123456.',
+    defaultCredentialsHint: 'Default username: quanthermes. Default password: 12345678.',
     credentialsRequired: 'Please enter username and password',
     invalidCredentials: 'Invalid username or password',
     tooManyAttempts: 'Too many failed attempts, please try again later',

@@ -22,7 +22,7 @@ export default {
     tokenLogin: 'الرمز',
     usernamePlaceholder: 'اسم المستخدم',
     passwordPlaceholder: 'كلمة المرور',
-    defaultCredentialsHint: 'اسم المستخدم الافتراضي: admin. كلمة المرور الافتراضية: 123456.',
+    defaultCredentialsHint: 'اسم المستخدم الافتراضي: quanthermes. كلمة المرور الافتراضية: 12345678.',
     credentialsRequired: 'الرجاء إدخال اسم المستخدم وكلمة المرور',
     invalidCredentials: 'اسم المستخدم أو كلمة المرور غير صحيحة',
     tooManyAttempts: 'محاولات فاشلة كثيرة، الرجاء المحاولة لاحقًا',

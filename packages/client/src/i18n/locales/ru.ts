@@ -22,7 +22,7 @@ export default {
     tokenLogin: 'Вход по токену',
     usernamePlaceholder: 'Имя пользователя',
     passwordPlaceholder: 'Пароль',
-    defaultCredentialsHint: 'Логин по умолчанию: admin, пароль по умолчанию: 123456',
+    defaultCredentialsHint: 'Логин по умолчанию: quanthermes, пароль по умолчанию: 12345678',
     credentialsRequired: 'Введите имя пользователя и пароль',
     invalidCredentials: 'Неверное имя пользователя или пароль',
     tooManyAttempts: 'Слишком много неудачных попыток входа, повторите попытку позже',

@@ -122,7 +122,7 @@ export default {
     tokenLogin: 'Token',
     usernamePlaceholder: 'Nombre de usuario',
     passwordPlaceholder: 'Contrasena',
-    defaultCredentialsHint: 'Nombre de usuario predeterminado: admin. Contrasena predeterminada: 123456.',
+    defaultCredentialsHint: 'Nombre de usuario predeterminado: quanthermes. Contrasena predeterminada: 12345678.',
     credentialsRequired: 'Por favor, introduzca nombre de usuario y contrasena',
     invalidCredentials: 'Nombre de usuario o contrasena incorrectos',
     tooManyAttempts: 'Demasiados intentos fallidos, por favor intente mas tarde',

@@ -122,7 +122,7 @@ export default {
     tokenLogin: 'トークン',
     usernamePlaceholder: 'ユーザー名',
     passwordPlaceholder: 'パスワード',
-    defaultCredentialsHint: '既定のユーザー名：admin、既定のパスワード：123456',
+    defaultCredentialsHint: '既定のユーザー名：quanthermes、既定のパスワード：12345678',
     credentialsRequired: 'ユーザー名とパスワードを入力してください',
     invalidCredentials: 'ユーザー名またはパスワードが正しくありません',
     tooManyAttempts: 'ログイン試行回数が多すぎます。しばらくしてからお試しください',

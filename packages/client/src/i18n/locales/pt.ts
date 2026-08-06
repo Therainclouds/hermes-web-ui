@@ -122,7 +122,7 @@ export default {
     tokenLogin: 'Token',
     usernamePlaceholder: 'Nome de usuário',
     passwordPlaceholder: 'Senha',
-    defaultCredentialsHint: 'Nome de usuário padrão: admin. Senha padrão: 123456.',
+    defaultCredentialsHint: 'Nome de usuário padrão: quanthermes. Senha padrão: 12345678.',
     credentialsRequired: 'Por favor, insira nome de usuário e senha',
     invalidCredentials: 'Nome de usuário ou senha incorretos',
     tooManyAttempts: 'Muitas tentativas falhadas, por favor tente novamente mais tarde',
