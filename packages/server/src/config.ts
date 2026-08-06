@@ -1,4 +1,5 @@
 import { join, resolve } from 'path'
+import { existsSync } from 'fs'
 import { homedir } from 'os'
 import type { UpdatePackageType, UpdateStrategy } from './services/update/types'
 
@@ -168,8 +169,37 @@ function getDefaultUpdateRunnerRequestFile(appHomePath: string): string {
   return resolve(appHomePath, 'updates', 'update-runner-request.json')
 }
 
-function getDefaultUpdateHealthcheckUrl(port: string): string {
-  return `http://127.0.0.1:${port}/health`
+/**
+ * Internal loopback port used by on-device processes (Node sub-processes,
+ * Python agents, shell/curl scripts) to reach the Web UI without having to
+ * negotiate self-signed TLS:
+ *   - HTTP mode: the plain HTTP listen port (same server, no extra process).
+ *   - HTTPS mode: a dedicated plain-HTTP loopback server bound to 127.0.0.1
+ *     on `HTTPS_PORT + 1`, override with LOOPBACK_PORT.
+ */
+const LOOPBACK_PORT: number = (() => {
+  const configured = process.env.LOOPBACK_PORT?.trim()
+  if (configured) {
+    const parsed = Number.parseInt(configured, 10)
+    if (Number.isInteger(parsed) && parsed > 0) return parsed
+  }
+  const listenPort = parseInt(process.env.PORT || '6060', 10)
+  const httpsPort = parseInt(process.env.HTTPS_PORT || String(listenPort), 10)
+  const certDir = resolve(__dirname, '../../certs')
+  const hasTls = existsSync(join(certDir, 'server.crt')) && existsSync(join(certDir, 'server.key'))
+  return hasTls ? httpsPort + 1 : listenPort
+})()
+
+export function getLoopbackPort(): number {
+  return LOOPBACK_PORT
+}
+
+export function getLoopbackBaseUrl(port: number | string = LOOPBACK_PORT): string {
+  return `http://127.0.0.1:${port}`
+}
+
+function getDefaultUpdateHealthcheckUrl(port: number | string = LOOPBACK_PORT): string {
+  return `${getLoopbackBaseUrl(port)}/health`
 }
 
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
@@ -238,7 +268,7 @@ export const config = {
     installerScript: (process.env.WEBUI_UPDATE_INSTALLER_SCRIPT || '').trim() || getDefaultInstallerScript(),
     stagingDir: resolve((process.env.WEBUI_UPDATE_STAGING_DIR || join(appHome, 'updates', 'staging')).trim()),
     backupDir: resolve((process.env.WEBUI_UPDATE_BACKUP_DIR || join(appHome, 'updates', 'backups')).trim()),
-    healthcheckUrl: (process.env.WEBUI_UPDATE_HEALTHCHECK_URL || '').trim() || getDefaultUpdateHealthcheckUrl(process.env.PORT || '6060'),
+    healthcheckUrl: (process.env.WEBUI_UPDATE_HEALTHCHECK_URL || '').trim() || getDefaultUpdateHealthcheckUrl(LOOPBACK_PORT),
     stateFile: resolve((process.env.WEBUI_UPDATE_STATE_FILE || join(appHome, 'updates', 'update-task-state.json')).trim()),
     logDir: resolve((process.env.WEBUI_UPDATE_LOG_DIR || join(appHome, 'updates', 'logs')).trim()),
     manifestTimeoutMs: parsePositiveInteger(process.env.WEBUI_UPDATE_MANIFEST_TIMEOUT_MS, 30_000),

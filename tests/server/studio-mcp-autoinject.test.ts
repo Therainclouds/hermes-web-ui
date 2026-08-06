@@ -70,6 +70,7 @@ vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
 
 vi.mock('../../packages/server/src/config', () => ({
   config: configMock,
+  getLoopbackBaseUrl: () => `http://127.0.0.1:${configMock.port}`,
 }))
 
 vi.mock('../../packages/server/src/services/logger', () => ({

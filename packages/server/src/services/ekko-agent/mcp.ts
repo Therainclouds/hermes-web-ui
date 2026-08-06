@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { config } from '../../config'
+import { config, getLoopbackBaseUrl } from '../../config'
 
 const MANAGED_ENV_KEY = 'HERMES_WEB_UI_MANAGED_MCP'
 const MANAGED_SERVERS: ReadonlyArray<{ name: string; toolset: string }> = [
@@ -80,7 +80,7 @@ function managedMcpServerConfig(profile: string, serverName: string, toolset: st
   return {
     ...managedCommandConfig(toolset),
     env: {
-      HERMES_WEB_UI_URL: `http://127.0.0.1:${config.port}`,
+      HERMES_WEB_UI_URL: getLoopbackBaseUrl(),
       HERMES_WEB_UI_HOME: config.appHome,
       HERMES_WEBUI_STATE_DIR: config.appHome,
       HERMES_WEB_UI_PROFILE: profile,

@@ -1,7 +1,7 @@
 import type { Context } from 'koa'
 import { randomUUID } from 'crypto'
 import { io, type Socket } from 'socket.io-client'
-import { config } from '../config'
+import { getLoopbackBaseUrl } from '../config'
 
 type ChatRunPayload = Record<string, unknown> & {
   input?: unknown
@@ -69,7 +69,7 @@ function requestTimeoutMs(value: unknown): number {
 }
 
 function chatRunBaseUrl(): string {
-  return (process.env.HERMES_WEB_UI_URL || `http://127.0.0.1:${config.port}`).replace(/\/$/, '')
+  return (process.env.HERMES_WEB_UI_URL || getLoopbackBaseUrl()).replace(/\/$/, '')
 }
 
 function profileFrom(ctx: Context, body: ChatRunPayload): string {

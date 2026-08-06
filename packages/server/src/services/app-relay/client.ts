@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto'
 import { io, type Socket } from 'socket.io-client'
-import { config } from '../../config'
+import { getLoopbackBaseUrl } from '../../config'
 import { logger } from '../logger'
 import { createDeviceSignature } from '../system-info'
 
@@ -434,7 +434,7 @@ export function startAppRelayClient(options: StartAppRelayClientOptions): AppRel
     machineId,
     publicKey,
     machineInfo: options.machineInfo,
-    localBaseUrl: options.localBaseUrl || `http://127.0.0.1:${config.port}`,
+    localBaseUrl: options.localBaseUrl || getLoopbackBaseUrl(),
     fetchImpl: options.fetchImpl || fetch,
   })
   client.start()

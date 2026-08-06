@@ -6,7 +6,7 @@ import { io as createClientSocket, type Socket as ClientSocket } from 'socket.io
 import { logger } from '../logger'
 import { authenticateUserToken, type AuthenticatedUser } from '../../middleware/user-auth'
 import { userCanAccessProfile } from '../../db/hermes/users-store'
-import { config } from '../../config'
+import { config, getLoopbackBaseUrl } from '../../config'
 import { getChatRunServer } from '../../routes/hermes/chat-run'
 import { transcodeToPcmS16le } from '../hermes/stt-providers/audio-convert'
 import { decodeMcuImaAdpcm, encodeMcuImaAdpcm } from '../hermes/mcu-adpcm'
@@ -443,7 +443,7 @@ export class GlobalAgentServer {
 
   constructor(io: Server, options: StartGlobalAgentServerOptions = {}) {
     this.nsp = io.of(GLOBAL_AGENT_NAMESPACE)
-    this.localBaseUrl = (options.localBaseUrl || `http://127.0.0.1:${config.port}`).replace(/\/$/, '')
+    this.localBaseUrl = (options.localBaseUrl || getLoopbackBaseUrl()).replace(/\/$/, '')
     this.fetchImpl = options.fetchImpl || fetch
   }
 

@@ -1,6 +1,6 @@
 import { Readable } from 'stream'
 import type { Context } from 'koa'
-import { config } from '../../../config'
+import { getLoopbackBaseUrl } from '../../../config'
 import {
   anthropicMessagesUrl as resolveAnthropicMessagesUrl,
   chatCompletionsUrl as resolveChatCompletionsUrl,
@@ -47,7 +47,7 @@ const CLAUDE_PROXY_VISIBLE_MODELS = [
 ]
 
 function localProxyBaseUrl(routeKey: string): string {
-  return `http://127.0.0.1:${config.port}/api/claude-code-proxy/${routeKey}`
+  return `${getLoopbackBaseUrl()}/api/claude-code-proxy/${routeKey}`
 }
 
 export function registerClaudeCodeProxyTarget(input: ClaudeCodeProxyTargetInput): { baseUrl: string; token: string; routeKey: string } {

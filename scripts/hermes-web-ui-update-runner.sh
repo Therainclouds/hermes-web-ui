@@ -78,10 +78,15 @@ if not isinstance(env_payload, dict):
 
 lines = [f"export HERMES_WEB_UI_UPDATE_REQUEST_STRATEGY={shlex.quote(strategy)}"]
 for key, value in env_payload.items():
+    # Unknown keys are treated as forward-compatible extensions from a newer
+    # controller. Hard-failing on them breaks self-upgrade when an older runner
+    # drives a newer request (bootstrap problem). Skip with a warning instead;
+    # the core update flow still runs with every recognized key.
     if key not in allowed_keys:
-      raise SystemExit(f"Unsupported request key: {key}")
+        print(f"[hermes-web-ui-update-runner] WARNING: skipping unsupported request key: {key}", file=sys.stderr)
+        continue
     if not isinstance(value, str):
-      raise SystemExit(f"Unsupported request value for {key}: expected string.")
+        raise SystemExit(f"Unsupported request value for {key}: expected string.")
     lines.append(f"export {key}={shlex.quote(value)}")
 
 output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
