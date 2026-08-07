@@ -2607,6 +2607,14 @@ export default {
   },
 
   changelog: {
+    new_0_7_17_1: 'Updating now upgrades Hermes Agent to the latest stable release by default: the Web UI is updated first, then the Agent, and an agent upgrade failure never blocks the Web UI update (supported on the device-package, source-deploy and npm update paths).',
+    new_0_7_17_2: 'Agent Bridge workers now fail fast on startup errors (no more waiting the full 120s) and attach the worker stderr tail to the error so the root cause is visible immediately.',
+    new_0_7_17_3: 'Agent Bridge errors are now categorized (bridge unreachable / worker spawn failed / request timeout) so the UI can suggest concrete fixes; the linked upgrade also resolves the hermes-agent 0.15.2 missing dashboard_auth startup failure.',
+    new_0_7_16_1: 'HTTPS loopback rework: internal services (group chat, meetings, external agents) now talk over a local loopback channel under HTTPS, avoiding self-signed certificate negotiation failures.',
+    new_0_7_16_2: 'TLS certificates are restored automatically after an update, fixing HTTPS falling back to HTTP after npm-based updates.',
+    new_0_7_16_3: 'The login screen now hints the real default account quanthermes instead of the misleading admin.',
+    new_0_7_15_1: 'Group chat adds a free-discussion mode with task cards and report export.',
+    new_0_7_15_2: 'Deploy/update now prepares the USB storage mount environment (exfat/ntfs-3g support, exfat kernel module, USB_USE_SUDO).',
     new_0_6_38_1: 'При запуске Windows-версия исправляет недействительные относительные пути Python, оставленные обновлением Agent в кэшированной среде Hermes Runtime, восстанавливая CLI, журналы и Gateway после обновления, переключения Runtime или переноса хранилища',
     new_0_6_38_2: 'Каталог совместимости сайта снова распознаёт Hermes 0.19.0, сохраняя доступность соответствующих desktop-загрузок и проверок совместимости (#2348)',
     new_0_6_37_1: 'Главное изменение этого выпуска из 14 PR — полная переработка Group Chat: каждый Agent независимо выбирает Profile, Provider, модель, режим API, уровень рассуждений, личность и workspace (#2334)',

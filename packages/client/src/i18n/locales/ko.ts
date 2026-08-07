@@ -2689,6 +2689,14 @@ export default {
   },
 
   changelog: {
+    new_0_7_17_1: 'Updating now upgrades Hermes Agent to the latest stable release by default: the Web UI is updated first, then the Agent, and an agent upgrade failure never blocks the Web UI update (supported on the device-package, source-deploy and npm update paths).',
+    new_0_7_17_2: 'Agent Bridge workers now fail fast on startup errors (no more waiting the full 120s) and attach the worker stderr tail to the error so the root cause is visible immediately.',
+    new_0_7_17_3: 'Agent Bridge errors are now categorized (bridge unreachable / worker spawn failed / request timeout) so the UI can suggest concrete fixes; the linked upgrade also resolves the hermes-agent 0.15.2 missing dashboard_auth startup failure.',
+    new_0_7_16_1: 'HTTPS loopback rework: internal services (group chat, meetings, external agents) now talk over a local loopback channel under HTTPS, avoiding self-signed certificate negotiation failures.',
+    new_0_7_16_2: 'TLS certificates are restored automatically after an update, fixing HTTPS falling back to HTTP after npm-based updates.',
+    new_0_7_16_3: 'The login screen now hints the real default account quanthermes instead of the misleading admin.',
+    new_0_7_15_1: 'Group chat adds a free-discussion mode with task cards and report export.',
+    new_0_7_15_2: 'Deploy/update now prepares the USB storage mount environment (exfat/ntfs-3g support, exfat kernel module, USB_USE_SUDO).',
     new_0_6_38_1: 'Windows 데스크톱 시작 시 Agent 업데이트가 캐시된 Hermes Runtime 환경에 남긴 잘못된 Python 상대 경로를 자동 복구해 업데이트, Runtime 전환 또는 저장소 마이그레이션 후 CLI, 로그와 Gateway를 정상화합니다',
     new_0_6_38_2: '웹사이트 호환 버전 목록이 Hermes 0.19.0을 다시 인식해 해당 데스크톱 다운로드와 호환성 검사를 계속 사용할 수 있습니다(#2348)',
     new_0_6_37_1: '14개 PR을 담은 이번 릴리스의 핵심은 Group Chat 전면 재구축입니다. 각 Agent가 Profile, Provider, 모델, API 모드, 추론 강도, 정체성과 workspace를 독립적으로 선택할 수 있습니다(#2334)',

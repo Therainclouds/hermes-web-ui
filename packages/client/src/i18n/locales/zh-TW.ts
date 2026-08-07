@@ -2914,6 +2914,14 @@ export default {
 
   // 更新日誌
   changelog: {
+    new_0_7_17_1: 'Updating now upgrades Hermes Agent to the latest stable release by default: the Web UI is updated first, then the Agent, and an agent upgrade failure never blocks the Web UI update (supported on the device-package, source-deploy and npm update paths).',
+    new_0_7_17_2: 'Agent Bridge workers now fail fast on startup errors (no more waiting the full 120s) and attach the worker stderr tail to the error so the root cause is visible immediately.',
+    new_0_7_17_3: 'Agent Bridge errors are now categorized (bridge unreachable / worker spawn failed / request timeout) so the UI can suggest concrete fixes; the linked upgrade also resolves the hermes-agent 0.15.2 missing dashboard_auth startup failure.',
+    new_0_7_16_1: 'HTTPS loopback rework: internal services (group chat, meetings, external agents) now talk over a local loopback channel under HTTPS, avoiding self-signed certificate negotiation failures.',
+    new_0_7_16_2: 'TLS certificates are restored automatically after an update, fixing HTTPS falling back to HTTP after npm-based updates.',
+    new_0_7_16_3: 'The login screen now hints the real default account quanthermes instead of the misleading admin.',
+    new_0_7_15_1: 'Group chat adds a free-discussion mode with task cards and report export.',
+    new_0_7_15_2: 'Deploy/update now prepares the USB storage mount environment (exfat/ntfs-3g support, exfat kernel module, USB_USE_SUDO).',
     new_0_6_38_1: 'Windows 桌面端啟動時會自動修復 Agent 更新後快取 Runtime 中失效的 Python 相對路徑，恢復更新、Runtime 切換或儲存遷移後的 CLI、日誌與 Gateway',
     new_0_6_38_2: '官網相容版本清單重新識別 Hermes 0.19.0，確保對應桌面端下載和相容性檢查繼續可用（#2348）',
     new_0_6_37_1: '本次涵蓋 14 個 PR 的版本以群聊全面重構為核心：每個 Agent 可獨立選擇 Profile、Provider、模型、API 模式、推理強度、身分和 workspace（#2334）',
