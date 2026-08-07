@@ -631,6 +631,25 @@ ${transcript}
           })
         }
       },
+      onMessageInterim: (evt: RunEvent) => {
+        const text = evt.text || evt.delta || ''
+        if (!text) return
+        if (activeAssistantMessageId) {
+          const msg = messages.value.find(m => m.id === activeAssistantMessageId)
+          if (msg) {
+            msg.content = text
+          }
+        } else {
+          addMessage({
+            id: uid(),
+            role: 'assistant',
+            content: text,
+            timestamp: Date.now(),
+            status: 'sent'
+          })
+        }
+        activeAssistantMessageId = null
+      },
       onReasoningDelta: (evt: RunEvent) => {
         const text = evt.text || evt.delta || ''
         if (!text) return
@@ -1048,6 +1067,26 @@ ${transcript}
             status: 'sent'
           })
         }
+      },
+      onMessageInterim: (evt: RunEvent) => {
+        const text = evt.text || evt.delta || ''
+        if (!text) return
+        responseContent += text
+        if (activeAssistantMessageId) {
+          const msg = messages.value.find(m => m.id === activeAssistantMessageId)
+          if (msg) {
+            msg.content = text
+          }
+        } else {
+          addMessage({
+            id: uid(),
+            role: 'assistant',
+            content: text,
+            timestamp: Date.now(),
+            status: 'sent'
+          })
+        }
+        activeAssistantMessageId = null
       },
       onReasoningDelta: (evt: RunEvent) => {
         const text = evt.text || evt.delta || ''
