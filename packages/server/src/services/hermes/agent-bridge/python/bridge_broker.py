@@ -148,8 +148,14 @@ class BridgeBroker:
             self._record_response_routes(profile, key, resp)
             return resp
         except RuntimeError as e:
-            # Worker returned ok=false or connection error — return error response
-            return {"ok": False, "error": str(e)}
+            # Worker returned ok=false or connection error — return error response.
+            # error_type lets the Node client classify the failure instead of
+            # surfacing a bare timeout (see WorkerStartupError).
+            return {
+                "ok": False,
+                "error": str(e),
+                "error_type": getattr(e, "error_type", "worker_request_failed"),
+            }
 
     def _worker_request_timeout(self, req: dict[str, Any]) -> float:
         try:

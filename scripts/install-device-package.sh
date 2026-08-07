@@ -31,7 +31,7 @@ HEALTHCHECK_TIMEOUT_MS="${HERMES_WEB_UI_UPDATE_HEALTHCHECK_TIMEOUT_MS:-2000}"
 HEALTHCHECK_INTERVAL_MS="${HERMES_WEB_UI_UPDATE_HEALTHCHECK_INTERVAL_MS:-2000}"
 HEALTHCHECK_RETRIES="${HERMES_WEB_UI_UPDATE_HEALTHCHECK_RETRIES:-15}"
 HEALTHCHECK_INITIAL_DELAY_MS="${HERMES_WEB_UI_UPDATE_HEALTHCHECK_INITIAL_DELAY_MS:-5000}"
-INCLUDE_AGENT_UPGRADE_RAW="${HERMES_WEB_UI_UPDATE_INCLUDE_AGENT_UPGRADE:-false}"
+INCLUDE_AGENT_UPGRADE_RAW="${HERMES_WEB_UI_UPDATE_INCLUDE_AGENT_UPGRADE:-true}"
 APP_USER="${APP_USER:-hermesui}"
 PORT="${PORT:-8648}"
 SYSTEMD_SERVICE_NAME="${SYSTEMD_SERVICE_NAME:-hermes-web-ui}"
@@ -550,12 +550,6 @@ main() {
   build_preserve_names
   prepare_workdirs
   extract_package
-  if [[ "${INCLUDE_AGENT_UPGRADE}" == "true" ]]; then
-    update_task_stage "updating_runtime" "Upgrading Hermes Agent before applying ${TARGET_VERSION}"
-    run_hermes_agent_update
-  else
-    info "Skipping Hermes Agent upgrade for device package ${TARGET_VERSION}"
-  fi
   update_task_stage "backing_up" "Creating program backup for ${TARGET_VERSION}"
   backup_current_deploy
   prune_old_backups "${BACKUP_RETENTION_COUNT}" "${BACKUP_ROOT}"
@@ -566,6 +560,16 @@ main() {
   fi
   update_task_stage "installing" "Replacing deploy tree with device package ${TARGET_VERSION}"
   sync_package_tree
+  # Upgrade Hermes Agent only after the Web UI tree is in place, so a failed
+  # agent upgrade never blocks the Web UI update itself (best-effort bailout).
+  if [[ "${INCLUDE_AGENT_UPGRADE}" == "true" ]]; then
+    update_task_stage "updating_runtime" "Upgrading Hermes Agent after replacing Web UI"
+    if ! run_hermes_agent_update; then
+      warn "Hermes Agent upgrade failed; web UI update continues without it"
+    fi
+  else
+    info "Skipping Hermes Agent upgrade for device package ${TARGET_VERSION}"
+  fi
   update_task_stage "restarting" "Rebuilding and restarting services for ${TARGET_VERSION}"
   run_deploy_script
   update_task_stage "health_checking" "Running health check for ${TARGET_VERSION}"

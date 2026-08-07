@@ -17,10 +17,22 @@ from urllib.parse import urlparse
 
 from bridge_runtime import _hidden_subprocess_kwargs, _json_line_bytes, _platform_text_encoding
 
+class WorkerStartupError(RuntimeError):
+    """Raised when a profile worker fails before reporting ready.
+
+    ``error_type`` lets the broker and the Node client classify the failure
+    (e.g. ``worker_spawn_failed``) instead of surfacing a bare timeout.
+    """
+
+    def __init__(self, message: str, error_type: str = "worker_spawn_failed") -> None:
+        super().__init__(message)
+        self.error_type = error_type
+
 class WorkerProcess:
     STARTUP_TIMEOUT_SECONDS = 120
     REQUEST_TIMEOUT_SECONDS = 120
     SHUTDOWN_REQUEST_TIMEOUT_SECONDS = 15
+    STDERR_TAIL_LINES = 40
 
     def __init__(self, key: str, profile: str, endpoint: str, agent_root: str | None, hermes_home: str | None) -> None:
         self.key = key or profile or "default"
@@ -31,6 +43,9 @@ class WorkerProcess:
         self.process: subprocess.Popen[str] | None = None
         self.last_used_at = time.time()
         self._lock = threading.RLock()
+        self._stderr_lines: list[str] = []
+        self._stderr_lock = threading.Lock()
+        self._stderr_eof = threading.Event()
 
     @property
     def running(self) -> bool:
@@ -88,17 +103,36 @@ class WorkerProcess:
 
         def run() -> None:
             assert proc.stderr is not None
-            for line in proc.stderr:
-                text = line.rstrip()
-                if text:
-                    print(f"[hermes-bridge-worker:{self.key}] {text}", file=sys.stderr, flush=True)
+            try:
+                for line in proc.stderr:
+                    text = line.rstrip()
+                    if text:
+                        with self._stderr_lock:
+                            self._stderr_lines.append(text)
+                            if len(self._stderr_lines) > self.STDERR_TAIL_LINES:
+                                del self._stderr_lines[: len(self._stderr_lines) - self.STDERR_TAIL_LINES]
+                        print(f"[hermes-bridge-worker:{self.key}] {text}", file=sys.stderr, flush=True)
+            finally:
+                self._stderr_eof.set()
 
         threading.Thread(target=run, daemon=True, name=f"hermes-bridge-worker-stderr-{self.key}").start()
+
+    def _stderr_tail(self, max_lines: int = 15) -> str:
+        with self._stderr_lock:
+            tail = "\n".join(self._stderr_lines[-max_lines:])
+        return tail.strip()
+
+    def _startup_error_message(self, reason: str) -> str:
+        stderr_tail = self._stderr_tail() or "no stderr output captured yet"
+        return (
+            f"profile worker {self.key} {reason}; "
+            f"worker stderr tail:\n{stderr_tail}"
+        )
 
     def _wait_ready(self) -> None:
         proc = self.process
         if proc is None or proc.stdout is None:
-            raise RuntimeError(f"profile worker {self.key} did not start")
+            raise WorkerStartupError(f"profile worker {self.key} did not start", "worker_spawn_failed")
         lines: queue.Queue[str | None] = queue.Queue()
         ready_event = threading.Event()
 
@@ -119,13 +153,24 @@ class WorkerProcess:
         deadline = time.time() + self.STARTUP_TIMEOUT_SECONDS
         while time.time() < deadline:
             if proc.poll() is not None:
-                raise RuntimeError(f"profile worker {self.key} exited before ready")
+                raise WorkerStartupError(
+                    self._startup_error_message("exited before ready"),
+                    "worker_spawn_failed",
+                )
             try:
                 line = lines.get(timeout=0.1)
             except queue.Empty:
                 continue
             if line is None:
-                time.sleep(0.05)
+                # stdout reached EOF (worker is tearing down). Give it a short
+                # grace period; if it has really exited, fail fast instead of
+                # waiting out the full STARTUP_TIMEOUT_SECONDS.
+                time.sleep(0.1)
+                if proc.poll() is not None:
+                    raise WorkerStartupError(
+                        self._startup_error_message("exited before ready"),
+                        "worker_spawn_failed",
+                    )
                 continue
             text = line.strip()
             if text:
@@ -138,7 +183,10 @@ class WorkerProcess:
             except Exception:
                 pass
         self.stop()
-        raise RuntimeError(f"profile worker {self.key} did not become ready within {self.STARTUP_TIMEOUT_SECONDS}s")
+        raise WorkerStartupError(
+            self._startup_error_message(f"did not become ready within {self.STARTUP_TIMEOUT_SECONDS}s"),
+            "worker_startup_timeout",
+        )
 
     def stop(self) -> None:
         with self._lock:

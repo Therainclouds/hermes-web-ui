@@ -1,6 +1,9 @@
+import { execFile } from 'child_process'
 import { cpSync, existsSync, mkdirSync } from 'fs'
 import { join, resolve } from 'path'
+import { promisify } from 'util'
 import { getDeployDir, getWebUiHome } from '../../../config'
+import { detectHermesHome } from '../../hermes/hermes-path'
 import { UpdateError } from '../errors'
 import type { UpdateConfig } from '../types'
 
@@ -58,4 +61,56 @@ export function restoreTlsCertificatesAfterNpmUpdate(targetCertsDir = resolve(__
     }
   }
   console.warn('[update] no stable TLS certificates found; HTTPS may fall back to HTTP after update')
+}
+
+const execFileAsync = promisify(execFile)
+
+/** Locate the Python interpreter of the Hermes Agent venv for the current install. */
+export function resolveHermesAgentVenvPython(hermesHome = detectHermesHome()): string | undefined {
+  const candidates = process.platform === 'win32'
+    ? [
+        join(hermesHome, 'hermes-agent-venv', 'Scripts', 'python.exe'),
+        join(hermesHome, 'hermes-agent-venv', 'Scripts', 'python3.exe'),
+      ]
+    : [
+        join(hermesHome, 'hermes-agent-venv', 'bin', 'python3'),
+        join(hermesHome, 'hermes-agent-venv', 'bin', 'python'),
+      ]
+  return candidates.find(candidate => existsSync(candidate))
+}
+
+/**
+ * npm-package 更新只替换 Web UI 本体，Hermes Agent 是一个独立 Python 包。
+ * 为了让 npm 用户也能在升级 Web UI 时顺带升级 Hermes Agent（修复上游 wheel
+ * 缺陷等），这里把 Hermes Agent venv 的 pip 升级到最新 stable 版本。
+ *
+ * 这是 best-effort 行为：失败只记告警日志，绝不阻断 Web UI 更新本身。
+ * 设备端如有 source-deploy 部署脚本，则由其 agent-only 模式承担更完整的
+ * 权限与依赖处理；npm 用户大多没有该脚本，直接用 venv pip 是最稳妥的等价操作。
+ */
+export async function upgradeHermesAgentAfterNpmUpdate(): Promise<void> {
+  const hermesHome = detectHermesHome()
+  const venvPython = resolveHermesAgentVenvPython(hermesHome)
+  if (!venvPython) {
+    console.warn('[update] Hermes Agent venv not found under %s; skipping agent upgrade', hermesHome)
+    return
+  }
+  const startedAt = Date.now()
+  try {
+    const { stdout, stderr } = await execFileAsync(
+      venvPython,
+      ['-m', 'pip', 'install', '--upgrade', 'hermes-agent'],
+      { timeout: 10 * 60 * 1000, maxBuffer: 8 * 1024 * 1024 },
+    )
+    console.log('[update] Hermes Agent upgraded via %s in %dms', venvPython, Date.now() - startedAt)
+    if (stderr?.trim()) {
+      console.warn('[update] hermes-agent pip stderr (upgrade continued):\n%s', stderr.trim().slice(0, 2000))
+    }
+    if (stdout?.trim()) {
+      console.log('[update] hermes-agent pip stdout:\n%s', stdout.trim().slice(0, 1000))
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.warn('[update] failed to upgrade Hermes Agent (web UI update continues): %s', message)
+  }
 }

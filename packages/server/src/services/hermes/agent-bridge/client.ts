@@ -239,6 +239,9 @@ export interface AgentBridgeBackgroundRoute {
 
 export class AgentBridgeError extends Error {
   response?: unknown
+  /** Machine-readable failure category, e.g. bridge_unreachable /
+   * worker_spawn_failed / worker_request_failed / request_timeout. */
+  errorType?: string
 }
 
 export class AgentBridgeClient {
@@ -371,7 +374,9 @@ export class AgentBridgeClient {
         ? setTimeout(() => {
             cleanup()
             socket.destroy()
-            rejectRead(new Error(`Agent bridge request timed out after ${timeoutMs}ms`))
+            rejectRead(new Error(
+              `Agent bridge request timed out after ${timeoutMs}ms (broker/worker or upstream LLM did not respond in time)`,
+            ))
           }, timeoutMs)
         : null
 
@@ -441,6 +446,7 @@ export class AgentBridgeClient {
         if (!response.ok) {
           const error = new AgentBridgeError(response.error || 'Agent bridge request failed')
           error.response = response
+          error.errorType = (response as { error_type?: string }).error_type || 'worker_request_failed'
           bridgeLogger.warn({
             durationMs: Date.now() - startedAt,
             runtime: runtimeContext,
@@ -458,12 +464,23 @@ export class AgentBridgeClient {
         return response as T
       } catch (err: any) {
         if (!(err instanceof AgentBridgeError) && action !== 'background_poll') {
+          // Distinguish "broker is not even reachable" from worker/LLM failures
+          // so callers can show a concrete remediation hint instead of a bare
+          // timeout string.
+          const message = err?.message ? String(err.message) : 'agent bridge request failed'
+          const wrapped = new AgentBridgeError(message)
+          wrapped.errorType = this.isRetryableConnectError(err)
+            ? 'bridge_unreachable'
+            : /timed out/i.test(message)
+              ? 'request_timeout'
+              : 'request_failed'
           bridgeLogger.error({
             durationMs: Date.now() - startedAt,
-            err: { message: err?.message, name: err?.name },
+            err: { message, name: err?.name },
             runtime: runtimeContext,
             request: this.summarizePayload(payload),
           }, '[agent-bridge-client] request failed')
+          throw wrapped
         }
         throw err
       }
