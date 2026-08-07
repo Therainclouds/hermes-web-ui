@@ -313,7 +313,7 @@ export class AgentBridgeClient {
     return undefined
   }
 
-  private connectSocketOnce(): Promise<Socket> {
+  private connectSocketOnce(connectTimeoutMs?: number): Promise<Socket> {
     return new Promise((resolveConnect, rejectConnect) => {
       const endpoint = this.endpoint
       let socket: Socket
@@ -330,7 +330,9 @@ export class AgentBridgeClient {
         return
       }
 
+      let connectTimer: NodeJS.Timeout | null = null
       const cleanup = () => {
+        if (connectTimer) clearTimeout(connectTimer)
         socket.off('connect', onConnect)
         socket.off('error', onError)
       }
@@ -343,6 +345,20 @@ export class AgentBridgeClient {
         socket.destroy()
         rejectConnect(err)
       }
+      // Unix-socket connects hang silently when the broker's accept backlog
+      // is full (e.g. the broker event loop is stuck). Without a hard
+      // timeout the request would wait forever, defeating the request-level
+      // timeout that only starts after the write. Treat it like any other
+      // connect failure so the caller can surface a concrete error.
+      if (connectTimeoutMs && connectTimeoutMs > 0) {
+        connectTimer = setTimeout(() => {
+          cleanup()
+          socket.destroy()
+          const err: any = new Error(`Agent bridge connect timed out after ${connectTimeoutMs}ms`)
+          err.code = 'ETIMEDOUT'
+          rejectConnect(err)
+        }, connectTimeoutMs)
+      }
       socket.once('connect', onConnect)
       socket.once('error', onError)
     })
@@ -353,13 +369,22 @@ export class AgentBridgeClient {
     return ['ECONNREFUSED', 'ENOENT', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT'].includes(code)
   }
 
-  private async connectSocket(): Promise<Socket> {
-    const deadline = Date.now() + Math.max(0, this.connectRetryMs)
+  private async connectSocket(deadline?: number): Promise<Socket> {
+    const effectiveDeadline = Math.min(
+      Date.now() + Math.max(0, this.connectRetryMs),
+      deadline ?? Number.POSITIVE_INFINITY,
+    )
     for (;;) {
+      const remaining = effectiveDeadline - Date.now()
+      if (remaining <= 0) {
+        const err: any = new Error('Agent bridge connect timed out')
+        err.code = 'ETIMEDOUT'
+        throw err
+      }
       try {
-        return await this.connectSocketOnce()
+        return await this.connectSocketOnce(remaining)
       } catch (err) {
-        if (!this.isRetryableConnectError(err) || Date.now() >= deadline) {
+        if (!this.isRetryableConnectError(err) || Date.now() >= effectiveDeadline) {
           throw err
         }
         await delay(100)
@@ -439,9 +464,11 @@ export class AgentBridgeClient {
         }, '[agent-bridge-client] request')
       }
       try {
-        const socket = await this.connectSocket()
+        const socket = await this.connectSocket(startedAt + timeoutMs)
+        const connectElapsed = Date.now() - startedAt
+        const remaining = Math.max(1, timeoutMs - connectElapsed)
         socket.write(`${JSON.stringify(payload)}\n`)
-        const raw = await this.readResponse(socket, timeoutMs)
+        const raw = await this.readResponse(socket, remaining)
         const response = JSON.parse(raw) as { ok?: boolean; error?: string }
         if (!response.ok) {
           const error = new AgentBridgeError(response.error || 'Agent bridge request failed')
