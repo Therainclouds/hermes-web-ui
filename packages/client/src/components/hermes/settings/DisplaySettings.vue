@@ -1,9 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { NButton, NSwitch, NSelect, NInputNumber } from 'naive-ui'
+import { NButton, NSwitch, NInputNumber } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useSettingsStore } from '@/stores/hermes/settings'
-import { useTheme, type BrightnessMode } from '@/composables/useTheme'
 import { requestCompletionNotificationPermission, showCompletionNotification, type CompletionNotificationPermissionResult } from '@/utils/completion-notification'
 import { clampChatInputHeight, MAX_CHAT_INPUT_HEIGHT, MIN_CHAT_INPUT_HEIGHT } from '@/utils/chat-input-height'
 import SettingRow from './SettingRow.vue'
@@ -12,13 +11,6 @@ import { useMessage } from '@/composables/useAppMessage'
 const settingsStore = useSettingsStore()
 const message = useMessage()
 const { t } = useI18n()
-const { brightness, setBrightness } = useTheme()
-
-const themeOptions = [
-  { label: t('settings.display.themeLight'), value: 'light' },
-  { label: t('settings.display.themeDark'), value: 'dark' },
-  { label: t('settings.display.themeSystem'), value: 'system' },
-]
 const chatInputHeight = computed(() => clampChatInputHeight(settingsStore.display.chat_input_height))
 
 async function save(values: Record<string, any>) {
@@ -28,12 +20,6 @@ async function save(values: Record<string, any>) {
   } catch (err: any) {
     message.error(t('settings.saveFailed'))
   }
-}
-
-function handleThemeChange(val: string) {
-  const m = val as BrightnessMode
-  setBrightness(m)
-  save({ skin: m })
 }
 
 function handleChatInputHeightChange(value: number | null) {
@@ -91,9 +77,6 @@ async function testCompletionNotification() {
 
 <template>
   <section class="settings-section">
-    <SettingRow :label="t('settings.display.theme')" :hint="t('settings.display.themeHint')">
-      <NSelect :value="brightness" :options="themeOptions" size="small" :consistent-menu-width="false" class="input-sm" @update:value="handleThemeChange" />
-    </SettingRow>
     <SettingRow :label="t('settings.display.streaming')" :hint="t('settings.display.streamingHint')">
       <NSwitch :value="settingsStore.display.streaming" @update:value="v => save({ streaming: v })" />
     </SettingRow>

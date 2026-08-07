@@ -29,6 +29,9 @@ if (isComic) {
 if (isDesktopShell) {
   document.documentElement.classList.add('hermes-desktop-shell')
 }
+if (isDesktopShell && bridge?.platform === 'win32') {
+  document.documentElement.classList.add('hermes-desktop-windows')
+}
 
 // Read token from URL BEFORE router initializes (hash router strips params)
 const urlParams = new URLSearchParams(window.location.search)

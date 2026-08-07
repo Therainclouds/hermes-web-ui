@@ -26,11 +26,10 @@ import type {
 
 interface OpenAIChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
-  content: string | null | Array<{
-    type: 'text'
-    text: string
-    cache_control?: { type: 'ephemeral' }
-  }>
+  content: string | null | Array<
+    | { type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }
+    | { type: 'image_url'; image_url: { url: string } }
+  >
   name?: string
   tool_call_id?: string
   tool_calls?: OpenAIToolCall[]
@@ -75,7 +74,6 @@ interface OpenAIChatPayload {
   stream_options?: {
     include_usage: boolean
   }
-  metadata?: Record<string, unknown>
   vl_high_resolution_images?: true
 }
 
@@ -117,7 +115,7 @@ interface OpenAIChatResponse {
 const defaultCapabilities: ModelCapabilities = {
   streaming: true,
   tools: true,
-  vision: false,
+  vision: true,
   jsonMode: false,
   systemPrompt: true,
 }
@@ -138,6 +136,10 @@ export class OpenAICompatibleModelClient implements ModelClient {
       ...defaultCapabilities,
       ...config.capabilities,
     }
+  }
+
+  requestTarget(): string {
+    return chatCompletionsUrl(this.config)
   }
 
   async create(request: ModelRequest): Promise<ModelResponse> {
@@ -251,16 +253,20 @@ export class OpenAICompatibleModelClient implements ModelClient {
 
 export function toOpenAIChatPayload(config: ModelProviderConfig, request: ModelRequest): OpenAIChatPayload {
   const isQwenOAuth = config.id === 'qwen-oauth'
+  const tools = request.tools?.length ? request.tools.map(toOpenAIToolDefinition) : undefined
   return {
     model: request.model ?? config.defaultModel,
-    messages: request.messages.map(message => toOpenAIChatMessage(message, isQwenOAuth)),
+    messages: request.messages.flatMap(message => toOpenAIChatMessages(message, isQwenOAuth)),
     temperature: request.temperature,
     max_tokens: request.maxTokens,
-    tools: request.tools?.map(toOpenAIToolDefinition),
-    tool_choice: request.toolChoice,
+    ...(tools
+      ? {
+          tools,
+          ...(request.toolChoice ? { tool_choice: request.toolChoice } : {}),
+        }
+      : {}),
     stream: request.stream,
     stream_options: request.stream ? { include_usage: true } : undefined,
-    metadata: request.metadata,
     vl_high_resolution_images: isQwenOAuth ? true : undefined,
   }
 }
@@ -294,7 +300,7 @@ function normalizeReasoning(message: OpenAIChatResponseMessage | undefined): str
   return undefined
 }
 
-function toOpenAIChatMessage(message: AgentMessage, qwenOAuth = false): OpenAIChatMessage {
+function toOpenAIChatMessages(message: AgentMessage, qwenOAuth = false): OpenAIChatMessage[] {
   const plainContent = message.role === 'assistant' && message.toolCalls?.length
     ? message.content || null
     : message.content
@@ -305,13 +311,31 @@ function toOpenAIChatMessage(message: AgentMessage, qwenOAuth = false): OpenAICh
         ...(message.role === 'system' ? { cache_control: { type: 'ephemeral' as const } } : {}),
       }]
     : plainContent
-  return {
+  const base: OpenAIChatMessage = {
     role: message.role,
     content,
     name: message.name,
     tool_call_id: message.toolCallId,
     tool_calls: message.toolCalls?.map(toOpenAIToolCall),
   }
+  const images = message.contentParts?.filter(part => part.type === 'image') ?? []
+  if (message.role === 'user' && images.length > 0) {
+    return [{
+      ...base,
+      content: [
+        ...(message.content ? [{ type: 'text' as const, text: message.content }] : []),
+        ...images.map(image => ({ type: 'image_url' as const, image_url: { url: `data:${image.mimeType};base64,${image.data}` } })),
+      ],
+    }]
+  }
+  if (message.role !== 'tool' || images.length === 0) return [base]
+  return [base, {
+    role: 'user',
+    content: [
+      { type: 'text', text: 'Visual output from the preceding tool result:' },
+      ...images.map(image => ({ type: 'image_url' as const, image_url: { url: `data:${image.mimeType};base64,${image.data}` } })),
+    ],
+  }]
 }
 
 function toOpenAIToolDefinition(tool: AgentToolDefinition): OpenAIToolDefinition {

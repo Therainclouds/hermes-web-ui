@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createInterface } from 'node:readline'
-import { readFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -9,7 +10,7 @@ const DEFAULT_PORT = process.env.HERMES_WEB_UI_PORT || process.env.PORT || '8648
 const DEFAULT_BASE_URL = `http://127.0.0.1:${DEFAULT_PORT}`
 const DISPLAY_COMMAND = 'hermes-studio-mcp'
 const SERVER_NAME = process.env.HERMES_MCP_SERVER_NAME || DISPLAY_COMMAND
-const TOOLSETS = new Set(['api', 'devices', 'use'])
+const TOOLSETS = new Set(['api', 'browser', 'devices', 'use'])
 const ALLOWED_PUBLIC_REQUEST_HEADERS = new Set([
   'accept',
   'accept-language',
@@ -44,7 +45,7 @@ function printHelp() {
 Hermes Studio MCP stdio server.
 
 Usage:
-  ${DISPLAY_COMMAND} [api|devices|use]
+  ${DISPLAY_COMMAND} [api|browser|devices|use]
   ${DISPLAY_COMMAND} --help
   ${DISPLAY_COMMAND} --version
 
@@ -55,7 +56,7 @@ Environment:
   HERMES_WEB_UI_PROFILE   Default Hermes profile when a tool call omits profile.
   HERMES_WEB_UI_TOKEN     Optional explicit API token.
   AUTH_TOKEN              Optional explicit API token fallback.
-  HERMES_MCP_TOOLSET      Tool category to expose: api, devices, or use. Default: api.
+  HERMES_MCP_TOOLSET      Tool category to expose: api, browser, devices, or use. Default: api.
 
 When run without options, this process waits for MCP JSON-RPC messages on stdin.
 `)
@@ -568,6 +569,89 @@ function withAuthArgs(args, options = {}) {
   }
 }
 
+const BROWSER_CLIENT_ID = `${SERVER_NAME}:${process.pid}:${randomUUID()}`
+let cachedBrowserSession = null
+
+function browserInputSchema(properties = {}, required = []) {
+  return {
+    type: 'object',
+    properties,
+    ...(required.length ? { required } : {}),
+    additionalProperties: false,
+  }
+}
+
+function browserDescriptor() {
+  let descriptor
+  const descriptorPath = join(appHome(), 'desktop-browser', 'broker.json')
+  try {
+    const info = statSync(descriptorPath)
+    if (process.platform !== 'win32' && (info.mode & 0o077) !== 0) throw new Error('unsafe descriptor permissions')
+    const directoryInfo = statSync(join(appHome(), 'desktop-browser'))
+    if (process.platform !== 'win32' && (directoryInfo.mode & 0o077) !== 0) throw new Error('unsafe descriptor directory permissions')
+    descriptor = JSON.parse(readFileSync(descriptorPath, 'utf8'))
+  } catch {
+    throw new Error('Hermes Studio Desktop Browser is not running. Open the Desktop app and try again.')
+  }
+  const endpoint = String(descriptor?.endpoint || '')
+  const token = String(descriptor?.token || '')
+  const parsed = new URL(endpoint)
+  if (descriptor?.schema !== 1 || parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1' || parsed.pathname !== '/v1' || !token) {
+    throw new Error('Desktop Browser Broker descriptor is invalid')
+  }
+  if (!Number.isInteger(descriptor.desktopPid) || descriptor.desktopPid <= 0) throw new Error('Desktop Browser Broker PID is invalid')
+  try { process.kill(descriptor.desktopPid, 0) } catch { throw new Error('Hermes Studio Desktop Browser is no longer running') }
+  return { endpoint, token, instanceId: String(descriptor.instanceId || '') }
+}
+
+async function browserSession(descriptor) {
+  if (cachedBrowserSession?.instanceId === descriptor.instanceId) return cachedBrowserSession
+  const sessionUrl = new URL(descriptor.endpoint)
+  sessionUrl.pathname = '/v1/session'
+  const response = await fetch(sessionUrl, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${descriptor.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ client: BROWSER_CLIENT_ID, client_pid: process.pid }),
+    signal: AbortSignal.timeout(10_000),
+  })
+  const payload = await response.json().catch(() => null)
+  if (!response.ok || !payload?.client_id || !payload?.session_token) throw new Error(payload?.error || 'Desktop Browser Broker session failed')
+  cachedBrowserSession = { instanceId: descriptor.instanceId, clientId: payload.client_id, token: payload.session_token }
+  return cachedBrowserSession
+}
+
+async function browserRequest(method, params = {}) {
+  const descriptor = browserDescriptor()
+  const session = await browserSession(descriptor)
+  const operationId = randomUUID()
+  const response = await fetch(descriptor.endpoint, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${session.token}`,
+      'Content-Type': 'application/json',
+      'X-Hermes-Browser-Client': session.clientId,
+    },
+    body: JSON.stringify({ method, params, operation_id: operationId }),
+    signal: AbortSignal.timeout(45_000),
+  })
+  const payload = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(payload?.error || `Browser Broker HTTP ${response.status}`)
+  return payload
+}
+
+function browserScreenshotContent(envelope) {
+  const screenshot = envelope?.result
+  if (!screenshot?.data || !screenshot?.mediaType) throw new Error('Browser Broker returned an invalid screenshot')
+  const metadata = { ...screenshot }
+  delete metadata.data
+  return {
+    content: [
+      { type: 'text', text: JSON.stringify({ operation_id: envelope.operation_id, ...metadata }, null, 2) },
+      { type: 'image', data: screenshot.data, mimeType: screenshot.mediaType },
+    ],
+  }
+}
+
 function pickDefined(source, keys) {
   const picked = {}
   for (const key of keys) {
@@ -769,6 +853,69 @@ function compactAvailableModelsPayload(payload, args = {}) {
 }
 
 const tools = [
+  {
+    name: 'hermes_studio_browser_tabs',
+    toolset: 'browser',
+    description: 'List, create, activate, close, or release control of Hermes Studio Desktop browser tabs. Reuse explicit tab_id values across calls.',
+    inputSchema: browserInputSchema({
+      action: { type: 'string', enum: ['list', 'create', 'activate', 'close', 'release'] },
+      tab_id: { type: 'string', description: 'Required for activate, close, and release.' },
+      url: { type: 'string', description: 'Optional HTTP/HTTPS URL for a new tab.' },
+      activate: { type: 'boolean', description: 'Whether a newly created tab becomes visible. Defaults to true.' },
+    }, ['action']),
+  },
+  {
+    name: 'hermes_studio_browser_navigate',
+    toolset: 'browser',
+    description: 'Open an HTTP/HTTPS URL or move back, forward, reload, or stop one Hermes Studio Desktop browser tab.',
+    inputSchema: browserInputSchema({
+      tab_id: { type: 'string' },
+      action: { type: 'string', enum: ['open', 'back', 'forward', 'reload', 'stop'], description: 'Defaults to open when url is provided.' },
+      url: { type: 'string', description: 'Required when action is open.' },
+    }, ['tab_id']),
+  },
+  {
+    name: 'hermes_studio_browser_snapshot',
+    toolset: 'browser',
+    description: 'Return a bounded accessibility snapshot with stable element refs. Pass its snapshot_id to read text, click, or type; stale snapshots are rejected.',
+    inputSchema: browserInputSchema({ tab_id: { type: 'string' } }, ['tab_id']),
+  },
+  {
+    name: 'hermes_studio_browser_read_text',
+    toolset: 'browser',
+    description: 'Read a bounded page of rendered text from one ref in the latest accessibility snapshot. Use nextOffset while hasMore is true to continue long text safely.',
+    inputSchema: browserInputSchema({
+      tab_id: { type: 'string' },
+      snapshot_id: { type: 'string' },
+      ref: { type: 'string' },
+      mode: { type: 'string', enum: ['innerText', 'textContent'], description: 'Defaults to innerText. Text refs use their parent element for innerText.' },
+      offset: { type: 'number', minimum: 0, description: 'Zero-based source character offset. Defaults to 0.' },
+      limit: { type: 'number', minimum: 1, maximum: 20000, description: 'Maximum source characters to return. Defaults to 4000.' },
+    }, ['tab_id', 'snapshot_id', 'ref']),
+  },
+  {
+    name: 'hermes_studio_browser_interact',
+    toolset: 'browser',
+    description: 'Click, type, press a key, or scroll in one Desktop browser tab. Click/type require a ref and snapshot_id from the latest snapshot.',
+    inputSchema: browserInputSchema({
+      tab_id: { type: 'string' },
+      action: { type: 'string', enum: ['click', 'type', 'press', 'scroll'] },
+      ref: { type: 'string' }, snapshot_id: { type: 'string' }, text: { type: 'string' }, key: { type: 'string' },
+      direction: { type: 'string', enum: ['up', 'down', 'left', 'right'] }, pixels: { type: 'number' },
+    }, ['tab_id', 'action']),
+  },
+  {
+    name: 'hermes_studio_browser_screenshot',
+    toolset: 'browser',
+    description: 'Capture the visible viewport or bounded full page as a real MCP image content block for visual reasoning.',
+    inputSchema: browserInputSchema({ tab_id: { type: 'string' }, full_page: { type: 'boolean' } }, ['tab_id']),
+  },
+  {
+    name: 'hermes_studio_browser_console',
+    toolset: 'browser',
+    description: 'Read or clear the bounded console log for one Desktop browser tab.',
+    inputSchema: browserInputSchema({ tab_id: { type: 'string' }, action: { type: 'string', enum: ['read', 'clear'] } }, ['tab_id', 'action']),
+  },
   {
     name: 'hermes_studio_api_openapi_get',
     toolset: 'api',
@@ -1251,8 +1398,10 @@ const tools = [
           description: 'Optional workflow input text.',
         },
         timeout_ms: {
-          type: 'number',
-          description: 'Optional per-node run timeout in milliseconds.',
+          type: 'integer',
+          minimum: 1000,
+          maximum: 86400000,
+          description: 'Optional total Workflow Run budget in milliseconds. Omit for no deadline.',
         },
       }, ['workflow_id']),
   },
@@ -1272,7 +1421,7 @@ const tools = [
       }, ['workflow_id', 'run_id']),
   },
   {
-    name: 'hermes_studio_use_workflow_run_rerun_from_node',
+    name: 'hermes_studio_use_workflow_rerun_node',
     toolset: 'use',
     description: 'Rerun an existing workflow run from a node. Use preserve_start_node=true to keep the selected node message and only rerun downstream nodes; false clears the selected node and downstream sessions.',
     inputSchema: inputSchema({
@@ -1293,8 +1442,10 @@ const tools = [
           description: 'When true, keep the selected node session and rerun downstream nodes only. Defaults to false on the server.',
         },
         timeout_ms: {
-          type: 'number',
-          description: 'Optional per-node run timeout in milliseconds.',
+          type: 'integer',
+          minimum: 1000,
+          maximum: 86400000,
+          description: 'Optional total Workflow Run budget in milliseconds. Omit for no deadline.',
         },
       }, ['workflow_id', 'run_id', 'node_id']),
   },
@@ -1475,6 +1626,7 @@ const tools = [
 const TOOL_ALIASES = new Map([
   ['hermes_api_openapi_get', 'hermes_studio_api_openapi_get'],
   ['hermes_api_request', 'hermes_studio_api_request'],
+  ['hermes_studio_use_workflow_run_rerun_from_node', 'hermes_studio_use_workflow_rerun_node'],
   ['hermes_lan_devices_list', 'hermes_studio_lan_devices_list'],
   ['hermes_lan_devices_scan', 'hermes_studio_lan_devices_scan'],
   ['hermes_lan_peer_connect', 'hermes_studio_lan_peer_connect'],
@@ -1495,24 +1647,194 @@ const TOOL_ALIASES = new Map([
   ['hermes_usb_copy_to_workspace', 'hermes_studio_usb_copy_to_workspace'],
 ])
 
+const CATEGORY_TOOLSETS = {
+  browser: {
+    name: 'hermes_studio_browser_toolset',
+    coverage: 'Hermes Studio Desktop browser tabs and leases; HTTP/HTTPS navigation; accessibility snapshots with stable refs; click, type, key press, and scroll interaction; viewport or full-page screenshots; bounded console log read and clear.',
+    description: 'Discover and invoke Hermes Studio Desktop browser operations without loading every browser tool schema into the model context. Covers tab list/create/activate/close/release, navigation back/forward/reload/stop/open, accessibility snapshots, click/type/key/scroll interaction, screenshots, and console logs. Use action=list for the compact operation catalog, action=describe for one full input schema, then action=call with that exact tool name and arguments.',
+  },
+  devices: {
+    name: 'hermes_studio_devices_toolset',
+    coverage: 'LAN and remote device discovery and status; paired peer connect/disconnect; interactive terminal create/list/input/read/resize/close; structured remote command execution; file upload and download.',
+    description: 'Discover and invoke Hermes Studio LAN/remote-device operations without loading every device tool schema into the model context. Covers device list/scan, paired peer connections, interactive terminal lifecycle and I/O, structured command execution using command plus argument arrays, and remote file upload/download. Use action=list for the compact operation catalog, action=describe for one full input schema, then action=call with that exact tool name and arguments.',
+  },
+  use: {
+    name: 'hermes_studio_use_toolset',
+    coverage: 'Explicit user-requested Studio chat/coding runs; session list/count/detail/messages/context/rename/delete; usage statistics; profiles and available models; provider add/delete; worker status; workflow CRUD and workflow run list/start/stop/rerun/delete.',
+    description: 'Discover and invoke high-level Hermes Studio operations without loading every Studio-use tool schema into the model context. Covers explicit user-requested chat or coding runs, session management and clean context, usage statistics, profiles/models/providers, worker status, workflow CRUD, and workflow run lifecycle. Never use chat/session operations as an internal delegation mechanism. Use action=list for the compact operation catalog, action=describe for one full input schema, then action=call with that exact tool name and arguments.',
+  },
+}
+
+function categoryToolsetDefinition(toolset) {
+  const category = CATEGORY_TOOLSETS[toolset]
+  if (!category) return null
+  return {
+    name: category.name,
+    description: category.description,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['list', 'describe', 'call'],
+          description: 'list returns the compact category catalog; describe returns one full tool schema; call invokes one catalog tool.',
+        },
+        query: {
+          type: 'string',
+          description: 'Optional case-insensitive filter for action=list, matched against tool names and descriptions.',
+        },
+        tool: {
+          type: 'string',
+          description: 'Exact tool name returned by list. Required for describe and call.',
+        },
+        arguments: {
+          type: 'object',
+          description: 'Arguments matching the described tool schema. Required for call; use an empty object when the target takes no arguments.',
+          additionalProperties: true,
+        },
+      },
+      required: ['action'],
+      additionalProperties: false,
+    },
+  }
+}
+
 function resolveToolName(name) {
   return TOOL_ALIASES.get(name) || name
 }
 
+function activeToolsetTools() {
+  return tools.filter(tool => tool.toolset === ACTIVE_TOOLSET)
+}
+
+function categoryToolCatalog(query = '') {
+  const normalizedQuery = String(query || '').trim().toLowerCase()
+  return activeToolsetTools()
+    .filter(tool => !normalizedQuery || `${tool.name} ${tool.description}`.toLowerCase().includes(normalizedQuery))
+    .map(tool => ({ name: tool.name, description: tool.description }))
+}
+
+function categoryToolByName(name) {
+  const resolved = resolveToolName(String(name || '').trim())
+  return activeToolsetTools().find(tool => tool.name === resolved) || null
+}
+
+function serverInstructions() {
+  if (ACTIVE_TOOLSET === 'api') {
+    return 'Hermes Studio API operations. Use hermes_studio_api_openapi_get without filters for the compact module index, call it again with tag/path/method filters for endpoint details, then call hermes_studio_api_request with the documented relative path and JSON fields.'
+  }
+  const category = CATEGORY_TOOLSETS[ACTIVE_TOOLSET]
+  return category ? `${category.description} Coverage: ${category.coverage}` : ''
+}
+
 function visibleTools() {
-  const visible = tools.filter(tool => tool.toolset === ACTIVE_TOOLSET)
+  if (ACTIVE_TOOLSET === 'browser') {
+    try {
+      browserDescriptor()
+    } catch {
+      return []
+    }
+  }
+  const categoryToolset = categoryToolsetDefinition(ACTIVE_TOOLSET)
+  if (categoryToolset) return [categoryToolset]
+  const visible = activeToolsetTools()
   return visible.map(({ toolset, ...tool }) => tool)
 }
 
-function isToolVisible(name) {
-  return visibleTools().some(tool => tool.name === resolveToolName(name))
+function isToolCallable(name) {
+  const resolved = resolveToolName(name)
+  const categoryToolset = categoryToolsetDefinition(ACTIVE_TOOLSET)
+  if (categoryToolset?.name === resolved) return true
+  return activeToolsetTools().some(tool => tool.name === resolved)
+}
+
+async function callCategoryToolset(args = {}) {
+  const category = CATEGORY_TOOLSETS[ACTIVE_TOOLSET]
+  if (!category) return errorText(`No compact category toolset is available for '${ACTIVE_TOOLSET}'.`)
+  if (args.action === 'list') {
+    const catalog = categoryToolCatalog(args.query)
+    return jsonText({
+      toolset: ACTIVE_TOOLSET,
+      coverage: category.coverage,
+      operation_count: catalog.length,
+      operations: catalog,
+      next: `Call ${category.name} with action=describe and an exact tool name before action=call when its parameters are not already known.`,
+    })
+  }
+  const target = categoryToolByName(args.tool)
+  if (!target) return errorText(`Unknown '${ACTIVE_TOOLSET}' tool: ${String(args.tool || '')}. Call ${category.name} with action=list first.`)
+  if (args.action === 'describe') {
+    return jsonText({
+      toolset: ACTIVE_TOOLSET,
+      name: target.name,
+      description: target.description,
+      inputSchema: target.inputSchema,
+    })
+  }
+  if (args.action === 'call') {
+    if (!isRecord(args.arguments)) return errorText('arguments must be an object when action=call.')
+    return await callTool(target.name, args.arguments)
+  }
+  return errorText('Invalid category toolset action. Allowed: list, describe, call.')
 }
 
 async function callTool(name, args = {}) {
-  if (!isToolVisible(name)) {
+  if (!isToolCallable(name)) {
     return errorText(`Tool is not available in the active '${ACTIVE_TOOLSET}' MCP toolset: ${name}`)
   }
-  switch (resolveToolName(name)) {
+  const resolvedName = resolveToolName(name)
+  const categoryToolset = categoryToolsetDefinition(ACTIVE_TOOLSET)
+  if (resolvedName === categoryToolset?.name) return await callCategoryToolset(args)
+  switch (resolvedName) {
+    case 'hermes_studio_browser_tabs': {
+      if (args.action === 'list') return jsonText(await browserRequest('tabs.list'))
+      if (args.action === 'create') return jsonText(await browserRequest('tabs.create', { url: args.url, activate: args.activate }))
+      if (args.action === 'activate') return jsonText(await browserRequest('tabs.activate', { tab_id: args.tab_id }))
+      if (args.action === 'close') return jsonText(await browserRequest('tabs.close', { tab_id: args.tab_id }))
+      if (args.action === 'release') return jsonText(await browserRequest('lease.release', { tab_id: args.tab_id }))
+      return errorText('Invalid browser tab action')
+    }
+    case 'hermes_studio_browser_navigate': {
+      const action = args.action || 'open'
+      if (action === 'open') {
+        if (!args.url) return errorText('url is required when browser navigation action is open')
+        return jsonText(await browserRequest('navigate', { tab_id: args.tab_id, url: args.url }))
+      }
+      return jsonText(await browserRequest('navigation.action', { tab_id: args.tab_id, action }))
+    }
+    case 'hermes_studio_browser_snapshot':
+      return jsonText(await browserRequest('snapshot', { tab_id: args.tab_id }))
+    case 'hermes_studio_browser_read_text':
+      return jsonText(await browserRequest('text.read', {
+        tab_id: args.tab_id,
+        snapshot_id: args.snapshot_id,
+        ref: args.ref,
+        mode: args.mode,
+        offset: args.offset,
+        limit: args.limit,
+      }))
+    case 'hermes_studio_browser_interact': {
+      const action = { action: args.action }
+      for (const key of ['ref', 'snapshot_id', 'text', 'key', 'direction', 'pixels']) {
+        if (args[key] !== undefined) action[key] = args[key]
+      }
+      return jsonText(await browserRequest('interact', { tab_id: args.tab_id, action }))
+    }
+    case 'hermes_studio_browser_screenshot': {
+      try {
+        return browserScreenshotContent(await browserRequest('screenshot', { tab_id: args.tab_id, full_page: args.full_page === true }))
+      } catch (error) {
+        const snapshot = await browserRequest('snapshot', { tab_id: args.tab_id }).catch(() => null)
+        if (!snapshot) throw error
+        return jsonText({
+          screenshot_error: error instanceof Error ? error.message : String(error),
+          fallback: 'Accessibility snapshot',
+          snapshot: snapshot.result,
+        })
+      }
+    }
+    case 'hermes_studio_browser_console':
+      return jsonText(await browserRequest(args.action === 'clear' ? 'console.clear' : 'console.read', { tab_id: args.tab_id }))
     case 'hermes_studio_api_openapi_get':
       return jsonText(compactOpenApiDocument(await openApiDocument(withAuthArgs(args)), args))
     case 'hermes_studio_api_request': {
@@ -1670,7 +1992,7 @@ async function callTool(name, args = {}) {
       return jsonText(await request(`/api/hermes/workflows/${encodeURIComponent(args.workflow_id)}/runs/${encodeURIComponent(args.run_id)}/stop`, withAuthArgs(args, {
         method: 'POST',
       })))
-    case 'hermes_studio_use_workflow_run_rerun_from_node':
+    case 'hermes_studio_use_workflow_rerun_node':
       return jsonText(await request(`/api/hermes/workflows/${encodeURIComponent(args.workflow_id)}/runs/${encodeURIComponent(args.run_id)}/rerun-from-node`, withAuthArgs(args, {
         method: 'POST',
         body: pickDefined(args, [
@@ -1762,6 +2084,7 @@ async function handle(message) {
             protocolVersion: message.params?.protocolVersion || '2024-11-05',
             capabilities: { tools: {} },
             serverInfo: { name: SERVER_NAME, version: VERSION, toolset: ACTIVE_TOOLSET },
+            instructions: serverInstructions(),
           },
         }
       case 'tools/list':

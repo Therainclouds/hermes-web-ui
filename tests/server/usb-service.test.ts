@@ -72,7 +72,9 @@ describe('usb service', () => {
       fs_type: 'vfat',
       label: 'KINGSTON',
       status: 'mounted',
-      ts: new Date('2026-07-01T10:00:00.000Z').toISOString(),
+      // Keep timestamps relative to the current time so the 24h history
+      // window filter stays valid regardless of when the suite runs.
+      ts: new Date(Date.now() - 5 * 60_000).toISOString(),
     })
 
     expect(service.listDevices()).toHaveLength(1)
@@ -99,7 +101,7 @@ describe('usb service', () => {
       device_node: '/dev/sdb1',
       label: 'KINGSTON',
       status: 'removed',
-      ts: new Date('2026-07-01T10:05:00.000Z').toISOString(),
+      ts: new Date(Date.now() - 4 * 60_000).toISOString(),
     })
 
     expect(service.listDevices()).toHaveLength(0)
@@ -132,7 +134,7 @@ describe('usb service', () => {
       fs_type: 'vfat',
       label: 'KINGSTON',
       status: 'mounted',
-      ts: new Date('2026-07-01T10:00:00.000Z').toISOString(),
+      ts: new Date(Date.now() - 5 * 60_000).toISOString(),
     })
 
     const copied = await service.copyFileToWorkspace('1234-ABCD', '/docs/nested.txt', workspace)

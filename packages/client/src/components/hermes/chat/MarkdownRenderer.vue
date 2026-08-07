@@ -2,7 +2,6 @@
 import 'katex/dist/katex.min.css'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { NDrawer, NDrawerContent, NSpin } from 'naive-ui'
 import type MarkdownIt from 'markdown-it'
 import MarkdownItConstructor from 'markdown-it'
 import katex from 'katex'
@@ -16,14 +15,13 @@ import {
   decodeMermaidSource,
   isMermaidFence,
   renderMermaidPlaceholder,
-  SUPPORT_PREVIEW_FILE_TYPES,
 } from './mermaidRenderer'
-import { downloadFile, getDownloadUrl, fetchFileText, inferDownloadFileName } from '@/api/hermes/download'
+import { downloadFile, getDownloadUrl, inferDownloadFileName } from '@/api/hermes/download'
 import { useMessage } from '@/composables/useAppMessage'
+import { isPreviewableFile } from '@/utils/hermes/file-preview'
+import { openUrlInDesktopBrowser } from '@/utils/desktop-browser'
 
 const LATEX_FENCE_LANGS = new Set(['latex', 'tex', 'math', 'katex'])
-const PREVIEW_AREA_WIDTH = 'min(800px, 100vw)'
-
 function getFenceLanguage(info: string): string {
   return info.trim().split(/\s+/)[0]?.toLowerCase() ?? ''
 }
@@ -88,10 +86,35 @@ const md: MarkdownIt = new MarkdownItConstructor({
   },
 })
 
+// Preserve literal quote characters from user and assistant messages while
+// retaining typographer's other replacements (for example, dashes and ellipses).
+md.disable('smartquotes')
+
 md.use(markdownItKatex, {
   katex,
   throwOnError: false,
   strict: 'ignore',
+})
+
+// A conversation carries whatever language the person writes in, and one
+// message can hold both. dir="auto" lets each block pick its own direction from
+// its first strong character, so an Arabic paragraph reads right-to-left even
+// while the interface is in English — and the reverse.
+const AUTO_DIRECTION_TOKENS = new Set([
+  'paragraph_open',
+  'heading_open',
+  'blockquote_open',
+  'list_item_open',
+  'th_open',
+  'td_open',
+  'dt_open',
+  'dd_open',
+])
+
+md.core.ruler.push('auto_direction', (state) => {
+  for (const token of state.tokens) {
+    if (AUTO_DIRECTION_TOKENS.has(token.type)) token.attrSet('dir', 'auto')
+  }
 })
 
 const defaultFenceRenderer = md.renderer.rules.fence?.bind(md.renderer.rules)
@@ -117,14 +140,6 @@ const markdownBody = ref<HTMLElement | null>(null)
 const componentId = `hermes-mermaid-${Math.random().toString(36).slice(2)}`
 const previewUrl = ref<string | null>(null)
 
-// Preview config variable
-const textPreviewContent = ref<string | null>(null)
-const textPreviewFileName = ref('')
-const textPreviewLoading = ref(false)
-const textPreviewVisible = ref(false)
-
-const textPreviewIsMarkdown = computed(() => /\.(md|markdown)$/i.test(textPreviewFileName.value))
-
 let renderGeneration = 0
 let unmounted = false
 
@@ -134,6 +149,23 @@ function isLocalFilePath(path: string): boolean {
 
 function normalizeLocalFilePath(path: string): string {
   return /^[a-zA-Z]:\\/.test(path) ? path.replace(/\\/g, '/') : path
+}
+
+function requestWorkspaceFilePreview(path: string, fileName: string): boolean {
+  const event = new CustomEvent('hermes:preview-workspace-file', {
+    cancelable: true,
+    detail: { path, fileName },
+  })
+  window.dispatchEvent(event)
+  return event.defaultPrevented
+}
+
+function downloadPathFromUrl(url: string): string | null {
+  try {
+    return new URL(url, window.location.origin).searchParams.get('path')
+  } catch {
+    return null
+  }
 }
 
 const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov'])
@@ -181,7 +213,7 @@ const renderedHtml = computed(() => {
   html = html.replace(/<a href="([^"]+)">([^<]+)<\/a>/g, (match, rawPath, filename) => {
     if (!isLocalFilePath(rawPath)) return match
 
-    const path = normalizeLocalFilePath(rawPath)
+    const path = normalizeLocalFilePath(downloadPathFromUrl(rawPath) || rawPath)
     const fileName = filename.trim()
     const downloadName = inferDownloadFileName(path, fileName)
 
@@ -420,9 +452,8 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
     }
 
     if (path) {
-      const ext = fileName?.split('.').pop()?.toLowerCase()
-      if (SUPPORT_PREVIEW_FILE_TYPES.includes(ext || '')) {
-        previewTextFile(path, fileName || '')
+      if (isPreviewableFile(fileName || path) && requestWorkspaceFilePreview(path, fileName || inferDownloadFileName(path))) {
+        return
       } else { // Download file immediately
         downloadFile(path, fileName).catch((err: Error) => {
           message.error(err.message || t('download.downloadFailed'))
@@ -439,10 +470,16 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
   const href = link.getAttribute('href')
   if (!href) return
 
-  // Let http(s) links behave normally — use window.open to prevent
-  // the hash-based router from intercepting the click
+  // Desktop chat links stay inside the embedded browser. Web deployments keep
+  // using a separate browser tab so the hash-based router cannot intercept.
   if (href.startsWith('http://') || href.startsWith('https://')) {
     event.preventDefault()
+    try {
+      if (await openUrlInDesktopBrowser(href)) return
+    } catch (error) {
+      message.error(`${t('browser.loadFailed')}: ${error instanceof Error ? error.message : String(error)}`)
+      return
+    }
     window.open(href, '_blank', 'noopener,noreferrer')
     return
   }
@@ -477,51 +514,10 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
   }
 }
 
-// Get file content and show preview area.
-async function previewTextFile(path: string, fileName: string): Promise<void> {
-  textPreviewLoading.value = true
-  textPreviewVisible.value = true
-  textPreviewFileName.value = fileName
-  textPreviewContent.value = null
-  try {
-    textPreviewContent.value = await fetchFileText(path, fileName)
-  } catch (err: any) {
-    message.error(err.message || t('download.downloadFailed'))
-  } finally {
-    textPreviewLoading.value = false
-  }
-}
-
-function closeTextPreview(): void {
-  textPreviewVisible.value = false
-}
 </script>
 
 <template>
-  <div ref="markdownBody" class="markdown-body" v-html="renderedHtml" @click="handleMarkdownClick"></div>
-  <!-- File preview area -->
-  <NDrawer
-    v-model:show="textPreviewVisible"
-    :width="PREVIEW_AREA_WIDTH"
-    placement="right"
-    :show-mask="false"
-    :trap-focus="false"
-    class="markdown-text-preview-drawer"
-  >
-    <NDrawerContent
-      :title="t('download.contentDisplay')"
-      closable
-      :body-content-style="{ padding: 0 }"
-      @close="closeTextPreview"
-    >
-      <NSpin :show="textPreviewLoading">
-        <div v-if="textPreviewContent !== null && textPreviewIsMarkdown" class="text-preview-markdown">
-          <MarkdownRenderer :content="textPreviewContent" />
-        </div>
-        <pre v-else-if="textPreviewContent !== null" class="text-preview-body">{{ textPreviewContent }}</pre>
-      </NSpin>
-    </NDrawerContent>
-  </NDrawer>
+  <div ref="markdownBody" class="markdown-body" dir="auto" v-html="renderedHtml" @click="handleMarkdownClick"></div>
   <Teleport to="body">
     <div v-if="previewUrl" class="image-preview-overlay" @click.self="previewUrl = null">
       <img :src="previewUrl" class="image-preview-img" @click="previewUrl = null" />
@@ -533,7 +529,18 @@ function closeTextPreview(): void {
 @use '@/styles/variables' as *;
 
 .markdown-body {
-  font-size: 14px;
+  // Code keeps its own direction whatever language surrounds it: a snippet
+  // inside an Arabic sentence must not be mirrored.
+  pre,
+  code,
+  kbd,
+  samp {
+    direction: ltr;
+    unicode-bidi: isolate;
+    text-align: start;
+  }
+
+  font-size: var(--font-size-base);
   line-height: 1.65;
   width: 100%;
   min-width: 0;
@@ -555,7 +562,7 @@ function closeTextPreview(): void {
   }
 
   ul, ol {
-    padding-left: 20px;
+    padding-inline-start: 20px;
     margin: 4px 0 8px;
   }
 
@@ -715,7 +722,7 @@ function closeTextPreview(): void {
   blockquote {
     margin: 8px 0;
     padding: 4px 12px;
-    border-left: 3px solid $border-color;
+    border-inline-start: 3px solid $border-color;
     color: $text-secondary;
   }
 
@@ -742,7 +749,7 @@ function closeTextPreview(): void {
     th, td {
       padding: 6px 12px;
       border: 1px solid $border-color;
-      text-align: left;
+      text-align: start;
       font-size: 13px;
     }
 
@@ -809,51 +816,4 @@ function closeTextPreview(): void {
   cursor: pointer;
 }
 
-.text-preview-body {
-  flex: 1;
-  overflow: auto;
-  padding: 16px;
-  margin: 0;
-  font-family: $font-code;
-  font-size: 13px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-all;
-  color: $text-primary;
-}
-
-.text-preview-markdown {
-  padding: 16px;
-  overflow: auto;
-}
-
-.markdown-text-preview-drawer {
-  max-width: 100vw;
-
-  .n-drawer-content,
-  .n-drawer-body-content-wrapper {
-    max-width: 100vw;
-  }
-}
-
-@media (max-width: $breakpoint-mobile) {
-  .markdown-text-preview-drawer {
-    max-width: 100vw;
-
-    .n-drawer-content,
-    .n-drawer-body-content-wrapper {
-      max-width: 100vw;
-    }
-  }
-
-  .text-preview-body {
-    padding: 12px;
-    max-width: 100vw;
-  }
-
-  .text-preview-markdown {
-    padding: 12px;
-    max-width: 100vw;
-  }
-}
 </style>

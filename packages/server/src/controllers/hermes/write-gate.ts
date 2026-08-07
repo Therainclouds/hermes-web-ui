@@ -56,10 +56,7 @@ export async function diff(ctx: Context) {
 export async function approve(ctx: Context) {
   try {
     const { subsystem, id } = pendingParams(ctx)
-    ctx.body = {
-      success: true,
-      output: await approvePendingWrite(requestedProfile(ctx), subsystem, id),
-    }
+    ctx.body = await approvePendingWrite(requestedProfile(ctx), subsystem, id)
   } catch (err: any) {
     handleError(ctx, err)
   }
@@ -68,10 +65,7 @@ export async function approve(ctx: Context) {
 export async function reject(ctx: Context) {
   try {
     const { subsystem, id } = pendingParams(ctx)
-    ctx.body = {
-      success: true,
-      output: await rejectPendingWrite(requestedProfile(ctx), subsystem, id),
-    }
+    ctx.body = await rejectPendingWrite(requestedProfile(ctx), subsystem, id)
   } catch (err: any) {
     handleError(ctx, err)
   }

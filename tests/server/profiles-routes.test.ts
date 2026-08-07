@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from 'fs'
 import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
-import { join } from 'path'
+import { basename, dirname, join } from 'path'
+import { Readable } from 'stream'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 const agentBridgeMocks = vi.hoisted(() => ({
@@ -38,6 +39,7 @@ vi.mock('../../packages/server/src/services/hermes/hermes-cli', () => ({
   setupReset: vi.fn(),
   exportProfile: vi.fn(),
   importProfile: vi.fn(),
+  ARCHIVE_TIMEOUT_CODE: 'archive_timeout',
 }))
 
 vi.mock('../../packages/server/src/services/hermes/agent-bridge', () => ({
@@ -174,6 +176,105 @@ describe('Profile Routes', () => {
       await hermesCli.renameProfile('old', 'new')
 
       expect(hermesCli.renameProfile).toHaveBeenCalledWith('old', 'new')
+    })
+  })
+
+  describe('profile export failures', () => {
+    it('uses a unique output directory and removes it after the response finishes', async () => {
+      let outputPath = ''
+      vi.mocked(hermesCli.exportProfile).mockImplementation(async (_name, path) => {
+        outputPath = path || ''
+        await writeFile(outputPath, 'complete archive', 'utf-8')
+        return 'Profile exported'
+      })
+      const responseHandlers = new Map<string, () => void>()
+      const { exportProfile } = await import('../../packages/server/src/controllers/hermes/profiles')
+      const ctx: any = {
+        params: { name: 'mohamed' },
+        status: 200,
+        body: undefined,
+        set: vi.fn(),
+        res: {
+          on: vi.fn((event: string, handler: () => void) => {
+            responseHandlers.set(event, handler)
+          }),
+        },
+      }
+
+      await exportProfile(ctx)
+
+      expect(dirname(outputPath)).toContain('hermes-profile-export-')
+      expect(existsSync(outputPath)).toBe(true)
+      responseHandlers.get('finish')?.()
+      await vi.waitFor(() => {
+        expect(existsSync(dirname(outputPath))).toBe(false)
+      })
+      ctx.body.destroy()
+    })
+
+    it('answers a timed-out export with 504 and a code the UI can act on', async () => {
+      let outputPath = ''
+      vi.mocked(hermesCli.exportProfile).mockImplementation(async (_name, path) => {
+        outputPath = path || ''
+        await writeFile(outputPath, 'partial archive', 'utf-8')
+        throw Object.assign(
+          new Error("Export of profile 'mohamed' timed out after 10 minutes — the archive is too large"),
+          { code: 'archive_timeout' },
+        )
+      })
+      const { exportProfile } = await import('../../packages/server/src/controllers/hermes/profiles')
+      const ctx: any = { params: { name: 'mohamed' }, status: 200, body: undefined, set: vi.fn(), res: { on: vi.fn() } }
+
+      await exportProfile(ctx)
+
+      expect(ctx.status).toBe(504)
+      expect(ctx.body.code).toBe('archive_timeout')
+      expect(ctx.body.error).toContain('timed out')
+      expect(outputPath).not.toBe('')
+      expect(existsSync(dirname(outputPath))).toBe(false)
+    })
+
+    it('still answers a real export failure with 500', async () => {
+      vi.mocked(hermesCli.exportProfile).mockRejectedValue(new Error("Failed to export profile: profile 'ghost' not found"))
+      const { exportProfile } = await import('../../packages/server/src/controllers/hermes/profiles')
+      const ctx: any = { params: { name: 'ghost' }, status: 200, body: undefined, set: vi.fn(), res: { on: vi.fn() } }
+
+      await exportProfile(ctx)
+
+      expect(ctx.status).toBe(500)
+      expect(ctx.body.code).toBeUndefined()
+    })
+  })
+
+  describe('profile import temp files', () => {
+    it('sanitizes the upload name and removes the request temp directory', async () => {
+      const boundary = 'profile-archive-boundary'
+      const multipart = [
+        `--${boundary}\r\n`,
+        'Content-Disposition: form-data; name="file"; filename="../../profile.tar.gz"\r\n',
+        'Content-Type: application/gzip\r\n\r\n',
+        'archive-data',
+        `\r\n--${boundary}--\r\n`,
+      ].join('')
+      let archivePath = ''
+      vi.mocked(hermesCli.importProfile).mockImplementation(async (path) => {
+        archivePath = path
+        expect(existsSync(path)).toBe(true)
+        return 'Profile imported'
+      })
+      const { importProfile } = await import('../../packages/server/src/controllers/hermes/profiles')
+      const ctx: any = {
+        get: vi.fn(() => `multipart/form-data; boundary=${boundary}`),
+        req: Readable.from([Buffer.from(multipart, 'latin1')]),
+        status: 200,
+        body: undefined,
+      }
+
+      await importProfile(ctx)
+
+      expect(ctx.body).toMatchObject({ success: true })
+      expect(basename(archivePath)).toBe('profile.tar.gz')
+      expect(existsSync(dirname(archivePath))).toBe(false)
     })
   })
 

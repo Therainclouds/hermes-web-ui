@@ -1,4 +1,4 @@
-﻿import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 describe('user auth tables and middleware', () => {
   let db: any = null
@@ -192,7 +192,9 @@ describe('user auth tables and middleware', () => {
   it.each([
     '/api/hermes/media/apikey-image-generate',
     '/api/hermes/media/grok-image-to-video',
-  ])('still allows server token for local media agent endpoint %s', async (path) => {
+    '/api/hermes/voice/proxy/default/v1/tts',
+    '/api/hermes/voice/proxy/work/v1/audio/transcriptions',
+  ])('allows server token for an approved loopback agent endpoint %s', async (path) => {
     vi.stubEnv('AUTH_TOKEN', 'server-token')
     const { auth } = await initUsers()
     const ctx = {
@@ -217,6 +219,8 @@ describe('user auth tables and middleware', () => {
   it.each([
     '/api/hermes/media/apikey-image-generate',
     '/api/hermes/media/grok-image-to-video',
+    '/api/hermes/voice/proxy/default/v1/tts',
+    '/api/hermes/voice/proxy/work/v1/audio/transcriptions',
     '/api/devices',
     '/api/devices/scan',
     '/api/devices/device-1/connect',
@@ -274,6 +278,27 @@ describe('user auth tables and middleware', () => {
     expect(adminCtx.status).toBe(403)
     expect(adminCtx.body).toEqual({ error: 'Super administrator privileges are required' })
     expect(next).toHaveBeenCalledOnce()
+  })
+
+  it('allows admin and super_admin roles through provider-management authorization', async () => {
+    const { auth } = await initUsers()
+    const adminNext = vi.fn(async () => {})
+    const superNext = vi.fn(async () => {})
+    const missingNext = vi.fn(async () => {})
+
+    const adminCtx = { state: { user: { role: 'admin' } }, status: 200, body: null } as any
+    const superCtx = { state: { user: { role: 'super_admin' } }, status: 200, body: null } as any
+    const missingCtx = { state: {}, status: 200, body: null } as any
+
+    await auth.requireAdmin(adminCtx, adminNext)
+    await auth.requireAdmin(superCtx, superNext)
+    await auth.requireAdmin(missingCtx, missingNext)
+
+    expect(adminNext).toHaveBeenCalledOnce()
+    expect(superNext).toHaveBeenCalledOnce()
+    expect(missingNext).not.toHaveBeenCalled()
+    expect(missingCtx.status).toBe(403)
+    expect(missingCtx.body).toEqual({ error: 'Administrator privileges are required' })
   })
 
   it('ignores stale profile headers for the aggregate available-models endpoint', async () => {
@@ -420,11 +445,20 @@ describe('user auth tables and middleware', () => {
 
     expect(ctx.status).toBe(200)
     expect(ctx.body.token).toMatch(/^[^.]+\.[^.]+\.[^.]+$/)
+    expect(ctx.body.userId).toBeGreaterThan(0)
+    expect(ctx.body.theme).toEqual({
+      fontSize: 14,
+      textColor: null,
+      accentColor: null,
+      background: null,
+      updatedAt: 0,
+    })
   })
 
   it('marks only quanthermes with password 12345678 as requiring a credential change', async () => {
+    vi.stubEnv('HERMES_DESKTOP', 'false')
     const { users } = await initUsers()
-    const admin = users.bootstrapDefaultSuperAdmin('admin', '123456')!
+    const admin = users.bootstrapDefaultSuperAdmin('quanthermes', '12345678')!
     const ctrl = await import('../../packages/server/src/controllers/auth')
 
     const defaultCtx = {
@@ -486,7 +520,7 @@ describe('user auth tables and middleware', () => {
 
   it('does not allow disabling the last active super admin', async () => {
     const { users } = await initUsers()
-    const admin = users.bootstrapDefaultSuperAdmin('admin', '123456')!
+    const admin = users.bootstrapDefaultSuperAdmin('quanthermes', '12345678')!
     vi.doMock('../../packages/server/src/services/hermes/hermes-profile', () => ({
       listProfileNamesFromDisk: () => ['default'],
     }))

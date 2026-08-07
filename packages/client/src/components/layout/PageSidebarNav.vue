@@ -349,4 +349,12 @@ function openExperts() {
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
   }
 }
+
+:global(.dark .conversation-switch--three .conversation-switch-tab.active) {
+  background: $bg-card-hover;
+  color: $accent-primary;
+  box-shadow:
+    inset 0 0 0 1px $border-color,
+    0 2px 5px rgba(0, 0, 0, 0.22);
+}
 </style>

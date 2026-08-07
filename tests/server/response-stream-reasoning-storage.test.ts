@@ -41,7 +41,7 @@ describe('response stream reasoning storage', () => {
     ])
   })
 
-  it('keeps reasoning deltas in session memory across tool boundaries', () => {
+  it('splits reasoning at tool boundaries and stores the pre-tool segment on the tool call', () => {
     const state: SessionState = { messages: [], isWorking: false, events: [], queue: [] }
 
     applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.created', {
@@ -70,13 +70,60 @@ describe('response stream reasoning storage', () => {
     expect(state.messages[0]).toMatchObject({
       role: 'assistant',
       content: 'Before tool.',
-      reasoning: 'think before. think after. ',
-      reasoning_content: 'think before. think after. ',
+      reasoning: 'think before. ',
+      reasoning_content: 'think before. ',
+    })
+    expect(state.messages[1]).toMatchObject({
+      role: 'assistant',
+      content: '',
+      reasoning: 'think before. ',
+      reasoning_content: 'think before. ',
+      tool_calls: [expect.objectContaining({ id: 'tool-1' })],
     })
     expect(state.messages[3]).toMatchObject({
       role: 'assistant',
       content: 'After tool.',
+      reasoning: 'think after. ',
+      reasoning_content: 'think after. ',
     })
+  })
+
+  it('stores a reasoning-only segment on its tool call without duplicating final snapshots', () => {
+    const state: SessionState = { messages: [], isWorking: false, events: [], queue: [] }
+    const toolCall = { type: 'function_call', call_id: 'tool-1', name: 'Bash', arguments: '{}' }
+
+    applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.created', {
+      response: { id: 'resp-1', status: 'in_progress' },
+    })
+    applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.reasoning.delta', {
+      delta: 'inspect first',
+    })
+    applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.output_item.added', {
+      item: toolCall,
+    })
+    applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.output_item.done', {
+      item: toolCall,
+    })
+    applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.completed', {
+      response: {
+        id: 'resp-1',
+        output: [
+          { type: 'reasoning', summary: [{ text: 'inspect first' }] },
+          toolCall,
+        ],
+      },
+    })
+
+    expect(state.messages).toEqual([
+      expect.objectContaining({
+        role: 'assistant',
+        content: '',
+        reasoning: 'inspect first',
+        reasoning_content: 'inspect first',
+        tool_calls: [expect.objectContaining({ id: 'tool-1' })],
+      }),
+    ])
+    expect(state.responseRun?.pendingReasoning).toBeUndefined()
   })
 
   it('flushes reasoning fields to message storage', () => {
@@ -101,6 +148,27 @@ describe('response stream reasoning storage', () => {
       reasoning: 'stored thinking',
       reasoning_content: 'stored thinking',
     }))
+  })
+
+  it('rebinds run messages to persisted ids and returns the final assistant id', () => {
+    const state: SessionState = { messages: [], isWorking: false, events: [], queue: [] }
+    addMessageMock.mockReturnValueOnce(40).mockReturnValueOnce(41).mockReturnValueOnce(42)
+
+    applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.created', {
+      response: { id: 'resp-1', status: 'in_progress' },
+    })
+    applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.output_text.delta', {
+      delta: 'Before tool.',
+    })
+    applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.output_item.done', {
+      item: { type: 'function_call', call_id: 'tool-1', name: 'Bash', arguments: '{}' },
+    })
+    applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.output_text.delta', {
+      delta: 'Final answer.',
+    })
+
+    expect(flushResponseRunToDb(state, 'session-1')).toBe('42')
+    expect(state.messages.map(message => message.id)).toEqual([40, 41, 42])
   })
 
   it('deduplicates final reasoning snapshots after streamed reasoning deltas', () => {

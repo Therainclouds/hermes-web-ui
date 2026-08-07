@@ -11,6 +11,7 @@ import {
   downloadWebUiVersion,
   fetchRuntimeVersionStatus,
   fetchVersionDownloadJobs,
+  selectRuntimeRoot,
   type InstalledRuntimeVersion,
   type InstalledWebUiVersion,
   type RuntimeVersionStatus,
@@ -20,6 +21,7 @@ import {
   type VersionDownloadSource,
 } from '@/api/hermes/runtime-versions'
 import { useMessage } from '@/composables/useAppMessage'
+import { desktopBridge } from '@/utils/desktop-bridge'
 
 const props = defineProps<{ show: boolean }>()
 const emit = defineEmits<{ (event: 'update:show', value: boolean): void }>()
@@ -33,6 +35,13 @@ const loading = ref(false)
 const actionLoading = ref<Record<string, boolean>>({})
 const loadError = ref('')
 let pollTimer: ReturnType<typeof setInterval> | null = null
+
+const canSelectRuntimeDirectory = computed(() => typeof desktopBridge()?.selectRuntimeDirectory === 'function')
+const isDefaultRuntimeDirectory = computed(() => {
+  const defaultDirectory = status.value?.hermes.defaultStorageDirectory
+  const selectedDirectory = status.value?.hermes.pendingStorageDirectory || status.value?.hermes.storageDirectory
+  return !defaultDirectory || selectedDirectory === defaultDirectory
+})
 
 const currentPlatformRuntime = computed(() =>
   (status.value?.hermes.installed || []).filter(item => item.platform === status.value?.platform),
@@ -187,6 +196,10 @@ function formatBytes(value?: number): string {
   return `${size >= 10 || unitIndex === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[unitIndex]}`
 }
 
+function displayHermesAgentVersion(value?: string): string {
+  return value?.split('·')[0]?.trim() || '-'
+}
+
 function jobProgressText(job: VersionDownloadJob): string {
   if (job.receivedBytes && job.totalBytes) {
     return `${formatBytes(job.receivedBytes)} / ${formatBytes(job.totalBytes)}`
@@ -217,6 +230,32 @@ async function useRuntime(version: string) {
   await runAction(`activate-runtime-${version}`, async () => {
     await activateRuntimeVersion(version)
     message.success(t('runtimeVersions.activateSuccess'))
+    await loadAll()
+  })
+}
+
+async function chooseRuntimeDirectory() {
+  const selectDirectory = desktopBridge()?.selectRuntimeDirectory
+  if (!selectDirectory) return
+
+  await runAction('select-runtime-directory', async () => {
+    const directory = await selectDirectory(
+      status.value?.hermes.pendingStorageDirectory || status.value?.hermes.storageDirectory || undefined,
+    )
+    if (!directory) return
+    await selectRuntimeRoot(directory)
+    message.success(t('runtimeVersions.runtimeDirectorySaved'))
+    await loadAll()
+  })
+}
+
+async function resetRuntimeDirectory() {
+  const directory = status.value?.hermes.defaultStorageDirectory
+  if (!directory) return
+
+  await runAction('reset-runtime-directory', async () => {
+    await selectRuntimeRoot(directory)
+    message.success(t('runtimeVersions.runtimeDirectorySaved'))
     await loadAll()
   })
 }
@@ -271,10 +310,68 @@ async function removeWebUi(version: string) {
             </div>
             <NButton size="small" secondary @click="loadAll">{{ t('runtimeVersions.refresh') }}</NButton>
           </div>
-          <div class="active-path">
-            <span>{{ t('runtimeVersions.activeVersion') }}: {{ status?.hermes.activeVersion || '-' }}</span>
-            <span :title="status?.hermes.activeDirectory || ''">{{ status?.hermes.activeDirectory || '-' }}</span>
+          <div class="active-path stacked">
+            <span
+              data-testid="active-hermes-agent-version"
+              :title="status?.hermes.agentVersion || ''"
+            >
+              {{ t('runtimeVersions.currentHermesAgentVersion') }}: {{ displayHermesAgentVersion(status?.hermes.agentVersion) }}
+            </span>
+            <span
+              data-testid="active-runtime-directory"
+              :title="status?.hermes.activeDirectory || ''"
+            >
+              {{ t('runtimeVersions.activeRuntimeDirectory') }}: {{ status?.hermes.activeDirectory || '-' }}
+            </span>
           </div>
+          <NAlert
+            data-testid="runtime-cli-update-note"
+            type="info"
+            :bordered="false"
+          >
+            <div class="runtime-update-note">
+              <span>{{ t('runtimeVersions.cliUpdateDescription') }}</span>
+              <code>hermes-studio cli update</code>
+            </div>
+          </NAlert>
+          <div class="runtime-directory-control">
+            <div class="runtime-directory-value">
+              <strong>{{ t('runtimeVersions.runtimeDirectory') }}</strong>
+              <span :title="status?.hermes.storageDirectory || ''">
+                {{ status?.hermes.storageDirectory || '-' }}
+              </span>
+            </div>
+            <div v-if="canSelectRuntimeDirectory" class="runtime-directory-actions">
+              <NButton
+                data-testid="select-runtime-directory"
+                size="small"
+                secondary
+                :loading="actionLoading['select-runtime-directory']"
+                @click="chooseRuntimeDirectory"
+              >
+                {{ t('runtimeVersions.chooseRuntimeDirectory') }}
+              </NButton>
+              <NButton
+                data-testid="reset-runtime-directory"
+                size="small"
+                secondary
+                :disabled="isDefaultRuntimeDirectory"
+                :loading="actionLoading['reset-runtime-directory']"
+                @click="resetRuntimeDirectory"
+              >
+                {{ t('runtimeVersions.resetRuntimeDirectory') }}
+              </NButton>
+            </div>
+          </div>
+          <p v-if="canSelectRuntimeDirectory" class="runtime-directory-hint">
+            {{ t('runtimeVersions.runtimeDirectoryHint') }}
+          </p>
+          <NAlert v-if="status?.hermes.pendingStorageDirectory" type="info" :bordered="false">
+            {{ t('runtimeVersions.runtimeMigrationPending', { directory: status.hermes.pendingStorageDirectory }) }}
+          </NAlert>
+          <NAlert v-if="status?.hermes.migrationError" type="error" :bordered="false">
+            {{ t('runtimeVersions.runtimeMigrationFailed') }}: {{ status.hermes.migrationError }}
+          </NAlert>
           <div class="version-list">
             <div v-for="version in runtimeVersions" :key="`runtime-${version}`" class="version-row">
               <div class="version-main">
@@ -503,6 +600,75 @@ async function removeWebUi(version: string) {
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+
+  &.stacked {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+
+    span {
+      overflow: visible;
+      text-overflow: clip;
+      white-space: normal;
+      word-break: break-word;
+    }
+
+    span:last-child {
+      color: var(--text-color-3);
+    }
+  }
+}
+
+.runtime-directory-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+}
+
+.runtime-update-note {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+
+  code {
+    width: fit-content;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--hover-color);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 12px;
+  }
+}
+
+.runtime-directory-value {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+
+  span {
+    overflow: hidden;
+    color: var(--text-color-2);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.runtime-directory-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.runtime-directory-hint {
+  margin: -4px 2px 0;
+  color: var(--text-color-3);
+  font-size: 12px;
 }
 
 .version-list,
@@ -579,9 +745,14 @@ async function removeWebUi(version: string) {
 @media (max-width: 640px) {
   .section-heading,
   .version-row,
-  .job-row {
+  .job-row,
+  .runtime-directory-control {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .runtime-directory-actions {
+    flex-wrap: wrap;
   }
 
   .active-path {

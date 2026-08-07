@@ -4,9 +4,10 @@
 </p>
 
 <p align="center">
-  面向 Hermes Agent 的桌面应用、本地运行时�?Web 控制台�?br/>
-  聊天、模型与 Profile 管理、平台渠道接入、任务自动化�?br/>
-  文件查看、Coding Agent 和本地运行环境都在一个界面中完成�?</p>
+  面向 Hermes Agent 的桌面应用、本地运行时和 Web 控制台。<br/>
+  聊天、模型与 Profile 管理、平台渠道接入、任务自动化、<br/>
+  文件查看、Coding Agent 和本地运行环境都在一个界面中完成。
+</p>
 
 <p align="center">
   <code>npm install -g hermes-web-ui && hermes-web-ui start</code>
@@ -14,112 +15,149 @@
 
 ## 核心能力
 
-| 模块 | Hermes Studio 能做什�?|
+| 模块 | Hermes Studio 能做什么 |
 |---|---|
-| Agent 聊天 | 运行 Hermes Agent 对话，支持流式回复、工具调用轨迹、文件上传下载和本地持久化会话�?|
-| 本地控制�?| 在一个仪表盘中管�?Profile、Provider、模型、凭证、记忆、技能、插件、日志和运行时设置�?|
-| 自动�?| 围绕同一�?Hermes Profile 配置平台渠道、Cron 任务、Kanban 任务、群聊房间和 MCP Server�?|
-| 工作区工�?| 提供文件浏览器、Web 终端、语音输入输出、Coding Agent、设备发现和性能视图�?|
-| 分发形�?| 支持 Windows/macOS/Linux 桌面应用、npm CLI 包和 Docker 镜像�?|
+| Agent 聊天 | 运行 Hermes Agent 对话，支持流式回复、工具调用轨迹、文件上传下载和本地持久化会话。 |
+| 本地控制台 | 在一个仪表盘中管理 Profile、Provider、模型、凭证、记忆、技能、插件、日志和运行时设置。 |
+| 自动化 | 围绕同一套 Hermes Profile 配置平台渠道、Cron 任务、Kanban 任务、群聊房间和 MCP Server。 |
+| 工作区工具 | 提供文件浏览器、Web 终端、语音输入输出、Coding Agent、设备发现和性能视图。 |
+| 分发形态 | 支持 Windows/macOS/Linux 桌面应用、npm CLI 包和 Docker 镜像。 |
 
-## 功能特�?
+## 功能特性
+
 ### AI 聊天
 
 - 聊天前端通过 Socket.IO `/chat-run` 实时流式更新；聊天运行通过 Hermes agent bridge 执行
-- 多会话管�?�?创建、重命名、删除、切换会�?- **自建会话数据�?* �?Web UI 会话使用本地 SQLite；Hermes state.db 仅作为只读来源用�?Hermes 历史 API
-- 按来源分组会话（Telegram、Discord、Slack 等），可折叠手风琴面�?- 活跃会话实时指示�?�?正在进行的会话置顶并显示旋转图标
-- 按最新消息时间排序会话列�?- Markdown 渲染，支持语法高亮和代码复制
-- 工具调用详情展开（参�?/ 结果�?- �?Profile 隔离的文件上�?- 文件下载支持 �?按解析后的路径下载用户上传文件和 Agent 生成文件，兼�?local、Docker、SSH、Singularity 等多�?terminal backend
-- 会话搜索 �?Ctrl+K 搜索 Web UI 本地会话库；不包含只�?Hermes 历史会话
-- 按账号授�?Profile 汇总模型选择�?�?只展示当前账号可访问�?Hermes Profile 中可用的模型
+- 多会话管理 — 创建、重命名、删除、切换会话
+- **自建会话数据库** — Web UI 会话使用本地 SQLite；Hermes state.db 仅作为只读来源用于 Hermes 历史 API
+- 按来源分组会话（Telegram、Discord、Slack 等），可折叠手风琴面板
+- 活跃会话实时指示器 — 正在进行的会话置顶并显示旋转图标
+- 按最新消息时间排序会话列表
+- Markdown 渲染，支持语法高亮和代码复制
+- 工具调用详情展开（参数 / 结果）
+- 按 Profile 隔离的文件上传
+- 文件下载支持 — 按解析后的路径下载用户上传文件和 Agent 生成文件，兼容 local、Docker、SSH、Singularity 等多种 terminal backend
+- 会话搜索 — Ctrl+K 搜索 Web UI 本地会话库；不包含只读 Hermes 历史会话
+- 按账号授权 Profile 汇总模型选择器 — 只展示当前账号可访问的 Hermes Profile 中可用的模型
 - 每个会话显示模型标签和上下文 Token 用量
 
 ### 平台渠道
 
-在一个页面统一配置 **8 个平�?*�?
+在一个页面统一配置 **8 个平台**：
+
 | 平台 | 功能 |
 |---|---|
-| Telegram | Bot Token、提及控制、表情回应、自由回复聊�?|
-| Discord | Bot Token、提及、自动线程、表情回应、频道白名单/黑名�?|
+| Telegram | Bot Token、提及控制、表情回应、自由回复聊天 |
+| Discord | Bot Token、提及、自动线程、表情回应、频道白名单/黑名单 |
 | Slack | Bot Token、提及控制、Bot 消息处理 |
-| WhatsApp | 启用/禁用、提及控制、提及模�?|
-| Matrix | Access Token、Homeserver、自动线程、私信提及线�?|
-| 飞书 | App ID / Secret、提及控�?|
+| WhatsApp | 启用/禁用、提及控制、提及模式 |
+| Matrix | Access Token、Homeserver、自动线程、私信提及线程 |
+| 飞书 | App ID / Secret、提及控制 |
 | 微信 | 扫码登录（浏览器扫码，自动保存凭证） |
 | 企业微信 | Bot ID / Secret |
 
 - 凭证管理写入 `~/.hermes/.env`
 - 渠道行为设置写入 `~/.hermes/config.yaml`
-- 每个平台已配�?未配置状态检�?
+- 每个平台已配置/未配置状态检测
+
 ### 用量分析
 
-- Token 总用量明细（输入 / 输出�?- 会话数及日均统计
+- Token 总用量明细（输入 / 输出）
+- 会话数及日均统计
 - 预估费用追踪及缓存命中率
-- 模型使用分布�?- 30 天每日趋势（柱状�?+ 数据表格�?
+- 模型使用分布图
+- 30 天每日趋势（柱状图 + 数据表格）
+
 ### 定时任务
 
-- 创建、编辑、暂停、恢复、删�?Cron 任务
+- 创建、编辑、暂停、恢复、删除 Cron 任务
 - 立即触发执行
-- Cron 表达式快捷预�?
+- Cron 表达式快捷预设
+
 ### Kanban
 
-- �?Profile 管理�?Kanban 看板，用于规划和跟踪 Agent 工作
-- 可在仪表盘中创建任务、更新任务并移动状�?- 复用 Web UI 本地状态和认证体系
+- 按 Profile 管理的 Kanban 看板，用于规划和跟踪 Agent 工作
+- 可在仪表盘中创建任务、更新任务并移动状态
+- 复用 Web UI 本地状态和认证体系
 
 ### 模型管理
 
-- 从凭证池自动发现模型（`~/.hermes/auth.json`�?- 从每�?Provider 端点获取可用模型（`/v1/models`�?- 添加、更新、删�?Provider（预�?& 自定�?OpenAI 兼容�?- OpenAI Codex �?Nous Portal OAuth 登录
-- Provider URL 自动检测，支持�?v1 API 版本（如 `/v4`�?- Provider 级别模型分组，支持切换默认模�?
-### 多配置文�?
-- 创建、重命名、删除、切�?Hermes 配置文件（Profile�?- 克隆现有配置文件或从归档导入（`.tar.gz`�?- 导出配置文件用于备份或分�?- �?Profile 隔离配置、缓存、上传、会话、任务、用量、记忆、技能、插件、Provider 和模型可见�?- 账号绑定 Profile 权限：超级管理员可以管理全部 Profile；普通管理员只能查看和使用分配给自己�?Profile
+- 从凭证池自动发现模型（`~/.hermes/auth.json`）
+- 从每个 Provider 端点获取可用模型（`/v1/models`）
+- 添加、更新、删除 Provider（预设 & 自定义 OpenAI 兼容）
+- OpenAI Codex 和 Nous Portal OAuth 登录
+- Provider URL 自动检测，支持非 v1 API 版本（如 `/v4`）
+- Provider 级别模型分组，支持切换默认模型
 
-### 文件浏览�?
-- 浏览远程后端文件（local、Docker、SSH、Singularity�?- 上传、下载、重命名、复制、移动和删除文件
-- 上传文件保存到当前选择/请求�?Hermes Profile 目录下；下载按真实路径解析，支持下载上传目录外的 Agent 产物
+### 多配置文件
+
+- 创建、重命名、删除、切换 Hermes 配置文件（Profile）
+- 克隆现有配置文件或从归档导入（`.tar.gz`）
+- 导出配置文件用于备份或分享
+- 按 Profile 隔离配置、缓存、上传、会话、任务、用量、记忆、技能、插件、Provider 和模型可见性
+- 账号绑定 Profile 权限：超级管理员可以管理全部 Profile；普通管理员只能查看和使用分配给自己的 Profile
+
+### 文件浏览器
+
+- 浏览远程后端文件（local、Docker、SSH、Singularity）
+- 上传、下载、重命名、复制、移动和删除文件
+- 上传文件保存到当前选择/请求的 Hermes Profile 目录下；下载按真实路径解析，支持下载上传目录外的 Agent 产物
 - 创建目录
-- 查看文件内容，支持语法高�?
+- 查看文件内容，支持语法高亮
+
 ### 群聊
 
-- �?Agent 聊天房间，通过 Socket.IO 实时通信
-- @提及路由 �?提及 Agent 触发上下文回�?- 上下文压�?�?历史消息超过 Token 阈值时自动摘要压缩
-- 输入状态和回复进度指示�?- 房间创建、删除和邀请码管理
-- Agent 管理 �?添加/移除房间中的 Agent，支持独�?Profile
-- SQLite 消息持久�?- 移动端响应式布局，可折叠侧边�?
+- 多 Agent 聊天房间，通过 Socket.IO 实时通信
+- @提及路由 — 提及 Agent 触发上下文回复
+- 上下文压缩 — 历史消息超过 Token 阈值时自动摘要压缩
+- 输入状态和回复进度指示器
+- 房间创建、删除和邀请码管理
+- Agent 管理 — 添加/移除房间中的 Agent，支持独立 Profile
+- SQLite 消息持久化
+- 移动端响应式布局，可折叠侧边栏
+
 ### Coding Agents
 
-- �?Web 仪表盘中启动和监控本�?Coding Agent 会话
-- �?Codex �?Claude Code 集成提供独立代理路由
-- 持久�?Agent 输出�?reasoning 元数据，便于后续查看
+- 在 Web 仪表盘中启动和监控本地 Coding Agent 会话
+- 为 Codex 和 Claude Code 集成提供独立代理路由
+- 持久化 Agent 输出和 reasoning 元数据，便于后续查看
 
 ### 技能与记忆
 
-- 浏览和搜索已安装的技�?- 查看技能详情和附件
-- 用户笔记和档案管�?
+- 浏览和搜索已安装的技能
+- 查看技能详情和附件
+- 用户笔记和档案管理
+
 ### 日志
 
 - 查看 Agent / Server / Error 日志
-- 按日志级别、日志文件和关键词过�?- 结构化日志解析，HTTP 访问日志高亮
+- 按日志级别、日志文件和关键词过滤
+- 结构化日志解析，HTTP 访问日志高亮
 
 ### 管理与运行时
 
 - 设备和局域网 Peer 页面，用于本地网络发现和 Peer 工具能力
-- MCP 管理器，用于托管�?`hermes-studio` MCP Server �?Profile 自动注入
-- Runtime Version �?Version Preview 工具，用于隔离测试新版本
+- MCP 管理器，用于托管的 `hermes-studio` MCP Server 和 Profile 自动注入
+- Runtime Version 和 Version Preview 工具，用于隔离测试新版本
 - 面向超级管理员的性能监控视图
 
 ### 认证
 
-- 基于 Token 的认证（首次运行自动生成或通过 `AUTH_TOKEN` 环境变量设置�?- 用户�?密码登录，并在设置页提供账户管理
-- 默认登录�?密码�?`admin` / `123456`；登录后会提示尽快修改默认账户和密码
-- 超级管理员可以管理用户和 Profile 绑定；普通管理员只能管理自己的账户信�?
-CLI 维护命令�?
-```bash
-# 删除持久化的登录 IP 锁记�?hermes-web-ui clear-login-locks
+- 基于 Token 的认证（首次运行自动生成或通过 `AUTH_TOKEN` 环境变量设置）
+- 用户名/密码登录，并在设置页提供账户管理
+- 默认登录名/密码为 `admin` / `123456`；登录后会提示尽快修改默认账户和密码
+- 超级管理员可以管理用户和 Profile 绑定；普通管理员只能管理自己的账户信息
 
-# 删除登录锁并重启正在运行�?Web UI 进程
+CLI 维护命令：
+
+```bash
+# 删除持久化的登录 IP 锁记录
+hermes-web-ui clear-login-locks
+
+# 删除登录锁并重启正在运行的 Web UI 进程
 hermes-web-ui clear-login-locks --restart
 
-# 创建或重置默认超级管理员登录�?密码�?admin / 123456
+# 创建或重置默认超级管理员登录名/密码为 admin / 123456
 hermes-web-ui reset-default-login
 ```
 
@@ -160,13 +198,25 @@ Web UI BFF 端点：
 
 - 显示（流式输出、紧凑模式、推理过程、费用显示）
 - Agent（最大轮次、超时时间、工具强制执行）
-- 记忆（启�?禁用、字符限制）
+- 记忆（启用/禁用、字符限制）
 - 会话重置（空闲超时、定时重置）
-- 隐私（PII 脱敏�?- 模型设置（默认模�?& Provider�?- Profile �?Provider 配置
+- 隐私（PII 脱敏）
+- 模型设置（默认模型 & Provider）
+- Profile 和 Provider 配置
 
 ### 语音 / TTS / STT
 
-- 可在聊天和群聊消息中朗读 Assistant 回复�?- Provider 支持：浏览器 Web Speech、内�?Edge TTS、OpenAI 兼容 `/audio/speech`、自定义 OpenAI 兼容 TTS 端点、MiMo�?- MiMo 支持预置音色、音色设计提示词、音色复刻参考音频（`.mp3`/`.wav`，最�?10 MB），并可选择鉴权请求头模式（`Authorization`、`api-key` 或两者同时发送）�?- Edge / OpenAI 兼容 / 自定�?/ MiMo 播放统一�?Web UI 后端 `/api/hermes/tts/synthesize`，停�?暂停状态一致，并会在可行时中断进行中的 fetch�?- Provider API Key �?MiMo 复刻参考音频保存在服务�?TTS 设置中，浏览器只显示脱敏后的 secret 状态�?- 使用 OpenAI / 自定�?/ MiMo 播放前，先在 Settings �?Voice 保存 provider 设置。消息播放只发送文本和非敏感播放参数，后端合成时读取当前用户保存的私钥�?- 聊天输入框支持回合制语音输入：通过麦克风按钮开�?停止一轮录音，转写结果会先填入当前输入框，用户可以编辑后再用普通发送按钮发送�?- 语音输入 / STT 可在支持时使用浏览器语音识别，也可使用在 Settings �?Voice 中配置的服务�?provider�?- �?Assistant 音频正在播放时，开始新的语音输入会先停止播放。这�?barge-in 只打断音频，不会隐式取消正在运行�?Agent；停�?run 仍然需要显式操作�?- 支持的设置项、安全边界和当前非目标范围见 [`docs/voice-dialogue.md`](./docs/voice-dialogue.md)�?- 限制：浏览器/服务端中断后，外�?TTS Provider 仍可能继续处理请求；自定�?/ OpenAI 兼容 / MiMo base URL 必须是公�?`http`/`https` 端点，不能指�?localhost 或私网�?
+- 可在聊天和群聊消息中朗读 Assistant 回复。
+- Provider 支持：浏览器 Web Speech、内置 Edge TTS、OpenAI 兼容 `/audio/speech`、自定义 OpenAI 兼容 TTS 端点、MiMo。
+- MiMo 支持预置音色、音色设计提示词、音色复刻参考音频（`.mp3`/`.wav`，最大 10 MB），并可选择鉴权请求头模式（`Authorization`、`api-key` 或两者同时发送）。
+- Edge / OpenAI 兼容 / 自定义 / MiMo 播放统一走 Web UI 后端 `/api/hermes/tts/synthesize`，停止/暂停状态一致，并会在可行时中断进行中的 fetch。
+- Provider API Key 和 MiMo 复刻参考音频保存在服务端 TTS 设置中，浏览器只显示脱敏后的 secret 状态。
+- 使用 OpenAI / 自定义 / MiMo 播放前，先在 Settings → Voice 保存 provider 设置。消息播放只发送文本和非敏感播放参数，后端合成时读取当前用户保存的私钥。
+- 聊天输入框支持回合制语音输入：通过麦克风按钮开始/停止一轮录音，转写结果会先填入当前输入框，用户可以编辑后再用普通发送按钮发送。
+- 语音输入 / STT 可在支持时使用浏览器语音识别，也可使用在 Settings → Voice 中配置的服务端 provider。
+- 当 Assistant 音频正在播放时，开始新的语音输入会先停止播放。这个 barge-in 只打断音频，不会隐式取消正在运行的 Agent；停止 run 仍然需要显式操作。
+- 支持的设置项、安全边界和当前非目标范围见 [`docs/voice-dialogue.md`](./docs/voice-dialogue.md)。
+- 限制：浏览器/服务端中断后，外部 TTS Provider 仍可能继续处理请求；自定义 / OpenAI 兼容 / MiMo base URL 必须是公网 `http`/`https` 端点，不能指向 localhost 或私网。
 
 ### 会议模式
 
@@ -271,35 +321,40 @@ Web UI BFF 端点：
 - **报告生成 prompt 加固。** `useMeetingAgent.generateReport` 现在通过 `sendMessage` 的第二个参数下发 pinned `instructions`，带上会议标题，并把已有 `analysisResult` 以及之前 assistant/system 消息以 `### Previous analysis result` / `### Previous conversation` 块的形式拼进 prompt。再点一次 "生成报告" 会基于之前的分析结果增量补全，而不是从头再来；严格的 instructions 同时强制 `write_file + ```html` 契约，与 `extractHtml` 的抽取规则对齐。
 - **HTML 检测放宽。** `looksLikeHtmlDocument` 现在同时接受 `<!DOCTYPE html>` 开头，最小长度阈值从 200 字符降到 100 字符，短的（不含 ECharts 图表的）报告也能被识别为完整 HTML 文档。
 
-**后端依赖：**
-
-- ASR 服务：`ws://localhost:8000/ws/asr`（实时语音识别）
-- 说话人分离服务：`ws://localhost:8001/ws/diarize`（需配置阿里云 OSS）
-- 详见 [meeting_asr_cloud](https://github.com/your-org/meeting_asr_cloud) 项目
-
 ### Web 终端
 
-- 集成终端，基�?node-pty �?@xterm/xterm
-- 多会话支�?�?创建、切换、关闭终端会�?- 通过 WebSocket 实时传输键盘输入�?PTY 输出
+- 集成终端，基于 node-pty 和 @xterm/xterm
+- 多会话支持 — 创建、切换、关闭终端会话
+- 通过 WebSocket 实时传输键盘输入和 PTY 输出
 - 支持窗口大小调整
 
-### 桌面应用与自动更�?
-- Windows、macOS �?Linux 原生 Electron 桌面�?- 内置 Web UI 运行时，并自动启动本�?Hermes Studio 服务
-- 桌面自动更新优先使用 Cloudflare 下载端点获取更新元数据和安装�?- 如果 Cloudflare 更新源不可用，会回退�?GitHub Releases `latest` 资源
-- Windows 升级时会先尝试关闭已�?Hermes Studio 进程，再替换文件
+### 桌面应用与自动更新
+
+- Windows、macOS 和 Linux 原生 Electron 桌面壳
+- 内置 Web UI 运行时，并自动启动本地 Hermes Studio 服务
+- 桌面自动更新优先使用 Cloudflare 下载端点获取更新元数据和安装包
+- 如果 Cloudflare 更新源不可用，会回退到 GitHub Releases `latest` 资源
+- Windows 升级时会先尝试关闭已有 Hermes Studio 进程，再替换文件
 
 ---
 
-## 快速开�?
+## 快速开始
+
 ### 桌面应用（推荐）
 
-请从你们自己的发布渠道下载最新的 **Hermes Studio** 桌面安装包�?
-桌面版会发布 macOS、Windows �?Linux 构建；适用时会区分不同 CPU 架构�?桌面应用内置 Web UI 运行时，Hermes Agent 数据会保存到原生 Hermes 目录�?
-- Windows：`%LOCALAPPDATA%\hermes`（找不到时回退�?`%APPDATA%\hermes`�?- macOS/Linux：`~/.hermes`
+请从你们自己的发布渠道下载最新的 **Hermes Studio** 桌面安装包。
 
-桌面壳自身的 Web UI 状态会单独保存�?`~/.hermes-web-ui`，除非设置了
-`HERMES_WEB_UI_HOME`�?
-桌面自动更新应优先读取你们自己的更新元数据地址和安装包分发地址�?
+桌面版会发布 macOS、Windows 和 Linux 构建；适用时会区分不同 CPU 架构。
+桌面应用内置 Web UI 运行时，Hermes Agent 数据会保存到原生 Hermes 目录：
+
+- Windows：`%LOCALAPPDATA%\hermes`（找不到时回退到 `%APPDATA%\hermes`）
+- macOS/Linux：`~/.hermes`
+
+桌面壳自身的 Web UI 状态会单独保存到 `~/.hermes-web-ui`，除非设置了
+`HERMES_WEB_UI_HOME`。
+
+桌面自动更新应优先读取你们自己的更新元数据地址和安装包分发地址。
+
 ### npm 安装
 
 ```bash
@@ -307,18 +362,21 @@ npm install -g @quanthermes/hermes-web-ui
 hermes-web-ui start
 ```
 
-打开 **http://localhost:6060**
+打开 **http://localhost:8648**
 
 ### 一键安装与 WSL
 
-请使用你们自己维护的安装脚本或部署文档，不再引用官方远程安装脚本�?
-> WSL 使用与其他本地安装相同的 Web UI 后台启动流程；Web UI 不再单独启动 gateway 服务�?
+请使用你们自己维护的安装脚本或部署文档，不再引用官方远程安装脚本。
+
+> WSL 使用与其他本地安装相同的 Web UI 后台启动流程；Web UI 不再单独启动 gateway 服务。
+
 ### Docker Compose
 
 单容器部署，内置 Hermes Agent 运行时：
 
 ```bash
-# 使用预构建镜像（推荐�?WEBUI_IMAGE=ekkoye8888/hermes-web-ui docker compose up -d
+# 使用预构建镜像（推荐）
+WEBUI_IMAGE=ekkoye8888/hermes-web-ui docker compose up -d
 
 # 或从源码构建
 docker compose up -d --build
@@ -329,36 +387,32 @@ docker compose logs -f hermes-webui
 打开 **http://localhost:6060**
 
 - Hermes 持久化数据目录：`./hermes_data`
-- Web UI 认证 Token 存储�?`./hermes_data/hermes-web-ui/.token`
-- 首次启动并开启认证时，Token 会打印到容器日志�?- 运行参数全部�?`docker-compose.yml` 环境变量驱动
+- Web UI 认证 Token 存储在 `./hermes_data/hermes-web-ui/.token`
+- 首次启动并开启认证时，Token 会打印到容器日志中
+- 运行参数全部由 `docker-compose.yml` 环境变量驱动
 
 更详细的说明与排错见：[`docs/docker.md`](./docs/docker.md)
 
 ### 源码部署提醒
 
-如果你要�?Armbian / Ubuntu 上走宿主机源码部署，请先阅读 [`docs/work-log.md`](./docs/work-log.md) 再开始执行部署步骤�?
-- `2026-05-19` 的工作日志记录了一个真实坑点：Hermes 被装到了 `root` 目录下，�?`hermes-web-ui.service` 实际�?`hermesui` 用户运行
-- 这种安装归属错位会导�?agent bridge �?`run_agent.py not found`，随后聊天链路出�?`ENOENT /tmp/hermes-agent-bridge.sock`
-- 源码部署完成后，请优先检�?`/home/hermesui/.local/bin/hermes` 是否归属 `hermesui`，不要链接到 `/root/.local/...`
+如果你要在 Armbian / Ubuntu 上走宿主机源码部署，请先阅读 [`docs/work-log.md`](./docs/work-log.md) 再开始执行部署步骤。
 
-### 更新与部署守则
+- `2026-05-19` 的工作日志记录了一个真实坑点：Hermes 被装到了 `root` 目录下，但 `hermes-web-ui.service` 实际以 `hermesui` 用户运行
+- 这种安装归属错位会导致 agent bridge 报 `run_agent.py not found`，随后聊天链路出现 `ENOENT /tmp/hermes-agent-bridge.sock`
+- 源码部署完成后，请优先检查 `/home/hermesui/.local/bin/hermes` 是否归属 `hermesui`，不要链接到 `/root/.local/...`
 
-- 必须把 `Web UI update`、`Hermes Agent upgrade`、`bootstrap`、`runtime reconcile` 视为 4 类独立职责。
-- 页面内更新默认只做编排，不得无提示扩大为宿主机初始化或 Hermes Agent 生命周期变更。
-- 只有在版本方案明确批准且运行时显式开启开关时，页面内更新才允许同时升级 Hermes Agent。
-- 手工恢复或固定版本发布时，必须使用目标版本的 `manifest.json`，不能使用持续漂移的 `stable/latest.json`。
-- 源码修复部署或手工恢复时，必须保留现有 `PORT`、`BIND_HOST` 以及状态目录配置。
-- 完整规则请查看 [`DEVELOPMENT.md`](./DEVELOPMENT.md) 和 [`docs/update-distribution/10-development-rules.md`](./docs/update-distribution/10-development-rules.md)。
+### Hermes Agent 运行时发现
 
-### Hermes Agent 运行时发�?
-Web UI 启动后端聊天能力时，会优先使用包�?`run_agent.py` 的源码目录，例如
-`~/.hermes/hermes-agent`。如果找不到源码目录，会退回到已安�?`hermes` 命令所使用
-�?Python 环境，再退到系�?Python。因此源码安装和 `pip install hermes-agent` 这类
-包安装方式都可以兼容�?
+Web UI 启动后端聊天能力时，会优先使用包含 `run_agent.py` 的源码目录，例如
+`~/.hermes/hermes-agent`。如果找不到源码目录，会退回到已安装 `hermes` 命令所使用
+的 Python 环境，再退到系统 Python。因此源码安装和 `pip install hermes-agent` 这类
+包安装方式都可以兼容。
+
 ## Web UI 环境变量
 
-这些变量只用于配�?Hermes Web UI 自身。Provider API Key �?Hermes Agent 相关设置仍通过 Hermes profile 管理�?
-| 变量 | 默认�?| 说明 |
+这些变量只用于配置 Hermes Web UI 自身。Provider API Key 和 Hermes Agent 相关设置仍通过 Hermes profile 管理。
+
+| 变量 | 默认值 | 说明 |
 |---|---|---|
 | `PORT` | `8648` | Web UI 监听端口。 |
 | `BIND_HOST` | `0.0.0.0` | Web UI 绑定地址。如需 IPv6，可显式设置为 `::`。 |
@@ -418,72 +472,82 @@ Web UI 启动后端聊天能力时，会优先使用包�?`run_agent.py` 的源
 | 命令 | 说明 |
 |---|---|
 | `hermes-web-ui start` | 后台启动（守护进程模式） |
-| `hermes-web-ui start --port 9000` | 自定义端口启�?|
+| `hermes-web-ui start --port 9000` | 自定义端口启动 |
 | `hermes-web-ui stop` | 停止后台进程 |
 | `hermes-web-ui restart` | 重启后台进程；默认会关闭 bridge broker |
 | `hermes-web-ui status` | 查看运行状态 |
 | `hermes-web-ui update` | 更新到最新版本并重启 |
-| `hermes-web-ui upgrade` | `update` 的别�?|
-| `hermes-web-ui -v` | 显示版本�?|
+| `hermes-web-ui upgrade` | `update` 的别名 |
+| `hermes-web-ui -v` | 显示版本号 |
 | `hermes-web-ui -h` | 显示帮助信息 |
 
-`update` / `upgrade` 会先尝试执行 `npm cache clean --force`，再执行 `npm install -g @quanthermes/hermes-web-ui@latest` 并重启。缓存清理是 best-effort；如果清理失败，只提�?warning，升级安装会继续执行�?
+`update` / `upgrade` 会先尝试执行 `npm cache clean --force`，再执行 `npm install -g @quanthermes/hermes-web-ui@latest` 并重启。缓存清理是 best-effort；如果清理失败，只提示 warning，升级安装会继续执行。
+
 ## npm 发布
 
 - 发布包名：`@quanthermes/hermes-web-ui`
 - 全局安装：`npm install -g @quanthermes/hermes-web-ui`
 - 运行命令：`hermes-web-ui start`
-- 发布工作流：推�?`v*` tag 后触�?[`.github/workflows/npm-publish.yml`](./.github/workflows/npm-publish.yml)
+- 发布工作流：推送 `v*` tag 后触发 [`.github/workflows/npm-publish.yml`](./.github/workflows/npm-publish.yml)
 - 发布说明：[`docs/npm-release.md`](./docs/npm-release.md)
 
 ### 自动配置
 
-启动�?BFF 服务器会自动�?
-- 初始�?Web UI 数据目录、本地数据库和内置技�?- 启动 `/chat-run` 使用�?Hermes agent bridge
-- 启动成功后自动打开浏览�?
+启动时 BFF 服务器会自动：
+
+- 初始化 Web UI 数据目录、本地数据库和内置技能
+- 启动 `/chat-run` 使用的 Hermes agent bridge
+- 启动成功后自动打开浏览器
+
 ---
 
-## 开�?
+## 开发
+
 ```bash
 npm install
 npm run dev
 ```
 
 - 前端：http://localhost:5173
-- BFF 服务器：http://localhost:6060
+- BFF 服务器：http://localhost:8648
 
 ```bash
-npm run build   # 构建输出�?dist/
+npm run build   # 构建输出到 dist/
 ```
 
-项目开发规范见：[DEVELOPMENT.md](./DEVELOPMENT.md)�?
+项目开发规范见：[DEVELOPMENT.md](./DEVELOPMENT.md)。
 
-涉及更新、发布、部署的改动，开发或执行前还应先阅读 [`docs/update-distribution/README.md`](./docs/update-distribution/README.md)�?
 ## 架构
 
 ```
-浏览�?�?BFF (Koa, :6060) �?Socket.IO /chat-run
-                �?        Hermes agent bridge �?Hermes Agent runtime
-                �?           Hermes CLI / profiles
+```
+Browser → BFF (Koa, :6060) → Socket.IO /chat-run
+                ↓
+                ↓
+           Hermes CLI / profiles
            profile config.yaml    (渠道/Provider 配置)
-           profile auth.json      (凭证�?
+           profile auth.json      (凭证池)
            腾讯 iLink API         (微信扫码登录)
 ```
 
-前端采用 **�?Agent 可扩展架�?* �?所�?Hermes 相关代码都按命名空间组织�?`hermes/` 目录下（API、组件、视图、Store），可以方便地并行接入新�?Agent�?
-BFF 层负责：Socket.IO 聊天流式推送、Hermes agent bridge、按 Profile 隔离的上传和按路径解析的下载（多 Backend 支持：local/Docker/SSH/Singularity）、会�?CRUD、分账户�?Profile 管理、配�?凭证管理、微信扫码登录、模型发现、技�?记忆/插件管理、TTS/STT、Coding Agent 代理、MCP/Runtime 管理、日志读取和静态文件服务�?
+前端采用 **多 Agent 可扩展架构** — 所有 Hermes 相关代码都按命名空间组织在 `hermes/` 目录下（API、组件、视图、Store），可以方便地并行接入新的 Agent。
+
+BFF 层负责：Socket.IO 聊天流式推送、Hermes agent bridge、按 Profile 隔离的上传和按路径解析的下载（多 Backend 支持：local/Docker/SSH/Singularity）、会话 CRUD、分账户分 Profile 管理、配置/凭证管理、微信扫码登录、模型发现、技能/记忆/插件管理、TTS/STT、Coding Agent 代理、MCP/Runtime 管理、日志读取和静态文件服务。
+
 ## 技术栈
 
-**前端�?* Vue 3 + TypeScript + Vite + Naive UI + Pinia + Vue Router + vue-i18n + SCSS + markdown-it + highlight.js
+**前端：** Vue 3 + TypeScript + Vite + Naive UI + Pinia + Vue Router + vue-i18n + SCSS + markdown-it + highlight.js
 
-**后端�?* Koa 2（BFF 服务器）+ node-pty（Web 终端�?
+**后端：** Koa 2（BFF 服务器）+ node-pty（Web 终端）
+
 ## Star 历史
 
 [![Star 历史图表](https://api.star-history.com/svg?repos=EKKOLearnAI/hermes-studio&type=Date)](https://star-history.com/#EKKOLearnAI/hermes-studio&Date)
 
 <!-- 如上方图表未加载，可访问 https://star-history.com/#EKKOLearnAI/hermes-studio -->
 
-## 许可�?
+## 许可证
+
 [BSL-1.1](./LICENSE)
 
 该许可证覆盖 Hermes Studio、原 Hermes Web UI 名称、`hermes-web-ui` npm 包和

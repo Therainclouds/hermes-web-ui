@@ -1,4 +1,14 @@
-import { createReadStream, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  createReadStream,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -27,13 +37,23 @@ function tempDir(prefix: string): string {
   return dir
 }
 
-function createRuntimeFiles(root: string) {
+function createRuntimeFiles(root: string, options: { standardWindowsVenv?: boolean } = {}) {
   if (process.platform === 'win32') {
-    mkdirSync(join(root, 'python', 'Scripts'), { recursive: true })
+    const pythonRoot = options.standardWindowsVenv
+      ? join(root, 'python', 'venv')
+      : join(root, 'python')
+    mkdirSync(join(pythonRoot, 'Scripts'), { recursive: true })
     mkdirSync(join(root, 'node'), { recursive: true })
     mkdirSync(join(root, 'git', 'cmd'), { recursive: true })
-    writeFileSync(join(root, 'python', 'python.exe'), '')
-    writeFileSync(join(root, 'python', 'Scripts', 'hermes.cmd'), '')
+    if (options.standardWindowsVenv) {
+      mkdirSync(join(root, 'python', 'base'), { recursive: true })
+      writeFileSync(join(root, 'python', 'base', 'python.exe'), '')
+      writeFileSync(join(pythonRoot, 'Scripts', 'python.exe'), '')
+      writeFileSync(join(pythonRoot, 'pyvenv.cfg'), 'home = ../base\n')
+    } else {
+      writeFileSync(join(pythonRoot, 'python.exe'), '')
+    }
+    writeFileSync(join(pythonRoot, 'Scripts', 'hermes.cmd'), '')
     writeFileSync(join(root, 'node', 'node.exe'), '')
     writeFileSync(join(root, 'git', 'cmd', 'git.exe'), '')
   } else {
@@ -45,20 +65,45 @@ function createRuntimeFiles(root: string) {
   }
   writeFileSync(join(root, 'runtime-manifest.json'), JSON.stringify({
     schema: 1,
-    platform: process.platform,
+    platform: `${process.platform === 'win32' ? 'win' : process.platform === 'darwin' ? 'mac' : process.platform}-${process.arch}`,
     hermesAgentVersion: '0.17.0',
     asset: { name: 'hermes-runtime-test.tar.gz' },
   }))
+}
+
+function createWebUiFiles(root: string, version = '0.6.31') {
+  mkdirSync(join(root, 'bin'), { recursive: true })
+  mkdirSync(join(root, 'dist', 'server'), { recursive: true })
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ version }))
+  writeFileSync(join(root, 'bin', 'hermes-web-ui.mjs'), '')
+  writeFileSync(join(root, 'dist', 'server', 'index.js'), '')
 }
 
 function setPlatform(platform: NodeJS.Platform): void {
   Object.defineProperty(process, 'platform', { value: platform })
 }
 
-async function createRuntimeArchive(): Promise<string> {
+async function createRuntimeArchive(options: {
+  invalidSchema2Source?: boolean
+  standardWindowsVenv?: boolean
+} = {}): Promise<string> {
   const source = tempDir('hermes-runtime-source-')
   const archive = join(tempDir('hermes-runtime-archive-'), 'hermes-runtime-test.tar.gz')
-  createRuntimeFiles(source)
+  createRuntimeFiles(source, options)
+  if (options.invalidSchema2Source) {
+    writeFileSync(join(source, 'runtime-manifest.json'), JSON.stringify({
+      schema: 2,
+      platform: `${process.platform === 'win32' ? 'win' : process.platform === 'darwin' ? 'mac' : process.platform}-${process.arch}`,
+      hermesAgentVersion: '0.17.0',
+      hermesSource: {
+        repository: 'https://github.com/NousResearch/hermes-agent.git',
+        ref: 'v2026.7.30',
+        commit: 'cc4cab2f592e60a197e796506de9168f74baf3ea',
+        installMethod: 'git',
+      },
+      asset: { name: 'hermes-runtime-test.tar.gz' },
+    }))
+  }
   await tar.c({ gzip: true, cwd: source, file: archive }, ['.'])
   return archive
 }
@@ -88,6 +133,7 @@ describe('desktop runtime manager', () => {
     process.env.HERMES_DESKTOP_RUNTIME_RELEASE_TAG = 'hermes-0.17.0-runtime'
     mockElectronApp.isPackaged = false
     mockElectronApp.getAppPath = () => process.cwd()
+    mockElectronApp.getVersion = () => '0.6.21'
   })
 
   afterEach(async () => {
@@ -129,9 +175,9 @@ describe('desktop runtime manager', () => {
     expect(existsSync(join(process.env.HERMES_WEB_UI_HOME!, 'desktop-runtime', 'active-version.json'))).toBe(true)
   })
 
-  it('accepts Windows runtime archives that contain hermes.cmd without hermes.exe', async () => {
+  it('rebases the Windows venv home while extracting an archive', async () => {
     setPlatform('win32')
-    const archive = await createRuntimeArchive()
+    const archive = await createRuntimeArchive({ standardWindowsVenv: true })
     process.env.HERMES_DESKTOP_RUNTIME_URL = await serveFile(archive)
 
     const { runtimePlatformKey } = await import('../../packages/desktop/src/main/runtime-paths')
@@ -145,7 +191,408 @@ describe('desktop runtime manager', () => {
       '0.17.0',
       runtimePlatformKey(),
     )
-    expect(existsSync(join(runtimeRoot, 'python', 'Scripts', 'hermes.cmd'))).toBe(true)
-    expect(existsSync(join(runtimeRoot, 'python', 'Scripts', 'hermes.exe'))).toBe(false)
+    const venvRoot = join(runtimeRoot, 'python', 'venv')
+    expect(existsSync(join(venvRoot, 'Scripts', 'hermes.cmd'))).toBe(true)
+    expect(existsSync(join(venvRoot, 'Scripts', 'hermes.exe'))).toBe(false)
+    expect(readFileSync(join(venvRoot, 'pyvenv.cfg'), 'utf-8')).toContain(
+      `home = ${join(runtimeRoot, 'python', 'base')}`,
+    )
+  })
+
+  it('repairs a cached Windows venv home even when the command wrapper already exists', async () => {
+    setPlatform('win32')
+    const home = process.env.HERMES_WEB_UI_HOME!
+    const { runtimePlatformKey } = await import('../../packages/desktop/src/main/runtime-paths')
+    const runtimeRoot = join(home, 'desktop-runtime', 'hermes', '0.17.0', runtimePlatformKey())
+    const activeVersionPath = join(home, 'desktop-runtime', 'active-version.json')
+    const pyvenvConfig = join(runtimeRoot, 'python', 'venv', 'pyvenv.cfg')
+    createRuntimeFiles(runtimeRoot, { standardWindowsVenv: true })
+    writeFileSync(activeVersionPath, JSON.stringify({
+      schema: 1,
+      hermesRuntimeVersion: '0.17.0',
+      runtimeDirectory: runtimeRoot,
+      platform: runtimePlatformKey(),
+    }))
+
+    const {
+      isDesktopRuntimeReady,
+      repairUpdatedDesktopRuntimeLaunchers,
+    } = await import('../../packages/desktop/src/main/runtime-manager')
+
+    expect(isDesktopRuntimeReady()).toBe(true)
+    expect(readFileSync(pyvenvConfig, 'utf-8')).toContain('home = ../base')
+    expect(repairUpdatedDesktopRuntimeLaunchers()).toBe(true)
+    expect(readFileSync(pyvenvConfig, 'utf-8')).toContain(
+      `home = ${join(runtimeRoot, 'python', 'base')}`,
+    )
+    expect(repairUpdatedDesktopRuntimeLaunchers()).toBe(false)
+  })
+
+  it('restores relocatable Windows launchers after Hermes CLI update replaces them with executables', async () => {
+    setPlatform('win32')
+    const home = process.env.HERMES_WEB_UI_HOME!
+    const { runtimePlatformKey } = await import('../../packages/desktop/src/main/runtime-paths')
+    const runtimeRoot = join(home, 'desktop-runtime', 'hermes', '0.17.0', runtimePlatformKey())
+    const activeVersionPath = join(home, 'desktop-runtime', 'active-version.json')
+    createRuntimeFiles(runtimeRoot, { standardWindowsVenv: true })
+    const scriptsRoot = join(runtimeRoot, 'python', 'venv', 'Scripts')
+    rmSync(join(scriptsRoot, 'hermes.cmd'))
+    for (const name of ['hermes', 'hermes-agent', 'hermes-acp']) {
+      writeFileSync(join(scriptsRoot, `${name}.exe`), '')
+    }
+    writeFileSync(activeVersionPath, JSON.stringify({
+      schema: 1,
+      hermesRuntimeVersion: '0.17.0',
+      runtimeDirectory: runtimeRoot,
+      platform: runtimePlatformKey(),
+    }))
+
+    const {
+      isDesktopRuntimeReady,
+      repairUpdatedDesktopRuntimeLaunchers,
+    } = await import('../../packages/desktop/src/main/runtime-manager')
+
+    expect(isDesktopRuntimeReady()).toBe(true)
+    expect(repairUpdatedDesktopRuntimeLaunchers()).toBe(true)
+    expect(isDesktopRuntimeReady()).toBe(true)
+    expect(readFileSync(join(scriptsRoot, 'hermes.cmd'), 'utf-8')).toContain(
+      '"%PY%" -m hermes_cli.main %*',
+    )
+    expect(existsSync(join(scriptsRoot, 'hermes.exe'))).toBe(false)
+    expect(existsSync(join(scriptsRoot, 'hermes-agent.cmd'))).toBe(true)
+    expect(existsSync(join(scriptsRoot, 'hermes-acp.cmd'))).toBe(true)
+  })
+
+  it('rejects schema 2 runtime archives that omit the updateable Git checkout', async () => {
+    const archive = await createRuntimeArchive({ invalidSchema2Source: true })
+    process.env.HERMES_DESKTOP_RUNTIME_URL = await serveFile(archive)
+
+    const { ensureDesktopRuntime } = await import('../../packages/desktop/src/main/runtime-manager')
+
+    await expect(ensureDesktopRuntime()).rejects.toThrow(/updateable Hermes source files/)
+  })
+
+  it('does not persist a development Web UI override as the active download directory', async () => {
+    const home = process.env.HERMES_WEB_UI_HOME!
+    const developmentWebUi = tempDir('hermes-development-webui-')
+    const { runtimePlatformKey } = await import('../../packages/desktop/src/main/runtime-paths')
+    const runtimeRoot = join(home, 'desktop-runtime', 'hermes', '0.17.0', runtimePlatformKey())
+    const activeVersionPath = join(home, 'desktop-runtime', 'active-version.json')
+    createRuntimeFiles(runtimeRoot)
+    process.env.HERMES_WEB_UI_DIR = developmentWebUi
+    mkdirSync(join(home, 'desktop-runtime'), { recursive: true })
+    writeFileSync(activeVersionPath, JSON.stringify({
+      schema: 1,
+      desktopAppVersion: '0.6.21',
+      webUiVersion: '0.6.31',
+      webUiDirectory: developmentWebUi,
+      platform: runtimePlatformKey(),
+    }))
+
+    const { writeActiveRuntimeVersion } = await import('../../packages/desktop/src/main/runtime-manager')
+    writeActiveRuntimeVersion(runtimeRoot)
+    const active = JSON.parse(readFileSync(activeVersionPath, 'utf-8'))
+
+    expect(active.webUiVersion).toBe('0.6.31')
+    expect(active.webUiDirectory).toBeUndefined()
+  })
+
+  it.each([
+    ['an older desktop version', '0.6.20'],
+    ['a legacy manifest without a recorded desktop version', undefined],
+  ])('uses the bundled Web UI after upgrading from %s', async (_label, previousVersion) => {
+    const home = process.env.HERMES_WEB_UI_HOME!
+    const { runtimePlatformKey } = await import('../../packages/desktop/src/main/runtime-paths')
+    const runtimeRoot = join(home, 'desktop-runtime', 'hermes', '0.17.0', runtimePlatformKey())
+    const downloadedWebUi = join(home, 'desktop-runtime', 'webui', '0.6.31')
+    const activeVersionPath = join(home, 'desktop-runtime', 'active-version.json')
+    createRuntimeFiles(runtimeRoot)
+    createWebUiFiles(downloadedWebUi)
+    mkdirSync(join(home, 'desktop-runtime'), { recursive: true })
+    writeFileSync(activeVersionPath, JSON.stringify({
+      schema: 1,
+      desktopAppVersion: previousVersion,
+      hermesRuntimeVersion: '0.17.0',
+      runtimeDirectory: runtimeRoot,
+      webUiVersion: '0.6.31',
+      platform: runtimePlatformKey(),
+    }))
+
+    const { writeActiveRuntimeVersion } = await import('../../packages/desktop/src/main/runtime-manager')
+    writeActiveRuntimeVersion(runtimeRoot)
+    const active = JSON.parse(readFileSync(activeVersionPath, 'utf-8'))
+
+    expect(active.desktopAppVersion).toBe('0.6.21')
+    expect(active.webUiVersion).toBeUndefined()
+  })
+
+  it('keeps the selected Web UI during an ordinary restart of the same desktop version', async () => {
+    const home = process.env.HERMES_WEB_UI_HOME!
+    const { runtimePlatformKey } = await import('../../packages/desktop/src/main/runtime-paths')
+    const runtimeRoot = join(home, 'desktop-runtime', 'hermes', '0.17.0', runtimePlatformKey())
+    const downloadedWebUi = join(home, 'desktop-runtime', 'webui', '0.6.31')
+    const activeVersionPath = join(home, 'desktop-runtime', 'active-version.json')
+    createRuntimeFiles(runtimeRoot)
+    createWebUiFiles(downloadedWebUi)
+    mkdirSync(join(home, 'desktop-runtime'), { recursive: true })
+    writeFileSync(activeVersionPath, JSON.stringify({
+      schema: 1,
+      desktopAppVersion: '0.6.21',
+      hermesRuntimeVersion: '0.17.0',
+      runtimeDirectory: runtimeRoot,
+      webUiVersion: '0.6.31',
+      platform: runtimePlatformKey(),
+    }))
+
+    const { writeActiveRuntimeVersion } = await import('../../packages/desktop/src/main/runtime-manager')
+    writeActiveRuntimeVersion(runtimeRoot)
+    const active = JSON.parse(readFileSync(activeVersionPath, 'utf-8'))
+
+    expect(active.desktopAppVersion).toBe('0.6.21')
+    expect(active.webUiVersion).toBe('0.6.31')
+  })
+
+  it('copies a pending Runtime migration before switching the active directory', async () => {
+    const home = process.env.HERMES_WEB_UI_HOME!
+    const destination = tempDir('hermes-runtime-migration-target-')
+    const { runtimePlatformKey } = await import('../../packages/desktop/src/main/runtime-paths')
+    const sourceRuntime = join(home, 'desktop-runtime', 'hermes', '0.17.0', runtimePlatformKey())
+    const sourceWebUi = join(home, 'desktop-runtime', 'webui', '0.6.31')
+    const activeVersionPath = join(home, 'desktop-runtime', 'active-version.json')
+    createRuntimeFiles(sourceRuntime)
+    createWebUiFiles(sourceWebUi)
+    writeFileSync(activeVersionPath, JSON.stringify({
+      schema: 1,
+      hermesRuntimeVersion: '0.17.0',
+      runtimeDirectory: sourceRuntime,
+      webUiVersion: '0.6.31',
+      webUiDirectory: sourceWebUi,
+      pendingRuntimeRootDirectory: destination,
+      platform: runtimePlatformKey(),
+    }))
+
+    const onProgress = vi.fn()
+    const { migratePendingRuntimeRoot } = await import('../../packages/desktop/src/main/runtime-manager')
+    const result = await migratePendingRuntimeRoot(onProgress)
+    const migratedRuntime = join(destination, 'hermes', '0.17.0', runtimePlatformKey())
+    const migratedWebUi = join(destination, 'webui', '0.6.31')
+    const active = JSON.parse(readFileSync(activeVersionPath, 'utf-8'))
+
+    expect(result).toEqual({ migrated: true, error: '' })
+    expect(existsSync(join(migratedRuntime, 'runtime-manifest.json'))).toBe(true)
+    expect(existsSync(join(sourceRuntime, 'runtime-manifest.json'))).toBe(true)
+    expect(existsSync(join(migratedWebUi, 'dist', 'server', 'index.js'))).toBe(true)
+    expect(existsSync(join(sourceWebUi, 'dist', 'server', 'index.js'))).toBe(true)
+    expect(active.runtimeDirectory).toBe(migratedRuntime)
+    expect(active.runtimeRootDirectory).toBe(destination)
+    expect(active.webUiVersion).toBe('0.6.31')
+    expect(active.webUiDirectory).toBeUndefined()
+    expect(active.pendingRuntimeRootDirectory).toBeUndefined()
+    expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({
+      stage: 'extract',
+      detail: destination,
+    }))
+  })
+
+  it('materializes updated Python symlinks during a Windows Runtime migration', async () => {
+    setPlatform('win32')
+    const home = process.env.HERMES_WEB_UI_HOME!
+    const destination = tempDir('hermes-runtime-migration-windows-links-')
+    const { runtimePlatformKey } = await import('../../packages/desktop/src/main/runtime-paths')
+    const sourceRuntime = join(home, 'desktop-runtime', 'hermes', '0.17.0', runtimePlatformKey())
+    const activeVersionPath = join(home, 'desktop-runtime', 'active-version.json')
+    const generation = join(
+      sourceRuntime,
+      'python',
+      '.hermes-runtime',
+      'python',
+      'generation-test',
+    )
+    const installedPython = join(generation, 'cpython-3.12.13-windows-x86_64-none')
+    const pythonAlias = join(generation, 'cpython-3.12-windows-x86_64-none')
+    createRuntimeFiles(sourceRuntime, { standardWindowsVenv: true })
+    mkdirSync(installedPython, { recursive: true })
+    writeFileSync(join(installedPython, 'python.exe'), 'managed Python')
+    symlinkSync(installedPython, pythonAlias, 'dir')
+    writeFileSync(
+      join(sourceRuntime, 'python', 'venv', 'pyvenv.cfg'),
+      `home = ${pythonAlias}\nexecutable = ${join(pythonAlias, 'python.exe')}\n`,
+    )
+    writeFileSync(activeVersionPath, JSON.stringify({
+      schema: 1,
+      hermesRuntimeVersion: '0.17.0',
+      runtimeDirectory: sourceRuntime,
+      pendingRuntimeRootDirectory: destination,
+      platform: runtimePlatformKey(),
+    }))
+
+    const { migratePendingRuntimeRoot } = await import('../../packages/desktop/src/main/runtime-manager')
+    const result = await migratePendingRuntimeRoot()
+    const migratedRuntime = join(destination, 'hermes', '0.17.0', runtimePlatformKey())
+    const migratedAlias = join(
+      migratedRuntime,
+      'python',
+      '.hermes-runtime',
+      'python',
+      'generation-test',
+      'cpython-3.12-windows-x86_64-none',
+    )
+    const migratedConfig = readFileSync(
+      join(migratedRuntime, 'python', 'venv', 'pyvenv.cfg'),
+      'utf-8',
+    )
+
+    expect(result).toEqual({ migrated: true, error: '' })
+    expect(lstatSync(migratedAlias).isSymbolicLink()).toBe(false)
+    expect(readFileSync(join(migratedAlias, 'python.exe'), 'utf-8')).toBe('managed Python')
+    expect(migratedConfig).toContain(`home = ${migratedAlias}`)
+    expect(migratedConfig).toContain(`executable = ${join(migratedAlias, 'python.exe')}`)
+    expect(migratedConfig).not.toContain(sourceRuntime)
+  })
+
+  it('reuses valid Runtime and Web UI versions in a custom destination', async () => {
+    const home = process.env.HERMES_WEB_UI_HOME!
+    const destination = tempDir('hermes-runtime-migration-existing-target-')
+    const { runtimePlatformKey } = await import('../../packages/desktop/src/main/runtime-paths')
+    const sourceRuntime = join(home, 'desktop-runtime', 'hermes', '0.17.0', runtimePlatformKey())
+    const sourceWebUi30 = join(home, 'desktop-runtime', 'webui', '0.6.30')
+    const sourceWebUi31 = join(home, 'desktop-runtime', 'webui', '0.6.31')
+    const targetRuntime = join(destination, 'hermes', '0.17.0', runtimePlatformKey())
+    const targetWebUi31 = join(destination, 'webui', '0.6.31')
+    const activeVersionPath = join(home, 'desktop-runtime', 'active-version.json')
+    createRuntimeFiles(sourceRuntime)
+    createRuntimeFiles(targetRuntime)
+    createWebUiFiles(sourceWebUi30, '0.6.30')
+    createWebUiFiles(sourceWebUi31)
+    createWebUiFiles(targetWebUi31)
+    writeFileSync(join(sourceRuntime, 'source-only.txt'), '')
+    writeFileSync(join(targetRuntime, 'target-only.txt'), '')
+    writeFileSync(join(sourceWebUi31, 'source-only.txt'), '')
+    writeFileSync(join(targetWebUi31, 'target-only.txt'), '')
+    writeFileSync(activeVersionPath, JSON.stringify({
+      schema: 1,
+      hermesRuntimeVersion: '0.17.0',
+      runtimeDirectory: sourceRuntime,
+      webUiVersion: '0.6.31',
+      pendingRuntimeRootDirectory: destination,
+      platform: runtimePlatformKey(),
+    }))
+
+    const { migratePendingRuntimeRoot } = await import('../../packages/desktop/src/main/runtime-manager')
+    const result = await migratePendingRuntimeRoot()
+    const active = JSON.parse(readFileSync(activeVersionPath, 'utf-8'))
+
+    expect(result).toEqual({ migrated: true, error: '' })
+    expect(existsSync(join(targetRuntime, 'target-only.txt'))).toBe(true)
+    expect(existsSync(join(targetRuntime, 'source-only.txt'))).toBe(false)
+    expect(existsSync(join(targetWebUi31, 'target-only.txt'))).toBe(true)
+    expect(existsSync(join(targetWebUi31, 'source-only.txt'))).toBe(false)
+    expect(existsSync(join(destination, 'webui', '0.6.30', 'dist', 'server', 'index.js'))).toBe(true)
+    expect(active.runtimeDirectory).toBe(targetRuntime)
+    expect(active.runtimeRootDirectory).toBe(destination)
+  })
+
+  it('switches back to an already valid default directory without copying', async () => {
+    const home = process.env.HERMES_WEB_UI_HOME!
+    const defaultRoot = join(home, 'desktop-runtime')
+    const customRoot = tempDir('hermes-runtime-migration-current-custom-')
+    const { runtimePlatformKey } = await import('../../packages/desktop/src/main/runtime-paths')
+    const sourceRuntime = join(customRoot, 'hermes', '0.17.0', runtimePlatformKey())
+    const sourceWebUi = join(customRoot, 'webui', '0.6.31')
+    const targetRuntime = join(defaultRoot, 'hermes', '0.17.0', runtimePlatformKey())
+    const targetWebUi = join(defaultRoot, 'webui', '0.6.31')
+    const activeVersionPath = join(defaultRoot, 'active-version.json')
+    createRuntimeFiles(sourceRuntime)
+    createRuntimeFiles(targetRuntime)
+    createWebUiFiles(sourceWebUi)
+    createWebUiFiles(targetWebUi)
+    writeFileSync(join(sourceRuntime, 'source-only.txt'), '')
+    writeFileSync(join(targetRuntime, 'target-only.txt'), '')
+    writeFileSync(join(sourceWebUi, 'source-only.txt'), '')
+    writeFileSync(join(targetWebUi, 'target-only.txt'), '')
+    writeFileSync(activeVersionPath, JSON.stringify({
+      schema: 1,
+      hermesRuntimeVersion: '0.17.0',
+      runtimeDirectory: sourceRuntime,
+      runtimeRootDirectory: customRoot,
+      webUiVersion: '0.6.31',
+      pendingRuntimeRootDirectory: defaultRoot,
+      platform: runtimePlatformKey(),
+    }))
+
+    const onProgress = vi.fn()
+    const { migratePendingRuntimeRoot } = await import('../../packages/desktop/src/main/runtime-manager')
+    const result = await migratePendingRuntimeRoot(onProgress)
+    const active = JSON.parse(readFileSync(activeVersionPath, 'utf-8'))
+
+    expect(result).toEqual({ migrated: true, error: '' })
+    expect(onProgress).not.toHaveBeenCalled()
+    expect(existsSync(join(targetRuntime, 'target-only.txt'))).toBe(true)
+    expect(existsSync(join(targetRuntime, 'source-only.txt'))).toBe(false)
+    expect(existsSync(join(targetWebUi, 'target-only.txt'))).toBe(true)
+    expect(existsSync(join(targetWebUi, 'source-only.txt'))).toBe(false)
+    expect(active.runtimeDirectory).toBe(targetRuntime)
+    expect(active.runtimeRootDirectory).toBe(defaultRoot)
+    expect(active.pendingRuntimeRootDirectory).toBeUndefined()
+  })
+
+  it('keeps the previous Runtime selected when a pending migration fails', async () => {
+    const home = process.env.HERMES_WEB_UI_HOME!
+    const destination = tempDir('hermes-runtime-migration-failure-')
+    const missingRuntime = join(home, 'missing-runtime')
+    const { runtimePlatformKey } = await import('../../packages/desktop/src/main/runtime-paths')
+    const activeVersionPath = join(home, 'desktop-runtime', 'active-version.json')
+    mkdirSync(join(home, 'desktop-runtime'), { recursive: true })
+    writeFileSync(activeVersionPath, JSON.stringify({
+      schema: 1,
+      hermesRuntimeVersion: '0.17.0',
+      runtimeDirectory: missingRuntime,
+      pendingRuntimeRootDirectory: destination,
+      platform: runtimePlatformKey(),
+    }))
+
+    const { migratePendingRuntimeRoot } = await import('../../packages/desktop/src/main/runtime-manager')
+    const result = await migratePendingRuntimeRoot()
+    const active = JSON.parse(readFileSync(activeVersionPath, 'utf-8'))
+
+    expect(result.migrated).toBe(false)
+    expect(result.error).toContain('Current Runtime is incomplete')
+    expect(active.runtimeDirectory).toBe(missingRuntime)
+    expect(active.runtimeRootDirectory).toBeUndefined()
+    expect(active.pendingRuntimeRootDirectory).toBeUndefined()
+    expect(active.runtimeMigrationError).toContain('Current Runtime is incomplete')
+  })
+
+  it('does not switch storage when a downloaded Web UI version fails validation', async () => {
+    const home = process.env.HERMES_WEB_UI_HOME!
+    const destination = tempDir('hermes-runtime-migration-webui-failure-')
+    const { runtimePlatformKey } = await import('../../packages/desktop/src/main/runtime-paths')
+    const sourceRuntime = join(home, 'desktop-runtime', 'hermes', '0.17.0', runtimePlatformKey())
+    const sourceWebUi = join(home, 'desktop-runtime', 'webui', '0.6.31')
+    const activeVersionPath = join(home, 'desktop-runtime', 'active-version.json')
+    createRuntimeFiles(sourceRuntime)
+    mkdirSync(sourceWebUi, { recursive: true })
+    writeFileSync(join(sourceWebUi, 'package.json'), JSON.stringify({ version: '0.6.31' }))
+    writeFileSync(activeVersionPath, JSON.stringify({
+      schema: 1,
+      hermesRuntimeVersion: '0.17.0',
+      runtimeDirectory: sourceRuntime,
+      webUiVersion: '0.6.31',
+      webUiDirectory: sourceWebUi,
+      pendingRuntimeRootDirectory: destination,
+      platform: runtimePlatformKey(),
+    }))
+
+    const { migratePendingRuntimeRoot } = await import('../../packages/desktop/src/main/runtime-manager')
+    const result = await migratePendingRuntimeRoot()
+    const active = JSON.parse(readFileSync(activeVersionPath, 'utf-8'))
+
+    expect(result.migrated).toBe(false)
+    expect(result.error).toContain('Web UI 0.6.31 is missing required files')
+    expect(active.runtimeDirectory).toBe(sourceRuntime)
+    expect(active.runtimeRootDirectory).toBeUndefined()
+    expect(active.webUiVersion).toBe('0.6.31')
+    expect(active.webUiDirectory).toBeUndefined()
+    expect(existsSync(join(destination, 'hermes', '0.17.0', runtimePlatformKey()))).toBe(false)
   })
 })

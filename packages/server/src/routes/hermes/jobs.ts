@@ -4,6 +4,7 @@ import * as ctrl from '../../controllers/hermes/jobs'
 export const jobRoutes = new Router()
 
 jobRoutes.get('/api/hermes/jobs', ctrl.list)
+jobRoutes.get('/api/hermes/jobs/delivery-targets', ctrl.deliveryTargets)
 jobRoutes.get('/api/hermes/jobs/:id', ctrl.get)
 jobRoutes.post('/api/hermes/jobs', ctrl.create)
 jobRoutes.patch('/api/hermes/jobs/:id', ctrl.update)

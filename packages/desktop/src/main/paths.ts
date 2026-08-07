@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { homedir, platform } from 'node:os'
 import {
@@ -7,14 +7,12 @@ import {
   runtimePlatformKey,
   type DesktopRuntimeResource,
 } from './runtime-paths'
-import { compareHermesAgentVersions, hermesAgentVersionFromRuntimeTag } from './runtime-version'
+import { hermesAgentVersionFromRuntimeTag } from './runtime-version'
 
 const isWin = platform() === 'win32'
-const DEFAULT_HERMES_AGENT_VERSION = '0.18.0'
-const MIN_COMPATIBLE_WEB_UI_VERSION = '0.6.23'
+const DEFAULT_HERMES_AGENT_VERSION = '0.20.0'
 const PACKAGED_RUNTIME_RELEASE_NAME = 'runtime-release.json'
 const ACTIVE_RUNTIME_VERSION_NAME = 'active-version.json'
-let legacyWebUiVersionsCleaned = false
 let incompleteActiveWebUiWarningPath = ''
 
 export function isPackaged() {
@@ -34,14 +32,21 @@ type RuntimeReleaseMetadata = {
 }
 
 type ActiveRuntimeVersion = {
+  desktopAppVersion?: unknown
   platform?: unknown
+  webUiVersion?: unknown
   runtimeDirectory?: unknown
+  runtimeRootDirectory?: unknown
+  pendingRuntimeRootDirectory?: unknown
+  runtimeMigrationError?: unknown
   webUiDirectory?: unknown
 }
 
 function runtimeRequiredFiles(root: string): string[] {
-  const python = isWin ? join(root, 'python', 'python.exe') : join(root, 'python', 'bin', 'python3')
-  const hermes = isWin ? join(root, 'python', 'Scripts', 'hermes.cmd') : join(root, 'python', 'bin', 'hermes')
+  const sourceRoot = join(root, 'python')
+  const environmentRoot = runtimePythonEnvironmentRoot(sourceRoot)
+  const python = runtimePythonExecutable(environmentRoot)
+  const hermes = isWin ? windowsHermesLauncher(environmentRoot) : join(environmentRoot, 'bin', 'hermes')
   const node = isWin ? join(root, 'node', 'node.exe') : join(root, 'node', 'bin', 'node')
   const files = [python, hermes, node]
   if (isWin) files.push(join(root, 'git', 'cmd', 'git.exe'))
@@ -70,7 +75,7 @@ function readRuntimeManifestVersion(runtimeDir: string): string | null {
 }
 
 function installedRuntimeDirectories(): Array<{ directory: string; version: string }> {
-  const root = join(webUiHome(), 'desktop-runtime', 'hermes')
+  const root = join(runtimeStorageRoot(), 'hermes')
   const currentPlatform = runtimePlatformKey()
   if (!existsSync(root)) return []
 
@@ -111,8 +116,14 @@ export function clearActiveWebUiDirectory(expectedDirectory?: string): void {
   const active = readActiveRuntimeVersion()
   if (!active || typeof active !== 'object') return
   const currentDirectory = typeof active.webUiDirectory === 'string' ? active.webUiDirectory.trim() : ''
-  if (!currentDirectory) return
-  if (expectedDirectory && resolve(currentDirectory) !== resolve(expectedDirectory)) return
+  const currentVersion = typeof active.webUiVersion === 'string'
+    ? active.webUiVersion.trim().replace(/^v/, '')
+    : ''
+  if (!currentDirectory && !currentVersion) return
+  const derivedDirectory = currentVersion
+    ? join(runtimeStorageRoot(), 'webui', currentVersion)
+    : currentDirectory
+  if (expectedDirectory && resolve(derivedDirectory) !== resolve(expectedDirectory)) return
 
   const next = { ...(active as Record<string, unknown>) }
   delete next.webUiDirectory
@@ -121,28 +132,6 @@ export function clearActiveWebUiDirectory(expectedDirectory?: string): void {
     writeFileSync(file, JSON.stringify(next, null, 2) + '\n')
   } catch (err) {
     console.warn('[desktop] failed to clear active Web UI directory:', err instanceof Error ? err.message : String(err))
-  }
-}
-
-function cleanupLegacyWebUiVersions(): void {
-  if (legacyWebUiVersionsCleaned) return
-  legacyWebUiVersionsCleaned = true
-
-  const root = join(webUiHome(), 'webui')
-  if (!existsSync(root)) return
-
-  try {
-    for (const entry of readdirSync(root, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue
-      const version = entry.name.trim().replace(/^v/, '')
-      const comparison = compareHermesAgentVersions(version, MIN_COMPATIBLE_WEB_UI_VERSION)
-      if (comparison === null || comparison >= 0) continue
-      const target = join(root, entry.name)
-      rmSync(target, { recursive: true, force: true })
-      console.log(`[desktop] removed incompatible Web UI cache ${version}: ${target}`)
-    }
-  } catch (err) {
-    console.warn('[desktop] failed to clean incompatible Web UI caches:', err instanceof Error ? err.message : String(err))
   }
 }
 
@@ -157,15 +146,18 @@ function webuiDirectoryReady(root: string): boolean {
   return existsSync(webuiServerEntryFor(root))
 }
 
-// active-version.json can pin the Web UI path used to start the local server.
+// active-version.json pins a Web UI version; its directory is derived from desktop runtime storage.
 export function webuiDir(): string {
   const override = process.env.HERMES_WEB_UI_DIR?.trim()
   if (override) return resolve(override)
 
-  cleanupLegacyWebUiVersions()
-
   const active = readActiveRuntimeVersion()
-  const activeWebUiDirectory = typeof active?.webUiDirectory === 'string' ? active.webUiDirectory.trim() : ''
+  const activeWebUiVersion = typeof active?.webUiVersion === 'string'
+    ? active.webUiVersion.trim().replace(/^v/, '')
+    : ''
+  const activeWebUiDirectory = activeWebUiVersion
+    ? join(runtimeStorageRoot(), 'webui', activeWebUiVersion)
+    : ''
   if (active?.platform === runtimePlatformKey()
     && activeWebUiDirectory
     && webuiDirectoryReady(activeWebUiDirectory)) {
@@ -178,7 +170,10 @@ export function webuiDir(): string {
     && incompleteActiveWebUiWarningPath !== activeWebUiDirectory) {
     incompleteActiveWebUiWarningPath = activeWebUiDirectory
     console.warn(`[desktop] ignored incomplete active Web UI directory ${activeWebUiDirectory}; missing ${webuiServerEntryFor(activeWebUiDirectory)}`)
-    clearActiveWebUiDirectory(activeWebUiDirectory)
+    clearActiveWebUiDirectory()
+  } else if (active?.platform === runtimePlatformKey() && activeWebUiVersion && !existsSync(activeWebUiDirectory)) {
+    console.warn(`[desktop] active Web UI ${activeWebUiVersion} was not found in desktop runtime storage; using bundled Web UI`)
+    clearActiveWebUiDirectory()
   }
 
   return defaultWebuiDir()
@@ -229,7 +224,15 @@ export function desktopRuntimeVersion(): string {
 export function targetDesktopRuntimeDir(): string {
   const override = process.env.HERMES_DESKTOP_RUNTIME_DIR?.trim()
   if (override) return resolve(override)
-  return join(webUiHome(), 'desktop-runtime', 'hermes', desktopRuntimeVersion(), runtimePlatformKey())
+  return join(runtimeStorageRoot(), 'hermes', desktopRuntimeVersion(), runtimePlatformKey())
+}
+
+export function runtimeStorageRoot(): string {
+  const active = readActiveRuntimeVersion()
+  const configured = typeof active?.runtimeRootDirectory === 'string'
+    ? active.runtimeRootDirectory.trim()
+    : ''
+  return configured ? resolve(configured) : join(webUiHome(), 'desktop-runtime')
 }
 
 export function desktopRuntimeDir(): string {
@@ -255,6 +258,9 @@ function desktopAppPath(): string {
 }
 
 export function runtimeResourceDir(name: DesktopRuntimeResource, packaged: boolean, appPath = desktopAppPath()): string {
+  if (process.env.HERMES_DESKTOP_RUNTIME_DIR?.trim()) {
+    return join(desktopRuntimeDir(), name)
+  }
   return resolveRuntimeResourceDir(name, packaged, appPath, desktopRuntimeDir(), runtimePlatformKey())
 }
 
@@ -262,6 +268,35 @@ export function runtimeResourceDir(name: DesktopRuntimeResource, packaged: boole
 // prod: downloaded runtime cache under Web UI home.
 export function pythonDir(): string {
   return runtimeResourceDir('python', isPackaged())
+}
+
+export function pythonEnvironmentDir(): string {
+  return runtimePythonEnvironmentRoot(pythonDir())
+}
+
+function runtimePythonEnvironmentRoot(sourceRoot: string): string {
+  const venvRoot = join(sourceRoot, 'venv')
+  const venvPythons = isWin
+    ? [join(venvRoot, 'Scripts', 'python.exe'), join(venvRoot, 'python.exe')]
+    : [join(venvRoot, 'bin', 'python3')]
+  return venvPythons.some(existsSync) ? venvRoot : sourceRoot
+}
+
+function runtimePythonExecutable(environmentRoot: string): string {
+  if (!isWin) return join(environmentRoot, 'bin', 'python3')
+  const standardVenvPython = join(environmentRoot, 'Scripts', 'python.exe')
+  return existsSync(standardVenvPython)
+    ? standardVenvPython
+    : join(environmentRoot, 'python.exe')
+}
+
+function windowsHermesLauncher(environmentRoot: string): string {
+  const scriptsRoot = join(environmentRoot, 'Scripts')
+  const commandWrapper = join(scriptsRoot, 'hermes.cmd')
+  const executable = join(scriptsRoot, 'hermes.exe')
+  return existsSync(commandWrapper) || !existsSync(executable)
+    ? commandWrapper
+    : executable
 }
 
 export function nodeDir(): string {
@@ -338,17 +373,17 @@ export function bundledBrowserExecutable(): string | undefined {
 }
 
 export function pythonBinDir(): string {
-  const dir = pythonDir()
+  const dir = pythonEnvironmentDir()
   return isWin ? join(dir, 'Scripts') : join(dir, 'bin')
 }
 
 export function bundledPython(): string {
-  const dir = pythonDir()
-  return isWin ? join(dir, 'python.exe') : join(dir, 'bin', 'python3')
+  const dir = pythonEnvironmentDir()
+  return runtimePythonExecutable(dir)
 }
 
 export function hermesBin(): string {
-  return isWin ? join(pythonBinDir(), 'hermes.cmd') : join(pythonBinDir(), 'hermes')
+  return isWin ? windowsHermesLauncher(pythonEnvironmentDir()) : join(pythonBinDir(), 'hermes')
 }
 
 export function hermesBinExists(): boolean {
@@ -365,9 +400,9 @@ export function desktopWindowsTrayIcon(): string {
   return resolve(desktopAppPath(), 'build', 'trayWindows.png')
 }
 
-export function desktopTrayTemplateIcon(): string {
-  if (isPackaged()) return resolve(process.resourcesPath, 'build', 'trayTemplate.png')
-  return resolve(desktopAppPath(), 'build', 'trayTemplate.png')
+export function desktopMacTrayIcon(): string {
+  if (isPackaged()) return resolve(process.resourcesPath, 'build', 'trayMac.png')
+  return resolve(desktopAppPath(), 'build', 'trayMac.png')
 }
 
 export function webUiHome(): string {

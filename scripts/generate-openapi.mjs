@@ -21,7 +21,7 @@ const openapi = {
   openapi: '3.0.3',
   info: {
     title: 'Hermes Studio API',
-    description: 'Hermes Studio API â€?chat sessions, scheduled jobs, platform channels, model management, skills, memory, logs, file browser, group chat, and terminal.',
+    description: 'Hermes Studio API â€” chat sessions, scheduled jobs, platform channels, model management, skills, memory, logs, file browser, group chat, and terminal.',
     version: packageJson.version,
   },
   servers: [
@@ -50,6 +50,7 @@ const tagMappings = {
   'routes/hermes/models.ts': { name: 'Models', description: 'Model configuration' },
   'routes/hermes/providers.ts': { name: 'Providers', description: 'Model provider management' },
   'routes/hermes/skills.ts': { name: 'Skills', description: 'Skill browsing and management' },
+  'routes/hermes/skill-bundles.ts': { name: 'Skill Bundles', description: 'Skill bundle browsing and management' },
   'routes/hermes/plugins.ts': { name: 'Plugins', description: 'Plugin browsing and management' },
   'routes/hermes/memory.ts': { name: 'Memory', description: 'Agent memory files' },
   'routes/hermes/logs.ts': { name: 'Logs', description: 'Log file access' },
@@ -83,6 +84,7 @@ const tagMappings = {
   'routes/auth.ts': { name: 'Auth', description: 'Authentication management' },
   'routes/devices.ts': { name: 'Devices', description: 'Device pairing and LAN peer operations' },
   'routes/coding-agents.ts': { name: 'Coding Agents', description: 'Coding agent installation, config, and runs' },
+  'routes/theme.ts': { name: 'Theme', description: 'Per-user appearance settings and background image' },
   'routes/api-docs.ts': { name: 'API Docs', description: 'OpenAPI route catalog' },
 }
 
@@ -95,7 +97,7 @@ function scanRoutes() {
   const hermesRouteFiles = readdirSync(hermesRoutesDir).filter(f => f.endsWith('.ts'))
 
   for (const file of hermesRouteFiles) {
-    const routePath = join('hermes', file)
+    const routePath = join('hermes', file).replace(/\\/g, '/')
     const tagInfo = tagMappings[`routes/${routePath}`]
     if (tagInfo) {
       scanRouteFile(join(hermesRoutesDir, file), tagInfo, paths)
@@ -995,6 +997,6 @@ if (!openapi.tags.find(t => t.name === 'Terminal')) {
 const outputPath = join(rootDir, 'docs/openapi.json')
 writeFileSync(outputPath, JSON.stringify(openapi, null, 2))
 
-console.log(`âœ?Generated OpenAPI spec: ${outputPath}`)
+console.log(`âœ“ Generated OpenAPI spec: ${outputPath}`)
 console.log(`  ${Object.keys(openapi.paths).length} endpoints`)
 console.log(`  ${openapi.tags.length} tags`)

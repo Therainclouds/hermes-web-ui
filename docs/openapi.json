@@ -2,8 +2,8 @@
   "openapi": "3.0.3",
   "info": {
     "title": "Hermes Studio API",
-    "description": "Hermes Studio API �?chat sessions, scheduled jobs, platform channels, model management, skills, memory, logs, file browser, group chat, and terminal.",
-    "version": "0.7.15"
+    "description": "Hermes Studio API — chat sessions, scheduled jobs, platform channels, model management, skills, memory, logs, file browser, group chat, and terminal.",
+    "version": "0.73.0"
   },
   "servers": [
     {
@@ -105,6 +105,10 @@
       "description": "Chat session management"
     },
     {
+      "name": "Skill Bundles",
+      "description": "Skill bundle browsing and management"
+    },
+    {
       "name": "Skills",
       "description": "Skill browsing and management"
     },
@@ -155,6 +159,10 @@
     {
       "name": "Coding Agents",
       "description": "Coding agent installation, config, and runs"
+    },
+    {
+      "name": "Theme",
+      "description": "Per-user appearance settings and background image"
     },
     {
       "name": "API Docs",
@@ -226,6 +234,56 @@
                     "additionalProperties": true
                   }
                 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/bind-super-admin": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Create bind-super-admin",
+        "description": "POST /api/auth/bind-super-admin",
+        "operationId": "bindSuperAdmin",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "password": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "username": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                },
+                "required": [
+                  "password",
+                  "username"
+                ]
               }
             }
           }
@@ -725,6 +783,51 @@
         }
       }
     },
+    "/api/auth/set-password": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Create set-password",
+        "description": "POST /api/auth/set-password",
+        "operationId": "setPassword",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "newPassword": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                },
+                "required": [
+                  "newPassword"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/auth/setup": {
       "post": {
         "tags": [
@@ -773,6 +876,32 @@
           },
           "404": {
             "description": "Not found"
+          }
+        }
+      }
+    },
+    "/api/auth/unbind-super-admin": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Create unbind-super-admin",
+        "description": "POST /api/auth/unbind-super-admin",
+        "operationId": "unbindSuperAdmin",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
           }
         }
       }
@@ -957,6 +1086,42 @@
             "required": true,
             "schema": {
               "type": "integer"
+            }
+          }
+        ]
+      }
+    },
+    "/api/auth/users/{id}/export": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Get export",
+        "description": "GET /api/auth/users/:id/export",
+        "operationId": "exportManagedUser",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
             }
           }
         ]
@@ -3298,6 +3463,101 @@
         }
       }
     },
+    "/api/hermes/bundles": {
+      "get": {
+        "tags": [
+          "Skill Bundles"
+        ],
+        "summary": "List bundles",
+        "description": "GET /api/hermes/bundles",
+        "operationId": "list",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Skill Bundles"
+        ],
+        "summary": "Create bundles",
+        "description": "POST /api/hermes/bundles",
+        "operationId": "create",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/hermes/bundles/{commandName}": {
+      "delete": {
+        "tags": [
+          "Skill Bundles"
+        ],
+        "summary": "Delete :commandName",
+        "description": "DELETE /api/hermes/bundles/:commandName",
+        "operationId": "remove",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "commandName",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
     "/api/hermes/config": {
       "get": {
         "tags": [
@@ -3505,6 +3765,39 @@
             }
           }
         }
+      }
+    },
+    "/api/hermes/config/credentials/{platform}": {
+      "delete": {
+        "tags": [
+          "Config"
+        ],
+        "summary": "Delete :platform",
+        "description": "DELETE /api/hermes/config/credentials/:platform",
+        "operationId": "clearCredentials",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "platform",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
       }
     },
     "/api/hermes/config/moa": {
@@ -3829,6 +4122,271 @@
         ]
       }
     },
+    "/api/hermes/config/providers/{poolKey}/editor": {
+      "get": {
+        "tags": [
+          "Providers"
+        ],
+        "summary": "Get editor",
+        "description": "GET /api/hermes/config/providers/:poolKey/editor",
+        "operationId": "getEditor",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "poolKey",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "Providers"
+        ],
+        "summary": "Update editor",
+        "description": "PATCH /api/hermes/config/providers/:poolKey/editor",
+        "operationId": "patchEditor",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "poolKey",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/hermes/config/providers/{poolKey}/editor/contexts": {
+      "patch": {
+        "tags": [
+          "Providers"
+        ],
+        "summary": "Update contexts",
+        "description": "PATCH /api/hermes/config/providers/:poolKey/editor/contexts",
+        "operationId": "patchEditorContexts",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "poolKey",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/hermes/config/providers/{poolKey}/editor/test": {
+      "post": {
+        "tags": [
+          "Providers"
+        ],
+        "summary": "Create test",
+        "description": "POST /api/hermes/config/providers/:poolKey/editor/test",
+        "operationId": "testEditor",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "poolKey",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/hermes/config/providers/{poolKey}/models/refresh": {
+      "post": {
+        "tags": [
+          "Providers"
+        ],
+        "summary": "Create refresh",
+        "description": "POST /api/hermes/config/providers/:poolKey/models/refresh",
+        "operationId": "refreshModels",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "poolKey",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "confirm": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/hermes/config/providers/{poolKey}/models/restore": {
+      "post": {
+        "tags": [
+          "Providers"
+        ],
+        "summary": "Create restore",
+        "description": "POST /api/hermes/config/providers/:poolKey/models/restore",
+        "operationId": "restoreModels",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "poolKey",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
     "/api/hermes/custom-model": {
       "put": {
         "tags": [
@@ -4101,6 +4659,45 @@
         }
       }
     },
+    "/api/hermes/files/preview": {
+      "get": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Get preview",
+        "description": "GET /api/hermes/files/preview",
+        "operationId": "previewProfileFile",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "string"
+              ]
+            }
+          }
+        ]
+      }
+    },
     "/api/hermes/files/read": {
       "get": {
         "tags": [
@@ -4338,14 +4935,20 @@
                   "agents": {
                     "type": "boolean"
                   },
-                  "compression": {
-                    "type": "number"
-                  },
                   "inviteCode": {
+                    "type": "string"
+                  },
+                  "memberDescription": {
+                    "type": "string"
+                  },
+                  "memberName": {
                     "type": "string"
                   },
                   "name": {
                     "type": "string"
+                  },
+                  "summary": {
+                    "type": "object"
                   },
                   "workspace": {
                     "type": "string"
@@ -4353,7 +4956,8 @@
                 },
                 "required": [
                   "inviteCode",
-                  "name"
+                  "name",
+                  "summary"
                 ]
               }
             }
@@ -4610,16 +5214,34 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "agent": {
+                    "type": "string"
+                  },
+                  "apiMode": {
+                    "type": "string"
+                  },
+                  "avatar": {
+                    "type": "string"
+                  },
                   "description": {
                     "type": "string"
                   },
                   "invited": {
                     "type": "boolean"
                   },
+                  "model": {
+                    "type": "string"
+                  },
                   "name": {
                     "type": "string"
                   },
                   "profile": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string"
+                  },
+                  "reasoningEffort": {
                     "type": "string"
                   }
                 },
@@ -4667,6 +5289,90 @@
       }
     },
     "/api/hermes/group-chat/rooms/{roomId}/agents/{agentId}": {
+      "put": {
+        "tags": [
+          "Group Chat"
+        ],
+        "summary": "Update :agentId",
+        "description": "PUT /api/hermes/group-chat/rooms/:roomId/agents/:agentId",
+        "operationId": "putAgents",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "roomId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "agentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "agent": {
+                    "type": "string"
+                  },
+                  "apiMode": {
+                    "type": "string"
+                  },
+                  "avatar": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "profile": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string"
+                  },
+                  "reasoningEffort": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "profile"
+                ]
+              }
+            }
+          }
+        }
+      },
       "delete": {
         "tags": [
           "Group Chat"
@@ -4797,42 +5503,6 @@
         }
       }
     },
-    "/api/hermes/group-chat/rooms/{roomId}/compress": {
-      "post": {
-        "tags": [
-          "Group Chat"
-        ],
-        "summary": "Create compress",
-        "description": "POST /api/hermes/group-chat/rooms/:roomId/compress",
-        "operationId": "createCompress",
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success"
-          },
-          "400": {
-            "$ref": "#/components/responses/BadRequest"
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          }
-        },
-        "parameters": [
-          {
-            "name": "roomId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ]
-      }
-    },
     "/api/hermes/group-chat/rooms/{roomId}/config": {
       "put": {
         "tags": [
@@ -4874,14 +5544,23 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "maxHistoryTokens": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "summaryApiMode": {
+                    "type": "string"
+                  },
+                  "summaryEveryTurns": {
                     "type": "number"
                   },
-                  "tailMessageCount": {
-                    "type": "number"
+                  "summaryModel": {
+                    "type": "string"
                   },
-                  "triggerTokens": {
-                    "type": "number"
+                  "summaryProfile": {
+                    "type": "string"
+                  },
+                  "summaryProvider": {
+                    "type": "string"
                   }
                 }
               }
@@ -4991,6 +5670,91 @@
         }
       }
     },
+    "/api/hermes/group-chat/rooms/{roomId}/summary": {
+      "get": {
+        "tags": [
+          "Group Chat"
+        ],
+        "summary": "Get summary",
+        "description": "GET /api/hermes/group-chat/rooms/:roomId/summary",
+        "operationId": "getSummary",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "roomId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "Group Chat"
+        ],
+        "summary": "Update summary",
+        "description": "PUT /api/hermes/group-chat/rooms/:roomId/summary",
+        "operationId": "updateSummary",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "roomId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "summary": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/hermes/group-chat/rooms/{roomId}/workspace": {
       "put": {
         "tags": [
@@ -5051,6 +5815,407 @@
         }
       }
     },
+    "/api/hermes/group-chat/rooms/{roomId}/workspace-file/content": {
+      "get": {
+        "tags": [
+          "Group Chat"
+        ],
+        "summary": "Get content",
+        "description": "GET /api/hermes/group-chat/rooms/:roomId/workspace-file/content",
+        "operationId": "readWorkspaceFileContent",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "roomId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "download",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "text",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ]
+      }
+    },
+    "/api/hermes/group-chat/rooms/{roomId}/workspace-file/copy": {
+      "post": {
+        "tags": [
+          "Group Chat"
+        ],
+        "summary": "Create copy",
+        "description": "POST /api/hermes/group-chat/rooms/:roomId/workspace-file/copy",
+        "operationId": "copyWorkspaceFile",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "roomId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "destPath": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "srcPath": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/hermes/group-chat/rooms/{roomId}/workspace-file/delete": {
+      "delete": {
+        "tags": [
+          "Group Chat"
+        ],
+        "summary": "Delete delete",
+        "description": "DELETE /api/hermes/group-chat/rooms/:roomId/workspace-file/delete",
+        "operationId": "deleteWorkspaceFile",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "roomId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/hermes/group-chat/rooms/{roomId}/workspace-file/mkdir": {
+      "post": {
+        "tags": [
+          "Group Chat"
+        ],
+        "summary": "Create mkdir",
+        "description": "POST /api/hermes/group-chat/rooms/:roomId/workspace-file/mkdir",
+        "operationId": "mkdirWorkspaceFile",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "roomId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/hermes/group-chat/rooms/{roomId}/workspace-file/read": {
+      "get": {
+        "tags": [
+          "Group Chat"
+        ],
+        "summary": "Get read",
+        "description": "GET /api/hermes/group-chat/rooms/:roomId/workspace-file/read",
+        "operationId": "readWorkspaceFile",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "roomId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/hermes/group-chat/rooms/{roomId}/workspace-file/rename": {
+      "post": {
+        "tags": [
+          "Group Chat"
+        ],
+        "summary": "Create rename",
+        "description": "POST /api/hermes/group-chat/rooms/:roomId/workspace-file/rename",
+        "operationId": "renameWorkspaceFile",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "roomId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "newPath": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "oldPath": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/hermes/group-chat/rooms/{roomId}/workspace-file/write": {
+      "put": {
+        "tags": [
+          "Group Chat"
+        ],
+        "summary": "Update write",
+        "description": "PUT /api/hermes/group-chat/rooms/:roomId/workspace-file/write",
+        "operationId": "writeWorkspaceFile",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "roomId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "content": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "path": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/hermes/group-chat/rooms/{roomId}/workspace-files/list": {
+      "get": {
+        "tags": [
+          "Group Chat"
+        ],
+        "summary": "Get list",
+        "description": "GET /api/hermes/group-chat/rooms/:roomId/workspace-files/list",
+        "operationId": "listWorkspaceFiles",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "roomId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
     "/api/hermes/jobs": {
       "get": {
         "tags": [
@@ -5107,6 +6272,32 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/hermes/jobs/delivery-targets": {
+      "get": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "Get delivery-targets",
+        "description": "GET /api/hermes/jobs/delivery-targets",
+        "operationId": "deliveryTargets",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
           }
         }
       }
@@ -5531,7 +6722,23 @@
         },
         "parameters": [
           {
+            "name": "board",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "task_id",
             "in": "query",
             "required": true,
             "schema": {
@@ -6331,6 +7538,102 @@
         }
       }
     },
+    "/api/hermes/kanban/{id}/attachments": {
+      "get": {
+        "tags": [
+          "Kanban"
+        ],
+        "summary": "Get attachments",
+        "description": "GET /api/hermes/kanban/:id/attachments",
+        "operationId": "listAttachments",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "board",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/hermes/kanban/{id}/attachments/{attachmentId}": {
+      "get": {
+        "tags": [
+          "Kanban"
+        ],
+        "summary": "Get :attachmentId",
+        "description": "GET /api/hermes/kanban/:id/attachments/:attachmentId",
+        "operationId": "readAttachment",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "attachmentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "board",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
     "/api/hermes/kanban/{id}/block": {
       "post": {
         "tags": [
@@ -6756,6 +8059,22 @@
             }
           },
           {
+            "name": "category",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "event",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "level",
             "in": "query",
             "required": false,
@@ -6772,6 +8091,14 @@
             }
           },
           {
+            "name": "run",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "session",
             "in": "query",
             "required": false,
@@ -6781,6 +8108,14 @@
           },
           {
             "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "text",
             "in": "query",
             "required": false,
             "schema": {
@@ -8565,6 +9900,48 @@
         ]
       }
     },
+    "/api/hermes/runtime-versions/runtime-root": {
+      "post": {
+        "tags": [
+          "Runtime Versions"
+        ],
+        "summary": "Create runtime-root",
+        "description": "POST /api/hermes/runtime-versions/runtime-root",
+        "operationId": "selectRuntimeRoot",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "directory": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/hermes/runtime-versions/runtime/download": {
       "post": {
         "tags": [
@@ -8773,6 +10150,159 @@
             "required": false,
             "schema": {
               "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/hermes/session-categories": {
+      "get": {
+        "tags": [
+          "Sessions"
+        ],
+        "summary": "Get session-categories",
+        "description": "GET /api/hermes/session-categories",
+        "operationId": "listCategories",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Sessions"
+        ],
+        "summary": "Create session-categories",
+        "description": "POST /api/hermes/session-categories",
+        "operationId": "createCategory",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/hermes/session-categories/{id}": {
+      "patch": {
+        "tags": [
+          "Sessions"
+        ],
+        "summary": "Update :id",
+        "description": "PATCH /api/hermes/session-categories/:id",
+        "operationId": "renameCategory",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Sessions"
+        ],
+        "summary": "Delete :id",
+        "description": "DELETE /api/hermes/session-categories/:id",
+        "operationId": "removeCategory",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
             }
           }
         ]
@@ -9160,7 +10690,77 @@
           "404": {
             "description": "Not found"
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/hermes/sessions/hermes/groups": {
+      "get": {
+        "tags": [
+          "Sessions"
+        ],
+        "summary": "Get groups",
+        "description": "GET /api/hermes/sessions/hermes/groups",
+        "operationId": "listHermesSessionGroups",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "include",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ]
       }
     },
     "/api/hermes/sessions/hermes/{id}": {
@@ -9427,6 +11027,54 @@
             }
           }
         ]
+      }
+    },
+    "/api/hermes/sessions/{id}/category": {
+      "post": {
+        "tags": [
+          "Sessions"
+        ],
+        "summary": "Create category",
+        "description": "POST /api/hermes/sessions/:id/category",
+        "operationId": "setCategory",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": true
+              }
+            }
+          }
+        }
       }
     },
     "/api/hermes/sessions/{id}/context": {
@@ -9772,6 +11420,66 @@
             }
           }
         }
+      }
+    },
+    "/api/hermes/sessions/{id}/workspace-file/content": {
+      "get": {
+        "tags": [
+          "Sessions"
+        ],
+        "summary": "Get content",
+        "description": "GET /api/hermes/sessions/:id/workspace-file/content",
+        "operationId": "readWorkspaceFileContent",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "download",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "text",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ]
       }
     },
     "/api/hermes/sessions/{id}/workspace-file/copy": {
@@ -11616,6 +13324,142 @@
         ]
       }
     },
+    "/api/hermes/voice/proxy/{profile}/v1/audio/speech": {
+      "post": {
+        "tags": [
+          "TTS"
+        ],
+        "summary": "Create speech",
+        "description": "POST /api/hermes/voice/proxy/:profile/v1/audio/speech",
+        "operationId": "synthesizeVoiceProxyOpenAi",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "profile",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "input": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/hermes/voice/proxy/{profile}/v1/audio/transcriptions": {
+      "post": {
+        "tags": [
+          "STT"
+        ],
+        "summary": "Create transcriptions",
+        "description": "POST /api/hermes/voice/proxy/:profile/v1/audio/transcriptions",
+        "operationId": "transcribeVoiceProxy",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "profile",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/hermes/voice/proxy/{profile}/v1/tts": {
+      "post": {
+        "tags": [
+          "TTS"
+        ],
+        "summary": "Create tts",
+        "description": "POST /api/hermes/voice/proxy/:profile/v1/tts",
+        "operationId": "synthesizeVoiceProxy",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "profile",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/hermes/weixin/qrcode": {
       "get": {
         "tags": [
@@ -12055,6 +13899,139 @@
           },
           "404": {
             "description": "Not found"
+          }
+        }
+      }
+    },
+    "/api/theme": {
+      "get": {
+        "tags": [
+          "Theme"
+        ],
+        "summary": "Get theme",
+        "description": "GET /api/theme",
+        "operationId": "getTheme",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Theme"
+        ],
+        "summary": "Update theme",
+        "description": "PUT /api/theme",
+        "operationId": "updateTheme",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/theme/background": {
+      "post": {
+        "tags": [
+          "Theme"
+        ],
+        "summary": "Create background",
+        "description": "POST /api/theme/background",
+        "operationId": "uploadThemeBackground",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Theme"
+        ],
+        "summary": "Get background",
+        "description": "GET /api/theme/background",
+        "operationId": "getThemeBackground",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Theme"
+        ],
+        "summary": "Delete background",
+        "description": "DELETE /api/theme/background",
+        "operationId": "deleteThemeBackground",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
           }
         }
       }

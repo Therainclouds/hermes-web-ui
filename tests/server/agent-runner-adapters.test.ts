@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
   anthropicMessageToResponses,
+  normalizeResponseFunctionCall,
   openAiChatToResponses,
+  responseToolNamespaceForName,
   responsesToAnthropicMessages,
   responsesToOpenAiChat,
+  truncateResponsesToolOutputs,
 } from '../../packages/server/src/services/agent-runner/adapters/responses'
 import {
   anthropicToOpenAiChat,
@@ -28,6 +31,50 @@ const codexTarget = { model: 'test-model', annotateMcpToolNamespaces: true }
 const anthropicTarget = { provider: 'deepseek', model: 'deepseek-reasoner', baseUrl: 'https://api.deepseek.com/v1' }
 
 describe('agent runner Responses adapters', () => {
+  it('forwards maximum reasoning effort to Chat and Anthropic payloads', () => {
+    const maxTarget = { ...target, reasoningEffort: 'max' }
+
+    expect(responsesToOpenAiChat({ input: [] }, maxTarget)).toMatchObject({
+      reasoning_effort: 'max',
+    })
+    expect(responsesToAnthropicMessages({ input: [] }, maxTarget)).toMatchObject({
+      reasoning_effort: 'max',
+    })
+  })
+
+  it('truncates oversized Responses function-call outputs before provider forwarding', () => {
+    const largeOutput = `${'A'.repeat(32 * 1024 + 1)}TAIL_MARKER`
+    const body = {
+      input: [
+        { role: 'user', content: [{ type: 'input_text', text: 'continue' }] },
+        { type: 'function_call_output', call_id: 'call_big', output: largeOutput },
+        { type: 'function_call_output', call_id: 'call_small', output: 'ok' },
+      ],
+    }
+
+    const sanitized = truncateResponsesToolOutputs(body)
+    const output = sanitized.input[1].output
+
+    expect(sanitized).not.toBe(body)
+    expect(output.length).toBeLessThan(largeOutput.length)
+    expect(output.length).toBeLessThanOrEqual(32 * 1024)
+    expect(Buffer.byteLength(output, 'utf8')).toBeLessThanOrEqual(32 * 1024)
+    expect(output).toContain('truncated before provider request')
+    expect(output).toContain(`original_chars=${largeOutput.length}`)
+    expect(output.endsWith('TAIL_MARKER')).toBe(true)
+    expect(sanitized.input[2]).toBe(body.input[2])
+    expect(body.input[1].output).toBe(largeOutput)
+
+    const cjkOutput = `${'界'.repeat(32 * 1024 + 1)}TAIL_MARKER`
+    const cjkSanitized = truncateResponsesToolOutputs({
+      input: [{ type: 'function_call_output', call_id: 'call_cjk', output: cjkOutput }],
+    })
+    const cjkTruncated = cjkSanitized.input[0].output
+    expect(Buffer.byteLength(cjkTruncated, 'utf8')).toBeLessThanOrEqual(32 * 1024)
+    expect(cjkTruncated).toContain(`original_bytes=${Buffer.byteLength(cjkOutput, 'utf8')}`)
+    expect(cjkTruncated.endsWith('TAIL_MARKER')).toBe(true)
+  })
+
   it('converts Responses input to OpenAI Chat messages and tools', () => {
     const body = {
       instructions: 'be terse',
@@ -69,6 +116,103 @@ describe('agent runner Responses adapters', () => {
         function: { name: 'search', description: 'Search', parameters: { type: 'object' } },
       }],
     })
+  })
+
+  it('preserves Responses image inputs for Chat and Anthropic providers', () => {
+    const imageUrl = 'data:image/png;base64,AQID'
+    const body = {
+      input: [{
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'inspect this' },
+          { type: 'input_image', image_url: imageUrl },
+        ],
+      }],
+    }
+
+    expect(responsesToOpenAiChat(body, target).messages).toEqual([{
+      role: 'user',
+      content: [
+        { type: 'text', text: 'inspect this' },
+        { type: 'image_url', image_url: { url: imageUrl } },
+      ],
+    }])
+    expect(responsesToAnthropicMessages(body, target).messages).toEqual([{
+      role: 'user',
+      content: [
+        { type: 'text', text: 'inspect this' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AQID' } },
+      ],
+    }])
+  })
+
+  it('preserves Responses image tool outputs without stringifying data URIs', () => {
+    const imageUrl = 'data:image/png;base64,AQID'
+    const body = {
+      input: [
+        { role: 'user', content: [{ type: 'input_text', text: 'inspect this' }] },
+        {
+          type: 'function_call',
+          call_id: 'call_image',
+          name: 'view_image',
+          arguments: '{"path":"/tmp/image.png"}',
+        },
+        {
+          type: 'function_call_output',
+          call_id: 'call_image',
+          output: [{ type: 'input_image', image_url: imageUrl, detail: 'high' }],
+        },
+      ],
+    }
+
+    expect(responsesToOpenAiChat(body, target).messages).toEqual([
+      { role: 'user', content: 'inspect this' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{
+          id: 'call_image',
+          type: 'function',
+          function: { name: 'view_image', arguments: '{"path":"/tmp/image.png"}' },
+        }],
+      },
+      {
+        role: 'tool',
+        tool_call_id: 'call_image',
+        content: '[Image output attached for tool view_image]',
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: '[Image output from tool view_image (call_image)]' },
+          { type: 'image_url', image_url: { url: imageUrl, detail: 'high' } },
+        ],
+      },
+    ])
+
+    expect(responsesToAnthropicMessages(body, target).messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'inspect this' }] },
+      {
+        role: 'assistant',
+        content: [{
+          type: 'tool_use',
+          id: 'call_image',
+          name: 'view_image',
+          input: { path: '/tmp/image.png' },
+        }],
+      },
+      {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'call_image',
+          content: [{
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: 'AQID' },
+          }],
+        }],
+      },
+    ])
   })
 
   it('groups parallel Responses function calls before Chat tool results', () => {
@@ -148,6 +292,92 @@ describe('agent runner Responses adapters', () => {
     })
   })
 
+  it('round-trips Codex deferred tool discovery through Anthropic tools', () => {
+    const toolSearch = {
+      type: 'tool_search',
+      execution: 'client',
+      description: 'Search deferred MCP tools.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string' },
+          limit: { type: 'number' },
+        },
+        required: ['query'],
+        additionalProperties: false,
+      },
+    }
+
+    expect(responsesToAnthropicMessages({
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'open the browser' }] }],
+      tools: [toolSearch],
+    }, target).tools).toEqual([{
+      name: 'tool_search',
+      description: 'Search deferred MCP tools.',
+      input_schema: toolSearch.parameters,
+    }])
+
+    const followup = responsesToAnthropicMessages({
+      input: [
+        { role: 'user', content: [{ type: 'input_text', text: 'open the browser' }] },
+        {
+          type: 'tool_search_call',
+          call_id: 'call_search',
+          status: 'completed',
+          execution: 'client',
+          arguments: { query: 'Hermes Studio browser tabs navigation' },
+        },
+        {
+          type: 'tool_search_output',
+          call_id: 'call_search',
+          status: 'completed',
+          execution: 'client',
+          tools: [{
+            type: 'namespace',
+            name: 'mcp__hermes_studio_browser',
+            description: 'Hermes browser tools.',
+            tools: [{
+              type: 'function',
+              name: 'hermes_studio_browser_toolset',
+              description: 'Discover browser operations.',
+              parameters: { type: 'object', properties: { action: { type: 'string' } }, required: ['action'] },
+            }],
+          }],
+        },
+      ],
+      tools: [toolSearch],
+    }, target)
+
+    expect(followup.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'open the browser' }] },
+      {
+        role: 'assistant',
+        content: [{
+          type: 'tool_use',
+          id: 'call_search',
+          name: 'tool_search',
+          input: { query: 'Hermes Studio browser tabs navigation' },
+        }],
+      },
+      {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'call_search',
+          content: 'Loaded deferred tools: mcp__hermes_studio_browser.hermes_studio_browser_toolset',
+        }],
+      },
+    ])
+    expect(followup.tools).toEqual([
+      expect.objectContaining({ name: 'tool_search' }),
+      {
+        name: 'hermes_studio_browser_toolset',
+        description: 'Discover browser operations.',
+        input_schema: { type: 'object', properties: { action: { type: 'string' } }, required: ['action'] },
+      },
+    ])
+  })
+
   it('expands Hermes MCP namespace tools for Chat and Anthropic providers', () => {
     const body = {
       input: [{ role: 'user', content: [{ type: 'input_text', text: 'list devices' }] }],
@@ -180,6 +410,43 @@ describe('agent runner Responses adapters', () => {
         }),
       }),
     ]))
+  })
+
+  it('expands split Hermes MCP namespaces and routes returned calls to the right server', () => {
+    const body = {
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'open a browser' }] }],
+      tools: [
+        { type: 'namespace', name: 'mcp__hermes_studio_api' },
+        { type: 'namespace', name: 'mcp__hermes_studio_browser' },
+        { type: 'namespace', name: 'mcp__hermes_studio_devices' },
+        { type: 'namespace', name: 'mcp__hermes_studio_use' },
+      ],
+    }
+
+    const anthropicTools = responsesToAnthropicMessages(body, target).tools
+    expect(anthropicTools.map((tool: any) => tool.name)).toEqual([
+      'hermes_studio_api_openapi_get',
+      'hermes_studio_api_request',
+      'hermes_studio_browser_toolset',
+      'hermes_studio_devices_toolset',
+      'hermes_studio_use_toolset',
+    ])
+    expect(anthropicTools.find((tool: any) => tool.name === 'hermes_studio_browser_toolset')).toMatchObject({
+      input_schema: {
+        required: ['action'],
+        properties: {
+          action: { enum: ['list', 'describe', 'call'] },
+          tool: { type: 'string' },
+          arguments: { type: 'object' },
+        },
+      },
+    })
+    expect(responseToolNamespaceForName('hermes_studio_browser_toolset')).toBe('mcp__hermes_studio_browser')
+    expect(normalizeResponseFunctionCall('hermes_studio_browser_toolset', '{"action":"list"}')).toEqual({
+      name: 'hermes_studio_browser_toolset',
+      arguments: '{"action":"list"}',
+      namespace: 'mcp__hermes_studio_browser',
+    })
   })
 
   it('keeps unknown MCP namespaces callable through a generic function fallback', () => {
@@ -297,6 +564,27 @@ describe('agent runner Responses adapters', () => {
 	        { type: 'function_call', call_id: 'toolu_1', name: 'lookup', arguments: '{"id":1}' },
       ],
       usage: { input_tokens: 4, output_tokens: 5, total_tokens: 9 },
+    })
+  })
+
+  it('returns Anthropic tool_search calls using the Codex-native response item', () => {
+    expect(anthropicMessageToResponses({
+      id: 'msg_search',
+      content: [{
+        type: 'tool_use',
+        id: 'call_search',
+        name: 'tool_search',
+        input: { query: 'Hermes Studio browser', limit: 5 },
+      }],
+      usage: { input_tokens: 2, output_tokens: 3 },
+    }, target)).toMatchObject({
+      output: [{
+        type: 'tool_search_call',
+        call_id: 'call_search',
+        status: 'completed',
+        execution: 'client',
+        arguments: { query: 'Hermes Studio browser', limit: 5 },
+      }],
     })
   })
 
@@ -476,6 +764,42 @@ describe('agent runner Responses stream adapters', () => {
     ]))
   })
 
+  it('streams Anthropic tool_search calls as Codex-native response items', async () => {
+    const events = await collectEvents(anthropicMessagesSseToResponsesEvents(encodedChunks([
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_search"}}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_search","name":"tool_search","input":{}}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"query\\":\\"Hermes Studio browser\\"}"}}\n\n',
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ]), codexTarget))
+
+    expect(events.some(event => event.type === 'response.function_call_arguments.delta')).toBe(false)
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'response.output_item.added',
+        data: expect.objectContaining({
+          item: expect.objectContaining({
+            type: 'tool_search_call',
+            call_id: 'call_search',
+            status: 'in_progress',
+            execution: 'client',
+          }),
+        }),
+      }),
+      expect.objectContaining({
+        type: 'response.output_item.done',
+        data: expect.objectContaining({
+          item: {
+            type: 'tool_search_call',
+            call_id: 'call_search',
+            status: 'completed',
+            execution: 'client',
+            arguments: { query: 'Hermes Studio browser' },
+          },
+        }),
+      }),
+    ]))
+  })
+
   it('passes native Responses SSE events through as canonical events', async () => {
     const events = await collectEvents(openAiResponsesSseToResponsesEvents(encodedChunks([
       'event: response.created\r\ndata: {"response":{"id":"resp_1"}}\r\n\r\n',
@@ -497,6 +821,17 @@ describe('agent runner Responses stream adapters', () => {
 })
 
 describe('agent runner Anthropic adapters', () => {
+  it('forwards maximum reasoning effort to Chat and Responses payloads', () => {
+    const maxTarget = { ...anthropicTarget, reasoningEffort: 'max' }
+
+    expect(anthropicToOpenAiChat({ messages: [] }, maxTarget)).toMatchObject({
+      reasoning_effort: 'max',
+    })
+    expect(anthropicToOpenAiResponses({ messages: [] }, maxTarget)).toMatchObject({
+      reasoning: { effort: 'max' },
+    })
+  })
+
   it('converts Anthropic messages to OpenAI Chat with reasoning_content', () => {
     const body = {
       system: 'system text',
@@ -541,6 +876,96 @@ describe('agent runner Anthropic adapters', () => {
         function: { name: 'lookup', description: 'Lookup', parameters: { type: 'object' } },
       }],
     })
+  })
+
+  it('preserves Anthropic image inputs for Chat and Responses providers', () => {
+    const body = {
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: 'inspect this' },
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: 'AQID' },
+          },
+        ],
+      }],
+    }
+    const imageUrl = 'data:image/png;base64,AQID'
+
+    expect(anthropicToOpenAiChat(body, anthropicTarget).messages).toEqual([{
+      role: 'user',
+      content: [
+        { type: 'text', text: 'inspect this' },
+        { type: 'image_url', image_url: { url: imageUrl } },
+      ],
+    }])
+    expect(anthropicToOpenAiResponses(body, anthropicTarget).input).toEqual([{
+      role: 'user',
+      content: [
+        { type: 'input_text', text: 'inspect this' },
+        { type: 'input_image', image_url: imageUrl },
+      ],
+    }])
+  })
+
+  it('preserves Anthropic image tool results without stringifying data URIs', () => {
+    const body = {
+      messages: [
+        {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: { file_path: 'image.png' } }],
+        },
+        {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'toolu_1',
+            content: [{
+              type: 'image',
+              source: { type: 'base64', media_type: 'image/png', data: 'AQID' },
+            }],
+          }],
+        },
+      ],
+    }
+
+    expect(anthropicToOpenAiChat(body, anthropicTarget).messages).toEqual([
+      {
+        role: 'assistant',
+        content: null,
+        reasoning_content: 'tool call',
+        tool_calls: [{
+          id: 'toolu_1',
+          type: 'function',
+          function: { name: 'Read', arguments: '{"file_path":"image.png"}' },
+        }],
+      },
+      { role: 'tool', tool_call_id: 'toolu_1', content: '[Image output attached.]' },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: '[Image output from tool toolu_1]' },
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,AQID' } },
+        ],
+      },
+    ])
+    expect(anthropicToOpenAiResponses(body, anthropicTarget).input).toEqual([
+      {
+        type: 'function_call',
+        call_id: 'toolu_1',
+        name: 'Read',
+        arguments: '{"file_path":"image.png"}',
+      },
+      {
+        type: 'function_call_output',
+        call_id: 'toolu_1',
+        output: [{
+          type: 'input_image',
+          image_url: 'data:image/png;base64,AQID',
+        }],
+      },
+    ])
   })
 
   it('converts Anthropic messages to Responses input', () => {

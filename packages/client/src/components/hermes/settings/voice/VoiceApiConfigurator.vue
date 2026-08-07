@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import type { VoiceApiConnection, VoiceApiSavePayload } from '@/types/voice-api'
 import { VOICE_API_PRESETS } from '@/constants/voiceApiPresets'
 import { DOUBAO_TTS_2_RESOURCE_ID, DOUBAO_TTS_VOICE_OPTIONS, doubaoTtsResourceForVoice } from '@/constants/doubaoTtsVoices'
+import { EDGE_TTS_VOICE_OPTIONS } from '@/constants/edgeTtsVoices'
 import { speedToEdgeRate, hzToEdgePitch } from '@/utils/ttsHelpers'
 import { useVoiceSettings } from '@/composables/useVoiceSettings'
 
@@ -155,16 +156,7 @@ async function handleSave() {
   }
 }
 
-const edgeVoiceOptions = [
-  { label: '晓晓 (zh-CN-XiaoxiaoNeural)', value: 'zh-CN-XiaoxiaoNeural' },
-  { label: '晓萱 (zh-CN-XiaoxuanNeural)', value: 'zh-CN-XiaoxuanNeural' },
-  { label: '云希 (zh-CN-YunxiNeural)', value: 'zh-CN-YunxiNeural' },
-  { label: '云健 (zh-CN-YunjianNeural)', value: 'zh-CN-YunjianNeural' },
-  { label: '云扬 (zh-CN-YunyangNeural)', value: 'zh-CN-YunyangNeural' },
-  { label: 'Jenny (en-US-JennyNeural)', value: 'en-US-JennyNeural' },
-  { label: 'Aria (en-US-AriaNeural)', value: 'en-US-AriaNeural' },
-  { label: 'Guy (en-US-GuyNeural)', value: 'en-US-GuyNeural' },
-]
+const edgeVoiceOptions = EDGE_TTS_VOICE_OPTIONS.map(option => ({ label: option.label, value: option.value }))
 
 const openaiVoiceOptions = [
   { label: 'Alloy', value: 'alloy' },
@@ -207,6 +199,10 @@ const doubaoVoiceOptions = computed(() => {
 const sttAudioTranscodeOptions = computed(() => [
   { label: t('settings.voice.sttAudioTranscodeNone'), value: 'none' },
   { label: t('settings.voice.sttAudioTranscodeFfmpeg'), value: 'ffmpeg' },
+])
+const booleanOptions = computed(() => [
+  { label: t('settings.voice.optionDisabled'), value: 'false' },
+  { label: t('settings.voice.optionEnabled'), value: 'true' },
 ])
 
 function handleDoubaoVoiceUpdate(value: string) {
@@ -257,6 +253,7 @@ function handleDoubaoVoiceUpdate(value: string) {
             v-if="connection.provider === 'edge'"
             :value="stringField('voice')"
             :options="edgeVoiceOptions"
+            tag
             filterable
             @update:value="value => setField('voice', value)"
           />
@@ -346,6 +343,37 @@ function handleDoubaoVoiceUpdate(value: string) {
           </NFormItem>
         </template>
 
+        <NFormItem
+          v-if="connection.kind === 'tts' && capabilities.language"
+          :label="t('settings.voice.sttLanguage')"
+        >
+          <NInput :value="stringField('language')" @update:value="value => setField('language', value)" />
+        </NFormItem>
+
+        <NFormItem v-if="capabilities.speed" :label="t('settings.voice.providerSpeed')">
+          <NInput :value="stringField('speed')" @update:value="value => setField('speed', value)" />
+        </NFormItem>
+
+        <NFormItem v-if="capabilities.sampleRate" :label="t('settings.voice.providerSampleRate')">
+          <NInput :value="stringField('sampleRate')" @update:value="value => setField('sampleRate', value)" />
+        </NFormItem>
+
+        <NFormItem v-if="capabilities.bitRate" :label="t('settings.voice.providerBitRate')">
+          <NInput :value="stringField('bitRate')" @update:value="value => setField('bitRate', value)" />
+        </NFormItem>
+
+        <NFormItem v-if="capabilities.groupId" :label="t('settings.voice.providerGroupId')">
+          <NInput :value="stringField('groupId')" @update:value="value => setField('groupId', value)" />
+        </NFormItem>
+
+        <NFormItem v-if="capabilities.volume" :label="t('settings.voice.providerVolume')">
+          <NInput :value="stringField('volume')" @update:value="value => setField('volume', value)" />
+        </NFormItem>
+
+        <NFormItem v-if="capabilities.emotion" :label="t('settings.voice.providerEmotion')">
+          <NInput :value="stringField('emotion')" @update:value="value => setField('emotion', value)" />
+        </NFormItem>
+
         <template v-if="connection.kind === 'stt' && connection.provider !== 'browser'">
           <NFormItem :label="t('settings.voice.sttAudioTranscode')">
             <NSelect
@@ -359,6 +387,27 @@ function handleDoubaoVoiceUpdate(value: string) {
           </NFormItem>
           <NFormItem :label="t('settings.voice.sttPrompt')">
             <NInput :value="stringField('prompt')" type="textarea" :rows="2" @update:value="value => setField('prompt', value)" />
+          </NFormItem>
+          <NFormItem v-if="capabilities.diarize" :label="t('settings.voice.providerDiarize')">
+            <NSelect
+              :value="stringField('diarize') || 'false'"
+              :options="booleanOptions"
+              @update:value="value => setField('diarize', value)"
+            />
+          </NFormItem>
+          <NFormItem v-if="capabilities.format" :label="t('settings.voice.providerFormatText')">
+            <NSelect
+              :value="stringField('format') || 'true'"
+              :options="booleanOptions"
+              @update:value="value => setField('format', value)"
+            />
+          </NFormItem>
+          <NFormItem v-if="capabilities.tagAudioEvents" :label="t('settings.voice.providerTagAudioEvents')">
+            <NSelect
+              :value="stringField('tagAudioEvents') || 'false'"
+              :options="booleanOptions"
+              @update:value="value => setField('tagAudioEvents', value)"
+            />
           </NFormItem>
         </template>
       </NForm>

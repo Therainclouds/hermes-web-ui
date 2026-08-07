@@ -8,6 +8,7 @@ const profileDir = vi.hoisted(() => ({ value: '' }))
 
 vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
   getActiveProfileDir: () => profileDir.value,
+  getHermesBaseDir: () => profileDir.value,
 }))
 
 function createStateDb(path: string) {
@@ -179,6 +180,31 @@ describe('session DB compression lineage', () => {
     })
   })
 
+  it('returns an independent first page and continuation signal for each source', async () => {
+    insertSession(db!, { id: 'cli-new', source: 'cli', started_at: 300 })
+    insertSession(db!, { id: 'cli-old', source: 'cli', started_at: 200 })
+    insertSession(db!, { id: 'weixin-one', source: 'weixin', started_at: 100 })
+
+    const mod = await import('../../packages/server/src/db/hermes/sessions-db')
+    const result = await mod.listSessionSummaryGroups(1, 'default', ['cli-old'])
+
+    expect(result.groups).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: 'cli',
+        total: 2,
+        hasMore: true,
+        sessions: [expect.objectContaining({ id: 'cli-new' })],
+      }),
+      expect.objectContaining({
+        source: 'weixin',
+        total: 1,
+        hasMore: false,
+        sessions: [expect.objectContaining({ id: 'weixin-one' })],
+      }),
+    ]))
+    expect(result.included).toEqual([expect.objectContaining({ id: 'cli-old' })])
+  })
+
   it.skip('returns the projected logical session when search matches continuation content (requires FTS5)', async () => {
     seedCompressionChain(db!)
 
@@ -207,6 +233,39 @@ describe('session DB compression lineage', () => {
       thread_session_count: 3,
     })
     expect(detail?.messages.map(message => message.session_id)).toEqual(['root', 'middle', 'tip'])
+  })
+
+  it('paginates only the requested compression chain for a profile detail request', async () => {
+    seedCompressionChain(db!)
+    insertSession(db!, {
+      id: 'unrelated',
+      source: 'cli',
+      title: 'Unrelated history',
+      started_at: 400,
+      ended_at: null,
+      end_reason: null,
+    })
+    insertMessage(db!, { id: 4, session_id: 'unrelated', content: 'must stay outside the requested page', timestamp: 401 })
+
+    const mod = await import('../../packages/server/src/db/hermes/sessions-db')
+    const newestPage = await mod.getSessionDetailPaginatedFromDbWithProfile('tip', 'default', 0, 2)
+
+    expect(newestPage).toMatchObject({
+      total: 3,
+      offset: 0,
+      limit: 2,
+      hasMore: true,
+      session: {
+        id: 'tip',
+        message_count: 9,
+        thread_session_count: 3,
+      },
+    })
+    expect(newestPage?.messages.map(message => message.session_id)).toEqual(['middle', 'tip'])
+
+    const oldestPage = await mod.getSessionDetailPaginatedFromDbWithProfile('tip', 'default', 2, 2)
+    expect(oldestPage).toMatchObject({ total: 3, offset: 2, limit: 2, hasMore: false })
+    expect(oldestPage?.messages.map(message => message.session_id)).toEqual(['root'])
   })
 
   it.skip('follows only the latest compression continuation child when a parent has multiple children (test logic needs fix)', async () => {

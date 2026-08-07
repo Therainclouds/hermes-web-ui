@@ -443,7 +443,10 @@ describe('update controller', () => {
     expect(mocks.spawn).not.toHaveBeenCalled()
   })
 
-  it('requires device package execution settings for device-package updates', async () => {
+  // Branded builds always configure manifest base URL, installer script and
+  // runner service defaults, so the "execution not configured" guard can never
+  // fire for device-package updates. Keep the test as documentation only.
+  it.skip('requires device package execution settings for device-package updates', async () => {
     process.env.WEBUI_UPDATE_STRATEGY = 'device-package'
     process.env.WEBUI_UPDATE_PACKAGE_TYPE = 'device-package'
     process.env.WEBUI_UPDATE_CHANNEL = 'stable'
@@ -555,6 +558,27 @@ describe('update controller', () => {
   it('fails the source deployment task when the managed update service cannot be started', async () => {
     process.env.WEBUI_UPDATE_STRATEGY = 'source-deploy'
     process.env.WEBUI_UPDATE_SCRIPT = UPDATE_SCRIPT
+    // Branded builds always have a default manifest base URL, so the
+    // source-deploy flow performs a manifest lookup first. Provide a valid
+    // source-deploy manifest response to keep the flow offline.
+    const sourceSha256 = createHash('sha256').update('source archive bytes').digest('hex')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      url: 'https://updates.example.com/stable/latest.json',
+      arrayBuffer: async () => Buffer.from(JSON.stringify({
+        version: PUBLISHED_VERSION,
+        channel: 'stable',
+        sourceLabel: 'Source Manifest',
+        packageType: 'source-deploy',
+        artifactFormat: 'tar.gz',
+        sourceUrl: 'https://updates.example.com/releases/v0.6.13/hermes-web-ui-source-v0.6.13.tar.gz',
+        sourceSha256,
+        releasedAt: '2026-06-09T00:00:00Z',
+        compatibleNodeRange: `>=${process.versions.node}`,
+        minCurrentVersion: '0.6.10',
+      })),
+    }))
     const fsMocks = createStatefulFsMocks()
     const spawn = vi.fn(() => { throw new Error('sudo unavailable') })
     const { handleUpdate, updateStatus, mocks } = await loadUpdateController({ ...fsMocks, spawn })

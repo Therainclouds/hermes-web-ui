@@ -12,10 +12,13 @@ import LanguageSwitch from "@/components/layout/LanguageSwitch.vue";
 import ThemeSwitch from "@/components/layout/ThemeSwitch.vue";
 import VersionManagementModal from "@/components/layout/VersionManagementModal.vue";
 import { changelog } from "@/data/changelog";
-import { getStoredUsername, isStoredSuperAdmin } from "@/api/client";
 import { resolveDeviceUrls } from "@/utils/deviceUrls";
+import { getStoredUserId, getStoredUsername, isStoredSuperAdmin } from "@/api/client";
+import { clearThemeBackgroundCache } from '@/api/theme'
+import { useMessage } from '@/composables/useAppMessage'
 
 const { t } = useI18n();
+const message = useMessage();
 const route = useRoute();
 const router = useRouter();
 const appStore = useAppStore();
@@ -98,7 +101,22 @@ function handleSidebarClick(event: MouseEvent) {
   }
 }
 
-function handleLogout() {
+async function handleUpdate() {
+  const ok = await appStore.doUpdate();
+  if (ok) {
+    message.success(t('sidebar.updateSuccess'), { duration: 5000 });
+  } else {
+    message.error(t('sidebar.updateFailed'));
+  }
+}
+
+function handleReloadClient() {
+  appStore.reloadClient();
+}
+
+async function handleLogout() {
+  const userId = getStoredUserId()
+  if (userId) await clearThemeBackgroundCache(userId)
   localStorage.clear();
   window.location.reload();
 }
@@ -109,14 +127,6 @@ function openChangelog() {
 
 function openVersionManagement() {
   showVersionManagement.value = true;
-}
-
-async function handleUpdate() {
-  await appStore.doUpdate();
-}
-
-async function handleReloadClient() {
-  appStore.reloadClient();
 }
 
 async function handleClearStaleUpdateClick() {
@@ -282,6 +292,15 @@ function handleUpdateClick() {
           </svg>
         </div>
         <div v-show="!isGroupCollapsed('tools')" class="nav-group-items">
+          <RouteLinkItem v-if="isDesktopShell && hasRoute('hermes.browser')" class="nav-item" :to="{ name: 'hermes.browser' }" :active="selectedKey === 'hermes.browser'">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M3 9h18" />
+              <path d="M9 3c-2 5-2 13 0 18" />
+              <path d="M15 3c2 5 2 13 0 18" />
+            </svg>
+            <span>{{ t("sidebar.browser") }}</span>
+          </RouteLinkItem>
           <RouteLinkItem v-if="hasRoute('hermes.codingAgents')" class="nav-item" :to="{ name: 'hermes.codingAgents' }" :active="selectedKey === 'hermes.codingAgents'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <polyline points="16 18 22 12 16 6" />
@@ -346,6 +365,15 @@ function handleUpdateClick() {
             </svg>
             <span>{{ t("sidebar.networkConfig") }}</span>
           </a>
+          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.theme' }" :active="selectedKey === 'hermes.theme'">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="13.5" cy="6.5" r="2.5" />
+              <circle cx="17.5" cy="10.5" r="2.5" />
+              <circle cx="8.5" cy="7.5" r="2.5" />
+              <path d="M12 3a9 9 0 1 0 9 9c0-1.1-.9-2-2-2h-1.2a2.8 2.8 0 0 1-2.8-2.8V5c0-1.1-.9-2-2-2h-1z" />
+            </svg>
+            <span>{{ t("sidebar.theme") }}</span>
+          </RouteLinkItem>
           <RouteLinkItem class="nav-item" :to="{ name: 'hermes.profiles' }" :active="selectedKey === 'hermes.profiles'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
@@ -421,13 +449,28 @@ function handleUpdateClick() {
           <span class="version-update-label">{{ t('sidebar.updateAvailableLabel') }}</span>
         </span>
       </NButton>
+      <!--
+        分支顺序有讲究：failed 和 updating 必须排在 updateAvailable 之前，
+        否则 doUpdate 失败后 updateAvailable 仍为 true，会命中"更新按钮"分支
+        而把失败原因静默掩盖掉（v-else-if 链短路）。
+      -->
+      <div v-if="appStore.updateTaskStatus === 'failed'" class="sidebar-update-action sidebar-update-progress sidebar-update-error">
+        <span class="sidebar-update-label">{{ t('sidebar.updateFailedWithReason', { reason: updateErrorText }) }}</span>
+        <button class="sidebar-update-clear-btn" @click="handleClearStaleUpdateClick">
+          {{ t('sidebar.updateClearStale') }}
+        </button>
+      </div>
+      <div v-else-if="appStore.updating" class="sidebar-update-action sidebar-update-progress">
+        <span class="sidebar-update-label">{{ updateStageLabel }}</span>
+        <span v-if="updateDetailText" class="sidebar-update-detail">{{ updateDetailText }}</span>
+      </div>
       <div
-        v-if="appStore.updateEnabled && appStore.updateAvailable && !appStore.updating"
+        v-else-if="appStore.updateEnabled && appStore.updateAvailable"
         class="sidebar-update-action"
       >
         <button
           class="sidebar-update-btn"
-          :disabled="appStore.updating || !!appStore.updateBlockingText"
+          :disabled="!!appStore.updateBlockingText"
           @click="handleUpdateClick"
         >
           <span class="sidebar-update-label">
@@ -436,27 +479,17 @@ function handleUpdateClick() {
         </button>
       </div>
       <div
-        v-else-if="appStore.updateEnabled && appStore.clientOutdated && !appStore.updating"
+        v-else-if="appStore.updateEnabled && appStore.clientOutdated"
         class="sidebar-update-action"
       >
         <button
           class="sidebar-update-btn"
-          :disabled="appStore.updating || !!appStore.updateBlockingText"
+          :disabled="!!appStore.updateBlockingText"
           @click="handleReloadClient"
         >
           <span class="sidebar-update-label">
             {{ t('sidebar.reloadClientVersion', { version: appStore.serverVersion }) }}
           </span>
-        </button>
-      </div>
-      <div v-else-if="appStore.updating" class="sidebar-update-action sidebar-update-progress">
-        <span class="sidebar-update-label">{{ updateStageLabel }}</span>
-        <span v-if="updateDetailText" class="sidebar-update-detail">{{ updateDetailText }}</span>
-      </div>
-      <div v-else-if="appStore.updateTaskStatus === 'failed'" class="sidebar-update-action sidebar-update-progress sidebar-update-error">
-        <span class="sidebar-update-label">{{ t('sidebar.updateFailedWithReason', { reason: updateErrorText }) }}</span>
-        <button class="sidebar-update-clear-btn" @click="handleClearStaleUpdateClick">
-          {{ t('sidebar.updateClearStale') }}
         </button>
       </div>
       <div v-if="appStore.updateSourceLabel" class="update-source">
@@ -526,12 +559,18 @@ function handleUpdateClick() {
 .sidebar {
   position: relative;
   width: $sidebar-width;
-  height: calc(100 * var(--vh));
-  background-color: $bg-sidebar;
-  border-right: 1px solid $border-color;
+  height: auto;
+  min-height: 0;
+  align-self: stretch;
+  margin: 10px;
+  background-color: $bg-sidebar-surface;
+  border: 1px solid $border-color;
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
   display: flex;
   flex-direction: column;
   padding: 8px 12px 20px;
+  overflow: hidden;
   flex-shrink: 0;
   transition: width $transition-normal;
 }
@@ -640,7 +679,7 @@ function handleUpdateClick() {
   cursor: pointer;
   transition: all $transition-fast;
   width: 100%;
-  text-align: left;
+  text-align: start;
 
   &:hover {
     background-color: rgba(var(--accent-primary-rgb), 0.06);
@@ -655,7 +694,7 @@ function handleUpdateClick() {
   .beta-tag {
     font-size: 10px;
     color: $text-muted;
-    margin-left: 2px;
+    margin-inline-start: 2px;
   }
 }
 
@@ -699,7 +738,7 @@ function handleUpdateClick() {
 }
 
 .logout-username {
-  margin-left: auto;
+  margin-inline-start: auto;
   max-width: 96px;
   color: $text-muted;
   font-size: 12px;
@@ -721,7 +760,7 @@ function handleUpdateClick() {
   align-items: center;
   gap: 8px;
   min-width: 0;
-  padding-left: 12px;
+  padding-inline-start: 12px;
   font-size: 12px;
   color: $text-secondary;
 
@@ -997,10 +1036,13 @@ function handleUpdateClick() {
 @media (max-width: $breakpoint-mobile) {
   .sidebar {
     position: fixed;
-    left: 0;
-    top: 0;
+    left: 10px;
+    top: 10px;
+    bottom: 10px;
+    margin: 0;
+    height: auto;
     z-index: 1000;
-    transform: translateX(-100%);
+    transform: translateX(calc(-100% - 10px));
     transition: transform $transition-normal;
     padding-top: env(safe-area-inset-top, 0px);
 

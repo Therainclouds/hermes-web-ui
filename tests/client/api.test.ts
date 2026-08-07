@@ -16,7 +16,7 @@ import { getApiKey, setApiKey, clearApiKey, hasApiKey, getStoredUserRole, isStor
 import { downloadFile, getDownloadUrl } from '../../packages/client/src/api/hermes/download'
 import { uploadFiles } from '../../packages/client/src/api/hermes/files'
 import { importSkill } from '../../packages/client/src/api/hermes/skills'
-import { archiveSession, batchDeleteSessions, exportSession, importHermesSession, unarchiveSession } from '../../packages/client/src/api/hermes/sessions'
+import { archiveSession, batchDeleteSessions, exportSession, fetchHermesSessionGroups, fetchHermesSessionPage, importHermesSession, unarchiveSession } from '../../packages/client/src/api/hermes/sessions'
 import router from '@/router'
 
 function fakeJwt(payload: Record<string, unknown>) {
@@ -370,6 +370,32 @@ describe('API Client', () => {
   })
 
   describe('sessions API', () => {
+    it('requests source-group pages with pinned and routed sessions included', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ groups: [], included: [] }),
+      })
+
+      await fetchHermesSessionGroups(20, 'travel', ['pinned-1', 'route-1'])
+
+      const [url] = mockFetch.mock.calls[0]
+      expect(url).toBe('/api/hermes/sessions/hermes/groups?limit=20&profile=travel&include=pinned-1&include=route-1')
+    })
+
+    it('requests the next page for one Hermes history source', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ sessions: [], hasMore: false, offset: 20, limit: 20 }),
+      })
+
+      await fetchHermesSessionPage('cli', 20, 20, 'travel')
+
+      const [url] = mockFetch.mock.calls[0]
+      expect(url).toBe('/api/hermes/sessions/hermes?source=cli&offset=20&limit=20&profile=travel')
+    })
+
     it('sends profile-qualified targets for batch deletes', async () => {
       localStorage.setItem('hermes_active_profile_name', 'research')
       mockFetch.mockResolvedValue({

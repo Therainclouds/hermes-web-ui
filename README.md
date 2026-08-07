@@ -9,7 +9,7 @@
   automate jobs, inspect files, run coding agents, and keep everything local.
   A full-featured web dashboard for Hermes Agent.<br/>
   Manage AI chat sessions, monitor usage & costs, configure platform channels,<br/>
-  schedule cron jobs, browse skills �?all from a clean, responsive web interface.
+  schedule cron jobs, browse skills — all from a clean, responsive web interface.
 </p>
 
 <p align="center">
@@ -31,17 +31,17 @@
 ### AI Chat
 
 - Real-time chat streaming over Socket.IO `/chat-run`; chat runs execute through the Hermes agent bridge
-- Multi-session management �?create, rename, delete, switch between sessions
-- **Self-built session database** �?local SQLite storage for Web UI sessions; Hermes state.db remains a read-only source for Hermes history APIs
+- Multi-session management — create, rename, delete, switch between sessions
+- **Self-built session database** — local SQLite storage for Web UI sessions; Hermes state.db remains a read-only source for Hermes history APIs
 - Session grouping by source (Telegram, Discord, Slack, etc.) with collapsible accordion
-- Active session indicator �?live sessions pin to top with spinner icon
+- Active session indicator — live sessions pin to top with spinner icon
 - Sessions sorted by latest message time
 - Markdown rendering with syntax highlighting and code copy
 - Tool call detail expansion (arguments / result)
 - Profile-scoped file uploads
-- File download support �?download uploaded files and agent-generated files by resolved path across local, Docker, SSH, and Singularity backends
-- Session search �?Ctrl+K search across the Web UI local session database; read-only Hermes history sessions are not included
-- Profile-aware model selector �?discovers models available to the signed-in account through authorized Hermes profiles
+- File download support — download uploaded files and agent-generated files by resolved path across local, Docker, SSH, and Singularity backends
+- Session search — Ctrl+K search across the Web UI local session database; read-only Hermes history sessions are not included
+- Profile-aware model selector — discovers models available to the signed-in account through authorized Hermes profiles
 - Per-session model display badge and context token usage
 
 ### Platform Channels
@@ -111,11 +111,11 @@ Unified configuration for **8 platforms** in one page:
 ### Group Chat
 
 - Multi-agent chat rooms with real-time messaging via Socket.IO
-- @mention routing �?mention an agent to trigger a contextual reply
-- Context compression �?automatic conversation summarization when history exceeds token threshold
+- @mention routing — mention an agent to trigger a contextual reply
+- Context compression — automatic conversation summarization when history exceeds token threshold
 - Typing status and reply progress indicators
 - Room creation, deletion, and invite code management
-- Agent management �?add/remove agents from rooms with per-agent profiles
+- Agent management — add/remove agents from rooms with per-agent profiles
 - SQLite message persistence
 - Mobile responsive with collapsible sidebar
 
@@ -214,9 +214,9 @@ Unbind from the UI: **Settings → Device Binding → Unbind**, or call `DELETE 
 - MiMo supports preset voices, voice design prompts, and voice clone reference audio (`.mp3`/`.wav`, max 10 MB) with selectable auth header mode (`Authorization`, `api-key`, or both).
 - Edge/OpenAI-compatible/custom/MiMo playback uses the Web UI backend's unified `/api/hermes/tts/synthesize` endpoint, so stop/pause state is shared and in-flight fetches are aborted when possible.
 - Provider API keys and MiMo clone reference audio are saved in server-side TTS settings, with only masked secret status shown back to the browser.
-- Save provider settings in Settings �?Voice before using OpenAI/custom/MiMo playback. Message playback sends text and non-secret playback options; the backend reads the stored per-user secret when synthesizing.
+- Save provider settings in Settings → Voice before using OpenAI/custom/MiMo playback. Message playback sends text and non-secret playback options; the backend reads the stored per-user secret when synthesizing.
 - Turn-based voice input is available from the chat input mic control: start/stop a voice turn, transcribe it, stage the transcript in the current input box for editing, then send it with the normal Send button.
-- Voice input / STT can use browser speech recognition when available or a server-backed provider configured in Settings �?Voice.
+- Voice input / STT can use browser speech recognition when available or a server-backed provider configured in Settings → Voice.
 - Starting a new voice turn while assistant audio is playing stops playback first. This barge-in boundary does not implicitly cancel an active agent run; stopping a run remains an explicit action.
 - For supported settings, security notes, and current non-goals, see [`docs/voice-dialogue.md`](./docs/voice-dialogue.md).
 - Limitation: external TTS providers may continue processing a request after the browser/server aborts; custom/OpenAI-compatible and MiMo base URLs must be public `http`/`https` endpoints and cannot target localhost/private networks.
@@ -324,16 +324,10 @@ Real-time speech transcription with AI-powered meeting analysis, speaker diariza
 - **Smarter report prompt.** `useMeetingAgent.generateReport` now passes a pinned `instructions` payload to Hermes, includes the session title, and folds in any prior `analysisResult` plus the previous assistant/system messages as `### Previous analysis result` / `### Previous conversation` blocks. This keeps a re-run of "Generate Report" idempotent instead of re-analyzing from scratch, and the strict instructions enforce the `write_file + ```html code block` contract that `extractHtml` looks for.
 - **Looser HTML detection.** `looksLikeHtmlDocument` now also accepts `<!DOCTYPE html>` prefixes and drops the minimum-length threshold from 200 to 100 characters, so shorter ECharts-free reports are still recognized as full HTML documents.
 
-**Backend Dependencies:**
-
-- ASR Service: `ws://localhost:8000/ws/asr` (real-time speech recognition)
-- Diarization Service: `ws://localhost:8001/ws/diarize` (requires Alibaba Cloud OSS configuration)
-- See [meeting_asr_cloud](https://github.com/your-org/meeting_asr_cloud) project
-
 ### Web Terminal
 
 - Integrated terminal powered by node-pty and @xterm/xterm
-- Multi-session support �?create, switch between, and close terminal sessions
+- Multi-session support — create, switch between, and close terminal sessions
 - Real-time keyboard input and PTY output streaming via WebSocket
 - Window resize support
 
@@ -356,7 +350,7 @@ npm install -g @quanthermes/hermes-web-ui
 hermes-web-ui start
 ```
 
-Open **http://localhost:6060**
+Open **http://localhost:8648**
 
 ### One-line Setup (Auto-detect OS)
 
@@ -406,15 +400,6 @@ For Armbian / Ubuntu host-level source deployment, review [`docs/work-log.md`](.
 - That mismatch caused the agent bridge to fail with `run_agent.py not found`, and chat requests then hit `ENOENT /tmp/hermes-agent-bridge.sock`
 - After source deployment, verify that `/home/hermesui/.local/bin/hermes` belongs to `hermesui` rather than linking into `/root/.local/...`
 
-### Update And Deployment Guardrails
-
-- Treat `Web UI update`, `Hermes Agent upgrade`, `bootstrap`, and `runtime reconcile` as separate responsibilities.
-- Keep in-app updates orchestration-only by default; do not silently expand them into host bootstrap or Hermes Agent lifecycle work.
-- Only allow an in-app update to upgrade Hermes Agent when the release plan explicitly approves it and runtime flags enable it.
-- For manual recovery or fixed-version rollout, use the target version `manifest.json` rather than a moving `stable/latest.json`.
-- During source-based repair or manual recovery, preserve the existing `PORT`, `BIND_HOST`, and state directory settings.
-- See [`DEVELOPMENT.md`](./DEVELOPMENT.md) and [`docs/update-distribution/10-development-rules.md`](./docs/update-distribution/10-development-rules.md) for the full project rules.
-
 ### Hermes Agent Runtime Discovery
 
 When Web UI starts backend chat features, it prefers a source checkout that
@@ -429,7 +414,7 @@ These variables configure Hermes Web UI itself. Provider API keys and Hermes Age
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `PORT` | `6060` | Web UI listen port. |
+| `PORT` | `8648` | Web UI listen port. |
 | `BIND_HOST` | `0.0.0.0` | Web UI bind host. Set `::` explicitly for IPv6. |
 | `HERMES_WEB_UI_HOME` | `~/.hermes-web-ui` | Web UI data home for auth token, credentials, logs, DB, and default uploads. `HERMES_WEBUI_STATE_DIR` is also supported as a compatibility alias. |
 | `HERMES_WEBUI_STATE_DIR` | unset | Compatibility alias for `HERMES_WEB_UI_HOME`. |
@@ -478,7 +463,7 @@ These variables configure Hermes Web UI itself. Provider API keys and Hermes Age
 | `HERMES_WEB_UI_PREVIEW_REPO` | package repository | GitHub repository used by Version Preview. |
 | `HERMES_WEB_UI_PREVIEW_AGENT_BRIDGE_TRANSPORT` | platform default | Version Preview broker transport. Set `tcp` to use loopback TCP for Preview on macOS/Linux; when unset, Preview follows `HERMES_AGENT_BRIDGE_WORKER_TRANSPORT=tcp`. |
 | `HERMES_WEB_UI_PREVIEW_AGENT_BRIDGE_ENDPOINT` | isolated preview endpoint | Directly overrides the Version Preview broker endpoint. |
-| `HERMES_WEB_UI_BACKEND_PORT` | `6060` | Backend port used by the Vite dev proxy. |
+| `HERMES_WEB_UI_BACKEND_PORT` | `8648` | Backend port used by the Vite dev proxy. |
 | `HERMES_WEB_UI_FRONTEND_PORT` | `8649` | Frontend Vite dev server port. |
 | `HERMES_WEB_UI_MEETING_ASR_TLS` | `false` | When `true` the meeting ASR Python child process is spawned with `--ssl-keyfile/--ssl-certfile` and the Node WS proxy communicates over `tls.connect`. Set this on device images where uvicorn needs TLS; local dev keeps the default `false`. |
 | `HERMES_WEB_UI_SSL_CERTFILE` | `{product_dir}/certs/server.crt` | Override path for the self-signed TLS certificate shared by the Node HTTPS server and the meeting ASR uvicorn child. |
@@ -526,7 +511,7 @@ npm run dev
 ```
 
 - Frontend: http://localhost:5173
-- BFF Server: http://localhost:6060
+- BFF Server: http://localhost:8648
 
 ```bash
 npm run build   # outputs to dist/
@@ -534,20 +519,20 @@ npm run build   # outputs to dist/
 
 See [DEVELOPMENT.md](./DEVELOPMENT.md) for project development guidelines.
 
-For update, release, and deployment work, also review [`docs/update-distribution/README.md`](./docs/update-distribution/README.md) before implementation or rollout.
-
 ## Architecture
 
 ```
-Browser �?BFF (Koa, :6060) �?Socket.IO /chat-run
-                �?        Hermes agent bridge �?Hermes Agent runtime
-                �?           Hermes CLI / profiles
+```
+Browser → BFF (Koa, :6060) → Socket.IO /chat-run
+                ↓
+                ↓
+           Hermes CLI / profiles
            profile config.yaml    (channel/provider behavior)
            profile auth.json      (credential pool)
            Tencent iLink API      (WeChat QR login)
 ```
 
-The frontend is designed with **multi-agent extensibility** �?all Hermes-specific code is namespaced under `hermes/` directories (API, components, views, stores), making it straightforward to add new agent integrations alongside.
+The frontend is designed with **multi-agent extensibility** — all Hermes-specific code is namespaced under `hermes/` directories (API, components, views, stores), making it straightforward to add new agent integrations alongside.
 
 The BFF layer handles Socket.IO chat streaming, the Hermes agent bridge, profile-aware file upload and path-based download (multi-backend: local/Docker/SSH/Singularity), session CRUD, account- and profile-scoped management, config/credential management, WeChat QR login, model discovery, skills/memory/plugin management, TTS/STT, coding-agent proxies, MCP/runtime management, log reading, and static file serving.
 

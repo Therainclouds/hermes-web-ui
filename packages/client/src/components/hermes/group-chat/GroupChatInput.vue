@@ -5,12 +5,22 @@ import { NButton, NDropdown, NTooltip, type DropdownOption } from 'naive-ui'
 import { useGroupChatStore } from '@/stores/hermes/group-chat'
 import { useSettingsStore } from '@/stores/hermes/settings'
 import { useToolTraceVisibility } from '@/composables/useToolTraceVisibility'
+import { extractClipboardFiles } from '@/utils/clipboard-files'
 import { buildMentionOptions, type MentionOption } from './mention-options'
 import type { Attachment } from '@/stores/hermes/chat'
 import { clampChatInputHeight, isMobileChatInputViewport } from '@/utils/chat-input-height'
 
 const { t } = useI18n()
-const emit = defineEmits<{ send: [content: string, attachments?: Attachment[]] }>()
+const props = withDefaults(defineProps<{
+    sendBlocked?: boolean
+}>(), {
+    sendBlocked: false,
+})
+const emit = defineEmits<{
+    send: [content: string, attachments?: Attachment[]]
+    'send-blocked': []
+    'request-discussion': []
+}>()
 const store = useGroupChatStore()
 const settingsStore = useSettingsStore()
 const { toolTraceVisible, toggleToolTraceVisible } = useToolTraceVisibility()
@@ -23,6 +33,10 @@ const attachments = ref<Attachment[]>([])
 const isDragging = ref(false)
 const dragCounter = ref(0)
 const isComposing = ref(false)
+const activeMessageReference = computed(() => store.activeMessageReference)
+const messageReferencePreview = computed(() =>
+    activeMessageReference.value?.content.replace(/\s+/g, ' ').trim() || '',
+)
 const autoPlaySpeech = ref(false)
 const inputSettingsOptions = computed<DropdownOption[]>(() => [
     {
@@ -85,6 +99,19 @@ watch(() => settingsStore.display.chat_input_height, () => {
     manualTextareaResize.value = false
     applyConfiguredTextareaHeight()
 })
+
+watch(
+    () => activeMessageReference.value?.id,
+    (id) => {
+        if (id) nextTick(() => textareaRef.value?.focus())
+    },
+)
+
+function clearMessageReference() {
+    const roomId = store.currentRoomId
+    if (roomId) store.clearMessageReference(roomId)
+    textareaRef.value?.focus()
+}
 
 // 自定义高度拖拽
 const textareaHeight = ref<number | null>(null)
@@ -200,7 +227,8 @@ function updateMentionState() {
     }
 
     // Make sure the @ is not part of a word (preceded by space or start of line)
-    if (atPos > 0 && text[atPos - 1] !== ' ' && text[atPos - 1] !== '\n') {
+    // Using /\w/ which matches [a-zA-Z0-9_]; CJK/punctuation/emoji are not \w so they work as delimiters
+    if (atPos > 0 && /\w/.test(text[atPos - 1])) {
         mentionActive.value = false
         return
     }
@@ -267,6 +295,34 @@ function selectMention(name: string) {
     })
 }
 
+function insertMention(name: string) {
+    const mentionName = String(name || '').trim()
+    if (!mentionName) return
+
+    const el = textareaRef.value
+    const selectionStart = el?.selectionStart ?? inputText.value.length
+    const selectionEnd = el?.selectionEnd ?? selectionStart
+    const before = inputText.value.slice(0, selectionStart)
+    const after = inputText.value.slice(selectionEnd)
+    const leadingSpace = before && !/\s$/.test(before) ? ' ' : ''
+    const trailingSpace = after && /^\s/.test(after) ? '' : ' '
+    const inserted = `${leadingSpace}@${mentionName}${trailingSpace}`
+    inputText.value = `${before}${inserted}${after}`
+    mentionActive.value = false
+    mentionStartIndex.value = -1
+    mentionQuery.value = ''
+    store.emitTyping()
+
+    nextTick(() => {
+        if (!el) return
+        const existingWhitespaceOffset = !trailingSpace && /^[ \t]/.test(after) ? 1 : 0
+        const nextPosition = before.length + inserted.length + existingWhitespaceOffset
+        el.setSelectionRange(nextPosition, nextPosition)
+        el.focus()
+        autoSizeTextarea(el)
+    })
+}
+
 // ─── Event Handlers ──────────────────────────────────────
 
 function handleKeydown(e: KeyboardEvent) {
@@ -305,6 +361,10 @@ function handleKeydown(e: KeyboardEvent) {
 function handleSend() {
     const content = inputText.value.trim()
     if (!content && attachments.value.length === 0) return
+    if (props.sendBlocked) {
+        emit('send-blocked')
+        return
+    }
 
     emit('send', content, attachments.value.length > 0 ? attachments.value : undefined)
     inputText.value = ''
@@ -393,16 +453,10 @@ function handleFileChange(e: Event) {
 }
 
 function handlePaste(e: ClipboardEvent) {
-    const items = Array.from(e.clipboardData?.items || [])
-    const imageItems = items.filter(i => i.type.startsWith('image/'))
-    if (!imageItems.length) return
+    const files = extractClipboardFiles(e.clipboardData)
+    if (!files.length) return
     e.preventDefault()
-    for (const item of imageItems) {
-        const blob = item.getAsFile()
-        if (!blob) continue
-        const ext = item.type.split('/')[1] || 'png'
-        addFiles([new File([blob], `pasted-${Date.now()}.${ext}`, { type: item.type })])
-    }
+    addFiles(files)
 }
 
 function handleDragOver(e: DragEvent) {
@@ -432,7 +486,7 @@ function handleDrop(e: DragEvent) {
     addFiles(Array.from(e.dataTransfer?.files || []))
 }
 
-defineExpose({ addFiles })
+defineExpose({ addFiles, insertMention })
 
 function removeAttachment(id: string) {
     const idx = attachments.value.findIndex(a => a.id === id)
@@ -467,6 +521,21 @@ function isImage(type: string): boolean {
                 </button>
             </div>
         </div>
+        <div v-if="activeMessageReference" class="message-reference-preview">
+            <span class="message-reference-text">{{ messageReferencePreview }}</span>
+            <button
+                type="button"
+                class="message-reference-remove"
+                :aria-label="t('chat.cancelReference')"
+                :title="t('chat.cancelReference')"
+                @click.stop="clearMessageReference"
+            >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+            </button>
+        </div>
         <div
             class="input-wrapper"
             :class="{ 'drag-over': isDragging }"
@@ -493,6 +562,16 @@ function isImage(type: string): boolean {
             />
             <div class="input-toolbar">
                 <div class="input-top-bar">
+                    <NTooltip trigger="hover" :disabled="isMobileViewport">
+                        <template #trigger>
+                            <NButton quaternary size="tiny" circle class="toolbar-icon-button" @click="emit('request-discussion')">
+                                <template #icon>
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                                </template>
+                            </NButton>
+                        </template>
+                        {{ t('groupChat.discussion.quickStartButton') }}
+                    </NTooltip>
                     <NTooltip trigger="hover" :disabled="isMobileViewport">
                         <template #trigger>
                             <NButton quaternary size="tiny" circle class="toolbar-icon-button" @click="handleAttachClick">
@@ -578,7 +657,7 @@ function isImage(type: string): boolean {
 .chat-input-area {
     padding: 8px 20px 14px;
     border-top: 0;
-    background-color: $bg-card;
+    background-color: $bg-main-surface;
     flex-shrink: 0;
 }
 
@@ -595,8 +674,8 @@ function isImage(type: string): boolean {
     display: flex;
     align-items: center;
     gap: 5px;
-    padding-left: 2px;
-    margin-left: 0;
+    padding-inline-start: 2px;
+    margin-inline-start: 0;
 
     .switch-label {
         display: flex;
@@ -616,7 +695,7 @@ function isImage(type: string): boolean {
     width: 24px;
     min-width: 24px;
     height: 22px;
-    margin-left: 0;
+    margin-inline-start: 0;
     padding: 0;
     background: transparent !important;
 
@@ -755,6 +834,49 @@ function isImage(type: string): boolean {
     30% { transform: translateY(-3px); opacity: 1; }
 }
 
+.message-reference-preview {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    margin: 0 8px 8px;
+    padding: 4px 8px;
+    border-radius: 8px;
+    background: rgba(var(--accent-primary-rgb), 0.07);
+    cursor: default;
+}
+
+.message-reference-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    color: $text-secondary;
+    font-size: 12px;
+    line-height: 24px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.message-reference-remove {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 24px;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: $text-muted;
+    cursor: pointer;
+
+    &:hover {
+        color: $text-primary;
+        background: rgba(var(--text-primary-rgb), 0.08);
+    }
+}
+
 .input-wrapper {
     display: flex;
     flex-direction: column;
@@ -763,7 +885,7 @@ function isImage(type: string): boolean {
     width: 100%;
     min-height: 150px;
     background-color: $bg-card;
-    border: 1px solid $border-color;
+    border: 1px solid var(--input-border-color);
     border-radius: 18px;
     padding: 14px 12px 9px;
     position: relative;
@@ -771,8 +893,12 @@ function isImage(type: string): boolean {
     transition: border-color $transition-fast, box-shadow $transition-fast;
 
     &:focus-within {
-        border-color: rgba(var(--text-primary-rgb), 0.22);
+        border-color: var(--input-border-focus-color);
         box-shadow: 0 10px 32px rgba(0, 0, 0, 0.11);
+    }
+
+    &:hover:not(:focus-within) {
+        border-color: var(--input-border-hover-color);
     }
 
     &.drag-over {
@@ -781,7 +907,7 @@ function isImage(type: string): boolean {
     }
 
     .dark & {
-        background-color: $bg-card;
+        background-color: #333333;
         box-shadow: 0 8px 28px rgba(0, 0, 0, 0.32);
     }
 }
@@ -823,7 +949,8 @@ function isImage(type: string): boolean {
     }
 
     &::placeholder {
-        color: $text-muted;
+        color: var(--input-placeholder-color);
+        opacity: 1;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;

@@ -14,12 +14,17 @@ const message = useMessage()
 const dialog = useDialog()
 const filesStore = useFilesStore()
 
+const props = defineProps<{
+  allowAttach?: boolean
+}>()
+
 const showMenu = ref(false)
 const menuX = ref(0)
 const menuY = ref(0)
 const targetEntry = ref<FileEntry | null>(null)
 
 const emit = defineEmits<{
+  (e: 'attach', entry: FileEntry): void
   (e: 'rename', entry: FileEntry): void
   (e: 'newFolder', entry: FileEntry): void
 }>()
@@ -42,13 +47,16 @@ function getOptions() {
   if (entry.isDir) {
     options.push({ label: t('files.open'), key: 'open' })
   } else {
+    if (props.allowAttach) {
+      options.push({ label: t('files.attachToChat'), key: 'attach' })
+    }
     if (isTextFile(entry.name)) {
       options.push({ label: t('files.edit'), key: 'edit' })
     }
     if (isPreviewableFile(entry.name)) {
       options.push({ label: t('files.preview'), key: 'preview' })
     }
-    if (!filesStore.currentWorkspaceSessionId) {
+    if (!filesStore.currentWorkspaceSessionId && !filesStore.currentWorkspaceRoomId) {
       options.push({ label: t('files.download'), key: 'download' })
     }
   }
@@ -67,6 +75,9 @@ async function handleSelect(key: string) {
   if (!entry) return
 
   switch (key) {
+    case 'attach':
+      if (!entry.isDir && props.allowAttach) emit('attach', entry)
+      break
     case 'open':
       filesStore.navigateTo(entry.path)
       break
@@ -77,7 +88,7 @@ async function handleSelect(key: string) {
       try { await filesStore.openPreview(entry) } catch { message.error(t('files.backendError')) }
       break
     case 'download':
-      if (filesStore.currentWorkspaceSessionId) return
+      if (filesStore.currentWorkspaceSessionId || filesStore.currentWorkspaceRoomId) return
       try { await downloadFile(entry.path, entry.name, filesStore.currentProfile) } catch (err: any) { message.error(err.message) }
       break
     case 'copyPath': {

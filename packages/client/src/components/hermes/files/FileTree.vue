@@ -21,7 +21,7 @@ let rootLoadSeq = 0
 
 async function loadChildren(path: string): Promise<TreeOption[]> {
   try {
-    const result = filesStore.currentWorkspaceSessionId
+    const result = filesStore.currentWorkspaceSessionId || filesStore.currentWorkspaceRoomId
       ? await filesStore.listEntries(path)
       : await filesStore.fetchDirectory(path, { profile: effectiveProfile.value })
     return result.entries
@@ -60,7 +60,7 @@ function renderLabel({ option }: { option: TreeOption }) {
   return h('span', { class: 'tree-node-label', title: label }, label)
 }
 
-watch([effectiveProfile, () => filesStore.currentWorkspaceSessionId, () => props.workspaceKey], async () => {
+watch([effectiveProfile, () => filesStore.currentWorkspaceSessionId, () => filesStore.currentWorkspaceRoomId, () => props.workspaceKey], async () => {
   const seq = ++rootLoadSeq
   selectedKeys.value = []
   treeInstanceKey.value += 1
@@ -84,6 +84,7 @@ watch([effectiveProfile, () => filesStore.currentWorkspaceSessionId, () => props
       :selected-keys="selectedKeys"
       :on-load="handleLoad"
       :render-label="renderLabel"
+      :indent="6"
       expand-on-click
       block-line
       @update:selected-keys="handleSelect"

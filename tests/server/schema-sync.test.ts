@@ -203,6 +203,204 @@ describe('Database Schema Synchronization', () => {
   })
 
   describe('Safe additive schema changes', () => {
+    it('migrates legacy workflow node sessions before creating the execution identity index', async () => {
+      const {
+        initAllHermesTables,
+        WORKFLOW_RUN_NODE_SESSIONS_TABLE,
+      } = await import('../../packages/server/src/db/hermes/schemas')
+      const db = getTestDb()
+
+      db.exec(`
+        CREATE TABLE "${WORKFLOW_RUN_NODE_SESSIONS_TABLE}" (
+          id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          workflow_id TEXT NOT NULL,
+          node_id TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          profile TEXT NOT NULL DEFAULT 'default',
+          agent TEXT NOT NULL DEFAULT '',
+          agent_mode TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'queued',
+          sequence INTEGER NOT NULL DEFAULT 0,
+          started_at INTEGER,
+          finished_at INTEGER,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          error TEXT
+        );
+        CREATE UNIQUE INDEX uniq_workflow_run_node_sessions_run_node
+          ON "${WORKFLOW_RUN_NODE_SESSIONS_TABLE}"(run_id, node_id);
+      `)
+      const insert = db.prepare(`
+        INSERT INTO "${WORKFLOW_RUN_NODE_SESSIONS_TABLE}"
+          (id, run_id, workflow_id, node_id, session_id, sequence, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      insert.run('legacy-a', 'run-1', 'workflow-1', 'node-a', 'session-a', 0, 100, 100)
+      insert.run('legacy-b', 'run-1', 'workflow-1', 'node-b', 'session-b', 1, 101, 101)
+
+      expect(() => initAllHermesTables()).not.toThrow()
+
+      const rows = db.prepare(`
+        SELECT id, run_id, node_id, execution_id, iteration_path_json,
+               consumed_edge_evaluation_ids_json, session_id
+        FROM "${WORKFLOW_RUN_NODE_SESSIONS_TABLE}"
+        ORDER BY sequence
+      `).all()
+      expect(rows).toEqual([
+        {
+          id: 'legacy-a', run_id: 'run-1', node_id: 'node-a', execution_id: 'node-a',
+          iteration_path_json: '[]', consumed_edge_evaluation_ids_json: '[]', session_id: 'session-a',
+        },
+        {
+          id: 'legacy-b', run_id: 'run-1', node_id: 'node-b', execution_id: 'node-b',
+          iteration_path_json: '[]', consumed_edge_evaluation_ids_json: '[]', session_id: 'session-b',
+        },
+      ])
+      expect(db.prepare(`SELECT name FROM sqlite_master WHERE type='index' AND name=?`)
+        .get('uniq_workflow_run_node_sessions_run_node')).toBeUndefined()
+      expect(db.prepare(`SELECT name FROM sqlite_master WHERE type='index' AND name=?`)
+        .get('uniq_workflow_run_node_sessions_run_execution')).toBeTruthy()
+
+      expect(() => initAllHermesTables()).not.toThrow()
+      expect(db.prepare(`SELECT COUNT(*) AS count FROM "${WORKFLOW_RUN_NODE_SESSIONS_TABLE}"`).get())
+        .toEqual({ count: 2 })
+    })
+
+    it('repairs a partially migrated workflow node session table after a failed startup', async () => {
+      const {
+        initAllHermesTables,
+        WORKFLOW_RUN_NODE_SESSIONS_TABLE,
+      } = await import('../../packages/server/src/db/hermes/schemas')
+      const db = getTestDb()
+
+      db.exec(`
+        CREATE TABLE "${WORKFLOW_RUN_NODE_SESSIONS_TABLE}" (
+          id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          workflow_id TEXT NOT NULL,
+          node_id TEXT NOT NULL,
+          execution_id TEXT NOT NULL DEFAULT '',
+          iteration_path_json TEXT NOT NULL DEFAULT '[]',
+          consumed_edge_evaluation_ids_json TEXT NOT NULL DEFAULT '[]',
+          session_id TEXT NOT NULL,
+          profile TEXT NOT NULL DEFAULT 'default',
+          agent TEXT NOT NULL DEFAULT '',
+          agent_mode TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'queued',
+          sequence INTEGER NOT NULL DEFAULT 0,
+          started_at INTEGER,
+          finished_at INTEGER,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          error TEXT
+        )
+      `)
+      const insert = db.prepare(`
+        INSERT INTO "${WORKFLOW_RUN_NODE_SESSIONS_TABLE}"
+          (id, run_id, workflow_id, node_id, session_id, sequence, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      insert.run('partial-a', 'run-2', 'workflow-1', 'node-a', 'session-a', 0, 100, 100)
+      insert.run('partial-b', 'run-2', 'workflow-1', 'node-b', 'session-b', 1, 101, 101)
+
+      expect(() => initAllHermesTables()).not.toThrow()
+      expect(db.prepare(`
+        SELECT execution_id FROM "${WORKFLOW_RUN_NODE_SESSIONS_TABLE}" ORDER BY sequence
+      `).all()).toEqual([{ execution_id: 'node-a' }, { execution_id: 'node-b' }])
+      expect(db.prepare(`SELECT name FROM sqlite_master WHERE type='index' AND name=?`)
+        .get('uniq_workflow_run_node_sessions_run_execution')).toBeTruthy()
+    })
+
+    it('archives incompatible legacy edge evidence before creating the current table', async () => {
+      const {
+        initAllHermesTables,
+        WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE,
+      } = await import('../../packages/server/src/db/hermes/schemas')
+      const db = getTestDb()
+      const archiveTable = `${WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE}__legacy_v1`
+
+      db.exec(`
+        CREATE TABLE "${WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE}" (
+          id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          workflow_id TEXT NOT NULL,
+          source_execution_id TEXT,
+          consumed_by_execution_id TEXT,
+          edge_id TEXT NOT NULL,
+          source_node_id TEXT NOT NULL,
+          target_node_id TEXT NOT NULL,
+          iteration_path_json TEXT NOT NULL DEFAULT '[]',
+          loop_id TEXT,
+          status TEXT NOT NULL DEFAULT 'not_taken',
+          delivery_status TEXT NOT NULL DEFAULT 'pending',
+          reason TEXT NOT NULL DEFAULT '',
+          context_json TEXT NOT NULL DEFAULT '{}',
+          sequence INTEGER NOT NULL DEFAULT 0,
+          evaluated_at INTEGER NOT NULL,
+          created_at INTEGER NOT NULL
+        )
+      `)
+      db.prepare(`
+        INSERT INTO "${WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE}"
+          (id, run_id, workflow_id, edge_id, source_node_id, target_node_id, evaluated_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run('legacy-edge', 'run-1', 'workflow-1', 'edge-1', 'node-a', 'node-b', 100, 100)
+
+      expect(() => initAllHermesTables()).not.toThrow()
+
+      const currentColumns = getTableColumns(db, WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE)
+      expect(currentColumns.has('source_outcome')).toBe(true)
+      expect(currentColumns.has('route')).toBe(true)
+      expect(currentColumns.has('orchestration_json')).toBe(true)
+      expect(currentColumns.has('condition_evaluation_json')).toBe(true)
+      expect(db.prepare(`SELECT COUNT(*) AS count FROM "${WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE}"`).get())
+        .toEqual({ count: 0 })
+      expect(db.prepare(`SELECT id, context_json FROM "${archiveTable}"`).get())
+        .toEqual({ id: 'legacy-edge', context_json: '{}' })
+
+      expect(() => initAllHermesTables()).not.toThrow()
+      expect(db.prepare(`SELECT COUNT(*) AS count FROM "${archiveTable}"`).get())
+        .toEqual({ count: 1 })
+    })
+
+
+    it('adds assistant turn attribution to legacy workspace changes without losing audit rows', async () => {
+      const {
+        syncTable,
+        WORKSPACE_RUN_CHANGES_TABLE,
+        WORKSPACE_RUN_CHANGES_SCHEMA,
+        WORKSPACE_RUN_CHANGES_INDEXES,
+      } = await import('../../packages/server/src/db/hermes/schemas')
+      const db = getTestDb()
+      const legacySchema = Object.fromEntries(
+        Object.entries(WORKSPACE_RUN_CHANGES_SCHEMA).filter(([name]) => name !== 'assistant_message_id'),
+      )
+      const columnSql = Object.entries(legacySchema)
+        .map(([name, definition]) => `"${name}" ${definition}`)
+        .join(', ')
+      db.exec(`CREATE TABLE "${WORKSPACE_RUN_CHANGES_TABLE}" (${columnSql})`)
+      db.prepare(`
+        INSERT INTO "${WORKSPACE_RUN_CHANGES_TABLE}"
+          (change_id, session_id, workspace, created_at)
+        VALUES (?, ?, ?, ?)
+      `).run('legacy-change', 'session-1', '/tmp/repo', 42)
+
+      syncTable(WORKSPACE_RUN_CHANGES_TABLE, WORKSPACE_RUN_CHANGES_SCHEMA, {
+        indexes: WORKSPACE_RUN_CHANGES_INDEXES,
+      })
+
+      expect(getTableColumns(db, WORKSPACE_RUN_CHANGES_TABLE).has('assistant_message_id')).toBe(true)
+      expect(db.prepare(`
+        SELECT change_id, session_id, assistant_message_id
+        FROM "${WORKSPACE_RUN_CHANGES_TABLE}"
+      `).get()).toEqual({
+        change_id: 'legacy-change',
+        session_id: 'session-1',
+        assistant_message_id: '',
+      })
+    })
+
     it('adds missing safe columns to existing table without rebuilding', async () => {
       const { syncTable, USAGE_TABLE, USAGE_SCHEMA } = await import('../../packages/server/src/db/hermes/schemas')
 
@@ -475,6 +673,44 @@ describe('Database Schema Synchronization', () => {
       const row = db.prepare(`SELECT * FROM "${USAGE_TABLE}" WHERE session_id = ?`).get('test-1')
       expect(row).toBeTruthy()
       expect(row.session_id).toBe('test-1')
+    })
+  })
+
+  describe('Model context profile migration', () => {
+    it('moves legacy rows to default profile and replaces the global unique index', async () => {
+      const {
+        initAllHermesTables,
+        LEGACY_MODEL_CONTEXT_INDEX,
+        MODEL_CONTEXT_TABLE,
+      } = await import('../../packages/server/src/db/hermes/schemas')
+      const db = getTestDb()
+      db.exec(`CREATE TABLE "${MODEL_CONTEXT_TABLE}" (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        context_limit INTEGER NOT NULL
+      )`)
+      db.exec(`CREATE UNIQUE INDEX ${LEGACY_MODEL_CONTEXT_INDEX} ON "${MODEL_CONTEXT_TABLE}"(provider, model)`)
+      db.prepare(`INSERT INTO "${MODEL_CONTEXT_TABLE}" (provider, model, context_limit) VALUES (?, ?, ?)`)
+        .run('deepseek', 'shared-model', 64000)
+
+      expect(() => initAllHermesTables()).not.toThrow()
+
+      const legacyRow = db.prepare(
+        `SELECT profile, context_limit FROM "${MODEL_CONTEXT_TABLE}" WHERE provider = ? AND model = ?`,
+      ).get('deepseek', 'shared-model') as { profile: string; context_limit: number }
+      expect(legacyRow).toEqual({ profile: 'default', context_limit: 64000 })
+      expect(db.prepare(`SELECT name FROM sqlite_master WHERE type='index' AND name=?`).get(LEGACY_MODEL_CONTEXT_INDEX))
+        .toBeUndefined()
+      expect(db.prepare(`SELECT name FROM sqlite_master WHERE type='index' AND name='idx_model_context_profile_provider_model'`).get())
+        .toBeTruthy()
+
+      expect(() => db.prepare(
+        `INSERT INTO "${MODEL_CONTEXT_TABLE}" (profile, provider, model, context_limit) VALUES (?, ?, ?, ?)`,
+      ).run('research', 'deepseek', 'shared-model', 128000)).not.toThrow()
+      expect(() => db.prepare(
+        `INSERT INTO "${MODEL_CONTEXT_TABLE}" (profile, provider, model, context_limit) VALUES (?, ?, ?, ?)`,
+      ).run('default', 'deepseek', 'shared-model', 128000)).toThrow()
     })
   })
 })

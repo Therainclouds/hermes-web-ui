@@ -8,6 +8,9 @@ const mockSystemApi = vi.hoisted(() => ({
   updateDefaultModel: vi.fn(),
   addCustomProvider: vi.fn(),
   removeCustomProvider: vi.fn(),
+  fetchProviderEditor: vi.fn(),
+  patchProviderEditor: vi.fn(),
+  patchProviderEditorContexts: vi.fn(),
 }))
 
 vi.mock('@/api/hermes/system', () => mockSystemApi)
@@ -21,6 +24,24 @@ describe('Models Store', () => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
     window.localStorage.clear()
+  })
+
+  it('keeps the virtual MoA provider out of credential-backed model settings', async () => {
+    const groups = [
+      { provider: 'deepseek', label: 'DeepSeek', base_url: '', api_key: '', models: ['deepseek-chat'] },
+      { provider: 'moa', label: 'Mixture of Agents', base_url: 'moa://local', api_key: 'moa-virtual-provider', models: ['research'] },
+    ]
+    mockSystemApi.fetchAvailableModelsForProfile.mockResolvedValue({
+      default: 'deepseek-chat',
+      default_provider: 'deepseek',
+      groups,
+      allProviders: groups,
+    })
+
+    const modelsStore = useModelsStore()
+    await modelsStore.fetchProviders()
+
+    expect(modelsStore.providers.map(group => group.provider)).toEqual(['deepseek'])
   })
 
   it('keeps the sidebar model picker in sync after provider model visibility changes', async () => {
@@ -171,5 +192,64 @@ describe('Models Store', () => {
     })
     expect(modelsStore.defaultModel).toBe('shared-model')
     expect(modelsStore.defaultProvider).toBe('provider-b')
+  })
+
+  it('chains revision-checked provider and context updates before reloading model stores', async () => {
+    const group = {
+      provider: 'custom:example',
+      label: 'Example',
+      base_url: 'https://example.invalid/v1',
+      api_key: '',
+      models: ['model-a'],
+    }
+    const response = {
+      default: 'model-a',
+      default_provider: 'custom:example',
+      groups: [group],
+      allProviders: [group],
+    }
+    const baseDetail = {
+      id: 'custom:example',
+      label: 'Example',
+      builtin: false,
+      source: 'custom_providers',
+      base_url: 'https://example.invalid/v1',
+      preferred_model: 'model-a',
+      credential_configured: true,
+      editable: true,
+      editable_fields: ['label', 'context_lengths'],
+      context_lengths: {},
+      connection_test_supported: true,
+      revision: 'revision-2',
+    }
+    mockSystemApi.patchProviderEditor.mockResolvedValue({ success: true, provider: baseDetail })
+    mockSystemApi.patchProviderEditorContexts.mockResolvedValue({
+      success: true,
+      provider: { ...baseDetail, context_lengths: { 'model-a': 128000 }, revision: 'revision-3' },
+    })
+    mockSystemApi.fetchAvailableModelsForProfile.mockResolvedValue(response)
+    mockSystemApi.fetchAvailableModels.mockResolvedValue(response)
+
+    const modelsStore = useModelsStore()
+    const saved = await modelsStore.saveProviderEditor(
+      'custom:example',
+      'revision-1',
+      { label: 'Example' },
+      { 'model-a': 128000 },
+    )
+
+    expect(mockSystemApi.patchProviderEditor).toHaveBeenCalledWith(
+      'custom:example',
+      'revision-1',
+      { label: 'Example' },
+    )
+    expect(mockSystemApi.patchProviderEditorContexts).toHaveBeenCalledWith(
+      'custom:example',
+      'revision-2',
+      { 'model-a': 128000 },
+    )
+    expect(saved.revision).toBe('revision-3')
+    expect(mockSystemApi.fetchAvailableModelsForProfile).toHaveBeenCalledWith('default')
+    expect(mockSystemApi.fetchAvailableModels).toHaveBeenCalled()
   })
 })

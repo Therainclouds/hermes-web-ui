@@ -14,12 +14,14 @@ from bridge_pool import AgentPool
 from bridge_runtime import (
     _agent_root,
     _apply_profile_env,
+    _ensure_agent_imports,
     _hermes_home,
     _install_stop_signal_handlers,
     _jsonable,
     _positive_int,
     _profile_env,
     _profile_home,
+    _resolve_runtime,
     _restore_profile_env,
     _start_parent_process_watchdog,
     _worker_profile,
@@ -67,6 +69,12 @@ class BridgeServer:
             provider = req.get("provider")
             workspace = req.get("workspace")
             source = req.get("source")
+            raw_background_delegation_enabled = req.get("background_delegation_enabled")
+            background_delegation_enabled = (
+                raw_background_delegation_enabled
+                if isinstance(raw_background_delegation_enabled, bool)
+                else None
+            )
             # Local patch (reasoning-effort): per-session reasoning effort override (Web UI brain button).
             reasoning_effort = req.get("reasoning_effort")
             record = self.pool.start_chat(
@@ -82,6 +90,7 @@ class BridgeServer:
                 workspace,
                 source,
                 reasoning_effort,
+                background_delegation_enabled,
             )
             if req.get("wait"):
                 timeout = float(req.get("timeout", 0) or 0)
@@ -98,6 +107,12 @@ class BridgeServer:
             messages = req.get("messages") or req.get("conversation_history") or []
             if not isinstance(messages, list):
                 raise ValueError("messages must be a list")
+            raw_background_delegation_enabled = req.get("background_delegation_enabled")
+            background_delegation_enabled = (
+                raw_background_delegation_enabled
+                if isinstance(raw_background_delegation_enabled, bool)
+                else None
+            )
             return self.pool.estimate_context(
                 session_id,
                 messages=messages,
@@ -106,7 +121,61 @@ class BridgeServer:
                 model=req.get("model"),
                 provider=req.get("provider"),
                 workspace=req.get("workspace"),
+                background_delegation_enabled=background_delegation_enabled,
             )
+
+        if action == "provider_credentials":
+            requested_provider = str(req.get("provider") or "").strip().lower()
+            if not requested_provider:
+                raise ValueError("provider is required")
+            runtime_provider = "anthropic" if requested_provider == "claude-oauth" else requested_provider
+            try:
+                if requested_provider == "minimax-oauth":
+                    # MiniMax access tokens are short-lived. Its generic
+                    # credential-pool row is diagnostic and may still contain
+                    # the previous access token, so call Hermes' authoritative
+                    # refresh-aware resolver directly.
+                    _ensure_agent_imports()
+                    from hermes_cli.auth import resolve_minimax_oauth_runtime_credentials
+
+                    credentials = resolve_minimax_oauth_runtime_credentials()
+                    runtime = {
+                        "provider": requested_provider,
+                        "api_mode": "anthropic_messages",
+                        "base_url": credentials.get("base_url", ""),
+                        "api_key": credentials.get("api_key", ""),
+                        "source": credentials.get("source", "oauth"),
+                    }
+                else:
+                    runtime = _resolve_runtime(str(req.get("model") or "").strip(), runtime_provider)
+                api_key = runtime.get("api_key")
+                if callable(api_key):
+                    api_key = api_key()
+                token = str(api_key or "").strip()
+                if not token:
+                    raise RuntimeError(
+                        f"Hermes Agent returned no runtime token for {requested_provider}"
+                    )
+                return {
+                    "resolved": True,
+                    "requested_provider": requested_provider,
+                    "provider": str(runtime.get("provider") or runtime_provider),
+                    "api_key": token,
+                    "base_url": str(runtime.get("base_url") or "").rstrip("/"),
+                    "api_mode": str(runtime.get("api_mode") or ""),
+                    "source": str(runtime.get("source") or ""),
+                    "last_refresh": runtime.get("last_refresh"),
+                    "expires_at": runtime.get("expires_at"),
+                    "expires_at_ms": runtime.get("expires_at_ms"),
+                }
+            except Exception as exc:
+                return {
+                    "resolved": False,
+                    "requested_provider": requested_provider,
+                    "error": str(exc),
+                    "code": str(getattr(exc, "code", "") or ""),
+                    "relogin_required": bool(getattr(exc, "relogin_required", False)),
+                }
 
         if action == "get_result":
             return self.pool.get_result(str(req.get("run_id") or ""))
@@ -213,6 +282,24 @@ class BridgeServer:
         if action == "status":
             return self.pool.status(str(req.get("session_id") or ""))
 
+        if action == "background_poll":
+            session_ids = req.get("session_ids")
+            return self.pool.poll_background(session_ids if isinstance(session_ids, list) else None)
+
+        if action == "background_notification_complete":
+            delegation_id = str(req.get("delegation_id") or "").strip()
+            claim_id = str(req.get("claim_id") or "").strip()
+            if not delegation_id or not claim_id:
+                raise ValueError("delegation_id and claim_id are required")
+            return self.pool.complete_background_notification(delegation_id, claim_id)
+
+        if action == "background_notification_release":
+            delegation_id = str(req.get("delegation_id") or "").strip()
+            claim_id = str(req.get("claim_id") or "").strip()
+            if not delegation_id or not claim_id:
+                raise ValueError("delegation_id and claim_id are required")
+            return self.pool.release_background_notification(delegation_id, claim_id)
+
         if action == "destroy":
             return self.pool.destroy(str(req.get("session_id") or ""))
 
@@ -223,9 +310,10 @@ class BridgeServer:
             return self.pool.list_sessions()
 
         if action == "shutdown":
-            self._shutdown_all_mcp_servers()
+            cleanup = self.pool.shutdown()
+            cleanup["mcp_servers"] = self._shutdown_all_mcp_servers()
             self._stop.set()
-            return {"status": "shutting_down"}
+            return {"status": "shutting_down", "cleanup": cleanup}
 
         # ───── MCP Management (forwarded from broker) ─────
         if action.startswith("mcp_"):
@@ -615,6 +703,8 @@ class BridgeServer:
                 if not s.running and now - s.last_used_at > self.IDLE_TIMEOUT_SECONDS
             ]
         for sid in idle_ids:
+            if self.pool.has_active_background_for_session(sid):
+                continue
             self.pool.destroy(sid)
 
     def serve_forever(self) -> None:

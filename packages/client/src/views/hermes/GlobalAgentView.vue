@@ -38,6 +38,7 @@ onMounted(async () => {
     profilesStore.fetchProfiles(),
     settingsStore.fetchSettings(),
   ])
+  chatStore.validateSessionProfileFilter(profilesStore.profiles.map(profile => profile.name))
   await loadRouteSession()
 })
 

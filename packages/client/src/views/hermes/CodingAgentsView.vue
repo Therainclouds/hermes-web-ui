@@ -686,7 +686,7 @@ onMounted(() => {
   flex: 1;
   overflow-y: auto;
   padding: 20px;
-  background: $bg-secondary;
+  background: $bg-main-surface;
 }
 
 .content-description {

@@ -19,6 +19,7 @@ const groupChatApiMock = vi.hoisted(() => ({
   deleteRoom: vi.fn(),
   clearRoomContext: vi.fn(),
   updateRoomWorkspace: vi.fn(),
+  updateInviteCode: vi.fn(),
 }))
 
 vi.mock('@/api/hermes/group-chat', () => groupChatApiMock)
@@ -36,7 +37,7 @@ describe('group chat store workspace', () => {
     vi.clearAllMocks()
   })
 
-  it('passes selected workspace when creating a room', async () => {
+  it('passes selected workspace and rolling-summary runtime when creating a room', async () => {
     const { useGroupChatStore } = await import('@/stores/hermes/group-chat')
     const store = useGroupChatStore()
     groupChatApiMock.createRoom.mockResolvedValue({
@@ -44,11 +45,24 @@ describe('group chat store workspace', () => {
       agents: [],
     })
 
-    await store.createNewRoom('Room 1', 'invite-1', [], { triggerTokens: 100000, maxHistoryTokens: 32000, tailMessageCount: 10 }, '/tmp/repo')
+    await store.createNewRoom('Room 1', 'invite-1', [], {
+      summaryProfile: 'research',
+      summaryProvider: 'openai',
+      summaryModel: 'gpt-summary',
+      summaryApiMode: 'codex_responses',
+      summaryEveryTurns: 12,
+    }, '/tmp/repo')
 
     expect(groupChatApiMock.createRoom).toHaveBeenCalledWith(expect.objectContaining({
       name: 'Room 1',
       inviteCode: 'invite-1',
+      summary: {
+        profile: 'research',
+        provider: 'openai',
+        model: 'gpt-summary',
+        apiMode: 'codex_responses',
+        everyTurns: 12,
+      },
       workspace: '/tmp/repo',
     }))
     expect(store.rooms[0].workspace).toBe('/tmp/repo')
@@ -90,5 +104,28 @@ describe('group chat store workspace', () => {
     await expect(store.setRoomWorkspace('room-1', '/outside')).rejects.toThrow('invalid workspace')
 
     expect(store.rooms[0].workspace).toBe('/tmp/repo')
+  })
+
+  it('updates the local room invite code after the API succeeds', async () => {
+    const { useGroupChatStore } = await import('@/stores/hermes/group-chat')
+    const store = useGroupChatStore()
+    store.rooms = [{ id: 'room-1', name: 'Room 1', inviteCode: 'OLD123', workspace: '' }]
+    groupChatApiMock.updateInviteCode.mockResolvedValue({ success: true })
+
+    await store.setRoomInviteCode('room-1', ' NEW456 ')
+
+    expect(groupChatApiMock.updateInviteCode).toHaveBeenCalledWith('room-1', 'NEW456')
+    expect(store.rooms[0].inviteCode).toBe('NEW456')
+  })
+
+  it('does not mutate local invite code when the API rejects', async () => {
+    const { useGroupChatStore } = await import('@/stores/hermes/group-chat')
+    const store = useGroupChatStore()
+    store.rooms = [{ id: 'room-1', name: 'Room 1', inviteCode: 'OLD123', workspace: '' }]
+    groupChatApiMock.updateInviteCode.mockRejectedValue(new Error('duplicate invite code'))
+
+    await expect(store.setRoomInviteCode('room-1', 'NEW456')).rejects.toThrow('duplicate invite code')
+
+    expect(store.rooms[0].inviteCode).toBe('OLD123')
   })
 })

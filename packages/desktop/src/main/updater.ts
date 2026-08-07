@@ -167,6 +167,21 @@ async function promptInstallDownloadedUpdate(info: UpdateInfo): Promise<void> {
   }
 }
 
+async function promptDownloadAvailableUpdate(info: UpdateInfo): Promise<void> {
+  const { response } = await dialog.showMessageBox({
+    type: 'info',
+    title: t('update.availableTitle'),
+    message: t('update.availableMessage', { version: info.version }),
+    detail: t('update.availableDetail'),
+    buttons: [t('update.download'), t('update.later')],
+    defaultId: 0,
+    cancelId: 1,
+  })
+  if (response === 0) {
+    await autoUpdater.downloadUpdate()
+  }
+}
+
 export function initAutoUpdater(nextOptions: AutoUpdaterOptions = {}) {
   options = { ...options, ...nextOptions }
   if (initialized) return
@@ -174,18 +189,15 @@ export function initAutoUpdater(nextOptions: AutoUpdaterOptions = {}) {
 
   if (!app.isPackaged) return // dev mode: skip
 
-  autoUpdater.autoDownload = true
+  autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = true
 
   autoUpdater.on('update-available', info => {
     console.log(`[updater] update available: ${info.version}`)
-    dialog.showMessageBox({
-      type: 'info',
-      title: t('update.availableTitle'),
-      message: t('update.availableMessage', { version: info.version }),
-      detail: t('update.downloading'),
-      buttons: [t('common.ok')],
-    }).catch(() => undefined)
+    promptDownloadAvailableUpdate(info).catch(err => {
+      console.error('[updater] update download failed:', err)
+      showUpdateCheckFailed()
+    })
   })
   autoUpdater.on('update-not-available', info => {
     console.log('[updater] up to date')
@@ -211,11 +223,6 @@ export function initAutoUpdater(nextOptions: AutoUpdaterOptions = {}) {
       console.error('[updater] initial check failed:', err)
     })
   }
-
-  // Recheck every 6h while app is running
-  setInterval(() => {
-    checkForDesktopUpdates(false).catch(() => undefined)
-  }, 6 * 60 * 60 * 1000)
 }
 
 export async function checkForDesktopUpdates(manual: boolean): Promise<void> {

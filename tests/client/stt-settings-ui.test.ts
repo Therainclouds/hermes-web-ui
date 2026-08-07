@@ -382,9 +382,12 @@ vi.mock('@/api/hermes/stt', () => ({
   transcribeSpeech: mockTranscribeSpeech,
 }))
 
-vi.mock('@/composables/useMicRecorder', () => ({
-  useMicRecorder: () => ({
-    state: mockMicRecorderState,
+vi.mock('@/composables/usePcmStreamRecorder', () => ({
+  usePcmStreamRecorder: () => ({
+    status: ref(mockMicRecorderState.value.status),
+    error: ref(null),
+    level: ref(0),
+    stream: ref(null),
     isRecording: ref(mockMicRecorderState.value.status === 'recording'),
     start: mockMicStart,
     stop: mockMicStop,
@@ -755,9 +758,10 @@ describe('VoiceSettings STT UI', () => {
     mockSaveActiveSttProvider.mockResolvedValue('browser')
   })
 
-  async function mountComponent() {
+  async function mountComponent(props?: { kind?: 'tts' | 'stt' | 'all' }) {
     const VoiceSettings = await importVoiceSettingsComponent()
     return mount(VoiceSettings, {
+      props,
       global: {
         stubs: {
           SettingRow: defineComponent({
@@ -815,6 +819,26 @@ describe('VoiceSettings STT UI', () => {
     expect(wrapper.find('[data-testid="stt-custom-base-url"]').exists()).toBe(false)
   })
 
+  it('renders only the voice API kind selected by the Models page tab', async () => {
+    const sttWrapper = await mountComponent({ kind: 'stt' })
+    await flushPromises()
+
+    expect(sttWrapper.text()).toContain('STT providers')
+    expect(sttWrapper.text()).toContain('Browser STT')
+    expect(sttWrapper.text()).not.toContain('TTS providers')
+    expect(sttWrapper.text()).not.toContain('Edge TTS')
+
+    sttWrapper.unmount()
+
+    const ttsWrapper = await mountComponent({ kind: 'tts' })
+    await flushPromises()
+
+    expect(ttsWrapper.text()).toContain('TTS providers')
+    expect(ttsWrapper.text()).toContain('Edge TTS')
+    expect(ttsWrapper.text()).not.toContain('STT providers')
+    expect(ttsWrapper.text()).not.toContain('Browser STT')
+  })
+
   it('uses server active TTS provider instead of stale local voice settings', async () => {
     voiceSettingsMock.provider.value = 'edge'
     mockFetchTtsSettings.mockResolvedValue({
@@ -851,7 +875,7 @@ describe('VoiceSettings STT UI', () => {
     expect(wrapper.find('.active-summary').text()).toContain('Edge TTS')
   })
 
-  it('adds a Groq STT preset through the unified add API modal and stores it as custom STT', async () => {
+  it('adds a Groq STT preset through the unified add API modal as a distinct usable provider', async () => {
     mockSaveSttSettings.mockResolvedValue({
       provider: 'custom',
       settings: { baseUrl: 'https://api.groq.com/openai/v1', model: 'whisper-large-v3' },
@@ -881,8 +905,8 @@ describe('VoiceSettings STT UI', () => {
     await wrapper.findAll('button').find(button => button.text().includes('common.add'))!.trigger('click')
     await flushPromises()
 
-    expect(mockSaveSttSettings).toHaveBeenCalledWith('custom', expect.objectContaining({
-      activeProvider: 'custom',
+    expect(mockSaveSttSettings).toHaveBeenCalledWith('groq', expect.objectContaining({
+      activeProvider: 'groq',
       settings: expect.objectContaining({
         baseUrl: 'https://api.groq.com/openai/v1',
         model: 'whisper-large-v3',
@@ -1051,6 +1075,41 @@ describe('VoiceSettings STT UI', () => {
       voice: '冰糖',
     }))
     expect(mockOpenaiPlay).not.toHaveBeenCalled()
+  })
+
+  it('records the STT card test as PCM WAV before transcription', async () => {
+    const wav = new Blob([new Uint8Array(256)], { type: 'audio/wav' })
+    mockMicStart.mockResolvedValue(undefined)
+    mockMicStop.mockResolvedValue(wav)
+    mockTranscribeSpeech.mockResolvedValue({
+      text: 'WAV transcription succeeded',
+      provider: 'openai',
+      model: 'gpt-4o-transcribe',
+      durationMs: 10,
+    })
+    mockFetchSttSettings.mockResolvedValue({
+      activeProvider: 'openai',
+      providers: [{
+        provider: 'openai',
+        settings: { model: 'gpt-4o-transcribe' },
+        secrets: { apiKey: '[stored]' },
+        updatedAt: 12,
+      }],
+    })
+
+    const wrapper = await mountComponent()
+    await flushPromises()
+
+    const testButton = wrapper.get('[data-testid="voice-card-test-stt-openai"]')
+    await testButton.trigger('click')
+    await flushPromises()
+    expect(mockMicStart).toHaveBeenCalledOnce()
+
+    await testButton.trigger('click')
+    await flushPromises()
+
+    expect(mockTranscribeSpeech).toHaveBeenCalledWith({ audio: wav, provider: 'openai' })
+    expect(wrapper.text()).toContain('WAV transcription succeeded')
   })
 
   it('shows missing-key and inline testing/error states on provider cards', async () => {

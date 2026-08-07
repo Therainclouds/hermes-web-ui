@@ -1,7 +1,6 @@
 import Koa from 'koa'
 import type { Context } from 'koa'
 import cors from '@koa/cors'
-import bodyParser from '@koa/bodyparser'
 import serve from 'koa-static'
 import send from 'koa-send'
 import os from 'os'
@@ -10,7 +9,7 @@ import https from 'https'
 import { join, relative, resolve } from 'path'
 import { mkdir } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
-import { config, shouldCreateWebUiDataDir } from './config'
+import { config, getLoopbackBaseUrl, getLoopbackPort, shouldCreateWebUiDataDir } from './config'
 import { initLoginLimiter } from './services/login-limiter'
 import { bindShutdown } from './services/shutdown'
 import { setupTerminalWebSocket } from './routes/hermes/terminal'
@@ -41,6 +40,7 @@ import { getStaticCacheControl, SPA_ENTRY_CACHE_CONTROL } from './middleware/sta
 import { requireUserJwt, resolveUserProfile } from './middleware/user-auth'
 import { createCorsOriginResolver, securityHeaders } from './security'
 import type { ShutdownHandler } from './services/shutdown'
+import { createRequestBodyParser } from './middleware/request-body-parser'
 
 // Injected by esbuild at build time; fallback to reading package.json in dev mode
 declare const __APP_VERSION__: string
@@ -104,7 +104,19 @@ async function listenWithFallback(app: Koa, port: number, host?: string): Promis
       })
       httpsServer.once('error', reject)
     })
-    return { primary, servers: [primary] }
+    // In HTTPS mode also serve a plain-HTTP loopback server bound to 127.0.0.1
+    // so on-device processes (Node clients, Python agents, shell/curl scripts)
+    // never have to negotiate the self-signed cert. The loopback server mounts
+    // the same Koa app; Socket.IO and WS upgrade handlers attach to it via the
+    // `servers` array below.
+    const loopbackPort = getLoopbackPort()
+    const loopbackServer = http.createServer(app.callback())
+    await new Promise<void>((resolveLoopback, rejectLoopback) => {
+      loopbackServer.once('error', rejectLoopback)
+      loopbackServer.listen(loopbackPort, '127.0.0.1', () => resolveLoopback())
+    })
+    console.log(`[bootstrap] internal loopback HTTP listening on 127.0.0.1:${loopbackPort}`)
+    return { primary, servers: [primary, loopbackServer] }
   }
 
   // Dev fallback: HTTP when certs not available
@@ -119,13 +131,6 @@ async function listenWithFallback(app: Koa, port: number, host?: string): Promis
     httpServer.once('error', reject)
   })
   return { primary, servers: [primary] }
-}
-
-function getLoopbackBaseUrl(httpServer: any): string {
-  const address = httpServer?.address?.()
-  const port = typeof address === 'object' && address?.port ? address.port : config.port
-  const protocol = httpServer instanceof http.Server ? 'http' : 'https'
-  return `${protocol}://127.0.0.1:${port}`
 }
 
 /**
@@ -353,13 +358,7 @@ export async function bootstrap() {
   app.use(cors({ origin: createCorsOriginResolver(config.corsOrigins) }))
   // Raise body limits above the default 1mb: profile avatars and MiMo voice-clone
   // reference audio are posted as base64 data URLs before reaching handlers.
-  app.use(bodyParser({
-    encoding: 'utf-8',
-    jsonLimit: '20mb',
-    formLimit: '20mb',
-    textLimit: '20mb',
-    parsedMethods: ['POST', 'PUT', 'PATCH', 'DELETE'],
-  }))
+  app.use(createRequestBodyParser())
   console.log('[bootstrap] cors + bodyParser registered')
 
   registerDesktopShutdownRoute(app)
@@ -406,7 +405,17 @@ export async function bootstrap() {
   // Chat run Socket.IO — shares the same Server instance, just adds /chat-run namespace
   chatRunServer = new ChatRunSocket(groupChatServer.getIO())
   setChatRunServer(chatRunServer)
+  groupChatServer.setChatRunService(chatRunServer)
   chatRunServer.init()
+
+  // A process restart loses in-memory scheduler, approval, and runner ownership.
+  // Persist a fail-closed terminal state before exposing workflow sockets, then abort
+  // any surviving session runners through the now-registered ChatRun service.
+  const { getWorkflowManager } = await import('./services/workflow-manager')
+  const recoveredWorkflows = await getWorkflowManager().recoverActiveRuns()
+  if (recoveredWorkflows.runs > 0) {
+    logger.warn('Recovered %d orphaned workflow runs and aborted %d sessions', recoveredWorkflows.runs, recoveredWorkflows.sessions)
+  }
 
   workflowSocketServer = new WorkflowSocketServer(groupChatServer.getIO())
   workflowSocketServer.init()
@@ -419,7 +428,7 @@ export async function bootstrap() {
   // Meeting realtime assist Socket.IO namespace
   realtimeAssistService.init(groupChatServer.getIO())
 
-  const loopbackBaseUrl = getLoopbackBaseUrl(server)
+  const loopbackBaseUrl = getLoopbackBaseUrl()
   startGlobalAgentServer(groupChatServer.getIO(), { localBaseUrl: loopbackBaseUrl })
   console.log('[bootstrap] global agent server ready')
 

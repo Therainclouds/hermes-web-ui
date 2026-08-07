@@ -71,7 +71,8 @@ async function save() {
 @use '@/styles/variables' as *;
 
 .settings-section {
-  max-width: 820px;
+  width: 100%;
+  max-width: none;
 }
 
 .section-title {
@@ -86,7 +87,13 @@ async function save() {
 }
 
 .input-lg {
-  width: 360px;
+  width: 100%;
+}
+
+.proxy-settings :deep(.setting-info),
+.proxy-settings :deep(.setting-control) {
+  min-width: 0;
+  flex: 1;
 }
 
 .settings-actions {

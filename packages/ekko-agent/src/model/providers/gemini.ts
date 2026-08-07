@@ -39,6 +39,7 @@ type GeminiPart =
   | { text: string }
   | { functionCall: { name: string; args: Record<string, unknown> } }
   | { functionResponse: { name: string; response: Record<string, unknown> } }
+  | { inlineData: { mimeType: string; data: string } }
 
 interface GeminiResponse {
   candidates?: Array<{
@@ -59,7 +60,7 @@ interface GeminiResponse {
 const capabilities: ModelCapabilities = {
   streaming: true,
   tools: true,
-  vision: false,
+  vision: true,
   jsonMode: true,
   systemPrompt: true,
 }
@@ -77,6 +78,10 @@ export class GeminiContentsModelClient implements ModelClient {
     this.provider = config.id
     this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis)
     this.capabilities = { ...capabilities, ...config.capabilities }
+  }
+
+  requestTarget(request: ModelRequest): string {
+    return geminiUrl({ ...this.config, apiKey: undefined }, request.model, request.stream === true)
   }
 
   async create(request: ModelRequest): Promise<ModelResponse> {
@@ -157,16 +162,27 @@ function toGeminiContent(message: AgentMessage): GeminiPayload['contents'][numbe
   if (message.role === 'tool') {
     return {
       role: 'function',
-      parts: [{
-        functionResponse: {
-          name: message.name ?? message.toolCallId ?? 'tool',
-          response: { content: message.content },
+      parts: [
+        {
+          functionResponse: {
+            name: message.name ?? message.toolCallId ?? 'tool',
+            response: { content: message.content },
+          },
         },
-      }],
+        ...(message.contentParts?.filter(part => part.type === 'image').map(image => ({ inlineData: { mimeType: image.mimeType, data: image.data } })) ?? []),
+      ],
     }
   }
 
-  return { role: 'user', parts: [{ text: message.content }] }
+  return {
+    role: 'user',
+    parts: [
+      ...(message.content ? [{ text: message.content }] : []),
+      ...(message.contentParts?.filter(part => part.type === 'image').map(image => ({
+        inlineData: { mimeType: image.mimeType, data: image.data },
+      })) ?? []),
+    ],
+  }
 }
 
 function toGeminiTool(tool: AgentToolDefinition): NonNullable<NonNullable<GeminiPayload['tools']>[number]['functionDeclarations']>[number] {

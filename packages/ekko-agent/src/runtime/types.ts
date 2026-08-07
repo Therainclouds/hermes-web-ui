@@ -6,6 +6,9 @@ import type { AgentToolContext, AgentToolResult } from '../tools/types'
 import type { AgentRuntimeEvent } from './events'
 import type { MemoryContext } from '../memory/types'
 import type { MemoryService } from '../memory/service'
+import type { SkillReviewUsageEvent } from '../skills/review'
+import type { EkkoLogWriter } from '../logging/file-logger'
+import type { EkkoRuntimeLogContext } from '../logging/runtime-logger'
 
 export interface AgentRuntimeContextEstimate {
   contextTokens: number
@@ -20,8 +23,16 @@ export interface AgentRuntimeContextEstimate {
 
 export interface AgentRuntimeOptions {
   modelClient?: ModelClient
+  /** Disable every tool source, including built-ins, MCP, memory, and skill tools. */
+  toolsEnabled?: boolean
   tools?: AgentToolRegistry
+  /** Disable every skill source, including constructor and per-run skills. */
+  skillsEnabled?: boolean
   skills?: AgentSkill[]
+  /** Fixed directory used by this agent instance for skill discovery and management. */
+  skillDirectory?: string
+  /** Trigger a background skill review after this many tool calls in one session. Set to 0 to disable. */
+  skillReviewEveryToolCalls?: number
   systemPrompt?: string
   runtimeInstructions?: string[]
   maxSteps?: number
@@ -32,6 +43,9 @@ export interface AgentRuntimeOptions {
   modelDefaults?: Omit<ModelRequest, 'messages' | 'tools' | 'stream'>
   contextKey?: string
   memory?: MemoryService
+  /** Internal structured log sink owned by the Ekko runtime. */
+  logWriter?: EkkoLogWriter
+  logProfile?: string
 }
 
 export interface AgentRuntimeRunInput {
@@ -47,18 +61,25 @@ export interface AgentRuntimeRunInput {
   model?: string
   temperature?: number
   maxTokens?: number
+  reasoningEffort?: ModelRequest['reasoningEffort']
+  reasoningSummary?: ModelRequest['reasoningSummary']
   metadata?: Record<string, unknown>
   modelClient?: ModelClient
   modelDefaults?: Omit<ModelRequest, 'messages' | 'tools' | 'stream'>
   contextKey?: string
   context?: unknown
   memoryEnabled?: boolean
+  /** When false, delegate_task only accepts foreground mode for this run. */
+  backgroundDelegationEnabled?: boolean
+  /** Correlation fields only; log events and payloads remain runtime-owned. */
+  logContext?: EkkoRuntimeLogContext
   onMemoryUsage?: (input: {
     purpose: 'ekko-memory-summary'
     usage: ModelUsage
     model?: string
     callIndex: number
   }) => void
+  onSkillReviewUsage?: (input: SkillReviewUsageEvent) => void
   onEvent?: (event: AgentRuntimeEvent) => void
 }
 

@@ -2,15 +2,15 @@
 import { ref, onMounted, computed } from 'vue'
 import { NModal, NForm, NFormItem, NInput, NButton, NSelect, NInputNumber } from 'naive-ui'
 import { useJobsStore } from '@/stores/hermes/jobs'
-import { useSettingsStore } from '@/stores/hermes/settings'
 import { useAppStore } from '@/stores/hermes/app'
 import {
   buildJobUpdateRequest,
   getJob,
   jobRepeatToEditValue,
+  listJobDeliveryTargets,
   scheduleToEditableInput,
 } from '@/api/hermes/jobs'
-import type { CreateJobRequest, Job } from '@/api/hermes/jobs'
+import type { CreateJobRequest, Job, JobDeliveryTarget } from '@/api/hermes/jobs'
 import { fetchSkills } from '@/api/hermes/skills'
 import type { SkillInfo } from '@/api/hermes/skills'
 import { useI18n } from 'vue-i18n'
@@ -28,7 +28,6 @@ const emit = defineEmits<{
 }>()
 
 const jobsStore = useJobsStore()
-const settingsStore = useSettingsStore()
 const appStore = useAppStore()
 const message = useMessage()
 
@@ -36,12 +35,14 @@ const showModal = ref(true)
 const loading = ref(false)
 const skillsLoading = ref(false)
 const skillOptions = ref<Array<{ label: string; value: string }>>([])
+const deliveryTargetsLoading = ref(false)
+const deliveryTargets = ref<JobDeliveryTarget[]>([])
 
 const formData = ref({
   name: '',
   schedule: '',
   prompt: '',
-  deliver: 'origin',
+  deliver: 'local',
   skills: [] as string[],
   repeat_times: null as number | null,
   provider: '',
@@ -61,38 +62,6 @@ const schedulePresets = computed(() => [
   { label: t('jobs.presetEveryMonday'), value: '0 9 * * 1' },
   { label: t('jobs.presetEveryMonth'), value: '0 9 1 * *' },
 ])
-
-function hasText(value: unknown): boolean {
-  return typeof value === 'string' && value.trim().length > 0
-}
-
-function isDeliverTargetConfigured(key: string): boolean {
-  const config = settingsStore.platforms[key] || {}
-  switch (key) {
-    case 'telegram':
-    case 'discord':
-    case 'slack':
-      return hasText(config.token)
-    case 'whatsapp':
-      return config.enabled === true || config.enabled === 'true'
-    case 'matrix':
-      return hasText(config.token) && hasText(config.extra?.homeserver)
-    case 'weixin':
-      return hasText(config.token) && hasText(config.extra?.account_id)
-    case 'wecom':
-      return hasText(config.extra?.bot_id) && hasText(config.extra?.secret)
-    case 'feishu':
-      return hasText(config.extra?.app_id) && hasText(config.extra?.app_secret)
-    case 'dingtalk':
-      return (hasText(config.extra?.client_id) && hasText(config.extra?.client_secret))
-        || (hasText(config.extra?.app_key) && hasText(config.extra?.client_secret))
-    case 'qqbot':
-      return hasText(config.extra?.app_id) && hasText(config.extra?.client_secret)
-    default:
-      return false
-  }
-}
-
 
 const providerOptions = computed(() => {
   const options = [
@@ -135,31 +104,45 @@ function handleProviderChange(provider: string) {
 }
 
 const targetOptions = computed(() => {
-  const options: Array<{ label: string; value: string; disabled?: boolean }> = [
-    { label: t('jobs.origin'), value: 'origin' },
+  const options: Array<{ label: string; value: string }> = [
     { label: t('jobs.local'), value: 'local' },
   ]
-  const channels = [
-    { key: 'telegram', label: 'Telegram' },
-    { key: 'discord', label: 'Discord' },
-    { key: 'slack', label: 'Slack' },
-    { key: 'whatsapp', label: 'WhatsApp' },
-    { key: 'matrix', label: 'Matrix' },
-    { key: 'weixin', label: 'WeChat' },
-    { key: 'wecom', label: 'WeCom' },
-    { key: 'feishu', label: 'Feishu' },
-    { key: 'dingtalk', label: 'DingTalk' },
-    { key: 'qqbot', label: 'QQBot' },
-  ]
-  for (const ch of channels) {
+  // Jobs created by the Web UI have no messaging origin. Keep the legacy
+  // value editable when loading an existing job, but do not offer it for new jobs.
+  if (formData.value.deliver === 'origin') {
+    options.unshift({ label: t('jobs.origin'), value: 'origin' })
+  }
+  for (const target of deliveryTargets.value) {
+    const typeSuffix = target.type ? ` (${target.type})` : ''
     options.push({
-      label: ch.label,
-      value: ch.key,
-      disabled: !isDeliverTargetConfigured(ch.key),
+      label: `${formatPlatformName(target.platform)} · ${target.name}${typeSuffix}`,
+      value: target.value,
     })
+  }
+
+  const current = formData.value.deliver.trim()
+  if (current && !options.some(option => option.value === current)) {
+    options.push({ label: current, value: current })
   }
   return options
 })
+
+function formatPlatformName(platform: string): string {
+  const names: Record<string, string> = {
+    weixin: 'WeChat',
+    wecom: 'WeCom',
+    qqbot: 'QQBot',
+    whatsapp: 'WhatsApp',
+    whatsapp_cloud: 'WhatsApp Cloud',
+    dingtalk: 'DingTalk',
+    feishu: 'Feishu',
+  }
+  return names[platform] || platform
+    .split('_')
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+}
 
 const originalJob = ref<Job | null>(null)
 
@@ -186,12 +169,24 @@ async function loadSkillOptions() {
   }
 }
 
-onMounted(async () => {
-  if (Object.keys(settingsStore.platforms || {}).length === 0) {
-    await settingsStore.fetchSettings()
+async function loadDeliveryTargets() {
+  deliveryTargetsLoading.value = true
+  try {
+    const data = await listJobDeliveryTargets()
+    deliveryTargets.value = Array.isArray(data.targets) ? data.targets : []
+  } catch {
+    deliveryTargets.value = []
+  } finally {
+    deliveryTargetsLoading.value = false
   }
-  await appStore.loadModels()
-  await loadSkillOptions()
+}
+
+onMounted(async () => {
+  await Promise.all([
+    appStore.loadModels(),
+    loadSkillOptions(),
+    loadDeliveryTargets(),
+  ])
 
   if (props.jobId) {
     try {
@@ -220,6 +215,10 @@ async function handleSave() {
   }
   if (!formData.value.schedule.trim()) {
     message.warning(t('jobs.scheduleRequired'))
+    return
+  }
+  if (!formData.value.prompt.trim()) {
+    message.warning(t('jobs.promptRequired'))
     return
   }
 
@@ -348,6 +347,8 @@ function handleClose() {
         <NSelect
           v-model:value="formData.deliver"
           :options="targetOptions"
+          :loading="deliveryTargetsLoading"
+          filterable
         />
       </NFormItem>
 

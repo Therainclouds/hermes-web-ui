@@ -15,8 +15,8 @@ import SessionListItem from '@/components/hermes/chat/SessionListItem.vue'
 import OutlinePanel from '@/components/hermes/chat/OutlinePanel.vue'
 import PageSidebarNav from '@/components/layout/PageSidebarNav.vue'
 import PageSidebarFooter from '@/components/layout/PageSidebarFooter.vue'
-import { batchDeleteSessions, deleteSession, fetchHermesSessions, fetchHermesSession, fetchSessionMessagesPage, importHermesSession, unarchiveSession, type HermesMessage, type SessionSummary } from '@/api/hermes/sessions'
 import { useMessage } from '@/composables/useAppMessage'
+import { batchDeleteSessions, deleteSession, fetchHermesSessionGroups, fetchHermesSessionPage, fetchHermesSession, fetchSessionMessagesPage, importHermesSession, unarchiveSession, type HermesMessage, type SessionSummary } from '@/api/hermes/sessions'
 
 const appStore = useAppStore()
 const profilesStore = useProfilesStore()
@@ -38,7 +38,7 @@ const routeProfile = computed(() => {
 
 const effectiveHistoryProfile = computed(() => profilesStore.activeProfileName || routeProfile.value || null)
 
-// Hermes history sessions (exclude api_server)
+// Hermes history sessions grouped by source, including Web UI/API Server.
 const hermesSessions = ref<SessionSummary[]>([])
 const hermesSessionsLoading = ref(false)
 const hermesSessionsLoaded = ref(false)
@@ -58,6 +58,10 @@ const contextMenuY = ref(0)
 let hermesSessionsRequestId = 0
 
 const HISTORY_PAGE_SIZE = 150
+const HISTORY_GROUP_PAGE_SIZE = 50
+const sourceHasMore = ref<Record<string, boolean>>({})
+const sourceLoading = ref<Record<string, boolean>>({})
+const sourceOffsets = ref<Record<string, number>>({})
 
 function handleOutlineNavigate(target: { messageId: string; anchorId: string }) {
   historyMessageListRef.value?.scrollToAnchor(target.messageId, target.anchorId)
@@ -72,9 +76,21 @@ async function loadHermesSessions() {
   const requestId = ++hermesSessionsRequestId
   hermesSessionsLoading.value = true
   try {
-    const sessions = await fetchHermesSessions(undefined, undefined, effectiveHistoryProfile.value)
+    const includedIds = [...sessionBrowserPrefsStore.pinnedIds]
+    if (routeSessionId.value && !includedIds.includes(routeSessionId.value)) includedIds.push(routeSessionId.value)
+    const result = await fetchHermesSessionGroups(HISTORY_GROUP_PAGE_SIZE, effectiveHistoryProfile.value, includedIds)
     if (requestId !== hermesSessionsRequestId) return
-    hermesSessions.value = sessions
+    const sessionsByKey = new Map<string, SessionSummary>()
+    for (const session of result.groups.flatMap(group => group.sessions)) {
+      sessionsByKey.set(`${session.profile || 'default'}\u0000${session.id}`, session)
+    }
+    for (const session of result.included) {
+      sessionsByKey.set(`${session.profile || 'default'}\u0000${session.id}`, session)
+    }
+    hermesSessions.value = [...sessionsByKey.values()]
+    sourceHasMore.value = Object.fromEntries(result.groups.map(group => [group.source, group.hasMore]))
+    sourceOffsets.value = Object.fromEntries(result.groups.map(group => [group.source, group.sessions.length]))
+    sourceLoading.value = {}
     hermesSessionsLoaded.value = true
   } catch (err) {
     console.error('Failed to load Hermes sessions:', err)
@@ -88,6 +104,11 @@ async function loadHermesSessions() {
 // Initialize synchronously from the media query so first paint is correct.
 const showSessions = ref(
   typeof window === 'undefined' || !window.matchMedia('(max-width: 768px)').matches,
+)
+watch(
+  showSessions,
+  expanded => appStore.setPageSidebarExpanded(expanded),
+  { immediate: true },
 )
 let mobileQuery: MediaQueryList | null = null
 const isMobile = ref(false)
@@ -332,14 +353,20 @@ async function syncRouteSession() {
   const sessionId = routeSessionId.value
   if (!sessionId) return
 
-  if (!hermesSessions.value.some(s => s.id === sessionId)) {
+  const summary = findHistorySession(sessionId)
+  if (!summary) {
     historySessionId.value = null
     historySession.value = null
     await router.replace({ name: 'hermes.history' })
     return
   }
 
-  const sessionProfile = routeProfile.value || findHistorySession(sessionId)?.profile || null
+  if (collapsedGroups.value.has(summary.source)) {
+    collapsedGroups.value = new Set([...collapsedGroups.value].filter(source => source !== summary.source))
+    localStorage.setItem('hermes_collapsed_groups', JSON.stringify([...collapsedGroups.value]))
+  }
+
+  const sessionProfile = routeProfile.value || summary.profile || null
   const currentProfile = historySession.value?.profile || null
   if (historySessionId.value !== sessionId || currentProfile !== sessionProfile) {
     historySessionId.value = sessionId
@@ -498,6 +525,8 @@ interface SessionGroup {
   source: string
   label: string
   sessions: Session[]
+  hasMore: boolean
+  loading: boolean
 }
 
 const pinnedSessions = computed(() =>
@@ -513,19 +542,66 @@ const groupedSessions = computed<SessionGroup[]>(() => {
     map.get(key)!.push(s)
   }
 
-  const keys = [...map.keys()].sort((a, b) => {
+  const keys = [...new Set([
+    ...map.keys(),
+    ...Object.keys(sourceHasMore.value).filter(source => sourceHasMore.value[source]),
+  ])].sort((a, b) => {
     const ka = sourceSortKey(a)
     const kb = sourceSortKey(b)
     if (ka !== kb) return ka - kb
     return a.localeCompare(b)
   })
 
-  return keys.map(key => ({
-    source: key,
-    label: key ? getSourceLabel(key) : t('chat.other'),
-    sessions: sortSessionsWithActiveFirst(map.get(key)!),
-  }))
+  return keys.map((key) => {
+    const sessions = sortSessionsWithActiveFirst(map.get(key) || [])
+    return {
+      source: key,
+      label: key ? getSourceLabel(key) : t('chat.other'),
+      sessions,
+      hasMore: Boolean(sourceHasMore.value[key]),
+      loading: Boolean(sourceLoading.value[key]),
+    }
+  })
 })
+
+async function loadMoreGroup(source: string) {
+  if (sourceLoading.value[source] || !sourceHasMore.value[source]) return
+  const requestId = hermesSessionsRequestId
+  const offset = sourceOffsets.value[source] || 0
+  sourceLoading.value = { ...sourceLoading.value, [source]: true }
+  try {
+    const page = await fetchHermesSessionPage(
+      source,
+      offset,
+      HISTORY_GROUP_PAGE_SIZE,
+      effectiveHistoryProfile.value,
+    )
+    if (requestId !== hermesSessionsRequestId) return
+
+    const sessionsByKey = new Map(hermesSessions.value.map(session => [
+      `${session.profile || 'default'}\u0000${session.id}`,
+      session,
+    ]))
+    for (const session of page.sessions) {
+      sessionsByKey.set(`${session.profile || 'default'}\u0000${session.id}`, session)
+    }
+    hermesSessions.value = [...sessionsByKey.values()]
+    sourceOffsets.value = {
+      ...sourceOffsets.value,
+      [source]: offset + page.sessions.length,
+    }
+    sourceHasMore.value = {
+      ...sourceHasMore.value,
+      [source]: page.sessions.length > 0 && page.hasMore,
+    }
+  } catch (err) {
+    console.error(`Failed to load more ${source} sessions:`, err)
+  } finally {
+    if (requestId === hermesSessionsRequestId) {
+      sourceLoading.value = { ...sourceLoading.value, [source]: false }
+    }
+  }
+}
 
 function toggleGroup(source: string) {
   const isExpanded = !collapsedGroups.value.has(source)
@@ -676,6 +752,12 @@ async function handleDeleteSession(id: string, profile?: string | null) {
 
   sessionBrowserPrefsStore.removePinned(id)
   hermesSessions.value = hermesSessions.value.filter(s => s.id !== id)
+  if (summary?.source && sourceOffsets.value[summary.source]) {
+    sourceOffsets.value = {
+      ...sourceOffsets.value,
+      [summary.source]: Math.max(0, sourceOffsets.value[summary.source] - 1),
+    }
+  }
 
   if (historySessionId.value === id) {
     historySessionId.value = null
@@ -853,7 +935,29 @@ function handleBatchDeleteConfirm() {
           <div class="session-group-header" @click="toggleGroup(group.source)">
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="group-chevron" :class="{ collapsed: collapsedGroups.has(group.source) }"><polyline points="9 18 15 12 9 6"/></svg>
             <span class="session-group-label">{{ group.label }}</span>
-            <span class="session-group-count">{{ group.sessions.length }}</span>
+            <span class="session-group-count">{{ group.sessions.length }}{{ group.hasMore ? '+' : '' }}</span>
+            <NTooltip v-if="group.hasMore" trigger="hover">
+              <template #trigger>
+                <NButton
+                  class="session-group-load-more"
+                  quaternary
+                  circle
+                  size="tiny"
+                  :loading="group.loading"
+                  :disabled="group.loading"
+                  :aria-label="group.loading ? t('common.loading') : t('chat.loadMoreSessions')"
+                  @click.stop="loadMoreGroup(group.source)"
+                >
+                  <template #icon>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                      <path d="M20 11a8 8 0 1 0-2.34 5.66" />
+                      <polyline points="20 4 20 11 13 11" />
+                    </svg>
+                  </template>
+                </NButton>
+              </template>
+              {{ group.loading ? t('common.loading') : t('chat.loadMoreSessions') }}
+            </NTooltip>
           </div>
           <template v-if="!collapsedGroups.has(group.source)">
             <SessionListItem
@@ -889,7 +993,10 @@ function handleBatchDeleteConfirm() {
       @clickoutside="handleClickOutside"
     />
 
-    <div class="chat-main">
+    <div
+      class="chat-main"
+      :class="{ 'chat-main--sidebar-collapsed': !showSessions }"
+    >
       <header class="chat-header">
         <div class="header-left">
           <NButton class="history-sidebar-toggle" quaternary size="small" @click="showSessions = !showSessions" circle>
@@ -928,9 +1035,11 @@ function handleBatchDeleteConfirm() {
       <div class="history-content-wrapper">
         <div class="history-main-content">
           <HistoryMessageList
+            :key="historySession?.id || 'history-empty'"
             ref="historyMessageListRef"
             :session="historySession"
             :load-older="loadOlderHistoryMessages"
+            scroll-scope="history"
           />
         </div>
         <OutlinePanel
@@ -950,6 +1059,8 @@ function handleBatchDeleteConfirm() {
   display: flex;
   height: 100%;
   position: relative;
+  overflow: hidden;
+  background: $bg-card;
 }
 
 .history-content-wrapper {
@@ -969,7 +1080,13 @@ function handleBatchDeleteConfirm() {
 
 .session-list {
   width: $sidebar-width;
-  border-right: 1px solid $border-color;
+  min-height: 0;
+  align-self: stretch;
+  margin: 10px;
+  background: $bg-sidebar-surface;
+  border: 1px solid $border-color;
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -978,23 +1095,26 @@ function handleBatchDeleteConfirm() {
 
   &.collapsed {
     width: 0;
-    border-right: none;
+    margin-inline-start: 0;
+    margin-inline-end: 0;
+    border: none;
+    box-shadow: none;
     opacity: 0;
     pointer-events: none;
   }
 
   @media (max-width: $breakpoint-mobile) {
     position: absolute;
-    left: 0;
-    top: 0;
-    height: 100%;
+    left: 10px;
+    top: 10px;
+    bottom: 10px;
+    height: auto;
+    margin: 0;
     z-index: 120;
-    background: $bg-card;
-    box-shadow: 2px 0 8px rgba(0, 0, 0, 0.1);
     width: $sidebar-width;
 
     &.collapsed {
-      transform: translateX(-100%);
+      transform: translateX(calc(-100% - 10px));
       opacity: 0;
     }
   }
@@ -1108,6 +1228,15 @@ function handleBatchDeleteConfirm() {
   font-weight: 400;
 }
 
+.session-group-load-more {
+  margin-inline-start: auto;
+  color: $text-muted;
+
+  &:hover {
+    color: $accent-primary;
+  }
+}
+
 .session-items {
   flex: 1;
   overflow-y: auto;
@@ -1128,6 +1257,15 @@ function handleBatchDeleteConfirm() {
   flex-direction: column;
   overflow: hidden;
   min-width: 0;
+  margin: 10px 10px 10px 0;
+  background: $bg-main-surface;
+  border: 1px solid $border-color;
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+
+  &--sidebar-collapsed {
+    margin-inline-start: 10px;
+  }
 }
 
 .chat-header {
@@ -1184,6 +1322,13 @@ function handleBatchDeleteConfirm() {
 }
 
 @media (max-width: $breakpoint-mobile) {
+  .chat-main {
+    margin: 0;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
   .chat-header {
     padding: 16px 12px 16px 52px;
   }

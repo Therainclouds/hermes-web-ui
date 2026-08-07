@@ -1,8 +1,8 @@
 import { io, type Socket } from 'socket.io-client'
 import { getActiveProfileName, getApiKey, getBaseUrlValue } from '../client'
-import type { WorkflowRecord } from './workflows'
+import type { WorkflowRecord, WorkflowRunRecord } from './workflows'
 
-export type WorkflowRuntimeState = 'idle' | 'queued' | 'running' | 'pending_approval' | 'completed' | 'failed' | 'approval_rejected' | 'canceled'
+export type WorkflowRuntimeState = 'idle' | 'queued' | 'running' | 'pending_approval' | 'completed' | 'skipped' | 'failed' | 'approval_rejected' | 'canceled'
 
 export interface WorkflowRuntimeStatus {
   workflowId: string
@@ -13,6 +13,14 @@ export interface WorkflowRuntimeStatus {
   completedAt: number | null
   error: string | null
   nodeStatuses?: Record<string, WorkflowRuntimeState>
+  run?: WorkflowRunRecord | null
+}
+
+
+export interface WorkflowRuntimeEvidenceError {
+  workflowId: string
+  runId: string | null
+  error: string
 }
 
 interface WorkflowSocketAck<T> {
@@ -111,4 +119,13 @@ export function onWorkflowStatusUpdated(
   const activeSocket = connectWorkflowSocket(profile)
   activeSocket.on('workflow.status.updated', handler)
   return () => activeSocket.off('workflow.status.updated', handler)
+}
+
+export function onWorkflowStatusError(
+  handler: (error: WorkflowRuntimeEvidenceError) => void,
+  profile?: string | null,
+): () => void {
+  const activeSocket = connectWorkflowSocket(profile)
+  activeSocket.on('workflow.status.error', handler)
+  return () => activeSocket.off('workflow.status.error', handler)
 }

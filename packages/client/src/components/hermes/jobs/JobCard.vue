@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed } from 'vue'
 import { NButton, NTooltip } from 'naive-ui'
+import { computed, ref } from 'vue'
 import type { Job } from '@/api/hermes/jobs'
 import { scheduleToDisplayText } from '@/api/hermes/jobs'
 import { useJobsStore } from '@/stores/hermes/jobs'
@@ -20,6 +20,7 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const jobsStore = useJobsStore()
 const message = useMessage()
+const runPending = ref(false)
 
 const jobId = computed(() => props.job.job_id || props.job.id)
 
@@ -65,11 +66,15 @@ async function handleResume() {
 }
 
 async function handleRun() {
+  if (runPending.value) return
+  runPending.value = true
   try {
     await jobsStore.runJob(jobId.value)
     message.info(t('jobs.jobTriggered'))
   } catch (e: any) {
     message.error(e.message)
+  } finally {
+    runPending.value = false
   }
 }
 
@@ -148,12 +153,15 @@ function handleCardClick(e: MouseEvent) {
         </template>
         {{ t('jobs.action.resumeJob') }}
       </NTooltip>
-      <NTooltip>
-        <template #trigger>
-          <NButton size="tiny" quaternary @click.stop="handleRun">{{ t('jobs.action.runNow') }}</NButton>
-        </template>
-        {{ t('jobs.action.triggerImmediately') }}
-      </NTooltip>
+      <NButton
+        size="tiny"
+        quaternary
+        :loading="runPending"
+        :disabled="runPending"
+        @click.stop="handleRun"
+      >
+        {{ t('jobs.action.runNow') }}
+      </NButton>
       <NButton size="tiny" quaternary @click.stop="emit('edit', jobId)">{{ t('common.edit') }}</NButton>
       <NButton size="tiny" quaternary type="error" @click.stop="handleDelete">{{ t('common.delete') }}</NButton>
     </div>
@@ -249,7 +257,7 @@ function handleCardClick(e: MouseEvent) {
 }
 
 .run-status {
-  margin-left: 6px;
+  margin-inline-start: 6px;
   font-size: 11px;
   font-weight: 500;
 

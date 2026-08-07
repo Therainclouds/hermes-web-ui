@@ -184,7 +184,15 @@ export async function switchHermesProfile(name: string): Promise<boolean> {
   }
 }
 
-export async function exportProfile(name: string): Promise<boolean> {
+export interface ProfileArchiveResult {
+  success: boolean
+  /** 服务端给出的失败原因，没有时前端回落到通用文案 */
+  error?: string
+  /** 已知的失败类型，目前只有 'archive_timeout' */
+  code?: string
+}
+
+export async function exportProfile(name: string): Promise<ProfileArchiveResult> {
   try {
     const baseUrl = getBaseUrlValue()
     const token = getApiKey()
@@ -195,7 +203,11 @@ export async function exportProfile(name: string): Promise<boolean> {
       method: 'POST',
       headers,
     })
-    if (!res.ok) throw new Error()
+    if (!res.ok) {
+      // 导出失败时服务端返回 JSON；别把原因丢掉，否则用户只看到"导出失败"
+      const detail = await res.json().catch(() => null)
+      return { success: false, error: detail?.error, code: detail?.code }
+    }
 
     const blob = await res.blob()
     const url = URL.createObjectURL(blob)
@@ -204,13 +216,13 @@ export async function exportProfile(name: string): Promise<boolean> {
     a.download = `hermes-profile-${name}.tar.gz`
     a.click()
     URL.revokeObjectURL(url)
-    return true
-  } catch {
-    return false
+    return { success: true }
+  } catch (err: any) {
+    return { success: false, error: err?.message }
   }
 }
 
-export async function importProfile(file: File): Promise<boolean> {
+export async function importProfile(file: File): Promise<ProfileArchiveResult> {
   try {
     const baseUrl = getBaseUrlValue()
     const token = getApiKey()
@@ -225,8 +237,10 @@ export async function importProfile(file: File): Promise<boolean> {
       headers,
       body: formData,
     })
-    return res.ok
-  } catch {
-    return false
+    if (res.ok) return { success: true }
+    const detail = await res.json().catch(() => null)
+    return { success: false, error: detail?.error, code: detail?.code }
+  } catch (err: any) {
+    return { success: false, error: err?.message }
   }
 }

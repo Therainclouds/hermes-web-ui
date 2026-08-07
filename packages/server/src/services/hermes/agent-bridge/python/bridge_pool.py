@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 import os
 import queue
@@ -73,6 +74,40 @@ def _clear_session_workspace_cwd() -> None:
         pass
 
 
+def _set_bridge_session_vars(
+    session_id: str,
+    profile: str | None,
+    workspace: str | None,
+    background_delegation_enabled: bool,
+) -> Any:
+    """Bind the richest session context supported by the installed runtime."""
+    from gateway.session_context import set_session_vars
+
+    values = {
+        "platform": "agent_bridge",
+        # Hermes delegate_task has a TUI-specific durable session routing path.
+        # Agent Bridge uses that contract so compression-driven session-id
+        # rotation cannot orphan a detached completion.
+        "source": "tui",
+        "session_key": session_id,
+        "session_id": session_id,
+        "ui_session_id": session_id,
+        "profile": str(profile or "default"),
+        "cwd": str(workspace or ""),
+        "async_delivery": background_delegation_enabled,
+    }
+    try:
+        parameters = inspect.signature(set_session_vars).parameters.values()
+        accepts_extra = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters)
+        accepted_names = {parameter.name for parameter in parameters}
+        supported = values if accepts_extra else {
+            name: value for name, value in values.items() if name in accepted_names
+        }
+    except (TypeError, ValueError):
+        supported = values
+    return set_session_vars(**supported)
+
+
 class SessionDbHolder:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -129,9 +164,15 @@ class AgentSession:
     lock: threading.RLock = field(default_factory=threading.RLock)
     created_at: float = field(default_factory=time.time)
     last_used_at: float = field(default_factory=time.time)
+    background_events: list[dict[str, Any]] = field(default_factory=list)
+    background_event_seq: int = 0
+    background_tasks: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 class AgentPool:
+    MAX_BACKGROUND_EVENTS_PER_SESSION = 500
+    MAX_BACKGROUND_TASKS_PER_SESSION = 50
+
     def __init__(self) -> None:
         self._sessions: dict[str, AgentSession] = {}
         self._runs: dict[str, RunRecord] = {}
@@ -141,6 +182,8 @@ class AgentPool:
         self._gateway_approval_requests: dict[str, str] = {}
         self._gateway_approval_pattern_keys: dict[str, list[str]] = {}
         self._compression_requests: dict[str, queue.Queue[dict[str, Any]]] = {}
+        self._background_notification_claims: dict[tuple[str, str], dict[str, Any]] = {}
+        self._suppressed_background_delegations: set[str] = set()
         self._clarify_requests: dict[str, queue.Queue[str]] = {}
         self._run_context = threading.local()
         self._approval_handlers: dict[str, Callable[..., str]] = {}
@@ -192,6 +235,7 @@ class AgentPool:
         profile: str | None = None,
         model: str | None = None,
         provider: str | None = None,
+        background_delegation_enabled: bool | None = None,
     ) -> AgentSession:
         requested_model = str(model or "").strip()
         requested_provider = str(provider or "").strip()
@@ -269,7 +313,7 @@ class AgentPool:
                     credential_pool=runtime.get("credential_pool"),
                     quiet_mode=True,
                     verbose_logging=False,
-                    reasoning_config=_load_reasoning_config(),
+                    reasoning_config=_load_reasoning_config(resolved_model),
                     service_tier=_load_service_tier(),
                     enabled_toolsets=_load_enabled_toolsets(),
                     platform=_bridge_platform(),
@@ -280,6 +324,7 @@ class AgentPool:
                     thinking_callback=self._make_thinking_callback(session_id),
                     reasoning_callback=self._text_event_callback(session_id, "reasoning.delta"),
                     stream_delta_callback=self._stream_delta_callback(session_id),
+                    interim_assistant_callback=self._interim_assistant_callback(session_id),
                     tool_progress_callback=self._tool_progress_callback(session_id),
                     tool_start_callback=self._tool_start_callback(session_id),
                     tool_complete_callback=self._tool_complete_callback(session_id),
@@ -310,6 +355,9 @@ class AgentPool:
                         "mcp_tool_count": len(discovered_mcp_tools),
                         "active_mcp_tool_count": len(mcp_tool_names),
                         "db_error": self._db.error,
+                        # This is an Agent-session policy, not a per-turn flag.
+                        # Callers select it when the cached AIAgent is created.
+                        "background_delegation_enabled": background_delegation_enabled is not False,
                     },
                 )
                 self._sessions[session_id] = session
@@ -410,6 +458,10 @@ class AgentPool:
         if not callable(switch_model):
             raise RuntimeError("loaded agent does not support switch_model")
 
+        with _profile_env(target_profile):
+            _refresh_worker_profile_env()
+            reasoning_config = _load_reasoning_config(requested_model)
+
         switch_model(
             new_model=requested_model,
             new_provider=resolved_provider,
@@ -417,6 +469,7 @@ class AgentPool:
             base_url=runtime.get("base_url") or "",
             api_mode=runtime.get("api_mode") or "",
         )
+        session.agent.reasoning_config = reasoning_config
         if resolved_provider.lower() == "moa":
             self._install_moa_reference_callback(session)
         session.config.update({
@@ -711,8 +764,15 @@ class AgentPool:
         model: str | None = None,
         provider: str | None = None,
         workspace: str | None = None,
+        background_delegation_enabled: bool | None = None,
     ) -> dict[str, Any]:
-        session = self.get_or_create(session_id, profile=profile, model=model, provider=provider)
+        session = self.get_or_create(
+            session_id,
+            profile=profile,
+            model=model,
+            provider=provider,
+            background_delegation_enabled=background_delegation_enabled,
+        )
         session_cwd_bound = _bind_session_workspace_cwd(session.session_id, workspace)
         try:
             context_info = self._estimate_context_info(session.agent, messages or [], instructions)
@@ -767,9 +827,193 @@ class AgentPool:
     def _append_event(self, session_id: str, event: dict[str, Any]) -> None:
         with self._lock:
             session = self._sessions.get(session_id)
+            if session and str(event.get("event") or "").startswith("subagent."):
+                event = self._record_background_event(session, event)
             run_id = session.current_run_id if session else None
             if run_id and run_id in self._runs:
                 self._runs[run_id].events.append(_jsonable(event))
+            elif session and str(event.get("event") or "").startswith("subagent."):
+                session.background_events.append(_jsonable(event))
+                if len(session.background_events) > self.MAX_BACKGROUND_EVENTS_PER_SESSION:
+                    del session.background_events[:-self.MAX_BACKGROUND_EVENTS_PER_SESSION]
+
+    def _record_background_event(
+        self,
+        session: AgentSession,
+        event: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Attach stable UI routing metadata without touching agent messages."""
+        session.background_event_seq += 1
+        payload = dict(event)
+        payload["background_seq"] = session.background_event_seq
+        payload["session_id"] = session.session_id
+        payload.setdefault("timestamp", time.time())
+
+        subagent_id = str(payload.get("subagent_id") or "").strip()
+        if subagent_id:
+            previous = session.background_tasks.get(subagent_id, {})
+            event_name = str(payload.get("event") or "")
+            status = str(payload.get("status") or "").strip()
+            if event_name == "subagent.start":
+                status = "running"
+            elif event_name != "subagent.complete":
+                status = status or str(previous.get("status") or "running")
+            else:
+                status = status or "completed"
+            task = {
+                **previous,
+                "subagent_id": subagent_id,
+                "parent_id": payload.get("parent_id"),
+                "depth": payload.get("depth"),
+                "task_index": payload.get("task_index"),
+                "task_count": payload.get("task_count"),
+                "goal": payload.get("goal"),
+                "model": payload.get("model"),
+                "tool_count": payload.get("tool_count", previous.get("tool_count", 0)),
+                "last_event": event_name,
+                "last_tool": payload.get("tool_name") or previous.get("last_tool"),
+                "preview": payload.get("text") or payload.get("summary") or previous.get("preview"),
+                "status": status,
+                "updated_at": payload["timestamp"],
+            }
+            if event_name == "subagent.start":
+                task["started_at"] = payload["timestamp"]
+            if event_name == "subagent.complete":
+                task["completed_at"] = payload["timestamp"]
+                task["summary"] = payload.get("summary")
+                task["duration_seconds"] = payload.get("duration_seconds")
+                task["api_calls"] = payload.get("api_calls")
+                task["input_tokens"] = payload.get("input_tokens")
+                task["output_tokens"] = payload.get("output_tokens")
+                task["cost_usd"] = payload.get("cost_usd")
+                task["files_read"] = payload.get("files_read")
+                task["files_written"] = payload.get("files_written")
+            session.background_tasks[subagent_id] = _jsonable(task)
+            if len(session.background_tasks) > self.MAX_BACKGROUND_TASKS_PER_SESSION:
+                ordered = sorted(
+                    session.background_tasks.items(),
+                    key=lambda item: float(item[1].get("updated_at") or 0),
+                )
+                removable = [item for item in ordered if item[1].get("status") != "running"]
+                for stale_id, _ in removable[: max(0, len(ordered) - self.MAX_BACKGROUND_TASKS_PER_SESSION)]:
+                    session.background_tasks.pop(stale_id, None)
+        return payload
+
+    def poll_background(self, recover_session_ids: list[Any] | None = None) -> dict[str, Any]:
+        """Drain worker-level UI telemetry and claim owned async completions."""
+        with self._lock:
+            loaded_session_ids = set(self._sessions)
+            loaded_session_ids.update(
+                str(session_id).strip()
+                for session_id in (recover_session_ids or [])
+                if str(session_id).strip()
+            )
+            session_payloads = []
+            for session in self._sessions.values():
+                events = list(session.background_events)
+                session.background_events.clear()
+                tasks = list(session.background_tasks.values())
+                if events or any(task.get("status") == "running" for task in tasks):
+                    session_payloads.append({
+                        "session_id": session.session_id,
+                        "events": _jsonable(events),
+                        "tasks": _jsonable(tasks),
+                        "running_count": sum(1 for task in tasks if task.get("status") == "running"),
+                    })
+
+        notifications: list[dict[str, Any]] = []
+        pending_notification_count = 0
+        if loaded_session_ids:
+            try:
+                from tools.async_delegation import claim_event_delivery, complete_completion_delivery
+                from tools.process_registry import format_process_notification, process_registry
+
+                def owns_event(evt: dict[str, Any]) -> bool:
+                    session_key = str(evt.get("session_key") or "")
+                    parent_session_id = str(evt.get("parent_session_id") or "")
+                    return session_key in loaded_session_ids or parent_session_id in loaded_session_ids
+
+                deferred: list[dict[str, Any]] = []
+                queue_size = process_registry.completion_queue.qsize()
+                for _ in range(queue_size):
+                    try:
+                        event = process_registry.completion_queue.get_nowait()
+                    except Exception:
+                        break
+                    if event.get("type") != "async_delegation" or not owns_event(event):
+                        deferred.append(event)
+                        continue
+                    claim_id = claim_event_delivery(event, "agent-bridge")
+                    if claim_id is None:
+                        pending_notification_count += 1
+                        deferred.append(event)
+                        continue
+                    delegation_id = str(event.get("delegation_id") or "")
+                    with self._lock:
+                        suppressed = delegation_id in self._suppressed_background_delegations
+                    if suppressed or str(event.get("status") or "").lower() in {"interrupted", "cancelled", "canceled"}:
+                        complete_completion_delivery(
+                            delegation_id,
+                            claim_id,
+                        )
+                        with self._lock:
+                            self._suppressed_background_delegations.discard(delegation_id)
+                        continue
+                    message = format_process_notification(event)
+                    if not message:
+                        complete_completion_delivery(
+                            str(event.get("delegation_id") or ""),
+                            claim_id,
+                        )
+                        continue
+                    session_id = str(event.get("parent_session_id") or event.get("session_key") or "")
+                    notifications.append({
+                        "delegation_id": str(event.get("delegation_id") or ""),
+                        "session_id": session_id,
+                        "claim_id": claim_id,
+                        "status": event.get("status"),
+                        "message": message,
+                        "event": _jsonable(event),
+                    })
+                    with self._lock:
+                        self._background_notification_claims[(
+                            str(event.get("delegation_id") or ""),
+                            claim_id,
+                        )] = event
+                for event in deferred:
+                    process_registry.completion_queue.put(event)
+            except Exception as exc:
+                print(
+                    f"[hermes_bridge] background completion poll failed: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+        return {
+            "sessions": session_payloads,
+            "notifications": notifications,
+            "pending_count": pending_notification_count,
+        }
+
+    def complete_background_notification(self, delegation_id: str, claim_id: str) -> dict[str, Any]:
+        from tools.async_delegation import complete_completion_delivery
+
+        completed = complete_completion_delivery(delegation_id, claim_id)
+        with self._lock:
+            self._background_notification_claims.pop((delegation_id, claim_id), None)
+        return {"delegation_id": delegation_id, "completed": bool(completed)}
+
+    def release_background_notification(self, delegation_id: str, claim_id: str) -> dict[str, Any]:
+        from tools.async_delegation import release_completion_delivery
+
+        released = release_completion_delivery(delegation_id, claim_id)
+        with self._lock:
+            event = self._background_notification_claims.pop((delegation_id, claim_id), None)
+        if released and event is not None:
+            from tools.process_registry import process_registry
+
+            process_registry.completion_queue.put(event)
+        return {"delegation_id": delegation_id, "released": bool(released)}
 
     def _status_callback(self, session_id: str):
         def callback(kind, text=None):
@@ -928,6 +1172,19 @@ class AgentPool:
             # Text deltas are already captured by the per-run stream_callback
             # passed to run_conversation.  Only consume boundary signals here
             # so registering this callback does not duplicate assistant text.
+
+        return callback
+
+    def _interim_assistant_callback(self, session_id: str):
+        def callback(text, *, already_streamed=False):
+            value = str(text or "")
+            if not value.strip():
+                return
+            self._append_event(session_id, {
+                "event": "message.interim",
+                "text": value,
+                "already_streamed": bool(already_streamed),
+            })
 
         return callback
 
@@ -1199,8 +1456,15 @@ class AgentPool:
         workspace: str | None = None,
         source: str | None = None,
         reasoning_effort: str | None = None,
+        background_delegation_enabled: bool | None = None,
     ) -> RunRecord:
-        session = self.get_or_create(session_id, profile=profile, model=model, provider=provider)
+        session = self.get_or_create(
+            session_id,
+            profile=profile,
+            model=model,
+            provider=provider,
+            background_delegation_enabled=background_delegation_enabled,
+        )
         # Install after agent construction so any runtime plugin initialization
         # has completed. Rechecking on every run also recovers from a forced
         # plugin reload that clears the manager's callback registry.
@@ -1255,6 +1519,7 @@ class AgentPool:
                         record.events.append({"event": "stream.delta", "delta": text})
 
             approval_session_token = None
+            session_context_tokens = None
             registered_gateway_approval_session = None
             exec_ask_scope_entered = False
             session_cwd_bound = False
@@ -1263,6 +1528,15 @@ class AgentPool:
             tail_synced = False
             try:
                 session_cwd_bound = _bind_session_workspace_cwd(session.session_id, workspace)
+                try:
+                    session_context_tokens = _set_bridge_session_vars(
+                        session.session_id,
+                        profile,
+                        workspace,
+                        session.config.get("background_delegation_enabled", True) is not False,
+                    )
+                except Exception:
+                    session_context_tokens = None
                 try:
                     self._enter_exec_ask_scope()
                     exec_ask_scope_entered = True
@@ -1429,16 +1703,120 @@ class AgentPool:
                         reset_current_session_key(approval_session_token)
                     except Exception:
                         pass
+                if session_context_tokens is not None:
+                    try:
+                        from gateway.session_context import clear_session_vars
+
+                        clear_session_vars(session_context_tokens)
+                    except Exception:
+                        pass
                 if exec_ask_scope_entered:
                     self._exit_exec_ask_scope()
                 if session_cwd_bound:
                     _clear_session_workspace_cwd()
+
+    @staticmethod
+    def _background_delegation_ids_for_session(session_id: str) -> list[str]:
+        try:
+            from tools.async_delegation import list_async_delegations
+
+            ids = []
+            for record in list_async_delegations():
+                if str(record.get("status") or "") not in {"running", "finalizing"}:
+                    continue
+                if not any(
+                    str(record.get(key) or "") == session_id
+                    for key in ("session_key", "origin_ui_session_id", "parent_session_id")
+                ):
+                    continue
+                delegation_id = str(record.get("delegation_id") or "").strip()
+                if delegation_id:
+                    ids.append(delegation_id)
+            return ids
+        except Exception:
+            return []
+
+    def has_active_background_for_session(self, session_id: str) -> bool:
+        """Return whether a session still owns running background work."""
+        try:
+            from tools.async_delegation import list_async_delegations
+
+            for record in list_async_delegations():
+                if str(record.get("status") or "").lower() not in {"running", "finalizing"}:
+                    continue
+                if any(
+                    str(record.get(key) or "") == session_id
+                    for key in ("session_key", "origin_ui_session_id", "parent_session_id")
+                ):
+                    return True
+            return False
+        except Exception:
+            # The durable registry is authoritative when available. Fall back
+            # to worker telemetry so a transient registry failure cannot let
+            # idle GC interrupt a task the worker still sees as active.
+            with self._lock:
+                session = self._sessions.get(session_id)
+                if session is None:
+                    return False
+                return any(
+                    str(task.get("status") or "").lower() in {"running", "finalizing"}
+                    for task in session.background_tasks.values()
+                )
+
+    @staticmethod
+    def _interrupt_background_for_session(session_id: str, reason: str) -> int:
+        try:
+            from tools.async_delegation import interrupt_for_session
+
+            return int(interrupt_for_session(
+                session_key=session_id,
+                origin_ui_session_id=session_id,
+                parent_session_id=session_id,
+                reason=reason,
+            ) or 0)
+        except Exception:
+            return 0
+
+    def _settle_interrupted_background_tasks(self, session_id: str) -> int:
+        """Persist terminal UI events when upstream interruption ends silently."""
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                return 0
+            timestamp = time.time()
+            interrupted = 0
+            for subagent_id, task in list(session.background_tasks.items()):
+                if str(task.get("status") or "").lower() != "running":
+                    continue
+                event = {
+                    **task,
+                    "event": "subagent.complete",
+                    "subagent_id": subagent_id,
+                    "tool_name": task.get("last_tool"),
+                    "status": "interrupted",
+                    "timestamp": timestamp,
+                    "completed_at": timestamp,
+                }
+                recorded = self._record_background_event(session, event)
+                session.background_events.append(_jsonable(recorded))
+                interrupted += 1
+            if len(session.background_events) > self.MAX_BACKGROUND_EVENTS_PER_SESSION:
+                del session.background_events[:-self.MAX_BACKGROUND_EVENTS_PER_SESSION]
+            return interrupted
 
     def interrupt(self, session_id: str, message: str | None = None) -> dict[str, Any]:
         with self._lock:
             session = self._sessions.get(session_id)
         if session is None:
             raise KeyError(f"unknown session: {session_id}")
+        background_delegation_ids = self._background_delegation_ids_for_session(session_id)
+        with self._lock:
+            self._suppressed_background_delegations.update(background_delegation_ids)
+        background_interrupted = self._interrupt_background_for_session(
+            session_id,
+            "user_interrupt",
+        )
+        self._settle_interrupted_background_tasks(session_id)
         if not hasattr(session.agent, "interrupt"):
             raise RuntimeError("agent does not support interrupt")
         session.agent.interrupt(message)
@@ -1450,7 +1828,13 @@ class AgentPool:
                     synced = True
                     break
             time.sleep(0.05)
-        return {"status": "interrupted", "session_id": session_id, "synced": synced}
+        return {
+            "status": "interrupted",
+            "session_id": session_id,
+            "synced": synced,
+            "background_interrupted": background_interrupted,
+            "background_delegation_ids": background_delegation_ids,
+        }
 
     def steer(self, session_id: str, text: str) -> dict[str, Any]:
         with self._lock:
@@ -1541,6 +1925,45 @@ class AgentPool:
                 return self._dispatch_goal_command(session_id, arg)
             if name == "subgoal":
                 return self._dispatch_subgoal_command(session_id, arg)
+            if name == "yolo":
+                try:
+                    from tools.approval import (
+                        disable_session_yolo,
+                        enable_session_yolo,
+                        is_session_yolo_enabled,
+                    )
+                except ImportError:
+                    return {
+                        "session_id": session_id,
+                        "command": name,
+                        "handled": False,
+                        "type": "yolo",
+                        "message": (
+                            "/yolo requires a newer Hermes Agent runtime with "
+                            "session-scoped YOLO support."
+                        ),
+                    }
+
+                enabled = not is_session_yolo_enabled(session_id)
+                if enabled:
+                    enable_session_yolo(session_id)
+                else:
+                    disable_session_yolo(session_id)
+                return {
+                    "session_id": session_id,
+                    "command": name,
+                    "handled": True,
+                    "type": "yolo",
+                    "action": "yolo",
+                    "enabled": enabled,
+                    "message": (
+                        "⚡ YOLO mode ON for this session — all commands "
+                        "auto-approved. Use with caution."
+                        if enabled
+                        else "⚠️ YOLO mode OFF for this session — dangerous "
+                        "commands will require approval."
+                    ),
+                }
             if name == "learn":
                 try:
                     from agent.learn_prompt import build_learn_prompt
@@ -1896,16 +2319,33 @@ class AgentPool:
         }
 
     def destroy(self, session_id: str) -> dict[str, Any]:
+        background_delegation_ids = self._background_delegation_ids_for_session(session_id)
+        with self._lock:
+            self._suppressed_background_delegations.update(background_delegation_ids)
+        background_interrupted = self._interrupt_background_for_session(
+            session_id,
+            "session_destroyed",
+        )
         with self._lock:
             session = self._sessions.pop(session_id, None)
         if session is None:
-            return {"session_id": session_id, "destroyed": False}
+            return {
+                "session_id": session_id,
+                "destroyed": False,
+                "background_interrupted": background_interrupted,
+                "background_delegation_ids": background_delegation_ids,
+            }
         if session.running and hasattr(session.agent, "interrupt"):
             try:
                 session.agent.interrupt("Session destroyed")
             except Exception:
                 pass
-        return {"session_id": session_id, "destroyed": True}
+        return {
+            "session_id": session_id,
+            "destroyed": True,
+            "background_interrupted": background_interrupted,
+            "background_delegation_ids": background_delegation_ids,
+        }
 
     def destroy_all(self) -> dict[str, Any]:
         with self._lock:
@@ -1915,6 +2355,72 @@ class AgentPool:
             result = self.destroy(sid)
             destroyed.append(result)
         return {"destroyed": len(destroyed)}
+
+    def shutdown(self) -> dict[str, Any]:
+        """Bounded worker cleanup for parent runs, delegations, and tool processes."""
+        with self._lock:
+            sessions = list(self._sessions.values())
+            claimed_notifications = list(self._background_notification_claims)
+
+        interrupted_sessions = 0
+        for session in sessions:
+            if not session.running or not hasattr(session.agent, "interrupt"):
+                continue
+            try:
+                session.agent.interrupt("Agent bridge shutting down")
+                interrupted_sessions += 1
+            except Exception:
+                pass
+
+        interrupted_delegations = 0
+        active_count = None
+        try:
+            from tools.async_delegation import active_count as async_active_count
+            from tools.async_delegation import interrupt_all
+
+            active_count = async_active_count
+            interrupted_delegations = int(interrupt_all("agent_bridge_shutdown") or 0)
+        except Exception:
+            pass
+
+        killed_processes = 0
+        try:
+            from tools.process_registry import process_registry
+
+            killed_processes = int(process_registry.kill_all() or 0)
+        except Exception:
+            pass
+
+        if active_count is not None and interrupted_delegations:
+            deadline = time.time() + 2.0
+            while time.time() < deadline:
+                try:
+                    if int(active_count() or 0) == 0:
+                        break
+                except Exception:
+                    break
+                time.sleep(0.05)
+
+        released_claims = 0
+        if claimed_notifications:
+            try:
+                from tools.async_delegation import release_completion_delivery
+
+                for delegation_id, claim_id in claimed_notifications:
+                    if release_completion_delivery(delegation_id, claim_id):
+                        released_claims += 1
+            except Exception:
+                pass
+            with self._lock:
+                for key in claimed_notifications:
+                    self._background_notification_claims.pop(key, None)
+
+        return {
+            "interrupted_sessions": interrupted_sessions,
+            "interrupted_delegations": interrupted_delegations,
+            "killed_processes": killed_processes,
+            "released_claims": released_claims,
+        }
 
     def status(self, session_id: str) -> dict[str, Any]:
         with self._lock:

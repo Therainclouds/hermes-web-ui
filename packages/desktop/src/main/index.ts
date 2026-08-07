@@ -1,36 +1,73 @@
-import { app, BrowserWindow, Menu, Tray, shell, ipcMain, nativeImage, Notification, screen, dialog, type MessageBoxOptions } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  Menu,
+  nativeImage,
+  Notification,
+  session,
+  shell,
+  systemPreferences,
+  Tray,
+  type MessageBoxOptions,
+  type OpenDialogOptions,
+  type IpcMainInvokeEvent,
+} from 'electron'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { startWebUiServer, stopWebUiServer, getToken } from './webui-server'
-import { bundledNode, desktopIcon, desktopRuntimeVersion, desktopTrayTemplateIcon, desktopWindowsTrayIcon, hermesBinExists, hermesBin, webuiDir } from './paths'
+import { bundledNode, desktopIcon, desktopMacTrayIcon, desktopRuntimeVersion, desktopWindowsTrayIcon, hermesBinExists, hermesBin, runtimeStorageRoot, webuiDir, webUiHome } from './paths'
 import { checkForDesktopUpdates, initAutoUpdater } from './updater'
 import { t } from './desktop-i18n'
 import { resetDesktopDefaultLogin } from './desktop-login-reset'
 import { installHermesStudioCliShim, installHermesStudioMcpShim } from './cli-shim'
 import { parseHermesCliArgs, runBundledHermesCli } from './hermes-cli'
+import { installSelectionContextMenu } from './selection-context-menu'
 import {
   ensureDesktopRuntime,
   isDesktopRuntimeReady,
+  migratePendingRuntimeRoot,
+  repairUpdatedDesktopRuntimeLaunchers,
   writeActiveRuntimeVersion,
   type RuntimeDownloadSource,
   type RuntimeProgress,
 } from './runtime-manager'
+import { BrowserManager } from './browser/browser-manager'
+import { BrowserBroker } from './browser/browser-broker'
+import type { BrowserBounds } from './browser/browser-types'
 
 const PORT = Number(process.env.HERMES_DESKTOP_PORT) || 8748
 const START_HIDDEN = process.argv.includes('--hidden')
 const QUIT_EXISTING = process.argv.includes('--quit')
 const APP_USER_MODEL_ID = 'com.hermeswebui.studio'
+const WINDOW_STATE_CHANGE_CHANNEL = 'hermes-desktop:window-state-change'
+const BROWSER_STATE_CHANGE_CHANNEL = 'hermes-desktop:browser-state-change'
+const BROWSER_ANNOTATION_REQUEST_CHANNEL = 'hermes-desktop:browser-annotation-request'
+const DESKTOP_DISABLED_CHROMIUM_FEATURES = ['CompressionDictionaryTransport', 'CompressionDictionaryTransportBackend']
 type WindowControlAction = 'minimize' | 'toggle-maximize' | 'close'
 type DesktopWindowBounds = { x: number; y: number; width: number; height: number }
 
 let mainWindow: BrowserWindow | null = null
+const chatWindows = new Map<string, BrowserWindow>()
 let serverUrl: string | null = null
 let tray: Tray | null = null
 let isQuitting = false
+let appShutdownPromise: Promise<void> | null = null
 let isBootstrapping = false
 let isResettingLogin = false
 let windowFadeTimer: NodeJS.Timeout | null = null
+let browserManager: BrowserManager | null = null
+let browserBroker: BrowserBroker | null = null
 const activeNotifications = new Set<Notification>()
+
+// Custom Session paths do not need Chromium's optional compression-dictionary
+// disk cache; disabling it leaves the normal HTTP cache enabled and isolated.
+const existingDisabledFeatures = app.commandLine.getSwitchValue('disable-features')
+  .split(',')
+  .map(value => value.trim())
+  .filter(Boolean)
+app.commandLine.appendSwitch('disable-features', [...new Set([...existingDisabledFeatures, ...DESKTOP_DISABLED_CHROMIUM_FEATURES])].join(','))
 
 if (process.platform === 'win32') {
   app.setAppUserModelId(APP_USER_MODEL_ID)
@@ -76,7 +113,7 @@ function showWindowWithFade(focus = true) {
 
 function showMainWindow() {
   if (!mainWindow) {
-    createWindow()
+    void createWindow()
   }
   if (!mainWindow) return
   showWindowWithFade(true)
@@ -85,6 +122,22 @@ function showMainWindow() {
 function quitApp() {
   isQuitting = true
   app.quit()
+}
+
+async function prepareAppShutdown(): Promise<void> {
+  isQuitting = true
+  if (!appShutdownPromise) {
+    appShutdownPromise = (async () => {
+      cancelWindowFade()
+      await showShutdownSplash()
+      await browserBroker?.stop().catch(() => undefined)
+      await browserManager?.destroy().catch(() => undefined)
+      browserBroker = null
+      browserManager = null
+      await stopWebUiServer().catch(() => undefined)
+    })()
+  }
+  await appShutdownPromise
 }
 
 function webUiHashUrl(hashPath: string): string | null {
@@ -97,23 +150,33 @@ function mainRouteUrl(): string | null {
   return webUiHashUrl('/hermes/chat')
 }
 
-function windowState() {
+function chatRouteUrl(sessionId: string, profile?: string): string | null {
+  const query = profile ? `?profile=${encodeURIComponent(profile)}` : ''
+  return webUiHashUrl(`/desktop-chat/${encodeURIComponent(sessionId)}${query}`)
+}
+
+function windowState(target: BrowserWindow | null = mainWindow) {
   return {
-    isMaximized: !!mainWindow?.isMaximized(),
+    isMaximized: !!target && !target.isDestroyed() && target.isMaximized(),
   }
 }
 
-function handleWindowControl(action: WindowControlAction) {
-  if (!mainWindow || mainWindow.isDestroyed()) return windowState()
+function notifyWindowStateChanged(target: BrowserWindow | null) {
+  if (!target || target.isDestroyed()) return
+  target.webContents.send(WINDOW_STATE_CHANGE_CHANNEL, windowState(target))
+}
+
+function handleWindowControl(target: BrowserWindow | null, action: WindowControlAction) {
+  if (!target || target.isDestroyed()) return windowState(target)
   if (action === 'minimize') {
-    mainWindow.minimize()
+    target.minimize()
   } else if (action === 'toggle-maximize') {
-    if (mainWindow.isMaximized()) mainWindow.unmaximize()
-    else mainWindow.maximize()
+    if (target.isMaximized()) target.unmaximize()
+    else target.maximize()
   } else if (action === 'close') {
-    mainWindow.close()
+    target.close()
   }
-  return windowState()
+  return windowState(target)
 }
 
 function hasQuitRequest(data: unknown): boolean {
@@ -265,18 +328,18 @@ function updateTrayMenu() {
 function createTray() {
   if (tray) return
   const source = process.platform === 'darwin'
-    ? desktopTrayTemplateIcon()
+    ? desktopMacTrayIcon()
     : process.platform === 'win32'
       ? desktopWindowsTrayIcon()
       : desktopIcon()
-  const icon = nativeImage.createFromPath(source).resize({
-    width: process.platform === 'darwin' ? 18 : process.platform === 'win32' ? 24 : 16,
-    height: process.platform === 'darwin' ? 18 : process.platform === 'win32' ? 24 : 16,
-    quality: 'best',
-  })
-  if (process.platform === 'darwin') {
-    icon.setTemplateImage(true)
-  }
+  const sourceIcon = nativeImage.createFromPath(source)
+  const icon = process.platform === 'darwin'
+    ? sourceIcon
+    : sourceIcon.resize({
+        width: process.platform === 'win32' ? 24 : 16,
+        height: process.platform === 'win32' ? 24 : 16,
+        quality: 'best',
+      })
   tray = new Tray(icon)
   tray.setToolTip('Hermes Studio')
   tray.on('click', () => {
@@ -286,11 +349,11 @@ function createTray() {
   updateTrayMenu()
 }
 
-function createWindow() {
+async function createWindow(): Promise<void> {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
-    minWidth: 960,
+    minWidth: 769,
     minHeight: 600,
     title: 'Hermes Studio',
     backgroundColor: '#1a1a1a',
@@ -299,7 +362,7 @@ function createWindow() {
     ...(process.platform === 'darwin'
       ? {
           titleBarStyle: 'hiddenInset' as const,
-          trafficLightPosition: { x: 16, y: 12 },
+          trafficLightPosition: { x: 20, y: 16 },
         }
       : process.platform === 'win32'
         ? {
@@ -329,6 +392,11 @@ function createWindow() {
 
   mainWindow.on('show', updateTrayMenu)
   mainWindow.on('hide', updateTrayMenu)
+  mainWindow.on('maximize', () => notifyWindowStateChanged(mainWindow))
+  mainWindow.on('unmaximize', () => notifyWindowStateChanged(mainWindow))
+  mainWindow.on('restore', () => notifyWindowStateChanged(mainWindow))
+
+  installSelectionContextMenu(mainWindow)
 
   // External links → system browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -343,18 +411,169 @@ function createWindow() {
   // macOS), go straight to it. Otherwise show a loading splash; bootstrap()
   // will swap in the real URL once the server is ready.
   if (serverUrl) {
-    mainWindow.loadURL(mainRouteUrl() || serverUrl)
+    await mainWindow.loadURL(mainRouteUrl() || serverUrl)
   } else {
-    mainWindow.loadURL(splashHtml(t('runtime.checking')))
+    await mainWindow.loadURL(splashHtml(t('runtime.checking')))
   }
   updateTrayMenu()
 }
 
+function normalizeChatWindowValue(value: unknown, maxLength: number): string | null {
+  if (typeof value !== 'string') return null
+  const normalized = value.trim()
+  if (!normalized || normalized.length > maxLength || /[\u0000-\u001f\u007f]/.test(normalized)) return null
+  return normalized
+}
+
+async function openChatWindow(sessionIdInput: unknown, profileInput?: unknown): Promise<void> {
+  const sessionId = normalizeChatWindowValue(sessionIdInput, 512)
+  if (!sessionId) throw new Error('Invalid chat session ID')
+  const profile = profileInput == null ? undefined : normalizeChatWindowValue(profileInput, 200) || undefined
+  const windowKey = `${profile || ''}\u0000${sessionId}`
+
+  const existing = chatWindows.get(windowKey)
+  if (existing && !existing.isDestroyed()) {
+    if (existing.isMinimized()) existing.restore()
+    existing.show()
+    existing.focus()
+    return
+  }
+
+  const url = chatRouteUrl(sessionId, profile)
+  if (!url) throw new Error('Desktop Web UI is not ready')
+
+  const chatWindow = new BrowserWindow({
+    width: 620,
+    height: 760,
+    minWidth: 620,
+    minHeight: 480,
+    title: 'Hermes Studio',
+    backgroundColor: '#1a1a1a',
+    autoHideMenuBar: true,
+    show: false,
+    ...(process.platform === 'darwin'
+      ? {
+          titleBarStyle: 'hiddenInset' as const,
+          trafficLightPosition: { x: 20, y: 16 },
+        }
+      : process.platform === 'win32'
+        ? {
+            titleBarStyle: 'hidden' as const,
+            titleBarOverlay: { height: 46 },
+          }
+        : {}),
+    ...(process.platform === 'linux' ? { icon: desktopIcon() } : {}),
+    webPreferences: {
+      preload: join(__dirname, '..', 'preload', 'index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      additionalArguments: ['--hermes-window-kind=chat'],
+    },
+  })
+  chatWindows.set(windowKey, chatWindow)
+
+  chatWindow.once('ready-to-show', () => {
+    if (chatWindow.isDestroyed()) return
+    chatWindow.show()
+    chatWindow.focus()
+  })
+  chatWindow.on('maximize', () => notifyWindowStateChanged(chatWindow))
+  chatWindow.on('unmaximize', () => notifyWindowStateChanged(chatWindow))
+  chatWindow.on('restore', () => notifyWindowStateChanged(chatWindow))
+  chatWindow.on('closed', () => {
+    if (chatWindows.get(windowKey) === chatWindow) chatWindows.delete(windowKey)
+  })
+
+  installSelectionContextMenu(chatWindow)
+  chatWindow.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
+    if (/^(https?:|mailto:)/i.test(targetUrl)) {
+      shell.openExternal(targetUrl).catch(() => undefined)
+    }
+    return { action: 'deny' }
+  })
+
+  await chatWindow.loadURL(url)
+}
+
+async function initializeDesktopBrowser(): Promise<void> {
+  if (!mainWindow || mainWindow.isDestroyed() || browserManager) return
+  const root = join(webUiHome(), 'desktop-browser')
+  const manager = new BrowserManager(mainWindow, root, {
+    selectElementLabel: t('browser.selectElement'),
+    selectRegionLabel: t('browser.selectRegion'),
+    onAnnotationRequest: (tabId, mode) => {
+      browserBroker?.revokeTab(tabId)
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(BROWSER_ANNOTATION_REQUEST_CHANNEL, { tabId, mode })
+      }
+    },
+  })
+  const broker = new BrowserBroker(manager, root)
+  try {
+    await manager.initialize()
+    manager.onStateChange(state => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(BROWSER_STATE_CHANGE_CHANNEL, state)
+    })
+    await broker.start()
+    browserManager = manager
+    browserBroker = broker
+  } catch (error) {
+    await broker.stop().catch(() => undefined)
+    await manager.destroy()
+    throw error
+  }
+}
+
+function installMicrophonePermissionHandler() {
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const isMainRenderer = !!mainWindow
+      && !mainWindow.isDestroyed()
+      && webContents === mainWindow.webContents
+    const isChatRenderer = [...chatWindows.values()].some(window => (
+      !window.isDestroyed() && webContents === window.webContents
+    ))
+    const isTrustedRenderer = isMainRenderer || isChatRenderer
+    if (permission !== 'media') {
+      callback(isTrustedRenderer)
+      return
+    }
+
+    const mediaTypes = ('mediaTypes' in details ? details.mediaTypes : undefined) ?? []
+    const requestsAudio = mediaTypes.length ? mediaTypes.includes('audio') : true
+
+    if (!isTrustedRenderer || !requestsAudio) {
+      callback(false)
+      return
+    }
+
+    if (process.platform !== 'darwin') {
+      callback(true)
+      return
+    }
+
+    const status = systemPreferences.getMediaAccessStatus('microphone')
+    if (status === 'granted') {
+      callback(true)
+      return
+    }
+    if (status === 'denied' || status === 'restricted') {
+      callback(false)
+      return
+    }
+    void systemPreferences.askForMediaAccess('microphone')
+      .then(granted => callback(granted))
+      .catch(() => callback(false))
+  })
+}
+
 function splashHtml(label = t('desktop.startingLocalServices')): string {
   const startingLabel = escapeHtml(label)
+  const pageBackground = process.platform === 'win32' ? 'transparent' : '#1a1a1a'
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Hermes Studio</title>
 <style>
-  html,body{margin:0;height:100%;background:#1a1a1a;color:#e5e5e5;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif;-webkit-app-region:drag;}
+  html,body{margin:0;height:100%;background:${pageBackground};color:#e5e5e5;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif;-webkit-app-region:drag;}
+  .surface{height:100%;background:#1a1a1a}
   .wrap{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:20px}
   .dot{width:10px;height:10px;border-radius:50%;background:#888;animation:pulse 1.2s ease-in-out infinite}
   @keyframes pulse{0%,100%{opacity:.3}50%{opacity:1}}
@@ -364,14 +583,16 @@ function splashHtml(label = t('desktop.startingLocalServices')): string {
   .detail{min-height:18px;font-size:12px;color:#7f7f7f}
   .progress{width:320px;height:6px;border-radius:999px;background:#2b2b2b;overflow:hidden}
   .bar{width:0;height:100%;background:#d8d8d8;transition:width .18s ease}
+  .bar.indeterminate{width:40%;animation:progress 1.2s ease-in-out infinite;transition:none}
+  @keyframes progress{0%{transform:translateX(-110%)}100%{transform:translateX(360%)}}
   h1{font-weight:500;margin:0;font-size:18px}
-</style></head><body><div class="wrap">
+</style></head><body><main class="surface"><div class="wrap">
 <h1>Hermes Studio</h1>
 <div class="row"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
 <div id="label" class="label">${startingLabel}</div>
-<div class="progress"><div id="bar" class="bar"></div></div>
+<div class="progress"><div id="bar" class="bar indeterminate"></div></div>
 <div id="detail" class="detail"></div>
-</div></body></html>`
+</div></main></body></html>`
   return 'data:text/html;charset=utf-8,' + encodeURIComponent(html)
 }
 
@@ -423,6 +644,7 @@ function runtimeSourceLogoDataUri(): string {
 function runtimeSourceHtml(errorMessage?: string): string {
   const safeError = errorMessage ? escapeHtml(errorMessage) : ''
   const logoUrl = runtimeSourceLogoDataUri()
+  const pageBackground = process.platform === 'win32' ? 'transparent' : '#191919'
   const errorBlock = safeError
     ? `<section class="error" aria-live="polite">
         <div class="error-title">${escapeHtml(t('desktop.downloadFailed'))}</div>
@@ -433,8 +655,9 @@ function runtimeSourceHtml(errorMessage?: string): string {
 <style>
   :root{color-scheme:dark}
   *{box-sizing:border-box}
-  html,body{margin:0;width:100%;height:100%;background:#191919;color:#f1f1f1;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif;}
-  body{min-height:100%;display:grid;place-items:center;padding:32px;-webkit-app-region:drag;}
+  html,body{margin:0;width:100%;height:100%;background:${pageBackground};color:#f1f1f1;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif;}
+  body{min-height:100%;-webkit-app-region:drag;}
+  .surface{width:100%;height:100%;display:grid;place-items:center;padding:32px;background:#191919}
   .wrap{width:min(720px,100%);display:flex;flex-direction:column;align-items:center;gap:22px;text-align:center}
   .brand{display:flex;align-items:center;gap:10px;color:#f6f6f6}
   .mark{width:34px;height:34px;border-radius:8px;object-fit:contain;display:block}
@@ -451,11 +674,11 @@ function runtimeSourceHtml(errorMessage?: string): string {
   .error-title{font-size:13px;font-weight:650;color:#ffc3c3;margin-bottom:8px}
   pre{width:100%;max-height:180px;overflow:auto;white-space:pre-wrap;margin:0;color:#ffaaaa;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;-webkit-app-region:no-drag}
   @media (max-width:560px){
-    body{padding:24px}
+    .surface{padding:24px}
     .actions{grid-template-columns:1fr}
     button{min-height:78px}
   }
-</style></head><body><main class="wrap">
+</style></head><body><main class="surface"><div class="wrap">
 <div class="brand">${logoUrl ? `<img class="mark" src="${logoUrl}" alt="Hermes Studio">` : ''}<h1>Hermes Studio</h1></div>
 <p class="label">${escapeHtml(t('desktop.selectRuntimeSource'))}</p>
 ${errorBlock}
@@ -477,7 +700,7 @@ ${errorBlock}
     window.hermesDesktop?.retryBootstrap?.('github')
   })
 </script>
-</main></body></html>`
+</div></main></body></html>`
   return 'data:text/html;charset=utf-8,' + encodeURIComponent(html)
 }
 
@@ -502,7 +725,7 @@ function updateSplash(progress: RuntimeProgress) {
   if (!mainWindow || mainWindow.isDestroyed()) return
   const label = progress.message
   const percent = typeof progress.percent === 'number' ? Math.round(progress.percent) : null
-  let detail = ''
+  let detail = progress.detail || ''
   if (progress.receivedBytes && progress.totalBytes) {
     detail = `${formatBytes(progress.receivedBytes)} / ${formatBytes(progress.totalBytes)}`
     if (percent !== null) detail += ` (${percent}%)`
@@ -517,9 +740,42 @@ function updateSplash(progress: RuntimeProgress) {
       const bar = document.getElementById('bar');
       if (label) label.textContent = ${JSON.stringify(label)};
       if (detail) detail.textContent = ${JSON.stringify(detail)};
-      if (bar) bar.style.width = ${JSON.stringify(percent === null ? '100%' : `${percent}%`)};
+      if (bar) {
+        bar.classList.toggle('indeterminate', ${JSON.stringify(percent === null)});
+        bar.style.width = ${JSON.stringify(percent === null ? '' : `${percent}%`)};
+      }
     }
   `).catch(() => undefined)
+}
+
+async function installPackagedCommandShims(): Promise<void> {
+  if (!app.isPackaged) return
+
+  const installs = [
+    installHermesStudioCliShim({
+      nodePath: bundledNode(),
+      runtimeVersion: desktopRuntimeVersion(),
+      webUiScriptPath: join(webuiDir(), 'bin', 'hermes-web-ui.mjs'),
+    }),
+    installHermesStudioMcpShim({
+      nodePath: bundledNode(),
+      scriptPath: join(webuiDir(), 'bin', 'hermes-studio-mcp.mjs'),
+      webUiUrl: `http://127.0.0.1:${PORT}`,
+    }),
+  ]
+  const results = await Promise.allSettled(installs)
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      console.warn(
+        `[cli-shim] failed to install Hermes Studio command: `
+        + `${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
+      )
+      continue
+    }
+    if (result.value.status === 'skipped') {
+      console.warn(`[cli-shim] ${result.value.reason}: ${result.value.shimPath}`)
+    }
+  }
 }
 
 async function bootstrap(source?: RuntimeDownloadSource) {
@@ -527,6 +783,8 @@ async function bootstrap(source?: RuntimeDownloadSource) {
   isBootstrapping = true
 
   try {
+    await migratePendingRuntimeRoot(updateSplash)
+    repairUpdatedDesktopRuntimeLaunchers()
     const selectedSource = source || envRuntimeDownloadSource()
     const runtimeUrlOverride = !!process.env.HERMES_DESKTOP_RUNTIME_URL?.trim()
     const manifestOverride = !!process.env.HERMES_DESKTOP_RUNTIME_MANIFEST_URL?.trim()
@@ -544,6 +802,7 @@ async function bootstrap(source?: RuntimeDownloadSource) {
     }
     if (isDesktopRuntimeReady()) {
       writeActiveRuntimeVersion()
+      await installPackagedCommandShims()
     }
   } catch (err) {
     console.error('Failed to prepare Hermes runtime:', err)
@@ -570,9 +829,11 @@ async function bootstrap(source?: RuntimeDownloadSource) {
     console.error('Failed to start Web UI server:', err)
     if (mainWindow) {
       const msg = escapeHtml(String(err instanceof Error ? err.message : err))
+      const pageBackground = process.platform === 'win32' ? 'transparent' : '#1a1a1a'
       mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(
-        `<html><body style="font-family:system-ui;padding:32px;background:#1a1a1a;color:#eee">
-         <h2>${escapeHtml(t('desktop.failedStartServices'))}</h2><pre style="white-space:pre-wrap;color:#f88">${msg}</pre>
+        `<html><body style="margin:0;font-family:system-ui;background:${pageBackground};color:#eee">
+         <main style="min-height:100vh;padding:32px;background:#1a1a1a">
+         <h2>${escapeHtml(t('desktop.failedStartServices'))}</h2><pre style="white-space:pre-wrap;color:#f88">${msg}</pre></main>
          </body></html>`,
       ))
     }
@@ -582,10 +843,133 @@ async function bootstrap(source?: RuntimeDownloadSource) {
 }
 
 ipcMain.handle('hermes-desktop:get-token', () => getToken())
-ipcMain.handle('hermes-desktop:get-window-state', () => windowState())
-ipcMain.handle('hermes-desktop:window-control', (_event, action?: unknown) => {
-  if (action !== 'minimize' && action !== 'toggle-maximize' && action !== 'close') return windowState()
-  return handleWindowControl(action)
+ipcMain.handle('hermes-desktop:open-chat-window', (event, sessionId?: unknown, profile?: unknown) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
+    throw new Error('Chat windows can only be opened from the main window')
+  }
+  return openChatWindow(sessionId, profile)
+})
+
+function browserForEvent(event: IpcMainInvokeEvent): BrowserManager {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) throw new Error('Desktop browser IPC is only available to the main window')
+  if (!browserManager) throw new Error('Desktop browser is still starting')
+  return browserManager
+}
+
+ipcMain.handle('hermes-desktop:browser-get-state', event => browserForEvent(event).state())
+ipcMain.handle('hermes-desktop:browser-set-viewport', (event, bounds?: unknown, visible?: unknown) => {
+  const input = bounds && typeof bounds === 'object' ? bounds as Partial<BrowserBounds> : {}
+  const sanitized: BrowserBounds = {
+    x: Number.isFinite(input.x) ? Number(input.x) : 0,
+    y: Number.isFinite(input.y) ? Number(input.y) : 0,
+    width: Number.isFinite(input.width) ? Number(input.width) : 1,
+    height: Number.isFinite(input.height) ? Number(input.height) : 1,
+  }
+  return browserForEvent(event).setViewport(sanitized, visible === true)
+})
+ipcMain.handle('hermes-desktop:browser-create-tab', (event, url?: unknown, activate?: unknown) => browserForEvent(event).createTab(typeof url === 'string' ? url : 'about:blank', activate !== false))
+ipcMain.handle('hermes-desktop:browser-create-html-preview-tab', (event, html?: unknown, title?: unknown, activate?: unknown) => (
+  browserForEvent(event).createHtmlPreviewTab(
+    typeof html === 'string' ? html : '',
+    typeof title === 'string' ? title : '',
+    activate !== false,
+  )
+))
+ipcMain.handle('hermes-desktop:browser-close-tab', (event, tabId?: unknown) => browserForEvent(event).closeTab(String(tabId || '')))
+ipcMain.handle('hermes-desktop:browser-activate-tab', (event, tabId?: unknown) => browserForEvent(event).activateTab(String(tabId || '')))
+ipcMain.handle('hermes-desktop:browser-navigate', (event, tabId?: unknown, url?: unknown) => {
+  const manager = browserForEvent(event)
+  browserBroker?.revokeTab(String(tabId || ''))
+  return manager.navigate(String(tabId || ''), String(url || ''))
+})
+ipcMain.handle('hermes-desktop:browser-navigation-action', (event, tabId?: unknown, action?: unknown) => {
+  if (action !== 'back' && action !== 'forward' && action !== 'reload' && action !== 'stop') throw new Error('Invalid browser navigation action')
+  const manager = browserForEvent(event)
+  browserBroker?.revokeTab(String(tabId || ''))
+  return manager.navigationAction(String(tabId || ''), action)
+})
+ipcMain.handle('hermes-desktop:browser-create-profile', (event, input?: unknown) => {
+  const value = input && typeof input === 'object' ? input as Record<string, unknown> : {}
+  const proxyMode = value.proxyMode === 'system' || value.proxyMode === 'fixed_servers' ? value.proxyMode : 'direct'
+  return browserForEvent(event).createProfile({
+    name: String(value.name || ''),
+    rootDirectory: String(value.rootDirectory || ''),
+    proxyMode,
+    proxyRules: String(value.proxyRules || ''),
+  })
+})
+ipcMain.handle('hermes-desktop:browser-choose-profile-root-directory', (event, defaultPath?: unknown) => (
+  browserForEvent(event).chooseProfileRootDirectory(typeof defaultPath === 'string' ? defaultPath : undefined)
+))
+ipcMain.handle('hermes-desktop:browser-rename-profile', (event, profileId?: unknown, name?: unknown) => browserForEvent(event).renameProfile(String(profileId || ''), String(name || '')))
+ipcMain.handle('hermes-desktop:browser-profile-switch-impact', event => browserForEvent(event).profileSwitchImpact())
+ipcMain.handle('hermes-desktop:browser-switch-profile', (event, profileId?: unknown, force?: unknown) => {
+  const manager = browserForEvent(event)
+  browserBroker?.revokeAll()
+  return manager.switchProfile(String(profileId || ''), force === true)
+})
+ipcMain.handle('hermes-desktop:browser-update-profile', (event, profileId?: unknown, input?: unknown) => {
+  const value = input && typeof input === 'object' ? input as Record<string, unknown> : {}
+  return browserForEvent(event).updateProfile(String(profileId || ''), {
+    ...(typeof value.rootDirectory === 'string' ? { rootDirectory: value.rootDirectory } : {}),
+    ...(value.proxyMode === 'direct' || value.proxyMode === 'system' || value.proxyMode === 'fixed_servers'
+      ? { proxyMode: value.proxyMode }
+      : {}),
+    ...(typeof value.proxyRules === 'string' ? { proxyRules: value.proxyRules } : {}),
+    ...(typeof value.askBeforeDownload === 'boolean' ? { askBeforeDownload: value.askBeforeDownload } : {}),
+    ...(value.downloadConflictPolicy === 'ask' || value.downloadConflictPolicy === 'uniquify'
+      ? { downloadConflictPolicy: value.downloadConflictPolicy }
+      : {}),
+  })
+})
+ipcMain.handle('hermes-desktop:browser-delete-profile', (event, profileId?: unknown) => browserForEvent(event).deleteProfile(String(profileId || '')))
+ipcMain.handle('hermes-desktop:browser-clear-profile-data', (event, profileId?: unknown, kind?: unknown) => {
+  if (kind !== 'cache' && kind !== 'site-data' && kind !== 'permission-audit') throw new Error('Invalid browser data type')
+  const manager = browserForEvent(event)
+  browserBroker?.revokeAll()
+  return manager.clearProfileData(String(profileId || ''), kind)
+})
+ipcMain.handle('hermes-desktop:browser-cancel-download', (event, downloadId?: unknown) => (
+  browserForEvent(event).cancelDownload(String(downloadId || ''))
+))
+ipcMain.handle('hermes-desktop:browser-take-over', (event, tabId?: unknown) => {
+  browserForEvent(event)
+  browserBroker?.revokeTab(String(tabId || ''))
+  return true
+})
+ipcMain.handle('hermes-desktop:browser-annotate', (event, tabId?: unknown, mode?: unknown) => {
+  if (mode !== 'element' && mode !== 'region') throw new Error('Invalid browser annotation mode')
+  const manager = browserForEvent(event)
+  browserBroker?.revokeTab(String(tabId || ''))
+  return manager.annotate(String(tabId || ''), mode)
+})
+ipcMain.handle('hermes-desktop:browser-cancel-annotation', (event, tabId?: unknown) => browserForEvent(event).cancelAnnotation(String(tabId || '')))
+ipcMain.handle('hermes-desktop:browser-update-annotation-note', (event, tabId?: unknown, marker?: unknown, note?: unknown) => {
+  const value = Number(marker)
+  if (!Number.isInteger(value) || value < 1 || value > 100) throw new Error('Invalid browser annotation marker')
+  return browserForEvent(event).updateAnnotationNote(String(tabId || ''), value, String(note || '').slice(0, 500))
+})
+ipcMain.handle('hermes-desktop:browser-capture-annotations', (event, tabId?: unknown) => browserForEvent(event).captureAnnotations(String(tabId || '')))
+ipcMain.handle('hermes-desktop:browser-clear-annotations', (event, tabId?: unknown) => browserForEvent(event).clearAnnotations(String(tabId || '')))
+ipcMain.handle('hermes-desktop:select-runtime-directory', async (_event, defaultPath?: unknown) => {
+  const options: OpenDialogOptions = {
+    properties: ['openDirectory'],
+    defaultPath: typeof defaultPath === 'string' && defaultPath.trim()
+      ? defaultPath.trim()
+      : runtimeStorageRoot(),
+  }
+  const result = mainWindow && !mainWindow.isDestroyed()
+    ? await dialog.showOpenDialog(mainWindow, options)
+    : await dialog.showOpenDialog(options)
+  return result.canceled ? null : result.filePaths[0] || null
+})
+ipcMain.handle('hermes-desktop:get-window-state', event => {
+  return windowState(BrowserWindow.fromWebContents(event.sender))
+})
+ipcMain.handle('hermes-desktop:window-control', (event, action?: unknown) => {
+  const target = BrowserWindow.fromWebContents(event.sender)
+  if (action !== 'minimize' && action !== 'toggle-maximize' && action !== 'close') return windowState(target)
+  return handleWindowControl(target, action)
 })
 function resolveNotificationIcon(icon: unknown): string {
   if (typeof icon !== 'string') return desktopIcon()
@@ -660,7 +1044,7 @@ function runDesktopApp() {
     showMainWindow()
   })
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     if (QUIT_EXISTING) {
       quitApp()
       return
@@ -671,41 +1055,17 @@ function runDesktopApp() {
     // visual clutter. macOS keeps a menu (system requirement) but Electron's
     // default is fine there.
     if (process.platform !== 'darwin') Menu.setApplicationMenu(null)
-    if (app.isPackaged) {
-      installHermesStudioCliShim({
-        nodePath: bundledNode(),
-        runtimeVersion: desktopRuntimeVersion(),
-        webUiScriptPath: join(webuiDir(), 'bin', 'hermes-web-ui.mjs'),
-      }).then(result => {
-        if (result.status === 'skipped') {
-          console.warn(`[cli-shim] ${result.reason}: ${result.shimPath}`)
-        }
-      }).catch(err => {
-        console.warn(`[cli-shim] failed to install hermes-studio command: ${err instanceof Error ? err.message : String(err)}`)
-      })
-      installHermesStudioMcpShim({
-        nodePath: bundledNode(),
-        scriptPath: join(webuiDir(), 'bin', 'hermes-studio-mcp.mjs'),
-        webUiUrl: `http://127.0.0.1:${PORT}`,
-      }).then(result => {
-        if (result.status === 'skipped') {
-          console.warn(`[cli-shim] ${result.reason}: ${result.shimPath}`)
-        }
-      }).catch(err => {
-        console.warn(`[cli-shim] failed to install hermes-studio-mcp command: ${err instanceof Error ? err.message : String(err)}`)
-      })
-    }
+    installMicrophonePermissionHandler()
     createTray()
-    createWindow()
-    bootstrap()
-    initAutoUpdater({
-      beforeQuitAndInstall: () => {
-        isQuitting = true
-      },
+    await createWindow()
+    await initializeDesktopBrowser().catch(error => {
+      console.error('[desktop-browser] failed to initialize:', error)
     })
+    void bootstrap()
+    initAutoUpdater({ beforeQuitAndInstall: prepareAppShutdown })
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
-        createWindow()
+        void createWindow()
       } else if (mainWindow) {
         showMainWindow()
       }
@@ -724,10 +1084,11 @@ function runDesktopApp() {
       return
     }
     e.preventDefault()
-    cancelWindowFade()
-    await showShutdownSplash()
-    await stopWebUiServer().catch(() => undefined)
-    app.exit(0)
+    try {
+      await prepareAppShutdown()
+    } finally {
+      app.exit(0)
+    }
   })
 }
 

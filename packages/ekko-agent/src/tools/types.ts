@@ -1,23 +1,44 @@
 import type { AgentToolDefinition } from '../model/types'
 
 export interface AgentToolContext {
+  runId?: string
   cwd?: string
   workspaceRoot?: string
   workspaceId?: string
   userId?: string
   sessionId?: string
+  profileId?: string
+  sourceMessageIds?: string[]
   browserSessionId?: string
   mcpServers?: Record<string, unknown>
   timeoutMs?: number
   signal?: AbortSignal
+  skillMutationSource?: 'foreground' | 'background-review'
+  delegationDepth?: number
+  delegateTask?: AgentTaskDelegate
 }
+
+export type AgentTaskMode = 'foreground' | 'background'
+
+export interface AgentTaskRequest {
+  goal: string
+  context?: string
+  mode: AgentTaskMode
+}
+
+export type AgentTaskDelegate = (request: AgentTaskRequest) => Promise<AgentToolResult>
 
 export interface AgentToolResult {
   ok: boolean
   content: string
+  contentParts?: AgentToolContentPart[]
   data?: unknown
   error?: string
 }
+
+export type AgentToolContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image'; data: string; mimeType: string }
 
 export interface AgentTool<TInput extends Record<string, unknown> = Record<string, unknown>> {
   definition: AgentToolDefinition

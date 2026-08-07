@@ -112,6 +112,38 @@ describe('file routes path metadata', () => {
     })
   })
 
+  it('returns exact preview bytes with allowlisted MIME and no-cache headers', async () => {
+    const data = Buffer.from('%PDF-1.7\npreview')
+    provider.stat.mockResolvedValue({
+      name: 'report.pdf',
+      path: 'workspace/report.pdf',
+      isDir: false,
+      size: data.length,
+      modTime: '2026-07-17T00:00:00.000Z',
+    })
+    provider.readFile.mockResolvedValue(data)
+    const headers: Record<string, string> = {}
+    const ctx: any = {
+      query: { path: 'workspace/report.pdf' },
+      state: { profile: { name: 'research' } },
+      set: (name: string, value: string) => { headers[name] = value },
+      body: null,
+    }
+
+    await runFileRoute('/api/hermes/files/preview', ctx)
+
+    expect(provider.stat).toHaveBeenCalledWith('/home/agent/.hermes/workspace/report.pdf')
+    expect(provider.readFile).toHaveBeenCalledWith('/home/agent/.hermes/workspace/report.pdf')
+    expect(ctx.body).toEqual(data)
+    expect(headers).toMatchObject({
+      'Content-Type': 'application/pdf',
+      'Content-Length': String(data.length),
+      'Cache-Control': 'no-store, max-age=0',
+      'X-Content-Type-Options': 'nosniff',
+    })
+    expect(headers['Content-Disposition']).toContain('inline;')
+  })
+
   it('deletes files from the parsed request body', async () => {
     provider.deleteFile.mockResolvedValue(undefined)
 

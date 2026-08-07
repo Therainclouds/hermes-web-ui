@@ -1,6 +1,7 @@
 import type { Server, Socket } from 'socket.io'
 import { authenticateUserToken, isAuthEnabled, type AuthenticatedUser } from '../middleware/user-auth'
 import { listUserProfiles } from '../db/hermes/users-store'
+import { getWorkflowRunWithEvidence, type WorkflowRunWithEvidenceRecord } from '../db/hermes/workflow-run-store'
 import { logger } from './logger'
 import {
   getWorkflowManager,
@@ -13,6 +14,10 @@ const WORKFLOW_NAMESPACE = '/workflow'
 
 interface WorkflowListRequest {
   profile?: string | null
+}
+
+export interface WorkflowSocketRuntimeStatus extends WorkflowRuntimeStatus {
+  run: WorkflowRunWithEvidenceRecord | null
 }
 
 interface WorkflowStatusRequest {
@@ -103,7 +108,7 @@ export class WorkflowSocketServer {
       this.handleList(socket, payload, callback)
     })
 
-    socket.on('workflow.status.subscribe', (request: WorkflowStatusRequest | Ack<{ statuses: WorkflowRuntimeStatus[] }> | undefined, ack?: Ack<{ statuses: WorkflowRuntimeStatus[] }>) => {
+    socket.on('workflow.status.subscribe', (request: WorkflowStatusRequest | Ack<{ statuses: WorkflowSocketRuntimeStatus[] }> | undefined, ack?: Ack<{ statuses: WorkflowSocketRuntimeStatus[] }>) => {
       const callback = typeof request === 'function' ? request : ack
       const payload = typeof request === 'function' ? {} : request || {}
       this.handleStatusSubscribe(socket, payload, callback)
@@ -126,7 +131,7 @@ export class WorkflowSocketServer {
     safeAck(ack, { ok: true, data: { workflows } })
   }
 
-  private handleStatusSubscribe(socket: Socket, request: WorkflowStatusRequest, ack?: Ack<{ statuses: WorkflowRuntimeStatus[] }>): void {
+  private handleStatusSubscribe(socket: Socket, request: WorkflowStatusRequest, ack?: Ack<{ statuses: WorkflowSocketRuntimeStatus[] }>): void {
     const workflowId = typeof request.workflowId === 'string' ? request.workflowId.trim() : ''
     if (workflowId) {
       const workflow = this.manager.get(workflowId)
@@ -140,8 +145,14 @@ export class WorkflowSocketServer {
         return
       }
 
-      void socket.join(this.workflowRoom(workflowId))
-      safeAck(ack, { ok: true, data: { statuses: [this.manager.getRuntimeStatus(workflowId)] } })
+      try {
+        const status = this.statusWithEvidence(this.manager.getRuntimeStatus(workflowId))
+        void socket.join(this.workflowRoom(workflowId))
+        safeAck(ack, { ok: true, data: { statuses: [status] } })
+      } catch (err: any) {
+        logger.error(err, '[workflow-socket] failed to load persisted execution evidence for workflow %s', workflowId)
+        safeAck(ack, { ok: false, error: err?.message || 'workflow evidence read failed' })
+      }
       return
     }
 
@@ -149,12 +160,15 @@ export class WorkflowSocketServer {
     const workflows = filterAllowedWorkflows(user, this.manager.list())
     const workflowIds = new Set(workflows.map(workflow => workflow.id))
     for (const id of workflowIds) void socket.join(this.workflowRoom(id))
-    safeAck(ack, {
-      ok: true,
-      data: {
-        statuses: this.manager.listRuntimeStatuses().filter(status => workflowIds.has(status.workflowId)),
-      },
-    })
+    try {
+      const statuses = this.manager.listRuntimeStatuses()
+        .filter(status => workflowIds.has(status.workflowId))
+        .map(status => this.statusWithEvidence(status))
+      safeAck(ack, { ok: true, data: { statuses } })
+    } catch (err: any) {
+      logger.error(err, '[workflow-socket] failed to load persisted execution evidence for workflow status subscription')
+      safeAck(ack, { ok: false, error: err?.message || 'workflow evidence read failed' })
+    }
   }
 
   private handleStatusUnsubscribe(socket: Socket, request: WorkflowStatusRequest, ack?: Ack<{ ok: true }>): void {
@@ -168,8 +182,24 @@ export class WorkflowSocketServer {
     safeAck(ack, { ok: true, data: { ok: true } })
   }
 
+  private statusWithEvidence(status: WorkflowRuntimeStatus): WorkflowSocketRuntimeStatus {
+    if (!status.runId) return { ...status, run: null }
+    const run = getWorkflowRunWithEvidence(status.runId)
+    if (!run) throw new Error(`workflow run ${status.runId} is unavailable while loading persisted evidence`)
+    return { ...status, run }
+  }
+
   private emitRuntimeStatus(status: WorkflowRuntimeStatus): void {
-    this.nsp.to(this.workflowRoom(status.workflowId)).emit('workflow.status.updated', status)
+    try {
+      this.nsp.to(this.workflowRoom(status.workflowId)).emit('workflow.status.updated', this.statusWithEvidence(status))
+    } catch (err: any) {
+      logger.error(err, '[workflow-socket] failed to load persisted execution evidence for workflow %s', status.workflowId)
+      this.nsp.to(this.workflowRoom(status.workflowId)).emit('workflow.status.error', {
+        workflowId: status.workflowId,
+        runId: status.runId,
+        error: err?.message || 'workflow evidence read failed',
+      })
+    }
   }
 
   private workflowRoom(workflowId: string): string {

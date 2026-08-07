@@ -26,6 +26,37 @@ describe('GroupChatInput mentions', () => {
   beforeEach(() => {
     localStorage.clear()
     window.innerWidth = 1024
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: vi.fn(() => 'blob:group-attachment'),
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: vi.fn(),
+    })
+  })
+
+  it('adds a pasted non-image file to the attachment list', async () => {
+    const pinia = createTestingPinia({ stubActions: false, createSpy: vi.fn })
+    const settingsStore = useSettingsStore()
+    settingsStore.display = {}
+    const file = new File(['hello'], 'group-notes.txt', { type: 'text/plain' })
+    const wrapper = mount(GroupChatInput, {
+      global: { plugins: [pinia], stubs: { Transition: false } },
+    })
+    const paste = new Event('paste', { bubbles: true, cancelable: true })
+    Object.defineProperty(paste, 'clipboardData', {
+      value: {
+        items: [{ kind: 'file', type: file.type, getAsFile: () => file }],
+        files: [file],
+      },
+    })
+
+    wrapper.get('textarea').element.dispatchEvent(paste)
+    await nextTick()
+
+    expect(paste.defaultPrevented).toBe(true)
+    expect(wrapper.get('.attachment-file').text()).toContain('group-notes.txt')
   })
 
   it('updates mention suggestions after the textarea has a custom height', async () => {
@@ -52,6 +83,55 @@ describe('GroupChatInput mentions', () => {
     await nextTick()
     expect(wrapper.find('.mention-dropdown').exists()).toBe(true)
     expect(wrapper.find('.mention-dropdown').text()).toContain('@Worker')
+  })
+
+  it('inserts an agent mention at the current cursor from the avatar action', async () => {
+    const pinia = createTestingPinia({ stubActions: false, createSpy: vi.fn })
+    const settingsStore = useSettingsStore()
+    settingsStore.display = {}
+    const store = useGroupChatStore()
+    store.emitTyping = vi.fn()
+    const wrapper = mount(GroupChatInput, {
+      attachTo: document.body,
+      global: { plugins: [pinia], stubs: { Transition: false } },
+    })
+    const textarea = wrapper.get('textarea')
+
+    await textarea.setValue('老板喊你')
+    ;(textarea.element as HTMLTextAreaElement).setSelectionRange(5, 5)
+    ;(wrapper.vm as any).insertMention('codex')
+    await nextTick()
+
+    expect((textarea.element as HTMLTextAreaElement).value).toBe('老板喊你 @codex ')
+    expect(document.activeElement).toBe(textarea.element)
+    expect(store.emitTyping).toHaveBeenCalled()
+
+    wrapper.unmount()
+  })
+
+  it('shows the active room reference outside the input and can cancel it', async () => {
+    const pinia = createTestingPinia({ stubActions: false, createSpy: vi.fn })
+    const settingsStore = useSettingsStore()
+    settingsStore.display = {}
+    const store = useGroupChatStore()
+    store.currentRoomId = 'room-1'
+    store.setMessageReference('room-1', {
+      id: 'message-1',
+      role: 'assistant',
+      content: 'A referenced group response',
+      sender: 'Worker',
+    })
+
+    const wrapper = mount(GroupChatInput, {
+      global: { plugins: [pinia], stubs: { Transition: false } },
+    })
+    await nextTick()
+
+    expect(wrapper.get('.message-reference-preview').text()).toContain('A referenced group response')
+    expect(wrapper.get('.message-reference-preview').element.parentElement?.classList.contains('input-wrapper')).toBe(false)
+
+    await wrapper.get('.message-reference-remove').trigger('click')
+    expect(store.activeMessageReference).toBeNull()
   })
 
   it('applies the configured desktop input height', async () => {
@@ -104,5 +184,23 @@ describe('GroupChatInput mentions', () => {
     await nextTick()
 
     expect((wrapper.get('textarea').element as HTMLTextAreaElement).style.height).not.toBe('168px')
+  })
+
+  it('keeps the draft intact when room configuration blocks sending', async () => {
+    const pinia = createTestingPinia({ stubActions: false, createSpy: vi.fn })
+    const settingsStore = useSettingsStore()
+    settingsStore.display = {}
+    const wrapper = mount(GroupChatInput, {
+      props: { sendBlocked: true },
+      global: { plugins: [pinia], stubs: { Transition: false } },
+    })
+    const textarea = wrapper.get('textarea')
+
+    await textarea.setValue('@Worker keep this draft')
+    await textarea.trigger('keydown', { key: 'Enter' })
+
+    expect(wrapper.emitted('send-blocked')).toHaveLength(1)
+    expect(wrapper.emitted('send')).toBeUndefined()
+    expect((textarea.element as HTMLTextAreaElement).value).toBe('@Worker keep this draft')
   })
 })

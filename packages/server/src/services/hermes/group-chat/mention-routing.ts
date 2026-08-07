@@ -11,8 +11,12 @@ type MentionRange = {
     end: number
 }
 
-const BEFORE_BOUNDARY = new Set(['(', '[', '{', '<'])
 const AFTER_BOUNDARY = new Set(['.', ',', '!', '?', ';', ':', '，', '。', '！', '？', '；', '：', ')', ']', '}', '>'])
+const QUOTED_MESSAGE_BLOCK_RE = /<quoted_message(?:\s[^>]*)?>[\s\S]*?<\/quoted_message>/gi
+
+function maskQuotedMessageBlocks(content: string): string {
+    return content.replace(QUOTED_MESSAGE_BLOCK_RE, block => block.replace(/[^\n]/g, ' '))
+}
 
 export function escapeMentionName(name: string): string {
     return name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -23,7 +27,9 @@ export function isReservedMentionName(name: string): boolean {
 }
 
 function isBeforeBoundary(char: string | undefined): boolean {
-    return char === undefined || /\s/.test(char) || BEFORE_BOUNDARY.has(char)
+    // Keep ASCII identifiers and email-like text from becoming mentions, while
+    // allowing the CJK, emoji, and punctuation boundaries used in natural chat.
+    return char === undefined || !/[a-zA-Z0-9_]/.test(char)
 }
 
 function isAfterBoundary(char: string | undefined): boolean {
@@ -33,7 +39,8 @@ function isAfterBoundary(char: string | undefined): boolean {
 function findMentionRanges(content: string, mentionName: string): MentionRange[] {
     if (!content || !mentionName) return []
 
-    const contentLower = content.toLowerCase()
+    const routableContent = maskQuotedMessageBlocks(content)
+    const contentLower = routableContent.toLowerCase()
     const mentionLower = mentionName.toLowerCase()
     const ranges: MentionRange[] = []
     let fromIndex = 0
@@ -44,7 +51,7 @@ function findMentionRanges(content: string, mentionName: string): MentionRange[]
 
         const start = atIndex
         const end = atIndex + mentionName.length + 1
-        if (isBeforeBoundary(content[start - 1]) && isAfterBoundary(content[end])) {
+        if (isBeforeBoundary(routableContent[start - 1]) && isAfterBoundary(routableContent[end])) {
             ranges.push({ start, end })
         }
         fromIndex = atIndex + 1

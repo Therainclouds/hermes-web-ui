@@ -7,8 +7,10 @@
 #include <WiFiClientSecure.h>
 #include <WiFiUdp.h>
 #include <Wire.h>
+#include <U8g2lib.h>
 #include <math.h>
 #include <memory>
+#include <vector>
 #include "driver/i2s.h"
 #include "esp_system.h"
 #include "esp_rom_sys.h"
@@ -93,6 +95,11 @@ constexpr uint8_t kDefaultOledAddr = 0x3C;
 constexpr uint8_t kAltOledAddr = 0x3D;
 constexpr int kOledWidth = 128;
 constexpr int kOledHeight = 64;
+constexpr size_t kOledBufferBytes = (kOledWidth * kOledHeight) / 8;
+constexpr int kMcuSubtitleMaxWidth = 124;
+constexpr uint8_t kMcuSubtitleLinesPerPage = 3;
+constexpr uint32_t kOledI2cClockHz = 400000;
+constexpr uint32_t kCodecI2cClockHz = 100000;
 constexpr uint32_t kOledRefreshIntervalMs = 160;
 constexpr uint32_t kOledSuccessReturnDelayMs = 2500;
 constexpr uint32_t kOledErrorReturnDelayMs = 6000;
@@ -114,6 +121,8 @@ constexpr int kMaxProfiles = 8;
 constexpr int kMaxMcuAudioQueue = 4;
 constexpr uint32_t kMcuInteractionIdleDelayMs = 3500;
 constexpr uint32_t kMcuFailureIdleDelayMs = 20000;
+constexpr uint8_t kDefaultIdlePowerSaveMinutes = 3;
+constexpr uint8_t kMaxIdlePowerSaveMinutes = 60;
 constexpr uint32_t kMcuAudioDefaultDurationMs = 1800;
 constexpr uint32_t kMcuAudioMaxDurationMs = 9000;
 constexpr uint32_t kMcuAudioHttpTimeoutMs = 30000;
@@ -142,6 +151,18 @@ constexpr uint32_t kVoiceVadRmsStart = 190;
 constexpr uint32_t kVoiceVadPeakStart = 480;
 constexpr uint32_t kVoiceVadActiveThreshold = 260;
 constexpr uint32_t kVoiceVadMinActiveSamples = 16;
+constexpr uint32_t kListeningSilenceStopMs = 1000;
+constexpr uint32_t kListeningMaxRecordMs = 30000;
+constexpr uint32_t kListeningRetriggerDelayMs = 1200;
+constexpr uint32_t kListeningAfterCompletionDelayMs = 1000;
+constexpr size_t kListeningPreRollFrames = 12800;
+constexpr uint32_t kListeningVadRmsStart = 420;
+constexpr uint32_t kListeningVadPeakStart = 1200;
+constexpr uint32_t kListeningVadActiveThreshold = 520;
+constexpr uint32_t kListeningVadMinActiveSamples = 24;
+constexpr uint32_t kListeningVadMinCandidateMs = 450;
+constexpr uint8_t kListeningVadMinSpeechWindows = 36;
+constexpr uint8_t kListeningVadMaxQuietWindows = 63;
 constexpr int kVoiceInputGainPermille = 1800;
 constexpr int kAudioSampleRate = 24000;
 constexpr int kVoiceInputSampleRate = 16000;
@@ -165,6 +186,7 @@ WiFiClientSecure mcuWsSecureClient;
 WiFiClient *mcuWsClient = &mcuWsPlainClient;
 WiFiClient mcuAudioPlainClient;
 WiFiClientSecure mcuAudioSecureClient;
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C oledTextRenderer(U8G2_R0, U8X8_PIN_NONE);
 uint8_t mcuAdpcmInputBuffer[kMcuAdpcmReadChunkBytes];
 int16_t mcuAdpcmStereoBuffer[kMcuAdpcmOutputFrames * 2];
 bool wifiReady = false;
@@ -187,6 +209,8 @@ bool bootLongPressHandled = false;
 bool bootClickPending = false;
 bool bootSecondClickStarted = false;
 bool bootInputArmed = false;
+bool idlePowerSaveActive = false;
+bool listeningModeEnabled = false;
 uint32_t lastOledAtMs = 0;
 uint32_t oledStatusReturnAtMs = 0;
 uint32_t restartAtMs = 0;
@@ -200,6 +224,7 @@ uint32_t bootReleaseStartedAtMs = 0;
 uint32_t audioInterruptPressStartedAtMs = 0;
 uint32_t wifiDisconnectedSinceMs = 0;
 uint32_t lastBatteryReadAtMs = 0;
+uint32_t lastMcuActivityAtMs = 0;
 uint32_t batteryVoltageMv = 0;
 uint8_t oledProgress = 0;
 uint8_t batteryLevelPercent = 0;
@@ -226,7 +251,10 @@ String mcuToolPreview;
 String mcuToolStatus;
 String lastAudioDetail = "not started";
 uint32_t lastAudioAtMs = 0;
-uint8_t oledBuffer[(kOledWidth * kOledHeight) / 8] = {};
+uint8_t *const oledBuffer = oledTextRenderer.getBufferPtr();
+std::vector<String> mcuSubtitleLines;
+uint16_t mcuSubtitleLineCount = 0;
+uint16_t mcuSubtitleRenderedPage = UINT16_MAX;
 int scannedNetworkCount = 0;
 String scannedSsids[kMaxScannedNetworks];
 int32_t scannedRssi[kMaxScannedNetworks] = {};
@@ -242,11 +270,13 @@ bool voiceRecordHeardSpeech = false;
 uint32_t mcuInteractionUpdatedAtMs = 0;
 uint32_t mcuAudioStartedAtMs = 0;
 uint32_t mcuAudioDurationMs = 0;
+uint32_t mcuAudioPlaybackProgressMs = 0;
 uint32_t nextMcuOtaCheckAtMs = kMcuOtaFirstCheckMs;
 uint32_t voiceRecordRms = 0;
 uint32_t voiceRecordPeak = 0;
 uint32_t voiceRecordActiveSamples = 0;
 uint8_t outputVolumePercent = kDefaultOutputVolumePercent;
+uint8_t idlePowerSaveMinutes = kDefaultIdlePowerSaveMinutes;
 
 struct McuAudioSegment {
   String interactionId;
@@ -282,6 +312,10 @@ void clearMcuSessionByButton();
 void disconnectMcuSocketClient();
 void connectMcuSocketClient();
 void mcuSocketLoop();
+void noteMcuActivity();
+void tickIdlePowerSave();
+void tickListeningMode();
+void resetListeningMonitor();
 bool waitForMcuSocketReady(uint32_t timeoutMs);
 void enqueueNoDevicePrompt(const String &interactionId);
 void enqueueTokenInvalidPromptAndClearActive(const String &interactionId, const String &url = "");
@@ -408,6 +442,50 @@ bool oledCommand(uint8_t command) {
   return Wire.endTransmission() == 0;
 }
 
+void leaveIdlePowerSave() {
+  if (!idlePowerSaveActive) return;
+  idlePowerSaveActive = false;
+  WiFi.setSleep(false);
+  if (oledReady && !oledCommand(0xAF)) {
+    Serial.println(F("Idle power save wake: OLED display-on failed"));
+  }
+  oledDirty = true;
+  Serial.println(F("Idle power save disabled"));
+}
+
+void noteMcuActivity() {
+  lastMcuActivityAtMs = millis();
+  leaveIdlePowerSave();
+}
+
+void tickIdlePowerSave() {
+  uint32_t now = millis();
+  if (lastMcuActivityAtMs == 0) {
+    lastMcuActivityAtMs = now;
+    return;
+  }
+
+  bool busy = mcuInteractionActive || mcuAudioPlaying || mcuAudioCount > 0 || audioBusy;
+  bool bootPressed = digitalRead(kPinBoot) == LOW;
+  bool canPowerSave = wifiReady && WiFi.status() == WL_CONNECTED && !setupApMode &&
+                      !restartPending && !busy && !bootPressed;
+  if (!canPowerSave) {
+    if (idlePowerSaveActive) noteMcuActivity();
+    return;
+  }
+  if (idlePowerSaveMinutes == 0) return;
+  uint32_t idleDelayMs = static_cast<uint32_t>(idlePowerSaveMinutes) * 60UL * 1000UL;
+  if (idlePowerSaveActive || now - lastMcuActivityAtMs < idleDelayMs) return;
+
+  idlePowerSaveActive = true;
+  WiFi.setSleep(true);
+  if (paEnabled) setPowerAmp(false);
+  if (oledReady && !oledCommand(0xAE)) {
+    Serial.println(F("Idle power save: OLED display-off failed"));
+  }
+  Serial.printf("Idle power save enabled after %u minutes\n", idlePowerSaveMinutes);
+}
+
 bool oledData(const uint8_t *data, size_t len) {
   size_t offset = 0;
   while (offset < len) {
@@ -424,7 +502,7 @@ bool oledData(const uint8_t *data, size_t len) {
 }
 
 void oledClearBuffer() {
-  memset(oledBuffer, 0, sizeof(oledBuffer));
+  memset(oledBuffer, 0, kOledBufferBytes);
 }
 
 void oledSetPixel(int x, int y, bool on = true) {
@@ -553,6 +631,100 @@ void oledDrawScrollingText(int y, String text, uint8_t scale = 1) {
   oledDrawText(width + gap - offset, y, text, scale);
 }
 
+size_t nextUtf8CharacterEnd(const String &text, size_t start) {
+  if (start >= text.length()) return text.length();
+  uint8_t lead = static_cast<uint8_t>(text[start]);
+  size_t bytes = 1;
+  if ((lead & 0xE0) == 0xC0) {
+    bytes = 2;
+  } else if ((lead & 0xF0) == 0xE0) {
+    bytes = 3;
+  } else if ((lead & 0xF8) == 0xF0) {
+    bytes = 4;
+  }
+  return min(start + bytes, text.length());
+}
+
+void clearMcuSubtitle() {
+  mcuSubtitleLines.clear();
+  mcuSubtitleLineCount = 0;
+  mcuSubtitleRenderedPage = UINT16_MAX;
+}
+
+void configureMcuSubtitleFont() {
+  oledTextRenderer.setFont(u8g2_font_wqy12_t_gb2312);
+  oledTextRenderer.setFontMode(1);
+  oledTextRenderer.setDrawColor(1);
+  oledTextRenderer.setFontPosTop();
+}
+
+void prepareMcuSubtitle(String text) {
+  clearMcuSubtitle();
+  text.replace("\r", " ");
+  text.replace("\n", " ");
+  text.trim();
+  if (text.length() == 0) return;
+
+  configureMcuSubtitleFont();
+  size_t offset = 0;
+  while (offset < text.length()) {
+    while (offset < text.length() && text[offset] == ' ') ++offset;
+    if (offset >= text.length()) break;
+
+    String line;
+    while (offset < text.length()) {
+      size_t end = nextUtf8CharacterEnd(text, offset);
+      String candidate = line + text.substring(offset, end);
+      if (line.length() > 0 &&
+          oledTextRenderer.getUTF8Width(candidate.c_str()) > kMcuSubtitleMaxWidth) {
+        break;
+      }
+      line = candidate;
+      offset = end;
+    }
+    line.trim();
+    if (line.length() > 0) {
+      mcuSubtitleLines.push_back(line);
+      if (mcuSubtitleLineCount < UINT16_MAX) ++mcuSubtitleLineCount;
+    }
+  }
+}
+
+uint16_t currentMcuSubtitlePage() {
+  if (mcuSubtitleLineCount == 0) return 0;
+  uint16_t pageCount =
+      (mcuSubtitleLineCount + kMcuSubtitleLinesPerPage - 1) / kMcuSubtitleLinesPerPage;
+  uint16_t page = 0;
+  if (pageCount > 1 && mcuAudioDurationMs > 0) {
+    uint32_t elapsed = millis() - mcuAudioStartedAtMs;
+    uint32_t progress = min(min(elapsed, mcuAudioPlaybackProgressMs), mcuAudioDurationMs);
+    page = min(static_cast<uint16_t>(
+                   (static_cast<uint64_t>(progress) * pageCount) / mcuAudioDurationMs),
+               static_cast<uint16_t>(pageCount - 1));
+  }
+  return page;
+}
+
+void drawMcuSubtitle() {
+  if (mcuSubtitleLineCount == 0) return;
+  configureMcuSubtitleFont();
+
+  uint16_t page = currentMcuSubtitlePage();
+  uint16_t firstLine = page * kMcuSubtitleLinesPerPage;
+  uint16_t remainingLines = mcuSubtitleLineCount - firstLine;
+  uint8_t visibleLines = remainingLines > kMcuSubtitleLinesPerPage
+      ? kMcuSubtitleLinesPerPage
+      : static_cast<uint8_t>(remainingLines);
+  int startY = visibleLines == 1 ? 29 : 21;
+  int lineSpacing = visibleLines == 3 ? 13 : 15;
+  for (uint8_t row = 0; row < visibleLines; ++row) {
+    const String &line = mcuSubtitleLines[firstLine + row];
+    int width = oledTextRenderer.getUTF8Width(line.c_str());
+    int x = max(2, (kOledWidth - width) / 2);
+    oledTextRenderer.drawUTF8(x, startY + row * lineSpacing, line.c_str());
+  }
+}
+
 uint8_t wifiBars() {
   if (!wifiReady || WiFi.status() != WL_CONNECTED) return 0;
   int rssi = WiFi.RSSI();
@@ -625,41 +797,50 @@ String interactionStatusLabel() {
 void drawInteractionFrame() {
   drawTopStatusBar();
 
+  bool showSubtitle = mcuAudioPlaying && mcuSubtitleLineCount > 0;
   String title = interactionStatusLabel();
-  oledDrawCenteredText(17, fitOledText(title, 12), 2);
+  if (showSubtitle) {
+    drawMcuSubtitle();
+  } else {
+    oledDrawCenteredText(17, fitOledText(title, 12), 2);
 
-  String detail = mcuInteractionText;
-  if (mcuInteractionStatus == F("tool")) {
-    detail = mcuToolName;
-    if (mcuToolStatus.length() > 0) {
-      detail += F(" ");
-      detail += mcuToolStatus;
+    String detail = mcuInteractionText;
+    if (mcuInteractionStatus == F("tool")) {
+      detail = mcuToolName;
+      if (mcuToolStatus.length() > 0) {
+        detail += F(" ");
+        detail += mcuToolStatus;
+      }
+    }
+    if (detail.length() > 20 || mcuInteractionStatus == F("failed")) {
+      oledDrawScrollingText(39, detail, 1);
+    } else {
+      oledDrawCenteredText(39, fitOledText(detail, 20), 1);
     }
   }
-  if (detail.length() > 20 || mcuInteractionStatus == F("failed")) {
-    oledDrawScrollingText(39, detail, 1);
-  } else {
-    oledDrawCenteredText(39, fitOledText(detail, 20), 1);
-  }
 
-  if (mcuAudioPlaying && mcuAudioDurationMs > 0) {
-    uint32_t elapsed = millis() - mcuAudioStartedAtMs;
-    uint8_t progress = clampUiValue((elapsed * 100UL) / mcuAudioDurationMs, 100);
-    oledDrawFrame(20, 52, 88, 4);
-    uint8_t filled = static_cast<uint8_t>((progress * 84) / 100);
-    if (filled > 0) oledDrawBox(22, 53, filled, 2);
-  } else {
+  if (!mcuAudioPlaying) {
     String queue = String(F("QUEUE ")) + mcuAudioCount;
     oledDrawCenteredText(55, queue, 1);
   }
 }
 
-bool oledFlush() {
-  for (uint8_t page = 0; page < 8; ++page) {
-    if (!oledCommand(0xB0 + page) || !oledCommand(0x00) || !oledCommand(0x10)) return false;
-    if (!oledData(oledBuffer + page * kOledWidth, kOledWidth)) return false;
+bool oledFlushPages(uint8_t firstPage, uint8_t lastPage) {
+  bool ok = true;
+  Wire.setClock(kOledI2cClockHz);
+  for (uint8_t page = firstPage; page <= lastPage; ++page) {
+    if (!oledCommand(0xB0 + page) || !oledCommand(0x00) || !oledCommand(0x10) ||
+        !oledData(oledBuffer + page * kOledWidth, kOledWidth)) {
+      ok = false;
+      break;
+    }
   }
-  return true;
+  Wire.setClock(kCodecI2cClockHz);
+  return ok;
+}
+
+bool oledFlush() {
+  return oledFlushPages(0, 7);
 }
 
 void drawOledFrame() {
@@ -693,8 +874,18 @@ void drawOledFrame() {
   oledDrawScrollingText(57, status, 1);
 }
 
+void refreshMcuSubtitlePage() {
+  if (!oledReady || idlePowerSaveActive || !mcuAudioPlaying || mcuSubtitleLineCount == 0) return;
+  uint16_t page = currentMcuSubtitlePage();
+  if (page == mcuSubtitleRenderedPage) return;
+  oledClearBuffer();
+  drawOledFrame();
+  oledReady = oledFlushPages(2, 7);
+  if (oledReady) mcuSubtitleRenderedPage = page;
+}
+
 void refreshOled(bool force = false) {
-  if (!oledReady) return;
+  if (!oledReady || idlePowerSaveActive) return;
   uint32_t now = millis();
   if (!force && !oledDirty && now - lastOledAtMs < kOledRefreshIntervalMs) return;
   oledDirty = false;
@@ -705,6 +896,7 @@ void refreshOled(bool force = false) {
 }
 
 void setOledStatus(OledMode mode, const String &title, const String &hint, uint8_t progress = 0) {
+  noteMcuActivity();
   String nextTitle = fitOledText(title, 10);
   String nextHint = fitOledText(hint, 20);
   oledMode = mode;
@@ -712,8 +904,9 @@ void setOledStatus(OledMode mode, const String &title, const String &hint, uint8
   oledHint = nextHint;
   oledProgress = progress > 100 ? 100 : progress;
   oledStatusReturnAtMs = 0;
-  bool isLanIpStatus = nextTitle == F("IP");
-  if (!isLanIpStatus && wifiReady && WiFi.status() == WL_CONNECTED &&
+  bool isHomeStatus = nextTitle == F("IP") ||
+                      (listeningModeEnabled && nextTitle == F("LISTEN") && nextHint.startsWith(F("AUTO ")));
+  if (!isHomeStatus && wifiReady && WiFi.status() == WL_CONNECTED &&
       (mode == OledMode::Ready || mode == OledMode::Error)) {
     uint32_t delayMs = mode == OledMode::Error ? kOledErrorReturnDelayMs : kOledSuccessReturnDelayMs;
     oledStatusReturnAtMs = millis() + delayMs;
@@ -724,7 +917,11 @@ void setOledStatus(OledMode mode, const String &title, const String &hint, uint8
 
 void showLanIpOnOled() {
   if (!wifiReady || WiFi.status() != WL_CONNECTED) return;
-  setOledStatus(OledMode::Ready, F("IP"), WiFi.localIP().toString(), 0);
+  if (listeningModeEnabled) {
+    setOledStatus(OledMode::Ready, F("LISTEN"), String(F("AUTO ")) + WiFi.localIP().toString(), 0);
+  } else {
+    setOledStatus(OledMode::Ready, F("IP"), WiFi.localIP().toString(), 0);
+  }
 }
 
 void tickOledStatusReturn() {
@@ -739,7 +936,7 @@ void tickOledStatusReturn() {
 
 void initOledDisplay() {
   Wire.begin(kPinI2cSda, kPinI2cScl);
-  Wire.setClock(100000);
+  Wire.setClock(kCodecI2cClockHz);
   delay(40);
   if (i2cProbe(kDefaultOledAddr)) {
     oledAddress = kDefaultOledAddr;
@@ -905,6 +1102,10 @@ void loadAudioPreferences() {
   outputVolumePercent = clampUiValue(
       static_cast<uint32_t>(prefs.getUChar("volume", kDefaultOutputVolumePercent)),
       kMaxOutputVolumePercent);
+  idlePowerSaveMinutes = clampUiValue(
+      static_cast<uint32_t>(prefs.getUChar("idle_min", kDefaultIdlePowerSaveMinutes)),
+      kMaxIdlePowerSaveMinutes);
+  listeningModeEnabled = prefs.getBool("listen_mode", false);
   prefs.end();
 }
 
@@ -913,6 +1114,24 @@ void saveOutputVolume(uint8_t volume) {
   prefs.begin("mcu", false);
   prefs.putUChar("volume", outputVolumePercent);
   prefs.end();
+}
+
+void saveIdlePowerSaveMinutes(uint8_t minutes) {
+  idlePowerSaveMinutes = clampUiValue(minutes, kMaxIdlePowerSaveMinutes);
+  prefs.begin("mcu", false);
+  prefs.putUChar("idle_min", idlePowerSaveMinutes);
+  prefs.end();
+  noteMcuActivity();
+}
+
+void saveListeningMode(bool enabled) {
+  listeningModeEnabled = enabled;
+  prefs.begin("mcu", false);
+  prefs.putBool("listen_mode", listeningModeEnabled);
+  prefs.end();
+  resetListeningMonitor();
+  noteMcuActivity();
+  showLanIpOnOled();
 }
 
 String currentIp() {
@@ -983,7 +1202,11 @@ String compactDetail(String value) {
   value.replace("\r", " ");
   value.replace("\n", " ");
   value.trim();
-  if (value.length() > 180) value = value.substring(0, 180);
+  if (value.length() > 180) {
+    size_t end = 180;
+    while (end > 0 && (static_cast<uint8_t>(value[end]) & 0xC0) == 0x80) --end;
+    value = value.substring(0, end);
+  }
   return value;
 }
 
@@ -1490,6 +1713,16 @@ enum class VoiceInputChannel : uint8_t {
   Mixed,
 };
 
+bool listeningMonitorReady = false;
+uint8_t listeningSpeechWindows = 0;
+uint8_t listeningQuietWindows = 0;
+uint32_t listeningCandidateStartedAtMs = 0;
+uint32_t listeningLastTriggeredAtMs = 0;
+size_t listeningPreRollWrite = 0;
+size_t listeningPreRollCount = 0;
+int16_t listeningPreRoll[kListeningPreRollFrames] = {};
+VoiceInputChannel listeningInputChannel = VoiceInputChannel::Undecided;
+
 const char *voiceInputChannelName(VoiceInputChannel channel) {
   switch (channel) {
     case VoiceInputChannel::Left:
@@ -1549,6 +1782,16 @@ void shapePcmBuffer(uint8_t *buffer, size_t length) {
     buffer[i] = static_cast<uint8_t>(shaped & 0xFF);
     buffer[i + 1] = static_cast<uint8_t>((static_cast<uint16_t>(shaped) >> 8) & 0xFF);
   }
+}
+
+void resetListeningMonitor() {
+  listeningMonitorReady = false;
+  listeningSpeechWindows = 0;
+  listeningQuietWindows = 0;
+  listeningCandidateStartedAtMs = 0;
+  listeningPreRollWrite = 0;
+  listeningPreRollCount = 0;
+  listeningInputChannel = VoiceInputChannel::Undecided;
 }
 
 bool shouldInterruptAudioForVoice() {
@@ -2056,6 +2299,10 @@ void cleanupMcuPreferences() {
   uint8_t volume = clampUiValue(
       static_cast<uint32_t>(prefs.getUChar("volume", kDefaultOutputVolumePercent)),
       kMaxOutputVolumePercent);
+  uint8_t idleMinutes = clampUiValue(
+      static_cast<uint32_t>(prefs.getUChar("idle_min", kDefaultIdlePowerSaveMinutes)),
+      kMaxIdlePowerSaveMinutes);
+  bool listenMode = prefs.getBool("listen_mode", false);
   String activeKey = prefs.getString("active_key", "");
   String activeAddr = prefs.getString("active_addr", "");
   String activeUrl = prefs.getString("active_url", "");
@@ -2090,6 +2337,8 @@ void cleanupMcuPreferences() {
   prefs.clear();
   if (deviceCode.length() > 0) prefs.putString("device_code", deviceCode);
   prefs.putUChar("volume", volume);
+  prefs.putUChar("idle_min", idleMinutes);
+  prefs.putBool("listen_mode", listenMode);
   if (activeKey.length() > 0) prefs.putString("active_key", activeKey);
   if (activeAddr.length() > 0) prefs.putString("active_addr", activeAddr);
   if (activeUrl.length() > 0) prefs.putString("active_url", activeUrl);
@@ -2555,6 +2804,8 @@ void sendStatusPage() {
   }
   appendInfoRow(html, F("音频硬件"), String(es8311Ready && i2sReady ? F("就绪") : F("未就绪")) + F(" · ") + lastAudioDetail);
   appendInfoRow(html, F("音量"), String(outputVolumePercent) + F("%"));
+  appendInfoRow(html, F("语音模式"), listeningModeEnabled ? F("自动监听") : F("按住说话"));
+  appendInfoRow(html, F("自动待机"), idlePowerSaveMinutes == 0 ? String(F("关闭")) : String(idlePowerSaveMinutes) + F(" 分钟"));
   appendInfoRow(html, F("电量"), F("未启用"));
   if (selectedProfile.length() > 0) {
     appendInfoRow(html, F("最近 Profile"), selectedProfile);
@@ -2579,6 +2830,31 @@ void sendStatusPage() {
   html += F("' oninput=\"document.getElementById('volume-output').textContent=this.value+'%'\"></div>");
   html += F("<div class='btn-row'><button class='btn primary' type='submit'>保存音量</button></div>");
   html += F("<p class='hint'>只影响 MCU 播放输出，不影响麦克风录音。</p></form></section>");
+
+  html += F("<section class='card'><h2>语音模式</h2><form method='post' action='/device/voice-mode'>");
+  html += F("<div class='choice-grid'><label class='choice'><input type='radio' name='mode' value='push'");
+  if (!listeningModeEnabled) html += F(" checked");
+  html += F("><span class='choice-card'><span class='choice-dot'></span><span class='choice-title'>按住说话</span>"
+            "<span class='choice-copy'>保持现有交互：长按录音，松开后提交。</span>"
+            "<span class='choice-meta'>PUSH TO TALK</span></span></label>");
+  html += F("<label class='choice'><input type='radio' name='mode' value='listen'");
+  if (listeningModeEnabled) html += F(" checked");
+  html += F("><span class='choice-card'><span class='choice-dot'></span><span class='choice-title'>自动监听</span>"
+            "<span class='choice-copy'>空闲时仅在设备本地检测人声，检测到说话后才上传，静音后自动提交。</span>"
+            "<span class='choice-meta'>LOCAL VAD</span></span></label></div>");
+  html += F("<div class='btn-row'><button class='btn primary' type='submit'>保存语音模式</button></div>");
+  html += F("<p class='hint'>运行、工具调用和语音播放期间不会监听；单击停止、双击清空和长按说话保持不变。</p></form></section>");
+
+  html += F("<section class='card'><h2>省电</h2>");
+  html += F("<form method='post' action='/device/power-save'><div class='field'><span class='label'>无交互后自动待机 <output id='idle-output'>");
+  html += idlePowerSaveMinutes;
+  html += F(" 分钟</output></span><input name='minutes' type='range' min='0' max='");
+  html += String(kMaxIdlePowerSaveMinutes);
+  html += F("' step='1' value='");
+  html += idlePowerSaveMinutes;
+  html += F("' oninput=\"document.getElementById('idle-output').textContent=this.value+' 分钟'\"></div>");
+  html += F("<div class='btn-row'><button class='btn primary' type='submit'>保存待机时间</button></div>");
+  html += F("<p class='hint'>默认 3 分钟；设为 0 可关闭自动待机。待机不会断开 Wi-Fi、登录或 Socket。</p></form></section>");
 
   html += F("<section class='card'><h2>手动添加机器</h2>");
   html += F("<form method='post' action='/device/manual'><div class='field'><span class='label'>地址</span>");
@@ -2758,6 +3034,33 @@ void handleDeviceAudio() {
   if (volume > kMaxOutputVolumePercent) volume = kMaxOutputVolumePercent;
   saveOutputVolume(static_cast<uint8_t>(volume));
   lastAudioDetail = String(F("output volume ")) + String(outputVolumePercent) + F("%");
+  server.sendHeader(F("Location"), F("/device"), true);
+  server.send(302, F("text/plain"), F(""));
+}
+
+void handleDevicePowerSave() {
+  String rawMinutes = server.arg(F("minutes"));
+  rawMinutes.trim();
+  if (rawMinutes.length() == 0) {
+    server.send(400, F("text/plain; charset=utf-8"), F("缺少待机时间"));
+    return;
+  }
+  int minutes = rawMinutes.toInt();
+  if (minutes < 0) minutes = 0;
+  if (minutes > kMaxIdlePowerSaveMinutes) minutes = kMaxIdlePowerSaveMinutes;
+  saveIdlePowerSaveMinutes(static_cast<uint8_t>(minutes));
+  server.sendHeader(F("Location"), F("/device"), true);
+  server.send(302, F("text/plain"), F(""));
+}
+
+void handleDeviceVoiceMode() {
+  String mode = server.arg(F("mode"));
+  mode.trim();
+  if (mode != F("push") && mode != F("listen")) {
+    server.send(400, F("text/plain; charset=utf-8"), F("无效的语音模式"));
+    return;
+  }
+  saveListeningMode(mode == F("listen"));
   server.sendHeader(F("Location"), F("/device"), true);
   server.send(302, F("text/plain"), F(""));
 }
@@ -3112,7 +3415,7 @@ void logoutDevice() {
 String mcuStatusJson() {
   updateBatteryReading();
   String json;
-  json.reserve(340);
+  json.reserve(380);
   json += F("{\"type\":\"mcu.status\",\"interactionId\":\"");
   json += escapeJson(mcuInteractionId);
   json += F("\",\"status\":\"");
@@ -3125,6 +3428,10 @@ String mcuStatusJson() {
   json += mcuSocketNamespaceReady ? 1 : 0;
   json += F(",\"socketConnected\":");
   json += mcuSocketNamespaceReady ? F("true") : F("false");
+  json += F(",\"powerSaveActive\":");
+  json += idlePowerSaveActive ? F("true") : F("false");
+  json += F(",\"powerSaveMinutes\":");
+  json += idlePowerSaveMinutes;
   json += F(",\"active_device\":\"");
   json += escapeJson(activeDeviceKey);
   json += F("\",\"profile\":\"");
@@ -3248,6 +3555,25 @@ uint32_t mcuAudioDurationFor(const McuAudioSegment &segment) {
   return min(max(estimated, kMcuAudioDefaultDurationMs), kMcuAudioMaxDurationMs);
 }
 
+void setMcuAudioTimelineFromFrames(uint32_t frames, uint32_t sampleRate) {
+  if (frames == 0 || sampleRate == 0) return;
+  mcuAudioDurationMs = static_cast<uint32_t>(
+      (static_cast<uint64_t>(frames) * 1000ULL + sampleRate - 1) / sampleRate);
+  mcuAudioPlaybackProgressMs = 0;
+  mcuAudioStartedAtMs = millis();
+  oledDirty = true;
+}
+
+void updateMcuAudioPlaybackProgress(uint32_t stereoBytes, uint32_t sampleRate) {
+  if (sampleRate == 0) return;
+  uint32_t frames = stereoBytes / (2 * sizeof(int16_t));
+  mcuAudioPlaybackProgressMs = static_cast<uint32_t>(
+      (static_cast<uint64_t>(frames) * 1000ULL) / sampleRate);
+  if (mcuAudioDurationMs > 0) {
+    mcuAudioPlaybackProgressMs = min(mcuAudioPlaybackProgressMs, mcuAudioDurationMs);
+  }
+}
+
 size_t mcuAudioPrebufferTargetBytes(int contentLength, uint32_t sampleRate, uint8_t channels, size_t frameBytes) {
   if (sampleRate == 0 || channels == 0 || frameBytes == 0) return 0;
   size_t target = static_cast<size_t>((static_cast<uint64_t>(sampleRate) * channels * sizeof(int16_t) *
@@ -3331,6 +3657,9 @@ bool playPcmStereoStream(WiFiClient *stream, int contentLength, uint32_t sampleR
   size_t prebufferLength = 0;
   size_t prebufferOffset = 0;
   prebufferPcmStream(stream, &remaining, kAudioFrameBytes, 2, sampleRate, &prebuffer, &prebufferLength);
+  if (contentLength > 0) {
+    setMcuAudioTimelineFromFrames(contentLength / kAudioFrameBytes, sampleRate);
+  }
 
   while (prebufferOffset < prebufferLength || remaining != 0) {
     if (shouldInterruptAudioForVoice()) {
@@ -3360,6 +3689,7 @@ bool playPcmStereoStream(WiFiClient *stream, int contentLength, uint32_t sampleR
           return false;
         }
         delay(10);
+        refreshMcuSubtitlePage();
         yield();
         continue;
       }
@@ -3393,9 +3723,11 @@ bool playPcmStereoStream(WiFiClient *stream, int contentLength, uint32_t sampleR
       return false;
     }
     playedBytes += written;
+    updateMcuAudioPlaybackProgress(playedBytes, sampleRate);
 
     pendingBytes = bufferedBytes - alignedBytes;
     if (pendingBytes > 0) memmove(buffer, buffer + alignedBytes, pendingBytes);
+    refreshMcuSubtitlePage();
     yield();
   }
 
@@ -3413,6 +3745,7 @@ bool playPcmStereoStream(WiFiClient *stream, int contentLength, uint32_t sampleR
       return false;
     }
     playedBytes += written;
+    updateMcuAudioPlaybackProgress(playedBytes, sampleRate);
   }
 
   releaseMcuAudioPrebuffer(&prebuffer);
@@ -3453,6 +3786,9 @@ bool playPcmMonoStream(WiFiClient *stream, int contentLength, uint32_t sampleRat
   size_t prebufferLength = 0;
   size_t prebufferOffset = 0;
   prebufferPcmStream(stream, &remaining, kMonoFrameBytes, 1, sampleRate, &prebuffer, &prebufferLength);
+  if (contentLength > 0) {
+    setMcuAudioTimelineFromFrames(contentLength / kMonoFrameBytes, sampleRate);
+  }
 
   while (prebufferOffset < prebufferLength || remaining != 0) {
     if (shouldInterruptAudioForVoice()) {
@@ -3482,6 +3818,7 @@ bool playPcmMonoStream(WiFiClient *stream, int contentLength, uint32_t sampleRat
           return false;
         }
         delay(10);
+        refreshMcuSubtitlePage();
         yield();
         continue;
       }
@@ -3526,9 +3863,11 @@ bool playPcmMonoStream(WiFiClient *stream, int contentLength, uint32_t sampleRat
       return false;
     }
     playedBytes += written;
+    updateMcuAudioPlaybackProgress(playedBytes, sampleRate);
 
     pendingBytes = bufferedBytes - alignedBytes;
     if (pendingBytes > 0) memmove(input, input + alignedBytes, pendingBytes);
+    refreshMcuSubtitlePage();
     yield();
   }
 
@@ -3550,6 +3889,7 @@ bool playPcmMonoStream(WiFiClient *stream, int contentLength, uint32_t sampleRat
       return false;
     }
     playedBytes += written;
+    updateMcuAudioPlaybackProgress(playedBytes, sampleRate);
   }
 
   releaseMcuAudioPrebuffer(&prebuffer);
@@ -3684,7 +4024,7 @@ size_t encodeVoiceAdpcmChunk(const int16_t *samples,
   return encodedBytes;
 }
 
-bool flushAdpcmStereo(int16_t *stereo, size_t *frames, uint32_t *playedBytes) {
+bool flushAdpcmStereo(int16_t *stereo, size_t *frames, uint32_t *playedBytes, uint32_t sampleRate) {
   if (!stereo || !frames || !playedBytes || *frames == 0) return true;
   size_t bytesToWrite = *frames * 2 * sizeof(int16_t);
   size_t written = 0;
@@ -3695,19 +4035,22 @@ bool flushAdpcmStereo(int16_t *stereo, size_t *frames, uint32_t *playedBytes) {
     return false;
   }
   *playedBytes += written;
+  updateMcuAudioPlaybackProgress(*playedBytes, sampleRate);
   *frames = 0;
   mcuSocketLoop();
+  refreshMcuSubtitlePage();
   yield();
   return true;
 }
 
-bool pushAdpcmSample(int16_t sample, int16_t *stereo, size_t *frames, uint32_t *playedBytes) {
+bool pushAdpcmSample(int16_t sample, int16_t *stereo, size_t *frames, uint32_t *playedBytes,
+                     uint32_t sampleRate) {
   int16_t shaped = shapeOutputSample(sample);
   stereo[*frames * 2] = shaped;
   stereo[*frames * 2 + 1] = shaped;
   *frames += 1;
   if (*frames >= kMcuAdpcmOutputFrames) {
-    return flushAdpcmStereo(stereo, frames, playedBytes);
+    return flushAdpcmStereo(stereo, frames, playedBytes, sampleRate);
   }
   return true;
 }
@@ -3730,6 +4073,7 @@ bool readExactAudioBytes(WiFiClient *stream, uint8_t *buffer, size_t length, int
       }
       delay(10);
       mcuSocketLoop();
+      refreshMcuSubtitlePage();
       yield();
       continue;
     }
@@ -3770,6 +4114,9 @@ bool playAdpcmStream(WiFiClient *stream, int contentLength, uint32_t fallbackSam
   uint32_t sampleRate = readLe32(header + 8);
   if (sampleRate == 0) sampleRate = fallbackSampleRate > 0 ? fallbackSampleRate : kMcuAudioDefaultSampleRate;
   uint32_t sampleCount = readLe32(header + 12);
+  if (sampleCount > 0) {
+    setMcuAudioTimelineFromFrames(sampleCount, sampleRate);
+  }
   int predictor = static_cast<int16_t>(readLe16(header + 16));
   int index = header[18];
   if (index < 0) index = 0;
@@ -3793,7 +4140,7 @@ bool playAdpcmStream(WiFiClient *stream, int contentLength, uint32_t fallbackSam
   uint32_t idleStarted = millis();
 
   if (sampleCount > 0) {
-    if (!pushAdpcmSample(static_cast<int16_t>(predictor), stereo, &frames, &playedBytes)) {
+    if (!pushAdpcmSample(static_cast<int16_t>(predictor), stereo, &frames, &playedBytes, sampleRate)) {
       audioBusy = false;
       return false;
     }
@@ -3839,7 +4186,7 @@ bool playAdpcmStream(WiFiClient *stream, int contentLength, uint32_t fallbackSam
         if (sampleCount > 0 && decodedSamples >= sampleCount) break;
         uint8_t nibble = half == 0 ? (byte & 0x0f) : (byte >> 4);
         int16_t sample = decodeImaAdpcmNibble(nibble, &predictor, &index);
-        if (!pushAdpcmSample(sample, stereo, &frames, &playedBytes)) {
+        if (!pushAdpcmSample(sample, stereo, &frames, &playedBytes, sampleRate)) {
           audioBusy = false;
           return false;
         }
@@ -3849,7 +4196,7 @@ bool playAdpcmStream(WiFiClient *stream, int contentLength, uint32_t fallbackSam
     yield();
   }
 
-  if (!flushAdpcmStereo(stereo, &frames, &playedBytes)) {
+  if (!flushAdpcmStereo(stereo, &frames, &playedBytes, sampleRate)) {
     audioBusy = false;
     return false;
   }
@@ -4015,9 +4362,11 @@ void clearMcuAudioQueue() {
   mcuAudioHead = 0;
   mcuAudioCount = 0;
   mcuCurrentAudio = McuAudioSegment();
+  clearMcuSubtitle();
   mcuAudioPlaying = false;
   mcuAudioStartedAtMs = 0;
   mcuAudioDurationMs = 0;
+  mcuAudioPlaybackProgressMs = 0;
 }
 
 bool broadcastMcuInterrupt(const String &interactionId, const String &reason) {
@@ -4047,6 +4396,7 @@ bool broadcastMcuSessionClear(const String &interactionId) {
 }
 
 void markMcuInteraction(const String &interactionId, const String &status, const String &text) {
+  noteMcuActivity();
   if (interactionId.length() > 0) mcuInteractionId = interactionId;
   if (status.length() > 0) mcuInteractionStatus = status;
   mcuInteractionText = compactDetail(text);
@@ -4066,18 +4416,19 @@ bool shouldPreserveMcuToolStatus(const String &interactionId) {
 }
 
 void touchMcuInteraction(const String &interactionId) {
+  noteMcuActivity();
   if (interactionId.length() > 0) mcuInteractionId = interactionId;
   mcuInteractionActive = true;
   mcuInteractionUpdatedAtMs = millis();
   oledDirty = true;
 }
 
-void markMcuAudioSpeaking(const String &interactionId) {
+void markMcuAudioSpeaking(const String &interactionId, const String &text) {
   if (shouldPreserveMcuToolStatus(interactionId)) {
     touchMcuInteraction(interactionId);
     return;
   }
-  markMcuInteraction(interactionId, F("speaking"), F(""));
+  markMcuInteraction(interactionId, F("speaking"), text);
 }
 
 void finishMcuAudio(bool interrupted) {
@@ -4094,9 +4445,11 @@ void finishMcuAudio(bool interrupted) {
   sendMcuSocketJson(json);
 
   mcuCurrentAudio = McuAudioSegment();
+  clearMcuSubtitle();
   mcuAudioPlaying = false;
   mcuAudioStartedAtMs = 0;
   mcuAudioDurationMs = 0;
+  mcuAudioPlaybackProgressMs = 0;
   oledDirty = true;
 }
 
@@ -4110,7 +4463,11 @@ void startNextMcuAudio() {
   mcuAudioPlaying = true;
   mcuAudioStartedAtMs = millis();
   mcuAudioDurationMs = mcuAudioDurationFor(mcuCurrentAudio);
-  markMcuAudioSpeaking(mcuCurrentAudio.interactionId);
+  mcuAudioPlaybackProgressMs = 0;
+  prepareMcuSubtitle(mcuCurrentAudio.text);
+  markMcuAudioSpeaking(mcuCurrentAudio.interactionId, mcuCurrentAudio.text);
+  refreshOled(true);
+  mcuSubtitleRenderedPage = currentMcuSubtitlePage();
 
   String json;
   json.reserve(260);
@@ -4166,7 +4523,6 @@ bool enqueueMcuAudio(const McuAudioSegment &segment) {
   int tail = (mcuAudioHead + mcuAudioCount) % kMaxMcuAudioQueue;
   mcuAudioQueue[tail] = segment;
   ++mcuAudioCount;
-  markMcuAudioSpeaking(segment.interactionId);
   startNextMcuAudio();
   return true;
 }
@@ -4290,7 +4646,7 @@ void handleMcuAudioEnqueue(uint8_t clientId, const String &message) {
   if (segment.interactionId.length() == 0) segment.interactionId = mcuInteractionId;
   segment.segmentId = jsonStringValue(message, F("segmentId"));
   if (segment.segmentId.length() == 0) segment.segmentId = String(F("seg-")) + millis();
-  segment.text = compactDetail(jsonStringValue(message, F("text")));
+  segment.text = jsonStringValue(message, F("text"));
   segment.url = jsonStringValue(message, F("url"));
   segment.mimeType = jsonStringValue(message, F("mimeType"));
   int channels = jsonIntValue(message, F("channels"));
@@ -4761,7 +5117,12 @@ bool broadcastMcuVoiceStreamChunk(const String &interactionId, const uint8_t *da
   return sent;
 }
 
-bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
+bool recordAndBroadcastMcuVoiceStream(const String &interactionId,
+                                      bool automatic = false,
+                                      const int16_t *initialRing = nullptr,
+                                      size_t initialRingCapacity = 0,
+                                      size_t initialRingCount = 0,
+                                      size_t initialRingWrite = 0) {
   if (audioBusy) {
     lastAudioDetail = F("audio busy before record");
     setOledStatus(OledMode::Think, F("BUSY"), F("AUDIO"), 50);
@@ -4780,9 +5141,11 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
   audioBusy = true;
   setPowerAmp(false);
   es8311UpdateBits(0x31, 0x60, 0x60);
-  setI2sSampleRate(kVoiceInputSampleRate);
-  i2s_zero_dma_buffer(kI2sPort);
-  setOledStatus(OledMode::Think, F("LISTEN"), F("SAY NOW"), 0);
+  if (!automatic) {
+    setI2sSampleRate(kVoiceInputSampleRate);
+    i2s_zero_dma_buffer(kI2sPort);
+  }
+  setOledStatus(OledMode::Think, F("LISTEN"), automatic ? F("AUTO REC") : F("SAY NOW"), 0);
 
   constexpr size_t kReadBytes = 512;
   uint8_t readBuffer[kReadBytes];
@@ -4817,9 +5180,12 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
   voiceRecordRms = 0;
   voiceRecordPeak = 0;
   voiceRecordActiveSamples = 0;
-  const uint32_t maxFrames = (kVoiceInputSampleRate * kVoiceStreamRecordMs) / 1000UL;
+  const uint32_t maxRecordMs = automatic ? kListeningMaxRecordMs : kVoiceStreamRecordMs;
+  const uint32_t maxFrames = (kVoiceInputSampleRate * maxRecordMs) / 1000UL;
   const uint32_t startedAt = millis();
   uint32_t releaseStartedAt = 0;
+  uint32_t automaticLastSpeechAt = startedAt;
+  bool automaticHeardSpeech = automatic && initialRing && initialRingCapacity > 0 && initialRingCount > 0;
   uint32_t lastRecordOledAtMs = startedAt;
   uint8_t lastRecordProgress = 0;
 
@@ -4842,6 +5208,28 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
     return true;
   };
 
+  if (automaticHeardSpeech) {
+    size_t seedCount = min(initialRingCount, initialRingCapacity);
+    size_t seedIndex = (initialRingWrite + initialRingCapacity - seedCount) % initialRingCapacity;
+    for (size_t i = 0; i < seedCount && framesDone < maxFrames; ++i) {
+      int16_t mono = initialRing[seedIndex];
+      seedIndex = (seedIndex + 1) % initialRingCapacity;
+      uint16_t monoMag = sampleMagnitude(mono);
+      if (monoMag > monoPeak) monoPeak = monoMag;
+      monoSquares += static_cast<uint64_t>(monoMag) * static_cast<uint64_t>(monoMag);
+      if (monoMag >= kVoiceVadActiveThreshold) ++activeSamples;
+      pcmChunk->samples[pcmChunkFrames++] = mono;
+      ++framesDone;
+      if (pcmChunkFrames >= kVoiceStreamChunkFrames && !queueVoiceChunk()) {
+        audioBusy = false;
+        free(pcmChunk);
+        lastAudioDetail = F("voice stream seed send failed");
+        abortVoiceStream(F("seed_send"));
+        return false;
+      }
+    }
+  }
+
   while (framesDone < maxFrames) {
     uint32_t loopNow = millis();
     if (loopNow - startedAt > kVoiceRecordHardTimeoutMs) {
@@ -4850,7 +5238,7 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
                         F(", empty=") + String(emptyReads);
       break;
     }
-    if (framesDone > 0 && loopNow - startedAt > kVoiceRecordMinMs) {
+    if (!automatic && framesDone > 0 && loopNow - startedAt > kVoiceRecordMinMs) {
       if (digitalRead(kPinBoot) != LOW) {
         if (releaseStartedAt == 0) releaseStartedAt = loopNow;
         if (loopNow - releaseStartedAt >= kVoiceStreamReleaseDebounceMs) {
@@ -4881,6 +5269,10 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
     int16_t *samples = reinterpret_cast<int16_t *>(readBuffer);
     size_t count = bytesRead / sizeof(int16_t);
     updateVoiceInputChannel(inputChannel, samples, count);
+    uint16_t blockPeak = 0;
+    uint64_t blockSquares = 0;
+    uint32_t blockActiveSamples = 0;
+    uint32_t blockFrames = 0;
     for (size_t i = 0; i + 1 < count && framesDone < maxFrames; i += 2) {
       int16_t left = samples[i];
       int16_t right = samples[i + 1];
@@ -4891,6 +5283,10 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
 
       int16_t mono = voiceInputMonoSample(left, right, inputChannel);
       uint16_t monoMag = sampleMagnitude(mono);
+      if (monoMag > blockPeak) blockPeak = monoMag;
+      blockSquares += static_cast<uint64_t>(monoMag) * static_cast<uint64_t>(monoMag);
+      if (monoMag >= kListeningVadActiveThreshold) ++blockActiveSamples;
+      ++blockFrames;
       if (monoMag > monoPeak) monoPeak = monoMag;
       monoSquares += static_cast<uint64_t>(monoMag) * static_cast<uint64_t>(monoMag);
       if (monoMag >= kVoiceVadActiveThreshold) ++activeSamples;
@@ -4903,6 +5299,23 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
         lastAudioDetail = F("voice stream chunk send failed");
         abortVoiceStream(F("chunk_send"));
         return false;
+      }
+    }
+
+    if (automatic && blockFrames > 0) {
+      uint32_t blockRms = static_cast<uint32_t>(
+          sqrt(static_cast<double>(blockSquares) / static_cast<double>(blockFrames)));
+      bool blockHasSpeech = blockRms >= kListeningVadRmsStart &&
+                            blockPeak >= kListeningVadPeakStart &&
+                            blockActiveSamples >= min<uint32_t>(kListeningVadMinActiveSamples, blockFrames);
+      if (blockHasSpeech) {
+        automaticHeardSpeech = true;
+        automaticLastSpeechAt = millis();
+      } else if (automaticHeardSpeech &&
+                 millis() - startedAt >= kVoiceRecordMinMs &&
+                 millis() - automaticLastSpeechAt >= kListeningSilenceStopMs) {
+        stopReason = "silence";
+        break;
       }
     }
 
@@ -4936,9 +5349,10 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
   voiceRecordPeak = monoPeak;
   voiceRecordRms = framesDone > 0 ? static_cast<uint32_t>(sqrt(static_cast<double>(monoSquares) / framesDone)) : 0;
   voiceRecordActiveSamples = activeSamples;
-  voiceRecordHeardSpeech = voiceRecordRms >= kVoiceVadRmsStart &&
+  voiceRecordHeardSpeech = automaticHeardSpeech ||
+                           (voiceRecordRms >= kVoiceVadRmsStart &&
                             voiceRecordPeak >= kVoiceVadPeakStart &&
-                            voiceRecordActiveSamples >= kVoiceVadMinActiveSamples;
+                            voiceRecordActiveSamples >= kVoiceVadMinActiveSamples);
   lastAudioDetail = String(F("voice adpcm bytes=")) + String(queuedBytes) +
                     F(", pcm bytes=") + String(framesDone * sizeof(int16_t)) +
                     F(", frames=") + String(framesDone) +
@@ -4993,9 +5407,9 @@ void handleVoiceTurnResponse(const String &interactionId, const String &response
     McuAudioSegment segment;
     segment.interactionId = interactionId;
     segment.segmentId = String(F("voice-")) + millis();
-    segment.text = compactDetail(jsonStringValue(response, F("text")));
+    segment.text = jsonStringValue(response, F("text"));
     if (segment.text.length() == 0 && audioPayload.length() > 0) {
-      segment.text = compactDetail(jsonStringValue(audioPayload, F("text")));
+      segment.text = jsonStringValue(audioPayload, F("text"));
     }
     if (segment.text.length() == 0) segment.text = F("语音提示");
     segment.url = audioUrl;
@@ -5083,6 +5497,142 @@ void triggerBootVoiceTurn() {
   broadcastMcuStatus();
 }
 
+void triggerListeningVoiceTurn(size_t preRollCount, size_t preRollWrite) {
+  bool interactionBlocksListening =
+      mcuInteractionActive &&
+      (mcuInteractionStatus != F("completed") ||
+       millis() - mcuInteractionUpdatedAtMs < kListeningAfterCompletionDelayMs);
+  if (!listeningModeEnabled ||
+      !wifiReady || WiFi.status() != WL_CONNECTED ||
+      mcuAuthToken.length() == 0 || activeDeviceUrl.length() == 0 || selectedProfile.length() == 0 ||
+      interactionBlocksListening || mcuAudioPlaying || mcuAudioCount > 0 || audioBusy) {
+    return;
+  }
+
+  String interactionId = String(F("mcu-listen-")) + millis();
+  if (!waitForMcuSocketReady(2000)) {
+    lastAudioDetail = F("auto listen socket unavailable");
+    return;
+  }
+
+  markMcuInteraction(interactionId, F("listening"), F("AUTO"));
+  broadcastMcuStatus();
+  if (!recordAndBroadcastMcuVoiceStream(interactionId,
+                                        true,
+                                        listeningPreRoll,
+                                        kListeningPreRollFrames,
+                                        preRollCount,
+                                        preRollWrite)) {
+    Serial.printf("Auto listen record failed detail=%s heap=%lu\n",
+                  lastAudioDetail.c_str(), static_cast<unsigned long>(ESP.getFreeHeap()));
+    markMcuInteraction(interactionId, F("failed"),
+                       lastAudioDetail.length() > 0 ? lastAudioDetail : String(F("record failed")));
+    broadcastMcuStatus();
+    return;
+  }
+
+  markMcuInteraction(interactionId, F("transcribing"), F(""));
+  broadcastMcuStatus();
+}
+
+void tickListeningMode() {
+  bool interactionBlocksListening =
+      mcuInteractionActive &&
+      (mcuInteractionStatus != F("completed") ||
+       millis() - mcuInteractionUpdatedAtMs < kListeningAfterCompletionDelayMs);
+  bool readyForListening = listeningModeEnabled &&
+                           bootInputArmed &&
+                           digitalRead(kPinBoot) != LOW &&
+                           wifiReady && WiFi.status() == WL_CONNECTED &&
+                           !setupApMode && !restartPending &&
+                           activeDeviceUrl.length() > 0 &&
+                           mcuAuthToken.length() > 0 &&
+                           selectedProfile.length() > 0 &&
+                           mcuSocketNamespaceReady &&
+                           !interactionBlocksListening &&
+                           !mcuAudioPlaying &&
+                           mcuAudioCount == 0 &&
+                           !audioBusy;
+  if (!readyForListening) {
+    resetListeningMonitor();
+    return;
+  }
+
+  uint32_t now = millis();
+  if (now - listeningLastTriggeredAtMs < kListeningRetriggerDelayMs) return;
+
+  if (!listeningMonitorReady) {
+    setPowerAmp(false);
+    es8311UpdateBits(0x31, 0x60, 0x60);
+    if (!setI2sSampleRate(kVoiceInputSampleRate)) {
+      resetListeningMonitor();
+      return;
+    }
+    i2s_zero_dma_buffer(kI2sPort);
+    listeningMonitorReady = true;
+    listeningSpeechWindows = 0;
+    listeningQuietWindows = 0;
+    listeningCandidateStartedAtMs = 0;
+    listeningInputChannel = VoiceInputChannel::Undecided;
+  }
+
+  constexpr size_t kReadBytes = 512;
+  uint8_t readBuffer[kReadBytes];
+  size_t bytesRead = 0;
+  esp_err_t err = i2s_read(kI2sPort, readBuffer, sizeof(readBuffer), &bytesRead, 0);
+  if (err != ESP_OK || bytesRead == 0) return;
+
+  int16_t *samples = reinterpret_cast<int16_t *>(readBuffer);
+  size_t sampleCount = bytesRead / sizeof(int16_t);
+  updateVoiceInputChannel(listeningInputChannel, samples, sampleCount);
+  uint16_t peak = 0;
+  uint64_t squares = 0;
+  uint32_t activeSamples = 0;
+  uint32_t frames = 0;
+  for (size_t i = 0; i + 1 < sampleCount; i += 2) {
+    int16_t mono = voiceInputMonoSample(samples[i], samples[i + 1], listeningInputChannel);
+    uint16_t magnitude = sampleMagnitude(mono);
+    if (magnitude > peak) peak = magnitude;
+    squares += static_cast<uint64_t>(magnitude) * static_cast<uint64_t>(magnitude);
+    if (magnitude >= kListeningVadActiveThreshold) ++activeSamples;
+    ++frames;
+    listeningPreRoll[listeningPreRollWrite] = mono;
+    listeningPreRollWrite = (listeningPreRollWrite + 1) % kListeningPreRollFrames;
+    if (listeningPreRollCount < kListeningPreRollFrames) ++listeningPreRollCount;
+  }
+  if (frames == 0) return;
+
+  uint32_t rms = static_cast<uint32_t>(sqrt(static_cast<double>(squares) / static_cast<double>(frames)));
+  bool speechWindow = rms >= kListeningVadRmsStart &&
+                      peak >= kListeningVadPeakStart &&
+                      activeSamples >= min<uint32_t>(kListeningVadMinActiveSamples, frames);
+  if (speechWindow) {
+    if (listeningCandidateStartedAtMs == 0) listeningCandidateStartedAtMs = now;
+    listeningQuietWindows = 0;
+    if (listeningSpeechWindows < UINT8_MAX) ++listeningSpeechWindows;
+  } else if (listeningCandidateStartedAtMs != 0) {
+    if (listeningQuietWindows < kListeningVadMaxQuietWindows) ++listeningQuietWindows;
+    if (listeningQuietWindows >= kListeningVadMaxQuietWindows) {
+      listeningSpeechWindows = 0;
+      listeningQuietWindows = 0;
+      listeningCandidateStartedAtMs = 0;
+      listeningInputChannel = VoiceInputChannel::Undecided;
+    }
+  }
+
+  if (listeningCandidateStartedAtMs == 0 ||
+      now - listeningCandidateStartedAtMs < kListeningVadMinCandidateMs ||
+      listeningSpeechWindows < kListeningVadMinSpeechWindows) {
+    return;
+  }
+  size_t preRollCount = listeningPreRollCount;
+  size_t preRollWrite = listeningPreRollWrite;
+  listeningLastTriggeredAtMs = now;
+  noteMcuActivity();
+  resetListeningMonitor();
+  triggerListeningVoiceTurn(preRollCount, preRollWrite);
+}
+
 void triggerBootRecordPlaybackTest() {
   if (mcuAudioPlaying || audioBusy) {
     setOledStatus(OledMode::Think, F("BUSY"), F("AUDIO"), 50);
@@ -5114,6 +5664,7 @@ void triggerBootRecordPlaybackTest() {
 void handleBootButton() {
   bool bootPressed = digitalRead(kPinBoot) == LOW;
   uint32_t now = millis();
+  if (bootPressed) noteMcuActivity();
 
   if (!bootInputArmed) {
     bootWasPressed = false;
@@ -5703,6 +6254,12 @@ void handleHealth() {
   json += mcuAudioPlaying ? F("true") : F("false");
   json += F(",\"queue_length\":");
   json += mcuAudioCount;
+  json += F(",\"power_save_active\":");
+  json += idlePowerSaveActive ? F("true") : F("false");
+  json += F(",\"power_save_minutes\":");
+  json += idlePowerSaveMinutes;
+  json += F(",\"listening_mode\":");
+  json += listeningModeEnabled ? F("true") : F("false");
   json += F("},\"audio\":{\"i2s_ready\":");
   json += i2sReady ? F("true") : F("false");
   json += F(",\"es8311_ready\":");
@@ -5786,6 +6343,8 @@ void setupRoutes() {
   server.on(F("/device"), HTTP_GET, scanAndSendStatusPage);
   server.on(F("/device/scan"), HTTP_GET, scanAndSendStatusPage);
   server.on(F("/device/audio"), HTTP_POST, handleDeviceAudio);
+  server.on(F("/device/voice-mode"), HTTP_POST, handleDeviceVoiceMode);
+  server.on(F("/device/power-save"), HTTP_POST, handleDevicePowerSave);
   server.on(F("/device/manual"), HTTP_POST, addManualDevice);
   server.on(F("/device/login"), HTTP_GET, sendMcuLoginPage);
   server.on(F("/device/login"), HTTP_POST, handleMcuLogin);
@@ -5855,8 +6414,10 @@ void loop() {
   if (wsReady) mcuSocketLoop();
   tickMcuInteraction();
   tickOledStatusReturn();
-  refreshOled();
   handleBootButton();
+  tickListeningMode();
+  tickIdlePowerSave();
+  refreshOled();
   if (kAutoOtaEnabled && static_cast<int32_t>(millis() - nextMcuOtaCheckAtMs) >= 0) {
     McuOtaResult otaResult = checkMcuFirmwareUpdate(false);
     nextMcuOtaCheckAtMs = millis() + (otaResult == McuOtaResult::Failed ? kMcuOtaRetryMs : kMcuOtaIntervalMs);

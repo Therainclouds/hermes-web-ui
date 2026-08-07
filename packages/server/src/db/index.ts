@@ -6,9 +6,13 @@ import { config } from '../config'
 const isDev = process.env.NODE_ENV !== 'production'
 const isTest = process.env.VITEST === 'true' || process.env.NODE_ENV === 'test'
 
+const testDbDirOverride = process.env.HERMES_WEB_UI_TEST_DB_DIR?.trim()
+
 // In WSL, always use home directory to avoid cross-filesystem issues
 const DB_DIR = isTest
-  ? resolve(process.cwd(), 'packages/server/data/test-runtime')
+  ? testDbDirOverride
+    ? resolve(testDbDirOverride)
+    : resolve(process.cwd(), 'packages/server/data/test-runtime')
   : isDev
   ? resolve(process.cwd(), 'packages/server/data')
   : config.appHome

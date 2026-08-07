@@ -6,6 +6,8 @@ const getCompressionSnapshotMock = vi.fn()
 const estimateUsageTokensFromMessagesMock = vi.fn()
 const buildDbHistoryMock = vi.fn()
 const buildSnapshotAwareHistoryMock = vi.fn()
+const getRecordedUsageTotalsMock = vi.fn()
+const getUsageMock = vi.fn()
 
 vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
   getSession: getSessionMock,
@@ -17,6 +19,8 @@ vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
 
 vi.mock('../../packages/server/src/db/hermes/usage-store', () => ({
   updateUsage: vi.fn(),
+  getRecordedUsageTotals: getRecordedUsageTotalsMock,
+  getUsage: getUsageMock,
 }))
 
 vi.mock('../../packages/server/src/db/hermes/compression-snapshot', () => ({
@@ -80,6 +84,7 @@ describe('loadSessionStateFromDb', () => {
       profile: 'default',
       model: 'gpt-test',
       provider: 'openai',
+      source: 'cli',
     })
     getSessionDetailPaginatedMock.mockReturnValue({
       messages: [
@@ -108,21 +113,57 @@ describe('loadSessionStateFromDb', () => {
       }
       return { inputTokens: 28_000, outputTokens: 0 }
     })
+    getRecordedUsageTotalsMock.mockReturnValue({
+      inputTokens: 28_000,
+      outputTokens: 2_000,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      apiCalls: 1,
+    })
+    getUsageMock.mockReturnValue({ input_tokens: 8_000, output_tokens: 1_000 })
   })
 
-  it('hydrates contextTokens from the same snapshot-aware history used for bridge runs', async () => {
+  it('hydrates persisted usage without reconstructing complete history on resume', async () => {
     const { loadSessionStateFromDb } = await import('../../packages/server/src/services/hermes/run-chat/load-state')
 
     const state = await loadSessionStateFromDb('session-1', new Map())
 
-    expect(buildSnapshotAwareHistoryMock).toHaveBeenCalledWith(
-      'session-1',
-      'default',
-      expect.any(Array),
-      { model: 'gpt-test', provider: 'openai' },
-    )
+    expect(buildDbHistoryMock).not.toHaveBeenCalled()
+    expect(buildSnapshotAwareHistoryMock).not.toHaveBeenCalled()
     expect(state.inputTokens).toBe(28_000)
-    expect(state.outputTokens).toBe(0)
+    expect(state.outputTokens).toBe(2_000)
     expect(state.contextTokens).toBe(9_000)
+  })
+
+  it('restores the persisted tool-result anchor for a Hermes background delegation', async () => {
+    getSessionDetailPaginatedMock.mockReturnValue({
+      messages: [{
+        id: 42,
+        role: 'tool',
+        content: JSON.stringify({
+          mode: 'background',
+          delegation_id: 'delegation-1',
+          goals: ['Inspect the task'],
+        }),
+        display_content: null,
+        tool_call_id: 'delegate-call-1',
+        tool_name: 'delegate_task',
+        timestamp: 100,
+      }],
+    })
+    const { loadSessionStateFromDb } = await import('../../packages/server/src/services/hermes/run-chat/load-state')
+
+    const state = await loadSessionStateFromDb('session-1', new Map())
+
+    expect(state.backgroundDelegations).toEqual({
+      'delegation-1': expect.objectContaining({
+        delegationId: 'delegation-1',
+        status: 'running',
+        messageId: 42,
+        toolCallId: 'delegate-call-1',
+        dispatchPayload: expect.objectContaining({ mode: 'background' }),
+      }),
+    })
   })
 })

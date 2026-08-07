@@ -1,6 +1,7 @@
 import type { ExpertDetail, ExpertManifest, ExpertProfileBindingRow } from '@/api/hermes/experts'
 
 export interface ExpertTeamRoomAgentInput {
+  agent: 'hermes'
   profile: string
   name?: string
   description?: string
@@ -111,6 +112,7 @@ export function buildExpertTeamRoomAgents(
   bindings: ExpertProfileBindingRow[],
 ): ExpertTeamRoomAgentInput[] {
   return buildExpertTeamRoster(teamSlug, detail, bindings).map((entry) => ({
+    agent: 'hermes' as const,
     profile: entry.profile,
     name: entry.name,
     description: entry.description,

@@ -14,10 +14,12 @@ type WindowWithHermesDesktop = Window & typeof globalThis & {
 }
 
 const desktop = (window as WindowWithHermesDesktop).hermesDesktop
-const platform = desktop?.platform
-const isMac = computed(() => platform === 'darwin')
-const showTitleBar = computed(() => platform === 'darwin' || platform === 'win32')
-const showWindowButtons = computed(() => platform === 'win32')
+const props = defineProps<{
+  standalone?: boolean
+  leftOffset?: number
+}>()
+const showWindowButtons = computed(() => desktop?.platform === 'win32')
+const titleBarStyle = computed(() => props.standalone ? undefined : { left: `${props.leftOffset ?? 260}px` })
 const isMaximized = ref(false)
 
 async function refreshWindowState() {
@@ -46,14 +48,16 @@ onMounted(() => {
 </script>
 
 <template>
-  <header v-if="showTitleBar" class="desktop-titlebar" :class="{ mac: isMac }" @dblclick="controlWindow('toggle-maximize')">
-    <div class="desktop-titlebar__drag">
-      <div class="desktop-titlebar__brand">
-        <img class="desktop-titlebar__logo" src="/logo.png" alt="" draggable="false">
-        <span class="desktop-titlebar__title">Hermes Studio</span>
-      </div>
-    </div>
-    <div v-if="showWindowButtons" class="desktop-titlebar__controls" @dblclick.stop>
+  <div
+    v-if="showWindowButtons"
+    class="desktop-titlebar"
+    :class="{ standalone }"
+    :style="titleBarStyle"
+    @dblclick="controlWindow('toggle-maximize')"
+  >
+    <div v-if="standalone" class="desktop-titlebar__standalone-drag" @dblclick="controlWindow('toggle-maximize')" />
+    <div v-else class="desktop-titlebar__drag" />
+    <div class="desktop-titlebar__controls" @dblclick.stop>
       <button class="desktop-window-btn" type="button" aria-label="Minimize" @click.stop="controlWindow('minimize')">
         <svg viewBox="0 0 12 12" aria-hidden="true">
           <path d="M2 6.5h8" />
@@ -74,25 +78,52 @@ onMounted(() => {
         </svg>
       </button>
     </div>
-  </header>
+  </div>
 </template>
 
 <style scoped lang="scss">
 @use "@/styles/variables" as *;
 
 .desktop-titlebar {
+  position: absolute;
+  z-index: 1001;
+  top: 10px;
+  right: 10px;
   height: 36px;
-  flex: 0 0 36px;
   display: flex;
   align-items: center;
-  border-bottom: 1px solid $border-color;
-  background: $bg-sidebar;
+  direction: ltr;
+  border: 0;
+  border-radius: 12px;
+  background: $bg-main-surface;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
   color: $text-primary;
   user-select: none;
+  overflow: hidden;
+  contain: paint;
+  clip-path: inset(0 round 12px);
   -webkit-app-region: drag;
 
-  &.mac {
-    padding-left: 82px;
+  &::after {
+    content: "";
+    position: absolute;
+    z-index: 2;
+    inset: 0;
+    border: 1px solid $border-color;
+    border-radius: inherit;
+    pointer-events: none;
+  }
+
+  &.standalone {
+    left: auto;
+    top: 10px;
+    width: 138px;
+
+    .desktop-titlebar__controls {
+      border-inline-start: 0;
+      border-radius: inherit;
+      clip-path: inset(0 round 12px);
+    }
   }
 }
 
@@ -100,43 +131,34 @@ onMounted(() => {
   min-width: 0;
   flex: 1;
   height: 100%;
-  display: flex;
-  align-items: center;
 }
 
-.desktop-titlebar__brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  padding: 0 12px;
-}
-
-.desktop-titlebar__logo {
-  width: 18px;
-  height: 18px;
-  flex: 0 0 18px;
-  object-fit: contain;
-}
-
-.desktop-titlebar__title {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0;
+.desktop-titlebar__standalone-drag {
+  position: fixed;
+  z-index: 0;
+  top: 0;
+  left: 0;
+  right: 138px;
+  height: 46px;
+  -webkit-app-region: drag;
 }
 
 .desktop-titlebar__controls {
+  position: relative;
+  z-index: 1;
   height: 100%;
   display: flex;
   align-items: stretch;
+  overflow: hidden;
+  contain: paint;
+  border-inline-start: 1px solid $border-color;
+  border-radius: 0 12px 12px 0;
+  clip-path: inset(0 round 0 12px 12px 0);
   -webkit-app-region: no-drag;
 }
 
 .desktop-window-btn {
+  position: relative;
   width: 46px;
   height: 100%;
   border: 0;
@@ -146,9 +168,25 @@ onMounted(() => {
   place-items: center;
   color: $text-secondary;
   background: transparent;
+  background-clip: padding-box;
   cursor: default;
+  overflow: hidden;
+  isolation: isolate;
+  -webkit-app-region: no-drag;
+
+  &::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    border-radius: inherit;
+    background: transparent;
+    pointer-events: none;
+  }
 
   svg {
+    position: relative;
+    z-index: 1;
     width: 12px;
     height: 12px;
     fill: none;
@@ -156,16 +194,33 @@ onMounted(() => {
     stroke-width: 1.4;
     stroke-linecap: round;
     stroke-linejoin: round;
+    pointer-events: none;
   }
 
   &:hover {
     color: $text-primary;
-    background: rgba(var(--text-muted-rgb), 0.14);
+
+    &::before {
+      background: rgba(var(--text-muted-rgb), 0.14);
+    }
   }
 
   &.close:hover {
     color: #ffffff;
-    background: #c42b1c;
+
+    &::before {
+      background: #c42b1c;
+    }
+  }
+
+  &:last-child {
+    border-top-right-radius: 11px;
+    border-bottom-right-radius: 11px;
+  }
+
+  .standalone &:first-child {
+    border-top-left-radius: 11px;
+    border-bottom-left-radius: 11px;
   }
 }
 </style>

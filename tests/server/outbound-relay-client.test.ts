@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { MCU_VOICE_SYSTEM_INSTRUCTIONS } from '../../packages/server/src/services/global-agent/mcu-voice-instructions'
 
 const { mockIo, mockSocket, sockets, socketHandlers, mockWebSockets, MockWebSocket, resetMockSockets } = vi.hoisted(() => {
   function createMockSocket(id: string, url = '') {
@@ -117,6 +118,22 @@ describe('outbound relay client', () => {
 
   function socketForUrl(url: string) {
     return sockets.find(socket => socket.__url === url)
+  }
+
+  function startPrimaryMockRun(socket: any, runId = 'run-primary'): string {
+    const runCall = socket.emit.mock.calls
+      .filter(([event]: [string]) => event === 'run')
+      .at(-1)
+    expect(runCall?.[1]).toMatchObject({
+      source: 'coding_agent',
+      session_source: 'global_agent',
+      coding_agent_id: 'ekko-agent',
+      instructions: MCU_VOICE_SYSTEM_INSTRUCTIONS,
+    })
+    const queueId = runCall?.[1]?.queue_id
+    expect(queueId).toMatch(/^mcu_/)
+    socket.__handlers.get('run.started')?.({ run_id: runId, queue_id: queueId })
+    return queueId
   }
 
   it('stays disabled when no relay url is passed explicitly', async () => {
@@ -519,12 +536,45 @@ describe('outbound relay client', () => {
     })
     const localSocket = socketForUrl('http://127.0.0.1:8648/chat-run')
     localSocket.__handlers.get('connect')?.()
-    localSocket.__handlers.get('message.delta')?.({ delta: '你好' })
-    localSocket.__handlers.get('run.completed')?.({})
+    startPrimaryMockRun(localSocket)
+    localSocket.__handlers.get('message.delta')?.({ delta: '我来查一下。\n' })
+    localSocket.__handlers.get('tool.started')?.({
+      tool: 'weather',
+      preview: 'tool arguments must stay local'.repeat(1_000),
+    })
+    localSocket.__handlers.get('tool.completed')?.({
+      tool: 'weather',
+      preview: 'tool result must stay local'.repeat(1_000),
+    })
+    expect(remoteSocket.emit).toHaveBeenCalledWith('tool.started', {
+      type: 'tool.started',
+      interactionId: 'voice-tts-ok',
+      tool: 'weather',
+    })
+    expect(remoteSocket.emit).toHaveBeenCalledWith('tool.completed', {
+      type: 'tool.completed',
+      interactionId: 'voice-tts-ok',
+      tool: 'weather',
+      error: undefined,
+    })
+    localSocket.__handlers.get('run.completed')?.({ output: '厦门今天晴。' })
 
     await vi.waitFor(() => {
       expect(remoteSocket.emit).toHaveBeenCalledWith('audio.enqueue', expect.objectContaining({
+        text: '我来查一下。',
         url: 'http://device.local:8787/global-agent/audio/audio-1?token=download-token',
+      }))
+    })
+    emitRemote(remoteSocket, 'audio.done', {
+      type: 'audio.done',
+      interactionId: 'voice-tts-ok',
+      segmentId: 'voice-tts-ok-tts-1',
+    })
+    await vi.waitFor(() => {
+      expect(remoteSocket.emit).toHaveBeenCalledWith('audio.enqueue', expect.objectContaining({
+        interactionId: 'voice-tts-ok',
+        segmentId: 'voice-tts-ok-tts-2',
+        text: '厦门今天晴。',
       }))
     })
     const uploadCall = fetchImpl.mock.calls.find(([url]: [string]) => url === 'http://device.local:8787/global-agent/audio')
@@ -538,6 +588,122 @@ describe('outbound relay client', () => {
     })
     expect(uploadCall?.[1].body).toBeInstanceOf(Uint8Array)
     expect(Buffer.from(uploadCall?.[1].body as Uint8Array).subarray(0, 4).toString('ascii')).toBe('HADP')
+  })
+
+  it('keeps direct relay background work non-blocking and sends only the final autonomous agent response', async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.includes('/api/hermes/mcu/voice-turn')) {
+        return new Response(JSON.stringify({ ok: true, transcript: '后台查询天气' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      if (url.includes('/api/hermes/tts/synthesize')) {
+        return new Response(Buffer.from('pcm-audio'), {
+          status: 200,
+          headers: { 'content-type': 'audio/x-pcm' },
+        })
+      }
+      return new Response('not found', { status: 404 })
+    })
+    const { startOutboundRelayClient } = await import('../../packages/server/src/services/global-agent/outbound-relay-client')
+
+    startOutboundRelayClient({
+      relayUrl: 'http://device.local:8787',
+      relayProtocol: 'mcu-socket.io',
+      userToken: 'user-jwt',
+      deviceCode: 'device-code-1',
+      localBaseUrl: 'http://127.0.0.1:8648',
+      fetchImpl: fetchImpl as any,
+    })
+
+    const remoteSocket = connectRemoteSocket()
+    emitRemote(remoteSocket, 'voice.recorded', {
+      type: 'voice.recorded',
+      interactionId: 'voice-background',
+      mimeType: 'audio/wav',
+      profile: 'research',
+    })
+    emitRemote(remoteSocket, 'voice.stream.chunk', {
+      type: 'voice.stream.chunk',
+      data: Buffer.from('wav-audio').toString('base64'),
+    })
+
+    await vi.waitFor(() => {
+      expect(socketForUrl('http://127.0.0.1:8648/chat-run')).toBeTruthy()
+    })
+    const localSocket = socketForUrl('http://127.0.0.1:8648/chat-run')
+    localSocket.__handlers.get('connect')?.()
+    startPrimaryMockRun(localSocket, 'run-parent')
+    localSocket.__handlers.get('delegation.updated')?.({
+      delegation_id: 'delegation-1',
+      status: 'running',
+      background_pending: 1,
+    })
+    localSocket.__handlers.get('run.completed')?.({
+      run_id: 'run-parent',
+      output: '',
+      background_pending: 1,
+    })
+
+    await vi.waitFor(() => {
+      expect(remoteSocket.emit).toHaveBeenCalledWith('interaction.status', expect.objectContaining({
+        interactionId: 'voice-background',
+        status: 'completed',
+      }))
+    })
+    expect(localSocket.disconnect).not.toHaveBeenCalled()
+    expect(fetchImpl.mock.calls.filter(([url]: [string]) => url.includes('/api/hermes/tts/synthesize'))).toHaveLength(0)
+
+    remoteSocket.emit.mockClear()
+    localSocket.__handlers.get('run.started')?.({
+      run_id: 'run-background-delivery',
+      autonomous: true,
+      delegation_id: 'delegation-1',
+    })
+    localSocket.__handlers.get('message.delta')?.({
+      run_id: 'run-background-delivery',
+      delta: '厦门明天晴，最高温度 30 度。',
+    })
+    expect(remoteSocket.emit).not.toHaveBeenCalledWith('interaction.status', expect.objectContaining({ status: 'thinking' }))
+    expect(remoteSocket.emit).not.toHaveBeenCalledWith('audio.enqueue', expect.anything())
+
+    localSocket.__handlers.get('run.completed')?.({
+      run_id: 'run-background-delivery',
+      autonomous: true,
+      delegation_id: 'delegation-1',
+      output: '厦门明天晴，最高温度 30 度。',
+      background_pending: 0,
+    })
+
+    await vi.waitFor(() => {
+      const ttsCalls = fetchImpl.mock.calls.filter(([url]: [string]) => url.includes('/api/hermes/tts/synthesize'))
+      expect(ttsCalls).toHaveLength(1)
+      expect(JSON.parse(String(ttsCalls[0][1]?.body))).toMatchObject({
+        text: '厦门明天晴，最高温度 30 度。',
+      })
+    })
+    await vi.waitFor(() => {
+      expect(remoteSocket.emit).toHaveBeenCalledWith('audio.enqueue', expect.objectContaining({
+        interactionId: 'mcu-background-delegation-1',
+        segmentId: 'mcu-background-delegation-1-tts-1',
+        text: '厦门明天晴，最高温度 30 度。',
+        completionManagedByServer: true,
+      }))
+    })
+    expect(localSocket.disconnect).toHaveBeenCalled()
+
+    emitRemote(remoteSocket, 'audio.done', {
+      type: 'audio.done',
+      interactionId: 'mcu-background-delegation-1',
+      segmentId: 'mcu-background-delegation-1-tts-1',
+    })
+    await vi.waitFor(() => {
+      expect(remoteSocket.emit).toHaveBeenCalledWith('interaction.status', expect.objectContaining({
+        interactionId: 'mcu-background-delegation-1',
+        status: 'completed',
+      }))
+    })
   })
 
   it('queues the hosted TTS-failed prompt when Socket.IO MCU speech synthesis fails', async () => {
@@ -580,6 +746,7 @@ describe('outbound relay client', () => {
     })
     const localSocket = socketForUrl('http://127.0.0.1:8648/chat-run')
     localSocket.__handlers.get('connect')?.()
+    startPrimaryMockRun(localSocket)
     localSocket.__handlers.get('message.delta')?.({ delta: '你好' })
     localSocket.__handlers.get('run.completed')?.({})
 
@@ -652,6 +819,7 @@ describe('outbound relay client', () => {
     })
     const localSocket = socketForUrl('http://127.0.0.1:8648/chat-run')
     localSocket.__handlers.get('connect')?.()
+    startPrimaryMockRun(localSocket)
     localSocket.__handlers.get('message.delta')?.({ delta: '这段正在合成。\n' })
 
     await vi.waitFor(() => {

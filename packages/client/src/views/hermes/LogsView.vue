@@ -70,6 +70,7 @@ async function loadLogs() {
     const data = await fetchLogs(selectedLog.value, {
       lines: lineCount.value,
       level: levelFilter.value || undefined,
+      text: selectedLog.value === 'ekko-agent' ? searchQuery.value || undefined : undefined,
     })
     entries.value = data.filter((e): e is LogEntry => e !== null)
   } catch (e: any) {
@@ -115,6 +116,7 @@ onMounted(async () => {
           v-model="searchQuery"
           class="search-input"
           :placeholder="t('logs.searchPlaceholder')"
+          @keyup.enter="loadLogs"
         />
         <NButton size="small" :loading="loading" @click="loadLogs">{{ t('logs.refresh') }}</NButton>
       </div>
@@ -224,19 +226,19 @@ onMounted(async () => {
   font-family: $font-code;
   font-size: 12px;
   line-height: 1.6;
-  border-left: 2px solid transparent;
+  border-inline-start: 2px solid transparent;
 
   &:hover {
     background-color: rgba(var(--accent-primary-rgb), 0.03);
   }
 
   &.level-error {
-    border-left-color: $error;
+    border-inline-start-color: $error;
     .log-message { color: $error; }
   }
 
   &.level-warning {
-    border-left-color: $warning;
+    border-inline-start-color: $warning;
     .log-message { color: $warning; }
   }
 }

@@ -50,10 +50,34 @@ const historySessions = [
     cost_status: '',
     workspace: null,
   },
+  {
+    id: 'hist-api-server',
+    profile: 'default',
+    source: 'api_server',
+    model: 'test-model',
+    provider: 'test-provider',
+    title: 'API Server History Session',
+    preview: 'API Server preview',
+    started_at: 1_790_000_400,
+    ended_at: null,
+    last_active: 1_790_000_500,
+    message_count: 2,
+    tool_call_count: 0,
+    input_tokens: 50,
+    output_tokens: 60,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+    reasoning_tokens: 0,
+    billing_provider: null,
+    estimated_cost_usd: 0,
+    actual_cost_usd: null,
+    cost_status: '',
+    workspace: null,
+  },
 ]
 
-function detailFor(id: string) {
-  const session = historySessions.find(s => s.id === id)
+function detailFor(id: string, sessions = historySessions) {
+  const session = sessions.find(s => s.id === id)
   if (!session) return null
   return {
     ...session,
@@ -88,7 +112,7 @@ function detailFor(id: string) {
   }
 }
 
-async function mockHistoryApi(page: Page) {
+async function mockHistoryApi(page: Page, sessions = historySessions) {
   await page.route('**/*', async (route: Route) => {
     const request = route.request()
     const url = new URL(request.url())
@@ -105,11 +129,43 @@ async function mockHistoryApi(page: Page) {
     if (pathname === '/api/auth/status') return json({ hasPasswordLogin: false, username: null })
     if (pathname === '/api/hermes/available-models') return json({ default: 'test-model', default_provider: 'test-provider', groups: [TEST_MODEL_GROUP], allProviders: [TEST_MODEL_GROUP], model_aliases: {}, model_visibility: {} })
     if (pathname === '/api/hermes/profiles') return json({ profiles: [{ name: 'default', active: true, model: 'test-model', gateway: 'test' }] })
-    if (pathname === '/api/hermes/sessions/hermes') return json({ sessions: historySessions })
+    if (pathname === '/api/hermes/sessions/hermes/groups') {
+      const limit = Number(url.searchParams.get('limit') || 20)
+      const includedIds = new Set(url.searchParams.getAll('include'))
+      const bySource = new Map<string, typeof sessions>()
+      for (const session of sessions) {
+        const group = bySource.get(session.source) || []
+        group.push(session)
+        bySource.set(session.source, group)
+      }
+      const groups = [...bySource.entries()].map(([source, group]) => {
+        group.sort((a, b) => Number(b.last_active || b.started_at) - Number(a.last_active || a.started_at))
+        return { source, sessions: group.slice(0, limit), hasMore: group.length > limit }
+      })
+      return json({
+        groups,
+        included: sessions.filter(session => includedIds.has(session.id)),
+      })
+    }
+    if (pathname === '/api/hermes/sessions/hermes') {
+      const source = url.searchParams.get('source')
+      if (!source) return json({ sessions })
+      const offset = Number(url.searchParams.get('offset') || 0)
+      const limit = Number(url.searchParams.get('limit') || 20)
+      const sourceSessions = sessions
+        .filter(session => session.source === source)
+        .sort((a, b) => Number(b.last_active || b.started_at) - Number(a.last_active || a.started_at))
+      return json({
+        sessions: sourceSessions.slice(offset, offset + limit),
+        hasMore: offset + limit < sourceSessions.length,
+        offset,
+        limit,
+      })
+    }
 
     const detailMatch = pathname.match(/^\/api\/hermes\/sessions\/hermes\/([^/]+)$/)
     if (detailMatch) {
-      const detail = detailFor(decodeURIComponent(detailMatch[1]))
+      const detail = detailFor(decodeURIComponent(detailMatch[1]), sessions)
       return detail ? json({ session: detail }) : json({ error: 'Session not found' }, 404)
     }
 
@@ -131,6 +187,14 @@ test.describe('history session deep links', () => {
     await expect(page).toHaveURL(/#\/hermes\/history\/session\/hist-beta$/)
   })
 
+  test('API Server sessions are available as a History source', async ({ page }) => {
+    await page.goto('/#/hermes/history/session/hist-api-server')
+
+    await expect(page.getByText('API Server History Session').first()).toBeVisible()
+    await expect(page.getByText('Answer from API Server History Session')).toBeVisible()
+    await expect(page.getByText('API Server', { exact: true }).first()).toBeVisible()
+  })
+
   test('clicking another history session updates URL and reload preserves it', async ({ page }) => {
     await page.goto('/#/hermes/history/session/hist-alpha')
     await expect(page.getByText('Answer from Alpha History Session')).toBeVisible()
@@ -148,6 +212,39 @@ test.describe('history session deep links', () => {
     await page.goto('/#/hermes/history/session/missing-session')
 
     await expect(page).toHaveURL(/#\/hermes\/history$/)
-    await expect(page.getByText('Alpha History Session').first()).toBeVisible()
+    await expect(page.getByText('API Server History Session').first()).toBeVisible()
+  })
+})
+
+test.describe('history source pagination', () => {
+  const stressSessions = [
+    ...historySessions,
+    ...Array.from({ length: 53 }, (_, index) => ({
+      ...historySessions[0],
+      id: `hist-stress-${index + 1}`,
+      title: `Stress History Session ${index + 1}`,
+      started_at: 1_780_000_000 - index,
+      last_active: 1_780_000_100 - index,
+    })),
+  ]
+
+  test.beforeEach(async ({ page }) => {
+    await authenticate(page)
+    await mockHistoryApi(page, stressSessions)
+  })
+
+  test('loads each source group in pages and removes the control at the end', async ({ page }) => {
+    await page.goto('/#/hermes/history/session/hist-beta')
+
+    await expect(page.getByText('Stress History Session 53')).toBeHidden()
+    const loadMore = page.getByRole('button', { name: 'Load more sessions' })
+    await expect(loadMore).toBeVisible()
+    await loadMore.hover()
+    await expect(page.getByText('Load more sessions').last()).toBeVisible()
+
+    await loadMore.click()
+
+    await expect(page.getByText('Stress History Session 53')).toBeVisible()
+    await expect(loadMore).toHaveCount(0)
   })
 })

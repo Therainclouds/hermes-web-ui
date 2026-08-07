@@ -30,6 +30,25 @@ async function waitForRun(page: Page, index = 0) {
   return handle.jsonValue() as Promise<any>
 }
 
+function readLiveReasoningStyles(status: Element) {
+  const avatar = status.querySelector<HTMLElement>('.thinking-avatar')!
+  const label = status.querySelector<HTMLElement>('.thinking-status-label')!
+  const statusStyle = getComputedStyle(status)
+  const avatarStyle = getComputedStyle(avatar)
+  const labelStyle = getComputedStyle(label)
+  return {
+    statusBackground: statusStyle.backgroundImage,
+    statusShadow: statusStyle.boxShadow,
+    statusPadding: statusStyle.padding,
+    avatarWidth: avatarStyle.width,
+    avatarHeight: avatarStyle.height,
+    avatarRadius: avatarStyle.borderRadius,
+    labelFontSize: labelStyle.fontSize,
+    labelFontWeight: labelStyle.fontWeight,
+    labelAnimation: labelStyle.animationName,
+  }
+}
+
 test('sends a chat run and renders streamed Socket.IO response events', async ({ page }) => {
   await authenticate(page, TEST_ACCESS_KEY, 'research')
   const api = await mockHermesApi(page)
@@ -71,6 +90,401 @@ test('sends a chat run and renders streamed Socket.IO response events', async ({
 
   await expect(page.getByText('Streaming answer from Hermes')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Stop' })).toHaveCount(0)
+  expect(api.unexpectedRequests).toEqual([])
+})
+
+test('freezes the current reasoning between the thinking animation and its tool call', async ({ page }) => {
+  await authenticate(page, TEST_ACCESS_KEY, 'research')
+  const api = await mockHermesApi(page)
+  await mockChatSocket(page)
+
+  await page.goto('/#/hermes/chat')
+  await sendChatMessage(page, 'Reason about the queue')
+  const { run } = await waitForRun(page)
+
+  await page.evaluate((sid) => {
+    const socket = (window as any).__PW_CHAT_SOCKET__.latest
+    socket.__trigger('run.started', {
+      event: 'run.started',
+      session_id: sid,
+      run_id: 'run-reasoning',
+    })
+  }, run.session_id)
+
+  await expect(page.locator('.streaming-indicator .thinking-status')).toBeVisible()
+
+  await page.evaluate((sid) => {
+    const socket = (window as any).__PW_CHAT_SOCKET__.latest
+    socket.__trigger('reasoning.delta', {
+      event: 'reasoning.delta',
+      session_id: sid,
+      run_id: 'run-reasoning',
+      delta: 'Inspecting the pending work.',
+    })
+  }, run.session_id)
+
+  const liveReasoning = page.locator('.streaming-indicator .live-reasoning-detail')
+  await expect(liveReasoning).toContainText('Inspecting the pending work.')
+  await expect(page.locator('.message.assistant .thinking-block')).toHaveCount(0)
+  await expect(page.locator('.streaming-indicator .thinking-status')).toBeVisible()
+  await expect(page.locator('.streaming-indicator .live-reasoning-status > .thinking-status + .live-reasoning-detail')).toBeVisible()
+
+  await page.evaluate((sid) => {
+    const socket = (window as any).__PW_CHAT_SOCKET__.latest
+    socket.__trigger('tool.started', {
+      event: 'tool.started',
+      session_id: sid,
+      run_id: 'run-reasoning',
+      tool_call_id: 'read-queue-1',
+      tool: 'read_file',
+      arguments: { path: 'queue.json' },
+    })
+  }, run.session_id)
+
+  await expect(liveReasoning).toContainText('Inspecting the pending work.')
+  await expect(page.locator('.streaming-indicator > .live-reasoning-status + .tool-calls-panel')).toBeVisible()
+  await expect(page.locator('.tool-calls-panel .tool-call-name').filter({ hasText: 'read_file' })).toBeVisible()
+
+  await page.evaluate((sid) => {
+    const socket = (window as any).__PW_CHAT_SOCKET__.latest
+    socket.__trigger('tool.completed', {
+      event: 'tool.completed',
+      session_id: sid,
+      run_id: 'run-reasoning',
+      tool_call_id: 'read-queue-1',
+      tool: 'read_file',
+      output: '{"pending":0}',
+    })
+    socket.__trigger('reasoning.delta', {
+      event: 'reasoning.delta',
+      session_id: sid,
+      run_id: 'run-reasoning',
+      delta: 'Summarizing the tool result.',
+    })
+  }, run.session_id)
+
+  await expect(liveReasoning).toContainText('Summarizing the tool result.')
+  await expect(liveReasoning).not.toContainText('Inspecting the pending work.')
+
+  await page.evaluate((sid) => {
+    const socket = (window as any).__PW_CHAT_SOCKET__.latest
+    socket.__trigger('message.delta', {
+      event: 'message.delta',
+      session_id: sid,
+      run_id: 'run-reasoning',
+      delta: 'The queue is ready.',
+    })
+  }, run.session_id)
+
+  const assistantBubble = page.locator('.message.assistant .message-bubble').filter({ hasText: 'The queue is ready.' })
+  await expect(liveReasoning).toContainText('Summarizing the tool result.')
+  await expect(assistantBubble.locator('.thinking-block')).toHaveCount(0)
+
+  await page.evaluate((sid) => {
+    const socket = (window as any).__PW_CHAT_SOCKET__.latest
+    socket.__trigger('run.completed', {
+      event: 'run.completed',
+      session_id: sid,
+      run_id: 'run-reasoning',
+      output: 'The queue is ready.',
+    })
+  }, run.session_id)
+
+  await expect(page.locator('.streaming-indicator .thinking-status')).toHaveCount(0)
+  await expect(assistantBubble.locator('.thinking-block')).toHaveCount(1)
+  await expect(assistantBubble).toContainText('Summarizing the tool result.')
+
+  const toolMessage = page.locator('.message.tool').filter({ hasText: 'read_file' })
+  await toolMessage.locator('.tool-line').click()
+  await expect(toolMessage.locator('.tool-detail-reasoning')).toContainText('Inspecting the pending work.')
+  expect(api.unexpectedRequests).toEqual([])
+})
+
+test('shows one real subagent card and opens its live chat stream in the resizable preview panel', async ({ page }) => {
+  await authenticate(page, TEST_ACCESS_KEY, 'research')
+  const api = await mockHermesApi(page)
+  await mockChatSocket(page)
+
+  await page.goto('/#/hermes/chat')
+  await sendChatMessage(page, 'Delegate the research task')
+  const { run } = await waitForRun(page)
+
+  await page.evaluate((sid) => {
+    const socket = (window as any).__PW_CHAT_SOCKET__.latest
+    socket.__trigger('run.started', { event: 'run.started', session_id: sid, run_id: 'run-delegate' })
+    socket.__trigger('reasoning.delta', {
+      event: 'reasoning.delta',
+      session_id: sid,
+      run_id: 'run-delegate',
+      delta: 'Preparing the delegated task.',
+    })
+    socket.__trigger('tool.started', {
+      event: 'tool.started',
+      session_id: sid,
+      run_id: 'run-delegate',
+      tool_call_id: 'delegate-call-1',
+      tool: 'delegate_task',
+      arguments: { mode: 'background', goal: 'Research the latest technology news' },
+    })
+    socket.__trigger('tool.completed', {
+      event: 'tool.completed',
+      session_id: sid,
+      run_id: 'run-delegate',
+      tool_call_id: 'delegate-call-1',
+      tool: 'delegate_task',
+      output: JSON.stringify({
+        mode: 'background',
+        status: 'dispatched',
+        delegation_id: 'delegation-1',
+      }),
+    })
+    socket.__trigger('delegation.updated', {
+      event: 'delegation.updated',
+      session_id: sid,
+      delegation_id: 'delegation-1',
+      status: 'running',
+      background_pending: 1,
+    })
+  }, run.session_id)
+
+  const singleChatLiveReasoning = page.locator('.streaming-indicator > .live-reasoning-status')
+  await expect(singleChatLiveReasoning).toBeVisible()
+  const singleChatThinkingStyles = await singleChatLiveReasoning.evaluate(readLiveReasoningStyles)
+
+  await page.evaluate((sid) => {
+    const socket = (window as any).__PW_CHAT_SOCKET__.latest
+    socket.__trigger('run.completed', {
+      event: 'run.completed',
+      session_id: sid,
+      run_id: 'run-delegate',
+      output: 'Delegation started.',
+      background_pending: 1,
+    })
+  }, run.session_id)
+
+  await expect(page.locator('.subagent-entry')).toHaveCount(0)
+
+  await page.evaluate((sid) => {
+    const socket = (window as any).__PW_CHAT_SOCKET__.latest
+    socket.__trigger('subagent.start', {
+      event: 'subagent.start',
+      session_id: sid,
+      subagent_id: 'child-1',
+      task_index: 0,
+      task_count: 1,
+      goal: 'Research the latest technology news',
+      model: 'test-model',
+      background_seq: 1,
+    })
+    socket.__trigger('subagent.thinking', {
+      event: 'subagent.thinking',
+      session_id: sid,
+      subagent_id: 'child-1',
+      text: 'Inspecting sources before searching.',
+      background_seq: 2,
+    })
+    socket.__trigger('subagent.tool', {
+      event: 'subagent.tool',
+      session_id: sid,
+      subagent_id: 'child-1',
+      tool: 'search_web',
+      arguments: { query: 'technology news' },
+      preview: 'technology news',
+      tool_count: 1,
+      background_seq: 3,
+    })
+  }, run.session_id)
+
+  const subagentCards = page.locator('.message.tool .subagent-entry')
+  await expect(subagentCards).toHaveCount(1)
+  await expect(subagentCards).toContainText('delegate_task')
+  await subagentCards.click()
+
+  const panel = page.locator('.subagent-stream-panel')
+  await expect(panel).toBeVisible()
+  await expect(panel).toContainText('Research the latest technology news')
+  await expect(panel.locator('.subagent-run-indicator .thinking-avatar')).toBeVisible()
+  await expect(panel.locator('.subagent-run-indicator .live-reasoning-detail')).toContainText('Inspecting sources before searching.')
+  await expect(panel.locator('.subagent-live-tool')).toContainText('search_web')
+  await expect(panel.getByText('Waiting for live output...')).toHaveCount(0)
+  await expect(panel.locator('.message-bubble.system')).toHaveCount(0)
+  const subagentThinkingStyles = await panel
+    .locator('.live-reasoning-status')
+    .evaluate(readLiveReasoningStyles)
+  expect(subagentThinkingStyles).toEqual(singleChatThinkingStyles)
+  expect(subagentThinkingStyles).toMatchObject({
+    statusBackground: 'none',
+    statusShadow: 'none',
+    statusPadding: '0px',
+    avatarWidth: '40px',
+    avatarHeight: '40px',
+  })
+  expect(subagentThinkingStyles.labelAnimation).not.toBe('none')
+  const reasoningDetailStyle = await panel.locator('.live-reasoning-detail').evaluate((detail) => {
+    const style = getComputedStyle(detail)
+    return {
+      background: style.backgroundColor,
+      borderInlineStartWidth: style.borderInlineStartWidth,
+      borderLeftWidth: style.borderLeftWidth,
+      padding: style.padding,
+    }
+  })
+  expect(reasoningDetailStyle.background).not.toBe('rgba(0, 0, 0, 0)')
+  expect(reasoningDetailStyle.borderInlineStartWidth).toBe('0px')
+  expect(reasoningDetailStyle.borderLeftWidth).toBe('0px')
+  expect(reasoningDetailStyle.padding).toBe('7px 10px')
+
+  for (const surface of [page.locator('.chat-tool-panel'), panel]) {
+    const bounds = await surface.boundingBox()
+    const viewport = page.viewportSize()
+    expect(bounds).not.toBeNull()
+    expect(viewport).not.toBeNull()
+    expect(bounds!.x).toBeGreaterThanOrEqual(0)
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport!.width + 1)
+  }
+
+  await page.setViewportSize({ width: 640, height: 820 })
+  await expect(panel).toBeVisible()
+  for (const surface of [page.locator('.chat-tool-panel'), panel]) {
+    const bounds = await surface.boundingBox()
+    expect(bounds).not.toBeNull()
+    expect(bounds!.x).toBeGreaterThanOrEqual(0)
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(641)
+  }
+
+  const backgrounds = await page.evaluate(() => ({
+    chat: getComputedStyle(document.querySelector('.chat-main-content')!).backgroundColor,
+    panel: getComputedStyle(document.querySelector('.subagent-stream-panel')!).backgroundColor,
+    transcript: getComputedStyle(document.querySelector('.subagent-stream-panel .virtual-message-list')!).backgroundColor,
+  }))
+  expect(backgrounds.panel).toBe(backgrounds.chat)
+  expect(backgrounds.transcript).toBe(backgrounds.chat)
+
+  await page.evaluate((sid) => {
+    const socket = (window as any).__PW_CHAT_SOCKET__.latest
+    socket.__trigger('subagent.thinking', {
+      event: 'subagent.thinking',
+      session_id: sid,
+      subagent_id: 'child-1',
+      text: 'Summarizing the search result.',
+      background_seq: 4,
+    })
+    socket.__trigger('subagent.text', {
+      event: 'subagent.text',
+      session_id: sid,
+      subagent_id: 'child-1',
+      text: 'Child live answer.',
+      background_seq: 5,
+    })
+  }, run.session_id)
+
+  await expect(panel.locator('.subagent-run-indicator .live-reasoning-detail')).toContainText('Summarizing the search result.')
+  await expect(panel.locator('.subagent-run-indicator .live-reasoning-detail')).not.toContainText('Inspecting sources before searching.')
+  await expect(panel).toContainText('Child live answer.')
+  await expect(panel.locator('.message.assistant .thinking-block')).toHaveCount(0)
+
+  await page.evaluate((sid) => {
+    const socket = (window as any).__PW_CHAT_SOCKET__.latest
+    socket.__trigger('subagent.thinking', {
+      event: 'subagent.thinking',
+      session_id: sid,
+      subagent_id: 'child-1',
+      text: 'Preparing the final summary.',
+      background_seq: 6,
+    })
+  }, run.session_id)
+
+  await expect(panel.locator('.subagent-run-indicator .live-reasoning-detail')).toContainText('Preparing the final summary.')
+  await expect(panel.locator('.message.assistant .thinking-block')).toHaveCount(0)
+
+  await page.evaluate((sid) => {
+    const socket = (window as any).__PW_CHAT_SOCKET__.latest
+    socket.__trigger('subagent.complete', {
+      event: 'subagent.complete',
+      session_id: sid,
+      subagent_id: 'child-1',
+      task_index: 0,
+      task_count: 1,
+      status: 'completed',
+      summary: 'Research finished.',
+      background_seq: 7,
+    })
+  }, run.session_id)
+
+  await expect(panel.locator('.subagent-status')).toHaveText('Completed')
+  await expect(panel.locator('.subagent-run-indicator')).toHaveCount(0)
+  await expect(panel).toContainText('Research finished.')
+  await expect(panel.locator('.message-bubble.system')).toHaveCount(0)
+
+  const completedTool = panel.locator('.message.tool').filter({ hasText: 'search_web' })
+  await completedTool.locator('.tool-line').click()
+  await expect(completedTool.locator('.tool-detail-reasoning')).toContainText('Inspecting sources before searching.')
+  const childAnswer = panel.locator('.message.assistant .message-bubble').filter({ hasText: 'Child live answer.' })
+  await expect(childAnswer.locator('.thinking-block')).toContainText('Summarizing the search result.')
+  const childSummary = panel.locator('.message.assistant .message-bubble').filter({ hasText: 'Research finished.' })
+  await expect(childSummary.locator('.thinking-block')).toContainText('Preparing the final summary.')
+  expect(api.unexpectedRequests).toEqual([])
+})
+
+test('settles a running subagent card when Stop completes without a child terminal event', async ({ page }) => {
+  await authenticate(page, TEST_ACCESS_KEY, 'research')
+  const api = await mockHermesApi(page)
+  await mockChatSocket(page)
+
+  await page.goto('/#/hermes/chat')
+  await sendChatMessage(page, 'Start background work')
+  const { run } = await waitForRun(page)
+
+  await page.evaluate((sid) => {
+    const socket = (window as any).__PW_CHAT_SOCKET__.latest
+    socket.__trigger('run.started', { event: 'run.started', session_id: sid, run_id: 'run-stop-child' })
+    socket.__trigger('subagent.start', {
+      event: 'subagent.start',
+      session_id: sid,
+      subagent_id: 'child-stop',
+      task_index: 0,
+      task_count: 1,
+      goal: 'Long-running background work',
+      background_seq: 1,
+    })
+    socket.__trigger('subagent.thinking', {
+      event: 'subagent.thinking',
+      session_id: sid,
+      subagent_id: 'child-stop',
+      text: 'Thinking without producing a reply.',
+      background_seq: 2,
+    })
+  }, run.session_id)
+
+  const subagentCard = page.locator('.subagent-entry').filter({ hasText: 'delegate_task' })
+  await expect(subagentCard).toHaveCount(1)
+  await subagentCard.click()
+  const panel = page.locator('.subagent-stream-panel')
+  await expect(panel.locator('.subagent-status')).toHaveText('Running')
+  await expect(panel.locator('.live-reasoning-detail')).toContainText('Thinking without producing a reply.')
+  await expect(panel.locator('.message.assistant')).toHaveCount(0)
+  await expect(subagentCard.locator('.tool-call-spinner')).toHaveCount(1)
+
+  await page.getByRole('button', { name: 'Stop' }).click()
+  await page.waitForFunction((sid) => {
+    const emitted = (window as any).__PW_CHAT_SOCKET__?.emitted || []
+    return emitted.some((item: any) => item.event === 'abort' && item.payload?.session_id === sid)
+  }, run.session_id)
+  await page.evaluate((sid) => {
+    const socket = (window as any).__PW_CHAT_SOCKET__.latest
+    socket.__trigger('abort.completed', {
+      event: 'abort.completed',
+      session_id: sid,
+      run_id: 'run-stop-child',
+      synced: true,
+    })
+  }, run.session_id)
+
+  await expect(panel.locator('.subagent-status')).toHaveText('Interrupted')
+  await expect(panel.locator('.subagent-live-dot')).not.toHaveClass(/active/)
+  await expect(panel.locator('.subagent-run-indicator')).toHaveCount(0)
+  await expect(panel.locator('.message.assistant')).toHaveCount(0)
+  await expect(subagentCard.locator('.tool-call-spinner, .tool-spinner')).toHaveCount(0)
   expect(api.unexpectedRequests).toEqual([])
 })
 

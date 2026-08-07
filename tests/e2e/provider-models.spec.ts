@@ -8,6 +8,10 @@ test('opens the provider form when model settings are entered from setup guidanc
   await page.goto('/#/hermes/models?addProvider=1')
 
   await expect(page.getByText('Provider Type')).toBeVisible()
+  const apiKeyInput = page.locator('input[type="password"]')
+  await expect(apiKeyInput).toHaveAttribute('autocomplete', 'new-password')
+  await expect(apiKeyInput).toHaveAttribute('name', 'new-provider-api-key')
+  await expect(apiKeyInput).toHaveAttribute('data-1p-ignore', 'true')
   await expect(page).toHaveURL(/#\/hermes\/models$/)
 })
 
@@ -43,5 +47,49 @@ test('fetches custom provider models through the backend proxy', async ({ page }
     api_key: 'test-provider-key',
   })
   expect(thirdPartyRequests).toEqual([])
+  expect(api.unexpectedRequests).toEqual([])
+})
+
+test('edits a provider without rendering its existing credential', async ({ page }) => {
+  await authenticate(page, TEST_ACCESS_KEY, 'research')
+  const api = await mockHermesApi(page, { initialProfileName: 'research' })
+
+  await page.goto('/#/hermes/models')
+  await page.getByRole('button', { name: 'Edit' }).click()
+
+  const editor = page.getByRole('dialog')
+  await expect(editor.getByText('Internal provider ID', { exact: true })).toBeVisible()
+  await expect(editor.getByText('test-provider', { exact: true })).toBeVisible()
+  await expect(editor.getByText('Configured', { exact: true })).toBeVisible()
+  await expect(editor.getByText('list-response-credential')).toHaveCount(0)
+  await expect(editor.locator('input[type="password"]')).toHaveValue('')
+  await expect(editor.locator('input[type="password"]')).toHaveAttribute('autocomplete', 'new-password')
+  await expect(editor.locator('input[type="password"]')).toHaveAttribute('name', 'provider-api-key-replacement')
+
+  await editor.getByLabel('Display name').fill('Edited Provider')
+  await editor.getByLabel('Base URL').fill('https://edited.example/v1')
+  await editor.locator('input[type="password"]').fill('replacement-provider-credential')
+
+  const patchRequestPromise = page.waitForRequest(request => {
+    const url = new URL(request.url())
+    return request.method() === 'PATCH' && url.pathname === '/api/hermes/config/providers/test-provider/editor'
+  })
+  await editor.getByRole('button', { name: 'Save' }).click()
+  const patchRequest = await patchRequestPromise
+  await expect(editor).toHaveCount(0)
+
+  expect(patchRequest.headers()['if-match']).toBe('"provider-revision-1"')
+  expect(JSON.parse(patchRequest.postData() || '{}')).toMatchObject({
+    label: 'Edited Provider',
+    base_url: 'https://edited.example/v1',
+    preferred_model: 'test-model',
+    credential_action: 'replace',
+    api_key: 'replacement-provider-credential',
+  })
+  const testRequest = api.requests.find(request => (
+    request.pathname === '/api/hermes/config/providers/test-provider/editor/test'
+  ))
+  expect(testRequest?.method).toBe('POST')
+  expect(testRequest?.headers['x-hermes-profile']).toBe('research')
   expect(api.unexpectedRequests).toEqual([])
 })

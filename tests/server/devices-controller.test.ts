@@ -283,7 +283,7 @@ describe('devices controller', () => {
 
     expect(ctx.body).toEqual({
       code: 'pair-secret',
-      link: 'http://192.168.1.88:8648/#/hermes/devices?pairing_code=pair-secret',
+      link: 'http://192.168.1.88:6060/#/hermes/devices?pairing_code=pair-secret',
     })
   })
 

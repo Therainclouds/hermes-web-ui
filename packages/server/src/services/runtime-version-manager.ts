@@ -1,11 +1,11 @@
 import { createHash } from 'crypto'
-import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'fs'
+import { accessSync, constants, createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
 import { get as httpGet } from 'http'
 import { get as httpsGet } from 'https'
-import { basename, dirname, join, relative, resolve } from 'path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path'
 import * as tar from 'tar'
 import { config } from '../config'
-import { getHermesWebUiVersion } from './system-info'
+import { getHermesAgentVersion, getHermesWebUiVersion } from './system-info'
 
 const ACTIVE_VERSION_FILE = 'active-version.json'
 const DEFAULT_REMOTE_MANIFEST_URL = 'https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/versions.json'
@@ -14,9 +14,13 @@ const DEFAULT_GITHUB_REPO = 'tangledup-ai/hermes-web-ui'
 
 export interface ActiveVersionManifest {
   schema: number
+  desktopAppVersion?: string
   hermesRuntimeVersion?: string
   webUiVersion?: string
   runtimeDirectory?: string
+  runtimeRootDirectory?: string
+  pendingRuntimeRootDirectory?: string
+  runtimeMigrationError?: string
   webUiDirectory?: string
   platform?: string
   updatedAt?: string
@@ -72,7 +76,12 @@ export interface RuntimeVersionStatus {
   remoteError: string
   hermes: {
     activeVersion: string
+    agentVersion: string
     activeDirectory: string
+    storageDirectory: string
+    defaultStorageDirectory: string
+    pendingStorageDirectory: string
+    migrationError: string
     installed: InstalledRuntimeVersion[]
     remoteVersions: string[]
   }
@@ -86,7 +95,15 @@ export interface RuntimeVersionStatus {
 }
 
 interface RuntimePackageManifest {
+  schema?: number
   hermesAgentVersion?: string
+  platform?: string
+  hermesSource?: {
+    repository?: string
+    ref?: string
+    commit?: string
+    installMethod?: string
+  }
   asset?: {
     name?: string
     url?: string
@@ -110,12 +127,31 @@ function runtimePlatformKey(platformName = process.platform, archName = process.
   return `${osLabel}-${archName}`
 }
 
-function desktopRuntimeRoot(): string {
+function defaultDesktopRuntimeRoot(): string {
   return join(config.appHome, 'desktop-runtime')
 }
 
 function activeVersionPath(): string {
-  return join(desktopRuntimeRoot(), ACTIVE_VERSION_FILE)
+  return join(defaultDesktopRuntimeRoot(), ACTIVE_VERSION_FILE)
+}
+
+function runtimeStorageRoot(active = readActiveVersionManifest()): string {
+  const configured = active?.runtimeRootDirectory?.trim()
+  return configured ? resolve(configured) : defaultDesktopRuntimeRoot()
+}
+
+function webUiStorageRoot(active = readActiveVersionManifest()): string {
+  return join(runtimeStorageRoot(active), 'webui')
+}
+
+function activeWebUiDirectory(active = readActiveVersionManifest()): string {
+  const version = active?.webUiVersion?.trim().replace(/^v/, '')
+  return version ? join(webUiStorageRoot(active), version) : ''
+}
+
+function isSameOrNestedPath(parent: string, candidate: string): boolean {
+  const rel = relative(resolve(parent), resolve(candidate))
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
 }
 
 function downloadBaseUrl(): string {
@@ -160,12 +196,19 @@ function readRuntimeManifestVersion(runtimeDir: string): string | undefined {
 }
 
 function requiredRuntimeFiles(root: string): string[] {
+  const sourceRoot = join(root, 'python')
+  const venvRoot = join(sourceRoot, 'venv')
+  const venvPythons = process.platform === 'win32'
+    ? [join(venvRoot, 'Scripts', 'python.exe'), join(venvRoot, 'python.exe')]
+    : [join(venvRoot, 'bin', 'python3')]
+  const pythonRoot = venvPythons.some(existsSync) ? venvRoot : sourceRoot
+  const standardVenvPython = join(pythonRoot, 'Scripts', 'python.exe')
   const pythonBin = process.platform === 'win32'
-    ? join(root, 'python', 'python.exe')
-    : join(root, 'python', 'bin', 'python3')
+    ? existsSync(standardVenvPython) ? standardVenvPython : join(pythonRoot, 'python.exe')
+    : join(pythonRoot, 'bin', 'python3')
   const hermesBin = process.platform === 'win32'
-    ? join(root, 'python', 'Scripts', 'hermes.cmd')
-    : join(root, 'python', 'bin', 'hermes')
+    ? join(pythonRoot, 'Scripts', 'hermes.cmd')
+    : join(pythonRoot, 'bin', 'hermes')
   const nodeBin = process.platform === 'win32'
     ? join(root, 'node', 'node.exe')
     : join(root, 'node', 'bin', 'node')
@@ -178,32 +221,77 @@ function missingRuntimeFiles(root: string): string[] {
   return requiredRuntimeFiles(root).filter(file => !existsSync(file))
 }
 
-export function listInstalledRuntimeVersions(active = readActiveVersionManifest()): InstalledRuntimeVersion[] {
-  const root = join(desktopRuntimeRoot(), 'hermes')
-  if (!existsSync(root)) return []
+function validateExtractedRuntime(root: string, expectedPlatform: string): void {
+  const missing = missingRuntimeFiles(root)
+  if (missing.length > 0) {
+    throw new Error(
+      `Runtime archive is missing required files: `
+      + missing.map(file => relative(root, file)).join(', '),
+    )
+  }
+  const manifest = readJsonFile<RuntimePackageManifest>(join(root, 'runtime-manifest.json'))
+  if (!manifest) throw new Error('Runtime archive has an invalid runtime-manifest.json')
+  if (manifest.platform && manifest.platform !== expectedPlatform) {
+    throw new Error(`Runtime platform mismatch: expected ${expectedPlatform}, received ${manifest.platform}`)
+  }
+  if ((manifest.schema || 0) >= 2) {
+    const missingSource = [
+      join(root, 'python', '.git', 'HEAD'),
+      join(root, 'python', 'pyproject.toml'),
+    ].filter(file => !existsSync(file))
+    if (missingSource.length > 0) {
+      throw new Error(
+        `Runtime archive is missing updateable Hermes source files: `
+        + missingSource.map(file => relative(root, file)).join(', '),
+      )
+    }
+    if (manifest.hermesSource?.installMethod !== 'git'
+      || !manifest.hermesSource.repository
+      || !manifest.hermesSource.ref
+      || !/^[0-9a-f]{40}$/i.test(manifest.hermesSource.commit || '')) {
+      throw new Error('Runtime archive has invalid Hermes Git source metadata')
+    }
+  }
+}
 
+export function listInstalledRuntimeVersions(active = readActiveVersionManifest()): InstalledRuntimeVersion[] {
+  const root = join(runtimeStorageRoot(active), 'hermes')
   const currentPlatform = runtimePlatformKey()
   const activeDir = active?.runtimeDirectory ? resolve(active.runtimeDirectory) : ''
   const installed: InstalledRuntimeVersion[] = []
 
-  for (const versionEntry of readdirSync(root, { withFileTypes: true })) {
-    if (!versionEntry.isDirectory()) continue
-    const version = versionEntry.name
-    const platformRoot = join(root, version)
-    for (const platformEntry of readdirSync(platformRoot, { withFileTypes: true })) {
-      if (!platformEntry.isDirectory()) continue
-      const directory = join(platformRoot, platformEntry.name)
-      installed.push({
-        version,
-        platform: platformEntry.name,
-        directory,
-        active: activeDir === resolve(directory),
-        manifestHermesRuntimeVersion: readRuntimeManifestVersion(directory),
-      })
+  if (existsSync(root)) {
+    for (const versionEntry of readdirSync(root, { withFileTypes: true })) {
+      if (!versionEntry.isDirectory()) continue
+      const version = versionEntry.name
+      const platformRoot = join(root, version)
+      for (const platformEntry of readdirSync(platformRoot, { withFileTypes: true })) {
+        if (!platformEntry.isDirectory()) continue
+        const directory = join(platformRoot, platformEntry.name)
+        installed.push({
+          version,
+          platform: platformEntry.name,
+          directory,
+          active: activeDir === resolve(directory),
+          manifestHermesRuntimeVersion: readRuntimeManifestVersion(directory),
+        })
+      }
     }
   }
 
+  if (activeDir && !installed.some(item => resolve(item.directory) === activeDir)) {
+    const manifestVersion = readRuntimeManifestVersion(activeDir)
+    installed.push({
+      version: active?.hermesRuntimeVersion || manifestVersion || basename(activeDir),
+      platform: active?.platform || currentPlatform,
+      directory: activeDir,
+      active: true,
+      manifestHermesRuntimeVersion: manifestVersion,
+    })
+  }
+
   return installed.sort((left, right) => {
+    if (left.active !== right.active) return left.active ? -1 : 1
     if (left.platform === currentPlatform && right.platform !== currentPlatform) return -1
     if (right.platform === currentPlatform && left.platform !== currentPlatform) return 1
     return right.version.localeCompare(left.version, undefined, { numeric: true })
@@ -211,10 +299,10 @@ export function listInstalledRuntimeVersions(active = readActiveVersionManifest(
 }
 
 export function listInstalledWebUiVersions(active = readActiveVersionManifest()): InstalledWebUiVersion[] {
-  const root = join(config.appHome, 'webui')
+  const root = webUiStorageRoot(active)
   if (!existsSync(root)) return []
 
-  const activeDir = active?.webUiDirectory ? resolve(active.webUiDirectory) : ''
+  const activeDir = activeWebUiDirectory(active)
   const installed: InstalledWebUiVersion[] = []
 
   for (const versionEntry of readdirSync(root, { withFileTypes: true })) {
@@ -248,7 +336,10 @@ async function fetchRemoteVersions(): Promise<{ manifest: RemoteVersionManifest 
 
 export async function getRuntimeVersionStatus(): Promise<RuntimeVersionStatus> {
   const active = readActiveVersionManifest()
-  const { manifest, error } = await fetchRemoteVersions()
+  const [{ manifest, error }, agentVersion] = await Promise.all([
+    fetchRemoteVersions(),
+    getHermesAgentVersion(),
+  ])
   const webUiVersion = getHermesWebUiVersion()
 
   return {
@@ -259,14 +350,19 @@ export async function getRuntimeVersionStatus(): Promise<RuntimeVersionStatus> {
     remoteError: error,
     hermes: {
       activeVersion: active?.hermesRuntimeVersion || '',
+      agentVersion,
       activeDirectory: active?.runtimeDirectory || '',
+      storageDirectory: runtimeStorageRoot(active),
+      defaultStorageDirectory: defaultDesktopRuntimeRoot(),
+      pendingStorageDirectory: active?.pendingRuntimeRootDirectory || '',
+      migrationError: active?.runtimeMigrationError || '',
       installed: listInstalledRuntimeVersions(active),
       remoteVersions: normalizeStringList(manifest?.hermes),
     },
     webui: {
       currentVersion: webUiVersion,
       activeVersion: active?.webUiVersion || webUiVersion,
-      activeDirectory: active?.webUiDirectory || '',
+      activeDirectory: activeWebUiDirectory(active),
       installed: listInstalledWebUiVersions(active),
       remoteVersions: normalizeStringList(manifest?.webui),
     },
@@ -356,11 +452,12 @@ export async function downloadRuntimeVersion(version: string, source: VersionDow
   const assetName = asset.name
 
   const assetUrl = downloadAssetUrl(assetName, releaseTag, source)
-  const targetRoot = join(desktopRuntimeRoot(), 'hermes', cleanVersion, platform)
-  const archive = join(desktopRuntimeRoot(), `${basename(assetName)}.download`)
-  const tempRoot = join(desktopRuntimeRoot(), `.runtime-download-${process.pid}-${Date.now()}`)
+  const storageRoot = runtimeStorageRoot()
+  const targetRoot = join(storageRoot, 'hermes', cleanVersion, platform)
+  const archive = join(storageRoot, `${basename(assetName)}.download`)
+  const tempRoot = join(storageRoot, `.runtime-download-${process.pid}-${Date.now()}`)
 
-  mkdirSync(desktopRuntimeRoot(), { recursive: true })
+  mkdirSync(storageRoot, { recursive: true })
   rmSync(tempRoot, { recursive: true, force: true })
   mkdirSync(tempRoot, { recursive: true })
 
@@ -373,10 +470,7 @@ export async function downloadRuntimeVersion(version: string, source: VersionDow
     }
     onProgress?.({ stage: 'extract', message: 'runtimeVersions.jobStage.extractRuntime' })
     await extractTarGzip(archive, tempRoot)
-    const missing = missingRuntimeFiles(tempRoot)
-    if (missing.length > 0) {
-      throw new Error(`Runtime archive is missing required files: ${missing.map(file => relative(tempRoot, file)).join(', ')}`)
-    }
+    validateExtractedRuntime(tempRoot, platform)
     onProgress?.({ stage: 'install', message: 'runtimeVersions.jobStage.installRuntime' })
     rmSync(targetRoot, { recursive: true, force: true })
     mkdirSync(dirname(targetRoot), { recursive: true })
@@ -405,12 +499,13 @@ export async function downloadWebUiVersion(version: string, source: VersionDownl
   const manifestUrl = downloadAssetUrl(manifestName, releaseTag, source)
   onProgress?.({ stage: 'resolve', message: 'runtimeVersions.jobStage.resolveWebUi' })
   const manifest = await fetchJson<{ asset?: { sha256?: string; size?: number } }>(manifestUrl)
-  const archive = join(desktopRuntimeRoot(), `${assetName}.download`)
-  const tempRoot = join(desktopRuntimeRoot(), `.webui-download-${process.pid}-${Date.now()}`)
-  const targetRoot = join(config.appHome, 'webui', cleanVersion)
+  const storageRoot = runtimeStorageRoot()
+  const archive = join(storageRoot, `${assetName}.download`)
+  const tempRoot = join(storageRoot, `.webui-download-${process.pid}-${Date.now()}`)
+  const targetRoot = join(storageRoot, 'webui', cleanVersion)
   const assetUrl = downloadAssetUrl(assetName, releaseTag, source)
 
-  mkdirSync(desktopRuntimeRoot(), { recursive: true })
+  mkdirSync(storageRoot, { recursive: true })
   rmSync(tempRoot, { recursive: true, force: true })
   mkdirSync(tempRoot, { recursive: true })
 
@@ -450,13 +545,56 @@ export function activateInstalledRuntimeVersion(version: string): ActiveVersionM
 
   const next: ActiveVersionManifest = {
     schema: 1,
+    desktopAppVersion: active?.desktopAppVersion || undefined,
     hermesRuntimeVersion: target.manifestHermesRuntimeVersion || target.version,
-    webUiVersion: active?.webUiVersion || getHermesWebUiVersion(),
+    webUiVersion: active?.webUiVersion || undefined,
     runtimeDirectory: target.directory,
-    webUiDirectory: active?.webUiDirectory || '',
+    runtimeRootDirectory: active?.runtimeRootDirectory || '',
+    pendingRuntimeRootDirectory: active?.pendingRuntimeRootDirectory || '',
+    runtimeMigrationError: active?.runtimeMigrationError || '',
     platform: target.platform,
     updatedAt: new Date().toISOString(),
   }
+
+  mkdirSync(dirname(activeVersionPath()), { recursive: true })
+  writeFileSync(activeVersionPath(), JSON.stringify(next, null, 2) + '\n', 'utf-8')
+  return next
+}
+
+export function scheduleRuntimeRootMigration(directory: string): ActiveVersionManifest {
+  const selectedDirectory = directory.trim()
+  if (!selectedDirectory) throw new Error('Runtime storage directory is required')
+  if (process.env.HERMES_DESKTOP_RUNTIME_DIR?.trim()) {
+    throw new Error('Runtime storage directory cannot be changed while HERMES_DESKTOP_RUNTIME_DIR is set')
+  }
+
+  const target = resolve(selectedDirectory)
+  if (!existsSync(target) || !statSync(target).isDirectory()) {
+    throw new Error('Runtime storage directory must be an existing directory')
+  }
+  try {
+    accessSync(target, constants.W_OK)
+  } catch {
+    throw new Error('Runtime storage directory is not writable')
+  }
+
+  const active = readActiveVersionManifest()
+  const currentRoot = runtimeStorageRoot(active)
+  if (target !== resolve(currentRoot) && isSameOrNestedPath(currentRoot, target)) {
+    throw new Error('Runtime storage directory cannot be inside the current Runtime storage directory')
+  }
+  if (active?.runtimeDirectory && isSameOrNestedPath(active.runtimeDirectory, target)) {
+    throw new Error('Runtime storage directory cannot be the current Runtime directory or one of its subdirectories')
+  }
+
+  const next: ActiveVersionManifest = {
+    ...(active || { schema: 1 }),
+    schema: 1,
+    pendingRuntimeRootDirectory: target === resolve(currentRoot) ? '' : target,
+    runtimeMigrationError: '',
+    updatedAt: new Date().toISOString(),
+  }
+  delete next.webUiDirectory
 
   mkdirSync(dirname(activeVersionPath()), { recursive: true })
   writeFileSync(activeVersionPath(), JSON.stringify(next, null, 2) + '\n', 'utf-8')
@@ -488,15 +626,18 @@ export function deleteInstalledRuntimeVersion(version: string): InstalledRuntime
 export function activateDownloadedWebUiVersion(version: string): ActiveVersionManifest {
   const cleanVersion = version.trim().replace(/^v/, '')
   if (!cleanVersion) throw new Error('Web UI version is required')
-  const directory = join(config.appHome, 'webui', cleanVersion)
-  if (!existsSync(join(directory, 'package.json'))) throw new Error(`Downloaded Web UI version not found: ${cleanVersion}`)
   const active = readActiveVersionManifest()
+  const directory = join(webUiStorageRoot(active), cleanVersion)
+  if (!existsSync(join(directory, 'package.json'))) throw new Error(`Downloaded Web UI version not found: ${cleanVersion}`)
   const next: ActiveVersionManifest = {
     schema: 1,
+    desktopAppVersion: active?.desktopAppVersion || undefined,
     hermesRuntimeVersion: active?.hermesRuntimeVersion || '',
     webUiVersion: cleanVersion,
     runtimeDirectory: active?.runtimeDirectory || '',
-    webUiDirectory: directory,
+    runtimeRootDirectory: active?.runtimeRootDirectory || '',
+    pendingRuntimeRootDirectory: active?.pendingRuntimeRootDirectory || '',
+    runtimeMigrationError: active?.runtimeMigrationError || '',
     platform: active?.platform || runtimePlatformKey(),
     updatedAt: new Date().toISOString(),
   }
@@ -515,7 +656,7 @@ export function deleteDownloadedWebUiVersion(version: string): InstalledWebUiVer
   if (!target) throw new Error(`Downloaded Web UI version not found: ${cleanVersion}`)
   if (target.active) throw new Error('Active Web UI version cannot be deleted')
 
-  const webUiRoot = resolve(join(config.appHome, 'webui'))
+  const webUiRoot = resolve(webUiStorageRoot(active))
   const targetDir = resolve(target.directory)
   const rel = relative(webUiRoot, targetDir)
   if (!rel || rel.startsWith('..') || rel === '..') {

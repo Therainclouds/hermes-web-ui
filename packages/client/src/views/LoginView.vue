@@ -16,9 +16,11 @@ import {
 } from "@/api/device-login";
 import { addCustomProvider } from "@/api/hermes/system";
 import { useDeviceBinding } from "@/composables/useDeviceBinding";
+import { useTheme } from "@/composables/useTheme";
 
 const { t } = useI18n();
 const router = useRouter();
+const { activateUserTheme } = useTheme();
 
 const username = ref("");
 const password = ref("");
@@ -78,8 +80,9 @@ async function handlePasswordLogin() {
   showLockResetHint.value = false;
 
   try {
-    const sessionToken = await loginWithPassword(username.value.trim(), password.value);
-    setApiKey(sessionToken);
+    const session = await loginWithPassword(username.value.trim(), password.value);
+    setApiKey(session.token);
+    activateUserTheme(session.userId, session.theme);
     router.replace("/hermes/chat");
   } catch (err: any) {
     if (err.status === 429 || err.status === 503) {
@@ -396,7 +399,7 @@ async function handleRecoverySubmit(recoveryPassword: string) {
 .login-error {
   font-size: 13px;
   color: $error;
-  text-align: left;
+  text-align: start;
 }
 
 .login-lock-hint {
@@ -407,7 +410,7 @@ async function handleRecoverySubmit(recoveryPassword: string) {
   color: $text-secondary;
   font-size: 12px;
   line-height: 1.5;
-  text-align: left;
+  text-align: start;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -475,7 +478,6 @@ async function handleRecoverySubmit(recoveryPassword: string) {
     cursor: not-allowed;
   }
 }
-
 .login-divider {
   display: flex;
   align-items: center;

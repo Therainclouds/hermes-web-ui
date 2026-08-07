@@ -1,17 +1,12 @@
 <script lang="ts">
-type SessionScrollSnapshot = {
-  scrollTop: number;
-  scrollHeight: number;
-  clientHeight: number;
-  wasNearBottom: boolean;
-}
+import type { MessageViewportScrollSnapshot } from "./message-scroll-position";
 
 type BottomScrollOptions = number | {
   frames?: number;
   keepAliveMs?: number;
 }
 
-const sessionScrollPositions = new Map<string, SessionScrollSnapshot>();
+const sessionScrollPositions = new Map<string, MessageViewportScrollSnapshot>();
 </script>
 
 <script setup lang="ts">
@@ -20,21 +15,25 @@ import { useI18n } from "vue-i18n";
 import { NButton, NInput } from "naive-ui";
 import VirtualMessageList from "./VirtualMessageList.vue";
 import MessageItem from "./MessageItem.vue";
-import { LIVE_CHAT_MAX_LOADED_MESSAGES, useChatStore, type Message } from "@/stores/hermes/chat";
-import thinkingImage from "@/assets/thinking.gif";
+import LiveReasoningStatus from "./LiveReasoningStatus.vue";
+import { LIVE_CHAT_MAX_LOADED_MESSAGES, parseMessageReference, useChatStore, type Message } from "@/stores/hermes/chat";
 import { useToolTraceVisibility } from "@/composables/useToolTraceVisibility";
+import { openSubagentStream, subagentIdFromToolCall } from "@/utils/hermes/subagent-stream";
+import { messageScrollPositionKey, rememberMessageScrollPosition } from "./message-scroll-position";
 
 const props = withDefaults(defineProps<{
   approvalPortalToBody?: boolean
+  scrollScope?: string
 }>(), {
   approvalPortalToBody: false,
+  scrollScope: "chat",
 })
 
 const chatStore = useChatStore();
 const { t } = useI18n();
 const { toolTraceVisible } = useToolTraceVisibility();
 const listRef = ref<InstanceType<typeof VirtualMessageList> | null>(null);
-const pendingInitialScrollSessionId = ref<string | null>(null);
+const pendingInitialScrollKey = ref<string | null>(null);
 const showScrollBottomButton = ref(false);
 const thinkingElapsedMs = ref(0);
 const initialBottomScrollOptions = { frames: 8, keepAliveMs: 1200 };
@@ -60,6 +59,15 @@ function toolPreviewText(preview?: string): string {
   return text.length > 160 ? `${text.slice(0, 157)}...` : text
 }
 
+function isSubagentToolCall(message: Message): boolean {
+  return subagentIdFromToolCall(message.toolCallId) !== null
+}
+
+function handleToolCallClick(message: Message) {
+  if (!isSubagentToolCall(message)) return
+  openSubagentStream(chatStore.activeSessionId, message.toolCallId)
+}
+
 function formatElapsed(ms: number): string {
   const totalSeconds = Math.floor(ms / 1000);
   const hours = Math.floor(totalSeconds / 3600);
@@ -77,7 +85,7 @@ function stopThinkingTimer() {
   }
 }
 
-const isThinkingIndicatorVisible = computed(() => chatStore.isRunActive || !!chatStore.abortState);
+const isRunIndicatorActive = computed(() => chatStore.isRunActive || !!chatStore.abortState);
 const formattedThinkingElapsed = computed(() => formatElapsed(thinkingElapsedMs.value));
 
 const currentToolCalls = computed(() => {
@@ -99,9 +107,53 @@ const visibleToolCalls = computed(() =>
   currentToolCalls.value.filter((tool) => !!tool.toolName),
 );
 
+const liveReasoningDetail = computed<{
+  messageId: Message["id"]
+  reasoning: string
+} | null>(() => {
+  if (!isRunIndicatorActive.value) return null;
+
+  const messages = chatStore.messages;
+  let lastInputIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user" || messages[i].role === "command") {
+      lastInputIdx = i;
+      break;
+    }
+  }
+
+  // Keep the newest assistant reasoning segment visible after it seals at a
+  // tool boundary. A later reasoning segment replaces it only when its first
+  // delta creates/updates a newer assistant message.
+  for (let i = messages.length - 1; i > lastInputIdx; i--) {
+    const message = messages[i];
+    if (message.role === "assistant" && message.reasoning?.trim()) {
+      return {
+        messageId: message.id,
+        reasoning: message.reasoning.trim(),
+      };
+    }
+  }
+
+  // Reattached runs can briefly expose the tool row before its assistant
+  // source is hydrated. Keep the persisted tool reasoning visible meanwhile.
+  for (let i = messages.length - 1; i > lastInputIdx; i--) {
+    const message = messages[i];
+    if (message.role === "tool" && message.reasoning?.trim()) {
+      return {
+        messageId: message.id,
+        reasoning: message.reasoning.trim(),
+      };
+    }
+  }
+  return null;
+});
+
 const emptyState = computed(() => {
   const session = chatStore.activeSession;
-  const codingAgentId = session?.codingAgentId || (session?.agent === "codex" ? "codex" : session?.agent === "claude" ? "claude-code" : session?.agent === "ekko-agent" ? "ekko-agent" : undefined);
+  const codingAgentId = session?.source === "global_agent"
+    ? "ekko-agent"
+    : session?.codingAgentId || (session?.agent === "codex" ? "codex" : session?.agent === "claude" ? "claude-code" : session?.agent === "ekko-agent" ? "ekko-agent" : undefined);
   if (codingAgentId === "codex") {
     return {
       logo: "/coding-agents/codex-openai.png",
@@ -131,22 +183,47 @@ const emptyState = computed(() => {
 });
 
 const displayMessages = computed(() => {
+  const messages = chatStore.messages;
   const currentToolIds = new Set(currentToolCalls.value.map((tool) => tool.id));
-  return chatStore.messages.filter((m) => {
-    if (m.role === "tool") {
-      return toolTraceVisible.value && !!m.toolName && !(chatStore.isRunActive && currentToolIds.has(m.id));
-    }
-    if (
-      m.role === "assistant" &&
-      m.isStreaming &&
-      !m.content?.trim() &&
-      !!m.reasoning?.trim() &&
-      currentToolCalls.value.length === 0
-    ) {
-      return false;
-    }
-    return true;
-  });
+  return messages
+    .filter((m, index) => {
+      if (m.role === "tool") {
+        return toolTraceVisible.value && !!m.toolName && !(chatStore.isRunActive && currentToolIds.has(m.id));
+      }
+      if (
+        m.role === "assistant" &&
+        m.id === liveReasoningDetail.value?.messageId &&
+        !m.content?.trim()
+      ) {
+        return false;
+      }
+      if (
+        m.role === "assistant" &&
+        !m.isStreaming &&
+        !m.content?.trim() &&
+        !!m.reasoning?.trim()
+      ) {
+        const next = messages[index + 1];
+        const reasoningMovedToTool =
+          toolTraceVisible.value &&
+          next?.role === "tool" &&
+          !!next.toolName &&
+          next.reasoning?.trim() === m.reasoning.trim();
+        return !reasoningMovedToTool;
+      }
+      return true;
+    })
+    .map((message) => {
+      if (
+        message.role === "assistant" &&
+        message.id === liveReasoningDetail.value?.messageId &&
+        message.content?.trim() &&
+        message.reasoning?.trim()
+      ) {
+        return { ...message, reasoning: undefined };
+      }
+      return message;
+    });
 });
 
 function forkDividerId(sessionId: string): string {
@@ -207,6 +284,18 @@ const virtualListPadding = computed(() => {
   return "20px";
 });
 
+const activeSessionScrollKey = computed(() => {
+  const sessionId = chatStore.activeSessionId;
+  if (!sessionId) return null;
+  const session = chatStore.activeSession?.id === sessionId
+    ? chatStore.activeSession
+    : chatStore.sessions.find(item => item.id === sessionId);
+  return messageScrollPositionKey(props.scrollScope, {
+    id: sessionId,
+    profile: session?.profile,
+  });
+});
+
 const showHistoryArchiveLink = computed(() => {
   const session = chatStore.activeSession;
   return !!session?.hasMoreBefore && (session.loadedMessageCount || 0) >= LIVE_CHAT_MAX_LOADED_MESSAGES;
@@ -260,7 +349,9 @@ function removeQueuedMessage(messageId: string) {
 }
 
 function queuedPreview(content: string): string {
-  const normalized = content.replace(/\s+/g, " ").trim();
+  const reference = parseMessageReference(content);
+  const visibleContent = reference?.reply || reference?.content || content;
+  const normalized = visibleContent.replace(/\s+/g, " ").trim();
   return normalized.length > 48 ? `${normalized.slice(0, 48)}...` : normalized;
 }
 
@@ -293,23 +384,23 @@ function handleScrollBottomClick() {
   scrollToBottom({ frames: 4, keepAliveMs: 600 });
 }
 
-function saveSessionScrollPosition(sessionId: string | null | undefined) {
-  if (!sessionId) return;
+function saveSessionScrollPosition(scrollKey: string | null | undefined) {
+  if (!scrollKey) return;
   const snapshot = listRef.value?.captureViewportPosition() ?? null;
-  if (snapshot) sessionScrollPositions.set(sessionId, snapshot);
+  if (snapshot) rememberMessageScrollPosition(sessionScrollPositions, scrollKey, snapshot);
 }
 
-function applyInitialSessionScroll(sessionId: string) {
-  if (chatStore.activeSessionId !== sessionId) return;
+function applyInitialSessionScroll(scrollKey: string) {
+  if (activeSessionScrollKey.value !== scrollKey) return;
   if (chatStore.focusMessageId) {
-    pendingInitialScrollSessionId.value = null;
+    pendingInitialScrollKey.value = null;
     scrollToMessage(chatStore.focusMessageId);
     return;
   }
 
-  const snapshot = sessionScrollPositions.get(sessionId);
+  const snapshot = sessionScrollPositions.get(scrollKey);
   if (snapshot) {
-    pendingInitialScrollSessionId.value = null;
+    pendingInitialScrollKey.value = null;
     if (snapshot.wasNearBottom) {
       scrollToBottom(initialBottomScrollOptions);
     } else {
@@ -323,7 +414,7 @@ function applyInitialSessionScroll(sessionId: string) {
     const dividerId = forkDividerId(session.id);
     const hasDivider = displayMessagesWithForkDivider.value.some((message) => message.id === dividerId);
     if (hasDivider) {
-      pendingInitialScrollSessionId.value = null;
+      pendingInitialScrollKey.value = null;
       scrollToMessage(dividerId);
       return;
     }
@@ -332,7 +423,7 @@ function applyInitialSessionScroll(sessionId: string) {
 
   scrollToBottom(initialBottomScrollOptions);
   if (chatStore.messages.length > 0 && !chatStore.isLoadingMessages) {
-    pendingInitialScrollSessionId.value = null;
+    pendingInitialScrollKey.value = null;
   }
 }
 
@@ -348,22 +439,22 @@ async function handleTopReach() {
 }
 
 watch(
-  () => chatStore.activeSessionId,
-  async (id, previousId) => {
-    saveSessionScrollPosition(previousId);
-    if (!id) return;
-    pendingInitialScrollSessionId.value = id;
+  activeSessionScrollKey,
+  async (scrollKey, previousScrollKey) => {
+    saveSessionScrollPosition(previousScrollKey);
+    if (!scrollKey) return;
+    pendingInitialScrollKey.value = scrollKey;
     await nextTick();
-    applyInitialSessionScroll(id);
+    applyInitialSessionScroll(scrollKey);
   },
   { immediate: true },
 );
 
 watch(
-  () => [chatStore.activeSessionId, chatStore.messages.length] as const,
-  ([id, length]) => {
-    if (!id || pendingInitialScrollSessionId.value !== id || length === 0) return;
-    applyInitialSessionScroll(id);
+  () => [activeSessionScrollKey.value, chatStore.messages.length] as const,
+  ([scrollKey, length]) => {
+    if (!scrollKey || pendingInitialScrollKey.value !== scrollKey || length === 0) return;
+    applyInitialSessionScroll(scrollKey);
     void nextTick(updateScrollBottomButton);
   },
   { flush: "post" },
@@ -381,15 +472,15 @@ watch(
   () => chatStore.isLoadingMessages,
   async (isLoading, wasLoading) => {
     if (isLoading || !wasLoading) return;
-    const id = chatStore.activeSessionId;
-    if (!id || pendingInitialScrollSessionId.value !== id) return;
+    const scrollKey = activeSessionScrollKey.value;
+    if (!scrollKey || pendingInitialScrollKey.value !== scrollKey) return;
     if (chatStore.focusMessageId) {
-      pendingInitialScrollSessionId.value = null;
+      pendingInitialScrollKey.value = null;
       return;
     }
     await nextTick();
-    if (chatStore.activeSessionId !== id) return;
-    applyInitialSessionScroll(id);
+    if (activeSessionScrollKey.value !== scrollKey) return;
+    applyInitialSessionScroll(scrollKey);
   },
   { flush: "post" },
 );
@@ -411,7 +502,7 @@ watch(
 );
 
 watch(
-  isThinkingIndicatorVisible,
+  isRunIndicatorActive,
   (visible) => {
     stopThinkingTimer();
     if (!visible) {
@@ -432,7 +523,7 @@ watch(
 watch(
   () => chatStore.messages[chatStore.messages.length - 1]?.content,
   () => {
-    if (pendingInitialScrollSessionId.value === chatStore.activeSessionId) return;
+    if (pendingInitialScrollKey.value === activeSessionScrollKey.value) return;
     if (chatStore.focusMessageId) {
       scrollToMessage(chatStore.focusMessageId);
       return;
@@ -442,7 +533,7 @@ watch(
   },
 );
 watch(currentToolCalls, () => {
-  if (pendingInitialScrollSessionId.value === chatStore.activeSessionId) return;
+  if (pendingInitialScrollKey.value === activeSessionScrollKey.value) return;
   if (chatStore.focusMessageId) {
     scrollToMessage(chatStore.focusMessageId);
     return;
@@ -454,7 +545,7 @@ watch(currentToolCalls, () => {
 watch(
   () => queuedMessages.value.length,
   async (length, previousLength) => {
-    if (pendingInitialScrollSessionId.value === chatStore.activeSessionId) return;
+    if (pendingInitialScrollKey.value === activeSessionScrollKey.value) return;
     if (chatStore.focusMessageId) return;
     if (length <= previousLength) return;
     const wasNearBottom = shouldAutoFollowBottom(320);
@@ -466,7 +557,7 @@ watch(
 
 onBeforeUnmount(() => {
   stopThinkingTimer();
-  saveSessionScrollPosition(chatStore.activeSessionId);
+  saveSessionScrollPosition(activeSessionScrollKey.value);
 });
 
 onMounted(() => {
@@ -483,7 +574,7 @@ defineExpose({
 <template>
   <div class="message-list-shell">
     <VirtualMessageList
-      :key="chatStore.activeSessionId || 'chat-empty'"
+      :key="activeSessionScrollKey || 'chat-empty'"
       ref="listRef"
       :messages="displayMessagesWithForkDivider"
       :virtualized="false"
@@ -542,19 +633,12 @@ defineExpose({
       </template>
       <template #after>
         <Transition name="fade">
-        <div v-if="isThinkingIndicatorVisible" class="streaming-indicator">
-          <div class="thinking-status">
-            <img
-              :src="thinkingImage"
-              alt=""
-              aria-hidden="true"
-              class="thinking-avatar"
-            >
-            <div class="thinking-status-copy">
-              <span class="thinking-status-label">{{ t("chat.thinkingInProgress") }}</span>
-              <span class="thinking-status-time">{{ formattedThinkingElapsed }}</span>
-            </div>
-          </div>
+        <div v-if="isRunIndicatorActive" class="streaming-indicator">
+          <LiveReasoningStatus
+            :reasoning="liveReasoningDetail?.reasoning"
+            :reasoning-id="liveReasoningDetail?.messageId"
+            :elapsed="formattedThinkingElapsed"
+          />
           <div v-if="visibleToolCalls.length > 0 || chatStore.compressionState || chatStore.abortState" class="tool-calls-panel">
             <!-- Abort indicator -->
             <div v-if="chatStore.abortState" class="tool-call-item compression-item">
@@ -643,6 +727,13 @@ defineExpose({
               v-for="tc in visibleToolCalls"
               :key="tc.id"
               class="tool-call-item"
+              :class="{ 'subagent-entry': isSubagentToolCall(tc) }"
+              :role="isSubagentToolCall(tc) ? 'button' : undefined"
+              :tabindex="isSubagentToolCall(tc) ? 0 : undefined"
+              :title="isSubagentToolCall(tc) ? t('subagent.open') : undefined"
+              @click="handleToolCallClick(tc)"
+              @keydown.enter.prevent="handleToolCallClick(tc)"
+              @keydown.space.prevent="handleToolCallClick(tc)"
             >
               <svg
                 width="12"
@@ -1086,7 +1177,7 @@ defineExpose({
   font-weight: 600;
 
   strong {
-    margin-left: auto;
+    margin-inline-start: auto;
     min-width: 20px;
     height: 20px;
     display: inline-flex;
@@ -1470,87 +1561,6 @@ defineExpose({
   box-sizing: border-box;
 }
 
-.thinking-status {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  min-width: 0;
-  min-height: 40px;
-}
-
-.thinking-avatar {
-  width: 40px;
-  height: 40px;
-  border-radius: $radius-md;
-  object-fit: cover;
-  flex-shrink: 0;
-
-  .dark & {
-    filter: brightness(1.18) contrast(1.08) saturate(1.08);
-  }
-}
-
-.thinking-status-copy {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  column-gap: 8px;
-  row-gap: 2px;
-  min-width: 0;
-  min-height: 20px;
-}
-
-.thinking-status-label {
-  display: inline-flex;
-  align-items: center;
-  color: transparent;
-  background: linear-gradient(105deg, $text-secondary 0%, $text-secondary 39%, #ffffff 48%, #ffffff 52%, $text-secondary 61%, $text-secondary 100%);
-  background-size: 300% 100%;
-  background-position: 0% 0;
-  -webkit-background-clip: text;
-  background-clip: text;
-  font-size: 15px;
-  font-weight: 600;
-  line-height: 20px;
-  animation: thinking-label-shimmer 2.2s linear infinite;
-  backface-visibility: hidden;
-  contain: paint;
-  transform: translateZ(0);
-  will-change: background-position;
-
-  .dark & {
-    background: linear-gradient(105deg, #f0f0f0 0%, #f0f0f0 37%, #2f3540 47%, #2f3540 53%, #f0f0f0 63%, #f0f0f0 100%);
-    background-size: 300% 100%;
-    background-position: 0% 0;
-    -webkit-background-clip: text;
-    background-clip: text;
-    filter: drop-shadow(0 0 5px rgba(255, 255, 255, 0.16));
-  }
-}
-
-.thinking-status-time {
-  display: inline-flex;
-  align-items: center;
-  margin-top: 2px;
-  color: $text-muted;
-  font-family: $font-code;
-  font-size: 13px;
-  font-variant-numeric: tabular-nums;
-  line-height: 20px;
-  min-width: 44px;
-}
-
-@keyframes thinking-label-shimmer {
-  0% {
-    background-position: 100% 0;
-  }
-
-  100% {
-    background-position: 0% 0;
-  }
-}
-
 .tool-calls-panel {
   display: flex;
   flex-direction: column;
@@ -1579,6 +1589,16 @@ defineExpose({
   padding: 3px 8px;
   background: rgba(0, 0, 0, 0.03);
   border-radius: $radius-sm;
+
+  &.subagent-entry {
+    cursor: pointer;
+
+    &:hover,
+    &:focus-visible {
+      outline: none;
+      background: rgba(var(--accent-primary-rgb), 0.09);
+    }
+  }
 
   .dark & {
     background: rgba(255, 255, 255, 0.06);
@@ -1638,7 +1658,7 @@ defineExpose({
 .tool-call-error-icon {
   color: #ff4d4f;
   flex-shrink: 0;
-  margin-left: 6px;
+  margin-inline-start: 6px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1648,14 +1668,14 @@ defineExpose({
   font-size: 10px;
   color: $text-muted;
   font-family: $font-code;
-  margin-left: 4px;
+  margin-inline-start: 4px;
   flex-shrink: 0;
 }
 
 .tool-call-success-icon {
   color: #52c41a;
   flex-shrink: 0;
-  margin-left: 6px;
+  margin-inline-start: 6px;
   display: flex;
   align-items: center;
   justify-content: center;

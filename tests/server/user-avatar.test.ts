@@ -45,14 +45,14 @@ describe('user avatar storage and controller', () => {
   describe('users-store avatar helpers', () => {
     it('returns an empty string for a brand new user', async () => {
       const { users } = await initUsers()
-      const admin = users.bootstrapDefaultSuperAdmin('admin', '123456')!
+      const admin = users.bootstrapDefaultSuperAdmin('quanthermes', '12345678')!
 
       expect(users.getUserAvatar(admin.id)).toBe('')
     })
 
     it('round-trips avatar JSON through set/getUserAvatar', async () => {
       const { users } = await initUsers()
-      const admin = users.bootstrapDefaultSuperAdmin('admin', '123456')!
+      const admin = users.bootstrapDefaultSuperAdmin('quanthermes', '12345678')!
       const payload = JSON.stringify({ type: 'image', dataUrl: 'data:image/png;base64,AAA' })
 
       const ok = users.setUserAvatar(admin.id, payload)
@@ -63,7 +63,7 @@ describe('user avatar storage and controller', () => {
     it('setUserAvatar returns false when the user does not exist', async () => {
       const { users } = await initUsers()
       // create a user so the table exists, but use a clearly non-existent id
-      users.bootstrapDefaultSuperAdmin('admin', '123456')
+      users.bootstrapDefaultSuperAdmin('quanthermes', '12345678')
 
       expect(users.setUserAvatar(9999, '{"type":"default"}')).toBe(false)
       expect(users.getUserAvatar(9999)).toBe('')
@@ -71,7 +71,7 @@ describe('user avatar storage and controller', () => {
 
     it('setUserAvatar returns false when given a non-numeric userId', async () => {
       const { users } = await initUsers()
-      users.bootstrapDefaultSuperAdmin('admin', '123456')
+      users.bootstrapDefaultSuperAdmin('quanthermes', '12345678')
 
       expect(users.setUserAvatar('not-a-number', '{"type":"default"}')).toBe(false)
       expect(users.setUserAvatar(-1, '{"type":"default"}')).toBe(false)
@@ -80,7 +80,7 @@ describe('user avatar storage and controller', () => {
 
     it('persists the avatar in the users table', async () => {
       const { users, schemas } = await initUsers()
-      const admin = users.bootstrapDefaultSuperAdmin('admin', '123456')!
+      const admin = users.bootstrapDefaultSuperAdmin('quanthermes', '12345678')!
       const payload = JSON.stringify({ type: 'default' })
 
       users.setUserAvatar(admin.id, payload)
@@ -105,7 +105,7 @@ describe('user avatar storage and controller', () => {
 
     it('returns the avatar string for the authenticated user', async () => {
       const { users, ctrl } = await initUsers()
-      const admin = users.bootstrapDefaultSuperAdmin('admin', '123456')!
+      const admin = users.bootstrapDefaultSuperAdmin('quanthermes', '12345678')!
       const payload = JSON.stringify({ type: 'image', dataUrl: 'data:image/png;base64,HI==' })
       users.setUserAvatar(admin.id, payload)
 
@@ -118,7 +118,7 @@ describe('user avatar storage and controller', () => {
 
     it('returns an empty avatar string for an authenticated user without an avatar', async () => {
       const { users, ctrl } = await initUsers()
-      const admin = users.bootstrapDefaultSuperAdmin('admin', '123456')!
+      const admin = users.bootstrapDefaultSuperAdmin('quanthermes', '12345678')!
 
       const ctx = makeControllerCtx({ id: admin.id, username: 'admin', role: 'super_admin' })
       await ctrl.getMyAvatar(ctx)
@@ -131,7 +131,7 @@ describe('user avatar storage and controller', () => {
   describe('updateMyAvatar controller', () => {
     it('persists a default avatar payload sent as a direct object', async () => {
       const { users, ctrl } = await initUsers()
-      const admin = users.bootstrapDefaultSuperAdmin('admin', '123456')!
+      const admin = users.bootstrapDefaultSuperAdmin('quanthermes', '12345678')!
 
       const ctx = makeControllerCtx(
         { id: admin.id, username: 'admin', role: 'super_admin' },
@@ -147,7 +147,7 @@ describe('user avatar storage and controller', () => {
 
     it('persists an image avatar payload sent as a direct object', async () => {
       const { users, ctrl } = await initUsers()
-      const admin = users.bootstrapDefaultSuperAdmin('admin', '123456')!
+      const admin = users.bootstrapDefaultSuperAdmin('quanthermes', '12345678')!
       const dataUrl = 'data:image/png;base64,iVBORw0KGgo='
 
       const ctx = makeControllerCtx(
@@ -164,7 +164,7 @@ describe('user avatar storage and controller', () => {
 
     it('persists a JSON-string avatar passed in the avatar field', async () => {
       const { users, ctrl } = await initUsers()
-      const admin = users.bootstrapDefaultSuperAdmin('admin', '123456')!
+      const admin = users.bootstrapDefaultSuperAdmin('quanthermes', '12345678')!
       const serialized = JSON.stringify({ type: 'default', seed: 'abc' })
 
       const ctx = makeControllerCtx(
@@ -180,7 +180,7 @@ describe('user avatar storage and controller', () => {
 
     it('rejects an unknown type with HTTP 400', async () => {
       const { users, ctrl } = await initUsers()
-      const admin = users.bootstrapDefaultSuperAdmin('admin', '123456')!
+      const admin = users.bootstrapDefaultSuperAdmin('quanthermes', '12345678')!
 
       const ctx = makeControllerCtx(
         { id: admin.id, username: 'admin', role: 'super_admin' },
@@ -195,7 +195,7 @@ describe('user avatar storage and controller', () => {
 
     it('rejects an image payload whose dataUrl exceeds 500KB with HTTP 400', async () => {
       const { users, ctrl } = await initUsers()
-      const admin = users.bootstrapDefaultSuperAdmin('admin', '123456')!
+      const admin = users.bootstrapDefaultSuperAdmin('quanthermes', '12345678')!
       const oversized = 'data:image/png;base64,' + 'A'.repeat(500 * 1024 + 16)
 
       const ctx = makeControllerCtx(
@@ -211,7 +211,7 @@ describe('user avatar storage and controller', () => {
 
     it('rejects an image payload with no dataUrl with HTTP 400', async () => {
       const { users, ctrl } = await initUsers()
-      const admin = users.bootstrapDefaultSuperAdmin('admin', '123456')!
+      const admin = users.bootstrapDefaultSuperAdmin('quanthermes', '12345678')!
 
       const ctx = makeControllerCtx(
         { id: admin.id, username: 'admin', role: 'super_admin' },
@@ -226,7 +226,7 @@ describe('user avatar storage and controller', () => {
 
     it('rejects an image payload whose dataUrl is not a data URL with HTTP 400', async () => {
       const { users, ctrl } = await initUsers()
-      const admin = users.bootstrapDefaultSuperAdmin('admin', '123456')!
+      const admin = users.bootstrapDefaultSuperAdmin('quanthermes', '12345678')!
 
       const ctx = makeControllerCtx(
         { id: admin.id, username: 'admin', role: 'super_admin' },

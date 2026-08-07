@@ -1,4 +1,5 @@
 import { request, getActiveProfileName, getApiKey, getBaseUrlValue } from '../client'
+import { fetchAuthenticatedBlob } from './binary-content'
 
 export interface FileEntry {
   name: string
@@ -144,4 +145,14 @@ export function getFileDownloadUrl(relativePath: string, fileName?: string, prof
   const token = getApiKey()
   if (token) params.set('token', token)
   return `${base}/api/hermes/download?${params.toString()}`
+}
+
+export async function fetchFilePreviewBlob(
+  path: string,
+  profile?: string | null,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  const params = new URLSearchParams({ path })
+  appendProfile(params, profile)
+  return fetchAuthenticatedBlob(`/api/hermes/files/preview?${params}`, { profile, signal })
 }
