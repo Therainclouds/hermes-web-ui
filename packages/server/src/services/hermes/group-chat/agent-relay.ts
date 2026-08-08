@@ -55,7 +55,6 @@ const RELAY_ATTACHMENT_CHUNK_BYTES = 256 * 1024
 const RELAY_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024
 const RELAY_RUN_ATTACHMENT_MAX_BYTES = 50 * 1024 * 1024
 const OUTBOUND_LINKS_FILE = join(config.appHome, 'group-chat', 'group-chat-agent-links.json')
-const LEGACY_OUTBOUND_LINKS_FILE = join(config.appHome, 'group-chat-agent-links.json')
 const OUTBOUND_ATTACHMENTS_DIR = join(config.appHome, 'group-chat-agent-relay', 'attachments')
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -1834,22 +1833,12 @@ export class GroupAgentOutboundRelayManager {
   }
 
   private async readPersisted(): Promise<PersistedOutboundLink[]> {
-    const current = await this.readPersistedFile(OUTBOUND_LINKS_FILE)
-    if (current !== null) return current
-    const legacy = await this.readPersistedFile(LEGACY_OUTBOUND_LINKS_FILE)
-    if (legacy === null) return []
-    await this.writePersisted(legacy)
-    await rm(LEGACY_OUTBOUND_LINKS_FILE, { force: true })
-    return legacy
-  }
-
-  private async readPersistedFile(filePath: string): Promise<PersistedOutboundLink[] | null> {
     let file: Awaited<ReturnType<typeof open>> | null = null
     try {
-      const info = await lstat(filePath)
+      const info = await lstat(OUTBOUND_LINKS_FILE)
       if (!info.isFile() || info.isSymbolicLink()) return []
       file = await open(
-        filePath,
+        OUTBOUND_LINKS_FILE,
         fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0),
       )
       const current = await file.stat()
@@ -1883,8 +1872,7 @@ export class GroupAgentOutboundRelayManager {
         }
       }
       return links
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return null
+    } catch {
       return []
     } finally {
       await file?.close().catch(() => undefined)

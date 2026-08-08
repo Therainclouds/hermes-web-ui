@@ -145,17 +145,15 @@ describe('group Agent outbound Relay persistence', () => {
     manager.shutdown()
   })
 
-  it('migrates the legacy root-level connection file into the group-chat directory', async () => {
-    const { connectorId, legacyLinksFile, linksFile, manager } = await restorePersistedConnection(
+  it('ignores the legacy root-level connection file without migrating it', async () => {
+    const { legacyLinksFile, linksFile, manager } = await restorePersistedConnection(
       'websocket connection unavailable',
       true,
     )
 
-    await expect(manager.listConnections()).resolves.toEqual([
-      expect.objectContaining({ connectorId, connected: false }),
-    ])
-    expect(existsSync(legacyLinksFile)).toBe(false)
-    expect(JSON.parse(readFileSync(linksFile, 'utf8'))).toHaveLength(1)
+    await expect(manager.listConnections()).resolves.toEqual([])
+    expect(existsSync(legacyLinksFile)).toBe(true)
+    expect(existsSync(linksFile)).toBe(false)
     manager.shutdown()
   })
 

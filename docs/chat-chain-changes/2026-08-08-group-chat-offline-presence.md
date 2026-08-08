@@ -25,7 +25,5 @@ so the remote service stops reconnecting and removes the local link immediately.
 Ordinary remote-server outages retain the existing one-to-thirty-second Socket.IO
 reconnection backoff.
 
-Outbound Agent links now live at
-`HERMES_WEB_UI_HOME/group-chat/group-chat-agent-links.json`. On first access,
-an existing root-level `group-chat-agent-links.json` is migrated to the new
-location before the legacy file is removed.
+Outbound Agent links live at
+`HERMES_WEB_UI_HOME/group-chat/group-chat-agent-links.json`.
