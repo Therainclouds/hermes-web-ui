@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { constants as fsConstants } from 'node:fs'
 import { lstat, mkdir, open, rename, rm, writeFile } from 'node:fs/promises'
-import { basename, extname, join, resolve } from 'node:path'
+import { basename, dirname, extname, join, resolve } from 'node:path'
 import type { Server, Socket as ServerSocket } from 'socket.io'
 import { io, type Socket as ClientSocket } from 'socket.io-client'
 import { config } from '../../../config'
@@ -30,6 +30,7 @@ import {
   getGroupAgentConnector,
   releaseGroupAgentPairingClaim,
   revokeGroupAgentConnector,
+  subscribeGroupAgentConnectorRevocations,
   touchGroupAgentConnector,
   normalizeRemoteGroupAgentDescriptor,
   type GroupAgentConnector,
@@ -53,7 +54,8 @@ const RELAY_AGENT_CONFIG_UPDATE_INTERVAL_MS = 1_000
 const RELAY_ATTACHMENT_CHUNK_BYTES = 256 * 1024
 const RELAY_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024
 const RELAY_RUN_ATTACHMENT_MAX_BYTES = 50 * 1024 * 1024
-const OUTBOUND_LINKS_FILE = join(config.appHome, 'group-chat-agent-links.json')
+const OUTBOUND_LINKS_FILE = join(config.appHome, 'group-chat', 'group-chat-agent-links.json')
+const LEGACY_OUTBOUND_LINKS_FILE = join(config.appHome, 'group-chat-agent-links.json')
 const OUTBOUND_ATTACHMENTS_DIR = join(config.appHome, 'group-chat-agent-relay', 'attachments')
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -114,9 +116,19 @@ type PendingRelayRun = {
 type WorkspaceDiffTerminalStatus = 'completed' | 'failed' | 'aborted'
 
 function relayError(message: string, code = 'GROUP_AGENT_RELAY_ERROR'): Error {
-  const error = new Error(message) as Error & { code?: string }
+  const error = new Error(message) as Error & { code?: string; data?: { code: string } }
   error.code = code
+  error.data = { code }
   return error
+}
+
+function isTerminalOutboundCredentialError(error: unknown): boolean {
+  const candidate = error as { code?: unknown; data?: { code?: unknown }; message?: unknown } | null
+  const code = String(candidate?.code || candidate?.data?.code || '')
+  if (code === 'GROUP_AGENT_CREDENTIAL_INVALID' || code === 'GROUP_AGENT_REGISTRATION_MISSING') return true
+  const message = String(candidate?.message || error || '')
+  return message.includes('Invalid or revoked reconnect credential')
+    || message.includes('Remote Agent registration no longer exists')
 }
 
 function normalizeOrigin(value: unknown): string {
@@ -898,6 +910,8 @@ class RelayGroupAgentExecutor implements GroupAgentExecutor {
 export class GroupAgentRelayServer {
   private readonly namespace
   private executors = new Map<string, RelayGroupAgentExecutor>()
+  private connectorSockets = new Map<string, ServerSocket>()
+  private unsubscribeConnectorRevocations: () => void
 
   constructor(
     ioServer: Server,
@@ -906,10 +920,23 @@ export class GroupAgentRelayServer {
     this.namespace = ioServer.of('/group-chat-agent-relay')
     this.namespace.use((socket, next) => this.authenticate(socket, next))
     this.namespace.on('connection', socket => void this.onConnection(socket))
+    this.unsubscribeConnectorRevocations = subscribeGroupAgentConnectorRevocations(connector => {
+      const socket = this.connectorSockets.get(connector.id)
+      if (!socket) return
+      socket.emit('connector.revoked', {
+        connectorId: connector.id,
+        roomId: connector.roomId,
+      })
+      const disconnectTimer = setTimeout(() => socket.disconnect(true), 250)
+      disconnectTimer.unref?.()
+    })
     logger.info('[GroupAgentRelay] Socket.IO ready at /group-chat-agent-relay')
   }
 
   shutdown(): void {
+    this.unsubscribeConnectorRevocations()
+    for (const socket of this.connectorSockets.values()) socket.disconnect(true)
+    this.connectorSockets.clear()
     for (const executor of this.executors.values()) executor.disconnect()
     this.executors.clear()
   }
@@ -1033,9 +1060,12 @@ export class GroupAgentRelayServer {
 
       const previous = this.executors.get(connector.id)
       previous?.disconnect()
+      const previousSocket = this.connectorSockets.get(connector.id)
+      if (previousSocket && previousSocket.id !== socket.id) previousSocket.disconnect(true)
       const executor = new RelayGroupAgentExecutor(socket, proxy, connector, roomAgent, storage)
       this.groupChatServer.agentClients.registerAgentForRoom(connector.roomId, executor)
       this.executors.set(connector.id, executor)
+      this.connectorSockets.set(connector.id, socket)
       touchGroupAgentConnector(connector.id, 'online')
       this.groupChatServer.broadcastRoomAgents(connector.roomId)
 
@@ -1131,7 +1161,7 @@ export class GroupAgentRelayServer {
         },
       )
       socket.on('connector.revoke', (_data, ack?: (response: Record<string, unknown>) => void) => {
-        revokeGroupAgentConnector(connector!.id)
+        revokeGroupAgentConnector(connector!.id, Date.now(), { notify: false })
         ack?.({ ok: true })
         queueMicrotask(() => {
           this.groupChatServer.agentClients.removeAgentFromRoom(connector!.roomId, connector!.agentId)
@@ -1149,6 +1179,7 @@ export class GroupAgentRelayServer {
       }
       logger.warn(error, '[GroupAgentRelay] connection setup failed')
       socket.emit('relay.error', {
+        code: typeof (error as any)?.code === 'string' ? (error as any).code : undefined,
         error: error instanceof Error ? error.message : 'Relay connection failed',
       })
       socket.disconnect(true)
@@ -1156,6 +1187,8 @@ export class GroupAgentRelayServer {
   }
 
   private handleDisconnect(connectorId: string, roomId: string, executor: RelayGroupAgentExecutor): void {
+    const socket = this.connectorSockets.get(connectorId)
+    if (socket?.data?.executor === executor) this.connectorSockets.delete(connectorId)
     if (this.executors.get(connectorId) !== executor) return
     this.executors.delete(connectorId)
     touchGroupAgentConnector(connectorId, 'offline')
@@ -1312,7 +1345,10 @@ class OutboundRelayConnection {
       })
       this.socket!.once('relay.error', (data: any) => {
         clearTimeout(timer)
-        reject(relayError(String(data?.error || 'Relay connection failed')))
+        reject(relayError(
+          String(data?.error || 'Relay connection failed'),
+          String(data?.code || 'GROUP_AGENT_RELAY_ERROR'),
+        ))
       })
       this.socket!.once('connect_error', error => {
         if (this.socket?.active) return
@@ -1380,6 +1416,11 @@ class OutboundRelayConnection {
 
   private bindEvents(): void {
     const socket = this.socket!
+    socket.on('connector.revoked', (data: { connectorId?: string }) => {
+      const connectorId = String(data?.connectorId || this.link.connectorId || '').trim()
+      if (!connectorId || connectorId !== this.link.connectorId) return
+      void this.manager.handleConnectorRevoked(connectorId, this)
+    })
     socket.on('run.request', (request: RelayRunRequest) => void this.handleRun(request))
     socket.on('run.interrupt', (data: { runId?: string }) => {
       const request = this.activeRequest
@@ -1658,8 +1699,13 @@ export class GroupAgentOutboundRelayManager {
       if (!link.connectorId || !link.credential) continue
       const connection = new OutboundRelayConnection(this, link.connectorId, link)
       this.connections.set(link.connectorId, connection)
-      void connection.connect().catch(error => {
+      void connection.connect().catch(async error => {
         logger.warn(error, '[GroupAgentRelay] failed to restore outbound connector %s', link.connectorId)
+        if (isTerminalOutboundCredentialError(error)) {
+          await this.forgetConnection(link.connectorId, connection).catch(cleanupError => {
+            logger.warn(cleanupError, '[GroupAgentRelay] failed to remove invalid outbound connector %s', link.connectorId)
+          })
+        }
       })
     }
   }
@@ -1709,7 +1755,17 @@ export class GroupAgentOutboundRelayManager {
   }> {
     const connection = this.connections.get(connectorId)
     if (!connection) throw new Error('Agent connection not found on this Hermes service')
-    const link = await connection.updateAgent(agent)
+    let link: PersistedOutboundLink
+    try {
+      link = await connection.updateAgent(agent)
+    } catch (error) {
+      if (isTerminalOutboundCredentialError(error)) {
+        await this.forgetConnection(connectorId, connection).catch(cleanupError => {
+          logger.warn(cleanupError, '[GroupAgentRelay] failed to remove invalid outbound connector %s', connectorId)
+        })
+      }
+      throw error
+    }
     return {
       connectorId: link.connectorId,
       cloudOrigin: link.cloudOrigin,
@@ -1733,6 +1789,23 @@ export class GroupAgentOutboundRelayManager {
     })
   }
 
+  async handleConnectorRevoked(connectorId: string, connection: unknown): Promise<void> {
+    if (!(connection instanceof OutboundRelayConnection)) return
+    await this.forgetConnection(connectorId, connection).catch(error => {
+      logger.warn(error, '[GroupAgentRelay] failed to remove revoked outbound connector %s', connectorId)
+    })
+  }
+
+  private async forgetConnection(connectorId: string, connection: OutboundRelayConnection): Promise<void> {
+    if (this.connections.get(connectorId) !== connection) return
+    connection.close()
+    this.connections.delete(connectorId)
+    await this.withPersistenceLock(async () => {
+      const links = await this.readPersisted()
+      await this.writePersisted(links.filter(link => link.connectorId !== connectorId))
+    })
+  }
+
   private async withPersistenceLock<T>(task: () => Promise<T>): Promise<T> {
     const previous = this.persistenceQueue
     let release = () => {}
@@ -1746,7 +1819,7 @@ export class GroupAgentOutboundRelayManager {
   }
 
   private async writePersisted(links: PersistedOutboundLink[]): Promise<void> {
-    await mkdir(config.appHome, { recursive: true })
+    await mkdir(dirname(OUTBOUND_LINKS_FILE), { recursive: true })
     const tempPath = `${OUTBOUND_LINKS_FILE}.tmp-${process.pid}-${randomUUID()}`
     try {
       await writeFile(
@@ -1761,12 +1834,22 @@ export class GroupAgentOutboundRelayManager {
   }
 
   private async readPersisted(): Promise<PersistedOutboundLink[]> {
+    const current = await this.readPersistedFile(OUTBOUND_LINKS_FILE)
+    if (current !== null) return current
+    const legacy = await this.readPersistedFile(LEGACY_OUTBOUND_LINKS_FILE)
+    if (legacy === null) return []
+    await this.writePersisted(legacy)
+    await rm(LEGACY_OUTBOUND_LINKS_FILE, { force: true })
+    return legacy
+  }
+
+  private async readPersistedFile(filePath: string): Promise<PersistedOutboundLink[] | null> {
     let file: Awaited<ReturnType<typeof open>> | null = null
     try {
-      const info = await lstat(OUTBOUND_LINKS_FILE)
+      const info = await lstat(filePath)
       if (!info.isFile() || info.isSymbolicLink()) return []
       file = await open(
-        OUTBOUND_LINKS_FILE,
+        filePath,
         fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0),
       )
       const current = await file.stat()
@@ -1800,7 +1883,8 @@ export class GroupAgentOutboundRelayManager {
         }
       }
       return links
-    } catch {
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return null
       return []
     } finally {
       await file?.close().catch(() => undefined)
