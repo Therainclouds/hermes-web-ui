@@ -2880,6 +2880,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function clearPendingApproval(evt: RunEvent) {
+    if ((evt as any).resolved === false) return
     const sid = evt.session_id
     if (!sid) return
     const current = pendingApprovals.value.get(sid)
@@ -2906,6 +2907,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function clearPendingClarify(evt: RunEvent) {
+    if ((evt as any).resolved === false) return
     const sid = evt.session_id
     if (!sid) return
     const current = pendingClarifies.value.get(sid)
@@ -2932,19 +2934,31 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  function respondToClarifyFor(sessionId: string, clarifyId: string, response: string) {
+    const pending = pendingClarifies.value.get(sessionId)
+    if (!pending || pending.clarifyId !== clarifyId) return
+    respondClarify(sessionId, clarifyId, response, runtimeTransport())
+  }
+
   function respondToClarify(response: string) {
     const pending = activePendingClarify.value
     if (!pending) return
-    respondClarify(pending.sessionId, pending.clarifyId, response, runtimeTransport())
+    respondToClarifyFor(pending.sessionId, pending.clarifyId, response)
     pendingClarifies.value.delete(pending.sessionId)
     pendingClarifies.value = new Map(pendingClarifies.value)
   }
 
 
+  function respondApprovalFor(sessionId: string, approvalId: string, choice: PendingApproval['choices'][number]) {
+    const pending = pendingApprovals.value.get(sessionId)
+    if (!pending || pending.approvalId !== approvalId) return
+    respondToolApproval(sessionId, approvalId, choice, runtimeTransport())
+  }
+
   function respondApproval(choice: PendingApproval['choices'][number]) {
     const pending = activePendingApproval.value
     if (!pending) return
-    respondToolApproval(pending.sessionId, pending.approvalId, choice, runtimeTransport())
+    respondApprovalFor(pending.sessionId, pending.approvalId, choice)
     pendingApprovals.value.delete(pending.sessionId)
     pendingApprovals.value = new Map(pendingApprovals.value)
   }
@@ -2993,8 +3007,9 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  function primeCompletionBellIfEnabled() {
-    if (useSettingsStore().display.bell_on_complete) {
+  function primeNotificationSoundIfEnabled() {
+    const { display } = useSettingsStore()
+    if (display.bell_on_complete || display.approval_bell) {
       primeCompletionSound()
     }
   }
@@ -3052,7 +3067,7 @@ export const useChatStore = defineStore('chat', () => {
   async function sendMessage(content: string, attachments?: Attachment[]) {
     if ((!content.trim() && !(attachments && attachments.length > 0))) return
 
-    primeCompletionBellIfEnabled()
+    primeNotificationSoundIfEnabled()
 
     const trimmedContent = content.trim()
 
@@ -4718,6 +4733,10 @@ export const useChatStore = defineStore('chat', () => {
 
   function handlePeerUserMessage(evt: RunEvent) {
     const sid = evt.session_id
+    if (evt.event === 'approval.requested') return setPendingApproval(evt)
+    if (evt.event === 'approval.resolved') return clearPendingApproval(evt)
+    if (evt.event === 'clarify.requested') return setPendingClarify(evt)
+    if (evt.event === 'clarify.resolved') return clearPendingClarify(evt)
     if (!sid || activeSessionId.value !== sid || !activeSession.value) return
 
     const peer = evt.message
@@ -4993,6 +5012,7 @@ export const useChatStore = defineStore('chat', () => {
     activeMessageReference,
     pendingApprovals,
     activePendingApproval,
+    pendingClarifies,
     activePendingClarify,
     subagentStreams,
     getSubagentStream,
@@ -5016,7 +5036,9 @@ export const useChatStore = defineStore('chat', () => {
     sendMessage,
     stopStreaming,
     respondApproval,
+    respondApprovalFor,
     respondToClarify,
+    respondToClarifyFor,
     loadSessions,
     refreshSessionListOnly,
     refreshActiveSession,

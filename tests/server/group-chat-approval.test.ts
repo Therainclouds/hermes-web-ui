@@ -11,6 +11,10 @@ import {
   denyPendingEkkoToolApprovals,
   waitForEkkoToolApproval,
 } from '../../packages/server/src/services/ekko-agent/approvals'
+import {
+  cancelPendingEkkoClarifications,
+  waitForEkkoClarification,
+} from '../../packages/server/src/services/ekko-agent/clarifications'
 import type { GroupChatServer } from '../../packages/server/src/services/hermes/group-chat'
 
 describe('group chat approval and context baseline', () => {
@@ -30,6 +34,7 @@ describe('group chat approval and context baseline', () => {
 
   afterEach(() => {
     denyPendingEkkoToolApprovals()
+    cancelPendingEkkoClarifications()
     harness?.cleanup()
     vi.restoreAllMocks()
   })
@@ -129,6 +134,139 @@ describe('group chat approval and context baseline', () => {
     ])
   })
 
+  it('delivers and handles approval globally for a manager who has not joined the source room', async () => {
+    const agentSessionId = groupRuntimeSessionId('room-1', 'default', 'Agent')
+    const agent = await connectGroupChatClient(port, 'agent-1', 'Agent', {
+      source: 'agent',
+      agentSocketSecret: GROUP_CHAT_AGENT_SOCKET_SECRET,
+    })
+    const manager = await connectGroupChatClient(port, 'manager-1', 'Manager')
+    harness.sockets.push(agent, manager)
+    await emitAck(agent, 'join', { roomId: 'room-1' })
+    groupServer.getStorage().addRoomMember('room-1', 'manager-1', 'Manager', '')
+    groupServer.getIO().of('/group-chat').sockets.get(manager.id!)!.data.authUser = {
+      id: 1, role: 'super_admin', profiles: ['default'],
+    }
+
+    const approval = waitForEkkoToolApproval({
+      approvalId: 'approval-global',
+      toolName: 'terminal_exec',
+      key: 'terminal:write',
+      command: 'touch global.txt',
+      description: 'writes a file',
+      choices: ['once', 'deny'],
+      allowPermanent: false,
+      timeoutMs: 300_000,
+    }, {
+      sessionId: agentSessionId,
+      onRequested: pending => agent.emit('approval.requested', {
+        roomId: 'room-1',
+        agentName: 'Agent',
+        agentSessionId,
+        approval_id: pending.approvalId,
+        command: pending.command,
+        description: pending.description,
+        choices: pending.choices,
+      }),
+    })
+
+    await expect(once<any>(manager, 'approval.requested')).resolves.toMatchObject({
+      roomId: 'room-1',
+      approval_id: 'approval-global',
+    })
+    await expect(emitAck(manager, 'approval.respond', {
+      roomId: 'room-1',
+      approval_id: 'approval-global',
+      choice: 'once',
+    })).resolves.toEqual({ ok: true, resolved: true })
+    await expect(approval).resolves.toBe('once')
+  })
+
+  it('does not expose or resolve approvals for a non-member socket when authentication is disabled', async () => {
+    const agentSessionId = groupRuntimeSessionId('room-1', 'default', 'Agent')
+    const agent = await connectGroupChatClient(port, 'agent-1', 'Agent', {
+      source: 'agent',
+      agentSocketSecret: GROUP_CHAT_AGENT_SOCKET_SECRET,
+    })
+    const manager = await connectGroupChatClient(port, 'manager-1', 'Manager')
+    const stranger = await connectGroupChatClient(port, 'stranger-1', 'Stranger')
+    harness.sockets.push(agent, manager, stranger)
+    await emitAck(agent, 'join', { roomId: 'room-1' })
+    groupServer.getStorage().addRoomMember('room-1', 'manager-1', 'Manager', '')
+    await emitAck(manager, 'join', { roomId: 'room-1' })
+
+    let leaked: unknown = null
+    stranger.on('approval.requested', payload => { leaked = payload })
+    const managerRequest = once<any>(manager, 'approval.requested')
+    const approval = waitForEkkoToolApproval({
+      approvalId: 'approval-private-global',
+      toolName: 'terminal_exec',
+      key: 'terminal:write',
+      command: 'cat /private/workspace/secret',
+      description: 'reads a private file',
+      choices: ['once', 'deny'],
+      allowPermanent: false,
+      timeoutMs: 300_000,
+    }, {
+      sessionId: agentSessionId,
+      onRequested: pending => agent.emit('approval.requested', {
+        roomId: 'room-1',
+        agentName: 'Agent',
+        agentSessionId,
+        approval_id: pending.approvalId,
+        command: pending.command,
+        description: pending.description,
+        choices: pending.choices,
+      }),
+    })
+
+    await expect(managerRequest).resolves.toMatchObject({ approval_id: 'approval-private-global' })
+    await wait()
+    expect(leaked).toBeNull()
+    await expect(emitAck(stranger, 'approval.respond', {
+      roomId: 'room-1',
+      approval_id: 'approval-private-global',
+      choice: 'once',
+    })).resolves.toEqual({ error: 'Access denied' })
+    await expect(emitAck(manager, 'approval.respond', {
+      roomId: 'room-1',
+      approval_id: 'approval-private-global',
+      choice: 'deny',
+    })).resolves.toEqual({ ok: true, resolved: true })
+    await expect(approval).resolves.toBe('deny')
+  })
+
+  it('does not trust a claimed persisted member identity for off-room approvals when authentication is disabled', async () => {
+    const agentSessionId = groupRuntimeSessionId('room-1', 'default', 'Agent')
+    const agent = await connectGroupChatClient(port, 'agent-1', 'Agent', {
+      source: 'agent',
+      agentSocketSecret: GROUP_CHAT_AGENT_SOCKET_SECRET,
+    })
+    const impostor = await connectGroupChatClient(port, 'manager-1', 'Impostor')
+    harness.sockets.push(agent, impostor)
+    await emitAck(agent, 'join', { roomId: 'room-1' })
+    groupServer.getStorage().addRoomMember('room-1', 'manager-1', 'Manager', '')
+
+    let leaked: unknown = null
+    impostor.on('approval.requested', payload => { leaked = payload })
+    agent.emit('approval.requested', {
+      roomId: 'room-1',
+      agentName: 'Agent',
+      agentSessionId,
+      approval_id: 'approval-impersonation',
+      command: 'cat /private/workspace/secret',
+      description: 'reads a private file',
+    })
+    await wait()
+
+    expect(leaked).toBeNull()
+    await expect(emitAck(impostor, 'approval.respond', {
+      roomId: 'room-1',
+      approval_id: 'approval-impersonation',
+      choice: 'once',
+    })).resolves.toEqual({ error: 'Access denied' })
+  })
+
   it('relays approval requested with default choices', async () => {
     const { agent, human, agentSessionId } = await joinPair()
     const requested = once<any>(human, 'approval.requested')
@@ -206,6 +344,75 @@ describe('group chat approval and context baseline', () => {
     })
   })
 
+  it('relays and routes a clarification response to the pending Ekko Agent session', async () => {
+    const { agent, human, agentSessionId } = await joinPair()
+    const requested = once<any>(human, 'clarify.requested')
+    const clarification = waitForEkkoClarification({
+      clarifyId: 'clarify-ekko',
+      question: 'Which environment?',
+      choices: ['staging', 'production'],
+      timeoutMs: 300_000,
+    }, {
+      sessionId: agentSessionId,
+      onRequested: pending => agent.emit('clarify.requested', {
+        roomId: 'room-1',
+        agentName: 'Agent',
+        agentSessionId,
+        clarify_id: pending.clarifyId,
+        question: pending.question,
+        choices: pending.choices,
+        timeout_ms: pending.timeoutMs,
+      }),
+    })
+
+    await expect(requested).resolves.toMatchObject({
+      event: 'clarify.requested', roomId: 'room-1', agentName: 'Agent',
+      clarify_id: 'clarify-ekko', question: 'Which environment?',
+    })
+    await expect(emitAck(human, 'clarify.respond', {
+      roomId: 'room-1', clarify_id: 'clarify-ekko', response: 'staging',
+    })).resolves.toEqual({ ok: true, resolved: true })
+    await expect(clarification).resolves.toBe('staging')
+  })
+
+  it('routes a clarification response to the Hermes bridge', async () => {
+    const { agent, human, agentSessionId } = await joinPair()
+    const bridgeClarify = vi.spyOn(AgentBridgeClient.prototype, 'clarifyRespond')
+      .mockResolvedValue({ resolved: true } as any)
+    const requested = once<any>(human, 'clarify.requested')
+    agent.emit('clarify.requested', {
+      roomId: 'room-1', agentName: 'Agent', agentSessionId,
+      clarify_id: 'clarify-hermes', question: 'Continue?', choices: null, timeout_ms: 300_000,
+    })
+
+    await expect(requested).resolves.toMatchObject({ clarify_id: 'clarify-hermes', question: 'Continue?' })
+    await expect(emitAck(human, 'clarify.respond', {
+      roomId: 'room-1', clarify_id: 'clarify-hermes', response: 'yes',
+    })).resolves.toEqual({ ok: true, resolved: true })
+    expect(bridgeClarify).toHaveBeenCalledWith('clarify-hermes', 'yes')
+  })
+
+  it('restores pending approvals and clarifications to a room manager on rejoin', async () => {
+    const { agent, human, agentSessionId } = await joinPair()
+    agent.emit('approval.requested', {
+      roomId: 'room-1', agentName: 'Agent', agentSessionId,
+      approval_id: 'approval-restored', command: 'touch file', description: 'needs approval',
+    })
+    agent.emit('clarify.requested', {
+      roomId: 'room-1', agentName: 'Agent', agentSessionId,
+      clarify_id: 'clarify-restored', question: 'Which environment?', choices: null,
+    })
+    await wait()
+
+    const joined = await emitAck<any>(human, 'join', { roomId: 'room-1', inviteCode: 'ROOM1' })
+    expect(joined.pendingApprovals).toEqual([
+      expect.objectContaining({ approval_id: 'approval-restored', command: 'touch file' }),
+    ])
+    expect(joined.pendingClarifies).toEqual([
+      expect.objectContaining({ clarify_id: 'clarify-restored', question: 'Which environment?' }),
+    ])
+  })
+
   it('routes approval responses back to the pending Ekko Agent session', async () => {
     const { agent, human, agentSessionId } = await joinPair()
     const bridgeApproval = vi.spyOn(AgentBridgeClient.prototype, 'approvalRespond')
@@ -248,6 +455,38 @@ describe('group chat approval and context baseline', () => {
     })).resolves.toEqual({ ok: true, resolved: true })
     await expect(approval).resolves.toBe('once')
     expect(bridgeApproval).not.toHaveBeenCalled()
+  })
+
+  it('removes a resolved remote approval locator so it cannot be submitted twice', async () => {
+    const { agent, human, agentSessionId } = await joinPair()
+    const respondApproval = vi.fn(async () => true)
+    vi.spyOn(groupServer.agentClients, 'getAgents').mockReturnValue([{
+      name: 'Agent',
+      respondApproval,
+    } as any])
+    const requested = once<any>(human, 'approval.requested')
+
+    agent.emit('approval.requested', {
+      roomId: 'room-1',
+      agentName: 'Agent',
+      agentSessionId,
+      approval_id: 'approval-remote-once',
+      command: 'touch file',
+      description: 'needs approval',
+    })
+    await expect(requested).resolves.toMatchObject({ approval_id: 'approval-remote-once' })
+
+    await expect(emitAck(human, 'approval.respond', {
+      roomId: 'room-1',
+      approval_id: 'approval-remote-once',
+      choice: 'once',
+    })).resolves.toEqual({ ok: true, resolved: true })
+    await expect(emitAck(human, 'approval.respond', {
+      roomId: 'room-1',
+      approval_id: 'approval-remote-once',
+      choice: 'once',
+    })).resolves.toEqual({ error: 'Approval is not pending in this room' })
+    expect(respondApproval).toHaveBeenCalledOnce()
   })
 
   it('keeps Hermes approval responses routed through the Agent Bridge', async () => {

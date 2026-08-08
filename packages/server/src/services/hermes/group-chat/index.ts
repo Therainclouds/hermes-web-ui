@@ -17,6 +17,7 @@ import { SessionDeleter } from '../session-deleter'
 import { countTokens } from '../../../lib/context-compressor'
 import { AgentBridgeClient } from '../agent-bridge'
 import { respondToEkkoToolApproval } from '../../ekko-agent/approvals'
+import { respondToEkkoClarification } from '../../ekko-agent/clarifications'
 import { insertWorkspaceRunChange, deleteWorkspaceRunChangesForRoom, type SaveWorkspaceRunChangeInput, type WorkspaceRunChangeSummary } from '../../../db/hermes/workspace-run-changes-store'
 import { authenticateUserToken, isAuthEnabled, type AuthenticatedUser } from '../../../middleware/user-auth'
 import { getUserAvatar } from '../../../db/hermes/users-store'
@@ -74,6 +75,23 @@ interface PendingGroupApprovalRoute {
     roomId: string
     agentName: string
     agentSessionId: string
+    approvalId: string
+    command: string
+    description: string
+    choices: string[]
+    allowPermanent: boolean
+    requestedAt: number
+}
+
+interface PendingGroupClarifyRoute {
+    roomId: string
+    agentName: string
+    agentSessionId: string
+    clarifyId: string
+    question: string
+    choices: string[] | null
+    timeoutMs: number
+    requestedAt: number
 }
 
 function contentToStorageString(content: unknown): string {
@@ -1534,8 +1552,51 @@ export class GroupChatServer {
         status: string
         agentSessionId?: string
     }>>()
-    /** approval id -> validated room and runtime session that requested it. */
+    /** room-scoped approval locator -> validated room and runtime session that requested it. */
     private pendingApprovalRoutes = new Map<string, PendingGroupApprovalRoute>()
+    /** room-scoped clarification locator -> validated room and runtime session that requested it. */
+    private pendingClarifyRoutes = new Map<string, PendingGroupClarifyRoute>()
+
+    private pendingApprovalRouteKey(roomId: string, approvalId: string): string {
+        return `${roomId}:${approvalId}`
+    }
+
+    private pendingClarifyRouteKey(roomId: string, clarifyId: string): string {
+        return `${roomId}:${clarifyId}`
+    }
+
+    private pendingApprovalSnapshots(roomId: string) {
+        const pendingRoutes = this.pendingApprovalRoutes
+        if (!pendingRoutes) return []
+        return [...pendingRoutes.values()]
+            .filter(route => route.roomId === roomId)
+            .map(route => ({
+                roomId: route.roomId,
+                agentName: route.agentName,
+                approval_id: route.approvalId,
+                command: route.command,
+                description: route.description,
+                choices: route.choices,
+                allow_permanent: route.allowPermanent,
+                requested_at: route.requestedAt,
+            }))
+    }
+
+    private pendingClarifySnapshots(roomId: string) {
+        const pendingRoutes = this.pendingClarifyRoutes
+        if (!pendingRoutes) return []
+        return [...pendingRoutes.values()]
+            .filter(route => route.roomId === roomId)
+            .map(route => ({
+                roomId: route.roomId,
+                agentName: route.agentName,
+                clarify_id: route.clarifyId,
+                question: route.question,
+                choices: route.choices,
+                timeout_ms: route.timeoutMs,
+                requested_at: route.requestedAt,
+            }))
+    }
     /** roomId -> blocked Bridge session ids from room-level interrupts/rotations. */
     private fencedRoomAgentSessions = new Map<string, Set<string>>()
     /** A short-lived proof that an invite guest actually joined as this room member. */
@@ -1849,6 +1910,7 @@ export class GroupChatServer {
         }
         this.contextStatusState.delete(roomId)
         this.clearPendingApprovalRoutes(roomId)
+        this.clearPendingClarifyRoutes(roomId)
         const releaseSessionFence = this.fenceCurrentRoomAgentSessions(roomId)
         try {
             await this.agentClients.interruptRoom(roomId)
@@ -1869,6 +1931,7 @@ export class GroupChatServer {
         }
         this.contextStatusState.delete(roomId)
         this.clearPendingApprovalRoutes(roomId)
+        this.clearPendingClarifyRoutes(roomId)
         const releaseSessionFence = this.fenceCurrentRoomAgentSessions(roomId)
         try {
             await this.agentClients.interruptRoom(roomId)
@@ -2000,6 +2063,9 @@ export class GroupChatServer {
         socket.on('approval.requested', (data: { roomId?: string; agentName?: string; approval_id?: string; command?: string; description?: string; choices?: string[]; allow_permanent?: boolean; agentSessionId?: string }) => this.handleApprovalRequested(socket, data))
         socket.on('approval.resolved', (data: { roomId?: string; agentName?: string; approval_id?: string; choice?: string; agentSessionId?: string }) => this.handleApprovalResolved(socket, data))
         socket.on('approval.respond', (data: { roomId?: string; approval_id?: string; choice?: string }, ack?: (response?: unknown) => void) => this.handleApprovalRespond(socket, data, ack))
+        socket.on('clarify.requested', (data: { roomId?: string; agentName?: string; clarify_id?: string; question?: string; choices?: string[] | null; timeout_ms?: number; agentSessionId?: string }) => this.handleClarifyRequested(socket, data))
+        socket.on('clarify.resolved', (data: { roomId?: string; agentName?: string; clarify_id?: string; resolved?: boolean; reason?: string; agentSessionId?: string }) => this.handleClarifyResolved(socket, data))
+        socket.on('clarify.respond', (data: { roomId?: string; clarify_id?: string; response?: string }, ack?: (response?: unknown) => void) => this.handleClarifyRespond(socket, data, ack))
         socket.on('disconnect', () => this.handleDisconnect(socket))
     }
 
@@ -2026,7 +2092,13 @@ export class GroupChatServer {
         const room = typeof this.storage.getRoom === 'function' ? this.storage.getRoom(roomId) : undefined
         if (!room) return false
         const authUser = socket.data?.authUser as AuthenticatedUser | undefined
-        if (!authUser) return true
+        if (!authUser) {
+            // With authentication disabled, handshake userId/authUserId values are client-controlled.
+            // They may identify a joined in-context member, but must never grant off-room global
+            // approval visibility or authority based on persisted membership alone.
+            const joined = this.getOnlineRoomMember(socket, roomId)
+            return Boolean(joined && joined.member.source === 'human')
+        }
         if (authUser.role === 'super_admin') return true
         if (typeof authUser.id === 'number' && Number(room.ownerAuthUserId || 0) === authUser.id) return true
         const profiles = authenticatedUserProfiles(authUser)
@@ -2076,13 +2148,11 @@ export class GroupChatServer {
     }
 
     private emitToRoomManagers(roomId: string, event: string, payload: Record<string, unknown>): void {
-        const room = this.rooms.get(roomId)
-        if (!room) return
         const emitted = new Set<string>()
-        for (const member of room.members.values()) {
-            if (!member.online || member.source === 'agent') continue
-            const socket = this.nsp.sockets.get(member.socketId)
-            if (!socket || emitted.has(socket.id)) continue
+        const sockets = this.nsp.sockets?.values?.()
+        if (!sockets) return
+        for (const socket of sockets) {
+            if (emitted.has(socket.id) || this.socketRequestedSourceMap?.get(socket.id) === 'agent') continue
             if (!this.canSocketManageRoom(socket, roomId)) continue
             socket.emit(event, payload)
             emitted.add(socket.id)
@@ -2269,6 +2339,8 @@ export class GroupChatServer {
             hasMore: messages.length < total,
             typingUsers: this.getTypingUsers(roomId),
             contextStatuses: this.getContextStatuses(roomId),
+            pendingApprovals: this.canSocketManageRoom(socket, roomId) ? this.pendingApprovalSnapshots(roomId) : [],
+            pendingClarifies: this.canSocketManageRoom(socket, roomId) ? this.pendingClarifySnapshots(roomId) : [],
             ...(isInviteGuest && source !== 'agent'
                 ? { agentLinkToken: this.issueGuestAgentRequestToken(roomId, userId, socket.id) }
                 : {}),
@@ -2771,10 +2843,17 @@ export class GroupChatServer {
         const roomId = data.roomId
         const agentName = data.agentName || ''
         if (!roomId || !data.approval_id || !this.getCurrentAgentEventMember(socket, roomId, agentName, data.agentSessionId)) return
-        this.pendingApprovalRoutes.set(data.approval_id, {
+        const choices = Array.isArray(data.choices) ? data.choices : ['once', 'session', 'deny']
+        this.pendingApprovalRoutes.set(this.pendingApprovalRouteKey(roomId, data.approval_id), {
             roomId,
             agentName,
             agentSessionId: String(data.agentSessionId || '').trim(),
+            approvalId: data.approval_id,
+            command: data.command || '',
+            description: data.description || '',
+            choices,
+            allowPermanent: Boolean(data.allow_permanent),
+            requestedAt: Date.now(),
         })
         this.emitToRoomManagers(roomId, 'approval.requested', {
             event: 'approval.requested',
@@ -2783,7 +2862,7 @@ export class GroupChatServer {
             approval_id: data.approval_id,
             command: data.command || '',
             description: data.description || '',
-            choices: Array.isArray(data.choices) ? data.choices : ['once', 'session', 'deny'],
+            choices,
             allow_permanent: Boolean(data.allow_permanent),
         })
     }
@@ -2792,9 +2871,10 @@ export class GroupChatServer {
         const roomId = data.roomId
         const agentName = data.agentName || ''
         if (!roomId || !data.approval_id || !this.getCurrentAgentEventMember(socket, roomId, agentName, data.agentSessionId)) return
-        const pendingRoute = this.pendingApprovalRoutes.get(data.approval_id)
+        const routeKey = this.pendingApprovalRouteKey(roomId, data.approval_id)
+        const pendingRoute = this.pendingApprovalRoutes.get(routeKey)
         if (pendingRoute?.roomId === roomId && pendingRoute.agentName === agentName) {
-            this.pendingApprovalRoutes.delete(data.approval_id)
+            this.pendingApprovalRoutes.delete(routeKey)
         }
         this.emitToRoomManagers(roomId, 'approval.resolved', {
             event: 'approval.resolved',
@@ -2812,7 +2892,7 @@ export class GroupChatServer {
             return
         }
         const room = this.rooms.get(roomId)
-        if (!room?.hasOnlineMember(socket.id)) {
+        if (!room) {
             ack?.({ error: 'Not in room' })
             return
         }
@@ -2820,7 +2900,8 @@ export class GroupChatServer {
             ack?.({ error: 'Access denied' })
             return
         }
-        const pendingRoute = this.pendingApprovalRoutes.get(data.approval_id)
+        const routeKey = this.pendingApprovalRouteKey(roomId, data.approval_id)
+        const pendingRoute = this.pendingApprovalRoutes.get(routeKey)
         if (!pendingRoute || pendingRoute.roomId !== roomId) {
             ack?.({ error: 'Approval is not pending in this room' })
             return
@@ -2831,7 +2912,7 @@ export class GroupChatServer {
         if (remoteExecutor?.respondApproval) {
             try {
                 const resolved = await remoteExecutor.respondApproval(data.approval_id, data.choice || 'deny')
-                if (resolved) this.pendingApprovalRoutes.delete(data.approval_id)
+                if (resolved) this.pendingApprovalRoutes.delete(routeKey)
                 ack?.({ ok: true, resolved })
             } catch (err: any) {
                 ack?.({ error: err.message || 'approval response failed' })
@@ -2850,14 +2931,14 @@ export class GroupChatServer {
                 ack?.({ error: 'Approval does not belong to the active Agent session' })
                 return
             }
-            this.pendingApprovalRoutes.delete(data.approval_id)
+            this.pendingApprovalRoutes.delete(routeKey)
             ack?.({ ok: true, resolved: true })
             return
         }
         try {
             const result = await new AgentBridgeClient().approvalRespond(data.approval_id, data.choice || 'deny')
             const resolved = Boolean((result as any)?.resolved)
-            if (resolved) this.pendingApprovalRoutes.delete(data.approval_id)
+            if (resolved) this.pendingApprovalRoutes.delete(routeKey)
             ack?.({ ok: true, resolved })
         } catch (err: any) {
             logger.warn(`[GroupChat] failed to respond approval ${data.approval_id}: ${err.message}`)
@@ -2865,11 +2946,107 @@ export class GroupChatServer {
         }
     }
 
+    private handleClarifyRequested(socket: Socket, data: { roomId?: string; agentName?: string; clarify_id?: string; question?: string; choices?: string[] | null; timeout_ms?: number; agentSessionId?: string }): void {
+        const roomId = data.roomId
+        const agentName = data.agentName || ''
+        if (!roomId || !data.clarify_id || !this.getCurrentAgentEventMember(socket, roomId, agentName, data.agentSessionId)) return
+        const timeoutMs = Number.isFinite(Number(data.timeout_ms)) && Number(data.timeout_ms) > 0
+            ? Number(data.timeout_ms)
+            : 300_000
+        const route: PendingGroupClarifyRoute = {
+            roomId,
+            agentName,
+            agentSessionId: String(data.agentSessionId || '').trim(),
+            clarifyId: data.clarify_id,
+            question: data.question || '',
+            choices: Array.isArray(data.choices) ? data.choices.map(String) : null,
+            timeoutMs,
+            requestedAt: Date.now(),
+        }
+        this.pendingClarifyRoutes.set(this.pendingClarifyRouteKey(roomId, data.clarify_id), route)
+        this.emitToRoomManagers(roomId, 'clarify.requested', {
+            event: 'clarify.requested',
+            roomId,
+            agentName,
+            clarify_id: route.clarifyId,
+            question: route.question,
+            choices: route.choices,
+            timeout_ms: route.timeoutMs,
+        })
+    }
+
+    private handleClarifyResolved(socket: Socket, data: { roomId?: string; agentName?: string; clarify_id?: string; resolved?: boolean; reason?: string; agentSessionId?: string }): void {
+        const roomId = data.roomId
+        const agentName = data.agentName || ''
+        if (!roomId || !data.clarify_id || !this.getCurrentAgentEventMember(socket, roomId, agentName, data.agentSessionId)) return
+        this.pendingClarifyRoutes.delete(this.pendingClarifyRouteKey(roomId, data.clarify_id))
+        this.emitToRoomManagers(roomId, 'clarify.resolved', {
+            event: 'clarify.resolved',
+            roomId,
+            agentName,
+            clarify_id: data.clarify_id,
+            resolved: data.resolved !== false,
+            reason: data.reason || '',
+        })
+    }
+
+    private async handleClarifyRespond(socket: Socket, data: { roomId?: string; clarify_id?: string; response?: string }, ack?: (response?: unknown) => void): Promise<void> {
+        const roomId = data.roomId
+        if (!roomId || !data.clarify_id) {
+            ack?.({ error: 'roomId and clarify_id are required' })
+            return
+        }
+        if (!this.rooms.get(roomId)) {
+            ack?.({ error: 'Not in room' })
+            return
+        }
+        if (!this.canSocketManageRoom(socket, roomId)) {
+            ack?.({ error: 'Access denied' })
+            return
+        }
+        const routeKey = this.pendingClarifyRouteKey(roomId, data.clarify_id)
+        const pendingRoute = this.pendingClarifyRoutes.get(routeKey)
+        if (!pendingRoute || pendingRoute.roomId !== roomId) {
+            ack?.({ error: 'Clarification is not pending in this room' })
+            return
+        }
+        const response = typeof data.response === 'string' ? data.response : String(data.response ?? '')
+        const ekkoResult = pendingRoute.agentSessionId
+            ? respondToEkkoClarification(pendingRoute.agentSessionId, data.clarify_id, response)
+            : null
+        if (ekkoResult?.handled) {
+            if (!ekkoResult.resolved) {
+                ack?.({ error: 'Clarification does not belong to the active Agent session' })
+                return
+            }
+            this.pendingClarifyRoutes.delete(routeKey)
+            ack?.({ ok: true, resolved: true })
+            return
+        }
+        try {
+            const result = await new AgentBridgeClient().clarifyRespond(data.clarify_id, response)
+            const resolved = Boolean((result as any)?.resolved)
+            if (resolved) this.pendingClarifyRoutes.delete(routeKey)
+            ack?.({ ok: true, resolved })
+        } catch (err: any) {
+            logger.warn(`[GroupChat] failed to respond clarification ${data.clarify_id}: ${err.message}`)
+            ack?.({ error: err.message || 'clarification response failed' })
+        }
+    }
+
     private clearPendingApprovalRoutes(roomId: string): void {
         const pendingRoutes = this.pendingApprovalRoutes
         if (!pendingRoutes) return
-        for (const [approvalId, route] of pendingRoutes) {
-            if (route.roomId === roomId) pendingRoutes.delete(approvalId)
+        for (const [routeKey, route] of pendingRoutes) {
+            if (route.roomId === roomId) pendingRoutes.delete(routeKey)
+        }
+    }
+
+    private clearPendingClarifyRoutes(roomId: string): void {
+        const pendingRoutes = this.pendingClarifyRoutes
+        if (!pendingRoutes) return
+        for (const [routeKey, route] of pendingRoutes) {
+            if (route.roomId === roomId) pendingRoutes.delete(routeKey)
         }
     }
 

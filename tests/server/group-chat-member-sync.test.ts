@@ -1181,6 +1181,9 @@ describe('Group Chat member/agent identity sync', () => {
     const agentSessionId = groupBridgeSessionId('room-1', 'default', '丫鬟', 'seed-1')
     server.storage = {
       getRoom: vi.fn(() => ({ id: 'room-1', name: 'Room', sessionSeed: 'seed-1' })),
+      getMemberByUserId: vi.fn((_roomId: string, userId: string) => userId === 'human-1'
+        ? { id: 'member-human-1', roomId: 'room-1', userId: 'human-1', source: 'human' }
+        : null),
       getRoomAgentByAgentId: vi.fn(() => ({ id: 'row-1', roomId: 'room-1', agentId: 'agent-1', profile: 'default', name: '丫鬟' })),
       getRoomAgents: vi.fn(() => [
         { id: 'row-1', roomId: 'room-1', agentId: 'agent-1', profile: 'default', name: '丫鬟' },

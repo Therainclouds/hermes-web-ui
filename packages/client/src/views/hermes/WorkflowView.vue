@@ -30,6 +30,7 @@ import {
   type WorkflowConditionValueType,
 } from '@/utils/workflow-edge-condition'
 import { workflowImportConfirmationText } from '@/utils/workflow-import'
+import { workflowApprovalKey } from '@/utils/workflow-approval-key'
 import {
   WORKFLOW_RUN_BUDGET_PRESETS,
   isWorkflowRunBudgetValid,
@@ -85,7 +86,6 @@ import {
   type WorkflowViewport,
 } from '@/api/hermes/workflows'
 import {
-  disconnectWorkflowSocket,
   listWorkflowsSocket,
   onWorkflowStatusError,
   onWorkflowStatusUpdated,
@@ -788,6 +788,23 @@ const workflowChatPanelPendingApproval = computed(() => {
   return workflowNodeStatusFromRun(run, nodeId) === 'pending_approval'
 })
 
+const visibleWorkflowApprovalKey = computed(() => {
+  const run = selectedWorkflowRun.value
+  const nodeId = workflowChatPanelNodeId.value
+  if (!workflowChatPanelVisible.value || !workflowChatPanelPendingApproval.value || !run || !nodeId) return null
+  return workflowApprovalKey(run.workflow_id, run.id, nodeId, workflowChatPanelExecutionId.value || undefined)
+})
+
+function publishVisibleWorkflowApproval(key: string | null, visible: boolean) {
+  if (!key || typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent('hermes:workflow-approval-visible', { detail: { key, visible } }))
+}
+
+watch(visibleWorkflowApprovalKey, (key, previousKey) => {
+  if (previousKey && previousKey !== key) publishVisibleWorkflowApproval(previousKey, false)
+  if (key && key !== previousKey) publishVisibleWorkflowApproval(key, true)
+})
+
 watch([agentOptions, modelGroups], () => {
   nodes.value = normalizeWorkflowRunNodeTargets(
     nodes.value,
@@ -815,6 +832,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  publishVisibleWorkflowApproval(visibleWorkflowApprovalKey.value, false)
   if (workflowBudgetClock !== null) window.clearInterval(workflowBudgetClock)
   workflowBudgetClock = null
   mobileQuery?.removeEventListener('change', handleMobileChange)
@@ -827,7 +845,6 @@ onUnmounted(() => {
   removeWorkflowStatusListener = null
   removeWorkflowStatusErrorListener?.()
   removeWorkflowStatusErrorListener = null
-  disconnectWorkflowSocket()
 })
 
 function handleMobileChange(event: MediaQueryList | MediaQueryListEvent) {

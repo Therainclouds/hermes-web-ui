@@ -241,6 +241,7 @@ export class ChatRunSocket {
     const socketUser = socket.data.user as AuthenticatedUser | undefined
     const socketProfile = (socket.handshake.query?.profile as string) || 'default'
     const currentProfile = () => socketProfile || getActiveProfileName() || 'default'
+    socket.join(`pending-interactions:${currentProfile()}`)
     const profileExists = (profile: string) => {
       if (!profile || profile === 'default') return true
       return listProfileNamesFromDisk().includes(profile)
@@ -267,6 +268,22 @@ export class ChatRunSocket {
         throw new Error(`Profile "${profile}" is not available for this user`)
       }
       return profile
+    }
+    const requireSocketSessionAccess = (sessionId: string) => {
+      const session = getSession(sessionId)
+      if (!session) throw new Error('Session not found')
+      const sessionProfile = String(session.profile || 'default').trim() || 'default'
+      const authorizedProfile = currentProfile()
+      if (sessionProfile !== authorizedProfile) {
+        throw new Error(`Profile "${sessionProfile}" is not available on this connection`)
+      }
+      if (!profileExists(sessionProfile)) {
+        throw new Error(`Profile "${sessionProfile}" does not exist`)
+      }
+      if (socketUser && !this.canAccessProfile(socketUser, sessionProfile)) {
+        throw new Error(`Profile "${sessionProfile}" is not available for this user`)
+      }
+      return sessionProfile
     }
 
     socket.on('run', async (data: {
@@ -419,6 +436,11 @@ export class ChatRunSocket {
 
     socket.on('cancel_queued_run', (data: { session_id?: string; queue_id?: string }) => {
       if (!data.session_id || !data.queue_id) return
+      try {
+        requireSocketSessionAccess(data.session_id)
+      } catch {
+        return
+      }
       const state = this.sessionMap.get(data.session_id)
       if (!state?.queue.length) return
       const before = state.queue.length
@@ -437,18 +459,46 @@ export class ChatRunSocket {
     socket.on('resume', async (data: { session_id?: string }) => {
       if (!data.session_id) return
       const sid = data.session_id
+      try {
+        requireSocketSessionAccess(sid)
+      } catch (err) {
+        socket.emit('run.failed', {
+          event: 'run.failed',
+          session_id: sid,
+          error: err instanceof Error ? err.message : String(err),
+        })
+        return
+      }
       socket.join(`session:${sid}`)
       await this.resumeSession(socket, sid)
     })
 
     socket.on('abort', (data: { session_id?: string }) => {
       if (data.session_id) {
+        try {
+          requireSocketSessionAccess(data.session_id)
+        } catch {
+          return
+        }
         void handleAbort(this.nsp, socket, data.session_id, this.sessionMap, this.bridge, this.runQueuedItem.bind(this))
       }
     })
 
     socket.on('approval.respond', async (data: { session_id?: string; approval_id?: string; choice?: string }) => {
       if (!data.session_id || !data.approval_id) return
+      try {
+        requireSocketSessionAccess(data.session_id)
+      } catch (err) {
+        socket.emit('approval.resolved', {
+          event: 'approval.resolved',
+          session_id: data.session_id,
+          approval_id: data.approval_id,
+          choice: data.choice || 'deny',
+          resolved: false,
+          error: err instanceof Error ? err.message : String(err),
+        })
+        return
+      }
       const ekkoResult = respondToEkkoToolApproval(
         data.session_id,
         data.approval_id,
@@ -487,7 +537,18 @@ export class ChatRunSocket {
 
     socket.on('clarify.respond', async (data: { session_id?: string; clarify_id?: string; response?: string }) => {
       if (!data.session_id || !data.clarify_id) return
-      this.clearClarifyEventState(data.session_id, data.clarify_id)
+      try {
+        requireSocketSessionAccess(data.session_id)
+      } catch (err) {
+        socket.emit('clarify.resolved', {
+          event: 'clarify.resolved',
+          session_id: data.session_id,
+          clarify_id: data.clarify_id,
+          resolved: false,
+          error: err instanceof Error ? err.message : String(err),
+        })
+        return
+      }
       const ekkoResult = respondToEkkoClarification(
         data.session_id,
         data.clarify_id,
@@ -501,6 +562,8 @@ export class ChatRunSocket {
             resolved: false,
             error: 'Clarification does not belong to this session.',
           })
+        } else {
+          this.clearClarifyEventState(data.session_id, data.clarify_id)
         }
         return
       }
@@ -511,6 +574,9 @@ export class ChatRunSocket {
           clarify_id: data.clarify_id,
           resolved: Boolean((result as any)?.resolved),
         })
+        if ((result as any)?.resolved) {
+          this.clearClarifyEventState(data.session_id, data.clarify_id)
+        }
       } catch (err) {
         this.emitToSession(socket, data.session_id, 'clarify.resolved', {
           event: 'clarify.resolved',
@@ -626,8 +692,12 @@ export class ChatRunSocket {
         ? `${getSystemPrompt(undefined, { source })}\n${data.instructions}`
         : getSystemPrompt(undefined, { source })
 
+      const onEvent = (event: string, payload: any) => {
+        data.onEvent?.(event, payload)
+        this.emitPendingInteraction(profile, event, payload)
+      }
       await handleBridgeRun(
-        this.nsp, socket, { ...data, instructions: fullInstructions }, profile,
+        this.nsp, socket, { ...data, instructions: fullInstructions, onEvent }, profile,
         this.sessionMap, this.bridge,
         skipUserMessage,
         loadSessionStateFromDb,
@@ -637,10 +707,14 @@ export class ChatRunSocket {
     }
 
     if (isEkkoAgentExecution(data)) {
+      const onEvent = (event: string, payload: any) => {
+        data.onEvent?.(event, payload)
+        this.emitPendingInteraction(profile, event, payload)
+      }
       await handleEkkoAgentRun(
         this.nsp,
         socket,
-        data,
+        { ...data, onEvent },
         profile,
         this.sessionMap,
         this.dequeueNextQueuedRun.bind(this),
@@ -1410,10 +1484,22 @@ export class ChatRunSocket {
     const tagged = { ...payload, session_id: sessionId }
     const profile = this.resolvePetEventProfile(sessionId, tagged)
     this.observePetEvent(profile, event, tagged)
+    this.emitPendingInteraction(profile, event, tagged)
     this.nsp.to(`session:${sessionId}`).emit(event, tagged)
     if (!this.nsp.adapter.rooms.get(`session:${sessionId}`)?.size && socket.connected) {
       socket.emit(event, tagged)
     }
+  }
+
+  private emitPendingInteraction(profile: string, event: string, payload: any) {
+    if (event !== 'approval.requested' && event !== 'approval.resolved'
+      && event !== 'clarify.requested' && event !== 'clarify.resolved') return
+    const sessionId = typeof payload?.session_id === 'string' ? payload.session_id : ''
+    const source = sessionId
+      ? this.sessionMap.get(sessionId)?.source || getSession(sessionId)?.source
+      : undefined
+    if (source === 'group_chat') return
+    this.nsp.to(`pending-interactions:${profile}`).emit(event, payload)
   }
 
   private serializeQueuedMessages(queue: QueuedRun[]) {
