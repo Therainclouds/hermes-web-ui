@@ -2,7 +2,12 @@ import { createReadStream, existsSync, readFileSync, readdirSync, renameSync, rm
 import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises'
 import { basename, join } from 'path'
 import { tmpdir } from 'os'
-import { getWebUiHome } from '../../config'
+import {
+  profileMetadataDir,
+  readProfileMeta,
+  readProfileAvatarMeta,
+  type ProfileAvatarMeta,
+} from '../../services/hermes/profile-metadata'
 import * as hermesCli from '../../services/hermes/hermes-cli'
 import { SessionDeleter } from '../../services/hermes/session-deleter'
 import { AgentBridgeClient } from '../../services/hermes/agent-bridge'
@@ -12,26 +17,20 @@ import {
   restartGatewayForProfile as restartGatewayRuntimeForProfile,
 } from '../../services/hermes/gateway-autostart'
 import { logger } from '../../services/logger'
+import { setProfileDisplayName, clearProfileDisplayName } from '../../services/hermes/profile-metadata'
 import { smartCloneCleanup, copyModelProviderAuthForClone } from '../../services/hermes/profile-credentials'
 import { detectHermesRootHome } from '../../services/hermes/hermes-path'
 import { getActiveProfileName } from '../../services/hermes/hermes-profile'
 import { HermesSkillInjector } from '../../services/hermes/skill-injector'
 import type { HermesProfile } from '../../services/hermes/hermes-cli'
-import { listUserProfiles } from '../../db/hermes/users-store'
+import { listUserProfiles, replaceUserProfiles } from '../../db/hermes/users-store'
 
 const bridgeCleanupClient = () => new AgentBridgeClient({ connectRetryMs: 0, timeoutMs: 5000 })
 
-interface ProfileAvatarMeta {
-  type: 'generated' | 'image'
-  seed?: string
-  file?: string
-  mime?: string
-  updatedAt?: number
-}
-
 interface ProfileAvatarResponse {
-  type: 'generated' | 'image'
+  type: 'generated' | 'image' | 'remote'
   seed?: string
+  url?: string
   dataUrl?: string
   updatedAt?: number
 }
@@ -193,15 +192,6 @@ function denyProfile(ctx: any, profileName: string): boolean {
   return true
 }
 
-function profileMetadataRoot(): string {
-  return join(getWebUiHome(), 'profile-metadata')
-}
-
-function profileMetadataDir(name: string): string {
-  const segment = Buffer.from(name || 'default', 'utf-8').toString('base64url')
-  return join(profileMetadataRoot(), segment)
-}
-
 function profileAvatarMetaPath(name: string): string {
   return join(profileMetadataDir(name), 'avatar.json')
 }
@@ -210,28 +200,21 @@ function profileAvatarImagePath(name: string, file = 'avatar.bin'): string {
   return join(profileMetadataDir(name), file)
 }
 
-/**
- * 读取 profile 元数据（显示名等），存储在 Web UI 独立元数据目录下
- */
-function readProfileMeta(name: string): { displayName?: string } {
-  const metaPath = join(profileMetadataDir(name), 'meta.json')
-  if (!existsSync(metaPath)) return {}
-  try {
-    return JSON.parse(readFileSync(metaPath, 'utf-8'))
-  } catch {
-    return {}
-  }
-}
-
 function readProfileAvatar(name: string): ProfileAvatarResponse | null {
-  const metaPath = profileAvatarMetaPath(name)
-  if (!existsSync(metaPath)) return null
+  const meta = readProfileAvatarMeta(name)
+  if (!meta) return null
   try {
-    const meta = JSON.parse(readFileSync(metaPath, 'utf-8')) as ProfileAvatarMeta
     if (meta.type === 'generated') {
       return {
         type: 'generated',
         seed: typeof meta.seed === 'string' ? meta.seed : name,
+        updatedAt: meta.updatedAt,
+      }
+    }
+    if (meta.type === 'remote' && meta.url) {
+      return {
+        type: 'remote',
+        url: meta.url,
         updatedAt: meta.updatedAt,
       }
     }
@@ -426,11 +409,27 @@ export async function list(ctx: any) {
       p.active = (p.name === activeProfileName)
     })
 
-    ctx.body = { profiles: attachProfileAvatars(profiles) }
+    ctx.body = { profiles: attachProfileAvatars(mergeProfileDisplayNames(profiles)) }
   } catch (err: any) {
     ctx.status = 500
     ctx.body = { error: err.message }
   }
+}
+
+/**
+ * Merge Web-UI displayName metadata (e.g. a WeChat name set at device login)
+ * into profiles returned by the Hermes CLI, which otherwise only knows the
+ * internal profile name.
+ */
+function mergeProfileDisplayNames<T extends HermesProfile>(profiles: T[]): T[] {
+  return profiles.map(profile => {
+    if (profile.displayName) return profile
+    const meta = readProfileMeta(profile.name)
+    if (meta.displayName) {
+      return { ...profile, displayName: meta.displayName }
+    }
+    return profile
+  })
 }
 
 export async function create(ctx: any) {
@@ -485,6 +484,26 @@ export async function create(ctx: any) {
     }
 
     await injectBundledSkillsForProfile(name)
+
+    // Optional display name: written as Web-UI metadata only (never touches the
+    // underlying Hermes profile directory), so all surfaces show the friendly
+    // name while requests still use the system `name`.
+    const displayName = typeof ctx.request.body?.displayName === 'string'
+      ? ctx.request.body.displayName.trim()
+      : ''
+    if (displayName) {
+      setProfileDisplayName(name, displayName)
+    }
+
+    // A non-super-admin user keeps whatever they create: bind the new profile
+    // to the current user so it shows up in their own profile list.
+    const user = ctx.state?.user
+    if (user && user.role !== 'super_admin') {
+      const existing = listUserProfiles(user.id).map(p => p.profile_name)
+      if (!existing.includes(name)) {
+        replaceUserProfiles(user.id, [...existing, name], existing[0] || name)
+      }
+    }
 
     ctx.body = {
       success: true,
@@ -564,6 +583,38 @@ export async function deleteAvatar(ctx: any) {
   }
 }
 
+/**
+ * PUT /api/hermes/profiles/:name/display-name
+ * Set or clear the user-visible display name for a profile. Written as Web-UI
+ * metadata only (never touches the underlying Hermes profile directory); an
+ * empty value clears the display name and restores the system name.
+ */
+export async function updateDisplayName(ctx: any) {
+  const name = String(ctx.params.name || '').trim() || 'default'
+  if (denyProfile(ctx, name)) return
+  if (isForbiddenProfileName(name)) {
+    ctx.status = 400
+    ctx.body = { error: `Profile name '${name}' is reserved` }
+    return
+  }
+  const raw = ctx.request.body?.displayName
+  const displayName = typeof raw === 'string' ? raw.trim() : ''
+  try {
+    if (displayName) {
+      setProfileDisplayName(name, displayName)
+    } else {
+      clearProfileDisplayName(name)
+    }
+    ctx.body = {
+      success: true,
+      displayName: displayName || '',
+    }
+  } catch (err: any) {
+    ctx.status = 400
+    ctx.body = { error: err.message }
+  }
+}
+
 export async function runtimeStatus(ctx: any) {
   const name = String(ctx.params.name || '').trim() || 'default'
   if (denyProfile(ctx, name)) return
@@ -617,7 +668,7 @@ async function listProfilesForStatus(): Promise<HermesProfile[]> {
   } catch {
     profiles = listProfilesFromDisk(getActiveProfileName())
   }
-  return filterVisibleProfiles(profiles)
+  return filterVisibleProfiles(mergeProfileDisplayNames(profiles))
 }
 
 export async function restartGatewayForProfile(ctx: any) {

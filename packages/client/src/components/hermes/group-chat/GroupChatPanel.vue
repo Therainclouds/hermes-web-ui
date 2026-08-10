@@ -13,6 +13,7 @@ import FolderPicker from '@/components/hermes/chat/FolderPicker.vue'
 import ProfileAvatar from '@/components/hermes/profiles/ProfileAvatar.vue'
 import PageSidebarNav from '@/components/layout/PageSidebarNav.vue'
 import { copyToClipboard } from '@/utils/clipboard'
+import { getProfileDisplayName } from '@/utils/hermes/profile-display'
 import { useDiscussionReportDownload } from '@/composables/useDiscussionReportDownload'
 import { useMessage } from '@/composables/useAppMessage'
 import type { Attachment } from '@/stores/hermes/chat'
@@ -276,7 +277,7 @@ const workspacePanelStyle = computed(() => ({
 }))
 
 const profileOptions = computed(() =>
-    profilesStore.profiles.map(p => ({ label: p.name, value: p.name }))
+    profilesStore.profiles.map(p => ({ label: getProfileDisplayName(p), value: p.name }))
 )
 
 type GroupAgentType = 'hermes' | 'ekko' | 'codex' | 'claude'

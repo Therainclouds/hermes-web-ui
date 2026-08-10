@@ -165,6 +165,35 @@ hermes-web-ui reset-default-login
 
 登录页在 IP 被锁（HTTP 429/503）时会显示两个按钮 ——「清除登录锁定」和「重置默认密码」，由统一的恢复密码保护，默认与出厂 admin 密码一致（`12345678`）；可通过 `HERMES_WEB_UI_RECOVERY_PASSWORD` 环境变量配置为独立的值。
 
+### 设备扫码登录（Token Platform）
+
+硬件 Hermes 设备（QuantClaw / 量迹龙虾盒子等）首次开机时，可在登录页扫描微信二维码绑定 [Token Platform](https://api.quantclaw.vip) 账号 —— 设备端无需手动输入用户名密码。绑定后设备持有专属 API key + 模型白名单，每次开机自动恢复，无需重复扫码。
+
+流程：
+
+1. 设备首次开机，LoginView 渲染微信二维码（`WeChatQrPanel.vue`）。
+2. BFF 调 Token Platform `POST /api/device-login/request`，传入设备的稳定 `hardware_id`（随机 UUID，持久化在 `HERMES_WEB_UI_HOME/device-id`，缺失时重新生成），拿到 `{appid, state, redirect_uri}`。
+3. 用户用微信扫码并在手机端确认。
+4. 设备轮询 `GET /api/device-login/status?login_id=..`；批准后 Token Platform 一次性返回 `{api_base, api_key, models, device_id}`（`KeyDelivered` 标志防泄漏）。
+5. BFF `POST /api/auth/device-login` 用 `verifyDeviceApiKey` 校验设备 API key，取绑定的用户资料，首次运行时自动在本地引导出 `admin` 超级管理员，签发 Hermes JWT，并把绑定持久化到 `${HERMES_WEB_UI_HOME}/device-binding.json`（含 `api_base / api_key / models / display_name / username / bound_at / expires_at`）。
+6. 后续开机由 `useDeviceBinding` 读取 `device-binding.json`，调 `POST /api/auth/device-login/restore` 重新签发 JWT，无需重新扫码。
+
+环境变量：
+
+- `TOKEN_PLATFORM_BASE_URL`（默认 `https://api.quantclaw.vip`）—— Token Platform 地址。
+- `HERMES_WEB_UI_HOME` —— 存放 `device-id` 和 `device-binding.json` 的目录。
+
+Web UI BFF 端点：
+
+| 方法 | 路径 | 鉴权 | 用途 |
+| --- | --- | --- | --- |
+| `POST` | `/api/auth/device-login` | 无 | 用 `{api_base, api_key, device_id, device_name, models}` 完成扫码登录。 |
+| `POST` | `/api/auth/device-login/restore` | 无 | 后续开机从持久化绑定恢复 JWT。 |
+| `GET`  | `/api/auth/device-binding` | 需要 | 读取当前持久化的绑定。 |
+| `DELETE` | `/api/auth/device-binding` | 需要 | 清除绑定，下次开机重新显示二维码。 |
+
+解绑：**设置 → 设备绑定 → 解绑**，或调 `DELETE /api/auth/device-binding`。解绑只清本地绑定文件，Token Platform 上的账号和设备 API key 仍然有效，要彻底作废请去 `https://api.quantclaw.vip` 后台删除设备。
+
 ### 设置
 
 - 显示（流式输出、紧凑模式、推理过程、费用显示）
@@ -234,8 +263,15 @@ hermes-web-ui reset-default-login
   ],
   "analysis": {
     "summary": "会议摘要",
+    "meeting_type": "项目汇报",
     "key_points": ["要点1", "要点2"],
-    "action_items": ["待办1", "待办2"],
+    "action_items": [
+      { "task": "撰写上线方案", "assignee": "张三", "deadline": "2026-07-25" }
+    ],
+    "decisions": ["v0.74 灰度发布，先开功能开关"],
+    "risks": ["ASR 后端仍是单节点"],
+    "learnings": [],
+    "feedback": { "positive": [], "negative": [] },
     "topics": ["主题1", "主题2"]
   }
 }

@@ -7,7 +7,11 @@ import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useExpertsStore } from '@/stores/hermes/experts'
 import { useI18n } from 'vue-i18n'
 import ProfileAvatar from './ProfileAvatar.vue'
+import ProfileDisplayNameModal from './ProfileDisplayNameModal.vue'
 import { useMessage } from '@/composables/useAppMessage'
+import { unbindSuperAdmin } from '@/api/auth'
+import { isStoredSuperAdmin, setApiKey } from '@/api/client'
+import { getProfileDisplayName } from '@/utils/hermes/profile-display'
 
 const props = defineProps<{ profile: HermesProfile }>()
 const emit = defineEmits<{}>()
@@ -22,10 +26,13 @@ const router = useRouter()
 const expanded = ref(false)
 const detailLoading = ref(false)
 const exporting = ref(false)
+const unbinding = ref(false)
 const switching = ref(false)
+const editingDisplayName = ref(false)
 const detail = ref<HermesProfileDetail | null>(null)
 
 const isDefault = computed(() => props.profile.name === 'default')
+const isCurrentSuperAdmin = computed(() => isStoredSuperAdmin())
 
 const expertBinding = computed(() => expertsStore.bindingsForProfile(props.profile.name))
 const isExpert = computed(() => !!expertBinding.value)
@@ -104,6 +111,30 @@ async function handleExport() {
   }
 }
 
+function handleUnbindSuperAdmin() {
+  dialog.warning({
+    title: t('profiles.unbindSuperAdmin'),
+    content: t('profiles.unbindSuperAdminConfirm'),
+    positiveText: t('common.confirm'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: performUnbindSuperAdmin,
+  })
+}
+
+async function performUnbindSuperAdmin() {
+  unbinding.value = true
+  try {
+    const result = await unbindSuperAdmin()
+    setApiKey(result.token)
+    message.success(t('profiles.unbindSuperAdminSuccess'))
+    setTimeout(() => window.location.reload(), 600)
+  } catch (err: any) {
+    message.error(err?.message || t('profiles.unbindSuperAdminFailed'))
+  } finally {
+    unbinding.value = false
+  }
+}
+
 function handleEditConfig() {
   void router.push({
     name: 'hermes.files',
@@ -120,7 +151,7 @@ function handleEditConfig() {
     <div class="card-header">
       <div class="profile-title">
         <ProfileAvatar :name="profile.name" :avatar="profile.avatar" :size="28" />
-        <h3 class="profile-name">{{ isExpert && profile.alias ? profile.alias : profile.name }}</h3>
+        <h3 class="profile-name">{{ getProfileDisplayName(profile) }}</h3>
         <NTag
           v-if="isExpert"
           size="tiny"
@@ -184,6 +215,9 @@ function handleEditConfig() {
     </div>
 
     <div class="card-actions">
+      <NButton size="tiny" quaternary @click="editingDisplayName = true">
+        {{ t('profiles.editDisplayName') }}
+      </NButton>
       <NButton size="tiny" quaternary @click="handleEditConfig">
         {{ t('profiles.editConfig') }}
       </NButton>
@@ -209,7 +243,25 @@ function handleEditConfig() {
       <NButton size="tiny" quaternary :loading="exporting" @click="handleExport">
         {{ t('profiles.export') }}
       </NButton>
+      <NButton
+        v-if="isDefault && isCurrentSuperAdmin"
+        size="tiny"
+        quaternary
+        type="warning"
+        :loading="unbinding"
+        @click="handleUnbindSuperAdmin"
+      >
+        {{ t('profiles.unbindSuperAdmin') }}
+      </NButton>
     </div>
+
+    <ProfileDisplayNameModal
+      v-if="editingDisplayName"
+      :profile-name="profile.name"
+      :current-display-name="profile.displayName"
+      @close="editingDisplayName = false"
+      @saved="editingDisplayName = false"
+    />
   </div>
 </template>
 

@@ -95,11 +95,17 @@ export const meetingASRApi = {
   },
 
   // Analysis methods
-  async startAnalysis(intervalSeconds: number = 60, customPrompt?: string): Promise<any> {
+  async startAnalysis(
+    intervalSecondsOrConfig: number | { interval_seconds?: number; interval_sentences?: number; trigger_mode?: string; custom_prompt?: string } = 60,
+    customPrompt?: string,
+  ): Promise<any> {
+    const payload = typeof intervalSecondsOrConfig === 'object'
+      ? intervalSecondsOrConfig
+      : { interval_seconds: intervalSecondsOrConfig, custom_prompt: customPrompt }
     const response = await fetch(`${API_BASE}/analysis/start`, {
       method: 'POST',
       headers: getAuthHeaders(),
-      body: JSON.stringify({ interval_seconds: intervalSeconds, custom_prompt: customPrompt }),
+      body: JSON.stringify(payload),
     })
     return response.json()
   },

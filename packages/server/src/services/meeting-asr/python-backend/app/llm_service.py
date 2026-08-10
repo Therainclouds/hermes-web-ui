@@ -20,6 +20,8 @@ class LLMService:
         self._transcript_buffer: list[str] = []
         self._last_analysis_text: str = ""
         self._analysis_count: int = 0
+        self._sentence_buffer: list[str] = []
+        self._last_analyzed_sentence_count: int = 0
 
     def _get_client(self, config: LLMConfig) -> AsyncOpenAI:
         if self._client is None or self._last_config != config:
@@ -39,8 +41,32 @@ class LLMService:
 
     def clear_transcript(self) -> None:
         self._transcript_buffer.clear()
+        self._sentence_buffer.clear()
         self._last_analysis_text = ""
         self._analysis_count = 0
+        self._last_analyzed_sentence_count = 0
+
+    def add_sentence(self, sentence: str) -> None:
+        """添加句子到缓冲区"""
+        if sentence and sentence.strip():
+            self._sentence_buffer.append(sentence.strip())
+
+    def get_sentence_count(self) -> int:
+        """获取当前句子数量"""
+        return len(self._sentence_buffer)
+
+    def _should_analyze_by_sentences(self, min_sentences: int = 10) -> bool:
+        """基于句子数量判断是否需要分析"""
+        current_count = len(self._sentence_buffer)
+        if current_count < min_sentences:
+            return False
+        if current_count - self._last_analyzed_sentence_count < min_sentences:
+            return False
+        return True
+
+    def _mark_analyzed(self) -> None:
+        """标记当前句子已分析"""
+        self._last_analyzed_sentence_count = len(self._sentence_buffer)
 
     def _should_analyze(self, min_length: int = 50) -> bool:
         """Deprecated: kept for backward compat with trigger endpoint."""
@@ -52,7 +78,7 @@ class LLMService:
         return True
 
     async def analyze(self, custom_prompt: str | None = None) -> AnalysisResult:
-        config = storage.get_llm_config()
+        config = storage.get_config().llm
         if not config.api_key:
             raise ValueError("API Key 未配置")
 
@@ -87,12 +113,17 @@ class LLMService:
             self._analysis_count += 1
 
             result = AnalysisResult(
+                meeting_type=data.get("meeting_type", "其他"),
                 summary=data.get("summary", ""),
                 key_points=data.get("key_points", []),
                 action_items=data.get("action_items", []),
                 people_mentioned=data.get("people_mentioned", []),
                 relationships=data.get("relationships", []),
                 topics=data.get("topics", []),
+                feedback=data.get("feedback", {}),
+                decisions=data.get("decisions", []),
+                risks=data.get("risks", []),
+                learnings=data.get("learnings", []),
                 should_update_html=self._should_update_html(data),
                 timestamp=time.time(),
             )
@@ -135,7 +166,7 @@ class LLMService:
         return False
 
     async def generate_html(self, analysis: AnalysisResult) -> str:
-        config = storage.get_llm_config()
+        config = storage.get_config().llm
         if not config.api_key:
             raise ValueError("API Key 未配置")
 

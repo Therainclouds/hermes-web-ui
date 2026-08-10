@@ -13,14 +13,22 @@ const props = withDefaults(defineProps<{
   sessionId: string
   sceneTemplate?: string
   isRecording?: boolean
+  // meeting 分支兼容：触发一次分析（当前 assist 架构下为占位，供后续接线）
+  startTrigger?: number
 }>(), {
   sceneTemplate: 'general',
   isRecording: false,
+  startTrigger: 0,
 })
 
 const emit = defineEmits<{
   (e: 'report-generated', markdown: string): void
   (e: 'request-report'): void
+  // meeting 分支兼容事件（assist 架构下暂不触发，保留契约供视图侧处理器）
+  (e: 'update:analysisResult', result: any): void
+  (e: 'update:reportHtml', html: string): void
+  (e: 'completed'): void
+  (e: 'corrected', sentences: any[]): void
 }>()
 
 const { t } = useI18n()

@@ -13,7 +13,9 @@ import {
   getUserAvatar,
   listUserProfiles,
   listUsers,
+  replaceUserProfiles,
   setUserAvatar,
+  touchUserLogin,
   updateUserModelGuideStatus,
   updateUser,
   updateUsername,
@@ -32,6 +34,25 @@ import { startOutboundRelayClient, stopOutboundRelayClient } from '../services/g
 import { getLanEndpointKind } from '../services/lan-discovery'
 import { getPublicSystemInfo } from '../services/system-info'
 import { config } from '../config'
+import { randomUUID } from 'crypto'
+import {
+  fetchDeviceSelf,
+  verifyDeviceApiKey,
+  type TokenPlatformUserProfile,
+} from '../services/token-platform-client'
+import {
+  loadDeviceBinding,
+  saveDeviceBinding,
+  clearDeviceBinding,
+  type DeviceBinding,
+} from '../services/device-binding'
+import {
+  setProfileDisplayName,
+  setProfileAvatarRemote,
+  setProfileAvatarGenerated,
+  clearProfileIdentity,
+} from '../services/hermes/profile-metadata'
+import { getActiveProfileName } from '../services/hermes/hermes-profile'
 
 /**
  * GET /api/auth/status
@@ -312,6 +333,391 @@ async function localRelayMachineInfo(url: string) {
 }
 
 /**
+ * POST /api/auth/device-login
+ * Complete a Token Platform WeChat scan login from the Hermes device.
+ *
+ * The client already received {api_base, api_key, models, device_id} from the
+ * Token Platform device-login status endpoint (the user scanned the QR with
+ * WeChat). This endpoint validates the device API key, resolves the bound user
+ * profile, provisions a local Hermes user (auto-bootstrapping a super_admin on
+ * first run), issues a Hermes JWT, and persists the device binding so later
+ * boots can restore the session without re-scanning.
+ *
+ * Body: { api_base, api_key, device_id, device_name, models }.
+ */
+export async function deviceLogin(ctx: Context) {
+  const {
+    api_base: apiBaseRaw,
+    api_key: apiKey,
+    device_id: deviceId,
+    device_name: deviceName,
+    models,
+  } = ctx.request.body as {
+    api_base?: string
+    api_key?: string
+    device_id?: number | string
+    device_name?: string
+    models?: string[]
+  }
+
+  const apiBase = String(apiBaseRaw || '').trim()
+  const key = String(apiKey || '').trim()
+  if (!apiBase || !key) {
+    ctx.status = 400
+    ctx.body = { error: 'api_base and api_key are required' }
+    return
+  }
+
+  let profile: TokenPlatformUserProfile
+  try {
+    profile = await fetchDeviceSelf(apiBase, key)
+  } catch (err: any) {
+    ctx.status = 502
+    ctx.body = { error: err?.message || 'Token Platform profile verification failed' }
+    return
+  }
+  if (!profile?.id) {
+    ctx.status = 401
+    ctx.body = { error: 'Invalid Token Platform device key' }
+    return
+  }
+
+  // Verify the key can actually reach the relay models endpoint.
+  let verifiedModels: string[]
+  try {
+    verifiedModels = await verifyDeviceApiKey(apiBase, key)
+  } catch (err: any) {
+    ctx.status = 502
+    ctx.body = { error: err?.message || 'Token Platform model verification failed' }
+    return
+  }
+
+  const modelList = Array.isArray(models) && models.length > 0
+    ? models
+    : verifiedModels
+
+  const localUsername = `tp_${profile.id}`
+  let user = findUserByUsername(localUsername)
+  if (!user) {
+    if (countUsers() === 0) {
+      // First run: auto-bootstrap a super_admin bound to this device.
+      user = createUser({
+        username: localUsername,
+        password: randomUUID(),
+        role: 'super_admin',
+        status: 'active',
+      })
+    } else {
+      // Device already configured locally: link a regular admin account.
+      // Bind the default agent profile so the user can access profile-scoped
+      // resources (profiles list, models, runtime status). Without this an
+      // admin with no bound profiles gets 403 everywhere.
+      user = createUser({
+        username: localUsername,
+        password: randomUUID(),
+        role: 'admin',
+        status: 'active',
+        profiles: ['default'],
+        defaultProfile: 'default',
+      })
+    }
+  } else if (user.role !== 'super_admin' && listUserProfiles(user.id).length === 0) {
+    // A previously-provisioned device user without any profile binding: grant
+    // access to the default agent profile so login stays usable.
+    replaceUserProfiles(user.id, ['default'], 'default')
+  }
+  if (!user) {
+    ctx.status = 500
+    ctx.body = { error: 'Failed to provision local user' }
+    return
+  }
+
+  if (profile.display_name || profile.avatar_url) {
+    // Sync the WeChat avatar/name onto the local user: use the real avatar URL
+    // when present (rendered as an <img>), otherwise fall back to a seeded
+    // multiavatar derived from the display name.
+    setUserAvatar(user.id, profile.avatar_url
+      ? JSON.stringify({ type: 'image', dataUrl: profile.avatar_url, seed: profile.display_name || '' })
+      : JSON.stringify({ type: 'default', seed: profile.display_name || '' }))
+  }
+
+  const token = await issueUserJwt(user)
+  touchUserLogin(user.id)
+
+  const displayName = profile.display_name || profile.username || localUsername
+  syncProfileIdentity(displayName, profile.avatar_url)
+  const binding: DeviceBinding = {
+    device_id: String(deviceId ?? ''),
+    api_base: apiBase,
+    api_key: key,
+    models: modelList,
+    display_name: displayName,
+    username: profile.username || localUsername,
+    bound_at: Date.now(),
+  }
+  await saveDeviceBinding(binding)
+
+  ctx.body = {
+    token,
+    user: {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+      display_name: displayName,
+      bound_models: modelList,
+    },
+    binding: {
+      device_id: binding.device_id,
+      display_name: displayName,
+    },
+  }
+}
+
+/**
+ * Reflect the Token Platform identity onto the active Hermes profile: the
+ * "default" agent profile is displayed by its internal name in the meeting,
+ * group chat, coding and profile selector surfaces. Writing the Web-UI
+ * displayName metadata (plus the WeChat avatar) makes every surface show the
+ * user's name instead of "default".
+ */
+function syncProfileIdentity(displayName: string, avatarUrl?: string | null): void {
+  // Apply to the active profile and the "default" agent profile, so the name
+  // shows up regardless of which profile the meeting/group-chat/coding surfaces
+  // are scoped to.
+  const names = new Set<string>([getActiveProfileName() || 'default', 'default'])
+  for (const profileName of names) {
+    setProfileDisplayName(profileName, displayName)
+    if (avatarUrl) {
+      setProfileAvatarRemote(profileName, avatarUrl)
+    } else {
+      setProfileAvatarGenerated(profileName, displayName)
+    }
+  }
+}
+
+/**
+ * GET /api/auth/device-binding
+ * Return whether this Hermes device has a persisted Token Platform binding.
+ * Used by the login page to offer "restore previous scan" without re-scanning.
+ */
+export async function getDeviceBinding(ctx: Context) {
+  const binding = await loadDeviceBinding()
+  if (!binding) {
+    ctx.body = { bound: false }
+    return
+  }
+  ctx.body = {
+    bound: true,
+    display_name: binding.display_name,
+    username: binding.username,
+    models: binding.models,
+    bound_at: binding.bound_at,
+  }
+}
+
+/**
+ * DELETE /api/auth/device-binding
+ * Forget the persisted Token Platform binding on this device.
+ */
+export async function clearDeviceBindingController(ctx: Context) {
+  await clearDeviceBinding()
+  ctx.body = { success: true }
+}
+
+/**
+ * POST /api/auth/device-login/restore
+ * Restore a previous Token Platform binding and re-issue a Hermes JWT without
+ * requiring a new WeChat scan. Verifies the stored api_key is still valid.
+ */
+export async function restoreDeviceLogin(ctx: Context) {
+  const binding = await loadDeviceBinding()
+  if (!binding?.api_key || !binding.api_base) {
+    ctx.status = 404
+    ctx.body = { error: 'No device binding found' }
+    return
+  }
+
+  let profile: TokenPlatformUserProfile
+  try {
+    profile = await fetchDeviceSelf(binding.api_base, binding.api_key)
+  } catch (err: any) {
+    ctx.status = 502
+    ctx.body = { error: err?.message || 'Token Platform verification failed' }
+    return
+  }
+  if (!profile?.id) {
+    ctx.status = 401
+    ctx.body = { error: 'Bound Token Platform key is no longer valid' }
+    return
+  }
+
+  const localUsername = `tp_${profile.id}`
+  const user = findUserByUsername(localUsername)
+  if (!user || user.status !== 'active') {
+    ctx.status = 401
+    ctx.body = { error: 'Bound local user no longer exists' }
+    return
+  }
+
+  // Ensure a non-super-admin device user always has the default profile bound.
+  if (user.role !== 'super_admin' && listUserProfiles(user.id).length === 0) {
+    replaceUserProfiles(user.id, ['default'], 'default')
+  }
+
+  const token = await issueUserJwt(user)
+  touchUserLogin(user.id)
+  syncProfileIdentity(profile.display_name || profile.username || localUsername, profile.avatar_url)
+  ctx.body = { token, user: { id: user.id, username: user.username, role: user.role } }
+}
+
+/**
+ * POST /api/auth/bind-super-admin
+ * Upgrade the currently authenticated user to a super administrator, after
+ * verifying that they can provide valid super-admin credentials.
+ *
+ * Used by WeChat device-login users who are provisioned as regular admins:
+ * after scanning they can choose to bind to the super administrator account by
+ * entering its username/password. Wrong credentials are rejected and the user
+ * stays a regular admin. A fresh JWT is issued because the old token still
+ * carries the previous role.
+ *
+ * Body: { username, password }.
+ */
+export async function bindSuperAdmin(ctx: Context) {
+  const userId = ctx.state.user?.id
+  if (!userId) {
+    ctx.status = 401
+    ctx.body = { error: 'Unauthorized' }
+    return
+  }
+
+  const body = ctx.request.body as { username?: unknown; password?: unknown }
+  const username = String(body?.username || '').trim()
+  const password = String(body?.password || '')
+
+  if (!username || !password) {
+    ctx.status = 400
+    ctx.body = { error: 'Super administrator username and password are required' }
+    return
+  }
+
+  const target = findUserByUsername(username)
+  if (!target || target.role !== 'super_admin' || target.status !== 'active') {
+    ctx.status = 401
+    ctx.body = { error: 'Invalid super administrator credentials' }
+    return
+  }
+
+  if (!verifyPassword(password, target.password_hash)) {
+    ctx.status = 401
+    ctx.body = { error: 'Invalid super administrator credentials' }
+    return
+  }
+
+  const user = findUserById(userId)
+  if (!user) {
+    ctx.status = 404
+    ctx.body = { error: 'User not found' }
+    return
+  }
+
+  if (user.role === 'super_admin') {
+    ctx.body = { token: await issueUserJwt(user), user: { id: user.id, username: user.username, role: user.role } }
+    return
+  }
+
+  const upgraded = updateUser({ userId, role: 'super_admin' })
+  if (!upgraded) {
+    ctx.status = 500
+    ctx.body = { error: 'Failed to bind super administrator' }
+    return
+  }
+
+  // Permanently reflect the bound WeChat identity on the default agent profile.
+  syncProfileIdentityFromUser(upgraded)
+
+  const token = await issueUserJwt(upgraded)
+  touchUserLogin(upgraded.id)
+  ctx.body = { token, user: { id: upgraded.id, username: upgraded.username, role: upgraded.role } }
+}
+
+/**
+ * Sync the default agent profile's display name and avatar from the current
+ * user's persisted identity (WeChat name/avatar stored in the user record).
+ * Used when binding to super administrator so the change is permanent.
+ */
+function syncProfileIdentityFromUser(user: UserRecord): void {
+  let displayName = user.username || 'default'
+  let avatarUrl: string | null = null
+  const raw = getUserAvatar(user.id)
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw)
+      if (parsed && typeof parsed === 'object') {
+        if (typeof parsed.seed === 'string' && parsed.seed.trim()) displayName = parsed.seed.trim()
+        if (typeof parsed.dataUrl === 'string' && parsed.dataUrl.startsWith('http')) avatarUrl = parsed.dataUrl
+      }
+    } catch {
+      // ignore malformed avatar
+    }
+  }
+  syncProfileIdentity(displayName, avatarUrl)
+}
+
+/**
+ * POST /api/auth/unbind-super-admin
+ * Demote the current super administrator back to a regular admin and clear the
+ * WeChat identity from the default profile.
+ *
+ * Only callable by the current super-admin user themselves (e.g. via the
+ * "解绑" button on the profile card). After unbinding, a future WeChat scan
+ * re-prompts the bind flow because the role is admin again.
+ */
+export async function unbindSuperAdmin(ctx: Context) {
+  const userId = ctx.state.user?.id
+  if (!userId) {
+    ctx.status = 401
+    ctx.body = { error: 'Unauthorized' }
+    return
+  }
+
+  const user = findUserById(userId)
+  if (!user) {
+    ctx.status = 404
+    ctx.body = { error: 'User not found' }
+    return
+  }
+
+  if (user.role !== 'super_admin') {
+    ctx.status = 403
+    ctx.body = { error: 'Only a super administrator can unbind' }
+    return
+  }
+
+  // Ensure at least one super administrator remains before demoting.
+  if (countActiveSuperAdmins(userId) === 0) {
+    ctx.status = 400
+    ctx.body = { error: 'At least one active super administrator is required' }
+    return
+  }
+
+  const demoted = updateUser({ userId, role: 'admin' })
+  if (!demoted) {
+    ctx.status = 500
+    ctx.body = { error: 'Failed to unbind super administrator' }
+    return
+  }
+
+  // Remove the WeChat name/avatar from the default agent profile so it falls
+  // back to its original identity.
+  clearProfileIdentity('default')
+
+  const token = await issueUserJwt(demoted)
+  touchUserLogin(demoted.id)
+  ctx.body = { token, user: { id: demoted.id, username: demoted.username, role: demoted.role } }
+}
+
+/**
  * POST /api/auth/mcu-login
  * Authenticate with the existing username/password login for an MCU/device.
  * When remote relay is requested or a legacy relay URL is provided, connect this Hermes Studio instance to it.
@@ -459,6 +865,47 @@ export async function changePassword(ctx: Context) {
 }
 
 /**
+ * POST /api/auth/set-password
+ * Set or reset the current user's password without requiring the current
+ * password.
+ *
+ * Identity is already established by the caller (JWT issued after a WeChat
+ * scan login, or a normal password login). This lets WeChat device users set
+ * their own account password for the first time, or reset it after forgetting
+ * it by re-scanning with WeChat.
+ */
+export async function setPassword(ctx: Context) {
+  const { newPassword } = ctx.request.body as { newPassword?: unknown }
+  if (typeof newPassword !== 'string' || !newPassword) {
+    ctx.status = 400
+    ctx.body = { error: 'New password is required' }
+    return
+  }
+  if (newPassword.length < 6) {
+    ctx.status = 400
+    ctx.body = { error: 'New password must be at least 6 characters' }
+    return
+  }
+
+  const userId = ctx.state.user?.id
+  if (!userId) {
+    ctx.status = 401
+    ctx.body = { error: 'Unauthorized' }
+    return
+  }
+
+  const user = findUserById(userId)
+  if (!user) {
+    ctx.status = 404
+    ctx.body = { error: 'User not found' }
+    return
+  }
+
+  updateUserPassword(user.id, newPassword)
+  ctx.body = { success: true }
+}
+
+/**
  * POST /api/auth/change-username
  * Change username (protected).
  */
@@ -530,6 +977,48 @@ export async function listManagedUsers(ctx: Context) {
   ctx.body = {
     users: listUsers(),
     profiles: listProfileNamesFromDisk(),
+  }
+}
+
+/**
+ * GET /api/auth/users/:id/export
+ * Export a single user account as JSON (super admin only). Used by the user
+ * management table to back up an individual account's identity and profile
+ * bindings. The password hash is deliberately excluded.
+ */
+export async function exportManagedUser(ctx: Context) {
+  const rawId = String(ctx.params.id || '')
+  const user = findUserById(rawId)
+  if (!user) {
+    ctx.status = 404
+    ctx.body = { error: 'User not found' }
+    return
+  }
+
+  const profiles = listUserProfiles(user.id)
+  const avatarRaw = getUserAvatar(user.id)
+  let avatar: unknown = null
+  if (avatarRaw) {
+    try {
+      avatar = JSON.parse(avatarRaw)
+    } catch {
+      avatar = avatarRaw
+    }
+  }
+
+  ctx.body = {
+    exported_at: Date.now(),
+    user: {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+      status: user.status,
+      profiles: profiles.map(p => p.profile_name),
+      default_profile: profiles.find(p => p.is_default === 1)?.profile_name || null,
+      created_at: user.created_at,
+      last_login_at: user.last_login_at,
+      avatar,
+    },
   }
 }
 

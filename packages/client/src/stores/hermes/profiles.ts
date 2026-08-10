@@ -97,8 +97,22 @@ export const useProfilesStore = defineStore('profiles', () => {
     }
   }
 
-  async function createProfile(name: string, clone?: boolean) {
-    const res = await profilesApi.createProfile(name, clone)
+  async function updateDisplayName(name: string, displayName: string) {
+    const res = await profilesApi.updateProfileDisplayName(name, displayName)
+    profiles.value = profiles.value.map(profile => (
+      profile.name === name ? { ...profile, displayName: res.displayName } : profile
+    ))
+    if (detailMap.value[name]) {
+      detailMap.value[name] = { ...detailMap.value[name], displayName: res.displayName }
+    }
+    if (activeProfile.value?.name === name) {
+      activeProfile.value = { ...activeProfile.value, displayName: res.displayName }
+    }
+    return res
+  }
+
+  async function createProfile(name: string, clone?: boolean, displayName?: string) {
+    const res = await profilesApi.createProfile(name, clone, displayName)
     if (res.success) await fetchProfiles()
     return res
   }
@@ -187,6 +201,7 @@ export const useProfilesStore = defineStore('profiles', () => {
     importProfile,
     updateAvatar,
     deleteAvatar,
+    updateDisplayName,
     clearAllSessionCaches,
   }
 })

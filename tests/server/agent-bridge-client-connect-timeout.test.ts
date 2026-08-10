@@ -102,4 +102,49 @@ describe('AgentBridgeClient connect timeout', () => {
 
     await expect(pending).resolves.toMatchObject({ ok: true })
   })
+
+  it('still connects successfully with connectRetryMs=0 (no retries, one attempt)', async () => {
+    vi.useFakeTimers()
+    const { AgentBridgeClient } = await import(
+      '../../packages/server/src/services/hermes/agent-bridge/client'
+    )
+    // connectRetryMs=0 must NOT short-circuit before the first attempt: the
+    // request-level deadline still bounds the connect, so a reachable broker
+    // is used normally even though retries are disabled.
+    const client = new AgentBridgeClient({
+      endpoint: 'ipc:///tmp/hermes-agent-bridge.sock',
+      connectRetryMs: 0,
+      timeoutMs: 2000,
+    })
+
+    const pending = client.ping()
+    hoisted.fakeSocket?.emit('connect')
+    await vi.advanceTimersByTimeAsync(0)
+    hoisted.fakeSocket?.emit('data', Buffer.from(`${JSON.stringify({ ok: true })}\n`))
+
+    await expect(pending).resolves.toMatchObject({ ok: true })
+  })
+
+  it('gives up after the single attempt when connectRetryMs=0 and connect hangs', async () => {
+    vi.useFakeTimers()
+    const { AgentBridgeClient } = await import(
+      '../../packages/server/src/services/hermes/agent-bridge/client'
+    )
+    const client = new AgentBridgeClient({
+      endpoint: 'ipc:///tmp/hermes-agent-bridge.sock',
+      connectRetryMs: 0,
+      timeoutMs: 100,
+    })
+
+    const pending = client.ping()
+    const assertion = expect(pending).rejects.toMatchObject({
+      errorType: 'bridge_unreachable',
+    })
+    // The single connect hangs (broker backlog); the request deadline must
+    // still cap it instead of retrying forever.
+    await vi.advanceTimersByTimeAsync(300)
+    await assertion
+
+    expect(hoisted.fakeSocket?.destroyed).toBe(true)
+  })
 })

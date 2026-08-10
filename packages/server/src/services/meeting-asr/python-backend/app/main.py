@@ -156,19 +156,44 @@ async def start_analysis(request: AnalysisRequest) -> dict:
         return {"status": "already_running", "message": "分析已在运行中"}
 
     _analysis_running = True
+    
+    # 更新配置
+    config = storage.get_config()
+    config.analysis.trigger_mode = request.trigger_mode
+    config.analysis.interval_sentences = request.interval_sentences
+    config.analysis.interval_seconds = request.interval_seconds
+    storage.update_config(config)
+    
     storage.update_status(is_running=True, current_interval=request.interval_seconds)
 
     async def analysis_loop():
         global _analysis_running
         while _analysis_running:
             try:
-                result = await llm_service.run_analysis_cycle(request.custom_prompt)
-                if result:
-                    log.info("Analysis completed: %s", result.summary[:50] if result.summary else "no summary")
+                should_analyze = False
+                current_config = storage.get_config().analysis
+                
+                # 基于句子数量触发
+                if current_config.trigger_mode in ("sentences", "both"):
+                    if llm_service._should_analyze_by_sentences(current_config.interval_sentences):
+                        should_analyze = True
+                
+                # 基于时间间隔触发
+                if current_config.trigger_mode in ("time", "both"):
+                    should_analyze = True
+                
+                if should_analyze:
+                    result = await llm_service.run_analysis_cycle(request.custom_prompt)
+                    if result:
+                        llm_service._mark_analyzed()
+                        log.info("Analysis completed: %s", result.summary[:50] if result.summary else "no summary")
+                        
             except Exception as e:
                 log.error("Analysis loop error: %s", e)
 
-            await asyncio.sleep(request.interval_seconds)
+            # 检查间隔：句子模式下检查更频繁
+            check_interval = 5 if current_config.trigger_mode == "sentences" else current_config.interval_seconds
+            await asyncio.sleep(check_interval)
 
     _analysis_task = asyncio.create_task(analysis_loop())
     return {"status": "started", "interval": request.interval_seconds}
@@ -248,6 +273,21 @@ async def add_transcript(data: dict) -> dict:
     if text:
         llm_service.add_transcript(text)
     return {"status": "ok"}
+
+
+@app.post("/api/transcript/sentence")
+async def add_sentence(data: dict) -> dict:
+    """添加单个句子到缓冲区"""
+    sentence = data.get("sentence", "")
+    if sentence:
+        llm_service.add_sentence(sentence)
+    return {"status": "ok", "sentence_count": llm_service.get_sentence_count()}
+
+
+@app.get("/api/transcript/sentence/count")
+async def get_sentence_count() -> dict:
+    """获取当前句子数量"""
+    return {"count": llm_service.get_sentence_count()}
 
 
 @app.get("/api/transcript")

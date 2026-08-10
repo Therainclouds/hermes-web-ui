@@ -8,6 +8,14 @@ import { clearLoginLocks, resetDefaultLogin } from "@/api/recovery";
 import RecoveryConfirmModal, {
   type RecoveryAction,
 } from "@/components/auth/RecoveryConfirmModal.vue";
+import BindSuperAdminModal from "@/components/auth/BindSuperAdminModal.vue";
+import WeChatQrPanel from "@/components/auth/WeChatQrPanel.vue";
+import {
+  completeHermesDeviceLogin,
+  type TokenPlatformDeviceLoginStatus,
+} from "@/api/device-login";
+import { addCustomProvider } from "@/api/hermes/system";
+import { useDeviceBinding } from "@/composables/useDeviceBinding";
 import { useTheme } from "@/composables/useTheme";
 
 const { t } = useI18n();
@@ -19,6 +27,25 @@ const password = ref("");
 const loading = ref(false);
 const errorMsg = ref("");
 const showLockResetHint = ref(false);
+
+// Token Platform WeChat binding restore (previously scanned device)
+const {
+  checking: bindingChecking,
+  hasBinding,
+  restoring: bindingRestoring,
+  restoreError: bindingRestoreError,
+  binding,
+  restore,
+} = useDeviceBinding();
+
+// WeChat scan login state
+const wechatMode = ref(false);
+const wechatSyncing = ref(false);
+const wechatError = ref("");
+
+// Bind super admin prompt (only for non-super-admin WeChat device users)
+const showBindSuperAdmin = ref(false);
+const pendingLoginToken = ref("");
 
 // Recovery modal state
 type RecoveryModalState = { open: false } | { open: true; action: RecoveryAction };
@@ -69,6 +96,77 @@ async function handlePasswordLogin() {
   }
 }
 
+async function handleWeChatApproved(
+  result: Extract<TokenPlatformDeviceLoginStatus, { status: "approved" }>,
+) {
+  wechatSyncing.value = true;
+  wechatError.value = "";
+  try {
+    const hermesResult = await completeHermesDeviceLogin({
+      api_base: result.api.api_base,
+      api_key: result.api.api_key,
+      device_id: result.device.device_id,
+      device_name: "Hermes",
+      models: result.api.models,
+    });
+    pendingLoginToken.value = hermesResult.token;
+
+    // Sync the user's model capabilities into Hermes as the default provider.
+    const models = hermesResult.user.bound_models?.length
+      ? hermesResult.user.bound_models
+      : result.api.models;
+    const defaultModel = models[0];
+    if (defaultModel) {
+      try {
+        await addCustomProvider({
+          name: "token_platform",
+          base_url: `${result.api.api_base.replace(/\/+$/, "")}/v1`,
+          api_key: result.api.api_key,
+          model: defaultModel,
+          api_mode: "chat_completions",
+        });
+      } catch (providerErr: any) {
+        // Provider configuration failure should not block login.
+        console.error("Failed to configure Token Platform provider:", providerErr);
+      }
+    }
+
+    // WeChat device users are regular admins. Offer to bind the account to the
+    // super administrator by verifying its credentials. Set the session token
+    // first so the bind request carries the Authorization header.
+    if (hermesResult.user.role !== "super_admin") {
+      setApiKey(hermesResult.token);
+      showBindSuperAdmin.value = true;
+      return;
+    }
+
+    setApiKey(hermesResult.token);
+    router.replace("/hermes/chat");
+  } catch (err: any) {
+    wechatError.value = err?.message || t("login.deviceLoginFailed");
+  } finally {
+    wechatSyncing.value = false;
+  }
+}
+
+function handleBindSuperAdminSkip() {
+  showBindSuperAdmin.value = false;
+  if (pendingLoginToken.value) {
+    setApiKey(pendingLoginToken.value);
+    router.replace("/hermes/chat");
+  }
+}
+
+function handleBindSuperAdminBound(
+  token: string,
+  _user: { id: number; username: string; role: string },
+) {
+  showBindSuperAdmin.value = false;
+  pendingLoginToken.value = token;
+  setApiKey(token);
+  router.replace("/hermes/chat");
+}
+
 function openRecoveryModal(action: RecoveryAction) {
   recoveryModal.value = { open: true, action };
 }
@@ -110,51 +208,97 @@ async function handleRecoverySubmit(recoveryPassword: string) {
       </div>
       <h1 class="login-title">{{ t("login.title") }}</h1>
       <p class="login-desc">{{ t("login.description") }}</p>
-      <p class="login-default-hint">{{ t("login.defaultCredentialsHint") }}</p>
 
-      <form class="login-form" @submit.prevent="handleLogin">
-        <input
-          v-model="username"
-          type="text"
-          class="login-input"
-          :placeholder="t('login.usernamePlaceholder')"
-          autofocus
-        />
-        <input
-          v-model="password"
-          type="password"
-          class="login-input"
-          :placeholder="t('login.passwordPlaceholder')"
-          @keyup.enter="handleLogin"
-        />
+      <div v-if="!wechatMode">
+        <p class="login-default-hint">{{ t("login.defaultCredentialsHint") }}</p>
 
-        <div v-if="errorMsg" class="login-error">{{ errorMsg }}</div>
-        <div v-if="showLockResetHint" class="login-lock-hint">
-          <span>{{ t("login.lockResetHint") }}</span>
-          <div class="login-lock-hint__actions">
-            <button
-              type="button"
-              class="login-lock-hint__btn"
-              @click="openRecoveryModal('clear-locks')"
-            >
-              {{ t("login.recoveryClearLocksButton") }}
-            </button>
-            <button
-              type="button"
-              class="login-lock-hint__btn"
-              @click="openRecoveryModal('reset-password')"
-            >
-              {{ t("login.recoveryResetPasswordButton") }}
-            </button>
+        <form class="login-form" @submit.prevent="handleLogin">
+          <input
+            v-model="username"
+            type="text"
+            class="login-input"
+            :placeholder="t('login.usernamePlaceholder')"
+            autofocus
+          />
+          <input
+            v-model="password"
+            type="password"
+            class="login-input"
+            :placeholder="t('login.passwordPlaceholder')"
+            @keyup.enter="handleLogin"
+          />
+
+          <div v-if="errorMsg" class="login-error">{{ errorMsg }}</div>
+          <div v-if="showLockResetHint" class="login-lock-hint">
+            <span>{{ t("login.lockResetHint") }}</span>
+            <div class="login-lock-hint__actions">
+              <button
+                type="button"
+                class="login-lock-hint__btn"
+                @click="openRecoveryModal('clear-locks')"
+              >
+                {{ t("login.recoveryClearLocksButton") }}
+              </button>
+              <button
+                type="button"
+                class="login-lock-hint__btn"
+                @click="openRecoveryModal('reset-password')"
+              >
+                {{ t("login.recoveryResetPasswordButton") }}
+              </button>
+            </div>
+            <span class="login-lock-hint__secondary">
+              {{ t("login.defaultLoginResetHint") }}
+            </span>
           </div>
-          <span class="login-lock-hint__secondary">
-            {{ t("login.defaultLoginResetHint") }}
-          </span>
+          <button type="submit" class="login-btn" :disabled="loading">
+            {{ loading ? "..." : t("login.submit") }}
+          </button>
+        </form>
+
+        <div class="login-divider">
+          <span class="login-divider__line" />
+          <span class="login-divider__text">{{ t("login.or") }}</span>
+          <span class="login-divider__line" />
         </div>
-        <button type="submit" class="login-btn" :disabled="loading">
-          {{ loading ? "..." : t("login.submit") }}
+
+        <button
+          type="button"
+          class="login-wechat-btn"
+          @click="wechatMode = true"
+        >
+          {{ t("login.wechatLogin") }}
         </button>
-      </form>
+
+        <button
+          v-if="hasBinding && !bindingChecking"
+          type="button"
+          class="login-restore-btn"
+          :disabled="bindingRestoring"
+          @click="restore"
+        >
+          {{ bindingRestoring ? "..." : t("login.wechatRestore", { account: binding?.display_name || "" }) }}
+        </button>
+        <div v-if="bindingRestoreError" class="login-error">
+          {{ bindingRestoreError }}
+        </div>
+      </div>
+
+      <div v-else class="login-wechat-mode">
+        <p class="login-wechat-mode__title">{{ t("login.wechatLoginTitle") }}</p>
+        <WeChatQrPanel @approved="handleWeChatApproved" />
+        <div v-if="wechatSyncing" class="login-wechat-syncing">
+          {{ t("login.deviceLoginSyncing") }}
+        </div>
+        <div v-if="wechatError" class="login-error">{{ wechatError }}</div>
+        <button
+          type="button"
+          class="login-back-btn"
+          @click="wechatMode = false"
+        >
+          {{ t("login.back") }}
+        </button>
+      </div>
     </div>
 
     <RecoveryConfirmModal
@@ -164,6 +308,12 @@ async function handleRecoverySubmit(recoveryPassword: string) {
       :action="recoveryModal.action"
       @close="closeRecoveryModal"
       @submit="handleRecoverySubmit"
+    />
+
+    <BindSuperAdminModal
+      :open="showBindSuperAdmin"
+      @close="handleBindSuperAdminSkip"
+      @bound="handleBindSuperAdminBound"
     />
   </div>
 </template>
@@ -326,6 +476,98 @@ async function handleRecoverySubmit(recoveryPassword: string) {
   &:disabled {
     opacity: 0.6;
     cursor: not-allowed;
+  }
+}
+.login-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 20px 0 12px;
+}
+
+.login-divider__line {
+  flex: 1;
+  height: 1px;
+  background: $border-color;
+}
+
+.login-divider__text {
+  font-size: 12px;
+  color: $text-muted;
+}
+
+.login-wechat-btn {
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid $border-color;
+  border-radius: $radius-sm;
+  background: transparent;
+  color: $text-primary;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background $transition-fast, border-color $transition-fast;
+  font-family: $font-code;
+
+  &:hover:not(:disabled) {
+    background: rgba(var(--accent-rgb, 79, 158, 139), 0.08);
+    border-color: $accent-primary;
+  }
+}
+
+.login-restore-btn {
+  width: 100%;
+  margin-top: 8px;
+  padding: 10px 16px;
+  border: 1px dashed $border-color;
+  border-radius: $radius-sm;
+  background: transparent;
+  color: $text-secondary;
+  font-size: 13px;
+  cursor: pointer;
+  transition: color $transition-fast, border-color $transition-fast;
+  font-family: $font-code;
+
+  &:hover:not(:disabled) {
+    color: $accent-primary;
+    border-color: $accent-primary;
+  }
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+}
+
+.login-wechat-mode {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.login-wechat-mode__title {
+  font-size: 14px;
+  color: $text-secondary;
+  margin: 0 0 4px;
+}
+
+.login-wechat-syncing {
+  font-size: 13px;
+  color: $text-muted;
+}
+
+.login-back-btn {
+  margin-top: 4px;
+  padding: 8px 16px;
+  border: none;
+  background: transparent;
+  color: $text-muted;
+  font-size: 13px;
+  cursor: pointer;
+
+  &:hover {
+    color: $text-primary;
   }
 }
 </style>
