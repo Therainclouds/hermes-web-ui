@@ -647,6 +647,7 @@ export default {
         high: 'High',
         max: 'Max',
         xhigh: 'Extra high',
+        ultra: 'Ultra',
       },
     },
     autoPlaySpeech: 'Auto-play voice',

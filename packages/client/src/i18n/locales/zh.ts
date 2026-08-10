@@ -647,6 +647,7 @@ export default {
         high: '高',
         max: 'Max',
         xhigh: '超高',
+        ultra: '极致',
       },
     },
     autoPlaySpeech: '自动播放语音',
