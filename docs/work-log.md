@@ -1,5 +1,41 @@
 # Work Log
 
+## 2026-08-10 · 合并 main (v0.7.17) 与 org/meeting/v0.73 至 integration/rebuild-from-upstream
+
+### 本轮目标
+
+- 将本地 `main`（v0.7.17，领先 integration 6 个提交）同步进当前 `integration/rebuild-from-upstream` 分支。
+- 拉取组织仓库 `tangledup-ai/hermes-web-ui` 的 `meeting/v0.73` 分支（15 个独立提交：微信登录/设备绑定/Token Platform/Profile 管理）并合并。
+- 合并规则遵循 `docs/harness/upstream-merge-rules.md`（LOCKED/BRANDED/ADAPTED/ACCEPT 四级保护）。
+
+### 已完成事项
+
+#### 1. main → integration
+
+- `git merge --no-ff main` 无冲突，带入群聊自由讨论模式（gc_discussions 数据表、discussion.ts、docx 导出）、v0.7.15/16/17 版本、更新/网关/agent-bridge 修复等。
+
+#### 2. org/meeting/v0.73 → integration
+
+- 唯一内容冲突为 `package.json` 版本号：meeting 分支自带 0.73.0，经确认**保留主线 0.7.17**（meeting 为独立产品线版本号，不应覆盖主线 0.7.x）。
+- 其余文件自动合并成功，无冲突标记残留。
+- 修复合并冗余：`meeting-asr/index.ts` 出现重复的 `ASR_MODEL` 赋值块，已删除重复项。
+- ADAPTED 文件审查通过：meeting-asr python-backend DashScope 标准端点保留、MeetingView.vue AudioWorklet + 配置向导保留、meeting.ts 句子触发配置正常合并、i18n 11 个 locale 无冲突标记且 quanthermes 引用完好。
+- 新路由已注册：`/api/auth/device-login`、`/api/auth/device-binding`、`/api/auth/bind-super-admin`、`/api/auth/users/:id/export` 等。
+
+#### 3. 验证
+
+- `npm run harness:check` 通过。
+- 服务端/客户端 `vue-tsc` 类型检查零错误。
+- 会议相关测试 50/50 通过（device-login-controller、device-binding、token-platform-client、profile-metadata 等）。
+- auth 测试 25/25 通过。
+- `npm run build` 全量构建通过。
+- 版本文件全部一致为 0.7.17（package.json / desktop / package-lock / device-package-release.json）。
+- 品牌残留检查：无新增 hermes-studio/EKKOLearnAI/download.ekkolearnai.com/api.hermes-studio.ai 残留（已有引用均为历史遗留，不在本次合并 diff 中）。
+
+### 遗留事项
+
+- `rtl-logical-css.test.ts` 在 main（29 个 offenders）和 org/meeting/v0.73（33 个）上本就失败，合并后保持 33 个——非本次合并引入，待单独归档处理。
+
 ## 2026-08-04 · 合并 upstream/main（141 commits）至 integration/rebuild-from-upstream
 
 ### 本轮目标
