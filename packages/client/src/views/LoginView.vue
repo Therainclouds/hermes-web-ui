@@ -112,23 +112,33 @@ async function handleWeChatApproved(
     pendingLoginToken.value = hermesResult.token;
 
     // Sync the user's model capabilities into Hermes as the default provider.
+    // The Token Platform reports an OpenAI-compatible api_base (e.g.
+    // https://api.quantclaw.vip). Its /v1/chat/completions, /v1/models and
+    // /v1/completions endpoints are served from that origin, so the base URL
+    // must NOT have "/v1" appended (the gateway/tooling appends "/v1" itself).
     const models = hermesResult.user.bound_models?.length
       ? hermesResult.user.bound_models
       : result.api.models;
     const defaultModel = models[0];
-    if (defaultModel) {
-      try {
-        await addCustomProvider({
-          name: "token_platform",
-          base_url: `${result.api.api_base.replace(/\/+$/, "")}/v1`,
-          api_key: result.api.api_key,
-          model: defaultModel,
-          api_mode: "chat_completions",
-        });
-      } catch (providerErr: any) {
-        // Provider configuration failure should not block login.
-        console.error("Failed to configure Token Platform provider:", providerErr);
-      }
+    if (!defaultModel) {
+      wechatError.value = t("login.tokenPlatformNoModel");
+      return;
+    }
+    try {
+      await addCustomProvider({
+        name: "token_platform",
+        base_url: result.api.api_base.replace(/\/+$/, ""),
+        api_key: result.api.api_key,
+        model: defaultModel,
+        api_mode: "chat_completions",
+      });
+    } catch (providerErr: any) {
+      // Auto-onboarding the user into the default provider is the whole point
+      // of WeChat login. If it fails the account is unusable, so surface the
+      // error instead of silently logging in without any model.
+      console.error("Failed to configure Token Platform provider:", providerErr);
+      wechatError.value = providerErr?.message || t("login.tokenPlatformConfigureFailed");
+      return;
     }
 
     // WeChat device users are regular admins. Offer to bind the account to the
@@ -210,7 +220,15 @@ async function handleRecoverySubmit(recoveryPassword: string) {
       <p class="login-desc">{{ t("login.description") }}</p>
 
       <div v-if="!wechatMode">
-        <p class="login-default-hint">{{ t("login.defaultCredentialsHint") }}</p>
+        <!-- WeChat scan is the primary login for token-platform-bound devices. -->
+        <div class="login-primary-wechat">
+          <p class="login-wechat-mode__title">{{ t("login.wechatLoginTitle") }}</p>
+          <WeChatQrPanel @approved="handleWeChatApproved" />
+          <div v-if="wechatSyncing" class="login-wechat-syncing">
+            {{ t("login.deviceLoginSyncing") }}
+          </div>
+          <div v-if="wechatError" class="login-error">{{ wechatError }}</div>
+        </div>
 
         <form class="login-form" @submit.prevent="handleLogin">
           <input
@@ -258,16 +276,17 @@ async function handleRecoverySubmit(recoveryPassword: string) {
 
         <div class="login-divider">
           <span class="login-divider__line" />
-          <span class="login-divider__text">{{ t("login.or") }}</span>
+          <span class="login-divider__text">{{ t("login.passwordOption") }}</span>
           <span class="login-divider__line" />
         </div>
+        <p class="login-default-hint">{{ t("login.defaultCredentialsHint") }}</p>
 
         <button
           type="button"
-          class="login-wechat-btn"
-          @click="wechatMode = true"
+          class="login-password-btn"
+          @click="wechatMode = false"
         >
-          {{ t("login.wechatLogin") }}
+          {{ t("login.passwordLogin") }}
         </button>
 
         <button
@@ -366,6 +385,16 @@ async function handleRecoverySubmit(recoveryPassword: string) {
   font-family: $font-code;
   font-size: 13px;
   color: $text-secondary;
+}
+
+.login-primary-wechat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 24px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid $border-color;
 }
 
 .login-form {
@@ -496,7 +525,7 @@ async function handleRecoverySubmit(recoveryPassword: string) {
   color: $text-muted;
 }
 
-.login-wechat-btn {
+.login-password-btn {
   width: 100%;
   padding: 14px 16px;
   border: 1px solid $border-color;
