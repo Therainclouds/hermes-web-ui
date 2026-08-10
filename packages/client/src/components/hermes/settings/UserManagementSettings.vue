@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import {
   createManagedUser,
   deleteManagedUser,
+  exportManagedUser,
   fetchManagedUsers,
   updateManagedUser,
   type ManagedUser,
@@ -147,6 +148,27 @@ async function removeUser(user: ManagedUser) {
   }
 }
 
+const exportingId = ref<number | null>(null)
+
+async function handleExportUser(user: ManagedUser) {
+  exportingId.value = user.id
+  try {
+    const data = await exportManagedUser(user.id)
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `user-${user.username}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+    message.success(t('users.exportSuccess', { username: user.username }))
+  } catch (err: any) {
+    message.error(err.message || t('users.exportFailed'))
+  } finally {
+    exportingId.value = null
+  }
+}
+
 function formatTime(value: number | null): string {
   if (!value) return '-'
   return new Date(value).toLocaleString()
@@ -195,9 +217,10 @@ const columns = computed<DataTableColumns<ManagedUser>>(() => [
   {
     title: t('common.edit'),
     key: 'actions',
-    width: 280,
+    width: 340,
     render: (row) => h(NSpace, { size: 8 }, {
       default: () => [
+        h(NButton, { size: 'small', loading: exportingId.value === row.id, onClick: () => handleExportUser(row) }, { default: () => t('users.export') }),
         h(NButton, { size: 'small', onClick: () => openEdit(row) }, { default: () => t('common.edit') }),
         h(NButton, {
           size: 'small',

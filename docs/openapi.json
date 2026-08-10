@@ -3,7 +3,7 @@
   "info": {
     "title": "Hermes Studio API",
     "description": "Hermes Studio API — chat sessions, scheduled jobs, platform channels, model management, skills, memory, logs, file browser, group chat, and terminal.",
-    "version": "0.7.15"
+    "version": "0.73.0"
   },
   "servers": [
     {
@@ -240,6 +240,56 @@
         }
       }
     },
+    "/api/auth/bind-super-admin": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Create bind-super-admin",
+        "description": "POST /api/auth/bind-super-admin",
+        "operationId": "bindSuperAdmin",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "password": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "username": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                },
+                "required": [
+                  "password",
+                  "username"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/auth/change-password": {
       "post": {
         "tags": [
@@ -332,6 +382,139 @@
                 ]
               }
             }
+          }
+        }
+      }
+    },
+    "/api/auth/device-binding": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Get device-binding",
+        "description": "GET /api/auth/device-binding",
+        "operationId": "getDeviceBinding",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Delete device-binding",
+        "description": "DELETE /api/auth/device-binding",
+        "operationId": "clearDeviceBindingController",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/auth/device-login": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Create device-login",
+        "description": "POST /api/auth/device-login",
+        "operationId": "deviceLogin",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "api_base": {
+                    "type": "string"
+                  },
+                  "api_key": {
+                    "type": "string"
+                  },
+                  "device_id": {
+                    "type": "number"
+                  },
+                  "device_name": {
+                    "type": "string"
+                  },
+                  "models": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "api_base",
+                  "api_key"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/device-login/restore": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Create restore",
+        "description": "POST /api/auth/device-login/restore",
+        "operationId": "restoreDeviceLogin",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
           }
         }
       }
@@ -600,6 +783,51 @@
         }
       }
     },
+    "/api/auth/set-password": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Create set-password",
+        "description": "POST /api/auth/set-password",
+        "operationId": "setPassword",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "newPassword": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                },
+                "required": [
+                  "newPassword"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/auth/setup": {
       "post": {
         "tags": [
@@ -648,6 +876,32 @@
           },
           "404": {
             "description": "Not found"
+          }
+        }
+      }
+    },
+    "/api/auth/unbind-super-admin": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Create unbind-super-admin",
+        "description": "POST /api/auth/unbind-super-admin",
+        "operationId": "unbindSuperAdmin",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
           }
         }
       }
@@ -832,6 +1086,42 @@
             "required": true,
             "schema": {
               "type": "integer"
+            }
+          }
+        ]
+      }
+    },
+    "/api/auth/users/{id}/export": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Get export",
+        "description": "GET /api/auth/users/:id/export",
+        "operationId": "exportManagedUser",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
             }
           }
         ]

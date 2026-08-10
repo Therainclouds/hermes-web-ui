@@ -39,6 +39,7 @@ import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, 
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { copyToClipboard } from "@/utils/clipboard";
+import { getProfileDisplayName } from "@/utils/hermes/profile-display";
 import FolderPicker from "./FolderPicker.vue";
 import ChatInput from "./ChatInput.vue";
 import RealtimeVoiceStage from "./RealtimeVoiceStage.vue";
@@ -515,7 +516,7 @@ function toggleCategoryGroup(key: string) {
 const profileFilterOptions = computed(() => [
   { label: t("chat.allProfiles"), value: "__all__" },
   ...profilesStore.profiles.map((profile) => ({
-    label: profile.name,
+    label: getProfileDisplayName(profile),
     value: profile.name,
   })),
 ]);
@@ -858,7 +859,7 @@ function getDefaultModelForProfile(profile: string) {
 
 const newChatProfileOptions = computed(() =>
   (profilesStore.profiles.length > 0 ? profilesStore.profiles : [{ name: "default" }]).map((profile) => ({
-    label: profile.name,
+    label: getProfileDisplayName(profile),
     value: profile.name,
   })),
 );

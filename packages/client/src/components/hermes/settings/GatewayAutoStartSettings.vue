@@ -6,6 +6,7 @@ import { useSettingsStore } from '@/stores/hermes/settings'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import SettingRow from './SettingRow.vue'
 import { useMessage } from '@/composables/useAppMessage'
+import { getProfileDisplayName } from '@/utils/hermes/profile-display'
 
 const settingsStore = useSettingsStore()
 const profilesStore = useProfilesStore()
@@ -20,7 +21,7 @@ const excludeProfiles = computed(() => settingsStore.gatewayAutoStart.exclude ||
 const isDefaultProfile = computed(() => (profilesStore.activeProfileName || profilesStore.activeProfile?.name || 'default') === 'default')
 const profileOptions = computed(() =>
   profilesStore.profiles.map(profile => ({
-    label: profile.name,
+    label: getProfileDisplayName(profile),
     value: profile.name,
   })),
 )

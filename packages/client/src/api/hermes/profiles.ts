@@ -22,8 +22,9 @@ export interface HermesProfileDetail {
 }
 
 export interface ProfileAvatar {
-  type: 'generated' | 'image'
+  type: 'generated' | 'image' | 'remote'
   seed?: string
+  url?: string
   dataUrl?: string
   updatedAt?: number
 }
