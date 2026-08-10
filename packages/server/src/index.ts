@@ -9,7 +9,7 @@ import https from 'https'
 import { join, relative, resolve } from 'path'
 import { mkdir } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
-import { config, shouldCreateWebUiDataDir } from './config'
+import { config, getLoopbackBaseUrl, getLoopbackPort, shouldCreateWebUiDataDir } from './config'
 import { initLoginLimiter } from './services/login-limiter'
 import { bindShutdown } from './services/shutdown'
 import { setupTerminalWebSocket } from './routes/hermes/terminal'
@@ -104,7 +104,19 @@ async function listenWithFallback(app: Koa, port: number, host?: string): Promis
       })
       httpsServer.once('error', reject)
     })
-    return { primary, servers: [primary] }
+    // In HTTPS mode also serve a plain-HTTP loopback server bound to 127.0.0.1
+    // so on-device processes (Node clients, Python agents, shell/curl scripts)
+    // never have to negotiate the self-signed cert. The loopback server mounts
+    // the same Koa app; Socket.IO and WS upgrade handlers attach to it via the
+    // `servers` array below.
+    const loopbackPort = getLoopbackPort()
+    const loopbackServer = http.createServer(app.callback())
+    await new Promise<void>((resolveLoopback, rejectLoopback) => {
+      loopbackServer.once('error', rejectLoopback)
+      loopbackServer.listen(loopbackPort, '127.0.0.1', () => resolveLoopback())
+    })
+    console.log(`[bootstrap] internal loopback HTTP listening on 127.0.0.1:${loopbackPort}`)
+    return { primary, servers: [primary, loopbackServer] }
   }
 
   // Dev fallback: HTTP when certs not available
@@ -119,13 +131,6 @@ async function listenWithFallback(app: Koa, port: number, host?: string): Promis
     httpServer.once('error', reject)
   })
   return { primary, servers: [primary] }
-}
-
-function getLoopbackBaseUrl(httpServer: any): string {
-  const address = httpServer?.address?.()
-  const port = typeof address === 'object' && address?.port ? address.port : config.port
-  const protocol = httpServer instanceof http.Server ? 'http' : 'https'
-  return `${protocol}://127.0.0.1:${port}`
 }
 
 /**
@@ -423,7 +428,7 @@ export async function bootstrap() {
   // Meeting realtime assist Socket.IO namespace
   realtimeAssistService.init(groupChatServer.getIO())
 
-  const loopbackBaseUrl = getLoopbackBaseUrl(server)
+  const loopbackBaseUrl = getLoopbackBaseUrl()
   startGlobalAgentServer(groupChatServer.getIO(), { localBaseUrl: loopbackBaseUrl })
   console.log('[bootstrap] global agent server ready')
 

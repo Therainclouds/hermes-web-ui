@@ -19,6 +19,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
     send: [content: string, attachments?: Attachment[]]
     'send-blocked': []
+    'request-discussion': []
 }>()
 const store = useGroupChatStore()
 const settingsStore = useSettingsStore()
@@ -561,6 +562,16 @@ function isImage(type: string): boolean {
             />
             <div class="input-toolbar">
                 <div class="input-top-bar">
+                    <NTooltip trigger="hover" :disabled="isMobileViewport">
+                        <template #trigger>
+                            <NButton quaternary size="tiny" circle class="toolbar-icon-button" @click="emit('request-discussion')">
+                                <template #icon>
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                                </template>
+                            </NButton>
+                        </template>
+                        {{ t('groupChat.discussion.quickStartButton') }}
+                    </NTooltip>
                     <NTooltip trigger="hover" :disabled="isMobileViewport">
                         <template #trigger>
                             <NButton quaternary size="tiny" circle class="toolbar-icon-button" @click="handleAttachClick">

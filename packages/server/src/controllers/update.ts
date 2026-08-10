@@ -12,7 +12,13 @@ import { resolveManifestCheckResult } from '../services/update/manifest-client'
 import { runUpdatePreflight } from '../services/update/preflight'
 import { resolveUpdateRuntimePaths } from '../services/update/runtime-paths'
 import { getSnapshot } from '../services/update/update-check-cache'
-import { assertNpmPackageExecution, buildNpmPackageInstallArgs, getNpmPackageExecutionMessage } from '../services/update/strategies/npm-package'
+import {
+  assertNpmPackageExecution,
+  buildNpmPackageInstallArgs,
+  getNpmPackageExecutionMessage,
+  restoreTlsCertificatesAfterNpmUpdate,
+  upgradeHermesAgentAfterNpmUpdate,
+} from '../services/update/strategies/npm-package'
 import { assertSourceDeployExecution, buildSourceDeployEnv, getSourceDeployExecutionMessage } from '../services/update/strategies/source-deploy'
 import { updateTaskStore } from '../services/update/task-store'
 import type { DevicePackageManifest, SourcePackageManifest, UpdateCapabilities, UpdateCheckResult, UpdatePreflightResult, UpdateRuntimePaths, UpdateStrategy } from '../services/update/types'
@@ -1638,6 +1644,13 @@ export async function handleUpdate(ctx: any) {
       warning: preflight.warningText,
     })
     const output = await runUpdateInstall(version)
+    restoreTlsCertificatesAfterNpmUpdate()
+
+    // Best-effort Hermes Agent upgrade: Web UI is already updated in place.
+    // Never blocks the Web UI update when the agent upgrade fails.
+    if (config.update.includeAgentUpgrade) {
+      await upgradeHermesAgentAfterNpmUpdate()
+    }
 
     updateTaskStore.updateCurrentStage('restarting', `Restarting Hermes Web UI after updating to ${version}.`, {
       targetVersion: version,

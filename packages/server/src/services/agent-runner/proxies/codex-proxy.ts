@@ -1,6 +1,6 @@
 import { Readable } from 'stream'
 import type { Context } from 'koa'
-import { config } from '../../../config'
+import { getLoopbackBaseUrl } from '../../../config'
 import {
   anthropicMessagesUrl as resolveAnthropicMessagesUrl,
   chatCompletionsUrl as resolveChatCompletionsUrl,
@@ -36,7 +36,7 @@ const targetRegistry = new AgentTargetRegistry<CodexProxyTargetInput>(
 )
 
 function localProxyBaseUrl(routeKey: string): string {
-  return `http://127.0.0.1:${config.port}/api/codex-proxy/${routeKey}/v1`
+  return `${getLoopbackBaseUrl()}/api/codex-proxy/${routeKey}/v1`
 }
 
 export function registerCodexProxyTarget(input: CodexProxyTargetInput): { baseUrl: string; token: string; routeKey: string } {

@@ -18,6 +18,7 @@ import { formatChatTimestamp } from '@/utils/chat-timestamp'
 import type { ChatMessage, GroupWorkspaceDiffFile, GroupWorkspaceDiffPayload, RoomAgent, MemberInfo } from '@/api/hermes/group-chat'
 import { useMessage } from '@/composables/useAppMessage'
 import { useGroupChatStore } from '@/stores/hermes/group-chat'
+import { useDiscussionReportDownload } from '@/composables/useDiscussionReportDownload'
 import { formatReferencedContentForDisplay, parseMessageReference } from '@/stores/hermes/chat'
 import { isPreviewableFile } from '@/utils/hermes/file-preview'
 import ToolChangeCard from '@/components/hermes/chat/ToolChangeCard.vue'
@@ -77,6 +78,17 @@ const agentInfo = computed(() => {
 const messageTtsProfile = computed(() => agentInfo.value?.profile?.trim() || '')
 
 const timeStr = computed(() => formatChatTimestamp(props.message.timestamp))
+
+// 当前消息是否为已结束讨论的统一意见报告：在报告消息卡片上提供下载入口。
+const isDiscussionReportMessage = computed(() => {
+    const roomId = groupChatStore.currentRoomId
+    if (!roomId) return false
+    const state = groupChatStore.discussionStates.get(roomId)
+    if (!state?.reportMessageId) return false
+    if (state.status === 'pending' || state.status === 'running' || state.status === 'paused') return false
+    return state.reportMessageId === props.message.id
+})
+const { isDownloading: isReportDownloading, downloadReport: downloadDiscussionReport } = useDiscussionReportDownload()
 
 // 找当前消息发送者在 members 里的记录
 const memberInfo = computed(() => {
@@ -760,6 +772,21 @@ onBeforeUnmount(() => {
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
                         <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                    </svg>
+                </button>
+                <button
+                    v-if="isDiscussionReportMessage"
+                    type="button"
+                    class="copy-bubble-btn"
+                    :class="{ downloading: isReportDownloading }"
+                    :title="t('groupChat.discussion.downloadReport')"
+                    :disabled="isReportDownloading"
+                    @click="downloadDiscussionReport"
+                >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="7 10 12 15 17 10"/>
+                        <line x1="12" y1="15" x2="12" y2="3"/>
                     </svg>
                 </button>
                 <button

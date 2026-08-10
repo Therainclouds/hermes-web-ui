@@ -449,13 +449,28 @@ function handleUpdateClick() {
           <span class="version-update-label">{{ t('sidebar.updateAvailableLabel') }}</span>
         </span>
       </NButton>
+      <!--
+        分支顺序有讲究：failed 和 updating 必须排在 updateAvailable 之前，
+        否则 doUpdate 失败后 updateAvailable 仍为 true，会命中"更新按钮"分支
+        而把失败原因静默掩盖掉（v-else-if 链短路）。
+      -->
+      <div v-if="appStore.updateTaskStatus === 'failed'" class="sidebar-update-action sidebar-update-progress sidebar-update-error">
+        <span class="sidebar-update-label">{{ t('sidebar.updateFailedWithReason', { reason: updateErrorText }) }}</span>
+        <button class="sidebar-update-clear-btn" @click="handleClearStaleUpdateClick">
+          {{ t('sidebar.updateClearStale') }}
+        </button>
+      </div>
+      <div v-else-if="appStore.updating" class="sidebar-update-action sidebar-update-progress">
+        <span class="sidebar-update-label">{{ updateStageLabel }}</span>
+        <span v-if="updateDetailText" class="sidebar-update-detail">{{ updateDetailText }}</span>
+      </div>
       <div
-        v-if="appStore.updateEnabled && appStore.updateAvailable && !appStore.updating"
+        v-else-if="appStore.updateEnabled && appStore.updateAvailable"
         class="sidebar-update-action"
       >
         <button
           class="sidebar-update-btn"
-          :disabled="appStore.updating || !!appStore.updateBlockingText"
+          :disabled="!!appStore.updateBlockingText"
           @click="handleUpdateClick"
         >
           <span class="sidebar-update-label">
@@ -464,27 +479,17 @@ function handleUpdateClick() {
         </button>
       </div>
       <div
-        v-else-if="appStore.updateEnabled && appStore.clientOutdated && !appStore.updating"
+        v-else-if="appStore.updateEnabled && appStore.clientOutdated"
         class="sidebar-update-action"
       >
         <button
           class="sidebar-update-btn"
-          :disabled="appStore.updating || !!appStore.updateBlockingText"
+          :disabled="!!appStore.updateBlockingText"
           @click="handleReloadClient"
         >
           <span class="sidebar-update-label">
             {{ t('sidebar.reloadClientVersion', { version: appStore.serverVersion }) }}
           </span>
-        </button>
-      </div>
-      <div v-else-if="appStore.updating" class="sidebar-update-action sidebar-update-progress">
-        <span class="sidebar-update-label">{{ updateStageLabel }}</span>
-        <span v-if="updateDetailText" class="sidebar-update-detail">{{ updateDetailText }}</span>
-      </div>
-      <div v-else-if="appStore.updateTaskStatus === 'failed'" class="sidebar-update-action sidebar-update-progress sidebar-update-error">
-        <span class="sidebar-update-label">{{ t('sidebar.updateFailedWithReason', { reason: updateErrorText }) }}</span>
-        <button class="sidebar-update-clear-btn" @click="handleClearStaleUpdateClick">
-          {{ t('sidebar.updateClearStale') }}
         </button>
       </div>
       <div v-if="appStore.updateSourceLabel" class="update-source">

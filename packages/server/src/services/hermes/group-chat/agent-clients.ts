@@ -2,6 +2,7 @@ import { io, Socket } from 'socket.io-client'
 import { createHash, randomBytes, randomUUID } from 'crypto'
 import { getToken } from '../../../services/auth'
 import { logger } from '../../../services/logger'
+import { getLoopbackBaseUrl, getLoopbackPort } from '../../../config'
 import { countTokens } from '../../../lib/context-compressor'
 import { AgentBridgeClient, type AgentBridgeContextEstimate, type AgentBridgeMessage, type AgentBridgeOutput } from '../agent-bridge'
 import { convertContentBlocksForAgent, isContentBlockArray } from '../run-chat/content-blocks'
@@ -284,10 +285,13 @@ class AgentClient {
     }
 
     async connect(port?: number): Promise<void> {
-        const actualPort = port ?? parseInt(process.env.PORT || '6060', 10)
+        // Always target the internal loopback endpoint (plain HTTP), which is the
+        // main port in HTTP mode and a dedicated 127.0.0.1 loopback server in
+        // HTTPS mode — so agents never negotiate self-signed TLS.
+        const actualPort = port ?? getLoopbackPort()
         const token = await getToken()
 
-        this.socket = io(`http://127.0.0.1:${actualPort}/group-chat`, {
+        this.socket = io(`${getLoopbackBaseUrl(actualPort)}/group-chat`, {
             auth: {
                 token: token || undefined,
                 userId: this.agentId,

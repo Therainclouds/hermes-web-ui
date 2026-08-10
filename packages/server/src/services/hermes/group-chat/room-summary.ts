@@ -190,6 +190,72 @@ function idleSummary(roomId: string): GroupRoomSummary {
   }
 }
 
+/**
+ * Run a single-step bare model call (no tools, no skills) through the global
+ * Ekko agent runtime. Shared by the rolling-summary service and the group-chat
+ * discussion judge so both use the same provider-resolution + model-client path.
+ */
+export interface BareModelAgentInput {
+  profile: string
+  provider: string
+  model: string
+  apiMode: string
+  systemPrompt: string
+  userPrompt: string
+  roomId: string
+  purpose: string
+  timeoutMs?: number
+}
+
+export async function runBareModelAgent(input: BareModelAgentInput): Promise<string> {
+  const runtimeConfig = await resolveEkkoProviderRuntimeConfig({
+    profile: input.profile,
+    provider: input.provider,
+    model: input.model,
+    apiMode: input.apiMode || undefined,
+  })
+  const { providerConfig } = resolveModelProviderConfigs({
+    provider: runtimeConfig.provider,
+    baseUrl: runtimeConfig.baseUrl,
+    apiKey: runtimeConfig.apiKey,
+    model: input.model,
+    apiMode: runtimeConfig.apiMode,
+    timeoutMs: input.timeoutMs ?? 300_000,
+  })
+  const result = await getGlobalEkkoAgent(input.profile).runIsolated(
+    {
+      modelClient: createModelClient(providerConfig),
+      toolsEnabled: false,
+      skillsEnabled: false,
+      systemPrompt: input.systemPrompt,
+      maxSteps: 1,
+      maxModelRetries: 3,
+      toolDelayMs: 0,
+      modelDefaults: { model: input.model },
+    },
+    {
+      messages: [{ role: 'user', content: input.userPrompt }],
+      memoryEnabled: false,
+      metadata: {
+        purpose: input.purpose,
+        room_id: input.roomId,
+        profile: input.profile,
+        session_id: `gc_${input.purpose}_${randomUUID()}`,
+      },
+      logContext: {
+        profile: input.profile,
+        sessionId: `gc-${input.purpose}:${input.roomId}`,
+      },
+    },
+  )
+  const output = String(result.output.content || '').trim()
+  if (!output) throw new Error('Model returned empty output')
+  if (result.output.toolCalls?.length || result.output.finishReason === 'max_steps') {
+    throw new Error('Model did not finish in one model step')
+  }
+  return output
+}
+
 export class GroupRoomSummaryService {
   private roomLocks = new Map<string, Promise<void>>()
 
@@ -347,54 +413,15 @@ export class GroupRoomSummaryService {
     messages: CleanGroupMessage[]
     roomId: string
   }): Promise<string> {
-    const runtimeConfig = await resolveEkkoProviderRuntimeConfig({
+    return runBareModelAgent({
       profile: input.profile,
       provider: input.provider,
       model: input.model,
-      apiMode: input.apiMode || undefined,
+      apiMode: input.apiMode,
+      systemPrompt: GROUP_SUMMARY_SYSTEM_PROMPT,
+      userPrompt: buildGroupSummaryUserPrompt(input.previousSummary, input.messages),
+      roomId: input.roomId,
+      purpose: 'group-chat-summary',
     })
-    const { providerConfig } = resolveModelProviderConfigs({
-      provider: runtimeConfig.provider,
-      baseUrl: runtimeConfig.baseUrl,
-      apiKey: runtimeConfig.apiKey,
-      model: input.model,
-      apiMode: runtimeConfig.apiMode,
-      timeoutMs: 300_000,
-    })
-    const result = await getGlobalEkkoAgent(input.profile).runIsolated(
-      {
-        modelClient: createModelClient(providerConfig),
-        toolsEnabled: false,
-        skillsEnabled: false,
-        systemPrompt: GROUP_SUMMARY_SYSTEM_PROMPT,
-        maxSteps: 1,
-        maxModelRetries: 3,
-        toolDelayMs: 0,
-        modelDefaults: { model: input.model },
-      },
-      {
-        messages: [{
-          role: 'user',
-          content: buildGroupSummaryUserPrompt(input.previousSummary, input.messages),
-        }],
-        memoryEnabled: false,
-        metadata: {
-          purpose: 'group-chat-summary',
-          room_id: input.roomId,
-          profile: input.profile,
-          session_id: `gc_summary_${randomUUID()}`,
-        },
-        logContext: {
-          profile: input.profile,
-          sessionId: `gc-summary:${input.roomId}`,
-        },
-      },
-    )
-    const output = String(result.output.content || '').trim()
-    if (!output) throw new Error('Summary model returned empty output')
-    if (result.output.toolCalls?.length || result.output.finishReason === 'max_steps') {
-      throw new Error('Summary model did not finish in one model step')
-    }
-    return output
   }
 }

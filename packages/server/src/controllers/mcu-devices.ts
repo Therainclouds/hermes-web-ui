@@ -1,5 +1,5 @@
 import type { Context } from 'koa'
-import { config } from '../config'
+import { config, getLoopbackBaseUrl } from '../config'
 import { getLanEndpointKind } from '../services/lan-discovery'
 import { getPublicSystemInfo } from '../services/system-info'
 import { getOutboundRelayClient, startOutboundRelayClient, stopOutboundRelayClient } from '../services/global-agent/outbound-relay-client'
@@ -44,7 +44,7 @@ function requestBaseUrl(ctx: Context): string | undefined {
 }
 
 function localBaseUrl(): string {
-  return `http://127.0.0.1:${config.port}`
+  return getLoopbackBaseUrl()
 }
 
 async function localRelayMachineInfo(url: string) {

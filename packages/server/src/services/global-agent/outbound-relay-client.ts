@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto'
 import { mkdir, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { io, type Socket } from 'socket.io-client'
-import { config } from '../../config'
+import { config, getLoopbackBaseUrl } from '../../config'
 import { clearSessionMessages } from '../../db/hermes/session-store'
 import { getChatRunServer } from '../../routes/hermes/chat-run'
 import { logger } from '../logger'
@@ -2256,7 +2256,7 @@ export function startOutboundRelayClient(options: StartOutboundRelayClientOption
     userToken: options.userToken ?? '',
     instanceId: options.instanceId ?? '',
     deviceCode: options.deviceCode ?? '',
-    localBaseUrl: options.localBaseUrl ?? `http://127.0.0.1:${config.port}`,
+    localBaseUrl: options.localBaseUrl ?? getLoopbackBaseUrl(),
     machineInfo: options.machineInfo,
     fetchImpl: options.fetchImpl ?? fetch,
   }

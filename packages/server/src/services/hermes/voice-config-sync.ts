@@ -6,7 +6,7 @@ import {
   getActiveTtsProvider,
   getTtsProviderSetting,
 } from '../../db/hermes/tts-settings-store'
-import { config } from '../../config'
+import { config, getLoopbackBaseUrl } from '../../config'
 import { getToken } from '../auth'
 import { updateConfigYamlForProfile } from '../config-helpers'
 import { logger } from '../logger'
@@ -34,7 +34,7 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 export function voiceProxyBaseUrl(profile: string): string {
-  return `http://127.0.0.1:${config.port}/api/hermes/voice/proxy/${encodeURIComponent(profile)}/v1`
+  return `${getLoopbackBaseUrl()}/api/hermes/voice/proxy/${encodeURIComponent(profile)}/v1`
 }
 
 function quoteCommandArgument(value: string): string {

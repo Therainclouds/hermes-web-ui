@@ -354,6 +354,67 @@ export async function updateRoomSummary(roomId: string, summary: string): Promis
     })
 }
 
+export type DiscussionStatus = 'pending' | 'running' | 'paused' | 'converged' | 'max_rounds' | 'stopped' | 'failed'
+
+export interface DiscussionJudgeNote {
+    round: number
+    converged: boolean
+    stalled: boolean
+    progress?: boolean
+    assessment: string
+    suggestion: string
+}
+
+export interface DiscussionState {
+    id: string
+    roomId: string
+    goal: string
+    agentOrder: string[]
+    reporterId: string
+    maxRounds: number
+    maxMessages: number
+    judgeProfile: string
+    judgeProvider: string
+    judgeModel: string
+    judgeApiMode: string
+    status: DiscussionStatus
+    currentRound: number
+    judgeNotes: DiscussionJudgeNote[]
+    reportMessageId: string
+    lastError: string | null
+    createdAt: number
+    updatedAt: number
+}
+
+export interface DiscussionStartInput {
+    goal: string
+    agentOrder?: string[]
+    maxRounds?: number
+    maxMessages?: number
+    reporterId?: string
+    judge?: { profile?: string; provider?: string; model?: string; apiMode?: string }
+}
+
+export async function startDiscussion(roomId: string, input: DiscussionStartInput): Promise<{ discussion: DiscussionState }> {
+    return request(`/api/hermes/group-chat/rooms/${roomId}/discussion`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+    })
+}
+
+export async function fetchDiscussion(roomId: string): Promise<{ discussion: DiscussionState | null }> {
+    return request(`/api/hermes/group-chat/rooms/${roomId}/discussion`)
+}
+
+export async function stopDiscussion(roomId: string): Promise<{ discussion: DiscussionState }> {
+    return request(`/api/hermes/group-chat/rooms/${roomId}/discussion/stop`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+    })
+}
+
 export async function listGroupWorkspaceFiles(roomId: string, path = ''): Promise<{
     entries: Array<{ name: string; path: string; absolutePath?: string; isDir: boolean; size: number; modTime: string }>
     path: string

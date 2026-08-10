@@ -8,6 +8,7 @@ const configMock = vi.hoisted(() => ({
 
 vi.mock('../../packages/server/src/config', () => ({
   config: configMock,
+  getLoopbackBaseUrl: () => `http://127.0.0.1:${configMock.port}`,
 }))
 
 describe('Ekko MCP server context', () => {

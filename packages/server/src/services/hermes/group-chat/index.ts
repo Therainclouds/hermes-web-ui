@@ -16,6 +16,7 @@ import { config } from '../../../config'
 import { createSocketIoCorsOrigin, shouldRejectUpgradeOrigin } from '../../../security'
 import { paginateRecentGroupMessagesCanonical, sliceGroupMessagesCanonical, type GroupMessageCursorCutoff } from './group-message-ordering'
 import { GroupRoomSummaryService, type GroupRoomSummary } from './room-summary'
+import { DiscussionRunner, type DiscussionRow, type DiscussionState, type DiscussionStartInput } from './discussion'
 
 // ─── Types ────────────────────────────────────────────────────
 
@@ -855,6 +856,51 @@ class ChatStorage {
         )
     }
 
+    // ─── Group Discussion ──────────────────────────────────
+
+    getDiscussionByRoom(roomId: string): DiscussionRow | null {
+        const row = this.db()?.prepare(
+            `SELECT id, roomId, goal, agentOrder, reporterId, maxRounds, maxMessages,
+                    judgeProfile, judgeProvider, judgeModel, judgeApiMode,
+                    status, currentRound, judgeNotes, reportMessageId, lastError, createdAt, updatedAt
+             FROM gc_discussions WHERE roomId = ? ORDER BY createdAt DESC LIMIT 1`
+        ).get(roomId) as Partial<DiscussionRow> | undefined
+        return row && row.id ? (row as DiscussionRow) : null
+    }
+
+    saveDiscussion(row: DiscussionRow): void {
+        this.db()?.prepare(
+            `INSERT INTO gc_discussions (
+                id, roomId, goal, agentOrder, reporterId, maxRounds, maxMessages,
+                judgeProfile, judgeProvider, judgeModel, judgeApiMode,
+                status, currentRound, judgeNotes, reportMessageId, lastError, createdAt, updatedAt
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(
+            row.id, row.roomId, row.goal, row.agentOrder, row.reporterId, row.maxRounds, row.maxMessages,
+            row.judgeProfile, row.judgeProvider, row.judgeModel, row.judgeApiMode,
+            row.status, row.currentRound, row.judgeNotes, row.reportMessageId, row.lastError, row.createdAt, row.updatedAt,
+        )
+    }
+
+    updateDiscussion(roomId: string, fields: Partial<DiscussionRow>): void {
+        const keys = Object.keys(fields).filter(key => key !== 'id' && key !== 'roomId')
+        if (!keys.length) return
+        const db = this.db()
+        if (!db) return
+        const set = keys.map(key => `${key} = ?`).join(', ')
+        const values: unknown[] = keys.map(key => (fields as Record<string, unknown>)[key])
+        db.prepare(`UPDATE gc_discussions SET ${set} WHERE roomId = ?`).run(...values as any[], roomId)
+    }
+
+    markDiscussionsFailed(statuses: string[]): void {
+        const db = this.db()
+        if (!db || !statuses.length) return
+        const placeholders = statuses.map(() => '?').join(', ')
+        db.prepare(
+            `UPDATE gc_discussions SET status = 'failed', updatedAt = ? WHERE status IN (${placeholders})`
+        ).run(Date.now(), ...statuses)
+    }
+
     deleteRoom(roomId: string): void {
         const db = this.db()
         if (!db) return
@@ -865,6 +911,7 @@ class ChatStorage {
             db.prepare('DELETE FROM gc_room_members WHERE roomId = ?').run(roomId)
             db.prepare('DELETE FROM gc_context_snapshots WHERE roomId = ?').run(roomId)
             db.prepare('DELETE FROM gc_room_summaries WHERE roomId = ?').run(roomId)
+            db.prepare('DELETE FROM gc_discussions WHERE roomId = ?').run(roomId)
             db.prepare('DELETE FROM gc_rooms WHERE id = ?').run(roomId)
         })
     }
@@ -1050,6 +1097,7 @@ export class GroupChatServer {
     private socketAuthUserIdMap = new Map<string, number>()
     readonly agentClients = new AgentClients()
     private roomSummaryService: GroupRoomSummaryService
+    private discussionRunner: DiscussionRunner
     private _restoreScheduled = false
     /** roomId -> (userId -> { userName, timer }) */
     private typingState = new Map<string, Map<string, { userName: string; timer: ReturnType<typeof setTimeout> }>>()
@@ -1105,6 +1153,14 @@ export class GroupChatServer {
         })
         this.agentClients.setStorage(this.storage)
         this.agentClients.setRoomSummaryService(this.roomSummaryService)
+        this.discussionRunner = new DiscussionRunner({
+            storage: this.storage,
+            agentClients: this.agentClients,
+            roomSummaryService: this.roomSummaryService,
+            emitSystemMessage: (roomId, content) => this.emitDiscussionSystemMessage(roomId, content),
+            broadcast: (roomId, state) => this.nsp.to(roomId).emit('discussion_update', state),
+        })
+        this.discussionRunner.recoverInterrupted()
         this.agentClients.setActivityBroadcaster((roomId, agentName, status) => {
             let roomStatuses = this.contextStatusState.get(roomId)
             if (status === 'ready') {
@@ -1137,6 +1193,41 @@ export class GroupChatServer {
 
     getRoomSummaryService(): GroupRoomSummaryService {
         return this.roomSummaryService
+    }
+
+    isRoomDiscussionRunning(roomId: string): boolean {
+        return this.discussionRunner.isActive(roomId)
+    }
+
+    startDiscussion(roomId: string, input: DiscussionStartInput): Promise<DiscussionState> {
+        return this.discussionRunner.start(roomId, input)
+    }
+
+    getDiscussion(roomId: string): DiscussionState | null {
+        return this.discussionRunner.getState(roomId)
+    }
+
+    stopDiscussion(roomId: string): Promise<DiscussionState> {
+        return this.discussionRunner.stop(roomId)
+    }
+
+    /** Persist a system-style message into the room transcript (judge notes, etc). */
+    private async emitDiscussionSystemMessage(roomId: string, content: string): Promise<void> {
+        try {
+            const saved = this.storage.saveMessageAndRefreshRoom({
+                id: this.generateId(),
+                roomId,
+                senderId: `discussion:${roomId}`,
+                senderName: '讨论系统',
+                content,
+                timestamp: Date.now(),
+                role: 'system',
+            })
+            this.nsp.to(roomId).emit('message', saved.message)
+            this.nsp.to(roomId).emit('room_updated', { roomId, totalTokens: saved.totalTokens })
+        } catch (err) {
+            logger.warn({ err, roomId }, `[Discussion] failed to emit system message: ${err instanceof Error ? err.message : String(err)}`)
+        }
     }
 
     ensureDefaultRoomWorkspace(roomId: string, profile: string): string {
@@ -1217,6 +1308,7 @@ export class GroupChatServer {
             this.typingState.delete(roomId)
         }
         this.contextStatusState.delete(roomId)
+        this.discussionRunner.abortRoom(roomId)
         const releaseSessionFence = this.fenceCurrentRoomAgentSessions(roomId)
         try {
             await this.agentClients.interruptRoom(roomId)
@@ -1236,6 +1328,7 @@ export class GroupChatServer {
             this.typingState.delete(roomId)
         }
         this.contextStatusState.delete(roomId)
+        this.discussionRunner.abortRoom(roomId)
         const releaseSessionFence = this.fenceCurrentRoomAgentSessions(roomId)
         try {
             await this.agentClients.interruptRoom(roomId)
@@ -1647,8 +1740,11 @@ export class GroupChatServer {
         const mentionDepth = normalizeMentionDepth(data.mentionDepth)
         const isAgentReply = savedMsg.role === 'assistant' && member?.source === 'agent'
         const canRouteHumanMentions = savedMsg.role === 'user' && this.canSocketManageRoom(socket, roomId)
-        const shouldRouteMentions = canRouteHumanMentions ||
-            (isAgentReply && mentionDepth < maxAgentMentionDepth())
+        // While a discussion is running, suspend @-mention routing so the
+        // discussion driver and the mention pipeline never race on the same agents.
+        const discussionActive = this.isRoomDiscussionRunning(roomId)
+        const shouldRouteMentions = (canRouteHumanMentions ||
+            (isAgentReply && mentionDepth < maxAgentMentionDepth())) && !discussionActive
 
         if (shouldRouteMentions) {
             // Server-side @mention routing — parse mentions and invoke agents directly.

@@ -1,5 +1,5 @@
 import type { Context } from 'koa'
-import { config } from '../config'
+import { config, getLoopbackBaseUrl } from '../config'
 import { getLanEndpointKind } from '../services/lan-discovery'
 import {
   getAppRelayClient,
@@ -40,7 +40,7 @@ export async function connectAppRelayController(ctx: Context) {
         http_port: config.port,
         endpoint_kind: getLanEndpointKind(config.port),
       },
-      localBaseUrl: `http://127.0.0.1:${config.port}`,
+      localBaseUrl: getLoopbackBaseUrl(),
     })
   }
   if (!client || !await client.waitForConnected(8000)) {

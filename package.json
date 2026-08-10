@@ -1,6 +1,6 @@
 {
   "name": "@quanthermes/hermes-web-ui",
-  "version": "0.7.15",
+  "version": "0.7.17",
   "description": "Self-hosted AI chat dashboard for Hermes Agent — multi-model web UI with multi-platform integration",
   "repository": {
     "type": "git",
@@ -90,6 +90,7 @@
     "@vue-flow/node-resizer": "^1.5.1",
     "adm-zip": "^0.5.17",
     "agent-browser": "^0.26.0",
+    "docx": "^9.7.1",
     "eventsource": "^4.1.0",
     "js-tiktoken": "^1.0.21",
     "katex": "^0.17.0",

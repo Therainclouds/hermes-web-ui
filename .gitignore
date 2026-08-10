@@ -85,6 +85,9 @@ tmp/
 # Tool-generated repo knowledge base (not source)
 .qoder/repowiki/
 
+# Studio MCP auto-inject self-test artifacts (never commit)
+.studio-mcp-*/
+
 # Local dev data (cache, tokens, profiles — never commit)
 .dev-data/
 .dev-data/**

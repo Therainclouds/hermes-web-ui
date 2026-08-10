@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { config } from '../../config'
+import { config, getLoopbackBaseUrl } from '../../config'
 import { updateConfigYamlForProfile } from '../config-helpers'
 import { logger } from '../logger'
 import { isPathWithin } from './hermes-path'
@@ -165,7 +165,7 @@ function managedConfig(
   bundledScript: string | null,
 ): Record<string, unknown> {
   const env: Record<string, string> = {
-    HERMES_WEB_UI_URL: `http://127.0.0.1:${config.port}`,
+    HERMES_WEB_UI_URL: getLoopbackBaseUrl(),
     HERMES_WEB_UI_HOME: config.appHome,
     HERMES_WEBUI_STATE_DIR: config.appHome,
     HERMES_WEB_UI_PROFILE: profile,

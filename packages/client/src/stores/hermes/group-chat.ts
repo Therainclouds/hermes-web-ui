@@ -16,6 +16,8 @@ import {
     type RoomAgentInput,
     type RoomSummaryConfig,
     type RoomSummaryState,
+    type DiscussionState,
+    type DiscussionStartInput,
     type ChatMessage,
     type GroupWorkspaceDiffPayload,
     type MemberInfo,
@@ -32,6 +34,9 @@ import {
     clearRoomContext,
     updateInviteCode as updateInviteCodeApi,
     updateRoomWorkspace as updateRoomWorkspaceApi,
+    startDiscussion as startDiscussionApi,
+    fetchDiscussion as fetchDiscussionApi,
+    stopDiscussion as stopDiscussionApi,
 } from '@/api/hermes/group-chat'
 
 type GroupChatSocket = ReturnType<typeof connectGroupChat>
@@ -165,6 +170,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
     const typingUsers = ref<Map<string, { name: string; timer: ReturnType<typeof setTimeout> }>>(new Map())
     const contextStatuses = ref<Map<string, { agentName: string; status: string }>>(new Map())
     const roomSummaryStates = ref<Map<string, RoomSummaryState>>(new Map())
+    const discussionStates = ref<Map<string, DiscussionState>>(new Map())
     const autoPlaySpeechEnabled = ref(false)
     const pendingApprovals = ref<Map<string, GroupPendingApproval>>(new Map())
     const pendingWelcomeMessages = ref<Map<string, PendingGroupWelcomeMessage[]>>(new Map())
@@ -642,6 +648,12 @@ const currentUserAvatar = ref('')
             roomSummaryStates.value = new Map(roomSummaryStates.value)
         })
 
+        socket.on('discussion_update', (state: DiscussionState) => {
+            if (!state?.roomId) return
+            discussionStates.value.set(state.roomId, state)
+            discussionStates.value = new Map(discussionStates.value)
+        })
+
         socket.on('approval.requested', (data: { roomId: string; agentName?: string; approval_id?: string; command?: string; description?: string; choices?: string[]; allow_permanent?: boolean }) => {
             if (!data.approval_id) return
             const description = data.description || ''
@@ -690,6 +702,8 @@ const currentUserAvatar = ref('')
             if (room) room.totalTokens = data.totalTokens
             roomSummaryStates.value.delete(data.roomId)
             roomSummaryStates.value = new Map(roomSummaryStates.value)
+            discussionStates.value.delete(data.roomId)
+            discussionStates.value = new Map(discussionStates.value)
             if (data.roomId === currentRoomId.value) {
                 messages.value = []
                 resetMessagePaging()
@@ -712,6 +726,7 @@ const currentUserAvatar = ref('')
         typingUsers.value.clear()
         contextStatuses.value.clear()
         roomSummaryStates.value.clear()
+        discussionStates.value.clear()
         pendingApprovals.value.clear()
     }
 
@@ -762,6 +777,7 @@ const currentUserAvatar = ref('')
             agents.value = res.agents
             members.value = res.members || []
             applyPendingWelcomeMessages(res.room.id)
+            void loadDiscussion(res.room.id)
         } catch (err: any) {
             error.value = err.message
             throw err
@@ -983,6 +999,40 @@ const currentUserAvatar = ref('')
         }
     }
 
+    // ─── Discussion Actions ─────────────────────────────────
+    async function loadDiscussion(roomId: string): Promise<void> {
+        if (!roomId) return
+        try {
+            const { discussion } = await fetchDiscussionApi(roomId)
+            if (discussion) {
+                discussionStates.value.set(roomId, discussion)
+                discussionStates.value = new Map(discussionStates.value)
+            }
+        } catch {
+            // Discussion may not exist yet; ignore.
+        }
+    }
+
+    async function beginDiscussion(roomId: string, input: DiscussionStartInput): Promise<DiscussionState> {
+        const { discussion } = await startDiscussionApi(roomId, input)
+        discussionStates.value.set(roomId, discussion)
+        discussionStates.value = new Map(discussionStates.value)
+        return discussion
+    }
+
+    async function endDiscussion(roomId: string): Promise<DiscussionState> {
+        const { discussion } = await stopDiscussionApi(roomId)
+        discussionStates.value.set(roomId, discussion)
+        discussionStates.value = new Map(discussionStates.value)
+        return discussion
+    }
+
+    function clearDiscussion(roomId: string): void {
+        if (discussionStates.value.delete(roomId)) {
+            discussionStates.value = new Map(discussionStates.value)
+        }
+    }
+
     // ─── Agent Actions ─────────────────────────────────────
     async function loadAgents(roomId: string) {
         try {
@@ -1094,6 +1144,7 @@ const currentUserAvatar = ref('')
         contextStatus,
         contextStatuses,
         roomSummaryStates,
+        discussionStates,
         pendingApprovals,
         activePendingApproval,
         autoPlaySpeechEnabled,
@@ -1140,6 +1191,10 @@ const currentUserAvatar = ref('')
         addAgentToRoom,
         updateAgentInRoom,
         removeAgentFromRoom,
+        loadDiscussion,
+        beginDiscussion,
+        endDiscussion,
+        clearDiscussion,
     }
 })
 

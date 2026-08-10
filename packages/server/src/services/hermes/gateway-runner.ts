@@ -1,4 +1,5 @@
 import { execFile } from 'child_process'
+import { existsSync } from 'fs'
 import { promisify } from 'util'
 import { logger } from '../logger'
 import { getActiveProfileDir } from './hermes-profile'
@@ -35,6 +36,14 @@ interface ProfileState {
   current: SupervisedGateway | null
   respawnTimer: NodeJS.Timeout | null
   respawnAttempts: number
+  /**
+   * Set when this profile's gateway is being retired (profile delete /
+   * managed shutdown). While set, the exit handler and any already-queued
+   * respawn timer must not re-create the gateway. This is a memory-level
+   * guard: the on-disk gateway_state.json is wiped with the profile
+   * directory and respawn never read it anyway.
+   */
+  suppressRespawn: boolean
 }
 
 const profileState = new Map<string, ProfileState>()
@@ -60,7 +69,7 @@ export interface ManagedGatewayShutdownResult {
 function getOrCreateProfileState(profileDir: string): ProfileState {
   let state = profileState.get(profileDir)
   if (!state) {
-    state = { current: null, respawnTimer: null, respawnAttempts: 0 }
+    state = { current: null, respawnTimer: null, respawnAttempts: 0, suppressRespawn: false }
     profileState.set(profileDir, state)
   }
   return state
@@ -165,6 +174,9 @@ export async function shutdownManagedGateways(
   let signaled = 0
 
   for (const [profileDir, state] of profileState) {
+    // Shutdown is an intentional stop: no exit handler / respawn timer may
+    // re-create these gateways.
+    state.suppressRespawn = true
     clearRespawnTimer(state, profileDir)
 
     const entry = state.current
@@ -202,6 +214,10 @@ export async function retireManagedGatewayForProfile(
   const state = profileState.get(profileDir)
   if (!state) return { signaled: 0, forced: 0, errors: 0 }
 
+  // Retiring is an intentional stop (profile delete / migration): suppress
+  // any respawn so a stale exit handler or pending timer cannot re-create
+  // the gateway inside a directory that is about to disappear.
+  state.suppressRespawn = true
   clearRespawnTimer(state, profileDir)
 
   const entry = state.current
@@ -279,6 +295,10 @@ function startGatewayRunManagedInternal(
   const profileDir = opts.profileDir || getActiveProfileDir()
   const state = getOrCreateProfileState(profileDir)
 
+  // A fresh start for this profile is an explicit user/system intent to run
+  // the gateway, so any prior retirement suppression no longer applies.
+  state.suppressRespawn = false
+
   // A new spawn for this profile cancels any pending respawn from a previous
   // unexpected exit. Without this, `/restart` (stop -> start) would race
   // against the respawn timer and end up with two gateways on the same port.
@@ -347,6 +367,16 @@ function startGatewayRunManagedInternal(
         )
         return
       }
+      // The profile may have been retired (deleted / shut down) between the
+      // child dying and this handler running. Never re-create a gateway for
+      // a profile that is intentionally gone.
+      if (state.suppressRespawn) {
+        logger.info(
+          '[gateway-runner] managed gateway exit suppressed by retirement (profileDir=%s pid=%s code=%s signal=%s)',
+          profileDir, pid, code, signal,
+        )
+        return
+      }
       if (Date.now() - entry.startedAt >= RESPAWN_STABLE_RUN_MS) {
         state.respawnAttempts = 0
       }
@@ -367,6 +397,27 @@ function startGatewayRunManagedInternal(
 
       state.respawnTimer = setTimeout(() => {
         state.respawnTimer = null
+        // Second guard: the profile may have been retired while the timer
+        // was pending. The exit handler check above catches the common case,
+        // but the timer itself must re-check because it may have been
+        // scheduled before retirement and outlived the retire path.
+        if (state.suppressRespawn) {
+          logger.info(
+            '[gateway-runner] pending respawn cancelled after profile retirement (profileDir=%s oldPid=%s)',
+            profileDir, pid,
+          )
+          return
+        }
+        // Defense in depth: the profile directory may have been removed
+        // through a path that never called retire (e.g. external CLI), so a
+        // respawn would recreate a ghost gateway under a dead directory.
+        if (!existsSync(profileDir)) {
+          logger.warn(
+            '[gateway-runner] skipping respawn because profile directory no longer exists (profileDir=%s oldPid=%s)',
+            profileDir, pid,
+          )
+          return
+        }
         try {
           const next = startGatewayRunManagedInternal(hermesBin, {
             profileDir,
