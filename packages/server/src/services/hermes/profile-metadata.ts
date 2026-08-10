@@ -56,6 +56,17 @@ export function setProfileDisplayName(name: string, displayName: string): void {
   writeProfileMeta(name, { ...existing, displayName: value })
 }
 
+/**
+ * Clear the display name for a profile, restoring the system name as the
+ * visible label. Keeps avatar metadata intact.
+ */
+export function clearProfileDisplayName(name: string): void {
+  const existing = readProfileMeta(name)
+  if (!existing.displayName) return
+  const { displayName: _removed, ...rest } = existing
+  writeProfileMeta(name, rest)
+}
+
 export function readProfileAvatarMeta(name: string): ProfileAvatarMeta | null {
   const metaPath = profileAvatarMetaPath(name)
   if (!existsSync(metaPath)) return null

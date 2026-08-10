@@ -7,6 +7,7 @@ import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useExpertsStore } from '@/stores/hermes/experts'
 import { useI18n } from 'vue-i18n'
 import ProfileAvatar from './ProfileAvatar.vue'
+import ProfileDisplayNameModal from './ProfileDisplayNameModal.vue'
 import { useMessage } from '@/composables/useAppMessage'
 import { unbindSuperAdmin } from '@/api/auth'
 import { isStoredSuperAdmin, setApiKey } from '@/api/client'
@@ -27,6 +28,7 @@ const detailLoading = ref(false)
 const exporting = ref(false)
 const unbinding = ref(false)
 const switching = ref(false)
+const editingDisplayName = ref(false)
 const detail = ref<HermesProfileDetail | null>(null)
 
 const isDefault = computed(() => props.profile.name === 'default')
@@ -213,6 +215,9 @@ function handleEditConfig() {
     </div>
 
     <div class="card-actions">
+      <NButton size="tiny" quaternary @click="editingDisplayName = true">
+        {{ t('profiles.editDisplayName') }}
+      </NButton>
       <NButton size="tiny" quaternary @click="handleEditConfig">
         {{ t('profiles.editConfig') }}
       </NButton>
@@ -249,6 +254,14 @@ function handleEditConfig() {
         {{ t('profiles.unbindSuperAdmin') }}
       </NButton>
     </div>
+
+    <ProfileDisplayNameModal
+      v-if="editingDisplayName"
+      :profile-name="profile.name"
+      :current-display-name="profile.displayName"
+      @close="editingDisplayName = false"
+      @saved="editingDisplayName = false"
+    />
   </div>
 </template>
 

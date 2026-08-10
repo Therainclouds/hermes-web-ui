@@ -1,5 +1,33 @@
 # Work Log
 
+## 2026-08-10 · 支持给已有配置编辑显示名称
+
+### 需求背景
+
+- 上一轮实现了"创建 profile 时设置显示名"，用户进一步需要给**已有配置**编辑显示名称（复用显示名/系统名分离机制）。
+
+### 改动
+
+- 服务端：
+  - `profile-metadata.ts` 新增 `clearProfileDisplayName()`（只清除 displayName 字段，保留 avatar）。
+  - `profiles` 控制器新增 `updateDisplayName()`：空值清除、非空写入，复用 `setProfileDisplayName`。
+  - 新增路由 `PUT /api/hermes/profiles/:name/display-name`。
+- 前端：
+  - profiles API 新增 `updateProfileDisplayName()`；store 新增 `updateDisplayName()`（成功后同步 profiles/detailMap/activeProfile）。
+  - 新建 `ProfileDisplayNameModal.vue`（预填当前显示名，留空恢复系统名）。
+  - `ProfileCard` 操作栏新增"编辑显示名"按钮并接入弹窗。
+  - `HermesProfileDetail` 类型补充可选 `displayName`。
+- i18n：新增 `editDisplayName` / `displayNameSaveSuccess` / `displayNameSaveFailed` / `displayNameClearHint` 到全部 11 个 locale。
+
+### 验证
+
+- `profile-metadata` + `profiles-routes` 测试 30/30 通过（新增 clear 服务测试 2 例 + updateDisplayName 控制器 2 例）。
+- `vue-tsc` / 服务端 `tsc` 零错误；`npm run build` / `npm run harness:check` 通过。
+
+### 备注
+
+- default profile 的显示名会被微信登录绑定 `syncProfileIdentity` 覆盖（既有行为）。
+
 ## 2026-08-10 · 创建 profile 支持设置显示名称
 
 ### 需求背景

@@ -9451,6 +9451,60 @@
         ]
       }
     },
+    "/api/hermes/profiles/{name}/display-name": {
+      "put": {
+        "tags": [
+          "Profiles"
+        ],
+        "summary": "Update display-name",
+        "description": "PUT /api/hermes/profiles/:name/display-name",
+        "operationId": "updateDisplayName",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "displayName": {
+                    "type": "string"
+                  },
+                  "trim": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/hermes/profiles/{name}/export": {
       "post": {
         "tags": [

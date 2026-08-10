@@ -19,6 +19,7 @@ export interface HermesProfileDetail {
   hasEnv: boolean
   hasSoulMd: boolean
   avatar?: ProfileAvatar | null
+  displayName?: string
 }
 
 export interface ProfileAvatar {
@@ -95,6 +96,14 @@ export async function updateProfileAvatar(name: string, avatar: ProfileAvatar): 
 
 export async function deleteProfileAvatar(name: string): Promise<void> {
   await request(`/api/hermes/profiles/${encodeURIComponent(name)}/avatar`, { method: 'DELETE' })
+}
+
+export async function updateProfileDisplayName(name: string, displayName: string): Promise<{ displayName: string }> {
+  const res = await request<{ success: boolean; displayName: string }>(
+    `/api/hermes/profiles/${encodeURIComponent(name)}/display-name`,
+    { method: 'PUT', body: JSON.stringify({ displayName }) },
+  )
+  return { displayName: res.displayName }
 }
 
 export async function restartProfileGateway(name: string): Promise<ProfileRuntimeStatus['gateway']> {

@@ -231,6 +231,57 @@ describe('Profile Routes', () => {
 
       expect(hermesCli.renameProfile).toHaveBeenCalledWith('old', 'new')
     })
+
+    it('updateDisplayName sets the profile display name', async () => {
+      const hermesHome = await mkdtemp(join(tmpdir(), 'hermes-profile-setdn-'))
+      const webUiHome = await mkdtemp(join(tmpdir(), 'hermes-webui-setdn-'))
+      tempHomes.push(hermesHome, webUiHome)
+      process.env.HERMES_HOME = hermesHome
+      process.env.HERMES_WEB_UI_HOME = webUiHome
+      await mkdir(join(hermesHome, 'profiles', 'meeting-bot'), { recursive: true })
+      const { updateDisplayName } = await import('../../packages/server/src/controllers/hermes/profiles')
+      const ctx: any = {
+        params: { name: 'meeting-bot' },
+        request: { body: { displayName: '会议小助手' } },
+        status: 200,
+        body: undefined,
+        state: { user: { role: 'super_admin' } },
+      }
+
+      await updateDisplayName(ctx)
+
+      expect(ctx.status).toBe(200)
+      expect(ctx.body).toEqual({ success: true, displayName: '会议小助手' })
+      const metaPath = join(webUiHome, 'profile-metadata', Buffer.from('meeting-bot', 'utf-8').toString('base64url'), 'meta.json')
+      expect(JSON.parse(readFileSync(metaPath, 'utf-8')).displayName).toBe('会议小助手')
+    })
+
+    it('updateDisplayName clears the display name when the value is empty', async () => {
+      const hermesHome = await mkdtemp(join(tmpdir(), 'hermes-profile-clear-dn-'))
+      const webUiHome = await mkdtemp(join(tmpdir(), 'hermes-webui-clear-dn-'))
+      tempHomes.push(hermesHome, webUiHome)
+      process.env.HERMES_HOME = hermesHome
+      process.env.HERMES_WEB_UI_HOME = webUiHome
+      await mkdir(join(hermesHome, 'profiles', 'meeting-bot'), { recursive: true })
+      const { updateDisplayName } = await import('../../packages/server/src/controllers/hermes/profiles')
+      const metaDir = join(webUiHome, 'profile-metadata', Buffer.from('meeting-bot', 'utf-8').toString('base64url'))
+      await mkdir(metaDir, { recursive: true })
+      await writeFile(join(metaDir, 'meta.json'), JSON.stringify({ displayName: '会议小助手' }, null, 2), 'utf-8')
+
+      const ctx: any = {
+        params: { name: 'meeting-bot' },
+        request: { body: { displayName: '   ' } },
+        status: 200,
+        body: undefined,
+        state: { user: { role: 'super_admin' } },
+      }
+
+      await updateDisplayName(ctx)
+
+      expect(ctx.status).toBe(200)
+      expect(ctx.body).toEqual({ success: true, displayName: '' })
+      expect(JSON.parse(readFileSync(join(metaDir, 'meta.json'), 'utf-8')).displayName).toBeUndefined()
+    })
   })
 
   describe('profile export failures', () => {
