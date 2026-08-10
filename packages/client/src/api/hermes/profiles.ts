@@ -123,7 +123,7 @@ export interface CreateProfileResult {
   strippedConfigCredentials?: string[]
 }
 
-export async function createProfile(name: string, clone?: boolean): Promise<CreateProfileResult & { error?: string }> {
+export async function createProfile(name: string, clone?: boolean, displayName?: string): Promise<CreateProfileResult & { error?: string }> {
   try {
     const res = await request<{
       success: boolean
@@ -133,7 +133,7 @@ export async function createProfile(name: string, clone?: boolean): Promise<Crea
       error?: string
     }>('/api/hermes/profiles', {
       method: 'POST',
-      body: JSON.stringify({ name, clone }),
+      body: JSON.stringify({ name, clone, ...(displayName ? { displayName } : {}) }),
     })
     return {
       success: !!res.success,

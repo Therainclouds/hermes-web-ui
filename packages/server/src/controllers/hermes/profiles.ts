@@ -17,6 +17,7 @@ import {
   restartGatewayForProfile as restartGatewayRuntimeForProfile,
 } from '../../services/hermes/gateway-autostart'
 import { logger } from '../../services/logger'
+import { setProfileDisplayName } from '../../services/hermes/profile-metadata'
 import { smartCloneCleanup, copyModelProviderAuthForClone } from '../../services/hermes/profile-credentials'
 import { detectHermesRootHome } from '../../services/hermes/hermes-path'
 import { getActiveProfileName } from '../../services/hermes/hermes-profile'
@@ -483,6 +484,16 @@ export async function create(ctx: any) {
     }
 
     await injectBundledSkillsForProfile(name)
+
+    // Optional display name: written as Web-UI metadata only (never touches the
+    // underlying Hermes profile directory), so all surfaces show the friendly
+    // name while requests still use the system `name`.
+    const displayName = typeof ctx.request.body?.displayName === 'string'
+      ? ctx.request.body.displayName.trim()
+      : ''
+    if (displayName) {
+      setProfileDisplayName(name, displayName)
+    }
 
     // A non-super-admin user keeps whatever they create: bind the new profile
     // to the current user so it shows up in their own profile list.
