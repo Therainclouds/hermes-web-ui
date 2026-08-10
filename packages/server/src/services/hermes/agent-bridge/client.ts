@@ -370,8 +370,16 @@ export class AgentBridgeClient {
   }
 
   private async connectSocket(deadline?: number): Promise<Socket> {
+    // `connectRetryMs` is the retry window AFTER the first failed attempt; a
+    // value of 0 means "no retries", not "give up before even trying". The
+    // request-level `deadline` bounds the whole connect phase, so a call with
+    // connectRetryMs=0 must still get one real connection attempt instead of
+    // being short-circuited by an already-expired retry deadline.
+    const retryDeadline = this.connectRetryMs > 0
+      ? Date.now() + this.connectRetryMs
+      : Number.POSITIVE_INFINITY
     const effectiveDeadline = Math.min(
-      Date.now() + Math.max(0, this.connectRetryMs),
+      retryDeadline,
       deadline ?? Number.POSITIVE_INFINITY,
     )
     for (;;) {
@@ -385,6 +393,11 @@ export class AgentBridgeClient {
         return await this.connectSocketOnce(remaining)
       } catch (err) {
         if (!this.isRetryableConnectError(err) || Date.now() >= effectiveDeadline) {
+          throw err
+        }
+        // connectRetryMs=0 means no retries: the single attempt already ran
+        // above, so fail now instead of looping again.
+        if (this.connectRetryMs <= 0) {
           throw err
         }
         await delay(100)
