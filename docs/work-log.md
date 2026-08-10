@@ -1,5 +1,23 @@
 # Work Log
 
+## 2026-08-10 · 创建 profile 支持设置显示名称
+
+### 需求背景
+
+- 用户确认"显示名/系统名分离"机制（微信绑定会把微信名写入 default profile 的显示名，请求仍用系统名 `default`）。
+- 追问：创建 profile 时能否也设置显示名？现状不支持（创建弹窗只有 name + clone，`setProfileDisplayName` 仅微信绑定一个调用点）。
+
+### 改动
+
+- 服务端 `profiles.create()`：接收可选 `displayName`，创建成功后调用 `setProfileDisplayName(name, displayName)` 写入 Web-UI profile-metadata（`~/.hermes-web-ui/profile-metadata/{base64}/meta.json`），不触碰底层 Hermes profile 目录。
+- 前端 `ProfileCreateModal.vue`：新增"显示名称"输入框（可选，maxlength=40），经 profiles API/store 透传。
+- i18n：新增 `displayName` / `displayNamePlaceholder` / `displayNameHint` 到全部 11 个 locale；修复 fr.ts 法语撇号导致的字符串定界问题。
+- 测试：`profiles-routes.test.ts` 新增 2 例（带 displayName 写入元数据 / 不带则不留元数据），21/21 通过。
+
+### 验证
+
+- `vue-tsc` / 服务端 `tsc` 零错误；`npm run build` 通过；`npm run harness:check` 通过。
+
 ## 2026-08-10 · 修复微信登录绑定后聊天报 Agent Bridge 连接超时
 
 ### 现象
