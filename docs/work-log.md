@@ -1,5 +1,39 @@
 # Work Log
 
+## 2026-08-10 · 修复微信登录绑定后聊天报 Agent Bridge 连接超时
+
+### 现象
+
+- 微信扫码登录并绑定后，聊天发送消息持续报错 `Error: Agent Bridge is not reachable: Agent bridge connect timed out`。
+- 绑定后 default/expert profile 显示名同步为微信名（`牢许`）属预期功能，但聊天无法进行。
+
+### 根因
+
+- 提交 `63870029`（v0.7.17）重写 `AgentBridgeClient.connectSocket()` 后，连接 deadline 计算为：
+  `effectiveDeadline = min(Date.now() + connectRetryMs, request deadline)`。
+- 当调用方传 `connectRetryMs: 0`（如 `ensureBridgeReadyForChatRun` → `ensureReady({ timeoutMs: 1000, connectRetryMs: 0 })`），
+  `effectiveDeadline` 被压缩为 `Date.now()`，循环首轮 `remaining <= 0` **直接抛 "Agent bridge connect timed out"**，
+  从未发起真实 socket 连接尝试——即使 broker 正常监听（本机 18765 端口可用）。
+- 旧代码总是先调用 `connectSocketOnce()` 再检查 deadline，`connectRetryMs=0` 语义是"失败后不重试"，而非"尝试前就放弃"。
+
+### 修复
+
+- `packages/server/src/services/hermes/agent-bridge/client.ts`：`connectRetryMs > 0` 时才叠加重试窗口；
+  `connectRetryMs = 0` 时重试窗口视为无穷（由请求级 `deadline` 兜底），保证**至少一次真实连接尝试**；
+  单次尝试失败且 `connectRetryMs <= 0` 时立即抛出，不进入重试循环。
+- 补充测试：`agent-bridge-client-connect-timeout.test.ts` 新增 2 例，覆盖 `connectRetryMs: 0` 连接成功与连接挂起场景。
+
+### 验证
+
+- 修复后真实 broker ping：`connectRetryMs: 0` 在 3ms 内连接成功（修复前立即超时）。
+- `agent-bridge-client-connect-timeout`（5/5）与 `chat-run-bridge-readiness`（18/18）通过，服务端 `tsc` 类型检查通过。
+
+### 备注
+
+- `tests/server/agent-bridge` 整体约 65 个失败在 **main 分支上同样存在**（Python 子进程环境依赖缺失等），
+  `gateway-respawn` 1 个失败亦为 main 既有问题，均与本次修复无关。
+- 修复后需重启 dev server（当前 18624 仍运行旧代码）方可生效。
+
 ## 2026-08-10 · 合并 main (v0.7.17) 与 org/meeting/v0.73 至 integration/rebuild-from-upstream
 
 ### 本轮目标
