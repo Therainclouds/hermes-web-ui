@@ -19,12 +19,23 @@ export const useProfilesStore = defineStore('profiles', () => {
     loading.value = true
     try {
       profiles.value = await profilesApi.fetchProfiles()
+      // The server reports which profile is active on disk (requestedProfileName
+      // falls back to getActiveProfileName()). Trust that as the source of truth
+      // so a freshly-bound WeChat device surfaces the profile that actually owns
+      // the token_platform provider — the localStorage value can be stale (e.g.
+      // it was set before a re-login), which is what made the models page show
+      // "no default model" even though the bound profile already had one.
+      // localStorage is still used as a manual-switch hint when it names a
+      // profile that exists AND matches the server's active profile; otherwise
+      // the server's active profile wins.
+      const diskActive = profiles.value.find(p => p.active) ?? null
       const storedName = activeProfileName.value || localStorage.getItem(ACTIVE_PROFILE_STORAGE_KEY)
-      let selected = profiles.value.find(p => p.name === storedName) ?? null
+      const storedExists = storedName && profiles.value.some(p => p.name === storedName)
+      let selected = (storedExists && storedName === diskActive?.name)
+        ? (profiles.value.find(p => p.name === storedName) ?? diskActive)
+        : diskActive
       if (!selected && profiles.value.length > 0) {
         selected = profiles.value[0]
-        activeProfileName.value = selected.name
-        localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, selected.name)
       }
       profiles.value = profiles.value.map(profile => ({
         ...profile,
@@ -33,6 +44,7 @@ export const useProfilesStore = defineStore('profiles', () => {
       activeProfile.value = selected
       if (selected) {
         activeProfileName.value = selected.name
+        localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, selected.name)
       } else {
         activeProfileName.value = null
         localStorage.removeItem(ACTIVE_PROFILE_STORAGE_KEY)
