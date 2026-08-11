@@ -1,5 +1,40 @@
 # Work Log
 
+## 2026-08-11 · 微信登录自动接入中转站 API + 单机单用户策略
+
+### 需求背景
+
+- 中转站 `api.quantclaw.vip`（newapi 二开，`token_platform` 仓）为每个微信用户/设备自动分配独立 Token。目标：用户微信扫码登录 Hermes 后**一键接入**中转站 API，无需手填 base_url / API key，首发教程也相应改为「模型已自动接入」流程。
+
+### 现状调研结论（关键）
+
+- **每微信用户独立 key 已天然成立**：`token_platform/new-api/model/device_login.go` 的 `CreateDeviceForUser` 按 `(user_id, hardware_id)` 为每台设备新建一把 48 位 Token 并关联到该微信用户，**中转站侧无需改动**。
+- **base_url 约定**：中转站把 `/v1/chat/completions`、`/v1/models` 挂在根域名（`https://api.quantclaw.vip`）下，Hermes 拿到 `api_base` 后**不可再拼 `/v1`**（否则 404）。
+- **用户体系现状（缺陷）**：原 `deviceLogin()` 里首个微信设为 `super_admin`，后续扫码一律建 `admin`（`tp_*`）并绑定**共享的 default profile**——多微信交替登录会互相覆盖 default profile 的 provider，无法严格隔离。
+
+### 改动
+
+- **登录页 `LoginView.vue`**：
+  - 修正 base_url：`addCustomProvider` 时不再追加 `/v1`，直接用中转站返回的 `api_base`。
+  - **修复 401 静默吞掉导致自动接入失效**：`addCustomProvider` 需要 Bearer JWT，但原来在 `setApiKey` 之前调用、localStorage 尚无 token → `/api/hermes/config/providers` 401 → 旧代码 `catch` 静默放行 → provider 从未写入、一直用旧的 minimax。现把 `setApiKey(hermesResult.token)` **提前**到 `addCustomProvider` 之前。
+  - provider 配置失败 / 无可用模型时**明确报错中止**，不再静默进门（新增 `tokenPlatformNoModel` / `tokenPlatformConfigureFailed` 文案）。
+  - 登录页以微信扫码为主入口，密码登录收进次要选项。
+- **单机单用户策略（`controllers/auth.ts` 的 `deviceLogin()`）**：
+  - 设备已有绑定后，**第二个微信扫码不再自动建号**，返回 `403 + code=DEVICE_ALREADY_BOUND`，提示用已绑定账号登录，防止覆盖首绑 owner 的 default profile。
+  - 首个绑定的微信仍为 `super_admin`，登录后**自动直达 `/hermes/chat`**，不弹绑定弹窗。
+- **首次登录教程文案**（`FirstRunModelGuide` 依赖的 i18n）：`modelGuide` 的 en/zh 改为「模型已自动接入 → 查看 → 按需手动添加 → 开始使用」，不再教手填 Key。
+- **i18n**：新增 `passwordOption` / `tokenPlatformNoModel` / `tokenPlatformConfigureFailed`，补齐 10 种语言（en/zh/zh-TW/ja/ko/ru/pt/es/fr/de/ar）。
+
+### 验证
+
+- server：`device-login-controller` / `auth-device-login-routes` / `auth` 三个测试文件 **41/41 通过**（新增「第二个微信被拒 DEVICE_ALREADY_BOUND」用例）。
+- client：`LoginView.vue` 无 TS 错误（`vue-tsc -b`）；全量仅剩 `meeting.ts` 一个既有未提交改动造成的未使用 import 告警，与本次无关。
+
+### 遗留 / 待办
+
+- **用户名乱码**：中转站 `/api/device/self` 返回的微信昵称本身已乱码（`éè¿¹Aiç«è´º`），根因在 **market(Django) 侧微信回调返回 `Nickname` 时的二次编码**，`token_platform` 仓不含 market 源码、无法在本仓修复。用户确认乱码暂不重要，已跳过；如需要可在 market 侧修 `web-login-callback`，或给 Hermes 加 UTF-8 mojibake 兜底（治标不治本）。
+- **中转站生产配置**：确认 `system_setting.ServerAddress` 为 `https://api.quantclaw.vip`（曾配 localhost 导致 Hermes 拿到错误地址）。
+
 ## 2026-08-10 · 支持给已有配置编辑显示名称
 
 ### 需求背景
