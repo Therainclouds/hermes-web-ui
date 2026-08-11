@@ -111,6 +111,13 @@ async function handleWeChatApproved(
     });
     pendingLoginToken.value = hermesResult.token;
 
+    // Set the Hermes session token FIRST so the addCustomProvider call below
+    // (which requires a Bearer JWT) carries the Authorization header. Without
+    // this the provider onboarding request is rejected with 401 and the
+    // account logs in with no usable model (falls back to whatever the default
+    // profile already had).
+    setApiKey(hermesResult.token);
+
     // Sync the user's model capabilities into Hermes as the default provider.
     // The Token Platform reports an OpenAI-compatible api_base (e.g.
     // https://api.quantclaw.vip). Its /v1/chat/completions, /v1/models and
@@ -142,9 +149,12 @@ async function handleWeChatApproved(
     }
 
     // WeChat device users are regular admins. Offer to bind the account to the
-    // super administrator by verifying its credentials. Set the session token
-    // first so the bind request carries the Authorization header.
+    // super administrator by verifying its credentials. The session token is
+    // already set above, so the bind request carries the Authorization header.
     if (hermesResult.user.role !== "super_admin") {
+      showBindSuperAdmin.value = true;
+      return;
+    }
       setApiKey(hermesResult.token);
       showBindSuperAdmin.value = true;
       return;
