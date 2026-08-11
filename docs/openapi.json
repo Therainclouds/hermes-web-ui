@@ -456,40 +456,6 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "api_base": {
-                    "type": "string"
-                  },
-                  "api_key": {
-                    "type": "string"
-                  },
-                  "device_id": {
-                    "type": "number"
-                  },
-                  "device_name": {
-                    "type": "string"
-                  },
-                  "models": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    }
-                  }
-                },
-                "required": [
-                  "api_base",
-                  "api_key"
-                ]
-              }
-            }
-          }
         }
       }
     },
