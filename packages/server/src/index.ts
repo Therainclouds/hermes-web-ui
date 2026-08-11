@@ -85,7 +85,6 @@ function listen(app: Koa, port: number, host: string): Promise<any> {
 
 async function listenWithFallback(app: Koa, port: number, host?: string): Promise<ListenResult> {
   const bindHost = host || '0.0.0.0'
-  const httpsPort = parseInt(process.env.HTTPS_PORT || String(port), 10)
   const certDir = resolve(__dirname, '../../certs')
   const certPath = join(certDir, 'server.crt')
   const keyPath = join(certDir, 'server.key')
@@ -95,20 +94,39 @@ async function listenWithFallback(app: Koa, port: number, host?: string): Promis
       cert: readFileSync(certPath),
       key: readFileSync(keyPath),
     }
-    const httpsServer = https.createServer(httpsOptions, app.callback())
-    const primary = await new Promise<any>((resolve, reject) => {
-      httpsServer.listen(httpsPort, bindHost)
-      httpsServer.once('listening', () => {
-        console.log(`[bootstrap] HTTPS listening on ${bindHost}:${httpsPort}`)
-        resolve(httpsServer)
+    // Protocol-sniffing single-port server: bind once on `port` and dispatch each
+    // connection by its first byte. TLS ClientHello records always start with
+    // 0x16 (22); plain HTTP requests start with an ASCII method letter. This lets
+    // http://<lan-ip>:6060 and https://<lan-ip>:6060 both work on the same port —
+    // browsers pick HTTPS when the user clicks "meeting mode", while normal usage
+    // stays on HTTP with no self-signed-cert warning.
+    const httpHandler = http.createServer(app.callback())
+    const httpsHandler = https.createServer(httpsOptions, app.callback())
+    const sniffer = net.createServer((socket) => {
+      socket.once('readable', () => {
+        const first = socket.read(1)
+        if (!first) {
+          socket.destroy()
+          return
+        }
+        // Put the byte back so the target handler can parse the full stream.
+        socket.unshift(first)
+        const target = first[0] === 0x16 ? httpsHandler : httpHandler
+        target.emit('connection', socket)
       })
-      httpsServer.once('error', reject)
     })
-    // In HTTPS mode also serve a plain-HTTP loopback server bound to 127.0.0.1
-    // so on-device processes (Node clients, Python agents, shell/curl scripts)
-    // never have to negotiate the self-signed cert. The loopback server mounts
-    // the same Koa app; Socket.IO and WS upgrade handlers attach to it via the
-    // `servers` array below.
+    const primary = await new Promise<any>((resolve, reject) => {
+      sniffer.listen(port, bindHost)
+      sniffer.once('listening', () => {
+        console.log(`[bootstrap] protocol-sniffing HTTP/HTTPS listening on ${bindHost}:${port}`)
+        resolve(sniffer)
+      })
+      sniffer.once('error', reject)
+    })
+    // Keep a plain-HTTP loopback server bound to 127.0.0.1 so on-device
+    // processes (Node clients, Python agents, shell/curl scripts) never have to
+    // negotiate the self-signed cert. Socket.IO and WS upgrade handlers attach
+    // to every server in the returned `servers` array below.
     const loopbackPort = getLoopbackPort()
     const loopbackServer = http.createServer(app.callback())
     await new Promise<void>((resolveLoopback, rejectLoopback) => {
@@ -116,7 +134,7 @@ async function listenWithFallback(app: Koa, port: number, host?: string): Promis
       loopbackServer.listen(loopbackPort, '127.0.0.1', () => resolveLoopback())
     })
     console.log(`[bootstrap] internal loopback HTTP listening on 127.0.0.1:${loopbackPort}`)
-    return { primary, servers: [primary, loopbackServer] }
+    return { primary, servers: [primary, httpHandler, httpsHandler, loopbackServer] }
   }
 
   // Dev fallback: HTTP when certs not available
