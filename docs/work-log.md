@@ -1,5 +1,27 @@
 # Work Log
 
+## 2026-08-11 · 会议音频改为结束一次性落库 + 录音中关页兜底
+
+### 需求背景
+
+- 会议模式的音频持久化策略确认：录音期间**不做实时落库**，只有会议结束（`stopRecording`）才把音频整体写入 IndexedDB 并上传服务器，与聊天逐条落库不同。
+- 排查发现：服务器上传本就是结束一次性做；但 `meeting.ts` 里藏着 `audioChunkBuffer` / `addAudioChunk` / `flushAudioChunks` 一段**从未被调用的死代码**（本意"每 10 块批量写 IndexedDB"，实际全库无调用），名不副实且易误导。
+
+### 改动
+
+- **`stores/hermes/meeting.ts`**：删除死代码 `audioChunkBuffer` / `addAudioChunk` / `flushAudioChunks`；`saveAudioData` 收窄为 `(sessionId, blob)`（原 `blob?` + flush 分支死路径）；去掉 `getAudioBlob` 内无意义的 flush 调用；补注释明确"音频只在结束一次性落库"。
+- **`views/hermes/MeetingView.vue`**：
+  - `stopRecording` 改 `async`，真实等待音频上传 + IndexedDB 写入完成，两步隔离（服务器失败不阻断本机备份），落库后清空 `audioChunks` 释放内存。
+  - 新增 `attach/detachBeforeUnloadAudioBackup`：`startRecording` 后挂载 `beforeunload`/`pagehide`/`unload` 三事件，录音中直接刷新/关页时把内存音频块写进 IndexedDB 兜底（服务器不传，卸载时 fetch 不可靠）；`stopRecording` 先摘除，避免正常结束重复写。
+
+### 验证
+
+- `vue-tsc --noEmit --project tsconfig.app.json` 通过，无报错。
+
+### 遗留 / 待办
+
+- 录音中关页兜底仅保 IndexedDB 本机备份；若需卸载时尽力上传服务器，可改用 `fetch keepalive`。
+
 ## 2026-08-11 · 微信登录自动接入中转站 API + 单机单用户策略
 
 ### 需求背景
