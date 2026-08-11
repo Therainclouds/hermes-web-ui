@@ -408,18 +408,21 @@ export async function deviceLogin(ctx: Context) {
         status: 'active',
       })
     } else {
-      // Device already configured locally: link a regular admin account.
-      // Bind the default agent profile so the user can access profile-scoped
-      // resources (profiles list, models, runtime status). Without this an
-      // admin with no bound profiles gets 403 everywhere.
-      user = createUser({
-        username: localUsername,
-        password: randomUUID(),
-        role: 'admin',
-        status: 'active',
-        profiles: ['default'],
-        defaultProfile: 'default',
-      })
+      // Single-machine, single-owner policy: this Hermes device serves the
+      // first WeChat account that binds to it. Any other WeChat account that
+      // scans is NOT auto-provisioned (which would otherwise create a fresh
+      // admin that shares and overwrites the same default agent profile).
+      // Reject loudly with the bound owner's name so the human can log in as
+      // the owned account instead of silently clobbering its model config.
+      const binding = await loadDeviceBinding()
+      const ownerName = binding?.display_name || '已绑定账号'
+      ctx.status = 403
+      ctx.body = {
+        error: `这台设备已绑定微信账号「${ownerName}」，请用该账号登录`,
+        code: 'DEVICE_ALREADY_BOUND',
+        owner: ownerName,
+      }
+      return
     }
   } else if (user.role !== 'super_admin' && listUserProfiles(user.id).length === 0) {
     // A previously-provisioned device user without any profile binding: grant
