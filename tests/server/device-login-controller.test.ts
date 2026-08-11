@@ -115,7 +115,7 @@ describe('deviceLogin controller', () => {
     }))
   })
 
-  it('links a regular admin when the device already has local users', async () => {
+  it('rejects a second WeChat account when the device already has a bound owner', async () => {
     const { ctrl, users } = await loadModules()
     users.createDefaultSuperAdmin()
     expect(users.countUsers()).toBe(1)
@@ -131,15 +131,12 @@ describe('deviceLogin controller', () => {
     })
     await ctrl.deviceLogin(ctx)
 
-    expect(ctx.status).toBe(200)
-    expect(ctx.body.user.role).toBe('admin')
-    const created = users.findUserByUsername('tp_8')
-    expect(created).not.toBeNull()
-    expect(created!.role).toBe('admin')
-    // The device admin must be bound to the default profile so profile-scoped
-    // endpoints (models, profiles, runtime status) do not return 403.
-    const boundProfiles = users.listUserProfiles(created!.id).map(p => p.profile_name)
-    expect(boundProfiles).toContain('default')
+    // Single-machine, single-owner: a non-first WeChat account must NOT be
+    // auto-provisioned (it would overwrite the default profile the owner set).
+    expect(ctx.status).toBe(403)
+    expect(ctx.body.code).toBe('DEVICE_ALREADY_BOUND')
+    expect(ctx.body.owner).toBeTruthy()
+    expect(users.findUserByUsername('tp_8')).toBeNull()
   })
 
   it('grants the default profile to an existing admin that has no profile bindings', async () => {
