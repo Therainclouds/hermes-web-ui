@@ -155,10 +155,6 @@ async function handleWeChatApproved(
       showBindSuperAdmin.value = true;
       return;
     }
-      setApiKey(hermesResult.token);
-      showBindSuperAdmin.value = true;
-      return;
-    }
 
     setApiKey(hermesResult.token);
     router.replace("/hermes/chat");
