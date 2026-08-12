@@ -1,5 +1,5 @@
 import { logger } from '../../logger'
-import { runBareModelAgent } from './room-summary'
+import { runBareModelAgent, type ArchiveRoomResult } from './room-summary'
 import type { GroupRuntimeContext } from './room-summary'
 
 // ─── Types ──────────────────────────────────────────────────
@@ -101,6 +101,9 @@ interface DiscussionAgentClients {
 
 interface DiscussionSummaryService {
   prepareForMessage(roomId: string, currentMessageId?: string): Promise<GroupRuntimeContext>
+  /** Free discussions auto-archive their transcript when the run ends. Optional so
+   *  lightweight test doubles can opt out. */
+  archiveRoom?(roomId: string): Promise<ArchiveRoomResult>
 }
 
 export interface DiscussionRunnerDeps {
@@ -564,12 +567,30 @@ export class DiscussionRunner {
       }
 
       if (terminateReason !== null) {
+        // Free discussions archive the round transcript BEFORE the final report, so
+        // the concluding report stays in the raw history and survives downloads.
+        await this.autoArchiveAfterRun(roomId, terminateReason)
         await this.reportPhase(roomId, state, agents, terminateReason)
       }
     } finally {
       this.interrupts.delete(roomId)
       this.locks.delete(roomId)
       releaseLock()
+    }
+  }
+
+  /** Free discussions default to archiving their transcript once the run ends, so the
+   *  raw messages no longer consume the room's agent context budget. */
+  private async autoArchiveAfterRun(roomId: string, reason: 'converged' | 'max_rounds' | 'stopped' | 'stalled'): Promise<void> {
+    const archive = this.deps.roomSummaryService.archiveRoom
+    if (!archive) return
+    try {
+      const result = await archive(roomId)
+      if (result.archived) {
+        logger.info({ roomId, reason, deletedMessages: result.deletedMessages }, '[Discussion] auto-archived room transcript after run')
+      }
+    } catch (err) {
+      logger.warn({ err, roomId }, '[Discussion] auto-archive after run failed')
     }
   }
 

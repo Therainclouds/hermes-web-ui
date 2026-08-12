@@ -32,6 +32,8 @@ import {
     cloneRoom as cloneRoomApi,
     deleteRoom as deleteRoomApi,
     clearRoomContext,
+    archiveRoom as archiveRoomApi,
+    dismissArchivePrompt,
     updateInviteCode as updateInviteCodeApi,
     updateRoomWorkspace as updateRoomWorkspaceApi,
     startDiscussion as startDiscussionApi,
@@ -211,6 +213,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
     const autoPlaySpeechEnabled = ref(false)
     const pendingApprovals = ref<Map<string, GroupPendingApproval>>(new Map())
     const pendingWelcomeMessages = ref<Map<string, PendingGroupWelcomeMessage[]>>(new Map())
+    const archivePromptStates = ref<Map<string, { count: number; threshold: number }>>(new Map())
     const totalMessages = ref(0)
     const loadedMessageCount = ref(0)
     const hasMoreBefore = ref(false)
@@ -780,12 +783,37 @@ const currentUserAvatar = ref('')
             roomSummaryStates.value = new Map(roomSummaryStates.value)
             discussionStates.value.delete(data.roomId)
             discussionStates.value = new Map(discussionStates.value)
+            archivePromptStates.value.delete(data.roomId)
+            archivePromptStates.value = new Map(archivePromptStates.value)
             if (data.roomId === currentRoomId.value) {
                 messages.value = []
                 resetMessagePaging()
                 typingUsers.value.clear()
                 contextStatuses.value.clear()
                 pendingApprovals.value.clear()
+            }
+        })
+
+        socket.on('room_archive_prompt', (data: { roomId: string; count: number; threshold: number }) => {
+            if (!data?.roomId) return
+            archivePromptStates.value.set(data.roomId, { count: data.count, threshold: data.threshold || 500 })
+            archivePromptStates.value = new Map(archivePromptStates.value)
+        })
+
+        socket.on('room_archived', (data: { roomId: string; deletedMessages: number; totalTokens: number }) => {
+            if (!data?.roomId) return
+            archivePromptStates.value.delete(data.roomId)
+            archivePromptStates.value = new Map(archivePromptStates.value)
+            const room = rooms.value.find(r => r.id === data.roomId)
+            if (room) room.totalTokens = data.totalTokens ?? 0
+            if (currentRoomId.value === data.roomId) {
+                // The archived rows are gone; reload the surviving transcript so the
+                // list no longer references deleted history.
+                void getRoomDetail(data.roomId).then((res) => {
+                    if (currentRoomId.value !== data.roomId) return
+                    messages.value = res.messages
+                    applyMessagePaging(res)
+                }).catch(() => { /* keep the stale list; the next reload repairs it */ })
             }
         })
     }
@@ -804,6 +832,7 @@ const currentUserAvatar = ref('')
         roomSummaryStates.value.clear()
         discussionStates.value.clear()
         pendingApprovals.value.clear()
+        archivePromptStates.value.clear()
     }
 
     function setUserInfo(name: string, description: string) {
@@ -1037,6 +1066,37 @@ const currentUserAvatar = ref('')
             roomSummaryStates.value = new Map(roomSummaryStates.value)
             const idx = rooms.value.findIndex(r => r.id === currentRoomId.value)
             if (idx >= 0 && res.room) rooms.value[idx] = res.room
+            return res
+        } catch (err: any) {
+            error.value = err.message
+            throw err
+        }
+    }
+
+    // ─── Archive Actions ───────────────────────────────────
+    async function archiveCurrentRoom() {
+        const roomId = currentRoomId.value
+        if (!roomId) return
+        try {
+            const res = await archiveRoomApi(roomId)
+            archivePromptStates.value.delete(roomId)
+            archivePromptStates.value = new Map(archivePromptStates.value)
+            if (res.room) upsertRoom(res.room)
+            return res
+        } catch (err: any) {
+            error.value = err.message
+            throw err
+        }
+    }
+
+    async function dismissCurrentRoomArchive(mode: 'ignore' | 'later') {
+        const roomId = currentRoomId.value
+        if (!roomId) return
+        try {
+            const res = await dismissArchivePrompt(roomId, mode)
+            archivePromptStates.value.delete(roomId)
+            archivePromptStates.value = new Map(archivePromptStates.value)
+            if (res.room) upsertRoom(res.room)
             return res
         } catch (err: any) {
             error.value = err.message
@@ -1303,6 +1363,7 @@ const currentUserAvatar = ref('')
         activePendingApproval,
         autoPlaySpeechEnabled,
         pendingWelcomeMessages,
+        archivePromptStates,
         activeMessageReference,
         totalMessages,
         loadedMessageCount,
@@ -1339,6 +1400,8 @@ const currentUserAvatar = ref('')
         deleteRoom,
         cloneRoom,
         clearCurrentRoomContext,
+        archiveCurrentRoom,
+        dismissCurrentRoomArchive,
         setRoomWorkspace,
         setRoomInviteCode,
         loadAgents,

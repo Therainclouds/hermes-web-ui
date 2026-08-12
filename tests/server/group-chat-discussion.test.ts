@@ -103,6 +103,7 @@ function harness(opts: {
 
   const broadcasts: DiscussionState[] = []
   const systemMessages: Array<{ roomId: string; content: string }> = []
+  const archiveCalls: string[] = []
   const interruptRoom = opts.interruptRoom || vi.fn(async () => {})
   const runner = new DiscussionRunner({
     storage,
@@ -112,6 +113,24 @@ function harness(opts: {
     },
     roomSummaryService: {
       prepareForMessage: async () => ({ summary: '', history: [] }),
+      archiveRoom: async (roomId: string) => {
+        archiveCalls.push(roomId)
+        return {
+          archived: true,
+          deletedMessages: 0,
+          summary: {
+            roomId,
+            summary: 'archived',
+            summaryThroughMessageId: '',
+            summaryThroughMessageTimestamp: 0,
+            summarizedTurnCount: 0,
+            status: 'success',
+            version: 1,
+            updatedAt: 0,
+            lastError: null,
+          },
+        }
+      },
     },
     emitSystemMessage: async (roomId: string, content: string) => {
       systemMessages.push({ roomId, content })
@@ -134,6 +153,7 @@ function harness(opts: {
     systemMessages,
     contextMessages,
     speechCalls,
+    archiveCalls,
     setMessageCount: (value: number) => {
       messageCount = value
     },
@@ -306,6 +326,17 @@ describe('group chat free discussion runner', () => {
     const calls = speechCalls()
     expect(calls.length).toBe(5) // 2 rounds x 2 + 1 report
     expect(calls.at(-1)?.content).toContain('原地打转')
+  })
+
+  it('auto-archives the room transcript once the discussion ends', async () => {
+    const { runner, archiveCalls } = harness()
+    judgeMock.mockResolvedValue(judgeJson({ converged: true }))
+
+    await runner.start('room-1', { goal: 'go', maxRounds: 3 })
+    const final = await waitForDone(runner, 'room-1')
+
+    expect(final.status).toBe('converged')
+    await vi.waitFor(() => expect(archiveCalls).toEqual(['room-1']))
   })
 
   it('skips an agent whose speech fails without blocking the round', async () => {

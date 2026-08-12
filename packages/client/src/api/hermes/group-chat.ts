@@ -326,6 +326,30 @@ export async function clearRoomContext(roomId: string): Promise<{ success: boole
     })
 }
 
+export interface ArchiveRoomResult {
+    success: boolean
+    deletedMessages: number
+    summary: RoomSummaryState
+    room: RoomInfo
+}
+
+export async function archiveRoom(roomId: string): Promise<ArchiveRoomResult> {
+    return request(`/api/hermes/group-chat/rooms/${roomId}/archive`, {
+        method: 'POST',
+    })
+}
+
+export async function dismissArchivePrompt(
+    roomId: string,
+    mode: 'ignore' | 'later',
+): Promise<{ success: boolean; room: RoomInfo }> {
+    return request(`/api/hermes/group-chat/rooms/${roomId}/archive-dismiss`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode }),
+    })
+}
+
 export async function updateRoomConfig(roomId: string, config: RoomConfigInput): Promise<{ room: RoomInfo }> {
     return request(`/api/hermes/group-chat/rooms/${roomId}/config`, {
         method: 'PUT',

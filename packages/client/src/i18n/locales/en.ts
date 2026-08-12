@@ -2769,6 +2769,17 @@ export default {
     clearContext: 'Clear context',
     clearContextConfirm: 'Clear this room context? Messages and compression snapshots will be removed, but agents and members stay.',
     contextCleared: 'Context cleared',
+
+    archivePromptTitle: 'Chat history limit reached',
+    archivePromptDesc: 'This room has {count} messages (threshold {threshold}). Archive them into the room summary and clean the old transcript to keep agent context lean.',
+    archivePromptHint: 'Archiving summarizes and cleans old messages (still visible in the summary panel); ignoring falls back to silent truncation.',
+    archiveNow: 'Archive now',
+    archiveIgnore: 'Ignore & truncate',
+    archiveLater: 'Remind me later',
+    archiveSuccess: 'Archived — {count} old messages cleaned up',
+    archiveIgnored: 'Ignored — continuing with silent truncation',
+    archiveFailed: 'Archive failed',
+
     you: 'You',
     joined: 'Joined room',
     joinFailed: 'Failed to join room',

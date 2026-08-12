@@ -285,3 +285,108 @@ describe('group chat rolling room summary', () => {
     expect(mutation).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('group chat archiveRoom', () => {
+  it('summarizes every message regardless of cadence and advances the anchor', async () => {
+    const runner = vi.fn<GroupSummaryRunner>(async input => (
+      `archived:${input.messages.map(m => m.id).join(',')}`
+    ))
+    const { messages, summaries, service } = harness(runner)
+    messages.push(
+      message('u1', 'user', 'one', 1),
+      message('a1', 'assistant', 'reply one', 2),
+      message('u2', 'user', 'two', 3),
+      message('a2', 'assistant', 'reply two', 4),
+    )
+
+    const result = await service.archiveRoom('room-1')
+
+    expect(result.archived).toBe(true)
+    expect(runner).toHaveBeenCalledTimes(1)
+    expect(runner.mock.calls[0][0].messages.map(m => m.id)).toEqual(['u1', 'a1', 'u2', 'a2'])
+    expect(summaries.get('room-1')).toMatchObject({
+      summary: 'archived:u1,a1,u2,a2',
+      summaryThroughMessageId: 'a2',
+      summarizedTurnCount: 2,
+      status: 'success',
+    })
+    expect(result.summary).toMatchObject({ summaryThroughMessageId: 'a2', status: 'success' })
+  })
+
+  it('re-archives: keeps the existing anchor and only summarizes the tail', async () => {
+    const runner = vi.fn<GroupSummaryRunner>(async () => 'second archive')
+    const { messages, summaries, service } = harness(runner)
+    summaries.set('room-1', {
+      roomId: 'room-1',
+      summary: 'first',
+      summaryThroughMessageId: 'a1',
+      summaryThroughMessageTimestamp: 2,
+      summarizedTurnCount: 1,
+      status: 'success',
+      version: 2,
+      updatedAt: 1,
+      lastError: null,
+    })
+    messages.push(
+      message('u1', 'user', 'one', 1),
+      message('a1', 'assistant', 'reply one', 2),
+      message('u2', 'user', 'two', 3),
+      message('a2', 'assistant', 'reply two', 4),
+    )
+
+    const result = await service.archiveRoom('room-1')
+
+    expect(runner).toHaveBeenCalledTimes(1)
+    expect(runner.mock.calls[0][0]).toMatchObject({ previousSummary: 'first' })
+    expect(runner.mock.calls[0][0].messages.map(m => m.id)).toEqual(['u2', 'a2'])
+    expect(summaries.get('room-1')).toMatchObject({
+      summary: 'second archive',
+      summaryThroughMessageId: 'a2',
+      summarizedTurnCount: 2,
+      version: 3,
+    })
+    expect(result.archived).toBe(true)
+  })
+
+  it('keeps the raw transcript when summarization fails', async () => {
+    const runner = vi.fn<GroupSummaryRunner>(async () => {
+      throw new Error('provider down')
+    })
+    const { messages, summaries, service } = harness(runner)
+    messages.push(
+      message('u1', 'user', 'one', 1),
+      message('a1', 'assistant', 'reply one', 2),
+    )
+
+    const result = await service.archiveRoom('room-1')
+
+    expect(result.archived).toBe(false)
+    expect(result.deletedMessages).toBe(0)
+    expect(summaries.get('room-1')).toMatchObject({ status: 'failed', lastError: 'provider down' })
+    expect(messages.length).toBe(2)
+  })
+
+  it('does not summarize or delete when the room has no summary configuration', async () => {
+    const runner = vi.fn<GroupSummaryRunner>(async () => 'unused')
+    const { messages, service } = harness(runner)
+    // Strip the summary config so the archive has nothing to run with.
+    messages.push(
+      message('u1', 'user', 'one', 1),
+      message('a1', 'assistant', 'reply one', 2),
+    )
+
+    const bareService = new GroupRoomSummaryService({
+      getRoom: () => ({ id: 'room-1' } as any),
+      getMessagesForContext: () => messages,
+      getRoomSummary: () => null,
+      saveRoomSummary: () => undefined,
+    })
+
+    const result = await bareService.archiveRoom('room-1')
+
+    expect(runner).not.toHaveBeenCalled()
+    expect(result.archived).toBe(false)
+    expect(result.deletedMessages).toBe(0)
+    expect(messages.length).toBe(2)
+  })
+})

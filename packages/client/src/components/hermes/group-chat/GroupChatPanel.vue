@@ -688,6 +688,40 @@ function canManageRoom(room: Pick<RoomInfo, 'canManage'> | null | undefined): bo
     return room?.canManage === true
 }
 const currentRoomCanManage = computed(() => canManageRoom(currentRoom.value))
+const archivePrompt = computed(() => {
+    if (!store.currentRoomId) return null
+    return store.archivePromptStates.get(store.currentRoomId) || null
+})
+const isArchiving = ref(false)
+const archivePromptVisible = computed({
+    get: () => !!archivePrompt.value,
+    set: (visible: boolean) => {
+        if (!visible && archivePrompt.value) void handleArchiveDismiss('later')
+    },
+})
+
+async function handleArchiveNow() {
+    if (!store.currentRoomId) return
+    isArchiving.value = true
+    try {
+        const res = await store.archiveCurrentRoom()
+        message.success(t('groupChat.archiveSuccess', { count: res?.deletedMessages ?? 0 }))
+    } catch (err: any) {
+        message.error(err.message || t('groupChat.archiveFailed'))
+    } finally {
+        isArchiving.value = false
+    }
+}
+
+async function handleArchiveDismiss(mode: 'ignore' | 'later') {
+    if (!store.currentRoomId) return
+    try {
+        await store.dismissCurrentRoomArchive(mode)
+        if (mode === 'ignore') message.info(t('groupChat.archiveIgnored'))
+    } catch (err: any) {
+        message.error(err.message || t('groupChat.archiveFailed'))
+    }
+}
 const currentRoomNeedsSummaryConfiguration = computed(() => {
     const room = currentRoom.value
     if (!room) return false
@@ -2820,6 +2854,28 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
             </div>
         </NModal>
 
+        <NModal
+            v-model:show="archivePromptVisible"
+            preset="card"
+            :title="t('groupChat.archivePromptTitle')"
+            :closable="true"
+            style="max-width: 440px"
+        >
+            <div v-if="archivePrompt" class="archive-prompt-body">
+                <p class="archive-prompt-desc">
+                    {{ t('groupChat.archivePromptDesc', { count: archivePrompt.count, threshold: archivePrompt.threshold }) }}
+                </p>
+                <p class="form-hint">{{ t('groupChat.archivePromptHint') }}</p>
+                <NSpace justify="end">
+                    <NButton @click="handleArchiveDismiss('later')">{{ t('groupChat.archiveLater') }}</NButton>
+                    <NButton @click="handleArchiveDismiss('ignore')">{{ t('groupChat.archiveIgnore') }}</NButton>
+                    <NButton type="primary" :loading="isArchiving" @click="handleArchiveNow">
+                        {{ t('groupChat.archiveNow') }}
+                    </NButton>
+                </NSpace>
+            </div>
+        </NModal>
+
     </div>
 </template>
 
@@ -2855,6 +2911,17 @@ export default defineComponent({ components: { CreateRoomForm } })
 }
 
 .group-chat-refactor-notice {
+    margin: 0;
+    line-height: 1.7;
+}
+
+.archive-prompt-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.archive-prompt-desc {
     margin: 0;
     line-height: 1.7;
 }

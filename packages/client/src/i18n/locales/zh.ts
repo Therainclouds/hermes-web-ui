@@ -2771,6 +2771,17 @@ export default {
     clearContext: '清理上下文',
     clearContextConfirm: '确定清理当前房间上下文吗？消息和压缩快照会被删除，智能体和成员会保留。',
     contextCleared: '上下文已清理',
+
+    archivePromptTitle: '聊天消息已达上限',
+    archivePromptDesc: '当前房间已有 {count} 条消息（上限 {threshold}）。建议归档压缩为总结并清理旧消息，避免影响智能体上下文。',
+    archivePromptHint: '归档会总结并清理历史消息（总结面板仍可查看）；忽略则恢复旧的静默截断。',
+    archiveNow: '立即归档',
+    archiveIgnore: '忽略并截断',
+    archiveLater: '稍后提醒',
+    archiveSuccess: '归档完成，已清理 {count} 条历史消息',
+    archiveIgnored: '已忽略，继续按消息上限静默截断',
+    archiveFailed: '归档失败',
+
     you: '你',
     joined: '已加入房间',
     joinFailed: '加入房间失败',

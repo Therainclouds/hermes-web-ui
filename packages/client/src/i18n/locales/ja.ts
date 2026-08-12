@@ -2546,6 +2546,17 @@ export default {
     clearContext: 'コンテキストを消去',
     clearContextConfirm: 'このルームのコンテキストを消去しますか？メッセージと圧縮スナップショットは削除されますが、エージェントとメンバーは残ります。',
     contextCleared: 'コンテキストを消去しました',
+
+    archivePromptTitle: 'チャット履歴の上限に達しました',
+    archivePromptDesc: 'このルームには {count} 件のメッセージがあります（上限 {threshold}）。古いメッセージを要約としてアーカイブし、エージェントのコンテキストを軽く保つことをお勧めします。',
+    archivePromptHint: 'アーカイブすると古いメッセージを要約して整理します（要約パネルから確認可能）。無視すると従来の静かな切り詰めに戻ります。',
+    archiveNow: '今すぐアーカイブ',
+    archiveIgnore: '無視して切り詰め',
+    archiveLater: '後で通知',
+    archiveSuccess: 'アーカイブ完了 — {count} 件の古いメッセージを整理しました',
+    archiveIgnored: '無視しました — 引き続き上限で切り詰めます',
+    archiveFailed: 'アーカイブに失敗しました',
+
     you: 'あなた',
     joined: 'ルームに参加しました',
     joinFailed: 'ルームへの参加に失敗しました',

@@ -61,6 +61,16 @@ export interface GroupRoomSummaryStorage {
   getMessagesForContext(roomId: string): StoredGroupMessage[]
   getRoomSummary(roomId: string): GroupRoomSummary | null
   saveRoomSummary(summary: GroupRoomSummary): void
+  /** Delete the raw transcript up to and including the summary anchor, so archived
+   *  history only lives in gc_room_summaries. Optional so lightweight test doubles
+   *  can opt out; the real ChatStorage implements it. */
+  deleteMessagesThrough?(roomId: string, anchorMessageId: string): number
+}
+
+export interface ArchiveRoomResult {
+  archived: boolean
+  deletedMessages: number
+  summary: GroupRoomSummary
 }
 
 export type GroupSummaryRunner = (input: {
@@ -263,6 +273,7 @@ export class GroupRoomSummaryService {
     private readonly storage: GroupRoomSummaryStorage,
     private readonly onStatus?: (summary: GroupRoomSummary) => void,
     private readonly summaryRunner?: GroupSummaryRunner,
+    private readonly onArchived?: (roomId: string, deletedMessages: number) => void,
   ) {}
 
   getState(roomId: string): GroupRoomSummary {
@@ -299,6 +310,101 @@ export class GroupRoomSummaryService {
 
   async checkAfterMessage(roomId: string, currentMessageId: string): Promise<void> {
     await this.withRoomLock(roomId, () => this.summarizeIfNeeded(roomId, currentMessageId))
+  }
+
+  /**
+   * Archive a room's transcript: force a rolling summary of everything not yet
+   * summarized (ignoring the per-turn cadence), then delete the raw messages up to
+   * the new summary anchor so history no longer occupies the agent context window.
+   * If the room has no summary config (or summarization fails), no raw messages are
+   * deleted — the transcript is kept rather than risking silent data loss.
+   */
+  async archiveRoom(roomId: string): Promise<ArchiveRoomResult> {
+    const result: ArchiveRoomResult = {
+      archived: false,
+      deletedMessages: 0,
+      summary: idleSummary(roomId),
+    }
+    await this.withRoomLock(roomId, async () => {
+      const room = this.storage.getRoom(roomId)
+      const previous = this.getState(roomId)
+      result.summary = previous
+      if (!room) return
+
+      const profile = String(room.summaryProfile || '').trim()
+      const provider = String(room.summaryProvider || '').trim()
+      const model = String(room.summaryModel || '').trim()
+      const canSummarize = Boolean(profile && provider && model)
+
+      const unsummarized = messagesAfterSummary(
+        cleanGroupMessages(this.storage.getMessagesForContext(roomId)),
+        previous,
+      )
+      let anchor = previous.summaryThroughMessageId
+
+      if (canSummarize && unsummarized.length > 0) {
+        const newTurns = unsummarized.filter(message => message.role === 'user').length
+        const summarizing: GroupRoomSummary = {
+          ...previous,
+          status: 'summarizing',
+          updatedAt: Date.now(),
+          lastError: null,
+        }
+        this.persistAndEmit(summarizing)
+        try {
+          const nextText = await (this.summaryRunner || this.runBareEkkoSummary.bind(this))({
+            profile,
+            provider,
+            model,
+            apiMode: String(room.summaryApiMode || '').trim(),
+            previousSummary: previous.summary,
+            messages: unsummarized,
+            roomId,
+          })
+          const lastMessage = unsummarized[unsummarized.length - 1]
+          const next: GroupRoomSummary = {
+            roomId,
+            summary: nextText,
+            summaryThroughMessageId: lastMessage.id,
+            summaryThroughMessageTimestamp: lastMessage.timestamp,
+            summarizedTurnCount: previous.summarizedTurnCount + newTurns,
+            status: 'success',
+            version: previous.version + 1,
+            updatedAt: Date.now(),
+            lastError: null,
+          }
+          this.persistAndEmit(next)
+          anchor = next.summaryThroughMessageId
+          result.summary = next
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          const failed: GroupRoomSummary = {
+            ...previous,
+            status: 'failed',
+            updatedAt: Date.now(),
+            lastError: message.slice(0, 2000),
+          }
+          this.persistAndEmit(failed)
+          result.summary = failed
+          logger.warn({ err: error, roomId }, '[GroupChat] archive summary failed; keeping raw transcript')
+          // No new anchor: never delete messages that we failed to summarize.
+          anchor = ''
+        }
+      }
+
+      if (anchor && this.storage.deleteMessagesThrough) {
+        const deleted = this.storage.deleteMessagesThrough(roomId, anchor)
+        if (deleted > 0) {
+          result.archived = true
+          result.deletedMessages = deleted
+          this.onArchived?.(roomId, deleted)
+        }
+      } else if (anchor && result.summary !== previous) {
+        // A fresh summary was produced but the storage cannot delete raw rows.
+        result.archived = true
+      }
+    })
+    return result
   }
 
   async runExclusive<T>(roomId: string, task: () => Promise<T> | T): Promise<T> {

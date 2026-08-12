@@ -2546,6 +2546,17 @@ export default {
     clearContext: '컨텍스트 지우기',
     clearContextConfirm: '이 방의 컨텍스트를 지울까요? 메시지와 압축 스냅샷은 삭제되지만 에이전트와 멤버는 유지됩니다.',
     contextCleared: '컨텍스트를 지웠습니다',
+
+    archivePromptTitle: '채팅 기록 한도에 도달했습니다',
+    archivePromptDesc: '이 방에는 {count}개의 메시지가 있습니다(한도 {threshold}). 오래된 메시지를 요약으로 보관하여 에이전트 컨텍스트를 가볍게 유지하세요.',
+    archivePromptHint: '보관은 오래된 메시지를 요약하고 정리합니다(요약 패널에서 확인 가능). 무시하면 기존처럼 조용히 잘라냅니다.',
+    archiveNow: '지금 보관',
+    archiveIgnore: '무시하고 잘라내기',
+    archiveLater: '나중에 알림',
+    archiveSuccess: '보관 완료 — 오래된 메시지 {count}개를 정리했습니다',
+    archiveIgnored: '무시됨 — 계속해서 한도로 잘라냅니다',
+    archiveFailed: '보관 실패',
+
     you: '나',
     joined: '방에 참여했습니다',
     joinFailed: '방 참여 실패',

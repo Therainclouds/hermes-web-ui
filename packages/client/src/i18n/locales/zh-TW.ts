@@ -2703,6 +2703,17 @@ export default {
     clearContext: '清理上下文',
     clearContextConfirm: '確定清理目前房間上下文嗎？訊息和壓縮快照會被刪除，智慧代理和成員會保留。',
     contextCleared: '上下文已清理',
+
+    archivePromptTitle: '聊天訊息已達上限',
+    archivePromptDesc: '目前房間已有 {count} 則訊息（上限 {threshold}）。建議封存壓縮為總結並清理舊訊息，避免影響智慧體上下文。',
+    archivePromptHint: '封存會總結並清理歷史訊息（總結面板仍可查看）；忽略則恢復舊的靜默截斷。',
+    archiveNow: '立即封存',
+    archiveIgnore: '忽略並截斷',
+    archiveLater: '稍後提醒',
+    archiveSuccess: '封存完成，已清理 {count} 則歷史訊息',
+    archiveIgnored: '已忽略，繼續依訊息上限靜默截斷',
+    archiveFailed: '封存失敗',
+
     you: '你',
     joined: '已加入房間',
     joinFailed: '加入房間失敗',
