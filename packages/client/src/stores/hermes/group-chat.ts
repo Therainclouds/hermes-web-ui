@@ -1060,8 +1060,15 @@ const currentUserAvatar = ref('')
         }
     }
 
-    async function beginDiscussion(roomId: string, input: DiscussionStartInput): Promise<DiscussionState> {
-        const { discussion } = await startDiscussionApi(roomId, input)
+    async function beginDiscussion(roomId: string, input: DiscussionStartInput, attachments?: Attachment[]): Promise<DiscussionState> {
+        // If the caller attached real files, upload them first so the file names
+        // can be referenced in the discussion goal.
+        let finalAttachments = input.attachments
+        if (attachments?.length) {
+            const uploaded = await uploadGroupFiles(attachments)
+            finalAttachments = uploaded.map(file => file.name)
+        }
+        const { discussion } = await startDiscussionApi(roomId, { ...input, attachments: finalAttachments })
         discussionStates.value.set(roomId, discussion)
         discussionStates.value = new Map(discussionStates.value)
         return discussion

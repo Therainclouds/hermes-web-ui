@@ -262,7 +262,7 @@ function tryParseDiscussionCommand(content: string): { goal: string; agentOrder?
     return { goal, agentOrder: order.length >= 2 ? order : undefined }
 }
 
-async function handleDiscussionCommand(command: { goal: string; agentOrder?: string[] }): Promise<void> {
+async function handleDiscussionCommand(command: { goal: string; agentOrder?: string[] }, attachments?: Attachment[]): Promise<void> {
     const roomId = store.currentRoomId
     if (!roomId) return
     if (!currentRoomCanManage.value) {
@@ -274,7 +274,7 @@ async function handleDiscussionCommand(command: { goal: string; agentOrder?: str
         return
     }
     try {
-        await store.beginDiscussion(roomId, { goal: command.goal, agentOrder: command.agentOrder })
+        await store.beginDiscussion(roomId, { goal: command.goal, agentOrder: command.agentOrder }, attachments)
     } catch (err: any) {
         message.error(err?.message || t('groupChat.discussion.startFailed'))
     }
@@ -1107,7 +1107,7 @@ async function handleSelectRoom(roomId: string) {
 async function handleSendMessage(content: string, attachments?: Attachment[]) {
     const discussionCommand = tryParseDiscussionCommand(content)
     if (discussionCommand) {
-        await handleDiscussionCommand(discussionCommand)
+        await handleDiscussionCommand(discussionCommand, attachments)
         return
     }
     try {
