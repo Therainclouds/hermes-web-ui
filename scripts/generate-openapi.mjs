@@ -121,23 +121,35 @@ function scanRoutes() {
 
 function scanRouteFile(filePath, tagInfo, paths) {
   const content = readFileSync(filePath, 'utf-8')
-  const controllerContent = readControllerContent(filePath, content)
+
+  // Resolve every `import * as alias from '<controller>'` so routes delegated to
+  // controllers under any namespace (ctrl, discussionCtrl, documentCtrl, ...)
+  // can be resolved to their handler source for operation/param inference.
+  const controllerAliases = []
+  const importRe = /import\s+\*\s+as\s+(\w+)\s+from\s+['"]([^'"]+)['"]/g
+  let importMatch
+  while ((importMatch = importRe.exec(content)) !== null) {
+    controllerAliases.push({ alias: importMatch[1], controllerPath: importMatch[2] })
+  }
 
   // Pattern 1: controller functions - sessionRoutes.get('/path', middleware, ctrl.method)
-  const ctrlRouteRegex = /\w+Routes?\.(get|post|put|delete|patch)\(\s*['"]([^'"]+)['"]\s*,[^\n]*?\bctrl\.(\w+)/g
-
-  let match
-  while ((match = ctrlRouteRegex.exec(content)) !== null) {
-    const [, method, path, controllerMethod] = match
-    const controllerSource = controllerContent
-      ? extractFunctionSource(controllerContent, controllerMethod)
-      : ''
-    addEndpoint(paths, method, path, controllerMethod, tagInfo, content, match.index, controllerSource)
+  for (const { alias, controllerPath } of controllerAliases) {
+    const controllerSource = readControllerContent(filePath, controllerPath)
+    const ctrlRouteRegex = new RegExp(`\\w+Routes?\\.(get|post|put|delete|patch)\\(\\s*['"]([^'"]+)['"]\\s*,[^\\n]*?\\b${alias}\\.(\\w+)`, 'g')
+    let match
+    while ((match = ctrlRouteRegex.exec(content)) !== null) {
+      const [, method, path, controllerMethod] = match
+      // Extract only the handler function body so param/body inference is
+      // scoped to this endpoint, not the whole controller file.
+      const handlerSource = controllerSource ? extractFunctionSource(controllerSource, controllerMethod) : ''
+      addEndpoint(paths, method, path, controllerMethod, tagInfo, content, match.index, handlerSource)
+    }
   }
 
   // Pattern 2: inline functions - groupChatRoutes.post('/path', async (ctx) => {...})
   const inlineRouteRegex = /\w+Routes?\.(get|post|put|delete|patch)\(\s*['"]([^'"]+)['"]\s*,[^\n]*?async\s*\(ctx\)/g
 
+  let match
   while ((match = inlineRouteRegex.exec(content)) !== null) {
     const [, method, path] = match
     const controllerMethod = generateOperationIdFromPath(path, method)
@@ -145,11 +157,8 @@ function scanRouteFile(filePath, tagInfo, paths) {
   }
 }
 
-function readControllerContent(routeFilePath, routeContent) {
-  const importMatch = routeContent.match(/import\s+\*\s+as\s+ctrl\s+from\s+['"]([^'"]+)['"]/)
-  if (!importMatch) return ''
-
-  const controllerPath = resolve(dirname(routeFilePath), `${importMatch[1]}.ts`)
+function readControllerContent(routeFilePath, controllerImportPath) {
+  const controllerPath = resolve(dirname(routeFilePath), `${controllerImportPath}.ts`)
   try {
     return readFileSync(controllerPath, 'utf-8')
   } catch {
