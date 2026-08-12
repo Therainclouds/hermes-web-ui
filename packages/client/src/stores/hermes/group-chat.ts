@@ -67,6 +67,35 @@ async function uploadGroupFiles(attachments: Attachment[]): Promise<{ name: stri
     return data.files
 }
 
+/**
+ * Upload discussion attachments through the group-chat /documents endpoint
+ * (streaming, no 50MB /upload cap) so large files actually land on the device
+ * before the discussion starts. Throws if any file fails — the caller must not
+ * start the discussion with a phantom file name.
+ */
+async function uploadDiscussionAttachments(roomId: string, attachments: Attachment[]): Promise<string[]> {
+    const uploaded: string[] = []
+    for (const att of attachments) {
+        if (!att.file) continue
+        const formData = new FormData()
+        formData.append('file', att.file, att.name)
+        const token = getApiKey()
+        const profileName = getActiveProfileName()
+        const headers: Record<string, string> = {}
+        if (token) headers.Authorization = `Bearer ${token}`
+        if (profileName) headers['X-Hermes-Profile'] = profileName
+        const res = await fetch(`/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/documents`, {
+            method: 'POST',
+            body: formData,
+            headers,
+        })
+        if (!res.ok) throw new Error(await responseErrorMessage(res, `Upload failed for ${att.name}`))
+        const data = await res.json() as { name: string }
+        uploaded.push(data.name)
+    }
+    return uploaded
+}
+
 function buildGroupContentBlocks(content: string, attachments: Attachment[], files: { name: string; path: string }[]): ContentBlock[] {
     const blocks: ContentBlock[] = []
     if (content.trim()) blocks.push({ type: 'text', text: content.trim() })
@@ -1061,12 +1090,13 @@ const currentUserAvatar = ref('')
     }
 
     async function beginDiscussion(roomId: string, input: DiscussionStartInput, attachments?: Attachment[]): Promise<DiscussionState> {
-        // If the caller attached real files, upload them first so the file names
-        // can be referenced in the discussion goal.
+        // If the caller attached real files, upload them through the streaming
+        // /documents endpoint (no 50MB /upload cap) so the file actually lands
+        // on the device; the returned names are referenced in the goal. Throws
+        // on failure so we never start a discussion with a phantom file.
         let finalAttachments = input.attachments
         if (attachments?.length) {
-            const uploaded = await uploadGroupFiles(attachments)
-            finalAttachments = uploaded.map(file => file.name)
+            finalAttachments = await uploadDiscussionAttachments(roomId, attachments)
         }
         const { discussion } = await startDiscussionApi(roomId, { ...input, attachments: finalAttachments })
         discussionStates.value.set(roomId, discussion)

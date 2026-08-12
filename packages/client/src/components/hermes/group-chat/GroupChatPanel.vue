@@ -174,22 +174,19 @@ function openDiscussionForm(): void {
     discussionReporterId.value = store.agents[0]?.agentId || ''
 }
 async function handleStartDiscussion(): Promise<void> {
-    const roomId = store.currentRoomId
     const goal = discussionGoal.value.trim()
-    if (!roomId || !goal) return
+    if (!goal) return
     isStartingDiscussion.value = true
     try {
-        await store.beginDiscussion(roomId, {
+        const ok = await startDiscussionViaUI({
             goal,
             attachments: discussionAttachments.value.length > 0 ? [...discussionAttachments.value] : undefined,
-            agentOrder: discussionAgentOrder.value.length >= 2 ? discussionAgentOrder.value : undefined,
+            agentOrder: discussionAgentOrder.value.length >= 2 ? [...discussionAgentOrder.value] : undefined,
             maxRounds: discussionMaxRounds.value,
             maxMessages: discussionMaxMessages.value,
             reporterId: discussionReporterId.value || undefined,
         })
-        discussionFormVisible.value = false
-    } catch (err: any) {
-        message.error(err?.message || t('groupChat.discussion.startFailed'))
+        if (ok) discussionFormVisible.value = false
     } finally {
         isStartingDiscussion.value = false
     }
@@ -207,6 +204,49 @@ async function handleStopDiscussion(): Promise<void> {
     }
 }
 
+/**
+ * Unified discussion launcher shared by all three entry points (settings form,
+ * quick-start toolbar button, and /讨论 command). Applies common guards and
+ * passes the full parameter set (goal, attachments, order, rounds, reporter).
+ */
+async function startDiscussionViaUI(
+    input: {
+        goal: string
+        agentOrder?: string[]
+        attachments?: string[]
+        attachmentsFiles?: Attachment[]
+        maxRounds?: number
+        maxMessages?: number
+        reporterId?: string
+    },
+): Promise<boolean> {
+    const roomId = store.currentRoomId
+    const goal = (input.goal || '').trim()
+    if (!roomId || !goal) return false
+    if (!currentRoomCanManage.value) {
+        message.error(t('groupChat.discussion.managerOnly'))
+        return false
+    }
+    if (discussionIsActive.value) {
+        message.warning(t('groupChat.discussion.inProgress'))
+        return false
+    }
+    try {
+        await store.beginDiscussion(roomId, {
+            goal,
+            attachments: input.attachments?.length ? [...input.attachments] : undefined,
+            agentOrder: input.agentOrder && input.agentOrder.length >= 2 ? input.agentOrder : undefined,
+            maxRounds: input.maxRounds,
+            maxMessages: input.maxMessages,
+            reporterId: input.reporterId || undefined,
+        }, input.attachmentsFiles)
+        return true
+    } catch (err: any) {
+        message.error(err?.message || t('groupChat.discussion.startFailed'))
+        return false
+    }
+}
+
 // ─── Report download (Word + Markdown) ─────────────────────
 const { isDownloading: isDownloadingReport, downloadReport: handleDownloadDiscussionReport } = useDiscussionReportDownload()
 
@@ -214,35 +254,56 @@ const { isDownloading: isDownloadingReport, downloadReport: handleDownloadDiscus
 const discussionQuickVisible = ref(false)
 const discussionQuickGoal = ref('')
 const discussionQuickOrder = ref<string[]>([])
+const discussionQuickMaxRounds = ref(8)
+const discussionQuickMaxMessages = ref(60)
+const discussionQuickReporterId = ref('')
+const discussionQuickAttachmentInputRef = ref<HTMLInputElement | null>(null)
+const discussionQuickAttachments = ref<string[]>([])
 const isQuickStarting = ref(false)
 
 function openDiscussionQuick(): void {
     discussionQuickVisible.value = true
     discussionQuickGoal.value = ''
     discussionQuickOrder.value = store.agents.map(agent => agent.agentId)
+    discussionQuickMaxRounds.value = 8
+    discussionQuickMaxMessages.value = 60
+    discussionQuickReporterId.value = store.agents[0]?.agentId || ''
+    discussionQuickAttachments.value = []
+}
+
+function openDiscussionQuickAttachmentPicker(): void {
+    discussionQuickAttachmentInputRef.value?.click()
+}
+
+function handleDiscussionQuickAttachmentChange(event: Event): void {
+    const input = event.target as HTMLInputElement
+    const files = Array.from(input.files || [])
+    input.value = ''
+    for (const file of files) {
+        if (!discussionQuickAttachments.value.includes(file.name)) {
+            discussionQuickAttachments.value.push(file.name)
+        }
+    }
+}
+
+function removeDiscussionQuickAttachment(name: string): void {
+    discussionQuickAttachments.value = discussionQuickAttachments.value.filter(n => n !== name)
 }
 
 async function handleDiscussionQuickStart(): Promise<void> {
-    const roomId = store.currentRoomId
     const goal = discussionQuickGoal.value.trim()
-    if (!roomId || !goal) return
-    if (!currentRoomCanManage.value) {
-        message.error(t('groupChat.discussion.managerOnly'))
-        return
-    }
-    if (discussionIsActive.value) {
-        message.warning(t('groupChat.discussion.inProgress'))
-        return
-    }
+    if (!goal) return
     isQuickStarting.value = true
     try {
-        await store.beginDiscussion(roomId, {
+        const ok = await startDiscussionViaUI({
             goal,
-            agentOrder: discussionQuickOrder.value.length >= 2 ? discussionQuickOrder.value : undefined,
+            attachments: discussionQuickAttachments.value.length > 0 ? [...discussionQuickAttachments.value] : undefined,
+            agentOrder: discussionQuickOrder.value.length >= 2 ? [...discussionQuickOrder.value] : undefined,
+            maxRounds: discussionQuickMaxRounds.value,
+            maxMessages: discussionQuickMaxMessages.value,
+            reporterId: discussionQuickReporterId.value || undefined,
         })
-        discussionQuickVisible.value = false
-    } catch (err: any) {
-        message.error(err?.message || t('groupChat.discussion.startFailed'))
+        if (ok) discussionQuickVisible.value = false
     } finally {
         isQuickStarting.value = false
     }
@@ -253,9 +314,16 @@ function tryParseDiscussionCommand(content: string): { goal: string; agentOrder?
     const match = content.trim().match(/^\/(?:讨论|discuss)\s+(.+)$/s)
     if (!match) return null
     const rest = match[1].trim()
+    // @全体 / @all are reserved: they mean "all agents" (fall back to every
+    // room agent). Other @names resolve to specific agents.
+    const mentionsAll = /@(?:全体|所有人|all)\b/i.test(rest)
     const mentionNames = [...rest.matchAll(/@([^\s@]+)/g)].map(entry => entry[1])
     const goal = rest.replace(/@[^\s@]+/g, '').replace(/\s+/g, ' ').trim()
     if (!goal) return null
+    if (mentionsAll) {
+        const all = store.agents.map(agent => agent.agentId)
+        return { goal, agentOrder: all.length >= 2 ? all : undefined }
+    }
     const order = mentionNames
         .map(name => store.agents.find(agent => agent.name === name)?.agentId)
         .filter((id): id is string => !!id)
@@ -263,21 +331,16 @@ function tryParseDiscussionCommand(content: string): { goal: string; agentOrder?
 }
 
 async function handleDiscussionCommand(command: { goal: string; agentOrder?: string[] }, attachments?: Attachment[]): Promise<void> {
-    const roomId = store.currentRoomId
-    if (!roomId) return
-    if (!currentRoomCanManage.value) {
-        message.error(t('groupChat.discussion.managerOnly'))
-        return
-    }
-    if (discussionIsActive.value) {
-        message.warning(t('groupChat.discussion.inProgress'))
-        return
-    }
-    try {
-        await store.beginDiscussion(roomId, { goal: command.goal, agentOrder: command.agentOrder }, attachments)
-    } catch (err: any) {
-        message.error(err?.message || t('groupChat.discussion.startFailed'))
-    }
+    // Re-resolve @全体/@all into the full agent set; fall back to parsed order.
+    const mentionsAll = /@(?:全体|所有人|all)\b/i.test(command.goal + (command.agentOrder || []).join(' '))
+    const agentOrder = mentionsAll
+        ? store.agents.map(agent => agent.agentId)
+        : command.agentOrder
+    await startDiscussionViaUI({
+        goal: command.goal,
+        agentOrder,
+        attachmentsFiles: attachments,
+    })
 }
 // ─── Large Document Pipeline ───────────────────────────────────
 const docUploadInputRef = ref<HTMLInputElement | null>(null)
@@ -2698,6 +2761,49 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                         :options="discussionAgentOptions"
                         :placeholder="t('groupChat.discussion.agentOrderPlaceholder')"
                     />
+                </div>
+                <div class="form-group">
+                    <label class="form-label">{{ t('groupChat.discussion.attachments') }}</label>
+                    <input
+                        ref="discussionQuickAttachmentInputRef"
+                        type="file"
+                        multiple
+                        style="display: none"
+                        @change="handleDiscussionQuickAttachmentChange"
+                    />
+                    <NSpace>
+                        <NButton size="small" secondary @click="openDiscussionQuickAttachmentPicker">
+                            {{ t('groupChat.discussion.pickAttachments') }}
+                        </NButton>
+                        <NButton
+                            v-if="discussionQuickAttachments.length > 0"
+                            size="small"
+                            tertiary
+                            @click="discussionQuickAttachments = []"
+                        >
+                            {{ t('common.clear') }}
+                        </NButton>
+                    </NSpace>
+                    <div v-if="discussionQuickAttachments.length > 0" class="discussion-attachment-list">
+                        <div v-for="name in discussionQuickAttachments" :key="name" class="discussion-attachment-chip">
+                            <span :title="name">{{ name }}</span>
+                            <span class="discussion-attachment-remove" @click="removeDiscussionQuickAttachment(name)">×</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="discussion-limit-row">
+                    <div class="form-group">
+                        <label class="form-label">{{ t('groupChat.discussion.maxRounds') }}</label>
+                        <NInputNumber v-model:value="discussionQuickMaxRounds" :min="1" :max="50" style="width: 100%" />
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">{{ t('groupChat.discussion.maxMessages') }}</label>
+                        <NInputNumber v-model:value="discussionQuickMaxMessages" :min="2" :max="500" style="width: 100%" />
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">{{ t('groupChat.discussion.reporter') }}</label>
+                    <NSelect v-model:value="discussionQuickReporterId" :options="discussionAgentOptions" />
                 </div>
                 <p class="form-hint">{{ t('groupChat.discussion.quickStartHint') }}</p>
                 <NSpace justify="end">

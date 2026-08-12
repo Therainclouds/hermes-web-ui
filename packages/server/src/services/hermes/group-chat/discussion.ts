@@ -335,12 +335,27 @@ export class DiscussionRunner {
       err.status = 400
       throw err
     }
-    // Attach referenced file names to the goal so every agent knows what to
-    // discuss (files were uploaded via the group-chat upload path beforehand).
+    // Attach referenced file names (and their on-disk paths when the upload
+    // landed in gc_documents) to the goal so every agent knows what to read.
     const attachments = (input.attachments || []).map(name => String(name).trim()).filter(Boolean)
-    const goalWithAttachments = attachments.length > 0
-      ? `${goal}\n【讨论文件】${attachments.join('、')}`
-      : goal
+    let goalWithAttachments = goal
+    if (attachments.length > 0) {
+      // Lazy require so this module never hard-couples tests/DB init to the
+      // document store; the goal path hint is best-effort.
+      let docs: Array<{ name: string; file_id: string }> = []
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const store = require('../../../db/hermes/document-store')
+        docs = store.listDocumentsByRoom(roomId)
+      } catch { /* document store unavailable — fall back to names only */ }
+      const lines = attachments.map((name) => {
+        const doc = docs.find(d => d.name === name || d.name.endsWith(name))
+        if (!doc) return name
+        // <appHome>/group-chat-docs/<roomId>/<fileId>/upload.bin
+        return `${name}（路径：group-chat-docs/${roomId}/${doc.file_id}/upload.bin）`
+      })
+      goalWithAttachments = `${goal}\n【讨论文件】${lines.join('、')}`
+    }
     const roomAgents = this.deps.storage.getRoomAgents(roomId)
     const order = input.agentOrder && input.agentOrder.length ? input.agentOrder : roomAgents.map(agent => agent.agentId)
     const knownIds = new Set(roomAgents.map(agent => agent.agentId))

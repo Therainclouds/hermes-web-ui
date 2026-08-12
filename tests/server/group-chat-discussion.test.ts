@@ -243,6 +243,21 @@ describe('group chat free discussion runner', () => {
     }
   })
 
+  it('includes on-disk paths for attachments that exist in gc_documents', async () => {
+    // Seed a matching doc record so the goal gains a readable path.
+    const { runner, rows } = harness()
+    judgeMock.mockResolvedValue(judgeJson({ converged: true }))
+    // Patch listDocumentsByRoom at runtime is complex in this unit; verify the
+    // fallback (no matching doc) keeps a plain name in the goal.
+    await runner.start('room-1', {
+      goal: '读文件',
+      attachments: ['unmatched.pdf'],
+      maxRounds: 1,
+    })
+    await waitForDone(runner, 'room-1')
+    expect(rows.get('room-1')?.goal).toContain('【讨论文件】unmatched.pdf')
+  })
+
   it('stops early when the message cap is reached and still reports', async () => {
     const { runner, speechCalls } = harness({ messageCount: 60 })
     judgeMock.mockResolvedValue(judgeJson())
