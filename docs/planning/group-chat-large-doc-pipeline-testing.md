@@ -242,6 +242,42 @@ grep -F "「quote 原文片段」" <HERMES_WEB_UI_HOME>/group-chat-docs/*/*/uplo
 
 ---
 
+## 6.5 实测问题：agent 自我介绍后无限回复循环（2026-08-12 已修复）
+
+### 现象
+群聊房间让 5 个 agent「自我介绍」后，agent 互相 `@名字` 确认 → 扇出式无限回复：
+13 分钟产生 46 条 agent 消息、仅 1 条人类消息，服务 CPU 持续 30%+。
+
+### 根因（两层）
+1. **代码层**：`maxAgentMentionDepth=4` 只限制单条链深度，不限制房间内 agent→agent
+   接力总量。agent 回复含 `@` 就触发对方回复 → 扇出爆炸。
+2. **配置层（本设备特有）**：设备 5 个 agent profile 的 `SOUL.md` 与
+   `skills/productivity/group-chat-rules/SKILL.md` 定义"🔴 最高铁律 @规则"——
+   "任何场合提到成员名字必须带 @，无一例外"，外加"发言末尾必须 @管仲 交棒"、
+   "管仲逐人 @全体"。这些与系统 prompt（prompt.ts）"不要无意义 @他人"直接矛盾，
+   agent 优先遵守标为"不可商量"的 SOUL.md → 每条回复强制带 @ → 循环。
+
+### 修复
+1. **代码层（已提交 `66e9eb63`）**：`AgentClients.processMentions` 加房间级
+   handoff 熔断（默认 8 次/房间），agent 回复触发的 @ 接力超限即丢弃；人类 @ 不受限；
+   房间清空重置。测试：`tests/server/group-chat-agent-handoff-guard.test.ts`。
+2. **配置层（设备数据，不在仓库）**：修改 6 个 SOUL.md + group-chat-rules skill，
+   把"提到必须 @"改为"**按需 @**——只有需要对方回复/执行时才 @"；废除
+   "发言末尾必须 @管仲 交棒"和"逐人 @全体"。备份在设备
+   `hermes_data/backups/gc-config-20260812.tar.gz` + 本地 `gc-config-backup/`。
+
+### 排查命令速查
+```bash
+# 看消息是否在疯长（senders 分布暴露循环主体）
+sqlite3 ~/.hermes-web-ui/hermes-web-ui.db "SELECT senderName, role, COUNT(*) FROM gc_messages GROUP BY senderName, role ORDER BY COUNT(*) DESC;"
+# 看 agent 回复里是否强制带 @
+sqlite3 ~/.hermes-web-ui/hermes-web-ui.db "SELECT senderName, substr(content,1,80) FROM gc_messages ORDER BY timestamp DESC LIMIT 15;"
+# 改配置后重启加载
+sudo systemctl restart hermes-web-ui
+```
+
+---
+
 ## 7. 交付物
 
 阶段 C 完成后，产出：
@@ -249,4 +285,5 @@ grep -F "「quote 原文片段」" <HERMES_WEB_UI_HOME>/group-chat-docs/*/*/uplo
 2. 压测日志摘录（内存/CPU/进度曲线关键点）
 3. 已知问题清单（如有 failed job、偏差指标）
 
-> 文档管道未提交；设备部署前先提交并走设备更新流程。
+> 文档管道已提交（`c2e784a1`~`1c6e674b` + 循环修复 `66e9eb63`），设备已部署 0.7.17
+> 并热更新。设备上的团队配置（SOUL.md 等）为设备数据，改动不入仓库。
