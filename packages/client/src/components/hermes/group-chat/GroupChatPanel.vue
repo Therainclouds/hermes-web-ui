@@ -2,7 +2,7 @@
 import { ref, computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { NInput, NButton, NSpace, NSelect, NPopover, NPopconfirm, NInputNumber, NDropdown, NModal, NDrawer, NDrawerContent, type DropdownOption } from 'naive-ui'
+import { NInput, NButton, NSpace, NSelect, NPopover, NPopconfirm, NInputNumber, NDropdown, NModal, NDrawer, NDrawerContent, NProgress, type DropdownOption } from 'naive-ui'
 import { useGroupChatStore } from '@/stores/hermes/group-chat'
 import { useAppStore } from '@/stores/hermes/app'
 import { useProfilesStore } from '@/stores/hermes/profiles'
@@ -17,7 +17,7 @@ import { getProfileDisplayName } from '@/utils/hermes/profile-display'
 import { useDiscussionReportDownload } from '@/composables/useDiscussionReportDownload'
 import { useMessage } from '@/composables/useAppMessage'
 import type { Attachment } from '@/stores/hermes/chat'
-import type { MemberInfo, RoomAgent, RoomInfo, RoomSummaryAnchor, RoomSummaryConfig, RoomSummaryState } from '@/api/hermes/group-chat'
+import type { MemberInfo, RoomAgent, RoomInfo, RoomSummaryAnchor, RoomSummaryConfig, RoomSummaryState, GroupDocumentInfo } from '@/api/hermes/group-chat'
 import { useFilesStore } from '@/stores/hermes/files'
 import { useToolPanelStore } from '@/stores/hermes/tool-panel'
 import { hasDesktopBrowserBridge } from '@/utils/desktop-bridge'
@@ -256,6 +256,83 @@ async function handleDiscussionCommand(command: { goal: string; agentOrder?: str
     } catch (err: any) {
         message.error(err?.message || t('groupChat.discussion.startFailed'))
     }
+}
+// ─── Large Document Pipeline ───────────────────────────────────
+const docUploadInputRef = ref<HTMLInputElement | null>(null)
+const isUploadingDocument = ref(false)
+const docAgentSelection = ref<string[]>([])
+const isStartingDocument = ref(false)
+
+const roomDocuments = computed(() => {
+    const roomId = store.currentRoomId
+    if (!roomId) return []
+    return Array.from(store.documentStates.values())
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .filter(doc => store.documentProgress.has(doc.fileId) || doc.status === 'chunked' || doc.status === 'done')
+})
+const documentAgentOptions = computed(() =>
+    store.agents.map(agent => ({ label: agent.name, value: agent.agentId }))
+)
+const activeDocumentCount = computed(() => roomDocuments.value.filter(doc => doc.status === 'reading' || doc.status === 'aggregating').length)
+
+function openDocumentUpload(): void {
+    docUploadInputRef.value?.click()
+}
+
+async function handleDocumentFileChange(event: Event): Promise<void> {
+    const input = event.target as HTMLInputElement
+    const file = input.files?.[0]
+    input.value = ''
+    if (!file) return
+    const roomId = store.currentRoomId
+    if (!roomId) return
+    isUploadingDocument.value = true
+    try {
+        await store.uploadDocument(roomId, file)
+        message.success(t('groupChat.document.uploaded'))
+    } catch (err: any) {
+        message.error(err?.message || t('groupChat.document.uploadFailed'))
+    } finally {
+        isUploadingDocument.value = false
+    }
+}
+
+async function handleStartDocumentReading(doc: GroupDocumentInfo): Promise<void> {
+    const roomId = store.currentRoomId
+    if (!roomId) return
+    const selected = docAgentSelection.value.length > 0
+        ? docAgentSelection.value
+        : store.agents.map(a => a.agentId)
+    if (selected.length === 0) {
+        message.warning(t('groupChat.document.needsAgents'))
+        return
+    }
+    isStartingDocument.value = true
+    try {
+        await store.startDocumentReading(roomId, doc.fileId, selected)
+        message.success(t('groupChat.document.started'))
+    } catch (err: any) {
+        message.error(err?.message || t('groupChat.document.startFailed'))
+    } finally {
+        isStartingDocument.value = false
+    }
+}
+
+function documentStatusLabel(status: string): string {
+    return t(`groupChat.document.status.${status}`)
+}
+
+function documentProgressOf(doc: GroupDocumentInfo): { pct: number; done: number; total: number } | null {
+    const progress = store.documentProgress.get(doc.fileId)
+    if (!progress) return null
+    return { pct: progress.progressPct, done: progress.chunksRead, total: progress.chunksTotal }
+}
+
+function formatDocumentSize(bytes: number): string {
+    if (!bytes) return ''
+    if (bytes < 1024) return `${bytes} B`
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 const chatDropCounter = ref(0)
 const isChatDropActive = ref(false)
@@ -2468,6 +2545,75 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                                 >
                                     {{ t('groupChat.discussion.downloadReport') }}
                                 </NButton>
+                            </div>
+                        </div>
+                    </section>
+                    <section class="settings-section document-settings-section">
+                        <div class="summary-state-heading">
+                            <h4>{{ t('groupChat.document.title') }}</h4>
+                            <span v-if="activeDocumentCount > 0" class="document-status is-reading">
+                                {{ t('groupChat.document.active') }}
+                            </span>
+                        </div>
+                        <p class="form-hint">{{ t('groupChat.document.desc') }}</p>
+                        <input
+                            ref="docUploadInputRef"
+                            type="file"
+                            accept=".txt,.md,.docx"
+                            style="display: none"
+                            @change="handleDocumentFileChange"
+                        />
+                        <NButton block :loading="isUploadingDocument" @click="openDocumentUpload">
+                            {{ t('groupChat.document.upload') }}
+                        </NButton>
+                        <p class="form-hint">{{ t('groupChat.document.uploadHint') }}</p>
+
+                        <div v-if="roomDocuments.length > 0" class="document-list">
+                            <div v-for="doc in roomDocuments" :key="doc.fileId" class="document-card">
+                                <div class="document-card-header">
+                                    <span class="document-name" :title="doc.name">{{ doc.name }}</span>
+                                    <span class="document-status" :class="`is-${doc.status}`">
+                                        {{ documentStatusLabel(doc.status) }}
+                                    </span>
+                                </div>
+                                <div class="document-meta">
+                                    <span>{{ formatDocumentSize(doc.sizeBytes) }}</span>
+                                    <span>{{ doc.chunkCount }} {{ t('groupChat.document.chunks') }}</span>
+                                    <span v-if="doc.docType">{{ doc.docType }}</span>
+                                </div>
+                                <template v-if="documentProgressOf(doc)">
+                                    <NProgress
+                                        :percentage="documentProgressOf(doc)!.pct"
+                                        :height="6"
+                                        :show-indicator="false"
+                                        class="document-progress"
+                                    />
+                                    <div class="document-progress-label">
+                                        {{ t('groupChat.document.progress', { done: documentProgressOf(doc)!.done, total: documentProgressOf(doc)!.total }) }}
+                                    </div>
+                                </template>
+                                <div v-if="doc.status === 'chunked'" class="document-actions">
+                                    <NSelect
+                                        v-model:value="docAgentSelection"
+                                        multiple
+                                        size="small"
+                                        :options="documentAgentOptions"
+                                        :placeholder="t('groupChat.document.agentsPlaceholder')"
+                                    />
+                                    <NButton
+                                        size="small"
+                                        type="primary"
+                                        secondary
+                                        :disabled="store.agents.length === 0"
+                                        :loading="isStartingDocument"
+                                        @click="handleStartDocumentReading(doc)"
+                                    >
+                                        {{ t('groupChat.document.start') }}
+                                    </NButton>
+                                </div>
+                                <div v-if="doc.status === 'failed'" class="document-error">
+                                    {{ t('groupChat.document.failedHint') }}
+                                </div>
                             </div>
                         </div>
                     </section>

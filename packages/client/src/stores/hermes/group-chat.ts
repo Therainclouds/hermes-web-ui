@@ -37,6 +37,12 @@ import {
     startDiscussion as startDiscussionApi,
     fetchDiscussion as fetchDiscussionApi,
     stopDiscussion as stopDiscussionApi,
+    listGroupDocuments as listGroupDocumentsApi,
+    uploadGroupDocument as uploadGroupDocumentApi,
+    fetchGroupDocumentProgress as fetchGroupDocumentProgressApi,
+    startGroupDocumentReading as startGroupDocumentReadingApi,
+    type GroupDocumentInfo,
+    type GroupDocumentProgress,
 } from '@/api/hermes/group-chat'
 
 type GroupChatSocket = ReturnType<typeof connectGroupChat>
@@ -171,6 +177,8 @@ export const useGroupChatStore = defineStore('groupChat', () => {
     const contextStatuses = ref<Map<string, { agentName: string; status: string }>>(new Map())
     const roomSummaryStates = ref<Map<string, RoomSummaryState>>(new Map())
     const discussionStates = ref<Map<string, DiscussionState>>(new Map())
+    const documentStates = ref<Map<string, GroupDocumentInfo>>(new Map())
+    const documentProgress = ref<Map<string, GroupDocumentProgress>>(new Map())
     const autoPlaySpeechEnabled = ref(false)
     const pendingApprovals = ref<Map<string, GroupPendingApproval>>(new Map())
     const pendingWelcomeMessages = ref<Map<string, PendingGroupWelcomeMessage[]>>(new Map())
@@ -654,6 +662,45 @@ const currentUserAvatar = ref('')
             discussionStates.value = new Map(discussionStates.value)
         })
 
+        socket.on('document_ready', (payload: { roomId?: string; fileId: string; name: string; docType: string; chunkCount: number; fieldsCount?: number }) => {
+            const roomId = payload.roomId || currentRoomId.value
+            if (!roomId || !payload.fileId) return
+            documentStates.value.set(payload.fileId, {
+                fileId: payload.fileId,
+                name: payload.name,
+                docType: payload.docType,
+                encoding: 'utf-8',
+                sizeBytes: 0,
+                chunkCount: payload.chunkCount,
+                status: 'chunked',
+                reportMessageId: null,
+                createdAt: Date.now(),
+            })
+            documentStates.value = new Map(documentStates.value)
+            void refreshDocuments(roomId)
+        })
+
+        socket.on('reading_progress', (payload: GroupDocumentProgress) => {
+            if (!payload?.fileId) return
+            documentProgress.value.set(payload.fileId, payload)
+            documentProgress.value = new Map(documentProgress.value)
+            const current = documentStates.value.get(payload.fileId)
+            if (current) {
+                documentStates.value.set(payload.fileId, { ...current, status: payload.status })
+                documentStates.value = new Map(documentStates.value)
+            }
+        })
+
+        socket.on('document_report', (payload: { fileId: string; messageId: string }) => {
+            if (!payload?.fileId) return
+            const current = documentStates.value.get(payload.fileId)
+            if (current) {
+                documentStates.value.set(payload.fileId, { ...current, status: 'done', reportMessageId: payload.messageId })
+                documentStates.value = new Map(documentStates.value)
+            }
+            if (currentRoomId.value) void refreshDocuments(currentRoomId.value)
+        })
+
         socket.on('approval.requested', (data: { roomId: string; agentName?: string; approval_id?: string; command?: string; description?: string; choices?: string[]; allow_permanent?: boolean }) => {
             if (!data.approval_id) return
             const description = data.description || ''
@@ -1033,6 +1080,74 @@ const currentUserAvatar = ref('')
         }
     }
 
+    // ─── Document Pipeline ─────────────────────────────────
+    async function refreshDocuments(roomId: string): Promise<void> {
+        if (!roomId) return
+        try {
+            const res = await listGroupDocumentsApi(roomId)
+            const byId = new Map<string, GroupDocumentInfo>()
+            for (const doc of res.documents) byId.set(doc.fileId, doc)
+            // Preserve live progress over static list info.
+            for (const [fileId, progress] of documentProgress.value) {
+                const current = byId.get(fileId)
+                if (current) byId.set(fileId, { ...current, status: progress.status, reportMessageId: progress.reportMessageId || current.reportMessageId })
+            }
+            documentStates.value = byId
+        } catch { /* ignore */ }
+    }
+
+    async function uploadDocument(roomId: string, file: File): Promise<GroupDocumentInfo> {
+        try {
+            const res = await uploadGroupDocumentApi(roomId, file)
+            const info: GroupDocumentInfo = {
+                fileId: res.fileId,
+                name: res.name,
+                docType: res.docType,
+                encoding: res.encoding,
+                sizeBytes: res.sizeBytes,
+                chunkCount: res.chunkCount,
+                status: 'chunked',
+                reportMessageId: null,
+                createdAt: Date.now(),
+            }
+            documentStates.value.set(res.fileId, info)
+            documentStates.value = new Map(documentStates.value)
+            return info
+        } catch (err: any) {
+            error.value = err.message
+            throw err
+        }
+    }
+
+    async function startDocumentReading(roomId: string, fileId: string, agentIds: string[]): Promise<void> {
+        try {
+            await startGroupDocumentReadingApi(roomId, fileId, agentIds)
+            const current = documentStates.value.get(fileId)
+            if (current) {
+                documentStates.value.set(fileId, { ...current, status: 'reading' })
+                documentStates.value = new Map(documentStates.value)
+            }
+            // Immediately fetch the initial progress snapshot.
+            void fetchDocumentProgress(roomId, fileId)
+        } catch (err: any) {
+            error.value = err.message
+            throw err
+        }
+    }
+
+    async function fetchDocumentProgress(roomId: string, fileId: string): Promise<void> {
+        try {
+            const progress = await fetchGroupDocumentProgressApi(roomId, fileId)
+            documentProgress.value.set(fileId, progress)
+            documentProgress.value = new Map(documentProgress.value)
+            const current = documentStates.value.get(fileId)
+            if (current) {
+                documentStates.value.set(fileId, { ...current, status: progress.status, reportMessageId: progress.reportMessageId || current.reportMessageId })
+                documentStates.value = new Map(documentStates.value)
+            }
+        } catch { /* ignore */ }
+    }
+
     // ─── Agent Actions ─────────────────────────────────────
     async function loadAgents(roomId: string) {
         try {
@@ -1145,6 +1260,8 @@ const currentUserAvatar = ref('')
         contextStatuses,
         roomSummaryStates,
         discussionStates,
+        documentStates,
+        documentProgress,
         pendingApprovals,
         activePendingApproval,
         autoPlaySpeechEnabled,
@@ -1195,6 +1312,10 @@ const currentUserAvatar = ref('')
         beginDiscussion,
         endDiscussion,
         clearDiscussion,
+        refreshDocuments,
+        uploadDocument,
+        startDocumentReading,
+        fetchDocumentProgress,
     }
 })
 
