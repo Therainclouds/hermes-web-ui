@@ -52,6 +52,9 @@ export interface DiscussionJudgeConfig {
 
 export interface DiscussionStartInput {
   goal: string
+  /** Optional referenced file names (already uploaded via group-chat upload) so
+   *  agents know what to discuss. Appended to the goal as 【讨论文件】. */
+  attachments?: string[]
   agentOrder?: string[]
   maxRounds?: number
   maxMessages?: number
@@ -332,6 +335,12 @@ export class DiscussionRunner {
       err.status = 400
       throw err
     }
+    // Attach referenced file names to the goal so every agent knows what to
+    // discuss (files were uploaded via the group-chat upload path beforehand).
+    const attachments = (input.attachments || []).map(name => String(name).trim()).filter(Boolean)
+    const goalWithAttachments = attachments.length > 0
+      ? `${goal}\n【讨论文件】${attachments.join('、')}`
+      : goal
     const roomAgents = this.deps.storage.getRoomAgents(roomId)
     const order = input.agentOrder && input.agentOrder.length ? input.agentOrder : roomAgents.map(agent => agent.agentId)
     const knownIds = new Set(roomAgents.map(agent => agent.agentId))
@@ -346,7 +355,7 @@ export class DiscussionRunner {
     const row: DiscussionRow = {
       id: generateDiscussionId(),
       roomId,
-      goal,
+      goal: goalWithAttachments,
       agentOrder: JSON.stringify(order),
       reporterId: input.reporterId && knownIds.has(input.reporterId) ? input.reporterId : order[0],
       maxRounds,

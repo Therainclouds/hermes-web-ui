@@ -43,6 +43,7 @@ export async function startDiscussion(ctx: any): Promise<void> {
         const body = (ctx.request?.body || {}) as Record<string, any>
         const state = await server.startDiscussion(roomId, {
             goal: String(body.goal || ''),
+            attachments: Array.isArray(body.attachments) ? body.attachments.map(String) : undefined,
             agentOrder: Array.isArray(body.agentOrder) ? body.agentOrder.map(String) : undefined,
             maxRounds: typeof body.maxRounds === 'number' ? body.maxRounds : undefined,
             maxMessages: typeof body.maxMessages === 'number' ? body.maxMessages : undefined,

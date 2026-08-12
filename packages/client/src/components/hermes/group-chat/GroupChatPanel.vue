@@ -126,6 +126,27 @@ const discussionAgentOrder = ref<string[]>([])
 const discussionReporterId = ref('')
 const isStartingDiscussion = ref(false)
 const isStoppingDiscussion = ref(false)
+const discussionAttachmentInputRef = ref<HTMLInputElement | null>(null)
+const discussionAttachments = ref<string[]>([])
+
+function openDiscussionAttachmentPicker(): void {
+    discussionAttachmentInputRef.value?.click()
+}
+
+function handleDiscussionAttachmentChange(event: Event): void {
+    const input = event.target as HTMLInputElement
+    const files = Array.from(input.files || [])
+    input.value = ''
+    for (const file of files) {
+        if (!discussionAttachments.value.includes(file.name)) {
+            discussionAttachments.value.push(file.name)
+        }
+    }
+}
+
+function removeDiscussionAttachment(name: string): void {
+    discussionAttachments.value = discussionAttachments.value.filter(n => n !== name)
+}
 
 const liveDiscussion = computed(() => {
     const roomId = store.currentRoomId
@@ -160,6 +181,7 @@ async function handleStartDiscussion(): Promise<void> {
     try {
         await store.beginDiscussion(roomId, {
             goal,
+            attachments: discussionAttachments.value.length > 0 ? [...discussionAttachments.value] : undefined,
             agentOrder: discussionAgentOrder.value.length >= 2 ? discussionAgentOrder.value : undefined,
             maxRounds: discussionMaxRounds.value,
             maxMessages: discussionMaxMessages.value,
@@ -2503,6 +2525,36 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                                 <label class="form-label">{{ t('groupChat.discussion.reporter') }}</label>
                                 <NSelect v-model:value="discussionReporterId" :options="discussionAgentOptions" />
                             </div>
+                            <div class="form-group">
+                                <label class="form-label">{{ t('groupChat.discussion.attachments') }}</label>
+                                <input
+                                    ref="discussionAttachmentInputRef"
+                                    type="file"
+                                    multiple
+                                    style="display: none"
+                                    @change="handleDiscussionAttachmentChange"
+                                />
+                                <NSpace>
+                                    <NButton size="small" secondary @click="openDiscussionAttachmentPicker">
+                                        {{ t('groupChat.discussion.pickAttachments') }}
+                                    </NButton>
+                                    <NButton
+                                        v-if="discussionAttachments.length > 0"
+                                        size="small"
+                                        tertiary
+                                        @click="discussionAttachments = []"
+                                    >
+                                        {{ t('common.clear') }}
+                                    </NButton>
+                                </NSpace>
+                                <div v-if="discussionAttachments.length > 0" class="discussion-attachment-list">
+                                    <div v-for="name in discussionAttachments" :key="name" class="discussion-attachment-chip">
+                                        <span :title="name">{{ name }}</span>
+                                        <span class="discussion-attachment-remove" @click="removeDiscussionAttachment(name)">×</span>
+                                    </div>
+                                </div>
+                                <p class="form-hint">{{ t('groupChat.discussion.attachmentsHint') }}</p>
+                            </div>
                             <div class="discussion-limit-row">
                                 <div class="form-group">
                                     <label class="form-label">{{ t('groupChat.discussion.maxRounds') }}</label>
@@ -3988,6 +4040,42 @@ export default defineComponent({ components: { CreateRoomForm } })
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 10px;
+}
+
+.discussion-attachment-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.discussion-attachment-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 100%;
+    padding: 2px 8px;
+    border-radius: 6px;
+    background: rgba(var(--accent-primary-rgb), 0.12);
+    font-size: 12px;
+    line-height: 20px;
+
+    span:first-child {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+}
+
+.discussion-attachment-remove {
+    cursor: pointer;
+    color: $text-muted;
+    font-weight: bold;
+    padding: 0 2px;
+
+    &:hover {
+        color: #d03050;
+    }
 }
 
 .discussion-result {

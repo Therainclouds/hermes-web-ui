@@ -220,6 +220,29 @@ describe('group chat free discussion runner', () => {
     expect(calls.at(-1)?.content).toContain('已达轮次/消息上限')
   })
 
+  it('appends attachment file names to the goal so agents know what to discuss', async () => {
+    const { runner, speechCalls, rows } = harness()
+    judgeMock.mockResolvedValue(judgeJson({ converged: true }))
+
+    await runner.start('room-1', {
+      goal: '自由讨论这个文件的内容',
+      attachments: ['contract_1mb.txt', '证据清单.pdf'],
+      maxRounds: 1,
+    })
+    await waitForDone(runner, 'room-1')
+
+    // The persisted goal includes the attachment file names.
+    const persisted = rows.get('room-1')
+    expect(persisted?.goal).toContain('自由讨论这个文件的内容')
+    expect(persisted?.goal).toContain('【讨论文件】contract_1mb.txt、证据清单.pdf')
+
+    // Every agent speech prompt carries the attachment reference.
+    for (const call of speechCalls()) {
+      expect(call.content).toContain('【讨论目标】自由讨论这个文件的内容')
+      expect(call.content).toContain('【讨论文件】contract_1mb.txt、证据清单.pdf')
+    }
+  })
+
   it('stops early when the message cap is reached and still reports', async () => {
     const { runner, speechCalls } = harness({ messageCount: 60 })
     judgeMock.mockResolvedValue(judgeJson())

@@ -388,6 +388,8 @@ export interface DiscussionState {
 
 export interface DiscussionStartInput {
     goal: string
+    /** Referenced uploaded file names appended to the discussion goal. */
+    attachments?: string[]
     agentOrder?: string[]
     maxRounds?: number
     maxMessages?: number
