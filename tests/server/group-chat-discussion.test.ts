@@ -258,18 +258,40 @@ describe('group chat free discussion runner', () => {
     expect(rows.get('room-1')?.goal).toContain('【讨论文件】unmatched.pdf')
   })
 
-  it('stops early when the message cap is reached and still reports', async () => {
-    const { runner, speechCalls } = harness({ messageCount: 60 })
+  it('does not terminate on pre-existing room history; only counts messages produced during the discussion', async () => {
+    const { runner, speechCalls, setMessageCount } = harness({ messageCount: 60 })
     judgeMock.mockResolvedValue(judgeJson())
 
-    await runner.start('room-1', { goal: 'go', maxRounds: 8, maxMessages: 60 })
+    // maxMessages applies to messages *during* this run, not the 60 historical ones.
+    await runner.start('room-1', { goal: 'go', maxRounds: 2, maxMessages: 60 })
     const final = await waitForDone(runner, 'room-1')
 
     expect(final.status).toBe('max_rounds')
-    expect(final.currentRound).toBe(0)
+    expect(final.currentRound).toBe(2) // full 2 rounds ran despite 60 historical msgs
+    // All agents spoke (2 rounds x 2 agents) plus the report.
     const calls = speechCalls()
-    expect(calls.length).toBe(1) // report only, no agent speech
-    expect(calls[0].content).toContain('已达轮次/消息上限')
+    expect(calls.length).toBe(2 * 2 + 1)
+  })
+
+  it('stops early when messages produced during the discussion hit the cap', async () => {
+    const { runner, speechCalls, setMessageCount } = harness({ messageCount: 10 })
+    judgeMock.mockResolvedValue(judgeJson())
+
+    // Simulate heavy chatter: after the run starts, the room gains enough new
+    // messages to cross the (incremental) cap, forcing an early max_rounds stop.
+    let started = false
+    const origSpeech = speechCalls
+    await runner.start('room-1', { goal: 'go', maxRounds: 8, maxMessages: 20 })
+    // Pump the counter past the incremental cap right away.
+    setMessageCount(10 + 25)
+    const final = await waitForDone(runner, 'room-1')
+
+    expect(final.status).toBe('max_rounds')
+    expect(final.currentRound).toBeLessThan(8)
+    void origSpeech
+    void started
+    const calls = speechCalls()
+    expect(calls.at(-1)?.content).toContain('已达轮次/消息上限')
   })
 
   it('terminates after two consecutive stalled rounds with a forced report', async () => {

@@ -290,6 +290,8 @@ function buildReportPrompt(input: {
 export class DiscussionRunner {
   private locks = new Map<string, Promise<void>>()
   private interrupts = new Map<string, boolean>()
+  /** Serializes start() so rapid double-clicks cannot create two active discussions. */
+  private startingRooms = new Map<string, Promise<void>>()
 
   constructor(private deps: DiscussionRunnerDeps) {}
 
@@ -317,18 +319,35 @@ export class DiscussionRunner {
   }
 
   async start(roomId: string, input: DiscussionStartInput): Promise<DiscussionState> {
-    const room = this.deps.storage.getRoom(roomId)
-    if (!room) {
-      const err = new Error('Room not found') as Error & { status?: number }
-      err.status = 404
-      throw err
+    // Serialize concurrent starts per room: rapid double-clicks / repeated
+    // /讨论 commands would otherwise both pass the "no active discussion"
+    // check and create multiple simultaneous runs.
+    const prior = this.startingRooms.get(roomId)
+    if (prior) {
+      await prior
+      const after = this.deps.storage.getDiscussionByRoom(roomId)
+      if (after && isActiveStatus(after.status)) {
+        const err = new Error('A discussion is already running in this room') as Error & { status?: number }
+        err.status = 409
+        throw err
+      }
     }
-    const existing = this.deps.storage.getDiscussionByRoom(roomId)
-    if (existing && isActiveStatus(existing.status)) {
-      const err = new Error('A discussion is already running in this room') as Error & { status?: number }
-      err.status = 409
-      throw err
-    }
+    let releaseStart: () => void = () => {}
+    const gate = new Promise<void>(resolve => { releaseStart = resolve })
+    this.startingRooms.set(roomId, gate)
+    try {
+      const room = this.deps.storage.getRoom(roomId)
+      if (!room) {
+        const err = new Error('Room not found') as Error & { status?: number }
+        err.status = 404
+        throw err
+      }
+      const existing = this.deps.storage.getDiscussionByRoom(roomId)
+      if (existing && isActiveStatus(existing.status)) {
+        const err = new Error('A discussion is already running in this room') as Error & { status?: number }
+        err.status = 409
+        throw err
+      }
     const goal = String(input.goal || '').trim()
     if (!goal) {
       const err = new Error('Discussion goal is required') as Error & { status?: number }
@@ -395,6 +414,10 @@ export class DiscussionRunner {
       logger.error({ err, roomId }, `[Discussion] runner crashed: ${errorMessage(err)}`)
     })
     return state
+    } finally {
+      releaseStart()
+      if (this.startingRooms.get(roomId) === gate) this.startingRooms.delete(roomId)
+    }
   }
 
   async stop(roomId: string): Promise<DiscussionState> {
@@ -451,6 +474,13 @@ export class DiscussionRunner {
         return
       }
 
+      // The maxMessages budget must only count messages produced *during* this
+      // discussion. A room may already hold many historical messages (previous
+      // discussions, uploads) — counting those would terminate a fresh run
+      // before any agent speaks.
+      const startMessageCount = this.deps.storage.getMessageCount(roomId)
+      const messagesSinceStart = (): number => this.deps.storage.getMessageCount(roomId) - startMessageCount
+
       let stalledStreak = 0
       let extensionUsed = 0
       let terminateReason: 'converged' | 'max_rounds' | 'stopped' | 'stalled' | null = null
@@ -471,7 +501,7 @@ export class DiscussionRunner {
             break
           }
         }
-        if (this.deps.storage.getMessageCount(roomId) >= state.maxMessages) {
+        if (messagesSinceStart() >= state.maxMessages) {
           terminateReason = 'max_rounds'
           break
         }
@@ -486,7 +516,7 @@ export class DiscussionRunner {
           terminateReason = 'stopped'
           break
         }
-        if (this.deps.storage.getMessageCount(roomId) >= state.maxMessages) {
+        if (messagesSinceStart() >= state.maxMessages) {
           terminateReason = 'max_rounds'
           break
         }
