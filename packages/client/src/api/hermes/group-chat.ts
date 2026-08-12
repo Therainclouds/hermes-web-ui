@@ -22,8 +22,28 @@ export interface RoomInfo {
     guestAgentApproval?: 'owner'
     maxGuestAgentsPerMember?: number
     allowRemoteWorkspaceAccess?: number
+    agentHandoffEnabled?: number
+    agentHandoffMaxDepth?: number | null
+    agentHandoffUnlimited?: number
     createdAt?: number
     lastActiveAt?: number
+}
+
+export interface RoomAgentHandoffChain {
+    chainId: string
+    roomId: string
+    sourceMessageId: string
+    currentDepth: number
+    maxDepth: number | null
+    unlimited: number
+    targetAgentId: string
+    status: 'stopped' | 'claimed' | 'resumed'
+    stopReason: string
+    continueUsed: number
+    attemptId?: string | null
+    lastError?: string | null
+    createdAt: number
+    updatedAt: number
 }
 
 export interface RoomSummaryConfig {
@@ -36,6 +56,9 @@ export interface RoomSummaryConfig {
 
 export interface RoomConfigInput extends Partial<RoomSummaryConfig> {
     name?: string
+    agentHandoffEnabled?: boolean
+    agentHandoffMaxDepth?: number | null
+    agentHandoffUnlimited?: boolean
 }
 
 export interface RoomSummaryState {
@@ -312,7 +335,7 @@ export async function listRooms(): Promise<{ rooms: RoomInfo[] }> {
 export async function getRoomDetail(
     roomId: string,
     options: { offset?: number; limit?: number } = {},
-): Promise<{ room: RoomInfo; messages: ChatMessage[]; agents: RoomAgent[]; members: MemberInfo[]; total?: number; offset?: number; limit?: number; hasMore?: boolean }> {
+): Promise<{ room: RoomInfo; messages: ChatMessage[]; agents: RoomAgent[]; members: MemberInfo[]; handoffChains?: RoomAgentHandoffChain[]; total?: number; offset?: number; limit?: number; hasMore?: boolean }> {
     const params = new URLSearchParams()
     if (options.offset != null) params.set('offset', String(options.offset))
     if (options.limit != null) params.set('limit', String(options.limit))
@@ -382,6 +405,20 @@ export async function updateRoomConfig(roomId: string, config: RoomConfigInput):
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config),
     })
+}
+
+export async function continueRoomAgentHandoff(roomId: string, chainId: string): Promise<{ success: boolean; chain: RoomAgentHandoffChain }> {
+    return request(`/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/handoffs/${encodeURIComponent(chainId)}/continue`, {
+        method: 'POST',
+    })
+}
+
+export async function getRoomAgentHandoff(roomId: string, chainId: string): Promise<{ chain: RoomAgentHandoffChain }> {
+    return request(`/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/handoffs/${encodeURIComponent(chainId)}`)
+}
+
+export async function listStoppedRoomAgentHandoffs(roomId: string): Promise<{ chains: RoomAgentHandoffChain[] }> {
+    return request(`/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/handoffs`)
 }
 
 export async function updateRoomWorkspace(roomId: string, workspace: string): Promise<{ room: RoomInfo }> {

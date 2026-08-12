@@ -60,7 +60,10 @@ export type MentionMessage = {
     role?: string
     input?: string | ContentBlock[]
     mentionDepth?: number
+    handoffChainId?: string
     mentions?: StructuredMention[]
+    /** Server-issued durable continuation identity; never accepted from an Agent socket. */
+    continuationAttemptId?: string
     /** Trusted, target-specific ownership context added by AgentClients. */
     targetOwnerMemberId?: string
 }
@@ -238,6 +241,12 @@ export interface GroupAgentExecutor {
     setStorage(storage: any): void
     setWorkspaceDiffBroadcaster(broadcaster: WorkspaceDiffBroadcaster | null): void
     setChatRunService(service: GroupChatRunService | null): void
+}
+
+export interface MentionDeliveryResult {
+    targetCount: number
+    deliveredCount: number
+    errors: string[]
 }
 
 export interface GroupChatRunService {
@@ -438,6 +447,15 @@ export class AgentClient implements GroupAgentExecutor {
             ? generatedMentions
             : (canCarryMentions ? this.structuredMentionsForAgentReply(roomId, content) : [])
         const messageExtra = canCarryMentions ? { ...extra, mentions } : extra
+        if (role === 'assistant' && messageId) {
+            this.storage?.registerTrustedAgentMessageMetadata?.(
+                roomId,
+                messageId,
+                extra?.mentionDepth,
+                extra?.handoffChainId,
+                extra?.continuationAttemptId,
+            )
+        }
         if (this.eventSink) {
             return this.eventSink.sendMessage(roomId, content, messageId, messageExtra, agentSessionId)
         }
@@ -1117,6 +1135,8 @@ export class AgentClient implements GroupAgentExecutor {
                     role: 'assistant',
                     run_id: responseRunId,
                     mentionDepth: nextMentionDepth(msg),
+                    handoffChainId: msg.handoffChainId || msg.messageId || '',
+                    continuationAttemptId: msg.continuationAttemptId || '',
                     reasoning: reasoningContent || null,
                     reasoning_content: reasoningContent || null,
                 }, sessionId)
@@ -1317,6 +1337,8 @@ export class AgentClient implements GroupAgentExecutor {
                                 role: 'assistant',
                                 run_id: runMessageId,
                                 mentionDepth: nextMentionDepth(msg),
+                                handoffChainId: msg.handoffChainId || msg.messageId || '',
+                                continuationAttemptId: msg.continuationAttemptId || '',
                                 reasoning: toolReasoning || null,
                                 reasoning_content: toolReasoning || null,
                             }, sessionId)
@@ -1378,6 +1400,8 @@ export class AgentClient implements GroupAgentExecutor {
                     role: 'assistant',
                     run_id: runMessageId,
                     mentionDepth: nextMentionDepth(msg),
+                    handoffChainId: msg.handoffChainId || msg.messageId || '',
+                    continuationAttemptId: msg.continuationAttemptId || '',
                     reasoning: reasoningContent || null,
                     reasoning_content: reasoningContent || null,
                 }, sessionId)
@@ -1448,6 +1472,8 @@ export class AgentClient implements GroupAgentExecutor {
             role: 'assistant',
             ...(responseRunId ? { run_id: responseRunId } : {}),
             mentionDepth: nextMentionDepth(sourceMsg),
+            handoffChainId: sourceMsg.handoffChainId || sourceMsg.messageId || '',
+            continuationAttemptId: sourceMsg.continuationAttemptId || '',
             finish_reason: 'error',
             reasoning: reasoningContent || null,
             reasoning_content: reasoningContent || null,
@@ -2268,21 +2294,88 @@ export class AgentClients {
      * Server-side: parse @mentions and forward to matching agents directly.
      * If the room is already processing (compressing/replying), queue the mention.
      */
-    async processMentions(roomId: string, msg: MentionMessage): Promise<void> {
+    async processMentions(roomId: string, msg: MentionMessage): Promise<MentionDeliveryResult> {
         const agents = this.getConnectedAgents(roomId)
         const mentioned = msg.mentions
             ? this.resolveStructuredMentionTargets(agents, msg.mentions, msg.senderId)
             : resolveMentionTargets(agents, msg.content, msg.senderId)
-        if (mentioned.length === 0 && msg.role !== 'user') return
+        if (mentioned.length === 0 && msg.role !== 'user') {
+            return { targetCount: 0, deliveredCount: 0, errors: [] }
+        }
 
         if (mentioned.length > 0) {
             logger.debug(`[AgentClients] ${mentioned.map(a => a.name).join(', ')} mentioned by ${msg.senderName}`)
         }
 
+        if (msg.continuationAttemptId) {
+            if (mentioned.length !== 1) {
+                return {
+                    targetCount: mentioned.length,
+                    deliveredCount: 0,
+                    errors: ['Continuation target Agent is not connected'],
+                }
+            }
+            const admission = this._storage?.admitHandoffTarget?.(
+                msg.continuationAttemptId,
+                mentioned[0].agentId,
+                msg as unknown as Record<string, unknown>,
+                { agentId: mentioned[0].agentId, name: mentioned[0].name },
+            )
+            if (!admission) {
+                return { targetCount: 1, deliveredCount: 0, errors: ['Continuation target admission was rejected'] }
+            }
+            const receipt = this._storage?.claimHandoffDelivery?.(
+                msg.continuationAttemptId,
+                mentioned[0].agentId,
+            )
+            if (receipt === 'already') {
+                return { targetCount: 1, deliveredCount: 1, errors: [] }
+            }
+            if (receipt !== 'accepted') {
+                return { targetCount: 1, deliveredCount: 0, errors: ['Continuation delivery receipt could not be created'] }
+            }
+            const accepted = this._storage?.acceptHandoffAttempt?.(
+                msg.continuationAttemptId,
+                mentioned[0].agentId,
+            )
+            if (accepted !== 'accepted' && accepted !== 'already') {
+                this._storage?.releaseHandoffDelivery?.(msg.continuationAttemptId)
+                return { targetCount: 1, deliveredCount: 0, errors: ['Continuation attempt is no longer dispatchable'] }
+            }
+            const executionId = `handoff:${msg.continuationAttemptId}`
+            const running = this._storage?.markHandoffTargetRunning?.(
+                msg.continuationAttemptId,
+                executionId,
+                Date.now() + 60_000,
+            )
+            if (!running && admission.status !== 'already') {
+                return { targetCount: 1, deliveredCount: 0, errors: ['Continuation target could not claim the invocation'] }
+            }
+            const started = this._storage?.markHandoffTargetInvocationStarted?.(msg.continuationAttemptId)
+            const current = this._storage?.getHandoffTargetStatus?.(msg.continuationAttemptId)
+            if (!started && !current?.invocationStartedAt) {
+                return { targetCount: 1, deliveredCount: 0, errors: ['Continuation invocation marker could not be persisted'] }
+            }
+        }
         this.queueMention(roomId, mentioned, msg)
         if (!this._processingRooms.has(roomId) && !this._pausedRooms.has(roomId)) {
             await this._drainRoomQueue(roomId)
         }
+        if (msg.continuationAttemptId && mentioned.length === 1) {
+            const status = this._storage?.getHandoffTargetStatus?.(msg.continuationAttemptId)
+            if (status?.status !== 'completed') {
+                this._storage?.failHandoffTarget?.(
+                    msg.continuationAttemptId,
+                    'Target invocation completed without a durable Agent message',
+                )
+                return {
+                    targetCount: 1,
+                    deliveredCount: 0,
+                    errors: ['Continuation target did not publish a durable Agent message'],
+                }
+            }
+        }
+        return { targetCount: mentioned.length, deliveredCount: mentioned.length, errors: [] }
     }
 
     private resolveStructuredMentionTargets(
@@ -2369,5 +2462,5 @@ export class AgentClients {
 }
 
 function nextMentionDepth(msg: MentionMessage): number {
-    return Math.max(0, msg.mentionDepth || 0) + 1
+    return Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, msg.mentionDepth || 0) + 1)
 }

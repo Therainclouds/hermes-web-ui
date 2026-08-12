@@ -6,7 +6,7 @@ import { useMessage, NInput, NButton, NSpace, NSelect, NPopconfirm, NInputNumber
 import { useGroupChatStore } from '@/stores/hermes/group-chat'
 import { useAppStore } from '@/stores/hermes/app'
 import { useProfilesStore } from '@/stores/hermes/profiles'
-import { getRoomSummary, updateRoomConfig, updateRoomSummary } from '@/api/hermes/group-chat'
+import { getRoomSummary, listStoppedRoomAgentHandoffs, continueRoomAgentHandoff, updateRoomConfig, updateRoomSummary } from '@/api/hermes/group-chat'
 import {
     decideGroupAgentPairing,
     leaveLocalGroupAgentRoom,
@@ -25,7 +25,7 @@ import PageSidebarNav from '@/components/layout/PageSidebarNav.vue'
 import SettingsCircuitBadge from '@/components/layout/SettingsCircuitBadge.vue'
 import { copyToClipboard } from '@/utils/clipboard'
 import type { Attachment } from '@/stores/hermes/chat'
-import type { GroupChatMention, MemberInfo, RoomAgent, RoomInfo, RoomSummaryAnchor, RoomSummaryConfig, RoomSummaryState } from '@/api/hermes/group-chat'
+import type { GroupChatMention, MemberInfo, RoomAgent, RoomAgentHandoffChain, RoomInfo, RoomSummaryAnchor, RoomSummaryConfig, RoomSummaryState } from '@/api/hermes/group-chat'
 import { useFilesStore } from '@/stores/hermes/files'
 import { useToolPanelStore } from '@/stores/hermes/tool-panel'
 import { hasDesktopBrowserBridge } from '@/utils/desktop-bridge'
@@ -97,6 +97,14 @@ const summaryConfig = ref<RoomSummaryConfig>({
     summaryApiMode: 'chat_completions',
     summaryEveryTurns: 20,
 })
+const agentHandoffEnabledDraft = ref(true)
+const agentHandoffMaxDepthDraft = ref<number | null>(4)
+const agentHandoffUnlimitedDraft = ref(false)
+const agentHandoffRecommendation = computed(() => Math.max(4, store.agents.length + 1))
+const stoppedHandoffChains = computed<RoomAgentHandoffChain[]>(() =>
+    [...store.handoffChains.values()].filter(chain => chain.roomId === store.currentRoomId)
+)
+const isContinuingHandoff = ref(false)
 const roomSummaryState = ref<RoomSummaryState | null>(null)
 const roomSummaryAnchor = ref<RoomSummaryAnchor | null>(null)
 const roomSummaryDraft = ref('')
@@ -1445,8 +1453,17 @@ async function handleOpenRoomSettings() {
             summaryApiMode: room.summaryApiMode || 'chat_completions',
             summaryEveryTurns: room.summaryEveryTurns || 20,
         }
+        agentHandoffEnabledDraft.value = Number(room.agentHandoffEnabled ?? 1) === 1
+        agentHandoffMaxDepthDraft.value = room.agentHandoffMaxDepth ?? 4
+        agentHandoffUnlimitedDraft.value = Number(room.agentHandoffUnlimited ?? 0) === 1
     }
     showRoomSettingsModal.value = true
+    try {
+        const result = await listStoppedRoomAgentHandoffs(store.currentRoomId!)
+        store.handoffChains = new Map(result.chains.map(chain => [chain.chainId, chain]))
+    } catch {
+        store.handoffChains = new Map()
+    }
     if (!store.currentRoomId) return
     void refreshPendingAgentPairings()
     isLoadingRoomSummary.value = true
@@ -1555,12 +1572,54 @@ async function handleSaveSummaryConfig() {
     if (!store.currentRoomId) return
     if (!currentRoomCanManage.value) return
     try {
-        const res = await updateRoomConfig(store.currentRoomId, { ...summaryConfig.value })
+        const res = await updateRoomConfig(store.currentRoomId, {
+            ...summaryConfig.value,
+            agentHandoffEnabled: agentHandoffEnabledDraft.value,
+            agentHandoffMaxDepth: agentHandoffMaxDepthDraft.value,
+            agentHandoffUnlimited: agentHandoffUnlimitedDraft.value,
+        })
         const idx = store.rooms.findIndex(r => r.id === store.currentRoomId)
         if (idx >= 0 && res.room) store.rooms[idx] = res.room
         message.success(t('groupChat.summaryConfigSaved'))
     } catch {
         message.error(t('common.saveFailed'))
+    }
+}
+
+async function handleSaveHandoffConfig() {
+    if (!store.currentRoomId || !currentRoomCanManage.value) return
+    try {
+        const res = await updateRoomConfig(store.currentRoomId, {
+            agentHandoffEnabled: agentHandoffEnabledDraft.value,
+            agentHandoffMaxDepth: agentHandoffMaxDepthDraft.value,
+            agentHandoffUnlimited: agentHandoffUnlimitedDraft.value,
+        })
+        const idx = store.rooms.findIndex(r => r.id === store.currentRoomId)
+        if (idx >= 0 && res.room) store.rooms[idx] = res.room
+        message.success(t('common.saved'))
+    } catch (err: any) {
+        message.error(err?.message || t('common.saveFailed'))
+    }
+}
+
+async function handleContinueHandoff(chainId: string): Promise<void> {
+    if (!store.currentRoomId || isContinuingHandoff.value) return
+    isContinuingHandoff.value = true
+    try {
+        await continueRoomAgentHandoff(store.currentRoomId, chainId)
+        const result = await listStoppedRoomAgentHandoffs(store.currentRoomId)
+        store.handoffChains = new Map(result.chains.map(chain => [chain.chainId, chain]))
+        message.success(t('groupChat.agentHandoffContinued'))
+    } catch (err: any) {
+        try {
+            const result = await listStoppedRoomAgentHandoffs(store.currentRoomId)
+            store.handoffChains = new Map(result.chains.map(chain => [chain.chainId, chain]))
+        } catch {
+            // Keep the original continuation error.
+        }
+        message.error(err?.message || t('common.saveFailed'))
+    } finally {
+        isContinuingHandoff.value = false
     }
 }
 
@@ -1991,6 +2050,8 @@ async function handleClarify(response?: string) {
                         <GroupMessageList
                             :allow-speech="!props.standalone"
                             @mention-agent="handleMentionAgent"
+                            @continue-handoff="handleContinueHandoff"
+                            @adjust-handoff-settings="handleOpenRoomSettings"
                         />
                         <Transition name="approval-float">
                             <div v-if="visibleAgentPairing" class="approval-float-panel agent-pairing-float-panel">
@@ -2781,6 +2842,48 @@ async function handleClarify(response?: string) {
                             >
                                 {{ t('groupChat.saveSummaryConfig') }}
                             </NButton>
+                        </section>
+                        <section class="settings-section">
+                            <h4>{{ t('groupChat.agentHandoffTitle') }}</h4>
+                            <div class="guest-agent-policy-row">
+                                <div>
+                                    <strong>{{ t('groupChat.agentHandoffEnabled') }}</strong>
+                                    <p class="form-hint">{{ t('groupChat.agentHandoffRecommendation', { count: agentHandoffRecommendation }) }}</p>
+                                </div>
+                                <NSwitch v-model:value="agentHandoffEnabledDraft" />
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">{{ t('groupChat.agentHandoffMaxDepth') }}</label>
+                                <NInputNumber
+                                    v-model:value="agentHandoffMaxDepthDraft"
+                                    :min="1"
+                                    :max="100"
+                                    :disabled="agentHandoffUnlimitedDraft || !agentHandoffEnabledDraft"
+                                    style="width: 100%"
+                                />
+                            </div>
+                            <div class="guest-agent-policy-row">
+                                <strong>{{ t('groupChat.agentHandoffUnlimited') }}</strong>
+                                <NSwitch v-model:value="agentHandoffUnlimitedDraft" :disabled="!agentHandoffEnabledDraft" />
+                            </div>
+                            <NButton type="primary" @click="handleSaveHandoffConfig">{{ t('common.save') }}</NButton>
+                            <div v-for="chain in stoppedHandoffChains" :key="chain.chainId" class="form-hint">
+                                <div>{{ t('groupChat.agentHandoffStopped') }}</div>
+                                <div>{{ t('groupChat.agentHandoffDepthState', { current: chain.currentDepth, max: chain.unlimited ? '∞' : chain.maxDepth }) }}</div>
+                                <div>{{ t('groupChat.agentHandoffTarget', { target: chain.targetAgentId || '—' }) }}</div>
+                                <div>{{ t('groupChat.agentHandoffReason', { reason: chain.stopReason || '—' }) }}</div>
+                                <div>{{ t('groupChat.agentHandoffContinueState', { state: chain.continueUsed ? 'used' : 'available', updated: formatSummaryTime(chain.updatedAt) }) }}</div>
+                                <div v-if="chain.lastError" class="summary-error">{{ chain.lastError }}</div>
+                                <NButton
+                                    v-if="chain.status === 'stopped' && !chain.continueUsed"
+                                    text
+                                    type="primary"
+                                    :loading="isContinuingHandoff"
+                                    @click="handleContinueHandoff(chain.chainId)"
+                                >
+                                    {{ t('groupChat.agentHandoffContinue') }}
+                                </NButton>
+                            </div>
                         </section>
                     <section class="settings-section summary-state-section">
                         <div class="summary-state-heading">
