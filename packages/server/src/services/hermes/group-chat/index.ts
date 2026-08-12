@@ -17,6 +17,8 @@ import { createSocketIoCorsOrigin, shouldRejectUpgradeOrigin } from '../../../se
 import { paginateRecentGroupMessagesCanonical, sliceGroupMessagesCanonical, type GroupMessageCursorCutoff } from './group-message-ordering'
 import { GroupRoomSummaryService, type GroupRoomSummary } from './room-summary'
 import { DiscussionRunner, type DiscussionRow, type DiscussionState, type DiscussionStartInput } from './discussion'
+import { DocumentPipelineService } from './document-pipeline'
+import { DOCUMENT_REPORT_TOOL_NAME } from './document-reading-context'
 
 // ─── Types ────────────────────────────────────────────────────
 
@@ -529,7 +531,7 @@ class ChatStorage {
         const rows = (this.db()?.prepare(
             `SELECT id, roomId, senderId, senderName, content, timestamp, run_id, role, tool_call_id, tool_calls, tool_name, finish_reason, reasoning, reasoning_details, reasoning_content
              FROM gc_messages
-             WHERE roomId = ? AND COALESCE(tool_name, '') <> 'workspace_diff'`
+             WHERE roomId = ? AND COALESCE(tool_name, '') NOT IN ('workspace_diff', 'document_report')`
         ).all(roomId) || []) as any[]
         return sliceGroupMessagesCanonical(rows.map(row => this.mapStoredMessageRow(row)), cutoff).messages
     }
@@ -1098,6 +1100,7 @@ export class GroupChatServer {
     readonly agentClients = new AgentClients()
     private roomSummaryService: GroupRoomSummaryService
     private discussionRunner: DiscussionRunner
+    private documentPipeline: DocumentPipelineService
     private _restoreScheduled = false
     /** roomId -> (userId -> { userName, timer }) */
     private typingState = new Map<string, Map<string, { userName: string; timer: ReturnType<typeof setTimeout> }>>()
@@ -1161,6 +1164,11 @@ export class GroupChatServer {
             broadcast: (roomId, state) => this.nsp.to(roomId).emit('discussion_update', state),
         })
         this.discussionRunner.recoverInterrupted()
+        this.documentPipeline = new DocumentPipelineService({
+            onDocumentReady: (roomId, payload) => this.nsp.to(roomId).emit('document_ready', payload),
+            onProgress: (roomId, payload) => this.nsp.to(roomId).emit('reading_progress', payload),
+            onReport: (roomId, fileId, reportText) => void this.emitDocumentReport(roomId, fileId, reportText),
+        })
         this.agentClients.setActivityBroadcaster((roomId, agentName, status) => {
             let roomStatuses = this.contextStatusState.get(roomId)
             if (status === 'ready') {
@@ -1193,6 +1201,31 @@ export class GroupChatServer {
 
     getRoomSummaryService(): GroupRoomSummaryService {
         return this.roomSummaryService
+    }
+
+    getDocumentPipelineService(): DocumentPipelineService {
+        return this.documentPipeline
+    }
+
+    /** Persist the document pipeline final report as a tagged message + broadcast. */
+    private async emitDocumentReport(roomId: string, fileId: string, reportText: string): Promise<void> {
+        try {
+            const saved = this.storage.saveMessageAndRefreshRoom({
+                id: this.generateId(),
+                roomId,
+                senderId: `document:${fileId}`,
+                senderName: '文档整理',
+                content: reportText,
+                timestamp: Date.now(),
+                role: 'tool',
+                tool_name: DOCUMENT_REPORT_TOOL_NAME,
+            })
+            this.nsp.to(roomId).emit('message', saved.message)
+            this.nsp.to(roomId).emit('room_updated', { roomId, totalTokens: saved.totalTokens })
+            this.nsp.to(roomId).emit('document_report', { fileId, messageId: saved.message.id })
+        } catch (err) {
+            logger.warn({ err, roomId }, `[DocumentPipeline] failed to emit report: ${err instanceof Error ? err.message : String(err)}`)
+        }
     }
 
     isRoomDiscussionRunning(roomId: string): boolean {
@@ -1740,11 +1773,15 @@ export class GroupChatServer {
         const mentionDepth = normalizeMentionDepth(data.mentionDepth)
         const isAgentReply = savedMsg.role === 'assistant' && member?.source === 'agent'
         const canRouteHumanMentions = savedMsg.role === 'user' && this.canSocketManageRoom(socket, roomId)
+        // Pipeline report messages are bookkeeping; never route them into agent
+        // contexts or summary triggers (document_report is filtered in
+        // getMessagesForContext and cleanGroupMessages too).
+        const isDocumentReport = savedMsg.tool_name === DOCUMENT_REPORT_TOOL_NAME
         // While a discussion is running, suspend @-mention routing so the
         // discussion driver and the mention pipeline never race on the same agents.
         const discussionActive = this.isRoomDiscussionRunning(roomId)
         const shouldRouteMentions = (canRouteHumanMentions ||
-            (isAgentReply && mentionDepth < maxAgentMentionDepth())) && !discussionActive
+            (isAgentReply && mentionDepth < maxAgentMentionDepth())) && !discussionActive && !isDocumentReport
 
         if (shouldRouteMentions) {
             // Server-side @mention routing — parse mentions and invoke agents directly.

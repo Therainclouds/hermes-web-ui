@@ -716,6 +716,100 @@ export const GC_DISCUSSIONS_SCHEMA: Record<string, string> = {
 }
 
 // ============================================================================
+// Group Chat - large document pipeline (services/hermes/group-chat/document-*)
+// Spec: docs/planning/group-chat-large-doc-pipeline-spec.md
+// ============================================================================
+
+export const GC_DOCUMENTS_TABLE = 'gc_documents'
+
+export const GC_DOCUMENTS_SCHEMA: Record<string, string> = {
+  file_id: 'TEXT PRIMARY KEY',
+  room_id: 'TEXT NOT NULL',
+  name: 'TEXT NOT NULL',
+  size_bytes: 'INTEGER NOT NULL DEFAULT 0',
+  doc_type: "TEXT NOT NULL DEFAULT 'generic'",  // contract|judgment|generic
+  encoding: "TEXT NOT NULL DEFAULT 'utf-8'",    // sniffed: utf-8|gbk|gb18030
+  chunk_count: 'INTEGER NOT NULL DEFAULT 0',
+  chunk_token_budget: 'INTEGER NOT NULL DEFAULT 40000',
+  status: "TEXT NOT NULL DEFAULT 'uploaded'",   // uploaded|chunked|reading|aggregating|done|failed
+  report_message_id: "TEXT NOT NULL DEFAULT ''",
+  created_at: 'INTEGER NOT NULL DEFAULT 0',
+  updated_at: 'INTEGER NOT NULL DEFAULT 0',
+}
+
+export const GC_FILE_CHUNKS_TABLE = 'gc_file_chunks'
+
+export const GC_FILE_CHUNKS_SCHEMA: Record<string, string> = {
+  chunk_id: 'TEXT PRIMARY KEY',
+  file_id: 'TEXT NOT NULL',
+  idx: 'INTEGER NOT NULL',
+  start_offset: 'INTEGER NOT NULL DEFAULT 0',
+  end_offset: 'INTEGER NOT NULL DEFAULT 0',
+  token_estimate: 'INTEGER NOT NULL DEFAULT 0',
+  status: "TEXT NOT NULL DEFAULT 'pending'",    // pending|read|fact_extracted
+  read_by_agent: 'TEXT',
+}
+
+export const GC_DOCUMENT_FIELDS_TABLE = 'gc_document_fields'
+
+export const GC_DOCUMENT_FIELDS_SCHEMA: Record<string, string> = {
+  field_id: 'TEXT PRIMARY KEY',
+  file_id: 'TEXT NOT NULL',
+  chunk_id: 'TEXT NOT NULL',
+  field_type: 'TEXT NOT NULL',                 // amount|date|party|statute|other
+  value: 'TEXT NOT NULL',
+  quote: "TEXT NOT NULL DEFAULT ''",
+  quote_offset: 'INTEGER NOT NULL DEFAULT 0',
+  verified_by_agent: 'TEXT',
+  verified_at: 'INTEGER',
+}
+
+export const GC_DOCUMENT_FACTS_TABLE = 'gc_document_facts'
+
+export const GC_DOCUMENT_FACTS_SCHEMA: Record<string, string> = {
+  fact_id: 'TEXT PRIMARY KEY',
+  file_id: 'TEXT NOT NULL',
+  chunk_id: 'TEXT NOT NULL',
+  agent_id: 'TEXT NOT NULL',
+  fact_json: 'TEXT NOT NULL',
+  created_at: 'INTEGER NOT NULL DEFAULT 0',
+}
+
+export const GC_READING_JOBS_TABLE = 'gc_reading_jobs'
+
+export const GC_READING_JOBS_SCHEMA: Record<string, string> = {
+  job_id: 'TEXT PRIMARY KEY',
+  file_id: 'TEXT NOT NULL',
+  chunk_id: 'TEXT NOT NULL',
+  agent_id: 'TEXT',
+  status: "TEXT NOT NULL DEFAULT 'pending'",    // pending|running|done|failed
+  attempts: 'INTEGER NOT NULL DEFAULT 0',
+  started_at: 'INTEGER',
+  finished_at: 'INTEGER',
+  error: 'TEXT',
+}
+
+export const GC_VOLUME_SUMMARIES_TABLE = 'gc_volume_summaries'
+
+export const GC_VOLUME_SUMMARIES_SCHEMA: Record<string, string> = {
+  file_id: 'TEXT NOT NULL',
+  agent_id: 'TEXT NOT NULL',
+  volume: 'INTEGER NOT NULL DEFAULT 0',
+  summary: "TEXT NOT NULL DEFAULT ''",
+  through_chunk_idx: 'INTEGER NOT NULL DEFAULT 0',
+  updated_at: 'INTEGER NOT NULL DEFAULT 0',
+}
+
+export const GC_DOCUMENT_INDEXES: Record<string, string> = {
+  idx_gc_file_chunks_file: 'CREATE INDEX IF NOT EXISTS idx_gc_file_chunks_file ON gc_file_chunks(file_id, idx)',
+  idx_gc_reading_jobs_file_status: 'CREATE INDEX IF NOT EXISTS idx_gc_reading_jobs_file_status ON gc_reading_jobs(file_id, status)',
+  idx_gc_document_facts_file_chunk: 'CREATE INDEX IF NOT EXISTS idx_gc_document_facts_file_chunk ON gc_document_facts(file_id, chunk_id)',
+  idx_gc_document_fields_file_type: 'CREATE INDEX IF NOT EXISTS idx_gc_document_fields_file_type ON gc_document_fields(file_id, field_type)',
+  idx_gc_volume_summaries_file_agent: 'CREATE INDEX IF NOT EXISTS idx_gc_volume_summaries_file_agent ON gc_volume_summaries(file_id, agent_id)',
+  idx_gc_documents_room: 'CREATE INDEX IF NOT EXISTS idx_gc_documents_room ON gc_documents(room_id)',
+}
+
+// ============================================================================
 // Expert Marketplace (services/hermes/experts/*)
 // ============================================================================
 
@@ -1287,6 +1381,17 @@ export function initAllHermesTables(): void {
         idx_gc_room_members_user: 'CREATE INDEX idx_gc_room_members_user ON gc_room_members(userId)',
       }
     })
+
+    // Group chat - large document pipeline
+    syncTable(GC_DOCUMENTS_TABLE, GC_DOCUMENTS_SCHEMA)
+    syncTable(GC_FILE_CHUNKS_TABLE, GC_FILE_CHUNKS_SCHEMA)
+    syncTable(GC_DOCUMENT_FIELDS_TABLE, GC_DOCUMENT_FIELDS_SCHEMA)
+    syncTable(GC_DOCUMENT_FACTS_TABLE, GC_DOCUMENT_FACTS_SCHEMA)
+    syncTable(GC_READING_JOBS_TABLE, GC_READING_JOBS_SCHEMA)
+    syncTable(GC_VOLUME_SUMMARIES_TABLE, GC_VOLUME_SUMMARIES_SCHEMA, {
+      primaryKey: 'file_id, agent_id, volume',
+    })
+    createIndexes(db, GC_DOCUMENT_INDEXES)
 
     // Expert marketplace (installed experts + profile bindings)
     syncTable(INSTALLED_EXPERTS_TABLE, INSTALLED_EXPERTS_SCHEMA, {

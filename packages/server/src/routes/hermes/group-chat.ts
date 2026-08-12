@@ -10,6 +10,7 @@ import {
 import { setGroupChatRuntimeServer } from '../../services/hermes/group-chat/runtime'
 import * as ctrl from '../../controllers/hermes/group-chat-workspace'
 import * as discussionCtrl from '../../controllers/hermes/group-chat-discussion'
+import * as documentCtrl from '../../controllers/hermes/group-chat-document'
 
 export const groupChatRoutes = new Router()
 
@@ -1361,3 +1362,11 @@ groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId/export', async (ctx) =
 groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/discussion', discussionCtrl.startDiscussion)
 groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId/discussion', discussionCtrl.getDiscussion)
 groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/discussion/stop', discussionCtrl.stopDiscussion)
+
+// ─── Large document pipeline ─────────────────────────────────
+// Spec: docs/planning/group-chat-large-doc-pipeline-spec.md §5
+
+groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/documents', documentCtrl.uploadDocument)
+groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId/documents', documentCtrl.listDocuments)
+groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId/documents/:fileId', documentCtrl.getDocumentProgress)
+groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/documents/:fileId/start', documentCtrl.startDocumentReading)
