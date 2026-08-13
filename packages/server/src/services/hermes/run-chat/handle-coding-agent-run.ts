@@ -42,7 +42,9 @@ export interface CodingAgentRunSocketData {
 
 function codingAgentId(data: CodingAgentRunSocketData): ExternalCodingAgentId {
   const value = data.coding_agent_id || data.agent_id || 'claude-code'
-  return value === 'codex' ? 'codex' : 'claude-code'
+  if (value === 'codex') return 'codex'
+  if (value === 'dsh') return 'dsh'
+  return 'claude-code'
 }
 
 export async function handleCodingAgentRun(

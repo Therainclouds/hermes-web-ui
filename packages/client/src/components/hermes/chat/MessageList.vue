@@ -153,7 +153,7 @@ const emptyState = computed(() => {
   const session = chatStore.activeSession;
   const codingAgentId = session?.source === "global_agent"
     ? "ekko-agent"
-    : session?.codingAgentId || (session?.agent === "codex" ? "codex" : session?.agent === "claude" ? "claude-code" : session?.agent === "ekko-agent" ? "ekko-agent" : undefined);
+    : session?.codingAgentId || (session?.agent === "codex" ? "codex" : session?.agent === "claude" ? "claude-code" : session?.agent === "dsh" ? "dsh" : session?.agent === "ekko-agent" ? "ekko-agent" : undefined);
   if (codingAgentId === "codex") {
     return {
       logo: "/coding-agents/codex-openai.png",
@@ -166,6 +166,13 @@ const emptyState = computed(() => {
       logo: "/coding-agents/claude-code.svg",
       alt: "Claude Code",
       text: t("chat.emptyStateAgent", { agent: "Claude Code" }),
+    };
+  }
+  if (codingAgentId === "dsh") {
+    return {
+      logo: "/coding-agents/dsh.svg",
+      alt: "DeepSeek Harness",
+      text: t("chat.emptyStateAgent", { agent: "DeepSeek Harness" }),
     };
   }
   if (codingAgentId === "ekko-agent") {

@@ -55,7 +55,7 @@ interface CommandExecution {
   windowsVerbatimArguments?: WindowsCommandExecution['windowsVerbatimArguments']
 }
 
-export type CodingAgentId = 'claude-code' | 'codex'
+export type CodingAgentId = 'claude-code' | 'codex' | 'dsh'
 
 export interface CodingAgentDefinition {
   id: CodingAgentId
@@ -167,6 +167,13 @@ const TOOL_DEFINITIONS: CodingAgentDefinition[] = [
     command: 'codex',
     packageName: '@openai/codex',
   },
+  {
+    id: 'dsh',
+    name: 'DeepSeek Harness',
+    provider: 'DeepSeek',
+    command: 'dsh',
+    packageName: '@deepseek-ai/dsh',
+  },
 ]
 
 const CONFIG_FILE_DEFINITIONS: Record<CodingAgentId, Array<Omit<CodingAgentConfigFileDefinition, 'absolutePath'> & { scopedPath: string }>> = {
@@ -179,6 +186,11 @@ const CONFIG_FILE_DEFINITIONS: Record<CodingAgentId, Array<Omit<CodingAgentConfi
     { key: 'auth', path: '~/.codex/auth.json', scopedPath: 'auth.json', language: 'json' },
     { key: 'config', path: '~/.codex/config.toml', scopedPath: 'config.toml', language: 'ini' },
     { key: 'agents', path: '~/.codex/AGENTS.md', scopedPath: 'AGENTS.md', language: 'markdown' },
+  ],
+  dsh: [
+    { key: 'settings', path: '~/.dsh/settings.yaml', scopedPath: 'settings.yaml', language: 'yaml' },
+    { key: 'patch', path: '~/.dsh/cordis.patch.yml', scopedPath: 'cordis.patch.yml', language: 'yaml' },
+    { key: 'credentials', path: '~/.dsh/.credentials.yaml', scopedPath: '.credentials.yaml', language: 'yaml' },
   ],
 }
 
@@ -832,6 +844,10 @@ function powerShellQuote(value: string): string {
 }
 
 function tomlString(value: string): string {
+  return JSON.stringify(value)
+}
+
+function yamlString(value: string): string {
   return JSON.stringify(value)
 }
 
@@ -1780,7 +1796,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
       promptPath,
       ...claudeCodePermissionArgs(),
     ]
-  } else {
+  } else if (tool.id === 'codex') {
     if (apiMode !== 'chat_completions' && apiMode !== 'codex_responses' && apiMode !== 'anthropic_messages') {
       const err = new Error('Codex launch only supports OpenAI Chat Completions, OpenAI Responses, or Anthropic Messages providers')
       ;(err as any).status = 400
@@ -1842,6 +1858,29 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
       '--model', model,
       ...(reasoningEffort ? ['-c', `model_reasoning_effort=${JSON.stringify(reasoningEffort)}`] : []),
     ]
+  } else {
+    if (apiMode !== 'chat_completions') {
+      const err = new Error('DeepSeek Harness launch only supports OpenAI Chat Completions providers')
+      ;(err as any).status = 400
+      throw err
+    }
+    const settingsYaml = [
+      'llm-deepseek:',
+      ...(baseUrl ? [`  baseURL: ${yamlString(baseUrl)}`] : []),
+      '  apiKeyEnv: DEEPSEEK_API_KEY',
+      '  thinking: disabled',
+      'agent-default-model:',
+      '  provider: deepseek-official',
+      `  model: ${yamlString(model)}`,
+    ].join('\n')
+    await writeScopedFile('settings', `${settingsYaml}\n`)
+
+    env = {
+      DSH_HOME: rootDir,
+      ...(baseUrl ? { DEEPSEEK_BASE_URL: baseUrl } : {}),
+      ...(apiKey ? { DEEPSEEK_API_KEY: apiKey } : {}),
+    }
+    args = ['--profile', 'headless']
   }
 
   let shellCommand = buildLaunchShellCommand({
@@ -1912,7 +1951,7 @@ export async function startCodingAgentRun(
   const agentSessionId = resolvedInput.agentSessionId || existingAgentSessionId || makeAgentSessionId()
   const canResumeNativeSession = existingSession
     ? storedCodingAgentMode(existingSession) === requestedMode &&
-      (existingSession.agent === (id === 'codex' ? 'codex' : 'claude') || !existingSession.agent) &&
+      (existingSession.agent === (id === 'codex' ? 'codex' : id === 'dsh' ? 'dsh' : 'claude') || !existingSession.agent) &&
       String(existingSession.provider || '').trim() === String(resolvedInput.provider || '').trim() &&
       String(existingSession.model || '').trim() === String(resolvedInput.model || '').trim() &&
       (!String(existingSession.api_mode || '').trim() || String(existingSession.api_mode || '').trim() === String(resolvedInput.apiMode || '').trim())
@@ -1957,7 +1996,7 @@ export async function startCodingAgentRun(
   })
   updateSession(sessionId, {
     source: sessionSource,
-    agent: launch.agentId === 'codex' ? 'codex' : 'claude',
+    agent: launch.agentId === 'codex' ? 'codex' : launch.agentId === 'dsh' ? 'dsh' : 'claude',
     agent_mode: launch.mode,
     agent_session_id: agentSessionId,
     agent_native_session_id: agentNativeSessionId,

@@ -791,6 +791,7 @@ const newChatAgentOptions = computed(() => [
   { label: "Hermes", value: "hermes" },
   { label: "Claude Code", value: "claude-code" },
   { label: "Codex", value: "codex" },
+  { label: "DeepSeek Harness", value: "dsh" },
   { label: "Ekko Agent", value: "ekko-agent" },
 ]);
 
@@ -901,7 +902,7 @@ const selectedNewChatProviderGroup = computed(() =>
 );
 
 const isNewChatCodingAgent = computed(() => newChatAgent.value !== "hermes");
-const isNewChatExternalCodingAgent = computed(() => newChatAgent.value === "claude-code" || newChatAgent.value === "codex");
+const isNewChatExternalCodingAgent = computed(() => newChatAgent.value === "claude-code" || newChatAgent.value === "codex" || newChatAgent.value === "dsh");
 const effectiveNewChatAgentMode = computed(() =>
   newChatAgent.value === "ekko-agent" ? "scoped" : newChatAgentMode.value,
 );
@@ -1083,8 +1084,10 @@ async function confirmNewChat() {
     ? "codex"
     : newChatAgent.value === "claude-code"
       ? "claude"
-      : newChatAgent.value === "ekko-agent"
-        ? "ekko-agent"
+      : newChatAgent.value === "dsh"
+        ? "dsh"
+        : newChatAgent.value === "ekko-agent"
+          ? "ekko-agent"
       : "hermes";
   const session = chatStore.newChat({
     profile: newChatProfile.value,
@@ -1591,9 +1594,11 @@ const sessionModelCodingAgentId = computed<ChatCodingAgentId | undefined>(() =>
     ? "claude-code"
     : sessionModelSession.value?.agent === "codex"
       ? "codex"
-      : sessionModelSession.value?.agent === "ekko-agent"
-        ? "ekko-agent"
-        : undefined),
+      : sessionModelSession.value?.agent === "dsh"
+        ? "dsh"
+        : sessionModelSession.value?.agent === "ekko-agent"
+          ? "ekko-agent"
+          : undefined),
 );
 const isSessionModelCodingAgent = computed(() =>
   sessionModelSession.value?.source === "coding_agent" || Boolean(sessionModelSession.value?.codingAgentId),

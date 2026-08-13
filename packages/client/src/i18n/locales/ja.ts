@@ -2160,6 +2160,7 @@ export default {
     notice: "すべてのプロバイダーとモデルが互換性を持つわけではありません。",
     claudeDescription: "print mode の単発タスクと対話型コーディングセッション向けの Anthropic CLI です。",
     codexDescription: "リポジトリ作業向けの OpenAI CLI と Hermes openai-codex プロバイダーフローです。",
+    dshDescription: "DeepSeek Harness (dsh)：プラグインベースの agent harness です。headless の単発タスクは最終結果を一度に返します（非ストリーミング）。各ターンは新しいセッションで開始されます。Node >= 22.19 が必要です。",
     copyCommand: "コピー",
     commandCopied: "コマンドをコピーしました",
     commandCopyFailed: "コピーに失敗しました",
@@ -2226,6 +2227,7 @@ export default {
     notes: {
       claudeInstall: "Claude Code CLI をグローバルにインストールします。",
       codexInstall: "Codex CLI をグローバルにインストールします。",
+      dshInstall: "DeepSeek Harness CLI をグローバルにインストールします（Node >= 22.19 が必要）。",
       claudeAuth: "Claude Code のログイン状態を確認します。未ログインの場合は一度 claude を実行してください。",
       codexAuth: "Hermes 管理の OpenAI Codex OAuth 認証情報を追加します。",
       claudeHealth: "アップデーターとローカル CLI の状態を確認します。",

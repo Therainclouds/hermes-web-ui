@@ -2463,6 +2463,7 @@ export default {
     notice: "ليست كل المزوّدات والنماذج متوافقة.",
     claudeDescription: "واجهة Anthropic السطرية لوضع الطباعة الفوري وجلسات البرمجة التفاعلية.",
     codexDescription: "واجهة OpenAI السطرية ومسار مزوّد openai-codex في Hermes لمهام المستودعات.",
+    dshDescription: "DeepSeek Harness (dsh): حزام وكيل قائم على الإضافات. المهام الفردية headless تعيد النتيجة النهائية في كتلة واحدة (بدون بث)؛ كل جولة تبدأ جلسة جديدة. يتطلب Node >= 22.19.",
     copyCommand: "نسخ",
     commandCopied: "تم نسخ الأمر",
     commandCopyFailed: "فشل النسخ",
@@ -2529,6 +2530,7 @@ export default {
     notes: {
       claudeInstall: "يثبّت واجهة Claude Code السطرية عالميًا.",
       codexInstall: "يثبّت واجهة Codex السطرية عالميًا.",
+      dshInstall: "يثبّت واجهة DeepSeek Harness السطرية عالميًا (يتطلب Node >= 22.19).",
       claudeAuth: "يتحقق من حالة تسجيل الدخول في Claude Code؛ شغّل claude مرة واحدة إذا لم يكن تسجيل الدخول موجودًا.",
       codexAuth: "يضيف بيانات مصادقة OAuth لـ OpenAI Codex التي يديرها Hermes.",
       claudeHealth: "يتحقق من المحدّث وسلامة الواجهة السطرية المحلية.",

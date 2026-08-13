@@ -466,4 +466,143 @@ describe('coding agent Windows process launch', () => {
     ;(manager as any).runs.clear()
     ;(manager as any).sessionIndex.clear()
   })
+
+  it('runs npm .cmd shims through cmd.exe for hidden DeepSeek Harness headless turns', () => {
+    const manager = new CodingAgentRunManager()
+    ;(manager as any).ensureDbSession = () => {}
+    ;(manager as any).addUserMessage = () => {}
+    ;(manager as any).emitToChat = () => {}
+    ;(manager as any).markChatRunCompleted = () => {}
+
+    manager.start({
+      agentSessionId: 'agent-session-dsh-1',
+      agentId: 'dsh',
+      mode: 'scoped',
+      profile: 'default',
+      provider: 'test-provider',
+      model: 'deepseek-test',
+      sessionId: 'chat-session-dsh-1',
+      command: 'C:\\Users\\Administrator\\AppData\\Roaming\\npm\\dsh.cmd',
+      args: ['--profile', 'headless'],
+      shellCommand: 'dsh --profile headless',
+      workspaceDir: process.cwd(),
+      env: {
+        DSH_HOME: 'C:\\Users\\Administrator\\.hermes-web-ui\\dsh',
+        DEEPSEEK_API_KEY: 'sk-test',
+      },
+      state: { messages: [], isWorking: false, events: [], queue: [] },
+    })
+
+    manager.send('chat-session-dsh-1', 'refactor the module')
+
+    expect(testState.spawnCalls[0]).toMatchObject({
+      command: expect.stringContaining('cmd.exe'),
+      args: expect.arrayContaining(['/d', '/s', '/c']),
+    })
+    expect(testState.spawnCalls[0].args[3]).toContain('C:\\Users\\Administrator\\AppData\\Roaming\\npm\\dsh.cmd')
+    expect(testState.spawnCalls[0].args[3]).toContain('^"--profile^"')
+    expect(testState.spawnCalls[0].args[3]).toContain('^"headless^"')
+    expect(testState.spawnCalls[0].args[3]).toContain('^"refactor^ the^ module^"')
+    expect(testState.spawnCalls[0].options).toMatchObject({
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsVerbatimArguments: true,
+      windowsHide: true,
+    })
+
+    const run = (manager as any).runs.get('agent-session-dsh-1')
+    if (run?.idleTimer) clearTimeout(run.idleTimer)
+    ;(manager as any).runs.clear()
+    ;(manager as any).sessionIndex.clear()
+  })
+
+  it('emits the final stdout text as a single response for DeepSeek Harness headless turns', async () => {
+    const manager = new CodingAgentRunManager()
+    const emitted: Array<{ event: string; payload: any }> = []
+    ;(manager as any).ensureDbSession = () => {}
+    ;(manager as any).addUserMessage = () => {}
+    ;(manager as any).markChatRunCompleted = () => {}
+    ;(manager as any).emitToChat = (_sessionId: string, event: string, payload: any) => {
+      emitted.push({ event, payload })
+    }
+
+    manager.start({
+      agentSessionId: 'agent-session-dsh-complete-1',
+      agentId: 'dsh',
+      mode: 'scoped',
+      profile: 'default',
+      provider: 'test-provider',
+      model: 'deepseek-test',
+      sessionId: 'chat-session-dsh-complete-1',
+      command: 'C:\\Users\\Administrator\\AppData\\Roaming\\npm\\dsh.cmd',
+      args: ['--profile', 'headless'],
+      shellCommand: 'dsh --profile headless',
+      workspaceDir: process.cwd(),
+      state: { messages: [], isWorking: false, events: [], queue: [] },
+    })
+
+    manager.send('chat-session-dsh-complete-1', 'refactor the module')
+    testState.spawnCalls[0].child.stdout.emit('data', Buffer.from('Final answer text here', 'utf8'))
+    testState.spawnCalls[0].child.emit('exit', 0)
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(emitted).toContainEqual(expect.objectContaining({
+      event: 'message.delta',
+      payload: expect.objectContaining({ delta: 'Final answer text here' }),
+    }))
+    expect(emitted).toContainEqual(expect.objectContaining({
+      event: 'run.completed',
+      payload: expect.objectContaining({ output: 'Final answer text here' }),
+    }))
+    expect(emitted).not.toContainEqual(expect.objectContaining({
+      event: 'run.failed',
+    }))
+
+    const run = (manager as any).runs.get('agent-session-dsh-complete-1')
+    if (run?.idleTimer) clearTimeout(run.idleTimer)
+    ;(manager as any).runs.clear()
+    ;(manager as any).sessionIndex.clear()
+  })
+
+  it('reports a non-zero exit from DeepSeek Harness headless turns as a failed response', async () => {
+    const manager = new CodingAgentRunManager()
+    const emitted: Array<{ event: string; payload: any }> = []
+    ;(manager as any).ensureDbSession = () => {}
+    ;(manager as any).addUserMessage = () => {}
+    ;(manager as any).markChatRunCompleted = () => {}
+    ;(manager as any).emitToChat = (_sessionId: string, event: string, payload: any) => {
+      emitted.push({ event, payload })
+    }
+
+    manager.start({
+      agentSessionId: 'agent-session-dsh-error-1',
+      agentId: 'dsh',
+      mode: 'scoped',
+      profile: 'default',
+      provider: 'test-provider',
+      model: 'deepseek-test',
+      sessionId: 'chat-session-dsh-error-1',
+      command: 'C:\\Users\\Administrator\\AppData\\Roaming\\npm\\dsh.cmd',
+      args: ['--profile', 'headless'],
+      shellCommand: 'dsh --profile headless',
+      workspaceDir: process.cwd(),
+      state: { messages: [], isWorking: false, events: [], queue: [] },
+    })
+
+    manager.send('chat-session-dsh-error-1', 'refactor the module')
+    testState.spawnCalls[0].child.stderr.emit('data', Buffer.from('dsh: boom', 'utf8'))
+    testState.spawnCalls[0].child.emit('exit', 1)
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(emitted).toContainEqual(expect.objectContaining({
+      event: 'run.failed',
+      payload: expect.objectContaining({
+        error: 'DeepSeek Harness exited with code 1: dsh: boom',
+      }),
+    }))
+
+    const run = (manager as any).runs.get('agent-session-dsh-error-1')
+    if (run?.idleTimer) clearTimeout(run.idleTimer)
+    ;(manager as any).runs.clear()
+    ;(manager as any).sessionIndex.clear()
+  })
 })

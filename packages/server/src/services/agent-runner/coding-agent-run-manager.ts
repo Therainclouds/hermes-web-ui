@@ -222,7 +222,7 @@ function truncateCodingAgentToolOutputEvent(event: CanonicalResponsesEvent): Can
 }
 
 function isPrintAgent(agentId: string): boolean {
-  return agentId === 'claude-code' || agentId === 'codex'
+  return agentId === 'claude-code' || agentId === 'codex' || agentId === 'dsh'
 }
 
 function hasManagedHermesMcpConfig(run: ManagedCodingAgentRun): boolean {
@@ -513,7 +513,7 @@ export class CodingAgentRunManager {
       this.sessionIndex.set(launch.sessionId, run.id)
       this.ensureDbSession(run)
       this.touch(run)
-      this.emitTerminalStatus(run, `${launch.agentId === 'codex' ? 'Codex' : 'Claude Code'} chat runner ready.`)
+      this.emitTerminalStatus(run, `${launch.agentId === 'codex' ? 'Codex' : launch.agentId === 'dsh' ? 'DeepSeek Harness' : 'Claude Code'} chat runner ready.`)
       logger.info({
         runId: run.id,
         sessionId: launch.sessionId,
@@ -557,7 +557,7 @@ export class CodingAgentRunManager {
     this.sessionIndex.set(launch.sessionId, run.id)
     this.ensureDbSession(run)
     this.touch(run)
-    this.emitTerminalStatus(run, `${launch.agentId === 'codex' ? 'Codex' : 'Claude Code'} session started.`)
+    this.emitTerminalStatus(run, `${launch.agentId === 'codex' ? 'Codex' : launch.agentId === 'dsh' ? 'DeepSeek Harness' : 'Claude Code'} session started.`)
 
     proc.onData((data: string) => {
       this.touch(run)
@@ -606,6 +606,10 @@ export class CodingAgentRunManager {
       this.startCodexExecTurn(run, text, systemPrompt, images)
       return { runId: run.id }
     }
+    if (run.launch.agentId === 'dsh') {
+      this.startDshPrintTurn(run, text)
+      return { runId: run.id }
+    }
     if (!run.pty) throw new Error('Coding agent terminal is not available')
     run.pty.write(`${text}\r`)
     return { runId: run.id }
@@ -648,7 +652,7 @@ export class CodingAgentRunManager {
       sessionId: run.launch.sessionId,
       runId: final?.id,
       source: 'coding_agent',
-      agent: run.launch.agentId === 'codex' ? 'codex' : 'claude_code',
+      agent: run.launch.agentId === 'codex' ? 'codex' : run.launch.agentId === 'dsh' ? 'dsh' : 'claude_code',
       usageScope: 'model_call',
       apiCalls: 1,
       usage,
@@ -715,7 +719,7 @@ export class CodingAgentRunManager {
             sessionId: run.launch.sessionId,
             runId: final?.id || run.printResponseId || run.runMarker,
             source: 'coding_agent',
-            agent: run.launch.agentId === 'codex' ? 'codex' : 'claude_code',
+            agent: run.launch.agentId === 'codex' ? 'codex' : run.launch.agentId === 'dsh' ? 'dsh' : 'claude_code',
             usageScope: 'run',
             usage: final.usage,
             profile: run.launch.profile,
@@ -807,7 +811,7 @@ export class CodingAgentRunManager {
       id: run.launch.sessionId,
       profile: run.launch.profile,
       source,
-      agent: run.launch.agentId === 'codex' ? 'codex' : 'claude',
+      agent: run.launch.agentId === 'codex' ? 'codex' : run.launch.agentId === 'dsh' ? 'dsh' : 'claude',
       agent_session_id: run.id,
       agent_native_session_id: run.launch.agentNativeSessionId,
       model: run.launch.model,
@@ -1819,6 +1823,116 @@ export class CodingAgentRunManager {
 
   private completeCodexExecTurn(run: ManagedCodingAgentRun, usage?: any) {
     this.completeClaudePrintTurn(run, usage)
+  }
+
+  private startDshPrintTurn(run: ManagedCodingAgentRun, input: string) {
+    if (childIsRunning(run.currentChild)) {
+      throw new Error('DeepSeek Harness is still processing the previous input')
+    }
+
+    const responseId = `resp_${Date.now()}`
+    run.printResponseId = responseId
+    run.printMessageId = `msg_${responseId}`
+    run.printTextStarted = false
+    run.printText = ''
+    run.printCompleted = false
+    run.responseStartEmitted = false
+    run.terminalEventHandled = false
+    run.currentChildStderr = ''
+    run.runMarker = undefined
+    run.memoryExportStarted = false
+
+    this.handleClaudePrintResponseEvent(run, {
+      type: 'response.created',
+      data: {
+        type: 'response.created',
+        response: { id: responseId, object: 'response', status: 'in_progress', model: run.launch.model, output: [] },
+      },
+    })
+
+    const child = spawnCodingAgentChild(run.launch.command, [...run.launch.args, input], {
+      cwd: existsSync(run.launch.workspaceDir) ? run.launch.workspaceDir : homedir(),
+      env: {
+        ...process.env,
+        ...(run.launch.env || {}),
+      },
+      pipeStdin: false,
+    })
+    run.currentChild = child
+
+    let stdoutText = ''
+    child.stdout?.on('data', (chunk: Buffer) => {
+      this.touch(run)
+      stdoutText += chunk.toString('utf8')
+    })
+
+    child.stderr?.on('data', (chunk: Buffer) => {
+      this.touch(run)
+      const text = appendChildStderr(run, chunk)
+      if (text) logger.debug({ runId: run.id, sessionId: run.launch.sessionId, text }, '[coding-agent-run] dsh print stderr')
+    })
+
+    child.on('error', (err) => {
+      if (run.currentChildKillTimer) clearTimeout(run.currentChildKillTimer)
+      run.currentChildKillTimer = undefined
+      run.currentChild = undefined
+      logger.warn({ err, runId: run.id, sessionId: run.launch.sessionId }, '[coding-agent-run] dsh print failed to start')
+      this.handleClaudePrintResponseEvent(run, {
+        type: 'response.failed',
+        data: {
+          type: 'response.failed',
+          response: {
+            id: run.printResponseId,
+            object: 'response',
+            status: 'failed',
+            model: run.launch.model,
+            error: { message: childProcessErrorMessage(err) },
+            output: [],
+          },
+        },
+      })
+    })
+
+    child.on('exit', (code) => {
+      if (run.currentChildKillTimer) clearTimeout(run.currentChildKillTimer)
+      run.currentChildKillTimer = undefined
+      run.currentChild = undefined
+      logger.info({ runId: run.id, sessionId: run.launch.sessionId, code }, '[coding-agent-run] dsh print exited')
+      if (run.stoppedByUser) return
+      if (code === 0) {
+        const text = stdoutText.trim()
+        if (text) {
+          this.ensureClaudePrintText(run)
+          run.printText = `${run.printText || ''}${text}`
+          this.handleClaudePrintResponseEvent(run, {
+            type: 'response.output_text.delta',
+            data: {
+              type: 'response.output_text.delta',
+              item_id: run.printMessageId,
+              output_index: 0,
+              content_index: 0,
+              delta: text,
+            },
+          })
+        }
+        this.completeClaudePrintTurn(run)
+        return
+      }
+      this.handleClaudePrintResponseEvent(run, {
+        type: 'response.failed',
+        data: {
+          type: 'response.failed',
+          response: {
+            id: run.printResponseId,
+            object: 'response',
+            status: 'failed',
+            model: run.launch.model,
+            error: { message: exitErrorMessage('DeepSeek Harness', code, run.currentChildStderr) },
+            output: [],
+          },
+        },
+      })
+    })
   }
 
   private async emitAndMarkPrintChatRunCompletedAfterUsage(

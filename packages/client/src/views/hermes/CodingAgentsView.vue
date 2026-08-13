@@ -27,8 +27,8 @@ import { getProfileDisplayName } from '@/utils/hermes/profile-display'
 
 type CodingAgentBlock = {
   id: CodingAgentId
-  tool: 'Claude Code' | 'Codex'
-  provider: 'Anthropic' | 'OpenAI'
+  tool: 'Claude Code' | 'Codex' | 'DeepSeek Harness'
+  provider: 'Anthropic' | 'OpenAI' | 'DeepSeek'
 }
 
 type ConfigFileEntry = {
@@ -56,18 +56,22 @@ const tools = ref<CodingAgentToolStatus[]>([])
 const installing = ref<Record<CodingAgentId, boolean>>({
   'claude-code': false,
   codex: false,
+  dsh: false,
 })
 const installFailureHints = ref<Record<CodingAgentId, string>>({
   'claude-code': '',
   codex: '',
+  dsh: '',
 })
 const installFailureDetails = ref<Record<CodingAgentId, string>>({
   'claude-code': '',
   codex: '',
+  dsh: '',
 })
 const deleting = ref<Record<CodingAgentId, boolean>>({
   'claude-code': false,
   codex: false,
+  dsh: false,
 })
 const launchModalVisible = ref(false)
 const launchLoading = ref(false)
@@ -87,6 +91,7 @@ const terminalKey = ref(0)
 const agentLogos: Record<CodingAgentBlock['tool'], string> = {
   'Claude Code': '/coding-agents/claude-code.svg',
   Codex: '/coding-agents/codex-openai.png',
+  'DeepSeek Harness': '/coding-agents/dsh.svg',
 }
 
 const agentBlocks: CodingAgentBlock[] = [
@@ -99,6 +104,11 @@ const agentBlocks: CodingAgentBlock[] = [
     id: 'codex',
     tool: 'Codex',
     provider: 'OpenAI',
+  },
+  {
+    id: 'dsh',
+    tool: 'DeepSeek Harness',
+    provider: 'DeepSeek',
   },
 ]
 
@@ -113,6 +123,11 @@ const configFiles: Record<CodingAgentId, ConfigFileEntry[]> = {
     { key: 'config', path: '~/.codex/config.toml', language: 'ini' },
     { key: 'agents', path: '~/.codex/AGENTS.md', language: 'markdown' },
   ],
+  dsh: [
+    { key: 'settings', path: '~/.dsh/settings.yaml', language: 'yaml' },
+    { key: 'patch', path: '~/.dsh/cordis.patch.yml', language: 'yaml' },
+    { key: 'credentials', path: '~/.dsh/.credentials.yaml', language: 'yaml' },
+  ],
 }
 
 const configEditorStates = ref<Record<CodingAgentId, ConfigEditorState>>({
@@ -125,6 +140,13 @@ const configEditorStates = ref<Record<CodingAgentId, ConfigEditorState>>({
   },
   codex: {
     selectedKey: 'config',
+    content: '',
+    originalContent: '',
+    loading: false,
+    saving: false,
+  },
+  dsh: {
+    selectedKey: 'settings',
     content: '',
     originalContent: '',
     loading: false,
@@ -267,13 +289,13 @@ function resetLaunchSelection() {
   const firstProvider = selectableLaunchProviders.value[0]
   launchProvider.value = firstProvider?.provider || ''
   launchModel.value = firstProvider?.models[0] || ''
-  launchApiMode.value = defaultLaunchApiMode(firstProvider)
+  launchApiMode.value = launchAgentId.value === 'dsh' ? 'chat_completions' : defaultLaunchApiMode(firstProvider)
 }
 
 function handleLaunchProviderChange(value: string) {
   const provider = selectableLaunchProviders.value.find(item => item.provider === value)
   launchModel.value = provider?.models[0] || ''
-  launchApiMode.value = defaultLaunchApiMode(provider)
+  launchApiMode.value = launchAgentId.value === 'dsh' ? 'chat_completions' : defaultLaunchApiMode(provider)
 }
 
 watch([selectableLaunchProviders, launchMode], () => {
@@ -299,6 +321,7 @@ async function openLaunchModal(agentId: CodingAgentId) {
     const result = await fetchAvailableModelsForProfile(activeProfileName.value)
     launchProviders.value = result.groups || []
     resetLaunchSelection()
+    if (agentId === 'dsh') launchApiMode.value = 'chat_completions'
   } catch (err: any) {
     message.error(err?.message || t('codingAgents.loadProvidersFailed'))
   } finally {
@@ -612,7 +635,7 @@ onMounted(() => {
               filterable
             />
           </NFormItem>
-          <NFormItem v-if="!useGlobalLaunchConfig" :label="t('codingAgents.protocolScope')">
+          <NFormItem v-if="!useGlobalLaunchConfig && launchAgentId !== 'dsh'" :label="t('codingAgents.protocolScope')">
             <NSelect
               v-model:value="launchApiMode"
               :options="launchProtocolOptions"

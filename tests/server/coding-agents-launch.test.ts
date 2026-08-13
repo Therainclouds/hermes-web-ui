@@ -194,6 +194,80 @@ describe('coding agent launch preparation', () => {
     expect(result.shellCommand).toContain(workspace)
   })
 
+  it('launches DeepSeek Harness with scoped DSH_HOME settings', async () => {
+    const home = makeHome()
+
+    const result = await prepareCodingAgentLaunch('dsh', {
+      profile: 'default',
+      provider: 'openrouter',
+      model: 'deepseek/deepseek-v4-flash',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      apiKey: 'sk-test',
+      apiMode: 'chat_completions',
+    })
+
+    expect(result.rootDir).toBe(join(home, 'coding-agent', 'model', 'default', 'openrouter', 'dsh'))
+    expect(result.workspaceDir).toBe(join(home, 'coding-agent', 'workspace', 'default', 'openrouter'))
+    expect(result.command).toBe('dsh')
+    expect(result.args).toEqual(['--profile', 'headless'])
+    expect(result.env).toMatchObject({
+      DSH_HOME: result.rootDir,
+      DEEPSEEK_BASE_URL: 'https://openrouter.ai/api/v1',
+      DEEPSEEK_API_KEY: 'sk-test',
+    })
+
+    const settings = readFileSync(join(result.rootDir, 'settings.yaml'), 'utf-8')
+    expect(settings).toContain('llm-deepseek:')
+    expect(settings).toContain('baseURL: "https://openrouter.ai/api/v1"')
+    expect(settings).toContain('apiKeyEnv: DEEPSEEK_API_KEY')
+    expect(settings).toContain('thinking: disabled')
+    expect(settings).toContain('agent-default-model:')
+    expect(settings).toContain('provider: deepseek-official')
+    expect(settings).toContain('model: "deepseek/deepseek-v4-flash"')
+
+    const launcher = readFileSync(join(result.rootDir, LAUNCHER_FILE), 'utf-8')
+    expect(launcher).toContain("'dsh'")
+    expect(launcher).toContain("'--profile'")
+    expect(launcher).toContain("'headless'")
+  })
+
+  it('rejects DeepSeek Harness scoped launches with non chat-completions protocols', async () => {
+    const home = makeHome()
+
+    await expect(prepareCodingAgentLaunch('dsh', {
+      profile: 'default',
+      provider: 'openrouter',
+      model: 'deepseek/deepseek-v4-flash',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      apiKey: 'sk-test',
+      apiMode: 'codex_responses',
+    })).rejects.toThrow('DeepSeek Harness launch only supports OpenAI Chat Completions providers')
+  })
+
+  it('launches DeepSeek Harness with the global config when requested', async () => {
+    const home = makeHome()
+
+    const result = await prepareCodingAgentLaunch('dsh', {
+      mode: 'global',
+      profile: 'default',
+    })
+
+    expect(result).toMatchObject({
+      agentId: 'dsh',
+      mode: 'global',
+      profile: 'default',
+      provider: 'global',
+      model: '',
+      rootDir: join(home, 'coding-agent', 'workspace', 'default', 'global'),
+      workspaceDir: join(home, 'coding-agent', 'workspace', 'default', 'global'),
+      command: 'dsh',
+      args: [],
+      env: {},
+      shellCommand: expectedShellCommand(join(home, 'coding-agent', 'workspace', 'default', 'global'), 'dsh', []),
+      files: [],
+    })
+  })
+
   it('launches Claude Code with scoped settings instead of a CLI --model override', async () => {
     const home = makeHome()
 

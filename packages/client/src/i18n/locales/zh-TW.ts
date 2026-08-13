@@ -2462,6 +2462,7 @@ export default {
     notice: "並非所有提供商和模型都相容。",
     claudeDescription: "Anthropic CLI，適合 print mode 單次任務和互動式編程工作階段。",
     codexDescription: "OpenAI CLI，以及 Hermes openai-codex 提供商的倉庫任務流程。",
+    dshDescription: "DeepSeek Harness (dsh)：基於外掛程式的 agent harness。headless 單次任務會一次性回傳最終結果（非串流），每一輪都會開啟全新工作階段。需要 Node >= 22.19。",
     copyCommand: "複製",
     commandCopied: "命令已複製",
     commandCopyFailed: "複製失敗",
@@ -2528,6 +2529,7 @@ export default {
     notes: {
       claudeInstall: "全域安裝 Claude Code CLI。",
       codexInstall: "全域安裝 Codex CLI。",
+      dshInstall: "全域安裝 DeepSeek Harness CLI（需要 Node >= 22.19）。",
       claudeAuth: "檢查 Claude Code 登入狀態；未登入時先執行 claude。",
       codexAuth: "新增 Hermes 管理的 OpenAI Codex OAuth 憑證。",
       claudeHealth: "檢查自動更新器和本機 CLI 健康狀態。",

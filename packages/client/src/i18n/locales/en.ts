@@ -2537,6 +2537,7 @@ export default {
     notice: "Not all providers and models are compatible.",
     claudeDescription: "Anthropic CLI for one-shot print mode and interactive coding sessions.",
     codexDescription: "OpenAI CLI and Hermes openai-codex provider flow for repository tasks.",
+    dshDescription: "DeepSeek Harness (dsh): a plugin-based agent harness. Headless one-shot tasks return the final answer in a single block (non-streaming); each turn starts a fresh session. Requires Node >= 22.19.",
     copyCommand: "Copy",
     commandCopied: "Command copied",
     commandCopyFailed: "Copy failed",
@@ -2603,6 +2604,7 @@ export default {
     notes: {
       claudeInstall: "Installs the Claude Code CLI globally.",
       codexInstall: "Installs the Codex CLI globally.",
+      dshInstall: "Installs the DeepSeek Harness CLI globally (requires Node >= 22.19).",
       claudeAuth: "Checks Claude Code login state; run claude once if login is missing.",
       codexAuth: "Adds Hermes-managed OpenAI Codex OAuth credentials.",
       claudeHealth: "Checks updater and local CLI health.",
