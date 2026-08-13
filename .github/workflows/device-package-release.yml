@@ -287,6 +287,33 @@ jobs:
           ossutil -c "${HOME}/.ossutilconfig" cp -r -f dist/hermes-agent/wheelhouse/ "${OSS_PATH}/hermes-agent/wheelhouse/"
           ossutil -c "${HOME}/.ossutilconfig" cp -f dist/hermes-agent/metadata/latest.json "${OSS_PATH}/hermes-agent/${AGENT_CHANNEL}/latest.json"
 
+      - name: Publish versions.json to OSS
+        if: steps.metadata.outputs.oss_path != ''
+        shell: bash
+        env:
+          OSS_PUBLIC_BASE_URL: ${{ steps.metadata.outputs.oss_public_base_url }}
+          OSS_PATH: ${{ steps.metadata.outputs.oss_path }}
+          AGENT_VERSION: ${{ steps.hermes_agent.outputs.version }}
+          EXISTING_VERSIONS_PATH: dist/device-package-release/versions.existing.json
+          OUTPUT_PATH: dist/device-package-release/versions.json
+        run: |
+          set -euo pipefail
+          mkdir -p dist/device-package-release
+
+          # The remote version list is cumulative: merge the existing OSS
+          # versions.json (if any) with every published release tag so a later
+          # release does not overwrite previously published versions.
+          if ! curl -fsSL "${OSS_PUBLIC_BASE_URL}/versions.json" -o "${EXISTING_VERSIONS_PATH}" 2>/dev/null; then
+            rm -f "${EXISTING_VERSIONS_PATH}"
+          fi
+          RELEASE_TAGS="$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tr '\n' ' ')" \
+          AGENT_VERSION="${AGENT_VERSION}" \
+          EXISTING_VERSIONS_PATH="${EXISTING_VERSIONS_PATH}" \
+          OUTPUT_PATH="${OUTPUT_PATH}" \
+            python scripts/build-versions-manifest.py
+
+          ossutil -c "${HOME}/.ossutilconfig" cp -f "${OUTPUT_PATH}" "${OSS_PATH}/versions.json"
+
       - name: Publish latest.json on manifest branch
         shell: bash
         env:
@@ -316,10 +343,16 @@ jobs:
           cp "${LATEST_PATH}" ".manifest-branch/releases/${RELEASE_CHANNEL}/latest.json"
           cp "${MANIFEST_PATH}" ".manifest-branch/releases/${RELEASE_TAG}/manifest.json"
           cp "${SHA_PATH}" ".manifest-branch/releases/${RELEASE_TAG}/$(basename "${SHA_PATH}")"
+          # Keep a cumulative versions.json backup on the manifest branch. It only
+          # exists when OSS publishing ran; the OSS copy remains authoritative.
+          if [ -f "dist/device-package-release/versions.json" ]; then
+            cp "dist/device-package-release/versions.json" ".manifest-branch/versions.json"
+          fi
 
           (
             cd .manifest-branch
             git add releases
+            if [ -f versions.json ]; then git add versions.json; fi
             git commit -m "chore: publish ${RELEASE_TAG} device package metadata" || true
             git push origin "${MANIFEST_BRANCH}"
           )
@@ -398,6 +431,12 @@ jobs:
             exit 1
           fi
           curl -fsSL "${hermes_agent_wheel_url}" -o /tmp/hermes-agent.whl
+
+          if [ -n "${{ steps.metadata.outputs.oss_public_base_url }}" ]; then
+            curl -fsSL "${{ steps.metadata.outputs.oss_public_base_url }}/versions.json" > /tmp/oss-versions.json
+            webui_version="$(printf '%s' "${{ steps.metadata.outputs.tag }}" | sed 's/^v//')"
+            grep -F "\"${webui_version}\"" /tmp/oss-versions.json
+          fi
 
       - name: Upload release metadata artifact
         uses: actions/upload-artifact@v4

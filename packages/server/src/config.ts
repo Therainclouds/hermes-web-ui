@@ -245,7 +245,7 @@ export const config = {
   update: {
     enabled: parseBoolean(process.env.WEBUI_UPDATE_ENABLED),
     strategy: normalizeUpdateStrategy(process.env.WEBUI_UPDATE_STRATEGY),
-    includeAgentUpgrade: parseBoolean(process.env.WEBUI_UPDATE_INCLUDE_AGENT_UPGRADE),
+    includeAgentUpgrade: parseBoolean(process.env.WEBUI_UPDATE_INCLUDE_AGENT_UPGRADE, true),
     autoInstallDependencies: parseBoolean(process.env.WEBUI_UPDATE_AUTO_INSTALL_DEPENDENCIES, true),
     packageName: updatePackageName,
     registry: updateRegistry,

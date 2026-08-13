@@ -12,6 +12,7 @@ vi.mock('../../packages/server/src/config', () => ({
 import {
   readProfileMeta,
   setProfileDisplayName,
+  clearProfileDisplayName,
   readProfileAvatarMeta,
   setProfileAvatarRemote,
   setProfileAvatarGenerated,
@@ -35,6 +36,19 @@ describe('profile-metadata service', () => {
   it('ignores empty display names', () => {
     setProfileDisplayName('default', '')
     expect(readProfileMeta('default').displayName).toBeUndefined()
+    expect(existsSync(join(profileMetadataDir('default'), 'meta.json'))).toBe(false)
+  })
+
+  it('clears an existing display name while keeping avatar metadata', () => {
+    setProfileDisplayName('default', 'Existentialist')
+    setProfileAvatarRemote('default', 'https://thirdwx.qlogo.cn/avatar.png')
+    clearProfileDisplayName('default')
+    expect(readProfileMeta('default').displayName).toBeUndefined()
+    expect(readProfileAvatarMeta('default')?.type).toBe('remote')
+  })
+
+  it('clearProfileDisplayName is a no-op when no display name is set', () => {
+    clearProfileDisplayName('default')
     expect(existsSync(join(profileMetadataDir('default'), 'meta.json'))).toBe(false)
   })
 

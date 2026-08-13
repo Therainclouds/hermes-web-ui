@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_USERNAME, DEFAULT_PASSWORD } from '../../packages/server/src/db/hermes/users-store'
 
-const { fetchDeviceSelfMock, verifyDeviceApiKeyMock, saveDeviceBindingMock } = vi.hoisted(() => ({
+const { fetchDeviceSelfMock, verifyDeviceApiKeyMock, saveDeviceBindingMock, loadDeviceBindingMock } = vi.hoisted(() => ({
   fetchDeviceSelfMock: vi.fn(),
   verifyDeviceApiKeyMock: vi.fn(),
   saveDeviceBindingMock: vi.fn(),
+  loadDeviceBindingMock: vi.fn(async () => null),
 }))
 
 vi.mock('../../packages/server/src/services/token-platform-client', () => ({
@@ -14,7 +15,7 @@ vi.mock('../../packages/server/src/services/token-platform-client', () => ({
 vi.mock('../../packages/server/src/services/device-binding', () => ({
   saveDeviceBinding: saveDeviceBindingMock,
   clearDeviceBinding: vi.fn(async () => undefined),
-  loadDeviceBinding: vi.fn(async () => null),
+  loadDeviceBinding: loadDeviceBindingMock,
   getOrCreateHardwareId: vi.fn(async () => 'uuid'),
   getHardwareId: vi.fn(async () => 'uuid'),
 }))
@@ -31,6 +32,9 @@ describe('deviceLogin controller', () => {
     vi.unstubAllEnvs()
     vi.unstubAllGlobals()
     vi.stubEnv('AUTH_JWT_SECRET', 'test-secret')
+    // Default: the device has no persisted WeChat binding. Tests that exercise
+    // the "already bound owner" rejection override this inside the test body.
+    loadDeviceBindingMock.mockResolvedValue(null)
 
     const { DatabaseSync } = await import('node:sqlite')
     db = new DatabaseSync(':memory:')
@@ -115,10 +119,14 @@ describe('deviceLogin controller', () => {
     }))
   })
 
-  it('links a regular admin when the device already has local users', async () => {
+  it('makes the first scanning WeChat the owner even when local users already exist', async () => {
+    // A freshly deployed device may already have local accounts (e.g. a
+    // bootstrap super admin) while having no WeChat binding at all. The first
+    // scanning WeChat must still become the owner (super_admin).
     const { ctrl, users } = await loadModules()
     users.createDefaultSuperAdmin()
     expect(users.countUsers()).toBe(1)
+    loadDeviceBindingMock.mockResolvedValue(null) // no WeChat binding on this device
 
     fetchDeviceSelfMock.mockResolvedValue({ id: 8, username: 'wechat_8', display_name: '新用户' })
     verifyDeviceApiKeyMock.mockResolvedValue(['claude-3-5-sonnet'])
@@ -132,14 +140,43 @@ describe('deviceLogin controller', () => {
     await ctrl.deviceLogin(ctx)
 
     expect(ctx.status).toBe(200)
-    expect(ctx.body.user.role).toBe('admin')
-    const created = users.findUserByUsername('tp_8')
-    expect(created).not.toBeNull()
-    expect(created!.role).toBe('admin')
-    // The device admin must be bound to the default profile so profile-scoped
-    // endpoints (models, profiles, runtime status) do not return 403.
-    const boundProfiles = users.listUserProfiles(created!.id).map(p => p.profile_name)
-    expect(boundProfiles).toContain('default')
+    expect(ctx.body.user.username).toBe('tp_8')
+    expect(ctx.body.user.role).toBe('super_admin')
+  })
+
+  it('rejects a second WeChat account when the device already has a bound owner', async () => {
+    const { ctrl, users } = await loadModules()
+    users.createDefaultSuperAdmin()
+    expect(users.countUsers()).toBe(1)
+    // The device already owns a WeChat binding for a different account.
+    loadDeviceBindingMock.mockResolvedValue({
+      device_id: '43',
+      api_base: 'https://api.quantclaw.vip',
+      api_key: 'sk-owner',
+      models: ['gpt-4o'],
+      display_name: '老用户',
+      username: 'wechat_8',
+      bound_at: Date.now(),
+    })
+
+    fetchDeviceSelfMock.mockResolvedValue({ id: 9, username: 'wechat_9', display_name: '新用户' })
+    verifyDeviceApiKeyMock.mockResolvedValue(['claude-3-5-sonnet'])
+
+    const ctx = makeCtx({
+      api_base: 'https://api.quantclaw.vip',
+      api_key: 'sk-good-2',
+      device_id: 44,
+      models: ['claude-3-5-sonnet'],
+    })
+    await ctrl.deviceLogin(ctx)
+
+    // Single-machine, single-owner: a WeChat account that is not the bound
+    // owner must NOT be auto-provisioned (it would overwrite the default
+    // profile the owner set).
+    expect(ctx.status).toBe(403)
+    expect(ctx.body.code).toBe('DEVICE_ALREADY_BOUND')
+    expect(ctx.body.owner).toBeTruthy()
+    expect(users.findUserByUsername('tp_9')).toBeNull()
   })
 
   it('grants the default profile to an existing admin that has no profile bindings', async () => {

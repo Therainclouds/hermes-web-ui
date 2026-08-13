@@ -17,6 +17,7 @@ import {
   buildNpmPackageInstallArgs,
   getNpmPackageExecutionMessage,
   restoreTlsCertificatesAfterNpmUpdate,
+  upgradeHermesAgentAfterNpmUpdate,
 } from '../services/update/strategies/npm-package'
 import { assertSourceDeployExecution, buildSourceDeployEnv, getSourceDeployExecutionMessage } from '../services/update/strategies/source-deploy'
 import { updateTaskStore } from '../services/update/task-store'
@@ -1644,6 +1645,12 @@ export async function handleUpdate(ctx: any) {
     })
     const output = await runUpdateInstall(version)
     restoreTlsCertificatesAfterNpmUpdate()
+
+    // Best-effort Hermes Agent upgrade: Web UI is already updated in place.
+    // Never blocks the Web UI update when the agent upgrade fails.
+    if (config.update.includeAgentUpgrade) {
+      await upgradeHermesAgentAfterNpmUpdate()
+    }
 
     updateTaskStore.updateCurrentStage('restarting', `Restarting Hermes Web UI after updating to ${version}.`, {
       targetVersion: version,

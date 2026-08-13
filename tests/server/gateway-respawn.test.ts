@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events'
+import { existsSync } from 'fs'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const originalEnv = { ...process.env }
@@ -20,6 +21,18 @@ class FakeChild extends EventEmitter {
 let fakeChildren: FakeChild[] = []
 let fakeSpawnOptions: any[] = []
 const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
+
+// The respawn tests drive the state machine with virtual profile dirs
+// (e.g. `/tmp/fake-a`), so the directory-existence guard added for
+// "respawn into a deleted profile" must default to "exists" here. Individual
+// cases flip it to false to exercise the guard itself.
+vi.mock('fs', async importOriginal => {
+  const actual = await importOriginal<typeof import('fs')>()
+  return {
+    ...actual,
+    existsSync: vi.fn(() => true),
+  }
+})
 
 vi.mock('../../packages/server/src/services/hermes/hermes-process', () => ({
   resolveHermesInvocation: (bin: string) => ({ command: bin, argsPrefix: [] }),
@@ -43,6 +56,7 @@ afterEach(() => {
   process.env = { ...originalEnv }
   fakeChildren = []
   fakeSpawnOptions = []
+  vi.mocked(existsSync).mockReturnValue(true)
   if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform)
 })
 
@@ -263,6 +277,52 @@ describe('gateway-runner supervision', () => {
 
     fakeChildren[0].emit('exit', 0, 'SIGTERM')
     await expect(retired).resolves.toEqual({ signaled: 1, forced: 0, errors: 0 })
+    await vi.advanceTimersByTimeAsync(6000)
+
+    expect(fakeChildren).toHaveLength(1)
+  })
+
+  it('does not respawn after an unexpected exit when the profile is retired before the timer fires', async () => {
+    vi.useFakeTimers()
+    vi.resetModules()
+    const { retireManagedGatewayForProfile, startGatewayRunManaged } = await import(
+      '../../packages/server/src/services/hermes/gateway-runner'
+    )
+
+    startGatewayRunManaged('/usr/bin/hermes', { profileDir: '/tmp/retire-race' })
+    expect(fakeChildren).toHaveLength(1)
+
+    // Unexpected exit schedules a respawn timer (2s).
+    fakeChildren[0].emit('exit', 1, null)
+
+    // The profile is deleted before the timer fires: retire must clear the
+    // pending timer and mark the profile so no gateway is re-created.
+    // `platform: 'linux'` keeps the assertion platform-independent (on Windows
+    // retire uses taskkill instead of SIGTERM).
+    const retired = retireManagedGatewayForProfile('/tmp/retire-race', { timeoutMs: 5000, platform: 'linux' })
+    await vi.advanceTimersByTimeAsync(0)
+    await retired
+    fakeChildren[0].emit('exit', 0, 'SIGTERM')
+
+    // Even though a respawn was already scheduled, the retirement must win.
+    await vi.advanceTimersByTimeAsync(6000)
+    expect(fakeChildren).toHaveLength(1)
+  })
+
+  it('does not respawn into a profile directory that no longer exists', async () => {
+    vi.useFakeTimers()
+    vi.resetModules()
+    vi.mocked(existsSync).mockReturnValue(false)
+    const { startGatewayRunManaged } = await import(
+      '../../packages/server/src/services/hermes/gateway-runner'
+    )
+
+    startGatewayRunManaged('/usr/bin/hermes', { profileDir: '/tmp/deleted-dir' })
+    expect(fakeChildren).toHaveLength(1)
+
+    // The profile directory is gone (deleted through a path that never
+    // called retire, e.g. an external CLI) — respawn must not recreate it.
+    fakeChildren[0].emit('exit', 1, null)
     await vi.advanceTimersByTimeAsync(6000)
 
     expect(fakeChildren).toHaveLength(1)

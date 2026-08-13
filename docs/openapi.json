@@ -3,7 +3,7 @@
   "info": {
     "title": "Hermes Studio API",
     "description": "Hermes Studio API — chat sessions, scheduled jobs, platform channels, model management, skills, memory, logs, file browser, group chat, and terminal.",
-    "version": "0.73.0"
+    "version": "0.7.17"
   },
   "servers": [
     {
@@ -455,40 +455,6 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "api_base": {
-                    "type": "string"
-                  },
-                  "api_key": {
-                    "type": "string"
-                  },
-                  "device_id": {
-                    "type": "number"
-                  },
-                  "device_name": {
-                    "type": "string"
-                  },
-                  "models": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    }
-                  }
-                },
-                "required": [
-                  "api_base",
-                  "api_key"
-                ]
-              }
-            }
           }
         }
       }
@@ -9174,6 +9140,9 @@
                   "clone": {
                     "type": "boolean"
                   },
+                  "displayName": {
+                    "type": "string"
+                  },
                   "name": {
                     "type": "string"
                   }
@@ -9446,6 +9415,60 @@
             }
           }
         ]
+      }
+    },
+    "/api/hermes/profiles/{name}/display-name": {
+      "put": {
+        "tags": [
+          "Profiles"
+        ],
+        "summary": "Update display-name",
+        "description": "PUT /api/hermes/profiles/:name/display-name",
+        "operationId": "updateDisplayName",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "displayName": {
+                    "type": "string"
+                  },
+                  "trim": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/hermes/profiles/{name}/export": {

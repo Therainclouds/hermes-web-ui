@@ -22,7 +22,7 @@ HEALTHCHECK_TIMEOUT_MS="${HERMES_WEB_UI_UPDATE_HEALTHCHECK_TIMEOUT_MS:-2000}"
 HEALTHCHECK_INTERVAL_MS="${HERMES_WEB_UI_UPDATE_HEALTHCHECK_INTERVAL_MS:-2000}"
 HEALTHCHECK_RETRIES="${HERMES_WEB_UI_UPDATE_HEALTHCHECK_RETRIES:-15}"
 HEALTHCHECK_INITIAL_DELAY_MS="${HERMES_WEB_UI_UPDATE_HEALTHCHECK_INITIAL_DELAY_MS:-5000}"
-INCLUDE_AGENT_UPGRADE_RAW="${HERMES_WEB_UI_UPDATE_INCLUDE_AGENT_UPGRADE:-false}"
+INCLUDE_AGENT_UPGRADE_RAW="${HERMES_WEB_UI_UPDATE_INCLUDE_AGENT_UPGRADE:-true}"
 PRESERVE_NAMES=("hermes_data" ".git" ".runtime-hermes" ".runtime-home")
 TASK_FINISHED=0
 
@@ -555,14 +555,18 @@ build_preserve_names
 update_task_stage "downloading" "Downloading source deployment archive ${TARGET_TAG}"
 download_source_archive
 extract_source_archive
+update_task_stage "installing" "Syncing source tree for ${TARGET_VERSION}"
+sync_source_tree
+# Upgrade Hermes Agent only after the Web UI source tree is in place, so a
+# failed agent upgrade never blocks the Web UI update itself (best-effort).
 if [[ "${INCLUDE_AGENT_UPGRADE}" == "true" ]]; then
-  update_task_stage "starting_runtime" "Upgrading Hermes Agent before applying ${TARGET_VERSION}"
-  run_hermes_agent_update
+  update_task_stage "starting_runtime" "Upgrading Hermes Agent after syncing Web UI"
+  if ! run_hermes_agent_update; then
+    warn "Hermes Agent upgrade failed; web UI update continues without it"
+  fi
 else
   info "Skipping Hermes Agent upgrade for this source deployment update"
 fi
-update_task_stage "installing" "Syncing source tree for ${TARGET_VERSION}"
-sync_source_tree
 update_task_stage "restarting" "Rebuilding and restarting services for ${TARGET_VERSION}"
 run_deploy_script
 update_task_stage "health_checking" "Running health check for ${TARGET_VERSION}"

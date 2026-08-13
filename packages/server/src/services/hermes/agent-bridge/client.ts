@@ -239,6 +239,9 @@ export interface AgentBridgeBackgroundRoute {
 
 export class AgentBridgeError extends Error {
   response?: unknown
+  /** Machine-readable failure category, e.g. bridge_unreachable /
+   * worker_spawn_failed / worker_request_failed / request_timeout. */
+  errorType?: string
 }
 
 export class AgentBridgeClient {
@@ -310,7 +313,7 @@ export class AgentBridgeClient {
     return undefined
   }
 
-  private connectSocketOnce(): Promise<Socket> {
+  private connectSocketOnce(connectTimeoutMs?: number): Promise<Socket> {
     return new Promise((resolveConnect, rejectConnect) => {
       const endpoint = this.endpoint
       let socket: Socket
@@ -327,7 +330,9 @@ export class AgentBridgeClient {
         return
       }
 
+      let connectTimer: NodeJS.Timeout | null = null
       const cleanup = () => {
+        if (connectTimer) clearTimeout(connectTimer)
         socket.off('connect', onConnect)
         socket.off('error', onError)
       }
@@ -340,6 +345,20 @@ export class AgentBridgeClient {
         socket.destroy()
         rejectConnect(err)
       }
+      // Unix-socket connects hang silently when the broker's accept backlog
+      // is full (e.g. the broker event loop is stuck). Without a hard
+      // timeout the request would wait forever, defeating the request-level
+      // timeout that only starts after the write. Treat it like any other
+      // connect failure so the caller can surface a concrete error.
+      if (connectTimeoutMs && connectTimeoutMs > 0) {
+        connectTimer = setTimeout(() => {
+          cleanup()
+          socket.destroy()
+          const err: any = new Error(`Agent bridge connect timed out after ${connectTimeoutMs}ms`)
+          err.code = 'ETIMEDOUT'
+          rejectConnect(err)
+        }, connectTimeoutMs)
+      }
       socket.once('connect', onConnect)
       socket.once('error', onError)
     })
@@ -350,13 +369,35 @@ export class AgentBridgeClient {
     return ['ECONNREFUSED', 'ENOENT', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT'].includes(code)
   }
 
-  private async connectSocket(): Promise<Socket> {
-    const deadline = Date.now() + Math.max(0, this.connectRetryMs)
+  private async connectSocket(deadline?: number): Promise<Socket> {
+    // `connectRetryMs` is the retry window AFTER the first failed attempt; a
+    // value of 0 means "no retries", not "give up before even trying". The
+    // request-level `deadline` bounds the whole connect phase, so a call with
+    // connectRetryMs=0 must still get one real connection attempt instead of
+    // being short-circuited by an already-expired retry deadline.
+    const retryDeadline = this.connectRetryMs > 0
+      ? Date.now() + this.connectRetryMs
+      : Number.POSITIVE_INFINITY
+    const effectiveDeadline = Math.min(
+      retryDeadline,
+      deadline ?? Number.POSITIVE_INFINITY,
+    )
     for (;;) {
+      const remaining = effectiveDeadline - Date.now()
+      if (remaining <= 0) {
+        const err: any = new Error('Agent bridge connect timed out')
+        err.code = 'ETIMEDOUT'
+        throw err
+      }
       try {
-        return await this.connectSocketOnce()
+        return await this.connectSocketOnce(remaining)
       } catch (err) {
-        if (!this.isRetryableConnectError(err) || Date.now() >= deadline) {
+        if (!this.isRetryableConnectError(err) || Date.now() >= effectiveDeadline) {
+          throw err
+        }
+        // connectRetryMs=0 means no retries: the single attempt already ran
+        // above, so fail now instead of looping again.
+        if (this.connectRetryMs <= 0) {
           throw err
         }
         await delay(100)
@@ -371,7 +412,9 @@ export class AgentBridgeClient {
         ? setTimeout(() => {
             cleanup()
             socket.destroy()
-            rejectRead(new Error(`Agent bridge request timed out after ${timeoutMs}ms`))
+            rejectRead(new Error(
+              `Agent bridge request timed out after ${timeoutMs}ms (broker/worker or upstream LLM did not respond in time)`,
+            ))
           }, timeoutMs)
         : null
 
@@ -434,13 +477,16 @@ export class AgentBridgeClient {
         }, '[agent-bridge-client] request')
       }
       try {
-        const socket = await this.connectSocket()
+        const socket = await this.connectSocket(startedAt + timeoutMs)
+        const connectElapsed = Date.now() - startedAt
+        const remaining = Math.max(1, timeoutMs - connectElapsed)
         socket.write(`${JSON.stringify(payload)}\n`)
-        const raw = await this.readResponse(socket, timeoutMs)
+        const raw = await this.readResponse(socket, remaining)
         const response = JSON.parse(raw) as { ok?: boolean; error?: string }
         if (!response.ok) {
           const error = new AgentBridgeError(response.error || 'Agent bridge request failed')
           error.response = response
+          error.errorType = (response as { error_type?: string }).error_type || 'worker_request_failed'
           bridgeLogger.warn({
             durationMs: Date.now() - startedAt,
             runtime: runtimeContext,
@@ -458,12 +504,23 @@ export class AgentBridgeClient {
         return response as T
       } catch (err: any) {
         if (!(err instanceof AgentBridgeError) && action !== 'background_poll') {
+          // Distinguish "broker is not even reachable" from worker/LLM failures
+          // so callers can show a concrete remediation hint instead of a bare
+          // timeout string.
+          const message = err?.message ? String(err.message) : 'agent bridge request failed'
+          const wrapped = new AgentBridgeError(message)
+          wrapped.errorType = this.isRetryableConnectError(err)
+            ? 'bridge_unreachable'
+            : /timed out/i.test(message)
+              ? 'request_timeout'
+              : 'request_failed'
           bridgeLogger.error({
             durationMs: Date.now() - startedAt,
-            err: { message: err?.message, name: err?.name },
+            err: { message, name: err?.name },
             runtime: runtimeContext,
             request: this.summarizePayload(payload),
           }, '[agent-bridge-client] request failed')
+          throw wrapped
         }
         throw err
       }

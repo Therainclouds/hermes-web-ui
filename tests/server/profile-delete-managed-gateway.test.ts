@@ -72,4 +72,36 @@ describe('profile delete managed gateway lifecycle', () => {
       await rm(home, { recursive: true, force: true })
     }
   })
+
+  it('does not respawn after profile delete even when the gateway exited unexpectedly first', async () => {
+    vi.useFakeTimers()
+    vi.resetModules()
+    const home = await mkdtemp(join(tmpdir(), 'wui-1633b-'))
+    process.env.HERMES_HOME = home
+    process.env.HERMES_BIN = '/usr/bin/hermes'
+    const profileDir = join(home, 'profiles', 'work')
+    await mkdir(profileDir, { recursive: true })
+    await writeFile(join(profileDir, 'config.yaml'), 'model:\n  default: test\n', 'utf-8')
+
+    try {
+      const { startGatewayRunManaged } = await import('../../packages/server/src/services/hermes/gateway-runner')
+      const { prepareGatewayForProfileDelete } = await import('../../packages/server/src/services/hermes/gateway-autostart')
+
+      startGatewayRunManaged('/usr/bin/hermes', { profileDir })
+      expect(fakeChildren).toHaveLength(1)
+
+      // Unexpected exit schedules a respawn timer before the delete prep.
+      fakeChildren[0].emit('exit', 1, null)
+
+      const prep = prepareGatewayForProfileDelete('work')
+      fakeChildren[0].emit('exit', 0, 'SIGTERM')
+      await prep
+      await vi.advanceTimersByTimeAsync(6000)
+
+      // The delete prep must win over the already-scheduled respawn.
+      expect(fakeChildren).toHaveLength(1)
+    } finally {
+      await rm(home, { recursive: true, force: true })
+    }
+  })
 })

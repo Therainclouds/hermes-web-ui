@@ -17,6 +17,7 @@ const message = useMessage()
 const showModal = ref(true)
 const loading = ref(false)
 const name = ref('')
+const displayName = ref('')
 const clone = ref(false)
 const nameValidationMessage = ref('')
 
@@ -44,7 +45,7 @@ async function handleSave() {
 
   loading.value = true
   try {
-    const res = await profilesStore.createProfile(name.value.trim(), clone.value)
+    const res = await profilesStore.createProfile(name.value.trim(), clone.value, displayName.value.trim())
     if (res.success) {
       const stripped = res.strippedCredentials ?? []
       const disabled = res.disabledPlatforms ?? []
@@ -94,6 +95,17 @@ function handleClose() {
       <NText v-if="nameValidationMessage" depth="3" type="warning" style="font-size: 12px;">
         {{ nameValidationMessage }}
       </NText>
+
+      <NFormItem :label="t('profiles.displayName')">
+        <NInput
+          v-model:value="displayName"
+          :placeholder="t('profiles.displayNamePlaceholder')"
+          maxlength="40"
+        />
+        <NText depth="3" style="font-size: 12px; margin-top: 4px;">
+          {{ t('profiles.displayNameHint') }}
+        </NText>
+      </NFormItem>
 
       <NFormItem :label="t('profiles.cloneFromCurrent')">
         <NSwitch v-model:value="clone" />

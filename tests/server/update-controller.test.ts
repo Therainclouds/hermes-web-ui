@@ -534,7 +534,7 @@ describe('update controller', () => {
         HERMES_WEB_UI_UPDATE_TASK_ID: expect.any(String),
         HERMES_WEB_UI_UPDATE_VERSION: PUBLISHED_VERSION,
         HERMES_WEB_UI_UPDATE_EXPECTED_SHA256: sha256,
-        HERMES_WEB_UI_UPDATE_INCLUDE_AGENT_UPGRADE: 'false',
+        HERMES_WEB_UI_UPDATE_INCLUDE_AGENT_UPGRADE: 'true',
       }),
     }))
     expect(mocks.spawn).toHaveBeenCalledWith(
@@ -889,7 +889,7 @@ describe('update controller', () => {
       }),
       runtime: expect.objectContaining({
         autoInstallDependencies: true,
-        includeAgentUpgrade: false,
+        includeAgentUpgrade: true,
       }),
       preflight: expect.objectContaining({
         strategy: 'device-package',

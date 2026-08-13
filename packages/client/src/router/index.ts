@@ -1,5 +1,5 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
-import { hasApiKey, isStoredSuperAdmin } from '@/api/client'
+import { hasApiKey, isStoredSuperAdmin, setApiKey } from '@/api/client'
 import { hasDesktopBrowserBridge } from '@/utils/desktop-bridge'
 
 const router = createRouter({
@@ -221,6 +221,23 @@ function isDesktopShell(): boolean {
 }
 
 router.beforeEach(async (to, _from, next) => {
+  // Restore a session token carried in the URL hash. The meeting entry hops
+  // http → https (same port, protocol-sniffing server); localStorage is
+  // scoped per origin, so the https side cannot read the http side's token.
+  // The token travels in the hash fragment (never sent to the server) and is
+  // stored here before any API call / auth check happens.
+  if (typeof window !== 'undefined') {
+    const tp = to.query.tp
+    if (typeof tp === 'string' && tp.trim()) {
+      setApiKey(tp)
+      // Strip the token from the URL so it does not linger in history/address bar.
+      const query = { ...to.query }
+      delete query.tp
+      next({ path: to.path, query, hash: to.hash, replace: true })
+      return
+    }
+  }
+
   await ensureDesktopAuth()
 
   // Public pages don't need auth

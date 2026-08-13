@@ -684,6 +684,42 @@ onUnmounted(() => {
   // Note: We don't stop the ASR service on unmount as it should persist across page navigations
 })
 
+// --- 录音中关页/刷新兜底：把内存里的音频块落库到 IndexedDB ---
+// 音频只在 stopRecording 一次性正式落库，但用户在录音中直接刷新或关闭页面时，
+// 组件不会走 onUnmounted（浏览器通常跳过 beforeunload 之后的清理），此时内存中的
+// audioChunks 会全部丢失。这里用 beforeunload/unload 把尚未落库的块写成 IndexedDB
+// 备份——注意 IndexedDB 事务在页面卸载进程中是非阻塞的，即便耗时也能完成写入。
+let beforeUnloadHandlerAttached = false
+
+function attachBeforeUnloadAudioBackup() {
+  if (beforeUnloadHandlerAttached) return
+  beforeUnloadHandlerAttached = true
+
+  const backup = () => {
+    const sessionId = meetingStore.activeSessionId
+    if (!isRecording.value || !sessionId || audioChunks.value.length === 0) return
+    try {
+      const blob = new Blob(audioChunks.value, { type: 'audio/webm' })
+      meetingStore.saveAudioData(sessionId, blob)
+    } catch (err) {
+      console.error('[meeting] Failed to backup audio on unload:', err)
+    }
+  }
+
+  window.addEventListener('beforeunload', backup)
+  window.addEventListener('pagehide', backup)
+  window.addEventListener('unload', backup)
+}
+
+function detachBeforeUnloadAudioBackup() {
+  if (!beforeUnloadHandlerAttached) return
+  beforeUnloadHandlerAttached = false
+  const noop = () => {}
+  window.removeEventListener('beforeunload', noop)
+  window.removeEventListener('pagehide', noop)
+  window.removeEventListener('unload', noop)
+}
+
 // --- 麦克风检测（仅做浏览器兼容性检查，不阻断 getUserMedia） ---
 async function checkMicrophoneAvailability(): Promise<{ available: boolean; reason?: string }> {
   if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
@@ -803,6 +839,9 @@ async function startRecording() {
       }
     }
     mediaRecorder.start(1000) // 每秒收集一次数据
+
+    // 录音开始后，挂载关页/刷新兜底（把内存音频块落库到 IndexedDB）
+    attachBeforeUnloadAudioBackup()
 
     // 根据模式决定连接哪些 WebSocket
     const isSaveMode = useDiarize.value && saveMode.value
@@ -1030,7 +1069,7 @@ function pushSentenceToAssist(sessionId: string, sentence: TranscriptSentence) {
   }).catch(() => { /* best effort */ })
 }
 
-function stopRecording() {
+async function stopRecording() {
   isRecording.value = false
   isConnecting.value = false
   statusText.value = ''
@@ -1046,6 +1085,9 @@ function stopRecording() {
     mediaRecorder.stop()
   }
   mediaRecorder = null
+
+  // 录音结束，移除关页/刷新兜底监听（正式落库由下方 saveAudioData 完成）
+  detachBeforeUnloadAudioBackup()
 
   // 发送停止消息给 ASR（ASR 已在录音过程中流式返回结果，500ms 后安全关闭）
   if (ws && ws.readyState === WebSocket.OPEN) {
@@ -1072,25 +1114,41 @@ function stopRecording() {
   }
   analyser = null
 
-  // 保存音频数据
+  // 保存音频（会议结束一次性落库）。录音期间 audioChunks 只累积在内存，
+  // MediaRecorder 每 1000ms 切一块，这里统一合成整段 webm 落库：
+  //  - 服务器：优先写，失败时 IndexedDB 仍兜底保留本机数据
+  //  - IndexedDB：直接存 Blob，作为离线备份
   if (audioChunks.value.length > 0 && meetingStore.activeSessionId) {
     audioBlob.value = new Blob(audioChunks.value, { type: 'audio/webm' })
     audioUrl.value = URL.createObjectURL(audioBlob.value)
-    
-    // 保存会议数据
-    saveCurrentMeeting()
-    
-    // 保存音频到服务器
+
     const meetingId = meetingStore.activeSessionId
-    meetingStorageApi.uploadAudio(meetingId, audioBlob.value)
+    const meeting = meetingStore.activeSession
+
+    // 先落会议数据（含 transcript），再上传音频，两件事互相隔离
+    saveCurrentMeeting()
+
+    // 上传音频到服务器（失败不阻断 IndexedDB 本地备份）
+    await meetingStorageApi
+      .uploadAudio(meetingId, audioBlob.value)
       .then(() => console.log('Audio saved to server'))
       .catch(err => {
         console.error('Failed to save audio to server:', err)
         message.error(t('meeting.errorUploadAudioFailed'))
       })
-    
-    // 同时保存到 IndexedDB 作为备份（直接存 Blob，避免 base64 编码 33% 膨胀）
-    meetingStore.saveAudioData(meetingId, audioBlob.value)
+
+    // 保存到 IndexedDB 作为本机备份（直接存 Blob，避免 base64 编码 33% 膨胀）
+    try {
+      await meetingStore.saveAudioData(meetingId, audioBlob.value)
+    } catch (err) {
+      console.error('Failed to save audio to IndexedDB:', err)
+    }
+
+    // 完成落库后，清空内存引用让 GC 回收，避免大会议残留内存
+    audioChunks.value = []
+    if (meeting) {
+      meetingStore.updateSession(meetingId, { audioDuration: meeting.audioDuration })
+    }
   }
 
   // 录音停止后自动触发报告生成

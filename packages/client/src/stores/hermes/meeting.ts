@@ -413,59 +413,23 @@ export const useMeetingStore = defineStore('meeting', () => {
   }
 
   // --- 音频 IndexedDB 操作 ---
+  // 音频不实时落库：录音期间的 MediaRecorder 块只累积在 MeetingView 的
+  // 内存 audioChunks 里，会议结束（stopRecording）时才一次性写入 IndexedDB
+  // 并上传到服务端。这里只有读出和整段写入，没有逐块写入路径。
 
-  let audioChunkBuffer: Map<string, AudioChunk[]> = new Map()
-
-  function addAudioChunk(sessionId: string, chunk: AudioChunk) {
+  async function saveAudioData(sessionId: string, blob: Blob) {
     const session = sessions.value.find(s => s.id === sessionId)
     if (!session) return
-    session.audioDuration += chunk.duration
-    session.updatedAt = Date.now()
-
-    // 缓存到内存，批量写入 IndexedDB
-    if (!audioChunkBuffer.has(sessionId)) {
-      audioChunkBuffer.set(sessionId, [])
-    }
-    audioChunkBuffer.get(sessionId)!.push(chunk)
-
-    // 每 10 个 chunk 批量写入一次
-    const buffer = audioChunkBuffer.get(sessionId)!
-    if (buffer.length >= 10) {
-      flushAudioChunks(sessionId)
-    }
-  }
-
-  async function flushAudioChunks(sessionId: string) {
-    const buffer = audioChunkBuffer.get(sessionId)
-    if (!buffer || buffer.length === 0) return
-
-    // 加载已有数据，追加后保存
-    const existing = await loadAudioChunks(sessionId)
-    const combined = [...existing, ...buffer]
-    await saveAudioChunks(sessionId, combined)
-    audioChunkBuffer.set(sessionId, [])
-  }
-
-  async function saveAudioData(sessionId: string, blob?: Blob) {
-    const session = sessions.value.find(s => s.id === sessionId)
-    if (!session) return
-    if (blob) {
-      // Direct path: caller already has the combined audio blob (from
-      // MediaRecorder onstop). Wrap in a single-chunk array so the existing
-      // IDB schema works without changes.
-      await saveAudioChunks(sessionId, [
-        { blob, timestamp: Date.now(), duration: session.audioDuration },
-      ])
-    } else {
-      await flushAudioChunks(sessionId)
-    }
+    // Direct path: caller (stopRecording) has the combined audio blob from
+    // MediaRecorder. Wrap in a single-chunk array so the existing IDB schema
+    // works without changes.
+    await saveAudioChunks(sessionId, [
+      { blob, timestamp: Date.now(), duration: session.audioDuration },
+    ])
     saveSessions(sessions.value)
   }
 
   async function getAudioBlob(sessionId: string): Promise<Blob | null> {
-    // 先刷新缓冲区
-    await flushAudioChunks(sessionId)
-
     const chunks = await loadAudioChunks(sessionId)
     if (chunks.length === 0) return null
 
@@ -543,7 +507,6 @@ export const useMeetingStore = defineStore('meeting', () => {
     updateSpeakerMap,
     updateStatus,
     clearSession,
-    addAudioChunk,
     saveAudioData,
     getAudioBlob,
     renameSpeaker,

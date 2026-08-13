@@ -399,8 +399,16 @@ export async function deviceLogin(ctx: Context) {
   const localUsername = `tp_${profile.id}`
   let user = findUserByUsername(localUsername)
   if (!user) {
-    if (countUsers() === 0) {
-      // First run: auto-bootstrap a super_admin bound to this device.
+    // Single-machine, single-owner policy: a Hermes device serves the first
+    // WeChat account that binds to it. The authority for "already bound" is
+    // the persisted device binding (device-binding.json) — NOT the presence of
+    // local users. A freshly deployed device may already have local accounts
+    // (e.g. a bootstrap super admin) while having no WeChat binding at all;
+    // in that case the first scanning WeChat must still become the owner.
+    const existingBinding = await loadDeviceBinding()
+    if (!existingBinding) {
+      // No WeChat binding on this device yet: the first WeChat account to scan
+      // becomes the owner (super_admin) bound to this device.
       user = createUser({
         username: localUsername,
         password: randomUUID(),
@@ -408,18 +416,18 @@ export async function deviceLogin(ctx: Context) {
         status: 'active',
       })
     } else {
-      // Device already configured locally: link a regular admin account.
-      // Bind the default agent profile so the user can access profile-scoped
-      // resources (profiles list, models, runtime status). Without this an
-      // admin with no bound profiles gets 403 everywhere.
-      user = createUser({
-        username: localUsername,
-        password: randomUUID(),
-        role: 'admin',
-        status: 'active',
-        profiles: ['default'],
-        defaultProfile: 'default',
-      })
+      // This device already owns a WeChat binding for a different account. Do
+      // NOT auto-provision a fresh admin that would share and overwrite the
+      // same default agent profile. Reject loudly with the bound owner's name
+      // so the human logs in as the owned account instead of clobbering it.
+      const ownerName = existingBinding?.display_name || '已绑定账号'
+      ctx.status = 403
+      ctx.body = {
+        error: `这台设备已绑定微信账号「${ownerName}」，请用该账号登录`,
+        code: 'DEVICE_ALREADY_BOUND',
+        owner: ownerName,
+      }
+      return
     }
   } else if (user.role !== 'super_admin' && listUserProfiles(user.id).length === 0) {
     // A previously-provisioned device user without any profile binding: grant

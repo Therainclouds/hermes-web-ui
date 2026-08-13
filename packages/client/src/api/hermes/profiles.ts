@@ -19,6 +19,7 @@ export interface HermesProfileDetail {
   hasEnv: boolean
   hasSoulMd: boolean
   avatar?: ProfileAvatar | null
+  displayName?: string
 }
 
 export interface ProfileAvatar {
@@ -97,6 +98,14 @@ export async function deleteProfileAvatar(name: string): Promise<void> {
   await request(`/api/hermes/profiles/${encodeURIComponent(name)}/avatar`, { method: 'DELETE' })
 }
 
+export async function updateProfileDisplayName(name: string, displayName: string): Promise<{ displayName: string }> {
+  const res = await request<{ success: boolean; displayName: string }>(
+    `/api/hermes/profiles/${encodeURIComponent(name)}/display-name`,
+    { method: 'PUT', body: JSON.stringify({ displayName }) },
+  )
+  return { displayName: res.displayName }
+}
+
 export async function restartProfileGateway(name: string): Promise<ProfileRuntimeStatus['gateway']> {
   const res = await request<{ success: boolean; gateway: ProfileRuntimeStatus['gateway'] }>(
     `/api/hermes/profiles/${encodeURIComponent(name)}/gateway/restart`,
@@ -123,7 +132,7 @@ export interface CreateProfileResult {
   strippedConfigCredentials?: string[]
 }
 
-export async function createProfile(name: string, clone?: boolean): Promise<CreateProfileResult & { error?: string }> {
+export async function createProfile(name: string, clone?: boolean, displayName?: string): Promise<CreateProfileResult & { error?: string }> {
   try {
     const res = await request<{
       success: boolean
@@ -133,7 +142,7 @@ export async function createProfile(name: string, clone?: boolean): Promise<Crea
       error?: string
     }>('/api/hermes/profiles', {
       method: 'POST',
-      body: JSON.stringify({ name, clone }),
+      body: JSON.stringify({ name, clone, ...(displayName ? { displayName } : {}) }),
     })
     return {
       success: !!res.success,

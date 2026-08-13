@@ -783,6 +783,9 @@ export async function handleBridgeRun(
     flushBridgePendingToDb(state, session_id, runMarker)
     updateSessionStats(session_id)
     const message = err instanceof Error ? err.message : String(err)
+    const errType = err instanceof Error && 'errorType' in err
+      ? (err as { errorType?: string }).errorType
+      : undefined
     const errUsage = await calcAndUpdateUsage(session_id, state, emit)
     const errContextTokens = await refreshFinalContextUsage({
       sessionId: session_id,
@@ -799,6 +802,7 @@ export async function handleBridgeRun(
     emit('run.failed', {
       event: 'run.failed',
       error: message,
+      error_type: errType,
       inputTokens: errUsage.inputTokens,
       outputTokens: errUsage.outputTokens,
       contextTokens: errContextTokens,

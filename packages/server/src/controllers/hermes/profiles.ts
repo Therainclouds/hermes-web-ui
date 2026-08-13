@@ -17,6 +17,7 @@ import {
   restartGatewayForProfile as restartGatewayRuntimeForProfile,
 } from '../../services/hermes/gateway-autostart'
 import { logger } from '../../services/logger'
+import { setProfileDisplayName, clearProfileDisplayName } from '../../services/hermes/profile-metadata'
 import { smartCloneCleanup, copyModelProviderAuthForClone } from '../../services/hermes/profile-credentials'
 import { detectHermesRootHome } from '../../services/hermes/hermes-path'
 import { getActiveProfileName } from '../../services/hermes/hermes-profile'
@@ -484,6 +485,16 @@ export async function create(ctx: any) {
 
     await injectBundledSkillsForProfile(name)
 
+    // Optional display name: written as Web-UI metadata only (never touches the
+    // underlying Hermes profile directory), so all surfaces show the friendly
+    // name while requests still use the system `name`.
+    const displayName = typeof ctx.request.body?.displayName === 'string'
+      ? ctx.request.body.displayName.trim()
+      : ''
+    if (displayName) {
+      setProfileDisplayName(name, displayName)
+    }
+
     // A non-super-admin user keeps whatever they create: bind the new profile
     // to the current user so it shows up in their own profile list.
     const user = ctx.state?.user
@@ -568,6 +579,38 @@ export async function deleteAvatar(ctx: any) {
     ctx.body = { success: true }
   } catch (err: any) {
     ctx.status = 500
+    ctx.body = { error: err.message }
+  }
+}
+
+/**
+ * PUT /api/hermes/profiles/:name/display-name
+ * Set or clear the user-visible display name for a profile. Written as Web-UI
+ * metadata only (never touches the underlying Hermes profile directory); an
+ * empty value clears the display name and restores the system name.
+ */
+export async function updateDisplayName(ctx: any) {
+  const name = String(ctx.params.name || '').trim() || 'default'
+  if (denyProfile(ctx, name)) return
+  if (isForbiddenProfileName(name)) {
+    ctx.status = 400
+    ctx.body = { error: `Profile name '${name}' is reserved` }
+    return
+  }
+  const raw = ctx.request.body?.displayName
+  const displayName = typeof raw === 'string' ? raw.trim() : ''
+  try {
+    if (displayName) {
+      setProfileDisplayName(name, displayName)
+    } else {
+      clearProfileDisplayName(name)
+    }
+    ctx.body = {
+      success: true,
+      displayName: displayName || '',
+    }
+  } catch (err: any) {
+    ctx.status = 400
     ctx.body = { error: err.message }
   }
 }

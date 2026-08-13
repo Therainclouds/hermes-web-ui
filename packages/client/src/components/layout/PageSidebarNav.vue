@@ -52,6 +52,27 @@ function openWorkflow() {
 
 function openMeeting() {
   if (props.active === 'meeting') return
+  if (typeof window === 'undefined') {
+    void router.push({ name: 'hermes.meeting' })
+    return
+  }
+  // Meeting mode needs browser microphone (getUserMedia), which requires a
+  // secure context. A LAN IP over plain HTTP is not a secure context, but the
+  // protocol-sniffing server serves both http and https on the same port. When
+  // the page is served over HTTP from a non-loopback host, hop to the HTTPS
+  // equivalent so the meeting can actually use the mic. The session token is
+  // carried in the URL hash (never sent to the server) because localStorage is
+  // scoped per origin (http vs https are different origins).
+  const { protocol, host } = window.location
+  const isLoopback = host === '127.0.0.1' || host === 'localhost' || host === '[::1]'
+  if (protocol === 'http:' && !isLoopback) {
+    const token = localStorage.getItem('hermes_api_key') || ''
+    const base = `https://${host}${window.location.pathname}`
+    const hashPath = router.resolve({ name: 'hermes.meeting' }).fullPath
+    const target = `${base}#${hashPath}${token ? `?tp=${encodeURIComponent(token)}` : ''}`
+    window.location.href = target
+    return
+  }
   void router.push({ name: 'hermes.meeting' })
 }
 function openApiRelay() {

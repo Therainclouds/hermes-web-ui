@@ -1,5 +1,178 @@
 # Work Log
 
+## 2026-08-11 · 会议音频改为结束一次性落库 + 录音中关页兜底
+
+### 需求背景
+
+- 会议模式的音频持久化策略确认：录音期间**不做实时落库**，只有会议结束（`stopRecording`）才把音频整体写入 IndexedDB 并上传服务器，与聊天逐条落库不同。
+- 排查发现：服务器上传本就是结束一次性做；但 `meeting.ts` 里藏着 `audioChunkBuffer` / `addAudioChunk` / `flushAudioChunks` 一段**从未被调用的死代码**（本意"每 10 块批量写 IndexedDB"，实际全库无调用），名不副实且易误导。
+
+### 改动
+
+- **`stores/hermes/meeting.ts`**：删除死代码 `audioChunkBuffer` / `addAudioChunk` / `flushAudioChunks`；`saveAudioData` 收窄为 `(sessionId, blob)`（原 `blob?` + flush 分支死路径）；去掉 `getAudioBlob` 内无意义的 flush 调用；补注释明确"音频只在结束一次性落库"。
+- **`views/hermes/MeetingView.vue`**：
+  - `stopRecording` 改 `async`，真实等待音频上传 + IndexedDB 写入完成，两步隔离（服务器失败不阻断本机备份），落库后清空 `audioChunks` 释放内存。
+  - 新增 `attach/detachBeforeUnloadAudioBackup`：`startRecording` 后挂载 `beforeunload`/`pagehide`/`unload` 三事件，录音中直接刷新/关页时把内存音频块写进 IndexedDB 兜底（服务器不传，卸载时 fetch 不可靠）；`stopRecording` 先摘除，避免正常结束重复写。
+
+### 验证
+
+- `vue-tsc --noEmit --project tsconfig.app.json` 通过，无报错。
+
+### 遗留 / 待办
+
+- 录音中关页兜底仅保 IndexedDB 本机备份；若需卸载时尽力上传服务器，可改用 `fetch keepalive`。
+
+## 2026-08-11 · 微信登录自动接入中转站 API + 单机单用户策略
+
+### 需求背景
+
+- 中转站 `api.quantclaw.vip`（newapi 二开，`token_platform` 仓）为每个微信用户/设备自动分配独立 Token。目标：用户微信扫码登录 Hermes 后**一键接入**中转站 API，无需手填 base_url / API key，首发教程也相应改为「模型已自动接入」流程。
+
+### 现状调研结论（关键）
+
+- **每微信用户独立 key 已天然成立**：`token_platform/new-api/model/device_login.go` 的 `CreateDeviceForUser` 按 `(user_id, hardware_id)` 为每台设备新建一把 48 位 Token 并关联到该微信用户，**中转站侧无需改动**。
+- **base_url 约定**：中转站把 `/v1/chat/completions`、`/v1/models` 挂在根域名（`https://api.quantclaw.vip`）下，Hermes 拿到 `api_base` 后**不可再拼 `/v1`**（否则 404）。
+- **用户体系现状（缺陷）**：原 `deviceLogin()` 里首个微信设为 `super_admin`，后续扫码一律建 `admin`（`tp_*`）并绑定**共享的 default profile**——多微信交替登录会互相覆盖 default profile 的 provider，无法严格隔离。
+
+### 改动
+
+- **登录页 `LoginView.vue`**：
+  - 修正 base_url：`addCustomProvider` 时不再追加 `/v1`，直接用中转站返回的 `api_base`。
+  - **修复 401 静默吞掉导致自动接入失效**：`addCustomProvider` 需要 Bearer JWT，但原来在 `setApiKey` 之前调用、localStorage 尚无 token → `/api/hermes/config/providers` 401 → 旧代码 `catch` 静默放行 → provider 从未写入、一直用旧的 minimax。现把 `setApiKey(hermesResult.token)` **提前**到 `addCustomProvider` 之前。
+  - provider 配置失败 / 无可用模型时**明确报错中止**，不再静默进门（新增 `tokenPlatformNoModel` / `tokenPlatformConfigureFailed` 文案）。
+  - 登录页以微信扫码为主入口，密码登录收进次要选项。
+- **单机单用户策略（`controllers/auth.ts` 的 `deviceLogin()`）**：
+  - 设备已有绑定后，**第二个微信扫码不再自动建号**，返回 `403 + code=DEVICE_ALREADY_BOUND`，提示用已绑定账号登录，防止覆盖首绑 owner 的 default profile。
+  - 首个绑定的微信仍为 `super_admin`，登录后**自动直达 `/hermes/chat`**，不弹绑定弹窗。
+- **首次登录教程文案**（`FirstRunModelGuide` 依赖的 i18n）：`modelGuide` 的 en/zh 改为「模型已自动接入 → 查看 → 按需手动添加 → 开始使用」，不再教手填 Key。
+- **i18n**：新增 `passwordOption` / `tokenPlatformNoModel` / `tokenPlatformConfigureFailed`，补齐 10 种语言（en/zh/zh-TW/ja/ko/ru/pt/es/fr/de/ar）。
+
+### 验证
+
+- server：`device-login-controller` / `auth-device-login-routes` / `auth` 三个测试文件 **41/41 通过**（新增「第二个微信被拒 DEVICE_ALREADY_BOUND」用例）。
+- client：`LoginView.vue` 无 TS 错误（`vue-tsc -b`）；全量仅剩 `meeting.ts` 一个既有未提交改动造成的未使用 import 告警，与本次无关。
+
+### 遗留 / 待办
+
+- **用户名乱码**：中转站 `/api/device/self` 返回的微信昵称本身已乱码（`éè¿¹Aiç«è´º`），根因在 **market(Django) 侧微信回调返回 `Nickname` 时的二次编码**，`token_platform` 仓不含 market 源码、无法在本仓修复。用户确认乱码暂不重要，已跳过；如需要可在 market 侧修 `web-login-callback`，或给 Hermes 加 UTF-8 mojibake 兜底（治标不治本）。
+- **中转站生产配置**：确认 `system_setting.ServerAddress` 为 `https://api.quantclaw.vip`（曾配 localhost 导致 Hermes 拿到错误地址）。
+
+## 2026-08-10 · 支持给已有配置编辑显示名称
+
+### 需求背景
+
+- 上一轮实现了"创建 profile 时设置显示名"，用户进一步需要给**已有配置**编辑显示名称（复用显示名/系统名分离机制）。
+
+### 改动
+
+- 服务端：
+  - `profile-metadata.ts` 新增 `clearProfileDisplayName()`（只清除 displayName 字段，保留 avatar）。
+  - `profiles` 控制器新增 `updateDisplayName()`：空值清除、非空写入，复用 `setProfileDisplayName`。
+  - 新增路由 `PUT /api/hermes/profiles/:name/display-name`。
+- 前端：
+  - profiles API 新增 `updateProfileDisplayName()`；store 新增 `updateDisplayName()`（成功后同步 profiles/detailMap/activeProfile）。
+  - 新建 `ProfileDisplayNameModal.vue`（预填当前显示名，留空恢复系统名）。
+  - `ProfileCard` 操作栏新增"编辑显示名"按钮并接入弹窗。
+  - `HermesProfileDetail` 类型补充可选 `displayName`。
+- i18n：新增 `editDisplayName` / `displayNameSaveSuccess` / `displayNameSaveFailed` / `displayNameClearHint` 到全部 11 个 locale。
+
+### 验证
+
+- `profile-metadata` + `profiles-routes` 测试 30/30 通过（新增 clear 服务测试 2 例 + updateDisplayName 控制器 2 例）。
+- `vue-tsc` / 服务端 `tsc` 零错误；`npm run build` / `npm run harness:check` 通过。
+
+### 备注
+
+- default profile 的显示名会被微信登录绑定 `syncProfileIdentity` 覆盖（既有行为）。
+
+## 2026-08-10 · 创建 profile 支持设置显示名称
+
+### 需求背景
+
+- 用户确认"显示名/系统名分离"机制（微信绑定会把微信名写入 default profile 的显示名，请求仍用系统名 `default`）。
+- 追问：创建 profile 时能否也设置显示名？现状不支持（创建弹窗只有 name + clone，`setProfileDisplayName` 仅微信绑定一个调用点）。
+
+### 改动
+
+- 服务端 `profiles.create()`：接收可选 `displayName`，创建成功后调用 `setProfileDisplayName(name, displayName)` 写入 Web-UI profile-metadata（`~/.hermes-web-ui/profile-metadata/{base64}/meta.json`），不触碰底层 Hermes profile 目录。
+- 前端 `ProfileCreateModal.vue`：新增"显示名称"输入框（可选，maxlength=40），经 profiles API/store 透传。
+- i18n：新增 `displayName` / `displayNamePlaceholder` / `displayNameHint` 到全部 11 个 locale；修复 fr.ts 法语撇号导致的字符串定界问题。
+- 测试：`profiles-routes.test.ts` 新增 2 例（带 displayName 写入元数据 / 不带则不留元数据），21/21 通过。
+
+### 验证
+
+- `vue-tsc` / 服务端 `tsc` 零错误；`npm run build` 通过；`npm run harness:check` 通过。
+
+## 2026-08-10 · 修复微信登录绑定后聊天报 Agent Bridge 连接超时
+
+### 现象
+
+- 微信扫码登录并绑定后，聊天发送消息持续报错 `Error: Agent Bridge is not reachable: Agent bridge connect timed out`。
+- 绑定后 default/expert profile 显示名同步为微信名（`牢许`）属预期功能，但聊天无法进行。
+
+### 根因
+
+- 提交 `63870029`（v0.7.17）重写 `AgentBridgeClient.connectSocket()` 后，连接 deadline 计算为：
+  `effectiveDeadline = min(Date.now() + connectRetryMs, request deadline)`。
+- 当调用方传 `connectRetryMs: 0`（如 `ensureBridgeReadyForChatRun` → `ensureReady({ timeoutMs: 1000, connectRetryMs: 0 })`），
+  `effectiveDeadline` 被压缩为 `Date.now()`，循环首轮 `remaining <= 0` **直接抛 "Agent bridge connect timed out"**，
+  从未发起真实 socket 连接尝试——即使 broker 正常监听（本机 18765 端口可用）。
+- 旧代码总是先调用 `connectSocketOnce()` 再检查 deadline，`connectRetryMs=0` 语义是"失败后不重试"，而非"尝试前就放弃"。
+
+### 修复
+
+- `packages/server/src/services/hermes/agent-bridge/client.ts`：`connectRetryMs > 0` 时才叠加重试窗口；
+  `connectRetryMs = 0` 时重试窗口视为无穷（由请求级 `deadline` 兜底），保证**至少一次真实连接尝试**；
+  单次尝试失败且 `connectRetryMs <= 0` 时立即抛出，不进入重试循环。
+- 补充测试：`agent-bridge-client-connect-timeout.test.ts` 新增 2 例，覆盖 `connectRetryMs: 0` 连接成功与连接挂起场景。
+
+### 验证
+
+- 修复后真实 broker ping：`connectRetryMs: 0` 在 3ms 内连接成功（修复前立即超时）。
+- `agent-bridge-client-connect-timeout`（5/5）与 `chat-run-bridge-readiness`（18/18）通过，服务端 `tsc` 类型检查通过。
+
+### 备注
+
+- `tests/server/agent-bridge` 整体约 65 个失败在 **main 分支上同样存在**（Python 子进程环境依赖缺失等），
+  `gateway-respawn` 1 个失败亦为 main 既有问题，均与本次修复无关。
+- 修复后需重启 dev server（当前 18624 仍运行旧代码）方可生效。
+
+## 2026-08-10 · 合并 main (v0.7.17) 与 org/meeting/v0.73 至 integration/rebuild-from-upstream
+
+### 本轮目标
+
+- 将本地 `main`（v0.7.17，领先 integration 6 个提交）同步进当前 `integration/rebuild-from-upstream` 分支。
+- 拉取组织仓库 `tangledup-ai/hermes-web-ui` 的 `meeting/v0.73` 分支（15 个独立提交：微信登录/设备绑定/Token Platform/Profile 管理）并合并。
+- 合并规则遵循 `docs/harness/upstream-merge-rules.md`（LOCKED/BRANDED/ADAPTED/ACCEPT 四级保护）。
+
+### 已完成事项
+
+#### 1. main → integration
+
+- `git merge --no-ff main` 无冲突，带入群聊自由讨论模式（gc_discussions 数据表、discussion.ts、docx 导出）、v0.7.15/16/17 版本、更新/网关/agent-bridge 修复等。
+
+#### 2. org/meeting/v0.73 → integration
+
+- 唯一内容冲突为 `package.json` 版本号：meeting 分支自带 0.73.0，经确认**保留主线 0.7.17**（meeting 为独立产品线版本号，不应覆盖主线 0.7.x）。
+- 其余文件自动合并成功，无冲突标记残留。
+- 修复合并冗余：`meeting-asr/index.ts` 出现重复的 `ASR_MODEL` 赋值块，已删除重复项。
+- ADAPTED 文件审查通过：meeting-asr python-backend DashScope 标准端点保留、MeetingView.vue AudioWorklet + 配置向导保留、meeting.ts 句子触发配置正常合并、i18n 11 个 locale 无冲突标记且 quanthermes 引用完好。
+- 新路由已注册：`/api/auth/device-login`、`/api/auth/device-binding`、`/api/auth/bind-super-admin`、`/api/auth/users/:id/export` 等。
+
+#### 3. 验证
+
+- `npm run harness:check` 通过。
+- 服务端/客户端 `vue-tsc` 类型检查零错误。
+- 会议相关测试 50/50 通过（device-login-controller、device-binding、token-platform-client、profile-metadata 等）。
+- auth 测试 25/25 通过。
+- `npm run build` 全量构建通过。
+- 版本文件全部一致为 0.7.17（package.json / desktop / package-lock / device-package-release.json）。
+- 品牌残留检查：无新增 hermes-studio/EKKOLearnAI/download.ekkolearnai.com/api.hermes-studio.ai 残留（已有引用均为历史遗留，不在本次合并 diff 中）。
+
+### 遗留事项
+
+- `rtl-logical-css.test.ts` 在 main（29 个 offenders）和 org/meeting/v0.73（33 个）上本就失败，合并后保持 33 个——非本次合并引入，待单独归档处理。
+
 ## 2026-08-04 · 合并 upstream/main（141 commits）至 integration/rebuild-from-upstream
 
 ### 本轮目标

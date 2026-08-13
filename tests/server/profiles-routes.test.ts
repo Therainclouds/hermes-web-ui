@@ -170,12 +170,117 @@ describe('Profile Routes', () => {
       expect(hermesCli.deleteProfile).toHaveBeenCalledWith('test')
     })
 
+    it('create writes the optional displayName into profile-metadata', async () => {
+      const hermesHome = await mkdtemp(join(tmpdir(), 'hermes-profile-display-'))
+      const webUiHome = await mkdtemp(join(tmpdir(), 'hermes-webui-display-'))
+      tempHomes.push(hermesHome, webUiHome)
+      process.env.HERMES_HOME = hermesHome
+      process.env.HERMES_WEB_UI_HOME = webUiHome
+      vi.mocked(hermesCli.createProfile).mockImplementation(async (name: string) => {
+        await mkdir(join(hermesHome, 'profiles', name), { recursive: true })
+        return 'Profile created'
+      })
+      const { create } = await import('../../packages/server/src/controllers/hermes/profiles')
+      const ctx: any = {
+        request: { body: { name: 'meeting-bot', clone: false, displayName: '我的会议助手' } },
+        status: 200,
+        body: undefined,
+        state: {},
+      }
+
+      await create(ctx)
+
+      expect(ctx.status).toBe(200)
+      expect(ctx.body.success).toBe(true)
+      // Display name is stored as Web-UI metadata keyed by base64url(name).
+      const metaPath = join(webUiHome, 'profile-metadata', Buffer.from('meeting-bot', 'utf-8').toString('base64url'), 'meta.json')
+      expect(existsSync(metaPath)).toBe(true)
+      const meta = JSON.parse(readFileSync(metaPath, 'utf-8'))
+      expect(meta.displayName).toBe('我的会议助手')
+    })
+
+    it('create without displayName leaves no profile-metadata', async () => {
+      const hermesHome = await mkdtemp(join(tmpdir(), 'hermes-profile-nodisplay-'))
+      const webUiHome = await mkdtemp(join(tmpdir(), 'hermes-webui-nodisplay-'))
+      tempHomes.push(hermesHome, webUiHome)
+      process.env.HERMES_HOME = hermesHome
+      process.env.HERMES_WEB_UI_HOME = webUiHome
+      vi.mocked(hermesCli.createProfile).mockImplementation(async (name: string) => {
+        await mkdir(join(hermesHome, 'profiles', name), { recursive: true })
+        return 'Profile created'
+      })
+      const { create } = await import('../../packages/server/src/controllers/hermes/profiles')
+      const ctx: any = {
+        request: { body: { name: 'plain-bot', clone: false } },
+        status: 200,
+        body: undefined,
+        state: {},
+      }
+
+      await create(ctx)
+
+      expect(ctx.status).toBe(200)
+      const metaPath = join(webUiHome, 'profile-metadata', Buffer.from('plain-bot', 'utf-8').toString('base64url'), 'meta.json')
+      expect(existsSync(metaPath)).toBe(false)
+    })
+
     it('renameProfile calls CLI with old and new name', async () => {
       vi.mocked(hermesCli.renameProfile).mockResolvedValue(true)
 
       await hermesCli.renameProfile('old', 'new')
 
       expect(hermesCli.renameProfile).toHaveBeenCalledWith('old', 'new')
+    })
+
+    it('updateDisplayName sets the profile display name', async () => {
+      const hermesHome = await mkdtemp(join(tmpdir(), 'hermes-profile-setdn-'))
+      const webUiHome = await mkdtemp(join(tmpdir(), 'hermes-webui-setdn-'))
+      tempHomes.push(hermesHome, webUiHome)
+      process.env.HERMES_HOME = hermesHome
+      process.env.HERMES_WEB_UI_HOME = webUiHome
+      await mkdir(join(hermesHome, 'profiles', 'meeting-bot'), { recursive: true })
+      const { updateDisplayName } = await import('../../packages/server/src/controllers/hermes/profiles')
+      const ctx: any = {
+        params: { name: 'meeting-bot' },
+        request: { body: { displayName: '会议小助手' } },
+        status: 200,
+        body: undefined,
+        state: { user: { role: 'super_admin' } },
+      }
+
+      await updateDisplayName(ctx)
+
+      expect(ctx.status).toBe(200)
+      expect(ctx.body).toEqual({ success: true, displayName: '会议小助手' })
+      const metaPath = join(webUiHome, 'profile-metadata', Buffer.from('meeting-bot', 'utf-8').toString('base64url'), 'meta.json')
+      expect(JSON.parse(readFileSync(metaPath, 'utf-8')).displayName).toBe('会议小助手')
+    })
+
+    it('updateDisplayName clears the display name when the value is empty', async () => {
+      const hermesHome = await mkdtemp(join(tmpdir(), 'hermes-profile-clear-dn-'))
+      const webUiHome = await mkdtemp(join(tmpdir(), 'hermes-webui-clear-dn-'))
+      tempHomes.push(hermesHome, webUiHome)
+      process.env.HERMES_HOME = hermesHome
+      process.env.HERMES_WEB_UI_HOME = webUiHome
+      await mkdir(join(hermesHome, 'profiles', 'meeting-bot'), { recursive: true })
+      const { updateDisplayName } = await import('../../packages/server/src/controllers/hermes/profiles')
+      const metaDir = join(webUiHome, 'profile-metadata', Buffer.from('meeting-bot', 'utf-8').toString('base64url'))
+      await mkdir(metaDir, { recursive: true })
+      await writeFile(join(metaDir, 'meta.json'), JSON.stringify({ displayName: '会议小助手' }, null, 2), 'utf-8')
+
+      const ctx: any = {
+        params: { name: 'meeting-bot' },
+        request: { body: { displayName: '   ' } },
+        status: 200,
+        body: undefined,
+        state: { user: { role: 'super_admin' } },
+      }
+
+      await updateDisplayName(ctx)
+
+      expect(ctx.status).toBe(200)
+      expect(ctx.body).toEqual({ success: true, displayName: '' })
+      expect(JSON.parse(readFileSync(join(metaDir, 'meta.json'), 'utf-8')).displayName).toBeUndefined()
     })
   })
 
