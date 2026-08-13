@@ -122,8 +122,14 @@ export const DISCUSSION_DEFAULT_MAX_ROUNDS = 8
 export const DISCUSSION_DEFAULT_MAX_MESSAGES = 60
 /** Extra rounds allowed past maxRounds while the judge keeps reporting substantive progress. */
 const DISCUSSION_MAX_EXTEND_ROUNDS = 4
-const AGENT_SPEECH_TIMEOUT_MS = 3 * 60_000
-const JUDGE_TIMEOUT_MS = 120_000
+function envTimeoutMs(name: string, fallback: number): number {
+  const value = Number(process.env[name])
+  return Number.isFinite(value) && value > 0 ? value : fallback
+}
+// Large-document discussions make each agent read multi-MB files before speaking,
+// which routinely exceeds 3 minutes on constrained devices — default to 10 min.
+const AGENT_SPEECH_TIMEOUT_MS = envTimeoutMs('HERMES_GROUP_CHAT_SPEECH_TIMEOUT_MS', 10 * 60_000)
+const JUDGE_TIMEOUT_MS = envTimeoutMs('HERMES_GROUP_CHAT_JUDGE_TIMEOUT_MS', 180_000)
 const MAX_STALLED_ROUNDS = 2
 const HOST_NAME = '讨论主持'
 const JUDGE_NAME = '讨论裁判'
