@@ -113,6 +113,23 @@ describe('extractFields', () => {
       expect(text.startsWith(field.quote, field.quote_offset)).toBe(true)
     }
   })
+
+  it('deduplicates identical matches and caps the total so dense contracts cannot explode the DB', () => {
+    // A dense generated contract repeats the same amount/date/party patterns
+    // hundreds of times; extraction must dedupe and stay bounded.
+    const line = '甲方：某公司 应于2024年3月1日支付人民币1,000,000元。《民法典》第10条。\n'
+    const text = line.repeat(3000)
+    const chunks: ParsedChunk[] = [
+      { chunk_id: 'c0', idx: 0, start_offset: 0, end_offset: text.length, token_estimate: 100 },
+    ]
+    const fields = extractFields(text, chunks)
+
+    // 3000 repeats of the same 4 fields — capped far below 12000.
+    expect(fields.length).toBeLessThanOrEqual(4000)
+    // Repeated identical (type, offset) matches are stored once.
+    const keys = new Set(fields.map(f => `${f.field_type}\u0000${f.quote_offset}`))
+    expect(keys.size).toBe(fields.length)
+  })
 })
 
 describe('parseDocumentFile', () => {

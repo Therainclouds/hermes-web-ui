@@ -173,6 +173,11 @@ const PARTY_RE = /(甲方|乙方|丙方|原告|被告|申请人|被申请人|出
  * Each field carries a quote + offset for provenance; the AI layer later
  * confirms rather than re-extracts.
  */
+/** Hard cap on rule-extracted fields per file. Dense generated contracts can
+ *  otherwise produce millions of near-identical rows that bloat the DB and slow
+ *  the aggregate report; a bounded sample is enough for risk review. */
+const MAX_EXTRACTED_FIELDS = 4000
+
 export function extractFields(text: string, chunks: ParsedChunk[]): ExtractedField[] {
   const fields: ExtractedField[] = []
   const rules: Array<[RegExp, string]> = [
@@ -181,7 +186,11 @@ export function extractFields(text: string, chunks: ParsedChunk[]): ExtractedFie
     [STATUTE_RE, 'statute'],
     [PARTY_RE, 'party'],
   ]
+  // Dedupe by (rule, absolute offset): the same value matched by two anchors or
+  // repeated in overlapping chunks must only be stored once.
+  const seen = new Set<string>()
 
+  outer:
   for (const chunk of chunks) {
     const chunkText = text.slice(chunk.start_offset, chunk.end_offset)
     const chunkBase = chunk.start_offset
@@ -189,15 +198,23 @@ export function extractFields(text: string, chunks: ParsedChunk[]): ExtractedFie
       re.lastIndex = 0
       let m: RegExpExecArray | null
       while ((m = re.exec(chunkText)) !== null) {
+        const absoluteOffset = chunkBase + m.index
+        const dedupeKey = `${reName}\u0000${absoluteOffset}`
+        if (seen.has(dedupeKey)) {
+          if (m.index === re.lastIndex) re.lastIndex++
+          continue
+        }
+        seen.add(dedupeKey)
+        if (fields.length >= MAX_EXTRACTED_FIELDS) break outer
         const isParty = reName === 'party'
         const value = isParty ? (m[2] ?? m[0]).trim() : m[0].trim()
         fields.push({
-          field_id: `gcf_${chunkBase}_${chunkBase + m.index}_${reName}`,
+          field_id: `gcf_${chunkBase}_${absoluteOffset}_${reName}`,
           chunk_id: chunk.chunk_id,
           field_type: reName,
           value,
           quote: m[0].trim().slice(0, 120),
-          quote_offset: chunkBase + m.index,
+          quote_offset: absoluteOffset,
         })
         if (m.index === re.lastIndex) re.lastIndex++
       }

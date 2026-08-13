@@ -148,4 +148,36 @@ describe('group chat archive storage', () => {
     // At the hard limit the room is pruned back to the threshold window.
     expect(storage.getMessageCount('room-1')).toBeLessThanOrEqual(GC_ARCHIVE_PROMPT_THRESHOLD)
   })
+
+  it('keeps a single discussion row per room: saveDiscussion upserts instead of accumulating', () => {
+    const base = {
+      roomId: 'room-1',
+      agentOrder: '["agent-a","agent-b"]',
+      reporterId: 'agent-a',
+      maxRounds: 8,
+      maxMessages: 60,
+      judgeProfile: 'default',
+      judgeProvider: 'openai',
+      judgeModel: 'gpt-test',
+      judgeApiMode: 'chat_completions',
+      status: 'pending',
+      currentRound: 0,
+      judgeNotes: '[]',
+      reportMessageId: '',
+      lastError: null,
+      createdAt: 1000,
+      updatedAt: 1000,
+    }
+
+    storage.saveDiscussion({ ...base, id: 'disc-1', goal: 'first' } as any)
+    storage.saveDiscussion({ ...base, id: 'disc-2', goal: 'second', createdAt: 2000, updatedAt: 2000 } as any)
+
+    const rows = (storage as any).db()?.prepare('SELECT id, goal, createdAt FROM gc_discussions WHERE roomId = ?').all('room-1') || []
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ id: 'disc-2', goal: 'second', createdAt: 2000 })
+    // updateDiscussion must not clobber createdAt.
+    storage.updateDiscussion('room-1', { status: 'converged', createdAt: 9999 } as any)
+    const after = (storage as any).db()?.prepare('SELECT status, createdAt FROM gc_discussions WHERE roomId = ?').get('room-1')
+    expect(after).toMatchObject({ status: 'converged', createdAt: 2000 })
+  })
 })

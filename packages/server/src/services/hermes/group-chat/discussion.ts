@@ -1,6 +1,7 @@
 import { logger } from '../../logger'
 import { runBareModelAgent, type ArchiveRoomResult } from './room-summary'
 import type { GroupRuntimeContext } from './room-summary'
+import { listDocumentsByRoom } from '../../../db/hermes/document-store'
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -362,19 +363,22 @@ export class DiscussionRunner {
     const attachments = (input.attachments || []).map(name => String(name).trim()).filter(Boolean)
     let goalWithAttachments = goal
     if (attachments.length > 0) {
-      // Lazy require so this module never hard-couples tests/DB init to the
-      // document store; the goal path hint is best-effort.
+      // A phantom attachment (uploaded file never registered) must fail loudly
+      // instead of silently producing a goal nobody can read.
       let docs: Array<{ name: string; file_id: string }> = []
       try {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const store = require('../../../db/hermes/document-store')
-        docs = store.listDocumentsByRoom(roomId)
-      } catch { /* document store unavailable — fall back to names only */ }
+        docs = listDocumentsByRoom(roomId)
+      } catch { /* document store unavailable — treat as no registered docs */ }
+      const missing = attachments.filter(name => !docs.some(d => d.name === name || d.name.endsWith(name)))
+      if (missing.length > 0) {
+        const err = new Error(`讨论附件未成功登记，无法作为讨论标的：${missing.join('、')}。请先在文档面板重新上传后再发起讨论。`) as Error & { status?: number }
+        err.status = 400
+        throw err
+      }
       const lines = attachments.map((name) => {
-        const doc = docs.find(d => d.name === name || d.name.endsWith(name))
-        if (!doc) return name
-        // <appHome>/group-chat-docs/<roomId>/<fileId>/upload.bin
-        return `${name}（路径：group-chat-docs/${roomId}/${doc.file_id}/upload.bin）`
+        const doc = docs.find(d => d.name === name || d.name.endsWith(name))!
+        // <appHome>/group-chat-docs/<roomId>/<fileId>/<name>
+        return `${name}（路径：group-chat-docs/${roomId}/${doc.file_id}/${doc.name}）`
       })
       goalWithAttachments = `${goal}\n【讨论文件】${lines.join('、')}`
     }

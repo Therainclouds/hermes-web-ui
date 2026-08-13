@@ -1366,6 +1366,10 @@ export function initAllHermesTables(): void {
     syncTable(GC_DISCUSSIONS_TABLE, GC_DISCUSSIONS_SCHEMA, {
       indexes: {
         idx_gc_discussions_room: 'CREATE INDEX idx_gc_discussions_room ON gc_discussions(roomId)',
+        // One discussion per room: enables saveDiscussion's ON CONFLICT(roomId)
+        // upsert so stale rows never accumulate. Existing tables get this index
+        // (after dedupe) in ChatStorage.init(), not here.
+        idx_gc_discussions_room_unique: 'CREATE UNIQUE INDEX IF NOT EXISTS idx_gc_discussions_room_unique ON gc_discussions(roomId)',
       },
     })
 

@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'fs/promises'
+import { mkdir, rename, rm, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
 import { config } from '../../config'
@@ -47,7 +47,29 @@ function sanitizeFileName(name: string): string {
   return name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').slice(0, 200) || 'document'
 }
 
+/** Sidecar marker written before/after streaming so a killed parse can be
+ *  reconciled at next startup (see reconcileOrphanGroupDocuments). */
+interface UploadMeta {
+  fileId: string
+  roomId: string
+  originalName: string
+  fileName: string
+  status: 'uploading' | 'parsing' | 'registered' | 'failed'
+  startedAt: number
+  updatedAt: number
+  error: string | null
+}
+
+async function writeUploadMeta(docsRoot: string, meta: UploadMeta): Promise<void> {
+  await writeFile(join(docsRoot, '.meta.json'), JSON.stringify(meta, null, 2), 'utf-8')
+}
+
+async function cleanupUpload(docsRoot: string): Promise<void> {
+  try { await rm(docsRoot, { recursive: true, force: true }) } catch { /* best-effort */ }
+}
+
 export async function uploadDocument(ctx: any) {
+  let docsRoot = ''
   try {
     const { room } = managedRoom(ctx)
     const contentType = ctx.get('content-type') || ''
@@ -60,8 +82,21 @@ export async function uploadDocument(ctx: any) {
     }
 
     const fileId = `gcd_${randomUUID()}`
-    const docsRoot = join(config.appHome, 'group-chat-docs', ctx.params.roomId, fileId)
+    docsRoot = join(config.appHome, 'group-chat-docs', ctx.params.roomId, fileId)
     await mkdir(docsRoot, { recursive: true })
+    // Sidecar first: a process killed mid-stream or mid-parse leaves upload.bin
+    // + meta behind, and the startup reconciliation re-registers it.
+    const meta: UploadMeta = {
+      fileId,
+      roomId: ctx.params.roomId,
+      originalName: '',
+      fileName: '',
+      status: 'uploading',
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+      error: null,
+    }
+    await writeUploadMeta(docsRoot, meta)
 
     let streamedName: string | null = null
     let streamedSize = 0
@@ -79,11 +114,13 @@ export async function uploadDocument(ctx: any) {
       })
       streamedName = written.filename
       if (!streamedName) {
+        await cleanupUpload(docsRoot)
         ctx.status = 400; ctx.body = { error: 'No file part found', code: 'bad_request' }
         return
       }
     } catch (error: any) {
       if (error?.code === 'file_too_large' || error?.code === 'group_doc_size') {
+        await cleanupUpload(docsRoot)
         ctx.status = 413; ctx.body = { error: error.message, code: 'file_too_large' }
         return
       }
@@ -93,15 +130,26 @@ export async function uploadDocument(ctx: any) {
     const fileName = sanitizeFileName(streamedName)
     const ext = fileName.includes('.') ? '.' + fileName.split('.').pop()!.toLowerCase() : ''
     if (!SUPPORTED_EXTENSIONS.has(ext)) {
+      await cleanupUpload(docsRoot)
       ctx.status = 415
       ctx.body = { error: `Unsupported file type "${ext || 'none'}". Supported: .txt .md .docx`, code: 'unsupported_doc_type' }
       return
     }
 
+    // Keep the original (sanitized) extension on disk so agent file readers
+    // accept it — the old `upload.bin` name is refused by the file-read tool.
+    meta.originalName = streamedName
+    meta.fileName = fileName
+    meta.status = 'parsing'
+    meta.updatedAt = Date.now()
+    await writeUploadMeta(docsRoot, meta)
+    const namedPath = join(docsRoot, fileName)
+    try { await rename(join(docsRoot, 'upload.bin'), namedPath) } catch { /* keep upload.bin as fallback */ }
+
     // Parser reads the streamed bytes, chunks, and rule-extracts fields.
-    const uploadPath = join(docsRoot, 'upload.bin')
-    const parsed = parseDocumentFile(uploadPath, fileName)
+    const parsed = parseDocumentFile(namedPath, fileName)
     if (parsed.chunks.length === 0) {
+      await cleanupUpload(docsRoot)
       ctx.status = 400; ctx.body = { error: 'Document contains no extractable text', code: 'doc_empty' }
       return
     }
@@ -122,6 +170,10 @@ export async function uploadDocument(ctx: any) {
       created_at: Date.now(),
       updated_at: Date.now(),
     })
+
+    meta.status = 'registered'
+    meta.updatedAt = Date.now()
+    await writeUploadMeta(docsRoot, meta)
 
     const server = getGroupChatRuntimeServer()
     server?.getIO().of('/group-chat')?.to(ctx.params.roomId).emit('document_ready', {
@@ -145,6 +197,9 @@ export async function uploadDocument(ctx: any) {
       status: 'chunked',
     }
   } catch (error: any) {
+    // Any HTTP-visible failure cleans up the partial dir so it never becomes an
+    // orphan. Only a process kill (no response) leaves the dir for reconciliation.
+    if (docsRoot) await cleanupUpload(docsRoot)
     handleDocError(ctx, error)
   }
 }

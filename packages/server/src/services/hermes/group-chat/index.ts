@@ -18,6 +18,7 @@ import { paginateRecentGroupMessagesCanonical, sliceGroupMessagesCanonical, sort
 import { GroupRoomSummaryService, type GroupRoomSummary } from './room-summary'
 import { DiscussionRunner, type DiscussionRow, type DiscussionState, type DiscussionStartInput } from './discussion'
 import { DocumentPipelineService } from './document-pipeline'
+import { reconcileOrphanGroupDocuments } from './document-reconciliation'
 import { DOCUMENT_REPORT_TOOL_NAME } from './document-reading-context'
 
 // ─── Types ────────────────────────────────────────────────────
@@ -274,6 +275,18 @@ class ChatStorage {
         try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_gc_room_members_unique ON gc_room_members(roomId, userId)') } catch { /* ignore */ }
         try { db.exec('CREATE INDEX IF NOT EXISTS idx_gc_pending_session_deletes_profile ON gc_pending_session_deletes(profile_name, status, next_attempt_at, created_at)') } catch { /* ignore */ }
         try { db.exec('CREATE INDEX IF NOT EXISTS idx_gc_session_profiles_profile ON gc_session_profiles(profile_name, created_at)') } catch { /* ignore */ }
+        // One discussion per room: dedupe stale rows first (a discussion is a
+        // transient run; keeping only the newest row per room is safe), then
+        // enforce it with a unique index so start() can never double-insert.
+        try {
+            db.exec(
+                `DELETE FROM gc_discussions WHERE id NOT IN (
+                    SELECT id FROM gc_discussions d
+                    WHERE rowid = (SELECT MAX(d2.rowid) FROM gc_discussions d2 WHERE d2.roomId = d.roomId)
+                )`,
+            )
+        } catch { /* ignore */ }
+        try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_gc_discussions_room_unique ON gc_discussions(roomId)') } catch { /* ignore */ }
         _tablesEnsured = true
     }
 
@@ -944,7 +957,25 @@ class ChatStorage {
                 id, roomId, goal, agentOrder, reporterId, maxRounds, maxMessages,
                 judgeProfile, judgeProvider, judgeModel, judgeApiMode,
                 status, currentRound, judgeNotes, reportMessageId, lastError, createdAt, updatedAt
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(roomId) DO UPDATE SET
+                id = excluded.id,
+                goal = excluded.goal,
+                agentOrder = excluded.agentOrder,
+                reporterId = excluded.reporterId,
+                maxRounds = excluded.maxRounds,
+                maxMessages = excluded.maxMessages,
+                judgeProfile = excluded.judgeProfile,
+                judgeProvider = excluded.judgeProvider,
+                judgeModel = excluded.judgeModel,
+                judgeApiMode = excluded.judgeApiMode,
+                status = excluded.status,
+                currentRound = excluded.currentRound,
+                judgeNotes = excluded.judgeNotes,
+                reportMessageId = excluded.reportMessageId,
+                lastError = excluded.lastError,
+                createdAt = excluded.createdAt,
+                updatedAt = excluded.updatedAt`
         ).run(
             row.id, row.roomId, row.goal, row.agentOrder, row.reporterId, row.maxRounds, row.maxMessages,
             row.judgeProfile, row.judgeProvider, row.judgeModel, row.judgeApiMode,
@@ -953,7 +984,7 @@ class ChatStorage {
     }
 
     updateDiscussion(roomId: string, fields: Partial<DiscussionRow>): void {
-        const keys = Object.keys(fields).filter(key => key !== 'id' && key !== 'roomId')
+        const keys = Object.keys(fields).filter(key => key !== 'id' && key !== 'roomId' && key !== 'createdAt')
         if (!keys.length) return
         const db = this.db()
         if (!db) return
@@ -1242,6 +1273,18 @@ export class GroupChatServer {
             onDocumentReady: (roomId, payload) => this.nsp.to(roomId).emit('document_ready', payload),
             onProgress: (roomId, payload) => this.nsp.to(roomId).emit('reading_progress', payload),
             onReport: (roomId, fileId, reportText) => void this.emitDocumentReport(roomId, fileId, reportText),
+        })
+        // Recover orphaned uploads (files streamed to disk but never registered
+        // because an earlier parse was interrupted) without blocking boot.
+        setImmediate(() => {
+            try {
+                const reconcile = reconcileOrphanGroupDocuments()
+                if (reconcile.registered.length || reconcile.failed.length || reconcile.renamed.length) {
+                    logger.info({ ...reconcile }, '[GroupChat] document reconciliation summary')
+                }
+            } catch (err) {
+                logger.warn({ err }, '[GroupChat] document reconciliation failed')
+            }
         })
         this.agentClients.setActivityBroadcaster((roomId, agentName, status) => {
             let roomStatuses = this.contextStatusState.get(roomId)

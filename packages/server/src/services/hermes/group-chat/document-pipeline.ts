@@ -11,7 +11,7 @@
  *   pipeline never races room summarization or agent replies.
  */
 import { freemem, totalmem } from 'os'
-import { readFileSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
 import { resolve } from 'path'
 import { config } from '../../../config'
 import { logger } from '../../logger'
@@ -239,7 +239,11 @@ export class DocumentPipelineService {
     try {
       const doc = getDocument(fileId)
       if (!doc) throw new Error('document missing')
-      const filePath = resolve(config.appHome, 'group-chat-docs', doc.room_id, fileId, 'upload.bin')
+      const docDir = resolve(config.appHome, 'group-chat-docs', doc.room_id, fileId)
+      const namedPath = resolve(docDir, doc.name)
+      // Prefer the original (sanitized) file name; fall back to legacy upload.bin
+      // for docs registered before named storage was introduced.
+      const filePath = existsSync(namedPath) ? namedPath : resolve(docDir, 'upload.bin')
       const text = readFileSync(filePath, 'utf-8')
       const chunkText = text.slice(chunk.start_offset, chunk.end_offset)
 

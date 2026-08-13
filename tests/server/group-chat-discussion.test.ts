@@ -15,6 +15,15 @@ vi.mock('../../packages/server/src/services/hermes/group-chat/room-summary', asy
   }
 })
 
+// Document store: default to "no registered docs" so a discussion with
+// attachments that were never registered fails loudly (hard validation).
+vi.mock('../../packages/server/src/db/hermes/document-store', () => ({
+  listDocumentsByRoom: vi.fn(() => []),
+}))
+
+import { listDocumentsByRoom } from '../../packages/server/src/db/hermes/document-store'
+const listDocumentsByRoomMock = vi.mocked(listDocumentsByRoom)
+
 import { runBareModelAgent } from '../../packages/server/src/services/hermes/group-chat/room-summary'
 import type { GroupChatServer } from '../../packages/server/src/services/hermes/group-chat'
 import {
@@ -27,6 +36,11 @@ import { authenticateUserToken, isAuthEnabled } from '../../packages/server/src/
 
 const judgeMock = vi.mocked(runBareModelAgent)
 const ACTIVE_STATUSES = new Set(['pending', 'running', 'paused'])
+
+beforeEach(() => {
+  listDocumentsByRoomMock.mockReset()
+  listDocumentsByRoomMock.mockReturnValue([])
+})
 
 interface AgentSpec {
   agentId: string
@@ -240,9 +254,13 @@ describe('group chat free discussion runner', () => {
     expect(calls.at(-1)?.content).toContain('已达轮次/消息上限')
   })
 
-  it('appends attachment file names to the goal so agents know what to discuss', async () => {
+  it('appends registered attachment paths to the goal so agents know what to read', async () => {
     const { runner, speechCalls, rows } = harness()
     judgeMock.mockResolvedValue(judgeJson({ converged: true }))
+    listDocumentsByRoomMock.mockReturnValue([
+      { name: 'contract_1mb.txt', file_id: 'gcd_1' },
+      { name: '证据清单.pdf', file_id: 'gcd_2' },
+    ])
 
     await runner.start('room-1', {
       goal: '自由讨论这个文件的内容',
@@ -251,31 +269,31 @@ describe('group chat free discussion runner', () => {
     })
     await waitForDone(runner, 'room-1')
 
-    // The persisted goal includes the attachment file names.
+    // The persisted goal includes each attachment with its readable on-disk path.
     const persisted = rows.get('room-1')
     expect(persisted?.goal).toContain('自由讨论这个文件的内容')
-    expect(persisted?.goal).toContain('【讨论文件】contract_1mb.txt、证据清单.pdf')
+    expect(persisted?.goal).toContain('【讨论文件】contract_1mb.txt（路径：group-chat-docs/room-1/gcd_1/contract_1mb.txt）、证据清单.pdf（路径：group-chat-docs/room-1/gcd_2/证据清单.pdf）')
 
     // Every agent speech prompt carries the attachment reference.
     for (const call of speechCalls()) {
       expect(call.content).toContain('【讨论目标】自由讨论这个文件的内容')
-      expect(call.content).toContain('【讨论文件】contract_1mb.txt、证据清单.pdf')
+      expect(call.content).toContain('【讨论文件】contract_1mb.txt（路径：group-chat-docs/room-1/gcd_1/contract_1mb.txt）')
     }
   })
 
-  it('includes on-disk paths for attachments that exist in gc_documents', async () => {
-    // Seed a matching doc record so the goal gains a readable path.
-    const { runner, rows } = harness()
+  it('rejects attachments that were never registered in the document store', async () => {
+    const { runner } = harness()
     judgeMock.mockResolvedValue(judgeJson({ converged: true }))
-    // Patch listDocumentsByRoom at runtime is complex in this unit; verify the
-    // fallback (no matching doc) keeps a plain name in the goal.
-    await runner.start('room-1', {
+    listDocumentsByRoomMock.mockReturnValue([])
+
+    await expect(runner.start('room-1', {
       goal: '读文件',
       attachments: ['unmatched.pdf'],
       maxRounds: 1,
-    })
-    await waitForDone(runner, 'room-1')
-    expect(rows.get('room-1')?.goal).toContain('【讨论文件】unmatched.pdf')
+    })).rejects.toMatchObject({ status: 400 })
+
+    // No discussion row is persisted for a rejected start.
+    expect(await runner.getState('room-1')).toBeNull()
   })
 
   it('does not terminate on pre-existing room history; only counts messages produced during the discussion', async () => {
