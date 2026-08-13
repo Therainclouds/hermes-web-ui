@@ -5379,6 +5379,93 @@
         ]
       }
     },
+    "/api/hermes/group-chat/rooms/{roomId}/archive": {
+      "post": {
+        "tags": [
+          "Group Chat"
+        ],
+        "summary": "Create archive",
+        "description": "POST /api/hermes/group-chat/rooms/:roomId/archive",
+        "operationId": "createArchive",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "roomId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/hermes/group-chat/rooms/{roomId}/archive-dismiss": {
+      "post": {
+        "tags": [
+          "Group Chat"
+        ],
+        "summary": "Create archive-dismiss",
+        "description": "POST /api/hermes/group-chat/rooms/:roomId/archive-dismiss",
+        "operationId": "createArchive-dismiss",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "roomId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "mode": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/hermes/group-chat/rooms/{roomId}/clear-context": {
       "post": {
         "tags": [
@@ -5526,6 +5613,297 @@
                     "type": "string"
                   },
                   "summaryProvider": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/hermes/group-chat/rooms/{roomId}/discussion": {
+      "post": {
+        "tags": [
+          "Group Chat"
+        ],
+        "summary": "Create discussion",
+        "description": "POST /api/hermes/group-chat/rooms/:roomId/discussion",
+        "operationId": "startDiscussion",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "roomId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Group Chat"
+        ],
+        "summary": "Get discussion",
+        "description": "GET /api/hermes/group-chat/rooms/:roomId/discussion",
+        "operationId": "getDiscussion",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "roomId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/hermes/group-chat/rooms/{roomId}/discussion/stop": {
+      "post": {
+        "tags": [
+          "Group Chat"
+        ],
+        "summary": "Create stop",
+        "description": "POST /api/hermes/group-chat/rooms/:roomId/discussion/stop",
+        "operationId": "stopDiscussion",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "roomId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/hermes/group-chat/rooms/{roomId}/documents": {
+      "post": {
+        "tags": [
+          "Group Chat"
+        ],
+        "summary": "Create documents",
+        "description": "POST /api/hermes/group-chat/rooms/:roomId/documents",
+        "operationId": "uploadDocument",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "roomId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "get": {
+        "tags": [
+          "Group Chat"
+        ],
+        "summary": "Get documents",
+        "description": "GET /api/hermes/group-chat/rooms/:roomId/documents",
+        "operationId": "listDocuments",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "roomId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/hermes/group-chat/rooms/{roomId}/documents/{fileId}": {
+      "get": {
+        "tags": [
+          "Group Chat"
+        ],
+        "summary": "Get :fileId",
+        "description": "GET /api/hermes/group-chat/rooms/:roomId/documents/:fileId",
+        "operationId": "getDocumentProgress",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "roomId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "fileId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/hermes/group-chat/rooms/{roomId}/documents/{fileId}/start": {
+      "post": {
+        "tags": [
+          "Group Chat"
+        ],
+        "summary": "Create start",
+        "description": "POST /api/hermes/group-chat/rooms/:roomId/documents/:fileId/start",
+        "operationId": "startDocumentReading",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "roomId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "fileId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "agents": {
                     "type": "string"
                   }
                 }

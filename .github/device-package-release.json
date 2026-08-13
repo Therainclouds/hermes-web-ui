@@ -21,6 +21,7 @@
     "scripts/hermes-web-ui-update.service",
     "scripts/hermes-web-ui.service",
     "scripts/install-device-package.sh",
+    "scripts/update-task-state.py",
     "scripts/generate-server-cert.sh"
   ],
   "sourcePathPrefix": "sources",

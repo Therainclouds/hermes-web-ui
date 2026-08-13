@@ -15,6 +15,15 @@ vi.mock('../../packages/server/src/services/hermes/group-chat/room-summary', asy
   }
 })
 
+// Document store: default to "no registered docs" so a discussion with
+// attachments that were never registered fails loudly (hard validation).
+vi.mock('../../packages/server/src/db/hermes/document-store', () => ({
+  listDocumentsByRoom: vi.fn(() => []),
+}))
+
+import { listDocumentsByRoom } from '../../packages/server/src/db/hermes/document-store'
+const listDocumentsByRoomMock = vi.mocked(listDocumentsByRoom)
+
 import { runBareModelAgent } from '../../packages/server/src/services/hermes/group-chat/room-summary'
 import type { GroupChatServer } from '../../packages/server/src/services/hermes/group-chat'
 import {
@@ -27,6 +36,11 @@ import { authenticateUserToken, isAuthEnabled } from '../../packages/server/src/
 
 const judgeMock = vi.mocked(runBareModelAgent)
 const ACTIVE_STATUSES = new Set(['pending', 'running', 'paused'])
+
+beforeEach(() => {
+  listDocumentsByRoomMock.mockReset()
+  listDocumentsByRoomMock.mockReturnValue([])
+})
 
 interface AgentSpec {
   agentId: string
@@ -103,6 +117,7 @@ function harness(opts: {
 
   const broadcasts: DiscussionState[] = []
   const systemMessages: Array<{ roomId: string; content: string }> = []
+  const archiveCalls: string[] = []
   const interruptRoom = opts.interruptRoom || vi.fn(async () => {})
   const runner = new DiscussionRunner({
     storage,
@@ -112,6 +127,27 @@ function harness(opts: {
     },
     roomSummaryService: {
       prepareForMessage: async () => ({ summary: '', history: [] }),
+      // Must be called as a method (this bound); a detached call would break the
+      // real service which relies on this.withRoomLock/this.storage.
+      archiveRoom: async function (this: unknown, roomId: string) {
+        if (this == null) throw new Error('archiveRoom lost its this binding')
+        archiveCalls.push(roomId)
+        return {
+          archived: true,
+          deletedMessages: 0,
+          summary: {
+            roomId,
+            summary: 'archived',
+            summaryThroughMessageId: '',
+            summaryThroughMessageTimestamp: 0,
+            summarizedTurnCount: 0,
+            status: 'success',
+            version: 1,
+            updatedAt: 0,
+            lastError: null,
+          },
+        }
+      },
     },
     emitSystemMessage: async (roomId: string, content: string) => {
       systemMessages.push({ roomId, content })
@@ -134,6 +170,7 @@ function harness(opts: {
     systemMessages,
     contextMessages,
     speechCalls,
+    archiveCalls,
     setMessageCount: (value: number) => {
       messageCount = value
     },
@@ -220,18 +257,82 @@ describe('group chat free discussion runner', () => {
     expect(calls.at(-1)?.content).toContain('已达轮次/消息上限')
   })
 
-  it('stops early when the message cap is reached and still reports', async () => {
-    const { runner, speechCalls } = harness({ messageCount: 60 })
+  it('appends registered attachment paths to the goal so agents know what to read', async () => {
+    const { runner, speechCalls, rows } = harness()
+    judgeMock.mockResolvedValue(judgeJson({ converged: true }))
+    listDocumentsByRoomMock.mockReturnValue([
+      { name: 'contract_1mb.txt', file_id: 'gcd_1' },
+      { name: '证据清单.pdf', file_id: 'gcd_2' },
+    ])
+
+    await runner.start('room-1', {
+      goal: '自由讨论这个文件的内容',
+      attachments: ['contract_1mb.txt', '证据清单.pdf'],
+      maxRounds: 1,
+    })
+    await waitForDone(runner, 'room-1')
+
+    // The persisted goal includes each attachment with its readable on-disk path.
+    const persisted = rows.get('room-1')
+    expect(persisted?.goal).toContain('自由讨论这个文件的内容')
+    expect(persisted?.goal).toContain('【讨论文件】contract_1mb.txt（路径：group-chat-docs/room-1/gcd_1/contract_1mb.txt）、证据清单.pdf（路径：group-chat-docs/room-1/gcd_2/证据清单.pdf）')
+
+    // Every agent speech prompt carries the attachment reference.
+    for (const call of speechCalls()) {
+      expect(call.content).toContain('【讨论目标】自由讨论这个文件的内容')
+      expect(call.content).toContain('【讨论文件】contract_1mb.txt（路径：group-chat-docs/room-1/gcd_1/contract_1mb.txt）')
+    }
+  })
+
+  it('rejects attachments that were never registered in the document store', async () => {
+    const { runner } = harness()
+    judgeMock.mockResolvedValue(judgeJson({ converged: true }))
+    listDocumentsByRoomMock.mockReturnValue([])
+
+    await expect(runner.start('room-1', {
+      goal: '读文件',
+      attachments: ['unmatched.pdf'],
+      maxRounds: 1,
+    })).rejects.toMatchObject({ status: 400 })
+
+    // No discussion row is persisted for a rejected start.
+    expect(await runner.getState('room-1')).toBeNull()
+  })
+
+  it('does not terminate on pre-existing room history; only counts messages produced during the discussion', async () => {
+    const { runner, speechCalls, setMessageCount } = harness({ messageCount: 60 })
     judgeMock.mockResolvedValue(judgeJson())
 
-    await runner.start('room-1', { goal: 'go', maxRounds: 8, maxMessages: 60 })
+    // maxMessages applies to messages *during* this run, not the 60 historical ones.
+    await runner.start('room-1', { goal: 'go', maxRounds: 2, maxMessages: 60 })
     const final = await waitForDone(runner, 'room-1')
 
     expect(final.status).toBe('max_rounds')
-    expect(final.currentRound).toBe(0)
+    expect(final.currentRound).toBe(2) // full 2 rounds ran despite 60 historical msgs
+    // All agents spoke (2 rounds x 2 agents) plus the report.
     const calls = speechCalls()
-    expect(calls.length).toBe(1) // report only, no agent speech
-    expect(calls[0].content).toContain('已达轮次/消息上限')
+    expect(calls.length).toBe(2 * 2 + 1)
+  })
+
+  it('stops early when messages produced during the discussion hit the cap', async () => {
+    const { runner, speechCalls, setMessageCount } = harness({ messageCount: 10 })
+    judgeMock.mockResolvedValue(judgeJson())
+
+    // Simulate heavy chatter: after the run starts, the room gains enough new
+    // messages to cross the (incremental) cap, forcing an early max_rounds stop.
+    let started = false
+    const origSpeech = speechCalls
+    await runner.start('room-1', { goal: 'go', maxRounds: 8, maxMessages: 20 })
+    // Pump the counter past the incremental cap right away.
+    setMessageCount(10 + 25)
+    const final = await waitForDone(runner, 'room-1')
+
+    expect(final.status).toBe('max_rounds')
+    expect(final.currentRound).toBeLessThan(8)
+    void origSpeech
+    void started
+    const calls = speechCalls()
+    expect(calls.at(-1)?.content).toContain('已达轮次/消息上限')
   })
 
   it('terminates after two consecutive stalled rounds with a forced report', async () => {
@@ -246,6 +347,17 @@ describe('group chat free discussion runner', () => {
     const calls = speechCalls()
     expect(calls.length).toBe(5) // 2 rounds x 2 + 1 report
     expect(calls.at(-1)?.content).toContain('原地打转')
+  })
+
+  it('auto-archives the room transcript once the discussion ends', async () => {
+    const { runner, archiveCalls } = harness()
+    judgeMock.mockResolvedValue(judgeJson({ converged: true }))
+
+    await runner.start('room-1', { goal: 'go', maxRounds: 3 })
+    const final = await waitForDone(runner, 'room-1')
+
+    expect(final.status).toBe('converged')
+    await vi.waitFor(() => expect(archiveCalls).toEqual(['room-1']))
   })
 
   it('skips an agent whose speech fails without blocking the round', async () => {

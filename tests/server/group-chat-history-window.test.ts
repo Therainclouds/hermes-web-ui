@@ -189,6 +189,9 @@ describe('group chat history windows', () => {
     })
 
     for (const message of seeded.slice(1)) storage.saveMessageAndRefreshRoom(message as any)
+    // Saving no longer silently prunes at 500 (that is now a user-facing archive
+    // prompt); exercise the pruned-anchor timestamp fallback directly.
+    storage.pruneMessages('room-1', 500)
 
     const retained = storage.getMessagesForContext('room-1')
     const context = groupServer.getRoomSummaryService().buildRuntimeContext('room-1')

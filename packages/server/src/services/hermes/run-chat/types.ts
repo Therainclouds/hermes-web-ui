@@ -137,7 +137,7 @@ export interface BridgeContextState {
 }
 
 export type ChatRunSource = 'api_server' | 'cli' | 'coding_agent' | 'global_agent' | 'workflow'
-export type ChatCodingAgentId = 'claude-code' | 'codex' | 'ekko-agent'
+export type ChatCodingAgentId = 'claude-code' | 'codex' | 'dsh' | 'ekko-agent'
 
 export interface BridgeCompressionResult {
   messages: ChatMessage[]

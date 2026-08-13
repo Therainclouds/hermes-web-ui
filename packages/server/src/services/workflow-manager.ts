@@ -876,7 +876,7 @@ function workflowOutputConditionContext(output: string, edges: WorkflowEdgeSnaps
 
 function isWorkflowCodingAgentSession(session?: { source?: string | null; agent?: string | null; agent_session_id?: string | null } | null): boolean {
   const agent = String(session?.agent || '').trim()
-  return agent === 'claude' || agent === 'codex' || Boolean(session?.agent_session_id)
+  return agent === 'claude' || agent === 'codex' || agent === 'dsh' || Boolean(session?.agent_session_id)
 }
 
 async function deleteHermesSessionIfPresent(sessionId: string, profile: string): Promise<void> {

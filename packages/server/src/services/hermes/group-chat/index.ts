@@ -14,9 +14,12 @@ import { authenticateUserToken, isAuthEnabled, type AuthenticatedUser } from '..
 import { findUserByUsername, getUserAvatar } from '../../../db/hermes/users-store'
 import { config } from '../../../config'
 import { createSocketIoCorsOrigin, shouldRejectUpgradeOrigin } from '../../../security'
-import { paginateRecentGroupMessagesCanonical, sliceGroupMessagesCanonical, type GroupMessageCursorCutoff } from './group-message-ordering'
+import { paginateRecentGroupMessagesCanonical, sliceGroupMessagesCanonical, sortGroupMessagesCanonical, type GroupMessageCursorCutoff } from './group-message-ordering'
 import { GroupRoomSummaryService, type GroupRoomSummary } from './room-summary'
 import { DiscussionRunner, type DiscussionRow, type DiscussionState, type DiscussionStartInput } from './discussion'
+import { DocumentPipelineService } from './document-pipeline'
+import { reconcileOrphanGroupDocuments } from './document-reconciliation'
+import { DOCUMENT_REPORT_TOOL_NAME } from './document-reading-context'
 
 // ─── Types ────────────────────────────────────────────────────
 
@@ -242,8 +245,17 @@ function maxAgentMentionDepth(): number {
     return Math.min(10, Math.floor(value))
 }
 
+/** When a room's raw message count crosses this window, clients are prompted to archive. */
+export const GC_ARCHIVE_PROMPT_THRESHOLD = 500
+
+/** Hard safety cap: if a room keeps dismissing archive prompts, silently prune at this size. */
+const GC_ARCHIVE_HARD_LIMIT = 1500
+
 class ChatStorage {
     private db() { return getDb() }
+
+    private archivePromptCounts = new Map<string, number>()
+    private onArchivePrompt?: (roomId: string, count: number) => void
 
     private mapStoredMessageRow(row: any): ChatMessage {
         return {
@@ -263,6 +275,18 @@ class ChatStorage {
         try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_gc_room_members_unique ON gc_room_members(roomId, userId)') } catch { /* ignore */ }
         try { db.exec('CREATE INDEX IF NOT EXISTS idx_gc_pending_session_deletes_profile ON gc_pending_session_deletes(profile_name, status, next_attempt_at, created_at)') } catch { /* ignore */ }
         try { db.exec('CREATE INDEX IF NOT EXISTS idx_gc_session_profiles_profile ON gc_session_profiles(profile_name, created_at)') } catch { /* ignore */ }
+        // One discussion per room: dedupe stale rows first (a discussion is a
+        // transient run; keeping only the newest row per room is safe), then
+        // enforce it with a unique index so start() can never double-insert.
+        try {
+            db.exec(
+                `DELETE FROM gc_discussions WHERE id NOT IN (
+                    SELECT id FROM gc_discussions d
+                    WHERE rowid = (SELECT MAX(d2.rowid) FROM gc_discussions d2 WHERE d2.roomId = d.roomId)
+                )`,
+            )
+        } catch { /* ignore */ }
+        try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_gc_discussions_room_unique ON gc_discussions(roomId)') } catch { /* ignore */ }
         _tablesEnsured = true
     }
 
@@ -529,7 +553,7 @@ class ChatStorage {
         const rows = (this.db()?.prepare(
             `SELECT id, roomId, senderId, senderName, content, timestamp, run_id, role, tool_call_id, tool_calls, tool_name, finish_reason, reasoning, reasoning_details, reasoning_content
              FROM gc_messages
-             WHERE roomId = ? AND COALESCE(tool_name, '') <> 'workspace_diff'`
+             WHERE roomId = ? AND COALESCE(tool_name, '') NOT IN ('workspace_diff', 'document_report')`
         ).all(roomId) || []) as any[]
         return sliceGroupMessagesCanonical(rows.map(row => this.mapStoredMessageRow(row)), cutoff).messages
     }
@@ -658,7 +682,7 @@ class ChatStorage {
                 tool_name: 'workspace_diff',
             }
             this.upsertMessage(message)
-            this.pruneMessages(args.roomId)
+            this.maybeNotifyArchivePrompt(args.roomId)
             const messages = this.getMessagesForContext(args.roomId)
             const totalTokens = this.estimateRoomTotalTokens(args.roomId, messages)
             this.updateRoomTotalTokens(args.roomId, totalTokens)
@@ -687,7 +711,7 @@ class ChatStorage {
                 : msg
             const message = existing && options.preserveExistingTimestamp ? { ...safeMsg, timestamp: existing.timestamp } : safeMsg
             this.upsertMessage(message)
-            this.pruneMessages(msg.roomId)
+            this.maybeNotifyArchivePrompt(msg.roomId)
             const messages = this.getMessagesForContext(msg.roomId)
             const totalTokens = this.estimateRoomTotalTokens(msg.roomId, messages)
             this.updateRoomTotalTokens(msg.roomId, totalTokens)
@@ -730,6 +754,8 @@ class ChatStorage {
             db.prepare('DELETE FROM gc_room_summaries WHERE roomId = ?').run(roomId)
             db.prepare('UPDATE gc_rooms SET totalTokens = 0, sessionSeed = ? WHERE id = ?').run(`${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`, roomId)
         })
+        // The room is empty again; the next archive prompt waits a full threshold window.
+        this.archivePromptCounts.delete(roomId)
     }
 
     pruneMessages(roomId: string, keep = 500): void {
@@ -748,6 +774,63 @@ class ChatStorage {
                 })
             }
         }
+    }
+
+    // ─── Archive Prompt & Transcript Cleanup ─────────────────
+
+    setArchivePromptNotifier(fn: (roomId: string, count: number) => void): void {
+        this.onArchivePrompt = fn
+    }
+
+    /** Fire the archive prompt once per threshold window. A hard cap still silently
+     *  prunes rooms that keep dismissing the prompt so history can never grow without bound. */
+    maybeNotifyArchivePrompt(roomId: string): void {
+        const count = this.getMessageCount(roomId)
+        if (count >= GC_ARCHIVE_HARD_LIMIT) {
+            this.pruneMessages(roomId, GC_ARCHIVE_PROMPT_THRESHOLD)
+            this.archivePromptCounts.set(roomId, GC_ARCHIVE_PROMPT_THRESHOLD)
+            logger.info(`[GroupChat] archive prompts dismissed; hard-pruned room ${roomId} to ${GC_ARCHIVE_PROMPT_THRESHOLD}`)
+            return
+        }
+        const last = this.archivePromptCounts.get(roomId) ?? 0
+        if (count >= GC_ARCHIVE_PROMPT_THRESHOLD && count - last >= GC_ARCHIVE_PROMPT_THRESHOLD) {
+            this.archivePromptCounts.set(roomId, count)
+            this.onArchivePrompt?.(roomId, count)
+        }
+    }
+
+    /** Remember the current message count so the next prompt waits a full window. */
+    markArchivePromptThreshold(roomId: string): void {
+        this.archivePromptCounts.set(roomId, this.getMessageCount(roomId))
+    }
+
+    /** Delete the raw transcript up to and including the summary anchor, so archived
+     *  history only lives in gc_room_summaries and no longer occupies agent context.
+     *  Returns the number of deleted messages (0 when the anchor is already gone). */
+    deleteMessagesThrough(roomId: string, anchorMessageId: string): number {
+        const db = this.db()
+        if (!db || !anchorMessageId) return 0
+        const rows = db.prepare('SELECT id, timestamp FROM gc_messages WHERE roomId = ?').all(roomId) as Array<{ id: string; timestamp: number }>
+        const ordered = sortGroupMessagesCanonical(rows)
+        const anchorIndex = ordered.findIndex(message => message.id === anchorMessageId)
+        if (anchorIndex < 0) return 0
+        const ids = ordered.slice(0, anchorIndex + 1).map(message => message.id)
+        const cutoffTimestamp = ordered[anchorIndex].timestamp
+        let deleted = 0
+        this.withImmediateTransaction(db, () => {
+            this.deleteWorkspaceDiffChanges(roomId, cutoffTimestamp)
+            for (let index = 0; index < ids.length; index += 500) {
+                const batch = ids.slice(index, index + 500)
+                const placeholders = batch.map(() => '?').join(',')
+                deleted += Number(db.prepare(`DELETE FROM gc_messages WHERE roomId = ? AND id IN (${placeholders})`).run(roomId, ...batch).changes)
+            }
+            if (deleted > 0) {
+                const messages = this.getMessagesForContext(roomId)
+                this.updateRoomTotalTokens(roomId, this.estimateRoomTotalTokens(roomId, messages))
+            }
+        })
+        logger.info(`[GroupChat] archived ${deleted} messages through summary anchor ${anchorMessageId} in room ${roomId}`)
+        return deleted
     }
 
     // ─── Room Agents ──────────────────────────────────────────
@@ -874,7 +957,25 @@ class ChatStorage {
                 id, roomId, goal, agentOrder, reporterId, maxRounds, maxMessages,
                 judgeProfile, judgeProvider, judgeModel, judgeApiMode,
                 status, currentRound, judgeNotes, reportMessageId, lastError, createdAt, updatedAt
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(roomId) DO UPDATE SET
+                id = excluded.id,
+                goal = excluded.goal,
+                agentOrder = excluded.agentOrder,
+                reporterId = excluded.reporterId,
+                maxRounds = excluded.maxRounds,
+                maxMessages = excluded.maxMessages,
+                judgeProfile = excluded.judgeProfile,
+                judgeProvider = excluded.judgeProvider,
+                judgeModel = excluded.judgeModel,
+                judgeApiMode = excluded.judgeApiMode,
+                status = excluded.status,
+                currentRound = excluded.currentRound,
+                judgeNotes = excluded.judgeNotes,
+                reportMessageId = excluded.reportMessageId,
+                lastError = excluded.lastError,
+                createdAt = excluded.createdAt,
+                updatedAt = excluded.updatedAt`
         ).run(
             row.id, row.roomId, row.goal, row.agentOrder, row.reporterId, row.maxRounds, row.maxMessages,
             row.judgeProfile, row.judgeProvider, row.judgeModel, row.judgeApiMode,
@@ -883,7 +984,7 @@ class ChatStorage {
     }
 
     updateDiscussion(roomId: string, fields: Partial<DiscussionRow>): void {
-        const keys = Object.keys(fields).filter(key => key !== 'id' && key !== 'roomId')
+        const keys = Object.keys(fields).filter(key => key !== 'id' && key !== 'roomId' && key !== 'createdAt')
         if (!keys.length) return
         const db = this.db()
         if (!db) return
@@ -1098,6 +1199,7 @@ export class GroupChatServer {
     readonly agentClients = new AgentClients()
     private roomSummaryService: GroupRoomSummaryService
     private discussionRunner: DiscussionRunner
+    private documentPipeline: DocumentPipelineService
     private _restoreScheduled = false
     /** roomId -> (userId -> { userName, timer }) */
     private typingState = new Map<string, Map<string, { userName: string; timer: ReturnType<typeof setTimeout> }>>()
@@ -1118,6 +1220,9 @@ export class GroupChatServer {
     constructor(httpServers: HttpServer | HttpServer[]) {
         this.storage = new ChatStorage()
         this.storage.init()
+        this.storage.setArchivePromptNotifier((roomId, count) => {
+            this.nsp.to(roomId).emit('room_archive_prompt', { roomId, count, threshold: GC_ARCHIVE_PROMPT_THRESHOLD })
+        })
         const servers = Array.isArray(httpServers) ? httpServers : [httpServers]
 
         this.io = new Server(servers[0], {
@@ -1150,6 +1255,9 @@ export class GroupChatServer {
 
         this.roomSummaryService = new GroupRoomSummaryService(this.storage, (summary) => {
             this.nsp.to(summary.roomId).emit('room_summary_updated', summary)
+        }, undefined, (roomId, deletedMessages) => {
+            const totalTokens = this.storage.getRoom(roomId)?.totalTokens ?? 0
+            this.nsp.to(roomId).emit('room_archived', { roomId, deletedMessages, totalTokens })
         })
         this.agentClients.setStorage(this.storage)
         this.agentClients.setRoomSummaryService(this.roomSummaryService)
@@ -1161,6 +1269,23 @@ export class GroupChatServer {
             broadcast: (roomId, state) => this.nsp.to(roomId).emit('discussion_update', state),
         })
         this.discussionRunner.recoverInterrupted()
+        this.documentPipeline = new DocumentPipelineService({
+            onDocumentReady: (roomId, payload) => this.nsp.to(roomId).emit('document_ready', payload),
+            onProgress: (roomId, payload) => this.nsp.to(roomId).emit('reading_progress', payload),
+            onReport: (roomId, fileId, reportText) => void this.emitDocumentReport(roomId, fileId, reportText),
+        })
+        // Recover orphaned uploads (files streamed to disk but never registered
+        // because an earlier parse was interrupted) without blocking boot.
+        setImmediate(() => {
+            try {
+                const reconcile = reconcileOrphanGroupDocuments()
+                if (reconcile.registered.length || reconcile.failed.length || reconcile.renamed.length) {
+                    logger.info({ ...reconcile }, '[GroupChat] document reconciliation summary')
+                }
+            } catch (err) {
+                logger.warn({ err }, '[GroupChat] document reconciliation failed')
+            }
+        })
         this.agentClients.setActivityBroadcaster((roomId, agentName, status) => {
             let roomStatuses = this.contextStatusState.get(roomId)
             if (status === 'ready') {
@@ -1193,6 +1318,31 @@ export class GroupChatServer {
 
     getRoomSummaryService(): GroupRoomSummaryService {
         return this.roomSummaryService
+    }
+
+    getDocumentPipelineService(): DocumentPipelineService {
+        return this.documentPipeline
+    }
+
+    /** Persist the document pipeline final report as a tagged message + broadcast. */
+    private async emitDocumentReport(roomId: string, fileId: string, reportText: string): Promise<void> {
+        try {
+            const saved = this.storage.saveMessageAndRefreshRoom({
+                id: this.generateId(),
+                roomId,
+                senderId: `document:${fileId}`,
+                senderName: '文档整理',
+                content: reportText,
+                timestamp: Date.now(),
+                role: 'tool',
+                tool_name: DOCUMENT_REPORT_TOOL_NAME,
+            })
+            this.nsp.to(roomId).emit('message', saved.message)
+            this.nsp.to(roomId).emit('room_updated', { roomId, totalTokens: saved.totalTokens })
+            this.nsp.to(roomId).emit('document_report', { fileId, messageId: saved.message.id })
+        } catch (err) {
+            logger.warn({ err, roomId }, `[DocumentPipeline] failed to emit report: ${err instanceof Error ? err.message : String(err)}`)
+        }
     }
 
     isRoomDiscussionRunning(roomId: string): boolean {
@@ -1740,11 +1890,15 @@ export class GroupChatServer {
         const mentionDepth = normalizeMentionDepth(data.mentionDepth)
         const isAgentReply = savedMsg.role === 'assistant' && member?.source === 'agent'
         const canRouteHumanMentions = savedMsg.role === 'user' && this.canSocketManageRoom(socket, roomId)
+        // Pipeline report messages are bookkeeping; never route them into agent
+        // contexts or summary triggers (document_report is filtered in
+        // getMessagesForContext and cleanGroupMessages too).
+        const isDocumentReport = savedMsg.tool_name === DOCUMENT_REPORT_TOOL_NAME
         // While a discussion is running, suspend @-mention routing so the
         // discussion driver and the mention pipeline never race on the same agents.
         const discussionActive = this.isRoomDiscussionRunning(roomId)
         const shouldRouteMentions = (canRouteHumanMentions ||
-            (isAgentReply && mentionDepth < maxAgentMentionDepth())) && !discussionActive
+            (isAgentReply && mentionDepth < maxAgentMentionDepth())) && !discussionActive && !isDocumentReport
 
         if (shouldRouteMentions) {
             // Server-side @mention routing — parse mentions and invoke agents directly.

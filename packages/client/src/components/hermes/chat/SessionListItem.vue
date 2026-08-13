@@ -55,6 +55,9 @@ const sessionAgentLogo = computed(() => {
     if (props.session.codingAgentId === 'codex' || props.session.agent === 'codex') {
       return { label: 'Codex', src: '/coding-agents/codex-openai.png' }
     }
+    if (props.session.codingAgentId === 'dsh' || props.session.agent === 'dsh') {
+      return { label: 'DeepSeek Harness', src: '/coding-agents/dsh.svg' }
+    }
     if (props.session.codingAgentId === 'ekko-agent' || props.session.agent === 'ekko-agent') {
       return { label: 'Ekko Agent', src: '/coding-agents/ekko-agent.png' }
     }

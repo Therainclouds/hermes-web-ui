@@ -1534,6 +1534,16 @@ export class AgentClients {
     private _scheduledAgentCounts = new Map<string, Map<string, number>>()
 
     /**
+     * Room-level agent-to-agent handoff guard. Agent replies that mention other
+     * agents can fan out into an unbounded reply loop (self-introductions,
+     * status chatter, etc.), so we count agent-initiated handoffs per room and
+     * stop routing agent replies once the budget is exhausted. Human @-mentions
+     * are never throttled — this only gates agent->agent relays.
+     */
+    private _roomAgentHandoffs = new Map<string, number>()
+    private static readonly MAX_AGENT_HANDOFFS_PER_ROOM = 8
+
+    /**
      * Create an agent client and connect it to the server.
      * The agent will NOT auto-join any room — call addAgentToRoom separately.
      */
@@ -1698,6 +1708,7 @@ export class AgentClients {
 
     private clearMentionQueuesForRoom(roomId: string): void {
         this._mentionQueue.delete(roomId)
+        this._roomAgentHandoffs.delete(roomId)
         const roomCounts = this._scheduledAgentCounts.get(roomId)
         this._scheduledAgentCounts.delete(roomId)
         for (const agentName of roomCounts?.keys() || []) {
@@ -1817,6 +1828,20 @@ export class AgentClients {
         const agents = this.getAgents(roomId)
         const mentioned = resolveMentionTargets(agents, msg.content, msg.senderId)
         if (mentioned.length === 0 && msg.role !== 'user') return
+
+        // Agent replies that @-mention other agents can fan out into an
+        // unbounded relay loop (self-introductions, status chatter). Gate
+        // agent-initiated handoffs with a per-room budget; human mentions
+        // always pass through.
+        const isAgentReply = msg.role === 'assistant'
+        if (isAgentReply && mentioned.length > 0) {
+            const handoffs = (this._roomAgentHandoffs.get(roomId) || 0) + 1
+            if (handoffs > AgentClients.MAX_AGENT_HANDOFFS_PER_ROOM) {
+                logger.warn(`[AgentClients] room ${roomId} agent handoff budget exhausted (${handoffs}), dropping agent reply mentions`)
+                return
+            }
+            this._roomAgentHandoffs.set(roomId, handoffs)
+        }
 
         if (mentioned.length > 0) {
             logger.debug(`[AgentClients] ${mentioned.map(a => a.name).join(', ')} mentioned by ${msg.senderName}`)

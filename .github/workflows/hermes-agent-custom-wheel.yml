@@ -1,0 +1,121 @@
+name: hermes-agent-custom-wheel
+
+# 方案 D：构建带 CN 本地化补丁的自定义 hermes-agent wheel，并发布到自家 OSS。
+# 设备端 source-deploy 通过 HERMES_AGENT_UPDATE_MANIFEST_URL 读取 stable/latest.json，
+# 因此本工作流是"受控发布"入口：先选 tag 构建验证，再翻 stable 清单。
+#
+# 手动触发（workflow_dispatch）:
+#   upstream_tag : 上游 git tag，默认 v2026.6.19（== hermes-agent 0.17.0，真机当前版本）
+#   agent_version: 语义版本，写进 latest.json，默认 0.17.0
+#   upload       : 是否上传 OSS 并更新 stable 清单（默认 true）
+#
+# 需要 secrets: ALIYUN_OSS_ENDPOINT / ALIYUN_OSS_ACCESS_KEY_ID / ALIYUN_OSS_ACCESS_KEY_SECRET
+# （与 hermes-agent-oss-mirror.yml 相同）
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: 'Upstream hermes-agent git tag (e.g. v2026.6.19)'
+        required: true
+        default: 'v2026.6.19'
+      agent_version:
+        description: 'Hermes Agent semantic version (written to latest.json)'
+        required: true
+        default: '0.17.0'
+      upload:
+        description: 'Upload to OSS and update stable manifest'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      OSS_PATH: oss://tangledup-ai-staging/quanthermes_pj/quanthermes_web_ui
+      OSS_PUBLIC_BASE_URL: https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui
+      TAG: ${{ github.event.inputs.upstream_tag }}
+      AGENT_VERSION: ${{ github.event.inputs.agent_version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Build custom wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${TAG}" AGENT_VERSION="${AGENT_VERSION}" \
+            bash patches/hermes-agent/build-release.sh
+          # 构建脚本把产物复制到仓库根目录 dist-hermes-agent-*.whl
+          ls -la dist-hermes-agent-*.whl
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-agent-custom-wheel
+          path: dist-hermes-agent-*.whl
+          retention-days: 14
+
+      - name: Setup OSS util
+        if: github.event.inputs.upload == 'true'
+        uses: yizhoumo/setup-ossutil@v2
+
+      - name: Configure OSS credentials
+        if: github.event.inputs.upload == 'true'
+        shell: bash
+        env:
+          ALIYUN_OSS_ENDPOINT: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
+          ALIYUN_OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
+          ALIYUN_OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
+        run: |
+          set -euo pipefail
+          : "${ALIYUN_OSS_ENDPOINT:?ALIYUN_OSS_ENDPOINT is required}"
+          : "${ALIYUN_OSS_ACCESS_KEY_ID:?ALIYUN_OSS_ACCESS_KEY_ID is required}"
+          : "${ALIYUN_OSS_ACCESS_KEY_SECRET:?ALIYUN_OSS_ACCESS_KEY_SECRET is required}"
+          endpoint="${ALIYUN_OSS_ENDPOINT}"
+          [[ "${endpoint}" != http://* && "${endpoint}" != https://* ]] && endpoint="https://${endpoint}"
+          cat > "${HOME}/.ossutilconfig" <<EOF
+          [Credentials]
+          language = EN
+          endpoint = ${endpoint}
+          accessKeyID = ${ALIYUN_OSS_ACCESS_KEY_ID}
+          accessKeySecret = ${ALIYUN_OSS_ACCESS_KEY_SECRET}
+          EOF
+          chmod 600 "${HOME}/.ossutilconfig"
+          ossutil -c "${HOME}/.ossutilconfig" ls "${OSS_PATH}" >/dev/null
+
+      - name: Upload wheel + update stable manifest
+        if: github.event.inputs.upload == 'true'
+        shell: bash
+        env:
+          OSSUTIL_CONFIG: ${HOME}/.ossutilconfig
+          OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
+        run: |
+          set -euo pipefail
+          export OSS_ACCESS_KEY_ID OSS_ACCESS_KEY_SECRET
+          export OSS_PUBLIC_BASE_URL
+          TAG="${TAG}" AGENT_VERSION="${AGENT_VERSION}" OSS_PATH="${OSS_PATH}" \
+            bash patches/hermes-agent/build-release.sh --upload
+
+      - name: Verify published manifest
+        if: github.event.inputs.upload == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL "${OSS_PUBLIC_BASE_URL}/hermes-agent/stable/latest.json" \
+            | grep -F "\"version\": \"${AGENT_VERSION}\""

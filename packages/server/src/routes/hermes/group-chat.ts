@@ -10,6 +10,7 @@ import {
 import { setGroupChatRuntimeServer } from '../../services/hermes/group-chat/runtime'
 import * as ctrl from '../../controllers/hermes/group-chat-workspace'
 import * as discussionCtrl from '../../controllers/hermes/group-chat-discussion'
+import * as documentCtrl from '../../controllers/hermes/group-chat-document'
 
 export const groupChatRoutes = new Router()
 
@@ -1116,6 +1117,83 @@ groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/clear-context', async
     ctx.body = { success: true, room: serializeRoom(storage.getRoom(roomId), true) }
 })
 
+// Archive the room transcript: force a rolling summary into gc_room_summaries and
+// delete the raw messages before the summary anchor. All room clients refresh.
+groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/archive', async (ctx) => {
+    if (!chatServer) {
+        ctx.status = 503
+        ctx.body = { error: 'Group chat not initialized' }
+        return
+    }
+
+    const roomId = ctx.params.roomId
+    const storage = chatServer.getStorage()
+    const room = storage.getRoom(roomId)
+    if (!room) {
+        ctx.status = 404
+        ctx.body = { error: 'Room not found' }
+        return
+    }
+    if (!canManageRoom(storage, roomId, ctx.state?.user)) {
+        ctx.status = 403
+        ctx.body = { error: 'Access denied' }
+        return
+    }
+    try {
+        const result = await chatServer.getRoomSummaryService().archiveRoom(roomId)
+        if (!result.archived) {
+            ctx.status = 409
+            ctx.body = {
+                success: false,
+                error: 'Archive did not complete — the room has no summary configuration (or summarization failed).',
+                summary: result.summary,
+            }
+            return
+        }
+        storage.markArchivePromptThreshold(roomId)
+        const refreshed = storage.getRoom(roomId)
+        ctx.body = {
+            success: true,
+            deletedMessages: result.deletedMessages,
+            summary: result.summary,
+            room: serializeRoom(refreshed, true),
+        }
+    } catch (err: any) {
+        ctx.status = Number(err?.status || 409)
+        ctx.body = { error: err?.message || 'Archive did not complete' }
+    }
+})
+
+// Dismiss the archive prompt. mode 'ignore' restores the old silent truncation at the
+// 500-message cap; mode 'later' keeps growing and re-prompts after another window.
+groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/archive-dismiss', async (ctx) => {
+    if (!chatServer) {
+        ctx.status = 503
+        ctx.body = { error: 'Group chat not initialized' }
+        return
+    }
+
+    const roomId = ctx.params.roomId
+    const storage = chatServer.getStorage()
+    const room = storage.getRoom(roomId)
+    if (!room) {
+        ctx.status = 404
+        ctx.body = { error: 'Room not found' }
+        return
+    }
+    if (!canManageRoom(storage, roomId, ctx.state?.user)) {
+        ctx.status = 403
+        ctx.body = { error: 'Access denied' }
+        return
+    }
+    const mode = String((ctx.request.body as { mode?: string })?.mode || 'later')
+    if (mode === 'ignore') {
+        storage.pruneMessages(roomId, 500)
+    }
+    storage.markArchivePromptThreshold(roomId)
+    ctx.body = { success: true, room: serializeRoom(storage.getRoom(roomId), true) }
+})
+
 // Update room name and rolling-summary config
 groupChatRoutes.put('/api/hermes/group-chat/rooms/:roomId/config', async (ctx) => {
     if (!chatServer) {
@@ -1361,3 +1439,11 @@ groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId/export', async (ctx) =
 groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/discussion', discussionCtrl.startDiscussion)
 groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId/discussion', discussionCtrl.getDiscussion)
 groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/discussion/stop', discussionCtrl.stopDiscussion)
+
+// ─── Large document pipeline ─────────────────────────────────
+// Spec: docs/planning/group-chat-large-doc-pipeline-spec.md §5
+
+groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/documents', documentCtrl.uploadDocument)
+groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId/documents', documentCtrl.listDocuments)
+groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId/documents/:fileId', documentCtrl.getDocumentProgress)
+groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/documents/:fileId/start', documentCtrl.startDocumentReading)

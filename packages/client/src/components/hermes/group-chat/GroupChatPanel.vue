@@ -2,7 +2,7 @@
 import { ref, computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { NInput, NButton, NSpace, NSelect, NPopover, NPopconfirm, NInputNumber, NDropdown, NModal, NDrawer, NDrawerContent, type DropdownOption } from 'naive-ui'
+import { NInput, NButton, NSpace, NSelect, NPopover, NPopconfirm, NInputNumber, NDropdown, NModal, NDrawer, NDrawerContent, NProgress, type DropdownOption } from 'naive-ui'
 import { useGroupChatStore } from '@/stores/hermes/group-chat'
 import { useAppStore } from '@/stores/hermes/app'
 import { useProfilesStore } from '@/stores/hermes/profiles'
@@ -17,7 +17,7 @@ import { getProfileDisplayName } from '@/utils/hermes/profile-display'
 import { useDiscussionReportDownload } from '@/composables/useDiscussionReportDownload'
 import { useMessage } from '@/composables/useAppMessage'
 import type { Attachment } from '@/stores/hermes/chat'
-import type { MemberInfo, RoomAgent, RoomInfo, RoomSummaryAnchor, RoomSummaryConfig, RoomSummaryState } from '@/api/hermes/group-chat'
+import type { MemberInfo, RoomAgent, RoomInfo, RoomSummaryAnchor, RoomSummaryConfig, RoomSummaryState, GroupDocumentInfo } from '@/api/hermes/group-chat'
 import { useFilesStore } from '@/stores/hermes/files'
 import { useToolPanelStore } from '@/stores/hermes/tool-panel'
 import { hasDesktopBrowserBridge } from '@/utils/desktop-bridge'
@@ -126,6 +126,27 @@ const discussionAgentOrder = ref<string[]>([])
 const discussionReporterId = ref('')
 const isStartingDiscussion = ref(false)
 const isStoppingDiscussion = ref(false)
+const discussionAttachmentInputRef = ref<HTMLInputElement | null>(null)
+const discussionAttachments = ref<string[]>([])
+
+function openDiscussionAttachmentPicker(): void {
+    discussionAttachmentInputRef.value?.click()
+}
+
+function handleDiscussionAttachmentChange(event: Event): void {
+    const input = event.target as HTMLInputElement
+    const files = Array.from(input.files || [])
+    input.value = ''
+    for (const file of files) {
+        if (!discussionAttachments.value.includes(file.name)) {
+            discussionAttachments.value.push(file.name)
+        }
+    }
+}
+
+function removeDiscussionAttachment(name: string): void {
+    discussionAttachments.value = discussionAttachments.value.filter(n => n !== name)
+}
 
 const liveDiscussion = computed(() => {
     const roomId = store.currentRoomId
@@ -153,21 +174,19 @@ function openDiscussionForm(): void {
     discussionReporterId.value = store.agents[0]?.agentId || ''
 }
 async function handleStartDiscussion(): Promise<void> {
-    const roomId = store.currentRoomId
     const goal = discussionGoal.value.trim()
-    if (!roomId || !goal) return
+    if (!goal) return
     isStartingDiscussion.value = true
     try {
-        await store.beginDiscussion(roomId, {
+        const ok = await startDiscussionViaUI({
             goal,
-            agentOrder: discussionAgentOrder.value.length >= 2 ? discussionAgentOrder.value : undefined,
+            attachments: discussionAttachments.value.length > 0 ? [...discussionAttachments.value] : undefined,
+            agentOrder: discussionAgentOrder.value.length >= 2 ? [...discussionAgentOrder.value] : undefined,
             maxRounds: discussionMaxRounds.value,
             maxMessages: discussionMaxMessages.value,
             reporterId: discussionReporterId.value || undefined,
         })
-        discussionFormVisible.value = false
-    } catch (err: any) {
-        message.error(err?.message || t('groupChat.discussion.startFailed'))
+        if (ok) discussionFormVisible.value = false
     } finally {
         isStartingDiscussion.value = false
     }
@@ -185,6 +204,49 @@ async function handleStopDiscussion(): Promise<void> {
     }
 }
 
+/**
+ * Unified discussion launcher shared by all three entry points (settings form,
+ * quick-start toolbar button, and /讨论 command). Applies common guards and
+ * passes the full parameter set (goal, attachments, order, rounds, reporter).
+ */
+async function startDiscussionViaUI(
+    input: {
+        goal: string
+        agentOrder?: string[]
+        attachments?: string[]
+        attachmentsFiles?: Attachment[]
+        maxRounds?: number
+        maxMessages?: number
+        reporterId?: string
+    },
+): Promise<boolean> {
+    const roomId = store.currentRoomId
+    const goal = (input.goal || '').trim()
+    if (!roomId || !goal) return false
+    if (!currentRoomCanManage.value) {
+        message.error(t('groupChat.discussion.managerOnly'))
+        return false
+    }
+    if (discussionIsActive.value) {
+        message.warning(t('groupChat.discussion.inProgress'))
+        return false
+    }
+    try {
+        await store.beginDiscussion(roomId, {
+            goal,
+            attachments: input.attachments?.length ? [...input.attachments] : undefined,
+            agentOrder: input.agentOrder && input.agentOrder.length >= 2 ? input.agentOrder : undefined,
+            maxRounds: input.maxRounds,
+            maxMessages: input.maxMessages,
+            reporterId: input.reporterId || undefined,
+        }, input.attachmentsFiles)
+        return true
+    } catch (err: any) {
+        message.error(err?.message || t('groupChat.discussion.startFailed'))
+        return false
+    }
+}
+
 // ─── Report download (Word + Markdown) ─────────────────────
 const { isDownloading: isDownloadingReport, downloadReport: handleDownloadDiscussionReport } = useDiscussionReportDownload()
 
@@ -192,35 +254,56 @@ const { isDownloading: isDownloadingReport, downloadReport: handleDownloadDiscus
 const discussionQuickVisible = ref(false)
 const discussionQuickGoal = ref('')
 const discussionQuickOrder = ref<string[]>([])
+const discussionQuickMaxRounds = ref(8)
+const discussionQuickMaxMessages = ref(60)
+const discussionQuickReporterId = ref('')
+const discussionQuickAttachmentInputRef = ref<HTMLInputElement | null>(null)
+const discussionQuickAttachments = ref<string[]>([])
 const isQuickStarting = ref(false)
 
 function openDiscussionQuick(): void {
     discussionQuickVisible.value = true
     discussionQuickGoal.value = ''
     discussionQuickOrder.value = store.agents.map(agent => agent.agentId)
+    discussionQuickMaxRounds.value = 8
+    discussionQuickMaxMessages.value = 60
+    discussionQuickReporterId.value = store.agents[0]?.agentId || ''
+    discussionQuickAttachments.value = []
+}
+
+function openDiscussionQuickAttachmentPicker(): void {
+    discussionQuickAttachmentInputRef.value?.click()
+}
+
+function handleDiscussionQuickAttachmentChange(event: Event): void {
+    const input = event.target as HTMLInputElement
+    const files = Array.from(input.files || [])
+    input.value = ''
+    for (const file of files) {
+        if (!discussionQuickAttachments.value.includes(file.name)) {
+            discussionQuickAttachments.value.push(file.name)
+        }
+    }
+}
+
+function removeDiscussionQuickAttachment(name: string): void {
+    discussionQuickAttachments.value = discussionQuickAttachments.value.filter(n => n !== name)
 }
 
 async function handleDiscussionQuickStart(): Promise<void> {
-    const roomId = store.currentRoomId
     const goal = discussionQuickGoal.value.trim()
-    if (!roomId || !goal) return
-    if (!currentRoomCanManage.value) {
-        message.error(t('groupChat.discussion.managerOnly'))
-        return
-    }
-    if (discussionIsActive.value) {
-        message.warning(t('groupChat.discussion.inProgress'))
-        return
-    }
+    if (!goal) return
     isQuickStarting.value = true
     try {
-        await store.beginDiscussion(roomId, {
+        const ok = await startDiscussionViaUI({
             goal,
-            agentOrder: discussionQuickOrder.value.length >= 2 ? discussionQuickOrder.value : undefined,
+            attachments: discussionQuickAttachments.value.length > 0 ? [...discussionQuickAttachments.value] : undefined,
+            agentOrder: discussionQuickOrder.value.length >= 2 ? [...discussionQuickOrder.value] : undefined,
+            maxRounds: discussionQuickMaxRounds.value,
+            maxMessages: discussionQuickMaxMessages.value,
+            reporterId: discussionQuickReporterId.value || undefined,
         })
-        discussionQuickVisible.value = false
-    } catch (err: any) {
-        message.error(err?.message || t('groupChat.discussion.startFailed'))
+        if (ok) discussionQuickVisible.value = false
     } finally {
         isQuickStarting.value = false
     }
@@ -231,31 +314,110 @@ function tryParseDiscussionCommand(content: string): { goal: string; agentOrder?
     const match = content.trim().match(/^\/(?:讨论|discuss)\s+(.+)$/s)
     if (!match) return null
     const rest = match[1].trim()
+    // @全体 / @all are reserved: they mean "all agents" (fall back to every
+    // room agent). Other @names resolve to specific agents.
+    const mentionsAll = /@(?:全体|所有人|all)\b/i.test(rest)
     const mentionNames = [...rest.matchAll(/@([^\s@]+)/g)].map(entry => entry[1])
     const goal = rest.replace(/@[^\s@]+/g, '').replace(/\s+/g, ' ').trim()
     if (!goal) return null
+    if (mentionsAll) {
+        const all = store.agents.map(agent => agent.agentId)
+        return { goal, agentOrder: all.length >= 2 ? all : undefined }
+    }
     const order = mentionNames
         .map(name => store.agents.find(agent => agent.name === name)?.agentId)
         .filter((id): id is string => !!id)
     return { goal, agentOrder: order.length >= 2 ? order : undefined }
 }
 
-async function handleDiscussionCommand(command: { goal: string; agentOrder?: string[] }): Promise<void> {
+async function handleDiscussionCommand(command: { goal: string; agentOrder?: string[] }, attachments?: Attachment[]): Promise<void> {
+    // Re-resolve @全体/@all into the full agent set; fall back to parsed order.
+    const mentionsAll = /@(?:全体|所有人|all)\b/i.test(command.goal + (command.agentOrder || []).join(' '))
+    const agentOrder = mentionsAll
+        ? store.agents.map(agent => agent.agentId)
+        : command.agentOrder
+    await startDiscussionViaUI({
+        goal: command.goal,
+        agentOrder,
+        attachmentsFiles: attachments,
+    })
+}
+// ─── Large Document Pipeline ───────────────────────────────────
+const docUploadInputRef = ref<HTMLInputElement | null>(null)
+const isUploadingDocument = ref(false)
+const docAgentSelection = ref<string[]>([])
+const isStartingDocument = ref(false)
+
+const roomDocuments = computed(() => {
+    const roomId = store.currentRoomId
+    if (!roomId) return []
+    return Array.from(store.documentStates.values())
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .filter(doc => store.documentProgress.has(doc.fileId) || doc.status === 'chunked' || doc.status === 'done')
+})
+const documentAgentOptions = computed(() =>
+    store.agents.map(agent => ({ label: agent.name, value: agent.agentId }))
+)
+const activeDocumentCount = computed(() => roomDocuments.value.filter(doc => doc.status === 'reading' || doc.status === 'aggregating').length)
+
+function openDocumentUpload(): void {
+    docUploadInputRef.value?.click()
+}
+
+async function handleDocumentFileChange(event: Event): Promise<void> {
+    const input = event.target as HTMLInputElement
+    const file = input.files?.[0]
+    input.value = ''
+    if (!file) return
     const roomId = store.currentRoomId
     if (!roomId) return
-    if (!currentRoomCanManage.value) {
-        message.error(t('groupChat.discussion.managerOnly'))
-        return
-    }
-    if (discussionIsActive.value) {
-        message.warning(t('groupChat.discussion.inProgress'))
-        return
-    }
+    isUploadingDocument.value = true
     try {
-        await store.beginDiscussion(roomId, { goal: command.goal, agentOrder: command.agentOrder })
+        await store.uploadDocument(roomId, file)
+        message.success(t('groupChat.document.uploaded'))
     } catch (err: any) {
-        message.error(err?.message || t('groupChat.discussion.startFailed'))
+        message.error(err?.message || t('groupChat.document.uploadFailed'))
+    } finally {
+        isUploadingDocument.value = false
     }
+}
+
+async function handleStartDocumentReading(doc: GroupDocumentInfo): Promise<void> {
+    const roomId = store.currentRoomId
+    if (!roomId) return
+    const selected = docAgentSelection.value.length > 0
+        ? docAgentSelection.value
+        : store.agents.map(a => a.agentId)
+    if (selected.length === 0) {
+        message.warning(t('groupChat.document.needsAgents'))
+        return
+    }
+    isStartingDocument.value = true
+    try {
+        await store.startDocumentReading(roomId, doc.fileId, selected)
+        message.success(t('groupChat.document.started'))
+    } catch (err: any) {
+        message.error(err?.message || t('groupChat.document.startFailed'))
+    } finally {
+        isStartingDocument.value = false
+    }
+}
+
+function documentStatusLabel(status: string): string {
+    return t(`groupChat.document.status.${status}`)
+}
+
+function documentProgressOf(doc: GroupDocumentInfo): { pct: number; done: number; total: number } | null {
+    const progress = store.documentProgress.get(doc.fileId)
+    if (!progress) return null
+    return { pct: progress.progressPct, done: progress.chunksRead, total: progress.chunksTotal }
+}
+
+function formatDocumentSize(bytes: number): string {
+    if (!bytes) return ''
+    if (bytes < 1024) return `${bytes} B`
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 const chatDropCounter = ref(0)
 const isChatDropActive = ref(false)
@@ -526,6 +688,40 @@ function canManageRoom(room: Pick<RoomInfo, 'canManage'> | null | undefined): bo
     return room?.canManage === true
 }
 const currentRoomCanManage = computed(() => canManageRoom(currentRoom.value))
+const archivePrompt = computed(() => {
+    if (!store.currentRoomId) return null
+    return store.archivePromptStates.get(store.currentRoomId) || null
+})
+const isArchiving = ref(false)
+const archivePromptVisible = computed({
+    get: () => !!archivePrompt.value,
+    set: (visible: boolean) => {
+        if (!visible && archivePrompt.value) void handleArchiveDismiss('later')
+    },
+})
+
+async function handleArchiveNow() {
+    if (!store.currentRoomId) return
+    isArchiving.value = true
+    try {
+        const res = await store.archiveCurrentRoom()
+        message.success(t('groupChat.archiveSuccess', { count: res?.deletedMessages ?? 0 }))
+    } catch (err: any) {
+        message.error(err.message || t('groupChat.archiveFailed'))
+    } finally {
+        isArchiving.value = false
+    }
+}
+
+async function handleArchiveDismiss(mode: 'ignore' | 'later') {
+    if (!store.currentRoomId) return
+    try {
+        await store.dismissCurrentRoomArchive(mode)
+        if (mode === 'ignore') message.info(t('groupChat.archiveIgnored'))
+    } catch (err: any) {
+        message.error(err.message || t('groupChat.archiveFailed'))
+    }
+}
 const currentRoomNeedsSummaryConfiguration = computed(() => {
     const room = currentRoom.value
     if (!room) return false
@@ -1008,7 +1204,7 @@ async function handleSelectRoom(roomId: string) {
 async function handleSendMessage(content: string, attachments?: Attachment[]) {
     const discussionCommand = tryParseDiscussionCommand(content)
     if (discussionCommand) {
-        await handleDiscussionCommand(discussionCommand)
+        await handleDiscussionCommand(discussionCommand, attachments)
         return
     }
     try {
@@ -2426,6 +2622,36 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                                 <label class="form-label">{{ t('groupChat.discussion.reporter') }}</label>
                                 <NSelect v-model:value="discussionReporterId" :options="discussionAgentOptions" />
                             </div>
+                            <div class="form-group">
+                                <label class="form-label">{{ t('groupChat.discussion.attachments') }}</label>
+                                <input
+                                    ref="discussionAttachmentInputRef"
+                                    type="file"
+                                    multiple
+                                    style="display: none"
+                                    @change="handleDiscussionAttachmentChange"
+                                />
+                                <NSpace>
+                                    <NButton size="small" secondary @click="openDiscussionAttachmentPicker">
+                                        {{ t('groupChat.discussion.pickAttachments') }}
+                                    </NButton>
+                                    <NButton
+                                        v-if="discussionAttachments.length > 0"
+                                        size="small"
+                                        tertiary
+                                        @click="discussionAttachments = []"
+                                    >
+                                        {{ t('common.clear') }}
+                                    </NButton>
+                                </NSpace>
+                                <div v-if="discussionAttachments.length > 0" class="discussion-attachment-list">
+                                    <div v-for="name in discussionAttachments" :key="name" class="discussion-attachment-chip">
+                                        <span :title="name">{{ name }}</span>
+                                        <span class="discussion-attachment-remove" @click="removeDiscussionAttachment(name)">×</span>
+                                    </div>
+                                </div>
+                                <p class="form-hint">{{ t('groupChat.discussion.attachmentsHint') }}</p>
+                            </div>
                             <div class="discussion-limit-row">
                                 <div class="form-group">
                                     <label class="form-label">{{ t('groupChat.discussion.maxRounds') }}</label>
@@ -2471,6 +2697,75 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                             </div>
                         </div>
                     </section>
+                    <section class="settings-section document-settings-section">
+                        <div class="summary-state-heading">
+                            <h4>{{ t('groupChat.document.title') }}</h4>
+                            <span v-if="activeDocumentCount > 0" class="document-status is-reading">
+                                {{ t('groupChat.document.active') }}
+                            </span>
+                        </div>
+                        <p class="form-hint">{{ t('groupChat.document.desc') }}</p>
+                        <input
+                            ref="docUploadInputRef"
+                            type="file"
+                            accept=".txt,.md,.docx"
+                            style="display: none"
+                            @change="handleDocumentFileChange"
+                        />
+                        <NButton block :loading="isUploadingDocument" @click="openDocumentUpload">
+                            {{ t('groupChat.document.upload') }}
+                        </NButton>
+                        <p class="form-hint">{{ t('groupChat.document.uploadHint') }}</p>
+
+                        <div v-if="roomDocuments.length > 0" class="document-list">
+                            <div v-for="doc in roomDocuments" :key="doc.fileId" class="document-card">
+                                <div class="document-card-header">
+                                    <span class="document-name" :title="doc.name">{{ doc.name }}</span>
+                                    <span class="document-status" :class="`is-${doc.status}`">
+                                        {{ documentStatusLabel(doc.status) }}
+                                    </span>
+                                </div>
+                                <div class="document-meta">
+                                    <span>{{ formatDocumentSize(doc.sizeBytes) }}</span>
+                                    <span>{{ doc.chunkCount }} {{ t('groupChat.document.chunks') }}</span>
+                                    <span v-if="doc.docType">{{ doc.docType }}</span>
+                                </div>
+                                <template v-if="documentProgressOf(doc)">
+                                    <NProgress
+                                        :percentage="documentProgressOf(doc)!.pct"
+                                        :height="6"
+                                        :show-indicator="false"
+                                        class="document-progress"
+                                    />
+                                    <div class="document-progress-label">
+                                        {{ t('groupChat.document.progress', { done: documentProgressOf(doc)!.done, total: documentProgressOf(doc)!.total }) }}
+                                    </div>
+                                </template>
+                                <div v-if="doc.status === 'chunked'" class="document-actions">
+                                    <NSelect
+                                        v-model:value="docAgentSelection"
+                                        multiple
+                                        size="small"
+                                        :options="documentAgentOptions"
+                                        :placeholder="t('groupChat.document.agentsPlaceholder')"
+                                    />
+                                    <NButton
+                                        size="small"
+                                        type="primary"
+                                        secondary
+                                        :disabled="store.agents.length === 0"
+                                        :loading="isStartingDocument"
+                                        @click="handleStartDocumentReading(doc)"
+                                    >
+                                        {{ t('groupChat.document.start') }}
+                                    </NButton>
+                                </div>
+                                <div v-if="doc.status === 'failed'" class="document-error">
+                                    {{ t('groupChat.document.failedHint') }}
+                                </div>
+                            </div>
+                        </div>
+                    </section>
                     </div>
                 </NDrawerContent>
             </NDrawer>
@@ -2501,6 +2796,49 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                         :placeholder="t('groupChat.discussion.agentOrderPlaceholder')"
                     />
                 </div>
+                <div class="form-group">
+                    <label class="form-label">{{ t('groupChat.discussion.attachments') }}</label>
+                    <input
+                        ref="discussionQuickAttachmentInputRef"
+                        type="file"
+                        multiple
+                        style="display: none"
+                        @change="handleDiscussionQuickAttachmentChange"
+                    />
+                    <NSpace>
+                        <NButton size="small" secondary @click="openDiscussionQuickAttachmentPicker">
+                            {{ t('groupChat.discussion.pickAttachments') }}
+                        </NButton>
+                        <NButton
+                            v-if="discussionQuickAttachments.length > 0"
+                            size="small"
+                            tertiary
+                            @click="discussionQuickAttachments = []"
+                        >
+                            {{ t('common.clear') }}
+                        </NButton>
+                    </NSpace>
+                    <div v-if="discussionQuickAttachments.length > 0" class="discussion-attachment-list">
+                        <div v-for="name in discussionQuickAttachments" :key="name" class="discussion-attachment-chip">
+                            <span :title="name">{{ name }}</span>
+                            <span class="discussion-attachment-remove" @click="removeDiscussionQuickAttachment(name)">×</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="discussion-limit-row">
+                    <div class="form-group">
+                        <label class="form-label">{{ t('groupChat.discussion.maxRounds') }}</label>
+                        <NInputNumber v-model:value="discussionQuickMaxRounds" :min="1" :max="50" style="width: 100%" />
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">{{ t('groupChat.discussion.maxMessages') }}</label>
+                        <NInputNumber v-model:value="discussionQuickMaxMessages" :min="2" :max="500" style="width: 100%" />
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">{{ t('groupChat.discussion.reporter') }}</label>
+                    <NSelect v-model:value="discussionQuickReporterId" :options="discussionAgentOptions" />
+                </div>
                 <p class="form-hint">{{ t('groupChat.discussion.quickStartHint') }}</p>
                 <NSpace justify="end">
                     <NButton @click="discussionQuickVisible = false">{{ t('common.cancel') }}</NButton>
@@ -2511,6 +2849,28 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                         @click="handleDiscussionQuickStart"
                     >
                         {{ t('groupChat.discussion.quickStartStart') }}
+                    </NButton>
+                </NSpace>
+            </div>
+        </NModal>
+
+        <NModal
+            v-model:show="archivePromptVisible"
+            preset="card"
+            :title="t('groupChat.archivePromptTitle')"
+            :closable="true"
+            style="max-width: 440px"
+        >
+            <div v-if="archivePrompt" class="archive-prompt-body">
+                <p class="archive-prompt-desc">
+                    {{ t('groupChat.archivePromptDesc', { count: archivePrompt.count, threshold: archivePrompt.threshold }) }}
+                </p>
+                <p class="form-hint">{{ t('groupChat.archivePromptHint') }}</p>
+                <NSpace justify="end">
+                    <NButton @click="handleArchiveDismiss('later')">{{ t('groupChat.archiveLater') }}</NButton>
+                    <NButton @click="handleArchiveDismiss('ignore')">{{ t('groupChat.archiveIgnore') }}</NButton>
+                    <NButton type="primary" :loading="isArchiving" @click="handleArchiveNow">
+                        {{ t('groupChat.archiveNow') }}
                     </NButton>
                 </NSpace>
             </div>
@@ -2551,6 +2911,17 @@ export default defineComponent({ components: { CreateRoomForm } })
 }
 
 .group-chat-refactor-notice {
+    margin: 0;
+    line-height: 1.7;
+}
+
+.archive-prompt-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.archive-prompt-desc {
     margin: 0;
     line-height: 1.7;
 }
@@ -3842,6 +4213,42 @@ export default defineComponent({ components: { CreateRoomForm } })
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 10px;
+}
+
+.discussion-attachment-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.discussion-attachment-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 100%;
+    padding: 2px 8px;
+    border-radius: 6px;
+    background: rgba(var(--accent-primary-rgb), 0.12);
+    font-size: 12px;
+    line-height: 20px;
+
+    span:first-child {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+}
+
+.discussion-attachment-remove {
+    cursor: pointer;
+    color: $text-muted;
+    font-weight: bold;
+    padding: 0 2px;
+
+    &:hover {
+        color: #d03050;
+    }
 }
 
 .discussion-result {

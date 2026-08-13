@@ -174,6 +174,52 @@ describe('handleCodingAgentRun', () => {
     expect(sendCodingAgentRunInputMock).toHaveBeenCalledWith('session-1', 'hello codex', 'system prompt')
   })
 
+  it('maps a dsh coding_agent_id to the DeepSeek Harness runner without the Hermes system prompt', async () => {
+    managerMock.runIdForSession.mockReturnValue('agent-session-1')
+    managerMock.isSessionLaunchCompatible.mockReturnValue(false)
+    startCodingAgentRunMock.mockResolvedValue({ agentSessionId: 'agent-session-2' })
+    sendCodingAgentRunInputMock.mockResolvedValue({ runId: 'agent-session-2' })
+
+    const { handleCodingAgentRun } = await import('../../packages/server/src/services/hermes/run-chat/handle-coding-agent-run')
+    const state = {
+      messages: [],
+      isWorking: false,
+      isAborting: false,
+      events: [],
+      queue: [],
+    }
+    const sessionMap = new Map([['session-1', state]])
+    const socket = {
+      join: vi.fn(),
+      emit: vi.fn(),
+    }
+
+    await handleCodingAgentRun({} as any, socket as any, {
+      session_id: 'session-1',
+      input: 'refactor the module',
+      coding_agent_id: 'dsh',
+      mode: 'scoped',
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+    }, 'default', sessionMap as any)
+
+    expect(managerMock.isSessionLaunchCompatible).toHaveBeenCalledWith('session-1', {
+      agentId: 'dsh',
+      mode: 'scoped',
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+    })
+    expect(managerMock.stop).toHaveBeenCalledWith('session-1', { reportClosed: false })
+    expect(startCodingAgentRunMock).toHaveBeenCalledWith('dsh', expect.objectContaining({
+      sessionId: 'session-1',
+      mode: 'scoped',
+      profile: 'default',
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+    }), state)
+    expect(sendCodingAgentRunInputMock).toHaveBeenCalledWith('session-1', 'refactor the module', '')
+  })
+
   it('passes the Hermes system prompt on every scoped Claude Code run', async () => {
     managerMock.runIdForSession.mockReturnValue(undefined)
     managerMock.isSessionLaunchCompatible.mockReturnValue(true)

@@ -1,7 +1,7 @@
 import { request } from './client'
 import type { ProviderApiMode } from './hermes/system'
 
-export type CodingAgentId = 'claude-code' | 'codex'
+export type CodingAgentId = 'claude-code' | 'codex' | 'dsh'
 export type ChatCodingAgentId = CodingAgentId | 'ekko-agent'
 export const CODING_AGENT_API_MODES = [
   'chat_completions',
@@ -59,6 +59,8 @@ export interface CodingAgentToolStatus {
   version: string
   rawVersion: string
   error?: string
+  /** Whether the DeepSeek Harness SDK runtime (full streaming capability) is installed. */
+  sdkAvailable?: boolean
 }
 
 export interface CodingAgentsStatus {

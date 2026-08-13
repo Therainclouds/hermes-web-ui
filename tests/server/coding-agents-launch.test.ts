@@ -54,6 +54,7 @@ afterEach(() => {
   delete process.env.HERMES_WEB_UI_HOME
   delete process.env.HERMES_CODING_AGENT_GLOBAL_HOME
   delete process.env.HERMES_AGENT_NODE
+  delete process.env.DEEPSEEK_HARNESS_ROOT
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true })
@@ -192,6 +193,122 @@ describe('coding agent launch preparation', () => {
     expect(result.rootDir).toBe(join(home, 'coding-agent', 'model', 'default', 'openrouter', 'codex'))
     expect(result.workspaceDir).toBe(workspace)
     expect(result.shellCommand).toContain(workspace)
+  })
+
+  it('launches DeepSeek Harness with scoped DSH_HOME settings', async () => {
+    const home = makeHome()
+
+    const result = await prepareCodingAgentLaunch('dsh', {
+      profile: 'default',
+      provider: 'openrouter',
+      model: 'deepseek/deepseek-v4-flash',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      apiKey: 'sk-test',
+      apiMode: 'chat_completions',
+    })
+
+    expect(result.rootDir).toBe(join(home, 'coding-agent', 'model', 'default', 'openrouter', 'dsh'))
+    expect(result.workspaceDir).toBe(join(home, 'coding-agent', 'workspace', 'default', 'openrouter'))
+    expect(result.command).toBe('dsh')
+    expect(result.args).toEqual(['--profile', 'headless'])
+    expect(result.env).toMatchObject({
+      DSH_HOME: result.rootDir,
+      DEEPSEEK_BASE_URL: 'https://openrouter.ai/api/v1',
+      DEEPSEEK_API_KEY: 'sk-test',
+    })
+
+    const settings = readFileSync(join(result.rootDir, 'settings.yaml'), 'utf-8')
+    expect(settings).toContain('llm-deepseek:')
+    expect(settings).toContain('baseURL: "https://openrouter.ai/api/v1"')
+    expect(settings).toContain('apiKeyEnv: DEEPSEEK_API_KEY')
+    expect(settings).toContain('thinking: disabled')
+    expect(settings).toContain('agent-default-model:')
+    expect(settings).toContain('provider: deepseek-official')
+    expect(settings).toContain('model: "deepseek/deepseek-v4-flash"')
+
+    const launcher = readFileSync(join(result.rootDir, LAUNCHER_FILE), 'utf-8')
+    expect(launcher).toContain("'dsh'")
+    expect(launcher).toContain("'--profile'")
+    expect(launcher).toContain("'headless'")
+  })
+
+  it('rejects DeepSeek Harness scoped launches with non chat-completions protocols', async () => {
+    const home = makeHome()
+
+    await expect(prepareCodingAgentLaunch('dsh', {
+      profile: 'default',
+      provider: 'openrouter',
+      model: 'deepseek/deepseek-v4-flash',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      apiKey: 'sk-test',
+      apiMode: 'codex_responses',
+    })).rejects.toThrow('DeepSeek Harness launch only supports OpenAI Chat Completions providers')
+  })
+
+  it('launches DeepSeek Harness in full SDK mode when a local source checkout is available', async () => {
+    const home = makeHome()
+    const checkout = join(home, 'dsh-sdk-checkout')
+    const sdkBin = join(checkout, 'packages', 'examples', 'jsonrpc-demo', 'src', 'bin.ts')
+    const sdkConfig = join(checkout, 'examples', 'jsonrpc-agent', 'cordis.yml')
+    mkdirSync(dirname(sdkBin), { recursive: true })
+    mkdirSync(dirname(sdkConfig), { recursive: true })
+    mkdirSync(join(checkout, 'node_modules', 'tsx'), { recursive: true })
+    writeFileSync(sdkBin, 'export {}')
+    writeFileSync(sdkConfig, '- id: sdk-jsonrpc-server\n')
+    writeFileSync(join(checkout, 'node_modules', 'tsx', 'package.json'), '{}')
+    process.env.DEEPSEEK_HARNESS_ROOT = checkout
+
+    const result = await prepareCodingAgentLaunch('dsh', {
+      profile: 'default',
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+      baseUrl: 'https://api.deepseek.com',
+      apiKey: 'sk-test',
+      apiMode: 'chat_completions',
+    })
+
+    expect(result.rootDir).toBe(join(home, 'coding-agent', 'model', 'default', 'deepseek', 'dsh'))
+    expect(result.command).toBe(process.execPath)
+    expect(result.args).toEqual([
+      '--import', 'tsx',
+      sdkBin,
+      sdkConfig,
+    ])
+    expect(result.runtimeCwd).toBe(checkout)
+    expect(result.env).toMatchObject({
+      DSH_CWD: result.workspaceDir,
+      DSH_SESSION_ROOT: join(result.rootDir, 'sessions'),
+      DSH_SYSTEM_PROMPT: expect.any(String),
+      DSH_MAX_TOKENS_AS_SUCCESS: 'true',
+      DEEPSEEK_BASE_URL: 'https://api.deepseek.com',
+      DEEPSEEK_API_KEY: 'sk-test',
+    })
+    // SDK mode must not write the headless settings.yaml into the run root.
+    expect(existsSync(join(result.rootDir, 'settings.yaml'))).toBe(false)
+  })
+
+  it('launches DeepSeek Harness with the global config when requested', async () => {
+    const home = makeHome()
+
+    const result = await prepareCodingAgentLaunch('dsh', {
+      mode: 'global',
+      profile: 'default',
+    })
+
+    expect(result).toMatchObject({
+      agentId: 'dsh',
+      mode: 'global',
+      profile: 'default',
+      provider: 'global',
+      model: '',
+      rootDir: join(home, 'coding-agent', 'workspace', 'default', 'global'),
+      workspaceDir: join(home, 'coding-agent', 'workspace', 'default', 'global'),
+      command: 'dsh',
+      args: [],
+      env: {},
+      shellCommand: expectedShellCommand(join(home, 'coding-agent', 'workspace', 'default', 'global'), 'dsh', []),
+      files: [],
+    })
   })
 
   it('launches Claude Code with scoped settings instead of a CLI --model override', async () => {

@@ -1,6 +1,7 @@
 import { logger } from '../../logger'
-import { runBareModelAgent } from './room-summary'
+import { runBareModelAgent, type ArchiveRoomResult } from './room-summary'
 import type { GroupRuntimeContext } from './room-summary'
+import { listDocumentsByRoom } from '../../../db/hermes/document-store'
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -52,6 +53,9 @@ export interface DiscussionJudgeConfig {
 
 export interface DiscussionStartInput {
   goal: string
+  /** Optional referenced file names (already uploaded via group-chat upload) so
+   *  agents know what to discuss. Appended to the goal as 【讨论文件】. */
+  attachments?: string[]
   agentOrder?: string[]
   maxRounds?: number
   maxMessages?: number
@@ -98,6 +102,9 @@ interface DiscussionAgentClients {
 
 interface DiscussionSummaryService {
   prepareForMessage(roomId: string, currentMessageId?: string): Promise<GroupRuntimeContext>
+  /** Free discussions auto-archive their transcript when the run ends. Optional so
+   *  lightweight test doubles can opt out. */
+  archiveRoom?(roomId: string): Promise<ArchiveRoomResult>
 }
 
 export interface DiscussionRunnerDeps {
@@ -287,6 +294,8 @@ function buildReportPrompt(input: {
 export class DiscussionRunner {
   private locks = new Map<string, Promise<void>>()
   private interrupts = new Map<string, boolean>()
+  /** Serializes start() so rapid double-clicks cannot create two active discussions. */
+  private startingRooms = new Map<string, Promise<void>>()
 
   constructor(private deps: DiscussionRunnerDeps) {}
 
@@ -314,23 +323,64 @@ export class DiscussionRunner {
   }
 
   async start(roomId: string, input: DiscussionStartInput): Promise<DiscussionState> {
-    const room = this.deps.storage.getRoom(roomId)
-    if (!room) {
-      const err = new Error('Room not found') as Error & { status?: number }
-      err.status = 404
-      throw err
+    // Serialize concurrent starts per room: rapid double-clicks / repeated
+    // /讨论 commands would otherwise both pass the "no active discussion"
+    // check and create multiple simultaneous runs.
+    const prior = this.startingRooms.get(roomId)
+    if (prior) {
+      await prior
+      const after = this.deps.storage.getDiscussionByRoom(roomId)
+      if (after && isActiveStatus(after.status)) {
+        const err = new Error('A discussion is already running in this room') as Error & { status?: number }
+        err.status = 409
+        throw err
+      }
     }
-    const existing = this.deps.storage.getDiscussionByRoom(roomId)
-    if (existing && isActiveStatus(existing.status)) {
-      const err = new Error('A discussion is already running in this room') as Error & { status?: number }
-      err.status = 409
-      throw err
-    }
+    let releaseStart: () => void = () => {}
+    const gate = new Promise<void>(resolve => { releaseStart = resolve })
+    this.startingRooms.set(roomId, gate)
+    try {
+      const room = this.deps.storage.getRoom(roomId)
+      if (!room) {
+        const err = new Error('Room not found') as Error & { status?: number }
+        err.status = 404
+        throw err
+      }
+      const existing = this.deps.storage.getDiscussionByRoom(roomId)
+      if (existing && isActiveStatus(existing.status)) {
+        const err = new Error('A discussion is already running in this room') as Error & { status?: number }
+        err.status = 409
+        throw err
+      }
     const goal = String(input.goal || '').trim()
     if (!goal) {
       const err = new Error('Discussion goal is required') as Error & { status?: number }
       err.status = 400
       throw err
+    }
+    // Attach referenced file names (and their on-disk paths when the upload
+    // landed in gc_documents) to the goal so every agent knows what to read.
+    const attachments = (input.attachments || []).map(name => String(name).trim()).filter(Boolean)
+    let goalWithAttachments = goal
+    if (attachments.length > 0) {
+      // A phantom attachment (uploaded file never registered) must fail loudly
+      // instead of silently producing a goal nobody can read.
+      let docs: Array<{ name: string; file_id: string }> = []
+      try {
+        docs = listDocumentsByRoom(roomId)
+      } catch { /* document store unavailable — treat as no registered docs */ }
+      const missing = attachments.filter(name => !docs.some(d => d.name === name || d.name.endsWith(name)))
+      if (missing.length > 0) {
+        const err = new Error(`讨论附件未成功登记，无法作为讨论标的：${missing.join('、')}。请先在文档面板重新上传后再发起讨论。`) as Error & { status?: number }
+        err.status = 400
+        throw err
+      }
+      const lines = attachments.map((name) => {
+        const doc = docs.find(d => d.name === name || d.name.endsWith(name))!
+        // <appHome>/group-chat-docs/<roomId>/<fileId>/<name>
+        return `${name}（路径：group-chat-docs/${roomId}/${doc.file_id}/${doc.name}）`
+      })
+      goalWithAttachments = `${goal}\n【讨论文件】${lines.join('、')}`
     }
     const roomAgents = this.deps.storage.getRoomAgents(roomId)
     const order = input.agentOrder && input.agentOrder.length ? input.agentOrder : roomAgents.map(agent => agent.agentId)
@@ -346,7 +396,7 @@ export class DiscussionRunner {
     const row: DiscussionRow = {
       id: generateDiscussionId(),
       roomId,
-      goal,
+      goal: goalWithAttachments,
       agentOrder: JSON.stringify(order),
       reporterId: input.reporterId && knownIds.has(input.reporterId) ? input.reporterId : order[0],
       maxRounds,
@@ -371,6 +421,10 @@ export class DiscussionRunner {
       logger.error({ err, roomId }, `[Discussion] runner crashed: ${errorMessage(err)}`)
     })
     return state
+    } finally {
+      releaseStart()
+      if (this.startingRooms.get(roomId) === gate) this.startingRooms.delete(roomId)
+    }
   }
 
   async stop(roomId: string): Promise<DiscussionState> {
@@ -427,6 +481,13 @@ export class DiscussionRunner {
         return
       }
 
+      // The maxMessages budget must only count messages produced *during* this
+      // discussion. A room may already hold many historical messages (previous
+      // discussions, uploads) — counting those would terminate a fresh run
+      // before any agent speaks.
+      const startMessageCount = this.deps.storage.getMessageCount(roomId)
+      const messagesSinceStart = (): number => this.deps.storage.getMessageCount(roomId) - startMessageCount
+
       let stalledStreak = 0
       let extensionUsed = 0
       let terminateReason: 'converged' | 'max_rounds' | 'stopped' | 'stalled' | null = null
@@ -447,7 +508,7 @@ export class DiscussionRunner {
             break
           }
         }
-        if (this.deps.storage.getMessageCount(roomId) >= state.maxMessages) {
+        if (messagesSinceStart() >= state.maxMessages) {
           terminateReason = 'max_rounds'
           break
         }
@@ -462,7 +523,7 @@ export class DiscussionRunner {
           terminateReason = 'stopped'
           break
         }
-        if (this.deps.storage.getMessageCount(roomId) >= state.maxMessages) {
+        if (messagesSinceStart() >= state.maxMessages) {
           terminateReason = 'max_rounds'
           break
         }
@@ -510,12 +571,31 @@ export class DiscussionRunner {
       }
 
       if (terminateReason !== null) {
+        // Free discussions archive the round transcript BEFORE the final report, so
+        // the concluding report stays in the raw history and survives downloads.
+        await this.autoArchiveAfterRun(roomId, terminateReason)
         await this.reportPhase(roomId, state, agents, terminateReason)
       }
     } finally {
       this.interrupts.delete(roomId)
       this.locks.delete(roomId)
       releaseLock()
+    }
+  }
+
+  /** Free discussions default to archiving their transcript once the run ends, so the
+   *  raw messages no longer consume the room's agent context budget. */
+  private async autoArchiveAfterRun(roomId: string, reason: 'converged' | 'max_rounds' | 'stopped' | 'stalled'): Promise<void> {
+    if (!this.deps.roomSummaryService.archiveRoom) return
+    try {
+      // Call as a method so `this` stays bound to the summary service (extracting
+      // it to a local would break archiveRoom's internal withRoomLock/storage).
+      const result = await this.deps.roomSummaryService.archiveRoom(roomId)
+      if (result.archived) {
+        logger.info({ roomId, reason, deletedMessages: result.deletedMessages }, '[Discussion] auto-archived room transcript after run')
+      }
+    } catch (err) {
+      logger.warn({ err, roomId }, '[Discussion] auto-archive after run failed')
     }
   }
 

@@ -32,11 +32,19 @@ import {
     cloneRoom as cloneRoomApi,
     deleteRoom as deleteRoomApi,
     clearRoomContext,
+    archiveRoom as archiveRoomApi,
+    dismissArchivePrompt,
     updateInviteCode as updateInviteCodeApi,
     updateRoomWorkspace as updateRoomWorkspaceApi,
     startDiscussion as startDiscussionApi,
     fetchDiscussion as fetchDiscussionApi,
     stopDiscussion as stopDiscussionApi,
+    listGroupDocuments as listGroupDocumentsApi,
+    uploadGroupDocument as uploadGroupDocumentApi,
+    fetchGroupDocumentProgress as fetchGroupDocumentProgressApi,
+    startGroupDocumentReading as startGroupDocumentReadingApi,
+    type GroupDocumentInfo,
+    type GroupDocumentProgress,
 } from '@/api/hermes/group-chat'
 
 type GroupChatSocket = ReturnType<typeof connectGroupChat>
@@ -59,6 +67,35 @@ async function uploadGroupFiles(attachments: Attachment[]): Promise<{ name: stri
     if (!res.ok) throw new Error(await responseErrorMessage(res, 'Upload failed'))
     const data = await res.json() as { files: { name: string; path: string }[] }
     return data.files
+}
+
+/**
+ * Upload discussion attachments through the group-chat /documents endpoint
+ * (streaming, no 50MB /upload cap) so large files actually land on the device
+ * before the discussion starts. Throws if any file fails — the caller must not
+ * start the discussion with a phantom file name.
+ */
+async function uploadDiscussionAttachments(roomId: string, attachments: Attachment[]): Promise<string[]> {
+    const uploaded: string[] = []
+    for (const att of attachments) {
+        if (!att.file) continue
+        const formData = new FormData()
+        formData.append('file', att.file, att.name)
+        const token = getApiKey()
+        const profileName = getActiveProfileName()
+        const headers: Record<string, string> = {}
+        if (token) headers.Authorization = `Bearer ${token}`
+        if (profileName) headers['X-Hermes-Profile'] = profileName
+        const res = await fetch(`/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/documents`, {
+            method: 'POST',
+            body: formData,
+            headers,
+        })
+        if (!res.ok) throw new Error(await responseErrorMessage(res, `Upload failed for ${att.name}`))
+        const data = await res.json() as { name: string }
+        uploaded.push(data.name)
+    }
+    return uploaded
 }
 
 function buildGroupContentBlocks(content: string, attachments: Attachment[], files: { name: string; path: string }[]): ContentBlock[] {
@@ -171,9 +208,12 @@ export const useGroupChatStore = defineStore('groupChat', () => {
     const contextStatuses = ref<Map<string, { agentName: string; status: string }>>(new Map())
     const roomSummaryStates = ref<Map<string, RoomSummaryState>>(new Map())
     const discussionStates = ref<Map<string, DiscussionState>>(new Map())
+    const documentStates = ref<Map<string, GroupDocumentInfo>>(new Map())
+    const documentProgress = ref<Map<string, GroupDocumentProgress>>(new Map())
     const autoPlaySpeechEnabled = ref(false)
     const pendingApprovals = ref<Map<string, GroupPendingApproval>>(new Map())
     const pendingWelcomeMessages = ref<Map<string, PendingGroupWelcomeMessage[]>>(new Map())
+    const archivePromptStates = ref<Map<string, { count: number; threshold: number }>>(new Map())
     const totalMessages = ref(0)
     const loadedMessageCount = ref(0)
     const hasMoreBefore = ref(false)
@@ -654,6 +694,45 @@ const currentUserAvatar = ref('')
             discussionStates.value = new Map(discussionStates.value)
         })
 
+        socket.on('document_ready', (payload: { roomId?: string; fileId: string; name: string; docType: string; chunkCount: number; fieldsCount?: number }) => {
+            const roomId = payload.roomId || currentRoomId.value
+            if (!roomId || !payload.fileId) return
+            documentStates.value.set(payload.fileId, {
+                fileId: payload.fileId,
+                name: payload.name,
+                docType: payload.docType,
+                encoding: 'utf-8',
+                sizeBytes: 0,
+                chunkCount: payload.chunkCount,
+                status: 'chunked',
+                reportMessageId: null,
+                createdAt: Date.now(),
+            })
+            documentStates.value = new Map(documentStates.value)
+            void refreshDocuments(roomId)
+        })
+
+        socket.on('reading_progress', (payload: GroupDocumentProgress) => {
+            if (!payload?.fileId) return
+            documentProgress.value.set(payload.fileId, payload)
+            documentProgress.value = new Map(documentProgress.value)
+            const current = documentStates.value.get(payload.fileId)
+            if (current) {
+                documentStates.value.set(payload.fileId, { ...current, status: payload.status })
+                documentStates.value = new Map(documentStates.value)
+            }
+        })
+
+        socket.on('document_report', (payload: { fileId: string; messageId: string }) => {
+            if (!payload?.fileId) return
+            const current = documentStates.value.get(payload.fileId)
+            if (current) {
+                documentStates.value.set(payload.fileId, { ...current, status: 'done', reportMessageId: payload.messageId })
+                documentStates.value = new Map(documentStates.value)
+            }
+            if (currentRoomId.value) void refreshDocuments(currentRoomId.value)
+        })
+
         socket.on('approval.requested', (data: { roomId: string; agentName?: string; approval_id?: string; command?: string; description?: string; choices?: string[]; allow_permanent?: boolean }) => {
             if (!data.approval_id) return
             const description = data.description || ''
@@ -704,12 +783,37 @@ const currentUserAvatar = ref('')
             roomSummaryStates.value = new Map(roomSummaryStates.value)
             discussionStates.value.delete(data.roomId)
             discussionStates.value = new Map(discussionStates.value)
+            archivePromptStates.value.delete(data.roomId)
+            archivePromptStates.value = new Map(archivePromptStates.value)
             if (data.roomId === currentRoomId.value) {
                 messages.value = []
                 resetMessagePaging()
                 typingUsers.value.clear()
                 contextStatuses.value.clear()
                 pendingApprovals.value.clear()
+            }
+        })
+
+        socket.on('room_archive_prompt', (data: { roomId: string; count: number; threshold: number }) => {
+            if (!data?.roomId) return
+            archivePromptStates.value.set(data.roomId, { count: data.count, threshold: data.threshold || 500 })
+            archivePromptStates.value = new Map(archivePromptStates.value)
+        })
+
+        socket.on('room_archived', (data: { roomId: string; deletedMessages: number; totalTokens: number }) => {
+            if (!data?.roomId) return
+            archivePromptStates.value.delete(data.roomId)
+            archivePromptStates.value = new Map(archivePromptStates.value)
+            const room = rooms.value.find(r => r.id === data.roomId)
+            if (room) room.totalTokens = data.totalTokens ?? 0
+            if (currentRoomId.value === data.roomId) {
+                // The archived rows are gone; reload the surviving transcript so the
+                // list no longer references deleted history.
+                void getRoomDetail(data.roomId).then((res) => {
+                    if (currentRoomId.value !== data.roomId) return
+                    messages.value = res.messages
+                    applyMessagePaging(res)
+                }).catch(() => { /* keep the stale list; the next reload repairs it */ })
             }
         })
     }
@@ -728,6 +832,7 @@ const currentUserAvatar = ref('')
         roomSummaryStates.value.clear()
         discussionStates.value.clear()
         pendingApprovals.value.clear()
+        archivePromptStates.value.clear()
     }
 
     function setUserInfo(name: string, description: string) {
@@ -968,6 +1073,37 @@ const currentUserAvatar = ref('')
         }
     }
 
+    // ─── Archive Actions ───────────────────────────────────
+    async function archiveCurrentRoom() {
+        const roomId = currentRoomId.value
+        if (!roomId) return
+        try {
+            const res = await archiveRoomApi(roomId)
+            archivePromptStates.value.delete(roomId)
+            archivePromptStates.value = new Map(archivePromptStates.value)
+            if (res.room) upsertRoom(res.room)
+            return res
+        } catch (err: any) {
+            error.value = err.message
+            throw err
+        }
+    }
+
+    async function dismissCurrentRoomArchive(mode: 'ignore' | 'later') {
+        const roomId = currentRoomId.value
+        if (!roomId) return
+        try {
+            const res = await dismissArchivePrompt(roomId, mode)
+            archivePromptStates.value.delete(roomId)
+            archivePromptStates.value = new Map(archivePromptStates.value)
+            if (res.room) upsertRoom(res.room)
+            return res
+        } catch (err: any) {
+            error.value = err.message
+            throw err
+        }
+    }
+
     async function setRoomWorkspace(roomId: string, workspace: string) {
         try {
             const res = await updateRoomWorkspaceApi(roomId, workspace)
@@ -1013,8 +1149,16 @@ const currentUserAvatar = ref('')
         }
     }
 
-    async function beginDiscussion(roomId: string, input: DiscussionStartInput): Promise<DiscussionState> {
-        const { discussion } = await startDiscussionApi(roomId, input)
+    async function beginDiscussion(roomId: string, input: DiscussionStartInput, attachments?: Attachment[]): Promise<DiscussionState> {
+        // If the caller attached real files, upload them through the streaming
+        // /documents endpoint (no 50MB /upload cap) so the file actually lands
+        // on the device; the returned names are referenced in the goal. Throws
+        // on failure so we never start a discussion with a phantom file.
+        let finalAttachments = input.attachments
+        if (attachments?.length) {
+            finalAttachments = await uploadDiscussionAttachments(roomId, attachments)
+        }
+        const { discussion } = await startDiscussionApi(roomId, { ...input, attachments: finalAttachments })
         discussionStates.value.set(roomId, discussion)
         discussionStates.value = new Map(discussionStates.value)
         return discussion
@@ -1031,6 +1175,74 @@ const currentUserAvatar = ref('')
         if (discussionStates.value.delete(roomId)) {
             discussionStates.value = new Map(discussionStates.value)
         }
+    }
+
+    // ─── Document Pipeline ─────────────────────────────────
+    async function refreshDocuments(roomId: string): Promise<void> {
+        if (!roomId) return
+        try {
+            const res = await listGroupDocumentsApi(roomId)
+            const byId = new Map<string, GroupDocumentInfo>()
+            for (const doc of res.documents) byId.set(doc.fileId, doc)
+            // Preserve live progress over static list info.
+            for (const [fileId, progress] of documentProgress.value) {
+                const current = byId.get(fileId)
+                if (current) byId.set(fileId, { ...current, status: progress.status, reportMessageId: progress.reportMessageId || current.reportMessageId })
+            }
+            documentStates.value = byId
+        } catch { /* ignore */ }
+    }
+
+    async function uploadDocument(roomId: string, file: File): Promise<GroupDocumentInfo> {
+        try {
+            const res = await uploadGroupDocumentApi(roomId, file)
+            const info: GroupDocumentInfo = {
+                fileId: res.fileId,
+                name: res.name,
+                docType: res.docType,
+                encoding: res.encoding,
+                sizeBytes: res.sizeBytes,
+                chunkCount: res.chunkCount,
+                status: 'chunked',
+                reportMessageId: null,
+                createdAt: Date.now(),
+            }
+            documentStates.value.set(res.fileId, info)
+            documentStates.value = new Map(documentStates.value)
+            return info
+        } catch (err: any) {
+            error.value = err.message
+            throw err
+        }
+    }
+
+    async function startDocumentReading(roomId: string, fileId: string, agentIds: string[]): Promise<void> {
+        try {
+            await startGroupDocumentReadingApi(roomId, fileId, agentIds)
+            const current = documentStates.value.get(fileId)
+            if (current) {
+                documentStates.value.set(fileId, { ...current, status: 'reading' })
+                documentStates.value = new Map(documentStates.value)
+            }
+            // Immediately fetch the initial progress snapshot.
+            void fetchDocumentProgress(roomId, fileId)
+        } catch (err: any) {
+            error.value = err.message
+            throw err
+        }
+    }
+
+    async function fetchDocumentProgress(roomId: string, fileId: string): Promise<void> {
+        try {
+            const progress = await fetchGroupDocumentProgressApi(roomId, fileId)
+            documentProgress.value.set(fileId, progress)
+            documentProgress.value = new Map(documentProgress.value)
+            const current = documentStates.value.get(fileId)
+            if (current) {
+                documentStates.value.set(fileId, { ...current, status: progress.status, reportMessageId: progress.reportMessageId || current.reportMessageId })
+                documentStates.value = new Map(documentStates.value)
+            }
+        } catch { /* ignore */ }
     }
 
     // ─── Agent Actions ─────────────────────────────────────
@@ -1145,10 +1357,13 @@ const currentUserAvatar = ref('')
         contextStatuses,
         roomSummaryStates,
         discussionStates,
+        documentStates,
+        documentProgress,
         pendingApprovals,
         activePendingApproval,
         autoPlaySpeechEnabled,
         pendingWelcomeMessages,
+        archivePromptStates,
         activeMessageReference,
         totalMessages,
         loadedMessageCount,
@@ -1185,6 +1400,8 @@ const currentUserAvatar = ref('')
         deleteRoom,
         cloneRoom,
         clearCurrentRoomContext,
+        archiveCurrentRoom,
+        dismissCurrentRoomArchive,
         setRoomWorkspace,
         setRoomInviteCode,
         loadAgents,
@@ -1195,6 +1412,10 @@ const currentUserAvatar = ref('')
         beginDiscussion,
         endDiscussion,
         clearDiscussion,
+        refreshDocuments,
+        uploadDocument,
+        startDocumentReading,
+        fetchDocumentProgress,
     }
 })
 

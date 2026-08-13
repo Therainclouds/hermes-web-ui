@@ -326,6 +326,30 @@ export async function clearRoomContext(roomId: string): Promise<{ success: boole
     })
 }
 
+export interface ArchiveRoomResult {
+    success: boolean
+    deletedMessages: number
+    summary: RoomSummaryState
+    room: RoomInfo
+}
+
+export async function archiveRoom(roomId: string): Promise<ArchiveRoomResult> {
+    return request(`/api/hermes/group-chat/rooms/${roomId}/archive`, {
+        method: 'POST',
+    })
+}
+
+export async function dismissArchivePrompt(
+    roomId: string,
+    mode: 'ignore' | 'later',
+): Promise<{ success: boolean; room: RoomInfo }> {
+    return request(`/api/hermes/group-chat/rooms/${roomId}/archive-dismiss`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode }),
+    })
+}
+
 export async function updateRoomConfig(roomId: string, config: RoomConfigInput): Promise<{ room: RoomInfo }> {
     return request(`/api/hermes/group-chat/rooms/${roomId}/config`, {
         method: 'PUT',
@@ -388,6 +412,8 @@ export interface DiscussionState {
 
 export interface DiscussionStartInput {
     goal: string
+    /** Referenced uploaded file names appended to the discussion goal. */
+    attachments?: string[]
     agentOrder?: string[]
     maxRounds?: number
     maxMessages?: number
@@ -412,6 +438,76 @@ export async function stopDiscussion(roomId: string): Promise<{ discussion: Disc
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
+    })
+}
+
+// ─── Large document pipeline ───────────────────────────────────
+
+export type GroupDocumentStatus = 'uploaded' | 'chunked' | 'reading' | 'aggregating' | 'done' | 'failed'
+
+export interface GroupDocumentInfo {
+    fileId: string
+    name: string
+    docType: string
+    encoding: string
+    sizeBytes: number
+    chunkCount: number
+    status: GroupDocumentStatus
+    reportMessageId: string | null
+    createdAt: number
+}
+
+export interface GroupDocumentProgress {
+    fileId: string
+    status: GroupDocumentStatus
+    name: string
+    docType: string
+    encoding: string
+    chunkCount: number
+    chunksRead: number
+    chunksTotal: number
+    fieldsCount: number
+    factsCount: number
+    progressPct: number
+    jobs: { pending: number; running: number; done: number; failed: number; total: number; chunksDone: number }
+    reportMessageId: string | null
+}
+
+export async function uploadGroupDocument(roomId: string, file: File): Promise<{
+    fileId: string
+    name: string
+    sizeBytes: number
+    docType: string
+    encoding: string
+    chunkCount: number
+    fieldsCount: number
+    status: string
+}> {
+    const formData = new FormData()
+    formData.append('file', file, file.name)
+    return request(`/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/documents`, {
+        method: 'POST',
+        body: formData,
+    })
+}
+
+export async function listGroupDocuments(roomId: string): Promise<{ documents: GroupDocumentInfo[] }> {
+    return request(`/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/documents`)
+}
+
+export async function fetchGroupDocumentProgress(roomId: string, fileId: string): Promise<GroupDocumentProgress> {
+    return request(`/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/documents/${encodeURIComponent(fileId)}`)
+}
+
+export async function startGroupDocumentReading(roomId: string, fileId: string, agents: string[]): Promise<{
+    fileId: string
+    pipelineId: string
+    jobsAssigned: number
+}> {
+    return request(`/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/documents/${encodeURIComponent(fileId)}/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agents }),
     })
 }
 
