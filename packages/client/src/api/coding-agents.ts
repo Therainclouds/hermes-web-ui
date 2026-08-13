@@ -59,6 +59,8 @@ export interface CodingAgentToolStatus {
   version: string
   rawVersion: string
   error?: string
+  /** Whether the DeepSeek Harness SDK runtime (full streaming capability) is installed. */
+  sdkAvailable?: boolean
 }
 
 export interface CodingAgentsStatus {

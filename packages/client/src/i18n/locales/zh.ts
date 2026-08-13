@@ -2530,6 +2530,8 @@ export default {
     claudeDescription: "Anthropic CLI，适合 print mode 单次任务和交互式编程会话。",
     codexDescription: "OpenAI CLI，以及 Hermes openai-codex provider 的仓库任务流程。",
     dshDescription: "DeepSeek Harness (dsh)：基于插件的 agent harness。headless 单次任务一次性返回最终结果（非流式），每轮都会开启全新会话。需要 Node >= 22.19。",
+    dshBasicMode: "基础模式",
+    dshFullMode: "完整能力",
     copyCommand: "复制",
     commandCopied: "命令已复制",
     commandCopyFailed: "复制失败",

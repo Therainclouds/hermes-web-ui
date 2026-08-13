@@ -2161,6 +2161,8 @@ export default {
     claudeDescription: "print mode の単発タスクと対話型コーディングセッション向けの Anthropic CLI です。",
     codexDescription: "リポジトリ作業向けの OpenAI CLI と Hermes openai-codex プロバイダーフローです。",
     dshDescription: "DeepSeek Harness (dsh)：プラグインベースの agent harness です。headless の単発タスクは最終結果を一度に返します（非ストリーミング）。各ターンは新しいセッションで開始されます。Node >= 22.19 が必要です。",
+    dshBasicMode: "基本モード",
+    dshFullMode: "フル機能",
     copyCommand: "コピー",
     commandCopied: "コマンドをコピーしました",
     commandCopyFailed: "コピーに失敗しました",

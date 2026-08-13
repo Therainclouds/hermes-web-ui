@@ -2464,6 +2464,8 @@ export default {
     claudeDescription: "واجهة Anthropic السطرية لوضع الطباعة الفوري وجلسات البرمجة التفاعلية.",
     codexDescription: "واجهة OpenAI السطرية ومسار مزوّد openai-codex في Hermes لمهام المستودعات.",
     dshDescription: "DeepSeek Harness (dsh): حزام وكيل قائم على الإضافات. المهام الفردية headless تعيد النتيجة النهائية في كتلة واحدة (بدون بث)؛ كل جولة تبدأ جلسة جديدة. يتطلب Node >= 22.19.",
+    dshBasicMode: "الوضع الأساسي",
+    dshFullMode: "إمكانيات كاملة",
     copyCommand: "نسخ",
     commandCopied: "تم نسخ الأمر",
     commandCopyFailed: "فشل النسخ",

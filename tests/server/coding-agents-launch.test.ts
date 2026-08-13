@@ -54,6 +54,7 @@ afterEach(() => {
   delete process.env.HERMES_WEB_UI_HOME
   delete process.env.HERMES_CODING_AGENT_GLOBAL_HOME
   delete process.env.HERMES_AGENT_NODE
+  delete process.env.DEEPSEEK_HARNESS_ROOT
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true })
@@ -242,6 +243,48 @@ describe('coding agent launch preparation', () => {
       apiKey: 'sk-test',
       apiMode: 'codex_responses',
     })).rejects.toThrow('DeepSeek Harness launch only supports OpenAI Chat Completions providers')
+  })
+
+  it('launches DeepSeek Harness in full SDK mode when a local source checkout is available', async () => {
+    const home = makeHome()
+    const checkout = join(home, 'dsh-sdk-checkout')
+    const sdkBin = join(checkout, 'packages', 'examples', 'jsonrpc-demo', 'src', 'bin.ts')
+    const sdkConfig = join(checkout, 'examples', 'jsonrpc-agent', 'cordis.yml')
+    mkdirSync(dirname(sdkBin), { recursive: true })
+    mkdirSync(dirname(sdkConfig), { recursive: true })
+    mkdirSync(join(checkout, 'node_modules', 'tsx'), { recursive: true })
+    writeFileSync(sdkBin, 'export {}')
+    writeFileSync(sdkConfig, '- id: sdk-jsonrpc-server\n')
+    writeFileSync(join(checkout, 'node_modules', 'tsx', 'package.json'), '{}')
+    process.env.DEEPSEEK_HARNESS_ROOT = checkout
+
+    const result = await prepareCodingAgentLaunch('dsh', {
+      profile: 'default',
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+      baseUrl: 'https://api.deepseek.com',
+      apiKey: 'sk-test',
+      apiMode: 'chat_completions',
+    })
+
+    expect(result.rootDir).toBe(join(home, 'coding-agent', 'model', 'default', 'deepseek', 'dsh'))
+    expect(result.command).toBe(process.execPath)
+    expect(result.args).toEqual([
+      '--import', 'tsx',
+      sdkBin,
+      sdkConfig,
+    ])
+    expect(result.runtimeCwd).toBe(checkout)
+    expect(result.env).toMatchObject({
+      DSH_CWD: result.workspaceDir,
+      DSH_SESSION_ROOT: join(result.rootDir, 'sessions'),
+      DSH_SYSTEM_PROMPT: expect.any(String),
+      DSH_MAX_TOKENS_AS_SUCCESS: 'true',
+      DEEPSEEK_BASE_URL: 'https://api.deepseek.com',
+      DEEPSEEK_API_KEY: 'sk-test',
+    })
+    // SDK mode must not write the headless settings.yaml into the run root.
+    expect(existsSync(join(result.rootDir, 'settings.yaml'))).toBe(false)
   })
 
   it('launches DeepSeek Harness with the global config when requested', async () => {

@@ -127,6 +127,7 @@ const configFiles: Record<CodingAgentId, ConfigFileEntry[]> = {
     { key: 'settings', path: '~/.dsh/settings.yaml', language: 'yaml' },
     { key: 'patch', path: '~/.dsh/cordis.patch.yml', language: 'yaml' },
     { key: 'credentials', path: '~/.dsh/.credentials.yaml', language: 'yaml' },
+    { key: 'cordis', path: '~/.deepseek-harness/cordis.yml', language: 'yaml' },
   ],
 }
 
@@ -492,6 +493,13 @@ onMounted(() => {
                   <span class="version-text">
                     {{ statusFor(block.id)?.version || statusFor(block.id)?.rawVersion }}
                   </span>
+                  <NTag
+                    v-if="block.id === 'dsh'"
+                    size="small"
+                    :type="statusFor(block.id)?.sdkAvailable ? 'info' : 'default'"
+                  >
+                    {{ statusFor(block.id)?.sdkAvailable ? t('codingAgents.dshFullMode') : t('codingAgents.dshBasicMode') }}
+                  </NTag>
                 </template>
                 <NTag v-else size="small" type="warning">{{ t('codingAgents.notInstalled') }}</NTag>
               </div>

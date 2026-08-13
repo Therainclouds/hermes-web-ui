@@ -2538,6 +2538,8 @@ export default {
     claudeDescription: "Anthropic CLI for one-shot print mode and interactive coding sessions.",
     codexDescription: "OpenAI CLI and Hermes openai-codex provider flow for repository tasks.",
     dshDescription: "DeepSeek Harness (dsh): a plugin-based agent harness. Headless one-shot tasks return the final answer in a single block (non-streaming); each turn starts a fresh session. Requires Node >= 22.19.",
+    dshBasicMode: "Basic",
+    dshFullMode: "Full capability",
     copyCommand: "Copy",
     commandCopied: "Command copied",
     commandCopyFailed: "Copy failed",

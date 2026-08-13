@@ -14,6 +14,13 @@ import type { CanonicalResponsesEvent } from './adapters/responses-stream'
 import { mapCodingAgentResponseEvent } from './coding-agent-event-mapper'
 import { normalizeWindowsCommandPath, windowsCmdShimExecution, windowsCommandNeedsShell } from '../windows-command'
 import { completeWorkspaceRunCheckpoint, startWorkspaceRunCheckpoint } from '../hermes/run-chat/workspace-diff-tracker'
+import { DshJsonRpcClient } from './dsh-jsonrpc-client'
+import {
+  createDshTurnAccumulator,
+  dshSessionEventToResponsesEvents,
+  type DshSessionEvent,
+  type DshTurnAccumulator,
+} from './adapters/dsh-session-event-mapper'
 
 const DEFAULT_IDLE_MS = 30 * 60 * 1000
 const TERMINAL_OUTPUT_FLUSH_MS = 120
@@ -72,6 +79,7 @@ export interface CodingAgentRunLaunch {
   args: string[]
   shellCommand: string
   workspaceDir: string
+  runtimeCwd?: string
   env?: NodeJS.ProcessEnv
   state?: SessionState
   sessionSource?: 'global_agent' | 'workflow'
@@ -113,6 +121,14 @@ interface ManagedCodingAgentRun {
   pendingChatCompletionPayload?: Record<string, unknown>
   memoryExportStarted?: boolean
   assistantMessageId?: string
+  dsh?: {
+    rpc: DshJsonRpcClient
+    sessionId: string
+    initialized: boolean
+    promptInFlight: boolean
+    lastError?: string
+    turn?: DshTurnAccumulator
+  }
 }
 
 interface CodingAgentRunSendOptions {
@@ -500,6 +516,7 @@ export class CodingAgentRunManager {
     state.runId = runId
 
     if (isPrintAgent(launch.agentId)) {
+      const isDshSdkMode = launch.agentId === 'dsh' && Boolean(launch.runtimeCwd || /dsh-jsonrpc-agent/i.test(launch.command))
       const run: ManagedCodingAgentRun = {
         id: runId,
         launch,
@@ -508,6 +525,14 @@ export class CodingAgentRunManager {
         startedAt: Date.now(),
         exited: false,
         nativeResumeReady: launch.nativeResume === true,
+        ...(isDshSdkMode ? {
+          dsh: {
+            rpc: undefined as unknown as DshJsonRpcClient,
+            sessionId: launch.agentSessionId || runId,
+            initialized: false,
+            promptInFlight: false,
+          },
+        } : {}),
       }
       this.runs.set(run.id, run)
       this.sessionIndex.set(launch.sessionId, run.id)
@@ -522,7 +547,8 @@ export class CodingAgentRunManager {
         profile: launch.profile,
         provider: launch.provider,
         model: launch.model,
-      }, '[coding-agent-run] print runner started')
+        ...(isDshSdkMode ? { sdk: true } : {}),
+      }, isDshSdkMode ? '[coding-agent-run] dsh sdk runner started' : '[coding-agent-run] print runner started')
       return { runId: run.id, pid: 0 }
     }
 
@@ -607,7 +633,13 @@ export class CodingAgentRunManager {
       return { runId: run.id }
     }
     if (run.launch.agentId === 'dsh') {
-      this.startDshPrintTurn(run, text)
+      if (run.dsh) {
+        void this.startDshRpcTurn(run, text).catch((err) => {
+          this.failDshTurn(run, err instanceof Error ? err.message : String(err))
+        })
+      } else {
+        this.startDshPrintTurn(run, text)
+      }
       return { runId: run.id }
     }
     if (!run.pty) throw new Error('Coding agent terminal is not available')
@@ -742,7 +774,7 @@ export class CodingAgentRunManager {
         output: finalText,
         error: terminalError || undefined,
       }
-      if (childIsRunning(run.currentChild)) {
+      if (isPrintAgent(run.launch.agentId) && !run.dsh && childIsRunning(run.currentChild)) {
         run.pendingChatCompletionEvent = chatCompletionEvent
         run.pendingChatCompletionPayload = chatCompletionPayload
       } else {
@@ -1932,6 +1964,223 @@ export class CodingAgentRunManager {
           },
         },
       })
+    })
+  }
+
+  private spawnDshSdkChild(run: ManagedCodingAgentRun) {
+    const child = spawnCodingAgentChild(run.launch.command, run.launch.args, {
+      cwd: run.launch.runtimeCwd || (existsSync(run.launch.workspaceDir) ? run.launch.workspaceDir : homedir()),
+      env: {
+        ...process.env,
+        ...(run.launch.env || {}),
+      },
+      pipeStdin: true,
+    })
+    run.currentChild = child
+    const rpc = new DshJsonRpcClient(child, (err) => {
+      if (err) logger.warn({ err, runId: run.id, sessionId: run.launch.sessionId }, '[coding-agent-run] deepseek-harness transport error')
+    })
+    run.dsh = {
+      rpc,
+      sessionId: run.launch.agentSessionId || run.id,
+      initialized: false,
+      promptInFlight: false,
+    }
+    rpc.onNotification((notification) => { this.handleDshNotification(run, notification) })
+    child.stderr?.on('data', (chunk: Buffer) => {
+      this.touch(run)
+      const text = appendChildStderr(run, chunk)
+      if (text) logger.debug({ runId: run.id, sessionId: run.launch.sessionId, text }, '[coding-agent-run] deepseek-harness stderr')
+    })
+    child.on('error', (err) => {
+      const raw = childProcessErrorMessage(err)
+      if (run.dsh) run.dsh.lastError = /ENOENT/i.test(raw)
+        ? `${raw} — install the SDK runtime with: python3 -m pip install deepseek-harness-sdk`
+        : raw
+      this.handleDshSdkChildDeath(run)
+    })
+    child.on('exit', (code) => {
+      if (code !== 0 && run.dsh && !run.dsh.lastError) {
+        run.dsh.lastError = exitErrorMessage('DeepSeek Harness', code, run.currentChildStderr)
+      }
+      this.handleDshSdkChildDeath(run)
+    })
+  }
+
+  private handleDshSdkChildDeath(run: ManagedCodingAgentRun) {
+    run.currentChild = undefined
+    if (run.exited) return
+    const message = run.dsh?.lastError || 'DeepSeek Harness process exited'
+    if (run.dsh?.promptInFlight) this.failDshTurn(run, message)
+    run.exited = true
+    if (run.idleTimer) clearTimeout(run.idleTimer)
+    this.runs.delete(run.id)
+    if (this.sessionIndex.get(run.launch.sessionId) === run.id) this.sessionIndex.delete(run.launch.sessionId)
+    logger.warn({ runId: run.id, sessionId: run.launch.sessionId, message }, '[coding-agent-run] deepseek-harness process exited')
+  }
+
+  private failDshTurn(run: ManagedCodingAgentRun, message: string) {
+    const dsh = run.dsh
+    if (!dsh || !dsh.promptInFlight) return
+    dsh.promptInFlight = false
+    this.handleClaudePrintResponseEvent(run, {
+      type: 'response.failed',
+      data: {
+        type: 'response.failed',
+        response: {
+          id: dsh.turn?.responseId || `resp_${Date.now()}`,
+          object: 'response',
+          status: 'failed',
+          model: run.launch.model,
+          error: { message },
+          output: [],
+        },
+      },
+    })
+    dsh.turn = undefined
+  }
+
+  private async startDshRpcTurn(run: ManagedCodingAgentRun, input: string) {
+    if (!run.dsh) this.spawnDshSdkChild(run)
+    const dsh = run.dsh
+    if (!dsh) throw new Error('DeepSeek Harness session not started')
+    if (dsh.promptInFlight) throw new Error('DeepSeek Harness is still processing the previous input')
+    if (dsh.rpc.isClosed()) {
+      throw new Error(dsh.lastError || 'DeepSeek Harness runtime is not running')
+    }
+
+    const responseId = `resp_${Date.now()}`
+    run.printResponseId = responseId
+    run.printTextStarted = false
+    run.printText = ''
+    run.printToolBlocks = new Map()
+    run.responseStartEmitted = false
+    run.terminalEventHandled = false
+    run.runMarker = undefined
+    run.memoryExportStarted = false
+    dsh.turn = createDshTurnAccumulator(responseId)
+    dsh.promptInFlight = true
+
+    this.handleClaudePrintResponseEvent(run, {
+      type: 'response.created',
+      data: {
+        type: 'response.created',
+        response: { id: responseId, object: 'response', status: 'in_progress', model: run.launch.model, output: [] },
+      },
+    })
+
+    if (!dsh.initialized) {
+      await dsh.rpc.request('initialize', {
+        cwd: run.launch.workspaceDir,
+        // The shipped DeepSeek adapter route; Hermes provider keys (e.g.
+        // 'deepseek') are not DSH routes, and the endpoint/key travel via env.
+        provider: 'deepseek-official',
+        model: run.launch.model,
+      })
+      dsh.initialized = true
+    }
+    await dsh.rpc.request('session/prompt', {
+      sessionId: dsh.sessionId,
+      contentBlocks: [{ type: 'text', text: input }],
+    })
+  }
+
+  private handleDshNotification(run: ManagedCodingAgentRun, notification: { method: string; params: Record<string, unknown> }) {
+    const dsh = run.dsh
+    if (!dsh) return
+    const params = notification.params || {}
+    const sessionId = typeof params.sessionId === 'string' ? params.sessionId : ''
+    if (sessionId !== dsh.sessionId) return
+
+    if (notification.method === 'session.event') {
+      const event = params.event as DshSessionEvent | undefined
+      if (!event || !dsh.turn) return
+      for (const canonical of dshSessionEventToResponsesEvents(dsh.turn, event)) {
+        this.handleClaudePrintResponseEvent(run, canonical)
+      }
+      return
+    }
+
+    if (notification.method === 'session.status') {
+      if (params.status !== 'idle' || !dsh.promptInFlight) return
+      dsh.promptInFlight = false
+      this.completeDshTurn(run)
+    }
+  }
+
+  private completeDshTurn(run: ManagedCodingAgentRun) {
+    const dsh = run.dsh
+    const turn = dsh?.turn
+    if (!dsh || !turn) return
+    dsh.turn = undefined
+    if (turn.pendingError) {
+      this.handleClaudePrintResponseEvent(run, {
+        type: 'response.failed',
+        data: {
+          type: 'response.failed',
+          response: {
+            id: turn.responseId,
+            object: 'response',
+            status: 'failed',
+            model: run.launch.model,
+            error: { message: turn.pendingError },
+            output: [],
+          },
+        },
+      })
+      return
+    }
+
+    const text = turn.text || ''
+    const usage = turn.pendingUsage
+    if (turn.textStarted) {
+      const item = {
+        type: 'message',
+        id: turn.messageId,
+        status: 'completed',
+        role: 'assistant',
+        content: [{ type: 'output_text', text, annotations: [] }],
+      }
+      this.handleClaudePrintResponseEvent(run, {
+        type: 'response.output_text.done',
+        data: {
+          type: 'response.output_text.done',
+          item_id: turn.messageId,
+          output_index: 0,
+          content_index: 0,
+          text,
+        },
+      })
+      this.handleClaudePrintResponseEvent(run, {
+        type: 'response.output_item.done',
+        data: {
+          type: 'response.output_item.done',
+          output_index: 0,
+          item,
+        },
+      })
+    }
+    this.handleClaudePrintResponseEvent(run, {
+      type: 'response.completed',
+      data: {
+        type: 'response.completed',
+        response: {
+          id: turn.responseId,
+          object: 'response',
+          status: 'completed',
+          model: run.launch.model,
+          output: turn.textStarted
+            ? [{
+                type: 'message',
+                id: turn.messageId,
+                status: 'completed',
+                role: 'assistant',
+                content: [{ type: 'output_text', text, annotations: [] }],
+              }]
+            : [],
+          ...(usage ? { usage } : {}),
+        },
+      },
     })
   }
 
