@@ -791,6 +791,7 @@ const newChatAgentOptions = computed(() => [
   { label: "Hermes", value: "hermes" },
   { label: "Claude Code", value: "claude-code" },
   { label: "Codex", value: "codex" },
+  { label: "DeepSeek Harness", value: "deepseek-harness" },
   { label: "Ekko Agent", value: "ekko-agent" },
 ]);
 
@@ -901,7 +902,7 @@ const selectedNewChatProviderGroup = computed(() =>
 );
 
 const isNewChatCodingAgent = computed(() => newChatAgent.value !== "hermes");
-const isNewChatExternalCodingAgent = computed(() => newChatAgent.value === "claude-code" || newChatAgent.value === "codex");
+const isNewChatExternalCodingAgent = computed(() => newChatAgent.value === "claude-code" || newChatAgent.value === "codex" || newChatAgent.value === "deepseek-harness");
 const effectiveNewChatAgentMode = computed(() =>
   newChatAgent.value === "ekko-agent" ? "scoped" : newChatAgentMode.value,
 );
@@ -1083,6 +1084,8 @@ async function confirmNewChat() {
     ? "codex"
     : newChatAgent.value === "claude-code"
       ? "claude"
+      : newChatAgent.value === "deepseek-harness"
+        ? "deepseek"
       : newChatAgent.value === "ekko-agent"
         ? "ekko-agent"
       : "hermes";

@@ -26,6 +26,138 @@ const LAUNCH_API_MODES = new Set<ApiMode>(['chat_completions', 'codex_responses'
 const CODING_AGENT_HOME_DIR = 'coding-agent'
 const CODEX_MODEL_CATALOG_FILE = 'codex-model-catalog.json'
 const CODEX_CATALOG_BASE_INSTRUCTIONS = 'You are Codex, a coding agent. Be precise, safe, and helpful.'
+const DEEPSEEK_HARNESS_CORDIS_FILE = 'cordis.yml'
+const DEEPSEEK_HARNESS_CORDIS_TEMPLATE = `# Unattended DeepSeek Harness coding-agent composition managed by Hermes Web UI.
+# stdout is reserved for JSON-RPC; do not add a console logger or terminal UI.
+
+- id: sdk-jsonrpc-server
+  name: '@deepseek-ai/dsh-sdk-jsonrpc-server'
+  config:
+    maxTokensAsSuccess: !!js "process.env.DSH_MAX_TOKENS_AS_SUCCESS === undefined ? true : JSON.parse(process.env.DSH_MAX_TOKENS_AS_SUCCESS)"
+
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek'
+  config:
+    thinking: enabled
+    reasoningEffort: max
+
+- id: subprocess
+  name: '@deepseek-ai/dsh-subprocess-local'
+
+- id: bash
+  name: '@deepseek-ai/dsh-bash-local'
+  config:
+    cwd: !!js process.env.DSH_CWD ?? process.cwd()
+    timeoutMs: 60000
+
+- id: agent-spine
+  name: '@deepseek-ai/dsh-agent-spine-demo'
+  config:
+    persona: !!js process.env.DSH_SYSTEM_PROMPT ?? 'You are a coding agent.'
+    workspaceContext: false
+    skills:
+      enabled: false
+    toolBash:
+      enableRunInBackground: false
+    toolJobs: false
+
+- id: sessions
+  name: '@deepseek-ai/dsh-session-persistence-jsonl'
+  config:
+    root: !!js process.env.DSH_SESSION_ROOT ?? './.sessions'
+    compression: zstd
+
+- id: session-checkpoints
+  name: '@deepseek-ai/dsh-session-checkpoint-policy'
+
+- id: subagent
+  name: '@deepseek-ai/dsh-subagent'
+
+- id: subagent-spawn-in-process
+  name: '@deepseek-ai/dsh-subagent-spawn-in-process'
+  config:
+    providerName: spawn
+
+- id: tool-subagent
+  name: '@deepseek-ai/dsh-tool-subagent'
+  config:
+    provider: spawn
+    toolName: subagent
+    enableRunInBackground: false
+
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: true
+
+- id: fs-local
+  name: '@deepseek-ai/dsh-fs-local'
+  config:
+    cwd: !!js process.env.DSH_CWD ?? process.cwd()
+
+- id: fs-observation-policy
+  name: '@deepseek-ai/dsh-fs-observation-policy'
+
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+- id: token-meter
+  name: '@deepseek-ai/dsh-token-meter'
+
+- id: compaction-basic
+  name: '@deepseek-ai/dsh-compaction-basic'
+  config:
+    thresholdRatio: 0.8
+    retainRatio: 0.16
+    maxTokens: 8192
+    compactionRetries: 1
+`
+const DEEPSEEK_HARNESS_BIN = 'dsh-jsonrpc-agent'
+const DEEPSEEK_HARNESS_SRC_BIN = 'packages/examples/jsonrpc-demo/src/bin.ts'
+const DEEPSEEK_HARNESS_SRC_CONFIG = 'examples/jsonrpc-agent/cordis.yml'
+
+/** Discover a local DeepSeek Harness source checkout, if present. */
+function findDeepseekHarnessCheckout(): string | null {
+  const candidates = [
+    process.env.DEEPSEEK_HARNESS_ROOT,
+    join(homedir(), 'dev', 'deepseek-harness'),
+    join(homedir(), 'deepseek-harness'),
+    '/home/kali/dev/deepseek-harness',
+  ].filter((value): value is string => typeof value === 'string' && value.trim() !== '')
+  for (const root of candidates) {
+    const hasBin = existsSync(join(root, DEEPSEEK_HARNESS_SRC_BIN))
+    const hasConfig = existsSync(join(root, DEEPSEEK_HARNESS_SRC_CONFIG))
+    const hasTsx = existsSync(join(root, 'node_modules', 'tsx')) || existsSync(join(root, 'node_modules', '.bin', 'tsx'))
+    if (hasBin && hasConfig && hasTsx) return root
+  }
+  return null
+}
+
+/**
+ * Resolve how to launch the DeepSeek Harness SDK runtime: prefer the bundled
+ * `dsh-jsonrpc-agent` binary, then a local source checkout driven by `node
+ * --import tsx` (mirrors the harness's own keyless launch). Returns null when
+ * neither is available.
+ */
+async function resolveDeepseekHarnessLaunch(): Promise<{ command: string; args: string[]; runtimeCwd?: string } | null> {
+  try {
+    const env = await commandEnv()
+    const paths = await findCommandPaths(DEEPSEEK_HARNESS_BIN, env)
+    const resolved = paths[0] ? await resolveCommandForExecution(DEEPSEEK_HARNESS_BIN, env) : null
+    if (resolved) return { command: resolved, args: [] }
+  } catch {
+    // Fall through to a local source checkout.
+  }
+  const checkout = findDeepseekHarnessCheckout()
+  if (checkout) {
+    return {
+      command: process.execPath,
+      args: ['--import', 'tsx', join(checkout, DEEPSEEK_HARNESS_SRC_BIN), join(checkout, DEEPSEEK_HARNESS_SRC_CONFIG)],
+      runtimeCwd: checkout,
+    }
+  }
+  return null
+}
 const NODE_ENVIRONMENT_MISSING_CODE = 'node_environment_missing'
 const POSIX_LAUNCHER_FILE = 'launch.sh'
 const WINDOWS_LAUNCHER_FILE = 'launch.ps1'
@@ -55,7 +187,7 @@ interface CommandExecution {
   windowsVerbatimArguments?: WindowsCommandExecution['windowsVerbatimArguments']
 }
 
-export type CodingAgentId = 'claude-code' | 'codex'
+export type CodingAgentId = 'claude-code' | 'codex' | 'deepseek-harness'
 
 export interface CodingAgentDefinition {
   id: CodingAgentId
@@ -139,6 +271,8 @@ export interface CodingAgentLaunchResult {
   shellCommand: string
   files: Array<{ key: string; path: string; absolutePath: string }>
   reasoningEffort?: string
+  /** Working directory for the runtime process (e.g. a DSH source checkout root). */
+  runtimeCwd?: string
 }
 
 export interface CodingAgentNativeLaunchResult extends CodingAgentLaunchResult {
@@ -167,6 +301,13 @@ const TOOL_DEFINITIONS: CodingAgentDefinition[] = [
     command: 'codex',
     packageName: '@openai/codex',
   },
+  {
+    id: 'deepseek-harness',
+    name: 'DeepSeek Harness',
+    provider: 'DeepSeek',
+    command: 'dsh-jsonrpc-agent',
+    packageName: 'deepseek-harness-sdk',
+  },
 ]
 
 const CONFIG_FILE_DEFINITIONS: Record<CodingAgentId, Array<Omit<CodingAgentConfigFileDefinition, 'absolutePath'> & { scopedPath: string }>> = {
@@ -179,6 +320,9 @@ const CONFIG_FILE_DEFINITIONS: Record<CodingAgentId, Array<Omit<CodingAgentConfi
     { key: 'auth', path: '~/.codex/auth.json', scopedPath: 'auth.json', language: 'json' },
     { key: 'config', path: '~/.codex/config.toml', scopedPath: 'config.toml', language: 'ini' },
     { key: 'agents', path: '~/.codex/AGENTS.md', scopedPath: 'AGENTS.md', language: 'markdown' },
+  ],
+  'deepseek-harness': [
+    { key: 'cordis', path: '~/.deepseek-harness/cordis.yml', scopedPath: 'cordis.yml', language: 'yaml' },
   ],
 }
 
@@ -1447,6 +1591,12 @@ export function getCodingAgentConfigFileDefinitions(id: string): CodingAgentConf
 
 export async function getCodingAgentStatus(definition: CodingAgentDefinition): Promise<CodingAgentToolStatus> {
   try {
+    if (definition.id === 'deepseek-harness') {
+      // Installed means either the bundled binary resolves or a local source
+      // checkout is discoverable. The runtime has no --version flag.
+      const launch = await resolveDeepseekHarnessLaunch()
+      return { ...definition, installed: launch !== null, version: '', rawVersion: '' }
+    }
     const env = await commandEnv()
     const resolvedCommand = await resolveCommandForExecution(definition.command, env)
     const execution = commandExecution(resolvedCommand, ['--version'])
@@ -1497,10 +1647,20 @@ export async function installCodingAgent(id: string): Promise<CodingAgentMutatio
   installingTools.add(tool.id)
   try {
     const env = await commandEnv()
-    await runNpm(['install', '-g', tool.packageName], {
-      timeout: 10 * 60 * 1000,
-      env,
-    })
+    if (tool.id === 'deepseek-harness') {
+      const python = process.env.PYTHON || process.env.HERMES_AGENT_BRIDGE_PYTHON || 'python3'
+      await execFileAsync(python, ['-m', 'pip', 'install', '--upgrade', tool.packageName], {
+        encoding: 'utf-8',
+        timeout: 10 * 60 * 1000,
+        env,
+        windowsHide: true,
+      })
+    } else {
+      await runNpm(['install', '-g', tool.packageName], {
+        timeout: 10 * 60 * 1000,
+        env,
+      })
+    }
     cachedGlobalNpmBin = undefined
     const status = await getCodingAgentStatus(tool)
     const allStatus = await getCodingAgentsStatus()
@@ -1721,6 +1881,8 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
 
   let args: string[] = []
   let env: Record<string, string> = {}
+  let command = tool.command
+  let runtimeCwd: string | undefined
 
   if (tool.id === 'claude-code') {
     const proxyTarget = baseUrl && apiKey
@@ -1780,6 +1942,30 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
       promptPath,
       ...claudeCodePermissionArgs(),
     ]
+  } else if (tool.id === 'deepseek-harness') {
+    const sessionRoot = join(rootDir, 'sessions')
+    await mkdir(sessionRoot, { recursive: true })
+    env = {
+      DSH_CWD: workspaceDir,
+      DSH_SESSION_ROOT: sessionRoot,
+      DSH_SYSTEM_PROMPT: scopedSystemPrompt,
+      DSH_MAX_TOKENS_AS_SUCCESS: 'true',
+      ...(apiKey ? { DEEPSEEK_API_KEY: apiKey } : {}),
+      ...(baseUrl ? { DEEPSEEK_BASE_URL: baseUrl } : {}),
+    }
+    const launch = await resolveDeepseekHarnessLaunch()
+    if (launch && launch.args.length > 0) {
+      // Local source checkout: the harness's own cordis.yml supplies the
+      // composition, and the runtime process must run from the checkout root.
+      command = launch.command
+      runtimeCwd = launch.runtimeCwd
+      args = launch.args
+    } else {
+      // Bundled binary (or not installed yet): drive a Hermes-managed cordis.yml.
+      command = launch?.command || DEEPSEEK_HARNESS_BIN
+      await writeScopedFile('cordis', DEEPSEEK_HARNESS_CORDIS_TEMPLATE)
+      args = [join(rootDir, DEEPSEEK_HARNESS_CORDIS_FILE)]
+    }
   } else {
     if (apiMode !== 'chat_completions' && apiMode !== 'codex_responses' && apiMode !== 'anthropic_messages') {
       const err = new Error('Codex launch only supports OpenAI Chat Completions, OpenAI Responses, or Anthropic Messages providers')
@@ -1847,14 +2033,14 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
   let shellCommand = buildLaunchShellCommand({
     workspaceDir,
     env,
-    command: tool.command,
+    command,
     args,
   })
   const launcherPath = await writeLauncherScript({
     rootDir,
     workspaceDir,
     env,
-    command: tool.command,
+    command,
     args,
   })
   files.push({
@@ -1873,12 +2059,13 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
     apiMode,
     rootDir,
     workspaceDir,
-    command: tool.command,
+    command,
     args,
     env,
     shellCommand,
     files,
     reasoningEffort,
+    ...(runtimeCwd ? { runtimeCwd } : {}),
   }
 }
 
@@ -1912,7 +2099,7 @@ export async function startCodingAgentRun(
   const agentSessionId = resolvedInput.agentSessionId || existingAgentSessionId || makeAgentSessionId()
   const canResumeNativeSession = existingSession
     ? storedCodingAgentMode(existingSession) === requestedMode &&
-      (existingSession.agent === (id === 'codex' ? 'codex' : 'claude') || !existingSession.agent) &&
+      (existingSession.agent === (id === 'codex' ? 'codex' : id === 'deepseek-harness' ? 'deepseek' : 'claude') || !existingSession.agent) &&
       String(existingSession.provider || '').trim() === String(resolvedInput.provider || '').trim() &&
       String(existingSession.model || '').trim() === String(resolvedInput.model || '').trim() &&
       (!String(existingSession.api_mode || '').trim() || String(existingSession.api_mode || '').trim() === String(resolvedInput.apiMode || '').trim())
@@ -1950,6 +2137,7 @@ export async function startCodingAgentRun(
     args: launch.args,
     shellCommand: launch.shellCommand,
     workspaceDir: launch.workspaceDir,
+    runtimeCwd: launch.runtimeCwd,
     env: runtimeEnv,
     state,
     reasoningEffort: launch.reasoningEffort,
@@ -1957,7 +2145,7 @@ export async function startCodingAgentRun(
   })
   updateSession(sessionId, {
     source: sessionSource,
-    agent: launch.agentId === 'codex' ? 'codex' : 'claude',
+    agent: launch.agentId === 'codex' ? 'codex' : launch.agentId === 'deepseek-harness' ? 'deepseek' : 'claude',
     agent_mode: launch.mode,
     agent_session_id: agentSessionId,
     agent_native_session_id: agentNativeSessionId,

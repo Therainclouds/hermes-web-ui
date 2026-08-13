@@ -211,6 +211,7 @@ function isCodingAgentSession(session?: { source?: string | null; agent?: string
   return session?.source === 'coding_agent' ||
     session?.agent === 'claude' ||
     session?.agent === 'codex' ||
+    session?.agent === 'deepseek' ||
     Boolean(session?.agent_session_id)
 }
 

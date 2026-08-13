@@ -336,3 +336,10 @@ a {
     font-size: 16px !important;
   }
 }
+
+// DeepSeek Harness logo is a monochrome `currentColor` SVG rendered via <img>,
+// where currentColor resolves to black regardless of theme. Invert it to white
+// in dark mode (`html.dark` is toggled on the document element).
+.dark img[src$="deepseek-harness.svg"] {
+  filter: invert(1);
+}

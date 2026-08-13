@@ -27,8 +27,8 @@ import { getProfileDisplayName } from '@/utils/hermes/profile-display'
 
 type CodingAgentBlock = {
   id: CodingAgentId
-  tool: 'Claude Code' | 'Codex'
-  provider: 'Anthropic' | 'OpenAI'
+  tool: 'Claude Code' | 'Codex' | 'DeepSeek Harness'
+  provider: 'Anthropic' | 'OpenAI' | 'DeepSeek'
 }
 
 type ConfigFileEntry = {
@@ -56,18 +56,22 @@ const tools = ref<CodingAgentToolStatus[]>([])
 const installing = ref<Record<CodingAgentId, boolean>>({
   'claude-code': false,
   codex: false,
+  'deepseek-harness': false,
 })
 const installFailureHints = ref<Record<CodingAgentId, string>>({
   'claude-code': '',
   codex: '',
+  'deepseek-harness': '',
 })
 const installFailureDetails = ref<Record<CodingAgentId, string>>({
   'claude-code': '',
   codex: '',
+  'deepseek-harness': '',
 })
 const deleting = ref<Record<CodingAgentId, boolean>>({
   'claude-code': false,
   codex: false,
+  'deepseek-harness': false,
 })
 const launchModalVisible = ref(false)
 const launchLoading = ref(false)
@@ -87,6 +91,7 @@ const terminalKey = ref(0)
 const agentLogos: Record<CodingAgentBlock['tool'], string> = {
   'Claude Code': '/coding-agents/claude-code.svg',
   Codex: '/coding-agents/codex-openai.png',
+  'DeepSeek Harness': '/coding-agents/deepseek-harness.svg',
 }
 
 const agentBlocks: CodingAgentBlock[] = [
@@ -99,6 +104,11 @@ const agentBlocks: CodingAgentBlock[] = [
     id: 'codex',
     tool: 'Codex',
     provider: 'OpenAI',
+  },
+  {
+    id: 'deepseek-harness',
+    tool: 'DeepSeek Harness',
+    provider: 'DeepSeek',
   },
 ]
 
@@ -113,6 +123,9 @@ const configFiles: Record<CodingAgentId, ConfigFileEntry[]> = {
     { key: 'config', path: '~/.codex/config.toml', language: 'ini' },
     { key: 'agents', path: '~/.codex/AGENTS.md', language: 'markdown' },
   ],
+  'deepseek-harness': [
+    { key: 'cordis', path: '~/.deepseek-harness/cordis.yml', language: 'yaml' },
+  ],
 }
 
 const configEditorStates = ref<Record<CodingAgentId, ConfigEditorState>>({
@@ -125,6 +138,13 @@ const configEditorStates = ref<Record<CodingAgentId, ConfigEditorState>>({
   },
   codex: {
     selectedKey: 'config',
+    content: '',
+    originalContent: '',
+    loading: false,
+    saving: false,
+  },
+  'deepseek-harness': {
+    selectedKey: 'cordis',
     content: '',
     originalContent: '',
     loading: false,
@@ -429,6 +449,7 @@ onMounted(() => {
   void loadStatus()
   void loadConfigFile('claude-code', configFiles['claude-code'][0])
   void loadConfigFile('codex', configFiles.codex[1])
+  void loadConfigFile('deepseek-harness', configFiles['deepseek-harness'][0])
 })
 </script>
 

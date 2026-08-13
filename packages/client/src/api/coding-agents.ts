@@ -1,7 +1,7 @@
 import { request } from './client'
 import type { ProviderApiMode } from './hermes/system'
 
-export type CodingAgentId = 'claude-code' | 'codex'
+export type CodingAgentId = 'claude-code' | 'codex' | 'deepseek-harness'
 export type ChatCodingAgentId = CodingAgentId | 'ekko-agent'
 export const CODING_AGENT_API_MODES = [
   'chat_completions',
@@ -114,6 +114,7 @@ export interface CodingAgentLaunchResult {
   env: Record<string, string>
   shellCommand: string
   files: Array<{ key: string; path: string; absolutePath: string }>
+  runtimeCwd?: string
 }
 
 export interface CodingAgentNativeLaunchResult extends CodingAgentLaunchResult {

@@ -138,6 +138,8 @@ const agentDisplayName = computed(() => {
     claude: 'Claude Code',
     'claude-code': 'Claude Code',
     codex: 'Codex',
+    deepseek: 'DeepSeek Harness',
+    'deepseek-harness': 'DeepSeek Harness',
     'ekko-agent': 'Ekko Agent',
   }[agent] || agent
 })

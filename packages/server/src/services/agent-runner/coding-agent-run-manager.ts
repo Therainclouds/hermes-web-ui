@@ -14,6 +14,13 @@ import type { CanonicalResponsesEvent } from './adapters/responses-stream'
 import { mapCodingAgentResponseEvent } from './coding-agent-event-mapper'
 import { normalizeWindowsCommandPath, windowsCmdShimExecution, windowsCommandNeedsShell } from '../windows-command'
 import { completeWorkspaceRunCheckpoint, startWorkspaceRunCheckpoint } from '../hermes/run-chat/workspace-diff-tracker'
+import { DshJsonRpcClient } from './dsh-jsonrpc-client'
+import {
+  createDshTurnAccumulator,
+  dshSessionEventToResponsesEvents,
+  type DshSessionEvent,
+  type DshTurnAccumulator,
+} from './adapters/dsh-session-event-mapper'
 
 const DEFAULT_IDLE_MS = 30 * 60 * 1000
 const TERMINAL_OUTPUT_FLUSH_MS = 120
@@ -72,6 +79,7 @@ export interface CodingAgentRunLaunch {
   args: string[]
   shellCommand: string
   workspaceDir: string
+  runtimeCwd?: string
   env?: NodeJS.ProcessEnv
   state?: SessionState
   sessionSource?: 'global_agent' | 'workflow'
@@ -113,6 +121,14 @@ interface ManagedCodingAgentRun {
   pendingChatCompletionPayload?: Record<string, unknown>
   memoryExportStarted?: boolean
   assistantMessageId?: string
+  dsh?: {
+    rpc: DshJsonRpcClient
+    sessionId: string
+    initialized: boolean
+    promptInFlight: boolean
+    lastError?: string
+    turn?: DshTurnAccumulator
+  }
 }
 
 interface CodingAgentRunSendOptions {
@@ -223,6 +239,20 @@ function truncateCodingAgentToolOutputEvent(event: CanonicalResponsesEvent): Can
 
 function isPrintAgent(agentId: string): boolean {
   return agentId === 'claude-code' || agentId === 'codex'
+}
+
+/** Stored session `agent` value for a coding-agent run. */
+function storedAgentName(agentId: string): 'claude' | 'codex' | 'deepseek' {
+  if (agentId === 'codex') return 'codex'
+  if (agentId === 'deepseek-harness') return 'deepseek'
+  return 'claude'
+}
+
+/** Usage-record `agent` value for a coding-agent run. */
+function storedUsageAgentName(agentId: string): 'claude_code' | 'codex' | 'deepseek' {
+  if (agentId === 'codex') return 'codex'
+  if (agentId === 'deepseek-harness') return 'deepseek'
+  return 'claude_code'
 }
 
 function hasManagedHermesMcpConfig(run: ManagedCodingAgentRun): boolean {
@@ -526,6 +556,34 @@ export class CodingAgentRunManager {
       return { runId: run.id, pid: 0 }
     }
 
+    if (launch.agentId === 'deepseek-harness') {
+      const run: ManagedCodingAgentRun = {
+        id: runId,
+        launch,
+        state,
+        lastActiveAt: Date.now(),
+        startedAt: Date.now(),
+        exited: false,
+      }
+      this.runs.set(run.id, run)
+      this.sessionIndex.set(launch.sessionId, run.id)
+      this.ensureDbSession(run)
+      this.touch(run)
+      // The runtime subprocess is spawned lazily on the first prompt so a
+      // missing binary or boot failure surfaces directly on that turn.
+      this.emitTerminalStatus(run, 'DeepSeek Harness chat runner ready.')
+      logger.info({
+        runId: run.id,
+        sessionId: launch.sessionId,
+        agentId: launch.agentId,
+        mode: launch.mode,
+        profile: launch.profile,
+        provider: launch.provider,
+        model: launch.model,
+      }, '[coding-agent-run] deepseek-harness runner started')
+      return { runId: run.id, pid: 0 }
+    }
+
     if (!pty) throw new Error('Hidden coding agent terminal is unavailable because node-pty is not installed')
 
     const shell = defaultShell()
@@ -606,6 +664,12 @@ export class CodingAgentRunManager {
       this.startCodexExecTurn(run, text, systemPrompt, images)
       return { runId: run.id }
     }
+    if (run.launch.agentId === 'deepseek-harness') {
+      void this.startDeepseekHarnessPrompt(run, text).catch((err) => {
+        this.failDeepseekTurn(run, err instanceof Error ? err.message : String(err))
+      })
+      return { runId: run.id }
+    }
     if (!run.pty) throw new Error('Coding agent terminal is not available')
     run.pty.write(`${text}\r`)
     return { runId: run.id }
@@ -648,7 +712,7 @@ export class CodingAgentRunManager {
       sessionId: run.launch.sessionId,
       runId: final?.id,
       source: 'coding_agent',
-      agent: run.launch.agentId === 'codex' ? 'codex' : 'claude_code',
+      agent: storedUsageAgentName(run.launch.agentId),
       usageScope: 'model_call',
       apiCalls: 1,
       usage,
@@ -715,7 +779,7 @@ export class CodingAgentRunManager {
             sessionId: run.launch.sessionId,
             runId: final?.id || run.printResponseId || run.runMarker,
             source: 'coding_agent',
-            agent: run.launch.agentId === 'codex' ? 'codex' : 'claude_code',
+            agent: storedUsageAgentName(run.launch.agentId),
             usageScope: 'run',
             usage: final.usage,
             profile: run.launch.profile,
@@ -738,7 +802,11 @@ export class CodingAgentRunManager {
         output: finalText,
         error: terminalError || undefined,
       }
-      if (childIsRunning(run.currentChild)) {
+      // Claude Code and Codex run one subprocess per turn, so their completion
+      // is deferred until that child exits (it flushes stdout/stderr then).
+      // DeepSeek Harness keeps a persistent subprocess per session, so deferring
+      // on child exit would hang forever; complete it immediately instead.
+      if (isPrintAgent(run.launch.agentId) && childIsRunning(run.currentChild)) {
         run.pendingChatCompletionEvent = chatCompletionEvent
         run.pendingChatCompletionPayload = chatCompletionPayload
       } else {
@@ -807,7 +875,7 @@ export class CodingAgentRunManager {
       id: run.launch.sessionId,
       profile: run.launch.profile,
       source,
-      agent: run.launch.agentId === 'codex' ? 'codex' : 'claude',
+      agent: storedAgentName(run.launch.agentId),
       agent_session_id: run.id,
       agent_native_session_id: run.launch.agentNativeSessionId,
       model: run.launch.model,
@@ -1329,6 +1397,231 @@ export class CodingAgentRunManager {
           model: run.launch.model,
           output,
           usage,
+        },
+      },
+    })
+  }
+
+  private handleAgentResponseEvent(run: ManagedCodingAgentRun, event: CanonicalResponsesEvent) {
+    run.acceptingPrintEvent = true
+    try {
+      this.handleResponseEvent(run.id, event)
+    } finally {
+      run.acceptingPrintEvent = false
+    }
+  }
+
+  private spawnDeepseekHarnessChild(run: ManagedCodingAgentRun) {
+    const child = spawnCodingAgentChild(run.launch.command, run.launch.args, {
+      cwd: run.launch.runtimeCwd || (existsSync(run.launch.workspaceDir) ? run.launch.workspaceDir : homedir()),
+      env: {
+        ...process.env,
+        ...(run.launch.env || {}),
+      },
+      pipeStdin: true,
+    })
+    run.currentChild = child
+    const rpc = new DshJsonRpcClient(child, (err) => {
+      if (err) logger.warn({ err, runId: run.id, sessionId: run.launch.sessionId }, '[coding-agent-run] deepseek-harness transport error')
+    })
+    run.dsh = {
+      rpc,
+      sessionId: run.launch.agentSessionId || run.id,
+      initialized: false,
+      promptInFlight: false,
+    }
+    rpc.onNotification((notification) => { this.handleDshNotification(run, notification) })
+    child.stderr?.on('data', (chunk: Buffer) => {
+      const text = appendChildStderr(run, chunk)
+      if (text) logger.debug({ runId: run.id, sessionId: run.launch.sessionId, text }, '[coding-agent-run] deepseek-harness stderr')
+    })
+    child.on('error', (err) => {
+      const raw = childProcessErrorMessage(err)
+      run.dsh!.lastError = /ENOENT/i.test(raw)
+        ? `${raw} — install the runtime with: python3 -m pip install deepseek-harness-sdk`
+        : raw
+      this.handleDeepseekChildDeath(run)
+    })
+    child.on('exit', (code) => {
+      if (code !== 0 && !run.dsh!.lastError) {
+        run.dsh!.lastError = exitErrorMessage('DeepSeek Harness', code, run.currentChildStderr)
+      }
+      this.handleDeepseekChildDeath(run)
+    })
+  }
+
+  private handleDeepseekChildDeath(run: ManagedCodingAgentRun) {
+    run.currentChild = undefined
+    if (run.exited) return
+    const message = run.dsh?.lastError || 'DeepSeek Harness process exited'
+    if (run.dsh?.promptInFlight) this.failDeepseekTurn(run, message)
+    run.exited = true
+    if (run.idleTimer) clearTimeout(run.idleTimer)
+    this.runs.delete(run.id)
+    if (this.sessionIndex.get(run.launch.sessionId) === run.id) this.sessionIndex.delete(run.launch.sessionId)
+    logger.warn({ runId: run.id, sessionId: run.launch.sessionId, message }, '[coding-agent-run] deepseek-harness process exited')
+  }
+
+  private failDeepseekTurn(run: ManagedCodingAgentRun, message: string) {
+    const dsh = run.dsh
+    if (!dsh || !dsh.promptInFlight) return
+    dsh.promptInFlight = false
+    this.handleAgentResponseEvent(run, {
+      type: 'response.failed',
+      data: {
+        type: 'response.failed',
+        response: {
+          id: dsh.turn?.responseId || `resp_${Date.now()}`,
+          object: 'response',
+          status: 'failed',
+          model: run.launch.model,
+          error: { message },
+          output: [],
+        },
+      },
+    })
+    dsh.turn = undefined
+  }
+
+  private async startDeepseekHarnessPrompt(run: ManagedCodingAgentRun, input: string) {
+    if (!run.dsh) this.spawnDeepseekHarnessChild(run)
+    const dsh = run.dsh
+    if (!dsh) throw new Error('DeepSeek Harness session not started')
+    if (dsh.promptInFlight) throw new Error('DeepSeek Harness is still processing the previous input')
+    if (dsh.rpc.isClosed()) {
+      throw new Error(dsh.lastError || 'DeepSeek Harness runtime is not running')
+    }
+
+    const responseId = `resp_${Date.now()}`
+    run.printResponseId = responseId
+    run.printTextStarted = false
+    run.printText = ''
+    run.printToolBlocks = new Map()
+    run.responseStartEmitted = false
+    run.terminalEventHandled = false
+    run.runMarker = undefined
+    run.memoryExportStarted = false
+    dsh.turn = createDshTurnAccumulator(responseId)
+    dsh.promptInFlight = true
+
+    this.handleAgentResponseEvent(run, {
+      type: 'response.created',
+      data: {
+        type: 'response.created',
+        response: { id: responseId, object: 'response', status: 'in_progress', model: run.launch.model, output: [] },
+      },
+    })
+
+    if (!dsh.initialized) {
+      await dsh.rpc.request('initialize', {
+        cwd: run.launch.workspaceDir,
+        // The shipped DeepSeek adapter route; Hermes provider keys (e.g.
+        // 'deepseek') are not DSH routes, and the endpoint/key travel via env.
+        provider: 'deepseek-official',
+        model: run.launch.model,
+      })
+      dsh.initialized = true
+    }
+    await dsh.rpc.request('session/prompt', {
+      sessionId: dsh.sessionId,
+      contentBlocks: [{ type: 'text', text: input }],
+    })
+  }
+
+  private handleDshNotification(run: ManagedCodingAgentRun, notification: { method: string; params: Record<string, unknown> }) {
+    const dsh = run.dsh
+    if (!dsh) return
+    const params = notification.params || {}
+    const sessionId = typeof params.sessionId === 'string' ? params.sessionId : ''
+    if (sessionId !== dsh.sessionId) return
+
+    if (notification.method === 'session.event') {
+      const event = params.event as DshSessionEvent | undefined
+      if (!event || !dsh.turn) return
+      for (const canonical of dshSessionEventToResponsesEvents(dsh.turn, event)) {
+        this.handleAgentResponseEvent(run, canonical)
+      }
+      return
+    }
+
+    if (notification.method === 'session.status') {
+      if (params.status !== 'idle' || !dsh.promptInFlight) return
+      dsh.promptInFlight = false
+      this.completeDeepseekTurn(run)
+    }
+  }
+
+  private completeDeepseekTurn(run: ManagedCodingAgentRun) {
+    const dsh = run.dsh
+    const turn = dsh?.turn
+    if (!dsh || !turn) return
+    dsh.turn = undefined
+    if (turn.pendingError) {
+      this.handleAgentResponseEvent(run, {
+        type: 'response.failed',
+        data: {
+          type: 'response.failed',
+          response: {
+            id: turn.responseId,
+            object: 'response',
+            status: 'failed',
+            model: run.launch.model,
+            error: { message: turn.pendingError },
+            output: [],
+          },
+        },
+      })
+      return
+    }
+
+    const text = turn.text || ''
+    const usage = turn.pendingUsage
+    if (turn.textStarted) {
+      const item = {
+        type: 'message',
+        id: turn.messageId,
+        status: 'completed',
+        role: 'assistant',
+        content: [{ type: 'output_text', text, annotations: [] }],
+      }
+      this.handleAgentResponseEvent(run, {
+        type: 'response.output_text.done',
+        data: {
+          type: 'response.output_text.done',
+          item_id: turn.messageId,
+          output_index: 0,
+          content_index: 0,
+          text,
+        },
+      })
+      this.handleAgentResponseEvent(run, {
+        type: 'response.output_item.done',
+        data: {
+          type: 'response.output_item.done',
+          output_index: 0,
+          item,
+        },
+      })
+    }
+    this.handleAgentResponseEvent(run, {
+      type: 'response.completed',
+      data: {
+        type: 'response.completed',
+        response: {
+          id: turn.responseId,
+          object: 'response',
+          status: 'completed',
+          model: run.launch.model,
+          output: turn.textStarted
+            ? [{
+                type: 'message',
+                id: turn.messageId,
+                status: 'completed',
+                role: 'assistant',
+                content: [{ type: 'output_text', text, annotations: [] }],
+              }]
+            : [],
+          ...(usage ? { usage } : {}),
         },
       },
     })
