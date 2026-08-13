@@ -127,7 +127,10 @@ function harness(opts: {
     },
     roomSummaryService: {
       prepareForMessage: async () => ({ summary: '', history: [] }),
-      archiveRoom: async (roomId: string) => {
+      // Must be called as a method (this bound); a detached call would break the
+      // real service which relies on this.withRoomLock/this.storage.
+      archiveRoom: async function (this: unknown, roomId: string) {
+        if (this == null) throw new Error('archiveRoom lost its this binding')
         archiveCalls.push(roomId)
         return {
           archived: true,

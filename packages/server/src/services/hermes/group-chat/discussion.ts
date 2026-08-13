@@ -586,10 +586,11 @@ export class DiscussionRunner {
   /** Free discussions default to archiving their transcript once the run ends, so the
    *  raw messages no longer consume the room's agent context budget. */
   private async autoArchiveAfterRun(roomId: string, reason: 'converged' | 'max_rounds' | 'stopped' | 'stalled'): Promise<void> {
-    const archive = this.deps.roomSummaryService.archiveRoom
-    if (!archive) return
+    if (!this.deps.roomSummaryService.archiveRoom) return
     try {
-      const result = await archive(roomId)
+      // Call as a method so `this` stays bound to the summary service (extracting
+      // it to a local would break archiveRoom's internal withRoomLock/storage).
+      const result = await this.deps.roomSummaryService.archiveRoom(roomId)
       if (result.archived) {
         logger.info({ roomId, reason, deletedMessages: result.deletedMessages }, '[Discussion] auto-archived room transcript after run')
       }
