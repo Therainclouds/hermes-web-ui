@@ -1267,6 +1267,7 @@ export class GroupChatServer {
             roomSummaryService: this.roomSummaryService,
             emitSystemMessage: (roomId, content) => this.emitDiscussionSystemMessage(roomId, content),
             broadcast: (roomId, state) => this.nsp.to(roomId).emit('discussion_update', state),
+            onAgentStatus: (roomId, agentName, status) => this.broadcastAgentActivity(roomId, agentName, status),
         })
         this.discussionRunner.recoverInterrupted()
         this.documentPipeline = new DocumentPipelineService({
@@ -1286,20 +1287,7 @@ export class GroupChatServer {
                 logger.warn({ err }, '[GroupChat] document reconciliation failed')
             }
         })
-        this.agentClients.setActivityBroadcaster((roomId, agentName, status) => {
-            let roomStatuses = this.contextStatusState.get(roomId)
-            if (status === 'ready') {
-                roomStatuses?.delete(agentName)
-                if (roomStatuses?.size === 0) this.contextStatusState.delete(roomId)
-            } else {
-                if (!roomStatuses) {
-                    roomStatuses = new Map()
-                    this.contextStatusState.set(roomId, roomStatuses)
-                }
-                roomStatuses.set(agentName, { agentName, status })
-            }
-            this.nsp.to(roomId).emit('context_status', { roomId, agentName, status })
-        })
+        this.agentClients.setActivityBroadcaster((roomId, agentName, status) => this.broadcastAgentActivity(roomId, agentName, status))
         this.agentClients.setWorkspaceDiffBroadcaster((roomId, msg, totalTokens) => {
             this.nsp.to(roomId).emit('message', msg)
             this.nsp.to(roomId).emit('room_updated', { roomId, totalTokens })
@@ -1359,6 +1347,23 @@ export class GroupChatServer {
 
     stopDiscussion(roomId: string): Promise<DiscussionState> {
         return this.discussionRunner.stop(roomId)
+    }
+
+    /** Track + broadcast which agent is actively replying (lights up avatars).
+     *  Shared by the @-mention routing path and the discussion runner. */
+    private broadcastAgentActivity(roomId: string, agentName: string, status: 'compressing' | 'replying' | 'ready'): void {
+        let roomStatuses = this.contextStatusState.get(roomId)
+        if (status === 'ready') {
+            roomStatuses?.delete(agentName)
+            if (roomStatuses?.size === 0) this.contextStatusState.delete(roomId)
+        } else {
+            if (!roomStatuses) {
+                roomStatuses = new Map()
+                this.contextStatusState.set(roomId, roomStatuses)
+            }
+            roomStatuses.set(agentName, { agentName, status })
+        }
+        this.nsp.to(roomId).emit('context_status', { roomId, agentName, status })
     }
 
     /** Persist a system-style message into the room transcript (judge notes, etc). */
