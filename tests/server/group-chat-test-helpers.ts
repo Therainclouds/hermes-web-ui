@@ -86,6 +86,7 @@ export async function createTestGroupChatServer(options: { authEnabled?: boolean
   groupChatAuthMock.user = null
   const db = new DatabaseSync(':memory:')
   groupChatDbMock.current = db
+  ;(globalThis as any).__GC_TEST_DB__ = db
   initAllHermesTables()
   const httpServer = createServer()
   const groupServer = new GroupChatServer(httpServer)
