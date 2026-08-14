@@ -28,6 +28,9 @@ const profilesStore = vi.hoisted(() => ({
 vi.mock('@/api/hermes/config', () => apiMocks)
 vi.mock('@/stores/hermes/models', () => ({ useModelsStore: () => modelsStore }))
 vi.mock('@/stores/hermes/profiles', () => ({ useProfilesStore: () => profilesStore }))
+vi.mock('@/composables/useAppMessage', () => ({
+  useMessage: () => messageMock,
+}))
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({ t: (key: string) => key }),
 }))
