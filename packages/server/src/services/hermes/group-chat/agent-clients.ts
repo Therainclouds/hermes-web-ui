@@ -2370,7 +2370,7 @@ export class AgentClients {
             const handoffs = (this._roomAgentHandoffs.get(roomId) || 0) + 1
             if (handoffs > AgentClients.MAX_AGENT_HANDOFFS_PER_ROOM) {
                 logger.warn(`[AgentClients] room ${roomId} agent handoff budget exhausted (${handoffs}), dropping agent reply mentions`)
-                return
+                return { targetCount: mentioned.length, deliveredCount: 0, errors: ['Agent handoff budget exhausted'] }
             }
             this._roomAgentHandoffs.set(roomId, handoffs)
         }

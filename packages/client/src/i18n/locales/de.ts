@@ -229,6 +229,7 @@ export default {
   // Common
   common: {
     loading: 'Laden...',
+    clear: "Löschen",
     cancel: 'Abbrechen',
     retry: 'Erneutern',
     reset: 'Zurücksetzen',

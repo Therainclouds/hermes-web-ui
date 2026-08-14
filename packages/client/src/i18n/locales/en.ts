@@ -129,6 +129,7 @@ export default {
   // Common
   common: {
     loading: 'Loading...',
+    clear: "Clear",
     cancel: 'Cancel',
     delete: 'Delete',
     edit: 'Edit',

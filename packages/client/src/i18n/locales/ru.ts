@@ -129,6 +129,7 @@ export default {
 
   common: {
     loading: 'Загрузка...',
+    clear: "Очистить",
     cancel: 'Отмена',
     delete: 'Удалить',
     retry: 'Повторить',

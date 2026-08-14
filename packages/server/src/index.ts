@@ -78,7 +78,6 @@ let server: any = null
 let servers: any[] = []
 let chatRunServer: any = null
 let workflowSocketServer: WorkflowSocketServer | null = null
-let petStateSocketServer: PetStateSocketServer | null = null
 let groupAgentRelayServer: GroupAgentRelayServer | null = null
 let agentBridgeManager: any = null
 let usbSocketServer: USBSocketServer | null = null

@@ -2,8 +2,9 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { useSettingsStore } from './settings'
 import { primeCompletionSound } from '@/utils/completion-sound'
-import { getActiveProfileName, getStoredUsername } from '@/api/client'
+import { getActiveProfileName, getApiKey, getStoredUsername } from '@/api/client'
 import { fetchCurrentUser } from '@/api/auth'
+import { responseErrorMessage } from '@/utils/http-error'
 import { formatMessageWithReference, type Attachment, type ContentBlock, type MessageReference } from './chat'
 import {
     connectGroupChat,

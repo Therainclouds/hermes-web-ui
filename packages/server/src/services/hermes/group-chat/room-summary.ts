@@ -254,7 +254,6 @@ export async function runBareModelAgent(input: BareModelAgentInput): Promise<str
       systemPrompt: input.systemPrompt,
       maxSteps: 1,
       maxModelRetries: 3,
-      toolDelayMs: 0,
       modelDefaults: { model: input.model },
     },
     {

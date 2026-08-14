@@ -37,7 +37,6 @@ import { writeModelRunProfileToken } from './model-run-prompt'
 import type { AuthenticatedUser } from '../../../middleware/user-auth'
 import { ensureHermesRunWorkspace } from './workspace'
 import { completeWorkspaceRunCheckpoint, startWorkspaceRunCheckpoint } from './workspace-diff-tracker'
-import { observeRunChatPetEvent } from '../pet-state-socket'
 
 const BRIDGE_USAGE_FLUSH_DELAY_MS = 200
 const BRIDGE_TITLE_EVENT_POLL_INTERVAL_MS = 500
@@ -889,7 +888,6 @@ export async function resumeBridgeRun(
 
   const emit = (event: string, payload: any) => {
     const tagged = { ...payload, session_id: sessionId }
-    observePetEvent(profile, event, tagged)
     args.onEvent?.(event, tagged)
     const outbound = buildOutboundRunEvent(event, tagged)
     nsp.to(`session:${sessionId}`).emit(event, outbound)
@@ -1910,12 +1908,4 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
       },
     )
   })
-}
-
-function observePetEvent(profile: string, event: string, payload: Record<string, unknown>): void {
-  try {
-    observeRunChatPetEvent(profile, event, payload)
-  } catch (err) {
-    logger.debug(err, '[chat-run-socket] failed to update pet state')
-  }
 }

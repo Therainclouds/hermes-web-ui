@@ -41,7 +41,6 @@ import type {
 } from './types'
 import { authenticateUserToken, isAuthEnabled, type AuthenticatedUser } from '../../../middleware/user-auth'
 import { userCanAccessProfile } from '../../../db/hermes/users-store'
-import { observeRunChatPetEvent } from '../pet-state-socket'
 import { observeChatRunWebhookEvent, type ChatRunWebhookAgent } from '../chat-webhooks'
 import { codingAgentRunManager } from '../../agent-runner/coding-agent-run-manager'
 import { respondToEkkoToolApproval } from '../../ekko-agent/approvals'
@@ -1777,7 +1776,6 @@ export class ChatRunSocket {
       workflowId: state?.webhookWorkflowId,
       workflowNodeId: state?.webhookWorkflowNodeId,
     })
-    this.observePetEvent(profile, event, tagged)
     this.emitSessionActivity(profile, event, tagged)
     if (state?.isWorking) {
       state.events.push({ event, data: tagged })
@@ -1927,9 +1925,7 @@ export class ChatRunSocket {
       workflowId: state?.webhookWorkflowId,
       workflowNodeId: state?.webhookWorkflowNodeId,
     })
-    this.observePetEvent(profile, event, tagged)
     this.emitPendingInteraction(profile, event, tagged)
->>>>>>> upstream/main
     this.nsp.to(`session:${sessionId}`).emit(event, tagged)
     if (!this.nsp.adapter.rooms.get(`session:${sessionId}`)?.size && socket.connected) {
       socket.emit(event, tagged)
@@ -2033,13 +2029,5 @@ export class ChatRunSocket {
     if (stateProfile) return stateProfile
     const storedProfile = getSession(sessionId)?.profile
     return storedProfile || 'default'
-  }
-
-  private observePetEvent(profile: string, event: string, payload: Record<string, unknown>): void {
-    try {
-      observeRunChatPetEvent(profile, event, payload)
-    } catch (err) {
-      logger.debug(err, '[chat-run-socket] failed to update pet state')
-    }
   }
 }
