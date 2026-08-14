@@ -218,6 +218,7 @@ const columns = computed<DataTableColumns<ManagedUser>>(() => [
     title: t('common.edit'),
     key: 'actions',
     width: 340,
+    fixed: 'right',
     render: (row) => h(NSpace, { size: 8 }, {
       default: () => [
         h(NButton, { size: 'small', loading: exportingId.value === row.id, onClick: () => handleExportUser(row) }, { default: () => t('users.export') }),
@@ -257,6 +258,7 @@ onMounted(loadUsers)
       :loading="loading"
       :bordered="false"
       :single-line="false"
+      :scroll-x="1080"
       size="small"
     />
 

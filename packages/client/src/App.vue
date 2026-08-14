@@ -11,6 +11,7 @@ import { useAppStore } from '@/stores/hermes/app'
 import AuthEventListener from '@/components/auth/AuthEventListener.vue'
 import { desktopBridge } from '@/utils/desktop-bridge'
 import USBEventBridge from '@/components/hermes/usb/USBEventBridge.vue'
+import { naiveLocaleFor } from '@/constants/naiveLocale'
 import { naiveRtlFor } from '@/constants/naiveRtl'
 
 const AppSidebar = defineAsyncComponent(async () => (await import('@/components/layout/AppSidebar.vue')).default)
@@ -19,6 +20,7 @@ const SessionSearchModal = defineAsyncComponent(async () => (await import('@/com
 const DefaultCredentialPrompt = defineAsyncComponent(async () => (await import('@/components/auth/DefaultCredentialPrompt.vue')).default)
 const FirstRunModelGuide = defineAsyncComponent(async () => (await import('@/components/auth/FirstRunModelGuide.vue')).default)
 const ProviderConfigurationPrompt = defineAsyncComponent(async () => (await import('@/components/hermes/models/ProviderConfigurationPrompt.vue')).default)
+const GlobalPendingActions = defineAsyncComponent(async () => (await import('@/components/layout/GlobalPendingActions.vue')).default)
 
 const {
   isDark,
@@ -28,6 +30,7 @@ const {
   syncThemeFromServer,
 } = useTheme()
 const { t, locale } = useI18n()
+const naiveLocale = computed(() => naiveLocaleFor(locale.value))
 const naiveRtl = computed(() => naiveRtlFor(locale.value))
 const appStore = useAppStore()
 const route = useRoute()
@@ -40,8 +43,9 @@ const naiveTheme = computed(() => isDark.value ? darkTheme : null)
 
 const isLoginPage = computed(() => route.name === 'login')
 const isStandaloneChatPage = computed(() => route.meta?.standaloneChat === true)
+const isInviteOnlyPage = computed(() => route.meta?.inviteOnly === true)
 const usesPageSidebar = computed(() =>
-  ['hermes.chat', 'hermes.session', 'hermes.history', 'hermes.historySession', 'hermes.globalAgent', 'hermes.globalAgentSession', 'hermes.groupChat', 'hermes.groupChatRoom', 'hermes.workflow', 'hermes.meeting'].includes(route.name as string),
+  ['hermes.chat', 'hermes.session', 'hermes.connections', 'hermes.history', 'hermes.historySession', 'hermes.globalAgent', 'hermes.globalAgentSession', 'hermes.groupChat', 'hermes.groupChatRoom', 'hermes.workflow', 'hermes.meeting'].includes(route.name as string),
 )
 const showAppSidebar = computed(() => !isLoginPage.value && !isStandaloneChatPage.value && !usesPageSidebar.value)
 const showMobileMenuButton = computed(() => !isLoginPage.value && !isStandaloneChatPage.value && (showAppSidebar.value || usesPageSidebar.value))
@@ -74,8 +78,8 @@ function handleMobileMenuClick() {
   appStore.toggleSidebar()
 }
 
-watch(isLoginPage, (loginPage) => {
-  if (loginPage) {
+watch([isLoginPage, isInviteOnlyPage], ([loginPage, inviteOnlyPage]) => {
+  if (loginPage || inviteOnlyPage) {
     appStore.stopHealthPolling()
     return
   }
@@ -86,7 +90,9 @@ watch(isLoginPage, (loginPage) => {
 })
 
 onMounted(() => {
-  void syncThemeFromServer().catch(() => undefined)
+  if (!isInviteOnlyPage.value) {
+    void syncThemeFromServer().catch(() => undefined)
+  }
   const bridge = desktopBridge()
   if (!bridge?.isDesktop || (desktopPlatform.value !== 'win32' && bridge.windowKind !== 'chat')) return
   bridge.getWindowState?.()
@@ -108,7 +114,13 @@ useKeyboard()
 </script>
 
 <template>
-  <NConfigProvider :theme="naiveTheme" :theme-overrides="themeOverrides" :rtl="naiveRtl">
+  <NConfigProvider
+    :theme="naiveTheme"
+    :theme-overrides="themeOverrides"
+    :locale="naiveLocale.locale"
+    :date-locale="naiveLocale.dateLocale"
+    :rtl="naiveRtl"
+  >
     <NMessageProvider>
       <AuthEventListener />
       <USBEventBridge />
@@ -150,6 +162,7 @@ useKeyboard()
           <FirstRunModelGuide />
           <DefaultCredentialPrompt v-if="!isStandaloneChatPage" />
           <ProviderConfigurationPrompt v-if="!isStandaloneChatPage" />
+          <GlobalPendingActions v-if="!isLoginPage && !isStandaloneChatPage" />
         </NNotificationProvider>
       </NDialogProvider>
     </NMessageProvider>

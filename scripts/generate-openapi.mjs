@@ -65,6 +65,7 @@ const tagMappings = {
   'routes/hermes/anthropic-auth.ts': { name: 'Anthropic Auth', description: 'Anthropic OAuth' },
   'routes/hermes/group-chat.ts': { name: 'Group Chat', description: 'Group chat management' },
   'routes/hermes/chat-run.ts': { name: 'Chat Run', description: 'Chat run HTTP and Socket.IO bridge operations' },
+  'routes/hermes/chat-webhooks.ts': { name: 'Chat Webhooks', description: 'Outgoing Chat Run webhook endpoint management' },
   'routes/hermes/config.ts': { name: 'Config', description: 'Configuration management' },
   'routes/hermes/files.ts': { name: 'Files', description: 'Hermes file browser' },
   'routes/hermes/download.ts': { name: 'Download', description: 'File download' },
@@ -80,8 +81,8 @@ const tagMappings = {
   'routes/health.ts': { name: 'Health', description: 'Health check' },
   'routes/update.ts': { name: 'Update', description: 'Self-update management' },
   'routes/upload.ts': { name: 'Upload', description: 'File upload' },
-  'routes/webhook.ts': { name: 'Webhook', description: 'Incoming webhooks' },
   'routes/auth.ts': { name: 'Auth', description: 'Authentication management' },
+  'routes/app-connections.ts': { name: 'App Connections', description: 'Mobile App authorization and connection management' },
   'routes/devices.ts': { name: 'Devices', description: 'Device pairing and LAN peer operations' },
   'routes/coding-agents.ts': { name: 'Coding Agents', description: 'Coding agent installation, config, and runs' },
   'routes/theme.ts': { name: 'Theme', description: 'Per-user appearance settings and background image' },
@@ -121,29 +122,25 @@ function scanRoutes() {
 
 function scanRouteFile(filePath, tagInfo, paths) {
   const content = readFileSync(filePath, 'utf-8')
-
-  // Resolve every `import * as alias from '<controller>'` so routes delegated to
-  // controllers under any namespace (ctrl, discussionCtrl, documentCtrl, ...)
-  // can be resolved to their handler source for operation/param inference.
-  const controllerAliases = []
-  const importRe = /import\s+\*\s+as\s+(\w+)\s+from\s+['"]([^'"]+)['"]/g
-  let importMatch
-  while ((importMatch = importRe.exec(content)) !== null) {
-    controllerAliases.push({ alias: importMatch[1], controllerPath: importMatch[2] })
-  }
+  const controllerContents = readControllerContents(filePath, content)
+  const controllerAliases = [...controllerContents.keys()]
 
   // Pattern 1: controller functions - sessionRoutes.get('/path', middleware, ctrl.method)
-  for (const { alias, controllerPath } of controllerAliases) {
-    const controllerSource = readControllerContent(filePath, controllerPath)
-    const ctrlRouteRegex = new RegExp(`\\w+Routes?\\.(get|post|put|delete|patch)\\(\\s*['"]([^'"]+)['"]\\s*,[^\\n]*?\\b${alias}\\.(\\w+)`, 'g')
-    let match
-    while ((match = ctrlRouteRegex.exec(content)) !== null) {
-      const [, method, path, controllerMethod] = match
-      // Extract only the handler function body so param/body inference is
-      // scoped to this endpoint, not the whole controller file.
-      const handlerSource = controllerSource ? extractFunctionSource(controllerSource, controllerMethod) : ''
-      addEndpoint(paths, method, path, controllerMethod, tagInfo, content, match.index, handlerSource)
-    }
+  const ctrlRouteRegex = controllerAliases.length
+    ? new RegExp(
+        `\\w+Routes?\\.(get|post|put|delete|patch)\\(\\s*['"]([^'"]+)['"]\\s*,[^\\n]*?\\b(${controllerAliases.map(escapeRegExp).join('|')})\\.(\\w+)`,
+        'g',
+      )
+    : null
+
+  let match
+  while (ctrlRouteRegex && (match = ctrlRouteRegex.exec(content)) !== null) {
+    const [, method, path, controllerAlias, controllerMethod] = match
+    const controllerContent = controllerContents.get(controllerAlias)
+    const controllerSource = controllerContent
+      ? extractFunctionSource(controllerContent, controllerMethod)
+      : ''
+    addEndpoint(paths, method, path, controllerMethod, tagInfo, content, match.index, controllerSource)
   }
 
   // Pattern 2: inline functions - groupChatRoutes.post('/path', async (ctx) => {...})
@@ -157,13 +154,18 @@ function scanRouteFile(filePath, tagInfo, paths) {
   }
 }
 
-function readControllerContent(routeFilePath, controllerImportPath) {
-  const controllerPath = resolve(dirname(routeFilePath), `${controllerImportPath}.ts`)
-  try {
-    return readFileSync(controllerPath, 'utf-8')
-  } catch {
-    return ''
+function readControllerContents(routeFilePath, routeContent) {
+  const contents = new Map()
+  for (const match of routeContent.matchAll(/import\s+\*\s+as\s+(\w+)\s+from\s+['"]([^'"]+)['"]/g)) {
+    const [, alias, importPath] = match
+    const controllerPath = resolve(dirname(routeFilePath), `${importPath}.ts`)
+    try {
+      contents.set(alias, readFileSync(controllerPath, 'utf-8'))
+    } catch {
+      // Non-controller namespace imports are ignored by the route scanner.
+    }
   }
+  return contents
 }
 
 function extractFunctionSource(content, functionName) {
@@ -659,9 +661,12 @@ function generateOperationIdFromPath(path, method) {
 }
 
 function extractJsDocDescription(content) {
-  const jsDocRegex = /\/\*\*[\s\S]*?\*\//
-  const match = content.match(jsDocRegex)
+  const jsDocRegex = /\/\*\*[\s\S]*?\*\//g
+  const matches = Array.from(content.matchAll(jsDocRegex))
+  const match = matches.at(-1)
   if (match) {
+    const trailingContent = content.slice((match.index || 0) + match[0].length)
+    if (trailingContent.trim()) return null
     const jsDoc = match[0]
     // Extract description text
     const description = jsDoc

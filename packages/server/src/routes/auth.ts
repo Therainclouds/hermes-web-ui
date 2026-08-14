@@ -6,6 +6,7 @@ import { requireSuperAdmin } from '../middleware/user-auth'
 export const authPublicRoutes = new Router()
 authPublicRoutes.get('/api/auth/status', ctrl.authStatus)
 authPublicRoutes.post('/api/auth/login', ctrl.login)
+authPublicRoutes.post('/api/auth/app-login', ctrl.appLogin)
 authPublicRoutes.post('/api/auth/mcu-login', ctrl.microcontrollerLogin)
 authPublicRoutes.post('/api/auth/device-login', ctrl.deviceLogin)
 authPublicRoutes.post('/api/auth/device-login/restore', ctrl.restoreDeviceLogin)
