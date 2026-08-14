@@ -112,7 +112,7 @@ describe('prompts', () => {
         expect(result).not.toContain('@Claude')
         expect(result).toContain('## Image format')
         expect(result).toContain('## Sending a file to the user')
-        expect(result).toContain('Respond in the language used by the latest message')
+        expect(result).toContain('回复时使用自然语言即可')
     })
 
     it('builds agent instructions with empty member list', () => {
