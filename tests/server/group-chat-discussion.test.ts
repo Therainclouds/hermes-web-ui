@@ -15,6 +15,12 @@ vi.mock('../../packages/server/src/services/hermes/group-chat/room-summary', asy
   }
 })
 
+// The discussion module graph pulls in ekko-agent/handoff modules that
+// transitively load the real db singleton before the test helper's db mock is
+// registered. Pin getDb() to the helper's in-memory db up front (same strategy
+// as group-chat-document-pipeline.test.ts).
+vi.mock('../../packages/server/src/db/index', () => ({ getDb: () => (globalThis as any).__GC_TEST_DB__ ?? null }))
+
 // Document store: default to "no registered docs" so a discussion with
 // attachments that were never registered fails loudly (hard validation).
 vi.mock('../../packages/server/src/db/hermes/document-store', () => ({

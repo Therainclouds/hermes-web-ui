@@ -466,12 +466,6 @@ function normalizeMentionDepth(depth: unknown): number {
     return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0
 }
 
-function maxAgentMentionDepth(): number {
-    const value = Number(process.env.HERMES_GROUP_CHAT_MAX_AGENT_MENTION_DEPTH)
-    if (!Number.isFinite(value) || value <= 0) return 4
-    return Math.min(10, Math.floor(value))
-}
-
 /** When a room's raw message count crosses this window, clients are prompted to archive. */
 export const GC_ARCHIVE_PROMPT_THRESHOLD = 500
 
@@ -4373,10 +4367,11 @@ export class GroupChatServer {
             ? (trustedMetadata?.handoffChainId || '')
             : (data.handoffChainId || savedMsg.id)
         const continuationAttemptId = trustedMetadata?.continuationAttemptId || ''
-        // Local policy: only users who can manage the room may route human
-        // mentions (stricter than upstream's join-based check). Room management
-        // stays separately protected by canSocketManageRoom.
-        const canRouteHumanMentions = savedMsg.role === 'user' && this.canSocketManageRoom(socket, roomId)
+        // Any human who has successfully joined the room may interact with its
+        // Agents. Room management remains separately protected by
+        // canSocketManageRoom, so invite guests cannot mutate settings, approve
+        // tools, or interrupt an Agent.
+        const canRouteHumanMentions = savedMsg.role === 'user' && member?.source === 'human'
         const handoffPolicy = typeof this.storage.getRoomAgentHandoffPolicy === 'function'
             ? this.storage.getRoomAgentHandoffPolicy(roomId)
             : resolveGroupChatAgentHandoffPolicy({}, process.env.HERMES_GROUP_CHAT_MAX_AGENT_MENTION_DEPTH)
@@ -4388,7 +4383,6 @@ export class GroupChatServer {
         // discussion driver and the mention pipeline never race on the same agents.
         const discussionActive = this.isRoomDiscussionRunning(roomId)
         const shouldRouteMentions = (canRouteHumanMentions ||
-            (isAgentReply && mentionDepth < maxAgentMentionDepth()) ||
             (hasStructuredAgentTargets && shouldRouteGroupChatAgentHandoff(mentionDepth, handoffPolicy)))
             && !discussionActive && !isDocumentReport
 
