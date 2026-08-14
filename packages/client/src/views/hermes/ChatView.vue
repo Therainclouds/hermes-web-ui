@@ -25,6 +25,7 @@ const routeProfile = computed(() => {
 })
 
 const isStandaloneChat = computed(() => route.meta?.standaloneChat === true)
+const isConnectionsPage = computed(() => route.name === 'hermes.connections')
 const productTitle = 'Hermes Studio'
 const tabTitle = computed(() => {
   if (route.name !== 'hermes.session' && route.name !== 'desktop.chat') return productTitle
@@ -46,6 +47,14 @@ async function loadRouteSession() {
   }
 }
 
+async function applyRouteProfile() {
+  const profile = routeProfile.value
+  if (!profile || profile === profilesStore.activeProfileName) return
+  if (!profilesStore.profiles.some(item => item.name === profile)) return
+  await profilesStore.switchProfile(profile)
+  chatStore.setSessionProfileFilter(profile)
+}
+
 onMounted(async () => {
   chatStore.setRuntimeMode('default')
   appStore.loadModels()
@@ -56,11 +65,13 @@ onMounted(async () => {
     settingsStore.fetchSettings(),
   ])
   chatStore.validateSessionProfileFilter(profilesStore.profiles.map(profile => profile.name))
+  await applyRouteProfile()
   await loadRouteSession()
 })
 
 watch([routeSessionId, routeProfile], async ([sessionId]) => {
   if (!chatStore.sessionsLoaded) return
+  await applyRouteProfile()
   if (!sessionId) {
     await chatStore.loadSessions(chatStore.sessionProfileFilter)
     return
@@ -79,7 +90,10 @@ watch([routeSessionId, routeProfile], async ([sessionId]) => {
 
 <template>
   <div class="chat-view" :class="{ 'chat-view--standalone': isStandaloneChat }">
-    <ChatPanel :standalone="isStandaloneChat" />
+    <ChatPanel
+      :standalone="isStandaloneChat"
+      :content-mode="isConnectionsPage ? 'connections' : 'chat'"
+    />
   </div>
 </template>
 

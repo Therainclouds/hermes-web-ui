@@ -9,6 +9,8 @@ export interface RoomInfo {
     name: string
     inviteCode: string | null
     canManage?: boolean
+    canMentionAll?: boolean
+    ownerMemberId?: string
     summaryProfile: string
     summaryProvider: string
     summaryModel: string
@@ -16,6 +18,32 @@ export interface RoomInfo {
     summaryEveryTurns: number
     totalTokens?: number
     workspace: string
+    allowGuestAgents?: number
+    guestAgentApproval?: 'owner'
+    maxGuestAgentsPerMember?: number
+    allowRemoteWorkspaceAccess?: number
+    agentHandoffEnabled?: number
+    agentHandoffMaxDepth?: number | null
+    agentHandoffUnlimited?: number
+    createdAt?: number
+    lastActiveAt?: number
+}
+
+export interface RoomAgentHandoffChain {
+    chainId: string
+    roomId: string
+    sourceMessageId: string
+    currentDepth: number
+    maxDepth: number | null
+    unlimited: number
+    targetAgentId: string
+    status: 'stopped' | 'claimed' | 'resumed' | 'outcome_unknown'
+    stopReason: string
+    continueUsed: number
+    attemptId?: string | null
+    lastError?: string | null
+    createdAt: number
+    updatedAt: number
 }
 
 export interface RoomSummaryConfig {
@@ -28,6 +56,9 @@ export interface RoomSummaryConfig {
 
 export interface RoomConfigInput extends Partial<RoomSummaryConfig> {
     name?: string
+    agentHandoffEnabled?: boolean
+    agentHandoffMaxDepth?: number | null
+    agentHandoffUnlimited?: boolean
 }
 
 export interface RoomSummaryState {
@@ -64,6 +95,12 @@ export interface RoomAgent {
     description: string
     avatar: string
     invited: number
+    executorType?: 'server' | 'remote'
+    remoteOrigin?: string
+    connectionStatus?: 'online' | 'offline'
+    ownerMemberId?: string
+    connectorId?: string
+    historical?: boolean
 }
 
 export interface RoomAgentInput {
@@ -93,8 +130,19 @@ export interface ChatMessage {
     roomId: string
     senderId: string
     senderName: string
+    senderType?: 'member' | 'agent'
+    senderAgentRecordId?: string
+    senderAvatar?: string
+    senderAgentType?: RoomAgent['agent']
+    senderAgentProfile?: string
+    senderAgentProvider?: string
+    senderAgentModel?: string
+    senderAgentDescription?: string
+    senderOwnerMemberId?: string
     content: string
     timestamp: number
+    /** Server-assigned persistence time used for room activity ordering. */
+    persistedAt?: number
     run_id?: string | null
     role?: string
     tool_call_id?: string | null
@@ -104,17 +152,24 @@ export interface ChatMessage {
     reasoning?: string | null
     reasoning_details?: string | null
     reasoning_content?: string | null
+    mentions?: GroupChatMention[]
     isStreaming?: boolean
     toolName?: string
     toolCallId?: string
     toolArgs?: unknown
     toolPreview?: string
     toolResult?: unknown
-    toolStatus?: 'running' | 'done' | 'error'
+    toolStatus?: 'running' | 'done' | 'error' | 'interrupted'
     workspaceChanges?: GroupWorkspaceDiffPayload[]
     firstSeenAt?: number
     attachments?: Array<{ id: string; name: string; type: string; size: number; url: string }>
     runItems?: ChatMessage[]
+}
+
+export interface GroupChatMention {
+    type: 'agent' | 'all'
+    participantId?: string
+    displayName: string
 }
 
 export interface GroupWorkspaceDiffFile {
@@ -154,6 +209,7 @@ export interface MemberInfo {
     description: string
     joinedAt: number
     avatar?: string
+    connectionStatus?: 'online' | 'offline'
 }
 
 export interface JoinResult {
@@ -168,10 +224,20 @@ export interface JoinResult {
 
 let socket: ReturnType<typeof io> | null = null
 
-export function connectGroupChat(opts?: { userId?: string; userName?: string; description?: string; authUserId?: number }): ReturnType<typeof io> {
-    if (socket?.connected) return socket
+export function connectGroupChat(opts?: {
+    userId?: string
+    userName?: string
+    description?: string
+    authUserId?: number
+    inviteCode?: string
+}): ReturnType<typeof io> {
+    // Keep one Socket.IO instance while it reconnects. Replacing a disconnected
+    // instance leaves the old reconnection loop alive and can split join/message
+    // events across different socket ids.
+    if (socket) return socket
 
-    const token = getApiKey()
+    const inviteCode = opts?.inviteCode?.trim() || ''
+    const token = inviteCode ? '' : getApiKey()
     const userId = opts?.userId || localStorage.getItem('gc_user_id') || generateUUID()
     if (!opts?.userId) localStorage.setItem('gc_user_id', userId)
 
@@ -182,6 +248,7 @@ export function connectGroupChat(opts?: { userId?: string; userName?: string; de
             name: opts?.userName || localStorage.getItem('gc_user_name') || undefined,
             description: opts?.description || localStorage.getItem('gc_user_description') || undefined,
             authUserId: opts?.authUserId,
+            inviteCode: inviteCode || undefined,
         },
         transports: ['websocket', 'polling'],
         reconnection: true,
@@ -268,7 +335,7 @@ export async function listRooms(): Promise<{ rooms: RoomInfo[] }> {
 export async function getRoomDetail(
     roomId: string,
     options: { offset?: number; limit?: number } = {},
-): Promise<{ room: RoomInfo; messages: ChatMessage[]; agents: RoomAgent[]; members: MemberInfo[]; total?: number; offset?: number; limit?: number; hasMore?: boolean }> {
+): Promise<{ room: RoomInfo; messages: ChatMessage[]; agents: RoomAgent[]; members: MemberInfo[]; handoffChains?: RoomAgentHandoffChain[]; total?: number; offset?: number; limit?: number; hasMore?: boolean }> {
     const params = new URLSearchParams()
     if (options.offset != null) params.set('offset', String(options.offset))
     if (options.limit != null) params.set('limit', String(options.limit))
@@ -277,7 +344,7 @@ export async function getRoomDetail(
 }
 
 export async function joinRoomByCode(code: string): Promise<{ room: RoomInfo }> {
-    return request(`/api/hermes/group-chat/rooms/join/${code}`)
+    return request(`/api/hermes/group-chat/rooms/join/${encodeURIComponent(code)}`)
 }
 
 export async function updateInviteCode(roomId: string, inviteCode: string): Promise<{ success: boolean }> {
@@ -310,6 +377,12 @@ export async function listAgents(roomId: string): Promise<{ agents: RoomAgent[] 
 
 export async function removeAgent(roomId: string, agentId: string): Promise<{ success: boolean; agents: RoomAgent[]; members: MemberInfo[] }> {
     return request(`/api/hermes/group-chat/rooms/${roomId}/agents/${agentId}`, {
+        method: 'DELETE',
+    })
+}
+
+export async function removeRoomMember(roomId: string, userId: string): Promise<{ success: boolean; agents: RoomAgent[]; members: MemberInfo[] }> {
+    return request(`/api/hermes/group-chat/rooms/${roomId}/members/${encodeURIComponent(userId)}`, {
         method: 'DELETE',
     })
 }
@@ -356,6 +429,20 @@ export async function updateRoomConfig(roomId: string, config: RoomConfigInput):
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config),
     })
+}
+
+export async function continueRoomAgentHandoff(roomId: string, chainId: string): Promise<{ success: boolean; chain: RoomAgentHandoffChain }> {
+    return request(`/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/handoffs/${encodeURIComponent(chainId)}/continue`, {
+        method: 'POST',
+    })
+}
+
+export async function getRoomAgentHandoff(roomId: string, chainId: string): Promise<{ chain: RoomAgentHandoffChain }> {
+    return request(`/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/handoffs/${encodeURIComponent(chainId)}`)
+}
+
+export async function listStoppedRoomAgentHandoffs(roomId: string): Promise<{ chains: RoomAgentHandoffChain[] }> {
+    return request(`/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/handoffs`)
 }
 
 export async function updateRoomWorkspace(roomId: string, workspace: string): Promise<{ room: RoomInfo }> {

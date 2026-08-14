@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
-import { setApiKey, hasApiKey } from "@/api/client";
+import { setApiKey, clearApiKey, hasApiKey } from "@/api/client";
 import { fetchAuthStatus, loginWithPassword } from "@/api/auth";
 import { clearLoginLocks, resetDefaultLogin } from "@/api/recovery";
 import RecoveryConfirmModal, {
@@ -16,10 +16,13 @@ import {
 } from "@/api/device-login";
 import { addCustomProvider } from "@/api/hermes/system";
 import { useDeviceBinding } from "@/composables/useDeviceBinding";
+import { isDesktopShell } from "@/utils/desktop-bridge";
+import { resolveLoginRedirect } from "@/utils/login-redirect";
 import { useTheme } from "@/composables/useTheme";
 
 const { t } = useI18n();
 const router = useRouter();
+const route = useRoute();
 const { activateUserTheme } = useTheme();
 
 const username = ref("");
@@ -27,6 +30,7 @@ const password = ref("");
 const loading = ref(false);
 const errorMsg = ref("");
 const showLockResetHint = ref(false);
+const desktopShell = isDesktopShell();
 
 // Token Platform WeChat binding restore (previously scanned device)
 const {
@@ -53,8 +57,12 @@ const recoveryModal = ref<RecoveryModalState>({ open: false });
 const recoveryModalRef = ref<InstanceType<typeof RecoveryConfirmModal> | null>(null);
 
 // If already has a key, try to go to main page
-if (hasApiKey()) {
-  router.replace("/hermes/chat");
+if (desktopShell) {
+  // Desktop login is a recovery path. Drop stale JWTs before any background
+  // request can reuse them and show an unrelated expiry notice.
+  clearApiKey();
+} else if (hasApiKey()) {
+  router.replace(resolveLoginRedirect(route.query.redirect));
 }
 
 onMounted(async () => {
@@ -83,7 +91,7 @@ async function handlePasswordLogin() {
     const session = await loginWithPassword(username.value.trim(), password.value);
     setApiKey(session.token);
     activateUserTheme(session.userId, session.theme);
-    router.replace("/hermes/chat");
+    router.replace(resolveLoginRedirect(route.query.redirect));
   } catch (err: any) {
     if (err.status === 429 || err.status === 503) {
       errorMsg.value = t("login.tooManyAttempts");

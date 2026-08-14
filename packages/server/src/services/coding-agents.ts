@@ -207,7 +207,7 @@ export interface CodingAgentLaunchInput extends CodingAgentConfigScope {
   agentSessionId?: string
   agentNativeSessionId?: string
   isolateSettings?: boolean
-  sessionSource?: 'global_agent' | 'workflow'
+  sessionSource?: 'global_agent' | 'workflow' | 'group_chat'
   groupSystemPrompt?: string
   groupRuntimeScope?: {
     roomId: string
@@ -1637,6 +1637,48 @@ export async function getCodingAgentsStatus(): Promise<CodingAgentsStatus> {
   }
 }
 
+export interface CodingAgentUpdateResult {
+  success: boolean
+  tool: CodingAgentToolStatus
+  latestVersion: string
+  updateAvailable: boolean
+  message?: string
+}
+
+function versionGte(a: string, b: string): boolean {
+  const x = String(a).match(/\d+(?:\.\d+){0,2}/)
+  const y = String(b).match(/\d+(?:\.\d+){0,2}/)
+  if (!x || !y) return String(a) === String(b)
+  const p = x[0].split('.').map(Number)
+  const q = y[0].split('.').map(Number)
+  for (let i = 0; i < 3; i += 1) {
+    const u = p[i] || 0
+    const v = q[i] || 0
+    if (u !== v) return u > v
+  }
+  return true
+}
+
+export async function checkUpdateAgent(id: string): Promise<CodingAgentUpdateResult> {
+  const tool = getCodingAgentDefinition(id)
+  if (!tool) {
+    const err = new Error('Unknown coding agent')
+    ;(err as any).status = 400
+    throw err
+  }
+  const env = await commandEnv()
+  try {
+    const { stdout } = await runNpm(['view', tool.packageName, 'version'], { timeout: 15_000, env })
+    const latestVersion = stdout.trim()
+    const status = await getCodingAgentStatus(tool)
+    const updateAvailable = !!latestVersion && status.installed && !versionGte(status.version, latestVersion)
+    return { success: true, tool: status, latestVersion, updateAvailable }
+  } catch (err: any) {
+    const status = await getCodingAgentStatus(tool)
+    return { success: false, tool: status, latestVersion: '', updateAvailable: false, message: normalizeError(err) }
+  }
+}
+
 export async function installCodingAgent(id: string): Promise<CodingAgentMutationResult> {
   const tool = getCodingAgentDefinition(id)
   if (!tool) {
@@ -2106,6 +2148,8 @@ export async function startCodingAgentRun(
   const existingSession = getSession(sessionId)
   const sessionSource = input.sessionSource === 'global_agent'
     ? 'global_agent'
+    : input.sessionSource === 'group_chat'
+      ? 'group_chat'
     : input.sessionSource === 'workflow'
       ? 'workflow'
       : 'coding_agent'
@@ -2164,7 +2208,9 @@ export async function startCodingAgentRun(
     env: runtimeEnv,
     state,
     reasoningEffort: launch.reasoningEffort,
-    sessionSource: sessionSource === 'global_agent' || sessionSource === 'workflow' ? sessionSource : undefined,
+    sessionSource: sessionSource === 'global_agent' || sessionSource === 'workflow' || sessionSource === 'group_chat'
+      ? sessionSource
+      : undefined,
   })
   updateSession(sessionId, {
     source: sessionSource,
@@ -2192,7 +2238,7 @@ export function sendCodingAgentRunInput(
   systemPrompt?: string,
   images: CodingAgentImageInput[] = [],
   storageInput?: string,
-): { runId: string } {
+): { runId: string; messageId?: number } {
   return codingAgentRunManager.send(sessionId, input, { systemPrompt, images, storageInput })
 }
 

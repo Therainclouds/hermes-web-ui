@@ -30,6 +30,7 @@ describe('server security policy', () => {
     const resolveOrigin = createCorsOriginResolver('')
 
     await expect(resolveOrigin(fakeCtx('http://127.0.0.1:8648', '127.0.0.1:8648'))).resolves.toBe('http://127.0.0.1:8648')
+    await expect(resolveOrigin(fakeCtx('http://localhost', '192.168.10.102:8647'))).resolves.toBe('')
     await expect(resolveOrigin(fakeCtx('https://evil.example', '127.0.0.1:8648'))).resolves.toBe('')
   })
 
@@ -45,6 +46,8 @@ describe('server security policy', () => {
     expect(shouldRejectUpgradeOrigin({ headers: { origin: 'https://evil.example', host: '127.0.0.1:8648' } } as any, '')).toBe(true)
     expect(shouldRejectUpgradeOrigin({ headers: { origin: 'null', host: '127.0.0.1:8648' } } as any, '')).toBe(true)
     expect(shouldRejectUpgradeOrigin({ headers: { origin: 'http://127.0.0.1:8648', host: '127.0.0.1:8648' } } as any, '')).toBe(false)
+    expect(shouldRejectUpgradeOrigin({ headers: { origin: 'http://localhost', host: '192.168.10.102:8647' } } as any, '')).toBe(false)
+    expect(shouldRejectUpgradeOrigin({ headers: { origin: 'http://localhost:5173', host: '192.168.10.102:8647' } } as any, '')).toBe(false)
     expect(shouldRejectUpgradeOrigin({ headers: { host: '127.0.0.1:8648' } } as any, '')).toBe(false)
   })
 
@@ -85,5 +88,32 @@ describe('server security policy', () => {
     // WebSocket connections are required for ASR + chat streaming.
     expect(csp).toMatch(/connect-src[^;]*\b(?:ws|wss):/)
     expect(response.headers.get('strict-transport-security')).toContain('max-age=31536000')
+  })
+
+  it('preserves the opener only for the dedicated group chat Agent authorization document', async () => {
+    const app = new Koa()
+    app.use(securityHeaders())
+    app.use((ctx) => {
+      ctx.body = '<!doctype html>'
+    })
+    const server = app.listen(0)
+    servers.push(server)
+    await new Promise<void>((resolve) => server.once('listening', () => resolve()))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('expected tcp server')
+
+    const authorizationDocument = await fetch(
+      `http://127.0.0.1:${address.port}/?groupChatAgentLink=1`,
+    )
+    const unrelatedPath = await fetch(
+      `http://127.0.0.1:${address.port}/health?groupChatAgentLink=1`,
+    )
+    const unrelatedQuery = await fetch(
+      `http://127.0.0.1:${address.port}/?groupChatAgentLink=unexpected`,
+    )
+
+    expect(authorizationDocument.headers.get('cross-origin-opener-policy')).toBe('unsafe-none')
+    expect(unrelatedPath.headers.get('cross-origin-opener-policy')).toBe('same-origin-allow-popups')
+    expect(unrelatedQuery.headers.get('cross-origin-opener-policy')).toBe('same-origin-allow-popups')
   })
 })

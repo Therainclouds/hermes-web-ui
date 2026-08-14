@@ -63,6 +63,218 @@ describe('coding agent completion errors', () => {
     expect(codingAgentGatewayErrorMessage(`  ${error}\n`)).toBe(error)
     expect(codingAgentGatewayErrorMessage('Provider returned HTTP 502')).toBe('Provider returned HTTP 502')
     expect(codingAgentGatewayErrorMessage('Here is a normal answer mentioning API Error: 529 as an example')).toBeNull()
+    expect(codingAgentGatewayErrorMessage('API Error: is a phrase used in this example')).toBeNull()
+  })
+
+  it('does not fail a normal native Claude reply whose text begins with a numeric API Error example', async () => {
+    initAllHermesTables()
+    const manager = new CodingAgentRunManager()
+    const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    const agentSessionId = `agent-session-claude-api-example-${suffix}`
+    const chatSessionId = `chat-session-claude-api-example-${suffix}`
+    const state: any = { messages: [], isWorking: false, events: [], queue: [] }
+    const emitted = vi.fn()
+    ;(manager as any).emitToChat = emitted
+    ;(manager as any).refreshCodingAgentUsage = async () => {}
+
+    manager.start({
+      agentSessionId,
+      agentId: 'claude-code',
+      mode: 'scoped',
+      profile: 'default',
+      provider: 'test-provider',
+      model: 'test-model',
+      apiMode: 'anthropic_messages',
+      sessionId: chatSessionId,
+      command: 'claude',
+      args: [],
+      shellCommand: 'claude',
+      workspaceDir: process.cwd(),
+      state,
+    })
+
+    const run = (manager as any).runs.get(agentSessionId)
+    run.acceptingPrintEvent = true
+    manager.handleResponseEvent(agentSessionId, {
+      type: 'response.completed',
+      data: {
+        response: {
+          id: `resp-${suffix}`,
+          status: 'completed',
+          model: 'test-model',
+          output: [{
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'API Error: 529 is the example requested by the user.' }],
+          }],
+        },
+      },
+    })
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(getSessionDetail(chatSessionId)?.messages.at(-1)).toEqual(expect.objectContaining({
+      content: 'API Error: 529 is the example requested by the user.',
+      finish_reason: 'stop',
+    }))
+    expect(emitted).toHaveBeenCalledWith(chatSessionId, 'run.completed', expect.anything())
+    expect(emitted).not.toHaveBeenCalledWith(chatSessionId, 'run.failed', expect.anything())
+    manager.shutdown()
+  })
+
+  it('waits for Claude stdout to close before settling a zero-exit child', async () => {
+    initAllHermesTables()
+    const fixtureDir = mkdtempSync(join(tmpdir(), 'claude-api-error-close-'))
+    const fixturePath = join(fixtureDir, 'delayed-api-error.cjs')
+    const nativeError = JSON.stringify({
+      type: 'assistant',
+      isApiErrorMessage: true,
+      error: 'unknown',
+      message: {
+        role: 'assistant',
+        stop_reason: 'stop_sequence',
+        content: [{ type: 'text', text: 'API Error: stream ended without terminal event' }],
+      },
+    })
+    writeFileSync(fixturePath, [
+      "const { spawn } = require('child_process')",
+      `spawn(process.execPath, ['-e', ${JSON.stringify(`setTimeout(() => process.stdout.write(${JSON.stringify(`${nativeError}\n`)}), 75)`) }], { stdio: ['ignore', 1, 2] })`,
+      'process.exit(0)',
+    ].join('\n'))
+
+    const manager = new CodingAgentRunManager()
+    const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    const agentSessionId = `agent-session-claude-close-${suffix}`
+    const chatSessionId = `chat-session-claude-close-${suffix}`
+    const state: any = { messages: [], isWorking: false, events: [], queue: [] }
+    const emitted = vi.fn()
+    ;(manager as any).emitToChat = emitted
+    ;(manager as any).refreshCodingAgentUsage = async () => {}
+
+    try {
+      manager.start({
+        agentSessionId,
+        agentId: 'claude-code',
+        mode: 'scoped',
+        profile: 'default',
+        provider: 'test-provider',
+        model: 'test-model',
+        apiMode: 'anthropic_messages',
+        sessionId: chatSessionId,
+        command: process.execPath,
+        args: [fixturePath],
+        shellCommand: process.execPath,
+        workspaceDir: process.cwd(),
+        state,
+      })
+      manager.send(chatSessionId, 'test delayed final stdout')
+
+      await vi.waitFor(() => {
+        expect(emitted).toHaveBeenCalledWith(chatSessionId, 'run.failed', expect.objectContaining({
+          error: 'API Error: stream ended without terminal event',
+        }))
+      }, { timeout: 2_000 })
+
+      expect(emitted).not.toHaveBeenCalledWith(chatSessionId, 'run.completed', expect.anything())
+      expect(getSessionDetail(chatSessionId)?.messages.at(-1)).toEqual(expect.objectContaining({
+        content: 'API Error: stream ended without terminal event',
+        finish_reason: 'error',
+      }))
+    } finally {
+      manager.shutdown()
+      rmSync(fixtureDir, { recursive: true, force: true })
+    }
+  })
+
+  it('persists a native Claude API error as an explicit failed terminal message', async () => {
+    initAllHermesTables()
+    const manager = new CodingAgentRunManager()
+    const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    const agentSessionId = `agent-session-claude-api-error-${suffix}`
+    const chatSessionId = `chat-session-claude-api-error-${suffix}`
+    const state: any = { messages: [], isWorking: false, events: [], queue: [] }
+    const emitted = vi.fn()
+    ;(manager as any).emitToChat = emitted
+    ;(manager as any).refreshCodingAgentUsage = async () => {}
+
+    manager.start({
+      agentSessionId,
+      agentId: 'claude-code',
+      mode: 'scoped',
+      profile: 'default',
+      provider: 'test-provider',
+      model: 'test-model',
+      apiMode: 'anthropic_messages',
+      sessionId: chatSessionId,
+      command: 'claude',
+      args: [],
+      shellCommand: 'claude',
+      workspaceDir: process.cwd(),
+      state,
+    })
+
+    const run = (manager as any).runs.get(agentSessionId)
+    run.currentChild = { exitCode: null, signalCode: null, killed: false }
+    ;(manager as any).handleClaudePrintLine(run, JSON.stringify({
+      type: 'assistant',
+      isApiErrorMessage: true,
+      error: 'unknown',
+      message: {
+        role: 'assistant',
+        stop_reason: 'stop_sequence',
+        content: [{ type: 'text', text: 'API Error: stream ended without terminal event' }],
+      },
+    }))
+
+    expect(run.pendingChatCompletionEvent).toBe('run.failed')
+    expect(emitted).not.toHaveBeenCalledWith(chatSessionId, 'run.failed', expect.anything())
+
+    const terminalEventCount = emitted.mock.calls.length
+    const terminalMessages = JSON.stringify(state.messages)
+    const terminalText = run.printText
+    ;(manager as any).handleClaudePrintLine(run, JSON.stringify({
+      type: 'stream_event',
+      event: {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'late text after failure' },
+      },
+    }))
+    ;(manager as any).handleClaudePrintLine(run, JSON.stringify({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'late-tool', name: 'write_file', input: { path: 'late.txt' } }],
+      },
+    }))
+    ;(manager as any).handleClaudePrintLine(run, JSON.stringify({
+      type: 'result',
+      result: 'late successful result',
+    }))
+
+    expect(emitted.mock.calls).toHaveLength(terminalEventCount)
+    expect(JSON.stringify(state.messages)).toBe(terminalMessages)
+    expect(run.printText).toBe(terminalText)
+
+    run.currentChild = undefined
+    await (manager as any).emitAndMarkPrintChatRunCompletedAfterUsage(
+      run,
+      run.pendingChatCompletionEvent,
+      run.pendingChatCompletionPayload,
+    )
+    ;(manager as any).completeClaudePrintTurn(run)
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    const messages = getSessionDetail(chatSessionId)?.messages || []
+    expect(messages.at(-1)).toEqual(expect.objectContaining({
+      role: 'assistant',
+      content: 'API Error: stream ended without terminal event',
+      finish_reason: 'error',
+    }))
+    expect(emitted).toHaveBeenCalledWith(chatSessionId, 'run.failed', expect.objectContaining({
+      error: 'API Error: stream ended without terminal event',
+    }))
+    expect(emitted).not.toHaveBeenCalledWith(chatSessionId, 'run.completed', expect.anything())
+    manager.shutdown()
   })
 })
 
@@ -439,6 +651,196 @@ describe('coding agent run state', () => {
     expect(state.isWorking).toBe(false)
     expect(state.messages).toEqual([])
     expect(emitted).not.toHaveBeenCalled()
+    manager.shutdown()
+  })
+
+  it('ignores proxy terminal failures while a native Codex process is still running', () => {
+    initAllHermesTables()
+    const manager = new CodingAgentRunManager()
+    const state: any = { messages: [], isWorking: true, events: [], queue: [] }
+    const emitted = vi.fn()
+    ;(manager as any).ensureDbSession = () => {}
+    ;(manager as any).emitToChat = emitted
+    ;(manager as any).refreshCodingAgentUsage = async () => {}
+
+    manager.start({
+      agentSessionId: 'agent-session-codex-retry',
+      agentId: 'codex',
+      mode: 'scoped',
+      profile: 'default',
+      provider: 'test-provider',
+      model: 'test-model',
+      sessionId: 'chat-session-codex-retry',
+      command: 'codex',
+      args: [],
+      shellCommand: 'codex',
+      workspaceDir: process.cwd(),
+      state,
+    })
+    const run = (manager as any).runs.get('agent-session-codex-retry')
+    run.currentChild = { exitCode: null, signalCode: null, killed: false }
+
+    manager.handleResponseEvent('agent-session-codex-retry', {
+      type: 'response.failed',
+      data: {
+        response: {
+          id: 'provider-attempt-1',
+          status: 'failed',
+          error: {
+            message: 'Reconnecting... 1/5 (stream disconnected before completion: stream closed before response.completed)',
+          },
+          output: [],
+        },
+      },
+    })
+
+    expect(run.terminalEventHandled).not.toBe(true)
+    expect(run.pendingChatCompletionEvent).toBeUndefined()
+    expect(emitted).not.toHaveBeenCalledWith('chat-session-codex-retry', 'run.failed', expect.anything())
+    manager.shutdown()
+  })
+
+  it('lets recovered native Codex errors complete successfully when the child exits zero', async () => {
+    initAllHermesTables()
+    const manager = new CodingAgentRunManager()
+    const state: any = { messages: [], isWorking: true, events: [], queue: [] }
+    const emitted = vi.fn()
+    ;(manager as any).ensureDbSession = () => {}
+    ;(manager as any).emitToChat = emitted
+    ;(manager as any).refreshCodingAgentUsage = async () => {}
+
+    manager.start({
+      agentSessionId: 'agent-session-codex-native-retry',
+      agentId: 'codex',
+      mode: 'scoped',
+      profile: 'default',
+      provider: 'test-provider',
+      model: 'test-model',
+      sessionId: 'chat-session-codex-native-retry',
+      command: 'codex',
+      args: [],
+      shellCommand: 'codex',
+      workspaceDir: process.cwd(),
+      state,
+    })
+    const run = (manager as any).runs.get('agent-session-codex-native-retry')
+    run.currentChild = { exitCode: null, signalCode: null, killed: false }
+
+    ;(manager as any).handleCodexExecLine(run, JSON.stringify({
+      type: 'error',
+      message: 'Reconnecting... 1/5 (stream disconnected before completion: stream closed before response.completed)',
+    }))
+
+    expect(run.terminalEventHandled).not.toBe(true)
+    expect(run.pendingChatCompletionEvent).toBeUndefined()
+    expect(run.codexPendingError).toBe('Reconnecting... 1/5 (stream disconnected before completion: stream closed before response.completed)')
+    expect(emitted).not.toHaveBeenCalledWith('chat-session-codex-native-retry', 'run.failed', expect.anything())
+
+    ;(manager as any).handleCodexExecLine(run, JSON.stringify({
+      method: 'error',
+      params: { message: 'Reconnecting... 2/5' },
+    }))
+
+    expect(run.terminalEventHandled).not.toBe(true)
+    expect(run.pendingChatCompletionEvent).toBeUndefined()
+    expect(run.codexPendingError).toBe('Reconnecting... 2/5')
+
+    ;(manager as any).appendCodexFinalText(run, 'recovered final answer')
+    run.currentChild = undefined
+    ;(manager as any).finishCodexExecTurn(run, 0)
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(run.terminalEventHandled).toBe(true)
+    expect(run.pendingChatCompletionEvent).toBeUndefined()
+    expect(emitted).toHaveBeenCalledWith('chat-session-codex-native-retry', 'run.completed', expect.objectContaining({
+      output: 'recovered final answer',
+      error: undefined,
+    }))
+    expect(emitted).not.toHaveBeenCalledWith('chat-session-codex-native-retry', 'run.failed', expect.anything())
+    ;(manager as any).finishCodexExecTurn(run, 0)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(emitted.mock.calls.filter(([, event]) => event === 'run.completed')).toHaveLength(1)
+    manager.shutdown()
+  })
+
+  it('reports a provisional native Codex error when the child exits non-zero', async () => {
+    initAllHermesTables()
+    const manager = new CodingAgentRunManager()
+    const state: any = { messages: [], isWorking: true, events: [], queue: [] }
+    const emitted = vi.fn()
+    ;(manager as any).ensureDbSession = () => {}
+    ;(manager as any).emitToChat = emitted
+    ;(manager as any).refreshCodingAgentUsage = async () => {}
+
+    manager.start({
+      agentSessionId: 'agent-session-codex-native-error-exit',
+      agentId: 'codex',
+      mode: 'scoped',
+      profile: 'default',
+      provider: 'test-provider',
+      model: 'test-model',
+      sessionId: 'chat-session-codex-native-error-exit',
+      command: 'codex',
+      args: [],
+      shellCommand: 'codex',
+      workspaceDir: process.cwd(),
+      state,
+    })
+    const run = (manager as any).runs.get('agent-session-codex-native-error-exit')
+    run.currentChild = { exitCode: null, signalCode: null, killed: false }
+    ;(manager as any).handleCodexExecLine(run, JSON.stringify({
+      type: 'error',
+      message: 'native transport retries exhausted',
+    }))
+
+    run.currentChild = undefined
+    ;(manager as any).finishCodexExecTurn(run, 1)
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(emitted).toHaveBeenCalledWith('chat-session-codex-native-error-exit', 'run.failed', expect.objectContaining({
+      error: 'native transport retries exhausted',
+    }))
+    expect(emitted).not.toHaveBeenCalledWith('chat-session-codex-native-error-exit', 'run.completed', expect.anything())
+    expect(emitted.mock.calls.filter(([, event]) => event === 'run.failed')).toHaveLength(1)
+    manager.shutdown()
+  })
+
+  it('keeps native Codex turn failures authoritative while the child is still running', () => {
+    initAllHermesTables()
+    const manager = new CodingAgentRunManager()
+    const state: any = { messages: [], isWorking: true, events: [], queue: [] }
+    const emitted = vi.fn()
+    ;(manager as any).ensureDbSession = () => {}
+    ;(manager as any).emitToChat = emitted
+    ;(manager as any).refreshCodingAgentUsage = async () => {}
+
+    manager.start({
+      agentSessionId: 'agent-session-codex-native-failure',
+      agentId: 'codex',
+      mode: 'scoped',
+      profile: 'default',
+      provider: 'test-provider',
+      model: 'test-model',
+      sessionId: 'chat-session-codex-native-failure',
+      command: 'codex',
+      args: [],
+      shellCommand: 'codex',
+      workspaceDir: process.cwd(),
+      state,
+    })
+    const run = (manager as any).runs.get('agent-session-codex-native-failure')
+    run.currentChild = { exitCode: null, signalCode: null, killed: false }
+
+    ;(manager as any).handleCodexExecLine(run, JSON.stringify({
+      type: 'turn.failed',
+      error: { message: 'native Codex failure' },
+    }))
+
+    expect(run.terminalEventHandled).toBe(true)
+    expect(run.pendingChatCompletionEvent).toBe('run.failed')
+    expect(run.pendingChatCompletionPayload).toEqual(expect.objectContaining({
+      error: 'native Codex failure',
+    }))
     manager.shutdown()
   })
 
@@ -1727,13 +2129,13 @@ describe('coding agent chat event mapper', () => {
 })
 
 describe('response stream tool detail events', () => {
-  it('emits updated tool.started payloads as function-call arguments stream in', () => {
+  it('buffers function-call argument deltas and emits tool.started once arguments are complete', () => {
     const state: any = { messages: [], isWorking: false, events: [], queue: [] }
     applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.created', {
       response: { id: 'resp-1', status: 'in_progress' },
     })
     const started = applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.output_item.added', {
-      item: { type: 'function_call', call_id: 'call-1', name: 'Bash', arguments: '' },
+      item: { type: 'function_call', call_id: 'call-1', name: 'Bash', arguments: '{}' },
     })
     const withCommand = applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.function_call_arguments.delta', {
       item_id: 'call-1',
@@ -1743,26 +2145,48 @@ describe('response stream tool detail events', () => {
       item_id: 'call-1',
       delta: '}',
     })
+    const completedArguments = applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.output_item.done', {
+      item: { type: 'function_call', call_id: 'call-1', name: 'Bash', arguments: '{"command":"pwd"}' },
+    })
+    const duplicateDone = applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.output_item.done', {
+      item: { type: 'function_call', call_id: 'call-1', name: 'Bash', arguments: '{"command":"pwd"}' },
+    })
+
+    expect(started).toBeNull()
+    expect(withCommand).toBeNull()
+    expect(withFinalArgs).toBeNull()
+    expect(completedArguments).toEqual(expect.objectContaining({
+      event: 'tool.started',
+      payload: expect.objectContaining({
+        tool_call_id: 'call-1',
+        tool: 'Bash',
+        arguments: '{"command":"pwd"}',
+      }),
+    }))
+    expect(duplicateDone).toBeNull()
+  })
+
+  it('emits tool.started immediately when an added function call already has complete arguments', () => {
+    const state: any = { messages: [], isWorking: false, events: [], queue: [] }
+    applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.created', {
+      response: { id: 'resp-1', status: 'in_progress' },
+    })
+    const started = applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.output_item.added', {
+      item: { type: 'function_call', call_id: 'call-1', name: 'Bash', arguments: '{"command":"pwd"}' },
+    })
+    const done = applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.output_item.done', {
+      item: { type: 'function_call', call_id: 'call-1', name: 'Bash', arguments: '{"command":"pwd"}' },
+    })
 
     expect(started).toEqual(expect.objectContaining({
       event: 'tool.started',
       payload: expect.objectContaining({
         tool_call_id: 'call-1',
         tool: 'Bash',
-      }),
-    }))
-    expect(withCommand).toEqual(expect.objectContaining({
-      event: 'tool.started',
-      payload: expect.objectContaining({
-        arguments: '{"command":"pwd"',
-      }),
-    }))
-    expect(withFinalArgs).toEqual(expect.objectContaining({
-      event: 'tool.started',
-      payload: expect.objectContaining({
         arguments: '{"command":"pwd"}',
       }),
     }))
+    expect(done).toBeNull()
   })
 
   it('emits completed tool events with duration', () => {
@@ -1834,6 +2258,104 @@ describe('response stream tool detail events', () => {
 })
 
 describe('Claude Code stream-json mapping', () => {
+  it('uses native stream-json tool events while the Claude child is running', () => {
+    const manager = new CodingAgentRunManager()
+    const emitted: Array<{ event: string; payload: any }> = []
+    ;(manager as any).emitToChat = (_sessionId: string, event: string, payload: any) => {
+      emitted.push({ event, payload })
+    }
+    ;(manager as any).ensureDbSession = () => {}
+    const run = {
+      id: 'agent-session-native-tools',
+      launch: {
+        agentSessionId: 'agent-session-native-tools',
+        agentId: 'claude-code',
+        profile: 'default',
+        provider: 'test',
+        model: 'claude-test',
+        sessionId: 'chat-session-native-tools',
+        command: 'claude',
+        args: [],
+        shellCommand: 'claude',
+        workspaceDir: process.cwd(),
+      },
+      state: { messages: [], isWorking: false, events: [], queue: [] },
+      lastActiveAt: Date.now(),
+      startedAt: Date.now(),
+      exited: false,
+      currentChild: { exitCode: null, signalCode: null, killed: false },
+      printResponseId: 'resp_native_tools',
+      printMessageId: 'msg_resp_native_tools',
+      printToolBlocks: new Map(),
+    }
+    ;(manager as any).runs.set(run.id, run)
+
+    manager.handleResponseEvent(run.id, {
+      type: 'response.output_item.added',
+      data: {
+        item: {
+          type: 'function_call',
+          id: 'call-proxy-web-search',
+          call_id: 'call-proxy-web-search',
+          name: 'web_search',
+          arguments: '{}',
+        },
+      },
+    })
+    manager.handleResponseEvent(run.id, {
+      type: 'response.output_item.done',
+      data: {
+        item: {
+          type: 'function_call_output',
+          id: 'call-proxy-web-search',
+          call_id: 'call-proxy-web-search',
+          output: '',
+        },
+      },
+    })
+
+    ;(manager as any).handleClaudePrintLine(run, JSON.stringify({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{
+          type: 'tool_use',
+          id: 'call-native-web-search',
+          name: 'WebSearch',
+          input: { query: 'Xiamen weather' },
+        }],
+      },
+    }))
+    ;(manager as any).handleClaudePrintLine(run, JSON.stringify({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'call-native-web-search',
+          content: 'Sunny',
+        }],
+      },
+    }))
+
+    expect(emitted.filter(event => event.event === 'tool.started').map(event => event.payload)).toEqual([
+      expect.objectContaining({
+        tool_call_id: 'call-native-web-search',
+        tool: 'WebSearch',
+        arguments: '{"query":"Xiamen weather"}',
+      }),
+    ])
+    expect(emitted.filter(event => event.event === 'tool.completed').map(event => event.payload)).toEqual([
+      expect.objectContaining({
+        tool_call_id: 'call-native-web-search',
+        output: 'Sunny',
+      }),
+    ])
+    expect(run.state.messages).not.toContainEqual(expect.objectContaining({
+      tool_calls: [expect.objectContaining({ id: 'call-proxy-web-search' })],
+    }))
+  })
+
   it('maps top-level tool_result messages to tool.completed', () => {
     const manager = new CodingAgentRunManager()
     const emitted: Array<{ event: string; payload: any }> = []
@@ -1887,6 +2409,108 @@ describe('Claude Code stream-json mapping', () => {
         tool_call_id: 'toolu_1',
         output: '/tmp/project',
       }),
+    }))
+  })
+})
+
+describe('Codex JSONL tool mapping', () => {
+  it('keeps proxy text streaming but uses native JSONL for tool events', () => {
+    const manager = new CodingAgentRunManager()
+    const emitted: Array<{ event: string; payload: any }> = []
+    ;(manager as any).emitToChat = (_sessionId: string, event: string, payload: any) => {
+      emitted.push({ event, payload })
+    }
+    ;(manager as any).ensureDbSession = () => {}
+    const run = {
+      id: 'agent-session-codex-native-tools',
+      launch: {
+        agentSessionId: 'agent-session-codex-native-tools',
+        agentId: 'codex',
+        profile: 'default',
+        provider: 'test',
+        model: 'gpt-codex-test',
+        sessionId: 'chat-session-codex-native-tools',
+        command: 'codex',
+        args: [],
+        shellCommand: 'codex',
+        workspaceDir: process.cwd(),
+      },
+      state: { messages: [], isWorking: false, events: [], queue: [] },
+      lastActiveAt: Date.now(),
+      startedAt: Date.now(),
+      exited: false,
+      currentChild: { exitCode: null, signalCode: null, killed: false },
+      printResponseId: 'resp_codex_native_tools',
+      printMessageId: 'msg_resp_codex_native_tools',
+      codexToolBlocks: new Map(),
+      codexChatText: '',
+    }
+    ;(manager as any).runs.set(run.id, run)
+
+    manager.handleResponseEvent(run.id, {
+      type: 'response.output_text.delta',
+      data: { type: 'response.output_text.delta', delta: 'Searching...' },
+    })
+    manager.handleResponseEvent(run.id, {
+      type: 'response.output_item.added',
+      data: {
+        item: {
+          type: 'function_call',
+          id: 'call-proxy-web-search',
+          call_id: 'call-proxy-web-search',
+          name: 'web_search',
+          arguments: '{}',
+        },
+      },
+    })
+    manager.handleResponseEvent(run.id, {
+      type: 'response.output_item.done',
+      data: {
+        item: {
+          type: 'function_call_output',
+          id: 'call-proxy-web-search',
+          call_id: 'call-proxy-web-search',
+          output: '',
+        },
+      },
+    })
+
+    ;(manager as any).handleCodexExecLine(run, JSON.stringify({
+      type: 'item.started',
+      item: {
+        type: 'web_search',
+        id: 'call-native-web-search',
+        query: 'Xiamen weather',
+      },
+    }))
+    ;(manager as any).handleCodexExecLine(run, JSON.stringify({
+      type: 'item.completed',
+      item: {
+        type: 'web_search',
+        id: 'call-native-web-search',
+        query: 'Xiamen weather',
+        output: 'Sunny',
+      },
+    }))
+
+    expect(emitted.filter(event => event.event === 'message.delta').map(event => event.payload.delta)).toEqual([
+      'Searching...',
+    ])
+    expect(emitted.filter(event => event.event === 'tool.started').map(event => event.payload)).toEqual([
+      expect.objectContaining({
+        tool_call_id: 'call-native-web-search',
+        tool: 'Web Search',
+        arguments: '{"query":"Xiamen weather"}',
+      }),
+    ])
+    expect(emitted.filter(event => event.event === 'tool.completed').map(event => event.payload)).toEqual([
+      expect.objectContaining({
+        tool_call_id: 'call-native-web-search',
+        output: 'Sunny',
+      }),
+    ])
+    expect(run.state.messages).not.toContainEqual(expect.objectContaining({
+      tool_calls: [expect.objectContaining({ id: 'call-proxy-web-search' })],
     }))
   })
 })

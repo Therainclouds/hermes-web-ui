@@ -1,8 +1,16 @@
 import Koa from 'koa'
 import bodyParser from '@koa/bodyparser'
 import { createServer, type Server as HttpServer } from 'http'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { groupChatRoutes, setGroupChatServer } from '../../packages/server/src/routes/hermes/group-chat'
+import { groupChatPublicRoutes, groupChatRoutes, setGroupChatServer } from '../../packages/server/src/routes/hermes/group-chat'
+import {
+  issueRemoteWorkspaceGrant,
+  resetRemoteWorkspaceGrantsForTest,
+  revokeRemoteWorkspaceGrantsForRun,
+} from '../../packages/server/src/services/hermes/group-chat/remote-workspace-auth'
 
 function listen(server: HttpServer): Promise<string> {
   return new Promise(resolve => server.listen(0, '127.0.0.1', () => {
@@ -19,7 +27,12 @@ describe('group chat REST route baseline', () => {
   let agentClients: any
   let clearRoomRuntimeState: ReturnType<typeof vi.fn>
   let updateRoomName: ReturnType<typeof vi.fn>
+  let broadcastRoomMetadata: ReturnType<typeof vi.fn>
+  let broadcastRoomAgents: ReturnType<typeof vi.fn>
+  let removeLiveRoomMember: ReturnType<typeof vi.fn>
+  let publishAgentAttachmentMessage: ReturnType<typeof vi.fn>
   let roomSummaryService: any
+  const temporaryDirectories: string[] = []
 
   beforeEach(async () => {
     storage = {
@@ -31,11 +44,18 @@ describe('group chat REST route baseline', () => {
       getRoom: vi.fn((id) => storage.rooms.get(id)),
       getAllRooms: vi.fn(() => [...storage.rooms.values()]),
       getRoomsForProfiles: vi.fn(() => [...storage.rooms.values()]),
+      getRoomsForAuthUser: vi.fn(() => []),
+      getOwnedRoomsForAuthUser: vi.fn(() => []),
       getRecentMessagesForUI: vi.fn((roomId, limit = 150, offset = 0) => (storage.messages.get(roomId) || []).slice(offset, offset + limit)),
       getMessageCount: vi.fn((roomId) => (storage.messages.get(roomId) || []).length),
       getMessage: vi.fn((messageId) => [...storage.messages.values()].flat().find((message: any) => message.id === messageId) || null),
       getRoomAgents: vi.fn((roomId) => storage.agents.get(roomId) || []),
       getRoomMembers: vi.fn((roomId) => storage.members.get(roomId) || []),
+      getMemberByUserId: vi.fn((roomId, userId) => (storage.members.get(roomId) || []).find((member: any) => member.userId === userId) || null),
+      removeRoomMember: vi.fn((roomId, userId) => storage.members.set(
+        roomId,
+        (storage.members.get(roomId) || []).filter((member: any) => member.userId !== userId),
+      )),
       getRoomByInviteCode: vi.fn((code) => [...storage.rooms.values()].find((r: any) => r.inviteCode === code)),
       addRoomAgent: vi.fn((roomId, agentId, profile, name, description, invited, metadata = {}) => {
         const row = { id: `row-${agentId}`, roomId, agentId, profile, name, description, invited, ...metadata }
@@ -58,7 +78,24 @@ describe('group chat REST route baseline', () => {
         if (room) Object.assign(room, config)
         return room
       }),
+      updateRoomInviteCode: vi.fn((roomId, inviteCode) => {
+        const room = storage.rooms.get(roomId)
+        if (room) room.inviteCode = inviteCode
+      }),
+      updateRoomGuestAgentPolicy: vi.fn((roomId, policy) => {
+        const room = storage.rooms.get(roomId)
+        if (room) {
+          Object.assign(room, {
+            allowGuestAgents: policy.allowGuestAgents ? 1 : 0,
+            guestAgentApproval: 'owner',
+            maxGuestAgentsPerMember: policy.maxGuestAgentsPerMember,
+            allowRemoteWorkspaceAccess: policy.allowGuestAgents && policy.allowRemoteWorkspaceAccess ? 1 : 0,
+          })
+        }
+        return room || null
+      }),
       deleteRoom: vi.fn((roomId) => storage.rooms.delete(roomId)),
+      getStoppedHandoffChains: vi.fn(() => []),
     }
     agentClients = {
       createAgent: vi.fn(async (cfg: any) => {
@@ -75,6 +112,13 @@ describe('group chat REST route baseline', () => {
       if (room) room.name = name
       return room || null
     })
+    broadcastRoomMetadata = vi.fn((roomId: string) => storage.getRoom(roomId) || null)
+    broadcastRoomAgents = vi.fn((roomId: string) => storage.getRoomAgents(roomId))
+    removeLiveRoomMember = vi.fn((roomId: string, userId: string) => {
+      storage.removeRoomMember(roomId, userId)
+      return storage.getRoomMembers(roomId)
+    })
+    publishAgentAttachmentMessage = vi.fn(() => ({ id: 'agent-attachment-message-1' }))
     roomSummaryService = {
       runExclusive: vi.fn(async (_roomId: string, task: () => unknown) => task()),
       getState: vi.fn((roomId: string) => ({
@@ -105,19 +149,37 @@ describe('group chat REST route baseline', () => {
       getRoomSummaryService: () => roomSummaryService,
       agentClients,
       clearRoomRuntimeState,
+      deleteRoomRuntimeState: vi.fn(async () => {}),
       updateRoomName,
+      broadcastRoomMetadata,
+      broadcastRoomAgents,
+      broadcastGuestAgentPolicy: vi.fn(),
+      removeRoomMember: removeLiveRoomMember,
+      publishAgentAttachmentMessage,
+      getRoomAgentViews: (roomId: string) => storage.getRoomAgents(roomId),
       ensureDefaultRoomWorkspace: (roomId: string, profile: string) => `/managed/group-chat/${profile}/${roomId}`,
     } as any)
     const app = new Koa()
     app.use(bodyParser())
+    app.use(async (ctx, next) => {
+      const userId = Number(ctx.get('x-test-user-id') || 0)
+      if (userId > 0) ctx.state.user = { id: userId, role: 'user', profiles: [] }
+      if (ctx.get('x-test-user') === 'member') {
+        ctx.state.user = { id: 7, username: 'member', role: 'user', profiles: ['default'] }
+      }
+      await next()
+    })
+    app.use(groupChatPublicRoutes.routes())
     app.use(groupChatRoutes.routes())
     httpServer = createServer(app.callback())
     baseUrl = await listen(httpServer)
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     httpServer.close()
     setGroupChatServer(null as any)
+    resetRemoteWorkspaceGrantsForTest()
+    await Promise.all(temporaryDirectories.splice(0).map(path => rm(path, { recursive: true, force: true })))
   })
 
   it('requires name and inviteCode when creating a room', async () => {
@@ -129,6 +191,265 @@ describe('group chat REST route baseline', () => {
 
     expect(res.status).toBe(400)
     await expect(res.json()).resolves.toEqual({ error: 'name and inviteCode are required' })
+  })
+
+  it('resolves invite-only room metadata without exposing management fields', async () => {
+    storage.rooms.set('room-1', {
+      id: 'room-1',
+      name: 'Shared Room',
+      inviteCode: 'ROOM1',
+      workspace: '/private/workspace',
+      summaryProfile: 'default',
+    })
+
+    const res = await fetch(`${baseUrl}/api/hermes/group-chat/rooms/join/ROOM1`)
+
+    expect(res.status).toBe(200)
+    await expect(res.json()).resolves.toEqual({
+      room: {
+        id: 'room-1',
+        name: 'Shared Room',
+        inviteCode: null,
+        canManage: false,
+        canMentionAll: false,
+        ownerMemberId: '',
+        summaryProfile: '',
+        summaryProvider: '',
+        summaryModel: '',
+        summaryApiMode: '',
+        summaryEveryTurns: 0,
+        totalTokens: 0,
+        workspace: '',
+        allowGuestAgents: 0,
+        guestAgentApproval: 'owner',
+        maxGuestAgentsPerMember: 1,
+      },
+    })
+  })
+
+  it('updates guest Agent policy without returning internal room ownership fields', async () => {
+    storage.rooms.set('room-1', {
+      id: 'room-1',
+      name: 'Owner Room',
+      ownerAuthUserId: 7,
+      inviteCode: 'SECRET',
+      workspace: '/private/workspace',
+      allowGuestAgents: 0,
+      guestAgentApproval: 'owner',
+      maxGuestAgentsPerMember: 1,
+    })
+
+    const res = await fetch(`${baseUrl}/api/hermes/group-chat/rooms/room-1/guest-agent-policy`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-test-user-id': '7',
+      },
+      body: JSON.stringify({
+        allowGuestAgents: true,
+        maxGuestAgentsPerMember: 2,
+        allowRemoteWorkspaceAccess: true,
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    await expect(res.json()).resolves.toEqual({
+      policy: {
+        allowGuestAgents: 1,
+        guestAgentApproval: 'owner',
+        maxGuestAgentsPerMember: 2,
+        allowRemoteWorkspaceAccess: 1,
+      },
+    })
+  })
+
+  it('rotates the invite code without removing existing remote Agents', async () => {
+    const remoteAgent = {
+      id: 'remote-row',
+      roomId: 'room-1',
+      agentId: 'remote-agent',
+      name: 'Remote Agent',
+      executorType: 'remote',
+      connectorId: 'connector-1',
+    }
+    storage.rooms.set('room-1', {
+      id: 'room-1',
+      name: 'Owner Room',
+      ownerAuthUserId: 7,
+      inviteCode: 'OLD-CODE',
+    })
+    storage.agents.set('room-1', [remoteAgent])
+
+    const res = await fetch(`${baseUrl}/api/hermes/group-chat/rooms/room-1/invite-code`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-test-user-id': '7',
+      },
+      body: JSON.stringify({ inviteCode: 'NEW-CODE' }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(storage.updateRoomInviteCode).toHaveBeenCalledWith('room-1', 'NEW-CODE')
+    expect(broadcastRoomMetadata).toHaveBeenCalledWith('room-1')
+    expect(storage.getRoomAgents('room-1')).toEqual([remoteAgent])
+    expect(storage.removeRoomAgent).not.toHaveBeenCalled()
+    expect(agentClients.removeAgentFromRoom).not.toHaveBeenCalled()
+  })
+
+  it('generates a fresh invite code when cloning a room', async () => {
+    storage.rooms.set('room-source', {
+      id: 'room-source',
+      name: 'Source Room',
+      inviteCode: 'SOURCE-CODE',
+      summaryProfile: 'default',
+      summaryProvider: 'openai',
+      summaryModel: 'summary-model',
+      summaryApiMode: 'chat_completions',
+      summaryEveryTurns: 20,
+      workspace: '',
+    })
+
+    const res = await fetch(`${baseUrl}/api/hermes/group-chat/rooms/room-source/clone`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Cloned Room' }),
+    })
+    const body = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(body.room).toMatchObject({ name: 'Cloned Room' })
+    expect(body.room.inviteCode).toMatch(/^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{16}$/)
+    expect(body.room.inviteCode).not.toBe('SOURCE-CODE')
+  })
+
+  it('serves the remote workspace API only with an active run-bound grant', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'group-chat-remote-route-'))
+    temporaryDirectories.push(workspace)
+    await writeFile(join(workspace, 'shared.txt'), 'shared content')
+    storage.rooms.set('room-remote', {
+      id: 'room-remote',
+      name: 'Remote Room',
+      workspace,
+      allowRemoteWorkspaceAccess: 1,
+    })
+    const { token } = issueRemoteWorkspaceGrant({
+      runId: 'run-route',
+      roomId: 'room-remote',
+      agentId: 'agent-route',
+      workspace,
+    })
+    const endpoint = `${baseUrl}/api/hermes/group-chat/remote-workspace/v1`
+
+    const unauthorized = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'read', path: 'shared.txt' }),
+    })
+    expect(unauthorized.status).toBe(401)
+
+    const authorized = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ action: 'read', path: 'shared.txt' }),
+    })
+    expect(authorized.status).toBe(200)
+    await expect(authorized.json()).resolves.toMatchObject({
+      ok: true,
+      path: 'shared.txt',
+      content: 'shared content',
+      sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    })
+
+    const binary = Buffer.from([0x00, 0xff, 0x10, 0x20])
+    const upload = await fetch(`${endpoint}/file?path=${encodeURIComponent('artifacts/data.bin')}`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/octet-stream',
+      },
+      body: binary,
+    })
+    expect(upload.status).toBe(200)
+    const uploaded = await upload.json() as { sha256: string; messageId: string }
+    expect(uploaded.sha256).toMatch(/^[a-f0-9]{64}$/)
+    expect(uploaded.messageId).toBe('agent-attachment-message-1')
+    expect(publishAgentAttachmentMessage).toHaveBeenCalledWith(expect.objectContaining({
+      roomId: 'room-remote',
+      agentId: 'agent-route',
+      runId: 'run-route',
+      workspacePath: 'artifacts/data.bin',
+    }))
+
+    const download = await fetch(`${endpoint}/file?path=${encodeURIComponent('artifacts/data.bin')}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    expect(download.status).toBe(200)
+    expect(download.headers.get('x-content-sha256')).toBe(uploaded.sha256)
+    expect(Buffer.from(await download.arrayBuffer())).toEqual(binary)
+
+    const overwriteWithoutHash = await fetch(
+      `${endpoint}/file?path=${encodeURIComponent('artifacts/data.bin')}`,
+      {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/octet-stream',
+        },
+        body: Buffer.from('replacement'),
+      },
+    )
+    expect(overwriteWithoutHash.status).toBe(409)
+    await expect(overwriteWithoutHash.json()).resolves.toMatchObject({ code: 'workspace_conflict' })
+
+    const replacement = Buffer.from([0x11, 0x22])
+    const overwrite = await fetch(`${endpoint}/file?path=${encodeURIComponent('artifacts/data.bin')}`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/octet-stream',
+        'X-Expected-SHA256': uploaded.sha256,
+      },
+      body: replacement,
+    })
+    expect(overwrite.status).toBe(200)
+    expect(await readFile(join(workspace, 'artifacts/data.bin'))).toEqual(replacement)
+
+    revokeRemoteWorkspaceGrantsForRun('run-route')
+    const revoked = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ action: 'list', path: '' }),
+    })
+    expect(revoked.status).toBe(401)
+  })
+
+  it('returns public lastActiveAt and keeps the aggregated authenticated room list ordered by activity instead of room id', async () => {
+    storage.getRoomsForProfiles.mockReturnValue([
+      { id: 'room-old-active', name: 'Old but active', inviteCode: 'Z', createdAt: 100, lastActiveAt: 300 },
+    ])
+    storage.getRoomsForAuthUser.mockReturnValue([
+      { id: 'room-new-created', name: 'New but inactive', inviteCode: 'A', createdAt: 200, lastActiveAt: 200 },
+    ])
+    storage.getOwnedRoomsForAuthUser.mockReturnValue([])
+
+    const res = await fetch(`${baseUrl}/api/hermes/group-chat/rooms`, {
+      headers: { 'x-test-user': 'member' },
+    })
+
+    expect(res.status).toBe(200)
+    await expect(res.json()).resolves.toMatchObject({
+      rooms: [
+        { id: 'room-old-active', lastActiveAt: 300 },
+        { id: 'room-new-created', lastActiveAt: 200 },
+      ],
+    })
   })
 
   it('rejects reserved @all agent names when creating a room', async () => {
@@ -321,11 +642,47 @@ describe('group chat REST route baseline', () => {
       messages: [{ id: 'msg-2' }],
       agents: [{ agentId: 'agent-1' }],
       members: [{ userId: 'user-1' }],
+      handoffChains: [],
       total: 2,
       offset: 1,
       limit: 1,
       hasMore: false,
     })
+  })
+
+  it('clones the room Agent handoff policy without copying stopped chains', async () => {
+    storage.rooms.set('room-source', {
+      id: 'room-source',
+      name: 'Source',
+      inviteCode: 'SOURCE',
+      summaryProfile: 'default',
+      summaryProvider: 'openai',
+      summaryModel: 'summary-model',
+      summaryApiMode: 'chat_completions',
+      summaryEveryTurns: 20,
+      workspace: '',
+      agentHandoffEnabled: 0,
+      agentHandoffMaxDepth: 6,
+      agentHandoffUnlimited: 0,
+    })
+
+    const res = await fetch(`${baseUrl}/api/hermes/group-chat/rooms/room-source/clone`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Clone' }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(storage.saveRoom).toHaveBeenCalledWith(
+      expect.any(String),
+      'Clone',
+      expect.any(String),
+      expect.objectContaining({
+        agentHandoffEnabled: false,
+        agentHandoffMaxDepth: 6,
+        agentHandoffUnlimited: false,
+      }),
+    )
   })
 
   it('allows multiple room agents backed by the same profile', async () => {
@@ -346,6 +703,48 @@ describe('group chat REST route baseline', () => {
       },
     })
     expect(storage.getRoomAgents('room-1')).toHaveLength(2)
+  })
+
+  it('allows only the room owner to remove a member and removes that member remote Agents', async () => {
+    storage.rooms.set('room-1', {
+      id: 'room-1',
+      name: 'Room',
+      inviteCode: 'ROOM1',
+      ownerAuthUserId: 1,
+    })
+    storage.members.set('room-1', [
+      { id: 'owner-row', userId: 'auth:1', name: 'Owner' },
+      { id: 'guest-row', userId: 'guest-1', name: 'Guest' },
+    ])
+    storage.agents.set('room-1', [{
+      id: 'remote-row',
+      agentId: 'remote-agent',
+      profile: 'default',
+      name: 'Remote Agent',
+      executorType: 'remote',
+      ownerMemberId: 'guest-1',
+      connectorId: '',
+    }])
+
+    const denied = await fetch(`${baseUrl}/api/hermes/group-chat/rooms/room-1/members/guest-1`, {
+      method: 'DELETE',
+      headers: { 'x-test-user-id': '2' },
+    })
+    expect(denied.status).toBe(403)
+
+    const removed = await fetch(`${baseUrl}/api/hermes/group-chat/rooms/room-1/members/guest-1`, {
+      method: 'DELETE',
+      headers: { 'x-test-user-id': '1' },
+    })
+    expect(removed.status).toBe(200)
+    await expect(removed.json()).resolves.toMatchObject({
+      success: true,
+      members: [{ userId: 'auth:1' }],
+      agents: [],
+    })
+    expect(removeLiveRoomMember).toHaveBeenCalledWith('room-1', 'guest-1')
+    expect(storage.removeRoomAgent).toHaveBeenCalledWith('room-1', 'remote-row')
+    expect(agentClients.removeAgentFromRoom).toHaveBeenCalledWith('room-1', 'remote-agent')
   })
 
   it('persists the selected provider, model, api mode, and reasoning effort for a room agent', async () => {
@@ -404,6 +803,7 @@ describe('group chat REST route baseline', () => {
       reasoningEffort: 'high',
       avatar: JSON.stringify({ type: 'generated', seed: 'researcher-avatar' }),
     })
+    expect(broadcastRoomAgents).toHaveBeenCalledWith('room-1')
   })
 
   it('rejects incomplete or invalid room agent runtime configuration', async () => {
@@ -570,6 +970,69 @@ describe('group chat REST route baseline', () => {
       profile: 'research',
       name: 'Reviewer',
     })
+    expect(broadcastRoomAgents).toHaveBeenCalledWith('room-1')
+  })
+
+  it('rejects a concurrent update for the same room agent before runtime and persistence can interleave', async () => {
+    storage.rooms.set('room-lock', { id: 'room-lock', name: 'Room', inviteCode: 'LOCK' })
+    storage.agents.set('room-lock', [{
+      id: 'row-lock', roomId: 'room-lock', agentId: 'agent-lock', agent: 'hermes', profile: 'default',
+      provider: 'openai', model: 'old', apiMode: '', reasoningEffort: '', name: 'Worker', description: '', invited: 0,
+    }])
+    let release!: () => void
+    const blocked = new Promise<void>(resolve => { release = resolve })
+    agentClients.createAgent.mockImplementationOnce(async (cfg: any) => {
+      await blocked
+      return { ...cfg, joinRoom: vi.fn(async () => ({})), disconnect: vi.fn() }
+    })
+    const request = (model: string) => fetch(`${baseUrl}/api/hermes/group-chat/rooms/room-lock/agents/row-lock`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent: 'hermes', profile: 'default', provider: 'openai', model, name: 'Worker' }),
+    })
+
+    const first = request('first')
+    await vi.waitFor(() => expect(agentClients.createAgent).toHaveBeenCalled())
+    const second = await request('second')
+    expect(second.status).toBe(409)
+    expect(await second.json()).toEqual({ error: 'Agent configuration update is already in progress' })
+    const removed = await fetch(`${baseUrl}/api/hermes/group-chat/rooms/room-lock/agents/row-lock`, { method: 'DELETE' })
+    expect(removed.status).toBe(409)
+    expect(await removed.json()).toEqual({ error: 'Agent configuration update is already in progress' })
+    expect(storage.removeRoomAgent).not.toHaveBeenCalledWith('room-lock', 'row-lock')
+    const roomRemoved = await fetch(`${baseUrl}/api/hermes/group-chat/rooms/room-lock`, { method: 'DELETE' })
+    expect(roomRemoved.status).toBe(409)
+    expect(await roomRemoved.json()).toEqual({ error: 'Agent configuration update is already in progress' })
+    release()
+    expect((await first).status).toBe(200)
+  })
+
+  it('rejects agent updates and removals while room deletion is already in progress', async () => {
+    storage.rooms.set('room-delete-lock', { id: 'room-delete-lock', name: 'Room', inviteCode: 'DELETE' })
+    storage.agents.set('room-delete-lock', [{
+      id: 'row-delete-lock', roomId: 'room-delete-lock', agentId: 'agent-delete-lock', agent: 'hermes',
+      profile: 'default', provider: 'openai', model: 'old', apiMode: '', reasoningEffort: '',
+      name: 'Worker', description: '', invited: 0,
+    }])
+    let release!: () => void
+    const blocked = new Promise<void>(resolve => { release = resolve })
+    roomSummaryService.runExclusive.mockImplementationOnce(async (_roomId: string, task: () => unknown) => {
+      await blocked
+      return task()
+    })
+
+    const deleting = fetch(`${baseUrl}/api/hermes/group-chat/rooms/room-delete-lock`, { method: 'DELETE' })
+    await vi.waitFor(() => expect(roomSummaryService.runExclusive).toHaveBeenCalled())
+    const update = await fetch(`${baseUrl}/api/hermes/group-chat/rooms/room-delete-lock/agents/row-delete-lock`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent: 'hermes', profile: 'default', provider: 'openai', model: 'new', name: 'Worker' }),
+    })
+    expect(update.status).toBe(409)
+    expect(await update.json()).toEqual({ error: 'Room deletion is already in progress' })
+    const remove = await fetch(`${baseUrl}/api/hermes/group-chat/rooms/room-delete-lock/agents/row-delete-lock`, { method: 'DELETE' })
+    expect(remove.status).toBe(409)
+    expect(await remove.json()).toEqual({ error: 'Room deletion is already in progress' })
+    release()
+    expect((await deleting).status).toBe(200)
   })
 
   it('removes an agent by row id and disconnects runtime by persisted agent id', async () => {
@@ -584,6 +1047,7 @@ describe('group chat REST route baseline', () => {
     expect(storage.removeRoomAgent).toHaveBeenCalledWith('room-1', 'row-agent')
     expect(agentClients.removeAgentFromRoom).toHaveBeenCalledWith('room-1', 'agent-1')
     expect(body).toMatchObject({ success: true, agents: [], members: [] })
+    expect(broadcastRoomAgents).toHaveBeenCalledWith('room-1')
   })
 
   it('clears room context and runtime state while returning the updated room', async () => {

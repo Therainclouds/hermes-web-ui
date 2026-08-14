@@ -1,6 +1,7 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 import { hasApiKey, isStoredSuperAdmin, setApiKey } from '@/api/client'
 import { hasDesktopBrowserBridge } from '@/utils/desktop-bridge'
+import { resolveLoginRedirect } from '@/utils/login-redirect'
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -10,6 +11,18 @@ const router = createRouter({
       name: 'login',
       component: () => import('@/views/LoginView.vue'),
       meta: { public: true },
+    },
+    {
+      path: '/share/group-chat/:inviteCode?',
+      name: 'share.groupChat',
+      component: () => import('@/views/hermes/SharedGroupChatView.vue'),
+      meta: { public: true, standaloneChat: true, inviteOnly: true },
+    },
+    {
+      path: '/group-chat-link',
+      name: 'groupChat.link',
+      component: () => import('@/views/hermes/GroupChatLinkView.vue'),
+      meta: { standaloneChat: true },
     },
     {
       path: '/hermes/chat',
@@ -150,9 +163,17 @@ const router = createRouter({
       meta: { requiresSuperAdmin: true },
     },
     {
+      path: '/hermes/connections',
+      name: 'hermes.connections',
+      component: () => import('@/views/hermes/ChatView.vue'),
+    },
+    {
       path: '/hermes/devices',
       name: 'hermes.devices',
-      component: () => import('@/views/hermes/DevicesView.vue'),
+      redirect: to => ({
+        name: 'hermes.connections',
+        query: { ...to.query, tab: 'devices' },
+      }),
       meta: { requiresSuperAdmin: true },
     },
     {
@@ -244,7 +265,7 @@ router.beforeEach(async (to, _from, next) => {
   if (to.meta.public) {
     // Already has key, skip login
     if (to.name === 'login' && hasApiKey() && !isDesktopShell()) {
-      next({ path: '/hermes/chat' })
+      next(resolveLoginRedirect(to.query.redirect))
       return
     }
     next()
@@ -253,7 +274,7 @@ router.beforeEach(async (to, _from, next) => {
 
   // All other pages require token
   if (!hasApiKey()) {
-    next({ name: 'login' })
+    next({ name: 'login', query: { redirect: to.fullPath } })
     return
   }
 

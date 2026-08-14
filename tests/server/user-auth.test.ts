@@ -1,3 +1,4 @@
+import { createHmac } from 'crypto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 describe('user auth tables and middleware', () => {
@@ -86,6 +87,24 @@ describe('user auth tables and middleware', () => {
     const { auth } = await initUsers()
 
     expect(auth.parseJwtExpirySeconds(value)).toBe(seconds)
+  })
+
+  it('allows configuring the model-run JWT lifetime independently', async () => {
+    vi.stubEnv('HERMES_WEB_UI_MODEL_RUN_JWT_EXPIRES_IN', '12h')
+    const { auth } = await initUsers()
+    vi.setSystemTime(new Date('2026-06-30T00:00:00Z'))
+
+    const token = await auth.issueModelRunJwt({ id: 1, username: 'admin', role: 'super_admin' })
+    const payload = jwtPayload(token)
+
+    expect(payload.exp - payload.iat).toBe(12 * 60 * 60)
+  })
+
+  it('falls back to the one-hour model-run JWT lifetime for invalid overrides', async () => {
+    vi.stubEnv('HERMES_WEB_UI_MODEL_RUN_JWT_EXPIRES_IN', 'forever')
+    const { auth } = await initUsers()
+
+    expect(auth.getModelRunJwtExpiresSeconds()).toBe(60 * 60)
   })
 
   it('creates the default super admin without profile bindings', async () => {
@@ -347,6 +366,24 @@ describe('user auth tables and middleware', () => {
     expect(auth.verifyUserJwt(token, 'wrong', 1000)).toBeNull()
   })
 
+  it('rejects tokens issued for the legacy hermes-web-ui audience', async () => {
+    const { auth } = await initUsers()
+    const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url')
+    const body = Buffer.from(JSON.stringify({
+      sub: '1',
+      username: 'admin',
+      role: 'super_admin',
+      type: 'access',
+      aud: 'hermes-web-ui',
+      iat: 1,
+      exp: 3601,
+    })).toString('base64url')
+    const unsigned = `${header}.${body}`
+    const signature = createHmac('sha256', 'secret').update(unsigned).digest('base64url')
+
+    expect(auth.verifyUserJwt(`${unsigned}.${signature}`, 'secret', 1000)).toBeNull()
+  })
+
   it('signs model run JWTs with the same payload shape and a one hour expiry', async () => {
     const { auth } = await initUsers()
     const token = auth.signUserJwt(
@@ -362,7 +399,7 @@ describe('user auth tables and middleware', () => {
       username: 'admin',
       role: 'super_admin',
       type: 'access',
-      aud: 'hermes-web-ui',
+      aud: 'hermes-studio',
       iat: 1,
       exp: 3601,
     })
@@ -446,6 +483,7 @@ describe('user auth tables and middleware', () => {
     expect(ctx.status).toBe(200)
     expect(ctx.body.token).toMatch(/^[^.]+\.[^.]+\.[^.]+$/)
     expect(ctx.body.userId).toBeGreaterThan(0)
+    expect(ctx.body.profiles).toContain('default')
     expect(ctx.body.theme).toEqual({
       fontSize: 14,
       textColor: null,
