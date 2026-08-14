@@ -30,11 +30,15 @@ vi.mock('@/api/hermes/system', () => ({
 }))
 
 vi.mock('@/stores/hermes/profiles', () => ({
-  useProfilesStore: () => ({ activeProfileName: 'default' }),
+  useProfilesStore: () => ({ activeProfileName: 'default', profiles: [] }),
 }))
 
 vi.mock('@/components/hermes/chat/TerminalPanel.vue', () => ({
   default: defineComponent({ template: '<div />' }),
+}))
+
+vi.mock('@/composables/useAppMessage', () => ({
+  useMessage: () => messageMock,
 }))
 
 vi.mock('vue-i18n', () => ({
