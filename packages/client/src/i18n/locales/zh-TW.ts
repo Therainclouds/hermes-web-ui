@@ -129,6 +129,7 @@ export default {
   // 通用
   common: {
     loading: '載入中...',
+    clear: "清除",
     cancel: '取消',
     delete: '刪除',
     retry: '重試',

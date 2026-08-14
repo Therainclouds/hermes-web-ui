@@ -91,6 +91,7 @@ export default {
   // Common
   common: {
     loading: 'جارٍ التحميل...',
+    clear: "مسح",
     cancel: 'إلغاء',
     delete: 'حذف',
     edit: 'تعديل',

@@ -229,6 +229,7 @@ export default {
   // 공통
   common: {
     loading: '로딩 중...',
+    clear: "지우기",
     cancel: '취소',
     retry: '재시도',
     reset: '초기화',

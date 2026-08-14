@@ -78,10 +78,12 @@ const deleting = ref<Record<CodingAgentId, boolean>>({
 const checkingUpdate = ref<Record<CodingAgentId, boolean>>({
   'claude-code': false,
   codex: false,
+  dsh: false,
 })
 const updateInfo = ref<Record<CodingAgentId, CodingAgentUpdateResult | null>>({
   'claude-code': null,
   codex: null,
+  dsh: null,
 })
 const launchModalVisible = ref(false)
 const launchLoading = ref(false)

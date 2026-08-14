@@ -229,6 +229,7 @@ export default {
   // 共通
   common: {
     loading: '読み込み中...',
+    clear: "クリア",
     cancel: 'キャンセル',
     retry: '再試行',
     reset: 'リセット',

@@ -818,7 +818,6 @@ async function handleArchiveDismiss(mode: 'ignore' | 'later') {
     }
 }
 const currentRoomCanMentionAll = computed(() => !props.standalone && currentRoom.value?.canMentionAll === true)
->>>>>>> upstream/main
 const currentRoomNeedsSummaryConfiguration = computed(() => {
     if (props.standalone) return false
     const room = currentRoom.value

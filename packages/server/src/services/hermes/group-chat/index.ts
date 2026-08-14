@@ -2137,6 +2137,87 @@ class ChatStorage {
         this.archivePromptCounts.delete(roomId)
     }
 
+    pruneMessages(roomId: string, keep = 500): void {
+        const db = this.db()
+        if (!db) return
+        const count = (db.prepare('SELECT COUNT(*) as c FROM gc_messages WHERE roomId = ?').get(roomId) as any)?.c
+        if (count > keep) {
+            const cutoff = db.prepare(
+                'SELECT timestamp FROM gc_messages WHERE roomId = ? ORDER BY timestamp DESC LIMIT 1 OFFSET ?'
+            ).get(roomId, keep - 1) as any
+            if (cutoff) {
+                this.withImmediateTransaction(db, () => {
+                    this.deleteWorkspaceDiffChanges(roomId)
+                    const result = db.prepare('DELETE FROM gc_messages WHERE roomId = ? AND timestamp < ?').run(roomId, cutoff.timestamp)
+                    logger.info(`[GroupChat] pruned ${result.changes} messages from room ${roomId} (had ${count}, keeping ${keep})`)
+                })
+            }
+        }
+    }
+
+    // ─── Archive Prompt & Transcript Cleanup ─────────────────
+
+    setArchivePromptNotifier(fn: (roomId: string, count: number) => void): void {
+        this.onArchivePrompt = fn
+    }
+
+    /** Fire the archive prompt once per threshold window. A hard cap still silently
+     *  prunes rooms that keep dismissing the prompt so history can never grow without bound. */
+    maybeNotifyArchivePrompt(roomId: string): void {
+        const count = this.getMessageCount(roomId)
+        if (count >= GC_ARCHIVE_HARD_LIMIT) {
+            this.pruneMessages(roomId, GC_ARCHIVE_PROMPT_THRESHOLD)
+            this.archivePromptCounts.set(roomId, GC_ARCHIVE_PROMPT_THRESHOLD)
+            logger.info(`[GroupChat] archive prompts dismissed; hard-pruned room ${roomId} to ${GC_ARCHIVE_PROMPT_THRESHOLD}`)
+            return
+        }
+        const last = this.archivePromptCounts.get(roomId) ?? 0
+        if (count >= GC_ARCHIVE_PROMPT_THRESHOLD && count - last >= GC_ARCHIVE_PROMPT_THRESHOLD) {
+            this.archivePromptCounts.set(roomId, count)
+            this.onArchivePrompt?.(roomId, count)
+        }
+    }
+
+    /** Remember the current message count so the next prompt waits a full window. */
+    markArchivePromptThreshold(roomId: string): void {
+        this.archivePromptCounts.set(roomId, this.getMessageCount(roomId))
+    }
+
+    /** Delete the raw transcript up to and including the summary anchor, so archived
+     *  history only lives in gc_room_summaries and no longer occupies agent context.
+     *  Returns the number of deleted messages (0 when the anchor is already gone). */
+    deleteMessagesThrough(roomId: string, anchorMessageId: string): number {
+        const db = this.db()
+        if (!db || !anchorMessageId) return 0
+        const rows = db.prepare('SELECT id, timestamp FROM gc_messages WHERE roomId = ?').all(roomId) as Array<{ id: string; timestamp: number }>
+        const ordered = sortGroupMessagesCanonical(rows)
+        const anchorIndex = ordered.findIndex(message => message.id === anchorMessageId)
+        if (anchorIndex < 0) return 0
+        const ids = ordered.slice(0, anchorIndex + 1).map(message => message.id)
+        const cutoffTimestamp = ordered[anchorIndex].timestamp
+        let deleted = 0
+        this.withImmediateTransaction(db, () => {
+            this.deleteWorkspaceDiffChanges(roomId)
+            for (let index = 0; index < ids.length; index += 500) {
+                const batch = ids.slice(index, index + 500)
+                const placeholders = batch.map(() => '?').join(',')
+                deleted += Number(db.prepare(`DELETE FROM gc_messages WHERE roomId = ? AND id IN (${placeholders})`).run(roomId, ...batch).changes)
+            }
+            if (deleted > 0) {
+                // Recompute from the surviving context window (the legacy
+                // full-scan estimate is gone; token accounting is incremental).
+                const totalTokens = this.contextWindowMessageIdsForTokenDelta(roomId)
+                    .reduce((total, id) => {
+                        const message = this.getMessage(id)
+                        return total + (message ? this.messageUsageTokens(message) : 0)
+                    }, 0)
+                this.updateRoomTotalTokens(roomId, totalTokens)
+            }
+        })
+        logger.info(`[GroupChat] archived ${deleted} messages through summary anchor ${anchorMessageId} in room ${roomId}`)
+        return deleted
+    }
+
     // ─── Room Agents ──────────────────────────────────────────
 
     getRoomAgents(roomId: string): RoomAgent[] {
@@ -3209,6 +3290,8 @@ export class GroupChatServer {
         } catch (err) {
             logger.warn({ err, roomId }, `[Discussion] failed to emit system message: ${err instanceof Error ? err.message : String(err)}`)
         }
+    }
+
     getChatRunService(): GroupChatRunService | null {
         return this.chatRunService
     }
