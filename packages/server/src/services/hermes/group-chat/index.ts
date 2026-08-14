@@ -2108,6 +2108,13 @@ export class GroupChatServer {
         const roomId = data.roomId
         const agentName = data.agentName || ''
         if (!roomId || !data.approval_id || !this.getCurrentAgentEventMember(socket, roomId, agentName, data.agentSessionId)) return
+        // Free discussions run with full access: auto-approve agent tool calls
+        // so they can work autonomously without a human approving every write
+        // or command (a discussion has no operator at the controls).
+        if (this.isRoomDiscussionRunning(roomId)) {
+            void this.autoApproveDiscussionRequest(roomId, agentName, data.approval_id, data.command || '')
+            return
+        }
         this.emitToRoomManagers(roomId, 'approval.requested', {
             event: 'approval.requested',
             roomId,
@@ -2118,6 +2125,15 @@ export class GroupChatServer {
             choices: Array.isArray(data.choices) ? data.choices : ['once', 'session', 'deny'],
             allow_permanent: Boolean(data.allow_permanent),
         })
+    }
+
+    private async autoApproveDiscussionRequest(roomId: string, agentName: string, approvalId: string, command: string): Promise<void> {
+        try {
+            await new AgentBridgeClient().approvalRespond(approvalId, 'always')
+            logger.info({ roomId, agentName, approvalId, command: command.slice(0, 120) }, '[GroupChat] auto-approved tool call during discussion (full access)')
+        } catch (err: any) {
+            logger.warn({ err, roomId, agentName, approvalId }, '[GroupChat] auto-approve during discussion failed')
+        }
     }
 
     private handleApprovalResolved(socket: Socket, data: { roomId?: string; agentName?: string; approval_id?: string; choice?: string; agentSessionId?: string }): void {

@@ -355,8 +355,8 @@ describe('group chat free discussion runner', () => {
     expect(calls.at(-1)?.content).toContain('原地打转')
   })
 
-  it('auto-archives the room transcript once the discussion ends', async () => {
-    const { runner, archiveCalls } = harness()
+  it('auto-archives the room transcript once the discussion ends (large room)', async () => {
+    const { runner, archiveCalls } = harness({ messageCount: 500 })
     judgeMock.mockResolvedValue(judgeJson({ converged: true }))
 
     await runner.start('room-1', { goal: 'go', maxRounds: 3 })
@@ -364,6 +364,17 @@ describe('group chat free discussion runner', () => {
 
     expect(final.status).toBe('converged')
     await vi.waitFor(() => expect(archiveCalls).toEqual(['room-1']))
+  })
+
+  it('keeps the transcript visible (no auto-archive) for a normal-size discussion', async () => {
+    const { runner, archiveCalls } = harness({ messageCount: 40 })
+    judgeMock.mockResolvedValue(judgeJson({ converged: true }))
+
+    await runner.start('room-1', { goal: 'go', maxRounds: 3 })
+    await waitForDone(runner, 'room-1')
+
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(archiveCalls).toEqual([])
   })
 
   it('reports live agent status during speech so room avatars light up', async () => {
