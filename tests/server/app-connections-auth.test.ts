@@ -32,7 +32,7 @@ describe('App connection authorization', () => {
 
   it('records the authorizing user and exchanges once for that user\'s 30-day device token', async () => {
     const users = await import('../../packages/server/src/db/hermes/users-store')
-    const admin = users.bootstrapDefaultSuperAdmin('admin', '123456')!
+    const admin = users.bootstrapDefaultSuperAdmin('quanthermes', '12345678')!
     vi.doMock('../../packages/server/src/services/lan-discovery', async importOriginal => ({
       ...await importOriginal<typeof import('../../packages/server/src/services/lan-discovery')>(),
       getLanBackendUrl: () => 'http://192.168.1.20:8648',
@@ -152,7 +152,7 @@ describe('App connection authorization', () => {
 
   it('keeps one row per phone and connection type while refreshing repeated logins', async () => {
     const users = await import('../../packages/server/src/db/hermes/users-store')
-    const admin = users.bootstrapDefaultSuperAdmin('admin', '123456')!
+    const admin = users.bootstrapDefaultSuperAdmin('quanthermes', '12345678')!
     const authController = await import('../../packages/server/src/controllers/auth')
     const store = await import('../../packages/server/src/db/hermes/app-connections-store')
 
