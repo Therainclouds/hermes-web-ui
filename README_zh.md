@@ -120,6 +120,7 @@
 
 - 在 Web 仪表盘中启动和监控本地 Coding Agent 会话
 - 为 Codex 和 Claude Code 集成提供独立代理路由
+- 支持 DeepSeek Harness（`deepseek-harness`）托管 Coding Agent，通过 JSON-RPC stdio 驱动并复用同一流式事件管道
 - 持久化 Agent 输出和 reasoning 元数据，便于后续查看
 
 ### 技能与记忆

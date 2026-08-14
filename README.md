@@ -123,6 +123,7 @@ Unified configuration for **8 platforms** in one page:
 
 - Launch and monitor local coding-agent sessions from the web dashboard
 - Dedicated proxy routes for Codex and Claude Code integrations
+- DeepSeek Harness (`deepseek-harness`) as a managed coding agent, driven over JSON-RPC stdio and mapped onto the same streaming event pipeline
 - Stores agent output and reasoning metadata for later inspection
 
 ### Skills & Memory
