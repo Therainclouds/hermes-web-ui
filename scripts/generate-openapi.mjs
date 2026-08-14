@@ -146,7 +146,6 @@ function scanRouteFile(filePath, tagInfo, paths) {
   // Pattern 2: inline functions - groupChatRoutes.post('/path', async (ctx) => {...})
   const inlineRouteRegex = /\w+Routes?\.(get|post|put|delete|patch)\(\s*['"]([^'"]+)['"]\s*,[^\n]*?async\s*\(ctx\)/g
 
-  let match
   while ((match = inlineRouteRegex.exec(content)) !== null) {
     const [, method, path] = match
     const controllerMethod = generateOperationIdFromPath(path, method)
