@@ -98,3 +98,6 @@ hermes_data/bots/*
 !hermes_data/bots/usb/config.py
 !hermes_data/bots/usb/mounter.py
 !hermes_data/bots/usb/usb_monitor.py
+
+# Local agent workspace (ttyd deploy scripts, JWT derivations, logs)
+.zcode/
