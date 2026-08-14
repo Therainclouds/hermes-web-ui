@@ -86,7 +86,8 @@ function harness(opts: {
     agentId: spec.agentId,
     name: spec.name,
     profile: spec.profile,
-    replyToMention: vi.fn(async (_roomId: string, msg: { content: unknown }) => {
+    replyToMention: vi.fn(async (_roomId: string, msg: { content: unknown }, _rt: unknown, onStatus?: (status: 'compressing' | 'replying' | 'ready') => void) => {
+      onStatus?.('replying')
       speechLog.push({ agentId: spec.agentId, content: String(msg.content) })
       await spec.reply?.(String(msg.content))
     }),
@@ -118,6 +119,7 @@ function harness(opts: {
   const broadcasts: DiscussionState[] = []
   const systemMessages: Array<{ roomId: string; content: string }> = []
   const archiveCalls: string[] = []
+  const agentStatusLog: Array<{ roomId: string; agentName: string; status: string }> = []
   const interruptRoom = opts.interruptRoom || vi.fn(async () => {})
   const runner = new DiscussionRunner({
     storage,
@@ -155,6 +157,9 @@ function harness(opts: {
     broadcast: (roomId: string, state: DiscussionState) => {
       broadcasts.push({ ...state })
     },
+    onAgentStatus: (roomId: string, agentName: string, status: 'compressing' | 'replying' | 'ready') => {
+      agentStatusLog.push({ roomId, agentName, status })
+    },
   })
 
   function speechCalls(): Array<{ agentId: string; content: string }> {
@@ -171,6 +176,7 @@ function harness(opts: {
     contextMessages,
     speechCalls,
     archiveCalls,
+    agentStatusLog,
     setMessageCount: (value: number) => {
       messageCount = value
     },
@@ -349,8 +355,8 @@ describe('group chat free discussion runner', () => {
     expect(calls.at(-1)?.content).toContain('原地打转')
   })
 
-  it('auto-archives the room transcript once the discussion ends', async () => {
-    const { runner, archiveCalls } = harness()
+  it('auto-archives the room transcript once the discussion ends (large room)', async () => {
+    const { runner, archiveCalls } = harness({ messageCount: 500 })
     judgeMock.mockResolvedValue(judgeJson({ converged: true }))
 
     await runner.start('room-1', { goal: 'go', maxRounds: 3 })
@@ -358,6 +364,36 @@ describe('group chat free discussion runner', () => {
 
     expect(final.status).toBe('converged')
     await vi.waitFor(() => expect(archiveCalls).toEqual(['room-1']))
+  })
+
+  it('keeps the transcript visible (no auto-archive) for a normal-size discussion', async () => {
+    const { runner, archiveCalls } = harness({ messageCount: 40 })
+    judgeMock.mockResolvedValue(judgeJson({ converged: true }))
+
+    await runner.start('room-1', { goal: 'go', maxRounds: 3 })
+    await waitForDone(runner, 'room-1')
+
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(archiveCalls).toEqual([])
+  })
+
+  it('reports live agent status during speech so room avatars light up', async () => {
+    const { runner, agentStatusLog } = harness()
+    judgeMock.mockResolvedValue(judgeJson({ converged: true }))
+
+    await runner.start('room-1', { goal: 'go', maxRounds: 1 })
+    await waitForDone(runner, 'room-1')
+
+    // Both agents must have reported a non-ready status while speaking.
+    const spokenAgents = new Set(
+      agentStatusLog.filter(entry => entry.status !== 'ready').map(entry => entry.agentName),
+    )
+    expect(spokenAgents.has('Agent A')).toBe(true)
+    expect(spokenAgents.has('Agent B')).toBe(true)
+    // Every non-ready status is followed by a ready (clear) status.
+    for (const agentName of spokenAgents) {
+      expect(agentStatusLog.some(entry => entry.agentName === agentName && entry.status === 'ready')).toBe(true)
+    }
   })
 
   it('skips an agent whose speech fails without blocking the round', async () => {

@@ -114,6 +114,9 @@ export interface DiscussionRunnerDeps {
   /** Persist a system-style message (role 'system') to the room transcript. */
   emitSystemMessage: (roomId: string, content: string) => Promise<void>
   broadcast: (roomId: string, state: DiscussionState) => void
+  /** Report an agent's live activity status so the room UI can light up the
+   *  avatar of whoever is speaking (mirrors the @-mention routing path). */
+  onAgentStatus?: (roomId: string, agentName: string, status: 'compressing' | 'replying' | 'ready') => void
 }
 
 // ─── Constants ──────────────────────────────────────────────
@@ -131,6 +134,9 @@ function envTimeoutMs(name: string, fallback: number): number {
 const AGENT_SPEECH_TIMEOUT_MS = envTimeoutMs('HERMES_GROUP_CHAT_SPEECH_TIMEOUT_MS', 10 * 60_000)
 const JUDGE_TIMEOUT_MS = envTimeoutMs('HERMES_GROUP_CHAT_JUDGE_TIMEOUT_MS', 180_000)
 const MAX_STALLED_ROUNDS = 2
+/** Only auto-archive a room after a discussion once it has grown this large;
+ *  smaller transcripts stay visible. Matches GC_ARCHIVE_PROMPT_THRESHOLD. */
+const DISCUSSION_AUTO_ARCHIVE_MIN_MESSAGES = 500
 const HOST_NAME = '讨论主持'
 const JUDGE_NAME = '讨论裁判'
 
@@ -593,6 +599,15 @@ export class DiscussionRunner {
    *  raw messages no longer consume the room's agent context budget. */
   private async autoArchiveAfterRun(roomId: string, reason: 'converged' | 'max_rounds' | 'stopped' | 'stalled'): Promise<void> {
     if (!this.deps.roomSummaryService.archiveRoom) return
+    // A normal discussion's transcript stays visible so the user can review it.
+    // Only auto-archive once the room has genuinely grown large (the same
+    // threshold as the manual archive prompt) — otherwise history vanishes
+    // right after every discussion, which feels like data loss.
+    const messageCount = this.deps.storage.getMessageCount(roomId)
+    if (messageCount < DISCUSSION_AUTO_ARCHIVE_MIN_MESSAGES) {
+      logger.info({ roomId, reason, messageCount }, '[Discussion] skipped auto-archive (room below threshold; transcript kept visible)')
+      return
+    }
     try {
       // Call as a method so `this` stays bound to the summary service (extracting
       // it to a local would break archiveRoom's internal withRoomLock/storage).
@@ -627,16 +642,22 @@ export class DiscussionRunner {
       timestamp: Date.now(),
       role: 'user',
     }
+    // Surface the speaking agent's live status so the room avatars light up.
+    const onStatus = (status: 'compressing' | 'replying' | 'ready') => {
+      if (status !== 'ready') this.deps.onAgentStatus?.(roomId, agent.name, status)
+    }
     try {
       const runtimeContext = await this.deps.roomSummaryService.prepareForMessage(roomId)
       await withTimeout(
-        agent.replyToMention(roomId, msg, runtimeContext),
+        agent.replyToMention(roomId, msg, runtimeContext, onStatus),
         AGENT_SPEECH_TIMEOUT_MS,
         `[Discussion] ${agent.name} speech`,
       )
     } catch (err) {
       const message = errorMessage(err)
       logger.warn({ err, roomId, agent: agent.name }, `[Discussion] agent speech skipped: ${message}`)
+    } finally {
+      this.deps.onAgentStatus?.(roomId, agent.name, 'ready')
     }
   }
 
@@ -704,14 +725,19 @@ export class DiscussionRunner {
       }
       try {
         const runtimeContext = await this.deps.roomSummaryService.prepareForMessage(roomId)
+        const onStatus = (status: 'compressing' | 'replying' | 'ready') => {
+          if (status !== 'ready') this.deps.onAgentStatus?.(roomId, reporter.name, status)
+        }
         await withTimeout(
-          reporter.replyToMention(roomId, msg, runtimeContext),
+          reporter.replyToMention(roomId, msg, runtimeContext, onStatus),
           AGENT_SPEECH_TIMEOUT_MS,
           '[Discussion] report',
         )
       } catch (err) {
         const message = errorMessage(err)
         logger.warn({ err, roomId, agent: reporter.name }, `[Discussion] report failed: ${message}`)
+      } finally {
+        this.deps.onAgentStatus?.(roomId, reporter.name, 'ready')
       }
     }
     const reportMessageId = this.findReportMessageId(roomId, reporter?.agentId, state.createdAt)
