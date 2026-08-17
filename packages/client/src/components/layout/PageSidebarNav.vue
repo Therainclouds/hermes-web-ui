@@ -5,7 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useSessionSearch } from '@/composables/useSessionSearch'
 
-type ActiveSection = 'chat' | 'history' | 'connections' | 'group' | 'global' | 'workflow' | 'meeting'
+type ActiveSection = 'chat' | 'history' | 'group' | 'global' | 'workflow' | 'meeting'
 
 const props = defineProps<{
   active: ActiveSection
@@ -38,11 +38,6 @@ function openHistory() {
     return
   }
   void router.push({ name: 'hermes.history' })
-}
-
-function openConnections() {
-  if (props.active === 'connections') return
-  void router.push({ name: 'hermes.connections' })
 }
 
 function openGroupChat() {
@@ -173,31 +168,6 @@ function openExperts() {
           <path d="M12 2l2.5 6 6.5.5-5 4.5L17.5 20 12 16.5 6.5 20 8 13 3 8.5 9.5 8z" />
         </svg>
         <span>{{ t('experts.title') }}</span>
-      </button>
-      <button
-        class="page-sidebar-tab"
-        :class="{ active: active === 'connections' }"
-        type="button"
-        :aria-current="active === 'connections' ? 'page' : undefined"
-        @click="openConnections"
-      >
-        <svg
-          width="15"
-          height="15"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.8"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          aria-hidden="true"
-        >
-          <circle cx="18" cy="5" r="2.5" />
-          <circle cx="6" cy="12" r="2.5" />
-          <circle cx="18" cy="19" r="2.5" />
-          <path d="m8.2 10.7 7.6-4.4M8.2 13.3l7.6 4.4" />
-        </svg>
-        <span>{{ t('sidebar.connections') }}</span>
       </button>
       <button class="page-sidebar-tab" type="button" @click="openApiRelay">
         <svg
