@@ -135,8 +135,6 @@ export const DISCUSSION_DEFAULT_MAX_ROUNDS = 8
 export const DISCUSSION_DEFAULT_MAX_MESSAGES = 60
 /** 收敛确认轮数：需要裁判连续 N 轮判定 converged 才允许结束，防止单轮误判过早收尾。 */
 export const DISCUSSION_CONVERGED_STREAK_REQUIRED = 2
-/** Extra rounds allowed past maxRounds while the judge keeps reporting substantive progress. */
-const DISCUSSION_MAX_EXTEND_ROUNDS = 4
 function envTimeoutMs(name: string, fallback: number): number {
   const value = Number(process.env[name])
   return Number.isFinite(value) && value > 0 ? value : fallback
@@ -531,7 +529,6 @@ export class DiscussionRunner {
 
       let stalledStreak = 0
       let convergedStreak = 0
-      let extensionUsed = 0
       let terminateReason: 'converged' | 'max_rounds' | 'stopped' | 'stalled' | null = null
 
       while (terminateReason === null) {
@@ -540,15 +537,9 @@ export class DiscussionRunner {
           break
         }
         if (state.currentRound >= state.maxRounds) {
-          // Soft cap: keep extending while the judge reports real progress,
-          // bounded by a hard extension budget so the run can never spin forever.
-          const lastNote = state.judgeNotes[state.judgeNotes.length - 1]
-          if (extensionUsed < DISCUSSION_MAX_EXTEND_ROUNDS && lastNote?.progress) {
-            extensionUsed += 1
-          } else {
-            terminateReason = 'max_rounds'
-            break
-          }
+          // 达到最大轮数后不再扩展，直接结束
+          terminateReason = 'max_rounds'
+          break
         }
         if (messagesSinceStart() >= state.maxMessages) {
           terminateReason = 'max_rounds'
@@ -570,6 +561,7 @@ export class DiscussionRunner {
           break
         }
 
+        // 裁判评估：记录本轮表现，判断是否收敛或停滞
         let note: DiscussionJudgeNote
         try {
           note = await this.judgeRound(roomId, state, agents, round, roundStart)
@@ -602,9 +594,8 @@ export class DiscussionRunner {
           `${JUDGE_NAME}·第${round}轮评估：${note.assessment}${note.converged ? '（已达成共识）' : ''}`,
         )
 
+        // 检查是否收敛
         if (note.converged) {
-          // 收敛需要满足两个条件：已跑满最小轮次（minRounds），且裁判连续 N 轮判定收敛
-          // （防止单轮误判、也防止任务未完成就因"意见一致"过早收尾）。
           convergedStreak += 1
           if (state.currentRound >= state.minRounds && convergedStreak >= DISCUSSION_CONVERGED_STREAK_REQUIRED) {
             terminateReason = 'converged'
