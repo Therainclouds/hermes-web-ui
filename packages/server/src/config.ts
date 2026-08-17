@@ -273,7 +273,7 @@ export const config = {
     packageTimeoutMs: parsePositiveInteger(process.env.WEBUI_UPDATE_PACKAGE_TIMEOUT_MS, 300_000),
     downloadRetries: parsePositiveInteger(process.env.WEBUI_UPDATE_DOWNLOAD_RETRIES, 3),
     downloadRetryDelayMs: parsePositiveInteger(process.env.WEBUI_UPDATE_DOWNLOAD_RETRY_DELAY_MS, 2_000),
-    healthcheckTimeoutMs: parsePositiveInteger(process.env.WEBUI_UPDATE_HEALTHCHECK_TIMEOUT_MS, 2_000),
+    healthcheckTimeoutMs: parsePositiveInteger(process.env.WEBUI_UPDATE_HEALTHCHECK_TIMEOUT_MS, 15_000),
     healthcheckIntervalMs: parsePositiveInteger(process.env.WEBUI_UPDATE_HEALTHCHECK_INTERVAL_MS, 2_000),
     healthcheckRetries: parsePositiveInteger(process.env.WEBUI_UPDATE_HEALTHCHECK_RETRIES, 15),
     healthcheckInitialDelayMs: parsePositiveInteger(process.env.WEBUI_UPDATE_HEALTHCHECK_INITIAL_DELAY_MS, 5_000),
