@@ -487,24 +487,6 @@ export const USB_EVENTS_INDEXES = {
 }
 
 // ============================================================================
-// MCU Devices
-// ============================================================================
-
-export const MCU_DEVICES_TABLE = 'mcu_devices'
-
-export const MCU_DEVICES_SCHEMA: Record<string, string> = {
-  id: 'INTEGER PRIMARY KEY AUTOINCREMENT',
-  name: "TEXT NOT NULL DEFAULT ''",
-  device_code: 'TEXT NOT NULL UNIQUE',
-  is_official: 'INTEGER NOT NULL DEFAULT 0',
-  created_at: `INTEGER NOT NULL DEFAULT (strftime('%s','now'))`,
-}
-
-export const MCU_DEVICES_INDEXES = {
-  idx_mcu_devices_created_at: 'CREATE INDEX IF NOT EXISTS idx_mcu_devices_created_at ON mcu_devices(created_at)',
-}
-
-// ============================================================================
 // App Connections
 // ============================================================================
 
@@ -1622,11 +1604,6 @@ export function initAllHermesTables(): void {
     })
     syncTable(USB_EVENTS_TABLE, USB_EVENTS_SCHEMA, {
       indexes: USB_EVENTS_INDEXES,
-    })
-
-    // MCU devices
-    syncTable(MCU_DEVICES_TABLE, MCU_DEVICES_SCHEMA, {
-      indexes: MCU_DEVICES_INDEXES,
     })
 
     // App authorization codes and connected mobile devices

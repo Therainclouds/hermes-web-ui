@@ -25,7 +25,6 @@ const routeProfile = computed(() => {
 })
 
 const isStandaloneChat = computed(() => route.meta?.standaloneChat === true)
-const isConnectionsPage = computed(() => route.name === 'hermes.connections')
 const productTitle = 'Hermes Studio'
 const tabTitle = computed(() => {
   if (route.name !== 'hermes.session' && route.name !== 'desktop.chat') return productTitle
@@ -92,7 +91,6 @@ watch([routeSessionId, routeProfile], async ([sessionId]) => {
   <div class="chat-view" :class="{ 'chat-view--standalone': isStandaloneChat }">
     <ChatPanel
       :standalone="isStandaloneChat"
-      :content-mode="isConnectionsPage ? 'connections' : 'chat'"
     />
   </div>
 </template>

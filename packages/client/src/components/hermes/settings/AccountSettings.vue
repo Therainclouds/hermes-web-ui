@@ -235,6 +235,22 @@ function openChangeUsernameModal() {
   showChangeUsernameModal.value = true;
 }
 
+// Unbind WeChat (WeChat device users only): clears the device binding,
+// deletes the provisioned local account, and returns to the login page.
+async function handleUnbindWechat() {
+  unbindingWechat.value = true;
+  try {
+    await unbindHermesDevice();
+    message.success(t("settings.unbindWechatSuccess"));
+    clearApiKey();
+    setTimeout(() => router.replace("/login"), 600);
+  } catch (err: any) {
+    message.error(err.message || t("settings.unbindWechatFailed"));
+  } finally {
+    unbindingWechat.value = false;
+  }
+}
+
 // Locked IPs management
 const lockedIps = ref<LockedIp[]>([]);
 const loadingLocks = ref(false);
@@ -321,6 +337,12 @@ onMounted(() => { loadLockedIps(); });
           <NButton v-if="isWeChatDeviceUser" type="primary" @click="openSetPasswordModal">{{ t("settings.setAccountPassword") }}</NButton>
           <NButton @click="openChangePasswordModal">{{ t("login.changePassword") }}</NButton>
           <NButton @click="openChangeUsernameModal">{{ t("login.changeUsername") }}</NButton>
+          <NPopconfirm v-if="isWeChatDeviceUser" @positive-click="handleUnbindWechat">
+            <template #trigger>
+              <NButton type="error" ghost :loading="unbindingWechat">{{ t("settings.unbindWechat") }}</NButton>
+            </template>
+            {{ t("settings.unbindWechatConfirm", { account: username || "" }) }}
+          </NPopconfirm>
         </div>
       </div>
       <p v-if="isWeChatDeviceUser" class="set-password-hint">{{ t("settings.setAccountPasswordHint") }}</p>

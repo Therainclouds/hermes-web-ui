@@ -167,7 +167,6 @@ describe('LAN discovery', () => {
   it('registers device request routes before auth and device management routes behind super admin auth', () => {
     const source = readFileSync('packages/server/src/routes/index.ts', 'utf8')
     const deviceRoutesSource = readFileSync('packages/server/src/routes/devices.ts', 'utf8')
-    const mcuDeviceRoutesSource = readFileSync('packages/server/src/routes/mcu-devices.ts', 'utf8')
     const bootstrapSource = readFileSync('packages/server/src/index.ts', 'utf8')
 
     const authIndex = source.indexOf('authMiddleware.forEach')
@@ -187,7 +186,6 @@ describe('LAN discovery', () => {
     expect(deviceRoutesSource).toContain("deviceRoutes.get('/api/devices/peer-connections'")
     expect(deviceRoutesSource).toContain("deviceRoutes.post('/api/devices/:id/connect'")
     expect(deviceRoutesSource).toContain("deviceRoutes.get('/api/devices/peer-connections/:connectionId/terminals'")
-    expect(mcuDeviceRoutesSource).not.toContain('requireSuperAdmin')
     expect(bootstrapSource).toContain('getLanPeerSocketPath()')
     expect(publicDeviceIndex).toBeLessThan(authIndex)
     expect(deviceIndex).toBeGreaterThan(authIndex)
