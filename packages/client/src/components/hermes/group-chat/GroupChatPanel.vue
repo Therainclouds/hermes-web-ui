@@ -6,7 +6,7 @@ import { NInput, NButton, NSpace, NSelect, NPopover, NPopconfirm, NInputNumber, 
 import { useGroupChatStore } from '@/stores/hermes/group-chat'
 import { useAppStore } from '@/stores/hermes/app'
 import { useProfilesStore } from '@/stores/hermes/profiles'
-import { updateRoomConfig, exportRoom, importRooms, getRoomSummary, updateRoomSummary } from '@/api/hermes/group-chat'
+import { updateRoomConfig, exportRoom, importRooms, getRoomSummary, updateRoomSummary, downloadGroupWorkspaceFile, fetchDeliveryUsage, cleanupDeliveryFiles, type DeliveryUsage } from '@/api/hermes/group-chat'
 import GroupMessageList from './GroupMessageList.vue'
 import GroupChatInput from './GroupChatInput.vue'
 import FolderPicker from '@/components/hermes/chat/FolderPicker.vue'
@@ -153,6 +153,53 @@ const liveDiscussion = computed(() => {
     if (!roomId) return null
     return store.discussionStates.get(roomId) || null
 })
+// 打开/切换房间时拉取该房间的讨论状态（含交付文件清单 deliverables），
+// 否则刷新页面后报告消息下方无法呈现本场交付文件。
+watch(
+    () => store.currentRoomId,
+    (roomId) => {
+        if (roomId) {
+            store.loadDiscussion(roomId)
+            loadDeliveryUsage()
+        }
+    },
+    { immediate: true },
+)
+
+// ─── 交付目录用量统计与清理提醒 ─────────────────────────────
+const deliveryUsage = ref<DeliveryUsage | null>(null)
+async function loadDeliveryUsage(): Promise<void> {
+    const roomId = store.currentRoomId
+    if (!roomId) return
+    try {
+        deliveryUsage.value = await fetchDeliveryUsage(roomId)
+    } catch {
+        deliveryUsage.value = null
+    }
+}
+function deliveryFormatBytes(value: number | null | undefined): string {
+    if (value == null || !Number.isFinite(value)) return '0 B'
+    const units = ['B', 'KB', 'MB', 'GB']
+    let next = value
+    let unitIndex = 0
+    while (next >= 1024 && unitIndex < units.length - 1) {
+        next /= 1024
+        unitIndex += 1
+    }
+    return `${next.toFixed(next >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`
+}
+async function handleCleanupDelivery(): Promise<void> {
+    const roomId = store.currentRoomId
+    if (!roomId || !deliveryUsage.value) return
+    if (!window.confirm(t('groupChat.delivery.cleanupConfirm'))) return
+    try {
+        await cleanupDeliveryFiles(roomId)
+        await loadDeliveryUsage()
+        message.success(t('groupChat.delivery.cleanupDone'))
+    } catch (err: any) {
+        message.error(err?.message || t('groupChat.delivery.cleanupFailed'))
+    }
+}
 const discussionIsActive = computed(() => {
     const state = liveDiscussion.value
     return state ? state.status === 'pending' || state.status === 'running' || state.status === 'paused' : false
@@ -249,6 +296,36 @@ async function startDiscussionViaUI(
 
 // ─── Report download (Word + Markdown) ─────────────────────
 const { isDownloading: isDownloadingReport, downloadReport: handleDownloadDiscussionReport } = useDiscussionReportDownload()
+
+// ─── 讨论结束后自动生成的总结文件下载（服务端落盘到房间工作区「交付」目录）───
+const isDownloadingSummary = ref(false)
+async function handleDownloadDiscussionSummary(): Promise<void> {
+    const roomId = store.currentRoomId
+    const state = roomId ? store.discussionStates.get(roomId) : null
+    const filePath = state?.summaryFilePath
+    if (!roomId || !filePath) return
+    isDownloadingSummary.value = true
+    try {
+        const fileName = filePath.split('/').pop() || '讨论总结.md'
+        await downloadGroupWorkspaceFile(roomId, filePath, fileName)
+    } catch (err: any) {
+        message.error(err?.message || t('groupChat.discussion.summaryDownloadFailed'))
+    } finally {
+        isDownloadingSummary.value = false
+    }
+}
+
+// ─── 本场讨论交付文件下载（工作区「交付」目录）───
+async function handleDownloadDeliverable(filePath: string): Promise<void> {
+    const roomId = store.currentRoomId
+    if (!roomId || !filePath) return
+    try {
+        const fileName = filePath.split('/').pop() || '交付文件'
+        await downloadGroupWorkspaceFile(roomId, filePath, fileName)
+    } catch (err: any) {
+        message.error(err?.message || t('groupChat.discussion.summaryDownloadFailed'))
+    }
+}
 
 // ─── Quick start from the chat input toolbar ───────────────
 const discussionQuickVisible = ref(false)
@@ -2037,73 +2114,109 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                     class="group-workspace-panel"
                     :style="workspacePanelStyle"
                 >
-                    <div class="group-workspace-resize-handle" @pointerdown="startWorkspaceResize" />
-                    <div class="group-workspace-panel-inner">
-                        <WorkspaceDiffPreview
-                            v-if="toolPanelStore.workspaceDiff"
-                            :custom-close="closeWorkspacePanel"
-                        />
-                        <FilePreview
-                            v-else-if="filesStore.previewFile?.workspaceRoomId === store.currentRoomId"
-                            :custom-close="closeWorkspacePanel"
-                        />
-                        <template v-else>
-                            <div class="group-tool-tabs" role="tablist">
-                                <button
-                                    class="group-tool-tab"
-                                    :class="{ active: activeWorkspacePanel === 'files' }"
-                                    type="button"
-                                    role="tab"
-                                    :title="t('drawer.files')"
-                                    :aria-label="t('drawer.files')"
-                                    :aria-selected="activeWorkspacePanel === 'files'"
-                                    @click="selectWorkspacePanel('files')"
-                                >
-                                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                                        <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5z" />
-                                    </svg>
-                                </button>
-                                <button
-                                    class="group-tool-tab"
-                                    :class="{ active: activeWorkspacePanel === 'terminal' }"
-                                    type="button"
-                                    role="tab"
-                                    :title="t('drawer.terminal')"
-                                    :aria-label="t('drawer.terminal')"
-                                    :aria-selected="activeWorkspacePanel === 'terminal'"
-                                    @click="selectWorkspacePanel('terminal')"
-                                >
-                                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                                        <rect x="3" y="4" width="18" height="16" rx="2" />
-                                        <path d="m7 9 3 3-3 3M13 15h4" />
-                                    </svg>
-                                </button>
-                                <button
-                                    v-if="desktopBrowserAvailable"
-                                    class="group-tool-tab"
-                                    :class="{ active: activeWorkspacePanel === 'browser' }"
-                                    type="button"
-                                    role="tab"
-                                    :title="t('browser.title')"
-                                    :aria-label="t('browser.title')"
-                                    :aria-selected="activeWorkspacePanel === 'browser'"
-                                    @click="selectWorkspacePanel('browser')"
-                                >
-                                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                                        <rect x="3" y="4" width="18" height="16" rx="2" />
-                                        <path d="M3 9h18" />
-                                        <circle cx="6.5" cy="6.5" r=".75" fill="currentColor" stroke="none" />
-                                        <circle cx="9.5" cy="6.5" r=".75" fill="currentColor" stroke="none" />
-                                    </svg>
-                                </button>
-                            </div>
-                            <div class="group-tool-content">
-                                <template v-if="currentRoom?.workspace">
-                                    <FilesPanel
-                                        v-show="activeWorkspacePanel === 'files'"
-                                        :workspace-room-id="store.currentRoomId"
-                                        :workspace="currentRoom.workspace"
-                                        @attach="handleWorkspaceFileAttach"
+                        <div class="group-workspace-resize-handle" @pointerdown="startWorkspaceResize" />
+                        <div class="group-workspace-panel-inner">
+                            <WorkspaceDiffPreview
+                                v-if="toolPanelStore.workspaceDiff"
+                                :custom-close="closeWorkspacePanel"
+                            />
+                            <FilePreview
+                                v-else-if="filesStore.previewFile?.workspaceRoomId === store.currentRoomId"
+                                :custom-close="closeWorkspacePanel"
+                            />
+                            <template v-else>
+                                <div class="group-tool-tabs" role="tablist">
+                                    <button
+                                        class="group-tool-tab"
+                                        :class="{ active: activeWorkspacePanel === 'files' }"
+                                        type="button"
+                                        role="tab"
+                                        :title="t('drawer.files')"
+                                        :aria-label="t('drawer.files')"
+                                        :aria-selected="activeWorkspacePanel === 'files'"
+                                        @click="selectWorkspacePanel('files')"
+                                    >
+                                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                                            <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5z" />
+                                        </svg>
+                                    </button>
+                                    <button
+                                        class="group-tool-tab"
+                                        :class="{ active: activeWorkspacePanel === 'terminal' }"
+                                        type="button"
+                                        role="tab"
+                                        :title="t('drawer.terminal')"
+                                        :aria-label="t('drawer.terminal')"
+                                        :aria-selected="activeWorkspacePanel === 'terminal'"
+                                        @click="selectWorkspacePanel('terminal')"
+                                    >
+                                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                                            <rect x="3" y="4" width="18" height="16" rx="2" />
+                                            <path d="m7 9 3 3-3 3M13 15h4" />
+                                        </svg>
+                                    </button>
+                                    <button
+                                        v-if="desktopBrowserAvailable"
+                                        class="group-tool-tab"
+                                        :class="{ active: activeWorkspacePanel === 'browser' }"
+                                        type="button"
+                                        role="tab"
+                                        :title="t('browser.title')"
+                                        :aria-label="t('browser.title')"
+                                        :aria-selected="activeWorkspacePanel === 'browser'"
+                                        @click="selectWorkspacePanel('browser')"
+                                    >
+                                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                                            <rect x="3" y="4" width="18" height="16" rx="2" />
+                                            <path d="M3 9h18" />
+                                            <circle cx="6.5" cy="6.5" r=".75" fill="currentColor" stroke="none" />
+                                            <circle cx="9.5" cy="6.5" r=".75" fill="currentColor" stroke="none" />
+                                        </svg>
+                                    </button>
+                                </div>
+                                <div class="group-tool-content">
+                                    <template v-if="currentRoom?.workspace">
+                                        <div v-if="deliveryUsage" class="delivery-usage-bar" :class="{ over: deliveryUsage.overLimit }">
+                                            <span class="delivery-usage-text">
+                                                {{ t('groupChat.delivery.usage', {
+                                                    used: deliveryFormatBytes(deliveryUsage.totalBytes),
+                                                    limit: deliveryFormatBytes(deliveryUsage.limitBytes),
+                                                    count: deliveryUsage.fileCount,
+                                                }) }}
+                                            </span>
+                                            <template v-if="deliveryUsage.overLimit">
+                                                <span class="delivery-usage-warn">{{ t('groupChat.delivery.overLimit') }}</span>
+                                                <NButton size="tiny" secondary type="warning" @click="handleCleanupDelivery">
+                                                    {{ t('groupChat.delivery.cleanup') }}
+                                                </NButton>
+                                            </template>
+                                        </div>
+                                        <FilesPanel
+                                            v-show="activeWorkspacePanel === 'files'"
+                                            :workspace-room-id="store.currentRoomId"
+                                            :workspace="currentRoom.workspace"
+                                            @attach="handleWorkspaceFileAttach"
+                                        />
+                                    </template>
+                                    <div v-else-if="activeWorkspacePanel === 'files'" class="group-workspace-empty">
+                                        <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+                                            <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                                        </svg>
+                                        <span>{{ t('chat.setWorkspaceTitle') }}</span>
+                                        <NButton type="primary" size="small" @click="handleOpenWorkspacePicker()">
+                                            {{ t('chat.setWorkspace') }}
+                                        </NButton>
+                                    </div>
+                                    <TerminalPanel
+                                        v-show="activeWorkspacePanel === 'terminal'"
+                                        class="group-terminal-panel"
+                                        :visible="showWorkspacePanel && activeWorkspacePanel === 'terminal'"
+                                    />
+                                    <DesktopBrowserPanel
+                                        v-if="desktopBrowserAvailable && activeWorkspacePanel === 'browser'"
+                                        class="group-browser-panel"
+                                        :visible="toolPanelTransitionReady"
+                                        @attach="handleBrowserAttachment"
                                     />
                                 </template>
                                 <div v-else-if="activeWorkspacePanel === 'files'" class="group-workspace-empty">
@@ -2694,6 +2807,25 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                                 >
                                     {{ t('groupChat.discussion.downloadReport') }}
                                 </NButton>
+                                <NButton
+                                    v-if="liveDiscussion.summaryFilePath"
+                                    size="small"
+                                    secondary
+                                    type="success"
+                                    :loading="isDownloadingSummary"
+                                    @click="handleDownloadDiscussionSummary"
+                                >
+                                    {{ t('groupChat.discussion.downloadSummary') }}
+                                </NButton>
+                            </div>
+                            <div v-if="liveDiscussion.deliverables && liveDiscussion.deliverables.length" class="discussion-deliverables">
+                                <div class="deliverables-title">{{ t('groupChat.discussion.deliverablesLabel') }}</div>
+                                <div v-for="file in liveDiscussion.deliverables" :key="file" class="deliverable-item">
+                                    <span class="deliverable-name" :title="file">{{ file.split('/').pop() }}</span>
+                                    <NButton size="tiny" secondary @click="handleDownloadDeliverable(file)">
+                                        {{ t('groupChat.discussion.downloadSummary') }}
+                                    </NButton>
+                                </div>
                             </div>
                         </div>
                     </section>
@@ -3817,6 +3949,29 @@ export default defineComponent({ components: { CreateRoomForm } })
     > * {
         height: 100%;
         min-height: 0;
+    }
+
+    .delivery-usage-bar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        padding: 6px 10px;
+        font-size: 12px;
+        border-bottom: 1px solid rgba(127, 127, 127, 0.15);
+
+        .delivery-usage-text {
+            color: var(--text-secondary, #888);
+        }
+
+        .delivery-usage-warn {
+            color: $warning;
+            font-weight: 600;
+        }
+
+        &.over {
+            background-color: rgba(240, 160, 32, 0.08);
+        }
     }
 }
 
