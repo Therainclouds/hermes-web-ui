@@ -2590,7 +2590,6 @@ async function handleSessionModelCustomSubmit() {
       class="chat-main"
       :class="{ 'chat-main--sidebar-collapsed': currentMode !== 'chat' || !showSessions }"
     >
-      <template>
       <header v-if="!standalone" class="chat-header">
         <div class="header-left">
           <NButton
@@ -2887,7 +2886,6 @@ async function handleSessionModelCustomSubmit() {
         v-else
         :human-only="sessionBrowserPrefsStore.humanOnly"
       />
-      </template>
     </div>
     <Teleport to="body">
       <RealtimeVoiceStage
