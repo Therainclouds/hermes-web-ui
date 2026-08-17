@@ -2439,9 +2439,9 @@ class ChatStorage {
 
     getDiscussionByRoom(roomId: string): DiscussionRow | null {
         const row = this.db()?.prepare(
-            `SELECT id, roomId, goal, agentOrder, reporterId, maxRounds, maxMessages,
+            `SELECT id, roomId, goal, agentOrder, reporterId, maxRounds, maxMessages, minRounds,
                     judgeProfile, judgeProvider, judgeModel, judgeApiMode,
-                    status, currentRound, judgeNotes, reportMessageId, lastError, createdAt, updatedAt
+                    status, currentRound, judgeNotes, reportMessageId, summaryFilePath, deliverables, lastError, createdAt, updatedAt
              FROM gc_discussions WHERE roomId = ? ORDER BY createdAt DESC LIMIT 1`
         ).get(roomId) as Partial<DiscussionRow> | undefined
         return row && row.id ? (row as DiscussionRow) : null
@@ -2450,10 +2450,10 @@ class ChatStorage {
     saveDiscussion(row: DiscussionRow): void {
         this.db()?.prepare(
             `INSERT INTO gc_discussions (
-                id, roomId, goal, agentOrder, reporterId, maxRounds, maxMessages,
+                id, roomId, goal, agentOrder, reporterId, maxRounds, maxMessages, minRounds,
                 judgeProfile, judgeProvider, judgeModel, judgeApiMode,
-                status, currentRound, judgeNotes, reportMessageId, lastError, createdAt, updatedAt
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                status, currentRound, judgeNotes, reportMessageId, summaryFilePath, deliverables, lastError, createdAt, updatedAt
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(roomId) DO UPDATE SET
                 id = excluded.id,
                 goal = excluded.goal,
@@ -2461,6 +2461,7 @@ class ChatStorage {
                 reporterId = excluded.reporterId,
                 maxRounds = excluded.maxRounds,
                 maxMessages = excluded.maxMessages,
+                minRounds = excluded.minRounds,
                 judgeProfile = excluded.judgeProfile,
                 judgeProvider = excluded.judgeProvider,
                 judgeModel = excluded.judgeModel,
@@ -2469,13 +2470,15 @@ class ChatStorage {
                 currentRound = excluded.currentRound,
                 judgeNotes = excluded.judgeNotes,
                 reportMessageId = excluded.reportMessageId,
+                summaryFilePath = excluded.summaryFilePath,
+                deliverables = excluded.deliverables,
                 lastError = excluded.lastError,
                 createdAt = excluded.createdAt,
                 updatedAt = excluded.updatedAt`
         ).run(
-            row.id, row.roomId, row.goal, row.agentOrder, row.reporterId, row.maxRounds, row.maxMessages,
+            row.id, row.roomId, row.goal, row.agentOrder, row.reporterId, row.maxRounds, row.maxMessages, row.minRounds,
             row.judgeProfile, row.judgeProvider, row.judgeModel, row.judgeApiMode,
-            row.status, row.currentRound, row.judgeNotes, row.reportMessageId, row.lastError, row.createdAt, row.updatedAt,
+            row.status, row.currentRound, row.judgeNotes, row.reportMessageId, row.summaryFilePath, row.deliverables, row.lastError, row.createdAt, row.updatedAt,
         )
     }
 

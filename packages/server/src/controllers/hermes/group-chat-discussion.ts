@@ -47,6 +47,7 @@ export async function startDiscussion(ctx: any): Promise<void> {
             agentOrder: Array.isArray(body.agentOrder) ? body.agentOrder.map(String) : undefined,
             maxRounds: typeof body.maxRounds === 'number' ? body.maxRounds : undefined,
             maxMessages: typeof body.maxMessages === 'number' ? body.maxMessages : undefined,
+            minRounds: typeof body.minRounds === 'number' ? body.minRounds : undefined,
             reporterId: typeof body.reporterId === 'string' ? body.reporterId : undefined,
             judge: readJudge(body),
         })
