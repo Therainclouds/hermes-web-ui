@@ -15,6 +15,7 @@ import { getSnapshot } from '../services/update/update-check-cache'
 import {
   assertNpmPackageExecution,
   buildNpmPackageInstallArgs,
+  cleanupStaleNpmPackageBackupDirs,
   getNpmPackageExecutionMessage,
   restoreTlsCertificatesAfterNpmUpdate,
   upgradeHermesAgentAfterNpmUpdate,
@@ -1157,6 +1158,20 @@ async function runUpdateInstall(versionOrTag: string) {
     runNpmSync(['cache', 'clean', '--force'], { timeout: 2 * 60 * 1000 })
   } catch (err) {
     console.warn('[update] failed to clean npm cache, continuing update:', err)
+  }
+
+  // npm install -g 会把现有包目录改名为 `.{name}-{random}` 备份再装新版；
+  // 上次失败留下的非空备份目录会让下一次 rename 报 ENOTEMPTY，安装前先清掉。
+  try {
+    const globalRoot = getGlobalRoot().trim()
+    if (globalRoot) {
+      const removed = cleanupStaleNpmPackageBackupDirs(globalRoot, config.update.packageName, config.update.cliBin)
+      if (removed > 0) {
+        console.log(`[update] removed ${removed} stale npm backup dir(s) before global install`)
+      }
+    }
+  } catch (err) {
+    console.warn('[update] failed to clean stale npm backup dirs, continuing update:', err)
   }
 
   return runNpmAsync(buildNpmPackageInstallArgs(config.update, versionOrTag), { timeout: 10 * 60 * 1000 })

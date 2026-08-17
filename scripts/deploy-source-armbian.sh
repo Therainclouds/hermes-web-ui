@@ -1856,7 +1856,14 @@ write_npmrc
 install_webui_dependencies
 reconcile_host_dependencies
 check_webui_dependencies
-build_webui
+if [[ "${DEPLOY_SKIP_BUILD:-false}" == "true" ]]; then
+  # Device packages ship a prebuilt dist/ (baked with the release version), so a
+  # source rebuild is neither possible (build scripts are not allowlisted into
+  # the package) nor needed. Source deploys keep the clean-rebuild path.
+  info "Skipping Web UI build: device package ships a prebuilt dist/"
+else
+  build_webui
+fi
 prewarm_meeting_asr_venv
 write_service_env
 install_update_runner_script

@@ -487,6 +487,7 @@ run_deploy_script() {
   step "Run deploy-source-armbian.sh update-only"
   env \
     DEPLOY_UPDATE_ONLY=true \
+    DEPLOY_SKIP_BUILD=true \
     DEPLOY_DIR="${DEPLOY_DIR}" \
     APP_USER="${APP_USER}" \
     PORT="${PORT}" \

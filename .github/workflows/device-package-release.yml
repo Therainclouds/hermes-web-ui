@@ -306,8 +306,19 @@ jobs:
           if ! curl -fsSL "${OSS_PUBLIC_BASE_URL}/versions.json" -o "${EXISTING_VERSIONS_PATH}" 2>/dev/null; then
             rm -f "${EXISTING_VERSIONS_PATH}"
           fi
+
+          # The Hermes Agent list is cumulative too: every version mirrored to
+          # OSS releases is a published runtime version. Listing the release
+          # dirs keeps the manifest in sync with all published agent versions
+          # (newest first) instead of pinning the single stable version.
+          OSS_HERMES_VERSIONS=""
+          if ossutil ls -d "${OSS_PATH}/hermes-agent/releases/" >/tmp/hermes-agent-release-dirs.txt 2>/dev/null; then
+            OSS_HERMES_VERSIONS="$(awk '{print $NF}' /tmp/hermes-agent-release-dirs.txt | sed 's#/$##; s#.*/##' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -u | tr '\n' ' ')"
+          fi
+
           RELEASE_TAGS="$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tr '\n' ' ')" \
           AGENT_VERSION="${AGENT_VERSION}" \
+          HERMES_VERSIONS="${OSS_HERMES_VERSIONS}" \
           EXISTING_VERSIONS_PATH="${EXISTING_VERSIONS_PATH}" \
           OUTPUT_PATH="${OUTPUT_PATH}" \
             python scripts/build-versions-manifest.py
