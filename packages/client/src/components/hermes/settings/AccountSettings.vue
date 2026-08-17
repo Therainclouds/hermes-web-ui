@@ -1,15 +1,19 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
+import { useRouter } from "vue-router";
 import { NButton, NInput, NModal, NForm, NFormItem, NPopconfirm } from "naive-ui";
 import { useMessage } from "@/composables/useAppMessage";
 import { useI18n } from "vue-i18n";
 import { changePassword, changeUsername, setPassword, fetchCurrentUser, fetchLockedIps, unlockSpecificIp, unlockAllIps, fetchMyAvatar, updateMyAvatar, resetMyAvatar } from "@/api/auth";
 import type { LockedIp, UserAvatar } from "@/api/auth";
+import { clearApiKey } from "@/api/client";
+import { unbindHermesDevice } from "@/api/device-login";
 import ProfileAvatar from "@/components/hermes/profiles/ProfileAvatar.vue";
 import multiavatar from "@multiavatar/multiavatar";
 
 const { t } = useI18n();
 const message = useMessage();
+const router = useRouter();
 
 const username = ref<string | null>(null);
 const loading = ref(false);
@@ -126,6 +130,7 @@ const showSetPasswordModal = ref(false);
 const setNewPasswordVal = ref("");
 const setNewPasswordConfirm = ref("");
 const isWeChatDeviceUser = ref(false);
+const unbindingWechat = ref(false);
 
 // Change username form
 const showChangeUsernameModal = ref(false);
