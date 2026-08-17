@@ -1,5 +1,81 @@
 # Work Log
 
+## 2026-08-17 · 群聊自由讨论深度增强 + 移除设备互联 + 讨论轮次修复
+
+### 本轮目标
+
+- 解决用户核心痛点：群聊讨论过早停止、讨论会反过来问用户、讨论结束后没有完整交付文件。
+- 用户反馈「设备上出现了设备互联功能」，要求彻底移除并保证本地代码也不含该功能。
+- 真实设备（阿曼 RK35xx，IP 已从 192.168.1.39 变更为 6.6.6.47）验证中发现讨论只跑 1 轮就停止，需修复。
+
+### 一、群聊自由讨论功能增强（commit e994d7d5）
+
+- **防过早收敛**：
+  - 新增 `minRounds` 参数（`clampInt(input.minRounds, 0, 0, maxRounds)`），收敛需跑满最小轮次。
+  - 新增连续收敛确认：`DISCUSSION_CONVERGED_STREAK_REQUIRED = 2`，裁判需连续 2 轮判定 `converged` 才允许结束，防单轮误判。
+  - 裁判提示词重写：`converged` 必须满足「讨论目标中的全部问题都已得到实质性解答、且已产出可落地交付的成果」。
+- **讨论自主化**：报告提示词改为「除非任务目标已全部完成并产出可交付成果，否则不要请求用户介入」，不再出现「让我来推进？」这类反问。
+- **Word 交付文件**：
+  - 服务端用 `docx` 库（Document/Packer/Paragraph/HeadingLevel）生成 `.docx` 总结文件，写入房间工作区「交付」目录。
+  - 目标注入：讨论目标中附带「【交付要求】将交付文件保存到「交付」目录（绝对路径）」。
+  - `scanDeliveryFiles()` 扫描交付目录，mtime ≥ 讨论开始的文件计入 `deliverables`。
+- **存储分区 + 清理**（新增 `group-chat-delivery.ts`）：
+  - `delivery-usage` GET：返回 totalBytes/fileCount/limitBytes/overLimit。
+  - `delivery-cleanup` POST：保留最新 N 个文件，删除其余（Agent 交付文件永不自动删除）。
+  - `scheduleAutoDeliveryCleanup()`：6 小时定时器，超限或磁盘紧张时仅删「讨论总结-」开头且超 90 天的文件，保留最新 5 个。
+  - 配置项：`GROUP_CHAT_DELIVERY_LIMIT_BYTES`（默认 100MB）、`KEEP_LATEST`（5）、`RETENTION_DAYS`（90）、`AUTO_CLEAN`、`GLOBAL_MIN_FREE_BYTES`（5GB）。
+- **前端展示**：
+  - `GroupChatPanel.vue`：交付用量条 + overLimit 警告 + 清理按钮 + 交付文件下载。
+  - `GroupMessageItem.vue`：报告消息后直接展示交付文件列表 + 下载按钮（用户无需点来点去）。
+  - 修复 `loadDiscussion` 未调用导致刷新后交付列表丢失的问题（watch currentRoomId 加载）。
+- **数据库**：`GC_DISCUSSIONS_SCHEMA` 新增 `minRounds` / `summaryFilePath` / `deliverables` 三列，syncTable 自动迁移旧库。
+- 测试：`group-chat-discussion.test.ts` / `group-chat-archive.test.ts` 更新收敛测试（2 连轮）并补 minRounds 用例。
+
+### 二、移除「设备互联」功能（commit 1ee42740）
+
+- **来源**：上游合入的 `connections` 聚合页（App 连接 / 小方盒 MCU / LAN 设备三个标签），入口在聊天页模式切换栏，文案「设备互联」。
+- **前端移除**：
+  - 路由 `/hermes/connections`、`PageSidebarNav.vue` 按钮、`ActiveSection` 类型。
+  - `App.vue` 布局数组、`ChatView.vue` `isConnectionsPage`、`ChatPanel.vue` `contentMode` prop 与 `ConnectionsPanel` 异步组件/模板。
+  - 删除 `components/hermes/connections/`（3 个组件）、`api/hermes/app-connections.ts`、`api/hermes/mcu-devices.ts`。
+  - 11 个 locale 删除 `sidebar.connections` 与顶层 `connections.*` 翻译块。
+- **服务端移除**：`routes/app-connections.ts`、`routes/mcu-devices.ts`、`controllers/app-connections.ts`、`controllers/mcu-devices.ts`、`db/hermes/mcu-devices-store.ts`、`routes/index.ts` 注册。
+  - **保留 `app-connections-store.ts`**：认证系统（设备登录 `consumeAppAuthorizationCode` / `upsertAppConnection`）、`user-auth` 中间件、app-relay 服务依赖它，不可删。
+- **schema**：删除 `MCU_DEVICES_TABLE/SCHEMA/INDEXES` 及 syncTable 调用。
+- **测试**：删除 `app-connections-api` / `app-connections-panel` / `mcu-devices-store` 测试；`lan-discovery.test.ts` 移除对已删路由文件的读取断言。
+- 验证：`npm run build` 通过，`hermes.connections` 在本地 bundle 中计数 0。
+
+### 三、讨论只跑 1 轮就停止的修复（commit b80cee40）
+
+- **现象**：设备上「许-测试1」讨论状态 `max_rounds`、`currentRound: 1`、`maxRounds: 8`，评判笔记仅 1 条（第 1 轮 converged:false / progress:true）。
+- **根因**：`run()` 循环中的「软上限扩展」机制：达到 `maxRounds` 后若裁判报告 progress 则扩展，最多 `DISCUSSION_MAX_EXTEND_ROUNDS=4` 轮；该逻辑复杂且存在提前终止路径。
+- **修复**：移除 `DISCUSSION_MAX_EXTEND_ROUNDS` 扩展机制与 `extensionUsed` 变量，达到 `maxRounds` 直接 `terminateReason='max_rounds'`。讨论严格跑满设定的最大轮数。
+- 重构轮次循环：每轮先让所有 agent 发言 → 检查消息预算 → 裁判评估 → 更新 streak → 判定收敛/停滞。
+
+### 四、设备部署
+
+- 设备 IP 变更：`192.168.1.39` → `6.6.6.47`（SSH root/123456 有效，quanthermes 密码 Byym602282# 用于 Web API 登录）。
+- Windows 无 sshpass/expect，改用 Python `paramiko` 编写部署脚本：SFTP 递归上传 `dist/client/*` 与 `dist/server/index.js` 到 `/opt/hermes-web-ui/dist/`，`systemctl restart hermes-web-ui`。
+- 部署后验证：设备 bundle 从 `index-D8uLQxSo.js`（含 `hermes.connections`）变为 `index-CrGJPHNG.js`（计数 0），确认设备互联已从设备移除。
+
+### 五、耀丰地产 1.7G 真实案例测试（会话前期）
+
+- 用户提供耀丰地产建设工程施工合同纠纷 1.7G 卷宗，5 个 agent 协同讨论。
+- 结论：群聊不支持 1.7G 大文件直接上传（有上传限制），U 盘传输最稳妥；USB 设备显示功能支持移动硬盘（Linux）。
+- 讨论目标设计要点：先用文件工具盘点卷宗目录 → 围绕争议焦点（违约金/工程款/工期）按需检索读取证据（扫描 PDF 按需 OCR）→ 每个结论注明证据文件 → 全部问题解答完才算完成。
+- 「许-测试1」已实际发起讨论（maxRounds:8，minRounds:0，5 个 agent，deepseek-v4-pro 裁判），发现并修复了只跑 1 轮的问题。
+
+### 当前分支
+
+- `merge/upstream-main-20260814`（合并上游 main 的本地分支）
+- 最新提交：`b80cee40 fix(discussion)` → `1ee42740 feat(removal)` → `ce82af73 fix(auth)` → `e994d7d5 feat(group-chat)`
+
+### 遗留 / 待办
+
+- 修复后需在设备上重新发起一场讨论验证跑满 8 轮（用耀丰地产卷宗或新话题）。
+- 大文件全量读取防幻觉方案（用户真实业务需要整个读取）尚未落地，待规划。
+- 本地 git 尚有未追踪文件 `.tmp_probe.py`（设备离线诊断遗留，可忽略）。
+
 ## 2026-08-11 · 会议音频改为结束一次性落库 + 录音中关页兜底
 
 ### 需求背景

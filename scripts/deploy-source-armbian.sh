@@ -1405,7 +1405,9 @@ wait_for_http_ready() {
   local i
   for ((i=1; i<=max_attempts; i++)); do
     local body
-    if body="$(curl -fsS --max-time 5 "$url" 2>/dev/null)" && [[ "$body" == *"$expected_fragment"* ]]; then
+    # Generous per-attempt timeout: on ARM the first /health call can take 5s+
+    # while the Hermes Agent CLI cold-starts inside the handler (getVersion).
+    if body="$(curl -fsS --max-time 30 "$url" 2>/dev/null)" && [[ "$body" == *"$expected_fragment"* ]]; then
       return 0
     fi
     sleep 2
