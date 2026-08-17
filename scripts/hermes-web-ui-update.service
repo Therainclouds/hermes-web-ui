@@ -7,7 +7,11 @@ Wants=network-online.target
 Type=oneshot
 User=root
 Group=root
-WorkingDirectory={{DEPLOY_DIR}}
+# No WorkingDirectory: the runner resolves every path from the update request
+# env (absolute paths), so a baked cwd only breaks the unit when the deploy
+# directory is renamed/moved after install (systemd dies with 200/CHDIR and
+# updates are stuck at "starting" forever). See scripts/update-source-deploy.sh
+# and scripts/install-device-package.sh for the actual execution paths.
 EnvironmentFile=-{{SERVICE_ENV_FILE}}
 ExecStart={{UPDATE_RUNNER_BIN}}
 StandardOutput=journal
