@@ -30,6 +30,8 @@ export interface DeviceBinding {
   username: string
   bound_at: number
   expires_at?: number
+  /** Token Platform user id; used to resolve the local `tp_<id>` user on unbind. */
+  profile_id?: number
 }
 
 export function deviceIdFilePath(): string {

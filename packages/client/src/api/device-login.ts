@@ -145,8 +145,12 @@ export async function fetchHermesDeviceBinding(): Promise<HermesDeviceBindingSta
 }
 
 /**
- * Forget the persisted Token Platform binding on this device.
+ * Unbind the WeChat account from this device: forget the persisted Token
+ * Platform binding, delete the local `tp_<id>` user, and restore the default
+ * profile identity. After this the device is available for a new WeChat owner.
  */
-export async function clearHermesDeviceBinding(): Promise<void> {
-  await request('/api/auth/device-binding', { method: 'DELETE' })
+export async function unbindHermesDevice(): Promise<{ hadBinding: boolean; deletedUser?: string | null }> {
+  return request<{ hadBinding: boolean; deletedUser?: string | null }>('/api/auth/device-binding', {
+    method: 'DELETE',
+  })
 }
