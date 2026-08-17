@@ -21,6 +21,7 @@ import * as inviteCtrl from '../../controllers/hermes/group-chat-invite'
 import * as workspaceCtrl from '../../controllers/hermes/group-chat-workspace'
 import * as agentLinkCtrl from '../../controllers/hermes/group-chat-agent-link'
 import * as remoteWorkspaceCtrl from '../../controllers/hermes/group-chat-remote-workspace'
+import * as deliveryCtrl from '../../controllers/hermes/group-chat-delivery'
 
 export const groupChatPublicRoutes = new Router()
 export const groupChatRoutes = new Router()
@@ -109,6 +110,8 @@ const roomDeletions = new Set<string>()
 export function setGroupChatServer(server: GroupChatServer | null) {
     chatServer = server
     setGroupChatRuntimeServer(server)
+    // 交付目录自动清理定时器（runtime server 就绪后再启动，避免首次扫描空跑）。
+    if (server) deliveryCtrl.scheduleAutoDeliveryCleanup()
 }
 
 export function getGroupChatServer(): GroupChatServer | null {
@@ -1812,6 +1815,10 @@ groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId/export', async (ctx) =
 groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/discussion', discussionCtrl.startDiscussion)
 groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId/discussion', discussionCtrl.getDiscussion)
 groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/discussion/stop', discussionCtrl.stopDiscussion)
+
+// ─── Delivery directory (工作区「交付」目录) 用量与清理 ──────────
+groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId/delivery-usage', deliveryCtrl.deliveryUsage)
+groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/delivery-cleanup', deliveryCtrl.cleanupDelivery)
 
 // ─── Large document pipeline ─────────────────────────────────
 // Spec: docs/planning/group-chat-large-doc-pipeline-spec.md §5

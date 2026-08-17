@@ -225,20 +225,21 @@ describe('group chat free discussion runner', () => {
   it('drives two agents round by round in the configured order with injected prompts, then reports on convergence', async () => {
     const { runner, speechCalls, systemMessages } = harness()
     judgeMock
-      .mockResolvedValueOnce(judgeJson())               // round 1: not converged
-      .mockResolvedValueOnce(judgeJson({ converged: true })) // round 2: converged
+      .mockResolvedValueOnce(judgeJson())                     // round 1: not converged
+      .mockResolvedValueOnce(judgeJson({ converged: true }))  // round 2: converged (streak 1 — not enough)
+      .mockResolvedValueOnce(judgeJson({ converged: true }))  // round 3: converged (streak 2 → ends)
 
     await runner.start('room-1', { goal: '决定发布策略', maxRounds: 5 })
     const final = await waitForDone(runner, 'room-1')
 
     expect(final.status).toBe('converged')
-    expect(final.currentRound).toBe(2)
+    expect(final.currentRound).toBe(3)
     expect(final.reportMessageId).toBe('')
-    expect(judgeMock).toHaveBeenCalledTimes(2)
+    expect(judgeMock).toHaveBeenCalledTimes(3)
 
-    // 2 agents x 2 rounds, then the reporter (order[0] = agent-a) closes with the report.
+    // 2 agents x 3 rounds, then the reporter (order[0] = agent-a) closes with the report.
     const calls = speechCalls()
-    expect(calls.map(call => call.agentId)).toEqual(['agent-a', 'agent-b', 'agent-a', 'agent-b', 'agent-a'])
+    expect(calls.map(call => call.agentId)).toEqual(['agent-a', 'agent-b', 'agent-a', 'agent-b', 'agent-a', 'agent-b', 'agent-a'])
 
     // Speech prompts carry the goal and per-agent identity.
     expect(calls[0].content).toContain('【讨论目标】决定发布策略')
@@ -247,12 +248,14 @@ describe('group chat free discussion runner', () => {
     // Round 2 speech inherits the judge's previous assessment.
     expect(calls[2].content).toContain('【裁判上轮评估】双方观点已清晰')
     // The closing call is the reporting phase.
-    expect(calls[4].content).toContain('汇报阶段')
-    expect(calls[4].content).toContain('【讨论目标】决定发布策略')
+    expect(calls[6].content).toContain('最终交付阶段')
+    expect(calls[6].content).toContain('【讨论目标】决定发布策略')
 
     // Judge notes are broadcast and echoed to the room as system messages.
-    expect(systemMessages.map(item => item.content).join('\n')).toContain('第1轮评估')
-    expect(systemMessages.map(item => item.content).join('\n')).toContain('第2轮评估')
+    const systemText = systemMessages.map(item => item.content).join('\n')
+    expect(systemText).toContain('第1轮评估')
+    expect(systemText).toContain('第2轮评估')
+    expect(systemText).toContain('第3轮评估')
   })
 
   it('forces a report when maxRounds is reached without convergence', async () => {
@@ -280,7 +283,7 @@ describe('group chat free discussion runner', () => {
     await runner.start('room-1', {
       goal: '自由讨论这个文件的内容',
       attachments: ['contract_1mb.txt', '证据清单.pdf'],
-      maxRounds: 1,
+      maxRounds: 3,
     })
     await waitForDone(runner, 'room-1')
 
@@ -410,17 +413,18 @@ describe('group chat free discussion runner', () => {
       ],
     })
     judgeMock
-      .mockResolvedValueOnce(judgeJson())
-      .mockResolvedValueOnce(judgeJson({ converged: true }))
+      .mockResolvedValueOnce(judgeJson())                     // round 1: not converged
+      .mockResolvedValueOnce(judgeJson({ converged: true }))  // round 2: converged (streak 1)
+      .mockResolvedValueOnce(judgeJson({ converged: true }))  // round 3: converged (streak 2 → ends)
 
     await runner.start('room-1', { goal: 'go', maxRounds: 5 })
     const final = await waitForDone(runner, 'room-1')
 
     expect(final.status).toBe('converged')
-    expect(final.currentRound).toBe(2)
+    expect(final.currentRound).toBe(3)
     const bCalls = speechCalls().filter(call => call.agentId === 'agent-b')
-    expect(bCalls.length).toBe(2) // round 1 and round 2 still happened
-    expect(bCalls.at(-1)?.content).toContain('第 2/')
+    expect(bCalls.length).toBe(3) // rounds 1-3 still happened
+    expect(bCalls.at(-1)?.content).toContain('第 3/')
   })
 
   it('keeps running when the judge keeps failing and still reports on the round cap', async () => {
@@ -444,15 +448,16 @@ describe('group chat free discussion runner', () => {
     const { runner } = harness()
     judgeMock
       .mockRejectedValueOnce(new Error('provider unavailable'))  // round 1: outage
-      .mockResolvedValueOnce(judgeJson({ converged: true }))     // round 2: converged
+      .mockResolvedValueOnce(judgeJson({ converged: true }))     // round 2: converged (streak 1)
+      .mockResolvedValueOnce(judgeJson({ converged: true }))     // round 3: converged (streak 2 → ends)
 
     await runner.start('room-1', { goal: 'go', maxRounds: 5 })
     const final = await waitForDone(runner, 'room-1')
 
     expect(final.status).toBe('converged')
-    expect(final.currentRound).toBe(2)
+    expect(final.currentRound).toBe(3)
     expect(final.lastError).toBeNull() // cleared once a judge round succeeds
-    expect(judgeMock).toHaveBeenCalledTimes(2)
+    expect(judgeMock).toHaveBeenCalledTimes(3)
   })
 
   it('extends past maxRounds while the judge keeps reporting progress, capped by the extension budget', async () => {
@@ -502,6 +507,38 @@ describe('group chat free discussion runner', () => {
     expect(calls.length).toBe(11) // 5 rounds x 2 agents + 1 report
   })
 
+  it('does not converge before minRounds, even when the judge reports convergence', async () => {
+    const { runner, speechCalls } = harness()
+    // Every round reports converged; with minRounds=3 the runner must keep going
+    // until round 3 even though the streak reaches 2 already at round 2.
+    judgeMock.mockResolvedValue(judgeJson({ converged: true }))
+
+    await runner.start('room-1', { goal: 'go', maxRounds: 5, minRounds: 3 })
+    const final = await waitForDone(runner, 'room-1')
+
+    expect(final.status).toBe('converged')
+    expect(final.currentRound).toBe(3) // forced to explore at least 3 rounds
+    const calls = speechCalls()
+    expect(calls.length).toBe(7) // 3 rounds x 2 agents + 1 report
+  })
+
+  it('resets the convergence streak when a round is not converged', async () => {
+    const { runner, speechCalls } = harness()
+    judgeMock
+      .mockResolvedValueOnce(judgeJson({ converged: true }))   // round 1: streak 1
+      .mockResolvedValueOnce(judgeJson())                       // round 2: streak reset
+      .mockResolvedValueOnce(judgeJson({ converged: true }))   // round 3: streak 1
+      .mockResolvedValueOnce(judgeJson({ converged: true }))   // round 4: streak 2 → ends
+
+    await runner.start('room-1', { goal: 'go', maxRounds: 8 })
+    const final = await waitForDone(runner, 'room-1')
+
+    expect(final.status).toBe('converged')
+    expect(final.currentRound).toBe(4) // needs two consecutive converged rounds after the reset
+    const calls = speechCalls()
+    expect(calls.length).toBe(9) // 4 rounds x 2 agents + 1 report
+  })
+
   it('stops an active discussion and forces a stopped report', async () => {
     let release!: () => void
     const gate = new Promise<void>(resolve => { release = resolve })
@@ -534,6 +571,7 @@ describe('group chat free discussion runner', () => {
       reporterId: 'agent-a',
       maxRounds: 8,
       maxMessages: 60,
+      minRounds: 0,
       judgeProfile: 'default',
       judgeProvider: 'openai',
       judgeModel: 'gpt-test',
@@ -542,6 +580,8 @@ describe('group chat free discussion runner', () => {
       currentRound: 3,
       judgeNotes: '[]',
       reportMessageId: '',
+      summaryFilePath: '',
+      deliverables: '[]',
       lastError: null,
       createdAt: 1,
       updatedAt: 1,
@@ -596,6 +636,7 @@ describe('group chat discussion @-mention routing gate', () => {
       reporterId: 'agent-worker',
       maxRounds: 8,
       maxMessages: 60,
+      minRounds: 0,
       judgeProfile: 'default',
       judgeProvider: 'openai',
       judgeModel: 'gpt-test',
@@ -604,6 +645,8 @@ describe('group chat discussion @-mention routing gate', () => {
       currentRound: 1,
       judgeNotes: '[]',
       reportMessageId: '',
+      summaryFilePath: '',
+      deliverables: '[]',
       lastError: null,
       createdAt: Date.now(),
       updatedAt: Date.now(),

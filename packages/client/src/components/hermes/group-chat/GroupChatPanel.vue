@@ -6,7 +6,7 @@ import { NInput, NButton, NSpace, NSelect, NPopover, NPopconfirm, NInputNumber, 
 import { useGroupChatStore } from '@/stores/hermes/group-chat'
 import { useAppStore } from '@/stores/hermes/app'
 import { useProfilesStore } from '@/stores/hermes/profiles'
-import { updateRoomConfig, exportRoom, importRooms, getRoomSummary, updateRoomSummary, listStoppedRoomAgentHandoffs, continueRoomAgentHandoff } from '@/api/hermes/group-chat'
+import { updateRoomConfig, exportRoom, importRooms, getRoomSummary, updateRoomSummary, listStoppedRoomAgentHandoffs, continueRoomAgentHandoff, downloadGroupWorkspaceFile, fetchDeliveryUsage, cleanupDeliveryFiles, type DeliveryUsage } from '@/api/hermes/group-chat'
 import {
     decideGroupAgentPairing,
     leaveLocalGroupAgentRoom,
@@ -204,6 +204,53 @@ const liveDiscussion = computed(() => {
     if (!roomId) return null
     return store.discussionStates.get(roomId) || null
 })
+// 打开/切换房间时拉取该房间的讨论状态（含交付文件清单 deliverables），
+// 否则刷新页面后报告消息下方无法呈现本场交付文件。
+watch(
+    () => store.currentRoomId,
+    (roomId) => {
+        if (roomId) {
+            store.loadDiscussion(roomId)
+            loadDeliveryUsage()
+        }
+    },
+    { immediate: true },
+)
+
+// ─── 交付目录用量统计与清理提醒 ─────────────────────────────
+const deliveryUsage = ref<DeliveryUsage | null>(null)
+async function loadDeliveryUsage(): Promise<void> {
+    const roomId = store.currentRoomId
+    if (!roomId) return
+    try {
+        deliveryUsage.value = await fetchDeliveryUsage(roomId)
+    } catch {
+        deliveryUsage.value = null
+    }
+}
+function deliveryFormatBytes(value: number | null | undefined): string {
+    if (value == null || !Number.isFinite(value)) return '0 B'
+    const units = ['B', 'KB', 'MB', 'GB']
+    let next = value
+    let unitIndex = 0
+    while (next >= 1024 && unitIndex < units.length - 1) {
+        next /= 1024
+        unitIndex += 1
+    }
+    return `${next.toFixed(next >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`
+}
+async function handleCleanupDelivery(): Promise<void> {
+    const roomId = store.currentRoomId
+    if (!roomId || !deliveryUsage.value) return
+    if (!window.confirm(t('groupChat.delivery.cleanupConfirm'))) return
+    try {
+        await cleanupDeliveryFiles(roomId)
+        await loadDeliveryUsage()
+        message.success(t('groupChat.delivery.cleanupDone'))
+    } catch (err: any) {
+        message.error(err?.message || t('groupChat.delivery.cleanupFailed'))
+    }
+}
 const discussionIsActive = computed(() => {
     const state = liveDiscussion.value
     return state ? state.status === 'pending' || state.status === 'running' || state.status === 'paused' : false
@@ -300,6 +347,36 @@ async function startDiscussionViaUI(
 
 // ─── Report download (Word + Markdown) ─────────────────────
 const { isDownloading: isDownloadingReport, downloadReport: handleDownloadDiscussionReport } = useDiscussionReportDownload()
+
+// ─── 讨论结束后自动生成的总结文件下载（服务端落盘到房间工作区「交付」目录）───
+const isDownloadingSummary = ref(false)
+async function handleDownloadDiscussionSummary(): Promise<void> {
+    const roomId = store.currentRoomId
+    const state = roomId ? store.discussionStates.get(roomId) : null
+    const filePath = state?.summaryFilePath
+    if (!roomId || !filePath) return
+    isDownloadingSummary.value = true
+    try {
+        const fileName = filePath.split('/').pop() || '讨论总结.md'
+        await downloadGroupWorkspaceFile(roomId, filePath, fileName)
+    } catch (err: any) {
+        message.error(err?.message || t('groupChat.discussion.summaryDownloadFailed'))
+    } finally {
+        isDownloadingSummary.value = false
+    }
+}
+
+// ─── 本场讨论交付文件下载（工作区「交付」目录）───
+async function handleDownloadDeliverable(filePath: string): Promise<void> {
+    const roomId = store.currentRoomId
+    if (!roomId || !filePath) return
+    try {
+        const fileName = filePath.split('/').pop() || '交付文件'
+        await downloadGroupWorkspaceFile(roomId, filePath, fileName)
+    } catch (err: any) {
+        message.error(err?.message || t('groupChat.discussion.summaryDownloadFailed'))
+    }
+}
 
 // ─── Quick start from the chat input toolbar ───────────────
 const discussionQuickVisible = ref(false)
@@ -2735,6 +2812,21 @@ async function handleClarify(response?: string) {
                                 </div>
                                 <div class="group-tool-content">
                                     <template v-if="currentRoom?.workspace">
+                                        <div v-if="deliveryUsage" class="delivery-usage-bar" :class="{ over: deliveryUsage.overLimit }">
+                                            <span class="delivery-usage-text">
+                                                {{ t('groupChat.delivery.usage', {
+                                                    used: deliveryFormatBytes(deliveryUsage.totalBytes),
+                                                    limit: deliveryFormatBytes(deliveryUsage.limitBytes),
+                                                    count: deliveryUsage.fileCount,
+                                                }) }}
+                                            </span>
+                                            <template v-if="deliveryUsage.overLimit">
+                                                <span class="delivery-usage-warn">{{ t('groupChat.delivery.overLimit') }}</span>
+                                                <NButton size="tiny" secondary type="warning" @click="handleCleanupDelivery">
+                                                    {{ t('groupChat.delivery.cleanup') }}
+                                                </NButton>
+                                            </template>
+                                        </div>
                                         <FilesPanel
                                             v-show="activeWorkspacePanel === 'files'"
                                             :workspace-room-id="store.currentRoomId"
@@ -3514,6 +3606,25 @@ async function handleClarify(response?: string) {
                                 >
                                     {{ t('groupChat.discussion.downloadReport') }}
                                 </NButton>
+                                <NButton
+                                    v-if="liveDiscussion.summaryFilePath"
+                                    size="small"
+                                    secondary
+                                    type="success"
+                                    :loading="isDownloadingSummary"
+                                    @click="handleDownloadDiscussionSummary"
+                                >
+                                    {{ t('groupChat.discussion.downloadSummary') }}
+                                </NButton>
+                            </div>
+                            <div v-if="liveDiscussion.deliverables && liveDiscussion.deliverables.length" class="discussion-deliverables">
+                                <div class="deliverables-title">{{ t('groupChat.discussion.deliverablesLabel') }}</div>
+                                <div v-for="file in liveDiscussion.deliverables" :key="file" class="deliverable-item">
+                                    <span class="deliverable-name" :title="file">{{ file.split('/').pop() }}</span>
+                                    <NButton size="tiny" secondary @click="handleDownloadDeliverable(file)">
+                                        {{ t('groupChat.discussion.downloadSummary') }}
+                                    </NButton>
+                                </div>
                             </div>
                         </div>
                     </section>
@@ -4811,6 +4922,29 @@ export default defineComponent({ components: { CreateRoomForm } })
     > * {
         height: 100%;
         min-height: 0;
+    }
+
+    .delivery-usage-bar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        padding: 6px 10px;
+        font-size: 12px;
+        border-bottom: 1px solid rgba(127, 127, 127, 0.15);
+
+        .delivery-usage-text {
+            color: var(--text-secondary, #888);
+        }
+
+        .delivery-usage-warn {
+            color: $warning;
+            font-weight: 600;
+        }
+
+        &.over {
+            background-color: rgba(240, 160, 32, 0.08);
+        }
     }
 }
 

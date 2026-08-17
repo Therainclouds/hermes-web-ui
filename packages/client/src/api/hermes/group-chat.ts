@@ -495,6 +495,10 @@ export interface DiscussionState {
     lastError: string | null
     createdAt: number
     updatedAt: number
+    /** 讨论结束后服务端自动生成的总结文件路径（房间工作区「交付」目录下），空串表示未生成。 */
+    summaryFilePath?: string
+    /** 本场讨论产出的交付文件路径清单（房间工作区「交付」目录下）。 */
+    deliverables?: string[]
 }
 
 export interface DiscussionStartInput {
@@ -504,6 +508,8 @@ export interface DiscussionStartInput {
     agentOrder?: string[]
     maxRounds?: number
     maxMessages?: number
+    /** 最小轮次：前 minRounds 轮禁止收敛，保证深度探索。 */
+    minRounds?: number
     reporterId?: string
     judge?: { profile?: string; provider?: string; model?: string; apiMode?: string }
 }
@@ -644,6 +650,21 @@ export async function downloadGroupWorkspaceFile(roomId: string, path: string, f
         `/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/workspace-file/content?${params}`,
     )
     saveBlob(blob, fileName)
+}
+
+export interface DeliveryUsage {
+    totalBytes: number
+    fileCount: number
+    limitBytes: number
+    overLimit: boolean
+}
+
+export async function fetchDeliveryUsage(roomId: string): Promise<DeliveryUsage> {
+    return request<DeliveryUsage>(`/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/delivery-usage`)
+}
+
+export async function cleanupDeliveryFiles(roomId: string): Promise<{ deleted: string[]; deletedBytes: number }> {
+    return request(`/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/delivery-cleanup`, { method: 'POST' })
 }
 
 export async function writeGroupWorkspaceFile(roomId: string, path: string, content: string): Promise<void> {

@@ -19,6 +19,7 @@ import { useMessage } from '@/composables/useAppMessage'
 import { getGroupChatAttachmentUrl } from '@/api/hermes/group-chat-attachments'
 import { useGroupChatStore } from '@/stores/hermes/group-chat'
 import { useDiscussionReportDownload } from '@/composables/useDiscussionReportDownload'
+import { downloadGroupWorkspaceFile } from '@/api/hermes/group-chat'
 import { formatReferencedContentForDisplay, parseMessageReference } from '@/stores/hermes/chat'
 import { isPreviewableFile } from '@/utils/hermes/file-preview'
 import ToolChangeCard from '@/components/hermes/chat/ToolChangeCard.vue'
@@ -57,6 +58,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const appMessage = useMessage()
 const toast = useMessage()
 const groupChatStore = useGroupChatStore()
 const filesStore = useFilesStore()
@@ -103,6 +105,27 @@ const isDiscussionReportMessage = computed(() => {
     return state.reportMessageId === props.message.id
 })
 const { isDownloading: isReportDownloading, downloadReport: downloadDiscussionReport } = useDiscussionReportDownload()
+
+// 报告消息卡片直接呈现本场讨论的交付文件（工作区「交付」目录），无需进入工作区面板。
+const reportDeliverables = computed(() => {
+    const roomId = groupChatStore.currentRoomId
+    if (!roomId || !isDiscussionReportMessage.value) return []
+    const state = groupChatStore.discussionStates.get(roomId)
+    return state?.deliverables || []
+})
+const isDeliverableDownloading = ref(false)
+async function downloadDeliverable(filePath: string): Promise<void> {
+    const roomId = groupChatStore.currentRoomId
+    if (!roomId || !filePath) return
+    isDeliverableDownloading.value = true
+    try {
+        await downloadGroupWorkspaceFile(roomId, filePath, filePath.split('/').pop() || '交付文件')
+    } catch (err: any) {
+        appMessage.error(err?.message || t('groupChat.discussion.summaryDownloadFailed'))
+    } finally {
+        isDeliverableDownloading.value = false
+    }
+}
 
 // 找当前消息发送者在 members 里的记录
 const memberInfo = computed(() => {
@@ -860,6 +883,18 @@ onBeforeUnmount(() => {
                 </button>
                 <span v-if="!embedded" class="message-time">{{ timeStr }}</span>
             </div>
+            <div v-if="reportDeliverables.length" class="report-deliverables">
+                <div class="report-deliverables-title">{{ t('groupChat.discussion.deliverablesLabel') }}</div>
+                <div v-for="file in reportDeliverables" :key="file" class="report-deliverable">
+                    <span class="report-deliverable-name" :title="file">{{ file.split('/').pop() }}</span>
+                    <button
+                        type="button"
+                        class="report-deliverable-download"
+                        :disabled="isDeliverableDownloading"
+                        @click="downloadDeliverable(file)"
+                    >⬇️ {{ t('groupChat.discussion.downloadSummary') }}</button>
+                </div>
+            </div>
         </div>
     </div>
     <div v-if="previewUrl" class="image-preview-overlay" @click.self="previewUrl = null">
@@ -892,6 +927,52 @@ onBeforeUnmount(() => {
 
     &.agent .msg-content.agent-content {
         background-color: rgba(var(--accent-primary-rgb), 0.06);
+    }
+
+    .report-deliverables {
+        margin-top: 8px;
+        padding: 8px 10px;
+        border: 1px solid rgba(var(--accent-primary-rgb), 0.25);
+        border-radius: 8px;
+        background-color: rgba(var(--accent-primary-rgb), 0.05);
+
+        .report-deliverables-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-secondary, #888);
+            margin-bottom: 6px;
+        }
+
+        .report-deliverable {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 3px 0;
+
+            .report-deliverable-name {
+                font-size: 13px;
+                word-break: break-all;
+                flex: 1;
+                min-width: 0;
+            }
+
+            .report-deliverable-download {
+                border: none;
+                background: rgba(var(--accent-primary-rgb), 0.12);
+                color: var(--accent-primary, #4c8dff);
+                border-radius: 6px;
+                padding: 3px 8px;
+                font-size: 12px;
+                cursor: pointer;
+                white-space: nowrap;
+
+                &:disabled {
+                    opacity: 0.5;
+                    cursor: not-allowed;
+                }
+            }
+        }
     }
 
     &.agent .msg-content.agent-error {
