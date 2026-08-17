@@ -2215,29 +2215,8 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                                     <DesktopBrowserPanel
                                         v-if="desktopBrowserAvailable && activeWorkspacePanel === 'browser'"
                                         class="group-browser-panel"
-                                        :visible="toolPanelTransitionReady"
                                         @attach="handleBrowserAttachment"
                                     />
-                                </template>
-                                <div v-else-if="activeWorkspacePanel === 'files'" class="group-workspace-empty">
-                                    <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
-                                        <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-                                    </svg>
-                                    <span>{{ t('chat.setWorkspaceTitle') }}</span>
-                                    <NButton type="primary" size="small" @click="handleOpenWorkspacePicker()">
-                                        {{ t('chat.setWorkspace') }}
-                                    </NButton>
-                                </div>
-                                <TerminalPanel
-                                    v-show="activeWorkspacePanel === 'terminal'"
-                                    class="group-terminal-panel"
-                                    :visible="showWorkspacePanel && activeWorkspacePanel === 'terminal'"
-                                />
-                                <DesktopBrowserPanel
-                                    v-if="desktopBrowserAvailable && activeWorkspacePanel === 'browser'"
-                                    class="group-browser-panel"
-                                    @attach="handleBrowserAttachment"
-                                />
                             </div>
                         </template>
                     </div>
