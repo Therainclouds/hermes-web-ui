@@ -461,6 +461,7 @@ export async function deviceLogin(ctx: Context) {
     models: modelList,
     display_name: displayName,
     username: profile.username || localUsername,
+    profile_id: profile.id,
     bound_at: Date.now(),
   }
   await saveDeviceBinding(binding)
@@ -525,11 +526,40 @@ export async function getDeviceBinding(ctx: Context) {
 
 /**
  * DELETE /api/auth/device-binding
- * Forget the persisted Token Platform binding on this device.
+ * Unbind the WeChat account bound to this device.
+ *
+ * Full unbind semantics (public, callable from the login page before signing
+ * in): forget the persisted Token Platform binding so the device is available
+ * for a new WeChat owner, remove the WeChat identity from the default agent
+ * profile, and delete the local `tp_<id>` user provisioned by the scan login.
+ * No "at least one super administrator" guard is enforced: unbinding is a
+ * device-handover operation and the next scan bootstraps a fresh owner.
+ *
+ * Response: { success, hadBinding, deletedUser }.
  */
 export async function clearDeviceBindingController(ctx: Context) {
-  await clearDeviceBinding()
-  ctx.body = { success: true }
+  const binding = await loadDeviceBinding()
+  let deletedUser: string | null = null
+  if (binding) {
+    // Resolve the local user provisioned by the scan login. Prefer the stored
+    // profile id (`tp_<id>`); fall back to the recorded username when it was
+    // persisted in the tp_ form (older bindings may not carry profile_id).
+    const localUsername = binding.profile_id != null
+      ? `tp_${binding.profile_id}`
+      : (binding.username && binding.username.startsWith('tp_') ? binding.username : null)
+    if (localUsername) {
+      const user = findUserByUsername(localUsername)
+      if (user) {
+        await removeAllUserThemeAssets(user.id)
+        deleteUser(user.id)
+        deletedUser = user.username
+      }
+    }
+    // Restore the default agent profile's original identity (name/avatar).
+    clearProfileIdentity('default')
+    await clearDeviceBinding()
+  }
+  ctx.body = { success: true, hadBinding: Boolean(binding), deletedUser }
 }
 
 /**

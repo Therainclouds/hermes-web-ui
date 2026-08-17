@@ -10,6 +10,7 @@ authPublicRoutes.post('/api/auth/mcu-login', ctrl.microcontrollerLogin)
 authPublicRoutes.post('/api/auth/device-login', ctrl.deviceLogin)
 authPublicRoutes.post('/api/auth/device-login/restore', ctrl.restoreDeviceLogin)
 authPublicRoutes.get('/api/auth/device-binding', ctrl.getDeviceBinding)
+authPublicRoutes.delete('/api/auth/device-binding', ctrl.clearDeviceBindingController)
 
 // Protected routes (auth required)
 export const authProtectedRoutes = new Router()
@@ -31,4 +32,3 @@ authProtectedRoutes.delete('/api/auth/users/:id', requireSuperAdmin, ctrl.delete
 authProtectedRoutes.get('/api/auth/users/:id/export', requireSuperAdmin, ctrl.exportManagedUser)
 authProtectedRoutes.get('/api/auth/locked-ips', ctrl.listLockedIps)
 authProtectedRoutes.delete('/api/auth/locked-ips', ctrl.unlockIpHandler)
-authProtectedRoutes.delete('/api/auth/device-binding', ctrl.clearDeviceBindingController)
