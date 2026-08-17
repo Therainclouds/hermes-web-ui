@@ -1,6 +1,6 @@
 import { execFile } from 'child_process'
-import { cpSync, existsSync, mkdirSync } from 'fs'
-import { join, resolve } from 'path'
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'fs'
+import { dirname, join, resolve } from 'path'
 import { promisify } from 'util'
 import { getDeployDir, getWebUiHome } from '../../../config'
 import { detectHermesHome } from '../../hermes/hermes-path'
@@ -28,6 +28,71 @@ export function buildNpmPackageInstallArgs(update: UpdateConfig, versionOrTag: s
     '--no-audit',
     '--no-fund',
   ]
+}
+
+/**
+ * npm 全局安装（npm install -g）替换旧包时会把现有包目录改名为
+ * `.{名字}-{随机}` 备份再装新版；若上次失败留下非空的备份目录，下一次
+ * rename 会因目标非空而报 ENOTEMPTY（npm 10 已知问题）。这里收集需要
+ * 清理的备份前缀：包名（去 scope）、CLI 名，以及已装包 package.json 里
+ * 声明的 bin 名（如 hermes-web-ui、hermes-web-ui-mcp、hermes-studio-mcp）。
+ */
+export function collectNpmPackageBackupPrefixes(globalRoot: string, packageName: string, cliBin: string): string[] {
+  const prefixes = new Set<string>()
+  const base = packageName.includes('/') ? packageName.split('/').pop() || '' : packageName
+  if (base.trim()) prefixes.add(base.trim())
+  const cliBase = cliBin.replace(/\.(mjs|js|cjs)$/, '').trim()
+  if (cliBase) prefixes.add(cliBase)
+
+  const segments = packageName.startsWith('@') ? packageName.split('/') : [packageName]
+  const pkgJsonPath = join(globalRoot, ...segments, 'package.json')
+  try {
+    if (existsSync(pkgJsonPath)) {
+      const pkg = JSON.parse(readFileSync(pkgJsonPath, 'utf-8')) as { bin?: string | Record<string, string> }
+      if (pkg.bin) {
+        const names = typeof pkg.bin === 'string' ? [segments[segments.length - 1]] : Object.keys(pkg.bin)
+        for (const name of names) {
+          const trimmed = String(name).trim()
+          if (trimmed) prefixes.add(trimmed)
+        }
+      }
+    }
+  } catch {
+    // best-effort: 读不到已装包的 bin 声明也不影响清理主包备份
+  }
+  return Array.from(prefixes)
+}
+
+/**
+ * 删除 npm 全局目录里上次失败留下的 `.{名字}-{随机}` 备份目录，避免下一次
+ * `npm install -g` 的 rename 因目标非空而报 ENOTEMPTY。清理范围：包所在
+ * 的 scope 目录（lib/node_modules/@scope 或 lib/node_modules）与全局 bin
+ * 目录（Linux lib/node_modules 的兄弟 bin/，Windows 为前缀根目录）。
+ * best-effort：单个目录清理失败不影响其余清理。
+ */
+export function cleanupStaleNpmPackageBackupDirs(globalRoot: string, packageName: string, cliBin: string): number {
+  const prefixes = collectNpmPackageBackupPrefixes(globalRoot, packageName, cliBin)
+  if (prefixes.length === 0) return 0
+
+  const scope = packageName.startsWith('@') ? packageName.split('/')[0] : ''
+  const scopeDir = scope ? join(globalRoot, scope) : globalRoot
+  const globalBinDir = process.platform === 'win32'
+    ? dirname(globalRoot)
+    : join(dirname(globalRoot), 'bin')
+
+  let removed = 0
+  for (const directory of new Set([scopeDir, globalBinDir].filter(dir => existsSync(dir)))) {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (!prefixes.some(prefix => entry.name.startsWith(`.${prefix}-`))) continue
+      try {
+        rmSync(join(directory, entry.name), { recursive: true, force: true })
+        removed += 1
+      } catch {
+        // best-effort: 单个残留清理失败不阻断更新
+      }
+    }
+  }
+  return removed
 }
 
 /**

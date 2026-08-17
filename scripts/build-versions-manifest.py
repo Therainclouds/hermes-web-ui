@@ -8,6 +8,11 @@ cumulative: every release appends the current tag instead of replacing history.
 Input (env vars):
   RELEASE_TAGS              Space separated git tags, e.g. "v0.7.15 v0.7.16"
   AGENT_VERSION             Current Hermes Agent version, e.g. "0.15.2"
+  HERMES_VERSIONS           Optional space separated published Hermes Agent
+                            versions, e.g. "0.15.2 0.16.0". Merged with
+                            AGENT_VERSION so the manifest lists every published
+                            version (newest first) instead of the single
+                            pinned stable.
   EXISTING_VERSIONS_PATH    Optional path to the existing versions.json fetched
                             from OSS; merged so already published versions are kept.
   OUTPUT_PATH               Output file path. When empty, prints JSON to stdout.
@@ -57,6 +62,7 @@ def normalize_existing(payload):
 def main() -> int:
     tags = [tag for tag in (os.environ.get("RELEASE_TAGS", "") or "").split() if tag]
     agent_version = (os.environ.get("AGENT_VERSION", "") or "").strip()
+    hermes_versions = [v for v in (os.environ.get("HERMES_VERSIONS", "") or "").split() if v.strip()]
     existing_path = (os.environ.get("EXISTING_VERSIONS_PATH", "") or "").strip()
     output_path = (os.environ.get("OUTPUT_PATH", "") or "").strip()
 
@@ -76,8 +82,10 @@ def main() -> int:
             webui.append(".".join(match.groups()))
 
     hermes = list(existing["hermes"])
-    if agent_version and SEMVER_RE.match(agent_version):
-        hermes.append(agent_version)
+    candidate_hermes = [*hermes_versions, agent_version]
+    for version in candidate_hermes:
+        if version and SEMVER_RE.match(version):
+            hermes.append(version)
 
     payload = {
         "schema": 1,
