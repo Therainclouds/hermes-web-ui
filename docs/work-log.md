@@ -1,6 +1,50 @@
 # Work Log
 
-## 2026-08-17 · 群聊自由讨论深度增强 + 移除设备互联 + 讨论轮次修复
+## 2026-08-18 · 群聊自由讨论改为"任务结果导向"（修复只跑 1 轮真正根因 + 防设备过载）
+
+### 本轮目标
+
+- 用户反馈：群聊自由讨论"任何任务只执行一轮"，要求以任务结果为导向——没产出明确结果不停，消息自动总结归档。
+- 前一轮 `b80cee40` 移除了"软上限扩展"机制但**误诊了根因**：真正的元凶是 `maxMessages=60` 消息预算统计了全部消息（含 tool 管道消息），5 个 agent 第 1 轮的工具调用就耗尽预算。
+- 设备（阿曼 RK35xx，IP 10.0.0.2）实测：4 核 / 3.9GB RAM / zram 1.9GB，需防止长讨论把设备吃爆。
+
+### 一、Spec（docs/planning/group-chat-discussion-task-oriented-spec.md）
+
+完整 spec 已写入 `docs/planning/group-chat-discussion-task-oriented-spec.md`：根因分析（含设备实测证据：第 1 轮恰好产生 60 条消息 = maxMessages 上限）、方案设计、验收标准、风险与回退。
+
+### 二、代码改动
+
+1. **maxMessages 预算改为只计"实质发言"**（`discussion.ts` + `index.ts`）：
+   - `ChatStorage` 新增 `getSubstantiveMessageCount()`：SQL 排除 `role='tool'` 与空 assistant 占位消息。
+   - `DiscussionStorage` 接口新增可选 `getSubstantiveMessageCount?` / `listDiscussions?`，测试桩不受破坏。
+   - `messagesSinceStart()` 改用实质发言计数——工具调用管道不再消耗讨论预算。
+2. **默认参数调整**：`DISCUSSION_DEFAULT_MAX_ROUNDS` 8→20、`DISCUSSION_DEFAULT_MAX_MESSAGES` 60→200（clamp 上限 500→1000）；前端 `GroupChatPanel.vue` 同步默认值与 NInputNumber max。
+3. **讨论中每 5 轮自动归档**（`archiveDuringRun`）：
+   - `DISCUSSION_ROUND_ARCHIVE_EVERY=5`、`DISCUSSION_ROUND_ARCHIVE_MIN_MESSAGES=20`（按实质发言计）。
+   - 每 5 轮把原始消息总结落盘为 summary（复用 `archiveRoom`），并广播"讨论记录已自动归档"系统消息；失败仅告警不中断。
+4. **全局并发限制**：`DISCUSSION_MAX_CONCURRENT=1`（环境变量 `HERMES_GROUP_CHAT_MAX_CONCURRENT_DISCUSSIONS` 可覆盖），基于 storage `listDiscussions()` 统计活跃场数，防止多房间讨论叠加吃爆设备内存。
+
+### 三、测试
+
+- `tests/server/group-chat-discussion.test.ts`：清理 3 个残留的已删除 extension 机制用例（其中 2 个此前一直失败），新增"实质发言不消耗预算""讨论中每 5 轮归档""全局并发 409/释放后放行"等用例。
+- **28/28 通过**；服务端 `tsc`、客户端 `vue-tsc`、`npm run build` 全部通过。
+
+### 四、真机验证（许-测试1，10.0.0.2）
+
+- 部署后 bundle：client `index-Bzlf6OMy.js`，server md5 `4331f62b…`（含全部新逻辑）。
+- **验证 1（maxRounds=8，质证要点任务）**：推进至第 6 轮后手动停止，产出 10 个交付文件（质证提纲 .md / 打印预览 .html+.pdf / 总结 .docx 等）——修复前第 1 轮即停，修复后稳定多轮。
+- **验证 2（maxRounds=6，利息起算口径任务）**：第 4 轮自然收敛（裁判连续 2 轮 converged=True，符合 `DISCUSSION_CONVERGED_STREAK_REQUIRED=2`），产出 2 个交付文件 + 总结 .docx。
+- **验证 3（maxRounds=8, minRounds=6，办案指引六阶段任务）**：**跑满 8/8 轮**，每轮裁判均判定 progress=True；第 5 轮触发"讨论记录已自动归档"系统消息、消息总数从 380+ 骤降到 2（原始消息落盘为 summary，summary 5260 字）；最终产出 9 个交付文件（6 阶段指引 + 汇总版 + 总结 .docx）。
+- **设备健康**：8 轮高强度讨论期间 load 峰值 ~4（4 核）、可用内存始终 ≥1.6GB（zram 兜底），**没有被吃爆**。
+
+### 当前分支
+
+- `merge/upstream-main-20260814`，HEAD `c24f36a8`。
+
+### 遗留 / 待办
+
+- 讨论中归档删除原始消息后，`totalTokens` 会计（`index.ts:2161`）随消息删除下降属预期（summary 保留内容）。
+- 归档阈值（20 条实质发言）与间隔（5 轮）可按设备负载经环境变量/常量再调优。
 
 ### 本轮目标
 
