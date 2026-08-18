@@ -148,8 +148,9 @@ export const DISCUSSION_CONVERGED_STREAK_REQUIRED = 2
 /** 讨论进行中每 N 轮自动归档一次（把原始消息落盘为 summary，防长讨论上下文膨胀）。
  *  0 表示关闭讨论中归档；结束后的 autoArchiveAfterRun 不受影响。 */
 export const DISCUSSION_ROUND_ARCHIVE_EVERY = 5
-/** 讨论中归档的最小实质发言量：低于此量不归档，避免小讨论频繁归档打扰。 */
-export const DISCUSSION_ROUND_ARCHIVE_MIN_MESSAGES = 60
+/** 讨论中归档的最小实质发言量：低于此量不归档，避免小讨论频繁归档打扰。
+ *  按实质发言计数（每轮约 agent 数+1 条），5 轮约 25-30 条，因此阈值设在 20。 */
+export const DISCUSSION_ROUND_ARCHIVE_MIN_MESSAGES = 20
 /** 同一时刻允许运行的讨论场数上限：防止多房间讨论并发把受限设备的内存吃爆。
  *  可用环境变量 HERMES_GROUP_CHAT_MAX_CONCURRENT_DISCUSSIONS 覆盖。 */
 export const DISCUSSION_MAX_CONCURRENT = envInt('HERMES_GROUP_CHAT_MAX_CONCURRENT_DISCUSSIONS', 1)
