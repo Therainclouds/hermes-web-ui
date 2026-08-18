@@ -232,7 +232,7 @@ describe('coding agent launch preparation', () => {
     expect(launcher).toContain("'headless'")
   })
 
-  it('rejects DeepSeek Harness scoped launches with non chat-completions protocols', async () => {
+  it('rejects DeepSeek Harness scoped launches with unsupported protocols', async () => {
     const home = makeHome()
 
     await expect(prepareCodingAgentLaunch('dsh', {
@@ -241,8 +241,47 @@ describe('coding agent launch preparation', () => {
       model: 'deepseek/deepseek-v4-flash',
       baseUrl: 'https://openrouter.ai/api/v1',
       apiKey: 'sk-test',
+      apiMode: 'anthropic_messages',
+    })).rejects.toThrow('DeepSeek Harness launch only supports OpenAI Chat Completions or OpenAI Responses providers')
+  })
+
+  it('launches DeepSeek Harness scoped launches with codex_responses using the openai-responses route', async () => {
+    const home = makeHome()
+
+    const result = await prepareCodingAgentLaunch('dsh', {
+      profile: 'default',
+      provider: 'openrouter',
+      model: 'deepseek/deepseek-v4-flash',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      apiKey: 'sk-test',
       apiMode: 'codex_responses',
-    })).rejects.toThrow('DeepSeek Harness launch only supports OpenAI Chat Completions providers')
+    })
+
+    expect(result.rootDir).toBe(join(home, 'coding-agent', 'model', 'default', 'openrouter', 'dsh'))
+    expect(result.workspaceDir).toBe(join(home, 'coding-agent', 'workspace', 'default', 'openrouter'))
+    expect(result.command).toBe('dsh')
+    expect(result.args).toEqual(['--profile', 'headless'])
+    expect(result.env).toMatchObject({
+      DSH_HOME: result.rootDir,
+      DEEPSEEK_BASE_URL: 'https://openrouter.ai/api/v1',
+      DEEPSEEK_API_KEY: 'sk-test',
+    })
+
+    const settings = readFileSync(join(result.rootDir, 'settings.yaml'), 'utf-8')
+    expect(settings).toContain('llm-pi-ai:')
+    expect(settings).toContain('openai-responses:')
+    expect(settings).toContain('api: openai-responses')
+    expect(settings).toContain('apiKeyEnv: DEEPSEEK_API_KEY')
+    expect(settings).toContain('baseURL: "https://openrouter.ai/api/v1"')
+    expect(settings).toContain('agent-default-model:')
+    expect(settings).toContain('provider: openai-responses')
+    expect(settings).toContain('model: "deepseek/deepseek-v4-flash"')
+    expect(settings).not.toContain('llm-deepseek:')
+
+    const launcher = readFileSync(join(result.rootDir, LAUNCHER_FILE), 'utf-8')
+    expect(launcher).toContain("'dsh'")
+    expect(launcher).toContain("'--profile'")
+    expect(launcher).toContain("'headless'")
   })
 
   it('launches DeepSeek Harness in full SDK mode when a local source checkout is available', async () => {
