@@ -74,11 +74,16 @@ function judgeJson(overrides: { converged?: boolean; stalled?: boolean; progress
 function harness(opts: {
   agents?: AgentSpec[]
   messageCount?: number
+  substantiveMessageCount?: number
+  /** Bump the substantive counter by this amount per agent speech, simulating
+   *  messages accumulating during the run (used by mid-run archive tests). */
+  growSubstantivePerSpeech?: number
   interruptRoom?: () => Promise<void>
 } = {}) {
   const rows = new Map<string, DiscussionRow>()
   const contextMessages: Array<Record<string, unknown>> = []
   let messageCount = opts.messageCount ?? 0
+  let substantiveCount = opts.substantiveMessageCount ?? opts.messageCount ?? 0
   const room = {
     summaryProfile: 'default',
     summaryProvider: 'openai',
@@ -95,6 +100,7 @@ function harness(opts: {
     replyToMention: vi.fn(async (_roomId: string, msg: { content: unknown }, _rt: unknown, onStatus?: (status: 'compressing' | 'replying' | 'ready') => void) => {
       onStatus?.('replying')
       speechLog.push({ agentId: spec.agentId, content: String(msg.content) })
+      if (opts.growSubstantivePerSpeech) substantiveCount += opts.growSubstantivePerSpeech
       await spec.reply?.(String(msg.content))
     }),
   }))
@@ -103,8 +109,10 @@ function harness(opts: {
     getRoom: (roomId: string) => (roomId === 'room-1' ? room : undefined),
     getRoomAgents: () => agents,
     getMessageCount: () => messageCount,
+    getSubstantiveMessageCount: () => substantiveCount,
     getMessagesForContext: () => contextMessages,
     getDiscussionByRoom: (roomId: string) => rows.get(roomId) || null,
+    listDiscussions: () => [...rows.values()],
     saveDiscussion: (row: DiscussionRow) => {
       rows.set(row.roomId, { ...row })
     },
@@ -185,6 +193,10 @@ function harness(opts: {
     agentStatusLog,
     setMessageCount: (value: number) => {
       messageCount = value
+      substantiveCount = value
+    },
+    setSubstantiveMessageCount: (value: number) => {
+      substantiveCount = value
     },
   }
 }
@@ -386,6 +398,91 @@ describe('group chat free discussion runner', () => {
     expect(archiveCalls).toEqual([])
   })
 
+  it('auto-archives mid-run every N rounds when the transcript grows large', async () => {
+    const { runner, archiveCalls, systemMessages } = harness({ growSubstantivePerSpeech: 10 })
+    judgeMock.mockResolvedValue(judgeJson())
+
+    // 2 agents x 5 rounds = 10 speeches, each growing the substantive counter by
+    // 10 → 100 substantive messages by round 5, crossing the mid-run threshold
+    // (>=60) at exactly the 5th round (DISCUSSION_ROUND_ARCHIVE_EVERY=5).
+    await runner.start('room-1', { goal: 'go', maxRounds: 5 })
+    const final = await waitForDone(runner, 'room-1')
+
+    expect(final.currentRound).toBe(5)
+    // Mid-run archive happened at round 5; the end-of-run auto-archive is skipped
+    // (transcript below 500), so archiveRoom was called exactly once.
+    await vi.waitFor(() => expect(archiveCalls).toEqual(['room-1']))
+    expect(systemMessages.some(item => item.content.includes('已自动归档'))).toBe(true)
+  })
+
+  it('rejects a start in another room while the global concurrency cap is reached', async () => {
+    const { runner, storage, rows } = harness()
+    // Seed an active discussion in a different room to occupy the single global slot.
+    storage.saveDiscussion({
+      id: 'disc-other',
+      roomId: 'room-2',
+      goal: 'other goal',
+      agentOrder: JSON.stringify(['agent-a', 'agent-b']),
+      reporterId: 'agent-a',
+      maxRounds: 8,
+      maxMessages: 200,
+      minRounds: 0,
+      judgeProfile: 'default',
+      judgeProvider: 'openai',
+      judgeModel: 'gpt-test',
+      judgeApiMode: 'chat_completions',
+      status: 'running',
+      currentRound: 2,
+      judgeNotes: '[]',
+      reportMessageId: '',
+      summaryFilePath: '',
+      deliverables: '[]',
+      lastError: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    })
+    expect(rows.get('room-2')?.status).toBe('running')
+
+    await expect(runner.start('room-1', { goal: 'go' })).rejects.toMatchObject({ status: 409 })
+    expect(runner.getState('room-1')).toBeNull() // nothing persisted for room-1
+  })
+
+  it('allows a second discussion once the occupying room finishes', async () => {
+    const { runner, storage, rows, speechCalls } = harness()
+    // Occupy the single global slot with an active row, then flip it terminal so
+    // the concurrency cap releases before room-1 starts.
+    storage.saveDiscussion({
+      id: 'disc-other',
+      roomId: 'room-2',
+      goal: 'other goal',
+      agentOrder: JSON.stringify(['agent-a', 'agent-b']),
+      reporterId: 'agent-a',
+      maxRounds: 8,
+      maxMessages: 200,
+      minRounds: 0,
+      judgeProfile: 'default',
+      judgeProvider: 'openai',
+      judgeModel: 'gpt-test',
+      judgeApiMode: 'chat_completions',
+      status: 'running',
+      currentRound: 2,
+      judgeNotes: '[]',
+      reportMessageId: '',
+      summaryFilePath: '',
+      deliverables: '[]',
+      lastError: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    })
+    rows.get('room-2')!.status = 'converged'
+    judgeMock.mockResolvedValue(judgeJson({ converged: true }))
+
+    await runner.start('room-1', { goal: 'go', maxRounds: 2 })
+    const final = await waitForDone(runner, 'room-1')
+    expect(final.status).toBe('converged')
+    expect(speechCalls().length).toBeGreaterThan(0)
+  })
+
   it('reports live agent status during speech so room avatars light up', async () => {
     const { runner, agentStatusLog } = harness()
     judgeMock.mockResolvedValue(judgeJson({ converged: true }))
@@ -460,19 +557,20 @@ describe('group chat free discussion runner', () => {
     expect(judgeMock).toHaveBeenCalledTimes(3)
   })
 
-  it('extends past maxRounds while the judge keeps reporting progress, capped by the extension budget', async () => {
+  it('closes at maxRounds without extension, even when the judge keeps reporting progress', async () => {
     const { runner, speechCalls } = harness()
     judgeMock.mockResolvedValue(judgeJson({ progress: true }))
 
     await runner.start('room-1', { goal: 'go', maxRounds: 3 })
     const final = await waitForDone(runner, 'room-1')
 
-    // Soft cap extends maxRounds(3) by DISCUSSION_MAX_EXTEND_ROUNDS(4) = 7 rounds.
+    // The soft-cap extension mechanism was removed (b80cee40): maxRounds is the
+    // hard ceiling and the runner never extends past it.
     expect(final.status).toBe('max_rounds')
-    expect(final.currentRound).toBe(7)
+    expect(final.currentRound).toBe(3)
     expect(final.judgeNotes.every(note => note.progress)).toBe(true)
     const calls = speechCalls()
-    expect(calls.length).toBe(15) // 7 rounds x 2 agents + 1 report
+    expect(calls.length).toBe(7) // 3 rounds x 2 agents + 1 report
   })
 
   it('closes at maxRounds without extending when the judge reports no progress', async () => {
@@ -488,23 +586,20 @@ describe('group chat free discussion runner', () => {
     expect(calls.length).toBe(7) // 3 rounds x 2 agents + 1 report
   })
 
-  it('stops extending as soon as a round stops producing progress', async () => {
-    const { runner, speechCalls } = harness()
-    judgeMock
-      .mockResolvedValueOnce(judgeJson({ progress: true }))   // round 1
-      .mockResolvedValueOnce(judgeJson({ progress: true }))   // round 2
-      .mockResolvedValueOnce(judgeJson({ progress: true }))   // round 3 (hits maxRounds, first extension)
-      .mockResolvedValueOnce(judgeJson({ progress: true }))   // round 4 (second extension)
-      .mockResolvedValueOnce(judgeJson({ progress: false }))  // round 5: no progress → close
+  it('does not count tool plumbing toward the maxMessages budget (substantive speech only)', async () => {
+    // 5 raw messages, but only 2 of them are substantive (e.g. agent speeches);
+    // the rest are tool results / empty assistant placeholders. maxMessages=3
+    // must NOT terminate on the raw count — substantive speech stays under it.
+    const { runner, speechCalls } = harness({ messageCount: 5, substantiveMessageCount: 2 })
+    judgeMock.mockResolvedValue(judgeJson())
 
-    await runner.start('room-1', { goal: 'go', maxRounds: 3 })
+    await runner.start('room-1', { goal: 'go', maxRounds: 4, maxMessages: 3 })
     const final = await waitForDone(runner, 'room-1')
 
     expect(final.status).toBe('max_rounds')
-    expect(final.currentRound).toBe(5)
-    expect(final.judgeNotes.at(-1)?.progress).toBe(false)
+    expect(final.currentRound).toBe(4) // ran the full 4 rounds despite 5 raw messages
     const calls = speechCalls()
-    expect(calls.length).toBe(11) // 5 rounds x 2 agents + 1 report
+    expect(calls.length).toBe(9) // 4 rounds x 2 agents + 1 report
   })
 
   it('does not converge before minRounds, even when the judge reports convergence', async () => {
