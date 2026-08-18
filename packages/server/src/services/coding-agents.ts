@@ -1,7 +1,7 @@
 import { execFile } from 'child_process'
 import { createHash, randomUUID } from 'crypto'
 import { existsSync, readdirSync, realpathSync } from 'fs'
-import { chmod, mkdir, readFile, stat, writeFile } from 'fs/promises'
+import { chmod, mkdir, readFile, rm, stat, writeFile } from 'fs/promises'
 import { homedir } from 'os'
 import { delimiter, dirname, join } from 'path'
 import { promisify } from 'util'
@@ -140,6 +140,20 @@ const DSH_SDK_CORDIS_TEMPLATE = `# Unattended DeepSeek Harness coding-agent comp
 const DSH_SDK_BIN = 'dsh-jsonrpc-agent'
 const DSH_SDK_SRC_BIN = 'packages/examples/jsonrpc-demo/src/bin.ts'
 const DSH_SDK_SRC_CONFIG = 'examples/jsonrpc-agent/cordis.yml'
+/**
+ * Published npm package providing the `dsh-jsonrpc-agent` bin for the full
+ * streaming DeepSeek Harness SDK runtime, and the coherent version series to
+ * pin it together with every cordis component in {@link DSH_SDK_CORDIS_TEMPLATE}.
+ *
+ * DSH publishes several series (the `latest` dist-tag still points at an old
+ * 0.0.1-rc.x series whose dependencies are not all published). The 0.1.0-rc.7
+ * series is the first self-consistent set: every template component plus the
+ * runtime bin resolves without ERESOLVE or missing packages. Bump this constant
+ * together with new DSH releases and re-run the isolated-prefix install check.
+ */
+const DSH_SDK_VERSION = '0.1.0-rc.7'
+const DSH_SDK_RUNTIME_PACKAGE = '@deepseek-ai/dsh-sdk-jsonrpc-demo'
+const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com'
 const NODE_ENVIRONMENT_MISSING_CODE = 'node_environment_missing'
 const POSIX_LAUNCHER_FILE = 'launch.sh'
 const WINDOWS_LAUNCHER_FILE = 'launch.ps1'
@@ -1561,6 +1575,63 @@ async function commandEnv(): Promise<NodeJS.ProcessEnv> {
   return env
 }
 
+/** Product-managed DeepSeek Harness SDK runtime tree under the Web UI home. */
+export function getDshSdkDir(): string {
+  return join(getWebUiHome(), 'dsh-sdk')
+}
+
+/**
+ * Cordis component packages referenced by {@link DSH_SDK_CORDIS_TEMPLATE}.
+ * Deriving the list from the template keeps the one-click SDK install in sync
+ * with the composition the runtime actually boots.
+ */
+export function dshSdkTemplatePackages(): string[] {
+  const names = new Set<string>()
+  for (const line of DSH_SDK_CORDIS_TEMPLATE.split('\n')) {
+    const match = line.match(/^  name: '(@deepseek-ai\/[^']+)'$/)
+    if (match) names.add(match[1])
+  }
+  return [...names].sort()
+}
+
+/**
+ * npm specs for one coherent DeepSeek Harness SDK runtime install: the
+ * `dsh-jsonrpc-agent` bin package plus every cordis component from the
+ * template, all pinned to {@link DSH_SDK_VERSION}.
+ */
+export function getDshSdkInstallSpecs(version = DSH_SDK_VERSION): string[] {
+  return [DSH_SDK_RUNTIME_PACKAGE, ...dshSdkTemplatePackages()].map(pkg => `${pkg}@${version}`)
+}
+
+/** Locate the `dsh-jsonrpc-agent` bin inside the product-managed SDK tree, if any. */
+function resolveDshSdkDirBin(): string | null {
+  const binDir = join(getDshSdkDir(), 'node_modules', '.bin')
+  const candidates = process.platform === 'win32'
+    ? [join(binDir, 'dsh-jsonrpc-agent.cmd'), join(binDir, 'dsh-jsonrpc-agent')]
+    : [join(binDir, 'dsh-jsonrpc-agent')]
+  return candidates.find(candidate => existsSync(candidate)) || null
+}
+
+/**
+ * Install the DeepSeek Harness SDK runtime into the product-managed tree when
+ * it is not already resolvable (PATH bin, source checkout, or managed tree).
+ * Returns null on success or when the SDK is already available, otherwise an
+ * error message. Best-effort: a failure keeps the headless basic mode working.
+ */
+async function ensureDshSdkInstalled(env: NodeJS.ProcessEnv): Promise<string | null> {
+  try {
+    if (await resolveDshSdkLaunch()) return null
+    const sdkDir = getDshSdkDir()
+    await runNpm(
+      ['install', '--prefix', sdkDir, '--no-audit', '--no-fund', ...getDshSdkInstallSpecs()],
+      { timeout: 10 * 60 * 1000, env },
+    )
+    return (await resolveDshSdkLaunch()) ? null : 'SDK packages installed but the dsh-jsonrpc-agent runtime was not found'
+  } catch (err) {
+    return normalizeError(err)
+  }
+}
+
 /** Discover a local DeepSeek Harness source checkout, if present. */
 function findDshSdkCheckout(): string | null {
   const candidates = [
@@ -1580,10 +1651,11 @@ function findDshSdkCheckout(): string | null {
 
 /**
  * Resolve how to launch the DeepSeek Harness SDK runtime for the full
- * streaming capability: prefer a `dsh-jsonrpc-agent` binary on PATH, then a
- * local source checkout driven by `node --import tsx`. Returns null when the
- * SDK runtime is not installed, in which case DeepSeek Harness falls back to
- * the headless CLI single-turn mode.
+ * streaming capability: prefer a `dsh-jsonrpc-agent` binary on PATH, then the
+ * product-managed SDK tree installed by the one-click install, then a local
+ * source checkout driven by `node --import tsx`. Returns null when the SDK
+ * runtime is not installed, in which case DeepSeek Harness falls back to the
+ * headless CLI single-turn mode.
  */
 async function resolveDshSdkLaunch(): Promise<{ command: string; args: string[]; runtimeCwd?: string } | null> {
   try {
@@ -1592,8 +1664,10 @@ async function resolveDshSdkLaunch(): Promise<{ command: string; args: string[];
     const resolved = paths[0] ? await resolveCommandForExecution(DSH_SDK_BIN, env) : null
     if (resolved) return { command: resolved, args: [] }
   } catch {
-    // Fall through to a local source checkout.
+    // Fall through to the product-managed SDK tree.
   }
+  const managedBin = resolveDshSdkDirBin()
+  if (managedBin) return { command: managedBin, args: [] }
   const checkout = findDshSdkCheckout()
   if (checkout) {
     return {
@@ -1725,13 +1799,21 @@ export async function installCodingAgent(id: string): Promise<CodingAgentMutatio
       env,
     })
     cachedGlobalNpmBin = undefined
+    // DeepSeek Harness ships its full streaming SDK runtime as separate npm
+    // packages; install it into the product-managed tree so scoped launches
+    // run in SDK mode instead of the headless single-turn fallback.
+    const sdkMessage = tool.id === 'dsh' ? await ensureDshSdkInstalled(env) : null
     const status = await getCodingAgentStatus(tool)
     const allStatus = await getCodingAgentsStatus()
     return {
       success: status.installed,
       tool: status,
       tools: allStatus.tools,
-      message: status.installed ? 'Installed' : status.error || 'Install completed but the command was not found',
+      message: status.installed
+        ? sdkMessage
+          ? `Installed (${sdkMessage})`
+          : 'Installed'
+        : status.error || 'Install completed but the command was not found',
     }
   } catch (err: any) {
     const status = await getCodingAgentStatus(tool)
@@ -1775,6 +1857,10 @@ export async function deleteCodingAgent(id: string): Promise<CodingAgentMutation
       })
     }
     cachedGlobalNpmBin = undefined
+    // Remove the product-managed DeepSeek Harness SDK runtime tree too.
+    if (tool.id === 'dsh') {
+      await rm(getDshSdkDir(), { recursive: true, force: true })
+    }
     const status = await getCodingAgentStatus(tool)
     const allStatus = await getCodingAgentsStatus()
     return {
@@ -2084,7 +2170,10 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
         DSH_SESSION_ROOT: sessionRoot,
         DSH_SYSTEM_PROMPT: scopedSystemPrompt,
         DSH_MAX_TOKENS_AS_SUCCESS: 'true',
-        ...(baseUrl ? { DEEPSEEK_BASE_URL: baseUrl } : {}),
+        // The cordis composition boots an llm-pi-ai route that requires a
+        // non-empty base URL; default to the official DeepSeek endpoint when
+        // the provider does not carry its own.
+        ...(baseUrl ? { DEEPSEEK_BASE_URL: baseUrl } : { DEEPSEEK_BASE_URL: DEFAULT_DEEPSEEK_BASE_URL }),
         ...(apiKey ? { DEEPSEEK_API_KEY: apiKey } : {}),
       }
       if (sdkLaunch.args.length > 0) {

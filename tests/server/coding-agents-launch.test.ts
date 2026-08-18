@@ -4,7 +4,7 @@ import { dirname, join } from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { claudeProxyMessages, claudeProxyModels, registerClaudeCodeProxyTarget } from '../../packages/server/src/services/agent-runner/proxies/claude-code-proxy'
 import { codexProxyModels, codexProxyResponses, registerCodexProxyTarget } from '../../packages/server/src/services/agent-runner/proxies/codex-proxy'
-import { prepareCodingAgentLaunch } from '../../packages/server/src/services/coding-agents'
+import { dshSdkTemplatePackages, getDshSdkInstallSpecs, prepareCodingAgentLaunch } from '../../packages/server/src/services/coding-agents'
 
 const homes: string[] = []
 
@@ -324,6 +324,49 @@ describe('coding agent launch preparation', () => {
     })
     // SDK mode must not write the headless settings.yaml into the run root.
     expect(existsSync(join(result.rootDir, 'settings.yaml'))).toBe(false)
+  })
+
+  it('defaults DEEPSEEK_BASE_URL for DeepSeek Harness SDK launches without a provider base URL', async () => {
+    const home = makeHome()
+    const checkout = join(home, 'dsh-sdk-checkout-no-base-url')
+    const sdkBin = join(checkout, 'packages', 'examples', 'jsonrpc-demo', 'src', 'bin.ts')
+    const sdkConfig = join(checkout, 'examples', 'jsonrpc-agent', 'cordis.yml')
+    mkdirSync(dirname(sdkBin), { recursive: true })
+    mkdirSync(dirname(sdkConfig), { recursive: true })
+    mkdirSync(join(checkout, 'node_modules', 'tsx'), { recursive: true })
+    writeFileSync(sdkBin, 'export {}')
+    writeFileSync(sdkConfig, '- id: sdk-jsonrpc-server\n')
+    writeFileSync(join(checkout, 'node_modules', 'tsx', 'package.json'), '{}')
+    process.env.DEEPSEEK_HARNESS_ROOT = checkout
+
+    const result = await prepareCodingAgentLaunch('dsh', {
+      profile: 'default',
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+      apiKey: 'sk-test',
+      apiMode: 'chat_completions',
+    })
+
+    // The SDK cordis composition boots an llm-pi-ai route that requires a
+    // non-empty base URL, so the launch must default it to the official
+    // DeepSeek endpoint instead of leaving DEEPSEEK_BASE_URL unset.
+    expect(result.env.DEEPSEEK_BASE_URL).toBe('https://api.deepseek.com')
+    expect(result.env.DEEPSEEK_API_KEY).toBe('sk-test')
+  })
+
+  it('builds the DeepSeek Harness SDK install spec from the cordis template', () => {
+    const packages = dshSdkTemplatePackages()
+    expect(packages).toContain('@deepseek-ai/dsh-sdk-jsonrpc-server')
+    expect(packages).toContain('@deepseek-ai/dsh-llm-deepseek')
+    expect(packages).toContain('@deepseek-ai/dsh-llm-pi-ai')
+    expect(packages).toContain('@deepseek-ai/dsh-compaction-basic')
+
+    const specs = getDshSdkInstallSpecs('0.1.0-rc.7')
+    expect(specs).toContain('@deepseek-ai/dsh-sdk-jsonrpc-demo@0.1.0-rc.7')
+    expect(specs).toContain('@deepseek-ai/dsh-sdk-jsonrpc-server@0.1.0-rc.7')
+    // Every template component must be pinned to the same coherent series.
+    expect(specs).toHaveLength(packages.length + 1)
+    for (const spec of specs) expect(spec).toMatch(/@0\.1\.0-rc\.7$/)
   })
 
   it('launches DeepSeek Harness with the global config when requested', async () => {
