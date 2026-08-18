@@ -4,6 +4,7 @@ import { setApiKey, hasApiKey } from '@/api/client'
 import {
   fetchHermesDeviceBinding,
   restoreHermesDeviceLogin,
+  unbindHermesDevice,
   type HermesDeviceBindingStatus,
 } from '@/api/device-login'
 
@@ -53,6 +54,14 @@ export function useDeviceBinding() {
     }
   }
 
+  async function unbind() {
+    const result = await unbindHermesDevice()
+    // Forget the local binding state so the restore/unbind buttons disappear.
+    binding.value = null
+    hasBinding.value = false
+    return result
+  }
+
   onMounted(() => {
     void loadBinding()
   })
@@ -64,5 +73,6 @@ export function useDeviceBinding() {
     restoring,
     restoreError,
     restore,
+    unbind,
   }
 }

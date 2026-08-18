@@ -634,6 +634,38 @@ describe('group chat free discussion runner', () => {
     expect(calls.length).toBe(9) // 4 rounds x 2 agents + 1 report
   })
 
+  it('does not converge before minRounds, even when the judge reports convergence', async () => {
+    const { runner, speechCalls } = harness()
+    // Every round reports converged; with minRounds=3 the runner must keep going
+    // until round 3 even though the streak reaches 2 already at round 2.
+    judgeMock.mockResolvedValue(judgeJson({ converged: true }))
+
+    await runner.start('room-1', { goal: 'go', maxRounds: 5, minRounds: 3 })
+    const final = await waitForDone(runner, 'room-1')
+
+    expect(final.status).toBe('converged')
+    expect(final.currentRound).toBe(3) // forced to explore at least 3 rounds
+    const calls = speechCalls()
+    expect(calls.length).toBe(7) // 3 rounds x 2 agents + 1 report
+  })
+
+  it('resets the convergence streak when a round is not converged', async () => {
+    const { runner, speechCalls } = harness()
+    judgeMock
+      .mockResolvedValueOnce(judgeJson({ converged: true }))   // round 1: streak 1
+      .mockResolvedValueOnce(judgeJson())                       // round 2: streak reset
+      .mockResolvedValueOnce(judgeJson({ converged: true }))   // round 3: streak 1
+      .mockResolvedValueOnce(judgeJson({ converged: true }))   // round 4: streak 2 → ends
+
+    await runner.start('room-1', { goal: 'go', maxRounds: 8 })
+    const final = await waitForDone(runner, 'room-1')
+
+    expect(final.status).toBe('converged')
+    expect(final.currentRound).toBe(4) // needs two consecutive converged rounds after the reset
+    const calls = speechCalls()
+    expect(calls.length).toBe(9) // 4 rounds x 2 agents + 1 report
+  })
+
   it('stops an active discussion and forces a stopped report', async () => {
     let release!: () => void
     const gate = new Promise<void>(resolve => { release = resolve })

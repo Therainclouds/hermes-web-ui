@@ -650,46 +650,25 @@ export async function getDeviceBinding(ctx: Context) {
  * DELETE /api/auth/device-binding
  * Unbind the WeChat account bound to this device.
  *
- * Full unbind semantics (protected, requires an authenticated caller): forget
- * the persisted Token Platform binding so the device is available for a new
- * WeChat owner, remove the WeChat identity from the default agent profile,
- * and delete the local `tp_<id>` user provisioned by the scan login. Only the
- * bound owner themselves or a super administrator may trigger this — a regular
- * admin must not wipe the device owner's binding. No "at least one super
- * administrator" guard is enforced: unbinding is a device-handover operation
- * and the next scan bootstraps a fresh owner.
+ * Full unbind semantics (public, callable from the login page before signing
+ * in): forget the persisted Token Platform binding so the device is available
+ * for a new WeChat owner, remove the WeChat identity from the default agent
+ * profile, and delete the local `tp_<id>` user provisioned by the scan login.
+ * No "at least one super administrator" guard is enforced: unbinding is a
+ * device-handover operation and the next scan bootstraps a fresh owner.
  *
  * Response: { success, hadBinding, deletedUser }.
  */
 export async function clearDeviceBindingController(ctx: Context) {
-  const caller = ctx.state.user
-  if (!caller) {
-    ctx.status = 401
-    ctx.body = { error: 'Unauthorized' }
-    return
-  }
-
   const binding = await loadDeviceBinding()
-  // Resolve the local user provisioned by the scan login. Prefer the stored
-  // profile id (`tp_<id>`); fall back to the recorded username when it was
-  // persisted in the tp_ form (older bindings may not carry profile_id).
-  const localUsername = binding
-    ? (binding.profile_id != null
-        ? `tp_${binding.profile_id}`
-        : (binding.username && binding.username.startsWith('tp_') ? binding.username : null))
-    : null
-
-  if (binding) {
-    const isBoundOwner = localUsername != null && caller.username === localUsername
-    if (caller.role !== 'super_admin' && !isBoundOwner) {
-      ctx.status = 403
-      ctx.body = { error: 'Only the bound WeChat owner or a super administrator can unbind this device' }
-      return
-    }
-  }
-
   let deletedUser: string | null = null
   if (binding) {
+    // Resolve the local user provisioned by the scan login. Prefer the stored
+    // profile id (`tp_<id>`); fall back to the recorded username when it was
+    // persisted in the tp_ form (older bindings may not carry profile_id).
+    const localUsername = binding.profile_id != null
+      ? `tp_${binding.profile_id}`
+      : (binding.username && binding.username.startsWith('tp_') ? binding.username : null)
     if (localUsername) {
       const user = findUserByUsername(localUsername)
       if (user) {
