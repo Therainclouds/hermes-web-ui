@@ -198,6 +198,6 @@ export const DISCUSSION_MAX_CONCURRENT = envInt('HERMES_GROUP_CHAT_MAX_CONCURREN
 2. paramiko SFTP 上传 `dist/server/index.js` 与 `dist/client/*` 到
    `/opt/hermes-web-ui/dist/`
 3. `systemctl restart hermes-web-ui`，确认进程起来、health 200
-4. Web 登录（quanthermes / Byym602282#），进入"许-测试1"发起讨论，
+4. Web 登录（quanthermes / <REDACTED>），进入"许-测试1"发起讨论，
    观察轮次推进与归档
 5. 检查 `gc_discussions` 表状态与交付目录文件

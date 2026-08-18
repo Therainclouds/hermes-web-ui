@@ -50,7 +50,7 @@
 
 - 解决用户核心痛点：群聊讨论过早停止、讨论会反过来问用户、讨论结束后没有完整交付文件。
 - 用户反馈「设备上出现了设备互联功能」，要求彻底移除并保证本地代码也不含该功能。
-- 真实设备（阿曼 RK35xx，IP 已从 192.168.1.39 变更为 6.6.6.47）验证中发现讨论只跑 1 轮就停止，需修复。
+- 真实设备（阿曼 RK35xx，IP 已从 <device-ip> 变更为 <device-ip>）验证中发现讨论只跑 1 轮就停止，需修复。
 
 ### 一、群聊自由讨论功能增强（commit e994d7d5）
 
@@ -98,7 +98,7 @@
 
 ### 四、设备部署
 
-- 设备 IP 变更：`192.168.1.39` → `6.6.6.47`（SSH root/123456 有效，quanthermes 密码 Byym602282# 用于 Web API 登录）。
+- 设备 IP 变更：`<device-ip>` → `<device-ip>`（SSH <REDACTED> 有效，quanthermes 密码 <REDACTED> 用于 Web API 登录）。
 - Windows 无 sshpass/expect，改用 Python `paramiko` 编写部署脚本：SFTP 递归上传 `dist/client/*` 与 `dist/server/index.js` 到 `/opt/hermes-web-ui/dist/`，`systemctl restart hermes-web-ui`。
 - 部署后验证：设备 bundle 从 `index-D8uLQxSo.js`（含 `hermes.connections`）变为 `index-CrGJPHNG.js`（计数 0），确认设备互联已从设备移除。
 
@@ -840,7 +840,7 @@
   - `resolveDeviceUrls is not defined`
 - 重置本地开发数据库并确认默认账号链路仍可用：
   - 用户名 `quanthermes`
-  - 密码 `12345678`
+  - 密码 <REDACTED>
 - 删除了页面、官网和 README 中最直接的官方跳转入口。
 - 修正了发布基线：
   - npm 发布名收口为 `@quanthermes/hermes-web-ui`
