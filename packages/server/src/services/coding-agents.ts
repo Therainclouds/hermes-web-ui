@@ -41,6 +41,31 @@ const DSH_SDK_CORDIS_TEMPLATE = `# Unattended DeepSeek Harness coding-agent comp
     thinking: enabled
     reasoningEffort: max
 
+# OpenAI Responses protocol route, selected when a session runs in
+# codex_responses apiMode. The endpoint/key travel via env; without a
+# DEEPSEEK_BASE_URL the route fails fast with a clear config error.
+- id: llm-pi-responses
+  name: '@deepseek-ai/dsh-llm-pi-ai'
+  config:
+    providers:
+      openai-responses:
+        apiKeyEnv: DEEPSEEK_API_KEY
+        api: openai-responses
+        baseURL: !!js "process.env.DEEPSEEK_BASE_URL ?? ''"
+        models:
+          - id: deepseek-v4-pro
+            contextWindow: 262144
+            maxTokens: 32768
+          - id: deepseek-v4-flash
+            contextWindow: 262144
+            maxTokens: 32768
+          - id: deepseek-chat
+            contextWindow: 65536
+            maxTokens: 8192
+          - id: deepseek-reasoner
+            contextWindow: 65536
+            maxTokens: 8192
+
 - id: subprocess
   name: '@deepseek-ai/dsh-subprocess-local'
 
@@ -2043,8 +2068,8 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
       ...(reasoningEffort ? ['-c', `model_reasoning_effort=${JSON.stringify(reasoningEffort)}`] : []),
     ]
   } else {
-    if (apiMode !== 'chat_completions') {
-      const err = new Error('DeepSeek Harness launch only supports OpenAI Chat Completions providers')
+    if (apiMode !== 'chat_completions' && apiMode !== 'codex_responses') {
+      const err = new Error('DeepSeek Harness launch only supports OpenAI Chat Completions or OpenAI Responses providers')
       ;(err as any).status = 400
       throw err
     }
@@ -2075,15 +2100,31 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
       }
     } else {
       // Basic capability: headless CLI single-turn mode.
-      const settingsYaml = [
-        'llm-deepseek:',
-        ...(baseUrl ? [`  baseURL: ${yamlString(baseUrl)}`] : []),
-        '  apiKeyEnv: DEEPSEEK_API_KEY',
-        '  thinking: disabled',
-        'agent-default-model:',
-        '  provider: deepseek-official',
-        `  model: ${yamlString(model)}`,
-      ].join('\n')
+      const settingsYaml = apiMode === 'codex_responses'
+        ? [
+            'llm-pi-ai:',
+            '  providers:',
+            '    openai-responses:',
+            '      apiKeyEnv: DEEPSEEK_API_KEY',
+            '      api: openai-responses',
+            ...(baseUrl ? [`      baseURL: ${yamlString(baseUrl)}`] : []),
+            '      models:',
+            `        - id: ${yamlString(model)}`,
+            '          contextWindow: 262144',
+            '          maxTokens: 32768',
+            'agent-default-model:',
+            '  provider: openai-responses',
+            `  model: ${yamlString(model)}`,
+          ].join('\n')
+        : [
+            'llm-deepseek:',
+            ...(baseUrl ? [`  baseURL: ${yamlString(baseUrl)}`] : []),
+            '  apiKeyEnv: DEEPSEEK_API_KEY',
+            '  thinking: disabled',
+            'agent-default-model:',
+            '  provider: deepseek-official',
+            `  model: ${yamlString(model)}`,
+          ].join('\n')
       await writeScopedFile('settings', `${settingsYaml}\n`)
 
       env = {
