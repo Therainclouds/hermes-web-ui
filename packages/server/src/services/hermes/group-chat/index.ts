@@ -1798,6 +1798,22 @@ class ChatStorage {
         return row?.total || 0
     }
 
+    /**
+     * Count only "substantive speech" messages in a room: excludes role='tool'
+     * rows and empty assistant placeholder rows. Tool-call plumbing (assistant
+     * placeholder + tool result per call) must not count toward the discussion
+     * message budget — with the raw count, a tool-heavy first round exhausted
+     * maxMessages and the discussion died after round 1.
+     */
+    getSubstantiveMessageCount(roomId: string): number {
+        const row = this.db()?.prepare(
+            `SELECT COUNT(*) as total FROM gc_messages
+             WHERE roomId = ? AND role <> 'tool'
+               AND (role <> 'assistant' OR TRIM(IFNULL(content, '')) <> '')`
+        ).get(roomId) as { total: number } | undefined
+        return row?.total || 0
+    }
+
     getMessage(messageId: string): ChatMessage | null {
         const row = this.db()?.prepare(
             `SELECT ${MESSAGE_SELECT_COLUMNS} FROM gc_messages WHERE id = ?`
@@ -2445,6 +2461,18 @@ class ChatStorage {
              FROM gc_discussions WHERE roomId = ? ORDER BY createdAt DESC LIMIT 1`
         ).get(roomId) as Partial<DiscussionRow> | undefined
         return row && row.id ? (row as DiscussionRow) : null
+    }
+
+    /** Every discussion row across all rooms (used for the global discussion
+     *  concurrency cap). */
+    listDiscussions(): DiscussionRow[] {
+        const rows = this.db()?.prepare(
+            `SELECT id, roomId, goal, agentOrder, reporterId, maxRounds, maxMessages, minRounds,
+                    judgeProfile, judgeProvider, judgeModel, judgeApiMode,
+                    status, currentRound, judgeNotes, reportMessageId, summaryFilePath, deliverables, lastError, createdAt, updatedAt
+             FROM gc_discussions`
+        ).all() as Partial<DiscussionRow>[] | undefined
+        return (rows || []).filter(row => row && row.id).map(row => row as DiscussionRow)
     }
 
     saveDiscussion(row: DiscussionRow): void {

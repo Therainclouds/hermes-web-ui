@@ -171,8 +171,8 @@ const summarySettingsSectionRef = ref<HTMLElement | null>(null)
 // ─── Free Discussion Mode ───────────────────────────────────
 const discussionFormVisible = ref(false)
 const discussionGoal = ref('')
-const discussionMaxRounds = ref(8)
-const discussionMaxMessages = ref(60)
+const discussionMaxRounds = ref(20)
+const discussionMaxMessages = ref(200)
 const discussionAgentOrder = ref<string[]>([])
 const discussionReporterId = ref('')
 const isStartingDiscussion = ref(false)
@@ -382,8 +382,8 @@ async function handleDownloadDeliverable(filePath: string): Promise<void> {
 const discussionQuickVisible = ref(false)
 const discussionQuickGoal = ref('')
 const discussionQuickOrder = ref<string[]>([])
-const discussionQuickMaxRounds = ref(8)
-const discussionQuickMaxMessages = ref(60)
+const discussionQuickMaxRounds = ref(20)
+const discussionQuickMaxMessages = ref(200)
 const discussionQuickReporterId = ref('')
 const discussionQuickAttachmentInputRef = ref<HTMLInputElement | null>(null)
 const discussionQuickAttachments = ref<string[]>([])
@@ -393,8 +393,8 @@ function openDiscussionQuick(): void {
     discussionQuickVisible.value = true
     discussionQuickGoal.value = ''
     discussionQuickOrder.value = store.agents.map(agent => agent.agentId)
-    discussionQuickMaxRounds.value = 8
-    discussionQuickMaxMessages.value = 60
+    discussionQuickMaxRounds.value = 20
+    discussionQuickMaxMessages.value = 200
     discussionQuickReporterId.value = store.agents[0]?.agentId || ''
     discussionQuickAttachments.value = []
 }
@@ -3571,7 +3571,7 @@ async function handleClarify(response?: string) {
                                 </div>
                                 <div class="form-group">
                                     <label class="form-label">{{ t('groupChat.discussion.maxMessages') }}</label>
-                                    <NInputNumber v-model:value="discussionMaxMessages" :min="2" :max="500" style="width: 100%" />
+                                    <NInputNumber v-model:value="discussionMaxMessages" :min="2" :max="1000" style="width: 100%" />
                                 </div>
                             </div>
                             <p class="form-hint">{{ t('groupChat.discussion.judgeDesc') }}</p>
@@ -3763,7 +3763,7 @@ async function handleClarify(response?: string) {
                     </div>
                     <div class="form-group">
                         <label class="form-label">{{ t('groupChat.discussion.maxMessages') }}</label>
-                        <NInputNumber v-model:value="discussionQuickMaxMessages" :min="2" :max="500" style="width: 100%" />
+                        <NInputNumber v-model:value="discussionQuickMaxMessages" :min="2" :max="1000" style="width: 100%" />
                     </div>
                 </div>
                 <div class="form-group">

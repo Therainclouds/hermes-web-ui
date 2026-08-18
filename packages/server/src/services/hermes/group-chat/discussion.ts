@@ -77,8 +77,18 @@ export interface DiscussionStorage {
   getRoom(roomId: string): { summaryProfile: string; summaryProvider: string; summaryModel: string; summaryApiMode: string; workspace?: string } | undefined
   getRoomAgents(roomId: string): Array<{ id: string; agentId: string; profile: string; name: string }>
   getMessageCount(roomId: string): number
+  /** Count only "substantive speech" messages: excludes role='tool' and empty
+   *  assistant placeholder rows. Optional so lightweight test doubles can fall
+   *  back to getMessageCount. The discussion message budget must not be consumed
+   *  by tool-call plumbing (assistant placeholder + tool result per call), which
+   *  is what terminated real discussions after round 1 with the raw count. */
+  getSubstantiveMessageCount?(roomId: string): number
   getMessagesForContext(roomId: string): Array<{ id: string; senderId: string; senderName: string; content: unknown; timestamp: number; role?: string }>
   getDiscussionByRoom(roomId: string): DiscussionRow | null
+  /** List every discussion row across rooms (used for the global concurrency
+   *  cap). Optional so lightweight test doubles can opt out; when absent the
+   *  runner falls back to tracking concurrent runs in memory. */
+  listDiscussions?(): DiscussionRow[]
   saveDiscussion(row: DiscussionRow): void
   updateDiscussion(roomId: string, fields: Partial<DiscussionRow>): void
   markDiscussionsFailed(statuses: string[]): void
@@ -131,13 +141,25 @@ export interface DiscussionRunnerDeps {
 
 // ─── Constants ──────────────────────────────────────────────
 
-export const DISCUSSION_DEFAULT_MAX_ROUNDS = 8
-export const DISCUSSION_DEFAULT_MAX_MESSAGES = 60
+export const DISCUSSION_DEFAULT_MAX_ROUNDS = 20
+export const DISCUSSION_DEFAULT_MAX_MESSAGES = 200
 /** 收敛确认轮数：需要裁判连续 N 轮判定 converged 才允许结束，防止单轮误判过早收尾。 */
 export const DISCUSSION_CONVERGED_STREAK_REQUIRED = 2
+/** 讨论进行中每 N 轮自动归档一次（把原始消息落盘为 summary，防长讨论上下文膨胀）。
+ *  0 表示关闭讨论中归档；结束后的 autoArchiveAfterRun 不受影响。 */
+export const DISCUSSION_ROUND_ARCHIVE_EVERY = 5
+/** 讨论中归档的最小实质发言量：低于此量不归档，避免小讨论频繁归档打扰。 */
+export const DISCUSSION_ROUND_ARCHIVE_MIN_MESSAGES = 60
+/** 同一时刻允许运行的讨论场数上限：防止多房间讨论并发把受限设备的内存吃爆。
+ *  可用环境变量 HERMES_GROUP_CHAT_MAX_CONCURRENT_DISCUSSIONS 覆盖。 */
+export const DISCUSSION_MAX_CONCURRENT = envInt('HERMES_GROUP_CHAT_MAX_CONCURRENT_DISCUSSIONS', 1)
 function envTimeoutMs(name: string, fallback: number): number {
   const value = Number(process.env[name])
   return Number.isFinite(value) && value > 0 ? value : fallback
+}
+function envInt(name: string, fallback: number): number {
+  const value = Number(process.env[name])
+  return Number.isInteger(value) && value > 0 ? value : fallback
 }
 // Large-document discussions make each agent read multi-MB files before speaking,
 // which routinely exceeds 3 minutes on constrained devices — default to 10 min.
@@ -323,6 +345,11 @@ export class DiscussionRunner {
   private interrupts = new Map<string, boolean>()
   /** Serializes start() so rapid double-clicks cannot create two active discussions. */
   private startingRooms = new Map<string, Promise<void>>()
+  /** In-memory fallback concurrency counter: used only when the storage layer
+   *  does not expose listDiscussions() (lightweight test doubles). The real
+   *  ChatStorage implements listDiscussions(), so the count is derived from
+   *  persisted rows and survives process restarts. */
+  private activeRunRooms = new Set<string>()
 
   constructor(private deps: DiscussionRunnerDeps) {}
 
@@ -379,6 +406,17 @@ export class DiscussionRunner {
         err.status = 409
         throw err
       }
+      // Global concurrency cap: prevent several rooms' discussions from stacking
+      // agent gateway load and RAM on constrained devices. Count active rows from
+      // storage when available; fall back to the in-memory set for test doubles.
+      const activeCount = this.countActiveDiscussions()
+      if (activeCount >= DISCUSSION_MAX_CONCURRENT) {
+        const err = new Error(
+          `同时最多运行 ${DISCUSSION_MAX_CONCURRENT} 场讨论（当前 ${activeCount} 场），请等待其他房间的讨论结束`,
+        ) as Error & { status?: number }
+        err.status = 409
+        throw err
+      }
     const goal = String(input.goal || '').trim()
     if (!goal) {
       const err = new Error('Discussion goal is required') as Error & { status?: number }
@@ -425,7 +463,7 @@ export class DiscussionRunner {
       throw err
     }
     const maxRounds = clampInt(input.maxRounds, DISCUSSION_DEFAULT_MAX_ROUNDS, 1, 50)
-    const maxMessages = clampInt(input.maxMessages, DISCUSSION_DEFAULT_MAX_MESSAGES, 2, 500)
+    const maxMessages = clampInt(input.maxMessages, DISCUSSION_DEFAULT_MAX_MESSAGES, 2, 1000)
     // 最小轮次：前 minRounds 轮禁止收敛，保证深度探索；不得超过 maxRounds，否则讨论永远到不了收敛终点。
     const minRounds = clampInt(input.minRounds, 0, 0, Math.max(maxRounds, 1))
     const judge = input.judge || {}
@@ -452,6 +490,7 @@ export class DiscussionRunner {
       createdAt: Date.now(),
       updatedAt: Date.now(),
     }
+    this.activeRunRooms.add(roomId)
     this.deps.storage.saveDiscussion(row)
     const state = this.toState(row)
     this.deps.broadcast(roomId, state)
@@ -523,9 +562,12 @@ export class DiscussionRunner {
       // The maxMessages budget must only count messages produced *during* this
       // discussion. A room may already hold many historical messages (previous
       // discussions, uploads) — counting those would terminate a fresh run
-      // before any agent speaks.
-      const startMessageCount = this.deps.storage.getMessageCount(roomId)
-      const messagesSinceStart = (): number => this.deps.storage.getMessageCount(roomId) - startMessageCount
+      // before any agent speaks. Only "substantive speech" counts toward the
+      // budget: tool-call plumbing (assistant placeholder + tool result) must
+      // not consume it, otherwise a tool-heavy first round exhausts maxMessages
+      // and the discussion dies after round 1 (the observed production bug).
+      const startMessageCount = this.substantiveMessageCount(roomId)
+      const messagesSinceStart = (): number => this.substantiveMessageCount(roomId) - startMessageCount
 
       let stalledStreak = 0
       let convergedStreak = 0
@@ -594,6 +636,16 @@ export class DiscussionRunner {
           `${JUDGE_NAME}·第${round}轮评估：${note.assessment}${note.converged ? '（已达成共识）' : ''}`,
         )
 
+        // 长讨论自动归档：每 N 轮把已产生的原始消息落盘为 summary，防止上下文
+        // 无限膨胀拖慢后续轮次。归档失败仅告警，绝不中断讨论。
+        if (
+          DISCUSSION_ROUND_ARCHIVE_EVERY > 0
+          && round % DISCUSSION_ROUND_ARCHIVE_EVERY === 0
+          && messagesSinceStart() >= DISCUSSION_ROUND_ARCHIVE_MIN_MESSAGES
+        ) {
+          await this.archiveDuringRun(roomId, round)
+        }
+
         // 检查是否收敛
         if (note.converged) {
           convergedStreak += 1
@@ -619,7 +671,26 @@ export class DiscussionRunner {
     } finally {
       this.interrupts.delete(roomId)
       this.locks.delete(roomId)
+      this.activeRunRooms.delete(roomId)
       releaseLock()
+    }
+  }
+
+  /** 讨论进行中每 N 轮自动归档：把截至当前锚点的原始消息总结落盘并删除，
+   *  上下文保持清爽。失败只告警，不影响讨论继续。 */
+  private async archiveDuringRun(roomId: string, round: number): Promise<void> {
+    if (!this.deps.roomSummaryService.archiveRoom) return
+    try {
+      const result = await this.deps.roomSummaryService.archiveRoom(roomId)
+      if (result.archived) {
+        logger.info({ roomId, round, deletedMessages: result.deletedMessages }, '[Discussion] auto-archived room transcript during run')
+        await this.deps.emitSystemMessage(
+          roomId,
+          `讨论记录已自动归档（第 ${round} 轮前的原始消息已整理为摘要，后续轮次仍可查看最新内容）。`,
+        )
+      }
+    } catch (err) {
+      logger.warn({ err, roomId, round }, '[Discussion] mid-run archive failed')
     }
   }
 
@@ -631,7 +702,7 @@ export class DiscussionRunner {
     // Only auto-archive once the room has genuinely grown large (the same
     // threshold as the manual archive prompt) — otherwise history vanishes
     // right after every discussion, which feels like data loss.
-    const messageCount = this.deps.storage.getMessageCount(roomId)
+    const messageCount = this.substantiveMessageCount(roomId)
     if (messageCount < DISCUSSION_AUTO_ARCHIVE_MIN_MESSAGES) {
       logger.info({ roomId, reason, messageCount }, '[Discussion] skipped auto-archive (room below threshold; transcript kept visible)')
       return
@@ -894,6 +965,23 @@ export class DiscussionRunner {
       judgeNotes: parseJsonArray<DiscussionJudgeNote>(judgeNotes, []),
       deliverables: parseJsonArray<string>(deliverables, []),
     }
+  }
+
+  /** Count "substantive speech" messages since the run started. Prefers the
+   *  storage-level filter (excludes tool rows and empty assistant placeholders);
+   *  falls back to the raw message count for test doubles without it. */
+  private substantiveMessageCount(roomId: string): number {
+    const count = this.deps.storage.getSubstantiveMessageCount?.(roomId)
+    return typeof count === 'number' && Number.isFinite(count) ? count : this.deps.storage.getMessageCount(roomId)
+  }
+
+  /** Number of currently active discussions across all rooms (global concurrency
+   *  cap). Uses persisted rows when the storage exposes listDiscussions(); falls
+   *  back to the in-memory set for test doubles. */
+  private countActiveDiscussions(): number {
+    const all = this.deps.storage.listDiscussions?.()
+    if (all) return all.filter(row => isActiveStatus(row.status)).length
+    return this.activeRunRooms.size
   }
 }
 
