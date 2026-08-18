@@ -62,8 +62,8 @@ describe('auth routes: device login endpoints', () => {
     expect(findLayer(authPublicRoutes, 'GET', '/api/auth/device-binding')).toBeDefined()
   })
 
-  it('mounts DELETE /api/auth/device-binding on the protected router', async () => {
-    const { authProtectedRoutes } = await import('../../packages/server/src/routes/auth')
-    expect(findLayer(authProtectedRoutes, 'DELETE', '/api/auth/device-binding')).toBeDefined()
+  it('mounts DELETE /api/auth/device-binding on the public router', async () => {
+    const { authPublicRoutes } = await import('../../packages/server/src/routes/auth')
+    expect(findLayer(authPublicRoutes, 'DELETE', '/api/auth/device-binding')).toBeDefined()
   })
 })

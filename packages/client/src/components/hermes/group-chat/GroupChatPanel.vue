@@ -6,6 +6,7 @@ import { NInput, NButton, NSpace, NSelect, NPopover, NPopconfirm, NInputNumber, 
 import { useGroupChatStore } from '@/stores/hermes/group-chat'
 import { useAppStore } from '@/stores/hermes/app'
 import { useProfilesStore } from '@/stores/hermes/profiles'
+
 import { updateRoomConfig, exportRoom, importRooms, getRoomSummary, updateRoomSummary, listStoppedRoomAgentHandoffs, continueRoomAgentHandoff, downloadGroupWorkspaceFile, fetchDeliveryUsage, cleanupDeliveryFiles, type DeliveryUsage } from '@/api/hermes/group-chat'
 import {
     decideGroupAgentPairing,
@@ -17,6 +18,7 @@ import {
     type GroupAgentPairingRequest,
     type LocalGroupAgentConnection,
 } from '@/api/hermes/group-chat-agent-link'
+
 import GroupMessageList from './GroupMessageList.vue'
 import GroupChatInput from './GroupChatInput.vue'
 import FolderPicker from '@/components/hermes/chat/FolderPicker.vue'
@@ -2738,6 +2740,7 @@ async function handleClarify(response?: string) {
                     @before-leave="handleToolPanelBeforeLeave"
                     @leave-cancelled="handleToolPanelLeaveCancelled"
                 >
+
                     <aside
                         v-if="showWorkspacePanel && (
                             activeWorkspacePanel === 'files'
@@ -2750,6 +2753,7 @@ async function handleClarify(response?: string) {
                         class="group-workspace-panel"
                         :style="workspacePanelStyle"
                     >
+
                         <div class="group-workspace-resize-handle" @pointerdown="startWorkspaceResize" />
                         <div class="group-workspace-panel-inner">
                             <WorkspaceDiffPreview
@@ -2851,6 +2855,7 @@ async function handleClarify(response?: string) {
                                     <DesktopBrowserPanel
                                         v-if="desktopBrowserAvailable && activeWorkspacePanel === 'browser'"
                                         class="group-browser-panel"
+
                                         :visible="toolPanelTransitionReady"
                                         @attach="handleBrowserAttachment"
                                     />
@@ -2859,6 +2864,7 @@ async function handleClarify(response?: string) {
                         </div>
                     </aside>
                 </Transition>
+
             </div>
 
             <div v-else class="no-room">

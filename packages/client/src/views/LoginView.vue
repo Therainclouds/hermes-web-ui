@@ -5,6 +5,7 @@ import { useI18n } from "vue-i18n";
 import { setApiKey, clearApiKey, hasApiKey } from "@/api/client";
 import { fetchAuthStatus, loginWithPassword } from "@/api/auth";
 import { clearLoginLocks, resetDefaultLogin } from "@/api/recovery";
+import { useMessage } from "@/composables/useAppMessage";
 import RecoveryConfirmModal, {
   type RecoveryAction,
 } from "@/components/auth/RecoveryConfirmModal.vue";
@@ -23,6 +24,7 @@ import { useTheme } from "@/composables/useTheme";
 const { t } = useI18n();
 const router = useRouter();
 const route = useRoute();
+const message = useMessage();
 const { activateUserTheme } = useTheme();
 
 const username = ref("");
@@ -40,7 +42,9 @@ const {
   restoreError: bindingRestoreError,
   binding,
   restore,
+  unbind,
 } = useDeviceBinding();
+const unbindingDevice = ref(false);
 
 // WeChat scan login state
 const wechatMode = ref(false);
@@ -199,6 +203,20 @@ function closeRecoveryModal() {
   recoveryModal.value = { open: false };
 }
 
+async function handleUnbindDevice() {
+  const account = binding.value?.display_name || "";
+  if (!window.confirm(t("login.unbindDeviceConfirm", { account }))) return;
+  unbindingDevice.value = true;
+  try {
+    await unbind();
+    message.success(t("login.unbindDeviceSuccess"));
+  } catch (err: any) {
+    message.error(err?.message || t("login.unbindDeviceFailed"));
+  } finally {
+    unbindingDevice.value = false;
+  }
+}
+
 async function handleRecoverySubmit(recoveryPassword: string) {
   if (!recoveryModal.value.open) return;
   const action = recoveryModal.value.action;
@@ -311,6 +329,15 @@ async function handleRecoverySubmit(recoveryPassword: string) {
           @click="restore"
         >
           {{ bindingRestoring ? "..." : t("login.wechatRestore", { account: binding?.display_name || "" }) }}
+        </button>
+        <button
+          v-if="hasBinding && !bindingChecking"
+          type="button"
+          class="login-unbind-btn"
+          :disabled="unbindingDevice"
+          @click="handleUnbindDevice"
+        >
+          {{ unbindingDevice ? "..." : t("login.unbindDevice") }}
         </button>
         <div v-if="bindingRestoreError" class="login-error">
           {{ bindingRestoreError }}
@@ -574,6 +601,30 @@ async function handleRecoverySubmit(recoveryPassword: string) {
   &:hover:not(:disabled) {
     color: $accent-primary;
     border-color: $accent-primary;
+  }
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+}
+
+.login-unbind-btn {
+  width: 100%;
+  margin-top: 8px;
+  padding: 10px 16px;
+  border: 1px dashed rgba($error, 0.55);
+  border-radius: $radius-sm;
+  background: transparent;
+  color: $error;
+  font-size: 13px;
+  cursor: pointer;
+  transition: color $transition-fast, border-color $transition-fast;
+  font-family: $font-code;
+
+  &:hover:not(:disabled) {
+    color: $error;
+    border-color: $error;
   }
 
   &:disabled {
