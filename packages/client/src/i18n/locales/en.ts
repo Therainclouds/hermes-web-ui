@@ -3134,6 +3134,10 @@ export default {
       reporter: 'Reporting Agent',
       maxRounds: 'Max Rounds',
       maxMessages: 'Message Limit',
+
+      minRounds: 'Min Rounds',
+      longRun: 'Long-run mode (unattended overnight)',
+      longRunHint: 'Applies long-run presets (40 rounds / min 15 rounds / 600 messages) and auto-appends guardrails: phase planning, per-phase delivery files, completion criteria, no asking the user. You only fill in the goal and material paths.',
       judgeDesc: 'The judge model follows the room summary configuration by default',
       roundsDone: '{rounds} round(s) completed',
       convergedLabel: 'Consensus reached',
