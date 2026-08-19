@@ -1150,6 +1150,22 @@ function toggleWorkspacePanel(): void {
         return
     }
     showWorkspacePanel.value = true
+    // bfcache 恢复或从单聊返回后，files store 可能停留在旧的 workspace 上下文
+    // （单聊 session 模式或错误房间），导致群聊文件列表不刷新。每次打开面板都
+    // 强制以当前房间重新拉取群聊工作区文件，确保列表始终对应当前房间。
+    void refreshWorkspaceFilesForCurrentRoom()
+}
+
+/** 以当前房间强制刷新群聊工作区文件列表（修复 bfcache/路由切换后文件列表不显示）。 */
+async function refreshWorkspaceFilesForCurrentRoom(): Promise<void> {
+    const roomId = store.currentRoomId
+    const workspace = currentRoom.value?.workspace
+    if (!roomId || !workspace) return
+    try {
+        await filesStore.fetchEntries('', { workspaceSessionId: null, workspaceRoomId: roomId })
+    } catch (err) {
+        console.warn('[GroupChat] refresh workspace files failed:', err)
+    }
 }
 
 function handleToolPanelBeforeEnter(): void {
@@ -1262,6 +1278,19 @@ async function refreshRemoteRooms() {
 
 function handleWindowFocus() {
     void refreshRemoteRooms()
+}
+
+/** bfcache（前进/后退缓存）恢复回调：persisted=true 表示页面从缓存恢复而非
+ *  重新加载。此时 WebSocket 已断开、files store 可能停留在旧 workspace 上下文
+ *  （单聊 session 模式），强制重新同步群聊上下文，保证工作区文件列表刷新。 */
+function handlePageShow(event: PageTransitionEvent): void {
+    if (!event.persisted) return
+    if (store.currentRoomId) {
+        void refreshWorkspaceFilesForCurrentRoom()
+        if (!props.standalone) void loadRoomSummaryState(store.currentRoomId)
+    }
+    void refreshRemoteRooms()
+    void refreshPendingAgentPairings()
 }
 
 function handleSelectRemoteRoom(room: RemoteGroupChatRoom) {
@@ -1748,6 +1777,10 @@ onMounted(() => {
     window.addEventListener(OPEN_DESKTOP_BROWSER_PANEL_EVENT, handleOpenDesktopBrowserPanelRequest)
     window.addEventListener('resize', handleWorkspacePanelResize)
     window.addEventListener('focus', handleWindowFocus)
+    // bfcache（前进/后退缓存）恢复时，WebSocket 与 files store 状态可能停留在
+    // 冻结前的快照（如单聊 session 模式），导致群聊工作区文件列表不刷新。
+    // pageshow 的 persisted 标志能识别 bfcache 恢复，强制重新同步群聊上下文。
+    window.addEventListener('pageshow', handlePageShow)
     handleWorkspacePanelResize()
     if (!props.standalone && profilesStore.profiles.length === 0) {
         void profilesStore.fetchProfiles()
@@ -1767,6 +1800,7 @@ onUnmounted(() => {
     window.removeEventListener(OPEN_DESKTOP_BROWSER_PANEL_EVENT, handleOpenDesktopBrowserPanelRequest)
     window.removeEventListener('resize', handleWorkspacePanelResize)
     window.removeEventListener('focus', handleWindowFocus)
+    window.removeEventListener('pageshow', handlePageShow)
     stopWorkspaceResize()
     roomFadeAnimation?.cancel()
     if (showWorkspacePanel.value) closeWorkspacePanel()
