@@ -4,7 +4,7 @@ import { dirname, join } from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { claudeProxyMessages, claudeProxyModels, registerClaudeCodeProxyTarget } from '../../packages/server/src/services/agent-runner/proxies/claude-code-proxy'
 import { codexProxyModels, codexProxyResponses, registerCodexProxyTarget } from '../../packages/server/src/services/agent-runner/proxies/codex-proxy'
-import { dshSdkTemplatePackages, getDshSdkInstallSpecs, prepareCodingAgentLaunch } from '../../packages/server/src/services/coding-agents'
+import { buildDshSdkCordisTemplate, dshSdkTemplatePackages, getDshSdkInstallSpecs, prepareCodingAgentLaunch } from '../../packages/server/src/services/coding-agents'
 
 const homes: string[] = []
 
@@ -324,6 +324,44 @@ describe('coding agent launch preparation', () => {
     })
     // SDK mode must not write the headless settings.yaml into the run root.
     expect(existsSync(join(result.rootDir, 'settings.yaml'))).toBe(false)
+    // Checkout mode runs the DSH repo's own cordis composition; the product
+    // template (and its apiMode-conditional llm-pi-ai route) only applies to
+    // PATH/managed-bin SDK launches, covered by buildDshSdkCordisTemplate.
+  })
+
+  it('loads the llm-pi-ai Responses route only for codex_responses SDK launches', async () => {
+    const home = makeHome()
+    const checkout = join(home, 'dsh-sdk-checkout-pi')
+    const sdkBin = join(checkout, 'packages', 'examples', 'jsonrpc-demo', 'src', 'bin.ts')
+    const sdkConfig = join(checkout, 'examples', 'jsonrpc-agent', 'cordis.yml')
+    mkdirSync(dirname(sdkBin), { recursive: true })
+    mkdirSync(dirname(sdkConfig), { recursive: true })
+    mkdirSync(join(checkout, 'node_modules', 'tsx'), { recursive: true })
+    writeFileSync(sdkBin, 'export {}')
+    writeFileSync(sdkConfig, '- id: sdk-jsonrpc-server\n')
+    writeFileSync(join(checkout, 'node_modules', 'tsx', 'package.json'), '{}')
+    process.env.DEEPSEEK_HARNESS_ROOT = checkout
+
+    const result = await prepareCodingAgentLaunch('dsh', {
+      profile: 'default',
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+      apiKey: 'sk-test',
+      apiMode: 'codex_responses',
+    })
+
+    const cordis = buildDshSdkCordisTemplate('codex_responses')
+    expect(cordis).toContain('- id: llm-pi-responses')
+    expect(cordis).toContain("name: '@deepseek-ai/dsh-llm-pi-ai'")
+    // The Responses route needs a non-empty base URL; default to the official
+    // DeepSeek endpoint when the provider carries none.
+    expect(result.env.DEEPSEEK_BASE_URL).toBe('https://api.deepseek.com')
+  })
+
+  it('omits the llm-pi-ai Responses route from chat-completions SDK compositions', () => {
+    expect(buildDshSdkCordisTemplate('chat_completions')).not.toContain('llm-pi-responses')
+    expect(buildDshSdkCordisTemplate('chat_completions')).toContain('- id: llm-deepseek')
+    expect(buildDshSdkCordisTemplate('codex_responses')).toContain('llm-pi-responses')
   })
 
   it('defaults DEEPSEEK_BASE_URL for DeepSeek Harness SDK launches without a provider base URL', async () => {

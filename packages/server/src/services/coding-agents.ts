@@ -137,6 +137,20 @@ const DSH_SDK_CORDIS_TEMPLATE = `# Unattended DeepSeek Harness coding-agent comp
     maxTokens: 8192
     compactionRetries: 1
 `
+/**
+ * Build the SDK cordis composition for a launch's apiMode. The llm-pi-ai
+ * OpenAI Responses route is only required by codex_responses sessions, so
+ * chat-completions boots stay free of it and never need DEEPSEEK_BASE_URL.
+ * The block is delimited by its comment and the next top-level entry; if the
+ * template structure ever changes, the safe fallback keeps the full template.
+ */
+export function buildDshSdkCordisTemplate(apiMode?: string): string {
+  if (apiMode === 'codex_responses') return DSH_SDK_CORDIS_TEMPLATE
+  const blockStart = DSH_SDK_CORDIS_TEMPLATE.indexOf('# OpenAI Responses protocol route')
+  const blockEnd = blockStart < 0 ? -1 : DSH_SDK_CORDIS_TEMPLATE.indexOf('- id: subprocess', blockStart)
+  if (blockStart < 0 || blockEnd < 0) return DSH_SDK_CORDIS_TEMPLATE
+  return DSH_SDK_CORDIS_TEMPLATE.slice(0, blockStart) + DSH_SDK_CORDIS_TEMPLATE.slice(blockEnd)
+}
 const DSH_SDK_BIN = 'dsh-jsonrpc-agent'
 const DSH_SDK_SRC_BIN = 'packages/examples/jsonrpc-demo/src/bin.ts'
 const DSH_SDK_SRC_CONFIG = 'examples/jsonrpc-agent/cordis.yml'
@@ -2184,7 +2198,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
         args = sdkLaunch.args
       } else {
         command = sdkLaunch.command
-        await writeScopedFile('cordis', DSH_SDK_CORDIS_TEMPLATE)
+        await writeScopedFile('cordis', buildDshSdkCordisTemplate(apiMode))
         args = [join(rootDir, DSH_SDK_CORDIS_FILE)]
       }
     } else {
