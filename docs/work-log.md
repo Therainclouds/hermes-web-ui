@@ -1,5 +1,49 @@
 # Work Log
 
+## 2026-08-19 · 长任务模式（无人值守通宵）+ 群聊工作区/终端面板修复
+
+### 本轮目标
+
+- 用户要为「许-测试1」执行 8-10 小时无人值守的长任务，需要"长任务模式"：用户只需填任务目标，系统自动应用长跑参数 + 附加护栏文案。
+- 用户反馈群聊界面三个显示问题：长任务勾选框只有文字、工作区面板只显示键名/交付文字、终端面板按钮文字异常。
+
+### 一、长任务模式（提交 `531b8761`）
+
+- **UI 复选框**：发起自由讨论表单 + 快捷弹窗新增「长任务模式（无人值守通宵）」开关，勾选后自动应用 `maxRounds=40 / minRounds=15 / maxMessages=600`，并在 goal 后自动附加护栏文案（阶段划分 / 每阶段落盘交付目录 / 完成标准 / 不反问用户）。
+- **`/讨论` 命令**：支持「长任务 / 通宵 / long-run / overnight」关键词，自动应用同样参数与护栏。
+- **服务端**：`DiscussionStartInput` 已有 `minRounds` 透传链路（clamp 上限 50），无需改动服务端。
+- **i18n**：全部 11 个 locale 补充 `minRounds / longRun / longRunHint` 键 + 更新 `quickStartHint`（提示长任务关键词）。
+
+### 二、群聊面板三个显示 bug 修复（提交 `531b8761`）
+
+1. **长任务勾选框只有文字**：`GroupChatPanel.vue` 用了 `<NCheckbox>` 但未从 naive-ui import（naive-ui 无全局注册），组件无法解析只剩插槽文字。修复：import 列表加入 `NCheckbox`。
+2. **工作区面板显示键名**：模板引用 `groupChat.delivery.*`，但 locale 定义在 `groupChat.discussion.delivery.*` 下，5 处键路径错误导致显示原始键名。修复：改为正确的 `groupChat.discussion.delivery.*` 路径。
+3. **终端面板按钮文字异常**：`TerminalPanel.vue` 的 `import { } from "naive-ui"` 是**空导入**（合并时被清空），但模板用了 `NTooltip / NPopconfirm / NButton`，组件解析失败导致 tooltip 文本裸显示。修复：导入 `{ NButton, NPopconfirm, NTooltip }`。构建后 chunk 中 `resolveComponent` 计数为 0（静态绑定，不再运行时解析）。
+
+### 三、群聊工作区文件列表不显示（提交 `73085ea6`，bfcache 问题）
+
+- **现象**：用户"先进入单聊 → 再切回群聊"，工作区面板只显示"交付（52 KB / 100 MB，7 个文件）"用量条，文件列表为空；headless 探测无法复现（无 bfcache）。
+- **根因**：用户浏览器 console 报 `Page entered Back-Forward Cache`——页面从 bfcache（前进/后退缓存）恢复时，WebSocket 断开、**files store 停留在冻结前快照**（单聊 session 工作区模式），群聊 FilesPanel 的 watch 因房间 ID 未变化不触发重新 fetch，文件列表不刷新。
+- **修复**：
+  - 打开工作区面板时强制以当前房间 ID 刷新群聊文件（`refreshWorkspaceFilesForCurrentRoom`）。
+  - 监听 `pageshow`（`event.persisted === true`）事件，bfcache 恢复时重新同步群聊文件、房间总结、远程房间与配对状态。
+- **验证**：设备部署 `index-BFPQuGQF.js`，chunk 含 `pageshow / persisted / fetchEntries / workspaceRoomId` 标记。
+
+### 四、真机验证（6.6.6.47，许-测试1）
+
+- **冒烟测试（maxRounds=3, minRounds=2）**：5 个 agent 正常轮流发言（default→guanzhong→jiran→…），第 1 轮裁判判 converged 但被 minRounds=2 压制继续探索，第 3 轮 `max_rounds` 正常结束，产出 2 个交付文件。确认多 agent 讨论功能正常（此前"只有 default 干活"是操作方式问题——直接发消息而非发起讨论）。
+- **通宵任务模板**：`docs/planning/yaofeng-overnight-run-template.md`——耀丰地产 4 阶段流水线模板（盘点→三大争议焦点→质证方案→最终报告），maxRounds=40/minRounds=15/maxMessages=600，含冒烟测试步骤与次日检查清单。
+
+### 当前分支
+
+- `main`（合并了 `merge/upstream-main-20260814` 的工作），HEAD `73085ea6`。
+
+### 遗留 / 待办
+
+- bfcache 恢复时群聊 WebSocket 由 socket.io 自动重连，若用户仍遇到断连可进一步监听 `pageshow` 主动重连。
+- 长任务模式参数（40/15/600）为默认值，UI 仍可手动调整；`/讨论` 命令长任务关键词已支持。
+- 设备 6.6.6.47 上的 kiosk Chromium 为 320x200 小屏，工作区面板以 100% 宽全屏展示，若布局异常可单独排查小屏适配。
+
 ## 2026-08-18 · 群聊自由讨论改为"任务结果导向"（修复只跑 1 轮真正根因 + 防设备过载）
 
 ### 本轮目标
