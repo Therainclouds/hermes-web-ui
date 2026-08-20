@@ -1,5 +1,36 @@
 # Work Log
 
+## 2026-08-20 · 发布 v0.7.19（会议隐藏说话人分离 + 更新链路验证）
+
+### 一、会议模式隐藏说话人分离（提交 `6b247ad3`）
+
+- `HIDE_SPEAKER_DIARIZATION=true` 常量控制：工具栏 diarize 开关/节省模式/说话人数选择、OSS 配置块全部隐藏（Vite 编译期剔除，chunk 中 `meeting.diarize`/`meeting.ossConfig` 键引用已消失）。
+- 强制 `useDiarize=false`（含历史 session 恢复时），转写不再显示说话人标签。
+- 顺带清理设置向导中重复的 ASR 模型选择块（合并残留）。
+
+### 二、更新链路验证（v0.7.19 发布前检查）
+
+- OSS manifest（`tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/releases/stable/latest.json`）可访问、内容正确。
+- 更新包（device-package tar.gz）与 source 包可下载，**sha256 完整校验匹配**。
+- 设备 health 检查：`update_enabled=True`、源 `Quanthermes Device Releases`、包类型 `device-package`。
+- **注意**：`update-check-cache.ts` 的 manifest 快照 5 分钟 TTL，但 `checkLatestVersion` 30 分钟周期轮询；重启服务可立即触发检测（`startVersionCheck` 5 秒后 force 刷新）。验证时通过重启确认设备正确报告 `update_available: True`（0.7.18 → 0.7.19）。
+
+### 三、发布 v0.7.19（提交 `165e4626`，tag `v0.7.19`）
+
+- 版本号 0.7.18 → 0.7.19（package.json / package-lock.json / desktop 两件 / device-package-release.json 共 5 个文件）。
+- `npm run check:release-consistency` 通过（Release consistency OK for 0.7.19）。
+- 打 tag `v0.7.19` 推送到 **org**（`tangledup-ai/hermes-web-ui`）触发 CI `device-package-release` workflow，**completed/success**；同时推送到 origin。
+- CI 产出已上传 OSS：`releases/v0.7.19/hermes-web-ui-device-*.tar.gz`（30MB），`stable/latest.json` 版本更新为 0.7.19，sha256 校验匹配。
+- npm-publish workflow 同步触发（npm 发布）。
+
+### 当前分支与远程
+
+- `main` = `origin/main` = `org/main` = `165e4626`，tag `v0.7.19` 两端同步。
+
+### 遗留 / 待办
+
+- 设备仍运行 0.7.18，可经 UI 更新到 0.7.19（已确认设备能检测到更新）；或待下次自动检查周期。
+
 ## 2026-08-19 · 长任务模式（无人值守通宵）+ 群聊工作区/终端面板修复
 
 ### 本轮目标
