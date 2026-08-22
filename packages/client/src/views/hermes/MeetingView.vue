@@ -675,6 +675,9 @@ onMounted(async () => {
   
   // 检查 ASR 服务状态
   await checkASRServiceStatus()
+
+  // 同步服务端会议列表 (触摸屏设备端创建的会议, 合并进侧边栏)
+  await meetingStore.syncSessionsFromServer()
   
   // 如果有活跃会议，加载它
   if (meetingStore.activeSession) {
