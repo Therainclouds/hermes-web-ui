@@ -1,5 +1,35 @@
 # Work Log
 
+## 2026-08-24 · 非英 locale 大面积缺失：量化分析与翻译合并管线（进行中）
+
+### 本轮目标
+
+- 承接上一条目「遗留 / 待办」的「非英 locale 大面积缺失」：9 个非英 locale（zh-TW / ja / ko / fr / es / de / pt / ru / ar）相对 en 缺失 341–558 个 key，目前依赖 `fallbackLocale: 'en'` + `mergeMessagesWithFallback` 深合并兜底，相关语言用户看到的仍是英文。
+- 本轮完成：缺口量化、按 locale 导出缺失 key 清单、搭建 TS-AST 引导的翻译合并管线并完成冒烟验证。
+- **翻译内容创作与合并尚未开始**——9 个语言共约 3700 条翻译待产出，这是下一步工作。
+
+### 一、缺口量化
+
+- `tmp/i18n-gap-live.mts`（vite-node 扫描 SourceRoot + changelog 引用）统计：跨 9 个 locale 共有 **812 个 live-missing union key**（约 3699 条翻译）。
+- 按 namespace 分布（union）：changelog 207、meeting 164、mcp 65、usb 64、experts 52、codingAgents 50、models 38、kanban 34、skills 33、login 32、githubPreview 25、chat 14、sidebar 11、modelGuide 6、profiles 6、settings 5、users 3、terminal 2、common 1。
+- 按 locale 分布：zh-TW 341、ja/ko/fr/es/de/pt 各 379、ru 526、ar 558。（zh 完整，0 缺失，用作参考。）
+- 特殊结构：meeting（164）、experts（52）、modelGuide（6）3 个 namespace 在 9 个 locale 中完全缺失；ar/ru 还额外缺 mcp、skills、login、usb、githubPreview、codingAgents、changelog 等整段 namespace。
+- 5 个死 namespace（connections / mcuDevices / petdex / gateways / language）已排除，不翻译。
+
+### 二、合并管线（`tmp/`，gitignore 内，不随库提交）
+
+- **`tmp/merge-i18n.mjs`**：TS AST 引导的文本插入合并器。读 `tmp/translations/<locale>.json`（扁平 dot-path → 目标语言文本），按顶层 namespace 分组；namespace 已存在则沿对象链下行插入缺失键，不存在则锚定文件末尾 `}` 新建 block。只增不删，不动已有翻译；输出后重新 parse 校验 0 diagnostics。
+- **`tmp/per-locale-keys.mts`**：为每个 locale 生成 `tmp/keys-<locale>.tsv`（key、en 值、zh 值三列），共 3699 行，作为逐语言创作翻译的清单底稿。
+- **`tmp/zh-reference.json`**：812 个 union key 的 zh 参考值（完整度 812/812），作为 zh-TW 简转繁与其他语言语义对照的基准。
+- **冒烟验证**：`tmp/test-locales/ja.ts` + `tmp/translations/ja.json`（6 个测试 key：meeting/experts/kanban/sidebar 混合）合并后 parse 0 diagnostics，中文原有翻译无损伤。
+
+### 三、下一步
+
+1. 为 9 个 locale 依次产出 `tmp/translations/<locale>.json`（zh-TW 基于 zh 简转繁；其余语言从 en 翻译）。
+2. 逐个运行 `node tmp/merge-i18n.mjs` 合并进 `packages/client/src/i18n/locales/*.ts`，用 gap 工具验证每个 locale live-missing=0。
+3. 运行 `npm run test -- tests/client/i18n-coverage.test.ts` + tsc/vue-tsc。
+4. 提交、更新本条记录、推送 origin（如需 CI 再推送 org）。
+
 ## 2026-08-24 · 合并上游 main + 代码审查与清理（任务 1-3）
 
 ### 本轮目标
