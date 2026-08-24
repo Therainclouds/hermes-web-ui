@@ -38,6 +38,8 @@ interface RawManifestPayload {
   sourceSha256?: unknown
   sourceRepoUrl?: unknown
   sourceSize?: unknown
+  installerScriptPath?: unknown
+  installerScriptSha256?: unknown
 }
 
 function toPackageType(value: unknown, fallback: UpdatePackageType): UpdatePackageType {

@@ -37,6 +37,9 @@ import type { UpdatePackageType, UpdateStrategy } from './services/update/types'
  * - HERMES_LAN_DISCOVERY_ENABLED: Set false/0/off to disable UDP LAN discovery responder.
  * - HERMES_LAN_DISCOVERY_HTTP_PORTS: HTTP ports to probe during UDP discovery scans. Default: 6060,8748 plus current PORT.
  *   Discovery probes are sent to the fixed UDP port 48640 plus legacy mapped ports for compatibility.
+ * - HERMES_LAN_ADVERTISE_URL: Publicly reachable Studio origin used in LAN QR codes, especially from Docker.
+ * - HERMES_APP_ENTITLEMENT_REQUIRED: Require an RS256 cloud entitlement for App LAN relay connections.
+ * - HERMES_APP_ENTITLEMENT_PUBLIC_KEY: Optional PEM public-key override for App entitlement verification.
  * - WORKSPACE_BASE: Base directory for workspace browsing. Default: current user's home directory.
  *
  * Limits/logging:
@@ -215,6 +218,24 @@ export function getCorsOrigins(env: Record<string, string | undefined> = process
   return env.CORS_ORIGINS?.trim() || ''
 }
 
+export function getLanAdvertiseUrl(env: Record<string, string | undefined> = process.env): string {
+  const value = env.HERMES_LAN_ADVERTISE_URL?.trim()
+  if (!value) return ''
+  try {
+    const url = new URL(value.includes('://') ? value : `http://${value}`)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return ''
+    if (!url.hostname || url.username || url.password) return ''
+    return url.origin
+  } catch {
+    return ''
+  }
+}
+
+export function isAppEntitlementRequired(env: Record<string, string | undefined> = process.env): boolean {
+  const value = String(env.HERMES_APP_ENTITLEMENT_REQUIRED || '').trim().toLowerCase()
+  return !['0', 'false', 'no', 'off'].includes(value)
+}
+
 const appHome = getWebUiHome()
 const DEFAULT_MANIFEST_BASE_URL = 'https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/releases'
 const updatePackageName = normalizePackageName(process.env.WEBUI_UPDATE_PACKAGE)
@@ -227,7 +248,8 @@ const remoteRelay = {
   url: normalizeUrl(process.env.HERMES_REMOTE_RELAY_URL || process.env.REMOTE_RELAY_URL || ''),
 }
 const appRelay = {
-  url: 'https://api.hermes-studio.ai',
+  url: process.env.HERMES_APP_RELAY_URL?.trim() || 'https://api.hermes-studio.ai',
+  entitlementRequired: isAppEntitlementRequired(),
 }
 
 export const config = {
@@ -238,6 +260,7 @@ export const config = {
   uploadDir: getUploadDir(),
   dataDir: resolve(__dirname, '..', 'data'),
   corsOrigins: getCorsOrigins(),
+  lanAdvertiseUrl: getLanAdvertiseUrl(),
   remoteRelay,
   appRelay,
   update: {

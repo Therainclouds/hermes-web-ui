@@ -14,6 +14,8 @@ import {
     getStoredUserName,
     type RoomInfo,
     type RoomAgent,
+    type RoomAgentSummary,
+    type GroupAgentActivity,
     type RoomAgentHandoffChain,
     type RoomAgentInput,
     type RoomSummaryConfig,
@@ -22,6 +24,7 @@ import {
     type DiscussionStartInput,
     type ChatMessage,
     type GroupChatMention,
+    type GroupExecutionQueueItem,
     type GroupWorkspaceDiffPayload,
     type MemberInfo,
     createRoom,
@@ -128,11 +131,11 @@ function uid(): string {
 const STREAM_FINAL_CONTENT_RECOVERY_DELAY_MS = 300
 export const GROUP_CHAT_STREAM_FLUSH_INTERVAL_MS = 50
 export const GROUP_CHAT_MESSAGE_PAGE_SIZE = 150
-export const GROUP_CHAT_MAX_DISPLAY_MESSAGES = 600
 const GROUP_CHAT_JOIN_TIMEOUT_MS = 30000
 const GROUP_CHAT_TYPING_HEARTBEAT_MS = 2500
 const GROUP_CHAT_TYPING_IDLE_MS = 4000
 const GROUP_CHAT_REMOTE_TYPING_TTL_MS = 5000
+const GROUP_CHAT_EXECUTION_QUEUE_CAPABILITY_PREFIX = 'gc_execution_queue_capability:'
 
 function normalizeLocalFilePath(path: string): string {
     return /^[a-zA-Z]:\\/.test(path) ? path.replace(/\\/g, '/') : path
@@ -140,6 +143,17 @@ function normalizeLocalFilePath(path: string): string {
 
 function hasText(value?: string | null): boolean {
     return !!value?.trim()
+}
+
+function executionQueueCapability(roomId: string): string {
+    const key = `${GROUP_CHAT_EXECUTION_QUEUE_CAPABILITY_PREFIX}${roomId}`
+    const stored = localStorage.getItem(key)
+    if (stored && /^[a-f0-9]{64}$/i.test(stored)) return stored.toLowerCase()
+    const bytes = new Uint8Array(32)
+    globalThis.crypto.getRandomValues(bytes)
+    const capability = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')
+    localStorage.setItem(key, capability)
+    return capability
 }
 
 function authenticatedGroupUserId(authUserId: number): string {
@@ -201,6 +215,8 @@ export interface GroupPendingClarify {
     clarifyId: string
     question: string
     choices: string[] | null
+    initialResponse: string
+    responseMode: string
     timeoutMs: number
     requestedAt: number
 }
@@ -232,10 +248,12 @@ export const useGroupChatStore = defineStore('groupChat', () => {
     const realtimeJoinedRoomId = ref<string | null>(null)
     const realtimeJoinedSocketId = ref<string | null>(null)
     const contextStatuses = ref<Map<string, { agentName: string; status: string }>>(new Map())
+    const activeAgentRuns = ref<Map<string, GroupAgentActivity>>(new Map())
     const roomSummaryStates = ref<Map<string, RoomSummaryState>>(new Map())
-    const discussionStates = ref<Map<string, DiscussionState>>(new Map())
+const discussionStates = ref<Map<string, DiscussionState>>(new Map())
     const documentStates = ref<Map<string, GroupDocumentInfo>>(new Map())
     const documentProgress = ref<Map<string, GroupDocumentProgress>>(new Map())
+    const executionQueue = ref<GroupExecutionQueueItem[]>([])
     const autoPlaySpeechEnabled = ref(false)
     const pendingApprovals = ref<Map<string, GroupPendingApproval>>(new Map())
     const pendingWelcomeMessages = ref<Map<string, PendingGroupWelcomeMessage[]>>(new Map())
@@ -253,9 +271,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
     const loadedMessageCount = ref(0)
     const hasMoreBefore = ref(false)
     const isLoadingOlderMessages = ref(false)
-    const hasReachedMessageDisplayLimit = computed(() =>
-        hasMoreBefore.value && loadedMessageCount.value >= GROUP_CHAT_MAX_DISPLAY_MESSAGES,
-    )
+    const olderMessagesError = ref<string | null>(null)
     const currentUserAvatar = ref('')
     const inviteGuest = ref(false)
     const activeInviteCode = ref('')
@@ -275,6 +291,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
         loadedMessageCount.value = 0
         hasMoreBefore.value = false
         isLoadingOlderMessages.value = false
+        olderMessagesError.value = null
     }
 
     function streamDeltaKey(roomId: string, messageId: string): string {
@@ -457,6 +474,62 @@ export const useGroupChatStore = defineStore('groupChat', () => {
         contextStatuses.value = new Map(contextStatuses.value)
     }
 
+    function activeAgentRunKey(roomId: string, agentId: string, runId: string): string {
+        return `${roomId}\u0000${agentId}\u0000${runId}`
+    }
+
+    function replaceActiveAgentRuns(activities: unknown): void {
+        const next = new Map<string, GroupAgentActivity>()
+        if (Array.isArray(activities)) {
+            for (const activity of activities) {
+                if (
+                    !activity ||
+                    typeof activity.roomId !== 'string' ||
+                    typeof activity.agentId !== 'string' ||
+                    typeof activity.runId !== 'string' ||
+                    (activity.status !== 'compressing' && activity.status !== 'replying')
+                ) continue
+                next.set(
+                    activeAgentRunKey(activity.roomId, activity.agentId, activity.runId),
+                    activity as GroupAgentActivity,
+                )
+            }
+        }
+        activeAgentRuns.value = next
+    }
+
+    function applyActiveAgentRun(activity: GroupAgentActivity): void {
+        if (!activity.roomId || !activity.agentId || !activity.runId) return
+        const key = activeAgentRunKey(activity.roomId, activity.agentId, activity.runId)
+        const next = new Map(activeAgentRuns.value)
+        if (activity.status === 'ready') next.delete(key)
+        else next.set(key, activity)
+        activeAgentRuns.value = next
+    }
+
+    function clearActiveAgentRunsForRoom(roomId: string, agentId?: string): void {
+        const next = new Map(activeAgentRuns.value)
+        for (const [key, activity] of next) {
+            if (activity.roomId === roomId && (!agentId || activity.agentId === agentId)) {
+                next.delete(key)
+            }
+        }
+        activeAgentRuns.value = next
+    }
+
+    function activeAgentRunsForRoom(roomId: string): GroupAgentActivity[] {
+        return [...activeAgentRuns.value.values()].filter(activity => activity.roomId === roomId)
+    }
+
+    function activeAgentIdsForRoom(roomId: string): string[] {
+        return [...new Set(activeAgentRunsForRoom(roomId).map(activity => activity.agentId))]
+    }
+
+    function isAgentRunActive(roomId: string, agentId: string, runId: string | null | undefined): boolean {
+        if (!roomId || !agentId || !runId) return false
+        return activeAgentRuns.value.has(activeAgentRunKey(roomId, agentId, runId))
+    }
+
     // Computed: returns first active status for backward compat
     const contextStatus = computed(() => {
         for (const [, status] of contextStatuses.value) {
@@ -504,7 +577,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
         })
     }
 
-    function upsertPendingClarify(data: { roomId: string; agentName?: string; clarify_id?: string; question?: string; choices?: string[] | null; timeout_ms?: number; requested_at?: number }) {
+    function upsertPendingClarify(data: { roomId: string; agentName?: string; clarify_id?: string; question?: string; choices?: string[] | null; initial_response?: string; response_mode?: string; timeout_ms?: number; requested_at?: number }) {
         if (!data.roomId || !data.clarify_id) return
         pendingClarifies.value.set(pendingClarifyKey(data.roomId, data.clarify_id), {
             roomId: data.roomId,
@@ -512,6 +585,8 @@ export const useGroupChatStore = defineStore('groupChat', () => {
             clarifyId: data.clarify_id,
             question: data.question || '',
             choices: Array.isArray(data.choices) ? data.choices.map(String) : null,
+            initialResponse: String(data.initial_response || ''),
+            responseMode: String(data.response_mode || ''),
             timeoutMs: Number(data.timeout_ms) || 300_000,
             requestedAt: Number(data.requested_at) || Date.now(),
         })
@@ -548,6 +623,29 @@ export const useGroupChatStore = defineStore('groupChat', () => {
         const idx = rooms.value.findIndex(existing => existing.id === room.id)
         if (idx >= 0) rooms.value[idx] = room
         else rooms.value.push(room)
+    }
+
+    function summarizeRoomAgents(roomAgents: RoomAgent[]): RoomAgentSummary[] {
+        return roomAgents.map(({ id, roomId, agentId, agent, name, avatar }) => ({
+            id,
+            roomId,
+            agentId,
+            agent,
+            name,
+            avatar,
+        }))
+    }
+
+    function projectRoomAgents(roomId: string, roomAgents: RoomAgent[]) {
+        const room = rooms.value.find(candidate => candidate.id === roomId)
+        if (!room) return
+        room.agents = summarizeRoomAgents(roomAgents)
+        rooms.value = [...rooms.value]
+    }
+
+    function roomAgentsForRoom(roomId: string): RoomAgentSummary[] {
+        if (roomId === currentRoomId.value) return summarizeRoomAgents(agents.value)
+        return rooms.value.find(room => room.id === roomId)?.agents || []
     }
 
     function clearRemoteTypingState() {
@@ -646,6 +744,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
         if (res.agents) {
             snapshotCurrentMessageAgents(agents.value)
             agents.value = mergeRoomAgentRoster(res.agents)
+            if (res.roomId) projectRoomAgents(res.roomId, agents.value)
         }
         if (res.roomName) roomName.value = res.roomName
         if (typeof res.agentLinkToken === 'string') agentLinkToken.value = res.agentLinkToken
@@ -685,6 +784,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
         } else {
             contextStatuses.value.clear()
         }
+        executionQueue.value = Array.isArray(res.executionQueue) ? res.executionQueue : []
         if (typeof res.roomId === 'string' && res.roomId) {
             replaceRoomPendingInteractions(res.roomId, res.pendingApprovals, res.pendingClarifies)
         }
@@ -900,6 +1000,9 @@ export const useGroupChatStore = defineStore('groupChat', () => {
             socket.emit('load_pending_approvals', {}, (res: { pendingApprovals?: unknown } | undefined) => {
                 replacePendingApprovalSnapshots(res?.pendingApprovals)
             })
+            socket.emit('load_room_agent_activities', {}, (res: { activities?: unknown } | undefined) => {
+                replaceActiveAgentRuns(res?.activities)
+            })
             const roomId = currentRoomId.value
             if (roomId) {
                 void joinRealtimeRoom(roomId, {
@@ -922,6 +1025,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
             pendingRealtimeJoin = null
             clearPendingStreamDeltas()
             resetLocalTypingState()
+            activeAgentRuns.value = new Map()
         })
 
         socket.on('connect_error', (err: Error) => {
@@ -1057,6 +1161,8 @@ export const useGroupChatStore = defineStore('groupChat', () => {
             roomName.value = ''
             clearRemoteTypingState()
             contextStatuses.value.clear()
+            clearActiveAgentRunsForRoom(data.roomId)
+            executionQueue.value = []
             pendingApprovals.value.clear()
             pendingClarifies.value.clear()
         })
@@ -1075,6 +1181,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
                 agents.value = Array.isArray(data.agents)
                     ? mergeRoomAgentRoster(data.agents)
                     : []
+                projectRoomAgents(data.roomId, agents.value)
             }
         })
 
@@ -1102,6 +1209,45 @@ export const useGroupChatStore = defineStore('groupChat', () => {
                     contextStatuses.value = new Map(contextStatuses.value)
                 }
             }
+        })
+
+        socket.on('room_agent_activity', (data: GroupAgentActivity) => {
+            applyActiveAgentRun(data)
+        })
+
+        socket.on('execution_queue_updated', (data: { roomId: string; items?: GroupExecutionQueueItem[] }) => {
+            if (data.roomId !== currentRoomId.value) return
+            executionQueue.value = Array.isArray(data.items) ? data.items : []
+        })
+
+        socket.on('message_retracted', (data: {
+            roomId: string
+            messageId: string
+            messageCount?: number
+            totalTokens?: number
+            lastActiveAt?: number
+        }) => {
+            if (!data.roomId || !data.messageId) return
+            executionQueue.value = executionQueue.value.filter(item => item.messageId !== data.messageId)
+            const room = rooms.value.find(item => item.id === data.roomId)
+            if (room) {
+                if (typeof data.totalTokens === 'number') room.totalTokens = data.totalTokens
+                if (typeof data.lastActiveAt === 'number') room.lastActiveAt = data.lastActiveAt
+                sortRoomsByActivity()
+            }
+            roomSummaryStates.value.delete(data.roomId)
+            roomSummaryStates.value = new Map(roomSummaryStates.value)
+            const reference = messageReferences.value.get(data.roomId)
+            if (reference?.id === data.messageId) clearMessageReference(data.roomId)
+            if (data.roomId !== currentRoomId.value) return
+            flushPendingStreamDeltas(data.roomId, data.messageId)
+            const removed = messages.value.some(message => message.id === data.messageId)
+            messages.value = messages.value.filter(message => message.id !== data.messageId)
+            if (removed) loadedMessageCount.value = Math.max(0, loadedMessageCount.value - 1)
+            totalMessages.value = typeof data.messageCount === 'number'
+                ? Math.max(0, data.messageCount)
+                : Math.max(0, totalMessages.value - (removed ? 1 : 0))
+            hasMoreBefore.value = loadedMessageCount.value < totalMessages.value
         })
 
         socket.on('room_summary_updated', (summary: RoomSummaryState) => {
@@ -1172,7 +1318,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
             pendingApprovals.value = new Map(pendingApprovals.value)
         })
 
-        socket.on('clarify.requested', (data: { roomId: string; agentName?: string; clarify_id?: string; question?: string; choices?: string[] | null; timeout_ms?: number }) => {
+        socket.on('clarify.requested', (data: { roomId: string; agentName?: string; clarify_id?: string; question?: string; choices?: string[] | null; initial_response?: string; response_mode?: string; timeout_ms?: number }) => {
             upsertPendingClarify(data)
             pendingClarifies.value = new Map(pendingClarifies.value)
         })
@@ -1202,10 +1348,15 @@ export const useGroupChatStore = defineStore('groupChat', () => {
             agentHandoffEnabled?: number
             agentHandoffMaxDepth?: number | null
             agentHandoffUnlimited?: number
+            lastActiveAt?: number
         }) => {
             const room = rooms.value.find(r => r.id === data.roomId)
             if (!room) return
             if (typeof data.totalTokens === 'number') room.totalTokens = data.totalTokens
+            if (typeof data.lastActiveAt === 'number') {
+                room.lastActiveAt = data.lastActiveAt
+                sortRoomsByActivity()
+            }
             if (typeof data.allowGuestAgents === 'number') room.allowGuestAgents = data.allowGuestAgents
             if (data.guestAgentApproval === 'owner') room.guestAgentApproval = data.guestAgentApproval
             if (typeof data.maxGuestAgentsPerMember === 'number') {
@@ -1252,6 +1403,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
                 if (chain.roomId === data.roomId) handoffChains.value.delete(chainId)
             }
             handoffChains.value = new Map(handoffChains.value)
+            clearActiveAgentRunsForRoom(data.roomId)
             if (data.roomId === currentRoomId.value) {
                 clearPendingStreamDeltas()
                 messages.value = []
@@ -1259,6 +1411,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
                 resetMessagePaging()
                 clearRemoteTypingState()
                 contextStatuses.value.clear()
+                executionQueue.value = []
                 pendingApprovals.value.clear()
                 pendingClarifies.value.clear()
             }
@@ -1310,6 +1463,8 @@ export const useGroupChatStore = defineStore('groupChat', () => {
         agents.value = []
         roomName.value = ''
         contextStatuses.value.clear()
+        activeAgentRuns.value = new Map()
+        executionQueue.value = []
         roomSummaryStates.value.clear()
         discussionStates.value.clear()
         pendingApprovals.value.clear()
@@ -1368,7 +1523,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
             const previousRoomId = currentRoomId.value
             if (previousRoomId && previousRoomId !== res.room.id) emitStopTyping(previousRoomId)
             clearPendingStreamDeltas()
-            upsertRoom(res.room)
+            upsertRoom({ ...res.room, agents: summarizeRoomAgents(res.agents || []) })
             currentRoomId.value = res.room.id
             realtimeJoinedRoomId.value = null
             realtimeJoinedSocketId.value = null
@@ -1380,6 +1535,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
             handoffChains.value = new Map((res.handoffChains || []).map(chain => [chain.chainId, chain]))
             applyMessagePaging(res)
             agents.value = res.agents
+            projectRoomAgents(res.room.id, agents.value)
             members.value = res.members || []
             applyPendingWelcomeMessages(res.room.id)
             void loadDiscussion(res.room.id)
@@ -1395,11 +1551,12 @@ export const useGroupChatStore = defineStore('groupChat', () => {
     async function loadOlderMessages(): Promise<boolean> {
         const roomId = currentRoomId.value
         if (!roomId || isLoadingOlderMessages.value || !hasMoreBefore.value) return false
-        const offset = loadedMessageCount.value
-        if (offset >= GROUP_CHAT_MAX_DISPLAY_MESSAGES) return false
+        const before = messages.value[0]?.id
+        if (!before) return false
         isLoadingOlderMessages.value = true
+        olderMessagesError.value = null
         try {
-            const limit = Math.min(GROUP_CHAT_MESSAGE_PAGE_SIZE, GROUP_CHAT_MAX_DISPLAY_MESSAGES - offset)
+            const limit = GROUP_CHAT_MESSAGE_PAGE_SIZE
             const res = inviteGuest.value
                 ? await new Promise<{
                     messages: ChatMessage[]
@@ -1411,22 +1568,23 @@ export const useGroupChatStore = defineStore('groupChat', () => {
                         reject(new Error('Group chat socket not connected'))
                         return
                     }
-                    socket.emit('load_messages', { roomId, offset, limit }, (response: any) => {
+                    socket.emit('load_messages', { roomId, before, limit, history: true }, (response: any) => {
                         if (response?.error) reject(new Error(response.error))
                         else resolve(response)
                     })
                 })
-                : await getRoomDetail(roomId, { offset, limit })
+                : await getRoomDetail(roomId, { before, limit, history: true })
+            if (currentRoomId.value !== roomId) return false
             const existingIds = new Set(messages.value.map(message => message.id))
             captureHistoricalMessageAgents(res.messages)
             const olderMessages = res.messages.filter(message => !existingIds.has(message.id))
             messages.value = [...olderMessages, ...messages.value]
-            loadedMessageCount.value = offset + res.messages.length
+            loadedMessageCount.value = messages.value.length
             totalMessages.value = res.total ?? totalMessages.value
             hasMoreBefore.value = res.hasMore ?? loadedMessageCount.value < totalMessages.value
             return olderMessages.length > 0
         } catch (err: any) {
-            error.value = err.message
+            olderMessagesError.value = err.message
             return false
         } finally {
             isLoadingOlderMessages.value = false
@@ -1479,7 +1637,13 @@ export const useGroupChatStore = defineStore('groupChat', () => {
 
         emitStopTyping(roomId)
         return new Promise<void>((resolve, reject) => {
-            socket.emit('message', { roomId, id: messageId, content: finalContent, mentions }, (res: { id?: string; error?: string }) => {
+            socket.emit('message', {
+                roomId,
+                id: messageId,
+                content: finalContent,
+                mentions,
+                executionQueueCapability: executionQueueCapability(roomId),
+            }, (res: { id?: string; error?: string }) => {
                 if (res.error) {
                     messages.value = messages.value.filter(m => m.id !== messageId)
                     reject(new Error(res.error))
@@ -1524,7 +1688,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
                 },
                 workspace: workspace || undefined,
             })
-            upsertRoom(res.room)
+            upsertRoom({ ...res.room, agents: summarizeRoomAgents(res.agents || []) })
             return res
         } catch (err: any) {
             error.value = err.message
@@ -1558,6 +1722,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
         try {
             await deleteRoomApi(roomId)
             rooms.value = rooms.value.filter(r => r.id !== roomId)
+            clearActiveAgentRunsForRoom(roomId)
             roomSummaryStates.value.delete(roomId)
             roomSummaryStates.value = new Map(roomSummaryStates.value)
             for (const [chainId, chain] of handoffChains.value) {
@@ -1588,7 +1753,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
     async function cloneRoom(roomId: string, data?: { name?: string; inviteCode?: string }) {
         try {
             const res = await cloneRoomApi(roomId, data)
-            upsertRoom(res.room)
+            upsertRoom({ ...res.room, agents: summarizeRoomAgents(res.agents || []) })
             return res
         } catch (err: any) {
             error.value = err.message
@@ -1608,6 +1773,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
             resetMessagePaging()
             clearRemoteTypingState()
             contextStatuses.value.clear()
+            clearActiveAgentRunsForRoom(roomId)
             roomSummaryStates.value.delete(roomId)
             roomSummaryStates.value = new Map(roomSummaryStates.value)
             const idx = rooms.value.findIndex(r => r.id === currentRoomId.value)
@@ -1797,6 +1963,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
             const res = await listAgents(roomId)
             snapshotCurrentMessageAgents(agents.value)
             agents.value = mergeRoomAgentRoster(res.agents)
+            projectRoomAgents(roomId, agents.value)
         } catch { /* ignore */ }
     }
 
@@ -1813,6 +1980,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
             } else {
                 agents.value = [...agents.value, res.agent]
             }
+            projectRoomAgents(roomId, agents.value)
             return res.agent
         } catch (err: any) {
             error.value = err.message
@@ -1826,6 +1994,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
             agents.value = mergeRoomAgentRoster(res.agents ?? agents.value.map(agent => (
                 agent.id === agentId || agent.agentId === agentId ? res.agent : agent
             )))
+            projectRoomAgents(roomId, agents.value)
             if (res.members) members.value = res.members
             return res.agent
         } catch (err: any) {
@@ -1846,6 +2015,8 @@ export const useGroupChatStore = defineStore('groupChat', () => {
             agents.value = mergeRoomAgentRoster(
                 res.agents ?? agents.value.filter(a => a.id !== agentId && a.agentId !== agentId),
             )
+            projectRoomAgents(roomId, agents.value)
+            if (target) clearActiveAgentRunsForRoom(roomId, target.id)
             if (res.members) members.value = res.members
         } catch (err: any) {
             error.value = err.message
@@ -1874,6 +2045,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
             agents.value = mergeRoomAgentRoster(
                 res.agents ?? agents.value.filter(agent => agent.ownerMemberId !== memberUserId),
             )
+            projectRoomAgents(roomId, agents.value)
         } catch (err: any) {
             error.value = err.message
             throw err
@@ -2009,6 +2181,25 @@ export const useGroupChatStore = defineStore('groupChat', () => {
         await respondClarifyFor(pending.roomId, pending.clarifyId, response)
     }
 
+    async function cancelExecutionQueueItem(queueId: string) {
+        const roomId = currentRoomId.value
+        if (!roomId) return
+        const socket = await ensureRealtimeRoomReady(roomId)
+        await new Promise<void>((resolve, reject) => {
+            socket.emit('cancel_execution_queue_item', {
+                roomId,
+                queueId,
+                executionQueueCapability: executionQueueCapability(roomId),
+            }, (res: any) => {
+                if (res?.error) {
+                    reject(new Error(res.error))
+                    return
+                }
+                resolve()
+            })
+        })
+    }
+
     return {
         // State
         connected,
@@ -2023,11 +2214,13 @@ export const useGroupChatStore = defineStore('groupChat', () => {
         error,
         contextStatus,
         contextStatuses,
+        activeAgentRuns,
         roomSummaryStates,
         discussionStates,
         documentStates,
         documentProgress,
         handoffChains,
+        executionQueue,
         pendingApprovals,
         pendingClarifies,
         activePendingApproval,
@@ -2040,7 +2233,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
         loadedMessageCount,
         hasMoreBefore,
         isLoadingOlderMessages,
-        hasReachedMessageDisplayLimit,
+        olderMessagesError,
         userId,
         userName,
         currentUserAvatar,
@@ -2050,6 +2243,10 @@ export const useGroupChatStore = defineStore('groupChat', () => {
         agentPairingRevision,
         // Computed
         sortedMessages,
+        activeAgentRunsForRoom,
+        activeAgentIdsForRoom,
+        roomAgentsForRoom,
+        isAgentRunActive,
         memberNames,
         typingNames,
         typingText,
@@ -2074,6 +2271,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
         respondApprovalFor,
         respondClarify,
         respondClarifyFor,
+        cancelExecutionQueueItem,
         createNewRoom,
         joinByCode,
         deleteRoom,

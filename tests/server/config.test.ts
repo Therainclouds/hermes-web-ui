@@ -1,7 +1,20 @@
 import { describe, expect, it } from 'vitest'
 import { homedir } from 'os'
 import { join, resolve } from 'path'
-import { getCorsOrigins, getDeployDir, getHermesHome, getListenHost, getUploadDir, getWebUiHome, hasConfiguredManifestCheck, hasConfiguredUpdateCheck, sanitizeConfigValue, shouldCreateWebUiDataDir } from '../../packages/server/src/config'
+import {
+  getCorsOrigins,
+  getDeployDir,
+  getHermesHome,
+  getLanAdvertiseUrl,
+  getListenHost,
+  getUploadDir,
+  getWebUiHome,
+  hasConfiguredManifestCheck,
+  hasConfiguredUpdateCheck,
+  isAppEntitlementRequired,
+  sanitizeConfigValue,
+  shouldCreateWebUiDataDir,
+} from '../../packages/server/src/config'
 
 describe('server config', () => {
   it('defaults to an IPv4 bind host', () => {
@@ -98,5 +111,16 @@ describe('server config', () => {
     expect(sanitizeConfigValue(' `https://updates.example.com/releases` ')).toBe('https://updates.example.com/releases')
     expect(sanitizeConfigValue('"https://registry.npmjs.org"')).toBe('https://registry.npmjs.org')
     expect(sanitizeConfigValue("'https://github.com/tangledup-ai/hermes-web-ui'")).toBe('https://github.com/tangledup-ai/hermes-web-ui')
+  })
+
+  it('normalizes the Docker LAN advertise origin', () => {
+    expect(getLanAdvertiseUrl({ HERMES_LAN_ADVERTISE_URL: ' 192.168.10.102:6060/path ' })).toBe('http://192.168.10.102:6060')
+    expect(getLanAdvertiseUrl({ HERMES_LAN_ADVERTISE_URL: 'file:///tmp/studio' })).toBe('')
+  })
+
+  it('enforces App entitlements by default and allows an explicit compatibility opt-out', () => {
+    expect(isAppEntitlementRequired({})).toBe(true)
+    expect(isAppEntitlementRequired({ HERMES_APP_ENTITLEMENT_REQUIRED: 'true' })).toBe(true)
+    expect(isAppEntitlementRequired({ HERMES_APP_ENTITLEMENT_REQUIRED: 'off' })).toBe(false)
   })
 })

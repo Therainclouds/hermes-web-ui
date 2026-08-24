@@ -152,11 +152,11 @@ const agentDisplayName = computed(() => {
   const agent = session?.agent || session?.codingAgentId || 'hermes'
   return {
     hermes: 'Hermes',
-    claude: 'Claude Code',
-    'claude-code': 'Claude Code',
+    claude: 'Claude',
+    'claude-code': 'Claude',
     codex: 'Codex',
     dsh: 'DeepSeek Harness',
-    'ekko-agent': 'Ekko Agent',
+    'ekko-agent': 'Ekko',
   }[agent] || agent
 })
 const statusLabel = computed(() => t(`realtimeVoice.status.${mode.value}`, {

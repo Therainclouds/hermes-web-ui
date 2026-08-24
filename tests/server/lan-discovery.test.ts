@@ -6,10 +6,12 @@ import {
   discoveryPortForHttpPort,
   getDiscoveryHttpPorts,
   getLanBackendUrl,
+  getLanBackendUrlForRequest,
   getLanEndpointKind,
   isPrivateOrLoopbackIPv4,
   resetLanDiscoveryState,
   scanLanDevices,
+  selectLanIPv4Address,
   startLanDiscoveryResponder,
 } from '../../packages/server/src/services/lan-discovery'
 import type { PublicSystemInfo } from '../../packages/server/src/services/system-info'
@@ -71,6 +73,71 @@ describe('LAN discovery', () => {
     expect(url.protocol).toBe('http:')
     expect(url.port).toBe('19004')
     expect(isPrivateOrLoopbackIPv4(url.hostname)).toBe(true)
+  })
+
+  it('uses the externally requested host instead of a Docker container interface', () => {
+    expect(getLanBackendUrlForRequest(
+      '172.19.0.1',
+      'http://192.168.10.102:6060',
+      6060,
+      '',
+    )).toBe('http://192.168.10.102:6060')
+  })
+
+  it('supports an explicit Docker LAN advertise URL and ignores localhost request origins', () => {
+    expect(getLanBackendUrlForRequest(
+      '172.19.0.1',
+      'http://localhost:6060',
+      6060,
+      'http://192.168.10.102:16060',
+    )).toBe('http://192.168.10.102:16060')
+    expect(getLanBackendUrlForRequest(
+      '192.168.10.20',
+      'http://localhost:6060',
+      6060,
+      '',
+    )).not.toBe('http://localhost:6060')
+  })
+
+  it('prefers a physical LAN interface over VPN and virtual adapters for local QR codes', () => {
+    const interfaces = [
+      { name: 'utun4', address: '10.8.0.2', netmask: '255.255.255.255' },
+      { name: 'docker0', address: '172.17.0.1', netmask: '255.255.0.0' },
+      { name: 'en0', address: '192.168.10.102', netmask: '255.255.255.0' },
+    ]
+
+    expect(selectLanIPv4Address('127.0.0.1', interfaces)).toBe('192.168.10.102')
+    expect(getLanBackendUrlForRequest(
+      '127.0.0.1',
+      'http://localhost:8648',
+      8648,
+      '',
+      interfaces,
+    )).toBe('http://192.168.10.102:8648')
+  })
+
+  it('ignores a VPN request origin when a physical LAN interface is available', () => {
+    const interfaces = [
+      { name: 'Tailscale Tunnel', address: '100.64.0.2', netmask: '255.255.255.255' },
+      { name: 'Wi-Fi', address: '192.168.1.20', netmask: '255.255.255.0' },
+    ]
+
+    expect(getLanBackendUrlForRequest(
+      '127.0.0.1',
+      'http://100.64.0.2:8648',
+      8648,
+      '',
+      interfaces,
+    )).toBe('http://192.168.1.20:8648')
+  })
+
+  it('keeps an exact remote subnet match even when it uses a VPN interface', () => {
+    const interfaces = [
+      { name: 'WireGuard Tunnel', address: '10.8.0.2', netmask: '255.255.255.0' },
+      { name: 'Ethernet', address: '192.168.1.20', netmask: '255.255.255.0' },
+    ]
+
+    expect(selectLanIPv4Address('10.8.0.50', interfaces)).toBe('10.8.0.2')
   })
 
   it('limits discovery responses to local/private IPv4 senders', () => {

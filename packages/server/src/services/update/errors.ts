@@ -15,6 +15,8 @@ export type UpdateErrorCode =
   | 'update_install_spawn_failed'
   | 'update_source_package_fetch_failed'
   | 'update_source_package_checksum_mismatch'
+  | 'update_installer_script_missing'
+  | 'update_installer_script_stale'
 
 export class UpdateError extends Error {
   code: UpdateErrorCode

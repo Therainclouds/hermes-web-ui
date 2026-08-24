@@ -120,6 +120,48 @@ describe('group chat history windows', () => {
     )
   })
 
+  it('bounds tool results only in the outbound UI page and retains full group history', () => {
+    const storage = groupServer.getStorage()
+    storage.saveRoom('room-1', 'Room 1')
+    const completeResult = 'tool-result-'.repeat(400)
+    storage.saveMessageAndRefreshRoom(makeMessage({
+      id: 'tool-result-1',
+      role: 'tool',
+      tool_name: 'read_file',
+      tool_call_id: 'call-1',
+      content: completeResult,
+    }) as any)
+
+    const [outbound] = storage.getRecentMessagesForUI('room-1') as Array<Record<string, any>>
+
+    expect(outbound.content).toHaveLength(1_000)
+    expect(outbound.content_truncated).toBe(true)
+    expect(outbound.content_original_length).toBe(completeResult.length)
+    expect(storage.getMessage('tool-result-1')?.content).toBe(completeResult)
+    expect(storage.getMessagesForContext('room-1')[0]?.content).toBe(completeResult)
+  })
+
+  it('keeps workspace diff payloads complete in the outbound UI page', () => {
+    const storage = groupServer.getStorage()
+    storage.saveRoom('room-1', 'Room 1')
+    const completeDiff = JSON.stringify({
+      kind: 'workspace_diff',
+      files: [{ path: 'large.ts', patch: '+'.repeat(4_000) }],
+    })
+    storage.saveMessageAndRefreshRoom(makeMessage({
+      id: 'workspace-diff-1',
+      role: 'tool',
+      tool_name: 'workspace_diff',
+      tool_call_id: 'workspace_diff:run-1',
+      content: completeDiff,
+    }) as any)
+
+    const [outbound] = storage.getRecentMessagesForUI('room-1') as Array<Record<string, any>>
+
+    expect(outbound.content).toBe(completeDiff)
+    expect(outbound.content_truncated).toBeUndefined()
+  })
+
   it('does not split same-timestamp multipart assistant/tool runs across UI page boundaries', () => {
     const storage = groupServer.getStorage()
     storage.saveRoom('room-1', 'Room 1')
@@ -144,6 +186,54 @@ describe('group chat history windows', () => {
       'run-1_part_0_toolcall_t',
       'run-1_part_0_toolresult_t',
     ])
+  })
+
+  it('expands complete-history pages instead of splitting an Agent run at the nominal boundary', () => {
+    const storage = groupServer.getStorage()
+    storage.saveRoom('room-1', 'Room 1')
+
+    const runMessages = [
+      makeMessage({
+        id: 'boundary-run_part_0',
+        role: 'assistant',
+        senderId: 'agent-1',
+        senderName: 'Agent',
+        content: 'starting',
+        timestamp: 100,
+      }),
+      makeMessage({
+        id: 'boundary-run_part_0_toolcall_t',
+        role: 'assistant',
+        senderId: 'agent-1',
+        senderName: 'Agent',
+        content: '',
+        timestamp: 101,
+      }),
+      makeMessage({
+        id: 'boundary-run_part_0_toolresult_t',
+        role: 'tool',
+        senderId: 'agent-1',
+        senderName: 'Agent',
+        content: 'tool result',
+        timestamp: 102,
+      }),
+    ]
+    const newerMessages = Array.from({ length: 149 }, (_value, index) => makeMessage({
+      id: `newer-${String(index + 1).padStart(3, '0')}`,
+      content: `newer ${index + 1}`,
+      timestamp: 1_000 + index,
+    }))
+    for (const message of [...runMessages, ...newerMessages]) {
+      storage.saveMessageAndRefreshRoom(message as any)
+    }
+
+    const page = storage.getHistoryPageForUI('room-1', 150)
+
+    expect(page.messages).toHaveLength(152)
+    expect(page.messages.slice(0, 3).map(message => message.id)).toEqual(
+      runMessages.map(message => message.id),
+    )
+    expect(page.hasMore).toBe(false)
   })
 
   it('bounds same-timestamp overflow while retaining the newest context messages', () => {
@@ -1322,9 +1412,11 @@ describe('group chat history windows', () => {
       seeded.slice(1).map(message => message.id),
     )
     expect(storage.getRecentMessagesForUI('room-1', 150, 450).map(message => message.id)).toEqual(
-      seeded.slice(1, 51).map(message => message.id),
+      seeded.slice(0, 51).map(message => message.id),
     )
-    expect(storage.getRecentMessagesForUI('room-1', 150, 500)).toEqual([])
+    expect(storage.getRecentMessagesForUI('room-1', 150, 500).map(message => message.id)).toEqual([
+      'msg-1',
+    ])
     expect(contextMessages).toHaveLength(500)
     expect(contextMessages.some(message => message.id === 'msg-1')).toBe(false)
     expect(context.summary).toBe('Earlier summary')
@@ -1379,6 +1471,93 @@ describe('group chat history windows', () => {
     expect(context.history).toHaveLength(500)
     expect(context.history[0]?.id).toBe('msg-2')
     expect(context.history.at(-1)?.id).toBe('msg-501')
+  })
+
+  it('paginates the complete UI history beyond the 500-message Agent context window', () => {
+    const storage = groupServer.getStorage()
+    storage.saveRoom('room-1', 'Room 1')
+    const seeded = Array.from({ length: 725 }, (_value, index) => makeMessage({
+      id: `history-${String(index + 1).padStart(4, '0')}`,
+      content: `history ${index + 1}`,
+      timestamp: index + 1,
+    }))
+    for (const message of seeded) storage.saveMessageAndRefreshRoom(message as any)
+
+    const pages: string[][] = []
+    let offset = 0
+    while (offset < seeded.length) {
+      const page = storage.getRecentMessagesForUI('room-1', 150, offset)
+      pages.unshift(page.map(message => message.id))
+      offset += page.length
+      if (page.length === 0) break
+    }
+
+    expect(pages.flat()).toEqual(seeded.map(message => message.id))
+    expect(new Set(pages.flat())).toHaveLength(seeded.length)
+    expect(storage.getRecentMessagesForUI('room-1', 150, 600)).toHaveLength(125)
+    expect(storage.getRecentMessagesForUI('room-1', 150, 725)).toEqual([])
+    expect(storage.getMessagesForContext('room-1')).toHaveLength(500)
+    expect(storage.getMessagesForContext('room-1')[0]?.id).toBe('history-0226')
+  })
+
+  it('keyset-paginates 13,000+ archived messages with stable ids and equal timestamps', () => {
+    const storage = groupServer.getStorage()
+    storage.saveRoom('room-1', 'Room 1')
+    const boundaryRunIndexes = new Set([12_923, 12_924, 12_925])
+    const seeded = Array.from({ length: 13_075 }, (_value, index) => makeMessage({
+      id: `archive-${String(index + 1).padStart(5, '0')}`,
+      content: `archive ${index + 1}`,
+      timestamp: 1_900_000_000 + Math.floor(index / 225),
+      ...(boundaryRunIndexes.has(index)
+        ? {
+            role: index === 12_924 ? 'tool' : 'assistant',
+            run_id: 'archive-boundary-run',
+            senderId: 'agent-1',
+            senderName: 'Agent',
+          }
+        : {}),
+    }))
+    const insert = dbMock.current!.prepare(
+      `INSERT INTO gc_messages (id, roomId, senderId, senderName, content, timestamp, role, run_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    dbMock.current!.exec('BEGIN')
+    try {
+      for (const message of seeded) {
+        insert.run(
+          message.id,
+          message.roomId,
+          message.senderId,
+          message.senderName,
+          message.content,
+          message.timestamp,
+          message.role,
+          message.run_id || null,
+        )
+      }
+      dbMock.current!.exec('COMMIT')
+    } catch (error) {
+      dbMock.current!.exec('ROLLBACK')
+      throw error
+    }
+
+    const pages: string[][] = []
+    let beforeMessageId: string | undefined
+    do {
+      const page = storage.getHistoryPageForUI('room-1', 150, beforeMessageId)
+      pages.unshift(page.messages.map(message => message.id))
+      beforeMessageId = page.hasMore ? page.messages[0]?.id : undefined
+      if (!page.hasMore) break
+    } while (beforeMessageId)
+
+    const loaded = pages.flat()
+    expect(loaded).toEqual(seeded.map(message => message.id))
+    expect(new Set(loaded)).toHaveLength(seeded.length)
+    expect(pages).toHaveLength(Math.ceil(seeded.length / 150))
+    const boundaryRunIds = [...boundaryRunIndexes].map(index => seeded[index].id)
+    expect(pages.filter(page => boundaryRunIds.some(id => page.includes(id)))).toEqual([
+      expect.arrayContaining(boundaryRunIds),
+    ])
   })
 
   it('builds Agent context from the full retained transcript rather than the UI page', () => {

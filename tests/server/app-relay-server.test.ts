@@ -50,6 +50,13 @@ vi.mock('socket.io-client', () => ({
   io: clientSocketMocks.io,
 }))
 
+vi.mock('../../packages/server/src/config', () => ({
+  config: {
+    port: 8648,
+    appRelay: { entitlementRequired: false },
+  },
+}))
+
 function createMockNamespace() {
   const middleware: Array<(socket: any, next: (err?: Error) => void) => void> = []
   const handlers = new Map<string, (...args: any[]) => void>()
@@ -145,6 +152,169 @@ describe('LocalAppRelayServer', () => {
     })
     await connectApp(namespace, loginOnly)
     expect(loginOnly.data.localUserToken).toBe('')
+  })
+
+  it('requires and binds cloud entitlements to the App account and device when enforcement is enabled', async () => {
+    const namespace = createMockNamespace()
+    const io = { of: vi.fn(() => namespace) }
+    const entitlement = {
+      issuer: 'hermes-studio-server',
+      audience: 'ekko-studio',
+      userId: 7001,
+      deviceCode: 'phone-001',
+      features: ['lan_access'],
+      plan: 'public_beta',
+      issuedAt: Math.floor(Date.now() / 1000) - 60,
+      expiresAt: Math.floor(Date.now() / 1000) + 3600,
+      tokenId: 'entitlement-001',
+    }
+    const verifyEntitlementToken = vi.fn((token: string) => token === 'signed-entitlement' ? entitlement : null)
+    const { LocalAppRelayServer } = await import('../../packages/server/src/services/app-relay/server')
+    const server = new LocalAppRelayServer(io as any, {
+      machineId: 'hwui_local_machine_1234567890',
+      entitlementRequired: true,
+      verifyEntitlementToken,
+    })
+    server.init()
+
+    const missing = createMockAppSocket('missing-entitlement', {
+      role: 'app',
+      machineId: 'hwui_local_machine_1234567890',
+      deviceCode: 'phone-001',
+    })
+    const missingNext = vi.fn()
+    await namespace.__middleware[0](missing, missingNext)
+    expect(missingNext.mock.calls[0][0]).toMatchObject({ message: 'app_entitlement_required' })
+
+    const wrongAccount = createMockAppSocket('wrong-account', {
+      role: 'app',
+      machineId: 'hwui_local_machine_1234567890',
+      deviceCode: 'phone-001',
+      cloudUserId: 7002,
+      entitlementToken: 'signed-entitlement',
+    })
+    const wrongAccountNext = vi.fn()
+    await namespace.__middleware[0](wrongAccount, wrongAccountNext)
+    expect(wrongAccountNext.mock.calls[0][0]).toMatchObject({ message: 'app_entitlement_account_mismatch' })
+
+    const wrongDevice = createMockAppSocket('wrong-device', {
+      role: 'app',
+      machineId: 'hwui_local_machine_1234567890',
+      deviceCode: 'phone-002',
+      cloudUserId: 7001,
+      entitlementToken: 'signed-entitlement',
+    })
+    const wrongDeviceNext = vi.fn()
+    await namespace.__middleware[0](wrongDevice, wrongDeviceNext)
+    expect(wrongDeviceNext.mock.calls[0][0]).toMatchObject({ message: 'app_entitlement_device_mismatch' })
+
+    const allowed = createMockAppSocket('entitled', {
+      role: 'app',
+      machineId: 'hwui_local_machine_1234567890',
+      deviceCode: 'phone-001',
+      cloudUserId: 7001,
+      entitlementToken: 'signed-entitlement',
+    })
+    await connectApp(namespace, allowed)
+    expect(allowed.data.appEntitlement).toEqual(entitlement)
+    expect(allowed.data.appDeviceCode).toBe('phone-001')
+    expect(allowed.emit).toHaveBeenCalledWith('relay.ready', expect.objectContaining({
+      capabilities: expect.arrayContaining(['app.entitlement']),
+    }))
+  })
+
+  it('records the signed mode and token lifetime when an entitlement has expired', async () => {
+    const namespace = createMockNamespace()
+    const io = { of: vi.fn(() => namespace) }
+    const { LocalAppRelayServer } = await import('../../packages/server/src/services/app-relay/server')
+    const server = new LocalAppRelayServer(io as any, {
+      machineId: 'hwui_local_machine_1234567890',
+      entitlementRequired: true,
+      inspectEntitlementToken: () => ({
+        status: 'expired',
+        claims: {
+          issuer: 'hermes-studio-server',
+          audience: 'ekko-studio',
+          userId: 7001,
+          deviceCode: 'phone-001',
+          features: ['lan_access'],
+          plan: 'paid',
+          issuedAt: 1_787_000_000,
+          expiresAt: 1_787_000_000,
+          tokenId: 'entitlement-expired-001',
+        },
+      }),
+    })
+    server.init()
+
+    const app = createMockAppSocket('expired-entitlement', {
+      role: 'app',
+      machineId: 'hwui_local_machine_1234567890',
+      deviceCode: 'phone-001',
+      cloudUserId: 7001,
+      entitlementToken: 'signed-expired-entitlement',
+    })
+    const next = vi.fn()
+    await namespace.__middleware[0](app, next)
+
+    expect(next.mock.calls[0][0]).toMatchObject({ message: 'app_entitlement_expired' })
+    expect(server.getLatestEntitlementFailure()).toMatchObject({
+      code: 'app_entitlement_expired',
+      deviceCode: 'phone-001',
+      cloudUserId: 7001,
+      plan: 'paid',
+      tokenTtlSeconds: 0,
+    })
+  })
+
+  it('rejects an App login body whose device does not match the signed entitlement', async () => {
+    const namespace = createMockNamespace()
+    const io = { of: vi.fn(() => namespace) }
+    const fetchImpl = vi.fn()
+    const { LocalAppRelayServer } = await import('../../packages/server/src/services/app-relay/server')
+    const server = new LocalAppRelayServer(io as any, {
+      machineId: 'hwui_local_machine_1234567890',
+      fetchImpl: fetchImpl as any,
+      entitlementRequired: true,
+      verifyEntitlementToken: () => ({
+        issuer: 'hermes-studio-server',
+        audience: 'ekko-studio',
+        userId: 7001,
+        deviceCode: 'phone-001',
+        features: ['lan_access'],
+        plan: 'public_beta',
+        issuedAt: Math.floor(Date.now() / 1000) - 60,
+        expiresAt: Math.floor(Date.now() / 1000) + 3600,
+        tokenId: 'entitlement-001',
+      }),
+    })
+    server.init()
+    const app = createMockAppSocket('entitled-login', {
+      role: 'app',
+      machineId: 'hwui_local_machine_1234567890',
+      deviceCode: 'phone-001',
+      cloudUserId: 7001,
+      entitlementToken: 'signed-entitlement',
+    })
+    await connectApp(namespace, app)
+
+    const ack = vi.fn()
+    app.__handlers.get('http.request')({
+      id: 'app-login-mismatch',
+      method: 'POST',
+      path: '/api/auth/app-login',
+      body: {
+        authorization_code: 'one-time-code',
+        device_code: 'phone-002',
+        cloud_user_id: 7001,
+      },
+    }, ack)
+
+    await vi.waitFor(() => expect(ack).toHaveBeenCalledWith(expect.objectContaining({
+      status: 403,
+      error: expect.objectContaining({ code: 'app_entitlement_device_mismatch' }),
+    })))
+    expect(fetchImpl).not.toHaveBeenCalled()
   })
 
   it('tracks an authenticated App as online, notifies it when deleted, and rejects its next connection', async () => {
@@ -338,6 +508,7 @@ describe('LocalAppRelayServer', () => {
       id: 'http-1',
       method: 'GET',
       path: '/api/hermes/sessions?profile=default',
+      headers: { 'if-match': '"revision-1"' },
     }, ack)
 
     await vi.waitFor(() => expect(ack).toHaveBeenCalledWith(expect.objectContaining({
@@ -351,6 +522,7 @@ describe('LocalAppRelayServer', () => {
     )
     const headers = fetchImpl.mock.calls[0][1]?.headers as Headers
     expect(headers.get('authorization')).toBe('Bearer local-user-token')
+    expect(headers.get('if-match')).toBe('"revision-1"')
     expect(clientSocketMocks.io).not.toHaveBeenCalled()
 
     fetchImpl.mockResolvedValueOnce(new Response(Uint8Array.from([7, 8, 9]), {
@@ -506,6 +678,62 @@ describe('LocalAppRelayServer', () => {
       namespace: '/group-chat',
       event: 'join',
       payload: { roomName: 'Relay room', messages: [] },
+    })))
+  })
+
+  it('bridges workflow status subscriptions with the authenticated Studio token', async () => {
+    const namespace = createMockNamespace()
+    const io = { of: vi.fn(() => namespace) }
+    const { LocalAppRelayServer } = await import('../../packages/server/src/services/app-relay/server')
+    const server = new LocalAppRelayServer(io as any, {
+      machineId: 'hwui_local_machine_1234567890',
+      localBaseUrl: 'http://127.0.0.1:8748',
+    })
+    server.init()
+
+    const app = createMockAppSocket('app-workflow', {
+      role: 'app',
+      token: 'local-user-token',
+      machineId: 'hwui_local_machine_1234567890',
+    })
+    await connectApp(namespace, app)
+    const openAck = vi.fn()
+    app.__handlers.get('socket.open')({
+      id: 'workflow-1',
+      namespace: '/workflow',
+      auth: { token: 'untrusted-token' },
+    }, openAck)
+
+    await vi.waitFor(() => expect(openAck).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'workflow-1',
+      ok: true,
+      namespace: '/workflow',
+    })))
+    expect(clientSocketMocks.io).toHaveBeenCalledWith(
+      'http://127.0.0.1:8748/workflow',
+      expect.objectContaining({ auth: { token: 'local-user-token' } }),
+    )
+
+    const local = clientSocketMocks.sockets[0]
+    local.emit.mockImplementation((event: string, payload: unknown, ack?: (response: unknown) => void) => {
+      if (event === 'workflow.status.subscribe') {
+        ack?.({ ok: true, data: { statuses: [{ workflowId: 'workflow-a', status: 'idle' }] } })
+      }
+    })
+    const eventAck = vi.fn()
+    app.__handlers.get('socket.event')({
+      id: 'workflow-1',
+      event: 'workflow.status.subscribe',
+      payload: { workflowId: 'workflow-a' },
+      ack: true,
+    }, eventAck)
+
+    await vi.waitFor(() => expect(eventAck).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'workflow-1',
+      ok: true,
+      namespace: '/workflow',
+      event: 'workflow.status.subscribe',
+      payload: { ok: true, data: { statuses: [{ workflowId: 'workflow-a', status: 'idle' }] } },
     })))
   })
 })

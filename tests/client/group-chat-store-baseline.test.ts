@@ -177,6 +177,7 @@ describe('group chat store baseline lifecycle', () => {
     groupChatApiMock.socket.emit.mockImplementation((event: string, data?: any, ack?: Function) => {
       if (event === 'join' && ack) ack({ members: [], agents: [], typingUsers: [], contextStatuses: [] })
       if (event === 'load_pending_approvals' && ack) ack({ pendingApprovals: [] })
+      if (event === 'load_room_agent_activities' && ack) ack({ activities: [] })
       if (event === 'message' && ack) ack({ id: data?.id })
       return groupChatApiMock.socket
     })
@@ -198,6 +199,191 @@ describe('group chat store baseline lifecycle', () => {
     expect(groupChatApiMock.socket.on).toHaveBeenCalledWith('approval.requested', expect.any(Function))
     expect(groupChatApiMock.socket.on).toHaveBeenCalledWith('room_cleared', expect.any(Function))
     expect(groupChatApiMock.socket.on).toHaveBeenCalledWith('room_summary_updated', expect.any(Function))
+    expect(groupChatApiMock.socket.on).toHaveBeenCalledWith('execution_queue_updated', expect.any(Function))
+    expect(groupChatApiMock.socket.on).toHaveBeenCalledWith('message_retracted', expect.any(Function))
+    expect(groupChatApiMock.socket.on).toHaveBeenCalledWith('room_agent_activity', expect.any(Function))
+    expect(groupChatApiMock.socket.emit).toHaveBeenCalledWith(
+      'load_room_agent_activities',
+      {},
+      expect.any(Function),
+    )
+  })
+
+  it('tracks exact active runs across rooms and settles only the matching run', async () => {
+    groupChatApiMock.socket.emit.mockImplementation((event: string, data?: any, ack?: Function) => {
+      if (event === 'load_pending_approvals' && ack) ack({ pendingApprovals: [] })
+      if (event === 'load_room_agent_activities' && ack) {
+        ack({
+          activities: [{
+            roomId: 'room-2',
+            agentId: 'agent-row-2',
+            runId: 'run-2',
+            agentName: 'Worker',
+            agent: 'codex',
+            avatar: '',
+            status: 'replying',
+          }],
+        })
+      }
+      return groupChatApiMock.socket
+    })
+    const store = await loadStore()
+
+    await store.connect()
+    expect(store.activeAgentRuns.size).toBe(1)
+
+    emitSocket('room_agent_activity', {
+      roomId: 'room-1',
+      agentId: 'agent-row-1',
+      runId: 'run-old',
+      agentName: 'Worker',
+      agent: 'codex',
+      avatar: '',
+      status: 'replying',
+    })
+    emitSocket('room_agent_activity', {
+      roomId: 'room-1',
+      agentId: 'agent-row-1',
+      runId: 'run-new',
+      agentName: 'Worker',
+      agent: 'codex',
+      avatar: '',
+      status: 'compressing',
+    })
+    emitSocket('room_agent_activity', {
+      roomId: 'room-1',
+      agentId: 'agent-row-1',
+      runId: 'run-old',
+      agentName: 'Worker',
+      agent: 'codex',
+      avatar: '',
+      status: 'ready',
+    })
+
+    expect([...store.activeAgentRuns.values()]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ roomId: 'room-2', runId: 'run-2' }),
+      expect.objectContaining({ roomId: 'room-1', runId: 'run-new', status: 'compressing' }),
+    ]))
+    expect([...store.activeAgentRuns.values()]).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ runId: 'run-old' }),
+    ]))
+    expect(store.activeAgentRunsForRoom('room-1')).toHaveLength(1)
+    expect(store.activeAgentIdsForRoom('room-1')).toEqual(['agent-row-1'])
+    expect(store.isAgentRunActive('room-1', 'agent-row-1', 'run-new')).toBe(true)
+    expect(store.isAgentRunActive('room-1', 'agent-row-1', 'run-old')).toBe(false)
+  })
+
+  it('replaces active-run state from reconnect snapshots and clears it while disconnected', async () => {
+    const store = await loadStore()
+    await store.connect()
+    emitSocket('room_agent_activity', {
+      roomId: 'room-1',
+      agentId: 'agent-row-1',
+      runId: 'run-1',
+      agentName: 'Worker',
+      agent: 'codex',
+      avatar: '',
+      status: 'replying',
+    })
+    expect(store.activeAgentRuns.size).toBe(1)
+
+    emitSocket('disconnect', 'transport close')
+    expect(store.activeAgentRuns.size).toBe(0)
+
+    groupChatApiMock.socket.emit.mockImplementation((event: string, _data?: any, ack?: Function) => {
+      if (event === 'load_pending_approvals' && ack) ack({ pendingApprovals: [] })
+      if (event === 'load_room_agent_activities' && ack) {
+        ack({
+          activities: [{
+            roomId: 'room-3',
+            agentId: 'agent-row-3',
+            runId: 'run-3',
+            agentName: 'Other',
+            agent: 'claude',
+            avatar: '',
+            status: 'replying',
+          }],
+        })
+      }
+      return groupChatApiMock.socket
+    })
+    emitSocket('connect', undefined)
+    await vi.waitFor(() => expect(store.activeAgentRuns.size).toBe(1))
+    expect(store.activeAgentRunsForRoom('room-3')[0]?.runId).toBe('run-3')
+  })
+
+  it('restores authoritative queued work and removes a retracted message from local history', async () => {
+    localStorage.setItem('gc_execution_queue_capability:room-1', 'c'.repeat(64))
+    const queued = {
+      id: 'queue-1',
+      roomId: 'room-1',
+      messageId: 'msg-queued',
+      targetAgentId: 'agent-1',
+      targetAgentName: 'Agent',
+      requesterMemberId: 'user-1',
+      textSummary: '@Agent do this',
+      sequence: 2,
+      position: 1,
+      status: 'queued',
+      createdAt: 2,
+    }
+    groupChatApiMock.setJoinAck({
+      roomId: 'room-1',
+      members: [member],
+      agents: [agent],
+      messages: [{ id: 'msg-queued', roomId: 'room-1', role: 'user', content: '@Agent do this', timestamp: 2 }],
+      executionQueue: [queued],
+      typingUsers: [],
+      contextStatuses: [],
+    })
+    groupChatApiMock.getRoomDetail.mockResolvedValue({
+      room,
+      messages: [{ id: 'msg-queued', roomId: 'room-1', role: 'user', content: '@Agent do this', timestamp: 2 }],
+      agents: [agent],
+      members: [member],
+      total: 0,
+      hasMore: false,
+    })
+    groupChatApiMock.socket.emit.mockImplementation((event: string, data?: any, ack?: Function) => {
+      if (event === 'join' && ack) ack(groupChatApiMock.setJoinAck && {
+        roomId: 'room-1',
+        members: [member],
+        agents: [agent],
+        messages: [{ id: 'msg-queued', roomId: 'room-1', role: 'user', content: '@Agent do this', timestamp: 2 }],
+        executionQueue: [queued],
+        typingUsers: [],
+        contextStatuses: [],
+      })
+      if (event === 'cancel_execution_queue_item' && ack) ack({ ok: true, status: 'retracted', messageId: 'msg-queued' })
+      return groupChatApiMock.socket
+    })
+    const store = await loadStore()
+    await store.connect()
+    store.currentRoomId = 'room-1'
+    await (store as any).joinRoom('room-1')
+
+    expect(store.executionQueue).toEqual([queued])
+    expect(store.messages).toEqual([expect.objectContaining({ id: 'msg-queued' })])
+    emitSocket('message_retracted', {
+      roomId: 'room-1',
+      messageId: 'msg-queued',
+      messageCount: 0,
+      totalTokens: 0,
+      lastActiveAt: 1,
+    })
+    expect(store.messages).toEqual([])
+    expect(store.executionQueue).toEqual([])
+
+    await store.cancelExecutionQueueItem('queue-1')
+    expect(groupChatApiMock.socket.emit).toHaveBeenCalledWith(
+      'cancel_execution_queue_item',
+      {
+        roomId: 'room-1',
+        queueId: 'queue-1',
+        executionQueueCapability: 'c'.repeat(64),
+      },
+      expect.any(Function),
+    )
   })
 
   it('invalidates cached handoff stops when another client changes the Room policy', async () => {
@@ -578,6 +764,7 @@ describe('group chat store baseline lifecycle', () => {
     const updatedAgent = { ...agent, name: 'Realtime Agent' }
 
     await store.connect()
+    store.rooms = [{ ...room, agents: [] }]
     store.currentRoomId = 'room-1'
     store.agents = [agent]
 
@@ -586,9 +773,13 @@ describe('group chat store baseline lifecycle', () => {
 
     emitSocket('agents_updated', { roomId: 'room-1', agents: [updatedAgent] })
     expect(store.agents).toEqual([updatedAgent])
+    expect(store.roomAgentsForRoom('room-1')).toEqual([
+      expect.objectContaining({ id: agent.id, name: 'Realtime Agent' }),
+    ])
 
     emitSocket('agents_updated', { roomId: 'room-1', agents: [] })
     expect(store.agents).toEqual([])
+    expect(store.roomAgentsForRoom('room-1')).toEqual([])
   })
 
   it('snapshots Agent display metadata before a realtime removal changes historical messages', async () => {
@@ -721,6 +912,7 @@ describe('group chat store baseline lifecycle', () => {
     expect(groupChatApiMock.socket.emit).toHaveBeenCalledWith('message', expect.objectContaining({
       roomId: 'room-1',
       content: 'hello room',
+      executionQueueCapability: expect.stringMatching(/^[a-f0-9]{64}$/),
     }), expect.any(Function))
     expect(store.error).toBeNull()
   })

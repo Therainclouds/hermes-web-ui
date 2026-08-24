@@ -8,6 +8,7 @@ import { buildDbSnapshotAwareHistory, forceCompressBridgeHistory, getOrCreateSes
 import { handleAbort } from './abort'
 import { calcAndUpdateUsage, contextTokensWithCachedOverhead, estimateUsageTokensFromMessages, updateMessageContextTokenUsage } from './usage'
 import { contentBlocksToString } from './content-blocks'
+import { getModelContextLength } from '../model-context'
 import type { ChatRunSource, ContentBlock, QueuedRun, SessionState } from './types'
 
 type CommandName =
@@ -26,6 +27,7 @@ type CommandName =
   | 'clear'
   | 'title'
   | 'compress'
+  | 'context'
   | 'branch'
   | 'steer'
   | 'destroy'
@@ -93,6 +95,8 @@ const COMMAND_ALIASES: Record<string, CommandName> = {
   clear: 'clear',
   title: 'title',
   compress: 'compress',
+  compact: 'compress',
+  context: 'context',
   fork: 'branch',
   steer: 'steer',
   destroy: 'destroy',
@@ -399,6 +403,31 @@ export async function handleSessionCommand(
       return
     }
 
+    case 'context': {
+      const usage = await calcAndUpdateUsage(sessionId, state, (event, payload) => {
+        emitToSession(ctx.nsp, ctx.socket, sessionId, event, payload)
+      })
+      const row = getSession(sessionId)
+      const contextWindow = getModelContextLength({
+        profile: ctx.profile,
+        model: ctx.model || row?.model || undefined,
+        provider: ctx.provider || row?.provider || undefined,
+      })
+      const totalTokens = usage.inputTokens + usage.outputTokens
+      const percent = contextWindow > 0 ? Math.round((totalTokens / contextWindow) * 1000) / 10 : 0
+      emitCommand({
+        action: 'context',
+        terminal: !state.isWorking,
+        message: `Context: input ${usage.inputTokens}, output ${usage.outputTokens}, total ${totalTokens} / ${contextWindow} tokens (${percent}%).`,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        totalTokens,
+        contextWindow,
+        contextPercent: percent,
+      })
+      return
+    }
+
     case 'status': {
       const row = getSession(sessionId)
       const bridgeStatus = await getBridgeSessionStatus(ctx, sessionId)
@@ -659,6 +688,11 @@ export async function handleSessionCommand(
         }
         const deleted = clearSessionMessages(sessionId)
         state.messages = []
+        state.messageTotal = 0
+        state.messageLoadedCount = 0
+        state.messageStateBaselineCount = 0
+        state.hasMoreBefore = false
+        state.backgroundContinuationContexts = undefined
         clearTransientRunState(state)
         await calcAndUpdateUsage(sessionId, state, (event, payload) => {
           emitToSession(ctx.nsp, ctx.socket, sessionId, event, payload)
@@ -934,6 +968,7 @@ export async function handleSessionCommand(
         state.bridgeOutput = undefined
         state.bridgePendingTools = undefined
         state.bridgeCompressionResults = undefined
+        state.backgroundContinuationContexts = undefined
         replaceState(ctx.sessionMap, sessionId, 'session.command', {
           event: 'session.command',
           action: 'destroy',
@@ -1183,6 +1218,7 @@ function createBranchSession(parentSessionId: string, requestedTitle: string, ct
     model: parent.model || ctx.model || '',
     provider: parent.provider || ctx.provider || '',
     api_mode: parent.api_mode || '',
+    reasoning_effort: parent.reasoning_effort || '',
     title,
     parent_session_id: parentSessionId,
     workspace: parent.workspace || undefined,
@@ -1228,7 +1264,7 @@ function createBranchSession(parentSessionId: string, requestedTitle: string, ct
 
 
 function isCodingAgentBranchSource(session: { source?: string | null; agent?: string | null } | null | undefined): boolean {
-  return session?.source === 'coding_agent' || session?.agent === 'claude' || session?.agent === 'codex' || session?.agent === 'dsh' || session?.agent === 'ekko-agent'
+return session?.source === 'coding_agent' || session?.agent === 'claude' || session?.agent === 'codex' || session?.agent === 'dsh' || session?.agent === 'pi' || session?.agent === 'ekko-agent'
 }
 
 function generateBranchSessionId(): string {

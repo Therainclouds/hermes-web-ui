@@ -16,10 +16,15 @@ import { NButton, NInput } from "naive-ui";
 import VirtualMessageList from "./VirtualMessageList.vue";
 import MessageItem from "./MessageItem.vue";
 import LiveReasoningStatus from "./LiveReasoningStatus.vue";
+import ToolRunCard from "./ToolRunCard.vue";
+import MessageQueueFloatPanel from "./MessageQueueFloatPanel.vue";
 import { LIVE_CHAT_MAX_LOADED_MESSAGES, parseMessageReference, useChatStore, type Message } from "@/stores/hermes/chat";
 import { useToolTraceVisibility } from "@/composables/useToolTraceVisibility";
 import { openSubagentStream, subagentIdFromToolCall } from "@/utils/hermes/subagent-stream";
 import { messageScrollPositionKey, rememberMessageScrollPosition } from "./message-scroll-position";
+import { chatSessionAgentAvatar } from "@/utils/chat-agent-avatar";
+import { parseThinking } from "@/utils/thinking-parser";
+import { groupCompletedToolsByRun } from "./tool-run-grouping";
 
 const props = withDefaults(defineProps<{
   approvalPortalToBody?: boolean
@@ -98,8 +103,13 @@ const currentToolCalls = computed(() => {
       break;
     }
   }
-  // Only tool calls after the last user input, newest on top.
-  const tools = msgs.filter((m, i) => m.role === "tool" && i > lastInputIdx);
+  // Keep only actively running tools in the live strip. Finalized tools move
+  // into the transcript immediately for every agent and launch mode.
+  const tools = msgs.filter((m, i) => (
+    m.role === "tool" &&
+    i > lastInputIdx &&
+    m.toolStatus === "running"
+  ));
   return [...tools].reverse();
 });
 
@@ -122,10 +132,22 @@ const liveReasoningDetail = computed<{
     }
   }
 
+  // A finalized tool owns the reasoning that led to it. Once the tool moves
+  // into the transcript, only reasoning produced after that boundary remains
+  // in the fixed live ticker.
+  let liveBoundaryIdx = lastInputIdx;
+  for (let i = messages.length - 1; i > lastInputIdx; i--) {
+    const message = messages[i];
+    if (message.role === "tool" && message.toolStatus !== "running") {
+      liveBoundaryIdx = i;
+      break;
+    }
+  }
+
   // Keep the newest assistant reasoning segment visible after it seals at a
   // tool boundary. A later reasoning segment replaces it only when its first
   // delta creates/updates a newer assistant message.
-  for (let i = messages.length - 1; i > lastInputIdx; i--) {
+  for (let i = messages.length - 1; i > liveBoundaryIdx; i--) {
     const message = messages[i];
     if (message.role === "assistant" && message.reasoning?.trim()) {
       return {
@@ -135,11 +157,11 @@ const liveReasoningDetail = computed<{
     }
   }
 
-  // Reattached runs can briefly expose the tool row before its assistant
-  // source is hydrated. Keep the persisted tool reasoning visible meanwhile.
-  for (let i = messages.length - 1; i > lastInputIdx; i--) {
+  // Running tools can briefly arrive before their assistant source is
+  // hydrated. Keep their persisted reasoning visible meanwhile.
+  for (let i = messages.length - 1; i > liveBoundaryIdx; i--) {
     const message = messages[i];
-    if (message.role === "tool" && message.reasoning?.trim()) {
+    if (message.role === "tool" && message.toolStatus === "running" && message.reasoning?.trim()) {
       return {
         messageId: message.id,
         reasoning: message.reasoning.trim(),
@@ -149,74 +171,40 @@ const liveReasoningDetail = computed<{
   return null;
 });
 
+const assistantAgent = computed(() => chatSessionAgentAvatar(chatStore.activeSession));
+
 const emptyState = computed(() => {
-  const session = chatStore.activeSession;
-  const codingAgentId = session?.codingAgentId
-    || (session?.agent === "codex" ? "codex" : session?.agent === "claude" ? "claude-code" : session?.agent === "dsh" ? "dsh" : session?.agent === "ekko-agent" ? "ekko-agent" : undefined);
-  if (codingAgentId === "codex") {
-    return {
-      logo: "/coding-agents/codex-openai.png",
-      alt: "Codex",
-      text: t("chat.emptyStateAgent", { agent: "Codex" }),
-    };
-  }
-  if (codingAgentId === "claude-code") {
-    return {
-      logo: "/coding-agents/claude-code.svg",
-      alt: "Claude Code",
-      text: t("chat.emptyStateAgent", { agent: "Claude Code" }),
-    };
-  }
-  if (codingAgentId === "dsh") {
-    return {
-      logo: "/coding-agents/dsh.svg",
-      alt: "DeepSeek Harness",
-      text: t("chat.emptyStateAgent", { agent: "DeepSeek Harness" }),
-    };
-  }
-  if (codingAgentId === "ekko-agent") {
-    return {
-      logo: "/coding-agents/ekko-agent.png",
-      alt: "Ekko Agent",
-      text: t("chat.emptyStateAgent", { agent: "Ekko Agent" }),
-    };
-  }
+  const agent = assistantAgent.value;
   return {
-    logo: "/coding-agents/hermes.png",
-    alt: "Hermes",
-    text: t("chat.emptyState"),
+    logo: agent.src,
+    alt: agent.label,
+    text: agent.label === "Hermes"
+      ? t("chat.emptyState")
+      : t("chat.emptyStateAgent", { agent: agent.label }),
   };
 });
+
+function assistantMessageBody(message: Message): string {
+  return parseThinking(message.content || "", { streaming: !!message.isStreaming }).body.trim();
+}
+
+function hasRenderableAssistantContent(message: Message): boolean {
+  return !!(
+    assistantMessageBody(message) ||
+    message.attachments?.length ||
+    message.workspaceChanges?.length
+  );
+}
 
 const displayMessages = computed(() => {
   const messages = chatStore.messages;
   const currentToolIds = new Set(currentToolCalls.value.map((tool) => tool.id));
-  return messages
-    .filter((m, index) => {
+  const renderedMessages = messages
+    .filter((m) => {
       if (m.role === "tool") {
-        return toolTraceVisible.value && !!m.toolName && !(chatStore.isRunActive && currentToolIds.has(m.id));
+        return toolTraceVisible.value && !!m.toolName && !(isRunIndicatorActive.value && currentToolIds.has(m.id));
       }
-      if (
-        m.role === "assistant" &&
-        m.id === liveReasoningDetail.value?.messageId &&
-        !m.content?.trim()
-      ) {
-        return false;
-      }
-      if (
-        m.role === "assistant" &&
-        !m.isStreaming &&
-        !m.content?.trim() &&
-        !!m.reasoning?.trim()
-      ) {
-        const next = messages[index + 1];
-        const reasoningMovedToTool =
-          toolTraceVisible.value &&
-          next?.role === "tool" &&
-          !!next.toolName &&
-          next.reasoning?.trim() === m.reasoning.trim();
-        return !reasoningMovedToTool;
-      }
+      if (m.role === "assistant" && !hasRenderableAssistantContent(m)) return false;
       return true;
     })
     .map((message) => {
@@ -230,6 +218,7 @@ const displayMessages = computed(() => {
       }
       return message;
     });
+  return groupCompletedToolsByRun(renderedMessages);
 });
 
 function forkDividerId(sessionId: string): string {
@@ -280,6 +269,10 @@ const queuedMessages = computed(() => {
   if (!sid) return [];
   return chatStore.queuedUserMessages.get(sid) || [];
 });
+const queuedFloatItems = computed(() => queuedMessages.value.map(message => ({
+  id: message.id,
+  text: queuedPreview(message.content),
+})));
 const activeQueueInsertion = computed(() => {
   const sid = chatStore.activeSessionId;
   if (!sid) return null;
@@ -292,12 +285,16 @@ const canInsertQueuedMessages = computed(() => {
   if (agent === "ekko-agent") {
     return session.source === "coding_agent" || session.source === "global_agent";
   }
-  if (agent === "codex" || agent === "claude" || agent === "claude-code") return false;
+  if (agent === "codex" || agent === "pi" || agent === "claude" || agent === "claude-code") return true;
   return !session.source || session.source === "cli" || session.source === "global_agent";
 });
 const visibleApproval = computed(() => chatStore.activePendingApproval);
 const visibleClarify = computed(() => chatStore.activePendingClarify);
 const clarifyResponse = ref("");
+watch(
+  () => visibleClarify.value?.clarifyId,
+  () => { clarifyResponse.value = visibleClarify.value?.initialResponse || ""; },
+);
 const hasFloatingPrompt = computed(() => !!visibleApproval.value || !!visibleClarify.value);
 const virtualListPadding = computed(() => {
   if (queuedMessages.value.length > 0 && hasFloatingPrompt.value) return "20px 20px 380px";
@@ -358,7 +355,11 @@ function handleApproval(choice: "once" | "session" | "always" | "deny") {
 }
 
 function handleClarify(response?: string) {
-  const finalResponse = response !== undefined ? response : clarifyResponse.value.trim();
+  const finalResponse = response !== undefined
+    ? response
+    : visibleClarify.value?.responseMode === "editor"
+      ? clarifyResponse.value
+      : clarifyResponse.value.trim();
   chatStore.respondToClarify(finalResponse);
   clarifyResponse.value = "";
 }
@@ -640,7 +641,12 @@ defineExpose({
         </div>
       </template>
       <template #item="{ message: msg }">
-        <div v-if="msg.systemType === 'fork-divider' && forkLineage" class="fork-divider" role="separator">
+        <ToolRunCard
+          v-if="msg.systemType === 'tool-run' && msg.toolRunId && msg.toolMessages"
+          :run-id="msg.toolRunId"
+          :tools="msg.toolMessages"
+        />
+        <div v-else-if="msg.systemType === 'fork-divider' && forkLineage" class="fork-divider" role="separator">
           <div class="fork-divider-line" aria-hidden="true"></div>
           <div class="fork-divider-pill">
             <span class="fork-divider-icon" aria-hidden="true">
@@ -662,6 +668,7 @@ defineExpose({
         <MessageItem
           v-else
           :message="msg"
+          :assistant-agent="assistantAgent"
           :highlight="chatStore.focusMessageId === msg.id"
           :show-fork-action="canForkActiveSession && msg.id === lastForkActionMessageId"
         />
@@ -982,6 +989,7 @@ defineExpose({
             <NInput
               v-model:value="clarifyResponse"
               size="small"
+              :type="visibleClarify.responseMode === 'editor' ? 'textarea' : 'text'"
               :placeholder="t('chat.clarifyPlaceholder')"
             />
             <NButton size="small" type="primary" @click="handleClarify()">
@@ -991,51 +999,14 @@ defineExpose({
         </div>
       </Transition>
       <Transition name="queue-float">
-        <div v-if="queuedMessages.length > 0" class="queue-float-panel">
-          <div class="queue-float-header">
-            <span class="queue-orbit" aria-hidden="true">
-              <span></span>
-            </span>
-            <span>{{ t('chat.messageQueue') }}</span>
-            <strong>{{ queuedMessages.length }}</strong>
-          </div>
-          <div class="queue-float-list">
-            <div
-              v-for="(message, index) in queuedMessages"
-              :key="message.id"
-              class="queue-float-item"
-            >
-              <span class="queue-index">{{ index + 1 }}</span>
-              <span class="queue-text">{{ queuedPreview(message.content) }}</span>
-              <button
-                v-if="canInsertQueuedMessages"
-                type="button"
-                class="queue-insert"
-                :class="{ 'queue-insert--active': activeQueueInsertion?.queueId === message.id }"
-                :disabled="!!activeQueueInsertion"
-                :title="queueInsertionTitle(message.id)"
-                :aria-label="queueInsertionTitle(message.id)"
-                @click="insertQueuedMessage(message.id)"
-              >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M12 19V5" />
-                  <path d="m5 12 7-7 7 7" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                class="queue-remove"
-                :title="t('chat.removeQueuedMessage')"
-                @click="removeQueuedMessage(message.id)"
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
-            </div>
-          </div>
-        </div>
+        <MessageQueueFloatPanel
+          :items="queuedFloatItems"
+          :can-insert="canInsertQueuedMessages"
+          :active-insert-id="activeQueueInsertion?.queueId"
+          :insert-title="item => queueInsertionTitle(item.id)"
+          @insert="insertQueuedMessage"
+          @remove="removeQueuedMessage"
+        />
       </Transition>
     </div>
   </div>
@@ -1642,22 +1613,33 @@ defineExpose({
   display: flex;
   flex-direction: column;
   align-items: flex-start;
+  flex: 0 0 120px;
   gap: 8px;
   width: 100%;
   max-width: 100%;
+  height: 120px;
+  min-height: 120px;
+  max-height: 120px;
   min-width: 0;
   padding: 4px;
   box-sizing: border-box;
+  overflow: hidden;
 }
 
 .tool-calls-panel {
   display: flex;
-  flex-direction: column;
+  flex: 0 0 26px;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: stretch;
   gap: 4px;
-  width: 100%;
+  width: 520px;
   min-width: 0;
-  max-height: 180px;
-  overflow-y: auto;
+  max-width: 100%;
+  height: 26px;
+  min-height: 26px;
+  max-height: 26px;
+  overflow: hidden;
   scrollbar-width: none;
   -ms-overflow-style: none;
   &::-webkit-scrollbar {
@@ -1667,12 +1649,17 @@ defineExpose({
 
 .tool-call-item {
   display: flex;
+  flex: 1 1 0;
   align-items: center;
   gap: 6px;
-  width: 520px;
+  width: auto;
   max-width: 100%;
+  height: 26px;
+  min-height: 26px;
+  max-height: 26px;
   min-width: 0;
   box-sizing: border-box;
+  overflow: hidden;
   font-size: 11px;
   color: $text-secondary;
   padding: 3px 8px;
@@ -1700,10 +1687,9 @@ defineExpose({
     .tool-call-name {
       flex: 1 1 auto;
       max-width: none;
-      white-space: normal;
-      overflow: visible;
-      text-overflow: clip;
-      overflow-wrap: anywhere;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
   }
 

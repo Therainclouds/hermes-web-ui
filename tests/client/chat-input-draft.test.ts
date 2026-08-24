@@ -41,12 +41,14 @@ vi.mock('naive-ui', () => ({
       />
     `,
   },
+  NPopselect: { template: '<div class="n-popselect-stub"><slot /></div>' },
   useMessage: () => ({ error: vi.fn(), success: vi.fn() }),
   useDialog: () => ({ warning: dialogWarningMock }),
 }))
 
 vi.mock('@/api/hermes/sessions', () => ({
   fetchContextLength: vi.fn().mockResolvedValue(256000),
+  setSessionReasoningEffort: vi.fn().mockResolvedValue(true),
 }))
 
 vi.mock('@/api/hermes/model-context', () => ({
@@ -129,20 +131,6 @@ describe('ChatInput draft persistence', () => {
 
     expect(paste.defaultPrevented).toBe(true)
     expect(wrapper.get('.attachment-file').text()).toContain('notes.txt')
-  })
-
-  it('accepts a browser selection directly into the current composer', async () => {
-    const wrapper = mountForSession('session-browser-selection')
-    const image = new File(['png'], 'browser-element.png', { type: 'image/png' })
-    const context = '{"browser_selection":{"annotations":[{"marker":1,"mode":"element","note":"Make this element clearer"}]}}'
-
-    ;(wrapper.vm as unknown as { addBrowserAttachment: (file: File, context: string) => void }).addBrowserAttachment(image, context)
-    await nextTick()
-
-    expect(wrapper.get('.attachment-thumb').attributes('alt')).toBe('browser-element.png')
-    expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('')
-    expect(wrapper.get('.attachment-context').attributes('open')).toBeUndefined()
-    expect(wrapper.get('.attachment-context pre').text()).toBe(context)
   })
 
   it('restores unsent text for the active session after the chat view is remounted', async () => {
@@ -285,7 +273,6 @@ describe('ChatInput draft persistence', () => {
     await nextTick()
 
     expect(store.sessions[0].reasoningEffort).toBe('max')
-    expect(localStorage.getItem('hermes:reasoning_effort:session-reasoning-max')).toBe('max')
     expect(wrapper.get('.reasoning-effort-button').attributes('style')).toContain('--reasoning-effort-accent-color: #ef4444')
     expect(wrapper.get('.n-slider-stub').classes()).toContain('reasoning-effort-slider--max')
   })
@@ -298,7 +285,6 @@ describe('ChatInput draft persistence', () => {
     await nextTick()
 
     expect(store.sessions[0].reasoningEffort).toBe('high')
-    expect(localStorage.getItem('hermes:reasoning_effort:session-reasoning')).toBe('high')
     expect(wrapper.get('.reasoning-effort-button').attributes('style')).toContain('--reasoning-effort-accent-color: #f9c33c')
     expect(wrapper.get('.n-slider-stub').classes()).not.toContain('reasoning-effort-slider--max')
   })

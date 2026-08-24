@@ -31,7 +31,7 @@ import { HermesSkillInjector } from './services/hermes/skill-injector'
 import { injectBundledMcpServer } from './services/hermes/studio-mcp-autoinject'
 import { ensureProfileGatewaysRunning, startPeriodicGatewayReaper } from './services/hermes/gateway-autostart'
 import { refreshConfiguredProviderModelCatalogsInBackground } from './services/hermes/model-catalog-cache'
-import { scanLanDevices, startLanDiscoveryResponder } from './services/lan-discovery'
+import { scanLanDevices, selectLanIPv4Address, startLanDiscoveryResponder } from './services/lan-discovery'
 import { getLanPeerSocketManager, getLanPeerSocketPath } from './services/lan-peer-socket'
 import { startGlobalAgentServer } from './services/global-agent/server'
 import { startLocalAppRelayServer } from './services/app-relay/server'
@@ -54,6 +54,10 @@ import { requireUserJwt, resolveUserProfile } from './middleware/user-auth'
 import { createCorsOriginResolver, securityHeaders } from './security'
 import type { ShutdownHandler } from './services/shutdown'
 import { createRequestBodyParser } from './middleware/request-body-parser'
+import {
+  migratePersistedPiRuntimeMcpConfigs,
+  restorePersistedPiProxyTargets,
+} from './services/coding-agents'
 
 // Injected by esbuild at build time; fallback to reading package.json in dev mode
 declare const __APP_VERSION__: string
@@ -369,6 +373,24 @@ export async function bootstrap() {
     console.warn('[bootstrap] failed to inject bundled MCP server:', err instanceof Error ? err.message : err)
   }
 
+  try {
+    const migratedPiMcpConfigs = await migratePersistedPiRuntimeMcpConfigs()
+    if (migratedPiMcpConfigs > 0) {
+      console.log(`[bootstrap] migrated ${migratedPiMcpConfigs} persisted Pi MCP runtime config(s) to proxy mode`)
+    }
+  } catch (err) {
+    logger.warn(err, '[bootstrap] failed to migrate persisted Pi MCP runtime configs')
+  }
+
+  try {
+    const restoredPiProxyTargets = await restorePersistedPiProxyTargets()
+    if (restoredPiProxyTargets > 0) {
+      console.log(`[bootstrap] restored ${restoredPiProxyTargets} persisted Pi proxy target(s)`)
+    }
+  } catch (err) {
+    logger.warn(err, '[bootstrap] failed to restore persisted Pi proxy targets')
+  }
+
   setupGlobalEkkoAgent()
   console.log('[bootstrap] ekko-agent setup complete')
 
@@ -562,7 +584,7 @@ export async function bootstrap() {
     })
   })
 
-  const interfaces = safeNetworkInterfaces()
+const interfaces = safeNetworkInterfaces()
   const localIp = Object.values(interfaces).flat().find(i => i?.family === 'IPv4' && !i?.internal)?.address || 'localhost'
   console.log(`Server: https://localhost:${config.port} (LAN: https://${localIp}:${config.port})`)
   console.log(`Log: ${config.appHome}/logs/server.log`)

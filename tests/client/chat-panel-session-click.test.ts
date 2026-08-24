@@ -28,7 +28,7 @@ describe('ChatPanel session clicks', () => {
     expect(source).not.toContain(':key="chatStore.activeSessionId" class="chat-main-content"')
   })
 
-  it('allows session model switching for coding agent sessions', () => {
+  it('allows scoped coding-agent model switching but disables it for global agents', () => {
     const source = readFileSync('packages/client/src/components/hermes/chat/ChatPanel.vue', 'utf8')
 
     expect(source).toContain('contextSession.value?.source === "coding_agent"')
@@ -37,6 +37,13 @@ describe('ChatPanel session clicks', () => {
     expect(source).toContain('showSessionModelModeModal')
     expect(source).toContain('pendingSessionModelSwitch')
     expect(source).toContain('chatStore.switchSessionModel(model, provider, sessionModelSessionId.value, apiMode)')
+    expect(source).toContain('activeSessionUsesGlobalCodingAgentConfig')
+    expect(source).toContain(':model-disabled="activeSessionUsesGlobalCodingAgentConfig"')
+    expect(source).toContain('contextSession.value?.codingAgentMode !== "global"')
+    expect(source).toContain('requestedSession?.codingAgentMode === "global"')
+    expect(readFileSync('packages/client/src/stores/hermes/chat.ts', 'utf8')).toContain(
+      "session?.codingAgentMode === 'global' && isCodingAgentLikeSession(session)",
+    )
     expect(source).toContain('const sessionModelSwitching = ref(false)')
     expect(source).toContain('sessionModelSwitching.value = true')
     expect(source).toContain('sessionModelSwitching.value = false')
@@ -82,12 +89,20 @@ describe('ChatPanel session clicks', () => {
     expect(source).toContain('selectedGroup?.models.includes(selectedModel)')
   })
 
-  it('offers Ekko Agent when creating chats in production builds', () => {
+  it('offers Ekko when creating chats in production builds', () => {
     const source = readFileSync('packages/client/src/components/hermes/chat/ChatPanel.vue', 'utf8')
 
-    expect(source).toContain('{ label: "Ekko Agent", value: "ekko-agent" }')
+    expect(source).toContain('{ label: "Ekko", value: "ekko-agent" }')
     expect(source).not.toContain('showEkkoAgentEntry')
     expect(source).not.toContain('import.meta.env.DEV')
+  })
+
+  it('persists Pi as the Pi agent instead of falling back to Hermes', () => {
+    const source = readFileSync('packages/client/src/components/hermes/chat/ChatPanel.vue', 'utf8')
+
+    expect(source).toContain('newChatAgent.value === "pi"')
+    expect(source).toContain('? "pi"')
+    expect(source).toContain('codingAgentId: newChatAgent.value === "hermes" ? undefined : newChatAgent.value')
   })
 
   it('shows and persists the API mode for Ekko chats and model switches', () => {

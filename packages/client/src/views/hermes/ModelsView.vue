@@ -27,6 +27,7 @@ const activeTab = ref<ModelsTab>('general')
 
 function normalizeTab(value: unknown): ModelsTab {
   const tab = typeof value === 'string' ? value : ''
+  if (tab === 'fallback') return 'auxiliary'
   return MODELS_TABS.has(tab as ModelsTab) ? tab as ModelsTab : 'general'
 }
 
@@ -71,6 +72,11 @@ watch(() => route.query.addProvider, (addProvider) => {
 watch(() => route.query.tab, (tab) => {
   if (route.query.addProvider === '1') return
   activeTab.value = normalizeTab(tab)
+  if (tab === 'fallback') {
+    void router.replace({
+      query: { ...route.query, tab: 'auxiliary' },
+    })
+  }
 }, { immediate: true })
 
 function handleModalClose() {

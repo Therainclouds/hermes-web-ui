@@ -417,6 +417,9 @@ These variables configure Hermes Web UI itself. Provider API keys and Hermes Age
 | --- | --- | --- |
 | `PORT` | `8648` | Web UI listen port. |
 | `BIND_HOST` | `0.0.0.0` | Web UI bind host. Set `::` explicitly for IPv6. |
+| `HERMES_LAN_ADVERTISE_URL` | unset | Reachable Studio origin used in App LAN QR codes. Set this to the Docker host's LAN URL when Studio is opened through `localhost`, for example `http://192.168.1.20:6060`. |
+| `HERMES_APP_ENTITLEMENT_REQUIRED` | `true` | Require a valid cloud-signed App entitlement before accepting a LAN App relay connection. Set `false` only for temporary compatibility diagnostics. |
+| `HERMES_APP_ENTITLEMENT_PUBLIC_KEY` | built in | Optional PEM public-key override for RS256 App entitlements. The expected issuer is `hermes-studio-server` and audience is `ekko-studio`. |
 | `HERMES_WEB_UI_HOME` | `~/.hermes-web-ui` | Web UI data home for auth token, credentials, logs, DB, and default uploads. `HERMES_WEBUI_STATE_DIR` is also supported as a compatibility alias. |
 | `HERMES_WEBUI_STATE_DIR` | unset | Compatibility alias for `HERMES_WEB_UI_HOME`. |
 | `HERMES_WEB_UI_DISABLE_MCP_AUTOINJECT` | unset | Disable startup injection of the managed `hermes-studio` MCP server into Hermes profile configs. |
@@ -483,6 +486,14 @@ These variables configure Hermes Web UI itself. Provider API keys and Hermes Age
 | `hermes-web-ui upgrade`           | Alias for `update`                 |
 | `hermes-web-ui -v`                | Show version number                |
 | `hermes-web-ui -h`                | Show help message                  |
+| `hermes-web-ui start [port]` | Start in background; accepts a positional port or `--port <port>` |
+| `hermes-web-ui client [port]` | Start for a remote client with gateway autostart disabled and permissive CORS |
+| `hermes-web-ui restart [port]` | Restart; stops the bridge by default |
+| `hermes-web-ui clear-login-locks [--restart]` | Clear persisted login locks, optionally restart |
+| `hermes-web-ui reset-default-login` | Create or reset the default administrator login |
+| `hermes-web-ui version` / `-v` | Show the version |
+| `hermes-web-ui-mcp [api\|browser\|devices\|use]` | Run one managed Web UI MCP toolset (same as `hermes-studio-mcp`) |
+
 
 `update` / `upgrade` first attempt `npm cache clean --force`, then run `npm install -g @quanthermes/hermes-web-ui@latest` and restart. Cache cleanup is best-effort; if it fails, the updater continues with the install.
 

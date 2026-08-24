@@ -7,22 +7,22 @@ import {
   chatCompletionsUrl,
   providerEndpointUrl,
   responsesUrl,
-} from '../../packages/server/src/services/agent-runner/endpoint-resolver'
-import { parseSseFrame, readSseFrames, readSseFrameTexts, sseEvent } from '../../packages/server/src/services/agent-runner/sse'
-import { AgentTargetRegistry, type AgentTargetInput } from '../../packages/server/src/services/agent-runner/target-registry'
-import { teeAsyncIterable } from '../../packages/server/src/services/agent-runner/stream-tee'
+} from '../../packages/server/src/services/coding-agents/shared/endpoint-resolver'
+import { parseSseFrame, readSseFrames, readSseFrameTexts, sseEvent } from '../../packages/server/src/services/coding-agents/shared/sse'
+import { AgentTargetRegistry, type AgentTargetInput } from '../../packages/server/src/services/coding-agents/shared/target-registry'
+import { teeAsyncIterable } from '../../packages/server/src/services/coding-agents/shared/stream-tee'
 import {
   buildClaudeStreamJsonInput,
   codexImageArgs,
   CodingAgentRunManager,
   codingAgentGatewayErrorMessage,
   sanitizeCodingAgentTerminalOutput,
-} from '../../packages/server/src/services/agent-runner/coding-agent-run-manager'
-import { mapCodingAgentResponseEvent } from '../../packages/server/src/services/agent-runner/coding-agent-event-mapper'
+} from '../../packages/server/src/services/coding-agents/runtime/run-manager'
 import { applyResponseStreamEvent } from '../../packages/server/src/services/hermes/run-chat/response-stream'
 import { initAllHermesTables } from '../../packages/server/src/db/hermes/schemas'
 import { addMessage, getSession, getSessionDetail, listSessions } from '../../packages/server/src/db/hermes/session-store'
 import { getRecordedUsageTotals, getUsage } from '../../packages/server/src/db/hermes/usage-store'
+import { getChatRunServer, setChatRunServer } from '../../packages/server/src/services/hermes/run-chat/server-registry'
 
 describe('agent runner endpoint resolver', () => {
   it('adds v1 for provider hosts without an API root path', () => {
@@ -56,6 +56,62 @@ describe('agent runner endpoint resolver', () => {
 })
 
 describe('coding agent completion errors', () => {
+  it('publishes realtime and terminal events after the run manager directory move', () => {
+    const previous = getChatRunServer()
+    const emitExternalEvent = vi.fn()
+    const markExternalRunCompleted = vi.fn()
+    setChatRunServer({ emitExternalEvent, markExternalRunCompleted } as any)
+    try {
+      const manager = new CodingAgentRunManager()
+      ;(manager as any).emitToChat('chat-relocated-manager', 'reasoning.delta', { delta: 'thinking' })
+      ;(manager as any).markChatRunCompleted('chat-relocated-manager', 'run.completed')
+
+      expect(emitExternalEvent).toHaveBeenCalledWith(
+        'chat-relocated-manager',
+        'reasoning.delta',
+        { delta: 'thinking' },
+      )
+      expect(markExternalRunCompleted).toHaveBeenCalledWith('chat-relocated-manager', 'run.completed')
+    } finally {
+      setChatRunServer(previous)
+    }
+  })
+
+  it('does not let a stalled usage refresh block the terminal chat event', async () => {
+    vi.useFakeTimers()
+    try {
+      const manager = new CodingAgentRunManager()
+      const emitted = vi.fn()
+      ;(manager as any).emitToChat = emitted
+      ;(manager as any).completeWorkspaceRunDiff = () => undefined
+      ;(manager as any).markChatRunCompleted = () => {}
+      ;(manager as any).startCodingAgentMemoryExport = () => {}
+      const run: any = {
+        id: 'agent-stalled-usage',
+        launch: { sessionId: 'chat-stalled-usage' },
+        state: { queue: [], events: [], isWorking: true },
+        terminalUsageRefresh: new Promise<void>(() => {}),
+      }
+
+      const completion = (manager as any).emitAndMarkPrintChatRunCompletedAfterUsage(
+        run,
+        'run.completed',
+        { event: 'run.completed' },
+      )
+      await vi.advanceTimersByTimeAsync(2_000)
+      await completion
+
+      expect(emitted).toHaveBeenCalledWith(
+        'chat-stalled-usage',
+        'run.completed',
+        expect.objectContaining({ event: 'run.completed' }),
+      )
+      expect(run.state.isWorking).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('treats gateway API error text as a failed coding-agent run', () => {
     const error = 'API Error: 529 [1305][The service may be temporarily overloaded, please try again later]'
 
@@ -1486,6 +1542,13 @@ describe('coding agent run state', () => {
       params: { delta: ' Extra.' },
     }))
     ;(manager as any).handleCodexExecLine(run, JSON.stringify({
+      type: 'item.completed',
+      item: {
+        type: 'reasoning',
+        summary: [{ text: 'Need inspect. Then answer. From response item. Extra.' }],
+      },
+    }))
+    ;(manager as any).handleCodexExecLine(run, JSON.stringify({
       method: 'item/agentMessage/delta',
       params: { delta: 'Done.' },
     }))
@@ -1815,12 +1878,16 @@ describe('coding agent run state', () => {
     expect(textMessages.map((message: any) => message.content)).toEqual([openingText, finalText])
     expect(textMessages.at(-1)).toEqual(expect.objectContaining({ finish_reason: 'stop' }))
     const dbMessages = getSessionDetail(chatSessionId)?.messages || []
-    expect(dbMessages.filter(message => message.role === 'assistant' && message.tool_calls?.length)).toHaveLength(1)
-    expect(dbMessages).toContainEqual(expect.objectContaining({
+    const dbToolCallMessages = dbMessages.filter(message => message.role === 'assistant' && message.tool_calls?.length)
+    const dbToolMessage = dbMessages.find(message => message.role === 'tool' && message.tool_call_id === 'cmd-1')
+    expect(dbToolCallMessages).toHaveLength(1)
+    expect(dbToolMessage).toEqual(expect.objectContaining({
       role: 'tool',
       content: 'ai素材\ncache\ngit',
       tool_call_id: 'cmd-1',
+      run_marker: expect.any(String),
     }))
+    expect(dbToolMessage?.run_marker).toBe(dbToolCallMessages[0].run_marker)
     expect(dbMessages).toContainEqual(expect.objectContaining({
       role: 'assistant',
       content: finalText,
@@ -2104,27 +2171,32 @@ describe('coding agent run state', () => {
   })
 })
 
-describe('coding agent chat event mapper', () => {
+describe('response stream chat event mapper', () => {
   it('does not surface raw provider stream events as chat agent events', () => {
-    const mapped = mapCodingAgentResponseEvent({
-      type: 'response.output_text.delta',
-      data: { type: 'response.output_text.delta', delta: 'hello' },
+    const state: any = { messages: [], isWorking: false, events: [], queue: [] }
+    const mapped = applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.output_item.added', {
+      item: { type: 'message', content: [] },
     })
 
-    expect(mapped).toEqual([])
+    expect(mapped).toBeNull()
   })
 
   it('maps reasoning deltas to chat reasoning deltas', () => {
-    expect(mapCodingAgentResponseEvent({
-      type: 'response.reasoning.delta',
-      data: { type: 'response.reasoning.delta', delta: 'thinking' },
-    })).toEqual([{
+    const state: any = { messages: [], isWorking: false, events: [], queue: [] }
+    applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.created', {
+      response: { id: 'resp-1', status: 'in_progress' },
+    })
+
+    expect(applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.reasoning.delta', {
+      delta: 'thinking',
+    })).toEqual({
       event: 'reasoning.delta',
       payload: expect.objectContaining({
         event: 'reasoning.delta',
         delta: 'thinking',
       }),
-    }])
+      runId: 'resp-1',
+    })
   })
 })
 

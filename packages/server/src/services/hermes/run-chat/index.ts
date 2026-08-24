@@ -28,9 +28,14 @@ import { handleAbort } from './abort'
 import { getOrCreateSession } from './compression'
 import { loadSessionStateFromDb, resolveRunSource } from './load-state'
 import { handleSessionCommand, isSessionCommand, parseSessionCommand } from './session-command'
+import {
+  handleCodingAgentSessionCommand,
+  parseCodingAgentSessionCommand,
+} from '../../coding-agents/session-command'
 import { contentBlocksToString } from './content-blocks'
-import { buildOutboundRunEvent, buildResumeEvents, buildResumeMessages } from './resume-payload'
+import { buildOutboundRunEvent, buildResumeEvents, buildResumeMessagePage } from './resume-payload'
 import type {
+  BackgroundContinuationContext,
   ChatCodingAgentId,
   ContentBlock,
   QueueInsertionControl,
@@ -42,7 +47,7 @@ import type {
 import { authenticateUserToken, isAuthEnabled, type AuthenticatedUser } from '../../../middleware/user-auth'
 import { userCanAccessProfile } from '../../../db/hermes/users-store'
 import { observeChatRunWebhookEvent, type ChatRunWebhookAgent } from '../chat-webhooks'
-import { codingAgentRunManager } from '../../agent-runner/coding-agent-run-manager'
+import { codingAgentRunManager } from '../../coding-agents/runtime/run-manager'
 import { respondToEkkoToolApproval } from '../../ekko-agent/approvals'
 import { respondToEkkoClarification } from '../../ekko-agent/clarifications'
 import { getGlobalEkkoAgent } from '../../ekko-agent/manager'
@@ -139,11 +144,11 @@ function isHermesWorkerBackedSession(session?: { source?: string | null; agent?:
   if (!source || source === 'cli' || source === 'api_server') return true
   if (source === 'workflow' || source === 'group_chat') {
     const agent = String(session?.agent || '').trim()
-    return agent !== 'claude' && agent !== 'codex' && agent !== 'deepseek' && agent !== 'ekko-agent' && !session?.agent_session_id
+return agent !== 'claude' && agent !== 'codex' && agent !== 'deepseek' && agent !== 'pi' && agent !== 'ekko-agent' && !session?.agent_session_id
   }
   if (source !== 'global_agent') return false
   const agent = String(session?.agent || '').trim()
-  return agent !== 'claude' && agent !== 'codex' && agent !== 'ekko-agent' && !session?.agent_session_id
+  return agent !== 'claude' && agent !== 'codex' && agent !== 'pi' && agent !== 'ekko-agent' && !session?.agent_session_id
 }
 
 function isBridgeRunSource(source?: string): boolean {
@@ -187,6 +192,7 @@ function webhookAgentForRun(data?: { coding_agent_id?: string; agent_id?: string
   const agent = data?.coding_agent_id || data?.agent_id
   if (agent === 'ekko-agent') return 'ekko'
   if (agent === 'codex') return 'codex'
+  if (agent === 'pi') return 'pi'
   if (agent === 'claude-code') return 'claude-code'
   return 'bridge'
 }
@@ -221,6 +227,19 @@ export class ChatRunSocket {
 
   constructor(io: Server) {
     this.nsp = io.of('/chat-run')
+  }
+
+  emitSessionSettingsUpdated(sessionId: string, settings: {
+    model?: string
+    provider?: string
+    api_mode?: string
+    reasoning_effort?: string
+  }): void {
+    this.nsp.to(`session:${sessionId}`).emit('session.settings.updated', {
+      event: 'session.settings.updated',
+      session_id: sessionId,
+      ...settings,
+    })
   }
 
   init() {
@@ -398,6 +417,15 @@ export class ChatRunSocket {
             })
           }
           return
+        }
+        if (isCodingAgentExecution(source, data)) {
+          if (typeof data.input === 'string') {
+            const codingAgentCommand = parseCodingAgentSessionCommand(data.input)
+            if (codingAgentCommand) {
+              await handleCodingAgentSessionCommand(this.nsp, socket, data, codingAgentCommand, runProfile, this.sessionMap)
+              return
+            }
+          }
         }
         if (state.isWorking) {
           const queueId = data.queue_id || `queue_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
@@ -610,6 +638,21 @@ export class ChatRunSocket {
         }
         return
       }
+      const codingAgentResult = codingAgentRunManager.resolveApproval(
+        data.session_id,
+        data.approval_id,
+        data.choice,
+      )
+      if (codingAgentResult.handled) {
+        this.emitToSession(socket, data.session_id, 'approval.resolved', {
+          event: 'approval.resolved',
+          approval_id: data.approval_id,
+          choice: data.choice || 'deny',
+          resolved: codingAgentResult.resolved,
+          ...(!codingAgentResult.resolved ? { error: 'Approval could not be applied.' } : {}),
+        })
+        return
+      }
       try {
         const result = await this.bridge.approvalRespond(data.approval_id, data.choice || 'deny')
         this.emitToSession(socket, data.session_id, 'approval.resolved', {
@@ -661,6 +704,23 @@ export class ChatRunSocket {
         }
         return
       }
+      const codingAgentResult = codingAgentRunManager.resolveClarification(
+        data.session_id,
+        data.clarify_id,
+        data.response,
+      )
+      if (codingAgentResult.handled) {
+        this.emitToSession(socket, data.session_id, 'clarify.resolved', {
+          event: 'clarify.resolved',
+          clarify_id: data.clarify_id,
+          resolved: codingAgentResult.resolved,
+          ...(!codingAgentResult.resolved ? { error: 'Clarification could not be applied.' } : {}),
+        })
+        if (codingAgentResult.resolved) {
+          this.clearClarifyEventState(data.session_id, data.clarify_id)
+        }
+        return
+      }
       try {
         const result = await this.bridge.clarifyRespond(data.clarify_id, data.response || '')
         this.emitToSession(socket, data.session_id, 'clarify.resolved', {
@@ -680,6 +740,14 @@ export class ChatRunSocket {
         })
       }
     })
+  }
+
+  respondCodingAgentApproval(sessionId: string, approvalId: string, choice: string): boolean {
+    return codingAgentRunManager.resolveApproval(sessionId, approvalId, choice).resolved
+  }
+
+  respondCodingAgentClarification(sessionId: string, clarifyId: string, response: string): boolean {
+    return codingAgentRunManager.resolveClarification(sessionId, clarifyId, response).resolved
   }
 
   // --- Run dispatcher ---
@@ -730,6 +798,7 @@ export class ChatRunSocket {
     },
     profile: string,
     skipUserMessage = false,
+    backgroundContinuationContext?: BackgroundContinuationContext,
   ) {
     const source = resolveRunSource(data.source, data.session_id)
     if (data.session_id) {
@@ -830,6 +899,7 @@ export class ChatRunSocket {
         skipUserMessage,
         loadSessionStateFromDb,
         this.dequeueNextQueuedRun.bind(this),
+        backgroundContinuationContext,
       )
       return
     }
@@ -859,6 +929,7 @@ export class ChatRunSocket {
         this.sessionMap,
         this.dequeueNextQueuedRun.bind(this),
         skipUserMessage,
+        backgroundContinuationContext,
       )
       return
     }
@@ -1159,19 +1230,24 @@ export class ChatRunSocket {
       ? state.events
       : (state.events || []).filter(evt => evt?.event === 'run.reattach_failed')
     const sessionDetail = getSessionMetadata(sid)
+    const messagePage = buildResumeMessagePage(state.messages, {
+      limit: state.messagePageLimit,
+      messageTotal: state.messageTotal,
+      messageStateBaselineCount: state.messageStateBaselineCount,
+    })
     socket.emit('resumed', {
       session_id: sid,
-      messages: buildResumeMessages(state.messages),
-      messageTotal: state.messageTotal,
-      messageLoadedCount: state.messageLoadedCount,
-      messagePageLimit: state.messagePageLimit,
-      hasMoreBefore: state.hasMoreBefore,
+      ...messagePage,
       parentSessionId: sessionDetail?.parent_session_id || null,
       forkPointMessageId: sessionDetail?.fork_point_message_id || null,
       parentTitle: sessionDetail?.parent_title || null,
       parentLastMessage: sessionDetail?.parent_last_message || null,
       parentLastMessageRole: sessionDetail?.parent_last_message_role || null,
       workspace: sessionDetail?.workspace || null,
+      model: sessionDetail?.model || '',
+      provider: sessionDetail?.provider || '',
+      api_mode: sessionDetail?.api_mode || '',
+      reasoning_effort: sessionDetail?.reasoning_effort || '',
       isWorking: state.isWorking,
       isAborting: state.isAborting || false,
       events: buildResumeEvents(resumeEvents),
@@ -1300,8 +1376,9 @@ export class ChatRunSocket {
   private queueInsertionRuntime(sessionId: string, state: SessionState): QueueInsertionRuntime | null {
     const storedAgent = String(getSession(sessionId)?.agent || '').trim()
     const activeAgent = state.webhookAgent
-      || (storedAgent === 'ekko-agent' ? 'ekko' : storedAgent === 'claude' ? 'claude-code' : storedAgent === 'codex' ? 'codex' : 'bridge')
+      || (storedAgent === 'ekko-agent' ? 'ekko' : storedAgent === 'claude' ? 'claude-code' : storedAgent === 'codex' ? 'codex' : storedAgent === 'pi' ? 'pi' : 'bridge')
     if (activeAgent === 'ekko') return 'ekko'
+    if (activeAgent === 'claude-code' || activeAgent === 'codex' || activeAgent === 'pi') return activeAgent
     if (activeAgent !== 'bridge') return null
     if (state.source === 'coding_agent') return null
     return state.source === 'cli' || state.source === 'global_agent' ? 'hermes' : null
@@ -1369,7 +1446,7 @@ export class ChatRunSocket {
       runId: state.runId,
       runtime,
       phase: 'requesting',
-      guarantee: 'strict',
+      guarantee: runtime === 'hermes' || runtime === 'ekko' ? 'strict' : 'immediate',
       requestedAt: Date.now(),
     }
     state.queueInsertion = control
@@ -1387,6 +1464,19 @@ export class ChatRunSocket {
     if (!state || !control || control.generation !== generation || control.phase !== 'requesting' || !control.runId) return
 
     try {
+      if (control.runtime === 'claude-code' || control.runtime === 'codex' || control.runtime === 'pi') {
+        control.phase = 'stopping_current_turn'
+        this.emitQueueInsertionUpdate(sessionId, control)
+        const result = await codingAgentRunManager.interruptForQueueInsertion(sessionId, control.runId)
+        if (result.status !== 'interrupted') {
+          const currentState = this.sessionMap.get(sessionId)
+          if (currentState?.queueInsertion?.generation === generation) {
+            this.clearQueueInsertion(sessionId, currentState, result.status)
+          }
+        }
+        return
+      }
+
       const result = control.runtime === 'ekko'
         ? getGlobalEkkoAgent(state.profile || 'default').requestBoundaryInterrupt({
             sessionId,
@@ -1444,7 +1534,8 @@ export class ChatRunSocket {
     if (control.phase !== 'requesting') {
       payload.interrupted = true
       payload.stop_reason = 'queue_insertion'
-      payload.boundary_guarantee = control.guarantee
+      if (control.guarantee === 'strict') payload.boundary_guarantee = 'strict'
+      else payload.interruption_mode = 'immediate'
     }
     if (state.queue.length === 0) this.clearQueueInsertion(sessionId, state, 'queue_empty')
   }
@@ -1479,6 +1570,13 @@ export class ChatRunSocket {
 
   private runQueuedItem(socket: Socket, sessionId: string, next: QueuedRun, fallbackProfile = 'default') {
     const skipUserMessage = next.displayInput === null
+    const backgroundContinuationContext = next.backgroundContinuationContext
+      || (next.backgroundDelegationId
+        ? this.sessionMap.get(sessionId)?.backgroundContinuationContexts?.[next.backgroundDelegationId]
+        : undefined)
+    const runProfile = backgroundContinuationContext?.runtime === 'hermes'
+      ? backgroundContinuationContext.profile
+      : next.profile || fallbackProfile
     void this.handleRun(socket, {
       input: next.input,
       display_input: next.displayInput,
@@ -1516,7 +1614,7 @@ export class ChatRunSocket {
       background_delegation_id: next.backgroundDelegationId,
       background_claim_id: next.backgroundClaimId,
       autonomous: next.autonomous,
-    }, next.profile || fallbackProfile, skipUserMessage)
+    }, runProfile, skipUserMessage, backgroundContinuationContext)
   }
 
   // --- Helpers ---
@@ -1613,7 +1711,10 @@ export class ChatRunSocket {
           return
         }
         try {
-          const result = await this.bridge.approvalRespond(approvalId, choice)
+          const codingAgentResult = codingAgentRunManager.resolveApproval(sessionId, approvalId, choice)
+          const result = codingAgentResult.handled
+            ? codingAgentResult
+            : await this.bridge.approvalRespond(approvalId, choice)
           const resolvedPayload = {
             event: 'approval.resolved',
             session_id: sessionId,
@@ -1770,7 +1871,7 @@ export class ChatRunSocket {
       sessionId,
       profile,
       source: state?.source || session?.source || 'coding_agent',
-      agent: state?.webhookAgent || (storedAgent === 'codex' ? 'codex' : storedAgent === 'ekko-agent' ? 'ekko' : 'claude-code'),
+      agent: state?.webhookAgent || (storedAgent === 'codex' ? 'codex' : storedAgent === 'pi' ? 'pi' : storedAgent === 'ekko-agent' ? 'ekko' : 'claude-code'),
       payload: tagged,
       roomId: state?.webhookRoomId,
       workflowId: state?.webhookWorkflowId,
@@ -1820,6 +1921,7 @@ export class ChatRunSocket {
       state.messages = []
       state.messageTotal = 0
       state.messageLoadedCount = 0
+      state.messageStateBaselineCount = 0
       state.hasMoreBefore = false
       state.inputTokens = 0
       state.outputTokens = 0
@@ -1919,7 +2021,7 @@ export class ChatRunSocket {
       sessionId,
       profile,
       source: state?.source || session?.source || 'chat',
-      agent: state?.webhookAgent || (storedAgent === 'codex' ? 'codex' : storedAgent === 'ekko-agent' ? 'ekko' : 'bridge'),
+      agent: state?.webhookAgent || (storedAgent === 'codex' ? 'codex' : storedAgent === 'pi' ? 'pi' : storedAgent === 'ekko-agent' ? 'ekko' : 'bridge'),
       payload: tagged,
       roomId: state?.webhookRoomId,
       workflowId: state?.webhookWorkflowId,

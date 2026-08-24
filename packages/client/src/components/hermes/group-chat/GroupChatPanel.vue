@@ -6,8 +6,24 @@ import { NInput, NButton, NSpace, NSelect, NPopover, NPopconfirm, NInputNumber, 
 import { useGroupChatStore } from '@/stores/hermes/group-chat'
 import { useAppStore } from '@/stores/hermes/app'
 import { useProfilesStore } from '@/stores/hermes/profiles'
-
-import { updateRoomConfig, exportRoom, importRooms, getRoomSummary, updateRoomSummary, listStoppedRoomAgentHandoffs, continueRoomAgentHandoff, downloadGroupWorkspaceFile, fetchDeliveryUsage, cleanupDeliveryFiles, type DeliveryUsage } from '@/api/hermes/group-chat'
+import {
+    createGroupAgentPreset,
+    deleteGroupAgentPreset,
+    exportRoom,
+    importRooms,
+    getRoomSummary,
+    groupAgentPresetToRoomAgentInput,
+    listGroupAgentPresets,
+    listStoppedRoomAgentHandoffs,
+    continueRoomAgentHandoff,
+    updateGroupAgentPreset,
+    updateRoomConfig,
+    updateRoomSummary,
+    downloadGroupWorkspaceFile,
+    fetchDeliveryUsage,
+    cleanupDeliveryFiles,
+    type DeliveryUsage,
+} from '@/api/hermes/group-chat'
 import {
     decideGroupAgentPairing,
     leaveLocalGroupAgentRoom,
@@ -21,6 +37,8 @@ import {
 
 import GroupMessageList from './GroupMessageList.vue'
 import GroupChatInput from './GroupChatInput.vue'
+import GroupRoomAgentAvatar from './GroupRoomAgentAvatar.vue'
+import MessageQueueFloatPanel from '@/components/hermes/chat/MessageQueueFloatPanel.vue'
 import FolderPicker from '@/components/hermes/chat/FolderPicker.vue'
 import ProfileAvatar from '@/components/hermes/profiles/ProfileAvatar.vue'
 import PageSidebarNav from '@/components/layout/PageSidebarNav.vue'
@@ -29,11 +47,27 @@ import { getProfileDisplayName } from '@/utils/hermes/profile-display'
 import { useDiscussionReportDownload } from '@/composables/useDiscussionReportDownload'
 import { useMessage } from '@/composables/useAppMessage'
 import type { Attachment } from '@/stores/hermes/chat'
-import type { MemberInfo, RoomAgent, RoomInfo, RoomSummaryAnchor, RoomSummaryConfig, RoomSummaryState, GroupDocumentInfo, GroupChatMention } from '@/api/hermes/group-chat'
+import type {
+    GroupAgentPreset,
+    GroupAgentPresetInput,
+    GroupChatMention,
+    GroupDocumentInfo,
+    MemberInfo,
+    RoomAgent,
+    RoomAgentInput,
+    RoomInfo,
+    RoomSummaryAnchor,
+    RoomSummaryConfig,
+    RoomSummaryState,
+} from '@/api/hermes/group-chat'
 import { useFilesStore } from '@/stores/hermes/files'
 import { useToolPanelStore } from '@/stores/hermes/tool-panel'
 import { hasDesktopBrowserBridge } from '@/utils/desktop-bridge'
 import { OPEN_DESKTOP_BROWSER_PANEL_EVENT } from '@/utils/desktop-browser'
+import {
+    createBrowserAnnotationAttachment,
+    type BrowserAnnotationSubmission,
+} from '@/utils/browser-annotation-submit'
 import { canScopedCodingAgentUseProvider } from '@/utils/codingAgentProviders'
 import {
     inferCodingAgentApiMode,
@@ -49,9 +83,9 @@ import {
 import { generateGroupChatInviteCode } from '@/utils/group-chat-invite-code'
 import { buildRemoteGroupChatRooms, type RemoteGroupChatRoom } from '@/utils/group-chat-remote-rooms'
 import { handoffErrorTranslationKey } from './handoff-presentation'
+import { clearGroupChatRoomDraft } from './group-chat-room-drafts'
 
 const FilesPanel = defineAsyncComponent(async () => (await import('@/components/hermes/chat/FilesPanel.vue')).default)
-const FilePreview = defineAsyncComponent(async () => (await import('@/components/hermes/files/FilePreview.vue')).default)
 const WorkspaceDiffPreview = defineAsyncComponent(async () => (await import('@/components/hermes/files/WorkspaceDiffPreview.vue')).default)
 const DesktopBrowserPanel = defineAsyncComponent(async () => (await import('@/components/hermes/chat/DesktopBrowserPanel.vue')).default)
 const TerminalPanel = defineAsyncComponent(async () => (await import('@/components/hermes/chat/TerminalPanel.vue')).default)
@@ -148,6 +182,15 @@ const agentName = ref('')
 const agentDescription = ref('')
 const agentAvatar = ref<ProfileAvatarData | null>(null)
 const agentAvatarFileInput = ref<HTMLInputElement | null>(null)
+const agentPresets = ref<GroupAgentPreset[]>([])
+const selectedAgentPresetId = ref<string | null>(null)
+const showAgentPresetDialog = ref(false)
+const agentPresetDialogMode = ref<'select' | 'manage'>('select')
+const agentPresetSearch = ref('')
+const pendingAgentPresetId = ref<string | null>(null)
+const isLoadingAgentPresets = ref(false)
+const agentPresetLoadError = ref('')
+const isSavingAgentPreset = ref(false)
 const cloneSourceRoomId = ref<string | null>(null)
 const cloneRoomName = ref('')
 const cloneInviteCode = ref('')
@@ -167,6 +210,7 @@ const isUpdatingRemoteRoom = ref(false)
 const groupChatInputRef = ref<(InstanceType<typeof GroupChatInput> & {
     addFiles?: (files: File[]) => void
     insertMention?: (name: string, participantId?: string) => void
+    completeSend?: (success: boolean) => void
 }) | null>(null)
 const summarySettingsSectionRef = ref<HTMLElement | null>(null)
 
@@ -633,13 +677,14 @@ const profileOptions = computed(() =>
     profilesStore.profiles.map(p => ({ label: getProfileDisplayName(p), value: p.name }))
 )
 
-type GroupAgentType = 'hermes' | 'ekko' | 'codex' | 'claude'
+type GroupAgentType = 'hermes' | 'ekko' | 'codex' | 'claude' | 'pi'
 
 const groupAgentTypeOptions = computed<Array<{ label: string; value: GroupAgentType }>>(() => [
     { label: 'Hermes', value: 'hermes' },
-    { label: 'Claude Code', value: 'claude' },
+    { label: 'Ekko', value: 'ekko' },
+    { label: 'Claude', value: 'claude' },
     { label: 'Codex', value: 'codex' },
-    { label: 'Ekko Agent', value: 'ekko' },
+    { label: 'Pi', value: 'pi' },
 ])
 
 function getAgentModelGroups(profile: string) {
@@ -651,7 +696,9 @@ function getAgentModelGroups(profile: string) {
                 ? 'ekko-agent'
                 : selectedAgentType.value === 'claude'
                     ? 'claude-code'
-                    : 'codex'
+                    : selectedAgentType.value === 'pi'
+                        ? 'pi'
+                        : 'codex'
             return canScopedCodingAgentUseProvider(codingAgentId, group.provider)
         })
 }
@@ -702,6 +749,24 @@ const agentApiModeOptions = computed(() => [
     { label: t('codingAgents.protocolOpenAiResponses'), value: 'codex_responses' },
     { label: t('codingAgents.protocolAnthropicMessages'), value: 'anthropic_messages' },
 ])
+const filteredAgentPresets = computed(() => {
+    const query = agentPresetSearch.value.trim().toLocaleLowerCase()
+    if (!query) return agentPresets.value
+    return agentPresets.value.filter((preset) => {
+        const searchable = [
+            preset.name,
+            preset.description,
+            preset.profile,
+            preset.provider,
+            preset.model,
+            preset.validationError,
+        ].join(' ').toLocaleLowerCase()
+        return searchable.includes(query)
+    })
+})
+const pendingAgentPreset = computed(() =>
+    agentPresets.value.find(preset => preset.id === pendingAgentPresetId.value) || null
+)
 
 const agentReasoningEffortOptions = computed(() => [
     { label: t('chat.reasoningEffort.options.default'), value: '' },
@@ -834,6 +899,7 @@ function syncAgentModelSelection(profile: string) {
     const defaults = getDefaultAgentModel(profile)
     selectedAgentProvider.value = defaults.provider
     selectedAgentModel.value = defaults.model
+    selectedAgentReasoningEffort.value = ''
     syncAgentApiMode()
 }
 
@@ -850,7 +916,13 @@ function handleAgentTypeChange(agent: GroupAgentType) {
 function handleAgentProviderChange(provider: string) {
     selectedAgentProvider.value = provider
     selectedAgentModel.value = agentModelOptions.value[0]?.value || ''
+    selectedAgentReasoningEffort.value = ''
     syncAgentApiMode()
+}
+
+function handleAgentModelChange(model: string) {
+    selectedAgentModel.value = model
+    selectedAgentReasoningEffort.value = ''
 }
 
 function agentAvatarName(agent: RoomAgent): string {
@@ -1008,6 +1080,10 @@ const visibleClarify = computed(() =>
     currentRoomCanManage.value && pendingAgentPairings.value.length === 0
         ? store.activePendingClarify
         : null,
+)
+watch(
+    () => visibleClarify.value?.clarifyId,
+    () => { clarifyResponse.value = visibleClarify.value?.initialResponse || '' },
 )
 const visibleAgentPairing = computed(() =>
     currentRoomCanManage.value ? pendingAgentPairings.value[0] || null : null,
@@ -1212,8 +1288,20 @@ function handleOpenDesktopBrowserPanelRequest(): void {
     selectWorkspacePanel('browser')
 }
 
-function handleBrowserAttachment(payload: { file: File }): void {
-    groupChatInputRef.value?.addFiles?.([payload.file])
+async function submitBrowserAnnotations(payload: BrowserAnnotationSubmission): Promise<boolean> {
+    if (currentRoomNeedsSummaryConfiguration.value) {
+        await handleSummaryConfigurationRequired()
+        return false
+    }
+    const attachment = createBrowserAnnotationAttachment(payload)
+    try {
+        await store.sendMessage('', [attachment])
+        return true
+    } catch (err: any) {
+        URL.revokeObjectURL(attachment.url)
+        message.error(err instanceof Error ? err.message : String(err))
+        return false
+    }
 }
 
 function groupWorkspacePreviewPath(filePath: string): string | null {
@@ -1368,13 +1456,21 @@ function extractApiErrorMessage(err: any): string {
     return raw || t('common.saveFailed')
 }
 
-async function handleCreateRoom(name: string, inviteCode: string, userName: string, description: string, summary: RoomSummaryConfig, workspace: string) {
+async function handleCreateRoom(
+    name: string,
+    inviteCode: string,
+    userName: string,
+    description: string,
+    summary: RoomSummaryConfig,
+    workspace: string,
+    agents: RoomAgentInput[],
+) {
     try {
         store.setUserInfo(userName, description)
         const res = await store.createNewRoom(
             name,
             inviteCode,
-            undefined,
+            agents,
             summary,
             workspace,
             { name: userName, description },
@@ -1645,10 +1741,22 @@ async function handleSendMessage(content: string, attachments?: Attachment[], me
         await handleDiscussionCommand(discussionCommand, attachments)
         return
     }
+    const submittedRoomId = store.currentRoomId
     try {
         await store.sendMessage(content, attachments, mentions)
+        if (submittedRoomId) clearGroupChatRoomDraft(submittedRoomId)
+        groupChatInputRef.value?.completeSend?.(true)
     } catch (err: any) {
+        groupChatInputRef.value?.completeSend?.(false)
         message.error(err.message)
+    }
+}
+
+async function handleCancelQueuedExecution(queueId: string) {
+    try {
+        await store.cancelExecutionQueueItem(queueId)
+    } catch (err: any) {
+        message.error(err?.message || t('groupChat.executionQueueCancelFailed'))
     }
 }
 
@@ -1664,6 +1772,7 @@ async function handleSummaryConfigurationRequired() {
 }
 
 function resetAgentForm() {
+    selectedAgentPresetId.value = null
     selectedProfile.value = null
     selectedAgentType.value = 'hermes'
     selectedAgentProvider.value = ''
@@ -1675,7 +1784,142 @@ function resetAgentForm() {
     agentAvatar.value = null
 }
 
+function currentAgentPresetInput(): GroupAgentPresetInput | null {
+    if (!canConfirmAddAgent.value || !selectedProfile.value) return null
+    return {
+        agent: selectedAgentType.value,
+        profile: selectedProfile.value,
+        provider: selectedAgentProvider.value,
+        model: selectedAgentModel.value,
+        apiMode: selectedAgentType.value === 'hermes' ? '' : selectedAgentApiMode.value,
+        reasoningEffort: selectedAgentReasoningEffort.value,
+        name: agentName.value.trim() || selectedProfile.value,
+        description: agentDescription.value.trim(),
+        avatar: agentAvatar.value ? JSON.stringify(agentAvatar.value) : '',
+    }
+}
+
+async function loadAgentPresets() {
+    isLoadingAgentPresets.value = true
+    agentPresetLoadError.value = ''
+    try {
+        agentPresets.value = (await listGroupAgentPresets()).presets
+    } catch (err: any) {
+        agentPresetLoadError.value = extractApiErrorMessage(err) || t('groupChat.agentPresetLoadFailed')
+        message.error(agentPresetLoadError.value)
+    } finally {
+        isLoadingAgentPresets.value = false
+    }
+}
+
+function openAgentPresetSelection() {
+    agentPresetDialogMode.value = 'select'
+    pendingAgentPresetId.value = selectedAgentPresetId.value
+    agentPresetSearch.value = ''
+    showAgentPresetDialog.value = true
+}
+
+function openAgentPresetManager() {
+    agentPresetDialogMode.value = 'manage'
+    pendingAgentPresetId.value = null
+    agentPresetSearch.value = ''
+    showAgentPresetDialog.value = true
+}
+
+function closeAgentPresetDialog() {
+    showAgentPresetDialog.value = false
+    pendingAgentPresetId.value = null
+    agentPresetSearch.value = ''
+}
+
+function selectAgentPresetForDialog(preset: GroupAgentPreset) {
+    if (!preset.available) return
+    pendingAgentPresetId.value = preset.id
+}
+
+function confirmAgentPresetSelection() {
+    const preset = pendingAgentPreset.value
+    if (!preset?.available) return
+    applyAgentPreset(preset.id)
+    closeAgentPresetDialog()
+}
+
+function applyAgentPreset(presetId: string | null) {
+    selectedAgentPresetId.value = presetId
+    const preset = agentPresets.value.find(item => item.id === presetId)
+    if (!preset) return
+    if (!preset.available) {
+        message.warning(preset.validationError || t('groupChat.agentPresetUnavailable'))
+        return
+    }
+    const input = groupAgentPresetToRoomAgentInput(preset)
+    selectedAgentType.value = input.agent
+    selectedProfile.value = input.profile
+    selectedAgentProvider.value = input.provider || ''
+    selectedAgentModel.value = input.model || ''
+    selectedAgentApiMode.value = normalizeCodingAgentApiMode(
+        input.apiMode,
+        inferCodingAgentApiMode(input.provider),
+    )
+    selectedAgentReasoningEffort.value = input.reasoningEffort || ''
+    agentName.value = input.name || ''
+    agentDescription.value = input.description || ''
+    agentAvatar.value = parseStoredAvatar(input.avatar)
+}
+
+async function saveAgentPreset(presetId: string | null) {
+    const input = currentAgentPresetInput()
+    if (!input || isSavingAgentPreset.value) return
+    isSavingAgentPreset.value = true
+    try {
+        const result = presetId
+            ? await updateGroupAgentPreset(presetId, input)
+            : await createGroupAgentPreset(input)
+        const index = agentPresets.value.findIndex(item => item.id === result.preset.id)
+        if (index >= 0) agentPresets.value[index] = result.preset
+        else agentPresets.value = [result.preset, ...agentPresets.value]
+        pendingAgentPresetId.value = result.preset.id
+        message.success(t('groupChat.agentPresetSaved'))
+    } catch (err: any) {
+        message.error(
+            err?.code === 'GROUP_AGENT_PRESET_NAME_CONFLICT'
+                ? t('groupChat.agentPresetAlreadyExists')
+                : extractApiErrorMessage(err) || t('groupChat.agentPresetOperationFailed'),
+        )
+    } finally {
+        isSavingAgentPreset.value = false
+    }
+}
+
+async function createAgentPresetFromCurrent() {
+    pendingAgentPresetId.value = null
+    await saveAgentPreset(null)
+}
+
+async function updateSelectedAgentPreset() {
+    if (!pendingAgentPresetId.value) return
+    await saveAgentPreset(pendingAgentPresetId.value)
+}
+
+async function deleteAgentPreset() {
+    const presetId = pendingAgentPresetId.value
+    if (!presetId || isSavingAgentPreset.value) return
+    isSavingAgentPreset.value = true
+    try {
+        await deleteGroupAgentPreset(presetId)
+        agentPresets.value = agentPresets.value.filter(item => item.id !== presetId)
+        if (selectedAgentPresetId.value === presetId) selectedAgentPresetId.value = null
+        pendingAgentPresetId.value = null
+        message.success(t('groupChat.agentPresetDeleted'))
+    } catch (err: any) {
+        message.error(extractApiErrorMessage(err) || t('groupChat.agentPresetOperationFailed'))
+    } finally {
+        isSavingAgentPreset.value = false
+    }
+}
+
 function closeAgentModal() {
+    closeAgentPresetDialog()
     showAddAgentModal.value = false
     editingAgent.value = null
     resetAgentForm()
@@ -1686,6 +1930,7 @@ async function handleAddAgent() {
     await Promise.all([
         profilesStore.fetchProfiles(),
         appStore.loadModels(),
+        loadAgentPresets(),
     ])
     editingAgent.value = null
     resetAgentForm()
@@ -1747,7 +1992,9 @@ async function handleEditAgent(agent: RoomAgent) {
     await Promise.all([
         profilesStore.fetchProfiles(),
         appStore.loadModels(),
+        loadAgentPresets(),
     ])
+    selectedAgentPresetId.value = null
     editingAgent.value = agent
     selectedAgentType.value = agent.agent || 'hermes'
     selectedProfile.value = agent.profile
@@ -1896,6 +2143,7 @@ async function confirmAddAgent() {
     isSavingAgent.value = true
     try {
         await store.addAgentToRoom(store.currentRoomId, {
+            presetId: selectedAgentPresetId.value || undefined,
             agent: selectedAgentType.value,
             profile: selectedProfile.value,
             provider: selectedAgentProvider.value,
@@ -2249,14 +2497,24 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
 
 async function handleClarify(response?: string) {
     if (!currentRoomCanManage.value) return
-    const finalResponse = response !== undefined ? response : clarifyResponse.value.trim()
-    if (response === undefined && !finalResponse) return
+    const finalResponse = response !== undefined
+        ? response
+        : visibleClarify.value?.responseMode === 'editor'
+            ? clarifyResponse.value
+            : clarifyResponse.value.trim()
+    if (response === undefined && !finalResponse && visibleClarify.value?.responseMode !== 'editor') return
     try {
         await store.respondClarify(finalResponse)
         clarifyResponse.value = ''
     } catch (err: any) {
         message.error(err.message || t('common.saveFailed'))
     }
+}
+
+function handleClarifyKeydown(event: KeyboardEvent) {
+    if (visibleClarify.value?.responseMode === 'editor') return
+    event.preventDefault()
+    void handleClarify()
 }
 
 </script>
@@ -2296,9 +2554,11 @@ async function handleClarify(response?: string) {
                             @click="handleSelectRoom(room.id)"
                             @contextmenu="handleRoomContextMenu($event, room.id)"
                         >
-                            <svg class="room-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                            </svg>
+                            <GroupRoomAgentAvatar
+                                :agents="store.roomAgentsForRoom(room.id)"
+                                :active-agent-ids="store.activeAgentIdsForRoom(room.id)"
+                                :label="room.name || room.id"
+                            />
                             <div class="room-info">
                                 <span class="room-name">{{ room.name || room.id }}</span>
                                 <span v-if="room.inviteCode" class="room-code">{{ room.inviteCode }}</span>
@@ -2564,7 +2824,7 @@ async function handleClarify(response?: string) {
                             <template #trigger>
                                 <button
                                     type="button"
-                                    class="agent-avatar-rail-item"
+                                    class="agent-avatar-rail-item agent-avatar-rail-agent"
                                     :class="{
                                         'agent-avatar-rail-active': !!agentContextStatus(agent),
                                         'agent-avatar-rail-offline': agent.connectionStatus === 'offline',
@@ -2759,8 +3019,8 @@ async function handleClarify(response?: string) {
                                     </NButton>
                                 </div>
                                 <div class="clarify-float-input-row">
-                                    <NInput v-model:value="clarifyResponse" size="small" :placeholder="t('chat.clarifyPlaceholder')" @keydown.enter.prevent="handleClarify()" />
-                                    <NButton size="small" type="primary" :disabled="!clarifyResponse.trim()" @click="handleClarify()">
+                                    <NInput v-model:value="clarifyResponse" size="small" :type="visibleClarify.responseMode === 'editor' ? 'textarea' : 'text'" :placeholder="t('chat.clarifyPlaceholder')" @keydown.enter="handleClarifyKeydown" />
+                                    <NButton size="small" type="primary" :disabled="visibleClarify.responseMode !== 'editor' && !clarifyResponse.trim()" @click="handleClarify()">
                                         {{ t('chat.clarifySubmit') }}
                                     </NButton>
                                 </div>
@@ -2816,8 +3076,22 @@ async function handleClarify(response?: string) {
                             </span>
                         </div>
                     </Transition>
+                    <div v-if="store.executionQueue.length > 0" class="group-execution-queue-float-stack">
+                        <MessageQueueFloatPanel
+                            :items="store.executionQueue.map(item => ({
+                                id: item.id,
+                                text: item.textSummary,
+                                secondary: item.targetAgentName,
+                                position: item.position,
+                            }))"
+                            test-id="group-execution-queue"
+                            :remove-title="item => t('groupChat.executionQueueCancel', { agent: item.secondary || '' })"
+                            @remove="handleCancelQueuedExecution"
+                        />
+                    </div>
                     <GroupChatInput
                         ref="groupChatInputRef"
+                        :room-id="store.currentRoomId"
                         :send-blocked="currentRoomNeedsSummaryConfiguration"
                         :allow-attachments="true"
                         :show-settings="!props.standalone"
@@ -2852,10 +3126,6 @@ async function handleClarify(response?: string) {
                         <div class="group-workspace-panel-inner">
                             <WorkspaceDiffPreview
                                 v-if="toolPanelStore.workspaceDiff"
-                                :custom-close="closeWorkspacePanel"
-                            />
-                            <FilePreview
-                                v-else-if="filesStore.previewFile?.workspaceRoomId === store.currentRoomId"
                                 :custom-close="closeWorkspacePanel"
                             />
                             <template v-else>
@@ -2951,7 +3221,7 @@ async function handleClarify(response?: string) {
                                         class="group-browser-panel"
 
                                         :visible="toolPanelTransitionReady"
-                                        @attach="handleBrowserAttachment"
+                                        :submit="submitBrowserAnnotations"
                                     />
                                 </div>
                             </template>
@@ -2981,6 +3251,18 @@ async function handleClarify(response?: string) {
             <div v-if="showAddAgentModal" class="modal-backdrop" @click.self="closeAgentModal">
                 <div class="modal">
                     <h3>{{ editingAgent ? t('groupChat.editAgentTitle', { name: editingAgent.name }) : t('groupChat.addAgent') }}</h3>
+                    <div v-if="!editingAgent" class="agent-preset-entry">
+                        <NButton secondary block @click="openAgentPresetSelection">
+                            {{ t('groupChat.chooseAgentPreset') }}
+                        </NButton>
+                        <p class="form-hint">{{ t('groupChat.agentPresetSnapshotHint') }}</p>
+                    </div>
+                    <div v-if="editingAgent" class="agent-preset-entry">
+                        <NButton secondary block @click="openAgentPresetManager">
+                            {{ t('groupChat.manageAgentPresets') }}
+                        </NButton>
+                        <p class="form-hint">{{ t('groupChat.agentPresetSnapshotHint') }}</p>
+                    </div>
                     <div class="group-agent-avatar-editor">
                         <ProfileAvatar
                             :name="selectedAgentType"
@@ -3041,11 +3323,12 @@ async function handleClarify(response?: string) {
                     <div class="form-group">
                         <label class="form-label">{{ t('models.models') }}</label>
                         <NSelect
-                            v-model:value="selectedAgentModel"
+                            :value="selectedAgentModel"
                             :options="agentModelOptions"
                             :placeholder="t('models.selectModel')"
                             :disabled="!selectedAgentProvider"
                             filterable
+                            @update:value="handleAgentModelChange"
                         />
                     </div>
                     <div v-if="selectedAgentType !== 'hermes'" class="form-group">
@@ -3100,6 +3383,105 @@ async function handleClarify(response?: string) {
                                 {{ editingAgent ? t('common.update') : t('common.add') }}
                             </NButton>
                         </NSpace>
+                    </div>
+                </div>
+            </div>
+            <div
+                v-if="showAgentPresetDialog"
+                class="modal-backdrop agent-preset-dialog-backdrop"
+                @click.self="closeAgentPresetDialog"
+            >
+                <div class="modal agent-preset-dialog">
+                    <h3>
+                        {{ agentPresetDialogMode === 'select'
+                            ? t('groupChat.chooseAgentPreset')
+                            : t('groupChat.manageAgentPresets') }}
+                    </h3>
+                    <NInput
+                        v-model:value="agentPresetSearch"
+                        clearable
+                        :placeholder="t('groupChat.searchAgentPresets')"
+                    />
+                    <div v-if="isLoadingAgentPresets" class="agent-preset-dialog-state">
+                        {{ t('groupChat.agentPresetsLoading') }}
+                    </div>
+                    <div v-else-if="agentPresetLoadError" class="agent-preset-dialog-state is-error">
+                        <span>{{ agentPresetLoadError }}</span>
+                        <NButton size="small" secondary @click="loadAgentPresets">
+                            {{ t('common.retry') }}
+                        </NButton>
+                    </div>
+                    <div v-else-if="agentPresets.length === 0" class="agent-preset-dialog-state">
+                        {{ t('groupChat.agentPresetsEmpty') }}
+                    </div>
+                    <div v-else-if="filteredAgentPresets.length === 0" class="agent-preset-dialog-state">
+                        {{ t('groupChat.agentPresetsNoResults') }}
+                    </div>
+                    <div v-else class="agent-preset-dialog-list">
+                        <button
+                            v-for="preset in filteredAgentPresets"
+                            :key="preset.id"
+                            type="button"
+                            class="agent-preset-dialog-row"
+                            :class="{
+                                selected: pendingAgentPresetId === preset.id,
+                                unavailable: !preset.available,
+                            }"
+                            :disabled="!preset.available"
+                            :aria-pressed="pendingAgentPresetId === preset.id"
+                            @click="selectAgentPresetForDialog(preset)"
+                        >
+                            <span class="agent-preset-dialog-row-name">{{ preset.name }}</span>
+                            <span class="agent-preset-dialog-row-config">
+                                {{ preset.profile }} · {{ preset.provider }}/{{ preset.model }}
+                            </span>
+                            <span v-if="!preset.available" class="agent-preset-dialog-row-error">
+                                {{ preset.validationError || t('groupChat.agentPresetUnavailable') }}
+                            </span>
+                        </button>
+                    </div>
+                    <p class="form-hint">{{ t('groupChat.agentPresetSnapshotHint') }}</p>
+                    <div v-if="agentPresetDialogMode === 'manage'" class="agent-preset-management-actions">
+                        <NButton
+                            secondary
+                            :disabled="!canConfirmAddAgent || isSavingAgentPreset"
+                            :loading="isSavingAgentPreset && !pendingAgentPresetId"
+                            @click="createAgentPresetFromCurrent"
+                        >
+                            {{ t('groupChat.saveCurrentAgentAsPreset') }}
+                        </NButton>
+                        <NButton
+                            secondary
+                            :disabled="!pendingAgentPresetId || !canConfirmAddAgent || isSavingAgentPreset"
+                            :loading="isSavingAgentPreset && Boolean(pendingAgentPresetId)"
+                            @click="updateSelectedAgentPreset"
+                        >
+                            {{ t('groupChat.updateAgentPreset') }}
+                        </NButton>
+                        <NPopconfirm
+                            v-if="pendingAgentPresetId"
+                            @positive-click="deleteAgentPreset"
+                        >
+                            <template #trigger>
+                                <NButton type="error" secondary :disabled="isSavingAgentPreset">
+                                    {{ t('groupChat.deleteAgentPreset') }}
+                                </NButton>
+                            </template>
+                            {{ t('groupChat.deleteAgentPresetConfirm') }}
+                        </NPopconfirm>
+                    </div>
+                    <div class="modal-actions">
+                        <NButton @click="closeAgentPresetDialog">
+                            {{ t('common.cancel') }}
+                        </NButton>
+                        <NButton
+                            v-if="agentPresetDialogMode === 'select'"
+                            type="primary"
+                            :disabled="!pendingAgentPreset?.available"
+                            @click="confirmAgentPresetSelection"
+                        >
+                            {{ t('groupChat.applyAgentPreset') }}
+                        </NButton>
                     </div>
                 </div>
             </div>
@@ -3956,6 +4338,15 @@ export default defineComponent({ components: { CreateRoomForm } })
     background-color: $bg-card;
 }
 
+.group-execution-queue-float-stack {
+    position: absolute;
+    right: 16px;
+    bottom: 82px;
+    z-index: 8;
+    width: min(380px, calc(100% - 32px));
+    pointer-events: none;
+}
+
 .sidebar-backdrop {
     display: none;
 }
@@ -4611,6 +5002,11 @@ export default defineComponent({ components: { CreateRoomForm } })
         width: 32px;
         height: 32px;
     }
+}
+
+.agent-avatar-rail-agent .agent-avatar {
+    box-sizing: border-box;
+    border: 1px solid #fff;
 }
 
 .agent-owner-avatar-badge {
@@ -5348,6 +5744,104 @@ export default defineComponent({ components: { CreateRoomForm } })
 
 .file-input {
     display: none;
+}
+
+.agent-preset-entry {
+    margin-bottom: 18px;
+}
+
+.agent-preset-dialog-backdrop {
+    z-index: 1010;
+}
+
+.agent-preset-dialog {
+    width: 480px;
+}
+
+.agent-preset-dialog-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 320px;
+    margin-top: 12px;
+    overflow-y: auto;
+}
+
+.agent-preset-dialog-row {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 3px;
+    width: 100%;
+    padding: 11px 12px;
+    border: 1px solid $border-color;
+    border-radius: $radius-md;
+    color: $text-primary;
+    background: $bg-main-surface;
+    text-align: start;
+    cursor: pointer;
+    transition:
+        border-color $transition-fast,
+        background-color $transition-fast;
+
+    &:hover:not(:disabled) {
+        border-color: rgba(var(--accent-primary-rgb), 0.55);
+        background: rgba(var(--accent-primary-rgb), 0.05);
+    }
+
+    &.selected {
+        border-color: var(--accent-primary);
+        background: rgba(var(--accent-primary-rgb), 0.09);
+    }
+
+    &.unavailable {
+        cursor: not-allowed;
+        opacity: 0.72;
+    }
+}
+
+.agent-preset-dialog-row-name {
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.agent-preset-dialog-row-config,
+.agent-preset-dialog-row-error {
+    font-size: 11px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+.agent-preset-dialog-row-config {
+    color: $text-secondary;
+}
+
+.agent-preset-dialog-row-error {
+    color: $error;
+}
+
+.agent-preset-dialog-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    margin-top: 12px;
+    padding: 28px 16px;
+    border: 1px dashed $border-color;
+    border-radius: $radius-md;
+    color: $text-muted;
+    text-align: center;
+
+    &.is-error {
+        color: $error;
+    }
+}
+
+.agent-preset-management-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 14px;
 }
 
 .room-settings-drawer {

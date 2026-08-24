@@ -417,6 +417,9 @@ Web UI 启动后端聊天能力时，会优先使用包含 `run_agent.py` 的源
 |---|---|---|
 | `PORT` | `8648` | Web UI 监听端口。 |
 | `BIND_HOST` | `0.0.0.0` | Web UI 绑定地址。如需 IPv6，可显式设置为 `::`。 |
+| `HERMES_LAN_ADVERTISE_URL` | 未设置 | App 局域网二维码使用的可访问 Studio 地址。Docker 中若通过 `localhost` 打开，请设置为宿主机局域网 URL，例如 `http://192.168.1.20:6060`。 |
+| `HERMES_APP_ENTITLEMENT_REQUIRED` | `true` | App 局域网 Relay 必须携带有效的云端签名。仅在临时兼容排查时设置为 `false`。 |
+| `HERMES_APP_ENTITLEMENT_PUBLIC_KEY` | 内置 | 可选的 RS256 App 签名 PEM 公钥覆盖。签名 issuer 为 `hermes-studio-server`，audience 为 `ekko-studio`。 |
 | `HERMES_WEB_UI_HOME` | `~/.hermes-web-ui` | Web UI 数据目录，用于认证 token、登录凭据、日志、数据库和默认上传目录。兼容支持 `HERMES_WEBUI_STATE_DIR` 作为别名。 |
 | `HERMES_WEBUI_STATE_DIR` | 未设置 | `HERMES_WEB_UI_HOME` 的兼容别名。 |
 | `HERMES_WEB_UI_DISABLE_MCP_AUTOINJECT` | 未设置 | 关闭启动时向 Hermes profile 配置自动注入托管的 `hermes-studio` MCP server。 |
@@ -481,6 +484,7 @@ Web UI 启动后端聊天能力时，会优先使用包含 `run_agent.py` 的源
 | `hermes-web-ui upgrade` | `update` 的别名 |
 | `hermes-web-ui -v` | 显示版本号 |
 | `hermes-web-ui -h` | 显示帮助信息 |
+| `hermes-web-ui-mcp [api\|browser\|devices\|use]` | 运行一个受管 Web UI MCP 工具集（等同于 `hermes-studio-mcp`） |
 
 `update` / `upgrade` 会先尝试执行 `npm cache clean --force`，再执行 `npm install -g @quanthermes/hermes-web-ui@latest` 并重启。缓存清理是 best-effort；如果清理失败，只提示 warning，升级安装会继续执行。
 

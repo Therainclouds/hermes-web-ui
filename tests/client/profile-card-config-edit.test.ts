@@ -29,6 +29,11 @@ vi.mock('naive-ui', () => ({
   NSpin: defineComponent({
     template: '<div><slot /></div>',
   }),
+  NModal: { template: '<div class="n-modal-stub"><slot /></div>' },
+  NForm: { template: '<form class="n-form-stub"><slot /></form>' },
+  NFormItem: { template: '<div class="n-form-item-stub"><slot /></div>' },
+  NInput: { template: '<input class="n-input-stub" />', emits: ['update:value'] },
+  NText: { template: '<span class="n-text-stub"><slot /></span>' },
   useMessage: () => ({ success: vi.fn(), error: vi.fn() }),
   useDialog: () => ({ warning: vi.fn() }),
 }))

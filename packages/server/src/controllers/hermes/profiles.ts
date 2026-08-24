@@ -24,6 +24,7 @@ import { getActiveProfileName } from '../../services/hermes/hermes-profile'
 import { HermesSkillInjector } from '../../services/hermes/skill-injector'
 import type { HermesProfile } from '../../services/hermes/hermes-cli'
 import { listUserProfiles, replaceUserProfiles } from '../../db/hermes/users-store'
+import { readAppProfileAvatar } from '../../services/hermes/app-profile-avatar'
 
 const bridgeCleanupClient = () => new AgentBridgeClient({ connectRetryMs: 0, timeoutMs: 5000 })
 
@@ -241,6 +242,15 @@ function attachProfileAvatars<T extends HermesProfile>(profiles: T[]): Array<T &
   }))
 }
 
+async function attachAppProfileAvatars<T extends HermesProfile>(
+  profiles: T[],
+): Promise<Array<T & { avatar: ProfileAvatarResponse | null }>> {
+  return Promise.all(profiles.map(async profile => ({
+    ...profile,
+    avatar: await readAppProfileAvatar(profile.name),
+  })))
+}
+
 function parseAvatarDataUrl(dataUrl: string): { mime: string; buffer: Buffer } {
   const match = dataUrl.match(/^data:(image\/(?:png|jpeg|webp));base64,([a-zA-Z0-9+/=]+)$/)
   if (!match) throw new Error('Avatar image must be a PNG, JPEG, or WebP data URL')
@@ -430,6 +440,33 @@ function mergeProfileDisplayNames<T extends HermesProfile>(profiles: T[]): T[] {
     }
     return profile
   })
+}
+
+export async function listForApp(ctx: any) {
+  try {
+    let profiles: HermesProfile[]
+    try {
+      profiles = await hermesCli.listProfiles()
+    } catch (err: any) {
+      const activeProfileName = getActiveProfileName()
+      if (!isForbiddenProfileName(activeProfileName)) throw err
+
+      logger.warn(err, '[listAppProfiles] active_profile "%s" is invalid/reserved; resetting to default and listing profiles from disk', activeProfileName)
+      writeFileSync(getActiveProfileFile(), 'default\n', 'utf-8')
+      profiles = listProfilesFromDisk('default')
+    }
+
+    const activeProfileName = requestedProfileName(ctx)
+    profiles = filterProfilesForUser(ctx, filterVisibleProfiles(profiles))
+    profiles.forEach(profile => {
+      profile.active = profile.name === activeProfileName
+    })
+
+    ctx.body = { profiles: await attachAppProfileAvatars(profiles) }
+  } catch (err: any) {
+    ctx.status = 500
+    ctx.body = { error: err.message }
+  }
 }
 
 export async function create(ctx: any) {

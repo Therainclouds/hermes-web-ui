@@ -64,7 +64,7 @@ describe('Profiles Store', () => {
     const result = await store.createProfile('new-profile', false)
 
     expect(result.success).toBe(true)
-    expect(mockProfilesApi.createProfile).toHaveBeenCalledWith('new-profile', false)
+    expect(mockProfilesApi.createProfile).toHaveBeenCalledWith('new-profile', false, undefined)
     expect(store.profiles).toHaveLength(2)
   })
 

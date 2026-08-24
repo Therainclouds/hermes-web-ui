@@ -78,7 +78,7 @@ describe('group chat baseline behavior', () => {
 
   it('accepts Relay mention depths governed by bounded or unlimited room policy', () => {
     const request = {
-      protocolVersion: 1,
+      protocolVersion: 2,
       runId: '11111111-2222-4333-8444-555555555555',
       room: { id: 'room-1', name: 'Room 1' },
       members: [],
@@ -124,6 +124,35 @@ describe('group chat baseline behavior', () => {
     expect(joined.members).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'Alice', connectionStatus: 'online' }),
     ]))
+  })
+
+  it('honors the requested initial history page size when joining', async () => {
+    const storage = groupServer.getStorage()
+    storage.saveRoom('room-history-limit', 'History Limit', 'HISTORY1')
+    for (let index = 1; index <= 200; index += 1) {
+      storage.saveMessageAndRefreshRoom({
+        id: `msg-${String(index).padStart(3, '0')}`,
+        roomId: 'room-history-limit',
+        senderId: 'user-a',
+        senderName: 'Alice',
+        content: `message ${index}`,
+        timestamp: index,
+        role: 'user',
+      } as any)
+    }
+
+    const alice = await connectGroupChatClient(port, 'user-a', 'Alice')
+    harness.sockets.push(alice)
+    const joined = await emitAck<any>(alice, 'join', {
+      roomId: 'room-history-limit',
+      inviteCode: 'HISTORY1',
+      historyLimit: 50,
+    })
+
+    expect(joined.messages).toHaveLength(50)
+    expect(joined.messages[0]?.id).toBe('msg-151')
+    expect(joined.messages.at(-1)?.id).toBe('msg-200')
+    expect(joined).toMatchObject({ total: 200, hasMore: true })
   })
 
   it('broadcasts persisted human members as offline after their socket disconnects', async () => {
@@ -405,11 +434,20 @@ describe('group chat baseline behavior', () => {
       ownerName: 'Guest',
       targetOrigin: 'http://127.0.0.1:8648',
       agent: relayStore.normalizeRemoteGroupAgentDescriptor({
-        agent: 'hermes',
+        agent: 'pi',
         profile: 'default',
-        name: 'Remote',
+        provider: 'openai',
+        model: 'pi-remote-model',
+        apiMode: 'codex_responses',
+        name: 'Remote Pi',
       }),
       now: 1_000,
+    })
+    expect(created.request.agent).toMatchObject({
+      agent: 'pi',
+      model: 'pi-remote-model',
+      apiMode: 'codex_responses',
+      name: 'Remote Pi',
     })
 
     expect(relayStore.getGroupAgentPairingRequestForRequester(
@@ -476,11 +514,12 @@ describe('group chat baseline behavior', () => {
       now: 1_000,
     })
     const agent = relayStore.normalizeRemoteGroupAgentDescriptor({
-      agent: 'codex',
+      agent: 'pi',
       profile: 'default',
       provider: 'openai',
       model: 'gpt-test',
-      name: 'Remote Codex',
+      apiMode: 'codex_responses',
+      name: 'Remote Pi',
     })
 
     expect(draft.status).toBe('draft')
@@ -496,7 +535,10 @@ describe('group chat baseline behavior', () => {
       requestSecret,
       agent,
       1_100,
-    )).toMatchObject({ status: 'pending', agent: { name: 'Remote Codex' } })
+    )).toMatchObject({
+      status: 'pending',
+      agent: { agent: 'pi', name: 'Remote Pi', apiMode: 'codex_responses' },
+    })
     expect(relayStore.submitGroupAgentPairingHandoff(
       draft.id,
       requestSecret,
@@ -528,14 +570,18 @@ describe('group chat baseline behavior', () => {
       allowRemoteWorkspaceAccess: true,
     })
     storage.addRoomMember('room-relay', 'guest-relay', 'Relay Guest', '')
+    storage.addRoomMember('room-relay', 'auth:7', 'Relay Observer', '')
     const created = relayStore.createGroupAgentPairingRequest({
       roomId: 'room-relay',
       ownerMemberId: 'guest-relay',
       ownerName: 'Relay Guest',
       targetOrigin: 'http://127.0.0.1:8648',
       agent: relayStore.normalizeRemoteGroupAgentDescriptor({
-        agent: 'hermes',
+        agent: 'pi',
         profile: 'default',
+        provider: 'openai',
+        model: 'pi-relay-model',
+        apiMode: 'codex_responses',
         name: 'Remote Relay Agent',
       }),
     })
@@ -562,7 +608,7 @@ describe('group chat baseline behavior', () => {
       transports: ['websocket'],
       reconnection: false,
       auth: {
-        protocolVersion: 1,
+        protocolVersion: 2,
         pairingTicket: created.pairingTicket,
         targetOrigin: 'http://127.0.0.1:8748',
       },
@@ -583,7 +629,7 @@ describe('group chat baseline behavior', () => {
       transports: ['websocket'],
       reconnection: false,
       auth: {
-        protocolVersion: 1,
+        protocolVersion: 2,
         pairingTicket: created.pairingTicket,
         targetOrigin: 'http://127.0.0.1:8648',
       },
@@ -597,11 +643,16 @@ describe('group chat baseline behavior', () => {
     intendedTarget.connect()
     const readyPayload = await ready
     expect(readyPayload).toMatchObject({
-      protocolVersion: 1,
+      protocolVersion: 2,
       roomId: 'room-relay',
       roomName: 'Relay Room',
       inviteCode: 'RELAY1',
-      agent: { name: 'Remote Relay Agent' },
+      agent: {
+        agent: 'pi',
+        model: 'pi-relay-model',
+        apiMode: 'codex_responses',
+        name: 'Remote Relay Agent',
+      },
     })
     expect(relayStore.getGroupAgentPairingRequestForRequester(
       created.request.id,
@@ -609,6 +660,8 @@ describe('group chat baseline behavior', () => {
     )?.status).toBe('consumed')
     expect(storage.getRoomAgents('room-relay')).toEqual([
       expect.objectContaining({
+        agent: 'pi',
+        model: 'pi-relay-model',
         name: 'Remote Relay Agent',
         executorType: 'remote',
         remoteOrigin: 'http://127.0.0.1:8648',
@@ -911,6 +964,15 @@ describe('group chat baseline behavior', () => {
     expect(failedError?.outcomeUnknown).not.toBe(true)
 
     const uncertainRunRequested = once<any>(intendedTarget as any, 'run.request', 2_000)
+    const responseRunId = 'remote-response-disconnect'
+    vi.spyOn(AgentClient.prototype, 'emitContextStatus').mockImplementation((roomId, status, extra) => {
+      ;(groupServer as any).updateRoomAgentActivity(
+        roomId,
+        'Updated Relay Agent',
+        status,
+        typeof extra?.runId === 'string' ? extra.runId : '',
+      )
+    })
     const uncertainReply = executor.replyToMention('room-relay', {
       messageId: 'transport-loss-message',
       content: '@Updated Relay Agent keep running across a transport loss',
@@ -918,14 +980,47 @@ describe('group chat baseline behavior', () => {
       senderId: 'guest-relay',
       timestamp: Date.now(),
       role: 'user',
+    }, { summary: '', history: [] }, (status, extra) => {
+      ;(groupServer as any).updateRoomAgentActivity(
+        'room-relay',
+        'Updated Relay Agent',
+        status,
+        typeof extra?.runId === 'string' ? extra.runId : '',
+      )
     })
     const uncertainRun = await uncertainRunRequested
     intendedTarget.emit('run.accepted', { runId: uncertainRun.runId })
+    await expect(emitAck<any>(intendedTarget as any, 'agent.event', {
+      runId: uncertainRun.runId,
+      seq: 1,
+      event: 'context_status',
+      data: {
+        status: 'replying',
+        runId: responseRunId,
+      },
+    })).resolves.toEqual({ ok: true })
+    const loadActivities = () => {
+      const ack = vi.fn()
+      ;(groupServer as any).handleLoadRoomAgentActivities(
+        { id: 'observer-socket', data: { authUser: { id: 7 } } },
+        {},
+        ack,
+      )
+      return ack.mock.calls[0]?.[0]
+    }
+    expect(loadActivities()).toEqual({
+      activities: [expect.objectContaining({
+        roomId: 'room-relay',
+        runId: responseRunId,
+        status: 'replying',
+      })],
+    })
     intendedTarget.disconnect()
     await expect(uncertainReply).rejects.toMatchObject({
       code: 'GROUP_AGENT_OFFLINE',
       outcomeUnknown: true,
     })
+    expect(loadActivities()).toEqual({ activities: [] })
     await vi.waitFor(() => {
       expect(storage.getMentionableRoomAgents('room-relay')).toEqual([])
     })
@@ -942,7 +1037,7 @@ describe('group chat baseline behavior', () => {
       transports: ['websocket'],
       reconnection: false,
       auth: {
-        protocolVersion: 1,
+        protocolVersion: 2,
         connectorId: readyPayload.connectorId,
         credential: readyPayload.credential,
         targetOrigin: 'http://127.0.0.1:8648',

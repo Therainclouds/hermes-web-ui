@@ -68,7 +68,7 @@ export async function loadSessionStateFromDb(sid: string, _sessionMap: Map<strin
     let outputTokens: number
     let contextTokens: number | undefined
     const session = actualDetail?.session || getSession(sid)
-    const usageSource = session?.source === 'coding_agent' || ['codex', 'claude', 'claude-code', 'claude_code', 'deepseek'].includes(session?.agent || '')
+const usageSource = session?.source === 'coding_agent' || ['codex', 'pi', 'claude', 'claude-code', 'claude_code', 'deepseek'].includes(session?.agent || '')
       ? 'coding_agent'
       : session?.agent === 'ekko_agent' || session?.agent === 'ekko-agent'
         ? 'ekko_agent'
@@ -89,6 +89,7 @@ export async function loadSessionStateFromDb(sid: string, _sessionMap: Map<strin
       messageTotal: actualDetail?.total || messages.length,
       messageLoadedCount: actualDetail?.messages.length || messages.length,
       messagePageLimit: actualDetail?.limit,
+      messageStateBaselineCount: messages.length,
       hasMoreBefore: actualDetail?.hasMore || false,
       isWorking: false,
       events: [],

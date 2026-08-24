@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   createDshTurnAccumulator,
   dshSessionEventToResponsesEvents,
-} from '../../packages/server/src/services/agent-runner/adapters/dsh-session-event-mapper'
+} from '../../packages/server/src/services/coding-agents/shared/adapters/dsh-session-event-mapper'
 
 function eventsFor(state: ReturnType<typeof createDshTurnAccumulator>, event: any) {
   return dshSessionEventToResponsesEvents(state, event)

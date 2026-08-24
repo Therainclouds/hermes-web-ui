@@ -678,9 +678,60 @@ describe('group chat agent workspace bridge runs', () => {
     expect(runAndWait.mock.calls[0][0].session_id).toMatch(/^gc_run_/)
   })
 
+  it('normalizes non-Hermes approval events onto the authoritative group run generation', async () => {
+    const { AgentClients } = await import('../../packages/server/src/services/hermes/group-chat/agent-clients')
+    const runAndWait = vi.fn(async (_data: any, options: any) => {
+      options.onEvent?.('approval.requested', {
+        run_id: 'runtime-run-id',
+        approval_id: 'approval-1',
+        command: 'printf harmless',
+      })
+      return { ok: true, run_id: 'runtime-run-id', output: 'done' }
+    })
+    const clients = new AgentClients()
+    clients.setChatRunService({ runAndWait, abortSession: vi.fn(async () => {}) })
+    const client = await clients.createAgent({
+      agentId: 'agent-codex',
+      agent: 'codex',
+      profile: 'default',
+      name: 'Coder',
+      description: '',
+      invited: 0,
+      backgroundDelegationEnabled: false,
+    } as any) as any
+    client.setStorage({
+      getRoom: vi.fn(() => ({ sessionSeed: 'seed-1', workspace: '', maxHistoryTokens: 32000 })),
+      getRoomAgents: vi.fn(() => []),
+      getMentionableRoomAgents: vi.fn(() => []),
+      getMessagesForContext: vi.fn(() => []),
+      getContextSnapshot: vi.fn(() => null),
+    })
+
+    await client.replyToMention('room-1', {
+      messageId: 'message-1',
+      content: '@Coder run safely',
+      senderName: 'Human',
+      senderId: 'human-1',
+      timestamp: 1,
+      role: 'user',
+    })
+
+    const streamStart = mockSocket.emit.mock.calls
+      .find(([event]) => event === 'message_stream_start')?.[1]
+    const approval = mockSocket.emit.mock.calls
+      .find(([event]) => event === 'approval.requested')?.[1]
+    expect(streamStart?.run_id).toBeTruthy()
+    expect(approval).toMatchObject({
+      approval_id: 'approval-1',
+      runId: streamStart.run_id,
+    })
+    expect(approval).not.toHaveProperty('run_id')
+  })
+
   it.each([
     ['ekko', 'ekko-agent'],
     ['claude', 'claude-code'],
+    ['pi', 'pi'],
   ] as const)('passes the dynamic group system prompt to the %s runtime', async (agent, codingAgentId) => {
     const { AgentClients } = await import('../../packages/server/src/services/hermes/group-chat/agent-clients')
     const runAndWait = vi.fn(async (_data: any, options: any) => {
@@ -698,11 +749,12 @@ describe('group chat agent workspace bridge runs', () => {
       runAndWait,
       abortSession: vi.fn(async () => {}),
     })
+    const displayName = agent === 'ekko' ? 'Ekko' : agent === 'claude' ? 'Claude' : 'Pi'
     const client = await clients.createAgent({
       agentId: `agent-${agent}`,
       agent,
       profile: 'default',
-      name: agent === 'ekko' ? 'Ekko' : 'Claude',
+      name: displayName,
       description: `${agent} room role`,
       invited: 0,
       backgroundDelegationEnabled: false,
@@ -716,7 +768,7 @@ describe('group chat agent workspace bridge runs', () => {
         {
           id: `room-agent-${agent}`,
           agentId: `agent-${agent}`,
-          name: agent === 'ekko' ? 'Ekko' : 'Claude',
+          name: displayName,
           description: `${agent} room role`,
         },
       ]),
@@ -724,7 +776,7 @@ describe('group chat agent workspace bridge runs', () => {
 
     await client.replyToMention('room-runtime', {
       messageId: `msg-${agent}`,
-      content: `@${agent === 'ekko' ? 'Ekko' : 'Claude'} reply`,
+      content: `@${displayName} reply`,
       senderName: 'Human',
       senderId: 'human-1',
       timestamp: 1,
@@ -734,7 +786,7 @@ describe('group chat agent workspace bridge runs', () => {
     const runData = runAndWait.mock.calls[0][0]
     expect(runAndWait.mock.calls[0][1]).not.toHaveProperty('timeoutMs')
     expect(runData.coding_agent_id).toBe(codingAgentId)
-    expect(runData.instructions).toContain(`You are "${agent === 'ekko' ? 'Ekko' : 'Claude'}", an AI assistant in the group chat room "Runtime Room"`)
+    expect(runData.instructions).toContain(`You are "${displayName}", an AI assistant in the group chat room "Runtime Room"`)
     expect(runData.instructions).toContain('- [Human member] Human: Room owner')
     expect(runData.group_system_prompt).toBe(runData.instructions)
     expect(runData.group_room_id).toBe('room-runtime')
@@ -745,6 +797,68 @@ describe('group chat agent workspace bridge runs', () => {
     expect(mockSocket.emit).toHaveBeenCalledWith('clarify.resolved', expect.objectContaining({
       roomId: 'room-runtime', clarify_id: `clarify-${agent}`, resolved: true,
     }))
+  })
+
+  it('keeps Pi group turns temporary while reinjecting the room history', async () => {
+    const { AgentClients } = await import('../../packages/server/src/services/hermes/group-chat/agent-clients')
+    const runAndWait = vi.fn(async () => ({ ok: true, output: 'done' }))
+    const disposeSession = vi.fn(async () => {})
+    const clients = new AgentClients()
+    clients.setChatRunService({
+      runAndWait,
+      abortSession: vi.fn(async () => {}),
+      disposeSession,
+    })
+    const client = await clients.createAgent({
+      agentId: 'agent-pi-history',
+      agent: 'pi',
+      profile: 'default',
+      name: 'Pi',
+      description: 'Keeps up with the room',
+      invited: 0,
+      backgroundDelegationEnabled: false,
+    } as any) as any
+    client.setStorage({
+      getRoom: vi.fn(() => ({ name: 'History Room', workspace: '' })),
+      getRoomMembers: vi.fn(() => []),
+      getRoomAgents: vi.fn(() => []),
+    })
+
+    await client.replyToMention('room-history', {
+      messageId: 'msg-1',
+      content: '@Pi remember alpha',
+      senderName: 'Human',
+      senderId: 'human-1',
+      timestamp: 1,
+      role: 'user',
+    })
+    await client.replyToMention('room-history', {
+      messageId: 'msg-2',
+      content: '@Pi what came before?',
+      senderName: 'Human',
+      senderId: 'human-1',
+      timestamp: 2,
+      role: 'user',
+    }, {
+      summary: '',
+      history: [{
+        id: 'msg-1',
+        timestamp: 1,
+        role: 'user',
+        senderName: 'Human',
+        content: '@Pi remember alpha',
+      }],
+    })
+
+    const firstRun = runAndWait.mock.calls[0][0]
+    const secondRun = runAndWait.mock.calls[1][0]
+    expect(firstRun.session_id).toMatch(/^gc_run_/)
+    expect(secondRun.session_id).toMatch(/^gc_run_/)
+    expect(secondRun.session_id).not.toBe(firstRun.session_id)
+    expect(String(secondRun.input)).toContain('Member "Human": @Pi remember alpha')
+    expect(disposeSession).toHaveBeenCalledTimes(2)
+    expect(disposeSession).toHaveBeenNthCalledWith(1, firstRun.session_id)
+    expect(disposeSession).toHaveBeenNthCalledWith(2, secondRun.session_id)
   })
 
   it('adds the workspace-scoped security policy only when a non-owner mentions the Agent', async () => {

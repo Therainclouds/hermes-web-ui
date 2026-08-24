@@ -27,6 +27,7 @@ export interface RoomInfo {
     agentHandoffUnlimited?: number
     createdAt?: number
     lastActiveAt?: number
+    agents?: RoomAgentSummary[]
 }
 
 export interface RoomAgentHandoffChain {
@@ -85,7 +86,7 @@ export interface RoomAgent {
     id: string
     roomId: string
     agentId: string
-    agent: 'hermes' | 'ekko' | 'codex' | 'claude'
+    agent: 'hermes' | 'ekko' | 'codex' | 'claude' | 'pi'
     profile: string
     provider: string
     model: string
@@ -103,8 +104,26 @@ export interface RoomAgent {
     historical?: boolean
 }
 
+export type RoomAgentSummary = Pick<
+    RoomAgent,
+    'id' | 'roomId' | 'agentId' | 'agent' | 'name' | 'avatar'
+>
+
+export interface GroupAgentActivity {
+    roomId: string
+    /** Stable gc_room_agents row identity. */
+    agentId: string
+    /** Stable response/run identity shared by every message in one Agent run. */
+    runId: string
+    agentName: string
+    agent: RoomAgent['agent']
+    avatar: string
+    status: 'compressing' | 'replying' | 'ready'
+}
+
 export interface RoomAgentInput {
-    agent: 'hermes' | 'ekko' | 'codex' | 'claude'
+    presetId?: string
+    agent: 'hermes' | 'ekko' | 'codex' | 'claude' | 'pi'
     profile: string
     provider?: string
     model?: string
@@ -114,6 +133,34 @@ export interface RoomAgentInput {
     description?: string
     avatar?: string
     invited?: boolean
+}
+
+export interface GroupAgentPreset extends Omit<RoomAgentInput, 'name' | 'description' | 'avatar'> {
+    id: string
+    name: string
+    description: string
+    avatar: string
+    available: boolean
+    validationError: string
+    createdAt: number
+    updatedAt: number
+}
+
+export type GroupAgentPresetInput = Omit<GroupAgentPreset, 'id' | 'available' | 'validationError' | 'createdAt' | 'updatedAt'>
+
+export function groupAgentPresetToRoomAgentInput(preset: GroupAgentPreset): RoomAgentInput {
+    return {
+        presetId: preset.id,
+        agent: preset.agent,
+        profile: preset.profile,
+        provider: preset.provider,
+        model: preset.model,
+        apiMode: preset.agent === 'hermes' ? undefined : preset.apiMode,
+        reasoningEffort: preset.reasoningEffort,
+        name: preset.name,
+        description: preset.description,
+        avatar: preset.avatar,
+    }
 }
 
 export interface AgentAddResult {
@@ -170,6 +217,20 @@ export interface GroupChatMention {
     type: 'agent' | 'all'
     participantId?: string
     displayName: string
+}
+
+export interface GroupExecutionQueueItem {
+    id: string
+    roomId: string
+    messageId: string
+    targetAgentId: string
+    targetAgentName: string
+    requesterMemberId: string
+    textSummary: string
+    sequence: number
+    position: number
+    status: 'queued'
+    createdAt: number
 }
 
 export interface GroupWorkspaceDiffFile {
@@ -328,17 +389,29 @@ export async function cloneRoom(roomId: string, data?: { name?: string; inviteCo
     })
 }
 
-export async function listRooms(): Promise<{ rooms: RoomInfo[] }> {
-    return request('/api/hermes/group-chat/rooms')
+export async function listRooms(options: { offset?: number; limit?: number } = {}): Promise<{
+    rooms: RoomInfo[]
+    total?: number
+    offset?: number
+    limit?: number
+    hasMore?: boolean
+}> {
+    const params = new URLSearchParams()
+    if (options.offset != null) params.set('offset', String(options.offset))
+    if (options.limit != null) params.set('limit', String(options.limit))
+    const query = params.toString()
+    return request(`/api/hermes/group-chat/rooms${query ? `?${query}` : ''}`)
 }
 
 export async function getRoomDetail(
     roomId: string,
-    options: { offset?: number; limit?: number } = {},
-): Promise<{ room: RoomInfo; messages: ChatMessage[]; agents: RoomAgent[]; members: MemberInfo[]; handoffChains?: RoomAgentHandoffChain[]; total?: number; offset?: number; limit?: number; hasMore?: boolean }> {
+    options: { offset?: number; limit?: number; before?: string; history?: boolean } = {},
+): Promise<{ room: RoomInfo; messages: ChatMessage[]; agents: RoomAgent[]; members: MemberInfo[]; handoffChains?: RoomAgentHandoffChain[]; total?: number; offset?: number; limit?: number; hasMore?: boolean; historyTruncated?: boolean }> {
     const params = new URLSearchParams()
     if (options.offset != null) params.set('offset', String(options.offset))
     if (options.limit != null) params.set('limit', String(options.limit))
+    if (options.before) params.set('before', options.before)
+    if (options.history) params.set('history', '1')
     const query = params.toString()
     return request(`/api/hermes/group-chat/rooms/${roomId}${query ? `?${query}` : ''}`)
 }
@@ -360,6 +433,33 @@ export async function addAgent(roomId: string, data: RoomAgentInput): Promise<{ 
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
+    })
+}
+
+export async function listGroupAgentPresets(profile?: string): Promise<{ presets: GroupAgentPreset[] }> {
+    const query = profile ? `?profile=${encodeURIComponent(profile)}` : ''
+    return request(`/api/hermes/group-chat/agent-presets${query}`)
+}
+
+export async function createGroupAgentPreset(data: GroupAgentPresetInput): Promise<{ preset: GroupAgentPreset }> {
+    return request('/api/hermes/group-chat/agent-presets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+    })
+}
+
+export async function updateGroupAgentPreset(id: string, data: GroupAgentPresetInput): Promise<{ preset: GroupAgentPreset }> {
+    return request(`/api/hermes/group-chat/agent-presets/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+    })
+}
+
+export async function deleteGroupAgentPreset(id: string): Promise<{ success: boolean }> {
+    return request(`/api/hermes/group-chat/agent-presets/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
     })
 }
 
@@ -605,9 +705,11 @@ export async function startGroupDocumentReading(roomId: string, fileId: string, 
 }
 
 export async function listGroupWorkspaceFiles(roomId: string, path = ''): Promise<{
-    entries: Array<{ name: string; path: string; absolutePath?: string; isDir: boolean; size: number; modTime: string }>
+    entries: import('./files').FileEntry[]
     path: string
     absolutePath?: string
+    gitStatus?: import('./files').GitFileStatus
+    gitStatusCount?: number
 }> {
     const params = new URLSearchParams()
     if (path) params.set('path', path)
@@ -618,6 +720,14 @@ export async function listGroupWorkspaceFiles(roomId: string, path = ''): Promis
 export async function readGroupWorkspaceFile(roomId: string, path: string): Promise<{ content: string; path: string; size: number }> {
     const params = new URLSearchParams({ path })
     return request(`/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/workspace-file/read?${params}`)
+}
+
+export async function fetchGroupWorkspaceFileDiff(
+    roomId: string,
+    path: string,
+): Promise<import('./files').WorkspaceFileDiff> {
+    const params = new URLSearchParams({ path })
+    return request(`/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/workspace-file/diff?${params}`)
 }
 
 export async function fetchGroupWorkspaceFileBlob(roomId: string, path: string, signal?: AbortSignal): Promise<Blob> {

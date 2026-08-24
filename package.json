@@ -71,7 +71,8 @@
     "prepublishOnly": "npm run build",
     "release:npm": "npm publish --access public",
     "claude": "claude --dangerously-skip-permissions",
-    "test:workflow-live": "vite-node scripts/workflow-live-acceptance.ts"
+    "test:workflow-live": "vite-node scripts/workflow-live-acceptance.ts",
+    "test:pi-rpc-real": "cross-env PI_REAL_RPC_E2E=1 vitest run tests/server/pi-rpc-real.test.ts"
   },
   "files": [
     "bin/",

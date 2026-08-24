@@ -40,6 +40,17 @@ onMounted(() => {
     automaticLayout: true,
     tabSize: 2,
     wordWrap: 'on',
+    overviewRulerLanes: 0,
+    hideCursorInOverviewRuler: true,
+    overviewRulerBorder: false,
+    scrollbar: {
+      vertical: 'hidden',
+      horizontal: 'hidden',
+      handleMouseWheel: true,
+      alwaysConsumeMouseWheel: false,
+      verticalScrollbarSize: 0,
+      horizontalScrollbarSize: 0,
+    },
   })
 
   editor.onDidChangeModelContent(() => {
@@ -113,9 +124,14 @@ function handleClose() {
 @use '@/styles/variables' as *;
 
 .file-editor {
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
+  width: 100%;
   height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .editor-header {
@@ -143,6 +159,8 @@ function handleClose() {
 
 .editor-container {
   flex: 1;
+  width: 100%;
+  min-width: 0;
   min-height: 0;
 }
 </style>

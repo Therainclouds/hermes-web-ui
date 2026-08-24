@@ -1,10 +1,14 @@
 import type { Server, Socket } from 'socket.io'
-import { codingAgentRunManager } from '../../agent-runner/coding-agent-run-manager'
+import { codingAgentRunManager } from '../../coding-agents/runtime/run-manager'
 import {
   sendCodingAgentRunInput,
   startCodingAgentRun,
   type CodingAgentId as ExternalCodingAgentId,
 } from '../../coding-agents'
+import {
+  handleCodingAgentSessionCommand,
+  parseCodingAgentSessionCommand,
+} from '../../coding-agents/session-command'
 import { getOrCreateSession } from './compression'
 import { contentBlocksToString, convertContentBlocksForCodingAgent } from './content-blocks'
 import type { ContentBlock, SessionState } from './types'
@@ -34,6 +38,7 @@ export interface CodingAgentRunSocketData {
   apiMode?: any
   api_mode?: any
   reasoning_effort?: string
+  instructions?: string
   session_source?: 'global_agent' | 'workflow' | 'group_chat'
   group_system_prompt?: string
   group_room_id?: string
@@ -44,6 +49,7 @@ function codingAgentId(data: CodingAgentRunSocketData): ExternalCodingAgentId {
   const value = data.coding_agent_id || data.agent_id || 'claude-code'
   if (value === 'codex') return 'codex'
   if (value === 'dsh') return 'dsh'
+  if (value === 'pi') return 'pi'
   return 'claude-code'
 }
 
@@ -70,12 +76,21 @@ export async function handleCodingAgentRun(
       ? 'workflow'
       : 'coding_agent'
 
+  if (typeof data.input === 'string') {
+    const command = parseCodingAgentSessionCommand(data.input)
+    if (command) {
+      await handleCodingAgentSessionCommand(nsp, socket, data, command, profile, sessionMap)
+      return
+    }
+  }
+
   let runId = codingAgentRunManager.runIdForSession(sessionId)
   const mode = data.mode === 'global' ? 'global' : 'scoped'
   const storedSession = getSession(sessionId)
   const launchProvider = data.provider || (mode === 'scoped' ? storedSession?.provider || undefined : undefined)
   const launchModel = data.model || (mode === 'scoped' ? storedSession?.model || undefined : undefined)
   const launchApiMode = data.apiMode || data.api_mode || (mode === 'scoped' ? storedSession?.api_mode || undefined : undefined)
+  const launchReasoningEffort = data.reasoning_effort ?? (mode === 'scoped' ? storedSession?.reasoning_effort || undefined : undefined)
   const groupSystemPrompt = String(data.group_system_prompt || '').trim()
   const groupRoomId = String(data.group_room_id || '').trim()
   const groupAgentId = String(data.group_agent_id || '').trim()
@@ -88,7 +103,7 @@ export async function handleCodingAgentRun(
     provider: launchProvider,
     model: launchModel,
     apiMode: launchApiMode,
-    reasoningEffort: data.reasoning_effort,
+    reasoningEffort: launchReasoningEffort,
   })) {
     codingAgentRunManager.stop(sessionId, { reportClosed: false })
     runId = undefined
@@ -104,7 +119,7 @@ export async function handleCodingAgentRun(
       baseUrl: data.baseUrl || data.base_url,
       apiKey: data.apiKey || data.api_key,
       apiMode: launchApiMode,
-      reasoningEffort: data.reasoning_effort,
+      reasoningEffort: launchReasoningEffort,
       sessionSource: data.session_source,
       ...(groupSystemPrompt ? { groupSystemPrompt } : {}),
       ...(groupRoomId && groupAgentId
@@ -134,9 +149,10 @@ export async function handleCodingAgentRun(
     const codingInput = convertContentBlocksForCodingAgent(data.input)
     const socketUser = socket.data?.user as AuthenticatedUser | undefined
     await writeModelRunProfileToken(socketUser, profile)
-    const includeBaseSystemPrompt = agentId === 'claude-code' || agentId === 'codex'
+    const includeBaseSystemPrompt = agentId === 'claude-code' || agentId === 'codex' || agentId === 'pi'
     const runPrompt = [
       groupSystemPrompt || (includeBaseSystemPrompt ? getSystemPrompt(undefined, { source: data.session_source || data.source }) : ''),
+      String(data.instructions || '').trim() === groupSystemPrompt ? '' : String(data.instructions || '').trim(),
     ].filter(Boolean).join('\n')
     const sent = await (Array.isArray(data.input)
       ? sendCodingAgentRunInput(

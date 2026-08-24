@@ -92,9 +92,10 @@ const hasServerHandoff = computed(() => (
 ))
 const groupAgentTypeOptions = computed<Array<{ label: string; value: GroupAgentType }>>(() => [
   { label: 'Hermes', value: 'hermes' },
-  { label: 'Claude Code', value: 'claude' },
+  { label: 'Ekko', value: 'ekko' },
+  { label: 'Claude', value: 'claude' },
   { label: 'Codex', value: 'codex' },
-  { label: 'Ekko Agent', value: 'ekko' },
+  { label: 'Pi', value: 'pi' },
 ])
 const profileOptions = computed(() => profileAgents.value.map(agent => ({
   label: agent.profile,
@@ -110,7 +111,9 @@ function getAgentModelGroups(profile: string) {
         ? 'ekko-agent'
         : selectedAgentType.value === 'claude'
           ? 'claude-code'
-          : 'codex'
+          : selectedAgentType.value === 'pi'
+            ? 'pi'
+            : 'codex'
       return canScopedCodingAgentUseProvider(codingAgentId, group.provider)
     })
 }
@@ -243,6 +246,7 @@ function syncAgentModelSelection(profile: string): void {
   const defaults = getDefaultAgentModel(profile)
   selectedAgentProvider.value = defaults.provider
   selectedAgentModel.value = defaults.model
+  selectedAgentReasoningEffort.value = ''
   syncAgentApiMode()
 }
 
@@ -259,7 +263,13 @@ function handleAgentProfileChange(profile: string): void {
 function handleAgentProviderChange(provider: string): void {
   selectedAgentProvider.value = provider
   selectedAgentModel.value = agentModelOptions.value[0]?.value || ''
+  selectedAgentReasoningEffort.value = ''
   syncAgentApiMode()
+}
+
+function handleAgentModelChange(model: string): void {
+  selectedAgentModel.value = model
+  selectedAgentReasoningEffort.value = ''
 }
 
 function applyAgentConfiguration(agent: RemoteGroupAgentDescriptor): void {
@@ -432,14 +442,14 @@ function decodePairingCode(value: string): {
   agent: RemoteGroupAgentDescriptor
 } {
   const trimmed = value.trim()
-  if (!trimmed.startsWith('HGC1.') || trimmed.length > 2_100_000) {
+  if (!trimmed.startsWith('HGC2.') || trimmed.length > 2_100_000) {
     throw new Error(t('groupChat.agentLinkInvalidPairingCode'))
   }
   const encoded = trimmed.slice(5).replace(/-/g, '+').replace(/_/g, '/')
   const padded = encoded.padEnd(Math.ceil(encoded.length / 4) * 4, '=')
   const bytes = Uint8Array.from(atob(padded), char => char.charCodeAt(0))
   const parsed = JSON.parse(new TextDecoder().decode(bytes))
-  if (parsed?.protocolVersion !== 1 || !parsed?.cloudOrigin || !parsed?.pairingTicket || !parsed?.agent) {
+  if (parsed?.protocolVersion !== 2 || !parsed?.cloudOrigin || !parsed?.pairingTicket || !parsed?.agent) {
     throw new Error(t('groupChat.agentLinkInvalidPairingCode'))
   }
   return parsed
@@ -636,11 +646,12 @@ onUnmounted(() => {
           <div class="field">
             <label>{{ t('models.models') }}</label>
             <NSelect
-              v-model:value="selectedAgentModel"
+              :value="selectedAgentModel"
               :options="agentModelOptions"
               :placeholder="t('models.selectModel')"
               :disabled="waitingForApproval || !selectedAgentProvider"
               filterable
+              @update:value="handleAgentModelChange"
             />
           </div>
           <div v-if="selectedAgentType !== 'hermes'" class="field">

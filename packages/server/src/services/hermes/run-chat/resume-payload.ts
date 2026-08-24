@@ -1,6 +1,7 @@
 import type { SessionMessage } from './types'
 
 export const RESUME_TOOL_RESULT_DISPLAY_LIMIT = 1_000
+export const RESUME_MESSAGE_PAGE_LIMIT = 150
 
 const JSON_STRING_DISPLAY_LIMIT = 200
 const JSON_MAX_DEPTH = 6
@@ -12,6 +13,32 @@ const TRUNCATED_MARKER = '... (truncated)'
 
 type ResumeMessage = SessionMessage & Record<string, unknown>
 type RunEventRecord = { event: string; data: any }
+
+export type OutboundToolMessage = Record<string, unknown> & {
+  role?: string
+  content?: string
+  display_role?: string | null
+  display_content?: string | null
+  tool_name?: string | null
+}
+
+export interface OutboundToolMessageOptions {
+  preserveToolNames?: readonly string[]
+}
+
+export interface ResumeMessagePageOptions {
+  limit?: number
+  messageTotal?: number
+  messageStateBaselineCount?: number
+}
+
+export interface ResumeMessagePage {
+  messages: SessionMessage[]
+  messageTotal: number
+  messageLoadedCount: number
+  messagePageLimit: number
+  hasMoreBefore: boolean
+}
 
 function stringifyLength(value: unknown): number {
   try {
@@ -114,7 +141,7 @@ function truncateToolResult(content: string): string {
 }
 
 function truncateMessageField(
-  target: ResumeMessage,
+  target: OutboundToolMessage,
   field: 'content' | 'display_content',
 ): boolean {
   const content = target[field]
@@ -128,6 +155,29 @@ function truncateMessageField(
 }
 
 /**
+ * Bound one display-only tool message without changing the persisted/runtime
+ * message. Consumers may exempt tool payloads that are fetched and rendered as
+ * first-class data instead of ordinary text (for example workspace diffs).
+ */
+export function buildOutboundToolMessage<T extends OutboundToolMessage>(
+  message: T,
+  options: OutboundToolMessageOptions = {},
+): T {
+  const isToolResult = message.role === 'tool'
+    || message.role === 'moa'
+    || message.display_role === 'tool'
+  if (!isToolResult) return message
+
+  const toolName = typeof message.tool_name === 'string' ? message.tool_name : ''
+  if (toolName && options.preserveToolNames?.includes(toolName)) return message
+
+  const outbound = { ...message } as T
+  const contentTruncated = truncateMessageField(outbound, 'content')
+  const displayContentTruncated = truncateMessageField(outbound, 'display_content')
+  return contentTruncated || displayContentTruncated ? outbound : message
+}
+
+/**
  * Build the display-only message page emitted by `resume`.
  *
  * The session state and persisted history intentionally retain complete tool
@@ -135,17 +185,41 @@ function truncateMessageField(
  * display threshold previously enforced by the Studio client.
  */
 export function buildResumeMessages(messages: SessionMessage[]): SessionMessage[] {
-  return messages.map((message) => {
-    const isToolResult = message.role === 'tool'
-      || message.role === 'moa'
-      || message.display_role === 'tool'
-    if (!isToolResult) return message
+  return messages.map(message => buildOutboundToolMessage(message as ResumeMessage) as SessionMessage)
+}
 
-    const outbound = { ...message } as ResumeMessage
-    const contentTruncated = truncateMessageField(outbound, 'content')
-    const displayContentTruncated = truncateMessageField(outbound, 'display_content')
-    return contentTruncated || displayContentTruncated ? outbound : message
-  })
+/**
+ * Page the display-only resume snapshot without trimming runtime state. The
+ * persisted total can be larger than the in-memory window after a cold load,
+ * while the in-memory window can grow during a long-lived server process.
+ */
+export function buildResumeMessagePage(
+  messages: SessionMessage[],
+  options: ResumeMessagePageOptions = {},
+): ResumeMessagePage {
+  const requestedLimit = Number(options.limit)
+  const messagePageLimit = Number.isFinite(requestedLimit) && requestedLimit > 0
+    ? Math.floor(requestedLimit)
+    : RESUME_MESSAGE_PAGE_LIMIT
+  const persistedTotal = Number(options.messageTotal)
+  const stateBaselineCount = Number(options.messageStateBaselineCount)
+  const appendedCount = Number.isFinite(stateBaselineCount)
+    ? Math.max(0, messages.length - Math.floor(stateBaselineCount))
+    : 0
+  const messageTotal = Math.max(
+    messages.length,
+    Number.isFinite(persistedTotal) ? Math.floor(persistedTotal) + appendedCount : 0,
+  )
+  const page = messages.slice(-messagePageLimit)
+  const messageLoadedCount = Math.min(messageTotal, messagePageLimit)
+
+  return {
+    messages: buildResumeMessages(page),
+    messageTotal,
+    messageLoadedCount,
+    messagePageLimit,
+    hasMoreBefore: messageTotal > messageLoadedCount,
+  }
 }
 
 /**

@@ -28,6 +28,7 @@ from bridge_runtime import (
     _jsonable,
     _load_cfg,
     _load_enabled_toolsets,
+    _load_fallback_model,
     _load_reasoning_config,
     _load_service_tier,
     _mcp_tool_names_from_names,
@@ -184,7 +185,8 @@ class AgentPool:
         self._lock = threading.RLock()
         self._db = SessionDbHolder()
         self._approval_requests: dict[str, queue.Queue[str]] = {}
-        self._gateway_approval_requests: dict[str, str] = {}
+        self._approval_request_generations: dict[str, tuple[str, str]] = {}
+        self._gateway_approval_requests: dict[str, tuple[str, str, str]] = {}
         self._gateway_approval_pattern_keys: dict[str, list[str]] = {}
         self._compression_requests: dict[str, queue.Queue[dict[str, Any]]] = {}
         self._background_notification_claims: dict[tuple[str, str], dict[str, Any]] = {}
@@ -456,6 +458,7 @@ class AgentPool:
 
                 agent = AIAgent(
                     model=resolved_model,
+                    fallback_model=_load_fallback_model(cfg),
                     max_iterations=_cfg_max_turns(cfg, 90),
                     provider=runtime.get("provider"),
                     base_url=runtime.get("base_url"),
@@ -485,6 +488,7 @@ class AgentPool:
                 )
                 agent.compression_enabled = False
                 self._install_compression_hook(agent, session_id)
+                self._install_prepersist_dedup_hook(agent)
                 mcp_tool_names = self._mcp_tool_names(self._agent_tool_names(getattr(agent, "tools", None) or []))
 
                 session = AgentSession(
@@ -773,6 +777,24 @@ class AgentPool:
                 profile or str(session.config.get("profile") or "default"),
                 add_note=True,
             )
+
+    def _install_prepersist_dedup_hook(self, agent: Any) -> None:
+        """Skip one bridge-pre-persisted user message in the native DB flush."""
+        original = getattr(agent, "_persist_session", None)
+        if not callable(original) or getattr(original, "_hermes_bridge_prepersist_dedup_wrapper", False):
+            return
+
+        def wrapped_persist_session(messages: Any, conversation_history: Any = None, *args: Any, **kwargs: Any):
+            if getattr(agent, "_hermes_bridge_prepersisted_user_pending", False) and isinstance(messages, list):
+                for message in reversed(messages):
+                    if isinstance(message, dict) and message.get("role") == "user" and not message.get("_db_persisted"):
+                        message["_db_persisted"] = True
+                        agent._hermes_bridge_prepersisted_user_pending = False
+                        break
+            return original(messages, conversation_history, *args, **kwargs)
+
+        wrapped_persist_session._hermes_bridge_prepersist_dedup_wrapper = True  # type: ignore[attr-defined]
+        agent._persist_session = wrapped_persist_session
 
     def _install_compression_hook(self, agent: Any, session_id: str) -> None:
         original = getattr(agent, "_compress_context", None)
@@ -1350,10 +1372,13 @@ class AgentPool:
             approval_id = uuid.uuid4().hex
             response_queue: queue.Queue[str] = queue.Queue(maxsize=1)
             with self._lock:
+                run_id = str(self._sessions.get(session_id).current_run_id or "") if self._sessions.get(session_id) else ""
                 self._approval_requests[approval_id] = response_queue
+                self._approval_request_generations[approval_id] = (session_id, run_id)
             choices = ["once", "session", "always", "deny"] if allow_permanent else ["once", "session", "deny"]
             self._append_event(session_id, {
                 "event": "approval.requested",
+                "run_id": run_id,
                 "approval_id": approval_id,
                 "command": str(command or ""),
                 "description": str(description or ""),
@@ -1368,8 +1393,10 @@ class AgentPool:
             finally:
                 with self._lock:
                     self._approval_requests.pop(approval_id, None)
+                    self._approval_request_generations.pop(approval_id, None)
             self._append_event(session_id, {
                 "event": "approval.resolved",
+                "run_id": run_id,
                 "approval_id": approval_id,
                 "choice": choice,
             })
@@ -1446,11 +1473,14 @@ class AgentPool:
             approval_id = uuid.uuid4().hex
             choices = ["once", "session", "always", "deny"]
             pattern_keys = _approval_pattern_keys(approval_data)
+            request_id = str(approval_data.get("request_id") or "").strip()
             with self._lock:
-                self._gateway_approval_requests[approval_id] = session_id
+                run_id = str(self._sessions.get(session_id).current_run_id or "") if self._sessions.get(session_id) else ""
+                self._gateway_approval_requests[approval_id] = (session_id, run_id, request_id)
                 self._gateway_approval_pattern_keys[approval_id] = pattern_keys
             self._append_event(session_id, {
                 "event": "approval.requested",
+                "run_id": run_id,
                 "approval_id": approval_id,
                 "command": str(approval_data.get("command") or ""),
                 "description": str(approval_data.get("description") or ""),
@@ -1503,6 +1533,11 @@ class AgentPool:
                 role="user",
                 content=user_content,
             )
+
+            # The native agent flush receives its own live message list. Mark
+            # exactly one user entry in that list only after this durable write
+            # succeeds, so fallback persistence remains available on failures.
+            session.agent._hermes_bridge_prepersisted_user_pending = True
 
             # AIAgent will build messages as conversation_history + current user.
             # Since the current user was pre-persisted above, align the flush
@@ -1887,6 +1922,9 @@ class AgentPool:
                     session.last_used_at = time.time()
                 self._apply_pending_session_model_switch(session)
             finally:
+                # A failed or interrupted run may never reach a native flush.
+                # Do not let its one-shot marker affect a later fallback turn.
+                session.agent._hermes_bridge_prepersisted_user_pending = False
                 with self._lock:
                     self._approval_handlers.pop(session.session_id, None)
                 try:
@@ -2010,6 +2048,7 @@ class AgentPool:
             raise KeyError(f"unknown session: {session_id}")
         with session.lock:
             self._cancel_boundary_run(session)
+            interrupted_run_id = str(session.current_run_id or "")
         background_delegation_ids = self._background_delegation_ids_for_session(session_id)
         with self._lock:
             self._suppressed_background_delegations.update(background_delegation_ids)
@@ -2021,6 +2060,7 @@ class AgentPool:
         if not hasattr(session.agent, "interrupt"):
             raise RuntimeError("agent does not support interrupt")
         session.agent.interrupt(message)
+        self._cancel_pending_approvals_for_generation(session_id, interrupted_run_id)
         deadline = time.time() + 10.0
         synced = False
         while time.time() < deadline:
@@ -2036,6 +2076,50 @@ class AgentPool:
             "background_interrupted": background_interrupted,
             "background_delegation_ids": background_delegation_ids,
         }
+
+    def _cancel_pending_approvals_for_generation(self, session_id: str, run_id: str) -> int:
+        if not session_id or not run_id:
+            return 0
+        terminal_queues: list[queue.Queue[str]] = []
+        gateway_approvals: list[tuple[str, str, list[str]]] = []
+        with self._lock:
+            for approval_id, approval_generation in list(self._approval_request_generations.items()):
+                if approval_generation != (session_id, run_id):
+                    continue
+                response_queue = self._approval_requests.pop(approval_id, None)
+                self._approval_request_generations.pop(approval_id, None)
+                if response_queue is not None:
+                    terminal_queues.append(response_queue)
+            for approval_id, approval_generation in list(self._gateway_approval_requests.items()):
+                if approval_generation[:2] != (session_id, run_id):
+                    continue
+                self._gateway_approval_requests.pop(approval_id, None)
+                gateway_approvals.append((
+                    approval_id,
+                    approval_generation[2],
+                    self._gateway_approval_pattern_keys.pop(approval_id, []),
+                ))
+        for response_queue in terminal_queues:
+            try:
+                response_queue.put_nowait("deny")
+            except queue.Full:
+                pass
+        for approval_id, request_id, _pattern_keys in gateway_approvals:
+            try:
+                from tools.approval import resolve_gateway_approval
+
+                if request_id:
+                    resolve_gateway_approval(session_id, "deny", request_id=request_id)
+            except Exception:
+                pass
+            self._append_event(session_id, {
+                "event": "approval.resolved",
+                "run_id": run_id,
+                "approval_id": approval_id,
+                "choice": "deny",
+                "reason": "Session interrupted",
+            })
+        return len(terminal_queues) + len(gateway_approvals)
 
     def request_boundary_interrupt(
         self,
@@ -2136,31 +2220,39 @@ class AgentPool:
         if cleaned not in {"once", "session", "always", "deny"}:
             cleaned = "deny"
         with self._lock:
-            response_queue = self._approval_requests.get(approval_id)
+            response_queue = self._approval_requests.pop(approval_id, None)
+            if response_queue is not None:
+                self._approval_request_generations.pop(approval_id, None)
+                try:
+                    response_queue.put_nowait(cleaned)
+                except queue.Full:
+                    pass
         if response_queue is None:
             with self._lock:
-                gateway_session_id = self._gateway_approval_requests.pop(approval_id, None)
+                gateway_generation = self._gateway_approval_requests.pop(approval_id, None)
                 pattern_keys = self._gateway_approval_pattern_keys.pop(approval_id, [])
-            if gateway_session_id is None:
+            if gateway_generation is None:
                 return {"approval_id": approval_id, "resolved": False, "choice": cleaned}
+            gateway_session_id, gateway_run_id, gateway_request_id = gateway_generation
             try:
                 from tools.approval import resolve_gateway_approval
 
-                resolved = resolve_gateway_approval(gateway_session_id, cleaned) > 0
+                resolved = bool(gateway_request_id) and resolve_gateway_approval(
+                    gateway_session_id,
+                    cleaned,
+                    request_id=gateway_request_id,
+                ) > 0
             except Exception:
                 resolved = False
             if resolved:
                 _persist_execute_code_approval_choice(gateway_session_id, pattern_keys, cleaned)
             self._append_event(gateway_session_id, {
                 "event": "approval.resolved",
+                "run_id": gateway_run_id,
                 "approval_id": approval_id,
                 "choice": cleaned,
             })
             return {"approval_id": approval_id, "resolved": resolved, "choice": cleaned}
-        try:
-            response_queue.put_nowait(cleaned)
-        except queue.Full:
-            pass
         return {"approval_id": approval_id, "resolved": True, "choice": cleaned}
 
     def respond_clarify(self, clarify_id: str, response: str) -> dict[str, Any]:

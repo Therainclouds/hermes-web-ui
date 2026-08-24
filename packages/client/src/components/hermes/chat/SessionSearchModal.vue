@@ -7,6 +7,7 @@ import { fetchSessions, searchSessions, type SessionSearchResult, type SessionSu
 import { useChatStore } from '@/stores/hermes/chat'
 import { useSessionSearch } from '@/composables/useSessionSearch'
 import { useMessage } from '@/composables/useAppMessage'
+import type { Session } from '@/stores/hermes/chat'
 
 const { t } = useI18n()
 const message = useMessage()
@@ -134,6 +135,14 @@ async function openItem(item: SearchItem) {
 
   await ensureChatSessionsLoaded()
   if (!chatStore.sessions.some(session => session.id === item.id) && typeof chatStore.addOrUpdateSession === 'function') {
+    const isCodingAgentSession = item.source === 'coding_agent' || item.agent === 'claude' || item.agent === 'codex' || item.agent === 'pi'
+    const codingAgentId: Session['codingAgentId'] = item.agent === 'codex'
+      ? 'codex'
+      : item.agent === 'pi'
+        ? 'pi'
+        : item.agent === 'claude'
+          ? 'claude-code'
+          : undefined
     chatStore.addOrUpdateSession({
       id: item.id,
       profile: item.profile || 'default',
@@ -148,6 +157,15 @@ async function openItem(item: SearchItem) {
       endedAt: item.ended_at != null ? Math.round(item.ended_at * 1000) : null,
       lastActiveAt: item.last_active != null ? Math.round(item.last_active * 1000) : undefined,
       workspace: item.workspace || null,
+      agent: item.agent || undefined,
+      agentSessionId: item.agent_session_id || undefined,
+      agentNativeSessionId: item.agent_native_session_id || undefined,
+      codingAgentId,
+      codingAgentMode: isCodingAgentSession
+        ? (item.agent_mode === 'global' || item.agent_mode === 'scoped'
+            ? item.agent_mode
+            : item.provider === 'global' ? 'global' : 'scoped')
+        : undefined,
     })
   }
   await chatStore.switchSession(item.id, messageId)
@@ -284,10 +302,10 @@ onUnmounted(() => {
             >
               <div class="result-main">
                 <div class="result-title-row">
-                  <span class="result-title">{{ getItemTitle(item) }}</span>
+                  <span class="result-title" dir="auto">{{ getItemTitle(item) }}</span>
                   <span class="result-source">{{ formatSource(item.source) }}</span>
                 </div>
-                <div class="result-snippet">
+                <div class="result-snippet" dir="auto">
                   {{ hasQuery ? item.snippet || t('chat.searchNoSnippet') : item.preview || t('chat.searchRecent') }}
                 </div>
               </div>

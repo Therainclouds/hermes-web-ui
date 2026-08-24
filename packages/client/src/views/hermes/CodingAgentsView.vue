@@ -29,8 +29,8 @@ import { getProfileDisplayName } from '@/utils/hermes/profile-display'
 
 type CodingAgentBlock = {
   id: CodingAgentId
-  tool: 'Claude Code' | 'Codex' | 'DeepSeek Harness'
-  provider: 'Anthropic' | 'OpenAI' | 'DeepSeek'
+  tool: 'Claude' | 'Codex' | 'DeepSeek Harness' | 'Pi'
+  provider: 'Anthropic' | 'OpenAI' | 'DeepSeek' | 'Pi'
 }
 
 type ConfigFileEntry = {
@@ -59,31 +59,37 @@ const installing = ref<Record<CodingAgentId, boolean>>({
   'claude-code': false,
   codex: false,
   dsh: false,
+  pi: false,
 })
 const installFailureHints = ref<Record<CodingAgentId, string>>({
   'claude-code': '',
   codex: '',
   dsh: '',
+  pi: '',
 })
 const installFailureDetails = ref<Record<CodingAgentId, string>>({
   'claude-code': '',
   codex: '',
   dsh: '',
+  pi: '',
 })
 const deleting = ref<Record<CodingAgentId, boolean>>({
   'claude-code': false,
   codex: false,
   dsh: false,
+  pi: false,
 })
 const checkingUpdate = ref<Record<CodingAgentId, boolean>>({
   'claude-code': false,
   codex: false,
   dsh: false,
+  pi: false,
 })
 const updateInfo = ref<Record<CodingAgentId, CodingAgentUpdateResult | null>>({
   'claude-code': null,
   codex: null,
   dsh: null,
+  pi: null,
 })
 const launchModalVisible = ref(false)
 const launchLoading = ref(false)
@@ -101,15 +107,16 @@ const terminalCommand = ref('')
 const terminalKey = ref(0)
 
 const agentLogos: Record<CodingAgentBlock['tool'], string> = {
-  'Claude Code': '/coding-agents/claude-code.svg',
+  'Claude': '/coding-agents/claude-code.svg',
   Codex: '/coding-agents/codex-openai.png',
   'DeepSeek Harness': '/coding-agents/dsh.svg',
+  Pi: '/coding-agents/pi.svg',
 }
 
 const agentBlocks: CodingAgentBlock[] = [
   {
     id: 'claude-code',
-    tool: 'Claude Code',
+    tool: 'Claude',
     provider: 'Anthropic',
   },
   {
@@ -122,12 +129,17 @@ const agentBlocks: CodingAgentBlock[] = [
     tool: 'DeepSeek Harness',
     provider: 'DeepSeek',
   },
+  {
+    id: 'pi',
+    tool: 'Pi',
+    provider: 'Pi',
+  },
 ]
 
 const configFiles: Record<CodingAgentId, ConfigFileEntry[]> = {
   'claude-code': [
     { key: 'settings', path: '~/.claude/settings.json', language: 'json' },
-    { key: 'mcp', path: '~/.claude.json', language: 'json' },
+    { key: 'mcp', path: '~/.claude/mcp.json', language: 'json' },
     { key: 'prompt', path: '~/.claude/CLAUDE.md', language: 'markdown' },
   ],
   codex: [
@@ -140,6 +152,12 @@ const configFiles: Record<CodingAgentId, ConfigFileEntry[]> = {
     { key: 'patch', path: '~/.dsh/cordis.patch.yml', language: 'yaml' },
     { key: 'credentials', path: '~/.dsh/.credentials.yaml', language: 'yaml' },
     { key: 'cordis', path: '~/.deepseek-harness/cordis.yml', language: 'yaml' },
+  ],
+  pi: [
+    { key: 'auth', path: '~/.pi/agent/auth.json', language: 'json' },
+    { key: 'settings', path: '~/.pi/agent/settings.json', language: 'json' },
+    { key: 'agents', path: '~/.pi/agent/AGENTS.md', language: 'markdown' },
+    { key: 'mcp', path: '~/.pi/agent/mcp.json', language: 'json' },
   ],
 }
 
@@ -159,7 +177,15 @@ const configEditorStates = ref<Record<CodingAgentId, ConfigEditorState>>({
     saving: false,
   },
   dsh: {
+
     selectedKey: 'settings',
+    content: '',
+    originalContent: '',
+    loading: false,
+    saving: false,
+  },
+  pi: {
+    selectedKey: 'auth',
     content: '',
     originalContent: '',
     loading: false,
@@ -254,6 +280,8 @@ async function loadStatus() {
     tools.value = data.tools
     updateInfo.value['claude-code'] = null
     updateInfo.value.codex = null
+    updateInfo.value.dsh = null
+    updateInfo.value.pi = null
   } catch (err: any) {
     loadError.value = err?.message || t('codingAgents.loadFailed')
   } finally {
@@ -484,10 +512,16 @@ async function handleCheckUpdate(id: CodingAgentId) {
   }
 }
 
-onMounted(() => {
-  void loadStatus()
+onMounted(async () => {
+  await loadStatus()
   void loadConfigFile('claude-code', configFiles['claude-code'][0])
   void loadConfigFile('codex', configFiles.codex[1])
+  if (statusFor('dsh')?.installed) {
+    void loadConfigFile('dsh', configFiles.dsh[0])
+  }
+  if (statusFor('pi')?.installed) {
+    void loadConfigFile('pi', configFiles.pi[0])
+  }
 })
 </script>
 

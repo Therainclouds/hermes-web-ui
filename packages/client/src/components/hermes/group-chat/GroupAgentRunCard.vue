@@ -15,8 +15,10 @@ const props = withDefaults(defineProps<{
     members?: MemberInfo[]
     currentUserId?: string
     allowSpeech?: boolean
+    active?: boolean
 }>(), {
     allowSpeech: true,
+    active: false,
 })
 
 const emit = defineEmits<{
@@ -77,7 +79,11 @@ function handleToolListWheel(event: WheelEvent): void {
 
 <template>
     <div class="group-agent-run" :data-run-id="message.run_id || undefined">
-        <div class="run-avatar">
+        <div
+            class="run-avatar"
+            :class="{ 'run-avatar-active': active }"
+            :aria-busy="active"
+        >
             <GroupAgentMessageAvatar
                 v-if="agentInfo"
                 :agent="agentInfo"
@@ -99,23 +105,6 @@ function handleToolListWheel(event: WheelEvent): void {
                 <GroupAgentRobotIcon v-if="agentInfo" class="run-agent-icon" />
             </div>
             <div class="run-card" :class="{ streaming: message.isStreaming }">
-                <div v-if="transcriptItems.length" class="run-transcript">
-                    <div
-                        v-for="item in transcriptItems"
-                        :key="item.id"
-                        class="run-transcript-item"
-                        :data-message-id="item.id"
-                    >
-                        <GroupMessageItem
-                            :message="item"
-                            :agents="agents"
-                            :members="members"
-                            :current-user-id="currentUserId"
-                            :allow-speech="props.allowSpeech"
-                            embedded
-                        />
-                    </div>
-                </div>
                 <div
                     v-if="runToolItems.length"
                     class="run-tool-list"
@@ -130,6 +119,23 @@ function handleToolListWheel(event: WheelEvent): void {
                         v-for="item in runToolItems"
                         :key="item.id"
                         class="run-tool-item"
+                        :data-message-id="item.id"
+                    >
+                        <GroupMessageItem
+                            :message="item"
+                            :agents="agents"
+                            :members="members"
+                            :current-user-id="currentUserId"
+                            :allow-speech="props.allowSpeech"
+                            embedded
+                        />
+                    </div>
+                </div>
+                <div v-if="transcriptItems.length" class="run-transcript">
+                    <div
+                        v-for="item in transcriptItems"
+                        :key="item.id"
+                        class="run-transcript-item"
                         :data-message-id="item.id"
                     >
                         <GroupMessageItem
@@ -162,12 +168,84 @@ function handleToolListWheel(event: WheelEvent): void {
 }
 
 .run-avatar {
+    position: relative;
     width: 36px;
     height: 36px;
     flex: 0 0 36px;
     margin-top: 2px;
     overflow: visible;
-    border-radius: 8px;
+    border-radius: 50%;
+}
+
+.run-avatar-active::before {
+    position: absolute;
+    z-index: 0;
+    inset: -4px;
+    border-radius: 50%;
+    box-shadow:
+        0 0 0 2px #ff6b6b,
+        0 0 10px rgba(255, 107, 107, 0.4),
+        0 0 20px rgba(255, 107, 107, 0.2);
+    content: '';
+    animation: run-avatar-rainbow-glow 4s linear infinite;
+    pointer-events: none;
+}
+
+@keyframes run-avatar-rainbow-glow {
+    0% {
+        box-shadow:
+            0 0 0 2px #ff6b6b,
+            0 0 10px rgba(255, 107, 107, 0.4),
+            0 0 20px rgba(255, 107, 107, 0.2);
+    }
+
+    16.66% {
+        box-shadow:
+            0 0 0 2px #feca57,
+            0 0 10px rgba(254, 202, 87, 0.4),
+            0 0 20px rgba(254, 202, 87, 0.2);
+    }
+
+    33.33% {
+        box-shadow:
+            0 0 0 2px #48dbfb,
+            0 0 10px rgba(72, 219, 251, 0.4),
+            0 0 20px rgba(72, 219, 251, 0.2);
+    }
+
+    50% {
+        box-shadow:
+            0 0 0 2px #ff9ff3,
+            0 0 10px rgba(255, 159, 243, 0.4),
+            0 0 20px rgba(255, 159, 243, 0.2);
+    }
+
+    66.66% {
+        box-shadow:
+            0 0 0 2px #54a0ff,
+            0 0 10px rgba(84, 160, 255, 0.4),
+            0 0 20px rgba(84, 160, 255, 0.2);
+    }
+
+    83.33% {
+        box-shadow:
+            0 0 0 2px #5f27cd,
+            0 0 10px rgba(95, 39, 205, 0.4),
+            0 0 20px rgba(95, 39, 205, 0.2);
+    }
+
+    100% {
+        box-shadow:
+            0 0 0 2px #ff6b6b,
+            0 0 10px rgba(255, 107, 107, 0.4),
+            0 0 20px rgba(255, 107, 107, 0.2);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .run-avatar-active::before {
+        animation: none;
+    }
 }
 
 .run-column {
@@ -218,7 +296,7 @@ function handleToolListWheel(event: WheelEvent): void {
     flex-direction: column;
     width: 100%;
     min-width: 0;
-    max-height: 180px;
+    max-height: 360px;
     overflow-y: auto;
     scrollbar-width: thin;
 
@@ -239,7 +317,7 @@ function handleToolListWheel(event: WheelEvent): void {
     min-width: 0;
 }
 
-.run-transcript + .run-tool-list {
+.run-tool-list + .run-transcript {
     border-top: 1px solid rgba(var(--text-primary-rgb), 0.08);
 }
 

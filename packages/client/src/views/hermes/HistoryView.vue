@@ -56,7 +56,6 @@ const showContextMenu = ref(false)
 const contextMenuX = ref(0)
 const contextMenuY = ref(0)
 let hermesSessionsRequestId = 0
-
 const HISTORY_PAGE_SIZE = 150
 const HISTORY_GROUP_PAGE_SIZE = 50
 const sourceHasMore = ref<Record<string, boolean>>({})
@@ -179,6 +178,7 @@ function mapHistoryMessages(messages: HermesMessage[]): Session['messages'] {
       timestamp: m.timestamp * 1000,
       reasoning: m.reasoning || undefined,
       systemType: displayRole === 'command' ? 'command' : undefined,
+      runMarker: m.run_marker,
     }
 
     if (m.role === 'tool' || isHistoryMoaToolDisplay(m)) {
@@ -199,12 +199,12 @@ function mapHistoryMessages(messages: HermesMessage[]): Session['messages'] {
 }
 
 function codingAgentFields(summary: SessionSummary): Pick<Session, 'agent' | 'agentSessionId' | 'agentNativeSessionId' | 'codingAgentId' | 'codingAgentMode'> {
-  const isCodingAgentSession = summary.source === 'coding_agent' || summary.agent === 'claude' || summary.agent === 'codex' || summary.agent === 'dsh'
+  const isCodingAgentSession = summary.source === 'coding_agent' || summary.agent === 'claude' || summary.agent === 'codex' || summary.agent === 'dsh' || summary.agent === 'pi'
   return {
     agent: summary.agent || undefined,
     agentSessionId: summary.agent_session_id || undefined,
     agentNativeSessionId: summary.agent_native_session_id || undefined,
-    codingAgentId: summary.agent === 'codex' ? 'codex' : summary.agent === 'claude' ? 'claude-code' : summary.agent === 'dsh' ? 'dsh' : undefined,
+    codingAgentId: summary.agent === 'codex' ? 'codex' : summary.agent === 'pi' ? 'pi' : summary.agent === 'claude' ? 'claude-code' : summary.agent === 'dsh' ? 'dsh' : undefined,
     codingAgentMode: isCodingAgentSession
       ? (summary.agent_mode === 'global' || summary.agent_mode === 'scoped'
           ? summary.agent_mode
@@ -403,18 +403,21 @@ onUnmounted(() => {
   window.removeEventListener('hermes:open-page-sidebar', openPageSidebar)
 })
 
-watch([routeSessionId, routeProfile], async ([sessionId]) => {
-  if (!sessionId) {
-    historySessionId.value = null
-    historySession.value = null
-    return
-  }
-  if (!hermesSessionsLoaded.value) return
-  if (routeProfile.value && !hermesSessions.value.some(s => s.profile === routeProfile.value)) {
-    await loadHermesSessions()
-  }
-  await syncRouteSession()
-})
+watch(
+  [routeSessionId, routeProfile],
+  async ([sessionId]) => {
+    if (!sessionId) {
+      historySessionId.value = null
+      historySession.value = null
+      return
+    }
+    if (!hermesSessionsLoaded.value) return
+    if (routeProfile.value && !hermesSessions.value.some(s => s.profile === routeProfile.value)) {
+      await loadHermesSessions()
+    }
+    await syncRouteSession()
+  },
+)
 
 watch(() => profilesStore.activeProfileName, async () => {
   if (!hermesSessionsLoaded.value) return
@@ -1198,6 +1201,11 @@ function handleBatchDeleteConfirm() {
   padding: 6px 10px 4px;
   cursor: pointer;
   user-select: none;
+
+  &[role='button']:focus-visible {
+    outline: 2px solid rgba($accent-primary, 0.55);
+    outline-offset: -2px;
+  }
 }
 
 .session-group-header--static {
@@ -1236,6 +1244,7 @@ function handleBatchDeleteConfirm() {
     color: $accent-primary;
   }
 }
+
 
 .session-items {
   flex: 1;
