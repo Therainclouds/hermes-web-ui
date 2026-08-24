@@ -448,6 +448,8 @@ export async function buildDevicePackageRelease(options = {}) {
       healthcheckUrl,
       hostDependenciesPath: hostDependencies.relativePath,
       hostDependencies: hostDependencies.manifest,
+      installerScriptPath: 'scripts/install-device-package.sh',
+      installerScriptSha256: computeSha256(resolve(stageRoot, 'scripts/install-device-package.sh')),
     }
     if (sourceStageRoot) {
       manifest.sourceArtifactFormat = sourceArtifactFormat

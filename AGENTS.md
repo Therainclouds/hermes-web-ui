@@ -44,6 +44,7 @@ Use the smallest relevant check while iterating. Before a broad PR, run
 - Keep in-app updates orchestration-only unless a release plan explicitly enables a wider scope.
 - Do not make Hermes Agent upgrades the default side effect of Web UI updates.
 - Treat bootstrap, runtime reconcile, Web UI update, and Hermes Agent upgrade as separate seams.
+- **Modifying a script in `.github/device-package-release.json#packageAllowlist`** (e.g. `scripts/install-device-package.sh`, `scripts/hermes-web-ui-update-runner.sh`, `scripts/deploy-source-armbian.sh`) means devices will compare their on-disk install script against the manifest's `installerScriptSha256` on the next update. After such a change, verify `npm run build:device-package` re-emits a manifest whose `installerScriptPath` and `installerScriptSha256` are present, and ensure the change ships in the next device-package release (0.7.x tag). Without that, devices will refuse the update with `update_installer_script_stale` until the next release that includes the fix.
 - Register local API routes before proxy catch-all routes.
 - Use structured APIs and argument arrays instead of shell string construction.
 - Add user-facing strings to every locale file.

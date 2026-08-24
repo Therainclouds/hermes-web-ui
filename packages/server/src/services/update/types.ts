@@ -151,6 +151,15 @@ export interface DevicePackageManifest extends ManifestUpdateInfo {
   notesUrl: string
   size: number
   healthcheckUrl: string
+  /**
+   * Relative path inside the device package to the install script that runs
+   * the device-package update. Devices compare this path's on-disk sha256
+   * against `installerScriptSha256` to refuse updates with stale installers.
+   * Optional for backward compatibility with manifests published before
+   * this contract was introduced.
+   */
+  installerScriptPath?: string
+  installerScriptSha256?: string
 }
 
 export interface SourcePackageManifest extends ManifestUpdateInfo {

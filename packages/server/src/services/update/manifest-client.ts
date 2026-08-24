@@ -230,7 +230,19 @@ export async function fetchDevicePackageManifest(update: UpdateConfig = config.u
     healthcheckUrl: typeof payload.healthcheckUrl === 'string' && payload.healthcheckUrl.trim()
       ? payload.healthcheckUrl.trim()
       : update.healthcheckUrl,
+    installerScriptPath: typeof payload.installerScriptPath === 'string' && payload.installerScriptPath.trim()
+      ? normalizeInstallerScriptPath(payload.installerScriptPath)
+      : undefined,
+    installerScriptSha256: typeof payload.installerScriptSha256 === 'string' && payload.installerScriptSha256.trim()
+      ? payload.installerScriptSha256.trim().toLowerCase()
+      : undefined,
   }
+}
+
+function normalizeInstallerScriptPath(raw: string): string | undefined {
+  const trimmed = raw.trim().replace(/\\/g, '/').replace(/^\/+/, '')
+  if (!trimmed || trimmed.includes('..') || trimmed.includes('\0')) return undefined
+  return trimmed
 }
 
 export async function fetchSourcePackageManifest(update: UpdateConfig = config.update): Promise<SourcePackageManifest> {

@@ -555,6 +555,77 @@ describe('update controller', () => {
     )
   })
 
+  it('refuses the device package update when the on-disk installer does not match the manifest fingerprint', async () => {
+    process.env.WEBUI_UPDATE_STRATEGY = 'device-package'
+    process.env.WEBUI_UPDATE_MANIFEST_URL = 'https://updates.example.com/stable/manifest.json'
+    process.env.WEBUI_UPDATE_INSTALLER_SCRIPT = '/opt/hermes-web-ui/scripts/install-device-package.sh'
+    process.env.WEBUI_UPDATE_PACKAGE_TYPE = 'device-package'
+    process.env.WEBUI_UPDATE_CHANNEL = 'stable'
+
+    const onDiskScript = '#!/usr/bin/env bash\necho old\n'
+    const onDiskSha = createHash('sha256').update(onDiskScript).digest('hex')
+    const manifestSha = 'f'.repeat(64)
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      url: 'https://updates.example.com/stable/manifest.json',
+      arrayBuffer: async () => Buffer.from(JSON.stringify({
+        version: PUBLISHED_VERSION,
+        channel: 'stable',
+        sourceLabel: 'Device Manifest',
+        packageType: 'device-package',
+        artifactFormat: 'tar.gz',
+        packageUrl: 'https://updates.example.com/releases/v0.6.13/hermes-web-ui-device-v0.6.13.tar.gz',
+        sha256: 'a'.repeat(64),
+        releasedAt: '2026-06-09T00:00:00Z',
+        compatibleNodeRange: `>=${process.versions.node}`,
+        minCurrentVersion: '0.6.10',
+        installerScriptPath: 'scripts/install-device-package.sh',
+        installerScriptSha256: manifestSha,
+      })),
+    }))
+
+    const readFileSync = vi.fn((filePath: string) => {
+      if (String(filePath).endsWith('package.json')) {
+        return JSON.stringify({
+          name: 'hermes-web-ui',
+          version: '0.6.10',
+          repository: { url: 'https://github.com/EKKOLearnAI/hermes-web-ui.git' },
+        })
+      }
+      if (String(filePath).endsWith('install-device-package.sh')) {
+        return onDiskScript
+      }
+      return ''
+    })
+    const { handleUpdate, updateStatus, mocks } = await loadUpdateController({ readFileSync })
+    const ctx = createMockCtx()
+    const statusCtx = createMockCtx()
+
+    await handleUpdate(ctx)
+    for (let index = 0; index < 10; index += 1) {
+      await updateStatus(statusCtx)
+      await Promise.resolve()
+    }
+
+    expect(ctx.body).toEqual(expect.objectContaining({
+      success: false,
+      message: expect.stringContaining('install script is out of date'),
+    }))
+    expect(ctx.status).toBe(409)
+    expect(mocks.spawn).not.toHaveBeenCalledWith(
+      'sudo',
+      expect.arrayContaining(['systemctl', 'start', 'hermes-web-ui-update.service']),
+      expect.anything(),
+    )
+
+    const requestCall = mocks.writeFileSync.mock.calls.find(call => String(call[0]).endsWith('update-runner-request.json'))
+    expect(requestCall).toBeUndefined()
+
+    expect(onDiskSha).not.toBe(manifestSha)
+  })
+
   it('fails the source deployment task when the managed update service cannot be started', async () => {
     process.env.WEBUI_UPDATE_STRATEGY = 'source-deploy'
     process.env.WEBUI_UPDATE_SCRIPT = UPDATE_SCRIPT
