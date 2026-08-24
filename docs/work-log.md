@@ -1,6 +1,86 @@
 # Work Log
 
+## 2026-08-25 · meeting 分支部署到设备（192.168.5.91）与部署问题记录
+
+### 背景
+
+- `meeting/v0.73` 已按用户要求与 `origin/main` 对齐（fast-forward，`meeting == main`），
+  并新增 2 个提交：
+  - `bf05ca8e` feat(meeting): 会议向导智能分析默认直接用 Hermes Agent，无需额外 LLM 配置
+  - `dd84032a` fix(meeting): ASR venv 创建被打断后自动重建，避免 No module named pip 死循环
+- 部署目标：`root@192.168.5.91`（aarch64 / RK35xx，主机名 jermey，运行 kiosk 环境）。
+- **实际运行目录是 `/root/hermes-web-ui`（v0.7.19），不是 `/opt/hermes-web-ui`（v0.7.16 旧部署残留）**。
+  systemd `hermes-web-ui.service`：`WorkingDirectory=/root/hermes-web-ui`、
+  `ExecStart=/usr/local/bin/node dist/server/index.js`、无 `User=`（root 运行）、`Environment=PORT=6060`。
+
+### 部署流程（源码 tar 包 + 设备端构建）
+
+1. 本地打包：`tar --exclude=.git --exclude=node_modules --exclude=dist --exclude=.runtime-hermes
+   --exclude=hermes_data --exclude=meetings --exclude=data --exclude=.runtime-home ...`（`meetings/` 380M 录音数据等本地状态一律排除）。
+2. scp 到 `/tmp/`，设备端 `tar --no-same-owner --strip-components=1 -xzf` 解压覆盖到 `/root/hermes-web-ui`
+   （保留 node_modules / dist / certs / hermes_data / .runtime-home）。
+3. 设备端 `npm run build`（openapi 357 端点 → vue-tsc → vite → server tsc → build-server），
+   设备 node_modules 已含 sharp（服务端 tsc 可通过；本机 node_modules 缺 sharp 是本地环境问题）。
+4. `systemctl restart hermes-web-ui` → 验证 `https://127.0.0.1:6060` HTTP 200、dist 产物含新文案。
+
+### 问题 1：`Failed to install Python dependencies: No module named pip`（已修复）
+
+- **现象**：会议 ASR 服务启动失败，`/root/hermes-web-ui/dist/server/python-backend/.venv/bin/python` 无 pip。
+- **根因**：venv 创建（`python -m venv`）在服务重启时被打断，留下只有 python 软链、无 pip 的半成品。
+  `ensureVirtualEnv()` 只检查 `.venv/bin/python` 是否存在，存在就跳过重建直接 `pip install` →
+  永久卡在 "No module named pip"（且无 `.hermes-ready` marker，每次启动都重试）。
+- **修复**（提交 `dd84032a`）：`ensureVirtualEnv()` 慢路径在 `pip install` 前先探测
+  `.venv/bin/python -m pip --version`；pip 缺失则 `fs.rm` 删除半成品 venv 并重建（自愈）。
+- **现场处置**：`rm -rf .venv` → `python3 -m venv .venv`（确认 pip 24.0）→
+  `.venv/bin/pip install -r dist/server/requirements.txt`（PyPI 直连可达，无需代理）→
+  `touch .venv/.hermes-ready`。
+- **验证**：`/api/meeting-asr/start` → `{"status":"started","startupPhase":"ready","isVenvReady":true}`。
+
+### 问题 2：`server rejected WebSocket connection: HTTP 401`（已修复）
+
+- **现象**：录音时 ASR WebSocket 连接被拒 401。
+- **根因**：该报错来自 Python `websockets` 客户端，是 Python 后端连接阿里云 DashScope
+  实时 ASR WebSocket（`wss://dashscope.aliyuncs.com/api-ws/v1/inference`）被 **401 拒绝认证**。
+  设备 `data/meeting-asr/config.json` 里 ASR 用的 key 是 **`sk-ws-H.EDPMPP...`（116 字符，非标准
+  DashScope key 格式，实测 DashScope API 返回 401）**；而同文件 LLM 用的 `sk-a294f3...`（35 字符）
+  实测 DashScope 返回 200（有效）。
+- **修复**：把 `config.json` 的 `asr.dashscope_api_key` 换成设备上已验证有效的 LLM key
+  （`sk-a294f3...`），`/stop` + `/start` 重启后端（控制器无 key 时回退读 `config.json`）。
+  运行中 uvicorn env 确认 `DASHSCOPE_API_KEY=sk-a294f3***`，venv 内 python websockets 实测
+  握手成功（非 401）。
+- **注意**：浏览器 localStorage 里的会议 ASR 配置仍可能是旧无效 key；用户需在向导第 1 步
+  更新为有效 key，否则后端下次重启时浏览器会把无效 key 重新推上去。
+
+### 问题 3：`启动语音识别服务失败`（已修复）
+
+- **现象**：前端点"开始录音"报"启动语音识别服务失败"（`meeting.asrServiceStartError`）。
+- **根因**：前端流程 = `startASRService()`（后端已运行则直接返回 true，不发 /start 请求）→
+  等 2 秒 → `GET /api/meeting-asr/healthz` 健康检查 → 非 ok 即报错。
+  后端已被我停掉（问题 2 排查期间），但浏览器页面的 `isRunning` 状态是旧的（以为在运行），
+  于是跳过 /start（服务端无启动日志），healthz 打到已停止的后端 → 失败。
+- **修复**：服务端 /start 与 healthz 实测正常后，把后端重新启动并保持运行（含有效 key），
+  前端再次录音即可通过。
+
+### 问题 4（遗留）：`node-pty` 原生模块缺失（终端功能降级，不影响会议/ASR）
+
+- **现象**：服务日志 `[lan-peer] node-pty failed to load; peer terminal disabled`。
+- **根因**：设备 node_modules 是 `npm install --ignore-scripts` 安装的，node-pty 的
+  postinstall（下载/编译 prebuilds/linux-arm64/pty.node）被跳过。
+- **影响**：仅 LAN peer 终端功能降级，会议/ASR 不受影响。**待处理**：设备端重装
+  `node-pty`（去掉 --ignore-scripts）或手动补 prebuild。
+
+### 运维要点（下次部署直接照做）
+
+- 设备验证 API：`TOKEN=$(cat /root/.hermes-web-ui/.token)`；
+  `curl -sk "https://127.0.0.1:6060/api/meeting-asr/status?token=$TOKEN"`（loopback + 原始令牌）。
+- `build-server.mjs` 打包时会 **`rmSync` 整个 `dist/server/python-backend`（含 .venv）**，
+  所以服务端重建后必须重建 venv + 安装依赖 + `touch .venv/.hermes-ready`，否则下次 ASR 启动
+  要等 3-10 分钟重装依赖。
+- 会议数据（会议录音等）在 `meetings/`，ASR 配置在 `data/meeting-asr/config.json`（DATA_DIR），
+  打包/更新时都要排除/保留。
+
 ## 2026-08-24 · 非英 locale 缺失：zh-TW 翻译完成（341 key 全量补齐）
+
 
 ### 范围收窄（用户决策）
 
