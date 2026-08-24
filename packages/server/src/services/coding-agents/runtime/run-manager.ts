@@ -11,7 +11,6 @@ import { calcAndUpdateUsage, updateContextTokenUsage } from '../../hermes/run-ch
 import { extractResponseText } from '../../hermes/run-chat/response-utils'
 import type { SessionState } from '../../hermes/run-chat/types'
 import type { CanonicalResponsesEvent } from '../shared/adapters/responses-stream'
-import { mapCodingAgentResponseEvent } from '../shared/coding-agent-event-mapper'
 import { normalizeWindowsCommandPath, windowsCmdShimExecution, windowsCommandNeedsShell } from '../../windows-command'
 import { completeWorkspaceRunCheckpoint, startWorkspaceRunCheckpoint } from '../../hermes/run-chat/workspace-diff-tracker'
 import { DshJsonRpcClient } from '../shared/dsh-jsonrpc-client'

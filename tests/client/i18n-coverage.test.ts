@@ -621,4 +621,17 @@ describe('i18n locale coverage', () => {
   it('keeps the coverage scanner rooted in client source files', () => {
     expect(relative(process.cwd(), SOURCE_ROOT)).toBe(join('packages', 'client', 'src'))
   })
+
+  it('has no stale keys in any non-English locale (keys at wrong paths or removed from en)', () => {
+    const enPaths = new Set(flattenLeafPaths(en).keys())
+    const stale = Object.entries(rawMessages).flatMap(([locale, localeMessages]) => {
+      if (locale === 'en') return []
+      const localePaths = flattenLeafPaths(localeMessages as Record<string, unknown>)
+      return [...localePaths.keys()]
+        .filter(key => !enPaths.has(key))
+        .map(key => `${locale}: ${key}`)
+    })
+
+    expect(stale).toEqual([])
+  })
 })

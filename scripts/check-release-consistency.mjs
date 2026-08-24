@@ -63,4 +63,12 @@ expectVersion('packages/desktop/package.json', desktopPackage.version, releaseVe
 expectVersion('packages/desktop/package-lock.json', desktopLockfile.version, releaseVersion)
 expectVersion('packages/desktop/package-lock.json packages[""]', desktopLockfile.packages?.['']?.version, releaseVersion)
 
+const changelogSource = readFileSync(resolve(ROOT, 'packages/client/src/data/changelog.ts'), 'utf-8')
+const changelogVersionMatch = changelogSource.match(/version:\s*'([^']+)'/)
+const changelogVersion = changelogVersionMatch ? changelogVersionMatch[1] : ''
+if (!changelogVersion) {
+  fail('packages/client/src/data/changelog.ts must define at least one version entry')
+}
+expectVersion('changelog.ts latest entry', changelogVersion, releaseVersion)
+
 console.log(`Release consistency OK for ${releaseVersion}`)

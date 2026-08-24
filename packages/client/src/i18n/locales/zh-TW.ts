@@ -234,8 +234,6 @@ export default {
     toolsClearSelection: '取消全選',
     toolsExcludeAll: '全部排除',
     toolsClearExcluded: '清空排除',
-    updateClearStale: 'Dismiss this error',
-    updateFailedWithReason: 'Update failed: {reason}',
   },
 
   sidebar: {
@@ -892,7 +890,6 @@ export default {
     sessionLinkCopied: 'Session link copied',
     copySessionId: '複製工作階段 ID',
     export: '匯出',
-    editConfig: '編輯設定檔',
     exportFull: '完整匯出 (JSON)',
     exportCompressed: '壓縮匯出 (TXT)',
     exportCompressing: '正在壓縮上下文，請稍候...',
@@ -2907,7 +2904,6 @@ export default {
   language: {
     label: '語言',
     zh: '中文（簡體）',
-    'zh-TW': '繁體中文',
     en: 'English',
   },
 
@@ -3397,6 +3393,12 @@ export default {
 
   // 更新日誌
   changelog: {
+    new_0_7_19_1: '會議現在隱藏說話人分離檢視：房間只顯示 agent 對話，讓會議介面保持乾淨與聚焦。',
+    new_0_7_18_1: '群聊自由討論升級：回合現在依 agent 實質發言而非工具呼叫計數，自動產出 Word 交付檔案並智慧清理，進行中的討論自動封存，並引入全域並發上限避免多個討論重疊（修復討論只跑一輪就停止的問題）。',
+    new_0_7_18_2: '群聊長任務模式：在討論中附加「長任務」關鍵字即可讓它無人值守在夜間自動執行。',
+    new_0_7_18_3: '裝置連線功能（App 連線 / MCU 裝置 / LAN 裝置標籤頁）已移除。',
+    new_0_7_18_4: 'DeepSeek Harness 現已支援 OpenAI Responses API（apiMode=codex_responses），dsh 一鍵安裝會同時安裝固定的 SDK 執行環境。',
+    new_0_7_18_5: '更新穩定性：清理 npm 全域安裝殘留備份避免 ENOTEMPTY 更新失敗、healthcheck 逾時統一為 15s、更新 runner 不再內建工作目錄。',
     new_0_7_17_1: 'Updating now upgrades Hermes Agent to the latest stable release by default: the Web UI is updated first, then the Agent, and an agent upgrade failure never blocks the Web UI update (supported on the device-package, source-deploy and npm update paths).',
     new_0_7_17_2: 'Agent Bridge workers now fail fast on startup errors (no more waiting the full 120s) and attach the worker stderr tail to the error so the root cause is visible immediately.',
     new_0_7_17_3: 'Agent Bridge errors are now categorized (bridge unreachable / worker spawn failed / request timeout) so the UI can suggest concrete fixes; the linked upgrade also resolves the hermes-agent 0.15.2 missing dashboard_auth startup failure.',

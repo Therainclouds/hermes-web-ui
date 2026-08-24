@@ -334,8 +334,6 @@ export default {
     toolsClearSelection: '選択をクリア',
     toolsExcludeAll: 'すべて除外',
     toolsClearExcluded: '除外をクリア',
-    updateClearStale: 'Dismiss this error',
-    updateFailedWithReason: 'Update failed: {reason}',
   },
 
   sidebar: {
@@ -928,7 +926,6 @@ export default {
     sessionLinkCopied: 'Session link copied',
     copySessionId: 'セッション ID をコピー',
     export: 'エクスポート',
-    editConfig: '設定を編集',
     exportFull: 'フルエクスポート (JSON)',
     exportCompressed: '圧縮エクスポート (TXT)',
     exportCompressing: 'コンテキストを圧縮中、お待ちください...',
@@ -2542,7 +2539,6 @@ export default {
     label: '言語',
     zh: '中文',
     en: 'English',
-    ja: '日本語',
   },
 
   // ターミナル
@@ -3171,6 +3167,12 @@ export default {
   },
 
   changelog: {
+    new_0_7_19_1: 'Meetings now hide the speaker-diarization view: a room shows only agent dialogue, keeping the meeting display clean and focused.',
+    new_0_7_18_1: 'Group chat discussion upgrades: rounds now count real agent speech instead of tool calls, deliverable Word files are produced automatically with smart cleanup, running discussions are archived automatically, and a global concurrency cap prevents overlapping discussions (fixes discussions stopping after a single round).',
+    new_0_7_18_2: 'Group chat long-task mode: append the "long-run" keyword to a discussion to let it run unattended overnight.',
+    new_0_7_18_3: 'Device connection features (App connections / MCU devices / LAN devices tabs) have been removed.',
+    new_0_7_18_4: 'DeepSeek Harness now supports the OpenAI Responses API (apiMode=codex_responses), and one-click dsh installation also provisions the pinned SDK runtime.',
+    new_0_7_18_5: 'Update stability: leftover npm global install backups are cleaned to avoid ENOTEMPTY failures, healthcheck timeouts are unified at 15s, and the update runner no longer bakes a working directory.',
     new_0_7_17_1: 'Updating now upgrades Hermes Agent to the latest stable release by default: the Web UI is updated first, then the Agent, and an agent upgrade failure never blocks the Web UI update (supported on the device-package, source-deploy and npm update paths).',
     new_0_7_17_2: 'Agent Bridge workers now fail fast on startup errors (no more waiting the full 120s) and attach the worker stderr tail to the error so the root cause is visible immediately.',
     new_0_7_17_3: 'Agent Bridge errors are now categorized (bridge unreachable / worker spawn failed / request timeout) so the UI can suggest concrete fixes; the linked upgrade also resolves the hermes-agent 0.15.2 missing dashboard_auth startup failure.',

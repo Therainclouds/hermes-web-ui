@@ -2240,10 +2240,6 @@ async function resolveDshSdkLaunch(): Promise<{ command: string; args: string[];
   return null
 }
 
-export function getCodingAgentDefinitions(): CodingAgentDefinition[] {
-  return TOOL_DEFINITIONS.map(tool => ({ ...tool }))
-}
-
 export function getCodingAgentDefinition(id: string): CodingAgentDefinition | null {
   return TOOL_DEFINITIONS.find(tool => tool.id === id) || null
 }
