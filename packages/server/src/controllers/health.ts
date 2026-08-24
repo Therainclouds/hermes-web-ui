@@ -146,7 +146,7 @@ export function livenessCheck(ctx: any) {
 }
 
 export async function healthCheck(ctx: any) {
-  const raw = await hermesCli.getVersion()
+  const raw = await hermesCli.getVersionCached()
   const hermesVersion = raw.split('\n')[0].replace('Hermes Agent ', '') || ''
   const updateEnabled = hasConfiguredUpdateExecution(config.update)
   const updateCheckConfigured = hasConfiguredUpdateCheck(config.update)

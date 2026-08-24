@@ -1,13 +1,14 @@
 import { createHash } from 'crypto'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'http'
 import type { AddressInfo } from 'net'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { UpdateError } from '../../packages/server/src/services/update/errors'
 import {
   assertDevicePackageCompatibility,
+  assertInstallerScriptCompatible,
   buildDevicePackageInstallCommand,
   buildDevicePackageInstallEnv,
   downloadAndVerifyDevicePackage,
@@ -405,6 +406,116 @@ describe('device package strategy', () => {
       HERMES_WEB_UI_UPDATE_EXPECTED_SHA256: manifest.sha256,
       HERMES_WEB_UI_UPDATE_AUTO_INSTALL_DEPENDENCIES: 'true',
       HERMES_WEB_UI_UPDATE_INCLUDE_AGENT_UPGRADE: 'false',
+      HERMES_WEB_UI_UPDATE_INSTALLER_SCRIPT_PATH: 'scripts/install-device-package.sh',
+      HERMES_WEB_UI_UPDATE_INSTALLER_SCRIPT_SHA256: '',
     }))
+  })
+
+  it('forwards the declared installer script fingerprint through the env', () => {
+    const manifest = createManifest({
+      installerScriptPath: 'scripts/install-device-package.sh',
+      installerScriptSha256: 'f'.repeat(64),
+    })
+
+    const env = buildDevicePackageInstallEnv(
+      createUpdateConfig(),
+      {},
+      manifest,
+      '/tmp/hermes-web-ui-device-v0.6.13.tar.gz',
+      {
+        deployDir: '/opt/hermes-web-ui',
+        webUiHome: '/home/hermesui/.hermes-web-ui',
+        uploadDir: '/home/hermesui/.hermes-web-ui/upload',
+        hermesHome: '/opt/hermes-web-ui/hermes_data',
+      },
+      'task-456',
+    )
+
+    expect(env.HERMES_WEB_UI_UPDATE_INSTALLER_SCRIPT_PATH).toBe('scripts/install-device-package.sh')
+    expect(env.HERMES_WEB_UI_UPDATE_INSTALLER_SCRIPT_SHA256).toBe('f'.repeat(64))
+  })
+})
+
+describe('assertInstallerScriptCompatible', () => {
+  let tmpRoot: string
+  let deployDir: string
+
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(join(tmpdir(), 'hwui-installer-spy-'))
+    deployDir = join(tmpRoot, 'deploy')
+    mkdirSync(deployDir, { recursive: true })
+    mkdirSync(join(deployDir, 'scripts'), { recursive: true })
+    writeFileSync(join(deployDir, 'scripts', 'install-device-package.sh'), '#!/usr/bin/env bash\n')
+  })
+
+  afterEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true })
+  })
+
+  it('is a no-op when the manifest does not declare a fingerprint', () => {
+    expect(() => assertInstallerScriptCompatible(deployDir, createManifest())).not.toThrow()
+  })
+
+  it('passes when the on-disk installer matches the manifest fingerprint', () => {
+    const scriptPath = join(deployDir, 'scripts', 'install-device-package.sh')
+    const sha = createHash('sha256').update(readFileSync(scriptPath)).digest('hex')
+    const manifest = createManifest({ installerScriptSha256: sha })
+
+    expect(() => assertInstallerScriptCompatible(deployDir, manifest)).not.toThrow()
+  })
+
+  it('throws update_installer_script_stale when the fingerprint mismatches', () => {
+    const manifest = createManifest({ installerScriptSha256: 'a'.repeat(64) })
+
+    try {
+      assertInstallerScriptCompatible(deployDir, manifest)
+      throw new Error('expected assertInstallerScriptCompatible to throw')
+    } catch (err) {
+      expect(err).toBeInstanceOf(UpdateError)
+      expect((err as UpdateError).code).toBe('update_installer_script_stale')
+      expect((err as UpdateError).status).toBe(409)
+      expect((err as UpdateError).details).toMatchObject({
+        deployDir,
+        installerScriptPath: 'scripts/install-device-package.sh',
+        expectedSha256: 'a'.repeat(64),
+      })
+    }
+  })
+
+  it('throws update_installer_script_missing when the script does not exist on disk', () => {
+    rmSync(join(deployDir, 'scripts', 'install-device-package.sh'))
+    const manifest = createManifest({ installerScriptSha256: 'b'.repeat(64) })
+
+    try {
+      assertInstallerScriptCompatible(deployDir, manifest)
+      throw new Error('expected assertInstallerScriptCompatible to throw')
+    } catch (err) {
+      expect(err).toBeInstanceOf(UpdateError)
+      expect((err as UpdateError).code).toBe('update_installer_script_missing')
+    }
+  })
+
+  it('honours a custom relativePath declared by the manifest', () => {
+    const custom = join(deployDir, 'scripts', 'custom-installer.sh')
+    writeFileSync(custom, 'echo custom\n')
+    const sha = createHash('sha256').update(readFileSync(custom)).digest('hex')
+
+    expect(() => assertInstallerScriptCompatible(
+      deployDir,
+      createManifest({ installerScriptPath: 'scripts/custom-installer.sh', installerScriptSha256: sha }),
+    )).not.toThrow()
+
+    try {
+      assertInstallerScriptCompatible(
+        deployDir,
+        createManifest({ installerScriptPath: 'scripts/custom-installer.sh', installerScriptSha256: 'c'.repeat(64) }),
+      )
+      throw new Error('expected to throw')
+    } catch (err) {
+      expect((err as UpdateError).code).toBe('update_installer_script_stale')
+      expect((err as UpdateError).details).toMatchObject({
+        installerScriptPath: 'scripts/custom-installer.sh',
+      })
+    }
   })
 })

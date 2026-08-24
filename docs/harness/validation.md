@@ -43,6 +43,7 @@ incident-driven checklist (B-1 worklet, B-3 CSP, R-5 storage, R-7 UI feedback).
 | User-visible browser flow | focused Vitest plus `npm run test:e2e` |
 | Server controller/service/db | focused `npm run test -- tests/server/<file>` |
 | Update/deploy/release contract | focused update tests, `npm run harness:check`, then `npm run build` |
+| `scripts/install-device-package.sh`, `scripts/hermes-web-ui-update-runner.sh`, or `scripts/deploy-source-armbian.sh` (i.e. any script in `.github/device-package-release.json#packageAllowlist`) | focused update tests + `npm run test:device-package-release`, then locally run `npm run build:device-package` (or `node scripts/build-device-package.mjs --tag <x.y.z>`) and verify the produced `manifest.json` contains `installerScriptPath` and `installerScriptSha256`. Devices will compare the on-disk install script against this fingerprint and refuse the update if they do not match |
 | Auth, profile, or credential behavior | focused server tests plus relevant e2e auth tests |
 | Chat, Socket.IO, group chat | focused server tests plus relevant e2e chat tests |
 | Chat session chain, Agent Bridge, compression, or Group Chat | Add one `docs/chat-chain-changes/*.md` fragment with date, PR/commit, touched feature, and behavior impact; then run `npm run harness:check` plus focused chat/bridge/group-chat tests |

@@ -5,7 +5,7 @@ import { delimiter, dirname, extname, join, resolve } from 'path'
 import { config, getWebUiHome, hasConfiguredManifestCheck, hasConfiguredUpdateExecution } from '../config'
 import { UpdateError } from '../services/update/errors'
 import { getLocalWebUiVersion, readPackageInfo } from '../services/update/package-info'
-import { assertDevicePackageCompatibility, assertDevicePackageExecution, buildDevicePackageInstallEnv, downloadAndVerifyDevicePackage, getDevicePackageExecutionMessage, resolveDevicePackageManifest } from '../services/update/strategies/device-package'
+import { assertDevicePackageCompatibility, assertDevicePackageExecution, assertInstallerScriptCompatible, buildDevicePackageInstallEnv, downloadAndVerifyDevicePackage, getDevicePackageExecutionMessage, resolveDevicePackageManifest } from '../services/update/strategies/device-package'
 import { fetchSourcePackageManifest } from '../services/update/manifest-client'
 import { assertSourcePackageCompatibility } from '../services/update/strategies/source-package'
 import { resolveManifestCheckResult } from '../services/update/manifest-client'
@@ -1547,6 +1547,12 @@ export async function handleUpdate(ctx: any) {
       })
 
       assertDevicePackageCompatibility(manifest, getLocalWebUiVersion())
+
+      // Refuse the update if the device's on-disk install script does not
+      // match the manifest's fingerprint. This prevents a class of failures
+      // where the install script on the device is older than the manifest
+      // expects, and would silently time out the post-update healthcheck.
+      assertInstallerScriptCompatible(runtimePaths.deployDir, manifest)
 
       updateTaskStore.updateCurrentStage('downloading', `Downloading device package ${manifest.version}.`, {
         targetVersion: manifest.version,

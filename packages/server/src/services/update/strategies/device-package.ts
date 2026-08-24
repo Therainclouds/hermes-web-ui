@@ -1,4 +1,5 @@
-import { mkdirSync } from 'fs'
+import { createHash } from 'crypto'
+import { existsSync, mkdirSync, readFileSync } from 'fs'
 import { basename, join, resolve } from 'path'
 import { isNodeVersionRangeSatisfied } from '../device-package-contract'
 import { UpdateError } from '../errors'
@@ -26,6 +27,63 @@ function inferPackageFilename(manifest: DevicePackageManifest): string {
 
 export function getDevicePackageExecutionMessage(): string {
   return 'Update source is not fully configured. Set WEBUI_UPDATE_MANIFEST_URL or WEBUI_UPDATE_MANIFEST_BASE_URL, WEBUI_UPDATE_INSTALLER_SCRIPT, and WEBUI_UPDATE_RUNNER_SERVICE.'
+}
+
+export const DEFAULT_INSTALLER_SCRIPT_PATH = 'scripts/install-device-package.sh'
+
+export function sha256OfFile(filePath: string): string {
+  const hash = createHash('sha256')
+  hash.update(readFileSync(filePath))
+  return hash.digest('hex')
+}
+
+/**
+ * Compare the device's on-disk installer script against the manifest's
+ * declared fingerprint. Throws `update_installer_script_stale` when the local
+ * copy does not match — this catches the "fixed in repo but never published
+ * to device" failure mode where the install script on a device is older than
+ * what the new manifest expects.
+ *
+ * No-op when the manifest does not declare a fingerprint (backward
+ * compatibility with manifests published before this contract was added).
+ */
+export function assertInstallerScriptCompatible(
+  deployDir: string,
+  manifest: DevicePackageManifest,
+): void {
+  const expected = manifest.installerScriptSha256
+  if (!expected) return
+
+  const relativePath = manifest.installerScriptPath || DEFAULT_INSTALLER_SCRIPT_PATH
+  const absolutePath = resolve(deployDir, relativePath)
+  if (!existsSync(absolutePath)) {
+    throw new UpdateError(
+      'update_installer_script_missing',
+      `Device install script is missing on disk: ${absolutePath}. The deploy directory may be incomplete; reinstall before retrying.`,
+      409,
+      {
+        deployDir,
+        installerScriptPath: relativePath,
+        absolutePath,
+      },
+    )
+  }
+
+  const actual = sha256OfFile(absolutePath)
+  if (actual.toLowerCase() !== expected.toLowerCase()) {
+    throw new UpdateError(
+      'update_installer_script_stale',
+      `Device install script is out of date. The script on disk at ${absolutePath} no longer matches the version bundled with the update manifest. The current Web UI package must be reinstalled (or a full source deploy run) so the installer is refreshed before this update can proceed.`,
+      409,
+      {
+        deployDir,
+        installerScriptPath: relativePath,
+        absolutePath,
+        expectedSha256: expected.toLowerCase(),
+        actualSha256: actual.toLowerCase(),
+      },
+    )
+  }
 }
 
 export function assertDevicePackageExecution(update: UpdateConfig): void {
@@ -180,6 +238,8 @@ export function buildDevicePackageInstallEnv(
     HERMES_WEB_UI_UPDATE_HEALTHCHECK_RETRIES: String(update.healthcheckRetries),
     HERMES_WEB_UI_UPDATE_HEALTHCHECK_INITIAL_DELAY_MS: String(update.healthcheckInitialDelayMs),
     HERMES_WEB_UI_UPDATE_EXPECTED_SHA256: manifest.sha256,
+    HERMES_WEB_UI_UPDATE_INSTALLER_SCRIPT_PATH: manifest.installerScriptPath || DEFAULT_INSTALLER_SCRIPT_PATH,
+    HERMES_WEB_UI_UPDATE_INSTALLER_SCRIPT_SHA256: manifest.installerScriptSha256 || '',
     HERMES_WEB_UI_UPDATE_AUTO_INSTALL_DEPENDENCIES: update.autoInstallDependencies ? 'true' : 'false',
     HERMES_WEB_UI_UPDATE_INCLUDE_AGENT_UPGRADE: update.includeAgentUpgrade ? 'true' : 'false',
   }

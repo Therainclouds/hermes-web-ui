@@ -415,6 +415,61 @@ export async function getVersion(): Promise<string> {
   }
 }
 
+const VERSION_CACHE_DEFAULT_TTL_MS = 30_000
+
+let cachedHermesVersion: { value: string; expiresAt: number } | null = null
+let pendingHermesVersionRefresh: Promise<string> | null = null
+
+async function refreshCachedHermesVersion(ttlMs: number): Promise<string> {
+  const value = await getVersion()
+  if (value) {
+    cachedHermesVersion = { value, expiresAt: Date.now() + ttlMs }
+  } else {
+    cachedHermesVersion = null
+  }
+  return value
+}
+
+/**
+ * Cached variant of getVersion() that memoizes the Hermes CLI version for a
+ * short TTL. The CLI cold-starts a Python interpreter on every invocation, so
+ * the very first call on a freshly started server can take 5s+ on ARM64. The
+ * update-install healthcheck loop fires several attempts within ~10s of boot;
+ * without caching, every attempt re-spawns the interpreter.
+ *
+ * Concurrent callers share a single in-flight refresh.
+ *
+ * @param options.ttlMs override the default TTL (used by prewarm). Default 30s.
+ */
+export async function getVersionCached(options: { ttlMs?: number } = {}): Promise<string> {
+  const ttlMs = options.ttlMs && options.ttlMs > 0 ? options.ttlMs : VERSION_CACHE_DEFAULT_TTL_MS
+  const now = Date.now()
+  if (cachedHermesVersion && cachedHermesVersion.expiresAt > now) {
+    return cachedHermesVersion.value
+  }
+
+  if (!pendingHermesVersionRefresh) {
+    pendingHermesVersionRefresh = refreshCachedHermesVersion(ttlMs).finally(() => {
+      pendingHermesVersionRefresh = null
+    })
+  }
+  return pendingHermesVersionRefresh
+}
+
+/**
+ * Fire-and-forget trigger to populate the version cache during server bootstrap.
+ * Safe to call multiple times; concurrent callers share a single in-flight refresh.
+ */
+export function prewarmHermesCliVersion(): void {
+  void getVersionCached()
+}
+
+/** Test-only hook to clear cached state between specs. */
+export function __resetHermesCliVersionCacheForTest(): void {
+  cachedHermesVersion = null
+  pendingHermesVersionRefresh = null
+}
+
 /**
  * Start Hermes gateway (uses launchd/systemd)
  */
