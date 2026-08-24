@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { saveAudioChunks, loadAudioChunks, deleteAudioChunks } from '@/utils/audio-db'
+import { meetingStorageApi } from '@/utils/meeting-storage-api'
 
 export interface MeetingSession {
   id: string
@@ -488,6 +489,56 @@ export const useMeetingStore = defineStore('meeting', () => {
     saveASRConfig(asrConfig.value)
   }
 
+  // --- 服务端会议同步 (触摸屏设备端创建的会议) ---
+  // 触摸屏 (keli) 把会议写入服务端 /api/meeting-storage, Web UI 本地
+  // localStorage 列表看不到这些会议; 这里把服务端会议合并进列表,
+  // 让会议模式能直接点开查看触摸屏上启动的对话内容。
+  async function syncSessionsFromServer(): Promise<void> {
+    try {
+      const ids = await meetingStorageApi.listMeetings()
+      let added = 0
+      for (const id of ids) {
+        if (sessions.value.some(s => s.id === id)) continue
+        const data = await meetingStorageApi.getMeeting(id)
+        if (!data) continue
+        const now = Date.now()
+        sessions.value.push({
+          id: data.id,
+          title: data.title || '会议',
+          createdAt: data.createdAt || now,
+          updatedAt: data.updatedAt || now,
+          useDiarize: !!data.useDiarize,
+          sentences: data.sentences || [],
+          analysisResult: data.analysisResult || null,
+          htmlContent: data.htmlContent || '',
+          speakerMap: data.speakerMap || {},
+          speakers: data.speakers || [],
+          status: data.status || 'completed',
+          analysisMode: data.analysisMode || 'hermes',
+          hermesProfile: data.hermesProfile,
+          customProvider: data.customProvider,
+          customModel: data.customModel,
+          sceneTemplate: 'general',
+          analysisRounds: [],
+          analysisTriggerMode: 'sentences',
+          analysisIntervalSentences: 10,
+          analysisIntervalSeconds: 60,
+          audioDuration: data.audioDuration || 0,
+          agentMessages: [],
+          agentStatus: 'idle',
+          agentConfig: { agentType: 'hermes', profile: data.hermesProfile || 'default' },
+        })
+        added += 1
+      }
+      if (added > 0) {
+        saveSessions(sessions.value)
+        console.log(`[meeting] 已从服务端同步 ${added} 个会议`)
+      }
+    } catch (err) {
+      console.error('[meeting] 同步服务端会议失败:', err)
+    }
+  }
+
   return {
     sessions,
     activeSessionId,
@@ -512,5 +563,6 @@ export const useMeetingStore = defineStore('meeting', () => {
     renameSpeaker,
     getSpeakerDisplayName,
     updateASRConfig,
+    syncSessionsFromServer,
   }
 })

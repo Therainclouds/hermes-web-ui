@@ -11,6 +11,14 @@ export async function getMeeting(ctx: Context): Promise<void> {
     ctx.body = { error: 'Meeting not found' }
     return
   }
+  // 触摸屏设备端 (keli) 把句子单独写到 transcript.json (metadata.sentences 为空),
+  // 读取时合并 transcript, 让 Web UI 侧边栏/详情能直接看到设备端会议内容。
+  if (!Array.isArray(data.sentences) || data.sentences.length === 0) {
+    const transcript = await meetingStorageService.getTranscript(meetingId)
+    if (transcript.length > 0) {
+      data.sentences = transcript
+    }
+  }
   ctx.body = data
 }
 
