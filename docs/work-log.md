@@ -1,5 +1,69 @@
 # Work Log
 
+## 2026-08-24 · 合并上游 main + 代码审查与清理（任务 1-3）
+
+### 本轮目标
+
+- 将上游 `EKKOLearnAI/hermes-studio`（upstream/main）合并进本地 0.7.x 分支，保留全部本地定制化修改（dsh agent、https server、触屏 OSS URL、群聊讨论、会议功能、website 包、设备连接删除、NPopselect 专家选择器等）。
+- 合并完成后做全面代码审查：混乱功能/影分身/冗余功能/更新链路/文档漂移。
+- 执行审查发现的三项优先任务。
+
+### 一、上游合并（提交 `7df7fdb3`）
+
+- 从 `merge/upstream-main-20260814` 分支合并，解决全部冲突。
+- 保留本地定制：dsh coding agent（JSON-RPC）、https server、触屏 OSS URL、群聊讨论 feature、会议 feature、device-connections 删除、NPopselect 专家选择器、website 包。
+- 验证：harness:check / tsc / vue-tsc / build 全部通过，4573 测试通过。剩余 156 个失败确认为 Windows 环境（Python spawn ENOENT、symlink EPERM）或 merge 前 pre-existing（device-connections 删除、profile-card-config-edit 选择器）。
+- 合并后推送到 main，同步到 origin（Therainclouds）和 org（tangledup-ai）。
+
+### 二、代码审查结论
+
+三个并行调查 agent 覆盖：重复功能、更新链路完整性、架构混乱。
+
+- **更新链路**：完整，无文档漂移导致 `update_installer_script_stale` 的风险。device-package manifest 指纹校验、install script SHA256、版本一致性检查均正常。
+- **影分身**：RealtimeVoiceStage.vue vs useComposerVoiceInput 经深入调查确认**不是影分身**——前者是全屏语音对话模式（Teleport to body，ChatPanel 消费），后者是聊天输入框内语音转文字（ChatInput + GroupChatInput 消费）。两套实现用途不同，都在正常使用。
+- **死代码**：3 处（getCodingAgentDefinitions 死导出、mapCodingAgentResponseEvent 死导入 + 整个 mapper 文件）。
+- **i18n key 漂移**：非英 locale 有错误路径的 stale key（如 `mcp.updateClearStale` 实际应在 `sidebar.` 下），4796 个缺失 key 由 `fallbackLocale: 'en'` + `mergeMessagesWithFallback` 自动兜底。
+
+### 三、任务 1-3 执行（提交 `5aa79e3a`）
+
+#### 任务 1 — i18n key hygiene
+
+- **清理 11 个 stale key**：从 8 个非英 locale 删除错误路径的 key：
+  - `chat.editConfig`（正确路径 `profiles.editConfig`）
+  - `mcp.updateClearStale` / `mcp.updateFailedWithReason`（正确路径 `sidebar.*`）
+  - `language.{de,es,fr,ja,ko,pt,ru,zh-TW}`（源码无引用的死 key）
+- **不补 4796 个缺失 key**：`fallbackLocale: 'en'` + `mergeMessagesWithFallback` 深合并自动兜底，手动补英文值是冗余。
+- **新增 stale-key 检测测试**：`i18n-coverage.test.ts` 新增全局 stale-key 检测，flatten 所有 locale key path，非英 locale 中存在但 en 中不存在的 key 直接 fail。防止未来再出现错误路径的 key。
+
+#### 任务 2 — 删死代码
+
+- 删除 `getCodingAgentDefinitions()`（0 调用方；保留有使用的 `getCodingAgentDefinition` 单数版）。
+- 删除 `run-manager.ts` 中 `mapCodingAgentResponseEvent` 死导入（0 调用，reasoning.delta 广播内联处理）。
+- 删除 `coding-agent-event-mapper.ts` 整个文件（45 行，唯一消费者是上述死导入）。
+
+#### 任务 3 — changelog + 版本一致性
+
+- `changelog.ts` 新增 0.7.18 / 0.7.19 条目，11 个 locale 各补 6 个 changelog key。
+- `check-release-consistency.mjs` 新增校验：changelog.ts 最新版本号必须与发布版本一致。
+
+### 四、验证
+
+- tsc（server）干净。
+- harness:check 通过。
+- check-release-consistency 通过（0.7.19）。
+- i18n-coverage 18/18 通过（17 既有 + 1 新增 stale-key 检测）。
+- profile-card-config-edit 1 个失败确认为 merge 前 pre-existing（stash 验证）。
+
+### 当前分支与远程
+
+- `main` HEAD = `5aa79e3a`，已同步到 origin/main 和 org/main。
+
+### 遗留 / 待办
+
+- **非英 locale 大面积缺失**（非 bug）：zh 完全同步（0 缺失），其他 locale 严重缺失（meeting 211/experts 56/changelog 70+），功能不崩（fallback 到英文），但 ar/ja/ko 用户体验下降。如产品面向这些语言用户，值得排期翻译。
+- **group-chat/index.ts 5899 行**：技术债务（维护难度），不影响运行，拆分为 nice-to-have。
+- **dsh vs pi 并行协议**：两套 coding agent 协议（JSON-RPC vs JSONL）共用 launch 层，是架构设计选择，不是重复实现。
+
 ## 2026-08-20 · 发布 v0.7.19（会议隐藏说话人分离 + 更新链路验证）
 
 ### 一、会议模式隐藏说话人分离（提交 `6b247ad3`）
@@ -25,7 +89,7 @@
 
 ### 当前分支与远程
 
-- `main` = `origin/main` = `org/main` = `165e4626`，tag `v0.7.19` 两端同步。
+- `main` = `origin/main` = `org/main` = `165e4626`，tag `v0.7.19` 两端同步。（注：2026-08-24 上游合并后已更新为 `5aa79e3a`，见上方条目。）
 
 ### 遗留 / 待办
 
