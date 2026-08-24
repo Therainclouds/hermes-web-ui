@@ -62,8 +62,10 @@ async function loadHealthController(options: LoadHealthControllerOptions = {}) {
   }
 
   const getVersion = vi.fn().mockResolvedValue('Hermes Agent v0.11.0\n')
+  const getVersionCached = vi.fn().mockImplementation(async () => getVersion())
   vi.doMock('../../packages/server/src/services/hermes/hermes-cli', () => ({
     getVersion,
+    getVersionCached,
   }))
 
   const checkReadiness = options.bridgeReadinessError

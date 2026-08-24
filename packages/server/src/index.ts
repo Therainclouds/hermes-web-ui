@@ -26,6 +26,7 @@ import {
 import { ChatRunSocket } from './services/hermes/run-chat'
 import { startChatWebhookDispatcher } from './services/hermes/chat-webhooks'
 import { getAgentBridgeManager, startAgentBridgeManager } from './services/hermes/agent-bridge'
+import * as hermesCli from './services/hermes/hermes-cli'
 import { HermesSkillInjector } from './services/hermes/skill-injector'
 import { injectBundledMcpServer } from './services/hermes/studio-mcp-autoinject'
 import { ensureProfileGatewaysRunning, startPeriodicGatewayReaper } from './services/hermes/gateway-autostart'
@@ -427,6 +428,12 @@ export async function bootstrap() {
   server = listenResult.primary
   servers = listenResult.servers
   console.log('[bootstrap] app.listen called')
+
+  // Fire-and-forget: pre-warm the Hermes CLI version cache so the first
+  // /health probe after a service restart (e.g. immediately after an update
+  // cutover) does not pay the cold-start cost of spawning the Python
+  // interpreter. Concurrent callers share one in-flight refresh.
+  hermesCli.prewarmHermesCliVersion()
 
   setupTerminalWebSocket(servers)
   setupKanbanEventsWebSocket(servers)
