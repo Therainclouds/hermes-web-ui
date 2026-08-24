@@ -126,7 +126,11 @@ const SERVER_TOKEN_EXACT_PATHS = new Set([
 
 function allowsServerTokenPath(path: string): boolean {
   return SERVER_TOKEN_EXACT_PATHS.has(path) ||
-    path.startsWith('/api/hermes/voice/proxy/')
+    path.startsWith('/api/hermes/voice/proxy/') ||
+    // 触摸屏设备端 (keli) 通过 loopback 用 .token 原始令牌调用会议接口:
+    // 与 voice proxy 相同的放行模式 — 设备是本机可信进程, 原始令牌仅 root 可读。
+    path.startsWith('/api/meeting-asr/') ||
+    path.startsWith('/api/meeting-storage')
 }
 
 function isLoopbackRequest(ctx: Context): boolean {

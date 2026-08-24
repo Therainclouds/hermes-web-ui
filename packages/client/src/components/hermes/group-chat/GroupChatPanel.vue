@@ -2,7 +2,7 @@
 import { ref, computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { NInput, NButton, NSpace, NSelect, NPopover, NPopconfirm, NInputNumber, NDropdown, NModal, NDrawer, NDrawerContent, NProgress, NSwitch, type DropdownOption } from 'naive-ui'
+import { NInput, NButton, NSpace, NSelect, NPopover, NPopconfirm, NInputNumber, NDropdown, NModal, NDrawer, NDrawerContent, NProgress, NSwitch, NCheckbox, type DropdownOption } from 'naive-ui'
 import { useGroupChatStore } from '@/stores/hermes/group-chat'
 import { useAppStore } from '@/stores/hermes/app'
 import { useProfilesStore } from '@/stores/hermes/profiles'
@@ -174,13 +174,37 @@ const summarySettingsSectionRef = ref<HTMLElement | null>(null)
 const discussionFormVisible = ref(false)
 const discussionGoal = ref('')
 const discussionMaxRounds = ref(20)
+const discussionMinRounds = ref(0)
 const discussionMaxMessages = ref(200)
+const discussionLongRunMode = ref(false)
 const discussionAgentOrder = ref<string[]>([])
 const discussionReporterId = ref('')
 const isStartingDiscussion = ref(false)
 const isStoppingDiscussion = ref(false)
 const discussionAttachmentInputRef = ref<HTMLInputElement | null>(null)
 const discussionAttachments = ref<string[]>([])
+
+/** 长任务模式（无人值守通宵跑）默认参数。 */
+const LONG_RUN_DEFAULTS = { maxRounds: 40, minRounds: 15, maxMessages: 600 } as const
+
+/** 长任务模式自动附加的护栏文案：约束 agent 行为，避免无人值守时翻车。 */
+const LONG_RUN_GUARDRAILS = [
+    '【阶段划分】请将任务拆分为多个阶段（如：盘点材料 → 逐项分析 → 方案制定 → 汇总交付），每阶段集中深化后再进入下一阶段，不要跳阶段。',
+    '【阶段落盘】每个阶段完成时，立即把该阶段成果保存为 Markdown 文件到交付目录（绝对路径已由【交付要求】给出），文件名带阶段号（如「阶段1-xxx.md」）。中途断电/重启也不丢失已落盘成果。',
+    '【完成标准】当且仅当所有阶段成果均已落盘、且任务目标涉及的问题全部得到实质性解答、并产出可直接使用的最终交付物时，才算完成；条件不满足前，即使意见一致也不得结束。',
+    '【禁止事项】不要反问用户、不要等待用户决策、不要请求用户介入；材料无法读取时标注"需人工核实"而不是编造内容；不要输出空回复。',
+].join('\n')
+
+function applyLongRunDefaults(): void {
+    discussionMaxRounds.value = LONG_RUN_DEFAULTS.maxRounds
+    discussionMinRounds.value = LONG_RUN_DEFAULTS.minRounds
+    discussionMaxMessages.value = LONG_RUN_DEFAULTS.maxMessages
+}
+
+function toggleLongRunMode(enabled: boolean): void {
+    discussionLongRunMode.value = enabled
+    if (enabled) applyLongRunDefaults()
+}
 
 function openDiscussionAttachmentPicker(): void {
     discussionAttachmentInputRef.value?.click()
@@ -244,13 +268,13 @@ function deliveryFormatBytes(value: number | null | undefined): string {
 async function handleCleanupDelivery(): Promise<void> {
     const roomId = store.currentRoomId
     if (!roomId || !deliveryUsage.value) return
-    if (!window.confirm(t('groupChat.delivery.cleanupConfirm'))) return
+    if (!window.confirm(t('groupChat.discussion.delivery.cleanupConfirm'))) return
     try {
         await cleanupDeliveryFiles(roomId)
         await loadDeliveryUsage()
-        message.success(t('groupChat.delivery.cleanupDone'))
+        message.success(t('groupChat.discussion.delivery.cleanupDone'))
     } catch (err: any) {
-        message.error(err?.message || t('groupChat.delivery.cleanupFailed'))
+        message.error(err?.message || t('groupChat.discussion.delivery.cleanupFailed'))
     }
 }
 const discussionIsActive = computed(() => {
@@ -270,12 +294,21 @@ function discussionStatusLabel(status: string): string {
 function openDiscussionForm(): void {
     discussionFormVisible.value = true
     discussionGoal.value = ''
+    discussionMaxRounds.value = 20
+    discussionMinRounds.value = 0
+    discussionMaxMessages.value = 200
+    discussionLongRunMode.value = false
     discussionAgentOrder.value = store.agents.map(agent => agent.agentId)
     discussionReporterId.value = store.agents[0]?.agentId || ''
 }
 async function handleStartDiscussion(): Promise<void> {
-    const goal = discussionGoal.value.trim()
-    if (!goal) return
+    const rawGoal = discussionGoal.value.trim()
+    if (!rawGoal) return
+    // 长任务模式：自动附加护栏文案（阶段划分/落盘/完成标准/禁止事项），
+    // 用户只需提供任务目标与材料路径。
+    const goal = discussionLongRunMode.value
+        ? `${rawGoal}\n\n${LONG_RUN_GUARDRAILS}`
+        : rawGoal
     isStartingDiscussion.value = true
     try {
         const ok = await startDiscussionViaUI({
@@ -283,6 +316,7 @@ async function handleStartDiscussion(): Promise<void> {
             attachments: discussionAttachments.value.length > 0 ? [...discussionAttachments.value] : undefined,
             agentOrder: discussionAgentOrder.value.length >= 2 ? [...discussionAgentOrder.value] : undefined,
             maxRounds: discussionMaxRounds.value,
+            minRounds: discussionMinRounds.value,
             maxMessages: discussionMaxMessages.value,
             reporterId: discussionReporterId.value || undefined,
         })
@@ -316,6 +350,7 @@ async function startDiscussionViaUI(
         attachments?: string[]
         attachmentsFiles?: Attachment[]
         maxRounds?: number
+        minRounds?: number
         maxMessages?: number
         reporterId?: string
     },
@@ -337,6 +372,7 @@ async function startDiscussionViaUI(
             attachments: input.attachments?.length ? [...input.attachments] : undefined,
             agentOrder: input.agentOrder && input.agentOrder.length >= 2 ? input.agentOrder : undefined,
             maxRounds: input.maxRounds,
+            minRounds: input.minRounds,
             maxMessages: input.maxMessages,
             reporterId: input.reporterId || undefined,
         }, input.attachmentsFiles)
@@ -385,7 +421,9 @@ const discussionQuickVisible = ref(false)
 const discussionQuickGoal = ref('')
 const discussionQuickOrder = ref<string[]>([])
 const discussionQuickMaxRounds = ref(20)
+const discussionQuickMinRounds = ref(0)
 const discussionQuickMaxMessages = ref(200)
+const discussionQuickLongRunMode = ref(false)
 const discussionQuickReporterId = ref('')
 const discussionQuickAttachmentInputRef = ref<HTMLInputElement | null>(null)
 const discussionQuickAttachments = ref<string[]>([])
@@ -396,9 +434,20 @@ function openDiscussionQuick(): void {
     discussionQuickGoal.value = ''
     discussionQuickOrder.value = store.agents.map(agent => agent.agentId)
     discussionQuickMaxRounds.value = 20
+    discussionQuickMinRounds.value = 0
     discussionQuickMaxMessages.value = 200
+    discussionQuickLongRunMode.value = false
     discussionQuickReporterId.value = store.agents[0]?.agentId || ''
     discussionQuickAttachments.value = []
+}
+
+function toggleQuickLongRunMode(enabled: boolean): void {
+    discussionQuickLongRunMode.value = enabled
+    if (enabled) {
+        discussionQuickMaxRounds.value = LONG_RUN_DEFAULTS.maxRounds
+        discussionQuickMinRounds.value = LONG_RUN_DEFAULTS.minRounds
+        discussionQuickMaxMessages.value = LONG_RUN_DEFAULTS.maxMessages
+    }
 }
 
 function openDiscussionQuickAttachmentPicker(): void {
@@ -421,8 +470,11 @@ function removeDiscussionQuickAttachment(name: string): void {
 }
 
 async function handleDiscussionQuickStart(): Promise<void> {
-    const goal = discussionQuickGoal.value.trim()
-    if (!goal) return
+    const rawGoal = discussionQuickGoal.value.trim()
+    if (!rawGoal) return
+    const goal = discussionQuickLongRunMode.value
+        ? `${rawGoal}\n\n${LONG_RUN_GUARDRAILS}`
+        : rawGoal
     isQuickStarting.value = true
     try {
         const ok = await startDiscussionViaUI({
@@ -430,6 +482,7 @@ async function handleDiscussionQuickStart(): Promise<void> {
             attachments: discussionQuickAttachments.value.length > 0 ? [...discussionQuickAttachments.value] : undefined,
             agentOrder: discussionQuickOrder.value.length >= 2 ? [...discussionQuickOrder.value] : undefined,
             maxRounds: discussionQuickMaxRounds.value,
+            minRounds: discussionQuickMinRounds.value,
             maxMessages: discussionQuickMaxMessages.value,
             reporterId: discussionQuickReporterId.value || undefined,
         })
@@ -439,37 +492,44 @@ async function handleDiscussionQuickStart(): Promise<void> {
     }
 }
 
-// ─── Chat input command: /讨论 <goal> [@member...] ─────────
-function tryParseDiscussionCommand(content: string): { goal: string; agentOrder?: string[] } | null {
+// ─── Chat input command: /讨论 <goal> [@member...] [长任务] ─────
+function tryParseDiscussionCommand(content: string): { goal: string; agentOrder?: string[]; longRun?: boolean } | null {
     const match = content.trim().match(/^\/(?:讨论|discuss)\s+(.+)$/s)
     if (!match) return null
     const rest = match[1].trim()
+    // 长任务 关键词：无人值守通宵模式（自动应用长跑参数 + 护栏文案）。
+    const longRun = /长任务|通宵|overnight|long[-\s]?run/i.test(rest)
+    const withoutLongRun = rest.replace(/长任务|通宵|overnight|long[-\s]?run/gi, '')
     // @全体 / @all are reserved: they mean "all agents" (fall back to every
     // room agent). Other @names resolve to specific agents.
-    const mentionsAll = /@(?:全体|所有人|all)\b/i.test(rest)
-    const mentionNames = [...rest.matchAll(/@([^\s@]+)/g)].map(entry => entry[1])
-    const goal = rest.replace(/@[^\s@]+/g, '').replace(/\s+/g, ' ').trim()
+    const mentionsAll = /@(?:全体|所有人|all)\b/i.test(withoutLongRun)
+    const mentionNames = [...withoutLongRun.matchAll(/@([^\s@]+)/g)].map(entry => entry[1])
+    const goal = withoutLongRun.replace(/@[^\s@]+/g, '').replace(/\s+/g, ' ').trim()
     if (!goal) return null
     if (mentionsAll) {
         const all = store.agents.map(agent => agent.agentId)
-        return { goal, agentOrder: all.length >= 2 ? all : undefined }
+        return { goal, agentOrder: all.length >= 2 ? all : undefined, longRun }
     }
     const order = mentionNames
         .map(name => store.agents.find(agent => agent.name === name)?.agentId)
         .filter((id): id is string => !!id)
-    return { goal, agentOrder: order.length >= 2 ? order : undefined }
+    return { goal, agentOrder: order.length >= 2 ? order : undefined, longRun }
 }
 
-async function handleDiscussionCommand(command: { goal: string; agentOrder?: string[] }, attachments?: Attachment[]): Promise<void> {
+async function handleDiscussionCommand(command: { goal: string; agentOrder?: string[]; longRun?: boolean }, attachments?: Attachment[]): Promise<void> {
     // Re-resolve @全体/@all into the full agent set; fall back to parsed order.
     const mentionsAll = /@(?:全体|所有人|all)\b/i.test(command.goal + (command.agentOrder || []).join(' '))
     const agentOrder = mentionsAll
         ? store.agents.map(agent => agent.agentId)
         : command.agentOrder
+    const goal = command.longRun ? `${command.goal}\n\n${LONG_RUN_GUARDRAILS}` : command.goal
     await startDiscussionViaUI({
-        goal: command.goal,
+        goal,
         agentOrder,
         attachmentsFiles: attachments,
+        ...(command.longRun
+            ? { maxRounds: LONG_RUN_DEFAULTS.maxRounds, minRounds: LONG_RUN_DEFAULTS.minRounds, maxMessages: LONG_RUN_DEFAULTS.maxMessages }
+            : {}),
     })
 }
 // ─── Large Document Pipeline ───────────────────────────────────
@@ -1090,6 +1150,22 @@ function toggleWorkspacePanel(): void {
         return
     }
     showWorkspacePanel.value = true
+    // bfcache 恢复或从单聊返回后，files store 可能停留在旧的 workspace 上下文
+    // （单聊 session 模式或错误房间），导致群聊文件列表不刷新。每次打开面板都
+    // 强制以当前房间重新拉取群聊工作区文件，确保列表始终对应当前房间。
+    void refreshWorkspaceFilesForCurrentRoom()
+}
+
+/** 以当前房间强制刷新群聊工作区文件列表（修复 bfcache/路由切换后文件列表不显示）。 */
+async function refreshWorkspaceFilesForCurrentRoom(): Promise<void> {
+    const roomId = store.currentRoomId
+    const workspace = currentRoom.value?.workspace
+    if (!roomId || !workspace) return
+    try {
+        await filesStore.fetchEntries('', { workspaceSessionId: null, workspaceRoomId: roomId })
+    } catch (err) {
+        console.warn('[GroupChat] refresh workspace files failed:', err)
+    }
 }
 
 function handleToolPanelBeforeEnter(): void {
@@ -1202,6 +1278,19 @@ async function refreshRemoteRooms() {
 
 function handleWindowFocus() {
     void refreshRemoteRooms()
+}
+
+/** bfcache（前进/后退缓存）恢复回调：persisted=true 表示页面从缓存恢复而非
+ *  重新加载。此时 WebSocket 已断开、files store 可能停留在旧 workspace 上下文
+ *  （单聊 session 模式），强制重新同步群聊上下文，保证工作区文件列表刷新。 */
+function handlePageShow(event: PageTransitionEvent): void {
+    if (!event.persisted) return
+    if (store.currentRoomId) {
+        void refreshWorkspaceFilesForCurrentRoom()
+        if (!props.standalone) void loadRoomSummaryState(store.currentRoomId)
+    }
+    void refreshRemoteRooms()
+    void refreshPendingAgentPairings()
 }
 
 function handleSelectRemoteRoom(room: RemoteGroupChatRoom) {
@@ -1688,6 +1777,10 @@ onMounted(() => {
     window.addEventListener(OPEN_DESKTOP_BROWSER_PANEL_EVENT, handleOpenDesktopBrowserPanelRequest)
     window.addEventListener('resize', handleWorkspacePanelResize)
     window.addEventListener('focus', handleWindowFocus)
+    // bfcache（前进/后退缓存）恢复时，WebSocket 与 files store 状态可能停留在
+    // 冻结前的快照（如单聊 session 模式），导致群聊工作区文件列表不刷新。
+    // pageshow 的 persisted 标志能识别 bfcache 恢复，强制重新同步群聊上下文。
+    window.addEventListener('pageshow', handlePageShow)
     handleWorkspacePanelResize()
     if (!props.standalone && profilesStore.profiles.length === 0) {
         void profilesStore.fetchProfiles()
@@ -1707,6 +1800,7 @@ onUnmounted(() => {
     window.removeEventListener(OPEN_DESKTOP_BROWSER_PANEL_EVENT, handleOpenDesktopBrowserPanelRequest)
     window.removeEventListener('resize', handleWorkspacePanelResize)
     window.removeEventListener('focus', handleWindowFocus)
+    window.removeEventListener('pageshow', handlePageShow)
     stopWorkspaceResize()
     roomFadeAnimation?.cancel()
     if (showWorkspacePanel.value) closeWorkspacePanel()
@@ -2818,16 +2912,16 @@ async function handleClarify(response?: string) {
                                     <template v-if="currentRoom?.workspace">
                                         <div v-if="deliveryUsage" class="delivery-usage-bar" :class="{ over: deliveryUsage.overLimit }">
                                             <span class="delivery-usage-text">
-                                                {{ t('groupChat.delivery.usage', {
+                                                {{ t('groupChat.discussion.delivery.usage', {
                                                     used: deliveryFormatBytes(deliveryUsage.totalBytes),
                                                     limit: deliveryFormatBytes(deliveryUsage.limitBytes),
                                                     count: deliveryUsage.fileCount,
                                                 }) }}
                                             </span>
                                             <template v-if="deliveryUsage.overLimit">
-                                                <span class="delivery-usage-warn">{{ t('groupChat.delivery.overLimit') }}</span>
+                                                <span class="delivery-usage-warn">{{ t('groupChat.discussion.delivery.overLimit') }}</span>
                                                 <NButton size="tiny" secondary type="warning" @click="handleCleanupDelivery">
-                                                    {{ t('groupChat.delivery.cleanup') }}
+                                                    {{ t('groupChat.discussion.delivery.cleanup') }}
                                                 </NButton>
                                             </template>
                                         </div>
@@ -3527,6 +3621,15 @@ async function handleClarify(response?: string) {
                                 />
                             </div>
                             <div class="form-group">
+                                <NCheckbox
+                                    :checked="discussionLongRunMode"
+                                    @update:checked="toggleLongRunMode"
+                                >
+                                    {{ t('groupChat.discussion.longRun') }}
+                                </NCheckbox>
+                                <p class="form-hint">{{ t('groupChat.discussion.longRunHint') }}</p>
+                            </div>
+                            <div class="form-group">
                                 <label class="form-label">{{ t('groupChat.discussion.agentOrder') }}</label>
                                 <NSelect
                                     v-model:value="discussionAgentOrder"
@@ -3574,6 +3677,10 @@ async function handleClarify(response?: string) {
                                 <div class="form-group">
                                     <label class="form-label">{{ t('groupChat.discussion.maxRounds') }}</label>
                                     <NInputNumber v-model:value="discussionMaxRounds" :min="1" :max="50" style="width: 100%" />
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">{{ t('groupChat.discussion.minRounds') }}</label>
+                                    <NInputNumber v-model:value="discussionMinRounds" :min="0" :max="50" style="width: 100%" />
                                 </div>
                                 <div class="form-group">
                                     <label class="form-label">{{ t('groupChat.discussion.maxMessages') }}</label>
@@ -3725,6 +3832,15 @@ async function handleClarify(response?: string) {
                     />
                 </div>
                 <div class="form-group">
+                    <NCheckbox
+                        :checked="discussionQuickLongRunMode"
+                        @update:checked="toggleQuickLongRunMode"
+                    >
+                        {{ t('groupChat.discussion.longRun') }}
+                    </NCheckbox>
+                    <p class="form-hint">{{ t('groupChat.discussion.longRunHint') }}</p>
+                </div>
+                <div class="form-group">
                     <label class="form-label">{{ t('groupChat.discussion.quickStartParticipants') }}</label>
                     <NSelect
                         v-model:value="discussionQuickOrder"
@@ -3766,6 +3882,10 @@ async function handleClarify(response?: string) {
                     <div class="form-group">
                         <label class="form-label">{{ t('groupChat.discussion.maxRounds') }}</label>
                         <NInputNumber v-model:value="discussionQuickMaxRounds" :min="1" :max="50" style="width: 100%" />
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">{{ t('groupChat.discussion.minRounds') }}</label>
+                        <NInputNumber v-model:value="discussionQuickMinRounds" :min="0" :max="50" style="width: 100%" />
                     </div>
                     <div class="form-group">
                         <label class="form-label">{{ t('groupChat.discussion.maxMessages') }}</label>

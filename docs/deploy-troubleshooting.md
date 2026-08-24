@@ -233,3 +233,107 @@ sudo ./scripts/deploy-armbian.sh
 - [源码部署指南](./deploy-source-armbian.md)
 - [Docker 部署指南](./deploy-armbian.md)
 - [历史排障记录](./work-log.md)
+
+## HTTPS 启用（麦克风必须）
+
+浏览器 `getUserMedia()` 在非 localhost 下必须 HTTPS。hemes-web-ui 支持 protocol-sniffing：同一端口同时处理 HTTP/HTTPS。
+
+### 生成自签名证书
+
+```bash
+# 在设备上执行（替换 IP 为实际地址）
+mkdir -p /root/hermes-web-ui/certs
+openssl req -x509 -newkey rsa:2048 \
+  -keyout /root/hermes-web-ui/certs/server.key \
+  -out    /root/hermes-web-ui/certs/server.crt \
+  -days 365 -nodes \
+  -subj '/CN=192.168.10.87' \
+  -addext 'subjectAltName=IP:192.168.10.87'
+```
+
+证书放在 `hermes-web-ui/certs/` 目录，Node 服务器启动时自动检测。
+
+### 验证
+
+```bash
+curl -sk https://<设备IP>:6060/
+# 应返回 HTML，日志中显示:
+# Server: https://localhost:6060 (LAN: https://<设备IP>:6060)
+```
+
+浏览器首次访问会提示不安全，点击 **高级 → 继续访问**。
+
+## Python 虚拟环境修复
+
+会议 ASR 后端（Python/FastAPI）依赖 venv。部署后常见错误：
+
+```
+Failed to create Python venv (exit 1): no stderr
+Failed to install Python dependencies (exit 1): No module named pip
+```
+
+### 修复步骤
+
+```bash
+# 1. 安装 python3-venv（Debian/Ubuntu 必需）
+apt-get update -qq && apt-get install -y python3.10-venv python3-pip
+
+# 2. 如果 venv 已存在但缺 pip，手动注入
+cd /root/hermes-web-ui/dist/server/python-backend
+.venv/bin/python3 -m ensurepip --upgrade
+
+# 3. 安装所有依赖
+.venv/bin/pip3 install fastapi uvicorn websockets pydantic openai httpx sse-starlette oss2 requests
+
+# 4. 重启服务
+systemctl restart hermes-web-ui
+```
+
+### 验证 ASR 服务
+
+```bash
+# 应看到两个 uvicorn 进程
+ps aux | grep uvicorn | grep -v grep
+# 端口 8000 (ASR) 和 8001 (diarize) 应在监听
+ss -tlnp | grep -E '8000|8001'
+
+# 查看日志
+journalctl -u hermes-web-ui -n 30 --no-pager | grep -E 'meeting|asr|venv|pip|error'
+```
+
+## 会议 ASR 连接失败排查
+
+前端会议页面需要：
+
+1. **DashScope API Key** — 在会议页面设置中填入（阿里云语音识别服务密钥）
+2. **ASR 后端运行** — 端口 8000/8001 需在监听
+3. **WebSocket 连接** — 浏览器通过 6060 端口的 WebSocket 代理连接到 ASR
+
+### 检查清单
+
+```bash
+# ASR 健康检查（需认证 token，直接看进程更可靠）
+ps aux | grep uvicorn | grep -v grep
+
+# 如果 ASR 未运行，手动启动
+curl -sk -X POST https://127.0.0.1:6060/api/meeting-asr/start \
+  -H 'Content-Type: application/json' \
+  -d '{"dashscopeApiKey": "YOUR_KEY"}'
+
+# 查看 ASR 状态
+curl -sk https://127.0.0.1:6060/api/meeting-asr/status
+```
+
+## 启动顺序总结
+
+新设备首次部署后的完整检查清单：
+
+```
+□ apt install python3.10-venv python3-pip
+□ 生成 TLS 证书 → hermes-web-ui/certs/server.{crt,key}
+□ systemctl restart hermes-web-ui
+□ 确认 HTTPS: curl -sk https://<IP>:6060/
+□ 确认 venv 无报错: journalctl -u hermes-web-ui -n 20 --no-pager
+□ 确认 ASR 进程: ps aux | grep uvicorn
+□ 在会议页面填入 DashScope API Key
+```

@@ -102,6 +102,10 @@ const statusText = ref('')
 const partialText = ref('')
 const finalSentences = ref<TranscriptSentence[]>([])
 const speakerMap = ref<Record<string, string>>({})
+/** 隐藏说话人分离功能（产品需求：会议只显示 agent 对话，不展示说话人分离）。
+ *  置 true 时：工具栏不显示 diarize 开关/节省模式/说话人数选择，且强制关闭
+ *  说话人分离（转写不再带说话人标签）。改回 false 可恢复。 */
+const HIDE_SPEAKER_DIARIZATION = true
 const useDiarize = ref(false)
 const saveMode = ref(true)  // 节省模式：只走说话人分离，不走实时ASR
 const speakerCount = ref(0) // 0 = auto
@@ -406,14 +410,14 @@ async function loadMeeting(session: MeetingSession) {
       analysisResult.value = serverData.analysisResult
       htmlContent.value = serverData.htmlContent || ''
       speakerMap.value = serverData.speakerMap || {}
-      useDiarize.value = serverData.useDiarize || false
+      useDiarize.value = HIDE_SPEAKER_DIARIZATION ? false : (serverData.useDiarize || false)
     } else {
       // 如果服务器没有数据，使用本地数据
       finalSentences.value = [...session.sentences]
       analysisResult.value = session.analysisResult
       htmlContent.value = session.htmlContent
       speakerMap.value = { ...session.speakerMap }
-      useDiarize.value = session.useDiarize
+      useDiarize.value = HIDE_SPEAKER_DIARIZATION ? false : session.useDiarize
     }
   } catch (err) {
     console.error('Failed to load meeting from server:', err)
@@ -422,7 +426,7 @@ async function loadMeeting(session: MeetingSession) {
     analysisResult.value = session.analysisResult
     htmlContent.value = session.htmlContent
     speakerMap.value = { ...session.speakerMap }
-    useDiarize.value = session.useDiarize
+    useDiarize.value = HIDE_SPEAKER_DIARIZATION ? false : session.useDiarize
   }
   
   // 同步句子到 store（供 Agent 面板读取）
@@ -671,6 +675,9 @@ onMounted(async () => {
   
   // 检查 ASR 服务状态
   await checkASRServiceStatus()
+
+  // 同步服务端会议列表 (触摸屏设备端创建的会议, 合并进侧边栏)
+  await meetingStore.syncSessionsFromServer()
   
   // 如果有活跃会议，加载它
   if (meetingStore.activeSession) {
@@ -2039,56 +2046,58 @@ async function clearTranscript() {
             {{ t('meeting.showAgentChat') }}
           </NTooltip>
 
-          <NTooltip trigger="hover">
-            <template #trigger>
-              <NButton
-                size="small"
-                :type="useDiarize ? 'primary' : 'default'"
-                @click="useDiarize = !useDiarize"
-                :disabled="isRecording"
-              >
-                <template #icon>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
-                    <circle cx="9" cy="7" r="4"/>
-                    <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
-                    <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-                  </svg>
-                </template>
-                {{ t('meeting.diarize') }}
-              </NButton>
-            </template>
-            {{ t('meeting.diarizeHint') }}
-          </NTooltip>
+          <template v-if="!HIDE_SPEAKER_DIARIZATION">
+            <NTooltip trigger="hover">
+              <template #trigger>
+                <NButton
+                  size="small"
+                  :type="useDiarize ? 'primary' : 'default'"
+                  @click="useDiarize = !useDiarize"
+                  :disabled="isRecording"
+                >
+                  <template #icon>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+                      <circle cx="9" cy="7" r="4"/>
+                      <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
+                      <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                    </svg>
+                  </template>
+                  {{ t('meeting.diarize') }}
+                </NButton>
+              </template>
+              {{ t('meeting.diarizeHint') }}
+            </NTooltip>
 
-          <NTooltip v-if="useDiarize" trigger="hover">
-            <template #trigger>
-              <NButton
-                size="small"
-                :type="saveMode ? 'warning' : 'default'"
-                @click="saveMode = !saveMode"
-                :disabled="isRecording"
-              >
-                <template #icon>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                    <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
-                  </svg>
-                </template>
-                {{ saveMode ? t('meeting.saveMode') : t('meeting.normalMode') }}
-              </NButton>
-            </template>
-            {{ saveMode ? t('meeting.saveModeHint') : t('meeting.normalModeHint') }}
-          </NTooltip>
+            <NTooltip v-if="useDiarize" trigger="hover">
+              <template #trigger>
+                <NButton
+                  size="small"
+                  :type="saveMode ? 'warning' : 'default'"
+                  @click="saveMode = !saveMode"
+                  :disabled="isRecording"
+                >
+                  <template #icon>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                      <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+                    </svg>
+                  </template>
+                  {{ saveMode ? t('meeting.saveMode') : t('meeting.normalMode') }}
+                </NButton>
+              </template>
+              {{ saveMode ? t('meeting.saveModeHint') : t('meeting.normalModeHint') }}
+            </NTooltip>
 
-          <NSelect
-            v-if="useDiarize"
-            v-model:value="speakerCount"
-            :options="speakerCountOptions"
-            size="small"
-            style="width: 120px"
-            :disabled="isRecording"
-            :placeholder="t('meeting.speakerCount')"
-          />
+            <NSelect
+              v-if="useDiarize"
+              v-model:value="speakerCount"
+              :options="speakerCountOptions"
+              size="small"
+              style="width: 120px"
+              :disabled="isRecording"
+              :placeholder="t('meeting.speakerCount')"
+            />
+          </template>
 
           <NTooltip trigger="hover">
             <template #trigger>
@@ -2176,7 +2185,7 @@ async function clearTranscript() {
             <span class="sentence-index">{{ index + 1 }}</span>
             <div class="sentence-body">
               <NPopover
-                v-if="sentence.speakerId"
+                v-if="sentence.speakerId && !HIDE_SPEAKER_DIARIZATION"
                 trigger="click"
                 placement="top"
                 :show="renamingKey === `${sentence.speakerId}:${index}`"
@@ -2690,8 +2699,8 @@ async function clearTranscript() {
             />
             <div class="form-hint">{{ t('meeting.dashscopeApiKeyHint') }}</div>
 
-            <!-- OSS 配置（说话人分离必填，可折叠） -->
-            <details class="oss-config-details">
+            <!-- OSS 配置（说话人分离必填，可折叠）——隐藏说话人分离时一并隐藏 -->
+            <details v-if="!HIDE_SPEAKER_DIARIZATION" class="oss-config-details">
               <summary class="oss-config-summary">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
@@ -2771,15 +2780,6 @@ async function clearTranscript() {
               <NButton size="small" @click="asrWizardStep = 2">{{ t('meeting.wizardBack') }}</NButton>
               <NButton size="small" @click="asrWizardStep = 1">{{ t('meeting.wizardRestart') }}</NButton>
             </div>
-          </div>
-          <div class="form-item">
-            <label class="form-label">{{ t('meeting.asrModel') }}</label>
-            <NSelect
-              v-model:value="newMeetingAsrModel"
-              :options="asrModelOptions"
-              :placeholder="t('meeting.selectAsrModel')"
-            />
-            <div class="form-hint">{{ t('meeting.asrModelHint') }}</div>
           </div>
           <div class="form-item">
             <label class="form-label">{{ t('meeting.asrModel') }}</label>

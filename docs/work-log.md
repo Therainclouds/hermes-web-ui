@@ -1,12 +1,131 @@
 # Work Log
 
-## 2026-08-17 · 群聊自由讨论深度增强 + 移除设备互联 + 讨论轮次修复
+## 2026-08-20 · 发布 v0.7.19（会议隐藏说话人分离 + 更新链路验证）
+
+### 一、会议模式隐藏说话人分离（提交 `6b247ad3`）
+
+- `HIDE_SPEAKER_DIARIZATION=true` 常量控制：工具栏 diarize 开关/节省模式/说话人数选择、OSS 配置块全部隐藏（Vite 编译期剔除，chunk 中 `meeting.diarize`/`meeting.ossConfig` 键引用已消失）。
+- 强制 `useDiarize=false`（含历史 session 恢复时），转写不再显示说话人标签。
+- 顺带清理设置向导中重复的 ASR 模型选择块（合并残留）。
+
+### 二、更新链路验证（v0.7.19 发布前检查）
+
+- OSS manifest（`tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/releases/stable/latest.json`）可访问、内容正确。
+- 更新包（device-package tar.gz）与 source 包可下载，**sha256 完整校验匹配**。
+- 设备 health 检查：`update_enabled=True`、源 `Quanthermes Device Releases`、包类型 `device-package`。
+- **注意**：`update-check-cache.ts` 的 manifest 快照 5 分钟 TTL，但 `checkLatestVersion` 30 分钟周期轮询；重启服务可立即触发检测（`startVersionCheck` 5 秒后 force 刷新）。验证时通过重启确认设备正确报告 `update_available: True`（0.7.18 → 0.7.19）。
+
+### 三、发布 v0.7.19（提交 `165e4626`，tag `v0.7.19`）
+
+- 版本号 0.7.18 → 0.7.19（package.json / package-lock.json / desktop 两件 / device-package-release.json 共 5 个文件）。
+- `npm run check:release-consistency` 通过（Release consistency OK for 0.7.19）。
+- 打 tag `v0.7.19` 推送到 **org**（`tangledup-ai/hermes-web-ui`）触发 CI `device-package-release` workflow，**completed/success**；同时推送到 origin。
+- CI 产出已上传 OSS：`releases/v0.7.19/hermes-web-ui-device-*.tar.gz`（30MB），`stable/latest.json` 版本更新为 0.7.19，sha256 校验匹配。
+- npm-publish workflow 同步触发（npm 发布）。
+
+### 当前分支与远程
+
+- `main` = `origin/main` = `org/main` = `165e4626`，tag `v0.7.19` 两端同步。
+
+### 遗留 / 待办
+
+- 设备仍运行 0.7.18，可经 UI 更新到 0.7.19（已确认设备能检测到更新）；或待下次自动检查周期。
+
+## 2026-08-19 · 长任务模式（无人值守通宵）+ 群聊工作区/终端面板修复
+
+### 本轮目标
+
+- 用户要为「许-测试1」执行 8-10 小时无人值守的长任务，需要"长任务模式"：用户只需填任务目标，系统自动应用长跑参数 + 附加护栏文案。
+- 用户反馈群聊界面三个显示问题：长任务勾选框只有文字、工作区面板只显示键名/交付文字、终端面板按钮文字异常。
+
+### 一、长任务模式（提交 `531b8761`）
+
+- **UI 复选框**：发起自由讨论表单 + 快捷弹窗新增「长任务模式（无人值守通宵）」开关，勾选后自动应用 `maxRounds=40 / minRounds=15 / maxMessages=600`，并在 goal 后自动附加护栏文案（阶段划分 / 每阶段落盘交付目录 / 完成标准 / 不反问用户）。
+- **`/讨论` 命令**：支持「长任务 / 通宵 / long-run / overnight」关键词，自动应用同样参数与护栏。
+- **服务端**：`DiscussionStartInput` 已有 `minRounds` 透传链路（clamp 上限 50），无需改动服务端。
+- **i18n**：全部 11 个 locale 补充 `minRounds / longRun / longRunHint` 键 + 更新 `quickStartHint`（提示长任务关键词）。
+
+### 二、群聊面板三个显示 bug 修复（提交 `531b8761`）
+
+1. **长任务勾选框只有文字**：`GroupChatPanel.vue` 用了 `<NCheckbox>` 但未从 naive-ui import（naive-ui 无全局注册），组件无法解析只剩插槽文字。修复：import 列表加入 `NCheckbox`。
+2. **工作区面板显示键名**：模板引用 `groupChat.delivery.*`，但 locale 定义在 `groupChat.discussion.delivery.*` 下，5 处键路径错误导致显示原始键名。修复：改为正确的 `groupChat.discussion.delivery.*` 路径。
+3. **终端面板按钮文字异常**：`TerminalPanel.vue` 的 `import { } from "naive-ui"` 是**空导入**（合并时被清空），但模板用了 `NTooltip / NPopconfirm / NButton`，组件解析失败导致 tooltip 文本裸显示。修复：导入 `{ NButton, NPopconfirm, NTooltip }`。构建后 chunk 中 `resolveComponent` 计数为 0（静态绑定，不再运行时解析）。
+
+### 三、群聊工作区文件列表不显示（提交 `73085ea6`，bfcache 问题）
+
+- **现象**：用户"先进入单聊 → 再切回群聊"，工作区面板只显示"交付（52 KB / 100 MB，7 个文件）"用量条，文件列表为空；headless 探测无法复现（无 bfcache）。
+- **根因**：用户浏览器 console 报 `Page entered Back-Forward Cache`——页面从 bfcache（前进/后退缓存）恢复时，WebSocket 断开、**files store 停留在冻结前快照**（单聊 session 工作区模式），群聊 FilesPanel 的 watch 因房间 ID 未变化不触发重新 fetch，文件列表不刷新。
+- **修复**：
+  - 打开工作区面板时强制以当前房间 ID 刷新群聊文件（`refreshWorkspaceFilesForCurrentRoom`）。
+  - 监听 `pageshow`（`event.persisted === true`）事件，bfcache 恢复时重新同步群聊文件、房间总结、远程房间与配对状态。
+- **验证**：设备部署 `index-BFPQuGQF.js`，chunk 含 `pageshow / persisted / fetchEntries / workspaceRoomId` 标记。
+
+### 四、真机验证（6.6.6.47，许-测试1）
+
+- **冒烟测试（maxRounds=3, minRounds=2）**：5 个 agent 正常轮流发言（default→guanzhong→jiran→…），第 1 轮裁判判 converged 但被 minRounds=2 压制继续探索，第 3 轮 `max_rounds` 正常结束，产出 2 个交付文件。确认多 agent 讨论功能正常（此前"只有 default 干活"是操作方式问题——直接发消息而非发起讨论）。
+- **通宵任务模板**：`docs/planning/yaofeng-overnight-run-template.md`——耀丰地产 4 阶段流水线模板（盘点→三大争议焦点→质证方案→最终报告），maxRounds=40/minRounds=15/maxMessages=600，含冒烟测试步骤与次日检查清单。
+
+### 当前分支
+
+- `main`（合并了 `merge/upstream-main-20260814` 的工作），HEAD `73085ea6`。
+
+### 遗留 / 待办
+
+- bfcache 恢复时群聊 WebSocket 由 socket.io 自动重连，若用户仍遇到断连可进一步监听 `pageshow` 主动重连。
+- 长任务模式参数（40/15/600）为默认值，UI 仍可手动调整；`/讨论` 命令长任务关键词已支持。
+- 设备 6.6.6.47 上的 kiosk Chromium 为 320x200 小屏，工作区面板以 100% 宽全屏展示，若布局异常可单独排查小屏适配。
+
+## 2026-08-18 · 群聊自由讨论改为"任务结果导向"（修复只跑 1 轮真正根因 + 防设备过载）
+
+### 本轮目标
+
+- 用户反馈：群聊自由讨论"任何任务只执行一轮"，要求以任务结果为导向——没产出明确结果不停，消息自动总结归档。
+- 前一轮 `b80cee40` 移除了"软上限扩展"机制但**误诊了根因**：真正的元凶是 `maxMessages=60` 消息预算统计了全部消息（含 tool 管道消息），5 个 agent 第 1 轮的工具调用就耗尽预算。
+- 设备（阿曼 RK35xx，IP 10.0.0.2）实测：4 核 / 3.9GB RAM / zram 1.9GB，需防止长讨论把设备吃爆。
+
+### 一、Spec（docs/planning/group-chat-discussion-task-oriented-spec.md）
+
+完整 spec 已写入 `docs/planning/group-chat-discussion-task-oriented-spec.md`：根因分析（含设备实测证据：第 1 轮恰好产生 60 条消息 = maxMessages 上限）、方案设计、验收标准、风险与回退。
+
+### 二、代码改动
+
+1. **maxMessages 预算改为只计"实质发言"**（`discussion.ts` + `index.ts`）：
+   - `ChatStorage` 新增 `getSubstantiveMessageCount()`：SQL 排除 `role='tool'` 与空 assistant 占位消息。
+   - `DiscussionStorage` 接口新增可选 `getSubstantiveMessageCount?` / `listDiscussions?`，测试桩不受破坏。
+   - `messagesSinceStart()` 改用实质发言计数——工具调用管道不再消耗讨论预算。
+2. **默认参数调整**：`DISCUSSION_DEFAULT_MAX_ROUNDS` 8→20、`DISCUSSION_DEFAULT_MAX_MESSAGES` 60→200（clamp 上限 500→1000）；前端 `GroupChatPanel.vue` 同步默认值与 NInputNumber max。
+3. **讨论中每 5 轮自动归档**（`archiveDuringRun`）：
+   - `DISCUSSION_ROUND_ARCHIVE_EVERY=5`、`DISCUSSION_ROUND_ARCHIVE_MIN_MESSAGES=20`（按实质发言计）。
+   - 每 5 轮把原始消息总结落盘为 summary（复用 `archiveRoom`），并广播"讨论记录已自动归档"系统消息；失败仅告警不中断。
+4. **全局并发限制**：`DISCUSSION_MAX_CONCURRENT=1`（环境变量 `HERMES_GROUP_CHAT_MAX_CONCURRENT_DISCUSSIONS` 可覆盖），基于 storage `listDiscussions()` 统计活跃场数，防止多房间讨论叠加吃爆设备内存。
+
+### 三、测试
+
+- `tests/server/group-chat-discussion.test.ts`：清理 3 个残留的已删除 extension 机制用例（其中 2 个此前一直失败），新增"实质发言不消耗预算""讨论中每 5 轮归档""全局并发 409/释放后放行"等用例。
+- **28/28 通过**；服务端 `tsc`、客户端 `vue-tsc`、`npm run build` 全部通过。
+
+### 四、真机验证（许-测试1，10.0.0.2）
+
+- 部署后 bundle：client `index-Bzlf6OMy.js`，server md5 `4331f62b…`（含全部新逻辑）。
+- **验证 1（maxRounds=8，质证要点任务）**：推进至第 6 轮后手动停止，产出 10 个交付文件（质证提纲 .md / 打印预览 .html+.pdf / 总结 .docx 等）——修复前第 1 轮即停，修复后稳定多轮。
+- **验证 2（maxRounds=6，利息起算口径任务）**：第 4 轮自然收敛（裁判连续 2 轮 converged=True，符合 `DISCUSSION_CONVERGED_STREAK_REQUIRED=2`），产出 2 个交付文件 + 总结 .docx。
+- **验证 3（maxRounds=8, minRounds=6，办案指引六阶段任务）**：**跑满 8/8 轮**，每轮裁判均判定 progress=True；第 5 轮触发"讨论记录已自动归档"系统消息、消息总数从 380+ 骤降到 2（原始消息落盘为 summary，summary 5260 字）；最终产出 9 个交付文件（6 阶段指引 + 汇总版 + 总结 .docx）。
+- **设备健康**：8 轮高强度讨论期间 load 峰值 ~4（4 核）、可用内存始终 ≥1.6GB（zram 兜底），**没有被吃爆**。
+
+### 当前分支
+
+- `merge/upstream-main-20260814`，HEAD `c24f36a8`。
+
+### 遗留 / 待办
+
+- 讨论中归档删除原始消息后，`totalTokens` 会计（`index.ts:2161`）随消息删除下降属预期（summary 保留内容）。
+- 归档阈值（20 条实质发言）与间隔（5 轮）可按设备负载经环境变量/常量再调优。
 
 ### 本轮目标
 
 - 解决用户核心痛点：群聊讨论过早停止、讨论会反过来问用户、讨论结束后没有完整交付文件。
 - 用户反馈「设备上出现了设备互联功能」，要求彻底移除并保证本地代码也不含该功能。
-- 真实设备（阿曼 RK35xx，IP 已从 192.168.1.39 变更为 6.6.6.47）验证中发现讨论只跑 1 轮就停止，需修复。
+- 真实设备（阿曼 RK35xx，IP 已从 <device-ip> 变更为 <device-ip>）验证中发现讨论只跑 1 轮就停止，需修复。
 
 ### 一、群聊自由讨论功能增强（commit e994d7d5）
 
@@ -54,7 +173,7 @@
 
 ### 四、设备部署
 
-- 设备 IP 变更：`192.168.1.39` → `6.6.6.47`（SSH root/123456 有效，quanthermes 密码 Byym602282# 用于 Web API 登录）。
+- 设备 IP 变更：`<device-ip>` → `<device-ip>`（SSH <REDACTED> 有效，quanthermes 密码 <REDACTED> 用于 Web API 登录）。
 - Windows 无 sshpass/expect，改用 Python `paramiko` 编写部署脚本：SFTP 递归上传 `dist/client/*` 与 `dist/server/index.js` 到 `/opt/hermes-web-ui/dist/`，`systemctl restart hermes-web-ui`。
 - 部署后验证：设备 bundle 从 `index-D8uLQxSo.js`（含 `hermes.connections`）变为 `index-CrGJPHNG.js`（计数 0），确认设备互联已从设备移除。
 
@@ -796,7 +915,7 @@
   - `resolveDeviceUrls is not defined`
 - 重置本地开发数据库并确认默认账号链路仍可用：
   - 用户名 `quanthermes`
-  - 密码 `12345678`
+  - 密码 <REDACTED>
 - 删除了页面、官网和 README 中最直接的官方跳转入口。
 - 修正了发布基线：
   - npm 发布名收口为 `@quanthermes/hermes-web-ui`

@@ -2181,7 +2181,7 @@ export class CodingAgentRunManager {
         cwd: run.launch.workspaceDir,
         // The shipped DeepSeek adapter route; Hermes provider keys (e.g.
         // 'deepseek') are not DSH routes, and the endpoint/key travel via env.
-        provider: 'deepseek-official',
+        provider: run.launch.apiMode === 'codex_responses' ? 'openai-responses' : 'deepseek-official',
         model: run.launch.model,
       })
       dsh.initialized = true

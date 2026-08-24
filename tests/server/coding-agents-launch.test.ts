@@ -4,7 +4,7 @@ import { dirname, join } from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { claudeProxyMessages, claudeProxyModels, registerClaudeCodeProxyTarget } from '../../packages/server/src/services/agent-runner/proxies/claude-code-proxy'
 import { codexProxyModels, codexProxyResponses, registerCodexProxyTarget } from '../../packages/server/src/services/agent-runner/proxies/codex-proxy'
-import { prepareCodingAgentLaunch } from '../../packages/server/src/services/coding-agents'
+import { buildDshSdkCordisTemplate, dshSdkTemplatePackages, getDshSdkInstallSpecs, prepareCodingAgentLaunch } from '../../packages/server/src/services/coding-agents'
 
 const homes: string[] = []
 
@@ -232,7 +232,7 @@ describe('coding agent launch preparation', () => {
     expect(launcher).toContain("'headless'")
   })
 
-  it('rejects DeepSeek Harness scoped launches with non chat-completions protocols', async () => {
+  it('rejects DeepSeek Harness scoped launches with unsupported protocols', async () => {
     const home = makeHome()
 
     await expect(prepareCodingAgentLaunch('dsh', {
@@ -241,8 +241,47 @@ describe('coding agent launch preparation', () => {
       model: 'deepseek/deepseek-v4-flash',
       baseUrl: 'https://openrouter.ai/api/v1',
       apiKey: 'sk-test',
+      apiMode: 'anthropic_messages',
+    })).rejects.toThrow('DeepSeek Harness launch only supports OpenAI Chat Completions or OpenAI Responses providers')
+  })
+
+  it('launches DeepSeek Harness scoped launches with codex_responses using the openai-responses route', async () => {
+    const home = makeHome()
+
+    const result = await prepareCodingAgentLaunch('dsh', {
+      profile: 'default',
+      provider: 'openrouter',
+      model: 'deepseek/deepseek-v4-flash',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      apiKey: 'sk-test',
       apiMode: 'codex_responses',
-    })).rejects.toThrow('DeepSeek Harness launch only supports OpenAI Chat Completions providers')
+    })
+
+    expect(result.rootDir).toBe(join(home, 'coding-agent', 'model', 'default', 'openrouter', 'dsh'))
+    expect(result.workspaceDir).toBe(join(home, 'coding-agent', 'workspace', 'default', 'openrouter'))
+    expect(result.command).toBe('dsh')
+    expect(result.args).toEqual(['--profile', 'headless'])
+    expect(result.env).toMatchObject({
+      DSH_HOME: result.rootDir,
+      DEEPSEEK_BASE_URL: 'https://openrouter.ai/api/v1',
+      DEEPSEEK_API_KEY: 'sk-test',
+    })
+
+    const settings = readFileSync(join(result.rootDir, 'settings.yaml'), 'utf-8')
+    expect(settings).toContain('llm-pi-ai:')
+    expect(settings).toContain('openai-responses:')
+    expect(settings).toContain('api: openai-responses')
+    expect(settings).toContain('apiKeyEnv: DEEPSEEK_API_KEY')
+    expect(settings).toContain('baseURL: "https://openrouter.ai/api/v1"')
+    expect(settings).toContain('agent-default-model:')
+    expect(settings).toContain('provider: openai-responses')
+    expect(settings).toContain('model: "deepseek/deepseek-v4-flash"')
+    expect(settings).not.toContain('llm-deepseek:')
+
+    const launcher = readFileSync(join(result.rootDir, LAUNCHER_FILE), 'utf-8')
+    expect(launcher).toContain("'dsh'")
+    expect(launcher).toContain("'--profile'")
+    expect(launcher).toContain("'headless'")
   })
 
   it('launches DeepSeek Harness in full SDK mode when a local source checkout is available', async () => {
@@ -285,6 +324,87 @@ describe('coding agent launch preparation', () => {
     })
     // SDK mode must not write the headless settings.yaml into the run root.
     expect(existsSync(join(result.rootDir, 'settings.yaml'))).toBe(false)
+    // Checkout mode runs the DSH repo's own cordis composition; the product
+    // template (and its apiMode-conditional llm-pi-ai route) only applies to
+    // PATH/managed-bin SDK launches, covered by buildDshSdkCordisTemplate.
+  })
+
+  it('loads the llm-pi-ai Responses route only for codex_responses SDK launches', async () => {
+    const home = makeHome()
+    const checkout = join(home, 'dsh-sdk-checkout-pi')
+    const sdkBin = join(checkout, 'packages', 'examples', 'jsonrpc-demo', 'src', 'bin.ts')
+    const sdkConfig = join(checkout, 'examples', 'jsonrpc-agent', 'cordis.yml')
+    mkdirSync(dirname(sdkBin), { recursive: true })
+    mkdirSync(dirname(sdkConfig), { recursive: true })
+    mkdirSync(join(checkout, 'node_modules', 'tsx'), { recursive: true })
+    writeFileSync(sdkBin, 'export {}')
+    writeFileSync(sdkConfig, '- id: sdk-jsonrpc-server\n')
+    writeFileSync(join(checkout, 'node_modules', 'tsx', 'package.json'), '{}')
+    process.env.DEEPSEEK_HARNESS_ROOT = checkout
+
+    const result = await prepareCodingAgentLaunch('dsh', {
+      profile: 'default',
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+      apiKey: 'sk-test',
+      apiMode: 'codex_responses',
+    })
+
+    const cordis = buildDshSdkCordisTemplate('codex_responses')
+    expect(cordis).toContain('- id: llm-pi-responses')
+    expect(cordis).toContain("name: '@deepseek-ai/dsh-llm-pi-ai'")
+    // The Responses route needs a non-empty base URL; default to the official
+    // DeepSeek endpoint when the provider carries none.
+    expect(result.env.DEEPSEEK_BASE_URL).toBe('https://api.deepseek.com')
+  })
+
+  it('omits the llm-pi-ai Responses route from chat-completions SDK compositions', () => {
+    expect(buildDshSdkCordisTemplate('chat_completions')).not.toContain('llm-pi-responses')
+    expect(buildDshSdkCordisTemplate('chat_completions')).toContain('- id: llm-deepseek')
+    expect(buildDshSdkCordisTemplate('codex_responses')).toContain('llm-pi-responses')
+  })
+
+  it('defaults DEEPSEEK_BASE_URL for DeepSeek Harness SDK launches without a provider base URL', async () => {
+    const home = makeHome()
+    const checkout = join(home, 'dsh-sdk-checkout-no-base-url')
+    const sdkBin = join(checkout, 'packages', 'examples', 'jsonrpc-demo', 'src', 'bin.ts')
+    const sdkConfig = join(checkout, 'examples', 'jsonrpc-agent', 'cordis.yml')
+    mkdirSync(dirname(sdkBin), { recursive: true })
+    mkdirSync(dirname(sdkConfig), { recursive: true })
+    mkdirSync(join(checkout, 'node_modules', 'tsx'), { recursive: true })
+    writeFileSync(sdkBin, 'export {}')
+    writeFileSync(sdkConfig, '- id: sdk-jsonrpc-server\n')
+    writeFileSync(join(checkout, 'node_modules', 'tsx', 'package.json'), '{}')
+    process.env.DEEPSEEK_HARNESS_ROOT = checkout
+
+    const result = await prepareCodingAgentLaunch('dsh', {
+      profile: 'default',
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+      apiKey: 'sk-test',
+      apiMode: 'chat_completions',
+    })
+
+    // The SDK cordis composition boots an llm-pi-ai route that requires a
+    // non-empty base URL, so the launch must default it to the official
+    // DeepSeek endpoint instead of leaving DEEPSEEK_BASE_URL unset.
+    expect(result.env.DEEPSEEK_BASE_URL).toBe('https://api.deepseek.com')
+    expect(result.env.DEEPSEEK_API_KEY).toBe('sk-test')
+  })
+
+  it('builds the DeepSeek Harness SDK install spec from the cordis template', () => {
+    const packages = dshSdkTemplatePackages()
+    expect(packages).toContain('@deepseek-ai/dsh-sdk-jsonrpc-server')
+    expect(packages).toContain('@deepseek-ai/dsh-llm-deepseek')
+    expect(packages).toContain('@deepseek-ai/dsh-llm-pi-ai')
+    expect(packages).toContain('@deepseek-ai/dsh-compaction-basic')
+
+    const specs = getDshSdkInstallSpecs('0.1.0-rc.7')
+    expect(specs).toContain('@deepseek-ai/dsh-sdk-jsonrpc-demo@0.1.0-rc.7')
+    expect(specs).toContain('@deepseek-ai/dsh-sdk-jsonrpc-server@0.1.0-rc.7')
+    // Every template component must be pinned to the same coherent series.
+    expect(specs).toHaveLength(packages.length + 1)
+    for (const spec of specs) expect(spec).toMatch(/@0\.1\.0-rc\.7$/)
   })
 
   it('launches DeepSeek Harness with the global config when requested', async () => {
