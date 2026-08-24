@@ -1,34 +1,33 @@
 # Work Log
 
-## 2026-08-24 · 非英 locale 大面积缺失：量化分析与翻译合并管线（进行中）
+## 2026-08-24 · 非英 locale 缺失：zh-TW 翻译完成（341 key 全量补齐）
 
-### 本轮目标
+### 范围收窄（用户决策）
 
-- 承接上一条目「遗留 / 待办」的「非英 locale 大面积缺失」：9 个非英 locale（zh-TW / ja / ko / fr / es / de / pt / ru / ar）相对 en 缺失 341–558 个 key，目前依赖 `fallbackLocale: 'en'` + `mergeMessagesWithFallback` 深合并兜底，相关语言用户看到的仍是英文。
-- 本轮完成：缺口量化、按 locale 导出缺失 key 清单、搭建 TS-AST 引导的翻译合并管线并完成冒烟验证。
-- **翻译内容创作与合并尚未开始**——9 个语言共约 3700 条翻译待产出，这是下一步工作。
+- 最初计划翻译全部 9 个非英 locale（约 3700 条）。用户拍板：**先只做 zh-TW 与英文**（英文本就是完整基准），其余 8 个语言等有实际国家/地区用户后再翻译。工具链保留，随时可扩。
 
-### 一、缺口量化
+### 交付内容
 
-- `tmp/i18n-gap-live.mts`（vite-node 扫描 SourceRoot + changelog 引用）统计：跨 9 个 locale 共有 **812 个 live-missing union key**（约 3699 条翻译）。
-- 按 namespace 分布（union）：changelog 207、meeting 164、mcp 65、usb 64、experts 52、codingAgents 50、models 38、kanban 34、skills 33、login 32、githubPreview 25、chat 14、sidebar 11、modelGuide 6、profiles 6、settings 5、users 3、terminal 2、common 1。
-- 按 locale 分布：zh-TW 341、ja/ko/fr/es/de/pt 各 379、ru 526、ar 558。（zh 完整，0 缺失，用作参考。）
-- 特殊结构：meeting（164）、experts（52）、modelGuide（6）3 个 namespace 在 9 个 locale 中完全缺失；ar/ru 还额外缺 mcp、skills、login、usb、githubPreview、codingAgents、changelog 等整段 namespace。
-- 5 个死 namespace（connections / mcuDevices / petdex / gateways / language）已排除，不翻译。
+- **`tmp/translations/zh-TW.json`**：341 个缺失 key 的繁体翻译（基于 zh 简中转繁，保留 API Key / OSS / ASR / LLM / Provider 等技术名词、`{placeholder}` 与既有 zh-TW 台湾用语习惯如 設定/伺服器/載入/重新整理 一致）。
+- **merge 工具修复（两处 bug）**：
+  1. 整块新建 namespace 时逐 key 渲染完整链 → 产生重复中间对象（如 `assist: { analyzing }`, `assist: { clearHints }` 并列），对象字面量后者覆盖前者，嵌套叶子丢失 39 个（experts 22 / meeting 17）。改为 `buildTree` + `renderTree` 树状合并。
+  2. 树状合并输入未剥 ns 前缀 → 生成 `meeting: { meeting: { ... } }` 双重嵌套。已修正（`k.slice(ns.length + 1)`）。
+- 冒烟用 `tmp/translations/ja.json`（6 测试 key）已移出到 `tmp/test-translations/`，避免误合并进真实 ja.ts。
 
-### 二、合并管线（`tmp/`，gitignore 内，不随库提交）
+### 验证
 
-- **`tmp/merge-i18n.mjs`**：TS AST 引导的文本插入合并器。读 `tmp/translations/<locale>.json`（扁平 dot-path → 目标语言文本），按顶层 namespace 分组；namespace 已存在则沿对象链下行插入缺失键，不存在则锚定文件末尾 `}` 新建 block。只增不删，不动已有翻译；输出后重新 parse 校验 0 diagnostics。
-- **`tmp/per-locale-keys.mts`**：为每个 locale 生成 `tmp/keys-<locale>.tsv`（key、en 值、zh 值三列），共 3699 行，作为逐语言创作翻译的清单底稿。
-- **`tmp/zh-reference.json`**：812 个 union key 的 zh 参考值（完整度 812/812），作为 zh-TW 简转繁与其他语言语义对照的基准。
-- **冒烟验证**：`tmp/test-locales/ja.ts` + `tmp/translations/ja.json`（6 个测试 key：meeting/experts/kanban/sidebar 混合）合并后 parse 0 diagnostics，中文原有翻译无损伤。
+- `node tmp/merge-i18n.mjs` → zh-TW inserted 122（341 key，其中 meeting/experts/modelGuide 整块新建只计 3 条）。
+- parse：zh-TW.ts parseDiagnostics=0；嵌套结构（assist/reportPanel/detail/scene）单对象无重复。
+- gap 工具：**zh-TW live-missing=0**（合并前 341 → 合并后 0）；其余 8 个 locale 数字不变（未触碰）。
+- i18n-coverage 18/18 通过；vue-tsc 类型检查通过。
+- 其余 locale 的 [intlify] not-found warning 为既有缺口走 fallback，符合预期。
 
-### 三、下一步
+### 遗留 / 待办
 
-1. 为 9 个 locale 依次产出 `tmp/translations/<locale>.json`（zh-TW 基于 zh 简转繁；其余语言从 en 翻译）。
-2. 逐个运行 `node tmp/merge-i18n.mjs` 合并进 `packages/client/src/i18n/locales/*.ts`，用 gap 工具验证每个 locale live-missing=0。
-3. 运行 `npm run test -- tests/client/i18n-coverage.test.ts` + tsc/vue-tsc。
-4. 提交、更新本条记录、推送 origin（如需 CI 再推送 org）。
+- ja/ko/fr/es/de/pt/ru/ar 仍缺 379–558 key（fallback 英文），待有用户后按同一管线翻译。
+- 提交本次 zh-TW 翻译（本记录随后 commit 一并提交）。
+
+## 2026-08-24 · 非英 locale 大面积缺失：量化分析与翻译合并管线
 
 ## 2026-08-24 · 合并上游 main + 代码审查与清理（任务 1-3）
 
