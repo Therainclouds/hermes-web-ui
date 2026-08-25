@@ -8,7 +8,7 @@ import { NButton, NEmpty, NSpin, NTag } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { copyUSBFileToWorkspace, fetchUSBDevices, fetchUSBHistory } from '@/api/hermes/usb'
 import USBEventHistory from '@/components/hermes/usb/USBEventHistory.vue'
-import USBFileBrowser from '@/components/hermes/usb/USBFileBrowser.vue'
+import USBExplorer from '@/components/hermes/usb/explorer/USBExplorer.vue'
 import { useUSBStream } from '@/composables/useUSBStream'
 import { useChatStore } from '@/stores/hermes/chat'
 import { useMessage } from '@/composables/useAppMessage'
@@ -259,7 +259,7 @@ onMounted(() => {
           <!-- Workspace -->
           <section class="workspace-grid">
             <div class="browser-column">
-              <USBFileBrowser
+              <USBExplorer
                 :device="selectedDevice"
                 :agent-read-enabled="canUseActiveChatSession"
                 :agent-read-busy="agentReadBusy"
