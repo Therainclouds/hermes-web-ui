@@ -4190,6 +4190,8 @@ export default {
       atmosphere: '氛围',
       risk: '风险',
       suggestion: '建议',
+      hints: '提示',
+      usageHint: '开始录音后，AI 将实时分析对话内容并提供关键提示和建议',
     },
     // 报告
     reportPanel: {

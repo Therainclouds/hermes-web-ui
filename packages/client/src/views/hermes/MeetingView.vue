@@ -3535,6 +3535,7 @@ async function clearTranscript() {
   background: $bg-card;
   border-left: 1px solid $border-color;
   display: flex;
+  align-self: stretch;
   min-height: 0;
   overflow: hidden; // 改为 hidden，避免按钮溢出屏幕
 }
