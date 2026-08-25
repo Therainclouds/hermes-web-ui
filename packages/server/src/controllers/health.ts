@@ -4,6 +4,7 @@ import { getAgentBridgeManager } from '../services/hermes/agent-bridge/manager'
 import { redactAgentBridgeError } from '../services/hermes/agent-bridge/redact'
 import { getTerminalRuntimeStatus } from '../services/terminal/runtime-state'
 import { getSnapshot, refresh as refreshUpdateCheck } from '../services/update/update-check-cache'
+import { getLastEnvironmentCheck } from '../services/update/reconcile'
 import { getLocalWebUiVersion } from '../services/update/package-info'
 import { isRemoteVersionNewer } from '../services/update/version-compare'
 import { isDockerContainer } from '../services/runtime-environment'
@@ -174,5 +175,6 @@ export async function healthCheck(ctx: any) {
     agent_bridge: agentBridge,
     terminal,
     is_docker: isDockerContainer(),
+    environment: getLastEnvironmentCheck(),
   }
 }

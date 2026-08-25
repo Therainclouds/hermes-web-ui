@@ -328,6 +328,19 @@ export default {
     },
   },
 
+  environmentDrift: {
+    title: '检测到设备环境漂移',
+    summary: '当前有 {count} 项环境门禁与最新 manifest 不一致。',
+    gateNodeRange: 'Node.js 版本 {actual} 不满足必需范围 {expected}',
+    gateAgentRange: 'Hermes Agent 版本 {actual} 不满足必需范围 {expected}',
+    gateSystemFile: '文件 {path} 当前为 {actual}，期望 {expected}',
+    gateInstallerScript: '安装脚本指纹不匹配',
+    reconcile: '立即对账',
+    reconcileQueued: '对账任务已启动，完成后此提示会自动消失',
+    dismiss: '本会话内隐藏',
+    unavailable: '尚未捕获设备环境状态。请先完成一次成功升级后再查看。',
+  },
+
   runtimeVersions: {
     title: '版本管理',
     runtimeTitle: 'Hermes Runtime',
