@@ -53,7 +53,6 @@ import {
   setProfileAvatarGenerated,
   clearProfileIdentity,
 } from '../services/hermes/profile-metadata'
-import { getActiveProfileName } from '../services/hermes/hermes-profile'
 
 /**
  * GET /api/auth/status
@@ -616,24 +615,21 @@ export async function deviceLogin(ctx: Context) {
 }
 
 /**
- * Reflect the Token Platform identity onto the active Hermes profile: the
- * "default" agent profile is displayed by its internal name in the meeting,
+ * Reflect the Token Platform identity onto the "default" Hermes profile only:
+ * the default agent profile is displayed by its internal name in the meeting,
  * group chat, coding and profile selector surfaces. Writing the Web-UI
- * displayName metadata (plus the WeChat avatar) makes every surface show the
- * user's name instead of "default".
+ * displayName metadata (plus the WeChat avatar) makes every surface scoped to
+ * "default" show the user's name. Other agent profiles (e.g. "research",
+ * "travel", or expert-installed agents) keep their own names and avatars and
+ * are intentionally NOT overwritten by the WeChat identity.
  */
 function syncProfileIdentity(displayName: string, avatarUrl?: string | null): void {
-  // Apply to the active profile and the "default" agent profile, so the name
-  // shows up regardless of which profile the meeting/group-chat/coding surfaces
-  // are scoped to.
-  const names = new Set<string>([getActiveProfileName() || 'default', 'default'])
-  for (const profileName of names) {
-    setProfileDisplayName(profileName, displayName)
-    if (avatarUrl) {
-      setProfileAvatarRemote(profileName, avatarUrl)
-    } else {
-      setProfileAvatarGenerated(profileName, displayName)
-    }
+  const profileName = 'default'
+  setProfileDisplayName(profileName, displayName)
+  if (avatarUrl) {
+    setProfileAvatarRemote(profileName, avatarUrl)
+  } else {
+    setProfileAvatarGenerated(profileName, displayName)
   }
 }
 
