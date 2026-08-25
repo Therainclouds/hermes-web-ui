@@ -328,6 +328,19 @@ export default {
     },
   },
 
+  environmentDrift: {
+    title: 'Device environment drift detected',
+    summary: '{count} environment gate(s) do not match the latest manifest.',
+    gateNodeRange: 'Node.js version {actual} does not satisfy required range {expected}',
+    gateAgentRange: 'Hermes Agent version {actual} does not satisfy required range {expected}',
+    gateSystemFile: 'File {path} is {actual}, expected {expected}',
+    gateInstallerScript: 'Installer script fingerprint mismatch',
+    reconcile: 'Reconcile now',
+    reconcileQueued: 'Reconcile task started; will auto-clear when complete',
+    dismiss: 'Hide for this session',
+    unavailable: 'Device environment state has not been captured yet. Run a successful upgrade first, then check again.',
+  },
+
   runtimeVersions: {
     title: 'Version Management',
     runtimeTitle: 'Hermes Runtime',

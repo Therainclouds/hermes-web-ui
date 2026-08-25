@@ -9,6 +9,7 @@ import RouteLinkItem from '@/components/common/RouteLinkItem.vue'
 import ModelSelector from "@/components/layout/ModelSelector.vue";
 import ProfileSelector from "@/components/layout/ProfileSelector.vue";
 import LanguageSwitch from "@/components/layout/LanguageSwitch.vue";
+import EnvironmentDriftBanner from "@/components/layout/EnvironmentDriftBanner.vue";
 import ThemeSwitch from "@/components/layout/ThemeSwitch.vue";
 import VersionManagementModal from "@/components/layout/VersionManagementModal.vue";
 import { changelog } from "@/data/changelog";
@@ -148,6 +149,7 @@ function handleUpdateClick() {
 
 <template>
   <aside class="sidebar" :class="{ open: appStore.sidebarOpen, collapsed: appStore.sidebarCollapsed }" @click="handleSidebarClick">
+    <EnvironmentDriftBanner />
     <nav class="sidebar-nav">
       <!-- Agent -->
       <div class="nav-group">

@@ -6,6 +6,7 @@ import { config, getWebUiHome, hasConfiguredManifestCheck, hasConfiguredUpdateEx
 import { UpdateError } from '../services/update/errors'
 import { getLocalWebUiVersion, readPackageInfo } from '../services/update/package-info'
 import { assertDevicePackageCompatibility, assertDevicePackageExecution, assertInstallerScriptCompatible, buildDevicePackageInstallEnv, buildDevicePackageReconcileCommand, buildDevicePackageReconcileEnv, downloadAndVerifyDevicePackage, getDevicePackageExecutionMessage, resolveDevicePackageManifest } from '../services/update/strategies/device-package'
+import { assertEnvironmentMatches, getLastEnvironmentCheck, readDeviceEnvState, runEnvironmentCheck } from '../services/update/reconcile'
 import { fetchDevicePackageManifest, fetchSourcePackageManifest } from '../services/update/manifest-client'
 import { assertSourcePackageCompatibility } from '../services/update/strategies/source-package'
 import { resolveManifestCheckResult } from '../services/update/manifest-client'
@@ -1465,6 +1466,51 @@ export async function clearStaleUpdateStatus(ctx: any) {
       ? 'Recovered interrupted update task state was cleared.'
       : 'Finished update task state was cleared.',
     ...updateTaskStore.getStatus(),
+  }
+}
+
+export async function getUpdateEnvironment(ctx: any) {
+  syncUpdateTaskState()
+  try {
+    await runEnvironmentCheck()
+  } catch (err) {
+    console.warn('[update] environment check refresh failed:', err instanceof Error ? err.message : String(err))
+  }
+  const cached = getLastEnvironmentCheck()
+
+  let state = null
+  try {
+    state = await readDeviceEnvState()
+  } catch (err) {
+    console.warn('[update] env-state.json read failed:', err instanceof Error ? err.message : String(err))
+  }
+
+  let manifest: DevicePackageManifest | null = null
+  if (config.update.strategy === 'device-package') {
+    try {
+      manifest = await fetchDevicePackageManifest(config.update)
+    } catch (err) {
+      if (!(err instanceof UpdateError)) {
+        console.warn('[update] manifest fetch failed for /environment:', err instanceof Error ? err.message : String(err))
+      }
+    }
+  }
+
+  const drift = state && manifest?.environment
+    ? assertEnvironmentMatches(state, manifest.environment)
+    : []
+
+  ctx.body = {
+    success: true,
+    status: !state ? 'unavailable' : drift.length === 0 ? 'ok' : 'drift_detected',
+    lastCapturedAt: state?.capturedAt ?? null,
+    manifestVersion: manifest?.version ?? null,
+    actualVersion: state?.version ?? null,
+    nodeVersion: state?.nodeVersion ?? null,
+    agentVersion: state?.agentVersion ?? null,
+    drift,
+    reconcileSupported: manifest?.environment !== undefined,
+    checkedAt: cached.checkedAt || null,
   }
 }
 
