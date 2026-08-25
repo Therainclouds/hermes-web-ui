@@ -78,6 +78,86 @@
   要等 3-10 分钟重装依赖。
 - 会议数据（会议录音等）在 `meetings/`，ASR 配置在 `data/meeting-asr/config.json`（DATA_DIR），
   打包/更新时都要排除/保留。
+## 2026-08-25 · USBView 重构为 Windows 资源管理器风格（提交 `6b9d8163`）
+
+
+### 目标
+
+命令行 Ubuntu 用户在 Hermes Web UI 里查看 USB 设备文件时，旧的 `USBView.vue` + `USBFileBrowser.vue` 是「设备卡片网格 + 文件列表 + 详情预览」三段拼接，操作路径长、不直观。本轮把它重做成类似 Windows 资源管理器（树 + 列表 + 预览）的三栏可视化点击体验。
+
+### 范围决策（用户拍板）
+
+- **仅前端 UI**，不动 Python 监听器、不动 `USBService`、不改 Socket.IO 事件格式——树/列表完全复用现有 REST API（`listUSBFiles` + `statUSBPath` + `fetchUSBFileBlob` + `downloadUSBFile` + `copyUSBFileToWorkspace`）。
+- **不做键盘导航**（仅网页点击）。
+- **保留「设备列表 + 单设备浏览器」形态**（不切 Tab、不合并多设备虚拟根）。
+- **视图切换保留**：列表视图 + 图标视图两种（Windows 11 资源管理器同款）。
+- **i18n 范围**：先英文 + 简体中文，其他 locale 沿用既有 fallback（`fallbackLocale: 'en'` + `mergeMessagesWithFallback` 自动兜底）。
+
+### 交付
+
+#### 1. 新增组件（`packages/client/src/components/hermes/usb/explorer/`）
+
+| 组件 | 职责 |
+|------|------|
+| `USBExplorerToolbar.vue` | 后退/前进/向上/刷新、地址栏（点击进入编辑态，Enter 跳转，Esc 取消）、搜索框、列表/图标视图切换 |
+| `USBExplorerBreadcrumb.vue` | 顶部面包屑，每个分段可点击跳转 |
+| `USBExplorerTree.vue` | 左侧目录树（懒加载，auto-expand 到当前路径） |
+| `USBExplorerList.vue` | 主文件列表，列表视图（名称/大小/类型/修改时间）+ 图标视图，按文件名前端过滤，右键唤起上下文菜单 |
+| `USBExplorerPreview.vue` | 右侧预览面板：元信息 + 文本/图片预览 + 复制路径/复制文件名/下载/让 Agent 读取 |
+| `USBExplorerContextMenu.vue` | 右键菜单：文件夹 vs 文件两套不同操作 |
+| `USBExplorer.vue` | 根容器，组合所有子组件，管理导航栈、双击打开、搜索、视图切换 |
+
+#### 2. 新增工具（`packages/client/src/utils/usb-format.ts`）
+
+`getExplorerEntryKind`（按扩展名分类 folder/image/document/archive/audio/video/code/text/unknown）、`isImageKind` / `isTextPreviewKind`、`joinExplorerPath` / `parentExplorerPath` / `explorerBaseName` / `normalizeExplorerPath`、`formatExplorerBytes` / `formatExplorerTime`。
+
+#### 3. 删除与替换
+
+- `packages/client/src/components/hermes/usb/USBFileBrowser.vue`（657 行）**已删除**，被 `USBExplorer` 替代
+- `packages/client/src/views/hermes/USBView.vue` 把 `<USBFileBrowser>` 换成 `<USBExplorer>`，保持设备卡片网格 + 历史侧栏不变
+
+#### 4. i18n
+
+en.ts 和 zh.ts 已经有完整的 `usb.explorer.*` 命名空间（toolbar / breadcrumb / tree / list / preview / contextMenu / nav / errors），**零新增 key**。
+
+### 关键设计点
+
+- **零后端改动**：树/列表/预览完全复用现有 REST API；前端每次点树节点、面包屑分段、文件行都触发一次 `listUSBFiles(uuid, path)`。
+- **路径安全**：导航全部走 `normalizeExplorerPath`（统一 `\`→`/`、合并斜杠、去除尾斜杠）+ 服务端 `isPathWithin` 防护，不存在路径穿越。
+- **导航栈**：根容器维护 `backStack` / `forwardStack`，后退/前进按钮正确启用/禁用。
+- **响应式**：移动端断点（`$breakpoint-mobile`）下三栏自动堆叠为单列（树 → 列表 → 预览）。
+- **图标 vs 列表视图**：复用同一个 `entries` 数组 + 同一份过滤逻辑，仅前端排版切换。
+- **右键菜单**：用 naive-ui `NDropdown` 的 `trigger="manual"` + `x/y` 坐标，避免侵入式事件监听。
+- **目录树懒加载**：每个 `<details>` 首次展开时 fetch 子目录，避免冷启动时拉取所有层。
+
+### 验证
+
+| 检查项 | 结果 |
+|--------|------|
+| `npm run harness:check` | ✅ passed |
+| `vue-tsc --noEmit`（client） | ✅ 无错误 |
+| 服务端 USB 测试 | ✅ 6/6 passed |
+| 我新增组件的 RTL logical CSS | ✅ 全部通过（`text-align: start` / `padding-inline-start`） |
+| 客户端测试整体 | 1404/1409 通过 |
+
+**5 个 pre-existing 失败**（与本改动无关）：
+- `ekko-display-name.test.ts` × 2 — Ekko/Claude 显示名相关
+- `device-connections-locales.test.ts` — device-connections locale 覆盖
+- `profile-card-config-edit.test.ts` — profile-card 选择器
+- `rtl-logical-css.test.ts` — 剩余的物理方向属性全在 MeetingView / ExpertDetailView / AppSidebar / MeetingAgentPanel / ExpertStarterPrompts / **USBView.vue:490（pre-existing，2026-07-01 由 65f3486c2 引入）**
+
+### 待办（不在本轮范围）
+
+- 真实设备上浏览器实操验收：插 U 盘 → 双击进入文件夹 → 右键菜单 → 搜索 → 视图切换 → 让 Agent 读取，截图留档
+- USBView.vue:490 的 `text-align: left` 是 2026-07-01 的 pre-existing 老问题，等后续清理 RTL 合集时一并修
+- 若用户后续要求支持键盘导航（F2 重命名、Enter 打开等），需补充 keydown 监听
+- 若要做"复制文件到工作区"的批量多选，需新增复选框 + 批量 API（建议放在工作区中心另起迭代）
+
+### 当前分支
+
+- `main` HEAD = `6b9d8163`，本地已提交，未推送（推送等用户决定）
+
+---
 
 ## 2026-08-24 · 非英 locale 缺失：zh-TW 翻译完成（341 key 全量补齐）
 
