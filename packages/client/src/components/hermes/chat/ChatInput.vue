@@ -75,6 +75,9 @@ const reasoningEffortAccentStyle = computed(() => ({
     || reasoningEffortAccentColors[0],
 }))
 const isMoaSession = computed(() => chatStore.activeSession?.provider === 'moa')
+const isGlobalCodingAgentSession = computed(() =>
+  chatStore.activeSession?.codingAgentMode === 'global'
+)
 const reasoningEffortLabel = computed<string>(() => {
   const v = currentReasoningEffort.value
   if (!v) return t('chat.reasoningEffort.defaultLabel')
@@ -1215,7 +1218,7 @@ function isImage(type: string): boolean {
           </NPopselect>
 
           <NPopover
-            v-if="!isMoaSession"
+            v-if="!isMoaSession && !isGlobalCodingAgentSession"
             trigger="click"
             placement="top-start"
           >
