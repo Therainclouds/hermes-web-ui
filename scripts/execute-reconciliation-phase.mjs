@@ -47,11 +47,10 @@ function run(cmd, args, options = {}) {
   })
 }
 
-function git(args, { allowFail = false } = {}) {
+function git(args) {
   try {
     return run('git', args).trim()
   } catch (err) {
-    if (allowFail) return null
     const stderr = err.stderr ? err.stderr.toString() : ''
     die(`git ${args.join(' ')} failed:\n${stderr}`)
   }
@@ -124,11 +123,19 @@ function cmdInit(phase) {
   ensureCleanTree()
   const branch = `phase${phase}-reconciliation`
   // Make sure origin/main exists locally.
-  if (git(['rev-parse', '--verify', 'origin/main'], { allowFail: true }) === null) {
+  try {
+    git(['rev-parse', '--verify', 'origin/main'])
+  } catch {
     git(['fetch', 'origin', '--prune'])
   }
   // Check if the branch already exists locally.
-  const exists = git(['rev-parse', '--verify', branch], { allowFail: true }) !== null
+  let exists = false
+  try {
+    git(['rev-parse', '--verify', branch])
+    exists = true
+  } catch {
+    exists = false
+  }
   if (exists) {
     git(['checkout', branch])
   } else {

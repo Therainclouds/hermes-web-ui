@@ -100,11 +100,7 @@ can `grep` against it.
 ### Controller + service layer
 
 - `packages/server/src/controllers/update.ts` — top-level update endpoints,
-  task lifecycle, strategy routing. `getUpdateEnvironment` exposes the
-  current drift status to the Web UI (`GET /api/hermes/update/environment`).
-- `packages/server/src/services/update/reconcile.ts` — drift computation,
-  `env-state.json` reader, and the 30-minute background reconcile loop.
-  Wired into bootstrap via `startReconcileLoop()` after `startVersionCheck()`.
+  task lifecycle, strategy routing.
 - `packages/server/src/services/update/manifest-client.ts` — manifest
   fetch + normalize.
 - `packages/server/src/services/update/device-package-contract.ts` —
@@ -442,73 +438,6 @@ There is no step that says "the version string inside
 `dist/server/index.js` matches the version string in the manifest that
 was used to fetch this tar". That is the gap that the v0.7.0 customer
 incident exposed.
-
-## Operator-Side Reconciliation (since Phase 3)
-
-`packages/server/src/services/update/reconcile.ts` adds a passive
-verification loop on top of the upgrade pipeline. It is intentionally
-separate from the install path: it does not refuse an upgrade — it only
-tells the operator when the device is **out of sync with the manifest**.
-
-### What it does
-
-- Reads `${HERMES_WEB_UI_HOME}/env-state.json` (written by
-  `install-device-package.sh` after every successful install).
-- Compares the captured Node version, Hermes Agent version, and
-  filesystem descriptors against `manifest.environment.requiredNodeRange`,
-  `requiredHermesAgentRange`, and `requiredSystemFiles`.
-- Runs the check at boot (after a 60s grace period), then every
-  30 minutes via `setInterval().unref()` so the timer does not block
-  process exit.
-- Stores the result in a module-scoped `lastEnvironmentCheck`, exposed
-  via `GET /api/hermes/update/environment` and (since phase 3) inside the
-  `/health` payload as `environment`.
-
-### What it does not do
-
-- It never spawns the install script on its own. The reconcile button in
-  the UI posts to `POST /api/hermes/update/reconcile`, which goes through
-  the same runner service as a normal upgrade.
-- It does not refuse an upgrade when drift is detected. Drift means
-  "the device is out of sync with the manifest", not "do not upgrade".
-  The UI shows a banner that operators can dismiss; the banner is **not**
-  shown when `reconcileSupported=false` (manifest has no `environment`
-  block), so legacy manifests do not produce a permanent banner.
-
-### DriftEntry shape
-
-```ts
-interface DriftEntry {
-  gate: 'requiredNodeRange' | 'requiredHermesAgentRange' | 'requiredSystemFiles' | 'installerScriptSha256'
-  expected: string
-  actual: string
-  detail?: string
-}
-```
-
-`gate=installerScriptSha256` is reserved for the future fingerprint
-self-check; the controller-side `assertInstallerScriptCompatible` in
-`strategies/device-package.ts` already raises that gate at upgrade time,
-so the banner would only re-surface drift that the operator had previously
-chosen to ignore.
-
-### How an operator uses it
-
-1. Web UI renders an `EnvironmentDriftBanner` in the sidebar when
-   `status === 'drift_detected' && reconcileSupported && drift.length > 0`.
-2. The banner shows the failing gates and offers **Reconcile** and
-   **Dismiss** actions. **Reconcile** calls
-   `POST /api/hermes/update/reconcile`, which spawns
-   `hermes-web-ui-update.service --reconcile-env-only`. **Dismiss** sets
-   a per-session flag (`environmentDismissed`) so the banner does not
-   re-appear until the next page reload.
-3. The banner never blocks any other action. It is purely informational.
-
-The whole reconcile module is intentionally pure where it can be:
-`assertEnvironmentMatches(state, manifest)` is a standalone function that
-takes a captured env and a manifest block and returns the list of
-failing gates, so drift logic is unit-testable without filesystem or
-network fixtures.
 
 ## Open Questions
 
