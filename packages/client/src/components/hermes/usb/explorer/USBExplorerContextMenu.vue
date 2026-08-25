@@ -21,7 +21,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  update:show: [value: boolean]
+  'update:show': [value: boolean]
   open: [entry: ContextMenuEntry]
   copyPath: [entry: ContextMenuEntry]
   copyName: [entry: ContextMenuEntry]
