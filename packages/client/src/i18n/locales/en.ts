@@ -317,6 +317,7 @@ export default {
       downloading: 'Downloading update package',
       verifying: 'Verifying update package',
       backing_up: 'Creating program backup',
+      reconciling_env: 'Reconciling device environment',
       starting: 'Starting update workflow',
       installing: 'Running update',
       restarting: 'Restarting service',

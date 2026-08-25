@@ -5,8 +5,8 @@ import { delimiter, dirname, extname, join, resolve } from 'path'
 import { config, getWebUiHome, hasConfiguredManifestCheck, hasConfiguredUpdateExecution } from '../config'
 import { UpdateError } from '../services/update/errors'
 import { getLocalWebUiVersion, readPackageInfo } from '../services/update/package-info'
-import { assertDevicePackageCompatibility, assertDevicePackageExecution, assertInstallerScriptCompatible, buildDevicePackageInstallEnv, downloadAndVerifyDevicePackage, getDevicePackageExecutionMessage, resolveDevicePackageManifest } from '../services/update/strategies/device-package'
-import { fetchSourcePackageManifest } from '../services/update/manifest-client'
+import { assertDevicePackageCompatibility, assertDevicePackageExecution, assertInstallerScriptCompatible, buildDevicePackageInstallEnv, buildDevicePackageReconcileCommand, buildDevicePackageReconcileEnv, downloadAndVerifyDevicePackage, getDevicePackageExecutionMessage, resolveDevicePackageManifest } from '../services/update/strategies/device-package'
+import { fetchDevicePackageManifest, fetchSourcePackageManifest } from '../services/update/manifest-client'
 import { assertSourcePackageCompatibility } from '../services/update/strategies/source-package'
 import { resolveManifestCheckResult } from '../services/update/manifest-client'
 import { runUpdatePreflight } from '../services/update/preflight'
@@ -107,6 +107,10 @@ const UPDATE_RUNNER_ENV_KEYS = [
   'HERMES_WEB_UI_UPDATE_HEALTHCHECK_RETRIES',
   'HERMES_WEB_UI_UPDATE_HEALTHCHECK_INITIAL_DELAY_MS',
   'HERMES_WEB_UI_UPDATE_EXPECTED_SHA256',
+  'HERMES_WEB_UI_UPDATE_INSTALLER_SCRIPT_PATH',
+  'HERMES_WEB_UI_UPDATE_INSTALLER_SCRIPT_SHA256',
+  'HERMES_WEB_UI_UPDATE_MANIFEST_ENV_JSON',
+  'HERMES_WEB_UI_STATE_DIR',
   'HERMES_WEB_UI_UPDATE_SOURCE_PACKAGE_URL',
   'HERMES_WEB_UI_UPDATE_SOURCE_PACKAGE_URLS',
   'HERMES_WEB_UI_UPDATE_SOURCE_PACKAGE_SHA256',
@@ -1218,6 +1222,20 @@ function spawnDevicePackageUpdate(
   return spawnManagedUpdateService()
 }
 
+function spawnDevicePackageReconcile(
+  manifest: DevicePackageManifest,
+  runtimePaths: UpdateRuntimePaths,
+  taskId: string,
+) {
+  if (!config.update.installerScript || !config.update.runnerService || !config.update.runnerRequestFile) {
+    throw new UpdateError('update_execution_misconfigured', getDevicePackageExecutionMessage())
+  }
+  const command = buildDevicePackageReconcileCommand(config.update.installerScript, manifest)
+  const env = buildDevicePackageReconcileEnv(config.update, getCurrentNodeEnv(), manifest, runtimePaths, taskId)
+  writeUpdateRunnerRequest('device-package', env)
+  return spawnManagedUpdateService()
+}
+
 function buildUpdateRunnerRequest(strategy: Extract<UpdateStrategy, 'source-deploy' | 'device-package'>, env: NodeJS.ProcessEnv) {
   const requestEnv: Record<string, string> = {}
   for (const key of UPDATE_RUNNER_ENV_KEYS) {
@@ -1447,6 +1465,84 @@ export async function clearStaleUpdateStatus(ctx: any) {
       ? 'Recovered interrupted update task state was cleared.'
       : 'Finished update task state was cleared.',
     ...updateTaskStore.getStatus(),
+  }
+}
+
+export async function reconcileUpdate(ctx: any) {
+  syncUpdateTaskState()
+  if (updateInProgress || managedUpdateTaskId) {
+    ctx.status = 409
+    ctx.body = {
+      success: false,
+      code: 'update_task_still_running',
+      message: 'Cannot reconcile while an update is still running.',
+      ...updateTaskStore.getStatus(),
+    }
+    return
+  }
+  if (!hasConfiguredUpdateExecution(config.update) || config.update.strategy !== 'device-package') {
+    ctx.status = 400
+    ctx.body = {
+      success: false,
+      code: 'update_strategy_unsupported',
+      message: 'Environment reconciliation only supports the device-package strategy.',
+    }
+    return
+  }
+  assertDevicePackageExecution(config.update)
+
+  const manifest = await fetchDevicePackageManifest(config.update)
+  if (!manifest.environment) {
+    ctx.body = {
+      success: true,
+      status: 'noop',
+      message: 'Manifest has no environment block; nothing to reconcile.',
+      latestVersion: manifest.version,
+    }
+    return
+  }
+
+  const task = updateTaskStore.createTask('device-package', `Reconciling device environment for ${manifest.version}.`)
+  managedUpdateTaskId = task.id
+  updateTaskStore.updateCurrentStage('reconciling_env', `Capturing device environment against manifest ${manifest.version}.`, {
+    targetVersion: manifest.version,
+    warning: '',
+    healthcheckUrl: config.update.healthcheckUrl,
+  })
+
+  const runtimePaths = resolveUpdateRuntimePaths()
+  let updateChild: ChildProcess
+  try {
+    updateChild = spawnDevicePackageReconcile(manifest, runtimePaths, task.id)
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err)
+    failCurrentUpdateTask(`Failed to start reconcile for ${manifest.version}.`, error)
+    throw err
+  }
+  updateTaskStore.updateCurrentStage('reconciling_env', `Reconciling device environment for ${manifest.version}.`, {
+    targetVersion: manifest.version,
+    warning: '',
+    healthcheckUrl: config.update.healthcheckUrl,
+  })
+  updateTaskStore.handoffCurrentTaskToRuntime({
+    stage: 'reconciling_env',
+    message: `Handed off reconcile for ${manifest.version} to runtime.`,
+    targetVersion: manifest.version,
+    warning: '',
+    healthcheckUrl: config.update.healthcheckUrl,
+  })
+  observeDetachedUpdateProcess(updateChild, 'managed device package reconcile service', {
+    onSuccess: () => {
+      managedUpdateTaskId = ''
+    },
+    onFailure: message => failCurrentUpdateTask(`Reconcile failed for ${manifest.version}.`, message),
+  })
+  ctx.body = {
+    success: true,
+    status: 'running',
+    message: `Starting device environment reconcile for ${manifest.version}.`,
+    taskId: task.id,
+    latestVersion: manifest.version,
   }
 }
 

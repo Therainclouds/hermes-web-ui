@@ -1564,4 +1564,106 @@ describe('update controller', () => {
     )
   })
 
+  it('returns noop when reconcile endpoint is hit but manifest has no environment block', async () => {
+    process.env.WEBUI_UPDATE_STRATEGY = 'device-package'
+    process.env.WEBUI_UPDATE_MANIFEST_URL = 'https://updates.example.com/stable/manifest.json'
+    process.env.WEBUI_UPDATE_INSTALLER_SCRIPT = '/opt/hermes-web-ui/scripts/install-device-package.sh'
+    process.env.WEBUI_UPDATE_PACKAGE_TYPE = 'device-package'
+    process.env.WEBUI_UPDATE_CHANNEL = 'stable'
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      url: 'https://updates.example.com/stable/manifest.json',
+      arrayBuffer: async () => Buffer.from(JSON.stringify({
+        version: PUBLISHED_VERSION,
+        channel: 'stable',
+        sourceLabel: 'Device Manifest',
+        packageType: 'device-package',
+        artifactFormat: 'tar.gz',
+        packageUrl: 'https://updates.example.com/releases/v0.6.13/hermes-web-ui-device-v0.6.13.tar.gz',
+        sha256: 'a'.repeat(64),
+        releasedAt: '2026-06-09T00:00:00Z',
+        compatibleNodeRange: `>=${process.versions.node}`,
+        minCurrentVersion: '0.6.10',
+      })),
+    }))
+    const { reconcileUpdate } = await loadUpdateController()
+    const ctx = createMockCtx()
+    await reconcileUpdate(ctx)
+    expect(ctx.body).toEqual(expect.objectContaining({
+      success: true,
+      status: 'noop',
+    }))
+  })
+
+  it('creates a reconciling_env task and launches the installer with --reconcile-env-only', async () => {
+    process.env.WEBUI_UPDATE_STRATEGY = 'device-package'
+    process.env.WEBUI_UPDATE_MANIFEST_URL = 'https://updates.example.com/stable/manifest.json'
+    process.env.WEBUI_UPDATE_INSTALLER_SCRIPT = '/opt/hermes-web-ui/scripts/install-device-package.sh'
+    process.env.WEBUI_UPDATE_PACKAGE_TYPE = 'device-package'
+    process.env.WEBUI_UPDATE_CHANNEL = 'stable'
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      url: 'https://updates.example.com/stable/manifest.json',
+      arrayBuffer: async () => Buffer.from(JSON.stringify({
+        version: PUBLISHED_VERSION,
+        channel: 'stable',
+        sourceLabel: 'Device Manifest',
+        packageType: 'device-package',
+        artifactFormat: 'tar.gz',
+        packageUrl: 'https://updates.example.com/releases/v0.6.13/hermes-web-ui-device-v0.6.13.tar.gz',
+        sha256: 'b'.repeat(64),
+        releasedAt: '2026-06-09T00:00:00Z',
+        compatibleNodeRange: `>=${process.versions.node}`,
+        minCurrentVersion: '0.6.10',
+        environment: {
+          requiredNodeRange: `>=${process.versions.node}`,
+          requiredSystemFiles: [
+            { path: 'scripts/install-device-package.sh', kind: 'executable' },
+          ],
+        },
+      })),
+    }))
+    const { reconcileUpdate, mocks } = await loadUpdateController()
+    const ctx = createMockCtx()
+
+    await reconcileUpdate(ctx)
+
+    expect(ctx.body).toEqual(expect.objectContaining({
+      success: true,
+      status: 'running',
+      taskId: expect.any(String),
+      latestVersion: PUBLISHED_VERSION,
+    }))
+    const requestCall = mocks.writeFileSync.mock.calls.find(call => String(call[0]).endsWith('update-runner-request.json'))
+    expect(requestCall).toBeDefined()
+    const parsed = JSON.parse(String(requestCall?.[1]))
+    expect(parsed.strategy).toBe('device-package')
+    expect(parsed.env.HERMES_WEB_UI_UPDATE_VERSION).toBe(PUBLISHED_VERSION)
+    expect(parsed.env.HERMES_WEB_UI_UPDATE_INCLUDE_AGENT_UPGRADE).toBe('false')
+    expect(parsed.env.HERMES_WEB_UI_UPDATE_AUTO_INSTALL_DEPENDENCIES).toBe('false')
+    const manifestEnv = JSON.parse(parsed.env.HERMES_WEB_UI_UPDATE_MANIFEST_ENV_JSON)
+    expect(manifestEnv.requiredNodeRange).toBe(`>=${process.versions.node}`)
+    expect(mocks.spawn).toHaveBeenCalledWith(
+      'sudo',
+      ['-n', 'systemctl', 'start', 'hermes-web-ui-update.service'],
+      expect.objectContaining({ detached: true }),
+    )
+  })
+
+  it('refuses reconcile when strategy is not device-package', async () => {
+    process.env.WEBUI_UPDATE_STRATEGY = 'npm-package'
+    process.env.WEBUI_UPDATE_MANIFEST_URL = ''
+    process.env.WEBUI_UPDATE_PACKAGE = 'hermes-web-ui'
+    const { reconcileUpdate } = await loadUpdateController()
+    const ctx = createMockCtx()
+    await reconcileUpdate(ctx)
+    expect(ctx.status).toBe(400)
+    expect(ctx.body).toEqual(expect.objectContaining({
+      success: false,
+      code: 'update_strategy_unsupported',
+    }))
+  })
+
 })
