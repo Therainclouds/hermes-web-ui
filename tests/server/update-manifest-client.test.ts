@@ -259,4 +259,143 @@ describe('update manifest client', () => {
       /Invalid update channel/,
     )
   })
+
+  it('accepts a device-package manifest without an environment block (backwards compatible)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      url: 'https://updates.example.com/releases/stable/latest.json',
+      arrayBuffer: vi.fn().mockResolvedValue(Buffer.from(JSON.stringify({
+        version: '1.2.10',
+        channel: 'stable',
+        sourceLabel: 'No Environment',
+        packageType: 'device-package',
+        artifactFormat: 'tar.gz',
+        packageUrl: 'https://updates.example.com/releases/v1.2.10/hermes-web-ui-device-v1.2.10.tar.gz',
+        sha256: 'a'.repeat(64),
+        releasedAt: '2026-08-01T00:00:00Z',
+        compatibleNodeRange: '>=23.0.0',
+        minCurrentVersion: '1.2.0',
+      }))),
+    }))
+    const { fetchDevicePackageManifest } = await import('../../packages/server/src/services/update/manifest-client')
+
+    const result = await fetchDevicePackageManifest({
+      ...createUpdateConfig(),
+      manifestUrl: 'https://updates.example.com/releases/stable/latest.json',
+    })
+
+    expect(result.environment).toBeUndefined()
+    expect(result.version).toBe('1.2.10')
+  })
+
+  it('accepts a device-package manifest with a full environment block', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      url: 'https://updates.example.com/releases/stable/latest.json',
+      arrayBuffer: vi.fn().mockResolvedValue(Buffer.from(JSON.stringify({
+        version: '1.2.11',
+        channel: 'stable',
+        sourceLabel: 'With Environment',
+        packageType: 'device-package',
+        artifactFormat: 'tar.gz',
+        packageUrl: 'https://updates.example.com/releases/v1.2.11/hermes-web-ui-device-v1.2.11.tar.gz',
+        sha256: 'b'.repeat(64),
+        releasedAt: '2026-08-02T00:00:00Z',
+        compatibleNodeRange: '>=23.0.0',
+        minCurrentVersion: '1.2.0',
+        environment: {
+          requiredNodeRange: '>=23.0.0 <25.0.0',
+          requiredHermesAgentRange: '>=0.16.0',
+          requiredSystemFiles: [
+            { path: 'scripts/install-device-package.sh', kind: 'executable' },
+            { path: 'scripts/hermes-web-ui-update-runner.sh', kind: 'executable' },
+          ],
+        },
+      }))),
+    }))
+    const { fetchDevicePackageManifest } = await import('../../packages/server/src/services/update/manifest-client')
+
+    const result = await fetchDevicePackageManifest({
+      ...createUpdateConfig(),
+      manifestUrl: 'https://updates.example.com/releases/stable/latest.json',
+    })
+
+    expect(result.environment).toEqual({
+      requiredNodeRange: '>=23.0.0 <25.0.0',
+      requiredHermesAgentRange: '>=0.16.0',
+      requiredSystemFiles: [
+        { path: 'scripts/install-device-package.sh', kind: 'executable' },
+        { path: 'scripts/hermes-web-ui-update-runner.sh', kind: 'executable' },
+      ],
+    })
+  })
+
+  it('drops unknown subfields inside the environment block', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      url: 'https://updates.example.com/releases/stable/latest.json',
+      arrayBuffer: vi.fn().mockResolvedValue(Buffer.from(JSON.stringify({
+        version: '1.2.12',
+        channel: 'stable',
+        sourceLabel: 'Unknown Environment Fields',
+        packageType: 'device-package',
+        artifactFormat: 'tar.gz',
+        packageUrl: 'https://updates.example.com/releases/v1.2.12/hermes-web-ui-device-v1.2.12.tar.gz',
+        sha256: 'c'.repeat(64),
+        releasedAt: '2026-08-03T00:00:00Z',
+        compatibleNodeRange: '>=23.0.0',
+        minCurrentVersion: '1.2.0',
+        environment: {
+          requiredNodeRange: '>=23.0.0',
+          unexpectedField: 'should be dropped',
+          requiredSystemFiles: [
+            { path: 'scripts/install-device-package.sh', kind: 'executable', garbage: 'drop me' },
+            { path: 'scripts/legacy.sh', kind: 'invalid-kind' },
+            { path: '', kind: 'present' },
+          ],
+        },
+      }))),
+    }))
+    const { fetchDevicePackageManifest } = await import('../../packages/server/src/services/update/manifest-client')
+
+    const result = await fetchDevicePackageManifest({
+      ...createUpdateConfig(),
+      manifestUrl: 'https://updates.example.com/releases/stable/latest.json',
+    })
+
+    expect(result.environment?.requiredNodeRange).toBe('>=23.0.0')
+    expect((result.environment as Record<string, unknown>).unexpectedField).toBeUndefined()
+    expect(result.environment?.requiredSystemFiles).toEqual([
+      { path: 'scripts/install-device-package.sh', kind: 'executable' },
+      { path: 'scripts/legacy.sh', kind: 'present' },
+    ])
+  })
+
+  it('returns undefined environment when the block is malformed (non-object)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      url: 'https://updates.example.com/releases/stable/latest.json',
+      arrayBuffer: vi.fn().mockResolvedValue(Buffer.from(JSON.stringify({
+        version: '1.2.13',
+        channel: 'stable',
+        sourceLabel: 'Malformed Environment',
+        packageType: 'device-package',
+        artifactFormat: 'tar.gz',
+        packageUrl: 'https://updates.example.com/releases/v1.2.13/hermes-web-ui-device-v1.2.13.tar.gz',
+        sha256: 'd'.repeat(64),
+        releasedAt: '2026-08-04T00:00:00Z',
+        compatibleNodeRange: '>=23.0.0',
+        minCurrentVersion: '1.2.0',
+        environment: 'not-an-object',
+      }))),
+    }))
+    const { fetchDevicePackageManifest } = await import('../../packages/server/src/services/update/manifest-client')
+
+    const result = await fetchDevicePackageManifest({
+      ...createUpdateConfig(),
+      manifestUrl: 'https://updates.example.com/releases/stable/latest.json',
+    })
+
+    expect(result.environment).toBeUndefined()
+  })
 })

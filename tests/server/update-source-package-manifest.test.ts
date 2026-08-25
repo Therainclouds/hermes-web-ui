@@ -264,6 +264,72 @@ describe('source-deploy manifest client', () => {
     expect(env.HERMES_WEB_UI_UPDATE_SOURCE_REPO_URL).toBe('')
   })
 
+  it('accepts a source-deploy manifest without an environment block (backwards compatible)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      url: 'https://updates.example.com/stable/latest.json',
+      arrayBuffer: vi.fn().mockResolvedValue(Buffer.from(JSON.stringify({
+        version: '1.3.10',
+        channel: 'stable',
+        sourceLabel: 'No Environment',
+        packageType: 'source-deploy',
+        artifactFormat: 'tar.gz',
+        sourceUrl: 'https://oss.example.com/sources/v1.3.10/source.tar.gz',
+        sourceSha256: 'a'.repeat(64),
+        releasedAt: '2026-08-10T00:00:00Z',
+        minCurrentVersion: '1.2.0',
+      }))),
+    }))
+
+    const { fetchSourcePackageManifest } = await import('../../packages/server/src/services/update/manifest-client')
+
+    const result = await fetchSourcePackageManifest({
+      ...createUpdateConfig(),
+      manifestUrl: 'https://updates.example.com/stable/latest.json',
+    })
+
+    expect(result.environment).toBeUndefined()
+    expect(result.version).toBe('1.3.10')
+  })
+
+  it('accepts a source-deploy manifest with a full environment block', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      url: 'https://updates.example.com/stable/latest.json',
+      arrayBuffer: vi.fn().mockResolvedValue(Buffer.from(JSON.stringify({
+        version: '1.3.11',
+        channel: 'stable',
+        sourceLabel: 'With Environment',
+        packageType: 'source-deploy',
+        artifactFormat: 'tar.gz',
+        sourceUrl: 'https://oss.example.com/sources/v1.3.11/source.tar.gz',
+        sourceSha256: 'b'.repeat(64),
+        releasedAt: '2026-08-11T00:00:00Z',
+        minCurrentVersion: '1.2.0',
+        environment: {
+          requiredNodeRange: '>=23.0.0',
+          requiredSystemFiles: [
+            { path: 'scripts/install-device-package.sh', kind: 'executable' },
+          ],
+        },
+      }))),
+    }))
+
+    const { fetchSourcePackageManifest } = await import('../../packages/server/src/services/update/manifest-client')
+
+    const result = await fetchSourcePackageManifest({
+      ...createUpdateConfig(),
+      manifestUrl: 'https://updates.example.com/stable/latest.json',
+    })
+
+    expect(result.environment).toEqual({
+      requiredNodeRange: '>=23.0.0',
+      requiredSystemFiles: [
+        { path: 'scripts/install-device-package.sh', kind: 'executable' },
+      ],
+    })
+  })
+
   it('blocks updates when current version is below manifest minCurrentVersion', async () => {
     const { assertSourcePackageCompatibility } = await import('../../packages/server/src/services/update/strategies/source-package')
 
