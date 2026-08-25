@@ -14,6 +14,24 @@ export interface AnalysisRound {
   keyPoint: string
   analysis: string
   timestamp: number
+  // 演讲评分场景（Toastmasters 风格）附加字段
+  fillerWords?: Array<{ word: string; count: number }>
+  goodPhrases?: string[]
+  grammarIssues?: Array<{ quote: string; issue: string }>
+  wotdUsed?: boolean
+  score?: Record<string, number>
+  timeNote?: string
+}
+
+/** 演讲评分场景的评估上下文：随分析批次注入提示词，供 AI 实时点评/评分。 */
+export interface SpeechContext {
+  wordOfTheDay?: string
+  timerDurationSec?: number
+  yellowAtSec?: number
+  redAtSec?: number
+  timerRecords?: Array<{ label: string; durationSec: number; overtimeSec: number }>
+  currentRemainingSec?: number
+  currentPhase?: 'green' | 'yellow' | 'red'
 }
 
 interface TranscriptSentence {
@@ -32,6 +50,7 @@ interface ActiveSession {
   sessionId: string
   sceneTemplate: string
   profile?: string
+  speechContext?: SpeechContext | null
   buffer: TranscriptSentence[]
   timer: NodeJS.Timeout | null
   isAnalyzing: boolean
@@ -89,7 +108,7 @@ class RealtimeAssistService {
     logger.info('[meeting-assist] namespace registered: %s', NAMESPACE)
   }
 
-  async startSession(sessionId: string, sceneTemplate: string, profile?: string): Promise<void> {
+  async startSession(sessionId: string, sceneTemplate: string, profile?: string, speechContext?: SpeechContext): Promise<void> {
     if (this.sessions.has(sessionId)) {
       logger.info('[meeting-assist] session %s already active, resetting buffer', sessionId)
       this.stopSession(sessionId)
@@ -99,12 +118,27 @@ class RealtimeAssistService {
       sessionId,
       sceneTemplate,
       profile,
+      speechContext: speechContext || null,
       buffer: [],
       timer: null,
       isAnalyzing: false,
     })
 
     logger.info('[meeting-assist] session started: %s (scene: %s, profile: %s)', sessionId, sceneTemplate, profile || '(active)')
+  }
+
+  /** 更新会话的演讲评分上下文（计时记录、每日一词等），后续分析批次会带上最新数据。 */
+  updateSpeechContext(sessionId: string, speechContext: SpeechContext): void {
+    const session = this.sessions.get(sessionId)
+    if (!session) return
+    session.speechContext = speechContext
+  }
+
+  /** 立即触发一次分析（忽略窗口大小/间隔计时），供"开始分析"按钮使用。 */
+  flushNow(sessionId: string): void {
+    const session = this.sessions.get(sessionId)
+    if (!session) return
+    void this.flush(session)
   }
 
   stopSession(sessionId: string): void {
@@ -157,7 +191,7 @@ class RealtimeAssistService {
     this.nsp?.to(`meeting:${session.sessionId}`).emit('analyzing', true)
 
     try {
-      const round = await this.analyzeBatch(sentences, session.sceneTemplate, session.profile)
+      const round = await this.analyzeBatch(sentences, session.sceneTemplate, session.profile, session.speechContext)
       if (round) {
         this.nsp?.to(`meeting:${session.sessionId}`).emit('analysis', round)
       }
@@ -170,7 +204,12 @@ class RealtimeAssistService {
     }
   }
 
-  private async analyzeBatch(sentences: TranscriptSentence[], sceneTemplateId: string, profile?: string): Promise<AnalysisRound | null> {
+  private async analyzeBatch(
+    sentences: TranscriptSentence[],
+    sceneTemplateId: string,
+    profile?: string,
+    speechContext?: SpeechContext | null,
+  ): Promise<AnalysisRound | null> {
     const template = getSceneTemplateOrDefault(sceneTemplateId)
     const transcriptText = sentences
       .map(s => `${s.speaker ? `[${s.speaker}] ` : ''}${s.text}`)
@@ -180,7 +219,7 @@ class RealtimeAssistService {
 
     // 实时提示始终走直调 LLM 快速路径（~3s），不走 Agent。
     // Agent + MCP 工具查询仅用于报告生成（需要真实法条/数据核实的深度分析）。
-    return this.analyzeBatchViaDirectLLM(transcriptText, template, resolvedProfile)
+    return this.analyzeBatchViaDirectLLM(transcriptText, template, resolvedProfile, speechContext)
   }
 
   /**
@@ -238,7 +277,12 @@ class RealtimeAssistService {
   /**
    * 回退路径：直接调用 LLM API 进行实时分析（不经过 Agent）。
    */
-  private async analyzeBatchViaDirectLLM(transcriptText: string, template: SceneTemplate, profile: string): Promise<AnalysisRound | null> {
+  private async analyzeBatchViaDirectLLM(
+    transcriptText: string,
+    template: SceneTemplate,
+    profile: string,
+    speechContext?: SpeechContext | null,
+  ): Promise<AnalysisRound | null> {
     const config = await this.loadLLMConfig()
     if (!config) {
       logger.warn('[meeting-assist] LLM config not available, skipping analysis')
@@ -247,9 +291,30 @@ class RealtimeAssistService {
 
     // 动态加载 profile 下的会议分析技能并追加到 system prompt。
     const skillSection = await prepareAnalysisSkillSection(profile)
-    const systemPrompt = skillSection
+    let systemPrompt = skillSection
       ? `${template.systemPrompt}\n\n${skillSection}`
       : template.systemPrompt
+
+    // 演讲评分场景：把计时记录/每日一词/当前倒计时注入提示词，让 AI 的点评与评分以实际用时为依据。
+    if (template.id === 'speech' && speechContext) {
+      const ctx = speechContext
+      const lines: string[] = ['', '【当前演讲评估上下文（请据此点评与评分）】']
+      if (ctx.wordOfTheDay) lines.push(`- 每日一词：${ctx.wordOfTheDay}`)
+      if (ctx.timerDurationSec) {
+        lines.push(`- 计时设置：单环节标准时长 ${ctx.timerDurationSec} 秒；黄牌触发剩余 ${ctx.yellowAtSec ?? 30} 秒；红牌触发剩余 ${ctx.redAtSec ?? 10} 秒`)
+      }
+      if (ctx.currentRemainingSec != null) {
+        lines.push(`- 当前倒计时：剩余 ${Math.round(ctx.currentRemainingSec)} 秒（${ctx.currentPhase || 'green'}）`)
+      }
+      if (ctx.timerRecords && ctx.timerRecords.length > 0) {
+        lines.push('- 已记录环节用时：')
+        for (const r of ctx.timerRecords) {
+          const overtime = r.overtimeSec > 0 ? `（超时 ${r.overtimeSec} 秒）` : ''
+          lines.push(`  - ${r.label}：${r.durationSec} 秒${overtime}`)
+        }
+      }
+      systemPrompt = `${systemPrompt}\n${lines.join('\n')}`
+    }
 
     const body = {
       model: config.model,
@@ -258,7 +323,8 @@ class RealtimeAssistService {
         { role: 'user', content: `以下是最近的对话内容：\n\n${transcriptText}` },
       ],
       temperature: 0.3,
-      max_tokens: 800,
+      // 演讲评分场景需要输出评分表/赘语/语法等多字段 JSON，给更大输出空间。
+      max_tokens: template.id === 'speech' ? 1200 : 800,
     }
 
     const response = await fetch(`${config.baseUrl}/chat/completions`, {
@@ -289,9 +355,32 @@ class RealtimeAssistService {
 
       const keyPoint = typeof parsed.keyPoint === 'string' ? parsed.keyPoint.trim() : ''
       const analysis = typeof parsed.analysis === 'string' ? parsed.analysis.trim() : ''
+      const fillerWords = Array.isArray(parsed.fillerWords)
+        ? parsed.fillerWords
+            .filter((f: any) => f && typeof f.word === 'string' && Number.isFinite(Number(f.count)))
+            .slice(0, 20)
+            .map((f: any) => ({ word: f.word.slice(0, 30), count: Math.max(0, Math.round(Number(f.count))) }))
+        : undefined
+      const goodPhrases = Array.isArray(parsed.goodPhrases)
+        ? parsed.goodPhrases.filter((p: any) => typeof p === 'string').slice(0, 10).map((p: string) => p.slice(0, 120))
+        : undefined
+      const grammarIssues = Array.isArray(parsed.grammarIssues)
+        ? parsed.grammarIssues
+            .filter((g: any) => g && typeof g.quote === 'string')
+            .slice(0, 10)
+            .map((g: any) => ({ quote: g.quote.slice(0, 120), issue: typeof g.issue === 'string' ? g.issue.slice(0, 200) : '' }))
+        : undefined
+      const score = parsed.score && typeof parsed.score === 'object' && !Array.isArray(parsed.score)
+        ? Object.fromEntries(
+            Object.entries(parsed.score)
+              .filter(([, v]) => Number.isFinite(Number(v)))
+              .map(([k, v]) => [k.slice(0, 20), Math.max(0, Math.min(100, Math.round(Number(v))))]),
+          )
+        : undefined
 
-      // Skip if both keyPoint and analysis are empty
-      if (!parsed || (!keyPoint && !analysis)) {
+      // 演讲评分场景：只要有任何一项内容就保留该轮（评分/赘语/好词好句也算）。
+      const hasSpeechContent = !!keyPoint || !!analysis || !!fillerWords?.length || !!goodPhrases?.length || !!grammarIssues?.length || !!score
+      if (!parsed || !hasSpeechContent) {
         return null
       }
 
@@ -303,6 +392,12 @@ class RealtimeAssistService {
         keyPoint: keyPoint.slice(0, 120),
         analysis: analysis.slice(0, 500),
         timestamp: now,
+        ...(fillerWords ? { fillerWords } : {}),
+        ...(goodPhrases ? { goodPhrases } : {}),
+        ...(grammarIssues ? { grammarIssues } : {}),
+        ...(typeof parsed.wotdUsed === 'boolean' ? { wotdUsed: parsed.wotdUsed } : {}),
+        ...(score ? { score } : {}),
+        ...(typeof parsed.timeNote === 'string' ? { timeNote: parsed.timeNote.slice(0, 200) } : {}),
       }
     } catch {
       logger.warn('[meeting-assist] failed to parse LLM response as JSON: %s', raw.slice(0, 100))

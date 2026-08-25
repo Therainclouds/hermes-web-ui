@@ -240,13 +240,13 @@ export async function getSceneTemplates(ctx: Context): Promise<void> {
 // Realtime assist
 export async function startAssist(ctx: Context): Promise<void> {
   const { realtimeAssistService } = await import('../../services/meeting-asr/realtime-assist')
-  const { sessionId, sceneTemplate, profile } = ctx.request.body as any || {}
+  const { sessionId, sceneTemplate, profile, speechContext } = ctx.request.body as any || {}
   if (!sessionId) {
     ctx.status = 400
     ctx.body = { error: 'sessionId is required' }
     return
   }
-  await realtimeAssistService.startSession(sessionId, sceneTemplate || 'general', profile)
+  await realtimeAssistService.startSession(sessionId, sceneTemplate || 'general', profile, speechContext || null)
   ctx.body = { status: 'started', sessionId, sceneTemplate: sceneTemplate || 'general', profile: profile || null }
 }
 
@@ -260,6 +260,34 @@ export async function stopAssist(ctx: Context): Promise<void> {
   }
   realtimeAssistService.stopSession(sessionId)
   ctx.body = { status: 'stopped', sessionId }
+}
+
+export async function updateAssistContext(ctx: Context): Promise<void> {
+  const { realtimeAssistService } = await import('../../services/meeting-asr/realtime-assist')
+  const { sessionId, speechContext } = ctx.request.body as any || {}
+  if (!sessionId || !speechContext) {
+    ctx.status = 400
+    ctx.body = { error: 'sessionId and speechContext are required' }
+    return
+  }
+  realtimeAssistService.updateSpeechContext(sessionId, speechContext)
+  ctx.body = { status: 'ok', sessionId }
+}
+
+export async function analyzeAssist(ctx: Context): Promise<void> {
+  const { realtimeAssistService } = await import('../../services/meeting-asr/realtime-assist')
+  const { sessionId, speechContext } = ctx.request.body as any || {}
+  if (!sessionId) {
+    ctx.status = 400
+    ctx.body = { error: 'sessionId is required' }
+    return
+  }
+  // 允许随触发请求携带最新演讲上下文（当前倒计时等），先应用再立即分析。
+  if (speechContext) {
+    realtimeAssistService.updateSpeechContext(sessionId, speechContext)
+  }
+  realtimeAssistService.flushNow(sessionId)
+  ctx.body = { status: 'ok', sessionId }
 }
 
 export async function pushAssistSentence(ctx: Context): Promise<void> {

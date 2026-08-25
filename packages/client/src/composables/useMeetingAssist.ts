@@ -9,6 +9,13 @@ export interface AnalysisRound {
   keyPoint: string
   analysis: string
   timestamp: number
+  // 演讲评分场景（Toastmasters 风格）附加字段
+  fillerWords?: Array<{ word: string; count: number }>
+  goodPhrases?: string[]
+  grammarIssues?: Array<{ quote: string; issue: string }>
+  wotdUsed?: boolean
+  score?: Record<string, number>
+  timeNote?: string
 }
 
 export function useMeetingAssist(sessionId: string) {

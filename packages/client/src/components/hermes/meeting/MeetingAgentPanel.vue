@@ -56,6 +56,7 @@ const sceneLabelMap: Record<string, string> = {
   business: t('meeting.scene.business'),
   medical: t('meeting.scene.medical'),
   interview: t('meeting.scene.interview'),
+  speech: t('meeting.scene.speech'),
 }
 
 // 分析模式标签
@@ -115,6 +116,7 @@ const sceneLabel = computed(() => {
     business: t('meeting.scene.business'),
     medical: t('meeting.scene.medical'),
     interview: t('meeting.scene.interview'),
+    speech: t('meeting.scene.speech'),
   }
   return map[props.sceneTemplate] || map.general
 })

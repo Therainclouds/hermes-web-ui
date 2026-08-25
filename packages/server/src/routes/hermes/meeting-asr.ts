@@ -32,6 +32,8 @@ meetingASRRoutes.get('/api/meeting-asr/scenes', ctrl.getSceneTemplates)
 meetingASRRoutes.post('/api/meeting-asr/assist/start', ctrl.startAssist)
 meetingASRRoutes.post('/api/meeting-asr/assist/stop', ctrl.stopAssist)
 meetingASRRoutes.post('/api/meeting-asr/assist/sentence', ctrl.pushAssistSentence)
+meetingASRRoutes.post('/api/meeting-asr/assist/context', ctrl.updateAssistContext)
+meetingASRRoutes.post('/api/meeting-asr/assist/analyze', ctrl.analyzeAssist)
 
 // Report generation (SSE streaming)
 meetingASRRoutes.post('/api/meeting-asr/report/stream', ctrl.streamReport)
