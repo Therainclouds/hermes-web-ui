@@ -95,6 +95,7 @@ export type UpdateTaskStage =
   | 'downloading'
   | 'verifying'
   | 'backing_up'
+  | 'reconciling_env'
   | 'starting'
   | 'installing_dependencies'
   | 'installing'

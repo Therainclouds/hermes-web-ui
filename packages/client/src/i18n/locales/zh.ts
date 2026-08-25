@@ -317,6 +317,7 @@ export default {
       downloading: '正在下载更新包',
       verifying: '正在校验更新包',
       backing_up: '正在创建程序备份',
+      reconciling_env: '正在核对设备环境',
       starting: '正在启动更新流程',
       installing: '正在执行更新',
       restarting: '正在重启服务',

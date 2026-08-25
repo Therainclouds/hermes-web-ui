@@ -306,3 +306,30 @@ tail -n 200 $(ls -t /home/hermesui/.hermes-web-ui/updates/logs/*.log 2>/dev/null
 - 服务名：`hermes-web-ui.service`
 - 更新状态：`/home/hermesui/.hermes-web-ui/updates/update-task-state.json`
 - 更新日志目录：`/home/hermesui/.hermes-web-ui/updates/logs`
+- 环境快照：`/home/hermesui/.hermes-web-ui/env-state.json`
+  （安装或 `/api/hermes/update/reconcile` 触发后写入；
+  包含 Node / Hermes Agent 版本、安装脚本指纹、与 manifest 的 drift）
+
+## 环境对账（reconcile）
+
+如果设备升级后行为异常（端口漂移、脚本不一致、依赖缺失），但控制台没有清晰错误，可手动触发一次环境对账：
+
+```bash
+sudo /opt/hermes-web-ui/scripts/install-device-package.sh \
+  --reconcile-env-only --version 0.7.20
+```
+
+或者从浏览器对 `/api/hermes/update/reconcile` 发 POST。结果会写入
+`env-state.json`，并以 exit code 区分：0 = 无 drift；1 = 有 drift（看
+`driftFromManifest` 字段定位）；2 = 抓取失败。
+
+## PORT 解析
+
+升级脚本不再用 `8648` 静默覆盖 `PORT`。优先级：
+
+1. 调用方传入的 `PORT` 环境变量
+2. `/etc/default/hermes-web-ui` 中的 `PORT=`
+3. 默认 `6060`
+
+`/etc/default/hermes-web-ui` 缺失或未设置 `PORT` 时，脚本会
+`[INFO] PORT not exported; resolved ...` 提示用了哪条路径。

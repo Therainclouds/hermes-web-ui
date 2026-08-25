@@ -25,6 +25,9 @@ STAGING_ROOT="${HERMES_WEB_UI_UPDATE_STAGING_DIR:-${RUNTIME_HOME}/updates/stagin
 BACKUP_ROOT="${HERMES_WEB_UI_UPDATE_BACKUP_DIR:-${RUNTIME_HOME}/updates/backups}"
 UPDATE_STATE_FILE="${HERMES_WEB_UI_UPDATE_STATE_FILE:-${RUNTIME_HOME}/updates/update-task-state.json}"
 UPDATE_LOG_DIR="${HERMES_WEB_UI_UPDATE_LOG_DIR:-${RUNTIME_HOME}/updates/logs}"
+STATE_DIR="${HERMES_WEB_UI_STATE_DIR:-${RUNTIME_HOME}}"
+MANIFEST_ENV_JSON="${HERMES_WEB_UI_UPDATE_MANIFEST_ENV_JSON:-}"
+RECONCILE_ENV_ONLY="${RECONCILE_ENV_ONLY:-false}"
 TASK_ID="${HERMES_WEB_UI_UPDATE_TASK_ID:-}"
 HEALTHCHECK_URL="${HERMES_WEB_UI_UPDATE_HEALTHCHECK_URL:-}"
 HEALTHCHECK_TIMEOUT_MS="${HERMES_WEB_UI_UPDATE_HEALTHCHECK_TIMEOUT_MS:-15000}"
@@ -33,7 +36,11 @@ HEALTHCHECK_RETRIES="${HERMES_WEB_UI_UPDATE_HEALTHCHECK_RETRIES:-15}"
 HEALTHCHECK_INITIAL_DELAY_MS="${HERMES_WEB_UI_UPDATE_HEALTHCHECK_INITIAL_DELAY_MS:-5000}"
 INCLUDE_AGENT_UPGRADE_RAW="${HERMES_WEB_UI_UPDATE_INCLUDE_AGENT_UPGRADE:-true}"
 APP_USER="${APP_USER:-hermesui}"
-PORT="${PORT:-8648}"
+if [[ -z "${PORT:-}" ]]; then
+  PORT="$(grep '^PORT=' /etc/default/hermes-web-ui 2>/dev/null | head -1 | cut -d= -f2-)"
+  PORT="${PORT:-6060}"
+  info "PORT not exported; resolved from /etc/default/hermes-web-ui: ${PORT}"
+fi
 SYSTEMD_SERVICE_NAME="${SYSTEMD_SERVICE_NAME:-hermes-web-ui}"
 SERVICE_ENV_FILE="${SERVICE_ENV_FILE:-/etc/default/hermes-web-ui}"
 PRESERVE_NAMES=("hermes_data" ".git" ".runtime-hermes" ".runtime-home")
@@ -395,12 +402,24 @@ parse_args() {
         TARGET_VERSION="${2:-}"
         shift 2
         ;;
+      --reconcile-env-only)
+        RECONCILE_ENV_ONLY=true
+        shift
+        ;;
       *)
         err "Unknown argument: $1"
         exit 1
         ;;
     esac
   done
+
+  if [[ "${RECONCILE_ENV_ONLY:-false}" == "true" ]]; then
+    if [[ -z "${TARGET_VERSION}" ]]; then
+      err "Missing --version <x.y.z>."
+      exit 1
+    fi
+    return 0
+  fi
 
   if [[ -z "${PACKAGE_ARCHIVE}" ]]; then
     err "Missing --package <archive>."
@@ -468,6 +487,191 @@ backup_current_deploy() {
   done
   shopt -u dotglob nullglob
   info "Program backup created at ${BACKUP_DIR}"
+}
+
+capture_environment() {
+  local target="${1:-${STATE_DIR}/env-state.json.new}"
+  local manifest_env_json="${MANIFEST_ENV_JSON:-}"
+
+  local node_version
+  node_version="$(node --version 2>/dev/null || echo 'unknown')"
+  local hermes_version
+  hermes_version="$(${HERMES_BIN:-hermes} --version 2>/dev/null || echo 'unknown')"
+
+  local apt_packages
+  apt_packages="$(dpkg-query -W -f='${Package}\n' 2>/dev/null | sort | jq -R -s 'split("\n")[:-1]' 2>/dev/null || echo '[]')"
+
+  local install_sha=""
+  if [[ -n "${SOURCE_DIR:-}" && -f "${SOURCE_DIR}/scripts/install-device-package.sh" ]]; then
+    install_sha="$(sha256sum "${SOURCE_DIR}/scripts/install-device-package.sh" 2>/dev/null | awk '{print $1}')"
+  fi
+
+  local drift='[]'
+  if [[ -n "${manifest_env_json}" ]]; then
+    drift="$(compute_drift "${manifest_env_json}" "${node_version}" "${hermes_version}" "${install_sha}" || echo '[]')"
+  fi
+
+  local captured_at
+  captured_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  jq -n \
+    --arg version "${TARGET_VERSION}" \
+    --arg capturedAt "${captured_at}" \
+    --arg node "${node_version}" \
+    --arg agent "${hermes_version}" \
+    --argjson apt "${apt_packages}" \
+    --arg installSha "${install_sha}" \
+    --argjson drift "${drift}" \
+    '{
+      version: $version,
+      capturedAt: $capturedAt,
+      nodeVersion: $node,
+      agentVersion: $agent,
+      aptPackages: $apt,
+      scripts: { install: $installSha },
+      driftFromManifest: $drift
+    }' > "${target}.tmp"
+
+  mv "${target}.tmp" "${target}"
+}
+
+compute_drift() {
+  local manifest_env_json="$1"
+  local node_version="$2"
+  local hermes_version="$3"
+  local install_sha="$4"
+
+  python3 - "$manifest_env_json" "$node_version" "$hermes_version" "$install_sha" <<'PY'
+import json, sys, os, re
+
+raw = sys.argv[1]
+node_version = sys.argv[2]
+hermes_version = sys.argv[3]
+install_sha = sys.argv[4]
+
+try:
+    env = json.loads(raw) if raw else {}
+except Exception:
+    print('[]')
+    raise SystemExit(0)
+
+issues = []
+
+def parse_semver(v):
+    m = re.match(r'^v?(\d+)\.(\d+)\.(\d+)(?:[-+][\w.]+)?$', (v or '').strip())
+    if not m:
+        return None
+    return tuple(int(x) for x in m.groups())
+
+def cmp(a, b):
+    return (a > b) - (a < b)
+
+def satisfies_node_range(rng, v):
+    if not v or not v.startswith('v'):
+        return True
+    parsed = parse_semver(v)
+    if not parsed:
+        return True
+    major = parsed[0]
+    if rng.startswith('~'):
+        target = parse_semver(rng[1:])
+        if not target:
+            return True
+        a, b, c = target
+        return parsed >= (a, b, c) and parsed < (a, b + 1, 0) if rng.count('.') == 1 \
+            else parsed >= (a, b, c) and parsed < (a, b, c + 1)
+    if rng.startswith('^'):
+        target = parse_semver(rng[1:])
+        if not target:
+            return True
+        a, b, c = target
+        if a != 0:
+            return parsed >= (a, b, c) and parsed < (a + 1, 0, 0)
+        if b != 0:
+            return parsed >= (0, b, c) and parsed < (0, b + 1, 0)
+        return parsed >= (0, 0, c) and parsed < (0, 0, c + 1)
+    if rng.startswith('>='):
+        rest = rng[2:].lstrip('=')
+        op = rng.replace(' ', '').startswith('>=')
+        m = re.match(r'^(>=|<=|>|<)?\s*(\d+)\.(\d+)\.(\d+)', rest)
+        if not m:
+            return True
+        return True  # simplified: callers pass simple >= ranges
+    return True
+
+def satisfies_range(rng, v):
+    if not v:
+        return True
+    parsed = parse_semver(v)
+    if not parsed:
+        return True
+    m = re.match(r'^(>=|<=|>|<|~|\^)\s*(\d+\.\d+\.\d+)$', (rng or '').strip())
+    if not m:
+        return True
+    op, target = m.group(1), m.group(2)
+    target_tuple = parse_semver(target)
+    if not target_tuple:
+        return True
+    if op == '>=':
+        return parsed >= target_tuple
+    if op == '<=':
+        return parsed <= target_tuple
+    if op == '>':
+        return parsed > target_tuple
+    if op == '<':
+        return parsed < target_tuple
+    return True
+
+node_range = env.get('requiredNodeRange') or env.get('compatibleNodeRange')
+if node_range and not satisfies_range(node_range, node_version):
+    issues.append({'kind': 'node_range', 'expected': node_range, 'actual': node_version})
+
+agent_range = env.get('requiredHermesAgentRange')
+if agent_range and not satisfies_range(agent_range, hermes_version):
+    issues.append({'kind': 'agent_range', 'expected': agent_range, 'actual': hermes_version})
+
+for entry in env.get('requiredSystemFiles', []) or []:
+    path = entry.get('path', '')
+    kind = entry.get('kind', 'present')
+    if not path:
+        continue
+    abs_path = path if path.startswith('/') else os.path.join(os.environ.get('DEPLOY_DIR', '/opt/hermes-web-ui'), path)
+    exists = os.path.exists(abs_path)
+    executable = exists and os.access(abs_path, os.X_OK)
+    if kind == 'present' and not exists:
+        issues.append({'kind': 'missing_file', 'path': path, 'expect': 'present'})
+    elif kind == 'executable' and not executable:
+        issues.append({'kind': 'missing_file', 'path': path, 'expect': 'executable'})
+    elif kind == 'absent' and exists:
+        issues.append({'kind': 'unexpected_file', 'path': path, 'expect': 'absent'})
+
+if install_sha and env.get('installerScriptSha256') and env['installerScriptSha256'].lower() != install_sha.lower():
+    issues.append({'kind': 'installer_script_stale', 'expected': env['installerScriptSha256'], 'actual': install_sha})
+
+print(json.dumps(issues))
+PY
+}
+
+reconcile_environment_only() {
+  step "Reconciling environment only (no package swap)"
+  init_logging
+  trap 'on_error $? $LINENO "$BASH_COMMAND"' ERR
+  trap cleanup_workdir EXIT
+  build_preserve_names
+  run mkdir -p "${STATE_DIR}"
+  SOURCE_DIR="${DEPLOY_DIR}"
+  if ! capture_environment "${STATE_DIR}/env-state.json"; then
+    err "Failed to capture environment state."
+    return 2
+  fi
+  local drift_count
+  drift_count="$(jq 'length' "${STATE_DIR}/env-state.json" 2>/dev/null || echo 0)"
+  if [[ "${drift_count}" -gt 0 ]]; then
+    err "Environment drift detected: ${drift_count} issue(s). See ${STATE_DIR}/env-state.json."
+    return 1
+  fi
+  info "Environment reconciled; no drift."
+  return 0
 }
 
 sync_package_tree() {
@@ -545,6 +749,12 @@ main() {
   else
     INCLUDE_AGENT_UPGRADE=false
   fi
+
+  if [[ "${RECONCILE_ENV_ONLY}" == "true" ]]; then
+    reconcile_environment_only
+    exit $?
+  fi
+
   init_logging
   trap 'on_error $? $LINENO "$BASH_COMMAND"' ERR
   trap cleanup_workdir EXIT
@@ -561,6 +771,9 @@ main() {
   fi
   update_task_stage "installing" "Replacing deploy tree with device package ${TARGET_VERSION}"
   sync_package_tree
+  if ! capture_environment "${RUNTIME_HOME}/env-state.json"; then
+    warn "Failed to capture environment journal; continuing without it."
+  fi
   # Upgrade Hermes Agent only after the Web UI tree is in place, so a failed
   # agent upgrade never blocks the Web UI update itself (best-effort bailout).
   if [[ "${INCLUDE_AGENT_UPGRADE}" == "true" ]]; then

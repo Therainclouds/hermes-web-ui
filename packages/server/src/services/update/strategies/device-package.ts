@@ -245,6 +245,33 @@ export function buildDevicePackageInstallEnv(
   }
 }
 
+export function buildDevicePackageReconcileEnv(
+  update: UpdateConfig,
+  baseEnv: NodeJS.ProcessEnv,
+  manifest: DevicePackageManifest,
+  paths: UpdateRuntimePaths,
+  taskId: string,
+): NodeJS.ProcessEnv {
+  return {
+    ...baseEnv,
+    APP_USER: baseEnv.APP_USER || 'hermesui',
+    DEPLOY_DIR: paths.deployDir,
+    HERMES_HOME: paths.hermesHome || baseEnv.HERMES_HOME || '',
+    HERMES_HOME_DIR: paths.hermesHome || baseEnv.HERMES_HOME_DIR || '',
+    HERMES_WEB_UI_HOME: paths.webUiHome,
+    HERMES_WEBUI_STATE_DIR: paths.webUiHome,
+    UPLOAD_DIR: paths.uploadDir,
+    HERMES_WEB_UI_STATE_DIR: paths.webUiHome,
+    HERMES_WEB_UI_UPDATE_VERSION: manifest.version,
+    HERMES_WEB_UI_UPDATE_TASK_ID: taskId,
+    HERMES_WEB_UI_UPDATE_INSTALLER_SCRIPT_PATH: manifest.installerScriptPath || DEFAULT_INSTALLER_SCRIPT_PATH,
+    HERMES_WEB_UI_UPDATE_INSTALLER_SCRIPT_SHA256: manifest.installerScriptSha256 || '',
+    HERMES_WEB_UI_UPDATE_MANIFEST_ENV_JSON: JSON.stringify(manifest.environment || {}),
+    HERMES_WEB_UI_UPDATE_AUTO_INSTALL_DEPENDENCIES: 'false',
+    HERMES_WEB_UI_UPDATE_INCLUDE_AGENT_UPGRADE: 'false',
+  }
+}
+
 export function buildDevicePackageInstallCommand(
   script: string,
   manifest: DevicePackageManifest,
@@ -258,6 +285,22 @@ export function buildDevicePackageInstallCommand(
     '--version', manifest.version,
     ],
     'Device package installer script',
+    resolveCommand,
+  )
+}
+
+export function buildDevicePackageReconcileCommand(
+  script: string,
+  manifest: DevicePackageManifest,
+  resolveCommand?: CommandResolver,
+): { command: string; args: string[] } {
+  return buildShellScriptCommand(
+    script,
+    [
+      '--reconcile-env-only',
+      '--version', manifest.version,
+    ],
+    'Device package reconcile script',
     resolveCommand,
   )
 }
