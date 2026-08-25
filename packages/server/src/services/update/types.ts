@@ -140,6 +140,38 @@ export interface ManifestUpdateInfo {
   manifestUrl: string
 }
 
+export type DeviceEnvironmentFileKind = 'present' | 'executable' | 'absent'
+
+export interface DeviceEnvironmentFile {
+  path: string
+  kind: DeviceEnvironmentFileKind
+}
+
+export interface DeviceEnvironment {
+  /**
+   * Semver range string describing the Node.js versions on which this
+   * package is expected to run. Defaults to `compatibleNodeRange` (or
+   * `minCurrentVersion` for source-deploy manifests) when omitted by
+   * the publisher. Consumers may treat absence as "no constraint".
+   */
+  requiredNodeRange?: string
+  /**
+   * Semver range string describing the Hermes Agent versions on which
+   * this package is expected to run. The install script reads the
+   * running agent version and refuses to proceed when the version
+   * does not satisfy the range. Optional: when absent, no agent check
+   * is performed.
+   */
+  requiredHermesAgentRange?: string
+  /**
+   * Filesystem descriptors the package requires on the target host.
+   * `path` is relative to the deploy root unless it starts with `/`.
+   * The controller-side gates that act on this field are wired in a
+   * later reconciliation phase; this phase only declares the schema.
+   */
+  requiredSystemFiles?: DeviceEnvironmentFile[]
+}
+
 export interface DevicePackageManifest extends ManifestUpdateInfo {
   artifactFormat: 'tar.gz'
   packageUrl: string
@@ -160,6 +192,12 @@ export interface DevicePackageManifest extends ManifestUpdateInfo {
    */
   installerScriptPath?: string
   installerScriptSha256?: string
+  /**
+   * Optional host-state descriptor (Node range, Hermes Agent range,
+   * system files). See `DeviceEnvironment`. Forward-compatible: missing
+   * means "no extra constraint beyond `compatibleNodeRange`".
+   */
+  environment?: DeviceEnvironment
 }
 
 export interface SourcePackageManifest extends ManifestUpdateInfo {
@@ -173,6 +211,12 @@ export interface SourcePackageManifest extends ManifestUpdateInfo {
   sourceRepoUrl?: string
   sourceSize: number
   healthcheckUrl: string
+  /**
+   * Optional host-state descriptor. Same shape and semantics as
+   * `DevicePackageManifest.environment`. Source-deploy manifests reuse
+   * the same `DeviceEnvironment` block so a single parser handles both.
+   */
+  environment?: DeviceEnvironment
 }
 
 export interface UpdateCheckResult {
