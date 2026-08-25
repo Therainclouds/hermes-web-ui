@@ -1,5 +1,71 @@
 # Work Log
 
+## 2026-08-25 · 设备环境漂移可视化 + 操作员对账横幅（Phase 3，提交 `1b7fff2d`）
+
+### 目标
+
+把 manifest 里声明的 `environment` 块（Phase 1 schema + Phase 2 对账管线）和设备实际状态之间的差异以**可见、可操作但不强制阻塞升级**的方式呈现给操作员。设备本身能升级时仍然升级；只有当设备已经"漂移"且 manifest 不在握手兼容期内才亮横幅。
+
+### 范围决策
+
+- **新增独立模块** `packages/server/src/services/update/reconcile.ts`，不复用 controller：纯函数 `assertEnvironmentMatches(state, manifest)` + 文件读取 + 调度，便于单元测试。
+- **绝不阻断升级**：drift 只触发横幅 + 一键对账按钮，不会让 `POST /api/hermes/update` 走 409。
+- **零额外网络依赖**：模块不主动拉 manifest，只在 controller 调用 `runEnvironmentCheck()` 或后台 timer 触发时才拉一次。`setInterval().unref()` 保证 timer 不阻塞进程退出。
+- **Banner 可见性保守**：仅当 `status === 'drift_detected' && reconcileSupported && drift.length > 0` 时显示。`reconcileSupported=false`（manifest 无 `environment` 块）时直接不显示，避免遗留 manifest 产生永久横幅。
+- **i18n**：英文 + 简体中文双 locale，新增 `environmentDrift.*` 键。
+- **不修 6.6.6.31、不重发 0.7.19、不改 CI**：与之前 phase 节奏一致。
+
+### 交付
+
+#### 1. 后端（`packages/server/`）
+
+| 文件 | 改动 |
+|------|------|
+| `services/update/reconcile.ts`（新） | `assertEnvironmentMatches` / `readDeviceEnvState` / `runEnvironmentCheck` / `startReconcileLoop` / `stopReconcileLoop` / `getLastEnvironmentCheck` / `__resetEnvironmentCheckForTest`。`DriftEntry` 类型包含 gate（4 种）+ expected/actual/detail。Semver 范围运算符覆盖 `>=`/`<=`/`>`/`<`/`~`/`^`。文件存在性 + 可执行位检查走 `fs.statSync`。 |
+| `index.ts` | `startVersionCheck()` 之后调用 `startReconcileLoop()`。首检 60s 延迟，之后每 30 分钟。 |
+| `controllers/health.ts` | `/health` payload 增加 `environment: getLastEnvironmentCheck()`。 |
+| `controllers/update.ts` | 新增 `getUpdateEnvironment(ctx)`：`runEnvironmentCheck` → `readDeviceEnvState` → `fetchDevicePackageManifest` → `assertEnvironmentMatches`，容错降级（manifest 拉不到也返回 payload）。 |
+| `routes/update.ts` | 注册 `updateRoutes.get('/api/hermes/update/environment', ctrl.getUpdateEnvironment)`，放在 `/reconcile` 路由之前（符合 AGENTS.md「本地 API 路由先于代理 catch-all」规则）。 |
+
+#### 2. 前端（`packages/client/`）
+
+| 文件 | 改动 |
+|------|------|
+| `components/layout/EnvironmentDriftBanner.vue`（新） | 横幅：标题 + 汇总 + 漂移项列表 + Reconcile 按钮 + Dismiss 链接。`visible` computed 守门见上。 |
+| `components/layout/AppSidebar.vue` | `<EnvironmentDriftBanner />` 放在 `<aside>` 紧后。 |
+| `api/hermes/system.ts` | 新增 `EnvironmentStatus` / `EnvironmentDriftEntry` / `EnvironmentCheckResponse` 类型，`fetchUpdateEnvironment()` 与 `reconcileUpdate()`。`HealthResponse` 增加 `environment?` 可选字段。 |
+| `stores/hermes/app.ts` | `environmentCheck` + `environmentDismissed` ref；`refreshEnvironmentCheck` / `dismissEnvironmentDrift` / `triggerEnvironmentReconcile`；`checkConnection` 解析 `/health` 时把 `environment` 归一化进 store（`?? null` 容错）。`status === 'ok'` 时自动清掉 dismiss flag。 |
+| `i18n/locales/{en,zh}.ts` | `environmentDrift.{title,summary,gateNodeRange,gateAgentRange,gateSystemFile,gateInstallerScript,reconcile,reconcileQueued,dismiss,unavailable}`。 |
+
+#### 3. 测试
+
+| 文件 | 用例数 | 覆盖 |
+|------|--------|------|
+| `tests/server/reconcile.test.ts`（新） | 14 | 三个 gate 类型各覆盖（node/agent range、system files present/executable/absent）；`readDeviceEnvState` 缺/坏/好三种；`runEnvironmentCheck` 在 unavailable 和 ok 两种状态下行为；loop 启停幂等；semver 范围运算符 9 组。 |
+| `tests/server/health-controller.test.ts` | +2 | `environment` 字段在 `drift_detected` 与 `unavailable` 两种状态下都正确出现。 |
+| `tests/server/update-controller.test.ts` | +5 | 三种 status（ok / drift_detected / unavailable）+ `reconcileSupported=false`（manifest 无 environment 块）+ manifest 拉取失败时仍返回 payload。 |
+
+#### 4. 文档
+
+- `docs/harness/update-system-overview.md`：在 Controller+service 层文件清单里点出 `reconcile.ts` + `getUpdateEnvironment`；新增「Operator-Side Reconciliation (since Phase 3)」章节，说明 what/does-not/DriftEntry shape/操作员流程/为什么 `assertEnvironmentMatches` 是纯函数。
+
+### 验证
+
+- `tsc --noEmit -p packages/server/tsconfig.json` 干净。
+- `vue-tsc -b`：Phase 3 零新增错误（24 个 USBExplorer*.vue 报错均为 Phase 3 之前已存在，与本轮无关）。
+- `npx vitest run tests/server/reconcile.test.ts tests/server/health-controller.test.ts`：32/32 通过。
+- `npx vitest run tests/server/update-controller.test.ts`：38/38 通过（已知 flake：单独跑第一遍时两个 source-deploy 测试偶发超时，第二次必过——`keeps the source deployment task running ...` 与 `fails the source deployment task ...`，与 Phase 3 无关，Phase 2 总结里已记录）。
+
+### Plan 进度
+
+| Phase | 提交 | 内容 |
+|-------|------|------|
+| Phase 1 | `d19fe6d4` | manifest environment 块 schema + installer-script fingerprint |
+| Phase 2 | `5d04be63` | 对账管线（PORT fix + capture journal + device env reconciliation）|
+| Phase 3 | `1b7fff2d` | 漂移可视化 + UI banner（本次）|
+| Phase 4 | — | `--bootstrap` flag + `POST /api/update/bootstrap` |
+| Phase 5 | — | 集成测试 + Playwright E2E + validation.md |
+
 ## 2026-08-25 · USBView 重构为 Windows 资源管理器风格（提交 `6b9d8163`）
 
 ### 目标
