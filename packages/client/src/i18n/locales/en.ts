@@ -3549,6 +3549,8 @@ export default {
       atmosphere: 'Atmosphere',
       risk: 'Risk',
       suggestion: 'Suggestion',
+      hints: 'Hints',
+      usageHint: 'Once recording starts, AI will analyze the conversation in real-time and provide key insights and suggestions',
     },
     // Report
     reportPanel: {

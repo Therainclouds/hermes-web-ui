@@ -3079,6 +3079,7 @@ async function clearTranscript() {
   background: $bg-card;
   border-left: 1px solid $border-color;
   display: flex;
+  align-self: stretch;
   min-height: 0;
   overflow: visible;
 }
