@@ -233,9 +233,7 @@ export class MeetingASRService extends EventEmitter {
     }
 
     // Slow path: venv missing, broken, or marker absent — recreate + install.
-    try {
-      await fs.access(pythonPath)
-    } catch {
+    const createVenv = async (): Promise<void> => {
       this._startupPhase = 'venv'
       this.emit('phase', this._startupPhase)
       logger.info('[meeting-asr] Creating Python virtual environment at %s', venvPath)
@@ -249,6 +247,26 @@ export class MeetingASRService extends EventEmitter {
           `Failed to create Python venv (exit ${createStderr.code}): ${createStderr.stderr.trim() || 'no stderr'}.${hint}`,
         )
       }
+    }
+
+    try {
+      await fs.access(pythonPath)
+    } catch {
+      await createVenv()
+    }
+
+    // Guard against a partial venv left behind by an interrupted creation:
+    // the venv python exists but pip is missing (e.g. the service was
+    // restarted mid-`python -m venv`). Proceeding straight to `pip install`
+    // would loop on "No module named pip" forever, so wipe and recreate.
+    const pipProbe = await this.runCaptured(pythonPath, ['-m', 'pip', '--version'], backendPath, 60_000)
+    if (pipProbe.code !== 0) {
+      logger.warn(
+        '[meeting-asr] venv python exists but pip is missing (%s); recreating venv',
+        pipProbe.stderr.trim().slice(-200) || `exit ${pipProbe.code}`,
+      )
+      await fs.rm(venvPath, { recursive: true, force: true })
+      await createVenv()
     }
 
     // Install requirements. May take 5-10 minutes on ARM64 — surface phase so

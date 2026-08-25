@@ -364,14 +364,21 @@ function handleCreateMeeting() {
     })
   }
   
+  // 分析模式：默认 Agent（hermes）直接调用 Hermes Agent 的 Agent 功能生成
+  // 会议纪要、关键要点、待办事项，无需额外 LLM 配置；自定义模式（custom）
+  // 走下方填写的 LLM API Key / Base URL / 模型
+  const analysisMode = newMeetingAnalysisMode.value
+  // 使用默认 Agent 时固定用 Hermes Agent（默认配置），不受 Agent 类型选择影响
+  const effectiveAgentType = analysisMode === 'hermes' ? 'hermes' : newMeetingAgentType.value
+  
   // 构建 Agent 配置
   const agentConfig: AgentConfig = {
-    agentType: newMeetingAgentType.value,
+    agentType: effectiveAgentType,
     codingAgentMode: newMeetingCodingAgentMode.value,
   }
   
   // 根据 Agent 类型设置配置
-  if (newMeetingAgentType.value === 'hermes') {
+  if (effectiveAgentType === 'hermes') {
     agentConfig.profile = newMeetingHermesProfile.value || 'default'
   } else {
     // Coding Agent (claude-code, codex)
@@ -384,10 +391,10 @@ function handleCreateMeeting() {
   meetingStore.createSession({
     title: newMeetingTitle.value.trim(),
     asrModel: newMeetingAsrModel.value,
-    analysisMode: newMeetingAgentType.value === 'hermes' ? 'hermes' : 'custom',
-    hermesProfile: newMeetingAgentType.value === 'hermes' ? (newMeetingHermesProfile.value || 'default') : undefined,
-    customProvider: newMeetingAgentType.value !== 'hermes' && newMeetingCodingAgentMode.value === 'scoped' ? newMeetingCustomProvider.value : undefined,
-    customModel: newMeetingAgentType.value !== 'hermes' && newMeetingCodingAgentMode.value === 'scoped' ? newMeetingCustomModel.value : undefined,
+    analysisMode,
+    hermesProfile: effectiveAgentType === 'hermes' ? (newMeetingHermesProfile.value || 'default') : undefined,
+    customProvider: effectiveAgentType !== 'hermes' && newMeetingCodingAgentMode.value === 'scoped' ? newMeetingCustomProvider.value : undefined,
+    customModel: effectiveAgentType !== 'hermes' && newMeetingCodingAgentMode.value === 'scoped' ? newMeetingCustomModel.value : undefined,
     agentConfig,
     sceneTemplate: newMeetingSceneTemplate.value,
   })
@@ -2674,7 +2681,7 @@ async function clearTranscript() {
           <div class="form-section-title">{{ t('meeting.asrConfig') }}</div>
           <NSteps :current="asrWizardStep" size="small" status="process" class="asr-wizard-steps">
             <NStep :title="t('meeting.wizardStepAsr')" :description="meetingStore.hasASRConfig ? t('meeting.configured') : ''" />
-            <NStep :title="t('meeting.wizardStepLlm')" :description="meetingStore.hasLLMConfig ? t('meeting.configured') : t('meeting.optional')" />
+            <NStep :title="t('meeting.wizardStepLlm')" :description="newMeetingAnalysisMode === 'hermes' ? t('meeting.hermesAgent') : (meetingStore.hasLLMConfig ? t('meeting.configured') : t('meeting.optional'))" />
             <NStep :title="t('meeting.wizardStepReview')" />
           </NSteps>
 
@@ -2734,22 +2741,40 @@ async function clearTranscript() {
             </div>
           </div>
 
-          <!-- Step 2: LLM Analysis Config (optional but recommended) -->
+          <!-- Step 2: 智能分析（可选 — 默认直接使用 Hermes Agent，无需 LLM 配置） -->
           <div v-if="asrWizardStep === 2" class="form-item">
             <NAlert type="info" :show-icon="false" style="margin-bottom: 12px">
               {{ t('meeting.llmOptionalHint') }}
             </NAlert>
-            <label class="form-label">{{ t('meeting.llmApiKey') }}</label>
-            <NInput
-              v-model:value="llmApiKey"
-              type="password"
-              show-password-on="click"
-              :placeholder="t('meeting.llmApiKeyPlaceholder')"
-            />
-            <label class="form-label" style="margin-top: 12px">{{ t('meeting.llmBaseUrl') }}</label>
-            <NInput v-model:value="llmBaseUrl" :placeholder="t('meeting.llmBaseUrlPlaceholder')" />
-            <label class="form-label" style="margin-top: 12px">{{ t('meeting.llmModel') }}</label>
-            <NInput v-model:value="llmModel" :placeholder="t('meeting.llmModelPlaceholder')" />
+            <label class="form-label">{{ t('meeting.analysisMode') }}</label>
+            <NRadioGroup v-model:value="newMeetingAnalysisMode">
+              <NRadio value="hermes">
+                <div class="radio-content">
+                  <span class="radio-title">{{ t('meeting.hermesAgent') }}</span>
+                  <span class="radio-desc">{{ t('meeting.hermesAgentDesc') }}</span>
+                </div>
+              </NRadio>
+              <NRadio value="custom">
+                <div class="radio-content">
+                  <span class="radio-title">{{ t('meeting.customModel') }}</span>
+                  <span class="radio-desc">{{ t('meeting.customModelDesc') }}</span>
+                </div>
+              </NRadio>
+            </NRadioGroup>
+            <!-- 自定义 LLM 配置（仅在选择自定义模式时显示） -->
+            <template v-if="newMeetingAnalysisMode === 'custom'">
+              <label class="form-label" style="margin-top: 12px">{{ t('meeting.llmApiKey') }}</label>
+              <NInput
+                v-model:value="llmApiKey"
+                type="password"
+                show-password-on="click"
+                :placeholder="t('meeting.llmApiKeyPlaceholder')"
+              />
+              <label class="form-label" style="margin-top: 12px">{{ t('meeting.llmBaseUrl') }}</label>
+              <NInput v-model:value="llmBaseUrl" :placeholder="t('meeting.llmBaseUrlPlaceholder')" />
+              <label class="form-label" style="margin-top: 12px">{{ t('meeting.llmModel') }}</label>
+              <NInput v-model:value="llmModel" :placeholder="t('meeting.llmModelPlaceholder')" />
+            </template>
             <div class="wizard-actions">
               <NButton size="small" @click="asrWizardStep = 1">{{ t('meeting.wizardBack') }}</NButton>
               <NButton type="primary" size="small" @click="asrWizardStep = 3">
@@ -2763,7 +2788,7 @@ async function clearTranscript() {
             <NAlert v-if="!meetingStore.hasASRConfig && !asrApiKey" type="warning" :show-icon="true" style="margin-bottom: 8px">
               {{ t('meeting.wizardWarnMissingAsr') }}
             </NAlert>
-            <NAlert v-if="!meetingStore.hasLLMConfig && !llmApiKey" type="info" :show-icon="false" style="margin-bottom: 8px">
+            <NAlert v-if="newMeetingAnalysisMode === 'custom' && !meetingStore.hasLLMConfig && !llmApiKey" type="info" :show-icon="false" style="margin-bottom: 8px">
               {{ t('meeting.wizardWarnMissingLlm') }}
             </NAlert>
             <ul class="wizard-review-list">
@@ -2773,7 +2798,7 @@ async function clearTranscript() {
               </li>
               <li>
                 <span class="wizard-review-label">{{ t('meeting.wizardStepLlm') }}:</span>
-                <span class="wizard-review-value">{{ (llmApiKey || meetingStore.asrConfig.llmApiKey) ? '✓ ' + t('meeting.configured') : '— ' + t('meeting.notConfigured') }}</span>
+                <span class="wizard-review-value">{{ newMeetingAnalysisMode === 'hermes' ? '✓ ' + t('meeting.hermesAgent') : ((llmApiKey || meetingStore.asrConfig.llmApiKey) ? '✓ ' + t('meeting.configured') : '— ' + t('meeting.notConfigured')) }}</span>
               </li>
             </ul>
             <div class="wizard-actions">
@@ -2794,17 +2819,8 @@ async function clearTranscript() {
 
         <div class="form-section">
           <div class="form-section-title">{{ t('meeting.agentConfig') }}</div>
-          <div class="form-item">
-            <label class="form-label">{{ t('meeting.agentType') }}</label>
-            <NSelect
-              v-model:value="newMeetingAgentType"
-              :options="agentTypeOptions"
-              :placeholder="t('meeting.selectAgentType')"
-            />
-          </div>
-
-          <!-- Hermes Agent 配置 -->
-          <template v-if="newMeetingAgentType === 'hermes'">
+          <!-- 默认 Agent 模式：固定使用 Hermes Agent，仅需选择 Agent 配置（profile） -->
+          <template v-if="newMeetingAnalysisMode === 'hermes'">
             <div class="form-item">
               <label class="form-label">{{ t('meeting.selectProfile') }}</label>
               <NSelect
@@ -2815,37 +2831,61 @@ async function clearTranscript() {
             </div>
           </template>
 
-          <!-- Coding Agent 配置 -->
-          <template v-if="newMeetingAgentType === 'claude-code' || newMeetingAgentType === 'codex'">
+          <!-- 自定义 LLM 模式：可选择 Hermes Agent 或 Coding Agent -->
+          <template v-else>
             <div class="form-item">
-              <label class="form-label">{{ t('meeting.codingAgentMode') }}</label>
-              <NRadioGroup v-model:value="newMeetingCodingAgentMode">
-                <NRadio v-for="option in codingAgentModeOptions" :key="option.value" :value="option.value">
-                  <div class="radio-content">
-                    <span class="radio-title">{{ option.label }}</span>
-                    <span class="radio-desc">{{ option.description }}</span>
-                  </div>
-                </NRadio>
-              </NRadioGroup>
+              <label class="form-label">{{ t('meeting.agentType') }}</label>
+              <NSelect
+                v-model:value="newMeetingAgentType"
+                :options="agentTypeOptions"
+                :placeholder="t('meeting.selectAgentType')"
+              />
             </div>
-            <template v-if="newMeetingCodingAgentMode === 'scoped'">
+
+            <!-- Hermes Agent 配置 -->
+            <template v-if="newMeetingAgentType === 'hermes'">
               <div class="form-item">
-                <label class="form-label">{{ t('meeting.selectProvider') }}</label>
+                <label class="form-label">{{ t('meeting.selectProfile') }}</label>
                 <NSelect
-                  v-model:value="newMeetingCustomProvider"
-                  :options="providerOptions"
-                  :placeholder="t('meeting.selectProviderPlaceholder')"
-                  @update:value="newMeetingCustomModel = ''"
+                  v-model:value="newMeetingHermesProfile"
+                  :options="profileOptions"
+                  :placeholder="t('meeting.selectProfilePlaceholder')"
                 />
               </div>
-              <div v-if="newMeetingCustomProvider" class="form-item">
-                <label class="form-label">{{ t('meeting.selectModel') }}</label>
-                <NSelect
-                  v-model:value="newMeetingCustomModel"
-                  :options="modelOptions"
-                  :placeholder="t('meeting.selectModelPlaceholder')"
-                />
+            </template>
+
+            <!-- Coding Agent 配置 -->
+            <template v-if="newMeetingAgentType === 'claude-code' || newMeetingAgentType === 'codex'">
+              <div class="form-item">
+                <label class="form-label">{{ t('meeting.codingAgentMode') }}</label>
+                <NRadioGroup v-model:value="newMeetingCodingAgentMode">
+                  <NRadio v-for="option in codingAgentModeOptions" :key="option.value" :value="option.value">
+                    <div class="radio-content">
+                      <span class="radio-title">{{ option.label }}</span>
+                      <span class="radio-desc">{{ option.description }}</span>
+                    </div>
+                  </NRadio>
+                </NRadioGroup>
               </div>
+              <template v-if="newMeetingCodingAgentMode === 'scoped'">
+                <div class="form-item">
+                  <label class="form-label">{{ t('meeting.selectProvider') }}</label>
+                  <NSelect
+                    v-model:value="newMeetingCustomProvider"
+                    :options="providerOptions"
+                    :placeholder="t('meeting.selectProviderPlaceholder')"
+                    @update:value="newMeetingCustomModel = ''"
+                  />
+                </div>
+                <div v-if="newMeetingCustomProvider" class="form-item">
+                  <label class="form-label">{{ t('meeting.selectModel') }}</label>
+                  <NSelect
+                    v-model:value="newMeetingCustomModel"
+                    :options="modelOptions"
+                    :placeholder="t('meeting.selectModelPlaceholder')"
+                  />
+                </div>
+              </template>
             </template>
           </template>
         </div>
