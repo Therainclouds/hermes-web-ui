@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import { clampMessageForUi } from '@/utils/format-text'
 import {
   checkHealth,
   clearStaleUpdateStatus as clearStaleUpdateStatusRequest,
@@ -116,9 +117,9 @@ export const useAppStore = defineStore('app', () => {
     updateTaskId.value = task.id
     updateTaskStatus.value = task.status
     updateTaskStage.value = task.stage
-    updateTaskMessage.value = task.message || ''
+    updateTaskMessage.value = clampMessageForUi(task.message)
     updateTaskWarning.value = task.warning || ''
-    updateTaskError.value = task.error || ''
+    updateTaskError.value = clampMessageForUi(task.error)
     updating.value = task.status === 'queued' || task.status === 'running'
   }
 

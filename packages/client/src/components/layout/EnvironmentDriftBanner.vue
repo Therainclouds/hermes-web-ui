@@ -120,13 +120,14 @@ function onDismiss() {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  padding: 12px 16px;
+  padding: 10px 12px;
   border: 1px solid #f0ad4e;
   background: #fff8e6;
   color: #5d4406;
   border-radius: 6px;
-  margin: 12px;
-  font-size: 14px;
+  margin: 8px;
+  font-size: 13px;
+  line-height: 1.5;
 }
 .environment-drift-banner--info {
   border-color: #d0d7de;

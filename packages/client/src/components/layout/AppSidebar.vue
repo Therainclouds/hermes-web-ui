@@ -149,7 +149,6 @@ function handleUpdateClick() {
 
 <template>
   <aside class="sidebar" :class="{ open: appStore.sidebarOpen, collapsed: appStore.sidebarCollapsed }" @click="handleSidebarClick">
-    <EnvironmentDriftBanner />
     <nav class="sidebar-nav">
       <!-- Agent -->
       <div class="nav-group">
@@ -437,6 +436,7 @@ function handleUpdateClick() {
         </span>
         <ThemeSwitch />
       </div>
+      <EnvironmentDriftBanner />
       <NButton
         v-if="isDesktopShell"
         type="primary"
@@ -581,6 +581,16 @@ function handleUpdateClick() {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.sidebar-update-label {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+  white-space: pre-wrap;
 }
 
 .sidebar-update-btn,

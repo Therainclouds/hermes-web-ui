@@ -12,6 +12,16 @@ import type {
 
 export const INTERRUPTED_UPDATE_TASK_ERROR_PREFIX = 'Previous update task was interrupted'
 
+export const MAX_TASK_ERROR_CHARS = 600
+const TRUNCATED_TASK_ERROR_NOTE = '\n…[truncated, see run log for full output]'
+
+export function summarizeTaskError(error: string | null | undefined): string {
+  const raw = (error ?? '').trim()
+  if (!raw) return ''
+  if (raw.length <= MAX_TASK_ERROR_CHARS) return raw
+  return raw.slice(0, MAX_TASK_ERROR_CHARS).trimEnd() + TRUNCATED_TASK_ERROR_NOTE
+}
+
 type UpdateTaskPatch = Partial<Pick<
   UpdateTaskRecord,
   'owner' | 'status' | 'stage' | 'message' | 'targetVersion' | 'warning' | 'error' | 'logPath' | 'rollbackMessage' | 'healthcheckUrl' | 'heartbeatAt' | 'finishedAt'

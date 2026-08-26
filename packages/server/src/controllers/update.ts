@@ -22,7 +22,7 @@ import {
   upgradeHermesAgentAfterNpmUpdate,
 } from '../services/update/strategies/npm-package'
 import { assertSourceDeployExecution, buildSourceDeployEnv, getSourceDeployExecutionMessage } from '../services/update/strategies/source-deploy'
-import { updateTaskStore } from '../services/update/task-store'
+import { summarizeTaskError, updateTaskStore } from '../services/update/task-store'
 import type { DevicePackageManifest, SourcePackageManifest, UpdateCapabilities, UpdateCheckResult, UpdatePreflightResult, UpdateRuntimePaths, UpdateStrategy } from '../services/update/types'
 import { isRemoteVersionNewer } from '../services/update/version-compare'
 import { isDockerContainer } from '../services/runtime-environment'
@@ -1388,7 +1388,9 @@ function formatUpdateTaskError(message: string, details?: unknown): string {
 
 function failCurrentUpdateTask(message: string, error = message) {
   managedUpdateTaskId = ''
-  updateTaskStore.completeCurrentTask('failed', message, error)
+  const safeMessage = summarizeTaskError(message)
+  const safeError = summarizeTaskError(error)
+  updateTaskStore.completeCurrentTask('failed', safeMessage, safeError)
 }
 
 function currentTaskResponse() {
