@@ -4,17 +4,19 @@ import { NSpin, NEmpty, NIcon } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { listUSBFiles, type USBFileEntry } from '@/api/hermes/usb'
 import { useMessage } from '@/composables/useAppMessage'
-import { joinExplorerPath } from '@/utils/usb-format'
 
 interface TreeNode {
   key: string
   label: string
   path: string
-  isLeaf: boolean
-  isLoaded: boolean
-  isLoading: boolean
-  loadError?: string
-  children?: TreeNode[]
+  isDir: boolean
+}
+
+interface NodeState {
+  loading: boolean
+  loaded: boolean
+  error?: string
+  children: TreeNode[]
 }
 
 const props = defineProps<{
@@ -32,20 +34,18 @@ const message = useMessage()
 const root = ref<TreeNode | null>(null)
 const loadingRoot = ref(false)
 const rootError = ref('')
-const nodeState = ref(new Map<string, { loading: boolean, loaded: boolean, error?: string, children?: TreeNode }>())
+const nodeState = ref(new Map<string, NodeState>())
 
 function makeLeaf(entry: USBFileEntry): TreeNode {
   return {
     key: entry.path,
     label: entry.name,
     path: entry.path,
-    isLeaf: !entry.isDir,
-    isLoaded: true,
-    isLoading: false,
+    isDir: entry.isDir,
   }
 }
 
-function ensureNode(path: string, label: string): { loading: boolean, loaded: boolean, error?: string, children?: TreeNode[] } {
+function ensureNode(path: string): NodeState {
   if (!nodeState.value.has(path)) {
     nodeState.value.set(path, { loading: false, loaded: false, children: [] })
   }
@@ -58,17 +58,14 @@ async function loadRoot() {
   try {
     const response = await listUSBFiles(props.uuid, '/')
     const folders = response.entries.filter(entry => entry.isDir)
-    const rootState = ensureNode('/', t('usb.explorer.breadcrumb.root'))
+    const rootState = ensureNode('/')
     rootState.loaded = true
     rootState.children = folders.map(makeLeaf)
     root.value = {
       key: '/',
       label: t('usb.explorer.breadcrumb.root'),
       path: '/',
-      isLeaf: false,
-      isLoaded: true,
-      isLoading: false,
-      children: rootState.children,
+      isDir: false,
     }
   } catch (error: any) {
     rootError.value = error?.message || t('usb.explorer.errors.loadFailed')
@@ -78,8 +75,8 @@ async function loadRoot() {
   }
 }
 
-async function loadChildren(path: string, label: string) {
-  const state = ensureNode(path, label)
+async function loadChildren(path: string) {
+  const state = ensureNode(path)
   if (state.loaded || state.loading) return
   state.loading = true
   state.error = undefined
@@ -89,16 +86,17 @@ async function loadChildren(path: string, label: string) {
     state.children = folders.map(makeLeaf)
     state.loaded = true
   } catch (error: any) {
-    state.error = error?.message || t('usb.explorer.errors.loadFailed')
-    message.error(state.error)
+    const errMsg = error?.message || t('usb.explorer.errors.loadFailed')
+    state.error = errMsg
+    message.error(errMsg)
   } finally {
     state.loading = false
   }
 }
 
 function handleToggle(node: TreeNode) {
-  if (node.isLeaf) return
-  void loadChildren(node.path, node.label)
+  if (!node.isDir) return
+  void loadChildren(node.path)
 }
 
 function handleSelect(node: TreeNode) {
@@ -138,7 +136,7 @@ watch(
       <div v-if="rootError" class="tree-empty">
         <NEmpty :description="rootError" size="small" />
       </div>
-      <div v-else-if="!root || !root.children || root.children.length === 0" class="tree-empty">
+      <div v-else-if="!root || !nodeState.get('/')?.children?.length" class="tree-empty">
         <NEmpty :description="t('usb.explorer.tree.empty')" size="small" />
       </div>
       <ul v-else class="tree-list">
@@ -158,8 +156,8 @@ watch(
             </NIcon>
             <span class="tree-label">{{ root.label }}</span>
           </button>
-          <ul v-if="root.children.length > 0" class="tree-list tree-list--nested">
-            <li v-for="node in root.children" :key="node.key">
+          <ul v-if="(nodeState.get('/')?.children?.length ?? 0) > 0" class="tree-list tree-list--nested">
+            <li v-for="node in nodeState.get('/')?.children ?? []" :key="node.key">
               <details
                 :open="expandedKeys.includes(node.path)"
                 @toggle="handleToggle(node)"
@@ -177,10 +175,10 @@ watch(
                   <span class="tree-label">{{ node.label }}</span>
                 </summary>
                 <ul
-                  v-if="nodeState.get(node.path)?.loaded && nodeState.get(node.path)?.children && nodeState.get(node.path)!.children!.length > 0"
+                  v-if="(nodeState.get(node.path)?.children?.length ?? 0) > 0"
                   class="tree-list tree-list--nested"
                 >
-                  <li v-for="child in nodeState.get(node.path)!.children" :key="child.key">
+                  <li v-for="child in nodeState.get(node.path)?.children ?? []" :key="child.key">
                     <button
                       type="button"
                       class="tree-row"

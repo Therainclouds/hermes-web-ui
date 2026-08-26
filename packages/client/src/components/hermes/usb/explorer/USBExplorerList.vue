@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { NEmpty, NSpin } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import type { USBFileEntry } from '@/api/hermes/usb'
-import { formatExplorerBytes, formatExplorerTime, getExplorerEntryKind } from '@/utils/usb-format'
+import { formatExplorerBytes, formatExplorerTime } from '@/utils/usb-format'
 
 const props = defineProps<{
   entries: USBFileEntry[]
@@ -27,10 +27,6 @@ const filteredEntries = computed(() => {
   if (!term) return props.entries
   return props.entries.filter(entry => entry.name.toLowerCase().includes(term))
 })
-
-function getKind(entry: USBFileEntry) {
-  return getExplorerEntryKind(entry.name, entry.isDir)
-}
 
 function getKindLabel(entry: USBFileEntry) {
   return entry.isDir ? t('usb.explorer.list.columnType') + ': ' + t('usb.page.browser.folder')

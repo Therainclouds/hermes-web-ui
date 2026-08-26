@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { listUSBFiles, downloadUSBFile, type USBFileEntry } from '@/api/hermes/usb'
 import type { USBDeviceRecord } from '@/api/hermes/usb-socket'
 import { copyToClipboard } from '@/utils/clipboard'
-import { normalizeExplorerPath, parentExplorerPath, explorerBaseName } from '@/utils/usb-format'
+import { normalizeExplorerPath, parentExplorerPath } from '@/utils/usb-format'
 import { useMessage } from '@/composables/useAppMessage'
 import USBExplorerToolbar, { type ExplorerViewMode } from './USBExplorerToolbar.vue'
 import USBExplorerBreadcrumb from './USBExplorerBreadcrumb.vue'
@@ -199,11 +199,6 @@ async function downloadEntry(entry: USBFileEntry) {
 function readEntryWithAgent(entry: USBFileEntry) {
   if (entry.isDir) return
   emit('readWithAgent', { path: entry.path, name: entry.name })
-}
-
-function openEntryNewTab(entry: USBFileEntry) {
-  if (!props.device || entry.isDir) return
-  window.open(`/api/usb/devices/${encodeURIComponent(props.device.uuid)}/read?path=${encodeURIComponent(entry.path)}`, '_blank')
 }
 
 watch(

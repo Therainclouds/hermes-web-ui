@@ -2,12 +2,9 @@
 import { computed } from 'vue'
 import { NDropdown, type DropdownOption } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
+import type { USBFileEntry } from '@/api/hermes/usb'
 
-export interface ContextMenuEntry {
-  path: string
-  name: string
-  isDir: boolean
-}
+export type ContextMenuEntry = USBFileEntry
 
 const props = defineProps<{
   show: boolean
@@ -31,14 +28,6 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-
-const folderPath = computed(() => {
-  if (!props.entry) return props.mountPoint
-  if (props.entry.isDir) return `${props.mountPoint}${props.entry.path}`
-  const lastSlash = props.entry.path.lastIndexOf('/')
-  if (lastSlash <= 0) return props.mountPoint
-  return `${props.mountPoint}${props.entry.path.slice(0, lastSlash) || '/'}`
-})
 
 const options = computed<DropdownOption[]>(() => {
   if (!props.entry) return []

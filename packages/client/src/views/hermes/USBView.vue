@@ -256,65 +256,67 @@ onMounted(() => {
             </div>
           </section>
 
-          <!-- Workspace -->
-          <section class="workspace-grid">
-            <div class="browser-column">
-              <USBExplorer
-                :device="selectedDevice"
-                :agent-read-enabled="canUseActiveChatSession"
-                :agent-read-busy="agentReadBusy"
-                :agent-read-hint="agentReadHint"
-                @read-with-agent="handleReadWithAgent"
-              />
+          <!-- Workspace (device grid only — workspace-grid moved outside v-else) -->
+        </template>
+
+        <!-- Workspace: explorer + side details, always rendered -->
+        <section class="workspace-grid">
+          <div class="browser-column">
+            <USBExplorer
+              :device="selectedDevice"
+              :agent-read-enabled="canUseActiveChatSession"
+              :agent-read-busy="agentReadBusy"
+              :agent-read-hint="agentReadHint"
+              @read-with-agent="handleReadWithAgent"
+            />
+          </div>
+
+          <aside class="side-column">
+            <div class="side-card">
+              <div class="side-card-head">
+                <span class="side-card-title">{{ t('usb.page.details') }}</span>
+                <NTag
+                  v-if="selectedDevice"
+                  size="small"
+                  round
+                  :type="selectedDevice.status === 'mount_failed' ? 'error' : 'success'"
+                >
+                  {{ t(`usb.page.status.${selectedDevice.status}`) }}
+                </NTag>
+              </div>
+              <dl v-if="selectedDevice" class="detail-list">
+                <div><dt>{{ t('usb.page.name') }}</dt><dd>{{ deviceTitle(selectedDevice) }}</dd></div>
+                <div><dt>{{ t('usb.page.mountPoint') }}</dt><dd>{{ selectedDevice.mountPoint }}</dd></div>
+                <div><dt>{{ t('usb.page.fsType') }}</dt><dd>{{ selectedDevice.fsType || t('usb.page.unknown') }}</dd></div>
+                <div><dt>{{ t('usb.page.vendor') }}</dt><dd>{{ selectedDevice.vendor || t('usb.page.unknown') }}</dd></div>
+                <div><dt>{{ t('usb.page.model') }}</dt><dd>{{ selectedDevice.model || t('usb.page.unknown') }}</dd></div>
+                <div><dt>{{ t('usb.page.serial') }}</dt><dd>{{ selectedDevice.serial || t('usb.page.unknown') }}</dd></div>
+                <div v-if="selectedDevice.error" class="detail-error">
+                  <dt>{{ t('usb.page.lastError') }}</dt>
+                  <dd>{{ selectedDevice.error }}</dd>
+                </div>
+              </dl>
+              <NEmpty v-else :description="t('usb.page.selectDevice')" size="small" />
             </div>
 
-            <aside class="side-column">
-              <div class="side-card">
-                <div class="side-card-head">
-                  <span class="side-card-title">{{ t('usb.page.details') }}</span>
-                  <NTag
-                    v-if="selectedDevice"
-                    size="small"
-                    round
-                    :type="selectedDevice.status === 'mount_failed' ? 'error' : 'success'"
-                  >
-                    {{ t(`usb.page.status.${selectedDevice.status}`) }}
-                  </NTag>
-                </div>
-                <dl v-if="selectedDevice" class="detail-list">
-                  <div><dt>{{ t('usb.page.name') }}</dt><dd>{{ deviceTitle(selectedDevice) }}</dd></div>
-                  <div><dt>{{ t('usb.page.mountPoint') }}</dt><dd>{{ selectedDevice.mountPoint }}</dd></div>
-                  <div><dt>{{ t('usb.page.fsType') }}</dt><dd>{{ selectedDevice.fsType || t('usb.page.unknown') }}</dd></div>
-                  <div><dt>{{ t('usb.page.vendor') }}</dt><dd>{{ selectedDevice.vendor || t('usb.page.unknown') }}</dd></div>
-                  <div><dt>{{ t('usb.page.model') }}</dt><dd>{{ selectedDevice.model || t('usb.page.unknown') }}</dd></div>
-                  <div><dt>{{ t('usb.page.serial') }}</dt><dd>{{ selectedDevice.serial || t('usb.page.unknown') }}</dd></div>
-                  <div v-if="selectedDevice.error" class="detail-error">
-                    <dt>{{ t('usb.page.lastError') }}</dt>
-                    <dd>{{ selectedDevice.error }}</dd>
-                  </div>
-                </dl>
-                <NEmpty v-else :description="t('usb.page.selectDevice')" size="small" />
+            <div class="side-card">
+              <div class="side-card-head">
+                <span class="side-card-title">{{ t('usb.page.runtimeTitle') }}</span>
+                <span class="section-meta">{{ t(`usb.page.runtime.${runtimeState}`) }}</span>
               </div>
+              <dl class="detail-list">
+                <div><dt>{{ t('usb.page.runtimeLabel') }}</dt><dd>{{ t(`usb.page.runtime.${runtimeState}`) }}</dd></div>
+                <div><dt>{{ t('usb.page.lastReadyAt') }}</dt><dd>{{ formatTime(usbStore.runtime?.lastReadyAt || null) }}</dd></div>
+                <div><dt>{{ t('usb.page.lastHeartbeatAt') }}</dt><dd>{{ formatTime(usbStore.runtime?.lastHeartbeatAt || null) }}</dd></div>
+                <div><dt>{{ t('usb.page.lastError') }}</dt><dd>{{ usbStore.runtime?.lastError || t('usb.page.none') }}</dd></div>
+              </dl>
+            </div>
 
-              <div class="side-card">
-                <div class="side-card-head">
-                  <span class="side-card-title">{{ t('usb.page.runtimeTitle') }}</span>
-                  <span class="section-meta">{{ t(`usb.page.runtime.${runtimeState}`) }}</span>
-                </div>
-                <dl class="detail-list">
-                  <div><dt>{{ t('usb.page.runtimeLabel') }}</dt><dd>{{ t(`usb.page.runtime.${runtimeState}`) }}</dd></div>
-                  <div><dt>{{ t('usb.page.lastReadyAt') }}</dt><dd>{{ formatTime(usbStore.runtime?.lastReadyAt || null) }}</dd></div>
-                  <div><dt>{{ t('usb.page.lastHeartbeatAt') }}</dt><dd>{{ formatTime(usbStore.runtime?.lastHeartbeatAt || null) }}</dd></div>
-                  <div><dt>{{ t('usb.page.lastError') }}</dt><dd>{{ usbStore.runtime?.lastError || t('usb.page.none') }}</dd></div>
-                </dl>
-              </div>
-
-              <div class="side-card side-card--history">
-                <USBEventHistory :events="usbStore.history" @pick-device="selectedUuid = $event" />
-              </div>
-            </aside>
-          </section>
-        </template>
+            <div class="side-card side-card--history">
+              <USBEventHistory :events="usbStore.history" @pick-device="selectedUuid = $event" />
+            </div>
+          </aside>
+        </section>
       </NSpin>
     </div>
   </div>

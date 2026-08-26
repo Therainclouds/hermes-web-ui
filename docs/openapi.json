@@ -15677,6 +15677,32 @@
         }
       }
     },
+    "/api/hermes/update/environment": {
+      "get": {
+        "tags": [
+          "Update"
+        ],
+        "summary": "Get environment",
+        "description": "GET /api/hermes/update/environment",
+        "operationId": "getUpdateEnvironment",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      }
+    },
     "/api/hermes/update/preview": {
       "get": {
         "tags": [
@@ -15859,6 +15885,32 @@
           },
           "404": {
             "description": "Not found"
+          }
+        }
+      }
+    },
+    "/api/hermes/update/reconcile": {
+      "post": {
+        "tags": [
+          "Update"
+        ],
+        "summary": "Create reconcile",
+        "description": "POST /api/hermes/update/reconcile",
+        "operationId": "reconcileUpdate",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
           }
         }
       }
