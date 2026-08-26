@@ -1564,4 +1564,358 @@ describe('update controller', () => {
     )
   })
 
+  it('returns noop when reconcile endpoint is hit but manifest has no environment block', async () => {
+    process.env.WEBUI_UPDATE_STRATEGY = 'device-package'
+    process.env.WEBUI_UPDATE_MANIFEST_URL = 'https://updates.example.com/stable/manifest.json'
+    process.env.WEBUI_UPDATE_INSTALLER_SCRIPT = '/opt/hermes-web-ui/scripts/install-device-package.sh'
+    process.env.WEBUI_UPDATE_PACKAGE_TYPE = 'device-package'
+    process.env.WEBUI_UPDATE_CHANNEL = 'stable'
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      url: 'https://updates.example.com/stable/manifest.json',
+      arrayBuffer: async () => Buffer.from(JSON.stringify({
+        version: PUBLISHED_VERSION,
+        channel: 'stable',
+        sourceLabel: 'Device Manifest',
+        packageType: 'device-package',
+        artifactFormat: 'tar.gz',
+        packageUrl: 'https://updates.example.com/releases/v0.6.13/hermes-web-ui-device-v0.6.13.tar.gz',
+        sha256: 'a'.repeat(64),
+        releasedAt: '2026-06-09T00:00:00Z',
+        compatibleNodeRange: `>=${process.versions.node}`,
+        minCurrentVersion: '0.6.10',
+      })),
+    }))
+    const { reconcileUpdate } = await loadUpdateController()
+    const ctx = createMockCtx()
+    await reconcileUpdate(ctx)
+    expect(ctx.body).toEqual(expect.objectContaining({
+      success: true,
+      status: 'noop',
+    }))
+  })
+
+  it('creates a reconciling_env task and launches the installer with --reconcile-env-only', async () => {
+    process.env.WEBUI_UPDATE_STRATEGY = 'device-package'
+    process.env.WEBUI_UPDATE_MANIFEST_URL = 'https://updates.example.com/stable/manifest.json'
+    process.env.WEBUI_UPDATE_INSTALLER_SCRIPT = '/opt/hermes-web-ui/scripts/install-device-package.sh'
+    process.env.WEBUI_UPDATE_PACKAGE_TYPE = 'device-package'
+    process.env.WEBUI_UPDATE_CHANNEL = 'stable'
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      url: 'https://updates.example.com/stable/manifest.json',
+      arrayBuffer: async () => Buffer.from(JSON.stringify({
+        version: PUBLISHED_VERSION,
+        channel: 'stable',
+        sourceLabel: 'Device Manifest',
+        packageType: 'device-package',
+        artifactFormat: 'tar.gz',
+        packageUrl: 'https://updates.example.com/releases/v0.6.13/hermes-web-ui-device-v0.6.13.tar.gz',
+        sha256: 'b'.repeat(64),
+        releasedAt: '2026-06-09T00:00:00Z',
+        compatibleNodeRange: `>=${process.versions.node}`,
+        minCurrentVersion: '0.6.10',
+        environment: {
+          requiredNodeRange: `>=${process.versions.node}`,
+          requiredSystemFiles: [
+            { path: 'scripts/install-device-package.sh', kind: 'executable' },
+          ],
+        },
+      })),
+    }))
+    const { reconcileUpdate, mocks } = await loadUpdateController()
+    const ctx = createMockCtx()
+
+    await reconcileUpdate(ctx)
+
+    expect(ctx.body).toEqual(expect.objectContaining({
+      success: true,
+      status: 'running',
+      taskId: expect.any(String),
+      latestVersion: PUBLISHED_VERSION,
+    }))
+    const requestCall = mocks.writeFileSync.mock.calls.find(call => String(call[0]).endsWith('update-runner-request.json'))
+    expect(requestCall).toBeDefined()
+    const parsed = JSON.parse(String(requestCall?.[1]))
+    expect(parsed.strategy).toBe('device-package')
+    expect(parsed.env.HERMES_WEB_UI_UPDATE_VERSION).toBe(PUBLISHED_VERSION)
+    expect(parsed.env.HERMES_WEB_UI_UPDATE_INCLUDE_AGENT_UPGRADE).toBe('false')
+    expect(parsed.env.HERMES_WEB_UI_UPDATE_AUTO_INSTALL_DEPENDENCIES).toBe('false')
+    const manifestEnv = JSON.parse(parsed.env.HERMES_WEB_UI_UPDATE_MANIFEST_ENV_JSON)
+    expect(manifestEnv.requiredNodeRange).toBe(`>=${process.versions.node}`)
+    expect(mocks.spawn).toHaveBeenCalledWith(
+      'sudo',
+      ['-n', 'systemctl', 'start', 'hermes-web-ui-update.service'],
+      expect.objectContaining({ detached: true }),
+    )
+  })
+
+  it('refuses reconcile when strategy is not device-package', async () => {
+    process.env.WEBUI_UPDATE_STRATEGY = 'npm-package'
+    process.env.WEBUI_UPDATE_MANIFEST_URL = ''
+    process.env.WEBUI_UPDATE_PACKAGE = 'hermes-web-ui'
+    const { reconcileUpdate } = await loadUpdateController()
+    const ctx = createMockCtx()
+    await reconcileUpdate(ctx)
+    expect(ctx.status).toBe(400)
+    expect(ctx.body).toEqual(expect.objectContaining({
+      success: false,
+      code: 'update_strategy_unsupported',
+    }))
+  })
+
+})
+
+async function loadUpdateControllerWithEnvironment(overrides: {
+  state?: any
+  manifest?: any
+  manifestFetchError?: Error
+  runEnvironmentCheck?: () => Promise<any>
+} = {}) {
+  const execFile = vi.fn((_command: string, _args: string[], _options: any, callback: any) => callback(null, '', ''))
+  const execFileSync = vi.fn(() => 'updated')
+  const unref = vi.fn()
+  const spawn = vi.fn(() => ({ unref, on: vi.fn() }))
+  const existsSync = vi.fn(() => true)
+  const readFileSync = vi.fn(() => JSON.stringify({
+    name: 'hermes-web-ui',
+    version: '0.0.0',
+    repository: { url: 'https://github.com/EKKOLearnAI/hermes-studio.git' },
+  }))
+  const writeFileSync = vi.fn()
+  const renameSync = vi.fn()
+  const unlinkSync = vi.fn()
+  const appendFileSync = vi.fn()
+
+  vi.resetModules()
+  vi.doMock('child_process', () => ({ execFile, execFileSync, spawn }))
+  vi.doMock('fs', () => ({
+    appendFileSync,
+    closeSync: vi.fn(),
+    createWriteStream: vi.fn(() => new Writable({
+      write(_chunk, _encoding, callback) {
+        callback()
+      },
+    })),
+    existsSync,
+    mkdirSync: vi.fn(),
+    openSync: vi.fn(() => 1),
+    readFileSync,
+    renameSync,
+    rmSync: vi.fn(),
+    unlinkSync,
+    writeFileSync,
+  }))
+  vi.doMock('../../packages/server/src/services/runtime-environment', () => ({
+    isDockerContainer: () => false,
+  }))
+
+  const state = overrides.state ?? null
+  const manifest = overrides.manifest ?? null
+
+  vi.doMock('../../packages/server/src/services/update/reconcile', () => ({
+    assertEnvironmentMatches: vi.fn((s: any, m: any) => {
+      if (!s) return []
+      if (m?.requiredNodeRange === '>=20.0.0' && s.nodeVersion === 'v18.20.0') {
+        return [{
+          gate: 'requiredNodeRange',
+          expected: '>=20.0.0',
+          actual: 'v18.20.0',
+        }]
+      }
+      return []
+    }),
+    getLastEnvironmentCheck: vi.fn(() => ({
+      status: state && manifest ? (manifest.environment && state.nodeVersion !== 'v20.10.0' ? 'drift_detected' : 'ok') : 'unavailable',
+      capturedAt: state?.capturedAt ?? null,
+      manifestVersion: manifest?.version ?? null,
+      actualVersion: state?.version ?? null,
+      nodeVersion: state?.nodeVersion ?? null,
+      agentVersion: state?.agentVersion ?? null,
+      drift: [],
+      reconcileSupported: manifest?.environment !== undefined,
+      checkedAt: '2026-08-25T10:30:00Z',
+    })),
+    readDeviceEnvState: vi.fn(async () => state),
+    runEnvironmentCheck: overrides.runEnvironmentCheck ?? vi.fn(async () => ({
+      status: 'unavailable',
+      capturedAt: null,
+      manifestVersion: null,
+      actualVersion: null,
+      nodeVersion: null,
+      agentVersion: null,
+      drift: [],
+      reconcileSupported: false,
+      checkedAt: '2026-08-25T10:30:00Z',
+    })),
+  }))
+
+  if (overrides.manifestFetchError) {
+    vi.doMock('../../packages/server/src/services/update/manifest-client', () => ({
+      fetchDevicePackageManifest: vi.fn(async () => { throw overrides.manifestFetchError }),
+      fetchSourcePackageManifest: vi.fn(async () => null),
+      resolveManifestCheckResult: vi.fn(),
+    }))
+  } else {
+    vi.doMock('../../packages/server/src/services/update/manifest-client', () => ({
+      fetchDevicePackageManifest: vi.fn(async () => manifest),
+      fetchSourcePackageManifest: vi.fn(async () => null),
+      resolveManifestCheckResult: vi.fn(),
+    }))
+  }
+
+  const mod = await import('../../packages/server/src/controllers/update')
+  return { ...mod, mocks: { execFile, execFileSync, spawn, unref, existsSync, readFileSync, writeFileSync, renameSync, unlinkSync, appendFileSync } }
+}
+
+describe('update controller environment endpoint', () => {
+  const originalStrategy = process.env.WEBUI_UPDATE_STRATEGY
+  const originalManifestUrl = process.env.WEBUI_UPDATE_MANIFEST_URL
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.resetModules()
+    vi.doUnmock('child_process')
+    vi.doUnmock('fs')
+    vi.doUnmock('../../packages/server/src/services/runtime-environment')
+    vi.doUnmock('../../packages/server/src/services/update/reconcile')
+    vi.doUnmock('../../packages/server/src/services/update/manifest-client')
+    vi.unstubAllGlobals()
+    if (originalStrategy === undefined) delete process.env.WEBUI_UPDATE_STRATEGY
+    else process.env.WEBUI_UPDATE_STRATEGY = originalStrategy
+    if (originalManifestUrl === undefined) delete process.env.WEBUI_UPDATE_MANIFEST_URL
+    else process.env.WEBUI_UPDATE_MANIFEST_URL = originalManifestUrl
+  })
+
+  it('reports unavailable when env-state.json is missing', async () => {
+    process.env.WEBUI_UPDATE_STRATEGY = 'device-package'
+    process.env.WEBUI_UPDATE_MANIFEST_URL = 'https://updates.example.com/stable/manifest.json'
+
+    const { getUpdateEnvironment } = await loadUpdateControllerWithEnvironment({
+      state: null,
+      manifest: { version: '0.7.20', environment: { requiredNodeRange: '>=20.0.0' } },
+    })
+    const ctx = createMockCtx()
+
+    await getUpdateEnvironment(ctx)
+
+    expect(ctx.body).toEqual(expect.objectContaining({
+      success: true,
+      status: 'unavailable',
+      drift: [],
+      reconcileSupported: true,
+      manifestVersion: '0.7.20',
+    }))
+  })
+
+  it('reports ok when captured state matches manifest requirements', async () => {
+    process.env.WEBUI_UPDATE_STRATEGY = 'device-package'
+    process.env.WEBUI_UPDATE_MANIFEST_URL = 'https://updates.example.com/stable/manifest.json'
+
+    const { getUpdateEnvironment } = await loadUpdateControllerWithEnvironment({
+      state: {
+        version: '0.7.20',
+        capturedAt: '2026-08-25T10:00:00Z',
+        nodeVersion: 'v20.10.0',
+        agentVersion: '0.11.0',
+        aptPackages: [],
+        scripts: {},
+      },
+      manifest: { version: '0.7.20', environment: { requiredNodeRange: '>=20.0.0' } },
+    })
+    const ctx = createMockCtx()
+
+    await getUpdateEnvironment(ctx)
+
+    expect(ctx.body).toEqual(expect.objectContaining({
+      success: true,
+      status: 'ok',
+      drift: [],
+      nodeVersion: 'v20.10.0',
+      agentVersion: '0.11.0',
+      manifestVersion: '0.7.20',
+      actualVersion: '0.7.20',
+      reconcileSupported: true,
+    }))
+  })
+
+  it('reports drift_detected when assertEnvironmentMatches returns failing entries', async () => {
+    process.env.WEBUI_UPDATE_STRATEGY = 'device-package'
+    process.env.WEBUI_UPDATE_MANIFEST_URL = 'https://updates.example.com/stable/manifest.json'
+
+    const { getUpdateEnvironment } = await loadUpdateControllerWithEnvironment({
+      state: {
+        version: '0.7.19',
+        capturedAt: '2026-08-25T10:00:00Z',
+        nodeVersion: 'v18.20.0',
+        agentVersion: '0.11.0',
+        aptPackages: [],
+        scripts: {},
+      },
+      manifest: { version: '0.7.20', environment: { requiredNodeRange: '>=20.0.0' } },
+    })
+    const ctx = createMockCtx()
+
+    await getUpdateEnvironment(ctx)
+
+    expect(ctx.body.status).toBe('drift_detected')
+    expect(ctx.body.drift).toEqual([
+      expect.objectContaining({
+        gate: 'requiredNodeRange',
+        expected: '>=20.0.0',
+        actual: 'v18.20.0',
+      }),
+    ])
+    expect(ctx.body.reconcileSupported).toBe(true)
+  })
+
+  it('reports reconcileSupported=false when manifest has no environment block', async () => {
+    process.env.WEBUI_UPDATE_STRATEGY = 'device-package'
+    process.env.WEBUI_UPDATE_MANIFEST_URL = 'https://updates.example.com/stable/manifest.json'
+
+    const { getUpdateEnvironment } = await loadUpdateControllerWithEnvironment({
+      state: {
+        version: '0.7.19',
+        capturedAt: '2026-08-25T10:00:00Z',
+        nodeVersion: 'v20.10.0',
+        agentVersion: '0.11.0',
+        aptPackages: [],
+        scripts: {},
+      },
+      manifest: { version: '0.7.20' },
+    })
+    const ctx = createMockCtx()
+
+    await getUpdateEnvironment(ctx)
+
+    expect(ctx.body.status).toBe('ok')
+    expect(ctx.body.reconcileSupported).toBe(false)
+  })
+
+  it('still returns a payload when manifest fetch fails', async () => {
+    process.env.WEBUI_UPDATE_STRATEGY = 'device-package'
+    process.env.WEBUI_UPDATE_MANIFEST_URL = 'https://updates.example.com/stable/manifest.json'
+
+    const { getUpdateEnvironment } = await loadUpdateControllerWithEnvironment({
+      state: {
+        version: '0.7.19',
+        capturedAt: '2026-08-25T10:00:00Z',
+        nodeVersion: 'v20.10.0',
+        agentVersion: '0.11.0',
+        aptPackages: [],
+        scripts: {},
+      },
+      manifestFetchError: new Error('manifest 5xx'),
+    })
+    const ctx = createMockCtx()
+
+    await getUpdateEnvironment(ctx)
+
+    expect(ctx.body.success).toBe(true)
+    expect(ctx.body.status).toBe('ok')
+    expect(ctx.body.manifestVersion).toBeNull()
+    expect(ctx.body.reconcileSupported).toBe(false)
+  })
 })

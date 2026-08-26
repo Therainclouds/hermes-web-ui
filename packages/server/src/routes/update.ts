@@ -8,6 +8,8 @@ export const updateRoutes = new Router()
 // new version and restarts itself. Admin-only update flows live under
 // /api/hermes/update/preview/* when needed.
 updateRoutes.post('/api/hermes/update', ctrl.handleUpdate)
+updateRoutes.post('/api/hermes/update/reconcile', ctrl.reconcileUpdate)
+updateRoutes.get('/api/hermes/update/environment', ctrl.getUpdateEnvironment)
 updateRoutes.get('/api/hermes/update/status', ctrl.updateStatus)
 updateRoutes.get('/api/hermes/update/capabilities', ctrl.updateCapabilities)
 updateRoutes.post('/api/hermes/update/status/clear-stale', ctrl.clearStaleUpdateStatus)

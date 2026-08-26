@@ -556,3 +556,80 @@ describe('health controller version metadata', () => {
   })
 
 })
+
+describe('health controller environment field', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.resetModules()
+  })
+
+  it('exposes the last environment check in the health payload', async () => {
+    const driftEntry = {
+      gate: 'requiredNodeRange',
+      expected: '>=20.0.0',
+      actual: 'v18.20.0',
+    }
+    const fakeEnvironmentCheck = {
+      status: 'drift_detected',
+      capturedAt: '2026-08-25T10:00:00Z',
+      manifestVersion: '0.7.20',
+      actualVersion: '0.7.19',
+      nodeVersion: 'v18.20.0',
+      agentVersion: '0.11.0',
+      drift: [driftEntry],
+      reconcileSupported: true,
+      checkedAt: '2026-08-25T10:30:00Z',
+    }
+
+    vi.doMock('../../packages/server/src/services/hermes/hermes-cli', () => ({
+      getVersion: vi.fn().mockResolvedValue('Hermes Agent v0.11.0\n'),
+      getVersionCached: vi.fn().mockResolvedValue('Hermes Agent v0.11.0\n'),
+    }))
+    vi.doMock('../../packages/server/src/services/update/reconcile', () => ({
+      getLastEnvironmentCheck: () => fakeEnvironmentCheck,
+    }))
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }))
+    vi.resetModules()
+
+    const healthModule = await import('../../packages/server/src/controllers/health')
+    const ctx = createMockCtx()
+    await healthModule.healthCheck(ctx)
+
+    expect(ctx.body.environment).toEqual(fakeEnvironmentCheck)
+  })
+
+  it('exposes the unavailable status when no env-state.json has been captured yet', async () => {
+    const fakeEnvironmentCheck = {
+      status: 'unavailable',
+      capturedAt: null,
+      manifestVersion: null,
+      actualVersion: null,
+      nodeVersion: null,
+      agentVersion: null,
+      drift: [],
+      reconcileSupported: false,
+      checkedAt: '',
+    }
+
+    vi.doMock('../../packages/server/src/services/hermes/hermes-cli', () => ({
+      getVersion: vi.fn().mockResolvedValue('Hermes Agent v0.11.0\n'),
+      getVersionCached: vi.fn().mockResolvedValue('Hermes Agent v0.11.0\n'),
+    }))
+    vi.doMock('../../packages/server/src/services/update/reconcile', () => ({
+      getLastEnvironmentCheck: () => fakeEnvironmentCheck,
+    }))
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }))
+    vi.resetModules()
+
+    const healthModule = await import('../../packages/server/src/controllers/health')
+    const ctx = createMockCtx()
+    await healthModule.healthCheck(ctx)
+
+    expect(ctx.body.environment.status).toBe('unavailable')
+    expect(ctx.body.environment.drift).toEqual([])
+    expect(ctx.body.environment.reconcileSupported).toBe(false)
+  })
+
+})

@@ -11,6 +11,8 @@ import {
   assertInstallerScriptCompatible,
   buildDevicePackageInstallCommand,
   buildDevicePackageInstallEnv,
+  buildDevicePackageReconcileCommand,
+  buildDevicePackageReconcileEnv,
   downloadAndVerifyDevicePackage,
 } from '../../packages/server/src/services/update/strategies/device-package'
 import type { DevicePackageManifest, UpdateConfig } from '../../packages/server/src/services/update/types'
@@ -517,5 +519,94 @@ describe('assertInstallerScriptCompatible', () => {
         installerScriptPath: 'scripts/custom-installer.sh',
       })
     }
+  })
+
+  describe('reconcile environment builder', () => {
+    it('builds the reconcile env with --reconcile-env-only flag', () => {
+      const cmd = buildDevicePackageReconcileCommand(
+        '/opt/hermes-web-ui/scripts/install-device-package.sh',
+        createManifest({ version: '0.7.21' }),
+        () => '/bin/bash',
+      )
+      expect(cmd.command).toBe('/bin/bash')
+      expect(cmd.args).toEqual([
+        '/opt/hermes-web-ui/scripts/install-device-package.sh',
+        '--reconcile-env-only',
+        '--version', '0.7.21',
+      ])
+    })
+
+    it('forwards MANIFEST_ENV_JSON in reconcile env when manifest has environment block', () => {
+      const env = buildDevicePackageReconcileEnv(
+        createUpdateConfig(),
+        { PATH: '/usr/bin' },
+        createManifest({
+          version: '0.7.22',
+          environment: {
+            requiredNodeRange: '>=23.0.0',
+            requiredSystemFiles: [
+              { path: 'scripts/install-device-package.sh', kind: 'executable' },
+            ],
+          },
+        }),
+        {
+          deployDir: '/opt/hermes-web-ui',
+          webUiHome: '/var/lib/hermes-web-ui',
+          uploadDir: '/var/lib/hermes-web-ui/uploads',
+          hermesHome: '',
+        },
+        'task-reconcile',
+      )
+      expect(env.HERMES_WEB_UI_UPDATE_VERSION).toBe('0.7.22')
+      expect(env.HERMES_WEB_UI_UPDATE_TASK_ID).toBe('task-reconcile')
+      expect(env.HERMES_WEB_UI_STATE_DIR).toBe('/var/lib/hermes-web-ui')
+      expect(env.HERMES_WEB_UI_UPDATE_AUTO_INSTALL_DEPENDENCIES).toBe('false')
+      expect(env.HERMES_WEB_UI_UPDATE_INCLUDE_AGENT_UPGRADE).toBe('false')
+      expect(env.HERMES_WEB_UI_UPDATE_PACKAGE_ARCHIVE).toBeUndefined()
+      const parsed = JSON.parse(env.HERMES_WEB_UI_UPDATE_MANIFEST_ENV_JSON)
+      expect(parsed.requiredNodeRange).toBe('>=23.0.0')
+      expect(parsed.requiredSystemFiles[0]).toEqual({
+        path: 'scripts/install-device-package.sh',
+        kind: 'executable',
+      })
+    })
+
+    it('emits empty MANIFEST_ENV_JSON object when manifest has no environment block', () => {
+      const env = buildDevicePackageReconcileEnv(
+        createUpdateConfig(),
+        { PATH: '/usr/bin' },
+        createManifest({ version: '0.7.23' }),
+        {
+          deployDir: '/opt/hermes-web-ui',
+          webUiHome: '/var/lib/hermes-web-ui',
+          uploadDir: '/var/lib/hermes-web-ui/uploads',
+          hermesHome: '',
+        },
+        'task-empty',
+      )
+      expect(env.HERMES_WEB_UI_UPDATE_MANIFEST_ENV_JSON).toBe('{}')
+    })
+
+    it('does NOT include MANIFEST_ENV_JSON in normal install env', () => {
+      const env = buildDevicePackageInstallEnv(
+        createUpdateConfig(),
+        { PATH: '/usr/bin' },
+        createManifest({
+          version: '0.7.24',
+          environment: {
+            requiredNodeRange: '>=23.0.0',
+          },
+        }),
+        '/tmp/art.tar.gz',
+        {
+          deployDir: '/opt/hermes-web-ui',
+          webUiHome: '/var/lib/hermes-web-ui',
+          uploadDir: '/var/lib/hermes-web-ui/uploads',
+          hermesHome: '',
+        },
+        'task-install',
+      )
+      expect(env.HERMES_WEB_UI_UPDATE_MANIFEST_ENV_JSON).toBeUndefined()
+    })
   })
 })

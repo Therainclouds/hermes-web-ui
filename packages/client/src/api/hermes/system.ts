@@ -29,6 +29,22 @@ export interface HealthResponse {
     pid?: number
     error?: string
   }
+  environment?: {
+    status: 'ok' | 'drift_detected' | 'unavailable'
+    capturedAt?: string | null
+    manifestVersion?: string | null
+    actualVersion?: string | null
+    nodeVersion?: string | null
+    agentVersion?: string | null
+    drift?: Array<{
+      gate: 'requiredNodeRange' | 'requiredHermesAgentRange' | 'requiredSystemFiles' | 'installerScriptSha256'
+      expected: string
+      actual: string
+      detail?: string
+    }>
+    reconcileSupported?: boolean
+    checkedAt?: string | null
+  }
 }
 
 export type UpdateTaskStatus = 'idle' | 'queued' | 'running' | 'succeeded' | 'failed'
@@ -574,4 +590,34 @@ export async function removeCustomModel(data: {
   return request<{ success: boolean; custom_models: CustomModels }>(`/api/hermes/custom-model?${params.toString()}`, {
     method: 'DELETE',
   })
+}
+
+export type EnvironmentStatus = 'ok' | 'drift_detected' | 'unavailable'
+
+export interface EnvironmentDriftEntry {
+  gate: 'requiredNodeRange' | 'requiredHermesAgentRange' | 'requiredSystemFiles' | 'installerScriptSha256'
+  expected: string
+  actual: string
+  detail?: string
+}
+
+export interface EnvironmentCheckResponse {
+  success: boolean
+  status: EnvironmentStatus
+  lastCapturedAt: string | null
+  manifestVersion: string | null
+  actualVersion: string | null
+  nodeVersion: string | null
+  agentVersion: string | null
+  drift: EnvironmentDriftEntry[]
+  reconcileSupported: boolean
+  checkedAt: string | null
+}
+
+export async function fetchUpdateEnvironment(): Promise<EnvironmentCheckResponse> {
+  return request<EnvironmentCheckResponse>('/api/hermes/update/environment', { method: 'GET' })
+}
+
+export async function reconcileUpdate(): Promise<{ success: boolean; status?: string; taskId?: string; message?: string }> {
+  return request('/api/hermes/update/reconcile', { method: 'POST' })
 }

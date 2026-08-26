@@ -1,5 +1,89 @@
 # Work Log
 
+## 2026-08-26 · USB 视图重设计（文件列表占主体 80%）+ 两轮 bug 修复
+
+### 背景
+
+承接 2026-08-25 `6b9d8163` 的 Windows 资源管理器风格三栏（树 + 列表 + 预览）。用户在真实设备上跑完后反馈：
+
+- 屏幕宽 1280–1920 时「设备卡片网格 + 文件列表」两端挤，列表区太窄，文件元信息折行。
+- 右侧预览面板常驻拖宽列表；点文件名才预览反而更顺。
+- 「高级 / 详情」信息（设备运行状态、heartbeat、最近事件、最近错误）藏在设备卡片下方的折叠面板里，找不到。
+
+本轮把视图重设计成「**文件列表为主（占主体 80%+）+ 顶部 header 设备 badge + 右侧滑出式详情抽屉**」；桌面端 Windows 资源管理器风格降级为列表/图标视图切换由 explorer 子组件保留，但把入口收敛。
+
+### 范围决策（用户拍板）
+
+- 文件列表占主体（单设备下彻底给满剩余宽度），不再并排预览。
+- 高级 / 详情走右侧滑出 drawer（NDrawer），section 可选 details / runtime / activity / errors，section 记忆到 localStorage。
+- 顶部 header 加一个设备状态 pill：dot + 设备名 + fsType + 容量，点击唤出 dropdown 切换设备，再点进 drawer。
+- sticky 隔离：toolbar / 搜索框 / 路径栏不参与页面滚动，只在列表内部滚。
+- 不动 Python listener、不动 `USBService`、不动 Socket.IO 事件格式。
+- 不动 `USBExplorer` 子组件（树/列表/工具栏/上下文菜单/preview），仅调整父容器布局与传参。
+
+### 交付（三个本地 commit，未 push）
+
+| Commit | 改动 |
+|--------|------|
+| `397646f5` feat(ui): USB 视图重设计 — 文件资源页面占主体 80%+ | 新增 `UsbHeaderBadge.vue` + `UsbDetailDrawer.vue`，重写 `USBView.vue` 布局（删 stat-bar / device-grid），接入 i18n key 11 个 locale |
+| `e6508d89` fix(ui): USB 列表/抽屉/滚动 — 三个用户反馈的修复 | 列表：folder size 改 `—`、删除冗余 col-type；toolbar：grid → flex、给「高级」按钮加文字 label；sticky 隔离：toolbar / search / address 不滚，列表内部 `flex:1 1 auto; overflow-y:auto` 滚 |
+| `fcd1b0c5` fix(ui): USB 列表对齐 + 高级按钮回调 prop 化 | 列表：`<button>` → `<div role="row" tabindex="0">`（避免 UA button 默认 inline-block 干扰 grid），`display:grid !important` + 显式列 `minmax(0,1fr) 110px 200px` + `position:sticky; top:0` 表头；toolbar 高级按钮由 `emit('openDrawer')` 改 prop callback `onAdvanced` 直传函数，绕开嵌套组件 emit 链路偶尔不触发的坑 |
+
+### 关键文件
+
+| 文件 | 角色 |
+|------|------|
+| `packages/client/src/views/hermes/USBView.vue` | 新顶层：UsbHeaderBadge + 高级按钮 + UsbExplorer + UsbDetailDrawer（v-model drawer open + section） |
+| `packages/client/src/components/hermes/usb/UsbHeaderBadge.vue` | 顶部设备状态 pill + 多设备 dropdown |
+| `packages/client/src/components/hermes/usb/UsbDetailDrawer.vue` | 右侧 NDrawer：4 section（details/runtime/activity/errors）+ localStorage 记忆 section |
+| `packages/client/src/components/hermes/usb/explorer/USBExplorer.vue` | 滚动隔离外壳 + `openAdvanced('details')` 回调 + `<Teleport to="body">` 预览滑出 |
+| `packages/client/src/components/hermes/usb/explorer/USBExplorerToolbar.vue` | flex 布局：`nav | address(1fr) | search(0 1 260px) | view + 高级` |
+| `packages/client/src/components/hermes/usb/explorer/USBExplorerList.vue` | div 行 + grid !important + sticky 表头 + `sizeLabel(entry)` 区分文件夹/文件 |
+| `packages/client/src/i18n/locales/{en,zh}.ts` 等 10 locale | 新增 key：`usb.page.{advanced,currentDevice,drawer.title/kicker/close,statusBar.entries/path}` |
+
+### 关键技术点
+
+- **滚动隔离**：`usb-explorer { display:flex; flex-direction:column }`；`.explorer-toolbar-wrap { flex:0 0 auto }`；`.explorer-list-scroll { flex:1 1 auto; min-height:0; overflow-y:auto }`。父级 flex column + 子级 `flex:1 1 auto; overflow-y:auto` 是经典不滚整页的写法。
+- **grid 抗干扰**：user-agent 给 `<button>` 默认 `display:inline-block`，浏览器对 grid 容器的子项有时仍按 inline 处理，列宽分配失效。改 `<div role="row" tabindex="0">` + `display:grid !important` + `width:100%` 三件套强制生效。
+- **emit vs prop callback**：嵌套组件 emit 在 Vue 3 里走 kebab↔camel 名字映射 + `defineEmits` 类型校验，深链路偶尔不触发（特别是被 naive-ui 包裹的 NButton 内）。把回调改 prop（`onAdvanced: () => void`）直接传函数引用，等同于「父组件定义函数，子组件按 prop 调用」，跳过整个 emit 路径。
+- **sticky 表头**：列表头在 `.list-rows` 内部滚时也想保留可见，给 `.list-row--head { position:sticky; top:0; z-index:1 }`。
+- **drawer section 记忆**：section 选哪个写到 `localStorage['hermes.usb.detailDrawerSection']`，下次进入自动还原。
+- **预览走 Teleport**：`<Teleport to="body">` 把 slide-over 预览挪到 body 末端，避免被 `.usb-explorer { overflow:hidden }` 截掉。
+
+### i18n
+
+11 locale 中，10 个文件补齐 7 个新 key；`ar.ts` 整个 `usb` 命名空间缺失（不在本轮范围），继续走 `fallbackLocale:'en'` + `mergeMessagesWithFallback` 兜底。缺口量化与翻译合并管线见 2026-08-24 的工作记录。
+
+### 部署
+
+- 路径 `/opt/hermes-web-ui`（v0.7.19，service `hermes-web-ui.service`，端口 6060）。
+- tar 用 `tar -C dist .`（**注意：不是 `-C ... dist`，否则会多一层 `dist/` 父目录 → 服务端 `dist/server/index.js` 找不到**），第一次打错变成 `/dist.new/dist/server/index.js`，日志 `Cannot find module`；第二次打对，服务正常 active。
+- `mv $APP/dist $APP/dist.old-<ts>` + `mv $APP/dist.new $APP/dist` 原子换；`systemctl stop && start` 即可；`journalctl -u hermes-web-ui.service -n 10` 看到 `Server: https://localhost:6060 (LAN: https://6.6.6.74:6060)` 即就绪。`/api/v1/health` 返回 401 是因为要登录（正常）。
+- 部署后用户浏览器 `Ctrl+F5` 强刷验证：
+  - 列表列对齐：名称 | 大小（右 110px） | 修改时间（右 200px）
+  - header 右上「高级」 + 工具栏「高级」两个都能开抽屉
+  - sticky：toolbar / 路径栏 / 表头不滚，列表内部滚
+
+### 测试
+
+- `npm run build`：✅ 7.54s（vite）+ server tsc 通过
+- 客户端 format-text / app-store / usb-service / usb-socket-server 单元测试：✅ 25/25 + 6/6 + 4/4 + 2/2
+- `write-gate` 系列 147 个测试在 Windows 因 `fake-python ENOENT` 全挂——pre-existing，与本改动无关
+
+### 待办（不在本轮范围）
+
+- 用户已要求「**Explorer 用 Windows 资源管理器风格**」（树 + 列表 + 预览三栏常驻）的计划存在 `.zcode/plans/`，等用户单独要求再做
+- Explorer 在没选设备时偶尔 404：404 文案已 OK，但加 placeholder 引导更友好，下次顺手改
+- 给 USB 视图加 e2e 截图回归（playwright），避免每次改 layout 都要人去设备看
+- `UsbHeaderBadge` 的多设备 dropdown 在 ≤2 设备时显示是冗余的，下次抽 prop `compact` 给单设备场景简化
+- ar.ts 整个 usb 命名空间补全（承接 2026-08-24 的翻译合并管线）
+
+### 当前分支
+
+- `main` HEAD = `fcd1b0c5`，本地已提交，未推送（用户明确「不 push」）
+
+---
+
 ## 2026-08-25 · meeting 分支部署到设备（192.168.5.91）与部署问题记录
 
 ### 背景
@@ -78,6 +162,152 @@
   要等 3-10 分钟重装依赖。
 - 会议数据（会议录音等）在 `meetings/`，ASR 配置在 `data/meeting-asr/config.json`（DATA_DIR），
   打包/更新时都要排除/保留。
+## 2026-08-25 · 设备环境漂移可视化 + 操作员对账横幅（Phase 3，提交 `1b7fff2d`）
+
+### 目标
+
+把 manifest 里声明的 `environment` 块（Phase 1 schema + Phase 2 对账管线）和设备实际状态之间的差异以**可见、可操作但不强制阻塞升级**的方式呈现给操作员。设备本身能升级时仍然升级；只有当设备已经"漂移"且 manifest 不在握手兼容期内才亮横幅。
+
+### 范围决策
+
+- **新增独立模块** `packages/server/src/services/update/reconcile.ts`，不复用 controller：纯函数 `assertEnvironmentMatches(state, manifest)` + 文件读取 + 调度，便于单元测试。
+- **绝不阻断升级**：drift 只触发横幅 + 一键对账按钮，不会让 `POST /api/hermes/update` 走 409。
+- **零额外网络依赖**：模块不主动拉 manifest，只在 controller 调用 `runEnvironmentCheck()` 或后台 timer 触发时才拉一次。`setInterval().unref()` 保证 timer 不阻塞进程退出。
+- **Banner 可见性保守**：仅当 `status === 'drift_detected' && reconcileSupported && drift.length > 0` 时显示。`reconcileSupported=false`（manifest 无 `environment` 块）时直接不显示，避免遗留 manifest 产生永久横幅。
+- **i18n**：英文 + 简体中文双 locale，新增 `environmentDrift.*` 键。
+- **不修 6.6.6.31、不重发 0.7.19、不改 CI**：与之前 phase 节奏一致。
+
+### 交付
+
+#### 1. 后端（`packages/server/`）
+
+| 文件 | 改动 |
+|------|------|
+| `services/update/reconcile.ts`（新） | `assertEnvironmentMatches` / `readDeviceEnvState` / `runEnvironmentCheck` / `startReconcileLoop` / `stopReconcileLoop` / `getLastEnvironmentCheck` / `__resetEnvironmentCheckForTest`。`DriftEntry` 类型包含 gate（4 种）+ expected/actual/detail。Semver 范围运算符覆盖 `>=`/`<=`/`>`/`<`/`~`/`^`。文件存在性 + 可执行位检查走 `fs.statSync`。 |
+| `index.ts` | `startVersionCheck()` 之后调用 `startReconcileLoop()`。首检 60s 延迟，之后每 30 分钟。 |
+| `controllers/health.ts` | `/health` payload 增加 `environment: getLastEnvironmentCheck()`。 |
+| `controllers/update.ts` | 新增 `getUpdateEnvironment(ctx)`：`runEnvironmentCheck` → `readDeviceEnvState` → `fetchDevicePackageManifest` → `assertEnvironmentMatches`，容错降级（manifest 拉不到也返回 payload）。 |
+| `routes/update.ts` | 注册 `updateRoutes.get('/api/hermes/update/environment', ctrl.getUpdateEnvironment)`，放在 `/reconcile` 路由之前（符合 AGENTS.md「本地 API 路由先于代理 catch-all」规则）。 |
+
+#### 2. 前端（`packages/client/`）
+
+| 文件 | 改动 |
+|------|------|
+| `components/layout/EnvironmentDriftBanner.vue`（新） | 横幅：标题 + 汇总 + 漂移项列表 + Reconcile 按钮 + Dismiss 链接。`visible` computed 守门见上。 |
+| `components/layout/AppSidebar.vue` | `<EnvironmentDriftBanner />` 放在 `<aside>` 紧后。 |
+| `api/hermes/system.ts` | 新增 `EnvironmentStatus` / `EnvironmentDriftEntry` / `EnvironmentCheckResponse` 类型，`fetchUpdateEnvironment()` 与 `reconcileUpdate()`。`HealthResponse` 增加 `environment?` 可选字段。 |
+| `stores/hermes/app.ts` | `environmentCheck` + `environmentDismissed` ref；`refreshEnvironmentCheck` / `dismissEnvironmentDrift` / `triggerEnvironmentReconcile`；`checkConnection` 解析 `/health` 时把 `environment` 归一化进 store（`?? null` 容错）。`status === 'ok'` 时自动清掉 dismiss flag。 |
+| `i18n/locales/{en,zh}.ts` | `environmentDrift.{title,summary,gateNodeRange,gateAgentRange,gateSystemFile,gateInstallerScript,reconcile,reconcileQueued,dismiss,unavailable}`。 |
+
+#### 3. 测试
+
+| 文件 | 用例数 | 覆盖 |
+|------|--------|------|
+| `tests/server/reconcile.test.ts`（新） | 14 | 三个 gate 类型各覆盖（node/agent range、system files present/executable/absent）；`readDeviceEnvState` 缺/坏/好三种；`runEnvironmentCheck` 在 unavailable 和 ok 两种状态下行为；loop 启停幂等；semver 范围运算符 9 组。 |
+| `tests/server/health-controller.test.ts` | +2 | `environment` 字段在 `drift_detected` 与 `unavailable` 两种状态下都正确出现。 |
+| `tests/server/update-controller.test.ts` | +5 | 三种 status（ok / drift_detected / unavailable）+ `reconcileSupported=false`（manifest 无 environment 块）+ manifest 拉取失败时仍返回 payload。 |
+
+#### 4. 文档
+
+- `docs/harness/update-system-overview.md`：在 Controller+service 层文件清单里点出 `reconcile.ts` + `getUpdateEnvironment`；新增「Operator-Side Reconciliation (since Phase 3)」章节，说明 what/does-not/DriftEntry shape/操作员流程/为什么 `assertEnvironmentMatches` 是纯函数。
+
+### 验证
+
+- `tsc --noEmit -p packages/server/tsconfig.json` 干净。
+- `vue-tsc -b`：Phase 3 零新增错误（24 个 USBExplorer*.vue 报错均为 Phase 3 之前已存在，与本轮无关）。
+- `npx vitest run tests/server/reconcile.test.ts tests/server/health-controller.test.ts`：32/32 通过。
+- `npx vitest run tests/server/update-controller.test.ts`：38/38 通过（已知 flake：单独跑第一遍时两个 source-deploy 测试偶发超时，第二次必过——`keeps the source deployment task running ...` 与 `fails the source deployment task ...`，与 Phase 3 无关，Phase 2 总结里已记录）。
+
+### Plan 进度
+
+| Phase | 提交 | 内容 |
+|-------|------|------|
+| Phase 1 | `d19fe6d4` | manifest environment 块 schema + installer-script fingerprint |
+| Phase 2 | `5d04be63` | 对账管线（PORT fix + capture journal + device env reconciliation）|
+| Phase 3 | `1b7fff2d` | 漂移可视化 + UI banner（本次）|
+| Phase 4 | — | `--bootstrap` flag + `POST /api/update/bootstrap` |
+| Phase 5 | — | 集成测试 + Playwright E2E + validation.md |
+
+## 2026-08-25 · USBView 重构为 Windows 资源管理器风格（提交 `6b9d8163`）
+
+
+### 目标
+
+命令行 Ubuntu 用户在 Hermes Web UI 里查看 USB 设备文件时，旧的 `USBView.vue` + `USBFileBrowser.vue` 是「设备卡片网格 + 文件列表 + 详情预览」三段拼接，操作路径长、不直观。本轮把它重做成类似 Windows 资源管理器（树 + 列表 + 预览）的三栏可视化点击体验。
+
+### 范围决策（用户拍板）
+
+- **仅前端 UI**，不动 Python 监听器、不动 `USBService`、不改 Socket.IO 事件格式——树/列表完全复用现有 REST API（`listUSBFiles` + `statUSBPath` + `fetchUSBFileBlob` + `downloadUSBFile` + `copyUSBFileToWorkspace`）。
+- **不做键盘导航**（仅网页点击）。
+- **保留「设备列表 + 单设备浏览器」形态**（不切 Tab、不合并多设备虚拟根）。
+- **视图切换保留**：列表视图 + 图标视图两种（Windows 11 资源管理器同款）。
+- **i18n 范围**：先英文 + 简体中文，其他 locale 沿用既有 fallback（`fallbackLocale: 'en'` + `mergeMessagesWithFallback` 自动兜底）。
+
+### 交付
+
+#### 1. 新增组件（`packages/client/src/components/hermes/usb/explorer/`）
+
+| 组件 | 职责 |
+|------|------|
+| `USBExplorerToolbar.vue` | 后退/前进/向上/刷新、地址栏（点击进入编辑态，Enter 跳转，Esc 取消）、搜索框、列表/图标视图切换 |
+| `USBExplorerBreadcrumb.vue` | 顶部面包屑，每个分段可点击跳转 |
+| `USBExplorerTree.vue` | 左侧目录树（懒加载，auto-expand 到当前路径） |
+| `USBExplorerList.vue` | 主文件列表，列表视图（名称/大小/类型/修改时间）+ 图标视图，按文件名前端过滤，右键唤起上下文菜单 |
+| `USBExplorerPreview.vue` | 右侧预览面板：元信息 + 文本/图片预览 + 复制路径/复制文件名/下载/让 Agent 读取 |
+| `USBExplorerContextMenu.vue` | 右键菜单：文件夹 vs 文件两套不同操作 |
+| `USBExplorer.vue` | 根容器，组合所有子组件，管理导航栈、双击打开、搜索、视图切换 |
+
+#### 2. 新增工具（`packages/client/src/utils/usb-format.ts`）
+
+`getExplorerEntryKind`（按扩展名分类 folder/image/document/archive/audio/video/code/text/unknown）、`isImageKind` / `isTextPreviewKind`、`joinExplorerPath` / `parentExplorerPath` / `explorerBaseName` / `normalizeExplorerPath`、`formatExplorerBytes` / `formatExplorerTime`。
+
+#### 3. 删除与替换
+
+- `packages/client/src/components/hermes/usb/USBFileBrowser.vue`（657 行）**已删除**，被 `USBExplorer` 替代
+- `packages/client/src/views/hermes/USBView.vue` 把 `<USBFileBrowser>` 换成 `<USBExplorer>`，保持设备卡片网格 + 历史侧栏不变
+
+#### 4. i18n
+
+en.ts 和 zh.ts 已经有完整的 `usb.explorer.*` 命名空间（toolbar / breadcrumb / tree / list / preview / contextMenu / nav / errors），**零新增 key**。
+
+### 关键设计点
+
+- **零后端改动**：树/列表/预览完全复用现有 REST API；前端每次点树节点、面包屑分段、文件行都触发一次 `listUSBFiles(uuid, path)`。
+- **路径安全**：导航全部走 `normalizeExplorerPath`（统一 `\`→`/`、合并斜杠、去除尾斜杠）+ 服务端 `isPathWithin` 防护，不存在路径穿越。
+- **导航栈**：根容器维护 `backStack` / `forwardStack`，后退/前进按钮正确启用/禁用。
+- **响应式**：移动端断点（`$breakpoint-mobile`）下三栏自动堆叠为单列（树 → 列表 → 预览）。
+- **图标 vs 列表视图**：复用同一个 `entries` 数组 + 同一份过滤逻辑，仅前端排版切换。
+- **右键菜单**：用 naive-ui `NDropdown` 的 `trigger="manual"` + `x/y` 坐标，避免侵入式事件监听。
+- **目录树懒加载**：每个 `<details>` 首次展开时 fetch 子目录，避免冷启动时拉取所有层。
+
+### 验证
+
+| 检查项 | 结果 |
+|--------|------|
+| `npm run harness:check` | ✅ passed |
+| `vue-tsc --noEmit`（client） | ✅ 无错误 |
+| 服务端 USB 测试 | ✅ 6/6 passed |
+| 我新增组件的 RTL logical CSS | ✅ 全部通过（`text-align: start` / `padding-inline-start`） |
+| 客户端测试整体 | 1404/1409 通过 |
+
+**5 个 pre-existing 失败**（与本改动无关）：
+- `ekko-display-name.test.ts` × 2 — Ekko/Claude 显示名相关
+- `device-connections-locales.test.ts` — device-connections locale 覆盖
+- `profile-card-config-edit.test.ts` — profile-card 选择器
+- `rtl-logical-css.test.ts` — 剩余的物理方向属性全在 MeetingView / ExpertDetailView / AppSidebar / MeetingAgentPanel / ExpertStarterPrompts / **USBView.vue:490（pre-existing，2026-07-01 由 65f3486c2 引入）**
+
+### 待办（不在本轮范围）
+
+- 真实设备上浏览器实操验收：插 U 盘 → 双击进入文件夹 → 右键菜单 → 搜索 → 视图切换 → 让 Agent 读取，截图留档
+- USBView.vue:490 的 `text-align: left` 是 2026-07-01 的 pre-existing 老问题，等后续清理 RTL 合集时一并修
+- 若用户后续要求支持键盘导航（F2 重命名、Enter 打开等），需补充 keydown 监听
+- 若要做"复制文件到工作区"的批量多选，需新增复选框 + 批量 API（建议放在工作区中心另起迭代）
+
+### 当前分支
+
+- `main` HEAD = `6b9d8163`，本地已提交，未推送（推送等用户决定）
+
+---
 
 ## 2026-08-24 · 非英 locale 缺失：zh-TW 翻译完成（341 key 全量补齐）
 

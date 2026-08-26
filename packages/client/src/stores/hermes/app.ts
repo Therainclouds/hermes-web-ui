@@ -1,11 +1,14 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import { clampMessageForUi } from '@/utils/format-text'
 import {
   checkHealth,
   clearStaleUpdateStatus as clearStaleUpdateStatusRequest,
   fetchAvailableModels,
   fetchUpdateCapabilities,
   fetchUpdateStatus,
+  fetchUpdateEnvironment,
+  reconcileUpdate as reconcileUpdateRequest,
   addCustomModel as persistCustomModel,
   removeCustomModel as deletePersistedCustomModel,
   triggerUpdate,
@@ -14,6 +17,7 @@ import {
   updateModelAlias,
   type AvailableModelGroup,
   type AvailableModelsResponse,
+  type EnvironmentCheckResponse,
   type UpdateStatusResponse,
   type UpdateTaskRecord,
   type UpdateTaskStage,
@@ -52,6 +56,8 @@ export const useAppStore = defineStore('app', () => {
   const updateChannel = ref('')
   const updateStrategy = ref('')
   const updatePackageType = ref('')
+  const environmentCheck = ref<EnvironmentCheckResponse | null>(null)
+  const environmentDismissed = ref(false)
   const clientOutdated = ref(false)
   const updating = ref(false)
   const updateTaskId = ref('')
@@ -111,9 +117,9 @@ export const useAppStore = defineStore('app', () => {
     updateTaskId.value = task.id
     updateTaskStatus.value = task.status
     updateTaskStage.value = task.stage
-    updateTaskMessage.value = task.message || ''
+    updateTaskMessage.value = clampMessageForUi(task.message)
     updateTaskWarning.value = task.warning || ''
-    updateTaskError.value = task.error || ''
+    updateTaskError.value = clampMessageForUi(task.error)
     updating.value = task.status === 'queued' || task.status === 'running'
   }
 
@@ -144,6 +150,30 @@ export const useAppStore = defineStore('app', () => {
       return task
     } catch {
       return null
+    }
+  }
+
+  async function refreshEnvironmentCheck() {
+    try {
+      const res = await fetchUpdateEnvironment()
+      environmentCheck.value = res
+      if (res.status === 'ok') environmentDismissed.value = false
+    } catch {
+      environmentCheck.value = null
+    }
+  }
+
+  function dismissEnvironmentDrift() {
+    environmentDismissed.value = true
+  }
+
+  async function triggerEnvironmentReconcile(): Promise<boolean> {
+    try {
+      await reconcileUpdateRequest()
+      environmentDismissed.value = false
+      return true
+    } catch {
+      return false
     }
   }
 
@@ -262,6 +292,21 @@ export const useAppStore = defineStore('app', () => {
       updateAvailable.value = !!res.webui_update_available
       if (res.node_version) nodeVersion.value = res.node_version
       isDocker.value = !!res.is_docker
+      if (res.environment) {
+        environmentCheck.value = {
+          success: true,
+          status: res.environment.status,
+          lastCapturedAt: res.environment.capturedAt ?? null,
+          manifestVersion: res.environment.manifestVersion ?? null,
+          actualVersion: res.environment.actualVersion ?? null,
+          nodeVersion: res.environment.nodeVersion ?? null,
+          agentVersion: res.environment.agentVersion ?? null,
+          drift: res.environment.drift ?? [],
+          reconcileSupported: res.environment.reconcileSupported ?? false,
+          checkedAt: res.environment.checkedAt ?? null,
+        }
+        if (res.environment.status === 'ok') environmentDismissed.value = false
+      }
       await refreshUpdateCapabilities()
     } catch {
       connected.value = false
@@ -603,5 +648,10 @@ export const useAppStore = defineStore('app', () => {
     stopHealthPolling,
     checkUpdateStatus,
     refreshUpdateCapabilities,
+    environmentCheck,
+    environmentDismissed,
+    refreshEnvironmentCheck,
+    dismissEnvironmentDrift,
+    triggerEnvironmentReconcile,
   }
 })

@@ -9,6 +9,8 @@ import { UpdateError } from './errors'
 import { describeUpdateNetworkError, fetchUpdateJson } from './network-client'
 import { parseSemver } from './version-compare'
 import type {
+  DeviceEnvironment,
+  DeviceEnvironmentFile,
   DevicePackageManifest,
   ManifestUpdateInfo,
   SourcePackageManifest,
@@ -40,6 +42,7 @@ interface RawManifestPayload {
   sourceSize?: unknown
   installerScriptPath?: unknown
   installerScriptSha256?: unknown
+  environment?: unknown
 }
 
 function toPackageType(value: unknown, fallback: UpdatePackageType): UpdatePackageType {
@@ -238,6 +241,7 @@ export async function fetchDevicePackageManifest(update: UpdateConfig = config.u
     installerScriptSha256: typeof payload.installerScriptSha256 === 'string' && payload.installerScriptSha256.trim()
       ? payload.installerScriptSha256.trim().toLowerCase()
       : undefined,
+    environment: normalizeEnvironment(payload.environment),
   }
 }
 
@@ -245,6 +249,39 @@ function normalizeInstallerScriptPath(raw: string): string | undefined {
   const trimmed = raw.trim().replace(/\\/g, '/').replace(/^\/+/, '')
   if (!trimmed || trimmed.includes('..') || trimmed.includes('\0')) return undefined
   return trimmed
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function normalizeEnvironment(value: unknown): DeviceEnvironment | undefined {
+  if (!isPlainObject(value)) return undefined
+  const requiredNodeRange = typeof value.requiredNodeRange === 'string' && value.requiredNodeRange.trim()
+    ? value.requiredNodeRange.trim()
+    : undefined
+  const requiredHermesAgentRange = typeof value.requiredHermesAgentRange === 'string' && value.requiredHermesAgentRange.trim()
+    ? value.requiredHermesAgentRange.trim()
+    : undefined
+  let requiredSystemFiles: DeviceEnvironmentFile[] | undefined
+  if (Array.isArray(value.requiredSystemFiles)) {
+    const normalised: DeviceEnvironmentFile[] = []
+    for (const entry of value.requiredSystemFiles) {
+      if (!isPlainObject(entry) || typeof entry.path !== 'string' || !entry.path.trim()) continue
+      const kind: DeviceEnvironmentFile['kind'] = entry.kind === 'executable' || entry.kind === 'absent'
+        ? entry.kind
+        : 'present'
+      normalised.push({ path: entry.path.trim(), kind })
+    }
+    if (normalised.length > 0) requiredSystemFiles = normalised
+  }
+
+  const environment: DeviceEnvironment = {}
+  if (requiredNodeRange) environment.requiredNodeRange = requiredNodeRange
+  if (requiredHermesAgentRange) environment.requiredHermesAgentRange = requiredHermesAgentRange
+  if (requiredSystemFiles) environment.requiredSystemFiles = requiredSystemFiles
+  if (Object.keys(environment).length === 0) return undefined
+  return environment
 }
 
 export async function fetchSourcePackageManifest(update: UpdateConfig = config.update): Promise<SourcePackageManifest> {
@@ -291,6 +328,7 @@ export async function fetchSourcePackageManifest(update: UpdateConfig = config.u
     healthcheckUrl: typeof payload.healthcheckUrl === 'string' && payload.healthcheckUrl.trim()
       ? payload.healthcheckUrl.trim()
       : update.healthcheckUrl,
+    environment: normalizeEnvironment(payload.environment),
   }
 }
 

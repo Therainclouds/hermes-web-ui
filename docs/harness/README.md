@@ -19,6 +19,8 @@ agent can discover without chat history.
 - `docs/harness/upstream-sync-runbook.md` documents the standard upstream sync path to `main`.
 - `docs/harness/worktree-runbook.md` explains isolated worktree development.
 - `docs/harness/pr-review.md` provides a PR self-review checklist.
+- `docs/harness/update-system-overview.md` maps the device update pipeline and lists real production incidents.
+- `docs/harness/update-reconciliation-plan.md` is the five-phase plan for environment reconciliation. Specs per phase live under `.zcode/plans/update-reconciliation-phase*.md`.
 - `scripts/harness-check.mjs` enforces baseline repository invariants.
 
 ## Operating Model

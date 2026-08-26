@@ -15,6 +15,7 @@ import { bindShutdown } from './services/shutdown'
 import { setupTerminalWebSocket } from './routes/hermes/terminal'
 import { setupKanbanEventsWebSocket } from './routes/hermes/kanban-events'
 import { startVersionCheck } from './routes/health'
+import { startReconcileLoop } from './services/update/reconcile'
 import { registerRoutes } from './routes'
 import { setGroupChatServer } from './routes/hermes/group-chat'
 import { setChatRunServer } from './routes/hermes/chat-run'
@@ -609,6 +610,7 @@ const interfaces = safeNetworkInterfaces()
 
   desktopShutdownHandler = bindShutdown(servers, groupChatServer, chatRunServer, agentBridgeManager, usbSocketServer as any)
   startVersionCheck()
+  startReconcileLoop()
 }
 
 bootstrap().catch((error) => {

@@ -3450,6 +3450,17 @@ jobTriggered: 'Job ejecutado',
         failed: 'Failed to start Agent reading',
         readPrompt: 'Please read the file "{path}" from the current workspace and display its contents directly.',
       },
+      advanced: 'Avanzado',
+      currentDevice: 'Dispositivo actual',
+      drawer: {
+        title: 'Detalles y actividad',
+        kicker: 'Inspector USB',
+        close: 'Cerrar',
+      },
+      statusBar: {
+        entries: 'entradas',
+        path: 'Ruta',
+      },
       history: {
         title: 'Recent Activity',
         count: '{count} events',

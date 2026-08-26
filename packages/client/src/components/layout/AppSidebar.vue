@@ -9,6 +9,7 @@ import RouteLinkItem from '@/components/common/RouteLinkItem.vue'
 import ModelSelector from "@/components/layout/ModelSelector.vue";
 import ProfileSelector from "@/components/layout/ProfileSelector.vue";
 import LanguageSwitch from "@/components/layout/LanguageSwitch.vue";
+import EnvironmentDriftBanner from "@/components/layout/EnvironmentDriftBanner.vue";
 import ThemeSwitch from "@/components/layout/ThemeSwitch.vue";
 import VersionManagementModal from "@/components/layout/VersionManagementModal.vue";
 import { changelog } from "@/data/changelog";
@@ -435,6 +436,7 @@ function handleUpdateClick() {
         </span>
         <ThemeSwitch />
       </div>
+      <EnvironmentDriftBanner />
       <NButton
         v-if="isDesktopShell"
         type="primary"
@@ -579,6 +581,16 @@ function handleUpdateClick() {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.sidebar-update-label {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+  white-space: pre-wrap;
 }
 
 .sidebar-update-btn,
