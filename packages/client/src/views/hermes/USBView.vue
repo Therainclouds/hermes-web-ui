@@ -201,6 +201,7 @@ onMounted(() => {
           type="primary"
           ghost
           :title="t('usb.page.advanced')"
+          data-testid="usb-advanced-header"
           @click="openDrawer('details')"
         >
           {{ t('usb.page.advanced') }}

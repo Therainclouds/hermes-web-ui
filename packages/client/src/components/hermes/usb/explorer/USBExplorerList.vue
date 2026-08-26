@@ -28,9 +28,9 @@ const filteredEntries = computed(() => {
   return props.entries.filter(entry => entry.name.toLowerCase().includes(term))
 })
 
-function getKindLabel(entry: USBFileEntry) {
-  return entry.isDir ? t('usb.explorer.list.columnType') + ': ' + t('usb.page.browser.folder')
-    : t('usb.page.browser.file')
+function formatSizeCell(entry: USBFileEntry): string {
+  if (entry.isDir) return '—'
+  return formatExplorerBytes(entry.size)
 }
 
 function handleRowClick(entry: USBFileEntry, event: MouseEvent) {
@@ -48,7 +48,6 @@ function handleRowClick(entry: USBFileEntry, event: MouseEvent) {
       <div class="list-row list-row--head">
         <span class="col-name">{{ t('usb.explorer.list.columnName') }}</span>
         <span class="col-size">{{ t('usb.explorer.list.columnSize') }}</span>
-        <span class="col-type">{{ t('usb.explorer.list.columnType') }}</span>
         <span class="col-modified">{{ t('usb.explorer.list.columnModified') }}</span>
       </div>
       <NSpin :show="props.loading">
@@ -78,8 +77,7 @@ function handleRowClick(entry: USBFileEntry, event: MouseEvent) {
               </svg>
               <span class="row-name">{{ entry.name }}</span>
             </span>
-            <span class="col-size">{{ formatExplorerBytes(entry.size) }}</span>
-            <span class="col-type">{{ getKindLabel(entry) }}</span>
+            <span class="col-size">{{ formatSizeCell(entry) }}</span>
             <span class="col-modified">{{ formatExplorerTime(entry.modTime) }}</span>
           </button>
         </div>
@@ -147,7 +145,7 @@ function handleRowClick(entry: USBFileEntry, event: MouseEvent) {
 
 .list-row {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) 100px 80px minmax(0, 1.4fr);
+  grid-template-columns: minmax(0, 2fr) 110px minmax(0, 1.4fr);
   align-items: center;
   gap: 12px;
   padding: 8px 14px;
@@ -212,10 +210,10 @@ function handleRowClick(entry: USBFileEntry, event: MouseEvent) {
   white-space: nowrap;
 }
 
-.col-size,
-.col-type {
+.col-size {
   color: $text-muted;
   font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 .col-modified {
@@ -288,13 +286,11 @@ function handleRowClick(entry: USBFileEntry, event: MouseEvent) {
 
 @media (max-width: $breakpoint-mobile) {
   .list-row {
-    grid-template-columns: minmax(0, 2fr) 80px;
+    grid-template-columns: minmax(0, 2fr) 90px;
   }
-  .col-type,
   .col-modified {
     display: none;
   }
-  .list-row--head .col-type,
   .list-row--head .col-modified {
     display: none;
   }

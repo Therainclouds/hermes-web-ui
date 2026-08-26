@@ -251,38 +251,42 @@ watch(
 
 <template>
   <section class="usb-explorer">
-    <USBExplorerToolbar
-      :can-back="canBack"
-      :can-forward="canForward"
-      :can-up="canUp"
-      :search-value="searchTerm"
-      :address-value="addressValue"
-      :address-editing="addressEditing"
-      :view-mode="viewMode"
-      @back="navigateBack"
-      @forward="navigateForward"
-      @up="navigateUp"
-      @refresh="refreshCurrent"
-      @update:search="updateSearch"
-      @update:address="updateAddress"
-      @start-edit-address="startEditAddress"
-      @cancel-edit-address="cancelEditAddress"
-      @submit-address="submitAddress"
-      @toggle-view="toggleView"
-      @open-drawer="openDrawer"
-    />
+    <div class="explorer-toolbar-wrap">
+      <USBExplorerToolbar
+        :can-back="canBack"
+        :can-forward="canForward"
+        :can-up="canUp"
+        :search-value="searchTerm"
+        :address-value="addressValue"
+        :address-editing="addressEditing"
+        :view-mode="viewMode"
+        @back="navigateBack"
+        @forward="navigateForward"
+        @up="navigateUp"
+        @refresh="refreshCurrent"
+        @update:search="updateSearch"
+        @update:address="updateAddress"
+        @start-edit-address="startEditAddress"
+        @cancel-edit-address="cancelEditAddress"
+        @submit-address="submitAddress"
+        @toggle-view="toggleView"
+        @open-drawer="openDrawer"
+      />
+    </div>
 
-    <USBExplorerList
-      :entries="entries"
-      :loading="loading"
-      :selected-path="selectedEntry?.path || ''"
-      :view-mode="viewMode"
-      :search-term="searchTerm"
-      :error-message="errorMessage"
-      @select="handleSelect"
-      @open="handleOpen"
-      @context="handleContext"
-    />
+    <div class="explorer-list-scroll">
+      <USBExplorerList
+        :entries="entries"
+        :loading="loading"
+        :selected-path="selectedEntry?.path || ''"
+        :view-mode="viewMode"
+        :search-term="searchTerm"
+        :error-message="errorMessage"
+        @select="handleSelect"
+        @open="handleOpen"
+        @context="handleContext"
+      />
+    </div>
 
     <footer class="explorer-status-bar">
       <span class="status-item">
@@ -343,9 +347,40 @@ watch(
 .usb-explorer {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 0;
   min-height: 0;
   flex: 1;
+  background: $bg-card;
+  border: 1px solid $border-light;
+  border-radius: $radius-md;
+  overflow: hidden;
+}
+
+.explorer-toolbar-wrap {
+  flex: 0 0 auto;
+  border-bottom: 1px solid $border-light;
+}
+
+.explorer-list-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.explorer-list-scroll > * {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.explorer-list-scroll :deep(.usb-explorer-list),
+.explorer-list-scroll :deep(.list-table),
+.explorer-list-scroll :deep(.grid-view) {
+  border: none;
+  border-radius: 0;
+  background: transparent;
 }
 
 // ── Status bar (底部状态行) ─────────────────────────────────────────
