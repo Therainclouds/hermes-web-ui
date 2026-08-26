@@ -28,7 +28,7 @@ const filteredEntries = computed(() => {
   return props.entries.filter(entry => entry.name.toLowerCase().includes(term))
 })
 
-function formatSizeCell(entry: USBFileEntry): string {
+function sizeLabel(entry: USBFileEntry): string {
   if (entry.isDir) return '—'
   return formatExplorerBytes(entry.size)
 }
@@ -58,13 +58,15 @@ function handleRowClick(entry: USBFileEntry, event: MouseEvent) {
           <NEmpty :description="t('usb.explorer.list.empty')" size="small" />
         </div>
         <div v-else class="list-rows">
-          <button
+          <div
             v-for="entry in filteredEntries"
             :key="entry.path"
-            type="button"
             class="list-row"
             :class="{ active: props.selectedPath === entry.path }"
+            role="row"
+            tabindex="0"
             @click="handleRowClick(entry, $event)"
+            @keydown.enter="emit('open', entry)"
             @contextmenu.prevent="emit('context', $event, entry)"
           >
             <span class="col-name">
@@ -77,9 +79,9 @@ function handleRowClick(entry: USBFileEntry, event: MouseEvent) {
               </svg>
               <span class="row-name">{{ entry.name }}</span>
             </span>
-            <span class="col-size">{{ formatSizeCell(entry) }}</span>
+            <span class="col-size">{{ sizeLabel(entry) }}</span>
             <span class="col-modified">{{ formatExplorerTime(entry.modTime) }}</span>
-          </button>
+          </div>
         </div>
       </NSpin>
     </div>
@@ -93,13 +95,15 @@ function handleRowClick(entry: USBFileEntry, event: MouseEvent) {
           <NEmpty :description="t('usb.explorer.list.empty')" size="small" />
         </div>
         <div v-else class="grid-tiles">
-          <button
+          <div
             v-for="entry in filteredEntries"
             :key="entry.path"
-            type="button"
             class="grid-tile"
             :class="{ active: props.selectedPath === entry.path }"
+            role="row"
+            tabindex="0"
             @click="handleRowClick(entry, $event)"
+            @keydown.enter="emit('open', entry)"
             @contextmenu.prevent="emit('context', $event, entry)"
           >
             <span class="tile-icon">
@@ -115,7 +119,7 @@ function handleRowClick(entry: USBFileEntry, event: MouseEvent) {
             <span class="tile-meta">
               {{ entry.isDir ? t('usb.page.browser.folder') : formatExplorerBytes(entry.size) }}
             </span>
-          </button>
+          </div>
         </div>
       </NSpin>
     </div>
@@ -129,10 +133,7 @@ function handleRowClick(entry: USBFileEntry, event: MouseEvent) {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  background: $bg-card;
-  border: 1px solid $border-light;
-  border-radius: $radius-md;
-  overflow: hidden;
+  flex: 1 1 auto;
 }
 
 .list-table,
@@ -143,14 +144,16 @@ function handleRowClick(entry: USBFileEntry, event: MouseEvent) {
   min-height: 0;
 }
 
+// 显式 grid 列宽：名称 | 大小 | 修改时间
+$list-grid: minmax(0, 1fr) 110px 200px;
+
 .list-row {
-  display: grid;
-  grid-template-columns: minmax(0, 2fr) 110px minmax(0, 1.4fr);
+  display: grid !important;
+  grid-template-columns: #{$list-grid} !important;
   align-items: center;
-  gap: 12px;
-  padding: 8px 14px;
+  gap: 16px;
+  padding: 8px 16px;
   border: none;
-  border-bottom: 1px solid $border-light;
   background: transparent;
   color: $text-primary;
   text-align: start;
@@ -158,28 +161,43 @@ function handleRowClick(entry: USBFileEntry, event: MouseEvent) {
   font-size: 12.5px;
   cursor: pointer;
   transition: background $transition-fast;
+  user-select: none;
+  outline: none;
+  width: 100%;
+  box-sizing: border-box;
+  border-bottom: 1px solid $border-light;
+}
 
-  &:last-child {
-    border-bottom: none;
-  }
+.list-rows > .list-row:last-child {
+  border-bottom: none;
+}
 
-  &:hover {
-    background: var(--bg-secondary);
-  }
+.list-row:hover {
+  background: var(--bg-secondary);
+}
 
-  &.active {
-    background: rgba(var(--accent-info-rgb), 0.12);
-    color: var(--accent-info);
-  }
+.list-row.active {
+  background: rgba(var(--accent-info-rgb), 0.12);
+  color: var(--accent-info);
+}
+
+.list-row:focus-visible {
+  background: rgba(var(--accent-info-rgb), 0.08);
+  box-shadow: inset 2px 0 0 var(--accent-info);
 }
 
 .list-row--head {
   background: var(--bg-secondary);
   color: $text-muted;
   font-size: 11px;
+  font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   cursor: default;
+  border-bottom: 1px solid $border-light;
+  position: sticky;
+  top: 0;
+  z-index: 1;
 
   &:hover {
     background: var(--bg-secondary);
@@ -214,10 +232,15 @@ function handleRowClick(entry: USBFileEntry, event: MouseEvent) {
   color: $text-muted;
   font-variant-numeric: tabular-nums;
   text-align: right;
+  white-space: nowrap;
+  font-feature-settings: 'tnum';
 }
 
 .col-modified {
   color: $text-muted;
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .list-empty {
@@ -249,6 +272,7 @@ function handleRowClick(entry: USBFileEntry, event: MouseEvent) {
   font-family: inherit;
   cursor: pointer;
   transition: background $transition-fast, border-color $transition-fast;
+  outline: none;
 
   &:hover {
     background: var(--bg-secondary);
@@ -286,7 +310,8 @@ function handleRowClick(entry: USBFileEntry, event: MouseEvent) {
 
 @media (max-width: $breakpoint-mobile) {
   .list-row {
-    grid-template-columns: minmax(0, 2fr) 90px;
+    grid-template-columns: minmax(0, 1fr) 90px !important;
+    gap: 12px;
   }
   .col-modified {
     display: none;

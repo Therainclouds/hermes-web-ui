@@ -2,7 +2,6 @@
 import { computed } from 'vue'
 import { NButton, NInput, NInputGroup, NTooltip, NIcon } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import type { UsbDetailSection } from '../UsbDetailDrawer.vue'
 
 export type ExplorerViewMode = 'icons' | 'list'
 
@@ -14,6 +13,7 @@ const props = defineProps<{
   addressValue: string
   addressEditing: boolean
   viewMode: ExplorerViewMode
+  onAdvanced: () => void
 }>()
 
 const emit = defineEmits<{
@@ -27,7 +27,6 @@ const emit = defineEmits<{
   toggleView: [mode: ExplorerViewMode]
   startEditAddress: []
   cancelEditAddress: []
-  openDrawer: [section: UsbDetailSection]
 }>()
 
 const { t } = useI18n()
@@ -46,7 +45,9 @@ function handleAddressKey(event: KeyboardEvent) {
 }
 
 function openAdvanced() {
-  emit('openDrawer', 'details')
+  if (typeof props.onAdvanced === 'function') {
+    props.onAdvanced()
+  }
 }
 </script>
 
@@ -210,7 +211,7 @@ function openAdvanced() {
         :title="t('usb.page.advanced')"
         class="toolbar-advanced"
         data-testid="usb-advanced"
-        @click="openAdvanced"
+        @click.stop="openAdvanced"
       >
         <template #icon>
           <NIcon>

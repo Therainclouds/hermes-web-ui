@@ -218,8 +218,12 @@ function readEntryWithAgent(entry: USBFileEntry) {
   emit('readWithAgent', { path: entry.path, name: entry.name })
 }
 
-function openDrawer(section: UsbDetailSection) {
+function openDrawer(section: UsbDetailSection = 'details') {
   emit('openDrawer', section)
+}
+
+function openAdvanced() {
+  openDrawer('details')
 }
 
 watch(
@@ -260,6 +264,7 @@ watch(
         :address-value="addressValue"
         :address-editing="addressEditing"
         :view-mode="viewMode"
+        :on-advanced="openAdvanced"
         @back="navigateBack"
         @forward="navigateForward"
         @up="navigateUp"
@@ -270,7 +275,6 @@ watch(
         @cancel-edit-address="cancelEditAddress"
         @submit-address="submitAddress"
         @toggle-view="toggleView"
-        @open-drawer="openDrawer"
       />
     </div>
 
