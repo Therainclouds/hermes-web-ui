@@ -3342,6 +3342,17 @@ export default {
         failed: 'Failed to start Agent reading',
         readPrompt: 'Please read the file "{path}" from the current workspace and display its contents directly.',
       },
+      advanced: 'Дополнительно',
+      currentDevice: 'Текущее устройство',
+      drawer: {
+        title: 'Сведения и активность',
+        kicker: 'USB-инспектор',
+        close: 'Закрыть',
+      },
+      statusBar: {
+        entries: 'записей',
+        path: 'Путь',
+      },
       history: {
         title: 'Recent Activity',
         count: '{count} events',

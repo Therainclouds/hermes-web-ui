@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { NButton, NInput, NInputGroup, NTooltip, NIcon } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
+import type { UsbDetailSection } from '../UsbDetailDrawer.vue'
 
 export type ExplorerViewMode = 'icons' | 'list'
 
@@ -26,6 +27,7 @@ const emit = defineEmits<{
   toggleView: [mode: ExplorerViewMode]
   startEditAddress: []
   cancelEditAddress: []
+  openDrawer: [section: UsbDetailSection]
 }>()
 
 const { t } = useI18n()
@@ -41,6 +43,10 @@ function handleAddressKey(event: KeyboardEvent) {
     event.preventDefault()
     emit('cancelEditAddress')
   }
+}
+
+function openAdvanced() {
+  emit('openDrawer', 'details')
 }
 </script>
 
@@ -196,6 +202,22 @@ function handleAddressKey(event: KeyboardEvent) {
           </svg>
         </NIcon>
       </NButton>
+
+      <NButton
+        size="small"
+        ghost
+        type="primary"
+        :title="t('usb.page.advanced')"
+        class="toolbar-advanced"
+        @click="openAdvanced"
+      >
+        <NIcon>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+        </NIcon>
+      </NButton>
     </div>
   </div>
 </template>
@@ -219,6 +241,11 @@ function handleAddressKey(event: KeyboardEvent) {
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+.toolbar-advanced {
+  margin-left: 4px;
+  border-color: rgba(var(--accent-info-rgb), 0.4);
 }
 
 .toolbar-address :deep(.n-input) {

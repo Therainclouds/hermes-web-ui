@@ -3449,6 +3449,17 @@ export default {
         failed: 'Failed to start Agent reading',
         readPrompt: 'Please read the file "{path}" from the current workspace and display its contents directly.',
       },
+      advanced: '고급',
+      currentDevice: '현재 장치',
+      drawer: {
+        title: '세부 정보 및 활동',
+        kicker: 'USB 인스펙터',
+        close: '닫기',
+      },
+      statusBar: {
+        entries: '항목',
+        path: '경로',
+      },
       history: {
         title: 'Recent Activity',
         count: '{count} events',

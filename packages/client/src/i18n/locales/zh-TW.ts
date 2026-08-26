@@ -3773,6 +3773,17 @@ export default {
         failed: '啟動 Agent 讀取失敗',
         readPrompt: '請讀取目前工作區中的檔案「{path}」，並直接把檔案內容顯示給我。',
       },
+      advanced: '進階',
+      currentDevice: '目前裝置',
+      drawer: {
+        title: '詳情與活動',
+        kicker: 'USB 檢查器',
+        close: '關閉',
+      },
+      statusBar: {
+        entries: '項',
+        path: '路徑',
+      },
       history: {
         title: '最近活動',
         count: '{count} 筆事件',

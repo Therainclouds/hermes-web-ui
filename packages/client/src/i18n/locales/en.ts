@@ -3950,6 +3950,17 @@ export default {
         failed: 'Failed to start Agent reading',
         readPrompt: 'Please read the file "{path}" from the current workspace and display its contents directly.',
       },
+      advanced: 'Advanced',
+      currentDevice: 'Current device',
+      drawer: {
+        title: 'Details & activity',
+        kicker: 'USB Inspector',
+        close: 'Close',
+      },
+      statusBar: {
+        entries: 'entries',
+        path: 'Path',
+      },
       history: {
         title: 'Recent Activity',
         count: '{count} events',

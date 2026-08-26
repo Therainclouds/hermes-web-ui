@@ -1,4 +1,8 @@
 <script setup lang="ts">
+/**
+ * USBExplorerPreview - 文件预览（slide-over 形态）
+ * 选中文件即从右侧滑入，可关闭
+ */
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { NButton, NEmpty, NSpin, NTag } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
@@ -18,6 +22,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   readWithAgent: [payload: { path: string, name: string }]
+  close: []
 }>()
 
 const { t } = useI18n()
@@ -88,9 +93,15 @@ onBeforeUnmount(() => {
   resetPreview()
 })
 
+function handleClose() {
+  emit('close')
+}
+
 async function handleCopyPath() {
   if (!props.entry) return
-  const absolute = props.device ? `${props.device.mountPoint}${props.entry.path === '/' ? '' : props.entry.path}` : props.entry.path
+  const absolute = props.device
+    ? `${props.device.mountPoint}${props.entry.path === '/' ? '' : props.entry.path}`
+    : props.entry.path
   const ok = await copyToClipboard(absolute)
   if (ok) message.success(t('common.copied'))
   else message.error(t('usb.explorer.errors.copyFailed'))
@@ -120,13 +131,18 @@ function handleReadWithAgent() {
 </script>
 
 <template>
-  <div class="usb-explorer-preview">
-    <div class="preview-head">
+  <aside class="usb-explorer-preview">
+    <header class="preview-head">
       <span class="preview-title">{{ displayName || t('usb.explorer.preview.selectFile') }}</span>
-      <NTag v-if="props.entry" size="small" round :type="isDir ? 'default' : 'info'">
-        {{ isDir ? t('usb.page.browser.folder') : t('usb.page.browser.file') }}
-      </NTag>
-    </div>
+      <div class="preview-head-actions">
+        <NTag v-if="props.entry" size="small" round :type="isDir ? 'default' : 'info'">
+          {{ isDir ? t('usb.page.browser.folder') : t('usb.page.browser.file') }}
+        </NTag>
+        <NButton size="tiny" quaternary class="preview-close" @click="handleClose">
+          ✕
+        </NButton>
+      </div>
+    </header>
 
     <div v-if="!props.entry" class="preview-empty">
       <NEmpty :description="t('usb.explorer.preview.selectFile')" />
@@ -163,9 +179,6 @@ function handleReadWithAgent() {
         <div v-if="!isDir" class="preview-content">
           <img v-if="previewImageUrl" :src="previewImageUrl" :alt="displayName" class="image-preview" />
           <pre v-else-if="previewText" class="text-preview">{{ previewText }}</pre>
-          <div v-else-if="isLargeText" class="preview-placeholder">
-            {{ t('usb.explorer.preview.noPreview') }}
-          </div>
           <div v-else class="preview-placeholder">
             {{ t('usb.explorer.preview.noPreview') }}
           </div>
@@ -196,7 +209,7 @@ function handleReadWithAgent() {
         </div>
       </div>
     </NSpin>
-  </div>
+  </aside>
 </template>
 
 <style scoped lang="scss">
@@ -206,11 +219,11 @@ function handleReadWithAgent() {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  min-height: 0;
+  height: 100%;
   background: $bg-card;
-  border: 1px solid $border-light;
-  border-radius: $radius-md;
-  padding: 12px 14px;
+  border-left: 1px solid $border-light;
+  border-radius: 0;
+  padding: 14px 16px;
 }
 
 .preview-head {
@@ -223,10 +236,22 @@ function handleReadWithAgent() {
 }
 
 .preview-title {
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 600;
   color: $text-primary;
   word-break: break-word;
+  flex: 1;
+  min-width: 0;
+}
+
+.preview-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.preview-close {
+  font-size: 14px;
 }
 
 .preview-empty,
@@ -243,6 +268,8 @@ function handleReadWithAgent() {
   flex-direction: column;
   gap: 12px;
   min-height: 0;
+  flex: 1;
+  overflow: auto;
 }
 
 .preview-stats {
@@ -279,7 +306,7 @@ function handleReadWithAgent() {
 .preview-content {
   flex: 1;
   min-height: 120px;
-  max-height: 320px;
+  max-height: 100%;
   overflow: auto;
   display: flex;
   flex-direction: column;

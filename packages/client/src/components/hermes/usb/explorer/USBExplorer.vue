@@ -1,4 +1,8 @@
 <script setup lang="ts">
+/**
+ * USBExplorer - 文件浏览器（主体视图）
+ * v2 重设计：文件列表占满主体（80%+），预览改为 slide-over
+ */
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { listUSBFiles, downloadUSBFile, type USBFileEntry } from '@/api/hermes/usb'
@@ -7,11 +11,10 @@ import { copyToClipboard } from '@/utils/clipboard'
 import { normalizeExplorerPath, parentExplorerPath } from '@/utils/usb-format'
 import { useMessage } from '@/composables/useAppMessage'
 import USBExplorerToolbar, { type ExplorerViewMode } from './USBExplorerToolbar.vue'
-import USBExplorerBreadcrumb from './USBExplorerBreadcrumb.vue'
-import USBExplorerTree from './USBExplorerTree.vue'
 import USBExplorerList from './USBExplorerList.vue'
 import USBExplorerPreview from './USBExplorerPreview.vue'
 import USBExplorerContextMenu from './USBExplorerContextMenu.vue'
+import type { UsbDetailSection } from '../UsbDetailDrawer.vue'
 
 const props = defineProps<{
   device: USBDeviceRecord | null
@@ -22,6 +25,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   readWithAgent: [payload: { path: string, name: string }]
+  openDrawer: [section: UsbDetailSection]
 }>()
 
 const { t } = useI18n()
@@ -45,9 +49,13 @@ const contextX = ref(0)
 const contextY = ref(0)
 const contextEntry = ref<USBFileEntry | null>(null)
 
+const previewOpen = ref(false)
+
 const canBack = computed(() => backStack.value.length > 0)
 const canForward = computed(() => forwardStack.value.length > 0)
 const canUp = computed(() => currentPath.value !== '/' && currentPath.value !== '')
+
+const entryCount = computed(() => entries.value.length)
 
 function resetNavigation() {
   backStack.value = []
@@ -135,6 +143,7 @@ async function loadCurrent() {
     addressValue.value = currentPath.value
     entries.value = response.entries
     selectedEntry.value = response.entries.find(entry => entry.path === selectedEntry.value?.path) || null
+    if (!selectedEntry.value) previewOpen.value = false
   } catch (error: any) {
     errorMessage.value = error?.message || t('usb.explorer.errors.loadFailed')
   } finally {
@@ -144,6 +153,11 @@ async function loadCurrent() {
 
 function handleSelect(entry: USBFileEntry) {
   selectedEntry.value = entry
+  if (entry.isDir) {
+    previewOpen.value = false
+  } else {
+    previewOpen.value = true
+  }
 }
 
 async function handleOpen(entry: USBFileEntry) {
@@ -152,6 +166,7 @@ async function handleOpen(entry: USBFileEntry) {
     return
   }
   selectedEntry.value = entry
+  previewOpen.value = true
 }
 
 function handleContext(event: MouseEvent, entry: USBFileEntry) {
@@ -170,11 +185,13 @@ function refreshCurrent() {
   void loadCurrent()
 }
 
+function closePreview() {
+  previewOpen.value = false
+}
+
 async function copyEntryPath(entry: USBFileEntry) {
   if (!props.device) return
-  const absolute = entry.isDir
-    ? `${props.device.mountPoint}${entry.path}`
-    : `${props.device.mountPoint}${entry.path}`
+  const absolute = `${props.device.mountPoint}${entry.path}`
   const ok = await copyToClipboard(absolute)
   if (ok) message.success(t('common.copied'))
   else message.error(t('usb.explorer.errors.copyFailed'))
@@ -201,10 +218,15 @@ function readEntryWithAgent(entry: USBFileEntry) {
   emit('readWithAgent', { path: entry.path, name: entry.name })
 }
 
+function openDrawer(section: UsbDetailSection) {
+  emit('openDrawer', section)
+}
+
 watch(
   () => props.device?.uuid,
   () => {
     resetNavigation()
+    previewOpen.value = false
     void loadCurrent()
   },
   { immediate: true },
@@ -247,44 +269,53 @@ watch(
       @cancel-edit-address="cancelEditAddress"
       @submit-address="submitAddress"
       @toggle-view="toggleView"
+      @open-drawer="openDrawer"
     />
 
-    <USBExplorerBreadcrumb :current-path="currentPath" @navigate="navigateTo" />
+    <USBExplorerList
+      :entries="entries"
+      :loading="loading"
+      :selected-path="selectedEntry?.path || ''"
+      :view-mode="viewMode"
+      :search-term="searchTerm"
+      :error-message="errorMessage"
+      @select="handleSelect"
+      @open="handleOpen"
+      @context="handleContext"
+    />
 
-    <div class="explorer-grid">
-      <aside class="explorer-tree">
-        <USBExplorerTree
-          :uuid="props.device?.uuid || ''"
-          :current-path="currentPath"
-          @navigate="navigateTo"
-        />
-      </aside>
+    <footer class="explorer-status-bar">
+      <span class="status-item">
+        <strong>{{ entryCount }}</strong>
+        <span class="status-meta">{{ t('usb.page.statusBar.entries') }}</span>
+      </span>
+      <span class="status-divider" />
+      <span class="status-item">
+        <span class="status-meta">{{ t('usb.page.statusBar.path') }}</span>
+        <code class="status-path">{{ currentPath }}</code>
+      </span>
+      <span class="status-spacer" />
+      <span class="status-item">
+        <span class="status-dot" :class="`is-${props.device?.status || 'unknown'}`" />
+        <span class="status-meta">{{ t(`usb.page.runtime.${props.device ? 'running' : 'idle'}`) }}</span>
+      </span>
+    </footer>
 
-      <main class="explorer-main">
-        <USBExplorerList
-          :entries="entries"
-          :loading="loading"
-          :selected-path="selectedEntry?.path || ''"
-          :view-mode="viewMode"
-          :search-term="searchTerm"
-          :error-message="errorMessage"
-          @select="handleSelect"
-          @open="handleOpen"
-          @context="handleContext"
-        />
-      </main>
-
-      <aside class="explorer-preview">
+    <Teleport to="body">
+      <Transition name="preview-slide">
         <USBExplorerPreview
+          v-if="previewOpen"
+          class="explorer-preview-slideover"
           :device="props.device"
           :entry="selectedEntry"
           :agent-read-enabled="props.agentReadEnabled"
           :agent-read-busy="props.agentReadBusy"
           :agent-read-hint="props.agentReadHint"
           @read-with-agent="emit('readWithAgent', $event)"
+          @close="closePreview"
         />
-      </aside>
-    </div>
+      </Transition>
+    </Teleport>
 
     <USBExplorerContextMenu
       :show="contextShow"
@@ -312,40 +343,97 @@ watch(
 .usb-explorer {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   min-height: 0;
+  flex: 1;
 }
 
-.explorer-grid {
-  display: grid;
-  grid-template-columns: minmax(180px, 220px) minmax(0, 1.6fr) minmax(280px, 1fr);
-  gap: 12px;
-  align-items: stretch;
-  min-height: 420px;
-}
-
-.explorer-tree,
-.explorer-main,
-.explorer-preview {
-  min-height: 0;
+// ── Status bar (底部状态行) ─────────────────────────────────────────
+.explorer-status-bar {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 14px;
+  background: $bg-card;
+  border: 1px solid $border-light;
+  border-radius: $radius-md;
+  font-size: 11.5px;
+  color: $text-secondary;
 }
 
-.explorer-main {
-  min-height: 420px;
+.status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.status-item strong {
+  font-weight: 600;
+  color: $text-primary;
+  font-variant-numeric: tabular-nums;
+}
+
+.status-meta {
+  color: $text-muted;
+}
+
+.status-divider {
+  width: 1px;
+  height: 12px;
+  background: $border-light;
+}
+
+.status-spacer {
+  flex: 1;
+}
+
+.status-path {
+  font-family: $font-code;
+  font-size: 11px;
+  color: $text-secondary;
+  background: var(--bg-secondary);
+  padding: 1px 6px;
+  border-radius: $radius-sm;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: $text-muted;
+
+  &.is-mounted { background: $success; }
+  &.is-mount_failed { background: $error; }
+  &.is-ejecting,
+  &.is-removing,
+  &.is-removed { background: $warning; }
+}
+
+// ── Slide-over preview (Teleport) ────────────────────────────────────
+.preview-slide-enter-active,
+.preview-slide-leave-active {
+  transition: transform $transition-normal, opacity $transition-normal;
+}
+
+.preview-slide-enter-from,
+.preview-slide-leave-to {
+  transform: translateX(100%);
+  opacity: 0;
+}
+
+.explorer-preview-slideover {
+  position: fixed;
+  top: 64px;
+  right: 0;
+  bottom: 0;
+  width: min(420px, 38vw);
+  z-index: 1000;
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.18);
 }
 
 @media (max-width: $breakpoint-mobile) {
-  .explorer-grid {
-    grid-template-columns: 1fr;
-    grid-template-areas:
-      'tree'
-      'main'
-      'preview';
+  .explorer-preview-slideover {
+    width: min(360px, 90vw);
   }
-  .explorer-tree { grid-area: tree; }
-  .explorer-main { grid-area: main; }
-  .explorer-preview { grid-area: preview; }
 }
 </style>

@@ -3997,6 +3997,17 @@ export default {
         failed: '启动 Agent 读取失败',
         readPrompt: '请读取当前工作区中的文件“{path}”，并直接把文件内容显示给我。',
       },
+      advanced: '高级',
+      currentDevice: '当前设备',
+      drawer: {
+        title: '详情与活动',
+        kicker: 'USB 检查器',
+        close: '关闭',
+      },
+      statusBar: {
+        entries: '项',
+        path: '路径',
+      },
       history: {
         title: '最近活动',
         count: '{count} 条事件',
