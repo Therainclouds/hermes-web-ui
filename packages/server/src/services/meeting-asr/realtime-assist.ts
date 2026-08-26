@@ -21,6 +21,11 @@ export interface AnalysisRound {
   wotdUsed?: boolean
   score?: Record<string, number>
   timeNote?: string
+  // 增量评价模式：AI 判断本段是否出现新的评价点
+  hasNewPoint?: boolean
+  highlights?: string[]       // 新增亮点（仅 hasNewPoint 时可能非空）
+  improvements?: string[]     // 新增可提升的点（仅 hasNewPoint 时可能非空）
+  topics?: string[]           // 新增主题（仅 hasNewPoint 时可能非空）
 }
 
 /** 演讲评分场景的评估上下文：随分析批次注入提示词，供 AI 实时点评/评分。 */
@@ -32,6 +37,14 @@ export interface SpeechContext {
   timerRecords?: Array<{ label: string; durationSec: number; overtimeSec: number }>
   currentRemainingSec?: number
   currentPhase?: 'green' | 'yellow' | 'red'
+}
+
+/** 服务端累积的演讲评价摘要：跨批次保留，注入后续提示词，供 AI 判断是否出现新的评价点。 */
+interface SpeechSummary {
+  highlights: string[]
+  improvements: string[]
+  topics: string[]
+  score?: Record<string, number>
 }
 
 interface TranscriptSentence {
@@ -51,6 +64,7 @@ interface ActiveSession {
   sceneTemplate: string
   profile?: string
   speechContext?: SpeechContext | null
+  speechSummary?: SpeechSummary
   buffer: TranscriptSentence[]
   timer: NodeJS.Timeout | null
   isAnalyzing: boolean
@@ -191,8 +205,10 @@ class RealtimeAssistService {
     this.nsp?.to(`meeting:${session.sessionId}`).emit('analyzing', true)
 
     try {
-      const round = await this.analyzeBatch(sentences, session.sceneTemplate, session.profile, session.speechContext)
+      const round = await this.analyzeBatch(sentences, session.sceneTemplate, session.profile, session.speechContext, session.speechSummary)
       if (round) {
+        // 演讲评分场景：把本轮新增的亮点/改进点/主题/评分累积进会话摘要，供下一批提示词使用
+        this.accumulateSpeechSummary(session, round)
         this.nsp?.to(`meeting:${session.sessionId}`).emit('analysis', round)
       }
     } catch (err) {
@@ -204,11 +220,31 @@ class RealtimeAssistService {
     }
   }
 
+  /** 将本轮演讲评分的新增内容合并进会话摘要（去重），供后续批次判断"是否出现新的评价点"。 */
+  private accumulateSpeechSummary(session: ActiveSession, round: AnalysisRound): void {
+    if (session.sceneTemplate !== 'speech') return
+    const summary = session.speechSummary || { highlights: [], improvements: [], topics: [] }
+    const pushUnique = (list: string[] | undefined, target: string[]) => {
+      for (const item of list || []) {
+        const s = item?.trim()
+        if (s && !target.includes(s)) target.push(s)
+      }
+    }
+    pushUnique(round.highlights, summary.highlights)
+    pushUnique(round.improvements, summary.improvements)
+    pushUnique(round.topics, summary.topics)
+    if (round.score && Object.keys(round.score).length > 0) {
+      summary.score = round.score
+    }
+    session.speechSummary = summary
+  }
+
   private async analyzeBatch(
     sentences: TranscriptSentence[],
     sceneTemplateId: string,
     profile?: string,
     speechContext?: SpeechContext | null,
+    speechSummary?: SpeechSummary,
   ): Promise<AnalysisRound | null> {
     const template = getSceneTemplateOrDefault(sceneTemplateId)
     const transcriptText = sentences
@@ -219,7 +255,7 @@ class RealtimeAssistService {
 
     // 实时提示始终走直调 LLM 快速路径（~3s），不走 Agent。
     // Agent + MCP 工具查询仅用于报告生成（需要真实法条/数据核实的深度分析）。
-    return this.analyzeBatchViaDirectLLM(transcriptText, template, resolvedProfile, speechContext)
+    return this.analyzeBatchViaDirectLLM(transcriptText, template, resolvedProfile, speechContext, speechSummary)
   }
 
   /**
@@ -282,6 +318,7 @@ class RealtimeAssistService {
     template: SceneTemplate,
     profile: string,
     speechContext?: SpeechContext | null,
+    speechSummary?: SpeechSummary,
   ): Promise<AnalysisRound | null> {
     const config = await this.loadLLMConfig()
     if (!config) {
@@ -295,22 +332,38 @@ class RealtimeAssistService {
       ? `${template.systemPrompt}\n\n${skillSection}`
       : template.systemPrompt
 
-    // 演讲评分场景：把计时记录/每日一词/当前倒计时注入提示词，让 AI 的点评与评分以实际用时为依据。
-    if (template.id === 'speech' && speechContext) {
-      const ctx = speechContext
+    // 演讲评分场景：把计时记录/每日一词/当前倒计时/已累积评价注入提示词。
+    if (template.id === 'speech') {
       const lines: string[] = ['', '【当前演讲评估上下文（请据此点评与评分）】']
-      if (ctx.wordOfTheDay) lines.push(`- 每日一词：${ctx.wordOfTheDay}`)
-      if (ctx.timerDurationSec) {
-        lines.push(`- 计时设置：单环节标准时长 ${ctx.timerDurationSec} 秒；黄牌触发剩余 ${ctx.yellowAtSec ?? 30} 秒；红牌触发剩余 ${ctx.redAtSec ?? 10} 秒`)
+      if (speechContext) {
+        const ctx = speechContext
+        if (ctx.wordOfTheDay) lines.push(`- 每日一词：${ctx.wordOfTheDay}`)
+        if (ctx.timerDurationSec) {
+          lines.push(`- 计时设置：单环节标准时长 ${ctx.timerDurationSec} 秒；黄牌触发剩余 ${ctx.yellowAtSec ?? 30} 秒；红牌触发剩余 ${ctx.redAtSec ?? 10} 秒`)
+        }
+        if (ctx.currentRemainingSec != null) {
+          lines.push(`- 当前倒计时：剩余 ${Math.round(ctx.currentRemainingSec)} 秒（${ctx.currentPhase || 'green'}）`)
+        }
+        if (ctx.timerRecords && ctx.timerRecords.length > 0) {
+          lines.push('- 已记录环节用时：')
+          for (const r of ctx.timerRecords) {
+            const overtime = r.overtimeSec > 0 ? `（超时 ${r.overtimeSec} 秒）` : ''
+            lines.push(`  - ${r.label}：${r.durationSec} 秒${overtime}`)
+          }
+        }
       }
-      if (ctx.currentRemainingSec != null) {
-        lines.push(`- 当前倒计时：剩余 ${Math.round(ctx.currentRemainingSec)} 秒（${ctx.currentPhase || 'green'}）`)
-      }
-      if (ctx.timerRecords && ctx.timerRecords.length > 0) {
-        lines.push('- 已记录环节用时：')
-        for (const r of ctx.timerRecords) {
-          const overtime = r.overtimeSec > 0 ? `（超时 ${r.overtimeSec} 秒）` : ''
-          lines.push(`  - ${r.label}：${r.durationSec} 秒${overtime}`)
+      if (speechSummary) {
+        if (speechSummary.highlights.length > 0) {
+          lines.push(`- 已累积亮点：${speechSummary.highlights.join('；')}`)
+        }
+        if (speechSummary.improvements.length > 0) {
+          lines.push(`- 已累积改进点：${speechSummary.improvements.join('；')}`)
+        }
+        if (speechSummary.topics.length > 0) {
+          lines.push(`- 已出现主题：${speechSummary.topics.join('；')}`)
+        }
+        if (speechSummary.score && Object.keys(speechSummary.score).length > 0) {
+          lines.push(`- 当前评分：${JSON.stringify(speechSummary.score)}`)
         }
       }
       systemPrompt = `${systemPrompt}\n${lines.join('\n')}`
@@ -377,9 +430,20 @@ class RealtimeAssistService {
               .map(([k, v]) => [k.slice(0, 20), Math.max(0, Math.min(100, Math.round(Number(v))))]),
           )
         : undefined
+      const hasNewPoint = typeof parsed.hasNewPoint === 'boolean' ? parsed.hasNewPoint : undefined
+      const highlights = Array.isArray(parsed.highlights)
+        ? parsed.highlights.filter((h: any) => typeof h === 'string').slice(0, 8).map((h: string) => h.slice(0, 120))
+        : undefined
+      const improvements = Array.isArray(parsed.improvements)
+        ? parsed.improvements.filter((i: any) => typeof i === 'string').slice(0, 8).map((i: string) => i.slice(0, 120))
+        : undefined
+      const topics = Array.isArray(parsed.topics)
+        ? parsed.topics.filter((tp: any) => typeof tp === 'string').slice(0, 8).map((tp: string) => tp.slice(0, 80))
+        : undefined
 
-      // 演讲评分场景：只要有任何一项内容就保留该轮（评分/赘语/好词好句也算）。
-      const hasSpeechContent = !!keyPoint || !!analysis || !!fillerWords?.length || !!goodPhrases?.length || !!grammarIssues?.length || !!score
+      // 演讲评分场景：只要有任何一项内容就保留该轮（评分/赘语/好词好句/新评价点也算）。
+      const hasSpeechContent = !!keyPoint || !!analysis || !!fillerWords?.length || !!goodPhrases?.length
+        || !!grammarIssues?.length || !!score || !!highlights?.length || !!improvements?.length || !!topics?.length || hasNewPoint === true
       if (!parsed || !hasSpeechContent) {
         return null
       }
@@ -398,6 +462,10 @@ class RealtimeAssistService {
         ...(typeof parsed.wotdUsed === 'boolean' ? { wotdUsed: parsed.wotdUsed } : {}),
         ...(score ? { score } : {}),
         ...(typeof parsed.timeNote === 'string' ? { timeNote: parsed.timeNote.slice(0, 200) } : {}),
+        ...(hasNewPoint !== undefined ? { hasNewPoint } : {}),
+        ...(highlights ? { highlights } : {}),
+        ...(improvements ? { improvements } : {}),
+        ...(topics ? { topics } : {}),
       }
     } catch {
       logger.warn('[meeting-assist] failed to parse LLM response as JSON: %s', raw.slice(0, 100))
