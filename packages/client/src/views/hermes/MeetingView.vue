@@ -5,6 +5,7 @@ import { NButton, NSpin, NTag, NTooltip, NInput, NPopconfirm, NModal, NSelect, N
 import PageSidebarNav from '@/components/layout/PageSidebarNav.vue'
 import PageSidebarFooter from '@/components/layout/PageSidebarFooter.vue'
 import MeetingAgentPanel from '@/components/hermes/meeting/MeetingAgentPanel.vue'
+import SpeechEvaluationPanel from '@/components/hermes/meeting/SpeechEvaluationPanel.vue'
 import { useMeetingStore } from '@/stores/hermes/meeting'
 import type { MeetingSession, TranscriptSentence, AgentConfig } from '@/stores/hermes/meeting'
 import { useModelsStore } from '@/stores/hermes/models'
@@ -41,6 +42,7 @@ const sceneTemplateOptions = computed(() => [
   { label: t('meeting.scene.business'), value: 'business' },
   { label: t('meeting.scene.medical'), value: 'medical' },
   { label: t('meeting.scene.interview'), value: 'interview' },
+  { label: t('meeting.scene.speech'), value: 'speech' },
 ])
 
 // --- Agent 配置 ---
@@ -206,6 +208,9 @@ const assistPanelRef = ref<InstanceType<typeof MeetingAgentPanel> | null>(null)
 
 // 当前活动会议
 const activeSession = computed(() => meetingStore.activeSession)
+
+// 演讲评分场景：右侧面板切换为专用评估面板（计时员/赘语记录员/语法官）
+const isSpeechScene = computed(() => activeSession.value?.sceneTemplate === 'speech')
 
 // 报告生成完成回调
 function onReportGenerated(markdown: string) {
@@ -2267,7 +2272,7 @@ async function clearTranscript() {
         />
         <div class="right-panel-inner">
           <div class="right-panel-header">
-            <h2>{{ showAgentPanel ? t('meeting.agentChat') : t('meeting.analysis') }}</h2>
+            <h2>{{ isSpeechScene ? t('meeting.scene.speech') : (showAgentPanel ? t('meeting.agentChat') : t('meeting.analysis')) }}</h2>
             <div class="right-panel-actions">
               <!-- 关闭按钮：始终位于最右，确保不被遮挡 -->
               <button
@@ -2284,7 +2289,7 @@ async function clearTranscript() {
           </div>
 
           <!-- 分析工具栏：独立一行，避免与标题互相挤压 -->
-          <div v-if="!showAgentPanel" class="right-panel-toolbar">
+          <div v-if="!showAgentPanel && !isSpeechScene" class="right-panel-toolbar">
             <div class="toolbar-actions">
               <NTooltip trigger="hover">
                 <template #trigger>
@@ -2380,8 +2385,19 @@ async function clearTranscript() {
             </NTooltip>
           </div>
 
+          <!-- 演讲评分场景：专用评估面板（计时员/赘语记录员/语法官） -->
+          <template v-if="isSpeechScene">
+            <SpeechEvaluationPanel
+              v-if="meetingStore.activeSessionId"
+              :key="meetingStore.activeSessionId"
+              :session-id="meetingStore.activeSessionId"
+              :is-recording="isRecording"
+              @report-generated="onReportGenerated"
+            />
+          </template>
+
           <!-- Agent 实时辅助面板 -->
-          <template v-if="showAgentPanel">
+          <template v-else-if="showAgentPanel">
             <MeetingAgentPanel
               v-if="meetingStore.activeSessionId"
               ref="assistPanelRef"
@@ -3535,6 +3551,7 @@ async function clearTranscript() {
   background: $bg-card;
   border-left: 1px solid $border-color;
   display: flex;
+  align-self: stretch;
   min-height: 0;
   overflow: hidden; // 改为 hidden，避免按钮溢出屏幕
 }

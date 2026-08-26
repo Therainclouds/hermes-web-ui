@@ -37,6 +37,30 @@ export interface MeetingSession {
   agentMessages: AgentMessage[]
   agentStatus: 'idle' | 'connecting' | 'running' | 'completed' | 'error'
   agentConfig: AgentConfig
+  // 演讲评分场景（sceneTemplate === 'speech'）专属状态
+  speechEval?: SpeechEvalState
+}
+
+export interface SpeechTimerRecord {
+  label: string      // 环节/演讲者名称
+  durationSec: number // 实际用时（秒）
+  overtimeSec: number // 超时秒数（未超时为 0）
+  timestamp: number
+}
+
+export interface SpeechEvalState {
+  // 计时员（Timer）设置
+  timerDurationSec: number  // 单环节标准时长
+  yellowAtSec: number       // 黄牌触发（剩余秒数）
+  redAtSec: number          // 红牌触发（剩余秒数）
+  timerRecords: SpeechTimerRecord[]
+  // 赘语记录员（Ah-Counter）
+  fillerWords: Record<string, number>
+  // 语法官（Grammarian）
+  wordOfTheDay: string
+  wotdUsedCount: number
+  goodPhrases: string[]
+  grammarNotes: string[]
 }
 
 export interface AgentConfig {

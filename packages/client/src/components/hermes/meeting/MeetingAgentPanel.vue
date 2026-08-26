@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, defineAsyncComponent, onUnmounted, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { NButton, NSpin, NEmpty } from 'naive-ui'
+import { NButton, NSpin, NTag } from 'naive-ui'
 import { useMeetingAssist } from '@/composables/useMeetingAssist'
 import { request, getApiKey } from '@/api/client'
 import { useMeetingStore } from '@/stores/hermes/meeting'
@@ -46,6 +46,41 @@ const {
 
 const meetingStore = useMeetingStore()
 
+// 当前会议信息
+const currentSession = computed(() => meetingStore.sessions.find(s => s.id === props.sessionId))
+
+// 场景标签映射
+const sceneLabelMap: Record<string, string> = {
+  general: t('meeting.scene.general'),
+  legal: t('meeting.scene.legal'),
+  business: t('meeting.scene.business'),
+  medical: t('meeting.scene.medical'),
+  interview: t('meeting.scene.interview'),
+  speech: t('meeting.scene.speech'),
+}
+
+// 分析模式标签
+const analysisModeLabel = computed(() => {
+  const session = currentSession.value
+  if (!session) return ''
+  return session.analysisMode === 'hermes' ? 'Hermes Agent' : t('meeting.customModel')
+})
+
+// Agent 类型标签
+const agentTypeLabel = computed(() => {
+  const session = currentSession.value
+  if (!session?.agentConfig) return 'Hermes Agent'
+  const typeMap: Record<string, string> = {
+    'hermes': 'Hermes Agent',
+    'claude-code': 'Claude Code',
+    'codex': 'Codex',
+  }
+  return typeMap[session.agentConfig.agentType] || 'Hermes Agent'
+})
+
+// 句子数量
+const sentenceCount = computed(() => currentSession.value?.sentences.length || 0)
+
 // 加载已持久化的历史分析记录
 onMounted(() => {
   const session = meetingStore.sessions.find(s => s.id === props.sessionId)
@@ -81,6 +116,7 @@ const sceneLabel = computed(() => {
     business: t('meeting.scene.business'),
     medical: t('meeting.scene.medical'),
     interview: t('meeting.scene.interview'),
+    speech: t('meeting.scene.speech'),
   }
   return map[props.sceneTemplate] || map.general
 })
@@ -247,9 +283,75 @@ onUnmounted(() => {
 
     <!-- Analysis rounds stream -->
     <div ref="roundsContainer" class="assist-rounds-area">
-      <!-- Empty state -->
+      <!-- Session info & empty state -->
       <div v-if="rounds.length === 0 && !isGeneratingReport && !reportMarkdown" class="assist-empty">
-        <NEmpty :description="isRecording ? t('meeting.assist.waitingForHints') : t('meeting.assist.notRecording')" size="small" />
+        <div class="session-info-panel">
+          <!-- 会议配置标签 -->
+          <div class="session-tags">
+            <NTag size="small" type="info" :bordered="false">
+              {{ sceneLabelMap[sceneTemplate] || sceneLabelMap.general }}
+            </NTag>
+            <NTag size="small" type="success" :bordered="false">
+              {{ agentTypeLabel }}
+            </NTag>
+            <NTag v-if="currentSession?.analysisMode" size="small" type="warning" :bordered="false">
+              {{ analysisModeLabel }}
+            </NTag>
+          </div>
+
+          <!-- 会议统计 -->
+          <div class="session-stats">
+            <div class="stat-item">
+              <span class="stat-value">{{ sentenceCount }}</span>
+              <span class="stat-label">{{ t('meeting.sentences') }}</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-value">{{ rounds.length }}</span>
+              <span class="stat-label">{{ t('meeting.assist.hints') }}</span>
+            </div>
+          </div>
+
+          <!-- 状态提示 -->
+          <div class="session-status">
+            <template v-if="isRecording">
+              <div class="status-icon recording">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+                  <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+                </svg>
+              </div>
+              <span class="status-text-active">{{ t('meeting.assist.listening') }}</span>
+            </template>
+            <template v-else-if="isAnalyzing">
+              <div class="status-icon analyzing">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"/>
+                  <path d="M12 6v6l4 2"/>
+                </svg>
+              </div>
+              <span class="status-text-active">{{ t('meeting.assist.analyzing') }}</span>
+            </template>
+            <template v-else>
+              <div class="status-icon idle">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/>
+                  <path d="M8 12l3 3 5-5"/>
+                </svg>
+              </div>
+              <span class="status-text-idle">{{ t('meeting.assist.notRecording') }}</span>
+            </template>
+          </div>
+
+          <!-- 使用提示 -->
+          <div class="usage-hint">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" opacity="0.5">
+              <circle cx="12" cy="12" r="10"/>
+              <path d="M12 16v-4"/>
+              <path d="M12 8h.01"/>
+            </svg>
+            <span>{{ t('meeting.assist.usageHint') }}</span>
+          </div>
+        </div>
       </div>
 
       <!-- Analysis round cards -->
@@ -405,6 +507,112 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   height: 100%;
+  padding: 14px;
+}
+
+.session-info-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  max-width: 280px;
+  text-align: center;
+}
+
+.session-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+}
+
+.session-stats {
+  display: flex;
+  gap: 24px;
+  padding: 12px 16px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  width: 100%;
+}
+
+.stat-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1;
+}
+
+.stat-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--n-text-color, #fff);
+  line-height: 1.2;
+}
+
+.stat-label {
+  font-size: 11px;
+  color: var(--n-text-color3, #888);
+  margin-top: 2px;
+}
+
+.session-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  width: 100%;
+}
+
+.status-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+}
+
+.status-icon.recording {
+  background: rgba(208, 48, 80, 0.15);
+  color: #d03050;
+  animation: pulse 2s infinite;
+}
+
+.status-icon.analyzing {
+  background: rgba(240, 160, 32, 0.15);
+  color: #f0a020;
+  animation: pulse 1.5s infinite;
+}
+
+.status-icon.idle {
+  background: rgba(99, 99, 99, 0.15);
+  color: #888;
+}
+
+.status-text-active {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--n-text-color, #fff);
+}
+
+.status-text-idle {
+  font-size: 12px;
+  color: var(--n-text-color3, #888);
+}
+
+.usage-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--n-text-color3, #777);
+  line-height: 1.4;
+  text-align: left;
 }
 
 /* --- Analysis Round Card --- */
