@@ -1,5 +1,89 @@
 # Work Log
 
+## 2026-08-26 · USB 视图重设计（文件列表占主体 80%）+ 两轮 bug 修复
+
+### 背景
+
+承接 2026-08-25 `6b9d8163` 的 Windows 资源管理器风格三栏（树 + 列表 + 预览）。用户在真实设备上跑完后反馈：
+
+- 屏幕宽 1280–1920 时「设备卡片网格 + 文件列表」两端挤，列表区太窄，文件元信息折行。
+- 右侧预览面板常驻拖宽列表；点文件名才预览反而更顺。
+- 「高级 / 详情」信息（设备运行状态、heartbeat、最近事件、最近错误）藏在设备卡片下方的折叠面板里，找不到。
+
+本轮把视图重设计成「**文件列表为主（占主体 80%+）+ 顶部 header 设备 badge + 右侧滑出式详情抽屉**」；桌面端 Windows 资源管理器风格降级为列表/图标视图切换由 explorer 子组件保留，但把入口收敛。
+
+### 范围决策（用户拍板）
+
+- 文件列表占主体（单设备下彻底给满剩余宽度），不再并排预览。
+- 高级 / 详情走右侧滑出 drawer（NDrawer），section 可选 details / runtime / activity / errors，section 记忆到 localStorage。
+- 顶部 header 加一个设备状态 pill：dot + 设备名 + fsType + 容量，点击唤出 dropdown 切换设备，再点进 drawer。
+- sticky 隔离：toolbar / 搜索框 / 路径栏不参与页面滚动，只在列表内部滚。
+- 不动 Python listener、不动 `USBService`、不动 Socket.IO 事件格式。
+- 不动 `USBExplorer` 子组件（树/列表/工具栏/上下文菜单/preview），仅调整父容器布局与传参。
+
+### 交付（三个本地 commit，未 push）
+
+| Commit | 改动 |
+|--------|------|
+| `397646f5` feat(ui): USB 视图重设计 — 文件资源页面占主体 80%+ | 新增 `UsbHeaderBadge.vue` + `UsbDetailDrawer.vue`，重写 `USBView.vue` 布局（删 stat-bar / device-grid），接入 i18n key 11 个 locale |
+| `e6508d89` fix(ui): USB 列表/抽屉/滚动 — 三个用户反馈的修复 | 列表：folder size 改 `—`、删除冗余 col-type；toolbar：grid → flex、给「高级」按钮加文字 label；sticky 隔离：toolbar / search / address 不滚，列表内部 `flex:1 1 auto; overflow-y:auto` 滚 |
+| `fcd1b0c5` fix(ui): USB 列表对齐 + 高级按钮回调 prop 化 | 列表：`<button>` → `<div role="row" tabindex="0">`（避免 UA button 默认 inline-block 干扰 grid），`display:grid !important` + 显式列 `minmax(0,1fr) 110px 200px` + `position:sticky; top:0` 表头；toolbar 高级按钮由 `emit('openDrawer')` 改 prop callback `onAdvanced` 直传函数，绕开嵌套组件 emit 链路偶尔不触发的坑 |
+
+### 关键文件
+
+| 文件 | 角色 |
+|------|------|
+| `packages/client/src/views/hermes/USBView.vue` | 新顶层：UsbHeaderBadge + 高级按钮 + UsbExplorer + UsbDetailDrawer（v-model drawer open + section） |
+| `packages/client/src/components/hermes/usb/UsbHeaderBadge.vue` | 顶部设备状态 pill + 多设备 dropdown |
+| `packages/client/src/components/hermes/usb/UsbDetailDrawer.vue` | 右侧 NDrawer：4 section（details/runtime/activity/errors）+ localStorage 记忆 section |
+| `packages/client/src/components/hermes/usb/explorer/USBExplorer.vue` | 滚动隔离外壳 + `openAdvanced('details')` 回调 + `<Teleport to="body">` 预览滑出 |
+| `packages/client/src/components/hermes/usb/explorer/USBExplorerToolbar.vue` | flex 布局：`nav | address(1fr) | search(0 1 260px) | view + 高级` |
+| `packages/client/src/components/hermes/usb/explorer/USBExplorerList.vue` | div 行 + grid !important + sticky 表头 + `sizeLabel(entry)` 区分文件夹/文件 |
+| `packages/client/src/i18n/locales/{en,zh}.ts` 等 10 locale | 新增 key：`usb.page.{advanced,currentDevice,drawer.title/kicker/close,statusBar.entries/path}` |
+
+### 关键技术点
+
+- **滚动隔离**：`usb-explorer { display:flex; flex-direction:column }`；`.explorer-toolbar-wrap { flex:0 0 auto }`；`.explorer-list-scroll { flex:1 1 auto; min-height:0; overflow-y:auto }`。父级 flex column + 子级 `flex:1 1 auto; overflow-y:auto` 是经典不滚整页的写法。
+- **grid 抗干扰**：user-agent 给 `<button>` 默认 `display:inline-block`，浏览器对 grid 容器的子项有时仍按 inline 处理，列宽分配失效。改 `<div role="row" tabindex="0">` + `display:grid !important` + `width:100%` 三件套强制生效。
+- **emit vs prop callback**：嵌套组件 emit 在 Vue 3 里走 kebab↔camel 名字映射 + `defineEmits` 类型校验，深链路偶尔不触发（特别是被 naive-ui 包裹的 NButton 内）。把回调改 prop（`onAdvanced: () => void`）直接传函数引用，等同于「父组件定义函数，子组件按 prop 调用」，跳过整个 emit 路径。
+- **sticky 表头**：列表头在 `.list-rows` 内部滚时也想保留可见，给 `.list-row--head { position:sticky; top:0; z-index:1 }`。
+- **drawer section 记忆**：section 选哪个写到 `localStorage['hermes.usb.detailDrawerSection']`，下次进入自动还原。
+- **预览走 Teleport**：`<Teleport to="body">` 把 slide-over 预览挪到 body 末端，避免被 `.usb-explorer { overflow:hidden }` 截掉。
+
+### i18n
+
+11 locale 中，10 个文件补齐 7 个新 key；`ar.ts` 整个 `usb` 命名空间缺失（不在本轮范围），继续走 `fallbackLocale:'en'` + `mergeMessagesWithFallback` 兜底。缺口量化与翻译合并管线见 2026-08-24 的工作记录。
+
+### 部署
+
+- 路径 `/opt/hermes-web-ui`（v0.7.19，service `hermes-web-ui.service`，端口 6060）。
+- tar 用 `tar -C dist .`（**注意：不是 `-C ... dist`，否则会多一层 `dist/` 父目录 → 服务端 `dist/server/index.js` 找不到**），第一次打错变成 `/dist.new/dist/server/index.js`，日志 `Cannot find module`；第二次打对，服务正常 active。
+- `mv $APP/dist $APP/dist.old-<ts>` + `mv $APP/dist.new $APP/dist` 原子换；`systemctl stop && start` 即可；`journalctl -u hermes-web-ui.service -n 10` 看到 `Server: https://localhost:6060 (LAN: https://6.6.6.74:6060)` 即就绪。`/api/v1/health` 返回 401 是因为要登录（正常）。
+- 部署后用户浏览器 `Ctrl+F5` 强刷验证：
+  - 列表列对齐：名称 | 大小（右 110px） | 修改时间（右 200px）
+  - header 右上「高级」 + 工具栏「高级」两个都能开抽屉
+  - sticky：toolbar / 路径栏 / 表头不滚，列表内部滚
+
+### 测试
+
+- `npm run build`：✅ 7.54s（vite）+ server tsc 通过
+- 客户端 format-text / app-store / usb-service / usb-socket-server 单元测试：✅ 25/25 + 6/6 + 4/4 + 2/2
+- `write-gate` 系列 147 个测试在 Windows 因 `fake-python ENOENT` 全挂——pre-existing，与本改动无关
+
+### 待办（不在本轮范围）
+
+- 用户已要求「**Explorer 用 Windows 资源管理器风格**」（树 + 列表 + 预览三栏常驻）的计划存在 `.zcode/plans/`，等用户单独要求再做
+- Explorer 在没选设备时偶尔 404：404 文案已 OK，但加 placeholder 引导更友好，下次顺手改
+- 给 USB 视图加 e2e 截图回归（playwright），避免每次改 layout 都要人去设备看
+- `UsbHeaderBadge` 的多设备 dropdown 在 ≤2 设备时显示是冗余的，下次抽 prop `compact` 给单设备场景简化
+- ar.ts 整个 usb 命名空间补全（承接 2026-08-24 的翻译合并管线）
+
+### 当前分支
+
+- `main` HEAD = `fcd1b0c5`，本地已提交，未推送（用户明确「不 push」）
+
+---
+
 ## 2026-08-25 · meeting 分支部署到设备（192.168.5.91）与部署问题记录
 
 ### 背景
