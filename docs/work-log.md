@@ -1795,3 +1795,17 @@ en.ts 和 zh.ts 已经有完整的 `usb.explorer.*` 命名空间（toolbar / bre
 - `vue-tsc -b --noEmit`：0 错误。
 - 29 个 chat 测试文件：**264/264 全过**。
 - chat.ts 5,332 → 3,696 行（累计 −1,636）；已抽出 4 个模块共 ~1,840 行。
+
+---
+
+## 2026-08-27 · chat store 拆分 — 第四批：队列系统域
+
+### 交付
+
+**`chat-queue.ts`**（222 行）：用户消息排队系统。`createChatQueue({ queuedUserMessages, queueLengths, queueInsertionStates, dequeuedQueueIds, runtimeTransport, updateSessionTitle, messages })` 工厂注入 4 个队列 refs + store 内函数 + 消息域操作，返回 12 个成员（enqueue/update/drop/remove/insert 排队消息、replaceQueueInsertionState、handleQueueInsertionUpdated、normalize/replaceQueuedUserMessages、mark/consumeDequeuedQueueId、handleRunQueuedEvent）。
+
+### 验证
+
+- `vue-tsc -b --noEmit`：0 错误（删除解构中不再直接调用的 markDequeuedQueueId）。
+- 29 个 chat 测试文件：**264/264 全过**。
+- chat.ts 5,332 → 3,516 行（累计 −1,816）；已抽出 5 个模块共 ~2,060 行。
