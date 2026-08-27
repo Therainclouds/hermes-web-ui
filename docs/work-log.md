@@ -1747,3 +1747,32 @@ en.ts 和 zh.ts 已经有完整的 `usb.explorer.*` 命名空间（toolbar / bre
 ### 后续
 
 - 第二批开始拆 store body（约 4,000 行）：session 管理 / 发送与停止 / 事件处理 / 队列 / 审批澄清 / 子代理流 / 工作区变更。这些域共享核心 refs，按「模块函数接受 refs 参数」方式拆，风险高于第一批。
+
+---
+
+## 2026-08-27 · chat store 拆分 — 第二批：审批/澄清域 + 消息操作域
+
+### 背景
+
+第一批（chat-core.ts）后继续拆 store body（原 4,000+ 行）。先做了耦合度分析：store body 有 **22 个共享 refs + 103 个函数**，多数函数只引用 1-5 个 refs，验证了「工厂注入 refs」的模块化路径可行。
+
+### 交付（两个新模块）
+
+1. **`chat-interactions.ts`**（161 行）：审批/澄清交互域。`createChatInteractions({ activeSessionId, pendingApprovals, pendingClarifies, runtimeTransport })` 工厂注入共享 refs + api 回调，返回 11 个成员（activePendingApproval/activePendingClarify computed + setPendingApproval/clearPendingApproval/setPendingClarify/clearPendingClarify/clearPendingInteractions/respondToClarifyFor/respondToClarify/respondApprovalFor/respondApproval）。store 删除内联实现，解构 factory 返回值，`respondClarify/respondToolApproval` import 移入模块。
+
+2. **`chat-messages.ts`**（155 行）：消息/会话状态操作域。`createChatMessages({ sessions })` 工厂只依赖 sessions ref + chat-core 纯函数，返回 10 个成员（getSessionMsgs/isEkkoAgentSession/addMessage/addMessageInTimelineOrder/addHermesBackgroundDelegateAnchors/findHermesBackgroundDelegateAnchor/addOrUpdateSession/updateMessage/settleRunningTools/settleRuntimeDisplayForCommand）。
+
+### 踩坑
+
+- **命名冲突**：把 factory 解构命名为 `messages` 覆盖了 store 原有的 `messages` computed（组件用 `chatStore.messages`）——改名 `chatMessages` 修复，vue-tsc 立刻从 36 错归零。
+- 搬走后 chat.ts 有 3 个孤儿 core import（`HERMES_BACKGROUND_DELEGATE_ANCHOR_PREFIX/backgroundDelegateAnchorCallId/backgroundDelegateTaskDescriptors`）——删除。
+
+### 验证
+
+- `vue-tsc -b --noEmit`：0 错误。
+- 29 个 chat 相关测试文件：**264/264 全过**。
+- chat.ts 5,332 → 3,886 行（累计 −1,446）；抽出的 3 个模块共 ~1,575 行。
+
+### 后续
+
+剩余 ~3,900 行是高度耦合的编排域（loadSessions/switchSession/sendMessage/handleAgentEvent/resumeServerWorkingRun 等），互相调用且共享全部 refs。拆分需按「流程编排层留在 store、纯状态操作下沉」进一步设计，风险高于已完成的独立域，等用户验收后继续。

@@ -1,4 +1,4 @@
-import { startRunViaSocket, resumeSession, registerSessionHandlers, unregisterSessionHandlers, getChatRunSocket, respondToolApproval, onPeerUserMessage, onSessionCommand, onSessionTitleUpdated, onSessionWorkspaceUpdated, onSessionSettingsUpdated, respondClarify, type ChatRunTransport, type ResumeSessionPayload, type StartRunRequest, type RunEvent } from '@/api/hermes/chat'
+import { startRunViaSocket, resumeSession, registerSessionHandlers, unregisterSessionHandlers, getChatRunSocket, onPeerUserMessage, onSessionCommand, onSessionTitleUpdated, onSessionWorkspaceUpdated, onSessionSettingsUpdated, type ChatRunTransport, type ResumeSessionPayload, type StartRunRequest, type RunEvent } from '@/api/hermes/chat'
 import { archiveSession as archiveSessionApi, createSessionServer, deleteSession as deleteSessionApi, fetchSessionMessagesPage, fetchSessions, fetchWorkspaceRunChangeFile, fetchWorkspaceRunChangesForSession, setSessionModel, setSessionReasoningEffort as persistSessionReasoningEffort, type SessionSummary, type WorkspaceRunChangeFileDetail, type WorkspaceRunChangeSummary } from '@/api/hermes/sessions'
 import { inferCodingAgentApiMode, normalizeCodingAgentApiMode, type ChatCodingAgentId } from '@/api/coding-agents'
 import { getDownloadUrl } from '@/api/hermes/download'
@@ -12,13 +12,29 @@ import { primeCompletionSound, playCompletionSound } from '@/utils/completion-so
 import { showCompletionNotification } from '@/utils/completion-notification'
 import { detectThinkingBoundary } from '@/utils/thinking-parser'
 import { isKnownBridgeSessionCommand } from '@/utils/hermes/bridge-session-commands'
-import { type AbortState, type Attachment, type ChatAgentId, type ChatRuntimeMode, type CompressionState, type ContentBlock, type Message, type MessageReference, type PendingApproval, type PendingClarify, type QueueInsertionState, type Session, type SubagentStream, HERMES_BACKGROUND_DELEGATE_ANCHOR_PREFIX, LEGACY_STORAGE_KEY, LEGACY_WORKSPACE_RUN_CHANGE_MESSAGE_PREFIX, LIVE_CHAT_MAX_LOADED_MESSAGES, LIVE_CHAT_MESSAGE_PAGE_SIZE, SESSION_PROFILE_FILTER_STORAGE_KEY, activeRuntimeMode, agentToCodingAgentId, alignWorkspaceChangeAssistantMessage, attachWorkspaceChangesToExactTurns, backgroundDelegateAnchorCallId, backgroundDelegateTaskDescriptors, buildContentBlocks, clearCodingAgentRuntimeCredentials, codingAgentIdToAgent, formatMessageWithReference, friendlyAgentErrorMessage, getItemBestEffort, getReplayRunMarker, hasRuntimeToolPayload, isBackgroundDelegateToolPayload, isCodingAgentLikeSession, isQueueInsertionInterruption, lastVisibleMessageContent, lastVisibleMessageRole, legacyStorageKey, mapHermesMessages, mapHermesSession, moaReferenceLabel, readRunMarker, reduceSubagentStream, removeItem, resolveResumedAssistantState, runtimeObjectPayload, runtimeToolOutputFromEvent, runtimeToolOutputHasError, runtimeToolPayloadOrUndefined, sessionActivitySeconds, setItemBestEffort, shouldPreserveRuntimeApiMode, storageKey, subagentStatus, setActiveRuntimeMode, uid, uploadFiles } from './chat-core'
+import { type AbortState, type Attachment, type ChatAgentId, type ChatRuntimeMode, type CompressionState, type ContentBlock, type Message, type MessageReference, type PendingApproval, type PendingClarify, type QueueInsertionState, type Session, type SubagentStream, LEGACY_STORAGE_KEY, LEGACY_WORKSPACE_RUN_CHANGE_MESSAGE_PREFIX, LIVE_CHAT_MAX_LOADED_MESSAGES, LIVE_CHAT_MESSAGE_PAGE_SIZE, SESSION_PROFILE_FILTER_STORAGE_KEY, activeRuntimeMode, agentToCodingAgentId, alignWorkspaceChangeAssistantMessage, attachWorkspaceChangesToExactTurns, buildContentBlocks, clearCodingAgentRuntimeCredentials, codingAgentIdToAgent, formatMessageWithReference, friendlyAgentErrorMessage, getItemBestEffort, getReplayRunMarker, hasRuntimeToolPayload, isBackgroundDelegateToolPayload, isCodingAgentLikeSession, isQueueInsertionInterruption, lastVisibleMessageContent, lastVisibleMessageRole, legacyStorageKey, mapHermesMessages, mapHermesSession, moaReferenceLabel, readRunMarker, reduceSubagentStream, removeItem, resolveResumedAssistantState, runtimeObjectPayload, runtimeToolOutputFromEvent, runtimeToolOutputHasError, runtimeToolPayloadOrUndefined, sessionActivitySeconds, setItemBestEffort, shouldPreserveRuntimeApiMode, storageKey, subagentStatus, setActiveRuntimeMode, uid, uploadFiles } from './chat-core'
+import { createChatInteractions } from './chat-interactions'
+import { createChatMessages } from './chat-messages'
 export * from './chat-core'
 
 export const useChatStore = defineStore('chat', () => {
   const runtimeMode = ref<ChatRuntimeMode>(activeRuntimeMode)
   const seenSessionCommandEvents = new WeakSet<RunEvent>()
   const sessions = ref<Session[]>([])
+  // 消息/会话状态操作域（拆分自本文件，见 chat-messages.ts）
+  const chatMessages = createChatMessages({ sessions })
+  const {
+    getSessionMsgs,
+    isEkkoAgentSession,
+    addMessage,
+    addMessageInTimelineOrder,
+    addHermesBackgroundDelegateAnchors,
+    findHermesBackgroundDelegateAnchor,
+    addOrUpdateSession,
+    updateMessage,
+    settleRunningTools,
+    settleRuntimeDisplayForCommand,
+  } = chatMessages
   const activeSessionId = ref<string | null>(null)
   const focusMessageId = ref<string | null>(null)
   const streamStates = ref<Map<string, { abort: () => void }>>(new Map())
@@ -51,16 +67,27 @@ export const useChatStore = defineStore('chat', () => {
     return sid ? messageReferences.value.get(sid) || null : null
   })
   const pendingApprovals = ref<Map<string, PendingApproval>>(new Map())
-  const activePendingApproval = computed(() => {
-    const sid = activeSessionId.value
-    return sid ? pendingApprovals.value.get(sid) || null : null
-  })
-
   const pendingClarifies = ref<Map<string, PendingClarify>>(new Map())
-  const activePendingClarify = computed(() => {
-    const sid = activeSessionId.value
-    return sid ? pendingClarifies.value.get(sid) || null : null
+  // 审批/澄清交互域（拆分自本文件，见 chat-interactions.ts）
+  const interactions = createChatInteractions({
+    activeSessionId,
+    pendingApprovals,
+    pendingClarifies,
+    runtimeTransport,
   })
+  const {
+    activePendingApproval,
+    activePendingClarify,
+    setPendingApproval,
+    clearPendingApproval,
+    setPendingClarify,
+    clearPendingClarify,
+    clearPendingInteractions,
+    respondToClarifyFor,
+    respondToClarify,
+    respondApprovalFor,
+    respondApproval,
+  } = interactions
 
   function setSessionProfileFilter(profile: string | null) {
     const normalized = profile?.trim()
@@ -1051,121 +1078,6 @@ export const useChatStore = defineStore('chat', () => {
     return true
   }
 
-  function getSessionMsgs(sessionId: string): Message[] {
-    const s = sessions.value.find(s => s.id === sessionId)
-    return s?.messages || []
-  }
-
-  function isEkkoAgentSession(sessionId: string): boolean {
-    const session = sessions.value.find(item => item.id === sessionId)
-    return session?.codingAgentId === 'ekko-agent' || session?.agent === 'ekko-agent'
-  }
-
-  function addMessage(sessionId: string, msg: Message) {
-    const s = sessions.value.find(s => s.id === sessionId)
-    if (s) s.messages.push(msg)
-  }
-
-  function addMessageInTimelineOrder(sessionId: string, msg: Message) {
-    const session = sessions.value.find(item => item.id === sessionId)
-    if (!session) return
-    const insertAt = session.messages.findIndex(existing => existing.timestamp > msg.timestamp)
-    if (insertAt === -1) {
-      session.messages.push(msg)
-      return
-    }
-    session.messages.splice(insertAt, 0, msg)
-  }
-
-  function addHermesBackgroundDelegateAnchors(
-    sessionId: string,
-    toolCallId: string | undefined,
-    output: unknown,
-    toolArgs: unknown,
-  ) {
-    const payload = runtimeObjectPayload(output)
-    if (!payload || payload.mode !== 'background' || payload.runtime === 'ekko') return
-    const baseId = toolCallId || String(payload.delegation_id || uid())
-    const messages = getSessionMsgs(sessionId)
-    for (const task of backgroundDelegateTaskDescriptors(payload, toolArgs)) {
-      const anchorCallId = backgroundDelegateAnchorCallId(baseId, task.taskIndex)
-      if (messages.some(message => message.toolCallId === anchorCallId)) continue
-      const label = `${task.taskIndex + 1}/${task.taskCount}`
-      addMessage(sessionId, {
-        id: uid(),
-        role: 'tool',
-        content: '',
-        timestamp: Date.now(),
-        toolName: 'delegate_task',
-        toolCallId: anchorCallId,
-        toolArgs,
-        toolPreview: `${label}${task.goal ? ` · ${task.goal}` : ''}`.slice(0, 220),
-        toolResult: {
-          ...payload,
-          runtime: 'hermes',
-          task_index: task.taskIndex,
-          task_count: task.taskCount,
-          goal: task.goal,
-        },
-        toolStatus: 'done',
-      })
-    }
-  }
-
-  function findHermesBackgroundDelegateAnchor(messages: Message[], evt: RunEvent): Message | undefined {
-    const taskIndex = Number((evt as any).task_index ?? 0)
-    const goal = String((evt as any).goal || '').trim()
-    const candidates = messages.filter(message =>
-      message.role === 'tool'
-      && message.toolCallId?.startsWith(HERMES_BACKGROUND_DELEGATE_ANCHOR_PREFIX)
-      && runtimeObjectPayload(message.toolResult)?.runtime === 'hermes',
-    )
-    return candidates.find(message => {
-      const payload = runtimeObjectPayload(message.toolResult)
-      return Number(payload?.task_index ?? 0) === taskIndex
-        && (!goal || !String(payload?.goal || '').trim() || String(payload?.goal || '').trim() === goal)
-    }) || candidates.find(message => Number(runtimeObjectPayload(message.toolResult)?.task_index ?? 0) === taskIndex)
-  }
-
-  function addOrUpdateSession(session: Session) {
-    const existingIndex = sessions.value.findIndex(s => s.id === session.id)
-    if (existingIndex !== -1) {
-      // Update existing session
-      sessions.value[existingIndex] = session
-    } else {
-      // Add new session
-      sessions.value.push(session)
-    }
-  }
-
-  function updateMessage(sessionId: string, id: string, update: Partial<Message>) {
-    const s = sessions.value.find(s => s.id === sessionId)
-    if (!s) return
-    const idx = s.messages.findIndex(m => m.id === id)
-    if (idx !== -1) {
-      s.messages[idx] = { ...s.messages[idx], ...update }
-    }
-  }
-
-  function settleRunningTools(sessionId: string, status: 'done' | 'error') {
-    const msgs = getSessionMsgs(sessionId)
-    msgs.forEach((m, i) => {
-      if (m.role === 'tool' && m.toolStatus === 'running' && !m.toolCallId?.startsWith('subagent:')) {
-        msgs[i] = { ...m, toolStatus: status }
-      }
-    })
-  }
-
-  function settleRuntimeDisplayForCommand(sessionId: string) {
-    const msgs = getSessionMsgs(sessionId)
-    msgs.forEach((m, i) => {
-      if (m.isStreaming) updateMessage(sessionId, m.id, { isStreaming: false })
-      if (m.role === 'tool' && m.toolStatus === 'running') {
-        msgs[i] = { ...m, toolStatus: 'done' }
-      }
-    })
-  }
-
   function clearAgentEventMessages(sessionId: string) {
     const s = sessions.value.find(s => s.id === sessionId)
     if (!s) return
@@ -1777,120 +1689,6 @@ export const useChatStore = defineStore('chat', () => {
       queued: true,
       systemType: peer?.role === 'command' ? 'command' : existing?.systemType,
     })
-  }
-
-  function setPendingApproval(evt: RunEvent) {
-    const sid = evt.session_id
-    const approvalId = (evt as any).approval_id as string | undefined
-    if (!sid || !approvalId) return
-    const description = String((evt as any).description || '')
-    const normalizedDescription = description.trim().toLowerCase().replace(/\s+/g, ' ')
-    const isMemoryWrite = !Boolean((evt as any).allow_permanent) && (
-      normalizedDescription === 'save to memory' ||
-      normalizedDescription.startsWith('save to memory:') ||
-      normalizedDescription.startsWith('save to memory?')
-    )
-    const rawChoices = Array.isArray((evt as any).choices) ? (evt as any).choices : ['once', 'session', 'deny']
-    const choices = rawChoices
-      .filter((choice: unknown): choice is PendingApproval['choices'][number] =>
-        choice === 'once' || choice === 'session' || choice === 'always' || choice === 'deny')
-    pendingApprovals.value.set(sid, {
-      sessionId: sid,
-      approvalId,
-      command: String((evt as any).command || ''),
-      description,
-      choices: isMemoryWrite ? ['once', 'deny'] : choices.length ? choices : ['once', 'session', 'deny'],
-      allowPermanent: Boolean((evt as any).allow_permanent),
-      isMemoryWrite,
-      requestedAt: Date.now(),
-    })
-    pendingApprovals.value = new Map(pendingApprovals.value)
-  }
-
-  function clearPendingApproval(evt: RunEvent) {
-    if ((evt as any).resolved === false) return
-    const sid = evt.session_id
-    if (!sid) return
-    const current = pendingApprovals.value.get(sid)
-    if (!current) return
-    const approvalId = (evt as any).approval_id
-    if (approvalId && current.approvalId !== approvalId) return
-    pendingApprovals.value.delete(sid)
-    pendingApprovals.value = new Map(pendingApprovals.value)
-  }
-
-  function setPendingClarify(evt: RunEvent) {
-    const sid = evt.session_id
-    const clarifyId = (evt as any).clarify_id as string | undefined
-    if (!sid || !clarifyId) return
-    pendingClarifies.value.set(sid, {
-      sessionId: sid,
-      clarifyId,
-      question: String((evt as any).question || ''),
-      choices: Array.isArray((evt as any).choices) ? (evt as any).choices : null,
-      initialResponse: String((evt as any).initial_response || ''),
-      responseMode: String((evt as any).response_mode || ''),
-      timeoutMs: Number((evt as any).timeout_ms) || 300000,
-      requestedAt: Date.now(),
-    })
-    pendingClarifies.value = new Map(pendingClarifies.value)
-  }
-
-  function clearPendingClarify(evt: RunEvent) {
-    if ((evt as any).resolved === false) return
-    const sid = evt.session_id
-    if (!sid) return
-    const current = pendingClarifies.value.get(sid)
-    if (!current) return
-    const clarifyId = (evt as any).clarify_id
-    if (clarifyId && current.clarifyId !== clarifyId) return
-    pendingClarifies.value.delete(sid)
-    pendingClarifies.value = new Map(pendingClarifies.value)
-  }
-
-  function clearPendingInteractions(sessionId: string) {
-    let changed = false
-    if (pendingApprovals.value.has(sessionId)) {
-      pendingApprovals.value.delete(sessionId)
-      changed = true
-    }
-    if (pendingClarifies.value.has(sessionId)) {
-      pendingClarifies.value.delete(sessionId)
-      changed = true
-    }
-    if (changed) {
-      pendingApprovals.value = new Map(pendingApprovals.value)
-      pendingClarifies.value = new Map(pendingClarifies.value)
-    }
-  }
-
-  function respondToClarifyFor(sessionId: string, clarifyId: string, response: string) {
-    const pending = pendingClarifies.value.get(sessionId)
-    if (!pending || pending.clarifyId !== clarifyId) return
-    respondClarify(sessionId, clarifyId, response, runtimeTransport())
-  }
-
-  function respondToClarify(response: string) {
-    const pending = activePendingClarify.value
-    if (!pending) return
-    respondToClarifyFor(pending.sessionId, pending.clarifyId, response)
-    pendingClarifies.value.delete(pending.sessionId)
-    pendingClarifies.value = new Map(pendingClarifies.value)
-  }
-
-
-  function respondApprovalFor(sessionId: string, approvalId: string, choice: PendingApproval['choices'][number]) {
-    const pending = pendingApprovals.value.get(sessionId)
-    if (!pending || pending.approvalId !== approvalId) return
-    respondToolApproval(sessionId, approvalId, choice, runtimeTransport())
-  }
-
-  function respondApproval(choice: PendingApproval['choices'][number]) {
-    const pending = activePendingApproval.value
-    if (!pending) return
-    respondApprovalFor(pending.sessionId, pending.approvalId, choice)
-    pendingApprovals.value.delete(pending.sessionId)
-    pendingApprovals.value = new Map(pendingApprovals.value)
   }
 
   function updateSessionTitle(sessionId: string) {
