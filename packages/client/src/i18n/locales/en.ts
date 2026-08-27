@@ -4215,10 +4215,15 @@ export default {
       placeholder: 'Select a meeting scene template',
       hint: 'AI will provide targeted real-time assistance based on the selected scene',
       general: 'General Meeting',
+      generalDesc: 'Real-time transcript & AI assist',
       legal: 'Legal Consultation',
+      legalDesc: 'Clause review & risk alerts',
       business: 'Business Negotiation',
+      businessDesc: 'Agenda, decisions & KPI board',
       medical: 'Medical Consultation',
+      medicalDesc: 'Clinical notes & structuring',
       interview: 'Client Interview',
+      interviewDesc: 'Q&A guidance & key takeaways',
       speech: 'Speech Evaluation',
     },
     // Speech evaluation scene (Toastmasters style)
@@ -4332,9 +4337,6 @@ export default {
     untitled: 'Untitled meeting',
     openSettings: 'Open settings',
     closeSession: 'Close meeting',
-    sceneShell: {
-      noActiveSession: 'No active meeting. Please return to the meeting list to create one.',
-    },
     control: {
       start: 'Start',
       startHint: 'Start recording and live assist',
@@ -4350,6 +4352,21 @@ export default {
       empty: 'No transcript yet. Start recording to see content here.',
       live: 'Connected',
       connecting: 'Connecting',
+    },
+    sceneBusiness: {
+      agenda: {
+        title: 'Agenda',
+        add: 'Add agenda item',
+      },
+      decisions: {
+        title: 'Decisions',
+        pending: 'Pending',
+        decided: 'Decided',
+        markDecided: 'Mark as decided',
+      },
+      kpi: {
+        title: 'KPI',
+      },
     },
   },
 }

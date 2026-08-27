@@ -3987,12 +3987,17 @@ export default {
     saveModeHint: '只執行說話人分離，省一半 Token（無即時文字）',
     scene: {
       business: '商務談判',
+      businessDesc: '議程 · 決策 · KPI 看板',
       general: '通用會議',
+      generalDesc: 'AI 即時轉寫與智能輔助',
       hint: 'AI 將根據所選場景提供針對性的即時輔助提示',
       interview: '客戶訪談',
+      interviewDesc: '問答引導與要點歸納',
       label: '會議場景',
       legal: '法律溝通',
+      legalDesc: '條款審閱與風險提示',
       medical: '醫療問診',
+      medicalDesc: '病歷記錄與結構化',
       placeholder: '選擇會議場景範本',
       speech: '演講評分',
     },
@@ -4098,9 +4103,6 @@ export default {
     untitled: 'Untitled meeting',
     openSettings: 'Open settings',
     closeSession: 'Close meeting',
-    sceneShell: {
-      noActiveSession: 'No active meeting. Please return to the meeting list to create one.',
-    },
     control: {
       start: 'Start',
       startHint: 'Start recording and live assist',
@@ -4116,6 +4118,21 @@ export default {
       empty: 'No transcript yet. Start recording to see content here.',
       live: 'Connected',
       connecting: 'Connecting',
+    },
+    sceneBusiness: {
+      agenda: {
+        title: '議程',
+        add: '添加議程项',
+      },
+      decisions: {
+        title: '決策項目',
+        pending: '待決',
+        decided: '已決',
+        markDecided: '标记为已決',
+      },
+      kpi: {
+        title: 'KPI',
+      },
     },
   },
   modelGuide: {

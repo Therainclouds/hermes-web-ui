@@ -1,11 +1,17 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { NButton, NSpin, NTag, NTooltip, NInput, NPopconfirm, NModal, NSelect, NRadio, NRadioGroup, NPopover, NSteps, NStep, NAlert } from 'naive-ui'
-import PageSidebarNav from '@/components/layout/PageSidebarNav.vue'
-import PageSidebarFooter from '@/components/layout/PageSidebarFooter.vue'
+import { NButton, NSpin, NTag, NTooltip, NInput, NPopconfirm, NModal, NSelect, NRadio, NRadioGroup, NSteps, NStep, NAlert } from 'naive-ui'
 import MeetingAgentPanel from '@/components/hermes/meeting/MeetingAgentPanel.vue'
 import SpeechEvaluationPanel from '@/components/hermes/meeting/SpeechEvaluationPanel.vue'
+import SceneTemplatePicker from '@/components/hermes/meeting/SceneTemplatePicker.vue'
+import WaveformCanvas from '@/components/hermes/meeting/WaveformCanvas.vue'
+import MeetingSidebar, { type SidebarSession } from '@/components/hermes/meeting/MeetingSidebar.vue'
+import CreateMeetingDialog from '@/components/hermes/meeting/CreateMeetingDialog.vue'
+import MeetingTopBar from '@/components/hermes/meeting/MeetingTopBar.vue'
+import MeetingRightPanel from '@/components/hermes/meeting/MeetingRightPanel.vue'
+import TranscriptList from '@/components/hermes/meeting/TranscriptList.vue'
+import type { SceneId } from '@/components/hermes/meeting/scene-templates'
 import { useMeetingStore } from '@/stores/hermes/meeting'
 import type { MeetingSession, TranscriptSentence, AgentConfig } from '@/stores/hermes/meeting'
 import { useModelsStore } from '@/stores/hermes/models'
@@ -26,6 +32,17 @@ const profilesStore = useProfilesStore()
 // --- 侧边栏状态 ---
 const showSidebar = ref(true)
 
+// 把 store 数据压扁成 MeetingSidebar 期望的最小结构（避免组件依赖 store 内部类型）
+const sidebarSessions = computed<SidebarSession[]>(() =>
+  meetingStore.sortedSessions.map((s) => ({
+    id: s.id,
+    title: s.title,
+    updatedAt: s.updatedAt,
+    sentencesCount: s.sentences.length,
+    hasAnalysis: s.analysisResult !== null && s.analysisResult !== undefined,
+  })),
+)
+
 // --- 创建会议对话框 ---
 const showCreateModal = ref(false)
 const newMeetingTitle = ref('')
@@ -33,17 +50,7 @@ const newMeetingAnalysisMode = ref<'hermes' | 'custom'>('hermes')
 const newMeetingHermesProfile = ref('')
 const newMeetingCustomProvider = ref('')
 const newMeetingCustomModel = ref('')
-const newMeetingSceneTemplate = ref('general')
-
-// 场景模板选项
-const sceneTemplateOptions = computed(() => [
-  { label: t('meeting.scene.general'), value: 'general' },
-  { label: t('meeting.scene.legal'), value: 'legal' },
-  { label: t('meeting.scene.business'), value: 'business' },
-  { label: t('meeting.scene.medical'), value: 'medical' },
-  { label: t('meeting.scene.interview'), value: 'interview' },
-  { label: t('meeting.scene.speech'), value: 'speech' },
-])
+const newMeetingSceneTemplate = ref<SceneId>('general')
 
 // --- Agent 配置 ---
 const newMeetingAgentType = ref<'hermes' | 'claude-code' | 'codex'>('hermes')
@@ -128,8 +135,6 @@ const speakerCountOptions = computed(() => [
 ])
 
 // --- 说话人重命名 ---
-const renamingKey = ref<string | null>(null)  // 格式: "speakerId:index"
-const renameInput = ref('')
 
 // --- 配置 ---
 // WebSocket goes through the Node server proxy (/ws/asr, /ws/diarize) so the
@@ -157,8 +162,7 @@ let ws: WebSocket | null = null
 let diarizeWs: WebSocket | null = null  // 说话人分离专用WebSocket
 let audioContext: AudioContext | null = null
 let mediaStream: MediaStream | null = null
-let analyser: AnalyserNode | null = null
-let animationFrameId: number | null = null
+const analyser = ref<AnalyserNode | null>(null)
 
 // --- 音频录制 ---
 let mediaRecorder: MediaRecorder | null = null
@@ -403,9 +407,15 @@ function handleCreateMeeting() {
     agentConfig,
     sceneTemplate: newMeetingSceneTemplate.value,
   })
-  
+
   resetMeetingState()
   showCreateModal.value = false
+}
+
+// MeetingSidebar 只传 sessionId；这里把它查回 store 中的完整 session，再走原 loadMeeting。
+function selectMeetingById(sessionId: string) {
+  const session = meetingStore.sortedSessions.find((s) => s.id === sessionId)
+  if (session) loadMeeting(session)
 }
 
 async function loadMeeting(session: MeetingSession) {
@@ -509,7 +519,6 @@ function resetMeetingState() {
   isConnecting.value = false
   statusText.value = ''
   highlightedSentenceIndex.value = -1
-  renamingKey.value = null
   stopAudio()
 }
 
@@ -550,31 +559,15 @@ async function saveCurrentMeeting() {
 }
 
 // --- 说话人重命名 ---
-function startRenameSpeaker(speakerId: string | undefined, index: number) {
-  if (!speakerId || !meetingStore.activeSession) return
-  renamingKey.value = `${speakerId}:${index}`
-  const displayName = meetingStore.getSpeakerDisplayName(meetingStore.activeSession, speakerId)
-  renameInput.value = displayName
-}
-
-function confirmRenameSpeaker() {
-  // 从 renamingKey 中提取 speakerId
-  const speakerId = renamingKey.value?.split(':')[0]
-  if (!speakerId || !renameInput.value.trim() || !meetingStore.activeSessionId) return
-  meetingStore.renameSpeaker(meetingStore.activeSessionId, speakerId, renameInput.value.trim())
-  // 更新本地 finalSentences 和 speakerMap
+// TranscriptList 负责 UI state（弹窗开合/输入框），这里只做持久化。
+function onTranscriptRename(speakerId: string, name: string) {
+  if (!meetingStore.activeSessionId) return
+  meetingStore.renameSpeaker(meetingStore.activeSessionId, speakerId, name)
   const session = meetingStore.activeSession
   if (session) {
     finalSentences.value = [...session.sentences]
     speakerMap.value = { ...session.speakerMap }
   }
-  renamingKey.value = null
-  renameInput.value = ''
-}
-
-function cancelRenameSpeaker() {
-  renamingKey.value = null
-  renameInput.value = ''
 }
 
 // --- ASR 服务管理 ---
@@ -837,15 +830,15 @@ async function startRecording() {
     const source = audioContext.createMediaStreamSource(mediaStream)
 
     // 创建分析节点用于可视化
-    analyser = audioContext.createAnalyser()
-    analyser.fftSize = 256
+    analyser.value = audioContext.createAnalyser()
+    analyser.value.fftSize = 256
 
     // AudioWorklet 替代 deprecated ScriptProcessorNode，跑在 audio 线程不抢主线程。
     // JS 副本在 public/audio/pcm-worklet.js（源文件 src/audio/pcm-worklet.ts）。
     await audioContext.audioWorklet.addModule('/audio/pcm-worklet.js')
     const pcmNode = new AudioWorkletNode(audioContext, 'pcm-processor')
-    source.connect(analyser)
-    analyser.connect(pcmNode)
+    source.connect(analyser.value)
+    analyser.value.connect(pcmNode)
     // 注意：worklet node 不能 connect 到 destination（会回声）。仅做 passthrough 处理。
 
     // 开始录制音频用于保存。timeslice=1000ms 切分，避免长会议占满内存。
@@ -1045,8 +1038,7 @@ async function startRecording() {
       if (diarizeOpen) diarizeWs!.send(int16Data.buffer)
     }
 
-    // 开始可视化
-    drawWaveform()
+    // 声浪可视化由 WaveformCanvas 组件监听 analyser 自动起停，无需手动调用。
 
   } catch (error: any) {
     console.error('[meeting] Failed to start recording:', error)
@@ -1093,11 +1085,8 @@ async function stopRecording() {
   isConnecting.value = false
   statusText.value = ''
 
-  // 停止可视化
-  if (animationFrameId) {
-    cancelAnimationFrame(animationFrameId)
-    animationFrameId = null
-  }
+  // 声浪可视化由 WaveformCanvas 监听 analyser 自动停止，这里只清空引用。
+  analyser.value = null
 
   // 停止媒体录制器
   if (mediaRecorder && mediaRecorder.state !== 'inactive') {
@@ -1131,7 +1120,7 @@ async function stopRecording() {
     audioContext.close().catch(() => { /* best effort */ })
     audioContext = null
   }
-  analyser = null
+  analyser.value = null
 
   // 保存音频（会议结束一次性落库）。录音期间 audioChunks 只累积在内存，
   // MediaRecorder 每 1000ms 切一块，这里统一合成整段 webm 落库：
@@ -1827,49 +1816,7 @@ function formatActionDeadline(item: any): string {
   return ''
 }
 
-// --- 可视化 ---
-const canvasRef = ref<HTMLCanvasElement | null>(null)
-
-function drawWaveform() {
-  const canvas = canvasRef.value
-  if (!canvas || !analyser) return
-
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return
-
-  const width = canvas.width
-  const height = canvas.height
-  const bufferLength = analyser.frequencyBinCount
-  const dataArray = new Uint8Array(bufferLength)
-
-  function draw() {
-    animationFrameId = requestAnimationFrame(draw)
-    analyser!.getByteFrequencyData(dataArray)
-
-    if (!ctx) return
-    
-    ctx.fillStyle = 'rgb(15, 23, 42)'
-    ctx.fillRect(0, 0, width, height)
-
-    const barWidth = (width / bufferLength) * 2.5
-    let x = 0
-
-    for (let i = 0; i < bufferLength; i++) {
-      const barHeight = (dataArray[i] / 255) * height * 0.8
-
-      const gradient = ctx.createLinearGradient(0, height - barHeight, 0, height)
-      gradient.addColorStop(0, '#8b5cf6')
-      gradient.addColorStop(1, '#6366f1')
-
-      ctx.fillStyle = gradient
-      ctx.fillRect(x, height - barHeight, barWidth, barHeight)
-
-      x += barWidth + 1
-    }
-  }
-
-  draw()
-}
+// 声浪可视化已迁移到 <WaveformCanvas>，本组件只保留 analyser ref 与录音控制。
 
 // --- 分析功能 ---
 async function startAnalysis() {
@@ -1958,192 +1905,61 @@ async function clearTranscript() {
 
 <template>
   <div class="meeting-view">
-    <!-- 左侧边栏背景遮罩 -->
-    <div
-      class="sidebar-backdrop"
-      :class="{ active: showSidebar }"
-      @click="showSidebar = false"
-    />
-
-    <!-- 左侧边栏 -->
-    <aside class="meeting-sidebar" :class="{ collapsed: !showSidebar }">
-      <div v-if="showSidebar" class="page-sidebar-top">
-        <PageSidebarNav
-          active="meeting"
-          :primary-label="t('meeting.newMeeting')"
-          @primary="openCreateModal"
-        />
-        <div class="meeting-list">
-          <div v-if="meetingStore.sortedSessions.length === 0" class="meeting-list-empty">
-            {{ t('meeting.noMeetings') }}
-          </div>
-          <button
-            v-for="session in meetingStore.sortedSessions"
-            :key="session.id"
-            class="meeting-list-item"
-            :class="{ active: session.id === meetingStore.activeSessionId }"
-            @click="loadMeeting(session)"
-          >
-            <div class="meeting-item-icon">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/>
-                <path d="M8 12l3 3 5-5"/>
+    <!-- 左侧边栏（拆分自 MeetingView 主体） -->
+    <MeetingSidebar
+      v-model:expanded="showSidebar"
+      :sessions="sidebarSessions"
+      :active-id="meetingStore.activeSessionId"
+      @create="openCreateModal"
+      @select="selectMeetingById"
+    >
+      <template #item-actions="{ session }">
+        <NPopconfirm @positive-click.stop="deleteMeeting(session.id)">
+          <template #trigger>
+            <button
+              class="meeting-item-delete"
+              @click.stop
+              :title="t('common.delete')"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"/>
+                <line x1="6" y1="6" x2="18" y2="18"/>
               </svg>
-            </div>
-            <div class="meeting-item-content">
-              <div class="meeting-item-title">{{ session.title }}</div>
-              <div class="meeting-item-meta">
-                {{ new Date(session.updatedAt).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) }}
-                · {{ session.sentences.length }} {{ t('meeting.sentences') }}
-                <span v-if="session.analysisResult" class="meeting-item-badge">AI</span>
-              </div>
-            </div>
-            <NPopconfirm @positive-click.stop="deleteMeeting(session.id)">
-              <template #trigger>
-                <button
-                  class="meeting-item-delete"
-                  @click.stop
-                  :title="t('common.delete')"
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <line x1="18" y1="6" x2="6" y2="18"/>
-                    <line x1="6" y1="6" x2="18" y2="18"/>
-                  </svg>
-                </button>
-              </template>
-              {{ t('meeting.deleteConfirm') }}
-            </NPopconfirm>
-          </button>
-        </div>
-      </div>
-      <PageSidebarFooter v-if="showSidebar" />
-    </aside>
+            </button>
+          </template>
+          {{ t('meeting.deleteConfirm') }}
+        </NPopconfirm>
+      </template>
+    </MeetingSidebar>
 
     <!-- 主内容区 -->
     <div class="meeting-main">
       <!-- 顶部标题栏 -->
-      <div class="meeting-header">
-        <div class="meeting-title">
-          <button
-            class="header-avatar-toggle"
-            @click="showSidebar = !showSidebar"
-            :title="showSidebar ? t('sidebar.collapse') : t('sidebar.expand')"
-          >
-            <img src="/logo.png" alt="QuantHermes" class="header-logo" />
-          </button>
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/>
-            <path d="M8 12l3 3 5-5"/>
-          </svg>
-          <h1>{{ t('meeting.title') }}</h1>
-        </div>
-        <div class="meeting-controls">
-          <!-- Agent 切换按钮 -->
-          <NTooltip trigger="hover">
-            <template #trigger>
-              <NButton
-                size="small"
-                :type="showAgentPanel ? 'primary' : 'default'"
-                @click="showAgentPanel = !showAgentPanel"
-              >
-                <template #icon>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                    <path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"/>
-                    <path d="M16 14H8a4 4 0 0 0-4 4v2h16v-2a4 4 0 0 0-4-4z"/>
-                  </svg>
-                </template>
-                {{ t('meeting.agentChat') }}
-              </NButton>
-            </template>
-            {{ t('meeting.showAgentChat') }}
-          </NTooltip>
-
-          <template v-if="!HIDE_SPEAKER_DIARIZATION">
-            <NTooltip trigger="hover">
-              <template #trigger>
-                <NButton
-                  size="small"
-                  :type="useDiarize ? 'primary' : 'default'"
-                  @click="useDiarize = !useDiarize"
-                  :disabled="isRecording"
-                >
-                  <template #icon>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
-                      <circle cx="9" cy="7" r="4"/>
-                      <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
-                      <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-                    </svg>
-                  </template>
-                  {{ t('meeting.diarize') }}
-                </NButton>
-              </template>
-              {{ t('meeting.diarizeHint') }}
-            </NTooltip>
-
-            <NTooltip v-if="useDiarize" trigger="hover">
-              <template #trigger>
-                <NButton
-                  size="small"
-                  :type="saveMode ? 'warning' : 'default'"
-                  @click="saveMode = !saveMode"
-                  :disabled="isRecording"
-                >
-                  <template #icon>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                      <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
-                    </svg>
-                  </template>
-                  {{ saveMode ? t('meeting.saveMode') : t('meeting.normalMode') }}
-                </NButton>
-              </template>
-              {{ saveMode ? t('meeting.saveModeHint') : t('meeting.normalModeHint') }}
-            </NTooltip>
-
-            <NSelect
-              v-if="useDiarize"
-              v-model:value="speakerCount"
-              :options="speakerCountOptions"
-              size="small"
-              style="width: 120px"
-              :disabled="isRecording"
-              :placeholder="t('meeting.speakerCount')"
-            />
-          </template>
-
-          <NTooltip trigger="hover">
-            <template #trigger>
-              <NButton
-                size="small"
-                type="error"
-                @click="clearTranscript"
-                :disabled="isRecording || sentences.length === 0"
-              >
-                <template #icon>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                    <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                  </svg>
-                </template>
-                {{ t('meeting.clear') }}
-              </NButton>
-            </template>
-            {{ t('meeting.clearHint') }}
-          </NTooltip>
-        </div>
-      </div>
+      <!-- 顶部控制条（拆分自 MeetingView 主体） -->
+      <MeetingTopBar
+        :sidebar-expanded="showSidebar"
+        :show-agent-panel="showAgentPanel"
+        :use-diarize="useDiarize"
+        :save-mode="saveMode"
+        :speaker-count="speakerCount"
+        :speaker-count-options="speakerCountOptions"
+        :is-recording="isRecording"
+        :has-sentences="sentences.length > 0"
+        :hide-speaker-diarization="HIDE_SPEAKER_DIARIZATION"
+        @toggle-sidebar="showSidebar = !showSidebar"
+        @toggle-agent-panel="showAgentPanel = !showAgentPanel"
+        @toggle-diarize="useDiarize = !useDiarize"
+        @toggle-save-mode="saveMode = !saveMode"
+        @update:speaker-count="speakerCount = $event"
+        @clear-transcript="clearTranscript"
+      />
 
       <!-- 主内容区 -->
       <div class="meeting-content">
       <!-- 左侧：转写区域 -->
       <div class="transcript-panel">
         <!-- 可视化区域 -->
-        <div class="waveform-container">
-          <canvas ref="canvasRef" width="600" height="100"></canvas>
-          <div v-if="isConnecting" class="connecting-overlay">
-            <NSpin size="small" />
-            <span>{{ t('meeting.connecting') }}</span>
-          </div>
-        </div>
+        <WaveformCanvas :analyser="analyser" :connecting="isConnecting" />
 
         <!-- 状态栏 -->
         <div class="status-bar">
@@ -2173,69 +1989,16 @@ async function clearTranscript() {
           </div>
         </div>
 
-        <!-- 转写内容 -->
-        <div id="transcript-container" class="transcript-content">
-          <div v-if="sentences.length === 0 && !partialText" class="empty-state">
-            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3">
-              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/>
-              <path d="M8 12l3 3 5-5"/>
-            </svg>
-            <p>{{ t('meeting.emptyState') }}</p>
-          </div>
-
-          <div 
-            v-for="(sentence, index) in sentences" 
-            :key="index" 
-            :data-index="index"
-            class="sentence-item"
-            :class="{ 
-              highlighted: highlightedSentenceIndex === index,
-              clickable: sentence.startTime && !isRecording
-            }"
-            @click="sentence.startTime && !isRecording ? seekToSentence(index) : undefined"
-          >
-            <span class="sentence-index">{{ index + 1 }}</span>
-            <div class="sentence-body">
-              <NPopover
-                v-if="sentence.speakerId && !HIDE_SPEAKER_DIARIZATION"
-                trigger="click"
-                placement="top"
-                :show="renamingKey === `${sentence.speakerId}:${index}`"
-                @update:show="(val: boolean) => { if (!val) cancelRenameSpeaker() }"
-              >
-                <template #trigger>
-                  <span 
-                    class="sentence-speaker"
-                    @click.stop="startRenameSpeaker(sentence.speakerId, index)"
-                    :title="t('meeting.renameSpeaker')"
-                  >
-                    {{ sentence.speaker }}
-                  </span>
-                </template>
-                <div class="speaker-rename-popover">
-                  <div class="speaker-rename-title">{{ t('meeting.renameSpeaker') }}</div>
-                  <NInput
-                    v-model:value="renameInput"
-                    size="small"
-                    :placeholder="t('meeting.speakerPlaceholder')"
-                    @keyup.enter="confirmRenameSpeaker"
-                    autofocus
-                  />
-                  <div class="speaker-rename-actions">
-                    <NButton size="tiny" @click="cancelRenameSpeaker">{{ t('common.cancel') }}</NButton>
-                    <NButton size="tiny" type="primary" @click="confirmRenameSpeaker">{{ t('common.confirm') }}</NButton>
-                  </div>
-                </div>
-              </NPopover>
-              <span class="sentence-text">{{ sentence.text }}</span>
-            </div>
-          </div>
-
-          <div v-if="partialText" class="partial-text">
-            <span class="partial-indicator">{{ t('meeting.partial') }}</span>
-            {{ partialText }}
-          </div>
-        </div>
+        <!-- 转写内容（拆分自 MeetingView 主体） -->
+        <TranscriptList
+          :sentences="sentences"
+          :partial-text="partialText"
+          :highlighted-index="highlightedSentenceIndex"
+          :is-recording="isRecording"
+          :hide-speaker-diarization="HIDE_SPEAKER_DIARIZATION"
+          @seek="seekToSentence"
+          @rename="onTranscriptRename"
+        />
 
         <!-- 录音按钮 -->
         <div class="record-button-container">
@@ -2260,110 +2023,87 @@ async function clearTranscript() {
         </div>
       </div>
 
-      <!-- 右侧：分析面板（可调整大小） -->
-      <aside
-        v-if="showRightPanel"
-        class="right-panel"
-        :style="rightPanelStyle"
+      <!-- 右侧：分析面板（壳已拆出 MeetingRightPanel） -->
+      <MeetingRightPanel
+        :visible="showRightPanel"
+        :is-speech-scene="isSpeechScene"
+        :show-agent-panel="showAgentPanel"
+        :resize-style="rightPanelStyle"
+        @close="showRightPanel = false"
+        @resize-start="startRightPanelResize"
       >
-        <div
-          class="right-panel-resize-handle"
-          @pointerdown="startRightPanelResize"
-        />
-        <div class="right-panel-inner">
-          <div class="right-panel-header">
-            <h2>{{ isSpeechScene ? t('meeting.scene.speech') : (showAgentPanel ? t('meeting.agentChat') : t('meeting.analysis')) }}</h2>
-            <div class="right-panel-actions">
-              <!-- 关闭按钮：始终位于最右，确保不被遮挡 -->
-              <button
-                class="panel-close-btn"
-                :title="t('sidebar.collapse')"
-                @click="showRightPanel = false"
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <line x1="18" y1="6" x2="6" y2="18"/>
-                  <line x1="6" y1="6" x2="18" y2="18"/>
-                </svg>
-              </button>
-            </div>
-          </div>
-
-          <!-- 分析工具栏：独立一行，避免与标题互相挤压 -->
-          <div v-if="!showAgentPanel && !isSpeechScene" class="right-panel-toolbar">
-            <div class="toolbar-actions">
-              <NTooltip trigger="hover">
-                <template #trigger>
-                  <NButton
-                    size="tiny"
-                    type="primary"
-                    :loading="isLoading && !isAnalyzing"
-                    :disabled="sentences.length === 0"
-                    @click="triggerAnalysis"
-                  >
-                    <template #icon>
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <polygon points="5 3 19 12 5 21 5 3"/>
-                      </svg>
-                    </template>
-                    {{ t('meeting.triggerAnalysis') }}
-                  </NButton>
-                </template>
-                {{ sentences.length === 0 ? t('meeting.noTranscript') : '' }}
-              </NTooltip>
-
-              <!-- 生成报告按钮（仅在非 Agent 面板时显示） -->
-              <template v-if="!showAgentPanel">
+        <template #toolbar>
+          <div class="toolbar-actions">
+            <NTooltip trigger="hover">
+              <template #trigger>
                 <NButton
                   size="tiny"
                   type="primary"
-                  @click="triggerAnalysis"
-                  :loading="isLoading"
+                  :loading="isLoading && !isAnalyzing"
                   :disabled="sentences.length === 0"
+                  @click="triggerAnalysis"
                 >
-                  {{ t('meeting.generateReport') }}
+                  <template #icon>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <polygon points="5 3 19 12 5 21 5 3"/>
+                    </svg>
+                  </template>
+                  {{ t('meeting.triggerAnalysis') }}
                 </NButton>
               </template>
-              <NTooltip trigger="hover">
-                <template #trigger>
-                  <NButton
-                    size="tiny"
-                    :type="isAnalyzing ? 'warning' : 'default'"
-                    :disabled="sentences.length === 0"
-                    @click="isAnalyzing ? stopAnalysis() : startAnalysis()"
-                  >
-                    <template #icon>
-                      <svg v-if="!isAnalyzing" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="10"/>
-                        <polyline points="12 6 12 12 16 14"/>
-                      </svg>
-                      <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <rect x="6" y="4" width="4" height="16"/>
-                        <rect x="14" y="4" width="4" height="16"/>
-                      </svg>
-                    </template>
-                    {{ isAnalyzing ? t('meeting.stopAnalysis') : t('meeting.startAnalysis') }}
-                  </NButton>
-                </template>
-              </NTooltip>
+              {{ sentences.length === 0 ? t('meeting.noTranscript') : '' }}
+            </NTooltip>
 
-              <NTooltip trigger="hover">
-                <template #trigger>
-                  <NButton
-                    size="tiny"
-                    quaternary
-                    @click="showAnalysisConfig = true"
-                  >
-                    <template #icon>
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="3"/>
-                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-                      </svg>
-                    </template>
-                  </NButton>
-                </template>
-                {{ t('meeting.analysisTriggerConfig') }}
-              </NTooltip>
-            </div>
+            <NButton
+              size="tiny"
+              type="primary"
+              @click="triggerAnalysis"
+              :loading="isLoading"
+              :disabled="sentences.length === 0"
+            >
+              {{ t('meeting.generateReport') }}
+            </NButton>
+
+            <NTooltip trigger="hover">
+              <template #trigger>
+                <NButton
+                  size="tiny"
+                  :type="isAnalyzing ? 'warning' : 'default'"
+                  :disabled="sentences.length === 0"
+                  @click="isAnalyzing ? stopAnalysis() : startAnalysis()"
+                >
+                  <template #icon>
+                    <svg v-if="!isAnalyzing" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <circle cx="12" cy="12" r="10"/>
+                      <polyline points="12 6 12 12 16 14"/>
+                    </svg>
+                    <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="6" y="4" width="4" height="16"/>
+                      <rect x="14" y="4" width="4" height="16"/>
+                    </svg>
+                  </template>
+                  {{ isAnalyzing ? t('meeting.stopAnalysis') : t('meeting.startAnalysis') }}
+                </NButton>
+              </template>
+            </NTooltip>
+
+            <NTooltip trigger="hover">
+              <template #trigger>
+                <NButton
+                  size="tiny"
+                  quaternary
+                  @click="showAnalysisConfig = true"
+                >
+                  <template #icon>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <circle cx="12" cy="12" r="3"/>
+                      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                    </svg>
+                  </template>
+                </NButton>
+              </template>
+              {{ t('meeting.analysisTriggerConfig') }}
+            </NTooltip>
 
             <!-- Agent 切换：靠右 -->
             <NTooltip trigger="hover">
@@ -2384,294 +2124,288 @@ async function clearTranscript() {
               {{ showAgentPanel ? t('meeting.showAnalysis') : t('meeting.showAgentChat') }}
             </NTooltip>
           </div>
+        </template>
 
-          <!-- 演讲评分场景：专用评估面板（计时员/赘语记录员/语法官） -->
-          <template v-if="isSpeechScene">
-            <SpeechEvaluationPanel
-              v-if="meetingStore.activeSessionId"
-              :key="meetingStore.activeSessionId"
-              :session-id="meetingStore.activeSessionId"
-              :is-recording="isRecording"
-              @report-generated="onReportGenerated"
-            />
-          </template>
+        <template #speech>
+          <SpeechEvaluationPanel
+            v-if="meetingStore.activeSessionId"
+            :key="meetingStore.activeSessionId"
+            :session-id="meetingStore.activeSessionId"
+            :is-recording="isRecording"
+            @report-generated="onReportGenerated"
+          />
+        </template>
 
-          <!-- Agent 实时辅助面板 -->
-          <template v-else-if="showAgentPanel">
-            <MeetingAgentPanel
-              v-if="meetingStore.activeSessionId"
-              ref="assistPanelRef"
-              :session-id="meetingStore.activeSessionId"
-              :scene-template="activeSession?.sceneTemplate || 'general'"
-              :is-recording="isRecording"
-              @report-generated="onReportGenerated"
-              @request-report="onRequestReport"
-              :start-trigger="agentStartAnalysisTrigger"
-              @update:analysis-result="onAgentAnalysisResult"
-              @update:report-html="onAgentReportHtml"
-              @completed="onAgentCompleted"
-              @corrected="onAgentCorrected"
-            />
-          </template>
+        <template #agent>
+          <MeetingAgentPanel
+            v-if="meetingStore.activeSessionId"
+            ref="assistPanelRef"
+            :session-id="meetingStore.activeSessionId"
+            :scene-template="activeSession?.sceneTemplate || 'general'"
+            :is-recording="isRecording"
+            @report-generated="onReportGenerated"
+            @request-report="onRequestReport"
+            :start-trigger="agentStartAnalysisTrigger"
+            @update:analysis-result="onAgentAnalysisResult"
+            @update:report-html="onAgentReportHtml"
+            @completed="onAgentCompleted"
+            @corrected="onAgentCorrected"
+          />
+        </template>
 
-          <!-- 分析和下载面板 -->
-          <template v-else>
-            <div class="right-panel-content">
-              <!-- 下载区域 - 始终显示 -->
-              <div class="download-section">
-                <h3>{{ t('meeting.downloads') }}</h3>
-                <!-- 音频播放器 -->
-                <div v-if="audioUrl" class="audio-section">
-                  <div class="audio-player">
-                    <button class="audio-play-btn" @click="togglePlayPause()">
-                      <svg v-if="!isPlaying" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                        <path d="M8 5v14l11-7z"/>
-                      </svg>
-                      <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                        <rect x="6" y="4" width="4" height="16"/>
-                        <rect x="14" y="4" width="4" height="16"/>
-                      </svg>
-                    </button>
-                    <div class="audio-info">
-                      <span class="audio-time">{{ formatDuration(playbackTime) }}</span>
-                      <div class="progress-track" @click="seekToPosition" @mousedown="startProgressDrag">
-                        <div class="progress-fill" :style="{ width: progressPercent + '%' }"></div>
-                        <div class="progress-thumb" :style="{ left: progressPercent + '%' }"></div>
-                      </div>
-                      <span class="audio-time">{{ formatDuration(playbackDuration) }}</span>
+        <template #analysis>
+          <div class="right-panel-content">
+            <!-- 下载区域 - 始终显示 -->
+            <div class="download-section">
+              <h3>{{ t('meeting.downloads') }}</h3>
+              <!-- 音频播放器 -->
+              <div v-if="audioUrl" class="audio-section">
+                <div class="audio-player">
+                  <button class="audio-play-btn" @click="togglePlayPause()">
+                    <svg v-if="!isPlaying" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M8 5v14l11-7z"/>
+                    </svg>
+                    <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                      <rect x="6" y="4" width="4" height="16"/>
+                      <rect x="14" y="4" width="4" height="16"/>
+                    </svg>
+                  </button>
+                  <div class="audio-info">
+                    <span class="audio-time">{{ formatDuration(playbackTime) }}</span>
+                    <div class="progress-track" @click="seekToPosition" @mousedown="startProgressDrag">
+                      <div class="progress-fill" :style="{ width: progressPercent + '%' }"></div>
+                      <div class="progress-thumb" :style="{ left: progressPercent + '%' }"></div>
                     </div>
+                    <span class="audio-time">{{ formatDuration(playbackDuration) }}</span>
                   </div>
-                </div>
-                <!-- 下载按钮 -->
-                <div class="download-actions">
-                  <NButton size="small" @click="downloadAudio" :disabled="isRecording || !audioUrl">
-                    <template #icon>
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                        <polyline points="7 10 12 15 17 10"/>
-                        <line x1="12" y1="15" x2="12" y2="3"/>
-                      </svg>
-                    </template>
-                    {{ t('meeting.downloadAudio') }}
-                  </NButton>
-                  <NButton size="small" @click="downloadTranscript" :disabled="isRecording || sentences.length === 0">
-                    <template #icon>
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                        <polyline points="14 2 14 8 20 8"/>
-                        <line x1="16" y1="13" x2="8" y2="13"/>
-                        <line x1="16" y1="17" x2="8" y2="17"/>
-                      </svg>
-                    </template>
-                    {{ t('meeting.downloadTranscript') }}
-                  </NButton>
-                  <NButton size="small" @click="downloadJson" :disabled="isRecording || sentences.length === 0">
-                    <template #icon>
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                        <polyline points="14 2 14 8 20 8"/>
-                        <line x1="16" y1="13" x2="8" y2="13"/>
-                        <line x1="16" y1="17" x2="8" y2="17"/>
-                        <polyline points="10 9 9 9 8 9"/>
-                      </svg>
-                    </template>
-                    {{ t('meeting.downloadJson') }}
-                  </NButton>
-                  <NButton v-if="htmlContent" size="small" @click="downloadReport" :disabled="isRecording">
-                    <template #icon>
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                        <polyline points="14 2 14 8 20 8"/>
-                        <line x1="16" y1="13" x2="8" y2="13"/>
-                        <line x1="16" y1="17" x2="8" y2="17"/>
-                      </svg>
-                    </template>
-                    {{ t('meeting.downloadReport') }}
-                  </NButton>
                 </div>
               </div>
-
-              <!-- 分析结果区域 - 只在有分析结果时显示 -->
-              <template v-if="analysisResult">
-                <div v-if="analysisResult.summary" class="result-section">
-                  <h3>{{ t('meeting.summary') }}</h3>
-                  <p>{{ analysisResult.summary }}</p>
-                </div>
-
-                <div v-if="analysisResult.key_points?.length" class="result-section">
-                  <h3>{{ t('meeting.keyPoints') }}</h3>
-                  <ul>
-                    <li v-for="(point, i) in analysisResult.key_points" :key="i">{{ point }}</li>
-                  </ul>
-                </div>
-
-                <div v-if="analysisResult.action_items?.length" class="result-section">
-                  <h3>{{ t('meeting.actionItems') }}</h3>
-                  <ul class="action-list">
-                    <li v-for="(item, i) in analysisResult.action_items" :key="i">
-                      <input type="checkbox" />
-                      <div class="action-body">
-                        <span class="action-text">{{ formatActionItem(item) }}</span>
-                        <span v-if="formatActionAssignee(item)" class="action-assignee">
-                          👤 {{ formatActionAssignee(item) }}
-                        </span>
-                        <span v-if="formatActionDeadline(item)" class="action-deadline">
-                          📅 {{ formatActionDeadline(item) }}
-                        </span>
-                      </div>
-                    </li>
-                  </ul>
-                </div>
-
-                <div v-if="analysisResult.decisions?.length" class="result-section">
-                  <h3>{{ t('meeting.decisions') }}</h3>
-                  <ol class="decision-list">
-                    <li v-for="(d, i) in analysisResult.decisions" :key="i">{{ d }}</li>
-                  </ol>
-                </div>
-
-                <div v-if="analysisResult.risks?.length" class="result-section">
-                  <h3>{{ t('meeting.risks') }}</h3>
-                  <ul>
-                    <li v-for="(r, i) in analysisResult.risks" :key="i">{{ r }}</li>
-                  </ul>
-                </div>
-
-                <div v-if="analysisResult.learnings?.length" class="result-section">
-                  <h3>{{ t('meeting.learnings') }}</h3>
-                  <ul>
-                    <li v-for="(l, i) in analysisResult.learnings" :key="i">{{ l }}</li>
-                  </ul>
-                </div>
-
-                <div v-if="analysisResult.feedback?.positive?.length || analysisResult.feedback?.negative?.length" class="result-section">
-                  <h3>{{ t('meeting.feedback') }}</h3>
-                  <div class="feedback-grid">
-                    <div v-if="analysisResult.feedback.positive?.length" class="feedback-positive">
-                      <h4>{{ t('meeting.feedbackPositive') }}</h4>
-                      <ul>
-                        <li v-for="(f, i) in analysisResult.feedback.positive" :key="i">{{ f }}</li>
-                      </ul>
-                    </div>
-                    <div v-if="analysisResult.feedback.negative?.length" class="feedback-negative">
-                      <h4>{{ t('meeting.feedbackNegative') }}</h4>
-                      <ul>
-                        <li v-for="(f, i) in analysisResult.feedback.negative" :key="i">{{ f }}</li>
-                      </ul>
-                    </div>
-                  </div>
-                </div>
-
-                <div v-if="analysisResult.people_mentioned?.length" class="result-section">
-                  <h3>{{ t('meeting.peopleMentioned') }}</h3>
-                  <div class="people-container">
-                    <NTag v-for="(p, i) in analysisResult.people_mentioned" :key="i" type="info" size="small">
-                      {{ p }}
-                    </NTag>
-                  </div>
-                </div>
-
-                <div v-if="analysisResult.relationships?.length" class="result-section">
-                  <h3>{{ t('meeting.relationships') }}</h3>
-                  <div class="relationship-list">
-                    <div v-for="(r, i) in analysisResult.relationships" :key="i" class="relationship-item">
-                      <span class="rel-source">{{ r.source }}</span>
-                      <span class="rel-arrow">→</span>
-                      <span class="rel-target">{{ r.target }}</span>
-                      <span class="rel-desc">{{ r.relation }}</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div v-if="analysisResult.meeting_type" class="result-section meeting-type">
-                  <NTag type="primary" size="small">{{ analysisResult.meeting_type }}</NTag>
-                </div>
-
-                <div v-if="analysisResult.topics?.length" class="result-section">
-                  <h3>{{ t('meeting.topics') }}</h3>
-                  <div class="topic-tags">
-                    <NTag v-for="(topic, i) in analysisResult.topics" :key="i" type="info" size="small">
-                      {{ topic }}
-                    </NTag>
-                  </div>
-                </div>
-
-                <div class="result-section result-actions">
-                  <NButton type="primary" @click="showReport = true" block size="small" :disabled="!htmlContent">
-                    {{ t('meeting.viewReport') }}
-                  </NButton>
-                  <NButton v-if="htmlContent" @click="downloadReport" block size="small">
-                    {{ t('meeting.downloadReport') }}
-                  </NButton>
-                </div>
-              </template>
-
-              <!-- 提示区域 - 当有转写内容但没有分析结果时显示 -->
-              <div v-if="!analysisResult && sentences.length > 0" class="analysis-hint">
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.5">
-                  <circle cx="12" cy="12" r="10"/>
-                  <path d="M12 16v-4"/>
-                  <path d="M12 8h.01"/>
-                </svg>
-                <p>{{ t('meeting.analysisHint') }}</p>
-                <NButton
-                  type="primary"
-                  size="small"
-                  :loading="isLoading && !isAnalyzing"
-                  :disabled="sentences.length === 0"
-                  @click="triggerAnalysis"
-                >
+              <!-- 下载按钮 -->
+              <div class="download-actions">
+                <NButton size="small" @click="downloadAudio" :disabled="isRecording || !audioUrl">
                   <template #icon>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <polygon points="5 3 19 12 5 21 5 3"/>
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                      <polyline points="7 10 12 15 17 10"/>
+                      <line x1="12" y1="15" x2="12" y2="3"/>
                     </svg>
                   </template>
-                  {{ t('meeting.triggerAnalysis') }}
+                  {{ t('meeting.downloadAudio') }}
+                </NButton>
+                <NButton size="small" @click="downloadTranscript" :disabled="isRecording || sentences.length === 0">
+                  <template #icon>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                      <polyline points="14 2 14 8 20 8"/>
+                      <line x1="16" y1="13" x2="8" y2="13"/>
+                      <line x1="16" y1="17" x2="8" y2="17"/>
+                    </svg>
+                  </template>
+                  {{ t('meeting.downloadTranscript') }}
+                </NButton>
+                <NButton size="small" @click="downloadJson" :disabled="isRecording || sentences.length === 0">
+                  <template #icon>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                      <polyline points="14 2 14 8 20 8"/>
+                      <line x1="16" y1="13" x2="8" y2="13"/>
+                      <line x1="16" y1="17" x2="8" y2="17"/>
+                      <polyline points="10 9 9 9 8 9"/>
+                    </svg>
+                  </template>
+                  {{ t('meeting.downloadJson') }}
+                </NButton>
+                <NButton v-if="htmlContent" size="small" @click="downloadReport" :disabled="isRecording">
+                  <template #icon>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                      <polyline points="14 2 14 8 20 8"/>
+                      <line x1="16" y1="13" x2="8" y2="13"/>
+                      <line x1="16" y1="17" x2="8" y2="17"/>
+                    </svg>
+                  </template>
+                  {{ t('meeting.downloadReport') }}
                 </NButton>
               </div>
+            </div>
 
-              <!-- 报告预览：有 htmlContent 时直接渲染，HTML 内容始终可见 -->
-              <div v-if="htmlContent" class="report-preview-section">
-                <div class="report-preview-header">
-                  <h3>{{ t('meeting.reportPreview') }}</h3>
-                  <div class="report-preview-actions">
-                    <NButton size="tiny" @click="showReport = true">
-                      {{ t('meeting.openReport') }}
-                    </NButton>
-                    <NButton size="tiny" @click="downloadReport" :disabled="isRecording">
-                      {{ t('meeting.downloadReport') }}
-                    </NButton>
+            <!-- 分析结果区域 - 只在有分析结果时显示 -->
+            <template v-if="analysisResult">
+              <div v-if="analysisResult.summary" class="result-section">
+                <h3>{{ t('meeting.summary') }}</h3>
+                <p>{{ analysisResult.summary }}</p>
+              </div>
+
+              <div v-if="analysisResult.key_points?.length" class="result-section">
+                <h3>{{ t('meeting.keyPoints') }}</h3>
+                <ul>
+                  <li v-for="(point, i) in analysisResult.key_points" :key="i">{{ point }}</li>
+                </ul>
+              </div>
+
+              <div v-if="analysisResult.action_items?.length" class="result-section">
+                <h3>{{ t('meeting.actionItems') }}</h3>
+                <ul class="action-list">
+                  <li v-for="(item, i) in analysisResult.action_items" :key="i">
+                    <input type="checkbox" />
+                    <div class="action-body">
+                      <span class="action-text">{{ formatActionItem(item) }}</span>
+                      <span v-if="formatActionAssignee(item)" class="action-assignee">
+                        👤 {{ formatActionAssignee(item) }}
+                      </span>
+                      <span v-if="formatActionDeadline(item)" class="action-deadline">
+                        📅 {{ formatActionDeadline(item) }}
+                      </span>
+                    </div>
+                  </li>
+                </ul>
+              </div>
+
+              <div v-if="analysisResult.decisions?.length" class="result-section">
+                <h3>{{ t('meeting.decisions') }}</h3>
+                <ol class="decision-list">
+                  <li v-for="(d, i) in analysisResult.decisions" :key="i">{{ d }}</li>
+                </ol>
+              </div>
+
+              <div v-if="analysisResult.risks?.length" class="result-section">
+                <h3>{{ t('meeting.risks') }}</h3>
+                <ul>
+                  <li v-for="(r, i) in analysisResult.risks" :key="i">{{ r }}</li>
+                </ul>
+              </div>
+
+              <div v-if="analysisResult.learnings?.length" class="result-section">
+                <h3>{{ t('meeting.learnings') }}</h3>
+                <ul>
+                  <li v-for="(l, i) in analysisResult.learnings" :key="i">{{ l }}</li>
+                </ul>
+              </div>
+
+              <div v-if="analysisResult.feedback?.positive?.length || analysisResult.feedback?.negative?.length" class="result-section">
+                <h3>{{ t('meeting.feedback') }}</h3>
+                <div class="feedback-grid">
+                  <div v-if="analysisResult.feedback.positive?.length" class="feedback-positive">
+                    <h4>{{ t('meeting.feedbackPositive') }}</h4>
+                    <ul>
+                      <li v-for="(f, i) in analysisResult.feedback.positive" :key="i">{{ f }}</li>
+                    </ul>
+                  </div>
+                  <div v-if="analysisResult.feedback.negative?.length" class="feedback-negative">
+                    <h4>{{ t('meeting.feedbackNegative') }}</h4>
+                    <ul>
+                      <li v-for="(f, i) in analysisResult.feedback.negative" :key="i">{{ f }}</li>
+                    </ul>
                   </div>
                 </div>
-                <iframe :srcdoc="htmlContent" class="report-preview-iframe"></iframe>
               </div>
 
-              <!-- 空状态 -->
-              <div v-if="sentences.length === 0" class="right-panel-empty">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3">
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                  <polyline points="14 2 14 8 20 8"/>
-                  <line x1="16" y1="13" x2="8" y2="13"/>
-                  <line x1="16" y1="17" x2="8" y2="17"/>
-                  <polyline points="10 9 9 9 8 9"/>
-                </svg>
-                <p>{{ t('meeting.emptyState') }}</p>
+              <div v-if="analysisResult.people_mentioned?.length" class="result-section">
+                <h3>{{ t('meeting.peopleMentioned') }}</h3>
+                <div class="people-container">
+                  <NTag v-for="(p, i) in analysisResult.people_mentioned" :key="i" type="info" size="small">
+                    {{ p }}
+                  </NTag>
+                </div>
               </div>
+
+              <div v-if="analysisResult.relationships?.length" class="result-section">
+                <h3>{{ t('meeting.relationships') }}</h3>
+                <div class="relationship-list">
+                  <div v-for="(r, i) in analysisResult.relationships" :key="i" class="relationship-item">
+                    <span class="rel-source">{{ r.source }}</span>
+                    <span class="rel-arrow">→</span>
+                    <span class="rel-target">{{ r.target }}</span>
+                    <span class="rel-desc">{{ r.relation }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div v-if="analysisResult.meeting_type" class="result-section meeting-type">
+                <NTag type="primary" size="small">{{ analysisResult.meeting_type }}</NTag>
+              </div>
+
+              <div v-if="analysisResult.topics?.length" class="result-section">
+                <h3>{{ t('meeting.topics') }}</h3>
+                <div class="topic-tags">
+                  <NTag v-for="(topic, i) in analysisResult.topics" :key="i" type="info" size="small">
+                    {{ topic }}
+                  </NTag>
+                </div>
+              </div>
+
+              <div class="result-section result-actions">
+                <NButton type="primary" @click="showReport = true" block size="small" :disabled="!htmlContent">
+                  {{ t('meeting.viewReport') }}
+                </NButton>
+                <NButton v-if="htmlContent" @click="downloadReport" block size="small">
+                  {{ t('meeting.downloadReport') }}
+                </NButton>
+              </div>
+            </template>
+
+            <!-- 提示区域 - 当有转写内容但没有分析结果时显示 -->
+            <div v-if="!analysisResult && sentences.length > 0" class="analysis-hint">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.5">
+                <circle cx="12" cy="12" r="10"/>
+                <path d="M12 16v-4"/>
+                <path d="M12 8h.01"/>
+              </svg>
+              <p>{{ t('meeting.analysisHint') }}</p>
+              <NButton
+                type="primary"
+                size="small"
+                :loading="isLoading && !isAnalyzing"
+                :disabled="sentences.length === 0"
+                @click="triggerAnalysis"
+              >
+                <template #icon>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polygon points="5 3 19 12 5 21 5 3"/>
+                  </svg>
+                </template>
+                {{ t('meeting.triggerAnalysis') }}
+              </NButton>
             </div>
-          </template>
-        </div>
-      </aside>
+
+            <!-- 报告预览：有 htmlContent 时直接渲染，HTML 内容始终可见 -->
+            <div v-if="htmlContent" class="report-preview-section">
+              <div class="report-preview-header">
+                <h3>{{ t('meeting.reportPreview') }}</h3>
+                <div class="report-preview-actions">
+                  <NButton size="tiny" @click="showReport = true">
+                    {{ t('meeting.openReport') }}
+                  </NButton>
+                  <NButton size="tiny" @click="downloadReport" :disabled="isRecording">
+                    {{ t('meeting.downloadReport') }}
+                  </NButton>
+                </div>
+              </div>
+              <iframe :srcdoc="htmlContent" class="report-preview-iframe"></iframe>
+            </div>
+
+            <!-- 空状态 -->
+            <div v-if="sentences.length === 0" class="right-panel-empty">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                <polyline points="14 2 14 8 20 8"/>
+                <line x1="16" y1="13" x2="8" y2="13"/>
+                <line x1="16" y1="17" x2="8" y2="17"/>
+                <polyline points="10 9 9 9 8 9"/>
+              </svg>
+              <p>{{ t('meeting.emptyState') }}</p>
+            </div>
+          </div>
+        </template>
+      </MeetingRightPanel>
       </div>
     </div>
 
-    <!-- 创建会议对话框 -->
-    <NModal
-      v-model:show="showCreateModal"
-      preset="card"
-      :title="t('meeting.createMeeting')"
-      :style="{ width: '580px' }"
-      :bordered="false"
-      :mask-closable="false"
+<!-- 创建会议对话框（外壳已拆出 CreateMeetingDialog） -->
+    <CreateMeetingDialog
+      v-model:visible="showCreateModal"
+      :create-disabled="!newMeetingTitle.trim() || (!asrApiKey.trim() && !meetingStore.hasASRConfig)"
+      @create="handleCreateMeeting"
     >
       <div class="create-meeting-form">
         <div class="form-item">
@@ -2685,11 +2419,7 @@ async function clearTranscript() {
 
         <div class="form-item">
           <label class="form-label">{{ t('meeting.scene.label') }}</label>
-          <NSelect
-            v-model:value="newMeetingSceneTemplate"
-            :options="sceneTemplateOptions"
-            :placeholder="t('meeting.scene.placeholder')"
-          />
+          <SceneTemplatePicker v-model="newMeetingSceneTemplate" />
           <div class="form-hint">{{ t('meeting.scene.hint') }}</div>
         </div>
 
@@ -2906,18 +2636,7 @@ async function clearTranscript() {
           </template>
         </div>
       </div>
-      
-      <template #action>
-        <NButton @click="showCreateModal = false">{{ t('common.cancel') }}</NButton>
-        <NButton
-          type="primary"
-          :disabled="!newMeetingTitle.trim() || (!asrApiKey.trim() && !meetingStore.hasASRConfig)"
-          @click="handleCreateMeeting"
-        >
-          {{ t('meeting.create') }}
-        </NButton>
-      </template>
-    </NModal>
+    </CreateMeetingDialog>
 
     <!-- 分析触发配置弹窗 -->
     <NModal
@@ -2999,8 +2718,8 @@ async function clearTranscript() {
   overflow: hidden;
 }
 
-// 左侧边栏样式
-.sidebar-backdrop {
+// 左侧边栏布局（容器+删除按钮样式由父级提供；列表项内层样式已迁入 MeetingSidebar）
+:deep(.sidebar-backdrop) {
   display: none;
 
   @media (max-width: 768px) {
@@ -3020,7 +2739,7 @@ async function clearTranscript() {
   }
 }
 
-.meeting-sidebar {
+:deep(.meeting-sidebar) {
   width: 260px;
   min-width: 260px;
   height: 100%;
@@ -3057,7 +2776,7 @@ async function clearTranscript() {
   }
 }
 
-.page-sidebar-top {
+:deep(.page-sidebar-top) {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -3066,7 +2785,7 @@ async function clearTranscript() {
   gap: 8px;
 }
 
-.meeting-list {
+:deep(.meeting-list) {
   flex: 1;
   overflow-y: auto;
   display: flex;
@@ -3074,14 +2793,7 @@ async function clearTranscript() {
   gap: 2px;
 }
 
-.meeting-list-empty {
-  padding: 16px;
-  text-align: center;
-  color: $text-secondary;
-  font-size: 13px;
-}
-
-.meeting-list-item {
+:deep(.meeting-list-item) {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -3103,7 +2815,7 @@ async function clearTranscript() {
   }
 }
 
-.meeting-item-icon {
+:deep(.meeting-item-icon) {
   flex-shrink: 0;
   width: 28px;
   height: 28px;
@@ -3115,42 +2827,13 @@ async function clearTranscript() {
   color: $accent-primary;
 }
 
-.meeting-item-content {
+:deep(.meeting-item-content) {
   flex: 1;
   min-width: 0;
 }
 
-.meeting-item-title {
-  font-size: 13px;
-  font-weight: 500;
-  color: $text-primary;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.meeting-item-meta {
-  font-size: 11px;
-  color: $text-secondary;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-top: 2px;
-}
-
-.meeting-item-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 1px 4px;
-  border-radius: 3px;
-  background: rgba($accent-primary, 0.15);
-  color: $accent-primary;
-  font-size: 10px;
-  font-weight: 600;
-}
-
-.meeting-item-delete {
+// 删除按钮由父级 slot 渲染（包 NPopconfirm），故其样式留在父级
+:deep(.meeting-item-delete) {
   flex-shrink: 0;
   width: 20px;
   height: 20px;
@@ -3165,14 +2848,15 @@ async function clearTranscript() {
   opacity: 0;
   transition: all 0.2s ease;
 
-  .meeting-list-item:hover & {
-    opacity: 1;
-  }
-
   &:hover {
     background: rgba(239, 68, 68, 0.1);
     color: #ef4444;
   }
+}
+
+// 让 hover 父级（列表项）时显示删除按钮——拆成独立规则，因为 SCSS 嵌套 + :deep + & 不能正确编译。
+:deep(.meeting-list-item:hover) .meeting-item-delete {
+  opacity: 1;
 }
 
 .meeting-main {
@@ -3183,7 +2867,7 @@ async function clearTranscript() {
   overflow: hidden;
 }
 
-.header-avatar-toggle {
+:deep(.header-avatar-toggle) {
   flex-shrink: 0;
   width: 32px;
   height: 32px;
@@ -3208,13 +2892,14 @@ async function clearTranscript() {
   }
 }
 
-.header-logo {
+:deep(.header-logo) {
   width: 24px;
   height: 24px;
   object-fit: contain;
 }
 
-.meeting-header {
+// 顶部控制条样式（MeetingTopBar 子组件内部 DOM，scoped 需用 :deep 穿透）
+:deep(.meeting-header) {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -3224,7 +2909,7 @@ async function clearTranscript() {
   flex-shrink: 0;
 }
 
-.meeting-title {
+:deep(.meeting-title) {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -3240,7 +2925,7 @@ async function clearTranscript() {
   }
 }
 
-.meeting-controls {
+:deep(.meeting-controls) {
   display: flex;
   gap: 8px;
 }
@@ -3259,29 +2944,7 @@ async function clearTranscript() {
   min-width: 0;
 }
 
-.waveform-container {
-  height: 100px;
-  background: rgb(15, 23, 42);
-  position: relative;
-  overflow: hidden;
-
-  canvas {
-    width: 100%;
-    height: 100%;
-  }
-
-  .connecting-overlay {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    background: rgba(0, 0, 0, 0.5);
-    color: white;
-    font-size: 14px;
-  }
-}
+// .waveform-container / .connecting-overlay 已迁入 WaveformCanvas 组件。
 
 .status-bar {
   display: flex;
@@ -3355,134 +3018,8 @@ async function clearTranscript() {
   font-size: 12px;
 }
 
-.transcript-content {
-  flex: 1;
-  overflow-y: auto;
-  padding: 16px;
-}
-
-.empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  gap: 12px;
-  color: $text-secondary;
-
-  p {
-    font-size: 14px;
-  }
-}
-
-.sentence-item {
-  display: flex;
-  gap: 12px;
-  padding: 8px;
-  border-bottom: 1px solid rgba($border-color, 0.5);
-  border-radius: 4px;
-  transition: background-color 0.2s ease;
-
-  &:last-child {
-    border-bottom: none;
-  }
-
-  &.highlighted {
-    background: rgba($accent-primary, 0.15);
-    border-left: 3px solid $accent-primary;
-  }
-
-  &.clickable {
-    cursor: pointer;
-
-    &:hover {
-      background: rgba($accent-primary, 0.06);
-    }
-  }
-}
-
-.sentence-index {
-  flex-shrink: 0;
-  width: 24px;
-  height: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba($accent-primary, 0.1);
-  color: $accent-primary;
-  border-radius: 50%;
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.sentence-body {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-  flex: 1;
-}
-
-.sentence-speaker {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  background: rgba($accent-primary, 0.1);
-  color: $accent-primary;
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  width: fit-content;
-
-  &:hover {
-    background: rgba($accent-primary, 0.2);
-  }
-}
-
-.sentence-text {
-  font-size: 14px;
-  line-height: 1.6;
-}
-
-.speaker-rename-popover {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 4px 0;
-}
-
-.speaker-rename-title {
-  font-size: 13px;
-  font-weight: 500;
-  color: $text-primary;
-}
-
-.speaker-rename-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.partial-text {
-  padding: 8px 0;
-  color: $text-secondary;
-  font-style: italic;
-  font-size: 14px;
-}
-
-.partial-indicator {
-  display: inline-block;
-  padding: 2px 6px;
-  background: rgba($accent-primary, 0.1);
-  color: $accent-primary;
-  border-radius: 4px;
-  font-size: 11px;
-  font-style: normal;
-  margin-right: 8px;
-}
+// 转写内容样式（.transcript-content/.empty-state/.sentence-item/.sentence-speaker/
+// .partial-text 等）已迁入 TranscriptList.vue scoped 样式。
 
 .record-button-container {
   display: flex;
@@ -3542,190 +3079,8 @@ async function clearTranscript() {
   color: $text-secondary;
 }
 
-// 右侧面板样式
-.right-panel {
-  position: relative;
-  flex: 0 0 auto;
-  min-width: 280px;
-  max-width: 100%;
-  background: $bg-card;
-  border-left: 1px solid $border-color;
-  display: flex;
-  align-self: stretch;
-  min-height: 0;
-  overflow: hidden; // 改为 hidden，避免按钮溢出屏幕
-}
-
-.right-panel-resize-handle {
-  position: absolute;
-  left: -7px;
-  top: 0;
-  bottom: 0;
-  width: 14px;
-  cursor: col-resize;
-  z-index: 20;
-
-  &::after {
-    content: "";
-    position: absolute;
-    left: 6px;
-    top: 0;
-    bottom: 0;
-    width: 1px;
-    background:
-      linear-gradient($border-color, $border-color) top / 1px calc(50% - 26px) no-repeat,
-      linear-gradient($border-color, $border-color) bottom / 1px calc(50% - 26px) no-repeat;
-    transition: background $transition-fast;
-    z-index: 1;
-  }
-
-  &::before {
-    content: "";
-    position: absolute;
-    left: 1px;
-    top: 50%;
-    width: 12px;
-    height: 38px;
-    transform: translateY(-50%);
-    border-radius: 6px;
-    background:
-      linear-gradient($text-muted, $text-muted) center 12px / 6px 1px no-repeat,
-      linear-gradient($text-muted, $text-muted) center 19px / 6px 1px no-repeat,
-      linear-gradient($text-muted, $text-muted) center 26px / 6px 1px no-repeat,
-      $bg-card;
-    border: 1px solid $border-color;
-    opacity: 0.9;
-    transition: all $transition-fast;
-    z-index: 2;
-  }
-
-  &:hover::after {
-    background:
-      linear-gradient(var(--accent-primary), var(--accent-primary)) top / 1px calc(50% - 26px) no-repeat,
-      linear-gradient(var(--accent-primary), var(--accent-primary)) bottom / 1px calc(50% - 26px) no-repeat;
-  }
-
-  &:hover::before {
-    background:
-      linear-gradient(var(--accent-primary), var(--accent-primary)) center 12px / 6px 1px no-repeat,
-      linear-gradient(var(--accent-primary), var(--accent-primary)) center 19px / 6px 1px no-repeat,
-      linear-gradient(var(--accent-primary), var(--accent-primary)) center 26px / 6px 1px no-repeat,
-      $bg-card;
-    border-color: var(--accent-primary);
-    opacity: 1;
-  }
-}
-
-.right-panel-inner {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.right-panel-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px 12px;
-  border-bottom: 1px solid $border-color;
-  flex-shrink: 0;
-  gap: 8px;
-
-  h2 {
-    font-size: 14px;
-    font-weight: 600;
-    margin: 0;
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-}
-
-.right-panel-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
-}
-
-// 新增：分析工具栏（独立一行，承载触发/启动/配置 + Agent 切换）
-.right-panel-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  padding: 8px 12px;
-  border-bottom: 1px solid $border-color;
-  background: rgba($accent-primary, 0.02);
-  flex-shrink: 0;
-  min-width: 0;
-}
-
-.toolbar-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex: 1;
-  min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-
-  &::-webkit-scrollbar {
-    display: none;
-  }
-
-  // 让按钮在窄面板中优雅收缩
-  :deep(.n-button) {
-    flex-shrink: 0;
-  }
-}
-
-.panel-close-btn {
-  width: 24px;
-  height: 24px;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: $text-secondary;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.2s ease;
-
-  &:hover {
-    background: rgba(239, 68, 68, 0.1);
-    color: #ef4444;
-  }
-}
-
-.right-panel-content {
-  flex: 1;
-  overflow-y: auto;
-  padding: 16px;
-}
-
-.right-panel-empty {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  color: $text-secondary;
-  padding: 40px;
-
-  p {
-    font-size: 14px;
-    text-align: center;
-  }
-}
+// 右侧面板：chrome 已迁入 MeetingRightPanel.vue
+// 父组件只保留分析内容区域的样式（result-section / download-section / ...）
 
 .result-section {
   margin-bottom: 20px;

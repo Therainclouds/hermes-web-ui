@@ -4262,10 +4262,15 @@ export default {
       placeholder: '选择会议场景模板',
       hint: 'AI 将根据所选场景提供针对性的实时辅助提示',
       general: '通用会议',
+      generalDesc: 'AI 实时转写与智能辅助',
       legal: '法律沟通',
+      legalDesc: '条款审阅与风险提示',
       business: '商务谈判',
+      businessDesc: '议程 · 决策 · KPI 看板',
       medical: '医疗问诊',
+      medicalDesc: '病历记录与结构化',
       interview: '客户访谈',
+      interviewDesc: '问答引导与要点归纳',
       speech: '演讲评分',
     },
     // 演讲评分场景（Toastmasters 风格）
@@ -4379,9 +4384,6 @@ export default {
     untitled: '未命名会议',
     openSettings: '打开设置',
     closeSession: '关闭会议',
-    sceneShell: {
-      noActiveSession: '当前没有活跃会议。请回到会议列表创建一个。',
-    },
     control: {
       start: '开始',
       startHint: '开始录音并启动实时辅助',
@@ -4397,6 +4399,21 @@ export default {
       empty: '暂无转写内容。开始录音后会显示在这里。',
       live: '已连接',
       connecting: '连接中',
+    },
+    sceneBusiness: {
+      agenda: {
+        title: '议程',
+        add: '添加议程项',
+      },
+      decisions: {
+        title: '决策项',
+        pending: '待决',
+        decided: '已决',
+        markDecided: '标记为已决',
+      },
+      kpi: {
+        title: 'KPI',
+      },
     },
   },
 }

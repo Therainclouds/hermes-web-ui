@@ -1646,3 +1646,74 @@ en.ts 和 zh.ts 已经有完整的 `usb.explorer.*` 命名空间（toolbar / bre
 - **离线 ASR 决策**：调研报告已落档，等用户拍板是否投入 Phase 2A（sherpa-onnx + Paraformer，1 周集成）
 - **历史测试失败**（与本轮无关）：
   - 8 个失败的测试均为环境相关（symlink EPERM / Unix PATH 检测 / Codex 系统技能），建议另起任务修复 Windows 沙盒里的 symlink 支持
+
+---
+
+## 2026-08-27 · MeetingView 模块化拆分（场景壳回滚 + 6 个内聚组件）
+
+### 背景
+
+承接 08-26 会议模块的「场景化」尝试。上一版把「会议场景」做成了**独立整页路由**（`MeetingSceneShell` + `/hermes/meeting/scene/:scene?`），用户实测发现严重问题：
+
+- 进入模板页后**没有侧边栏**、没有波形、没有录音，`连接中` 状态卡死，原有会议模式功能全部失效。
+- 用户质疑：场景模板到底是独立页面还是 MeetingView 内的形态？并要求**先验证能不能把 MeetingView 拆成 Vue 组件**再谈重构。
+
+### 决策（用户拍板）
+
+1. **删掉**错误/过时的场景壳架构：`MeetingSceneShell.vue`、场景路由、`scenes/` 整页组件、旧设计文档。
+2. **保留** `/hermes/meeting` 单一整页路由；场景模板只影响 MeetingView 内部的样式与提示。
+3. **模块化拆分**：按「内聚块 + 明确 props 边界」把 4400+ 行的 MeetingView 逐块拆成组件，先做 **WaveformCanvas 样品验证可行性**，出蓝图后按批拆。
+4. **audio setup**（MediaStream/AnalyserNode/WebSocket/Diarize）暂不拆，等测试覆盖加深后再评估。
+
+### 交付
+
+#### 场景壳回滚 + 清理
+
+- 删 `views/hermes/MeetingSceneShell.vue`、路由 `hermes.meeting.scene`、`scenes/{index.ts, SceneGeneral, SceneBusiness, shared/*}`。
+- 类型/常量迁移到新模块 `components/hermes/meeting/scene-templates.ts`（`SceneId / SCENE_IDS / DEFAULT_SCENE_ID / isSceneId / normalizeSceneId`；`resolveSceneComponent` 随壳删除）。
+- 新建会议对话框的模板选择器（`SceneTemplatePicker.vue`，5 卡无 speech）保留，import 改指 scene-templates.ts。
+- `scenes/business/` 三面板（AgendaTimeline / DecisionPanel / KPIStrip）移到 `components/hermes/meeting/business/`，供后续在 MeetingView 内嵌商务场景使用。
+- i18n 三语言删除 `meeting.sceneShell.*`。
+- 测试对齐：`meeting-scenes-registry.test.ts` → `scene-templates.test.ts`（删 resolveSceneComponent 用例、改导入）。
+
+#### MeetingView 内聚组件拆分（按蓝图批次）
+
+| 组件 | props 契约（简） | 说明 |
+|------|------------------|------|
+| `WaveformCanvas.vue` | `analyser, connecting` | canvas + AnalyserNode 频谱 + RAF 生命周期（样品，先验证可行性） |
+| `MeetingSidebar.vue` | `expanded, sessions, activeId` | 侧栏容器 + 新建 + 列表 + footer + item-actions slot |
+| `CreateMeetingDialog.vue` | `visible, createDisabled` | NModal 外壳 + action 按钮；wizard 表单走 default slot |
+| `MeetingTopBar.vue` | 9 个状态 props | 顶部标题 + Agent/Diarize/保存模式/清空转写控制 |
+| `MeetingRightPanel.vue` | `visible, isSpeechScene, showAgentPanel` | 右面板外壳 + resize handle + speech/agent/analysis 三槽分发（此轮实际已存在，补验证） |
+| `TranscriptList.vue` | `sentences, partialText, highlightedIndex, isRecording` | 句子列表 + 重命名 speaker + partial + 空状态 |
+
+新增测试：`waveform-canvas / meeting-sidebar / create-meeting-dialog / meeting-topbar / transcript-list`（共 38 项），加上既有 `meeting-right-panel`(13) / `scene-templates`(6) / `meeting-scene-picker`(4) 等，meeting 相关共 **105/105 通过**。
+
+### 踩坑记录（重要）
+
+**scoped CSS 不穿透子组件** — 拆出组件后，父级 `<style scoped>` 里的选择器带上父级 hash，无法命中子组件内部 DOM：
+
+1. **侧栏**：`.meeting-sidebar / .meeting-list-item` 等失效 → 列表项变 inline-block 网格、白块。修复：父级加 `:deep()` 包裹布局选择器；hover 显示删除按钮拆成独立规则（SCSS 嵌套 + `:deep` + `&` 混用会编译错）。
+2. **顶部控制条**：`.meeting-header / .meeting-title / .meeting-controls / .header-avatar-toggle / .header-logo` 失效 → header 被 flex 撑到 **726px**，波形压成 0、右面板只剩 174px，整页崩溃。修复：5 条规则全部加 `:deep()`。
+
+**排查方法**：用 headless Chromium `getBoundingClientRect()` + `getComputedStyle` 逐区域测布局尺寸，比对预期值（header 应 ~57px、waveform 100px、transcript flex:1），一眼定位是「选择器没命中」而非「样式写错」。
+
+**NPopover / NModal 在 jsdom 里 teleport 到 `<body>`** — 单元测试要用 `attachTo` 挂真实 DOM 节点后 query `document.body`，不能用 `wrapper.find`。
+
+**Vue 模板里 SVG `<line ... />` 误写成 `</line>`** — vite vue 编译器报 `Invalid end tag`，导致 MeetingView 整文件编译 500、路由挂载失败（dev 页空白）。修复后需重启 dev（vite 脏状态）。
+
+### 验证
+
+- `vue-tsc -b --noEmit`：0 error。
+- `vitest` meeting 相关 10 个文件：105/105 通过。
+- headless Chromium（1440×900）：
+  - 布局恢复：header 57px / waveform 100px / transcript 575px / right-panel 843px 撑满。
+  - 侧栏 5 tabs + 列表点击不跳转（URL 不变）。
+  - 创建对话框 640px、5 卡模板、点 business 卡切换生效。
+  - 选择有句子的会议：`.sentence-item` 正常渲染、`display:flex padding:8px`。
+
+### 当前状态
+
+- 场景壳已彻底移除，MeetingView 回到单一整页 + 组件拆分结构。
+- 剩余未拆块：`MeetingTopBar` 之下的 status-bar / record-button / analysis 内容区 / ReportDialog（右面板 slot 内内容仍是父级）。
+- 下一轮：**MeetingView 重构方案**（用户已要求开始思考项目级重构，不止 meeting 页面）。
