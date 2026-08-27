@@ -1776,3 +1776,22 @@ en.ts 和 zh.ts 已经有完整的 `usb.explorer.*` 命名空间（toolbar / bre
 ### 后续
 
 剩余 ~3,900 行是高度耦合的编排域（loadSessions/switchSession/sendMessage/handleAgentEvent/resumeServerWorkingRun 等），互相调用且共享全部 refs。拆分需按「流程编排层留在 store、纯状态操作下沉」进一步设计，风险高于已完成的独立域，等用户验收后继续。
+
+---
+
+## 2026-08-27 · chat store 拆分 — 第三批：子代理/MoA 流事件域
+
+### 交付
+
+**`chat-subagents.ts`**（264 行）：子代理（subagent.*）与多智能体聚合（moa.*）实时流事件域。`createChatSubagents({ subagentStreams, messages })` 工厂注入 subagentStreams ref + chat-messages 域的纯状态操作（getSessionMsgs/findHermesBackgroundDelegateAnchor/updateMessage/addMessageInTimelineOrder/addMessage），返回 5 个成员（handleSubagentEvent/restorePersistedSubagentStreams/settleInterruptedSubagents/getSubagentStream/handleMoaEvent）。
+
+### 踩坑
+
+- 搬走后 chat.ts 有 3 个孤儿 core import（moaReferenceLabel/reduceSubagentStream/subagentStatus）——删除。
+- 用 node 脚本精准删除行范围（1105-1313）比 Edit 大段替换更可靠。
+
+### 验证
+
+- `vue-tsc -b --noEmit`：0 错误。
+- 29 个 chat 测试文件：**264/264 全过**。
+- chat.ts 5,332 → 3,696 行（累计 −1,636）；已抽出 4 个模块共 ~1,840 行。

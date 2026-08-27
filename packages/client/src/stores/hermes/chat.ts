@@ -12,9 +12,10 @@ import { primeCompletionSound, playCompletionSound } from '@/utils/completion-so
 import { showCompletionNotification } from '@/utils/completion-notification'
 import { detectThinkingBoundary } from '@/utils/thinking-parser'
 import { isKnownBridgeSessionCommand } from '@/utils/hermes/bridge-session-commands'
-import { type AbortState, type Attachment, type ChatAgentId, type ChatRuntimeMode, type CompressionState, type ContentBlock, type Message, type MessageReference, type PendingApproval, type PendingClarify, type QueueInsertionState, type Session, type SubagentStream, LEGACY_STORAGE_KEY, LEGACY_WORKSPACE_RUN_CHANGE_MESSAGE_PREFIX, LIVE_CHAT_MAX_LOADED_MESSAGES, LIVE_CHAT_MESSAGE_PAGE_SIZE, SESSION_PROFILE_FILTER_STORAGE_KEY, activeRuntimeMode, agentToCodingAgentId, alignWorkspaceChangeAssistantMessage, attachWorkspaceChangesToExactTurns, buildContentBlocks, clearCodingAgentRuntimeCredentials, codingAgentIdToAgent, formatMessageWithReference, friendlyAgentErrorMessage, getItemBestEffort, getReplayRunMarker, hasRuntimeToolPayload, isBackgroundDelegateToolPayload, isCodingAgentLikeSession, isQueueInsertionInterruption, lastVisibleMessageContent, lastVisibleMessageRole, legacyStorageKey, mapHermesMessages, mapHermesSession, moaReferenceLabel, readRunMarker, reduceSubagentStream, removeItem, resolveResumedAssistantState, runtimeObjectPayload, runtimeToolOutputFromEvent, runtimeToolOutputHasError, runtimeToolPayloadOrUndefined, sessionActivitySeconds, setItemBestEffort, shouldPreserveRuntimeApiMode, storageKey, subagentStatus, setActiveRuntimeMode, uid, uploadFiles } from './chat-core'
+import { type AbortState, type Attachment, type ChatAgentId, type ChatRuntimeMode, type CompressionState, type ContentBlock, type Message, type MessageReference, type PendingApproval, type PendingClarify, type QueueInsertionState, type Session, type SubagentStream, LEGACY_STORAGE_KEY, LEGACY_WORKSPACE_RUN_CHANGE_MESSAGE_PREFIX, LIVE_CHAT_MAX_LOADED_MESSAGES, LIVE_CHAT_MESSAGE_PAGE_SIZE, SESSION_PROFILE_FILTER_STORAGE_KEY, activeRuntimeMode, agentToCodingAgentId, alignWorkspaceChangeAssistantMessage, attachWorkspaceChangesToExactTurns, buildContentBlocks, clearCodingAgentRuntimeCredentials, codingAgentIdToAgent, formatMessageWithReference, friendlyAgentErrorMessage, getItemBestEffort, getReplayRunMarker, hasRuntimeToolPayload, isBackgroundDelegateToolPayload, isCodingAgentLikeSession, isQueueInsertionInterruption, lastVisibleMessageContent, lastVisibleMessageRole, legacyStorageKey, mapHermesMessages, mapHermesSession, readRunMarker, removeItem, resolveResumedAssistantState, runtimeObjectPayload, runtimeToolOutputFromEvent, runtimeToolOutputHasError, runtimeToolPayloadOrUndefined, sessionActivitySeconds, setItemBestEffort, shouldPreserveRuntimeApiMode, storageKey, setActiveRuntimeMode, uid, uploadFiles } from './chat-core'
 import { createChatInteractions } from './chat-interactions'
 import { createChatMessages } from './chat-messages'
+import { createChatSubagents } from './chat-subagents'
 export * from './chat-core'
 
 export const useChatStore = defineStore('chat', () => {
@@ -46,6 +47,24 @@ export const useChatStore = defineStore('chat', () => {
   const completedUnreadSessions = ref<Set<string>>(new Set())
   /** UI-only live streams for Hermes background subagents. Never sent into parent context. */
   const subagentStreams = ref<Map<string, SubagentStream>>(new Map())
+  // 子代理 / MoA 流事件域（拆分自本文件，见 chat-subagents.ts）
+  const subagents = createChatSubagents({
+    subagentStreams,
+    messages: {
+      getSessionMsgs,
+      findHermesBackgroundDelegateAnchor,
+      updateMessage,
+      addMessageInTimelineOrder,
+      addMessage,
+    },
+  })
+  const {
+    handleSubagentEvent,
+    restorePersistedSubagentStreams,
+    settleInterruptedSubagents,
+    getSubagentStream,
+    handleMoaEvent,
+  } = subagents
   const storedSessionProfileFilter = getItemBestEffort(SESSION_PROFILE_FILTER_STORAGE_KEY)?.trim()
   const sessionProfileFilter = ref<string | null>(
     storedSessionProfileFilter && storedSessionProfileFilter !== '__all__'
@@ -1084,215 +1103,6 @@ export const useChatStore = defineStore('chat', () => {
     s.messages = s.messages.filter(m => m.commandAction !== 'agent.event')
   }
 
-  function handleSubagentEvent(sessionId: string, evt: RunEvent) {
-    const eventName = String(evt.event || '')
-    if (!eventName.startsWith('subagent.') && eventName !== 'delegation.updated') return
-
-    if (eventName === 'delegation.updated') {
-      const delegationId = String(evt.delegation_id || '').trim()
-      const status = subagentStatus((evt as any).status)
-      if (status === 'running') return
-      const sessionStreams = [...subagentStreams.value.values()].filter(stream =>
-        stream.sessionId === sessionId && stream.status === 'running',
-      )
-      const exactMatch = sessionStreams.find(stream => stream.subagentId === delegationId)
-      const targets = exactMatch
-        ? [exactMatch]
-        : ['failed', 'error', 'cancelled', 'interrupted'].includes(status)
-          ? sessionStreams
-          : []
-      for (const stream of targets) {
-        handleSubagentEvent(sessionId, {
-          ...evt,
-          event: 'subagent.complete',
-          subagent_id: stream.subagentId,
-          task_index: stream.taskIndex,
-          task_count: stream.taskCount,
-          goal: stream.goal,
-          model: stream.model,
-          status,
-        })
-      }
-      return
-    }
-
-    const subagentId = String((evt as any).subagent_id || `${(evt as any).task_index ?? 0}`)
-    const streamKey = `${sessionId}:${subagentId}`
-    const currentStream = subagentStreams.value.get(streamKey)
-    const nextStream = reduceSubagentStream(currentStream, sessionId, evt)
-    if (nextStream === currentStream) return
-    subagentStreams.value.set(streamKey, nextStream)
-    const toolCallId = `subagent:${subagentId}`
-    const taskIndex = Number((evt as any).task_index ?? 0)
-    const taskCount = Number((evt as any).task_count ?? 1)
-    const label = `${taskIndex + 1}/${Math.max(1, taskCount || 1)}`
-    const toolName = String((evt as any).tool || (evt as any).name || '')
-    const toolCount = Number((evt as any).tool_count || 0)
-    const goal = String((evt as any).goal || '').trim()
-    const rawText = String(evt.text || evt.preview || '')
-    const text = rawText.trim()
-    const summary = String((evt as any).summary || '').trim()
-    const duration = Number((evt as any).duration_seconds ?? (evt as any).duration)
-
-    let preview = `${label}${goal ? ` · ${goal}` : ''}`
-    if (eventName === 'subagent.start') {
-      preview = `${label}${goal ? ` · ${goal}` : ''}`
-    } else if (eventName === 'subagent.tool') {
-      preview = `${label}${toolCount ? ` · #${toolCount}` : ''}${toolName ? ` · ${toolName}` : ''}${text ? ` · ${text}` : ''}`
-    } else if (eventName === 'subagent.progress' || eventName === 'subagent.text' || eventName === 'subagent.thinking') {
-      preview = `${label}${text ? ` · ${text}` : goal ? ` · ${goal}` : ''}`
-    } else if (eventName === 'subagent.complete') {
-      preview = `${label}${summary ? ` · ${summary}` : text ? ` · ${text}` : ''}`
-    }
-
-    const msgs = getSessionMsgs(sessionId)
-    const existing = msgs.find(m => m.role === 'tool' && m.toolCallId === toolCallId)
-      || findHermesBackgroundDelegateAnchor(msgs, evt)
-    const toolStatus = nextStream.status === 'running'
-      ? 'running'
-      : nextStream.status === 'completed' ? 'done' : 'error'
-    const update: Partial<Message> = {
-      toolName: 'delegate_task',
-      toolCallId,
-      toolPreview: preview.slice(0, 220),
-      toolArgs: eventName === 'subagent.tool'
-        ? runtimeToolPayloadOrUndefined((evt as any).arguments)
-        : existing?.toolArgs,
-      toolStatus,
-      toolDuration: Number.isFinite(duration) ? duration : undefined,
-      toolResult: eventName === 'subagent.complete'
-        ? JSON.stringify({
-            status: (evt as any).status || 'completed',
-            summary: summary || text,
-            api_calls: (evt as any).api_calls,
-            input_tokens: (evt as any).input_tokens,
-            output_tokens: (evt as any).output_tokens,
-            output_tail: (evt as any).output_tail,
-          }, null, 2)
-        : existing?.toolResult,
-    }
-
-    if (existing) {
-      updateMessage(sessionId, existing.id, update)
-      return
-    }
-
-    addMessageInTimelineOrder(sessionId, {
-      id: uid(),
-      role: 'tool',
-      content: '',
-      timestamp: nextStream.startedAt,
-      ...update,
-    })
-  }
-
-  function restorePersistedSubagentStreams(sessionId: string) {
-    for (const message of getSessionMsgs(sessionId)) {
-      if (message.role !== 'tool' || !message.toolCallId?.startsWith('subagent:')) continue
-      const subagentId = message.toolCallId.slice('subagent:'.length).trim()
-      if (!subagentId || subagentStreams.value.has(`${sessionId}:${subagentId}`)) continue
-      const payload = runtimeObjectPayload(message.toolResult)
-      if (!payload) continue
-      const status = subagentStatus(payload.status)
-      const restoredOutput = String(payload.output || payload.output_tail || payload.summary || '').trim()
-      handleSubagentEvent(sessionId, {
-        ...payload,
-        event: status === 'running' ? 'subagent.start' : 'subagent.complete',
-        session_id: sessionId,
-        subagent_id: subagentId,
-        background: payload.mode === 'background',
-        background_snapshot: true,
-        summary: restoredOutput || payload.summary,
-        timestamp: message.timestamp,
-      } as RunEvent)
-    }
-  }
-
-  function settleInterruptedSubagents(sessionId: string) {
-    const runningStreams = [...subagentStreams.value.values()].filter(stream =>
-      stream.sessionId === sessionId && stream.status === 'running',
-    )
-    for (const stream of runningStreams) {
-      handleSubagentEvent(sessionId, {
-        event: 'subagent.complete',
-        session_id: sessionId,
-        subagent_id: stream.subagentId,
-        task_index: stream.taskIndex,
-        task_count: stream.taskCount,
-        goal: stream.goal,
-        model: stream.model,
-        status: 'interrupted',
-        timestamp: Date.now(),
-      })
-    }
-  }
-
-  function getSubagentStream(sessionId: string, subagentId: string): SubagentStream | null {
-    return subagentStreams.value.get(`${sessionId}:${subagentId}`) || null
-  }
-
-  function handleMoaEvent(sessionId: string, evt: RunEvent) {
-    const eventName = String(evt.event || '')
-    if (eventName !== 'moa.reference' && eventName !== 'moa.aggregating') return
-
-    const msgs = getSessionMsgs(sessionId)
-    if (eventName === 'moa.reference') {
-      const label = moaReferenceLabel(evt)
-      const index = Number.isFinite(Number(evt.index)) ? Number(evt.index) : label
-      const toolCallId = `moa:reference:${evt.run_id || 'run'}:${index}`
-      const output = typeof evt.text === 'string'
-        ? evt.text
-        : typeof evt.delta === 'string'
-          ? evt.delta
-          : ''
-      const update: Partial<Message> = {
-        toolName: 'moa_reference',
-        toolCallId,
-        runMarker: readRunMarker(evt),
-        toolPreview: label.slice(0, 220),
-        toolStatus: 'done',
-        toolResult: output,
-      }
-      const existing = msgs.find(m => m.role === 'tool' && m.toolCallId === toolCallId)
-      if (existing) {
-        updateMessage(sessionId, existing.id, update)
-        return
-      }
-      addMessage(sessionId, {
-        id: uid(),
-        role: 'tool',
-        content: '',
-        timestamp: Date.now(),
-        ...update,
-      })
-      return
-    }
-
-    const aggregator = typeof evt.aggregator === 'string' && evt.aggregator.trim()
-      ? evt.aggregator.trim()
-      : 'aggregator'
-    const toolCallId = `moa:aggregating:${evt.run_id || 'run'}`
-    const update: Partial<Message> = {
-      toolName: 'moa_aggregating',
-      toolCallId,
-      runMarker: readRunMarker(evt),
-      toolPreview: aggregator.slice(0, 220),
-      toolStatus: 'running',
-      toolArgs: { aggregator },
-    }
-    const existing = msgs.find(m => m.role === 'tool' && m.toolCallId === toolCallId)
-    if (existing) {
-      updateMessage(sessionId, existing.id, update)
-      return
-    }
-    addMessage(sessionId, {
-      id: uid(),
-      role: 'tool',
-      content: '',
-      timestamp: Date.now(),
-      ...update,
-    })
-  }
 
   function addAgentErrorMessage(sessionId: string, error?: unknown) {
     const message = friendlyAgentErrorMessage(error)
