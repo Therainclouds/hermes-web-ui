@@ -1717,3 +1717,33 @@ en.ts 和 zh.ts 已经有完整的 `usb.explorer.*` 命名空间（toolbar / bre
 - 场景壳已彻底移除，MeetingView 回到单一整页 + 组件拆分结构。
 - 剩余未拆块：`MeetingTopBar` 之下的 status-bar / record-button / analysis 内容区 / ReportDialog（右面板 slot 内内容仍是父级）。
 - 下一轮：**MeetingView 重构方案**（用户已要求开始思考项目级重构，不止 meeting 页面）。
+
+---
+
+## 2026-08-27 · chat store 拆分 — 第一批：纯函数区 → chat-core.ts
+
+### 背景
+
+上一轮（MeetingView 模块化拆分）之后开始项目级重构思考。调查确认 `stores/hermes/chat.ts` 是全 client 最大的 store（5,332 行，153 个顶层函数），是聊天主链路（ChatPanel/MessageList/MessageItem 全依赖），拆分收益最大。用户拍板采用「薄编排 + 模块化实现」：保持 `useChatStore` 单入口，把内部实现拆到模块文件，对外 API 零变化（25+ 测试文件、几十个组件的 `from '@/stores/hermes/chat'` 不变）。
+
+### 交付
+
+- 新建 `stores/hermes/chat-core.ts`（1,259 行）：承载 chat.ts 顶部纯函数区——全部类型（`Session/Message/PendingApproval/SubagentStream/...`）、常量（`LIVE_CHAT_*` 等）、纯函数（`reduceSubagentStream/parseMessageReference/mapHermesMessages/buildContentBlocks/...`），独立可测。
+- `chat.ts`（5,332 → 4,082 行）：顶部 `import { 57 个符号 } from './chat-core'` + `export * from './chat-core'`，对外 API 不变。
+
+### 迁移中踩的坑
+
+1. **脚本搬代码没搬 export 关键字**：纯函数区大量非 export 符号（`interface CompressionState`、`function uid` 等）搬到新文件后 chat.ts 无法 import——vue-tsc 报 41 个 TS2459。用脚本自动补 `export`。
+2. **类型 import 被误删**：原 chat.ts 顶部一个 import 块同时服务纯函数区和 store body，搬走纯函数区后 store body 用的 `RunEvent/SessionSummary/WorkspaceRunChangeSummary/ChatCodingAgentId` 等丢失——补回。
+3. **模块级 let 被 import 后不能赋值**：`activeRuntimeMode` 是模块级 `let`，`setRuntimeMode()` 会写它；拆到 core 后 chat.ts 的 import 绑定只读。解法：core 加 `setActiveRuntimeMode(mode)` setter，chat.ts 改调 setter。
+4. **未使用 import 告警**：`WorkspaceRunChangeFileDetail`（core 侧）/`HermesMessage`（chat.ts 侧）迁移后成孤儿 import——删除。
+
+### 验证
+
+- `vue-tsc -b --noEmit`：0 错误（迁移前基线 26 个既有错误，本次改动未新增）。
+- 29 个 chat 相关测试文件：**264/264 全过**。
+- chat.ts 5,332 → 4,082 行（−1,250）。
+
+### 后续
+
+- 第二批开始拆 store body（约 4,000 行）：session 管理 / 发送与停止 / 事件处理 / 队列 / 审批澄清 / 子代理流 / 工作区变更。这些域共享核心 refs，按「模块函数接受 refs 参数」方式拆，风险高于第一批。
