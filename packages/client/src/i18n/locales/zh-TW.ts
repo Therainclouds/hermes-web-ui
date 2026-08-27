@@ -4095,6 +4095,28 @@ export default {
     wizardStepReview: '確認',
     wizardWarnMissingAsr: '未設定 DashScope API Key，無法進行語音辨識。',
     wizardWarnMissingLlm: '未設定自訂 LLM。會議可以錄音，但無法自動生成分析報告；可返回上一步選擇「預設 Agent」。',
+    untitled: 'Untitled meeting',
+    openSettings: 'Open settings',
+    closeSession: 'Close meeting',
+    sceneShell: {
+      noActiveSession: 'No active meeting. Please return to the meeting list to create one.',
+    },
+    control: {
+      start: 'Start',
+      startHint: 'Start recording and live assist',
+      pause: 'Pause',
+      resume: 'Resume',
+      pauseHint: 'Pause / resume recording',
+      stop: 'Stop',
+      stopHint: 'Stop recording and save transcript',
+      report: 'Generate report',
+    },
+    transcript: {
+      title: 'Live transcript',
+      empty: 'No transcript yet. Start recording to see content here.',
+      live: 'Connected',
+      connecting: 'Connecting',
+    },
   },
   modelGuide: {
     complete: '開始使用',

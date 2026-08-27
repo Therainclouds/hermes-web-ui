@@ -4376,5 +4376,27 @@ export default {
     reportReady: '报告已生成',
     openReport: '打开完整报告',
     viewHtml: '查看 HTML',
+    untitled: '未命名会议',
+    openSettings: '打开设置',
+    closeSession: '关闭会议',
+    sceneShell: {
+      noActiveSession: '当前没有活跃会议。请回到会议列表创建一个。',
+    },
+    control: {
+      start: '开始',
+      startHint: '开始录音并启动实时辅助',
+      pause: '暂停',
+      resume: '继续',
+      pauseHint: '暂停 / 继续录音',
+      stop: '停止',
+      stopHint: '停止录音并保存转写',
+      report: '出报告',
+    },
+    transcript: {
+      title: '实时转写',
+      empty: '暂无转写内容。开始录音后会显示在这里。',
+      live: '已连接',
+      connecting: '连接中',
+    },
   },
 }

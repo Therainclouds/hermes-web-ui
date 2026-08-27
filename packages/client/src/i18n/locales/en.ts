@@ -4329,5 +4329,27 @@ export default {
     reportReady: 'Report ready',
     openReport: 'Open Full Report',
     viewHtml: 'View HTML',
+    untitled: 'Untitled meeting',
+    openSettings: 'Open settings',
+    closeSession: 'Close meeting',
+    sceneShell: {
+      noActiveSession: 'No active meeting. Please return to the meeting list to create one.',
+    },
+    control: {
+      start: 'Start',
+      startHint: 'Start recording and live assist',
+      pause: 'Pause',
+      resume: 'Resume',
+      pauseHint: 'Pause / resume recording',
+      stop: 'Stop',
+      stopHint: 'Stop recording and save transcript',
+      report: 'Generate report',
+    },
+    transcript: {
+      title: 'Live transcript',
+      empty: 'No transcript yet. Start recording to see content here.',
+      live: 'Connected',
+      connecting: 'Connecting',
+    },
   },
 }
