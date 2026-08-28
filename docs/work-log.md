@@ -1961,3 +1961,75 @@ chat store 剩余 ~3,500 行主要为高度耦合的发送/事件编排域（loa
 - `packages/server/src/controllers/hermes/meeting-asr.ts`
 - `packages/client/src/components/hermes/meeting/MeetingAgentPanel.vue`
 - `tests/server/meeting-report-fallback.test.ts`
+
+---
+
+## 2026-08-28 · 报告错误用户友好化 — 第三方 SDK 错误归一化 + retry 按钮
+
+### 背景
+
+上一轮 commit `7f3d267e` 修复了 server→client 的 SSE 流处理 bug，但用户报告
+「总结还是显示 `Provider returned an empty stream with no finish_reason`」。
+这次错误**来自上游 provider / 第三方 SDK**（OpenAI Python SDK 1.50+ 在
+`stream=True` 模式下，stream 关闭但没有任何 chunk 携带 `finish_reason` 时抛的错），
+不是我们 server→client 路径的 bug。
+
+错误已经能传到 UI，但 UI 直接展示原始 SDK 错误字符串：
+- 不可读（英文 stack 字符串）
+- 没给用户任何可操作路径（用户只能重录会议）
+- 对运维也没归类（timeout / network / llm / agent 都混在一行）
+
+### 修复
+
+**错误归一化（extract to pure function）**：
+- 新增 `packages/client/src/components/hermes/meeting/report-error.ts`：
+  导出 `classifyReportError(rawMessage: string): ReportErrorKey`
+  纯函数，无 Vue 依赖，单测可独立覆盖。
+- 匹配规则：`empty stream.*no finish_reason` / `stream ended unexpectedly`
+  / `stream.*reset` / `stream.*closed` → `meeting.reportPanel.errorEmptyStream`；
+  其他 → `meeting.reportPanel.errorGeneric`。
+- 提取的目的：组件代码里不掺杂匹配逻辑；新增 pattern 时只改一处 + 一处测试。
+
+**组件接入**：
+- `MeetingAgentPanel.vue`：catch 块从 inline regex 改为调 `classifyReportError` + `t(...)`。
+- raw 错误仍然 console.error 给运维，不展示给用户。
+
+**用户操作路径**：
+- 新增 `lastTranscript` ref，在每次 `generateReport` 调用时记录 transcript。
+- 新增 `retryReport()` 函数：复用 `lastTranscript` 再调一次 `generateReport`。
+- 模板：report-error 区域从单行文字改成「错误文字 + Retry 按钮」并排，
+  按钮只在 `lastTranscript && !isGeneratingReport` 时显示。
+
+**i18n**（en.ts `meeting.reportPanel` namespace）：
+- `retry`: 'Retry'
+- `errorEmptyStream`: 友好提示 + 建议（网络问题 / provider 状态）
+- `errorGeneric`: 通用 fallback + 建议（看 server logs）
+
+### 验证
+
+- `vue-tsc -b --noEmit`：**0 错误**
+- 新增 `tests/client/meeting-report-error.test.ts`：**5/5 通过**
+  - 精确匹配「Provider returned an empty stream with no finish_reason」
+  - 大小写不敏感
+  - 匹配 Anthropic 风格「stream ended unexpectedly」「stream closed」
+  - 未知错误落到 generic
+  - 过度匹配保护：「no finish_reason」单独出现不误命中
+- 8 个 meeting 相关测试：**73/73 通过**（含新增）
+- `tests/server/meeting-report-fallback.test.ts`：**6/6 仍通过**
+
+### 改动文件
+
+- `packages/client/src/components/hermes/meeting/report-error.ts`（新）
+- `packages/client/src/components/hermes/meeting/MeetingAgentPanel.vue`
+- `packages/client/src/i18n/locales/en.ts`
+- `tests/client/meeting-report-error.test.ts`（新）
+
+### 已知限制
+
+底层 provider 抛错本身**没有修**——Python OpenAI SDK 在 provider 流中断时还是会抛
+`Provider returned an empty stream with no finish_reason`。这是上游网络 / rate-limit /
+load balancer 问题，本仓库无法从 server 侧解决。如果用户频繁遇到，建议：
+1. 在 server 侧捕获这条特定错误，对报告请求做 1 次 auto-retry（流式请求 → 非流式 fallback）
+2. 在 Python OpenAI SDK 上调 `stream_options={"include_usage": true}` 让 SDK 知道这是正常流终止
+
+如需做这两项修复，告诉我，我再走一轮 server-side retry。

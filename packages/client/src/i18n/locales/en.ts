@@ -4307,6 +4307,9 @@ export default {
       export: 'Export',
       generating: 'Generating report...',
       generate: 'Generate Report',
+      retry: 'Retry',
+      errorEmptyStream: 'The AI model\'s response stream ended unexpectedly. This is usually a temporary network issue — please retry. If the problem persists, check the LLM provider\'s service status.',
+      errorGeneric: 'Report generation failed. Please retry. If the problem persists, check the server logs.',
     },
     // Analysis trigger config
     analysisTriggerConfig: 'Analysis Trigger Config',

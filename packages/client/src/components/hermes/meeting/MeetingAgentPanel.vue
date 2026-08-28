@@ -6,6 +6,7 @@ import { useMeetingAssist } from '@/composables/useMeetingAssist'
 import { request, getApiKey } from '@/api/client'
 import { useMeetingStore } from '@/stores/hermes/meeting'
 import { buildReportHtml } from '@/utils/report-html'
+import { classifyReportError } from './report-error'
 
 const MarkdownRenderer = defineAsyncComponent(async () => (await import('@/components/hermes/chat/MarkdownRenderer.vue')).default)
 
@@ -104,6 +105,8 @@ watch(rounds, (newRounds) => {
 const reportMarkdown = ref('')
 const isGeneratingReport = ref(false)
 const reportError = ref<string | null>(null)
+// 最近一次尝试生成报告的 transcript，让 retry 按钮可以直接复用而不用父组件再发一次。
+const lastTranscript = ref<string>('')
 
 // Rounds container ref for auto-scroll
 const roundsContainer = ref<HTMLElement | null>(null)
@@ -173,6 +176,8 @@ async function generateReport(transcript: string) {
     return
   }
 
+  // 记住最近一次的 transcript，让 retry 按钮可以直接复用而不需要父组件再发一次。
+  lastTranscript.value = transcript
   isGeneratingReport.value = true
   reportError.value = null
   reportMarkdown.value = ''
@@ -255,10 +260,22 @@ async function generateReport(transcript: string) {
     console.log('[report] 流结束，共收到原始块:', rawChunkCount, '，报告长度:', reportMarkdown.value.length)
     emit('report-generated', reportMarkdown.value)
   } catch (err) {
-    reportError.value = err instanceof Error ? err.message : String(err)
+    // 之前直接展示 raw provider error 字符串（"Provider returned an empty stream with
+    // no finish_reason" 等），既不可读也没给用户任何可操作路径。这里用 classifyReportError
+    // 归一化到 i18n key，组件只负责 t(...)；匹配规则在 report-error.ts 里可单测。
+    const rawMessage = err instanceof Error ? err.message : String(err)
+    reportError.value = t(classifyReportError(rawMessage))
+    // raw 错误仍然打 console 方便排查，但不展示给用户。
+    console.error('[report] generation failed:', rawMessage)
   } finally {
     isGeneratingReport.value = false
   }
+}
+
+// Retry 上次失败的任务——不依赖父组件再发一次 transcript。
+function retryReport() {
+  if (!lastTranscript.value || isGeneratingReport.value) return
+  void generateReport(lastTranscript.value)
 }
 
 // 导出报告：将 Markdown 转换为精简美观的独立 HTML 页面下载
@@ -431,7 +448,17 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <div v-if="reportError" class="report-error">{{ reportError }}</div>
+      <div v-if="reportError" class="report-error">
+        <span>{{ reportError }}</span>
+        <NButton
+          v-if="lastTranscript && !isGeneratingReport"
+          size="tiny"
+          class="report-retry"
+          @click="retryReport"
+        >
+          {{ t('meeting.reportPanel.retry') }}
+        </NButton>
+      </div>
 
       <div v-if="isGeneratingReport && !reportMarkdown" class="report-loading">
         <NSpin size="small" />
@@ -805,6 +832,13 @@ onUnmounted(() => {
   background: rgba(208, 48, 80, 0.08);
   border-radius: 6px;
   border: 1px solid rgba(208, 48, 80, 0.2);
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+
+  .report-retry {
+    flex-shrink: 0;
+  }
 }
 
 .report-content {
