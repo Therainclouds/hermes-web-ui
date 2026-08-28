@@ -1900,3 +1900,64 @@ ChatPanel.vue 加 watcher 把它 surface 成 `message.warning(t('meeting.session
 ### 后续
 
 chat store 剩余 ~3,500 行主要为高度耦合的发送/事件编排域（loadSessions / switchSession / sendMessage / handleAgentEvent / resumeServerWorkingRun），互相调用并共享全部 refs，是真正难拆的部分。按之前节奏，等用户验收本轮蓝图校正后再继续。
+
+---
+
+## 2026-08-28 · 会议报告生成 SSE 流错误帧 + 末尾 buffer 丢失修复
+
+### 背景
+
+上一轮 commit `8d7343a9` 修完三条症状后用户报告「效果正常了，但是最后的生成总结报错」。
+错误原文是 upstream LLM provider 抛出的 `Provider returned an empty stream with no finish_reason`，
+表面看起来是 provider 端问题，但报告区显示成空白 / 半截，并没有红色错误。
+排查后发现根因在 server→client 的 SSE 流处理路径里有 3 处实际可修的 bug。
+
+### 根因
+
+1. **provider SSE 流里嵌 error 帧被静默忽略**：
+   server `generateReportViaDirectLLM` 的 read loop（`realtime-assist.ts:528-555`）只识别
+   `choices[0].delta.content`，如果 provider 在流里塞了
+   `data: {"error": {"message": "empty stream", "type": "upstream_error"}}` 帧，
+   这种帧会被当普通 chunk 走 SyntaxError catch，warn 一行就过去。
+   然后 read loop 自然结束，`yieldedAny` 看运气，可能触发 fallback（也可能不触发），
+   最终 report 区域显示空白或半截残文，用户看不到任何错误。
+
+2. **末尾不带换行的 chunk 永远到不了前端**：
+   server read loop 用 `buffer.split('\n').pop()` 把最后一行留给「下次读取」，
+   但流已经 `done=true`，这段永远不会被解析。客户端拿到的报告总是缺尾巴。
+
+3. **server 异常 catch 块写的错误格式与客户端解析不一致**：
+   server `streamReport` 写 `data: {"error": String(err)}`，把 stack + message 整串塞进去；
+   客户端 `MeetingAgentPanel.generateReport` 拿到后当成普通字符串展示，
+   既不可读、也没有 error type 归类（timeout / network / llm / agent）。
+
+### 修复
+
+**server**：
+- `realtime-assist.ts`：在 SSE read loop 增加 (a) provider error 帧检测 + 立即抛错；
+  (b) `done=true` 时 flush 剩余 buffer，避免尾部 chunk 丢失。
+- `controllers/hermes/meeting-asr.ts`：错误帧格式改为 `{ error: { message, type } }`，
+  只保留 message + error.name，去掉 stack。
+
+**client**：
+- `MeetingAgentPanel.vue`：(a) 兼容 server 新错误格式 + 旧裸字符串；
+  (b) `[DONE]` 帧真正 break 外层 while（之前 `break` 只能跳出 for-of inner loop，会再读一次直到 done）；
+  (c) `sawDoneFrame` 标志：未收到 `[DONE]` 就 done 时打 warn（让运维侧可见）。
+
+**测试**（`tests/server/meeting-report-fallback.test.ts`）：
+- 新增「provider error 帧应抛错」：断言 `generateReportStream` 抛 `/empty stream/`，且已 yield 的 partial 内容保留。
+- 新增「末尾不带 `\n\n` 的 chunk 也能 flush」：断言 `'head' + 'tail' = 'headtail'`。
+
+### 验证
+
+- `vue-tsc -b --noEmit`：**0 错误**
+- `tests/server/meeting-report-fallback.test.ts`：**6/6 通过**（含 2 个新增）
+- 全 `tests/server` 43 文件失败：**已确认是预存在**（baseline 同样失败，原因是 fake-python ENOENT 测试环境问题）
+- 与本次改动无关，**之前同样的失败**。
+
+### 改动文件
+
+- `packages/server/src/services/meeting-asr/realtime-assist.ts`
+- `packages/server/src/controllers/hermes/meeting-asr.ts`
+- `packages/client/src/components/hermes/meeting/MeetingAgentPanel.vue`
+- `tests/server/meeting-report-fallback.test.ts`

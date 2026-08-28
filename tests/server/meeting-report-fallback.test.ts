@@ -131,4 +131,53 @@ describe('meeting report generation (agent-first with fallback)', () => {
     expect(report).toBe('Final Report Text')
     expect(mocks.fetchMock).not.toHaveBeenCalled()
   })
+
+  it('throws when the direct LLM stream contains an in-band error frame', async () => {
+    // Provider 偶尔会在 SSE 流里塞 error 帧而不是断开连接：
+    //   data: {"error":{"message":"empty stream","type":"upstream_error"}}
+    // 之前会被当成普通 chunk 静默忽略，现在必须抛错让上游 catch 处理。
+    wireBridge()
+    mocks.chatMock.mockRejectedValue(new Error('bridge unavailable'))
+    mocks.fetchMock.mockResolvedValue({
+      ok: true,
+      body: {
+        getReader: () => sseReader([
+          `data: ${JSON.stringify({ choices: [{ delta: { content: 'partial' } }] })}\n\n`,
+          `data: ${JSON.stringify({ error: { message: 'Provider returned an empty stream with no finish_reason', type: 'upstream_error' } })}\n\n`,
+        ]),
+      },
+    })
+    vi.stubGlobal('fetch', mocks.fetchMock)
+
+    const { realtimeAssistService } = await import('../../packages/server/src/services/meeting-asr/realtime-assist')
+    const collected: string[] = []
+    const gen = realtimeAssistService.generateReportStream('s5', 'transcript', 'general', 'default')
+    await expect((async () => {
+      for await (const c of gen) collected.push(c)
+    })()).rejects.toThrow(/empty stream/)
+    expect(collected.join('')).toBe('partial')
+  })
+
+  it('flushes the trailing buffer line when the SSE stream ends without a trailing newline', async () => {
+    // 之前 buffer 里最后一行不带换行的 chunk 会被 .pop() 留到下次读取，
+    // 而服务端又不会再 push，结果那段永远到不了前端。
+    wireBridge()
+    mocks.chatMock.mockRejectedValue(new Error('bridge unavailable'))
+    const trailingChunk = `data: ${JSON.stringify({ choices: [{ delta: { content: 'tail' } }] })}`
+    mocks.fetchMock.mockResolvedValue({
+      ok: true,
+      body: {
+        getReader: () => sseReader([
+          // 注意末尾没有 \n\n
+          `data: ${JSON.stringify({ choices: [{ delta: { content: 'head' } }] })}\n\n${trailingChunk}`,
+        ]),
+      },
+    })
+    vi.stubGlobal('fetch', mocks.fetchMock)
+
+    const { realtimeAssistService } = await import('../../packages/server/src/services/meeting-asr/realtime-assist')
+    const report = await collect(realtimeAssistService.generateReportStream('s6', 'transcript', 'general', 'default'))
+
+    expect(report).toBe('headtail')
+  })
 })

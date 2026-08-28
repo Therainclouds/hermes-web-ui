@@ -527,7 +527,38 @@ class RealtimeAssistService {
 
     while (true) {
       const { done, value } = await reader.read()
-      if (done) break
+      if (done) {
+        // 流结束时把 buffer 里剩余的最后一行（可能是不带换行的最后一条 data:）flush 出去。
+        // 否则最后一段 chunk 会留在 buffer 里永远不到前端。
+        if (buffer.trim()) {
+          const trimmed = buffer.trim()
+          if (trimmed.startsWith('data:')) {
+            const payload = trimmed.slice(5).trim()
+            if (payload && payload !== '[DONE]') {
+              try {
+                const chunk = JSON.parse(payload)
+                // provider 也可能把错误放在流里（{error: {...}}），这种帧必须立即抛错
+                // 让外层 fallback / 上层 catch 处理，否则会被静默忽略。
+                if (chunk?.error) {
+                  throw new Error(typeof chunk.error === 'string' ? chunk.error : (chunk.error?.message || JSON.stringify(chunk.error)))
+                }
+                const delta = chunk?.choices?.[0]?.delta?.content ?? chunk?.choices?.[0]?.message?.content
+                if (delta) {
+                  yieldedAny = true
+                  yield delta
+                }
+              } catch (err) {
+                if (err instanceof SyntaxError) {
+                  console.warn('[report-stream] 无法解析的 SSE 块:', payload.slice(0, 200))
+                } else {
+                  throw err
+                }
+              }
+            }
+          }
+        }
+        break
+      }
 
       buffer += decoder.decode(value, { stream: true })
       const lines = buffer.split('\n')
@@ -542,14 +573,23 @@ class RealtimeAssistService {
 
         try {
           const chunk = JSON.parse(payload)
+          // provider 也可能把错误放在流里（{error: {...}}），这种帧必须立即抛错
+          // 让外层 fallback / 上层 catch 处理，否则会被静默忽略。
+          if (chunk?.error) {
+            throw new Error(typeof chunk.error === 'string' ? chunk.error : (chunk.error?.message || JSON.stringify(chunk.error)))
+          }
           // 标准 OpenAI 流式：delta.content；部分端点：message.content
           const delta = chunk?.choices?.[0]?.delta?.content ?? chunk?.choices?.[0]?.message?.content
           if (delta) {
             yieldedAny = true
             yield delta
           }
-        } catch {
-          console.warn('[report-stream] 无法解析的 SSE 块:', payload.slice(0, 200))
+        } catch (err) {
+          if (err instanceof SyntaxError) {
+            console.warn('[report-stream] 无法解析的 SSE 块:', payload.slice(0, 200))
+          } else {
+            throw err
+          }
         }
       }
     }
@@ -577,6 +617,10 @@ class RealtimeAssistService {
   }
 
   private async loadLLMConfig(): Promise<LLMConfig | null> {
+    // Mirror MeetingASRService.getDataDir() default so we read from the same
+    // root as the rest of the meeting-asr persistent state (config.json,
+    // analysis.json, .env). Keep the literal here in sync if the default ever
+    // moves; the helper lives on MeetingASRService.
     const dataDir = path.join(process.cwd(), 'data', 'meeting-asr')
     const configFile = path.join(dataDir, 'config.json')
 

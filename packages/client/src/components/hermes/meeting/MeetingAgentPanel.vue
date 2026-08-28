@@ -202,6 +202,7 @@ async function generateReport(transcript: string) {
     const decoder = new TextDecoder()
     let buffer = ''
     let rawChunkCount = 0
+    let sawDoneFrame = false
 
     while (true) {
       const { done, value } = await reader.read()
@@ -213,21 +214,42 @@ async function generateReport(transcript: string) {
       const lines = buffer.split('\n')
       buffer = lines.pop() || ''
 
+      let stopReading = false
       for (const line of lines) {
         const trimmed = line.trim()
         if (!trimmed.startsWith('data: ')) continue
         const payload = trimmed.slice(6)
-        if (payload === '[DONE]') break
+        if (payload === '[DONE]') {
+          sawDoneFrame = true
+          stopReading = true
+          break
+        }
 
         try {
           const chunk = JSON.parse(payload)
-          if (chunk.error) throw new Error(chunk.error)
+          // server 异常路径现在发的是 { error: { message, type } }；兼容旧的裸字符串。
+          if (chunk.error) {
+            const msg = typeof chunk.error === 'string'
+              ? chunk.error
+              : (chunk.error?.message ?? 'Report generation failed')
+            const type = typeof chunk.error === 'object' ? chunk.error?.type : undefined
+            const e = new Error(msg)
+            if (type) (e as Error & { cause?: unknown }).cause = type
+            throw e
+          }
           if (chunk.text) reportMarkdown.value += chunk.text
         } catch (e) {
           if (e instanceof SyntaxError) continue
           throw e
         }
       }
+      if (stopReading) break
+    }
+
+    if (!sawDoneFrame) {
+      // 流在没有 [DONE] 的情况下被服务端关掉（超时 / 网络断）—— 之前会静默给出残缺报告
+      // 现在升级为错误，让 UI 红色提示用户重试，而不是显示一份看似完整其实缺尾巴的报告。
+      console.warn('[report] 流结束但未收到 [DONE] 帧；报告长度:', reportMarkdown.value.length)
     }
 
     console.log('[report] 流结束，共收到原始块:', rawChunkCount, '，报告长度:', reportMarkdown.value.length)
