@@ -10,6 +10,11 @@
 // emits:
 //   update:visible 关闭/取消
 //   create         点击"创建会议"按钮
+//
+// display-directive="show"：首次打开后保持 slot 内容挂载，使向导组件
+// （AsrConfigWizardDialog）的输入值在关闭弹窗后仍然保留——与向导拆分前
+// "状态常驻 MeetingView"的语义一致，否则关闭后 startASRService 将读不到
+// 未保存的输入。
 
 import { useI18n } from 'vue-i18n'
 import { NModal, NButton } from 'naive-ui'
@@ -43,6 +48,7 @@ function onCreate() {
     :style="{ width: '640px' }"
     :bordered="false"
     :mask-closable="false"
+    :display-directive="'show'"
     @update:show="(v: boolean) => emit('update:visible', v)"
   >
     <slot />

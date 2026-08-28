@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { NButton, NSpin, NTag, NTooltip, NInput, NPopconfirm, NModal, NSelect, NRadio, NRadioGroup, NSteps, NStep, NAlert } from 'naive-ui'
+import { NButton, NSpin, NTag, NTooltip, NInput, NPopconfirm, NModal, NSelect, NRadio, NRadioGroup } from 'naive-ui'
 import MeetingAgentPanel from '@/components/hermes/meeting/MeetingAgentPanel.vue'
 import SpeechEvaluationPanel from '@/components/hermes/meeting/SpeechEvaluationPanel.vue'
 import SceneTemplatePicker from '@/components/hermes/meeting/SceneTemplatePicker.vue'
 import WaveformCanvas from '@/components/hermes/meeting/WaveformCanvas.vue'
 import MeetingSidebar, { type SidebarSession } from '@/components/hermes/meeting/MeetingSidebar.vue'
 import CreateMeetingDialog from '@/components/hermes/meeting/CreateMeetingDialog.vue'
+import AsrConfigWizardDialog from '@/components/hermes/meeting/AsrConfigWizardDialog.vue'
 import MeetingTopBar from '@/components/hermes/meeting/MeetingTopBar.vue'
 import MeetingRightPanel from '@/components/hermes/meeting/MeetingRightPanel.vue'
 import TranscriptList from '@/components/hermes/meeting/TranscriptList.vue'
@@ -72,38 +73,11 @@ const codingAgentModeOptions = computed(() => [
 ])
 
 // --- ASR 配置 ---
+// DashScope Key 由父级持有（"创建"按钮禁用条件需要响应式依赖它）；
+// 其余向导字段（LLM/OSS/步骤/ASR 模型）由 AsrConfigWizardDialog 自持，
+// 通过 collectConfig() 取值、reset() 重播种。
 const asrApiKey = ref(meetingStore.asrConfig.dashscopeApiKey)
-const llmApiKey = ref(meetingStore.asrConfig.llmApiKey)
-const llmBaseUrl = ref(meetingStore.asrConfig.llmBaseUrl)
-const llmModel = ref(meetingStore.asrConfig.llmModel)
-const asrWizardStep = ref(1) // 1=DashScope, 2=LLM, 3=Review
-
-// --- OSS 配置（说话人分离模式必填）---
-const ossBucket = ref(meetingStore.asrConfig.ossBucket)
-const ossAccessKeyId = ref(meetingStore.asrConfig.ossAccessKeyId)
-const ossAccessKeySecret = ref(meetingStore.asrConfig.ossAccessKeySecret)
-const ossEndpoint = ref(meetingStore.asrConfig.ossEndpoint)
-const ossPathPrefix = ref(meetingStore.asrConfig.ossPathPrefix)
-const newMeetingAsrModel = ref('paraformer-v2')
-
-// ASR 模型选项
-const asrModelOptions = computed(() => [
-  { 
-    label: 'Paraformer V2', 
-    value: 'paraformer-v2',
-    description: t('meeting.asrModelParaformerDesc')
-  },
-  { 
-    label: 'Fun-ASR', 
-    value: 'fun-asr',
-    description: t('meeting.asrModelFunAsrDesc')
-  },
-  { 
-    label: 'Fun-ASR MTL', 
-    value: 'fun-asr-mtl',
-    description: t('meeting.asrModelFunAsrMtlDesc')
-  },
-])
+const asrWizardRef = ref<InstanceType<typeof AsrConfigWizardDialog> | null>(null)
 
 // --- 当前会议状态 ---
 const isLoading = ref(false)
@@ -276,42 +250,43 @@ function openCreateModal() {
   newMeetingCodingAgentMode.value = 'scoped'
   newMeetingSceneTemplate.value = 'general'
   asrApiKey.value = meetingStore.asrConfig.dashscopeApiKey
-  llmApiKey.value = meetingStore.asrConfig.llmApiKey
-  llmBaseUrl.value = meetingStore.asrConfig.llmBaseUrl
-  llmModel.value = meetingStore.asrConfig.llmModel
-  ossBucket.value = meetingStore.asrConfig.ossBucket
-  ossAccessKeyId.value = meetingStore.asrConfig.ossAccessKeyId
-  ossAccessKeySecret.value = meetingStore.asrConfig.ossAccessKeySecret
-  ossEndpoint.value = meetingStore.asrConfig.ossEndpoint
-  ossPathPrefix.value = meetingStore.asrConfig.ossPathPrefix
-  asrWizardStep.value = meetingStore.hasASRConfig && meetingStore.hasLLMConfig ? 3 : 1
+  // LLM/OSS/步骤的重播种已随向导拆入 AsrConfigWizardDialog
+  asrWizardRef.value?.reset()
   showCreateModal.value = true
 }
 
 function handleCreateMeeting() {
   if (!newMeetingTitle.value.trim()) return
   if (!asrApiKey.value.trim() && !meetingStore.hasASRConfig) return
-  
+
+  const wizard = asrWizardRef.value?.collectConfig()
+
   // 保存 ASR API Key（如果有更新）
   if (asrApiKey.value.trim()) {
     meetingStore.updateASRConfig({ dashscopeApiKey: asrApiKey.value.trim() })
   }
   // 保存 LLM 配置（可选 — 没填也不阻塞创建）
-  if (llmApiKey.value.trim() || llmBaseUrl.value.trim() || llmModel.value.trim()) {
+  const wizardLlmApiKey = wizard?.llmApiKey ?? ''
+  const wizardLlmBaseUrl = wizard?.llmBaseUrl ?? ''
+  const wizardLlmModel = wizard?.llmModel ?? ''
+  if (wizardLlmApiKey.trim() || wizardLlmBaseUrl.trim() || wizardLlmModel.trim()) {
     meetingStore.updateASRConfig({
-      llmApiKey: llmApiKey.value.trim(),
-      llmBaseUrl: llmBaseUrl.value.trim() || 'https://api.deepseek.com',
-      llmModel: llmModel.value.trim() || 'deepseek-chat',
+      llmApiKey: wizardLlmApiKey.trim(),
+      llmBaseUrl: wizardLlmBaseUrl.trim() || 'https://api.deepseek.com',
+      llmModel: wizardLlmModel.trim() || 'deepseek-chat',
     })
   }
   // 保存 OSS 配置（说话人分离用，可选）
-  if (ossBucket.value.trim() || ossAccessKeyId.value.trim() || ossAccessKeySecret.value.trim()) {
+  const wizardOssBucket = wizard?.ossBucket ?? ''
+  const wizardOssAccessKeyId = wizard?.ossAccessKeyId ?? ''
+  const wizardOssAccessKeySecret = wizard?.ossAccessKeySecret ?? ''
+  if (wizardOssBucket.trim() || wizardOssAccessKeyId.trim() || wizardOssAccessKeySecret.trim()) {
     meetingStore.updateASRConfig({
-      ossBucket: ossBucket.value.trim(),
-      ossAccessKeyId: ossAccessKeyId.value.trim(),
-      ossAccessKeySecret: ossAccessKeySecret.value.trim(),
-      ossEndpoint: ossEndpoint.value.trim() || 'oss-cn-beijing.aliyuncs.com',
-      ossPathPrefix: ossPathPrefix.value.trim() || 'meeting-asr-uploads/',
+      ossBucket: wizardOssBucket.trim(),
+      ossAccessKeyId: wizardOssAccessKeyId.trim(),
+      ossAccessKeySecret: wizardOssAccessKeySecret.trim(),
+      ossEndpoint: (wizard?.ossEndpoint ?? '').trim() || 'oss-cn-beijing.aliyuncs.com',
+      ossPathPrefix: (wizard?.ossPathPrefix ?? '').trim() || 'meeting-asr-uploads/',
     })
   }
   
@@ -341,7 +316,7 @@ function handleCreateMeeting() {
   
   meetingStore.createSession({
     title: newMeetingTitle.value.trim(),
-    asrModel: newMeetingAsrModel.value,
+    asrModel: asrWizardRef.value?.collectConfig()?.asrModel || 'paraformer-v2',
     analysisMode,
     hermesProfile: effectiveAgentType === 'hermes' ? (newMeetingHermesProfile.value || 'default') : undefined,
     customProvider: effectiveAgentType !== 'hermes' && newMeetingCodingAgentMode.value === 'scoped' ? newMeetingCustomProvider.value : undefined,
@@ -525,15 +500,16 @@ async function checkASRServiceStatus() {
 }
 
 async function startASRService() {
-  // Check both the persisted store AND the current wizard input refs — when
+  // Check both the persisted store AND the current wizard input — when
   // the browser origin changes (different dev port, incognito, etc.)
   // localStorage is empty but the user may have just re-entered OSS config
-  // in the wizard. Without checking the local refs we'd skip restart and
+  // in the wizard. Without checking the wizard we'd skip restart and
   // keep using the already-running (OSS-less) service.
+  const wizard = asrWizardRef.value?.collectConfig()
   const hasOSS =
-    meetingStore.asrConfig.ossBucket || ossBucket.value.trim() ||
-    meetingStore.asrConfig.ossAccessKeyId || ossAccessKeyId.value.trim() ||
-    meetingStore.asrConfig.ossAccessKeySecret || ossAccessKeySecret.value.trim()
+    meetingStore.asrConfig.ossBucket || (wizard?.ossBucket ?? '').trim() ||
+    meetingStore.asrConfig.ossAccessKeyId || (wizard?.ossAccessKeyId ?? '').trim() ||
+    meetingStore.asrConfig.ossAccessKeySecret || (wizard?.ossAccessKeySecret ?? '').trim()
   if (asrServiceStatus.value.isRunning && !hasOSS) return true
 
   isStartingASR.value = true
@@ -552,25 +528,25 @@ async function startASRService() {
       asrModel: activeSession?.asrModel || 'paraformer-v2',
     }
     // Pass LLM config if user provided it, so backend has it from the start.
-    if (meetingStore.asrConfig.llmApiKey || llmApiKey.value) {
-      config.llmApiKey = meetingStore.asrConfig.llmApiKey || llmApiKey.value
-      config.llmBaseUrl = meetingStore.asrConfig.llmBaseUrl || llmBaseUrl.value
-      config.llmModel = meetingStore.asrConfig.llmModel || llmModel.value
+    if (meetingStore.asrConfig.llmApiKey || wizard?.llmApiKey) {
+      config.llmApiKey = meetingStore.asrConfig.llmApiKey || wizard?.llmApiKey
+      config.llmBaseUrl = meetingStore.asrConfig.llmBaseUrl || wizard?.llmBaseUrl
+      config.llmModel = meetingStore.asrConfig.llmModel || wizard?.llmModel
     }
     // Pass OSS config if user configured it (speaker diarization chunk flow).
-    // Fallback to local refs (current modal input) when the persisted store
+    // Fallback to the current wizard input when the persisted store
     // is empty — without this, edits made in the wizard that haven't yet been
     // flushed via updateASRConfig() would silently get dropped on the wire.
     const store = meetingStore.asrConfig
-    const ossBucketValue = store.ossBucket || ossBucket.value.trim()
-    const ossAccessKeyIdValue = store.ossAccessKeyId || ossAccessKeyId.value.trim()
-    const ossAccessKeySecretValue = store.ossAccessKeySecret || ossAccessKeySecret.value.trim()
+    const ossBucketValue = store.ossBucket || (wizard?.ossBucket ?? '').trim()
+    const ossAccessKeyIdValue = store.ossAccessKeyId || (wizard?.ossAccessKeyId ?? '').trim()
+    const ossAccessKeySecretValue = store.ossAccessKeySecret || (wizard?.ossAccessKeySecret ?? '').trim()
     if (ossBucketValue || ossAccessKeyIdValue || ossAccessKeySecretValue) {
       config.ossBucket = ossBucketValue
       config.ossAccessKeyId = ossAccessKeyIdValue
       config.ossAccessKeySecret = ossAccessKeySecretValue
-      config.ossEndpoint = store.ossEndpoint || ossEndpoint.value.trim() || 'oss-cn-beijing.aliyuncs.com'
-      config.ossPathPrefix = store.ossPathPrefix || ossPathPrefix.value.trim() || 'meeting-asr-uploads/'
+      config.ossEndpoint = store.ossEndpoint || (wizard?.ossEndpoint ?? '').trim() || 'oss-cn-beijing.aliyuncs.com'
+      config.ossPathPrefix = store.ossPathPrefix || (wizard?.ossPathPrefix ?? '').trim() || 'meeting-asr-uploads/'
     }
 
     console.log('[meeting] Calling ASR start API with config:', { ...config, dashscopeApiKey: config.dashscopeApiKey ? '***' : 'not set' })
@@ -1750,145 +1726,12 @@ async function clearTranscript() {
           <div class="form-hint">{{ t('meeting.scene.hint') }}</div>
         </div>
 
-        <div class="form-section">
-          <div class="form-section-title">{{ t('meeting.asrConfig') }}</div>
-          <NSteps :current="asrWizardStep" size="small" status="process" class="asr-wizard-steps">
-            <NStep :title="t('meeting.wizardStepAsr')" :description="meetingStore.hasASRConfig ? t('meeting.configured') : ''" />
-            <NStep :title="t('meeting.wizardStepLlm')" :description="newMeetingAnalysisMode === 'hermes' ? t('meeting.hermesAgent') : (meetingStore.hasLLMConfig ? t('meeting.configured') : t('meeting.optional'))" />
-            <NStep :title="t('meeting.wizardStepReview')" />
-          </NSteps>
-
-          <!-- Step 1: DashScope API Key (required) -->
-          <div v-if="asrWizardStep === 1" class="form-item">
-            <label class="form-label">
-              {{ t('meeting.dashscopeApiKey') }}
-              <a
-                href="https://dashscope.aliyun.com/"
-                target="_blank"
-                rel="noopener noreferrer"
-                class="form-tutorial-link"
-                @click.stop
-              >{{ t('meeting.howToGetApiKey') }}</a>
-              <span v-if="meetingStore.hasASRConfig" class="form-label-badge">{{ t('meeting.configured') }}</span>
-            </label>
-            <NInput
-              v-model:value="asrApiKey"
-              type="password"
-              show-password-on="click"
-              :placeholder="meetingStore.hasASRConfig ? t('meeting.apiKeySaved') : t('meeting.dashscopeApiKeyPlaceholder')"
-            />
-            <div class="form-hint">{{ t('meeting.dashscopeApiKeyHint') }}</div>
-
-            <!-- OSS 配置（说话人分离必填，可折叠）——隐藏说话人分离时一并隐藏 -->
-            <details v-if="!HIDE_SPEAKER_DIARIZATION" class="oss-config-details">
-              <summary class="oss-config-summary">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
-                  <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
-                  <line x1="12" y1="22.08" x2="12" y2="12"/>
-                </svg>
-                {{ t('meeting.ossConfig') }}
-                <span v-if="meetingStore.asrConfig.ossBucket" class="form-label-badge">{{ t('meeting.configured') }}</span>
-              </summary>
-              <div class="oss-config-body">
-                <NAlert type="info" :show-icon="false" closable style="margin-bottom: 12px">
-                  {{ t('meeting.ossConfigHint') }}
-                </NAlert>
-                <label class="form-label">{{ t('meeting.ossBucket') }}</label>
-                <NInput v-model:value="ossBucket" :placeholder="t('meeting.ossBucketPlaceholder')" />
-                <label class="form-label" style="margin-top: 12px">{{ t('meeting.ossAccessKeyId') }}</label>
-                <NInput v-model:value="ossAccessKeyId" type="password" show-password-on="click" :placeholder="t('meeting.ossAccessKeyIdPlaceholder')" />
-                <label class="form-label" style="margin-top: 12px">{{ t('meeting.ossAccessKeySecret') }}</label>
-                <NInput v-model:value="ossAccessKeySecret" type="password" show-password-on="click" :placeholder="t('meeting.ossAccessKeySecretPlaceholder')" />
-                <label class="form-label" style="margin-top: 12px">{{ t('meeting.ossEndpoint') }}</label>
-                <NInput v-model:value="ossEndpoint" :placeholder="t('meeting.ossEndpointPlaceholder')" />
-                <label class="form-label" style="margin-top: 12px">{{ t('meeting.ossPathPrefix') }}</label>
-                <NInput v-model:value="ossPathPrefix" :placeholder="t('meeting.ossPathPrefixPlaceholder')" />
-              </div>
-            </details>
-
-            <div class="wizard-actions">
-              <NButton type="primary" size="small" @click="asrWizardStep = 2">
-                {{ t('meeting.wizardNext') }}
-              </NButton>
-            </div>
-          </div>
-
-          <!-- Step 2: 智能分析（可选 — 默认直接使用 Hermes Agent，无需 LLM 配置） -->
-          <div v-if="asrWizardStep === 2" class="form-item">
-            <NAlert type="info" :show-icon="false" style="margin-bottom: 12px">
-              {{ t('meeting.llmOptionalHint') }}
-            </NAlert>
-            <label class="form-label">{{ t('meeting.analysisMode') }}</label>
-            <NRadioGroup v-model:value="newMeetingAnalysisMode">
-              <NRadio value="hermes">
-                <div class="radio-content">
-                  <span class="radio-title">{{ t('meeting.hermesAgent') }}</span>
-                  <span class="radio-desc">{{ t('meeting.hermesAgentDesc') }}</span>
-                </div>
-              </NRadio>
-              <NRadio value="custom">
-                <div class="radio-content">
-                  <span class="radio-title">{{ t('meeting.customModel') }}</span>
-                  <span class="radio-desc">{{ t('meeting.customModelDesc') }}</span>
-                </div>
-              </NRadio>
-            </NRadioGroup>
-            <!-- 自定义 LLM 配置（仅在选择自定义模式时显示） -->
-            <template v-if="newMeetingAnalysisMode === 'custom'">
-              <label class="form-label" style="margin-top: 12px">{{ t('meeting.llmApiKey') }}</label>
-              <NInput
-                v-model:value="llmApiKey"
-                type="password"
-                show-password-on="click"
-                :placeholder="t('meeting.llmApiKeyPlaceholder')"
-              />
-              <label class="form-label" style="margin-top: 12px">{{ t('meeting.llmBaseUrl') }}</label>
-              <NInput v-model:value="llmBaseUrl" :placeholder="t('meeting.llmBaseUrlPlaceholder')" />
-              <label class="form-label" style="margin-top: 12px">{{ t('meeting.llmModel') }}</label>
-              <NInput v-model:value="llmModel" :placeholder="t('meeting.llmModelPlaceholder')" />
-            </template>
-            <div class="wizard-actions">
-              <NButton size="small" @click="asrWizardStep = 1">{{ t('meeting.wizardBack') }}</NButton>
-              <NButton type="primary" size="small" @click="asrWizardStep = 3">
-                {{ t('meeting.wizardNext') }}
-              </NButton>
-            </div>
-          </div>
-
-          <!-- Step 3: Review -->
-          <div v-if="asrWizardStep === 3" class="form-item">
-            <NAlert v-if="!meetingStore.hasASRConfig && !asrApiKey" type="warning" :show-icon="true" style="margin-bottom: 8px">
-              {{ t('meeting.wizardWarnMissingAsr') }}
-            </NAlert>
-            <NAlert v-if="newMeetingAnalysisMode === 'custom' && !meetingStore.hasLLMConfig && !llmApiKey" type="info" :show-icon="false" style="margin-bottom: 8px">
-              {{ t('meeting.wizardWarnMissingLlm') }}
-            </NAlert>
-            <ul class="wizard-review-list">
-              <li>
-                <span class="wizard-review-label">{{ t('meeting.wizardStepAsr') }}:</span>
-                <span class="wizard-review-value">{{ (asrApiKey || meetingStore.asrConfig.dashscopeApiKey) ? '✓ ' + t('meeting.configured') : '— ' + t('meeting.notConfigured') }}</span>
-              </li>
-              <li>
-                <span class="wizard-review-label">{{ t('meeting.wizardStepLlm') }}:</span>
-                <span class="wizard-review-value">{{ newMeetingAnalysisMode === 'hermes' ? '✓ ' + t('meeting.hermesAgent') : ((llmApiKey || meetingStore.asrConfig.llmApiKey) ? '✓ ' + t('meeting.configured') : '— ' + t('meeting.notConfigured')) }}</span>
-              </li>
-            </ul>
-            <div class="wizard-actions">
-              <NButton size="small" @click="asrWizardStep = 2">{{ t('meeting.wizardBack') }}</NButton>
-              <NButton size="small" @click="asrWizardStep = 1">{{ t('meeting.wizardRestart') }}</NButton>
-            </div>
-          </div>
-          <div class="form-item">
-            <label class="form-label">{{ t('meeting.asrModel') }}</label>
-            <NSelect
-              v-model:value="newMeetingAsrModel"
-              :options="asrModelOptions"
-              :placeholder="t('meeting.selectAsrModel')"
-            />
-            <div class="form-hint">{{ t('meeting.asrModelHint') }}</div>
-          </div>
-        </div>
+        <!-- ASR 配置向导（拆分至 AsrConfigWizardDialog，行为保持不变） -->
+        <AsrConfigWizardDialog
+          ref="asrWizardRef"
+          v-model:asr-api-key="asrApiKey"
+          v-model:analysis-mode="newMeetingAnalysisMode"
+        />
 
         <div class="form-section">
           <div class="form-section-title">{{ t('meeting.agentConfig') }}</div>
