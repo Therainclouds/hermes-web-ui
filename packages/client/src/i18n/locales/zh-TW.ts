@@ -4099,6 +4099,7 @@ export default {
       emptyBodyNotes: '暫無觀察記錄。',
       reportTitle: '評估報告',
       generateReport: '產生評估報告',
+      downloadVerbatim: '下載演講評分逐字稿',
       generating: '正在產生評估報告…',
       exportReport: '匯出報告',
       exportWord: '匯出為 Word (.docx)',
@@ -4196,6 +4197,7 @@ export default {
       pushToTalk: '按住說話,鬆開發送',
       releaseToSend: '正在錄音…鬆開結束',
       emptyHint: '點擊「開始對話」啟動即時語音會話',
+      contextLoaded: '已載入目前會議上下文（含逐字稿），AI 將結合會議內容回答',
       phase: {
         idle: '未啟動',
         connecting: '正在連線…',

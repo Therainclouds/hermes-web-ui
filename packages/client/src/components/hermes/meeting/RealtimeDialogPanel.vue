@@ -7,6 +7,11 @@ import { useOmniRealtime } from '@/composables/useOmniRealtime'
 const props = defineProps<{
   /** Used to surface a friendly error if no DashScope key has been configured. */
   hasDashscopeKey: boolean
+  /**
+   * 会议上下文（标题 / 开始时间 / 发言人 / 带时间戳逐字稿）。由 MeetingView
+   * 在对应会议下计算并注入，开启会话时拼进 instructions，让 AI 结合当前会议回答。
+   */
+  meetingContext?: string
 }>()
 
 const emit = defineEmits<{
@@ -75,12 +80,19 @@ const phaseTagType = computed(() => {
 
 const canStart = computed(() => props.hasDashscopeKey && phase.value === 'idle')
 const isActive = computed(() => phase.value !== 'idle' && phase.value !== 'closed')
+const hasMeetingContext = computed(() => Boolean(props.meetingContext?.trim()))
 
 async function startSession() {
   if (!props.hasDashscopeKey) return
+  // 会议上下文注入：在用户设定的人设/指令之后追加当前会议的逐字稿与时间信息，
+  // 让 AI 根据"现在正在开的会"来回答。仅当上下文非空时才拼，避免污染自定义指令。
+  const baseInstructions = instructions.value.trim()
+  const contextBlock = hasMeetingContext.value && props.meetingContext
+    ? `\n\n——\n以下是开启本实时对话时所在的会议上下文（逐字稿带时间戳）。请结合这些内容回答，不要编造上下文之外的事实；若用户问题与会议无关也可以正常闲聊。\n${props.meetingContext.trim()}`
+    : ''
   await omni.connect({
     voice: selectedVoice.value,
-    instructions: instructions.value,
+    instructions: `${baseInstructions}${contextBlock}`,
   })
 }
 
@@ -162,6 +174,9 @@ watch(
     </div>
 
     <div v-if="!isActive" class="realtime-config">
+      <div v-if="hasMeetingContext" class="realtime-context-hint">
+        {{ t('meeting.realtime.contextLoaded') }}
+      </div>
       <div class="realtime-config-row">
         <label>{{ t('meeting.realtime.voice') }}</label>
         <NSelect
@@ -328,6 +343,16 @@ watch(
   flex-direction: column;
   gap: 10px;
   margin-bottom: 10px;
+}
+
+.realtime-context-hint {
+  font-size: 11px;
+  line-height: 1.5;
+  color: #86efac;
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  border-radius: 6px;
+  padding: 6px 8px;
 }
 
 .realtime-config-row {

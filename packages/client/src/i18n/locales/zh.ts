@@ -4355,6 +4355,7 @@ export default {
       emptyBodyNotes: '暂无观察记录。',
       reportTitle: '评估报告',
       generateReport: '生成评估报告',
+      downloadVerbatim: '下载演讲评分逐字稿',
       generating: '正在生成评估报告…',
       exportReport: '导出报告',
       exportWord: '导出为 Word (.docx)',
@@ -4477,6 +4478,7 @@ export default {
       pushToTalk: '按住说话，松开发送',
       releaseToSend: '正在录音…松开结束',
       emptyHint: '点击"开始对话"启动实时语音会话',
+      contextLoaded: '已载入当前会议上下文（含逐字稿），AI 将结合会议内容回答',
       phase: {
         idle: '未启动',
         connecting: '正在连接…',

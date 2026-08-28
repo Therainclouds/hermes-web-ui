@@ -570,6 +570,26 @@ function buildTranscriptWithEval(): string {
   return [...lines, '', ...evalBlock].join('\n')
 }
 
+/** 下载演讲评分逐字稿：逐字稿 + 评估数据（计时/赘语/金句/语法/肢体/评分）落盘为 .txt。 */
+function downloadVerbatim() {
+  const transcript = buildTranscriptWithEval()
+  if (!transcript.trim()) return
+  const header = [
+    `演讲评分逐字稿：${session.value?.title || ''}`,
+    `导出时间：${new Date().toLocaleString('zh-CN')}`,
+    '',
+  ].join('\n')
+  const blob = new Blob([header + transcript], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${session.value?.title || '演讲评分'}_逐字稿.txt`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
 async function generateReport() {
   if (isGeneratingReport.value) return
   const transcript = buildTranscriptWithEval()
@@ -965,9 +985,14 @@ onUnmounted(() => {
         <span class="role-icon">📊</span>
         <span class="section-name">{{ t('meeting.speechEval.reportTitle') }}</span>
       </div>
-      <NButton type="primary" size="small" block :loading="isGeneratingReport" :disabled="!session?.sentences?.length" @click="generateReport">
-        {{ t('meeting.speechEval.generateReport') }}
-      </NButton>
+      <div class="report-generate-row">
+        <NButton type="primary" size="small" :loading="isGeneratingReport" :disabled="!session?.sentences?.length" @click="generateReport">
+          {{ t('meeting.speechEval.generateReport') }}
+        </NButton>
+        <NButton size="small" :disabled="!session?.sentences?.length" @click="downloadVerbatim">
+          {{ t('meeting.speechEval.downloadVerbatim') }}
+        </NButton>
+      </div>
 
       <div v-if="reportError" class="report-error">{{ reportError }}</div>
 
@@ -1425,6 +1450,8 @@ onUnmounted(() => {
 
 // --- 报告 ---
 .report-section { gap: 8px; }
+.report-generate-row { display: flex; gap: 8px; }
+.report-generate-row .n-button { flex: 1; }
 .report-error { font-size: 12px; color: #d03050; padding: 6px 8px; background: rgba(208, 48, 80, 0.08); border-radius: 6px; }
 .report-loading { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--n-text-color3, #888); }
 .report-actions { display: flex; justify-content: flex-end; margin-bottom: 8px; }

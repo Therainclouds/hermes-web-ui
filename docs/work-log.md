@@ -1,5 +1,26 @@
 # Work Log
 
+## 2026-08-28 深夜续 · 实时对话接入会议上下文 + 演讲评分逐字稿下载
+
+按用户需求更新实时对话（RealtimeDialogPanel）：
+
+- **会议上下文注入**：在对应会议下开启实时对话时，MeetingView 计算
+  `realtimeMeetingContext`（会议标题 / 开始时间 / 发言人 / 带时间戳逐字稿，最近 60
+  句截断避免超长），经 `meeting-context` prop 传给面板；开启会话时拼进
+  instructions 注入 DashScope system prompt —— AI 能根据"现在正在开的会"回答
+  （音频即现有按住说话实时采集，字幕即逐字稿上下文）。面板在未启动时显示
+  "已载入当前会议上下文（含逐字稿）"提示。
+- **下载演讲评分逐字稿按钮**：SpeechEvaluationPanel 报告区新增「下载演讲评分
+  逐字稿」按钮，复用 `buildTranscriptWithEval()`（逐字稿 + 计时/发言人用时/串场/
+  赘语/金句/语法/肢体/亮点/评分等评估数据）导出为 `.txt`。
+- i18n：zh/en/zh-TW 新增 `realtime.contextLoaded` + `speechEval.downloadVerbatim`。
+- 验证：`vue-tsc -b` 零错误；`npm run build` 全链路通过；守卫测试 17 个全绿
+  （omni-realtime-wiring 14 + speech-eval-verbatim-download 3）；全量 vitest
+  45 failed 与基线同集合（0 新增回归）；真实 DashScope key 冒烟验证**带会议上下文
+  instructions** 握手成功（ready 事件）。
+- 备注：测试运行期间 meeting-asr 服务把源码树 venv 迁至 `data/meeting-asr/.venv`
+  （v0.7.16 数据目录迁移语义，预期行为）。
+
 ## 2026-08-28 深夜 · 合并对齐收尾：全链路验证 + 实时对话冒烟验证 + 密钥清理
 
 承接 `fcde4264`「merge: origin/main → meeting/v0.73」后的工作区合并对齐：

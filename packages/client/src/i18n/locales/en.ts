@@ -4309,6 +4309,7 @@ export default {
       emptyBodyNotes: 'No observations yet.',
       reportTitle: 'Evaluation Report',
       generateReport: 'Generate Evaluation Report',
+      downloadVerbatim: 'Download Verbatim Transcript',
       generating: 'Generating evaluation report…',
       exportReport: 'Export Report',
       exportWord: 'Export as Word (.docx)',
@@ -4432,6 +4433,7 @@ export default {
       pushToTalk: 'Hold to talk, release to send',
       releaseToSend: 'Recording… release to send',
       emptyHint: 'Click "Start session" to begin a realtime voice conversation',
+      contextLoaded: 'Meeting context loaded (incl. verbatim transcript) — AI will answer based on it',
       phase: {
         idle: 'Idle',
         connecting: 'Connecting…',

@@ -75,6 +75,17 @@ describe('omni-realtime client wiring', () => {
     expect(source).toContain('has-dashscope-key')
   })
 
+  it('MeetingView feeds the current meeting context (transcript + time) into the realtime dialog', () => {
+    const source = readFileSync(`${CLIENT_SRC}/views/hermes/MeetingView.vue`, 'utf8')
+    // context builder: title / start time / speakers / timestamped verbatim transcript
+    expect(source).toContain('realtimeMeetingContext')
+    expect(source).toContain('meetingStore.activeSession')
+    expect(source).toContain('会议标题')
+    expect(source).toContain('逐字稿')
+    // the panel receives it as a prop
+    expect(source).toMatch(/meeting-context="realtimeMeetingContext"/)
+  })
+
   it('MeetingRightPanel accepts showRealtimeDialog and a realtime slot', () => {
     const source = readFileSync(
       `${CLIENT_SRC}/components/hermes/meeting/MeetingRightPanel.vue`,
@@ -92,14 +103,21 @@ describe('omni-realtime client wiring', () => {
     )
     // receives the DashScope-key availability as a prop from MeetingView
     expect(source).toContain('hasDashscopeKey')
+    // receives the current meeting context (transcript + time) as a prop
+    expect(source).toContain('meetingContext')
+    // injects the meeting context into the instructions at session start
+    expect(source).toContain('contextBlock')
+    expect(source).toContain('instructions:')
     // speak/release handlers
     expect(source).toContain('togglePush')
     expect(source).toContain('releasePush')
     // delegates WS lifecycle to useOmniRealtime (covered in the next test)
     expect(source).toContain('useOmniRealtime')
     // passes the user-supplied voice + instructions through to the server
+    // (instructions = user prompt + injected meeting context block)
     expect(source).toMatch(/voice:\s*selectedVoice/)
-    expect(source).toMatch(/instructions:\s*instructions/)
+    expect(source).toContain('baseInstructions')
+    expect(source).toContain('contextBlock')
   })
 
   it('MeetingView forwards the DashScope key availability to RealtimeDialogPanel', () => {

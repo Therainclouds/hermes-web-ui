@@ -141,6 +141,39 @@ const assistPanelRef = ref<InstanceType<typeof MeetingAgentPanel> | null>(null)
 // --- 实时对话面板 (qwen3.5-omni-flash-realtime) ---
 const showRealtimeDialog = ref(false)
 
+// 实时对话的会议上下文：开启会话时把当前会议的标题 / 开始时间 / 发言人 /
+// 带时间戳的逐字稿注入 AI 的 system prompt，让 AI 能根据"现在正在开的会"
+// 来回答（而不是只凭用户当下的一句话）。
+const REALTIME_CONTEXT_MAX_SENTENCES = 60
+const realtimeMeetingContext = computed(() => {
+  const s = meetingStore.activeSession
+  if (!s) return ''
+  const lines: string[] = []
+  lines.push(`会议标题：${s.title}`)
+  lines.push(`开始时间：${new Date(s.createdAt).toLocaleString('zh-CN')}`)
+  const speakerNames = s.speakers.map((sp) => sp.displayName).filter(Boolean)
+  if (speakerNames.length) lines.push(`发言人：${speakerNames.join('、')}`)
+  lines.push('')
+  lines.push('【当前会议逐字稿（带时间戳）】')
+  const all = s.sentences
+  if (!all.length) {
+    lines.push('（暂无逐字稿，可先基于会议主题交流）')
+  } else {
+    const slice = all.length > REALTIME_CONTEXT_MAX_SENTENCES ? all.slice(-REALTIME_CONTEXT_MAX_SENTENCES) : all
+    if (all.length > REALTIME_CONTEXT_MAX_SENTENCES) {
+      lines.push(`（逐字稿共 ${all.length} 句，以下为最近 ${REALTIME_CONTEXT_MAX_SENTENCES} 句，更早内容已省略）`)
+    }
+    for (const sen of slice) {
+      const time = typeof sen.startTime === 'number'
+        ? formatDuration(sen.startTime / 1000)
+        : new Date(sen.timestamp).toLocaleTimeString('zh-CN')
+      const speaker = sen.speaker ? `[${sen.speaker}]` : ''
+      lines.push(`${time} ${speaker} ${sen.text}`.trim())
+    }
+  }
+  return lines.join('\n')
+})
+
 // --- 音频录制/播放（拆分至 useMeetingAudio，行为保持不变） ---
 const {
   isRecording,
@@ -1230,6 +1263,7 @@ async function clearTranscript() {
         <template #realtime>
           <RealtimeDialogPanel
             :has-dashscope-key="!!meetingStore.asrConfig.dashscopeApiKey"
+            :meeting-context="realtimeMeetingContext"
             @close="showRealtimeDialog = false"
           />
         </template>
