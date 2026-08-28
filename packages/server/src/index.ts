@@ -531,6 +531,10 @@ export async function bootstrap() {
         targetPort = meetingASRService.getASRPort() || 8000
       } else if (req.url === '/ws/diarize') {
         targetPort = meetingASRService.getDiarizePort() || 8001
+      } else if (req.url === '/ws/omni-realtime') {
+        // Omni-Realtime shares the main ASR port (same Python uvicorn process).
+        // The endpoint /ws/omni-realtime is routed inside FastAPI in main.py.
+        targetPort = meetingASRService.getASRPort() || 8000
       }
       if (!targetPort) return // fall through to catch-all
 
@@ -579,7 +583,8 @@ export async function bootstrap() {
         url.pathname !== getLanPeerSocketPath() &&
         !url.pathname.startsWith('/socket.io/') &&
         url.pathname !== '/ws/asr' &&
-        url.pathname !== '/ws/diarize') {
+        url.pathname !== '/ws/diarize' &&
+        url.pathname !== '/ws/omni-realtime') {
         socket.destroy()
       }
     })

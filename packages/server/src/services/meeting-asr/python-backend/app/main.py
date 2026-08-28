@@ -18,6 +18,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from .asr_proxy import ParaformerProxy
 from .config import settings
+from .omni_realtime_proxy import OmniRealtimeProxy, translate_event as translate_omni_event
 from ._log_helper import log_skip
 from .html_generator import generate_html_report
 from .llm_service import llm_service
@@ -419,6 +420,127 @@ async def ws_asr(ws: WebSocket) -> None:
             except (asyncio.CancelledError, Exception):
                 pass
         await proxy.close()
+
+
+@app.websocket("/ws/omni-realtime")
+async def ws_omni_realtime(ws: WebSocket) -> None:
+    """Bridge a frontend WS to the DashScope Omni-Realtime API.
+
+    Wire format is documented in ``omni_realtime_proxy.py``. The handler is
+    intentionally thin — all the protocol translation lives in the proxy
+    module so it stays unit-testable.
+    """
+    await ws.accept()
+    proxy: OmniRealtimeProxy | None = None
+    upstream_task: asyncio.Task | None = None
+
+    async def pump_upstream() -> None:
+        if proxy is None:
+            return
+        try:
+            async for raw in proxy.upstream_events():
+                translated = translate_omni_event(raw)
+                if translated is None:
+                    continue
+                try:
+                    if isinstance(translated, (bytes, bytearray)):
+                        await ws.send_bytes(bytes(translated))
+                    else:
+                        await ws.send_text(translated)
+                except (WebSocketDisconnect, RuntimeError):
+                    return
+                except Exception as exc:
+                    log.warning("omni-realtime: downstream send failed: %s", exc)
+                    return
+        except Exception as exc:
+            log.exception("omni-realtime: upstream pump error: %s", exc)
+
+    try:
+        first = await ws.receive()
+        if "text" not in first:
+            await ws.send_json({"type": "error", "message": "expected start frame"})
+            await ws.close()
+            return
+
+        try:
+            start_msg = json.loads(first["text"])
+        except json.JSONDecodeError:
+            await ws.send_json({"type": "error", "message": "invalid start frame json"})
+            await ws.close()
+            return
+
+        if start_msg.get("type") != "start":
+            await ws.send_json({"type": "error", "message": "first frame must be {\"type\":\"start\"}"})
+            await ws.close()
+            return
+
+        proxy = OmniRealtimeProxy(
+            model=start_msg.get("model"),
+            voice=start_msg.get("voice"),
+            instructions=start_msg.get("instructions"),
+        )
+        await proxy.connect()
+        await ws.send_json({"type": "ready", "session_id": proxy.session_id, "model": proxy.model})
+
+        upstream_task = asyncio.create_task(pump_upstream())
+
+        while True:
+            try:
+                frame = await ws.receive()
+            except (WebSocketDisconnect, RuntimeError):
+                break
+
+            if "bytes" in frame:
+                data = frame["bytes"]
+                if not data:
+                    continue
+                try:
+                    await proxy.send_audio(data)
+                except Exception as exc:
+                    log.warning("omni-realtime: send_audio failed: %s", exc)
+                    try:
+                        await ws.send_json({"type": "error", "message": f"upstream send: {exc}"})
+                    except Exception:
+                        break
+            elif "text" in frame:
+                try:
+                    msg = json.loads(frame["text"])
+                except json.JSONDecodeError:
+                    continue
+                mtype = msg.get("type")
+                if mtype == "commit":
+                    await proxy.commit_audio()
+                elif mtype == "cancel":
+                    await proxy.cancel()
+                elif mtype == "ping":
+                    try:
+                        await ws.send_json({"type": "pong"})
+                    except Exception:
+                        break
+                elif mtype == "stop":
+                    await proxy.commit_audio()
+                    break
+    except WebSocketDisconnect:
+        log.info("omni-realtime: client disconnected")
+    except Exception as exc:
+        log.exception("ws_omni_realtime error: %s", exc)
+        try:
+            await ws.send_json({"type": "error", "message": str(exc)})
+        except Exception:
+            pass
+    finally:
+        if upstream_task is not None:
+            upstream_task.cancel()
+            try:
+                await upstream_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        if proxy is not None:
+            await proxy.close()
+        try:
+            await ws.send_json({"type": "stopped"})
+        except Exception:
+            pass
 
 
 def main() -> None:

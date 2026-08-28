@@ -61,6 +61,10 @@ export interface SpeechEvalState {
   wotdUsedCount: number
   goodPhrases: string[]
   grammarNotes: string[]
+  // 肢体语言与台风（手动观察记录：AI 看不到画面，由人工补充，报告据此点评）
+  bodyNotes: string[]
+  // 计时声音提醒（黄牌/红牌/时间到 语音播报）
+  voiceAlert: boolean
 }
 
 export interface AgentConfig {

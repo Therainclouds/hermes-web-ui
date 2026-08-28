@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { NButton, NInput, NInputNumber, NModal, NSpin, NTag } from 'naive-ui'
 import { useMeetingStore } from '@/stores/hermes/meeting'
 import type { SpeechEvalState, SpeechTimerRecord } from '@/stores/hermes/meeting'
-import { useMeetingAssist } from '@/composables/useMeetingAssist'
+import { useMeetingAssist, type GoldenQuote, type GrammarIssue } from '@/composables/useMeetingAssist'
 import { useSpeechTimer } from '@/composables/useSpeechTimer'
 import { request, getApiKey } from '@/api/client'
 import { buildReportHtml } from '@/utils/report-html'
@@ -52,9 +52,17 @@ const DEFAULT_EVAL: SpeechEvalState = {
   wotdUsedCount: 0,
   goodPhrases: [],
   grammarNotes: [],
+  // 肢体语言与台风：AI 看不到画面，由人工观察记录，报告据此点评
+  bodyNotes: [],
+  // 计时声音提醒（黄牌/红牌/时间到 语音播报），默认开启
+  voiceAlert: true,
 }
 
-const evalState = computed<SpeechEvalState>(() => session.value?.speechEval || DEFAULT_EVAL)
+// 合并默认值：旧会话持久化数据缺少新增字段时也能拿到默认值
+const evalState = computed<SpeechEvalState>(() => ({
+  ...DEFAULT_EVAL,
+  ...(session.value?.speechEval || {}),
+}))
 
 function persist(patch: Partial<SpeechEvalState>) {
   meetingStore.updateSession(props.sessionId, { speechEval: { ...evalState.value, ...patch } })
@@ -103,17 +111,43 @@ function nextLabel(): string {
   return `${t('meeting.speechEval.segmentLabelPrefix')} ${n}`
 }
 
+// ---------- 串场计时（主持人过渡/串场用时） ----------
+// 计时器同一份运行态：切换"演讲计时/串场计时"模式，记录时打上不同标签，
+// 报告里按标签汇总串场用时，让 AI 在时间把控评分中体现串场是否拖沓。
+const timerMode = ref<'segment' | 'transition'>('segment')
+
+const transitionRecords = computed(() =>
+  timerRecords.value.filter(r => r.label.includes(t('meeting.speechEval.transitionLabel'))),
+)
+const transitionTotalSec = computed(() => transitionRecords.value.reduce((a, r) => a + r.durationSec, 0))
+
+function transitionLabel(): string {
+  const n = transitionRecords.value.length + 1
+  return `${t('meeting.speechEval.transitionLabel')} ${n}`
+}
+
+function switchTimerMode(mode: 'segment' | 'transition') {
+  timerMode.value = mode
+  // 切换模式时若计时器已停，清零准备新一段计时
+  if (!timerRunning.value) {
+    resetVoiceFlags()
+    resetTimer()
+  }
+}
+
 function recordSegment() {
   const durationSec = evalState.value.timerDurationSec - timerRemainingMs.value / 1000
   const overtimeSec = Math.max(0, -timerRemainingMs.value / 1000)
+  const isTransition = timerMode.value === 'transition'
   const record: SpeechTimerRecord = {
-    label: timerLabel.value.trim() || nextLabel(),
+    label: isTransition ? transitionLabel() : (timerLabel.value.trim() || nextLabel()),
     durationSec,
     overtimeSec,
     timestamp: Date.now(),
   }
   persist({ timerRecords: [...evalState.value.timerRecords, record] })
   timerLabel.value = ''
+  resetVoiceFlags()
   resetTimer()
 }
 
@@ -121,6 +155,71 @@ function removeRecord(index: number) {
   const records = [...evalState.value.timerRecords]
   records.splice(index, 1)
   persist({ timerRecords: records })
+}
+
+// ---------- 计时声音提醒（黄牌/红牌/时间到 语音播报） ----------
+
+const voiceAlert = computed(() => evalState.value.voiceAlert !== false)
+
+function toggleVoiceAlert() {
+  persist({ voiceAlert: !voiceAlert.value })
+}
+
+function cancelAnnouncement() {
+  try {
+    const synth = window.speechSynthesis
+    if (synth && typeof synth.cancel === 'function') synth.cancel()
+  } catch { /* ignore */ }
+}
+
+function speakAnnouncement(text: string) {
+  try {
+    const synth = window.speechSynthesis
+    if (!synth || typeof synth.speak !== 'function') return
+    synth.cancel()
+    const u = new SpeechSynthesisUtterance(text)
+    u.lang = 'zh-CN'
+    u.rate = 1.05
+    synth.speak(u)
+  } catch { /* 语音播报失败不影响主流程 */ }
+}
+
+let lastVoicePhase: 'green' | 'yellow' | 'red' | null = null
+let voiceWasOver = false
+
+function resetVoiceFlags() {
+  lastVoicePhase = null
+  voiceWasOver = false
+}
+
+// 红黄绿牌切换时语音提醒
+watch(phase, (p) => {
+  if (!timerRunning.value || !voiceAlert.value) return
+  if (lastVoicePhase === null) { lastVoicePhase = p; return }
+  if (p !== lastVoicePhase) {
+    lastVoicePhase = p
+    if (p === 'yellow') {
+      speakAnnouncement(`黄牌，还剩 ${Math.ceil(timerRemainingMs.value / 1000)} 秒`)
+    } else if (p === 'red') {
+      speakAnnouncement('红牌，请注意时间')
+    }
+  }
+})
+
+// 超时瞬间语音提醒
+watch(timerRemainingMs, (ms) => {
+  if (!timerRunning.value || !voiceAlert.value) return
+  if (ms <= 0 && !voiceWasOver) {
+    voiceWasOver = true
+    speakAnnouncement('时间到，请结束发言')
+  } else if (ms > 0) {
+    voiceWasOver = false
+  }
+})
+
+function handleResetTimer() {
+  resetVoiceFlags()
+  resetTimer()
 }
 
 const timerRecords = computed(() => evalState.value.timerRecords || [])
@@ -248,10 +347,27 @@ const aiFillerTotals = computed<Record<string, number>>(() => {
   const totals: Record<string, number> = {}
   for (const r of rounds.value) {
     for (const f of r.fillerWords || []) {
+      if (!f?.word) continue
       totals[f.word] = (totals[f.word] || 0) + f.count
     }
   }
   return totals
+})
+
+// 赘语按发言人区分（AI 尽量带 speaker，便于精准汇报与展示）
+const aiFillerBySpeaker = computed<Array<{ speaker: string; totals: Record<string, number>; total: number }>>(() => {
+  const map = new Map<string, { totals: Record<string, number>; total: number }>()
+  for (const r of rounds.value) {
+    for (const f of r.fillerWords || []) {
+      if (!f?.word) continue
+      const sp = (f.speaker || '').trim() || t('meeting.speechEval.unknownSpeaker')
+      let entry = map.get(sp)
+      if (!entry) { entry = { totals: {}, total: 0 }; map.set(sp, entry) }
+      entry.totals[f.word] = (entry.totals[f.word] || 0) + f.count
+      entry.total += f.count
+    }
+  }
+  return [...map.entries()].map(([speaker, v]) => ({ speaker, totals: v.totals, total: v.total }))
 })
 
 // 赘语展示 = AI 检测汇总 + 手动修正
@@ -277,20 +393,22 @@ function removeFiller(word: string) {
   persist({ fillerWords: next })
 }
 
-const aiGoodPhrases = computed<string[]>(() => {
+// 金句（定义：有观点、有感染力、能让人记住、可单独引用的一句话），按发言人区分
+const aiGoldenQuotes = computed<GoldenQuote[]>(() => {
   const seen = new Set<string>()
-  const out: string[] = []
+  const out: GoldenQuote[] = []
   for (const r of rounds.value) {
-    for (const p of r.goodPhrases || []) {
-      if (!seen.has(p)) { seen.add(p); out.push(p) }
+    for (const q of r.goldenQuotes || []) {
+      if (!q?.quote) continue
+      if (!seen.has(q.quote)) { seen.add(q.quote); out.push(q) }
     }
   }
   return out
 })
 
-const aiGrammarIssues = computed<Array<{ quote: string; issue: string }>>(() => {
+const aiGrammarIssues = computed<GrammarIssue[]>(() => {
   const seen = new Set<string>()
-  const out: Array<{ quote: string; issue: string }> = []
+  const out: GrammarIssue[] = []
   for (const r of rounds.value) {
     for (const g of r.grammarIssues || []) {
       const key = `${g.quote}|${g.issue}`
@@ -404,6 +522,56 @@ function removeGrammar(index: number) {
   persist({ grammarNotes: next })
 }
 
+// ---------- 肢体语言与台风（手动观察记录） ----------
+// AI 只能听到音频、看不到画面，表情/动作/肢体语言由人工观察记录，
+// 报告生成时随「演讲评估数据」交给 AI 结合点评。
+
+const bodyInput = ref('')
+const bodyNotes = computed(() => evalState.value.bodyNotes || [])
+
+function addBodyNote() {
+  const text = bodyInput.value.trim()
+  if (!text) return
+  persist({ bodyNotes: [...bodyNotes.value, text] })
+  bodyInput.value = ''
+}
+
+function removeBodyNote(index: number) {
+  const next = [...bodyNotes.value]
+  next.splice(index, 1)
+  persist({ bodyNotes: next })
+}
+
+// ---------- 发言人用时（由转写时间戳估算，用于时间把控/串场分析） ----------
+
+// 设备/系统播报不算发言人（"不是多一个设备官"）
+const DEVICE_SPEAKER_RE = /设备|系统|device|assistant|播报/i
+
+const speakerDurations = computed<Array<{ speaker: string; durationSec: number }>>(() => {
+  const sentences = session.value?.sentences || []
+  const bySpeaker: Record<string, number> = {}
+  const order: string[] = []
+  for (let i = 0; i < sentences.length; i++) {
+    const s = sentences[i]
+    const sp = (s.speaker || '').trim()
+    if (!sp || DEVICE_SPEAKER_RE.test(sp)) continue
+    let durMs = 0
+    if (typeof s.startTime === 'number' && typeof s.endTime === 'number') {
+      durMs = s.endTime - s.startTime
+    } else if (typeof s.timestamp === 'number') {
+      const next = sentences[i + 1]?.timestamp
+      durMs = typeof next === 'number' && next > s.timestamp ? next - s.timestamp : 0
+    }
+    // 单句上限 30s：避免录音暂停等大间隔把时长撑爆
+    durMs = Math.min(Math.max(0, durMs), 30_000)
+    if (!(sp in bySpeaker)) order.push(sp)
+    bySpeaker[sp] = (bySpeaker[sp] || 0) + durMs
+  }
+  return order
+    .map(sp => ({ speaker: sp, durationSec: Math.round(bySpeaker[sp] / 1000) }))
+    .filter(d => d.durationSec > 0)
+})
+
 // ---------- 评估报告 ----------
 
 const isGeneratingReport = ref(false)
@@ -420,19 +588,45 @@ function buildTranscriptWithEval(): string {
   const fillerLines = Object.entries(fillerWords.value)
     .filter(([, c]) => c > 0)
     .map(([w, c]) => `- ${w}：${c} 次`)
-  const goodLines = [...aiGoodPhrases.value, ...(st.goodPhrases || [])]
-  const grammarLines = [...aiGrammarIssues.value.map(g => `- ${g.quote}：${g.issue}`), ...(st.grammarNotes || []).map(n => `- ${n}`)]
+  const fillerBySpeakerLines = aiFillerBySpeaker.value.map(entry => {
+    const words = Object.entries(entry.totals).map(([w, c]) => `${w}×${c}`).join('、')
+    return `- ${entry.speaker}：${words || '（无）'}（共 ${entry.total} 次）`
+  })
+  const goldenLines = [
+    ...aiGoldenQuotes.value.map(q => `- ${q.quote}${q.speaker ? `（${q.speaker}）` : ''}${q.reason ? `：${q.reason}` : ''}`),
+    ...(st.goodPhrases || []).map(p => `- ${p}`),
+  ]
+  const grammarLines = [
+    ...aiGrammarIssues.value.map(g => `- ${g.quote}${g.speaker ? `（${g.speaker}）` : ''}：${g.issue}`),
+    ...(st.grammarNotes || []).map(n => `- ${n}`),
+  ]
+  const speakerLines = speakerDurations.value.map(d => `- ${d.speaker}：${fmtSec(d.durationSec)}`)
+  const transitionLines = transitionRecords.value.length
+    ? [
+        `- 串场 ${transitionRecords.value.length} 次，共 ${fmtSec(transitionTotalSec.value)}`,
+        ...transitionRecords.value.map(r => `- ${r.label}：${fmtSec(r.durationSec)}`),
+      ]
+    : ['（无）']
+  const bodyLines = (st.bodyNotes || []).map(n => `- ${n}`)
   const evalBlock = [
     '【演讲评估数据】',
     '## 计时员记录',
     ...timerLines,
+    '## 发言人用时',
+    ...(speakerLines.length ? speakerLines : ['（无）']),
+    '## 串场用时',
+    ...transitionLines,
     '## 赘语统计',
     ...(fillerLines.length ? fillerLines : ['（无赘语）']),
+    '## 赘语统计（按发言人）',
+    ...(fillerBySpeakerLines.length ? fillerBySpeakerLines : ['（无）']),
     `## 每日一词：${st.wordOfTheDay || '（未设置）'}（AI 检测使用 ${aiWotdUsedCount.value} 次${st.wotdUsedCount ? `，手动标记 ${st.wotdUsedCount} 次` : ''}）`,
-    '## 好词好句',
-    ...(goodLines.length ? goodLines.map(p => `- ${p}`) : ['（无）']),
+    '## 金句',
+    ...(goldenLines.length ? goldenLines : ['（无）']),
     '## 语法错误',
     ...(grammarLines.length ? grammarLines : ['（无）']),
+    '## 肢体语言观察',
+    ...(bodyLines.length ? bodyLines : ['（无）']),
     '## 亮点',
     ...(highlights.value.length ? highlights.value.map(h => `- ${h}`) : ['（无）']),
     '## 可提升的点',
@@ -521,6 +715,8 @@ watch(() => props.sessionId, () => {
   if (contextPushTimer) { clearTimeout(contextPushTimer); contextPushTimer = null }
   disconnect()
   clear()
+  resetVoiceFlags()
+  cancelAnnouncement()
   resetTimer()
   wotdInput.value = evalState.value.wordOfTheDay || ''
   reportMarkdown.value = ''
@@ -536,6 +732,8 @@ onUnmounted(() => {
   // 计时器由共享模块持有：面板卸载时不停表（左侧波形/转写区覆盖层继续走表），
   // 由 MeetingView 在页面卸载/切换会话时统一 reset/stop。
   if (contextPushTimer) { clearTimeout(contextPushTimer); contextPushTimer = null }
+  resetVoiceFlags()
+  cancelAnnouncement()
   disconnect()
 })
 </script>
@@ -587,9 +785,9 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- 累积可提升的点 -->
+      <!-- 累积可提升的点（3+1：只给最重要的一个可落地提升点） -->
       <div v-if="improvements.length" class="eval-block">
-        <div class="eval-block-title">💡 {{ t('meeting.speechEval.improvements') }}</div>
+        <div class="eval-block-title">💡 {{ t('meeting.speechEval.topImprovement') }}</div>
         <div class="eval-tags">
           <NTag v-for="(imp, i) in improvements" :key="i" size="small" type="warning" :bordered="false">↗ {{ imp }}</NTag>
         </div>
@@ -621,19 +819,22 @@ onUnmounted(() => {
 
             <div v-if="round.fillerWords?.length" class="round-chips">
               <NTag v-for="f in round.fillerWords" :key="f.word" size="small" type="warning" :bordered="false">
-                {{ f.word }} ×{{ f.count }}
+                {{ f.word }} ×{{ f.count }}<template v-if="f.speaker"> · {{ f.speaker }}</template>
               </NTag>
             </div>
 
-            <div v-if="round.goodPhrases?.length" class="round-lists">
-              <div class="round-list-title">✨ {{ t('meeting.speechEval.goodPhrases') }}</div>
-              <div v-for="(p, i) in round.goodPhrases" :key="i" class="round-list-item">「{{ p }}」</div>
+            <div v-if="round.goldenQuotes?.length" class="round-lists">
+              <div class="round-list-title">✨ {{ t('meeting.speechEval.goldenQuotes') }}</div>
+              <div v-for="(q, i) in round.goldenQuotes" :key="i" class="round-list-item">
+                「{{ q.quote }}」<template v-if="q.speaker"><span class="quote-speaker">—— {{ q.speaker }}</span></template>
+                <div v-if="q.reason" class="quote-reason">{{ q.reason }}</div>
+              </div>
             </div>
 
             <div v-if="round.grammarIssues?.length" class="round-lists">
               <div class="round-list-title">⚠️ {{ t('meeting.speechEval.grammarIssues') }}</div>
               <div v-for="(g, i) in round.grammarIssues" :key="i" class="round-list-item">
-                「{{ g.quote }}」— {{ g.issue }}
+                「{{ g.quote }}」— {{ g.issue }}<template v-if="g.speaker"><span class="quote-speaker">（{{ g.speaker }}）</span></template>
               </div>
             </div>
 
@@ -677,12 +878,25 @@ onUnmounted(() => {
         <NButton size="small" :type="timerRunning ? 'warning' : 'primary'" @click="toggleTimer">
           {{ timerRunning ? t('meeting.speechEval.pause') : t('meeting.speechEval.start') }}
         </NButton>
-        <NButton size="small" @click="resetTimer">{{ t('meeting.speechEval.reset') }}</NButton>
+        <NButton size="small" @click="handleResetTimer">{{ t('meeting.speechEval.reset') }}</NButton>
+        <NButton size="small" :type="timerMode === 'segment' ? 'info' : 'default'" @click="switchTimerMode('segment')">
+          {{ t('meeting.speechEval.segmentMode') }}
+        </NButton>
+        <NButton size="small" :type="timerMode === 'transition' ? 'info' : 'default'" @click="switchTimerMode('transition')">
+          {{ t('meeting.speechEval.transitionMode') }}
+        </NButton>
+        <NButton size="small" :type="voiceAlert ? 'success' : 'default'" @click="toggleVoiceAlert" :title="t('meeting.speechEval.voiceAlertDesc')">
+          {{ voiceAlert ? t('meeting.speechEval.voiceAlertOn') : t('meeting.speechEval.voiceAlertOff') }}
+        </NButton>
       </div>
 
+      <div v-if="timerMode === 'transition'" class="transition-hint">⏭️ {{ t('meeting.speechEval.transitionHint') }}</div>
+
       <div class="segment-row">
-        <NInput v-model:value="timerLabel" size="small" :placeholder="t('meeting.speechEval.segmentLabelPlaceholder')" />
-        <NButton size="small" type="primary" @click="recordSegment">{{ t('meeting.speechEval.recordSegment') }}</NButton>
+        <NInput v-if="timerMode === 'segment'" v-model:value="timerLabel" size="small" :placeholder="t('meeting.speechEval.segmentLabelPlaceholder')" />
+        <NButton size="small" type="primary" @click="recordSegment">
+          {{ timerMode === 'transition' ? t('meeting.speechEval.recordTransition') : t('meeting.speechEval.recordSegment') }}
+        </NButton>
       </div>
 
       <div class="time-records">
@@ -694,6 +908,16 @@ onUnmounted(() => {
           <button class="record-remove" @click="removeRecord(i)">×</button>
         </div>
       </div>
+
+      <!-- 发言人用时（由转写时间戳估算，供时间把控/串场分析） -->
+      <div class="time-records">
+        <div class="records-title">👥 {{ t('meeting.speechEval.speakerDuration') }}</div>
+        <div v-if="speakerDurations.length === 0" class="empty-hint">{{ t('meeting.speechEval.emptySpeakerDurations') }}</div>
+        <div v-for="d in speakerDurations" :key="d.speaker" class="record-item">
+          <span class="record-label">{{ d.speaker }}</span>
+          <span class="record-duration">{{ fmtSec(d.durationSec) }}</span>
+        </div>
+      </div>
     </section>
 
     <!-- 赘语记录员（AI 检测） -->
@@ -703,6 +927,7 @@ onUnmounted(() => {
         <span class="section-name">{{ t('meeting.speechEval.ahCounter') }}</span>
       </div>
       <p class="section-desc">{{ t('meeting.speechEval.ahCounterDesc') }}</p>
+      <p class="section-desc">{{ t('meeting.speechEval.fillerThresholdNote') }}</p>
 
       <div v-if="Object.keys(fillerWords).length === 0" class="empty-hint">{{ t('meeting.speechEval.emptyFillers') }}</div>
 
@@ -715,6 +940,18 @@ onUnmounted(() => {
         </div>
       </div>
       <div class="filler-total">{{ t('meeting.speechEval.fillerTotal') }}：{{ fillerTotal }} <span class="filler-unit">{{ t('meeting.speechEval.times') }}</span></div>
+
+      <!-- 赘语按发言人区分 -->
+      <div v-if="aiFillerBySpeaker.length" class="filler-speakers">
+        <div class="records-title">{{ t('meeting.speechEval.fillerBySpeaker') }}</div>
+        <div v-for="entry in aiFillerBySpeaker" :key="entry.speaker" class="speaker-filler-item">
+          <span class="speaker-filler-name">{{ entry.speaker }}</span>
+          <span class="speaker-filler-tags">
+            <NTag v-for="(c, w) in entry.totals" :key="w" size="tiny" type="warning" :bordered="false">{{ w }} ×{{ c }}</NTag>
+          </span>
+          <span class="speaker-filler-total">{{ t('meeting.speechEval.fillerTotal') }} {{ entry.total }}</span>
+        </div>
+      </div>
 
       <div class="add-row">
         <NInput v-model:value="newFiller" size="small" :placeholder="t('meeting.speechEval.addFiller')" @keyup.enter="addFiller" />
@@ -737,16 +974,22 @@ onUnmounted(() => {
         </NButton>
       </div>
 
-      <!-- AI 检测的好词好句 -->
-      <div v-if="aiGoodPhrases.length" class="note-group">
-        <div class="note-title">✨ {{ t('meeting.speechEval.aiGoodPhrases') }}</div>
-        <div v-for="(p, i) in aiGoodPhrases" :key="`ai-${i}`" class="note-item"><span>「{{ p }}」</span></div>
+      <!-- AI 检测的金句（按发言人） -->
+      <div v-if="aiGoldenQuotes.length" class="note-group">
+        <div class="note-title">✨ {{ t('meeting.speechEval.aiGoldenQuotes') }}</div>
+        <div class="quote-def">{{ t('meeting.speechEval.goldenQuotesDesc') }}</div>
+        <div v-for="(q, i) in aiGoldenQuotes" :key="`ai-${i}`" class="note-item note-item--quote">
+          <span>「{{ q.quote }}」<template v-if="q.speaker"><span class="quote-speaker">—— {{ q.speaker }}</span></template></span>
+          <div v-if="q.reason" class="quote-reason">{{ q.reason }}</div>
+        </div>
       </div>
 
       <!-- AI 检测的语法问题 -->
       <div v-if="aiGrammarIssues.length" class="note-group">
         <div class="note-title">⚠️ {{ t('meeting.speechEval.aiGrammarIssues') }}</div>
-        <div v-for="(g, i) in aiGrammarIssues" :key="`ai-${i}`" class="note-item"><span>「{{ g.quote }}」— {{ g.issue }}</span></div>
+        <div v-for="(g, i) in aiGrammarIssues" :key="`ai-${i}`" class="note-item">
+          <span>「{{ g.quote }}」— {{ g.issue }}<template v-if="g.speaker"><span class="quote-speaker">（{{ g.speaker }}）</span></template></span>
+        </div>
       </div>
 
       <div class="note-group">
@@ -771,6 +1014,26 @@ onUnmounted(() => {
           <span>{{ n }}</span>
           <button class="note-remove" @click="removeGrammar(i)">×</button>
         </div>
+      </div>
+    </section>
+
+    <!-- 肢体语言与台风（手动观察，AI 结合点评） -->
+    <section class="eval-section">
+      <div class="section-title">
+        <span class="role-icon">🧍</span>
+        <span class="section-name">{{ t('meeting.speechEval.bodyLanguage') }}</span>
+      </div>
+      <p class="section-desc">{{ t('meeting.speechEval.bodyLanguageDesc') }}</p>
+
+      <div class="add-row">
+        <NInput v-model:value="bodyInput" size="small" :placeholder="t('meeting.speechEval.bodyNotesPlaceholder')" @keyup.enter="addBodyNote" />
+        <NButton size="small" @click="addBodyNote">{{ t('meeting.speechEval.addBodyNote') }}</NButton>
+      </div>
+
+      <div v-if="bodyNotes.length === 0" class="empty-hint">{{ t('meeting.speechEval.emptyBodyNotes') }}</div>
+      <div v-for="(n, i) in bodyNotes" :key="i" class="note-item">
+        <span>{{ n }}</span>
+        <button class="note-remove" @click="removeBodyNote(i)">×</button>
       </div>
     </section>
 
@@ -1119,8 +1382,17 @@ onUnmounted(() => {
   &.red.active { opacity: 1; border-color: #d03050; background: rgba(208, 48, 80, 0.18); }
 }
 
-.timer-controls { display: flex; gap: 8px; }
+.timer-controls { display: flex; gap: 8px; flex-wrap: wrap; }
 .segment-row { display: flex; gap: 8px; align-items: center; }
+
+.transition-hint {
+  font-size: 11px;
+  color: #70c0e8;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(112, 192, 232, 0.08);
+  border: 1px solid rgba(112, 192, 232, 0.15);
+}
 
 .time-records { display: flex; flex-direction: column; gap: 4px; }
 .records-title { font-size: 11px; color: var(--n-text-color3, #888); }
@@ -1173,6 +1445,24 @@ onUnmounted(() => {
 .filler-total { font-size: 12px; color: var(--n-text-color3, #999); }
 .filler-unit { color: var(--n-text-color3, #777); }
 
+// --- 赘语按发言人 ---
+.filler-speakers { display: flex; flex-direction: column; gap: 4px; }
+
+.speaker-filler-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  flex-wrap: wrap;
+}
+
+.speaker-filler-name { font-weight: 600; color: #9fd4f0; min-width: 48px; }
+.speaker-filler-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.speaker-filler-total { margin-left: auto; color: var(--n-text-color3, #999); font-variant-numeric: tabular-nums; }
+
 .add-row { display: flex; gap: 8px; align-items: center; }
 
 // --- 语法官 ---
@@ -1192,6 +1482,20 @@ onUnmounted(() => {
 
   > span { flex: 1; }
 }
+
+// 金句条目：引文 + 出处 + 点评（竖排）
+.note-item--quote {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+
+  > span { flex: none; }
+}
+
+// --- 金句 ---
+.quote-def { font-size: 11px; color: var(--n-text-color3, #999); }
+.quote-speaker { color: #9fd4f0; font-size: 11px; }
+.quote-reason { font-size: 11px; color: var(--n-text-color3, #999); padding-left: 4px; }
 
 // --- 报告 ---
 .report-section { gap: 8px; }
