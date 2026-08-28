@@ -2233,3 +2233,51 @@ packages/server/src/services/meeting-asr/realtime-assist.ts(468,11): error TS232
 **新增回归测试** `meeting-report-fallback.test.ts`：模拟 `streamOutput` yield `''` + `'API call failed after 3 retries: ...'`（done=true），断言 agent 错误文本**不出现在最终输出里**，且必须出现 `REPORT_FALLBACK_MARKER` + direct LLM 输出 `Recovered via direct LLM`。9/9 通过。
 
 **教训**：外部 `agent` 包失败语义和 Node 层的异常语义不一致 —— 任何"读取外部 agent 输出然后当成功内容 yield 出去"的路径都必须用内容检测兜底，不能只信 status 字段。这个 helper 后续可提取到 `run-chat/handle-bridge-run.ts` 共用，本轮先本地复刻避免跨域改动。
+
+---
+
+## 2026-08-28 · 会议报告"是不是模块化拆坏的？" — 明确归因：和重构无关
+
+### 用户提问
+
+> "本问题是否和我们的重构有关？"
+
+直接回答：**无关**。三轮回合（`ace6d455` → `6304f543` → `71fba298`）修的所有问题都在 `realtime-assist.ts` / `meeting-asr.ts` / `MeetingAgentPanel.vue` 这一条错误链路上，**没有任何一处**触及正在进行的 chat store 模块化拆分。
+
+### 证据链
+
+**1. 错误来源不在本仓库**：
+
+- `Provider returned an empty stream with no finish_reason (possible upstream error or malformed SSE response)` 这条**带括号**的字符串是 OpenAI Python SDK 在 provider SSE 中断时 raise 的原始异常。
+- Node 原生 `fetch` 不抛这条（只会 `TypeError: fetch failed` + `cause.code`）。
+- 本仓库代码 grep 完全搜不到这条字符串，唯一出现的位置是 `tests/server/...test.ts` 里的 fixture。
+- → 100% 来自外部 `agent` Python 包。
+
+**2. 出错链路未被重构碰过**：
+
+```
+MeetingAgentPanel.vue  →  /api/meeting-asr/report/stream  →  meeting-asr.ts#streamReport controller
+                     →  realtime-assist.ts#generateReportStream
+                     →  generateReportViaAgent  →  agent-bridge/client.ts
+                     →  bridge_pool.py  →  外部 OpenAI Python SDK
+```
+
+chat store 模块化拆分只动 `packages/client/src/stores/hermes/chat.ts` 及其子域，上面这条链上**没有一个文件被重构触及**——`realtime-assist.ts`、`meeting-asr.ts`、`MeetingAgentPanel.vue` 都是拆分前的同一份代码。
+
+**3. 这个 bug 在重构之前就存在**：
+
+- `7f3d267e` (重构前) `fix(report-stream): SSE 错误帧检测 + 末尾 buffer flush + 错误格式归一化` — 改的就是这条错误链路
+- `d921c5d4` (重构前) `feat(report-error): SDK 错误归一化 + 重试按钮` — 还是这条错误链路
+- 本轮 `ace6d455` / `6304f543` / `71fba298` — 还是这条错误链路
+
+**4. 间接关系（非因果）**：
+
+重构期间给 `MeetingAgentPanel.vue` SSE 解析循环加了 `chunk.error` 检测 —— 把这个 bug 从「默默显示残缺报告」升级为「明确报错」。所以**重构提高了 bug 的可见性**，但没改变它的根因。
+
+### 结论
+
+本仓库代码无论重构前还是重构后都没修这个 bug，因为根因在外部 Python 包 + LLM provider 网络。本轮三个 commit 的能力上限：**让 agent 失败时用户拿到一份完整的 direct LLM 报告**，而不是"agent 半截内容 + 错误块"。如果 provider 真的一直抽风（两路都挂），最终用户看到的是 `errorBothFailed` 文案，因为我们没办法让挂掉的 provider 凭空复活。
+
+### 留给未来 agent 的判据
+
+如果你以后看到「会议报告相关」的错误，**先去看 `realtime-assist.ts` / `MeetingAgentPanel.vue` 的 git blame**，这条链路从 2026-08-26 之前就在被反复打补丁，与 chat store 拆分毫无关系。任何把它归因到模块化的猜测都是错的。
