@@ -1,5 +1,50 @@
 # Work Log
 
+## 2026-08-28 · 会议模块模块化落地（审计 7 项任务全部完成，0 行为变更 0 回归）
+
+### 背景
+
+承接 `3f9d2c75` 的《会议模块拆分审计报告 v1.0》：MeetingView 3842 行、realtime-assist.ts 762 行（A+C bug 根因文件）等失衡点。本轮先写实施规格（spec，验收标准先行），再按「每个 PR 一个模块边界」逐项实施，全程**行为冻结（pure move）**——为后续「不同场景不同组件显示」打底：每个组件/组合单元先有独立契约，才能被场景层声明式编排。
+
+### 交付（9 个本地 commit）
+
+| Commit | 改动 |
+|--------|------|
+| `a0fcf0d2` fix(meeting-asr): config sync + venv path resolution | 上一会话遗留：`MEETING_ASR_DATA_DIR` env 解析、venv 迁到 `dataDir/.venv`（EACCES 修复）、DashScope key 双文件回退（config.json + config.env）、Python `Settings` 去 frozen + `sync_from()` 热更新同步；`config.env` 入 .gitignore（含密钥不进 git） |
+| `9d923a8a` docs(harness): 模块化实施规格 | spec v1.0：7 个 PR 的拆什么/怎么拆/怎么验收（`docs/harness/meeting-modularization-spec.md`，docs/ 需 `git add -f`） |
+| `3c97caa1` PR-2a | MeetingView 抽出 `useMeetingAudio`（录音+播放全生命周期，含双 WS 连接/兜底落库）+ `useDraggableWidth`；3842→3158 |
+| `96950623` PR-2b | 抽出 `AsrConfigWizardDialog.vue`；CreateMeetingDialog 改 `display-directive="show"` 保持向导状态跨开关存活（对齐旧版 view 级 ref 语义）；3158→3001 |
+| `64ad141c` PR-2c | 补齐 -30% 缺口：抽出 `useDiarizeMerge` + `useMeetingDownloads`；3001→**2690** |
+| `381cd7d7` PR-1 | realtime-assist.ts 拆出 `report-parser` / `agent-bridge` / `direct-llm`（fetch/bridge/配置读取全部依赖注入）；本体 762→**283** 瘦身为编排层；导出面不变（`realtimeAssistService` + `REPORT_FALLBACK_MARKER`） |
+| `e8781aa4` PR-5 | MeetingAgentPanel 抽出 `useReportStream`（SSE 解析、fallback 帧清空、无 [DONE] 截断检测、lastTranscript retry）；865→755 |
+| `04e7b025` PR-6 | SpeechEvaluationPanel 抽出 `useSpeechTimer` + `useSpeechFillerCounter`；1065→946 |
+| `6b3c1923` PR-4 | meeting-asr/index.ts 抽出 `venv-manager` + `dashscope-key-store`；1066→781；子进程 spawn/env 注入语义零改动（safety-audit 红线） |
+| `a8dadd2e` PR-7 | diarize_endpoint.py 分层：路由 `diarize_ws_handler` 留守（`diarize_server.py` import 不变），服务层入 `diarize_service.py`；750→282+504 |
+| `2597540d` docs(harness) | spec 回填 v1.1（结果表+5 项偏差）+ 审计附录 B 八项全勾 |
+
+### 新增单测（7 文件 45 用例）
+
+`tests/server/report-parser.test.ts`(11)、`tests/server/agent-bridge.test.ts`(15，假 bridge 注入)、`tests/server/direct-llm.test.ts`(14，注入 fetch/config)、`tests/server/dashscope-key-store.test.ts`(5)、`tests/client/composables/use-draggable-width.test.ts`(6)、`use-report-stream.test.ts`(7)、`use-speech-timer.test.ts`(12)。既有 `meeting-report-fallback.test.ts`（A+C 回退契约 9 用例）在新接缝上原样全绿。
+
+### 关键技术点
+
+- **导出面即契约**：拆分前先 `grep` 摸清外部引用（单例/marker 常量/组件 props/i18n key），拆完调用方零改动或仅最小改动。
+- **composable 接回模板零改动**：返回的变量/函数名与原 view 完全一致，view 解构接回，模板一字不动；`noUnusedLocals` 开启，只解构实际用到的名字。
+- **状态所有权决定契约形状**：`asrApiKey`/`analysisMode` 留在 view（创建按钮 disabled 需要响应式依赖），其余向导字段组件自持 + `reset()/collectConfig()`；NModal 默认 `display-directive="if"` 关闭即卸载，改 `"show"` 才能保住「关闭弹窗后 startASRService 仍能读到未保存输入」的旧语义。
+- **守卫测试跟随代码走**：worklet 静态路径契约（B-1 守卫）与 venv 源码契约断言随实现迁入新文件，行为断言不改——测试钉的是约束不是文件名。
+- **依赖注入换可测性**：server 侧 fetch/bridge/config 读取全部作参数注入（默认实现保持动态 import 原语义），单测不 mock 整个 socket、不碰真实文件系统（skill-resolver vi.mock）。
+
+### 验证与偏差（如实记录）
+
+- `vue-tsc -b` + server `tsc --noEmit` 零错误；`npm run build` 全链路通过（含 build-server python 打包）。
+- 全量 `vitest run` 失败集合两次运行 148↔150 漂移（`group-chat-invite-attachments`、`stt-transcribe-controller` 等环境 flake），**meeting 相关失败 0**；基线（stash 后 HEAD）与本分支均为 149 failed / 4752 passed 同集合，本轮 0 回归。
+- 未达 spec v1.0 乐观目标两处（spec v1.1 如实记录）：两 panel 行数（≤700/≤750）未达——剩余体量在模板/样式，脚本职责已全抽出；继续压缩需合并报告路径语义（行为变更），留作后续。
+- 安全红线核对：CSP/security.ts、子进程 env 注入语义、venv 创建序列、audio_buffer 并发结构（R-4/R-12 暂不动）全部未触碰。
+
+### 下一步
+
+场景化组件显示（本轮重构的目标用例）：基于 `scene-templates.ts` 声明「场景 → 组件组合」映射，按场景配置 `MeetingRightPanel` 的 slot 内容与工具栏项。
+
 ## 2026-08-26 · USB 视图重设计（文件列表占主体 80%）+ 两轮 bug 修复
 
 ### 背景
