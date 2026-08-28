@@ -267,4 +267,39 @@ describe('meeting report generation (agent-first with fallback)', () => {
     expect(err.message).toMatch(/agent: empty stream with no finish_reason/)
     expect(err.message).toMatch(/fallback: /)
   })
+
+  it('treats agent "graceful failure" final_response as an error and falls back to direct LLM', async () => {
+    // 关键 bug fix：外部 agent 包在 provider 错误时不抛异常，而是把错误信息
+    // 写成 final_response（例如 "API call failed after 3 retries: Provider
+    // returned an empty stream..."）并把 run status 标为 'complete'。
+    // 旧契约：把这些错误文本当报告 yield 出去 → 用户看到错误块。
+    // 新契约：在流末尾识别出这种"假完成"内容，抛错回退到 direct LLM。
+    wireBridge()
+    mocks.chatMock.mockResolvedValue({ ok: true, run_id: 'run-graceful-fail' })
+    const agentFailureText =
+      'API call failed after 3 retries: Provider returned an empty stream with no finish_reason ' +
+      '(possible upstream error or malformed SSE response).'
+    mocks.streamOutputMock.mockImplementation(async function* () {
+      // 模拟 agent 优雅失败：先 yield 一段开头空响应（让消费者以为真在流），
+      // 最后一段才把整段错误文本倾倒出来 + done=true。
+      yield { delta: '', done: false }
+      yield { delta: agentFailureText, done: true, status: 'complete' }
+    })
+    stubDirectLLM('Recovered via direct LLM')
+
+    const { realtimeAssistService, REPORT_FALLBACK_MARKER } = await import(
+      '../../packages/server/src/services/meeting-asr/realtime-assist'
+    )
+    const seen: Array<string | symbol> = []
+    for await (const chunk of realtimeAssistService.generateReportStream('s9', 'transcript', 'general', 'default')) {
+      seen.push(chunk)
+    }
+    // 关键断言：agent 的错误文本不应出现在最终输出里。
+    const visibleText = seen.filter((c): c is string => typeof c === 'string').join('')
+    expect(visibleText).not.toMatch(/API call failed after/)
+    expect(visibleText).toBe('Recovered via direct LLM')
+    // 应当走过 fallback：sentinel 必须出现，且 fallback 必须真的被调用。
+    expect(seen).toContain(REPORT_FALLBACK_MARKER)
+    expect(mocks.fetchMock).toHaveBeenCalledTimes(1)
+  })
 })

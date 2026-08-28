@@ -92,6 +92,38 @@ function safeActiveProfileName(): string {
   }
 }
 
+/**
+ * 判断一段文本是不是 agent 优雅失败的产物。外部 `agent` Python 包在
+ * provider 错误时（如 OpenAI SDK 抛 "Provider returned an empty stream with
+ * no finish_reason"）通常会写一段 ≤2000 字符的 final_response（典型形如
+ * "API call failed after 3 retries: ..."），而不是让 run_conversation 抛
+ * 异常。这种情况下 record.status 仍是 'complete'，需要从内容本身判断。
+ *
+ * 借鉴 packages/server/src/services/hermes/run-chat/handle-bridge-run.ts
+ * 的 looksLikeStandaloneAgentFailure。后续可提取到独立模块共享，本轮先本地
+ * 复刻，避免跨域改动扩大 blast radius。
+ */
+function looksLikeStandaloneAgentFailure(value: string): boolean {
+  const text = value.replace(/\s+/g, ' ').trim()
+  if (!text) return false
+  // 报告通常远大于 2 KB，agent 失败短消息一般 ≤ 2 KB（与 handle-bridge-run 保持一致）
+  if (text.length > 2_000) return false
+  return (
+    /\bAPI call failed after\b/i.test(text)
+    || /\bHTTP\s+(?:4\d\d|5\d\d)\b/i.test(text)
+    || /\bProvider returned an empty stream\b/i.test(text)
+    || /\b(?:401|403)\b.{0,100}\b(?:unauthorized|forbidden|authentication|auth|invalid api key|permission denied)\b/i.test(text)
+    || /\b(?:unauthorized|forbidden|authentication|auth|invalid api key|permission denied)\b.{0,100}\b(?:401|403)\b/i.test(text)
+    || /\b429\b.{0,100}\b(?:rate limit|too many requests|quota)\b/i.test(text)
+    || /\b(?:rate limit|too many requests|quota)\b.{0,100}\b429\b/i.test(text)
+    || /\b(?:500|502|503|504)\b.{0,100}\b(?:server error|bad gateway|service unavailable|gateway timeout|upstream|provider|request failed|api)\b/i.test(text)
+    || /\b(?:server error|bad gateway|service unavailable|gateway timeout|upstream|provider|request failed|api)\b.{0,100}\b(?:500|502|503|504)\b/i.test(text)
+    || /(?:无可用渠道|渠道不可用|认证失败|鉴权失败|额度不足|余额不足|请求失败|接口调用失败)/i.test(text)
+    || /(?:请求|接口|模型|渠道|API).{0,20}(?:被限流|触发限流|因限流失败)/i.test(text)
+    || /(?:限流|频率限制).{0,20}(?:失败|错误|重试|稍后)/i.test(text)
+  )
+}
+
 class RealtimeAssistService {
   private io: Server | null = null
   private nsp: Namespace | null = null
@@ -517,25 +549,46 @@ class RealtimeAssistService {
 
       let lastChunk: AgentBridgeOutput | null = null
       let yieldedAny = false
+      // 累计本次 run 已经看到的所有 delta 文本，用来检查末态是不是 agent
+      // 优雅失败的产物——外部 `agent` 包在 provider 错误时会写一段形如
+      // "API call failed after 3 retries: ..." 的 final_response，而不是抛
+      // 异常。这种情况下 record.status = 'complete'（不是 'error'），
+      // 旧的 status 检查抓不到，但用户看到的依然是错误文本。借鉴
+      // handle-bridge-run.ts 的 looksLikeStandaloneAgentFailure 思路检测并抛错。
+      let accumulatedDelta = ''
       for await (const chunk of bridge.streamOutput(started.run_id, { timeoutMs: 180_000 })) {
         lastChunk = chunk
         if (chunk.delta) {
+          accumulatedDelta += chunk.delta
+          // 流末尾的最终一段 delta 才有可能是"假完成"信号；中途的 delta 不算
+          // （agent 可能在解释它为什么失败，但仍有可能真出过内容）。
+          if (chunk.done && looksLikeStandaloneAgentFailure(accumulatedDelta)) {
+            throw new Error(accumulatedDelta.trim() || 'Agent reported provider failure')
+          }
           yieldedAny = true
           yield chunk.delta
+        } else if (chunk.done) {
+          // 没有 delta 但 done：典型情况是 agent 整体失败（status=error），
+          // 真正的错误信息在 lastChunk.error 里。
+          if (chunk.status === 'error') {
+            throw new Error(chunk.error || 'Agent report run failed')
+          }
+          // 既有 done 又无 delta 且状态非 error：当作 no-output 处理（下方
+          // yieldedAny 分支会兜底）。
+          break
         }
-        if (chunk.done) break
       }
 
-      if (lastChunk?.status === 'error') {
-        throw new Error(lastChunk.error || 'Agent report run failed')
-      }
-
-      // 部分 bridge/运行不会增量返回 delta，回退到从 result 提取最终文本。
+      // 兜底：本次 run 没有 stream 出任何 delta，从 result.final_response 提取。
+      // 该路径同样要避开 agent-failure 的"假完成"内容，否则会把错误信息当报告 yield 出去。
       if (!yieldedAny) {
         const result = lastChunk?.result as { final_response?: string } | undefined
         const finalText = (result?.final_response || lastChunk?.output || '').trim()
-        if (finalText) yield finalText
-        else throw new Error('Agent report produced no output')
+        if (!finalText) throw new Error('Agent report produced no output')
+        if (looksLikeStandaloneAgentFailure(finalText)) {
+          throw new Error(finalText)
+        }
+        yield finalText
       }
     } finally {
       // 报告生成是一次性场景，结束后立即销毁临时会话，避免占用 bridge 资源。

@@ -2210,3 +2210,26 @@ packages/server/src/services/meeting-asr/realtime-assist.ts(468,11): error TS232
 - **场景 2**（agent bridge 完全不可用）：行为不变，仍走 fallback 直接 LLM 出报告。
 - **场景 3**（agent + LLM 都挂）：用户现在看到的是 `errorBothFailed` 文案，明确告知"两侧都失败，请查 server logs"，比之前的 `errorGeneric` 更具体。
 - **场景 4**（纯网络问题）：用户现在看到 `errorLLMNetwork` 文案，提示"检查到提供商的连通性"，比之前的 generic 更可操作。
+
+#### 补遗 2：A+C 还有一层漏洞 —— agent 优雅失败不抛异常（commit `6304f543` + 后续 fix）
+
+加了诊断日志后又跑了一次 B 会议报告，server 端日志只看到：
+
+```
+[meeting-assist] generateReportStream start: session=meeting-mtb4ptsn-24qd0s ...
+[meeting-assist] agent path completed cleanly: 141 chars
+```
+
+按 A+C 契约，"completed cleanly" 之后 generator 应该 `return`，根本不该进入 fallback。但客户端依然报 `API call failed after 3 retries: Provider returned an empty stream with no finish_reason`。
+
+**真正的根因**：外部 `agent` Python 包在 OpenAI SDK 重试 3 次失败后，**不会抛异常**，而是把错误信息写成一段 ≤2000 字符的 final_response（典型 `API call failed after 3 retries: ...`），run 状态标为 `complete`。我的旧契约只检查 `lastChunk.status === 'error'`，对这种"假完成"完全失明 —— 把错误信息当报告 yield 出去，generator 走到 `return`，fallback 不触发，用户看到的就是这条错误文本。
+
+**修复**（commit 后续 fixup）：
+
+1. 在 `realtime-assist.ts` 加 `looksLikeStandaloneAgentFailure(value: string)` 函数，复刻 `handle-bridge-run.ts:170` 的检测规则 —— 包含 `API call failed after`、`HTTP 4xx/5xx`、`Provider returned an empty stream`、`unauthorized/forbidden`、`rate limit/429`、`无可用渠道/认证失败/鉴权失败` 等中英文模式。
+2. `generateReportViaAgent` 在 **每个 chunk 流末尾**（`chunk.done === true`）累积 delta 后做一次失败检测；若识别为 agent 优雅失败，直接 `throw` —— 此时 throw 会触发 `generateReportStream` 的 catch 分支，正常进入 fallback 路径。
+3. 兜底路径（`!yieldedAny` 从 `result.final_response` 提取）同样检测一遍，避免同样的漏网。
+
+**新增回归测试** `meeting-report-fallback.test.ts`：模拟 `streamOutput` yield `''` + `'API call failed after 3 retries: ...'`（done=true），断言 agent 错误文本**不出现在最终输出里**，且必须出现 `REPORT_FALLBACK_MARKER` + direct LLM 输出 `Recovered via direct LLM`。9/9 通过。
+
+**教训**：外部 `agent` 包失败语义和 Node 层的异常语义不一致 —— 任何"读取外部 agent 输出然后当成功内容 yield 出去"的路径都必须用内容检测兜底，不能只信 status 字段。这个 helper 后续可提取到 `run-chat/handle-bridge-run.ts` 共用，本轮先本地复刻避免跨域改动。
