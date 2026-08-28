@@ -3,8 +3,10 @@ import { ref, computed, watch, onMounted, onUnmounted, defineAsyncComponent } fr
 import { useI18n } from 'vue-i18n'
 import { NButton, NInput, NInputNumber, NModal, NSpin, NTag } from 'naive-ui'
 import { useMeetingStore } from '@/stores/hermes/meeting'
-import type { SpeechEvalState, SpeechTimerRecord } from '@/stores/hermes/meeting'
+import type { SpeechEvalState } from '@/stores/hermes/meeting'
 import { useMeetingAssist } from '@/composables/useMeetingAssist'
+import { useSpeechTimer } from '@/composables/useSpeechTimer'
+import { useSpeechFillerCounter } from '@/composables/useSpeechFillerCounter'
 import { request, getApiKey } from '@/api/client'
 import MeetingExportDropdown from './MeetingExportDropdown.vue'
 
@@ -59,115 +61,28 @@ function persist(patch: Partial<SpeechEvalState>) {
   meetingStore.updateSession(props.sessionId, { speechEval: { ...evalState.value, ...patch } })
 }
 
-// ---------- 计时员 (Timer) ----------
+// ---------- 计时员 (Timer)（拆分至 useSpeechTimer，行为保持不变） ----------
 
-const timerRunning = ref(false)
-const timerRemainingMs = ref(0)
-const timerLabel = ref('')
-let timerInterval: number | null = null
-let timerStartAt = 0        // 本次开始计时的墙钟时间戳
-let timerStartRemaining = 0 // 本次开始时的剩余毫秒
-
-function fmtSec(sec: number): string {
-  const s = Math.max(0, Math.round(sec))
-  const m = Math.floor(s / 60)
-  return `${String(m).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
-}
-
-const timerDisplay = computed(() => {
-  const rem = timerRemainingMs.value
-  if (rem > 0) return fmtSec(rem / 1000)
-  return `+${fmtSec(-rem / 1000)}`
-})
-
-const phase = computed(() => {
-  const rem = timerRemainingMs.value
-  if (rem <= evalState.value.redAtSec * 1000) return 'red'
-  if (rem <= evalState.value.yellowAtSec * 1000) return 'yellow'
-  return 'green'
-})
-
-const phaseLabel = computed(() => {
-  const map = {
-    green: t('meeting.speechEval.greenCard'),
-    yellow: t('meeting.speechEval.yellowCard'),
-    red: t('meeting.speechEval.redCard'),
-  }
-  return map[phase.value]
-})
-
-function resetTimer() {
-  if (timerInterval) { clearInterval(timerInterval); timerInterval = null }
-  timerRunning.value = false
-  timerRemainingMs.value = evalState.value.timerDurationSec * 1000
-}
-
-function toggleTimer() {
-  if (timerRunning.value) {
-    // 暂停：按墙钟结算剩余时间
-    timerRemainingMs.value = timerStartRemaining - (Date.now() - timerStartAt)
-    if (timerInterval) { clearInterval(timerInterval); timerInterval = null }
-    timerRunning.value = false
-    return
-  }
-  timerStartAt = Date.now()
-  timerStartRemaining = timerRemainingMs.value
-  timerRunning.value = true
-  timerInterval = window.setInterval(() => {
-    timerRemainingMs.value = timerStartRemaining - (Date.now() - timerStartAt)
-  }, 250)
-}
-
-function nextLabel(): string {
-  const n = timerRecords.value.length + 1
-  return `${t('meeting.speechEval.segmentLabelPrefix')} ${n}`
-}
-
-function recordSegment() {
-  const durationSec = evalState.value.timerDurationSec - timerRemainingMs.value / 1000
-  const overtimeSec = Math.max(0, -timerRemainingMs.value / 1000)
-  const record: SpeechTimerRecord = {
-    label: timerLabel.value.trim() || nextLabel(),
-    durationSec,
-    overtimeSec,
-    timestamp: Date.now(),
-  }
-  persist({ timerRecords: [...evalState.value.timerRecords, record] })
-  timerLabel.value = ''
-  resetTimer()
-}
-
-function removeRecord(index: number) {
-  const records = [...evalState.value.timerRecords]
-  records.splice(index, 1)
-  persist({ timerRecords: records })
-}
-
-const timerRecords = computed(() => evalState.value.timerRecords || [])
-
-// ---------- 计时设置 ----------
-
-const showSettings = ref(false)
-const settingsDuration = ref(180)
-const settingsYellow = ref(30)
-const settingsRed = ref(10)
-
-function openSettings() {
-  settingsDuration.value = evalState.value.timerDurationSec
-  settingsYellow.value = evalState.value.yellowAtSec
-  settingsRed.value = evalState.value.redAtSec
-  showSettings.value = true
-}
-
-function saveSettings() {
-  persist({
-    timerDurationSec: Math.max(10, Math.round(settingsDuration.value || 180)),
-    yellowAtSec: Math.max(0, Math.round(settingsYellow.value || 30)),
-    redAtSec: Math.max(0, Math.round(settingsRed.value || 10)),
-  })
-  showSettings.value = false
-  resetTimer()
-}
+const {
+  timerRunning,
+  timerRemainingMs,
+  timerLabel,
+  timerDisplay,
+  phase,
+  phaseLabel,
+  timerRecords,
+  fmtSec,
+  resetTimer,
+  toggleTimer,
+  recordSegment,
+  removeRecord,
+  showSettings,
+  settingsDuration,
+  settingsYellow,
+  settingsRed,
+  openSettings,
+  saveSettings,
+} = useSpeechTimer({ evalState, persist })
 
 // ---------- 演讲上下文（注入 AI 提示词：计时/每日一词） ----------
 
@@ -247,38 +162,16 @@ function analyzeNow() {
 
 // ---------- AI 实时点评聚合 ----------
 
-const aiFillerTotals = computed<Record<string, number>>(() => {
-  const totals: Record<string, number> = {}
-  for (const r of rounds.value) {
-    for (const f of r.fillerWords || []) {
-      totals[f.word] = (totals[f.word] || 0) + f.count
-    }
-  }
-  return totals
-})
-
-// 赘语展示 = AI 检测汇总 + 手动修正
-const fillerWords = computed<Record<string, number>>(() => {
-  const merged: Record<string, number> = { ...evalState.value.fillerWords }
-  for (const [w, c] of Object.entries(aiFillerTotals.value)) {
-    merged[w] = (merged[w] || 0) + c
-  }
-  return merged
-})
-
-const fillerTotal = computed(() => Object.values(fillerWords.value).reduce((a, b) => a + b, 0))
-
-// 手动修正只累加在 evalState.fillerWords（与 AI 检测分开计数，展示时合并）
-function incrementFiller(word: string) {
-  persist({ fillerWords: { ...evalState.value.fillerWords, [word]: (evalState.value.fillerWords[word] || 0) + 1 } })
-}
-
-// 仅允许删除纯手动添加的词（AI 检测的词由 AI 数据驱动，删除无意义）
-function removeFiller(word: string) {
-  const next = { ...evalState.value.fillerWords }
-  delete next[word]
-  persist({ fillerWords: next })
-}
+// 赘语（拆分至 useSpeechFillerCounter，行为保持不变）
+const {
+  aiFillerTotals,
+  fillerWords,
+  fillerTotal,
+  incrementFiller,
+  removeFiller,
+  newFiller,
+  addFiller,
+} = useSpeechFillerCounter({ evalState, persist, rounds })
 
 const aiGoodPhrases = computed<string[]>(() => {
   const seen = new Set<string>()
@@ -311,18 +204,6 @@ const scoreLabelMap: Record<string, string> = {
   language: 'meeting.speechEval.scoreLanguage',
   timeControl: 'meeting.speechEval.scoreTimeControl',
   overall: 'meeting.speechEval.scoreOverall',
-}
-
-// ---------- 赘语记录员 (Ah-Counter) ----------
-
-const newFiller = ref('')
-
-function addFiller() {
-  const word = newFiller.value.trim()
-  if (!word) return
-  // 手动登记该词（保留当前合并计数，使其可被删除；AI 词只读）
-  persist({ fillerWords: { ...evalState.value.fillerWords, [word]: evalState.value.fillerWords[word] || 0 } })
-  newFiller.value = ''
 }
 
 // ---------- 语法官 (Grammarian) ----------
@@ -480,7 +361,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  if (timerInterval) clearInterval(timerInterval)
+  // 计时器 interval 的清理已随 useSpeechTimer 内置。
   if (contextPushTimer) { clearTimeout(contextPushTimer); contextPushTimer = null }
   disconnect()
 })
