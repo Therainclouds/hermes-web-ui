@@ -431,12 +431,15 @@ class RealtimeAssistService {
     let yieldedAny = false
     let partialFromAgent = ''
     let agentError: unknown = null
+    logger.info('[meeting-assist] generateReportStream start: session=%s template=%s profile=%s transcript_len=%d',
+      sessionId, template.id, resolvedProfile, transcript.length)
     try {
       for await (const chunk of this.generateReportViaAgent(sessionId, transcript, template, resolvedProfile)) {
         yieldedAny = true
         partialFromAgent += chunk
         yield chunk
       }
+      logger.info('[meeting-assist] agent path completed cleanly: %d chars', partialFromAgent.length)
       return
     } catch (err) {
       agentError = err
@@ -466,12 +469,14 @@ class RealtimeAssistService {
     // 用一个不可能与 LLM 输出混淆的格式：流控制用单独的 sentinel 字段。
     // 详见 streamReport controller，它会把 sentinel 翻译成 SSE 帧 { fallback: true }。
     yield REPORT_FALLBACK_MARKER
+    logger.info('[meeting-assist] falling back to direct LLM path')
     try {
       let fallbackYielded = 0
       for await (const chunk of this.generateReportViaDirectLLM(transcript, template, resolvedProfile)) {
         fallbackYielded++
         yield chunk
       }
+      logger.info('[meeting-assist] direct LLM path completed: %d chars', fallbackYielded)
       if (fallbackYielded === 0) {
         // fallback 路径也返回空内容（典型：provider 也抽风）。
         // 抛出与 agent 同样的错误，让上游 catch 写出 error 帧。
@@ -480,9 +485,10 @@ class RealtimeAssistService {
           : new Error('Direct LLM fallback produced no output')
       }
     } catch (fallbackErr) {
+      const fallbackMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)
+      logger.warn('[meeting-assist] direct LLM path failed: %s', fallbackMsg)
       // fallback 也失败：合并两次错误信息，原始 agent 错误在前（更接近根因）。
       const agentMsg = agentError instanceof Error ? agentError.message : String(agentError)
-      const fallbackMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)
       const merged = new Error(`agent: ${agentMsg} | fallback: ${fallbackMsg}`)
       merged.name = 'ReportStreamBothFailed'
       throw merged
