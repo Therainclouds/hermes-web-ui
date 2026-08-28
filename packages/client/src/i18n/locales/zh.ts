@@ -4272,6 +4272,7 @@ export default {
       interview: '客户访谈',
       interviewDesc: '问答引导与要点归纳',
       speech: '演讲评分',
+      speechDesc: '演讲计时 · 赘语 · 实时评分',
     },
     // 演讲评分场景（Toastmasters 风格）
     speechEval: {

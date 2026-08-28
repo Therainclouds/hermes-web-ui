@@ -4226,6 +4226,7 @@ export default {
       interview: 'Client Interview',
       interviewDesc: 'Q&A guidance & key takeaways',
       speech: 'Speech Evaluation',
+      speechDesc: 'Speech timing · filler words · live scoring',
     },
     // Speech evaluation scene (Toastmasters style)
     speechEval: {

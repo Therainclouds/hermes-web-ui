@@ -13,7 +13,7 @@
  * 而不是切到另一个独立页面（见 docs/meeting-view-split-blueprint.md）。
  */
 
-export type SceneId = 'general' | 'business' | 'medical' | 'legal' | 'interview'
+export type SceneId = 'general' | 'business' | 'medical' | 'legal' | 'interview' | 'speech'
 
 export const SCENE_IDS: readonly SceneId[] = [
   'general',
@@ -21,6 +21,7 @@ export const SCENE_IDS: readonly SceneId[] = [
   'medical',
   'legal',
   'interview',
+  'speech',
 ] as const
 
 export const DEFAULT_SCENE_ID: SceneId = 'general'

@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // 场景模板卡片选择器（新建会议对话框用）
 //
-// 5 个场景卡片：图标 + 标题 + 一句话描述。选中态用主题 accent 高亮。
-// speech 场景已移除（产品不做）；medical/legal/interview 目前渲染占位布局，
+// 6 个场景卡片：图标 + 标题 + 一句话描述。选中态用主题 accent 高亮。
+// speech（演讲评分）为 Toastmasters 风格场景：计时/赘语/增量评分；medical/legal/interview 目前渲染占位布局，
 // 但在这里都是可选项——用户选了就按该模板新建会议。
 
 import { useI18n } from 'vue-i18n'
@@ -34,6 +34,11 @@ const TEMPLATE_ICONS: Record<SceneId, string> = {
     <circle cx="12" cy="12" r="10"/>
     <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
     <line x1="12" y1="17" x2="12.01" y2="17"/>`,
+  speech: `
+    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+    <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+    <line x1="12" y1="19" x2="12" y2="23"/>
+    <line x1="8" y1="23" x2="16" y2="23"/>`,
 }
 
 function isSelected(id: SceneId): boolean {

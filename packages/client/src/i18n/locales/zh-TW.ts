@@ -4017,6 +4017,7 @@ export default {
       medicalDesc: '病歷記錄與結構化',
       placeholder: '選擇會議場景範本',
       speech: '演講評分',
+      speechDesc: '演講計時 · 贅語 · 即時評分',
     },
     speechEval: {
       analyzeNow: '開始分析',
