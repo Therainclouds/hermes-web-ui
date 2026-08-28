@@ -1,6 +1,7 @@
 import type { Context } from 'koa'
 import { PassThrough } from 'node:stream'
 import { meetingASRService } from '../../services/meeting-asr'
+import { REPORT_FALLBACK_MARKER } from '../../services/meeting-asr/realtime-assist'
 import { logger } from '../../services/logger'
 
 async function proxyToBackend(ctx: Context, path: string, method: 'GET' | 'POST' = 'GET', body?: any): Promise<any> {
@@ -59,12 +60,19 @@ export async function startASRService(ctx: Context): Promise<void> {
 
     // If no API key provided, check if we have it in stored config
     if (!config.dashscopeApiKey) {
-      // Try to read from data directory
+      // Try to read from data directory. Resolve the same way as
+      // MeetingASRService.getDataDir() so controller + service agree on the
+      // root. Before this fix, the controller hardcoded process.cwd()/data
+      // which diverged from the service's MEETING_ASR_DATA_DIR override,
+      // so a key saved under the env-overridden data dir was invisible here.
       const fs = await import('fs/promises')
       const path = await import('path')
-      const dataDir = config.dataDir || path.join(process.cwd(), 'data', 'meeting-asr')
-      const configFile = path.join(dataDir, 'config.json')
+      const dataDir = config.dataDir
+        || process.env.MEETING_ASR_DATA_DIR
+        || path.join(process.cwd(), 'data', 'meeting-asr')
 
+      // 1. config.json (JSON structure)
+      const configFile = path.join(dataDir, 'config.json')
       try {
         const content = await fs.readFile(configFile, 'utf-8')
         const storedConfig = JSON.parse(content)
@@ -72,11 +80,8 @@ export async function startASRService(ctx: Context): Promise<void> {
           config.dashscopeApiKey = storedConfig.asr.dashscope_api_key
           logger.info('[meeting-asr-ctrl] dashscopeApiKey from config.asr.dashscope_api_key')
         } else if (storedConfig.llm?.api_key) {
-          // Fallback: DashScope key 同时用于 LLM 和 ASR
           config.dashscopeApiKey = storedConfig.llm.api_key
           logger.info('[meeting-asr-ctrl] dashscopeApiKey fallback from config.llm.api_key')
-        } else {
-          logger.warn('[meeting-asr-ctrl] no dashscopeApiKey found in any config path')
         }
         if (storedConfig.llm?.api_key) {
           config.llmApiKey = storedConfig.llm.api_key
@@ -89,6 +94,40 @@ export async function startASRService(ctx: Context): Promise<void> {
         }
       } catch {
         logger.error('[meeting-asr-ctrl] failed to read config file: %s', configFile)
+      }
+
+      // 2. config.env (shell-style KEY=VALUE). The Python backend writes
+      // DASHSCOPE_API_KEY here via storage.update_config(); if the JSON
+      // path didn't yield a key, this is where it lives.
+      if (!config.dashscopeApiKey) {
+        try {
+          const envFile = path.join(dataDir, 'config.env')
+          const raw = await fs.readFile(envFile, 'utf-8')
+          for (const line of raw.split('\n')) {
+            const trimmed = line.trim()
+            if (!trimmed || trimmed.startsWith('#')) continue
+            const eq = trimmed.indexOf('=')
+            if (eq === -1) continue
+            if (trimmed.slice(0, eq).trim() === 'DASHSCOPE_API_KEY') {
+              let val = trimmed.slice(eq + 1).trim()
+              if ((val.startsWith('"') && val.endsWith('"')) ||
+                  (val.startsWith("'") && val.endsWith("'"))) {
+                val = val.slice(1, -1)
+              }
+              if (val) {
+                config.dashscopeApiKey = val
+                logger.info('[meeting-asr-ctrl] dashscopeApiKey from config.env')
+                break
+              }
+            }
+          }
+        } catch {
+          // config.env missing — not an error, just no key there
+        }
+      }
+
+      if (!config.dashscopeApiKey) {
+        logger.warn('[meeting-asr-ctrl] no dashscopeApiKey found in config.json or config.env')
       }
     } else {
       logger.info('[meeting-asr-ctrl] dashscopeApiKey provided by frontend')
@@ -328,11 +367,23 @@ export async function streamReport(ctx: Context): Promise<void> {
     try {
       const stream = realtimeAssistService.generateReportStream(sessionId, transcript, sceneTemplate, profile)
       for await (const chunk of stream) {
+        // 服务层会在「agent 中途失败、回退到 direct LLM」时 yield 一个 Symbol sentinel；
+        // 把它翻译成专用的 SSE 控制帧，前端识别后清空已累积的部分内容，
+        // 再继续接收 LLM 的真实 chunks。Symbol 永远不会出现在 LLM 文本里，安全。
+        if (typeof chunk === 'symbol' && chunk === REPORT_FALLBACK_MARKER) {
+          passthrough.write(`data: ${JSON.stringify({ fallback: true })}\n\n`)
+          continue
+        }
         passthrough.write(`data: ${JSON.stringify({ text: chunk })}\n\n`)
       }
       passthrough.write('data: [DONE]\n\n')
     } catch (err) {
-      passthrough.write(`data: ${JSON.stringify({ error: String(err) })}\n\n`)
+      // 上游错误（LLM 流中断 / provider 返回错误帧 / agent bridge 失败），
+      // 之前 String(err) 会把整个 stack 字符串化塞给前端；这里只保留可读 message，
+      // 同时附上完整 error 的 type，方便前端归类（timeout / network / llm / agent / unknown）。
+      const message = err instanceof Error ? err.message : String(err)
+      const errorType = err instanceof Error ? err.name : 'UnknownError'
+      passthrough.write(`data: ${JSON.stringify({ error: { message, type: errorType } })}\n\n`)
     } finally {
       passthrough.end()
     }

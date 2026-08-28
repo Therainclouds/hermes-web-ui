@@ -3,9 +3,10 @@ import { ref, computed, watch, nextTick, defineAsyncComponent, onUnmounted, onMo
 import { useI18n } from 'vue-i18n'
 import { NButton, NSpin, NTag } from 'naive-ui'
 import { useMeetingAssist } from '@/composables/useMeetingAssist'
-import { request, getApiKey } from '@/api/client'
+import { useReportStream } from '@/composables/useReportStream'
+import { request } from '@/api/client'
 import { useMeetingStore } from '@/stores/hermes/meeting'
-import { buildReportHtml } from '@/utils/report-html'
+import MeetingExportDropdown from './MeetingExportDropdown.vue'
 
 const MarkdownRenderer = defineAsyncComponent(async () => (await import('@/components/hermes/chat/MarkdownRenderer.vue')).default)
 
@@ -100,10 +101,20 @@ watch(rounds, (newRounds) => {
   meetingStore.updateSession(props.sessionId, { analysisRounds: [...newRounds] })
 }, { deep: true })
 
-// Report state
-const reportMarkdown = ref('')
-const isGeneratingReport = ref(false)
-const reportError = ref<string | null>(null)
+// Report state（拆分至 useReportStream，行为保持不变）
+const {
+  reportMarkdown,
+  isGeneratingReport,
+  reportError,
+  lastTranscript,
+  generateReport,
+  retryReport,
+} = useReportStream({
+  getSessionId: () => props.sessionId,
+  getSceneTemplate: () => props.sceneTemplate,
+  resolveProfile,
+  onReportGenerated: (markdown) => emit('report-generated', markdown),
+})
 
 // Rounds container ref for auto-scroll
 const roundsContainer = ref<HTMLElement | null>(null)
@@ -165,93 +176,8 @@ watch(() => props.isRecording, async (recording) => {
   }
 }, { immediate: true })
 
-// Generate report after recording stops
-async function generateReport(transcript: string) {
-  console.log('[report] generateReport called:', { transcriptLen: transcript?.length ?? 0, isGenerating: isGeneratingReport.value })
-  if (!transcript || isGeneratingReport.value) {
-    console.warn('[report] generateReport early return')
-    return
-  }
-
-  isGeneratingReport.value = true
-  reportError.value = null
-  reportMarkdown.value = ''
-
-  try {
-    const response = await fetch('/api/meeting-asr/report/stream', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(getApiKey() ? { Authorization: `Bearer ${getApiKey()}` } : {}),
-      },
-      body: JSON.stringify({
-        sessionId: props.sessionId,
-        sceneTemplate: props.sceneTemplate,
-        transcript,
-        profile: resolveProfile(),
-      }),
-    })
-    console.log('[report] fetch status:', response.status)
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`)
-    }
-
-    const reader = response.body?.getReader()
-    if (!reader) throw new Error('No response body')
-
-    const decoder = new TextDecoder()
-    let buffer = ''
-    let rawChunkCount = 0
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      const rawText = decoder.decode(value, { stream: true })
-      if (++rawChunkCount <= 3) console.log('[report] 原始SSE块 ' + rawChunkCount + ':', JSON.stringify(rawText.slice(0, 150)))
-      buffer += rawText
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        const trimmed = line.trim()
-        if (!trimmed.startsWith('data: ')) continue
-        const payload = trimmed.slice(6)
-        if (payload === '[DONE]') break
-
-        try {
-          const chunk = JSON.parse(payload)
-          if (chunk.error) throw new Error(chunk.error)
-          if (chunk.text) reportMarkdown.value += chunk.text
-        } catch (e) {
-          if (e instanceof SyntaxError) continue
-          throw e
-        }
-      }
-    }
-
-    console.log('[report] 流结束，共收到原始块:', rawChunkCount, '，报告长度:', reportMarkdown.value.length)
-    emit('report-generated', reportMarkdown.value)
-  } catch (err) {
-    reportError.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    isGeneratingReport.value = false
-  }
-}
-
-// 导出报告：将 Markdown 转换为精简美观的独立 HTML 页面下载
-function exportReportHtml() {
-  if (!reportMarkdown.value) return
-  const title = meetingStore.activeSession?.title || t('meeting.reportPanel.title')
-  const html = buildReportHtml(reportMarkdown.value, title)
-  const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `${title}_报告.html`
-  a.click()
-  URL.revokeObjectURL(url)
-}
+// 导出报告：拆分按钮 + 下拉菜单，默认 Word（极致样式），可切 HTML / Markdown。
+const exportTitle = computed(() => meetingStore.activeSession?.title || t('meeting.reportPanel.title'))
 
 // Expose generateReport for parent component
 defineExpose({ generateReport })
@@ -403,13 +329,26 @@ onUnmounted(() => {
       <div class="report-header">
         <span class="report-title">{{ t('meeting.reportPanel.title') }}</span>
         <div class="report-actions">
-          <NButton v-if="reportMarkdown && !isGeneratingReport" size="tiny" @click="exportReportHtml">
-            {{ t('meeting.reportPanel.export') }}
-          </NButton>
+          <MeetingExportDropdown
+            v-if="reportMarkdown && !isGeneratingReport"
+            :markdown="reportMarkdown"
+            :title="exportTitle"
+            scope="reportPanel"
+          />
         </div>
       </div>
 
-      <div v-if="reportError" class="report-error">{{ reportError }}</div>
+      <div v-if="reportError" class="report-error">
+        <span>{{ reportError }}</span>
+        <NButton
+          v-if="lastTranscript && !isGeneratingReport"
+          size="tiny"
+          class="report-retry"
+          @click="retryReport"
+        >
+          {{ t('meeting.reportPanel.retry') }}
+        </NButton>
+      </div>
 
       <div v-if="isGeneratingReport && !reportMarkdown" class="report-loading">
         <NSpin size="small" />
@@ -783,6 +722,13 @@ onUnmounted(() => {
   background: rgba(208, 48, 80, 0.08);
   border-radius: 6px;
   border: 1px solid rgba(208, 48, 80, 0.2);
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+
+  .report-retry {
+    flex-shrink: 0;
+  }
 }
 
 .report-content {

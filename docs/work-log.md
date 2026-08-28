@@ -1,5 +1,67 @@
 # Work Log
 
+## 2026-08-28 深夜 · 合并对齐收尾：全链路验证 + 实时对话冒烟验证 + 密钥清理
+
+承接 `fcde4264`「merge: origin/main → meeting/v0.73」后的工作区合并对齐：
+
+- 工作区与 origin/main 对齐（chat store 拆分 chat-core/messages/queue/…、MeetingView 模块化、realtime-assist 拆 report-parser/agent-bridge/direct-llm、diarize 分层），其上嫁接实时对话面板（`RealtimeDialogPanel` + `useOmniRealtime` + `omni_realtime_proxy`）。
+- 验证：`vue-tsc -b` + server `tsc --noEmit` 零错误；`npm run build` 全链路通过（含 python 打包）；`omni-realtime-wiring`（13）+ python proxy 单测（19）全绿；全量 vitest 45 failed 与 origin/main 同集合（hermes-schemas / update-controller / coding-agents-launch / rtl-logical-css / ekko-display-name 等环境 flake，抽查逐文件核对均与本次改动无关）。
+- **实时对话链路冒烟验证（真实 DashScope key）**：WS → FastAPI `/ws/omni-realtime` → `OmniRealtimeProxy` → DashScope `qwen3.5-omni-flash-realtime` 握手成功，收到 `ready` 事件（session_id 正常返回）。
+- 修复 vue-tsc 6 处类型错误：`isPushing` 补进 composable 导出、`Float32Array<ArrayBuffer>` 泛型（`.subarray`→`.slice`、`ws.send` 显式 cast）、NSelect `SelectOption` 类型。
+- 安全：`data/meeting-asr/config.json`（含 DashScope key）移出 git 跟踪并加入 .gitignore；该 key 此前已存在于历史提交（`288919b3`/`8ec92110`，origin/main 已有），**建议轮换**。
+
+
+## 2026-08-28 · 会议模块模块化落地（审计 7 项任务全部完成，0 行为变更 0 回归）
+
+### 背景
+
+承接 `3f9d2c75` 的《会议模块拆分审计报告 v1.0》：MeetingView 3842 行、realtime-assist.ts 762 行（A+C bug 根因文件）等失衡点。本轮先写实施规格（spec，验收标准先行），再按「每个 PR 一个模块边界」逐项实施，全程**行为冻结（pure move）**——为后续「不同场景不同组件显示」打底：每个组件/组合单元先有独立契约，才能被场景层声明式编排。
+
+### 交付（9 个本地 commit）
+
+| Commit | 改动 |
+|--------|------|
+| `a0fcf0d2` fix(meeting-asr): config sync + venv path resolution | 上一会话遗留：`MEETING_ASR_DATA_DIR` env 解析、venv 迁到 `dataDir/.venv`（EACCES 修复）、DashScope key 双文件回退（config.json + config.env）、Python `Settings` 去 frozen + `sync_from()` 热更新同步；`config.env` 入 .gitignore（含密钥不进 git） |
+| `9d923a8a` docs(harness): 模块化实施规格 | spec v1.0：7 个 PR 的拆什么/怎么拆/怎么验收（`docs/harness/meeting-modularization-spec.md`，docs/ 需 `git add -f`） |
+| `3c97caa1` PR-2a | MeetingView 抽出 `useMeetingAudio`（录音+播放全生命周期，含双 WS 连接/兜底落库）+ `useDraggableWidth`；3842→3158 |
+| `96950623` PR-2b | 抽出 `AsrConfigWizardDialog.vue`；CreateMeetingDialog 改 `display-directive="show"` 保持向导状态跨开关存活（对齐旧版 view 级 ref 语义）；3158→3001 |
+| `64ad141c` PR-2c | 补齐 -30% 缺口：抽出 `useDiarizeMerge` + `useMeetingDownloads`；3001→**2690** |
+| `381cd7d7` PR-1 | realtime-assist.ts 拆出 `report-parser` / `agent-bridge` / `direct-llm`（fetch/bridge/配置读取全部依赖注入）；本体 762→**283** 瘦身为编排层；导出面不变（`realtimeAssistService` + `REPORT_FALLBACK_MARKER`） |
+| `e8781aa4` PR-5 | MeetingAgentPanel 抽出 `useReportStream`（SSE 解析、fallback 帧清空、无 [DONE] 截断检测、lastTranscript retry）；865→755 |
+| `04e7b025` PR-6 | SpeechEvaluationPanel 抽出 `useSpeechTimer` + `useSpeechFillerCounter`；1065→946 |
+| `6b3c1923` PR-4 | meeting-asr/index.ts 抽出 `venv-manager` + `dashscope-key-store`；1066→781；子进程 spawn/env 注入语义零改动（safety-audit 红线） |
+| `a8dadd2e` PR-7 | diarize_endpoint.py 分层：路由 `diarize_ws_handler` 留守（`diarize_server.py` import 不变），服务层入 `diarize_service.py`；750→282+504 |
+| `2597540d` docs(harness) | spec 回填 v1.1（结果表+5 项偏差）+ 审计附录 B 八项全勾 |
+
+### 新增单测（7 文件 45 用例）
+
+`tests/server/report-parser.test.ts`(11)、`tests/server/agent-bridge.test.ts`(15，假 bridge 注入)、`tests/server/direct-llm.test.ts`(14，注入 fetch/config)、`tests/server/dashscope-key-store.test.ts`(5)、`tests/client/composables/use-draggable-width.test.ts`(6)、`use-report-stream.test.ts`(7)、`use-speech-timer.test.ts`(12)。既有 `meeting-report-fallback.test.ts`（A+C 回退契约 9 用例）在新接缝上原样全绿。
+
+### 关键技术点
+
+- **导出面即契约**：拆分前先 `grep` 摸清外部引用（单例/marker 常量/组件 props/i18n key），拆完调用方零改动或仅最小改动。
+- **composable 接回模板零改动**：返回的变量/函数名与原 view 完全一致，view 解构接回，模板一字不动；`noUnusedLocals` 开启，只解构实际用到的名字。
+- **状态所有权决定契约形状**：`asrApiKey`/`analysisMode` 留在 view（创建按钮 disabled 需要响应式依赖），其余向导字段组件自持 + `reset()/collectConfig()`；NModal 默认 `display-directive="if"` 关闭即卸载，改 `"show"` 才能保住「关闭弹窗后 startASRService 仍能读到未保存输入」的旧语义。
+- **守卫测试跟随代码走**：worklet 静态路径契约（B-1 守卫）与 venv 源码契约断言随实现迁入新文件，行为断言不改——测试钉的是约束不是文件名。
+- **依赖注入换可测性**：server 侧 fetch/bridge/config 读取全部作参数注入（默认实现保持动态 import 原语义），单测不 mock 整个 socket、不碰真实文件系统（skill-resolver vi.mock）。
+
+### 验证与偏差（如实记录）
+
+- `vue-tsc -b` + server `tsc --noEmit` 零错误；`npm run build` 全链路通过（含 build-server python 打包）。
+- 全量 `vitest run` 失败集合两次运行 148↔150 漂移（`group-chat-invite-attachments`、`stt-transcribe-controller` 等环境 flake），**meeting 相关失败 0**；基线（stash 后 HEAD）与本分支均为 149 failed / 4752 passed 同集合，本轮 0 回归。
+- 未达 spec v1.0 乐观目标两处（spec v1.1 如实记录）：两 panel 行数（≤700/≤750）未达——剩余体量在模板/样式，脚本职责已全抽出；继续压缩需合并报告路径语义（行为变更），留作后续。
+- 安全红线核对：CSP/security.ts、子进程 env 注入语义、venv 创建序列、audio_buffer 并发结构（R-4/R-12 暂不动）全部未触碰。
+
+### 当日晚间续：org 演讲功能并入 + 演讲场景恢复入口
+
+- **org/main 分歧排查与合并**：org/main（= org/meeting/v0.73，同一提交）含设备线「会议模式演讲功能」`e887f98b`（增量评价模式：AI 跨批次累积亮点/改进点/主题/评分，hasNewPoint 沉默机制；Toastmasters 环节预设；波形区计时器浮层）。真实 merge（`71e77470`）逐文件解决 7 处冲突，保留模块化结构、嫁接 org 功能；无强推，两远程 fast-forward。
+- **关键发现——演讲场景选择入口曾被移除**：本地场景化重构（`a9f9c83e`）时 speech 以「产品不做」为由从 SceneTemplatePicker 移除，但服务端模板/评估面板/计时器全在，功能整体不可达。已恢复（`e391e159`）：SceneId/SCENE_IDS 加回 speech、麦克风图标卡片、三 locale 补 speechDesc；两个钉旧决策的守卫测试更新为六选一（`f9667fe5`）。教训：**「产品不做」的注释要与代码同生共死，恢复功能时先 grep 这类注释**。
+- **useSpeechTimer 合并要点**：org 版是模块级单例（浮层与面板共享走表状态），本地 PR-6 版是组件私有实例含记录/设置——合并为「单例核心 + deps 可选面板层」，单测重写为单例语义（含双实例同步性测试）。
+
+### 下一步（用户已拍板）
+
+**六大场景（general/business/medical/legal/interview/speech）都要专门的组件设计和页面布局**——本轮先不做 speech 单场景重构。后续每个场景的落地模式：从场景清单（scene-templates）声明「场景 → 组件组合」映射，按场景装配 MeetingRightPanel 插槽、波形区浮层与工具栏项；speech 场景（已并入的增量评价 + 计时浮层）作为第一个样板，其余五场景逐一套用该契约。
+
 ## 2026-08-26 · USB 视图重设计（文件列表占主体 80%）+ 两轮 bug 修复
 
 ### 背景
@@ -1646,3 +1708,724 @@ en.ts 和 zh.ts 已经有完整的 `usb.explorer.*` 命名空间（toolbar / bre
 - **离线 ASR 决策**：调研报告已落档，等用户拍板是否投入 Phase 2A（sherpa-onnx + Paraformer，1 周集成）
 - **历史测试失败**（与本轮无关）：
   - 8 个失败的测试均为环境相关（symlink EPERM / Unix PATH 检测 / Codex 系统技能），建议另起任务修复 Windows 沙盒里的 symlink 支持
+
+---
+
+## 2026-08-27 · MeetingView 模块化拆分（场景壳回滚 + 6 个内聚组件）
+
+### 背景
+
+承接 08-26 会议模块的「场景化」尝试。上一版把「会议场景」做成了**独立整页路由**（`MeetingSceneShell` + `/hermes/meeting/scene/:scene?`），用户实测发现严重问题：
+
+- 进入模板页后**没有侧边栏**、没有波形、没有录音，`连接中` 状态卡死，原有会议模式功能全部失效。
+- 用户质疑：场景模板到底是独立页面还是 MeetingView 内的形态？并要求**先验证能不能把 MeetingView 拆成 Vue 组件**再谈重构。
+
+### 决策（用户拍板）
+
+1. **删掉**错误/过时的场景壳架构：`MeetingSceneShell.vue`、场景路由、`scenes/` 整页组件、旧设计文档。
+2. **保留** `/hermes/meeting` 单一整页路由；场景模板只影响 MeetingView 内部的样式与提示。
+3. **模块化拆分**：按「内聚块 + 明确 props 边界」把 4400+ 行的 MeetingView 逐块拆成组件，先做 **WaveformCanvas 样品验证可行性**，出蓝图后按批拆。
+4. **audio setup**（MediaStream/AnalyserNode/WebSocket/Diarize）暂不拆，等测试覆盖加深后再评估。
+
+### 交付
+
+#### 场景壳回滚 + 清理
+
+- 删 `views/hermes/MeetingSceneShell.vue`、路由 `hermes.meeting.scene`、`scenes/{index.ts, SceneGeneral, SceneBusiness, shared/*}`。
+- 类型/常量迁移到新模块 `components/hermes/meeting/scene-templates.ts`（`SceneId / SCENE_IDS / DEFAULT_SCENE_ID / isSceneId / normalizeSceneId`；`resolveSceneComponent` 随壳删除）。
+- 新建会议对话框的模板选择器（`SceneTemplatePicker.vue`，5 卡无 speech）保留，import 改指 scene-templates.ts。
+- `scenes/business/` 三面板（AgendaTimeline / DecisionPanel / KPIStrip）移到 `components/hermes/meeting/business/`，供后续在 MeetingView 内嵌商务场景使用。
+- i18n 三语言删除 `meeting.sceneShell.*`。
+- 测试对齐：`meeting-scenes-registry.test.ts` → `scene-templates.test.ts`（删 resolveSceneComponent 用例、改导入）。
+
+#### MeetingView 内聚组件拆分（按蓝图批次）
+
+| 组件 | props 契约（简） | 说明 |
+|------|------------------|------|
+| `WaveformCanvas.vue` | `analyser, connecting` | canvas + AnalyserNode 频谱 + RAF 生命周期（样品，先验证可行性） |
+| `MeetingSidebar.vue` | `expanded, sessions, activeId` | 侧栏容器 + 新建 + 列表 + footer + item-actions slot |
+| `CreateMeetingDialog.vue` | `visible, createDisabled` | NModal 外壳 + action 按钮；wizard 表单走 default slot |
+| `MeetingTopBar.vue` | 9 个状态 props | 顶部标题 + Agent/Diarize/保存模式/清空转写控制 |
+| `MeetingRightPanel.vue` | `visible, isSpeechScene, showAgentPanel` | 右面板外壳 + resize handle + speech/agent/analysis 三槽分发（此轮实际已存在，补验证） |
+| `TranscriptList.vue` | `sentences, partialText, highlightedIndex, isRecording` | 句子列表 + 重命名 speaker + partial + 空状态 |
+
+新增测试：`waveform-canvas / meeting-sidebar / create-meeting-dialog / meeting-topbar / transcript-list`（共 38 项），加上既有 `meeting-right-panel`(13) / `scene-templates`(6) / `meeting-scene-picker`(4) 等，meeting 相关共 **105/105 通过**。
+
+### 踩坑记录（重要）
+
+**scoped CSS 不穿透子组件** — 拆出组件后，父级 `<style scoped>` 里的选择器带上父级 hash，无法命中子组件内部 DOM：
+
+1. **侧栏**：`.meeting-sidebar / .meeting-list-item` 等失效 → 列表项变 inline-block 网格、白块。修复：父级加 `:deep()` 包裹布局选择器；hover 显示删除按钮拆成独立规则（SCSS 嵌套 + `:deep` + `&` 混用会编译错）。
+2. **顶部控制条**：`.meeting-header / .meeting-title / .meeting-controls / .header-avatar-toggle / .header-logo` 失效 → header 被 flex 撑到 **726px**，波形压成 0、右面板只剩 174px，整页崩溃。修复：5 条规则全部加 `:deep()`。
+
+**排查方法**：用 headless Chromium `getBoundingClientRect()` + `getComputedStyle` 逐区域测布局尺寸，比对预期值（header 应 ~57px、waveform 100px、transcript flex:1），一眼定位是「选择器没命中」而非「样式写错」。
+
+**NPopover / NModal 在 jsdom 里 teleport 到 `<body>`** — 单元测试要用 `attachTo` 挂真实 DOM 节点后 query `document.body`，不能用 `wrapper.find`。
+
+**Vue 模板里 SVG `<line ... />` 误写成 `</line>`** — vite vue 编译器报 `Invalid end tag`，导致 MeetingView 整文件编译 500、路由挂载失败（dev 页空白）。修复后需重启 dev（vite 脏状态）。
+
+### 验证
+
+- `vue-tsc -b --noEmit`：0 error。
+- `vitest` meeting 相关 10 个文件：105/105 通过。
+- headless Chromium（1440×900）：
+  - 布局恢复：header 57px / waveform 100px / transcript 575px / right-panel 843px 撑满。
+  - 侧栏 5 tabs + 列表点击不跳转（URL 不变）。
+  - 创建对话框 640px、5 卡模板、点 business 卡切换生效。
+  - 选择有句子的会议：`.sentence-item` 正常渲染、`display:flex padding:8px`。
+
+### 当前状态
+
+- 场景壳已彻底移除，MeetingView 回到单一整页 + 组件拆分结构。
+- 剩余未拆块：`MeetingTopBar` 之下的 status-bar / record-button / analysis 内容区 / ReportDialog（右面板 slot 内内容仍是父级）。
+- 下一轮：**MeetingView 重构方案**（用户已要求开始思考项目级重构，不止 meeting 页面）。
+
+---
+
+## 2026-08-27 · chat store 拆分 — 第一批：纯函数区 → chat-core.ts
+
+### 背景
+
+上一轮（MeetingView 模块化拆分）之后开始项目级重构思考。调查确认 `stores/hermes/chat.ts` 是全 client 最大的 store（5,332 行，153 个顶层函数），是聊天主链路（ChatPanel/MessageList/MessageItem 全依赖），拆分收益最大。用户拍板采用「薄编排 + 模块化实现」：保持 `useChatStore` 单入口，把内部实现拆到模块文件，对外 API 零变化（25+ 测试文件、几十个组件的 `from '@/stores/hermes/chat'` 不变）。
+
+### 交付
+
+- 新建 `stores/hermes/chat-core.ts`（1,259 行）：承载 chat.ts 顶部纯函数区——全部类型（`Session/Message/PendingApproval/SubagentStream/...`）、常量（`LIVE_CHAT_*` 等）、纯函数（`reduceSubagentStream/parseMessageReference/mapHermesMessages/buildContentBlocks/...`），独立可测。
+- `chat.ts`（5,332 → 4,082 行）：顶部 `import { 57 个符号 } from './chat-core'` + `export * from './chat-core'`，对外 API 不变。
+
+### 迁移中踩的坑
+
+1. **脚本搬代码没搬 export 关键字**：纯函数区大量非 export 符号（`interface CompressionState`、`function uid` 等）搬到新文件后 chat.ts 无法 import——vue-tsc 报 41 个 TS2459。用脚本自动补 `export`。
+2. **类型 import 被误删**：原 chat.ts 顶部一个 import 块同时服务纯函数区和 store body，搬走纯函数区后 store body 用的 `RunEvent/SessionSummary/WorkspaceRunChangeSummary/ChatCodingAgentId` 等丢失——补回。
+3. **模块级 let 被 import 后不能赋值**：`activeRuntimeMode` 是模块级 `let`，`setRuntimeMode()` 会写它；拆到 core 后 chat.ts 的 import 绑定只读。解法：core 加 `setActiveRuntimeMode(mode)` setter，chat.ts 改调 setter。
+4. **未使用 import 告警**：`WorkspaceRunChangeFileDetail`（core 侧）/`HermesMessage`（chat.ts 侧）迁移后成孤儿 import——删除。
+
+### 验证
+
+- `vue-tsc -b --noEmit`：0 错误（迁移前基线 26 个既有错误，本次改动未新增）。
+- 29 个 chat 相关测试文件：**264/264 全过**。
+- chat.ts 5,332 → 4,082 行（−1,250）。
+
+### 后续
+
+- 第二批开始拆 store body（约 4,000 行）：session 管理 / 发送与停止 / 事件处理 / 队列 / 审批澄清 / 子代理流 / 工作区变更。这些域共享核心 refs，按「模块函数接受 refs 参数」方式拆，风险高于第一批。
+
+---
+
+## 2026-08-27 · chat store 拆分 — 第二批：审批/澄清域 + 消息操作域
+
+### 背景
+
+第一批（chat-core.ts）后继续拆 store body（原 4,000+ 行）。先做了耦合度分析：store body 有 **22 个共享 refs + 103 个函数**，多数函数只引用 1-5 个 refs，验证了「工厂注入 refs」的模块化路径可行。
+
+### 交付（两个新模块）
+
+1. **`chat-interactions.ts`**（161 行）：审批/澄清交互域。`createChatInteractions({ activeSessionId, pendingApprovals, pendingClarifies, runtimeTransport })` 工厂注入共享 refs + api 回调，返回 11 个成员（activePendingApproval/activePendingClarify computed + setPendingApproval/clearPendingApproval/setPendingClarify/clearPendingClarify/clearPendingInteractions/respondToClarifyFor/respondToClarify/respondApprovalFor/respondApproval）。store 删除内联实现，解构 factory 返回值，`respondClarify/respondToolApproval` import 移入模块。
+
+2. **`chat-messages.ts`**（155 行）：消息/会话状态操作域。`createChatMessages({ sessions })` 工厂只依赖 sessions ref + chat-core 纯函数，返回 10 个成员（getSessionMsgs/isEkkoAgentSession/addMessage/addMessageInTimelineOrder/addHermesBackgroundDelegateAnchors/findHermesBackgroundDelegateAnchor/addOrUpdateSession/updateMessage/settleRunningTools/settleRuntimeDisplayForCommand）。
+
+### 踩坑
+
+- **命名冲突**：把 factory 解构命名为 `messages` 覆盖了 store 原有的 `messages` computed（组件用 `chatStore.messages`）——改名 `chatMessages` 修复，vue-tsc 立刻从 36 错归零。
+- 搬走后 chat.ts 有 3 个孤儿 core import（`HERMES_BACKGROUND_DELEGATE_ANCHOR_PREFIX/backgroundDelegateAnchorCallId/backgroundDelegateTaskDescriptors`）——删除。
+
+### 验证
+
+- `vue-tsc -b --noEmit`：0 错误。
+- 29 个 chat 相关测试文件：**264/264 全过**。
+- chat.ts 5,332 → 3,886 行（累计 −1,446）；抽出的 3 个模块共 ~1,575 行。
+
+### 后续
+
+剩余 ~3,900 行是高度耦合的编排域（loadSessions/switchSession/sendMessage/handleAgentEvent/resumeServerWorkingRun 等），互相调用且共享全部 refs。拆分需按「流程编排层留在 store、纯状态操作下沉」进一步设计，风险高于已完成的独立域，等用户验收后继续。
+
+---
+
+## 2026-08-27 · chat store 拆分 — 第三批：子代理/MoA 流事件域
+
+### 交付
+
+**`chat-subagents.ts`**（264 行）：子代理（subagent.*）与多智能体聚合（moa.*）实时流事件域。`createChatSubagents({ subagentStreams, messages })` 工厂注入 subagentStreams ref + chat-messages 域的纯状态操作（getSessionMsgs/findHermesBackgroundDelegateAnchor/updateMessage/addMessageInTimelineOrder/addMessage），返回 5 个成员（handleSubagentEvent/restorePersistedSubagentStreams/settleInterruptedSubagents/getSubagentStream/handleMoaEvent）。
+
+### 踩坑
+
+- 搬走后 chat.ts 有 3 个孤儿 core import（moaReferenceLabel/reduceSubagentStream/subagentStatus）——删除。
+- 用 node 脚本精准删除行范围（1105-1313）比 Edit 大段替换更可靠。
+
+### 验证
+
+- `vue-tsc -b --noEmit`：0 错误。
+- 29 个 chat 测试文件：**264/264 全过**。
+- chat.ts 5,332 → 3,696 行（累计 −1,636）；已抽出 4 个模块共 ~1,840 行。
+
+---
+
+## 2026-08-27 · chat store 拆分 — 第四批：队列系统域
+
+### 交付
+
+**`chat-queue.ts`**（222 行）：用户消息排队系统。`createChatQueue({ queuedUserMessages, queueLengths, queueInsertionStates, dequeuedQueueIds, runtimeTransport, updateSessionTitle, messages })` 工厂注入 4 个队列 refs + store 内函数 + 消息域操作，返回 12 个成员（enqueue/update/drop/remove/insert 排队消息、replaceQueueInsertionState、handleQueueInsertionUpdated、normalize/replaceQueuedUserMessages、mark/consumeDequeuedQueueId、handleRunQueuedEvent）。
+
+### 验证
+
+- `vue-tsc -b --noEmit`：0 错误（删除解构中不再直接调用的 markDequeuedQueueId）。
+- 29 个 chat 测试文件：**264/264 全过**。
+- chat.ts 5,332 → 3,516 行（累计 −1,816）；已抽出 5 个模块共 ~2,060 行。
+
+---
+
+## 2026-08-28 · 三条录音/切会话症状整体修复 — 与模块化拆分无关
+
+### 背景
+
+浏览器 in-app 嵌入视图（`https://localhost:8649/`）抓到三条同时出现的症状：
+1. `Permissions policy violation: unload is not allowed`（×3 次）— `MeetingView.vue:723`
+2. `Failed to load session messages via resume: Error: resume timeout` — `chat.ts:935`
+3. UI 提示「录音未知错误」— `MeetingView.vue:1240` 的 ASR error 分支
+
+用户问「是不是模块化引起的？」。先用 git history 排查。
+
+### 调查结论：**三条症状都是预存问题，与模块化无关**
+
+| 症状 | 引入 commit | 时间 |
+|---|---|---|
+| `attachBeforeUnloadAudioBackup` 含 `unload` 监听 | `98ee4349 fix(meeting): 音频改为结束一次性落库...` | 2026-08-11 |
+| `switchSession` 15s `resume timeout` | `75ecc04b feat(session): add Hermes session sync on first startup` | 模块化前 |
+| ASR `case 'error': data.message || unknownError` | `9ed56302 fix(meeting-asr): 修复 DashScope 端点...` | 模块化前 |
+
+模块化拆分（8 月下旬开始）只动了 chat.ts 的位置和 MeetingView 的内部结构，
+没有新增任何以上三类监听或错误处理逻辑。
+
+### 修复
+
+**修 1（控制台违规）**：`MeetingView.vue` 的 `attachBeforeUnloadAudioBackup` 去掉 `unload` 监听，
+保留 `beforeunload` + `pagehide`。理由：
+- 嵌入式容器（iframe / in-app browser）Permissions-Policy 拒绝 `unload`，违规是无效冗余
+- `pagehide` 在 SPA 切页 / 移动端 / 嵌入容器都会触发，覆盖更全
+- 注释里写清这条限制，避免后人再加回来
+
+**修 2（resume timeout 静默）**：chat store 新增 `lastSwitchError` ref + `clearLastSwitchError()` 方法；
+`switchSession` 的 catch 块在「本次请求仍是当前活跃请求」时把 `${sessionId}:${reason}` 写进去。
+ChatPanel.vue 加 watcher 把它 surface 成 `message.warning(t('meeting.sessionSwitchResumeFailed'))`，
+持续 6 秒，然后立即清空 ref 避免重弹。
+
+**修 3（ASR 空 message 兜底太弱）**：MeetingView.vue:1240 之前是
+`errorMessage.value = data.message || t('meeting.unknownError')`，
+后端 ASR 进程崩溃 / 未启动时 `data.message` 经常是空字符串，落到的就是字面量「未知错误」。
+改成三种形态兼容（字符串 / 对象 / 空），空 message 落 `meeting.errorServiceNotReady` 而不是
+`meeting.unknownError`，对用户更可操作。
+
+新增 i18n key：`meeting.sessionSwitchResumeFailed`（仅 en.ts，因为其他 10 个 locale
+之前也没有 unknownError 的具体翻译，按"先英文过审"的策略落地）。
+
+### 验证
+
+- `vue-tsc -b --noEmit`：**0 错误**
+- 新增 `tests/client/chat-store-switch-error.test.ts`（3 项）— 超时写入 / 不匹配 session_id 不写 / 清理方法
+- 22 个 chat 相关测试文件：**179/179 通过**
+- 5 个 meeting 相关测试文件：**69/69 通过**
+- 全 `tests/client` 总数：1496 项，其中 **5 项失败已确认是预存在**（`ekko-display-name` / `rtl-logical-css`
+  / `device-connections-locales` / `profile-card-config-edit` / `group-chat-store-{baseline,streaming}`），
+  与本次改动无关 — 已通过 `git stash` 在 baseline 复现。
+
+### 改动文件
+
+- `packages/client/src/views/hermes/MeetingView.vue`（修 1 + 修 3）
+- `packages/client/src/stores/hermes/chat.ts`（修 2：新增 ref + 写入 + clear）
+- `packages/client/src/components/hermes/chat/ChatPanel.vue`（修 2：watcher）
+- `packages/client/src/i18n/locales/en.ts`（新增 key）
+- `tests/client/chat-store-switch-error.test.ts`（新增测试）
+
+---
+
+## 2026-08-28 · MeetingView 模块化蓝图复核 — 8 个内聚块已全部抽完
+
+### 背景
+
+`.zcode/plans/plan-sess_c781a70e-b408-46dd-8a96-80341511eac2.md` 描述的
+「清理场景壳 + 提取 WaveformCanvas 样品 + 输出拆分蓝图」任务。
+会话恢复时审计发现 commit `e8f6648a refactor(meeting): MeetingView 模块化拆分 — 回滚场景壳 + 6 个内聚组件`
+已把这套工作全部完成：路由 `hermes.meeting.scene` 已删除、`scenes/` 目录已删除、
+`docs/design/meeting-scenes/` 已删除、MeetingView 不再调 `router.push` 不再含 `openSessionScene`、
+`WaveformCanvas.vue` 已抽出并接入、`waveform-canvas.test.ts` 5/5 通过、
+`docs/meeting-view-split-blueprint.md` 已存在（103 行）。
+
+### 本轮收尾
+
+- **蓝图状态校正**：原蓝图第 2 节「MeetingView 内聚块清单」未标状态、第 4 节「推荐拆分顺序」列出的 6 个批次实际都已完成。改为：
+  - 第 2 节增加「拆分状态」列
+  - 第 4 节改为「拆分执行记录」，按推荐顺序列已完成的 6 个组件 + 各自测试文件 + MeetingView 接入行号
+  - 第 7 节「等你拍板的点」删除已决项，只留 audio setup / Storybook 两个开放问题
+- **验证**：`vue-tsc -b --noEmit` 0 错误；7 个 meeting 相关测试文件 69/69 通过（waveform 5 + right-panel 13 + sidebar 7 + topbar 14 + create-dialog 5 + scene-picker 5 + scene-templates 8，其他 meeting 测试未纳入本轮）。
+- **MeetingView 当前体量**：3831 行（4400 → 3831，−569），剩余主体为 audio setup 编排（770-1120 区段）+ 状态机 + 事件分发。
+
+### 后续
+
+chat store 剩余 ~3,500 行主要为高度耦合的发送/事件编排域（loadSessions / switchSession / sendMessage / handleAgentEvent / resumeServerWorkingRun），互相调用并共享全部 refs，是真正难拆的部分。按之前节奏，等用户验收本轮蓝图校正后再继续。
+
+---
+
+## 2026-08-28 · 会议报告生成 SSE 流错误帧 + 末尾 buffer 丢失修复
+
+### 背景
+
+上一轮 commit `8d7343a9` 修完三条症状后用户报告「效果正常了，但是最后的生成总结报错」。
+错误原文是 upstream LLM provider 抛出的 `Provider returned an empty stream with no finish_reason`，
+表面看起来是 provider 端问题，但报告区显示成空白 / 半截，并没有红色错误。
+排查后发现根因在 server→client 的 SSE 流处理路径里有 3 处实际可修的 bug。
+
+### 根因
+
+1. **provider SSE 流里嵌 error 帧被静默忽略**：
+   server `generateReportViaDirectLLM` 的 read loop（`realtime-assist.ts:528-555`）只识别
+   `choices[0].delta.content`，如果 provider 在流里塞了
+   `data: {"error": {"message": "empty stream", "type": "upstream_error"}}` 帧，
+   这种帧会被当普通 chunk 走 SyntaxError catch，warn 一行就过去。
+   然后 read loop 自然结束，`yieldedAny` 看运气，可能触发 fallback（也可能不触发），
+   最终 report 区域显示空白或半截残文，用户看不到任何错误。
+
+2. **末尾不带换行的 chunk 永远到不了前端**：
+   server read loop 用 `buffer.split('\n').pop()` 把最后一行留给「下次读取」，
+   但流已经 `done=true`，这段永远不会被解析。客户端拿到的报告总是缺尾巴。
+
+3. **server 异常 catch 块写的错误格式与客户端解析不一致**：
+   server `streamReport` 写 `data: {"error": String(err)}`，把 stack + message 整串塞进去；
+   客户端 `MeetingAgentPanel.generateReport` 拿到后当成普通字符串展示，
+   既不可读、也没有 error type 归类（timeout / network / llm / agent）。
+
+### 修复
+
+**server**：
+- `realtime-assist.ts`：在 SSE read loop 增加 (a) provider error 帧检测 + 立即抛错；
+  (b) `done=true` 时 flush 剩余 buffer，避免尾部 chunk 丢失。
+- `controllers/hermes/meeting-asr.ts`：错误帧格式改为 `{ error: { message, type } }`，
+  只保留 message + error.name，去掉 stack。
+
+**client**：
+- `MeetingAgentPanel.vue`：(a) 兼容 server 新错误格式 + 旧裸字符串；
+  (b) `[DONE]` 帧真正 break 外层 while（之前 `break` 只能跳出 for-of inner loop，会再读一次直到 done）；
+  (c) `sawDoneFrame` 标志：未收到 `[DONE]` 就 done 时打 warn（让运维侧可见）。
+
+**测试**（`tests/server/meeting-report-fallback.test.ts`）：
+- 新增「provider error 帧应抛错」：断言 `generateReportStream` 抛 `/empty stream/`，且已 yield 的 partial 内容保留。
+- 新增「末尾不带 `\n\n` 的 chunk 也能 flush」：断言 `'head' + 'tail' = 'headtail'`。
+
+### 验证
+
+- `vue-tsc -b --noEmit`：**0 错误**
+- `tests/server/meeting-report-fallback.test.ts`：**6/6 通过**（含 2 个新增）
+- 全 `tests/server` 43 文件失败：**已确认是预存在**（baseline 同样失败，原因是 fake-python ENOENT 测试环境问题）
+- 与本次改动无关，**之前同样的失败**。
+
+### 改动文件
+
+- `packages/server/src/services/meeting-asr/realtime-assist.ts`
+- `packages/server/src/controllers/hermes/meeting-asr.ts`
+- `packages/client/src/components/hermes/meeting/MeetingAgentPanel.vue`
+- `tests/server/meeting-report-fallback.test.ts`
+
+---
+
+## 2026-08-28 · 报告错误用户友好化 — 第三方 SDK 错误归一化 + retry 按钮
+
+### 背景
+
+上一轮 commit `7f3d267e` 修复了 server→client 的 SSE 流处理 bug，但用户报告
+「总结还是显示 `Provider returned an empty stream with no finish_reason`」。
+这次错误**来自上游 provider / 第三方 SDK**（OpenAI Python SDK 1.50+ 在
+`stream=True` 模式下，stream 关闭但没有任何 chunk 携带 `finish_reason` 时抛的错），
+不是我们 server→client 路径的 bug。
+
+错误已经能传到 UI，但 UI 直接展示原始 SDK 错误字符串：
+- 不可读（英文 stack 字符串）
+- 没给用户任何可操作路径（用户只能重录会议）
+- 对运维也没归类（timeout / network / llm / agent 都混在一行）
+
+### 修复
+
+**错误归一化（extract to pure function）**：
+- 新增 `packages/client/src/components/hermes/meeting/report-error.ts`：
+  导出 `classifyReportError(rawMessage: string): ReportErrorKey`
+  纯函数，无 Vue 依赖，单测可独立覆盖。
+- 匹配规则：`empty stream.*no finish_reason` / `stream ended unexpectedly`
+  / `stream.*reset` / `stream.*closed` → `meeting.reportPanel.errorEmptyStream`；
+  其他 → `meeting.reportPanel.errorGeneric`。
+- 提取的目的：组件代码里不掺杂匹配逻辑；新增 pattern 时只改一处 + 一处测试。
+
+**组件接入**：
+- `MeetingAgentPanel.vue`：catch 块从 inline regex 改为调 `classifyReportError` + `t(...)`。
+- raw 错误仍然 console.error 给运维，不展示给用户。
+
+**用户操作路径**：
+- 新增 `lastTranscript` ref，在每次 `generateReport` 调用时记录 transcript。
+- 新增 `retryReport()` 函数：复用 `lastTranscript` 再调一次 `generateReport`。
+- 模板：report-error 区域从单行文字改成「错误文字 + Retry 按钮」并排，
+  按钮只在 `lastTranscript && !isGeneratingReport` 时显示。
+
+**i18n**（en.ts `meeting.reportPanel` namespace）：
+- `retry`: 'Retry'
+- `errorEmptyStream`: 友好提示 + 建议（网络问题 / provider 状态）
+- `errorGeneric`: 通用 fallback + 建议（看 server logs）
+
+### 验证
+
+- `vue-tsc -b --noEmit`：**0 错误**
+- 新增 `tests/client/meeting-report-error.test.ts`：**5/5 通过**
+  - 精确匹配「Provider returned an empty stream with no finish_reason」
+  - 大小写不敏感
+  - 匹配 Anthropic 风格「stream ended unexpectedly」「stream closed」
+  - 未知错误落到 generic
+  - 过度匹配保护：「no finish_reason」单独出现不误命中
+- 8 个 meeting 相关测试：**73/73 通过**（含新增）
+- `tests/server/meeting-report-fallback.test.ts`：**6/6 仍通过**
+
+### 改动文件
+
+- `packages/client/src/components/hermes/meeting/report-error.ts`（新）
+- `packages/client/src/components/hermes/meeting/MeetingAgentPanel.vue`
+- `packages/client/src/i18n/locales/en.ts`
+- `tests/client/meeting-report-error.test.ts`（新）
+
+### 已知限制
+
+底层 provider 抛错本身**没有修**——Python OpenAI SDK 在 provider 流中断时还是会抛
+`Provider returned an empty stream with no finish_reason`。这是上游网络 / rate-limit /
+load balancer 问题，本仓库无法从 server 侧解决。如果用户频繁遇到，建议：
+1. 在 server 侧捕获这条特定错误，对报告请求做 1 次 auto-retry（流式请求 → 非流式 fallback）
+2. 在 Python OpenAI SDK 上调 `stream_options={"include_usage": true}` 让 SDK 知道这是正常流终止
+
+如需做这两项修复，告诉我，我再走一轮 server-side retry。
+
+---
+
+## 2026-08-28 · 会议报告「A+C」方案：agent 失败强制回退 + 错误细分归类
+
+### 背景
+
+2026-08-26 那一轮把 `Provider returned an empty stream with no finish_reason` 错误归一化到了友好的 i18n 文案，但**真正的生成失败问题没解决**——agent bridge 在 provider 流中断时仍会失败，用户必须手动重试。B 会议报告实测仍报"API call failed after 3 retries: Provider returned an empty stream with no finish_reason"。
+
+讨论三个方案：
+
+- **A**：agent 失败时**强制回退到直接 LLM**（即使 agent 已经流出过部分内容），UI 在切换瞬间清空已累积的 markdown，重新渲染 LLM 输出。代价：agent 部分输出被丢弃。
+- **B**：agent 失败时**保留已流出部分**，把后续部分用直接 LLM 续上。代价：风格不一致 + 用户看到的是"半截 agent + 半截 LLM"的拼接体。
+- **C**：服务端把原始错误字符串**细粒度归类**，前端按类别给用户精确文案 + 具体可执行建议。
+
+A+C 拍板。
+
+### 改动
+
+#### 1. `packages/server/src/services/meeting-asr/realtime-assist.ts`
+
+`generateReportStream` 整体重写（关键逻辑）：
+
+```ts
+async *generateReportStream(sessionId, transcript, sceneTemplateId, profile?) {
+  // ... resolve template + profile ...
+
+  let yieldedAny = false
+  let partialFromAgent = ''
+  let agentError: unknown = null
+  try {
+    for await (const chunk of this.generateReportViaAgent(...)) {
+      yieldedAny = true
+      partialFromAgent += chunk
+      yield chunk
+    }
+    return
+  } catch (err) {
+    agentError = err
+    // 之前契约：yieldedAny=true → 直接 throw（agent 半截丢给用户）
+    // 现在契约：无论是否 yield 过，都强制回退到 direct LLM
+    logger.warn('[meeting-assist] agent path %s; discarding partial and falling back',
+      yieldedAny ? `produced ${partialFromAgent.length} chars then failed mid-stream` : 'unavailable', err)
+  }
+
+  // sentinel：通知 controller "我已切换路径，请告诉前端清空已显示的内容"
+  yield REPORT_FALLBACK_MARKER
+
+  try {
+    let fallbackYielded = 0
+    for await (const chunk of this.generateReportViaDirectLLM(...)) {
+      fallbackYielded++
+      yield chunk
+    }
+    if (fallbackYielded === 0) throw agentError ?? new Error('Direct LLM fallback produced no output')
+  } catch (fallbackErr) {
+    // 两路都失败：合并错误信息，方便 UI 一次性展示根因
+    const merged = new Error(`agent: ${agentMsg} | fallback: ${fallbackMsg}`)
+    merged.name = 'ReportStreamBothFailed'
+    throw merged
+  }
+}
+```
+
+新增模块顶层常量 `REPORT_FALLBACK_MARKER = Symbol.for('meeting-assist.report.fallback')`——Symbol 类型是流控制信号，绝不会和 LLM 真实输出文本冲突（之前考虑用字符串 `__FALLBACK__` 但 LLM 可能恰好产出同样的字面量，风险不可接受）。
+
+#### 2. `packages/server/src/controllers/hermes/meeting-asr.ts`
+
+`streamReport` 在循环里识别 marker，翻译成 SSE 控制帧 `{ fallback: true }`：
+
+```ts
+for await (const chunk of stream) {
+  if (typeof chunk === 'symbol' && chunk === REPORT_FALLBACK_MARKER) {
+    passthrough.write(`data: ${JSON.stringify({ fallback: true })}\n\n`)
+    continue
+  }
+  passthrough.write(`data: ${JSON.stringify({ text: chunk })}\n\n`)
+}
+```
+
+#### 3. `packages/client/src/components/hermes/meeting/MeetingAgentPanel.vue`
+
+SSE 解析循环增加分支：`{ fallback: true }` 帧 → 清空 `reportMarkdown.value`，让后续 LLM chunks 写到空容器里。
+
+```ts
+if (chunk.fallback === true) {
+  console.info('[report] agent path fell back to direct LLM; discarding partial content')
+  reportMarkdown.value = ''
+  continue
+}
+```
+
+#### 4. `packages/client/src/components/hermes/meeting/report-error.ts`
+
+把分类器从 2 类扩展到 7 类（顺序自上而下，更具体的优先）：
+
+- `errorBothFailed` — `ReportStreamBothFailed` 合并错误（A+C 新增）
+- `errorAgentUnavailable` — `AgentBridge / bridge_pool / unix socket` 相关
+- `errorAgentFailed` — `AIAgent / tool_call / agent run failed` 相关
+- `errorLLMNetwork` — `ECONN* / ETIMEDOUT / fetch failed / HTTP 4xx-5xx`（之前被笼统归到 generic，现在区分出来）
+- `errorLLMStreamInterrupted` — `empty stream.*no finish_reason / stream ended unexpectedly / stream reset / stream closed`（替代旧的 `errorEmptyStream`）
+- `errorEmptyStream`（保留兼容别名，已不在主路径使用）
+- `errorGeneric` — 兜底
+
+每个正则都有意收紧边界（如 `LLM_NETWORK_PATTERN` 要求 `\b...\b` 包裹），避免误命中普通错误消息里的子串。
+
+#### 5. i18n
+
+新增 5 个 i18n key + 给 `zh.ts` / `zh-TW.ts` 补齐旧 key：
+
+- `meeting.reportPanel.errorBothFailed`
+- `meeting.reportPanel.errorAgentUnavailable`
+- `meeting.reportPanel.errorAgentFailed`
+- `meeting.reportPanel.errorLLMStreamInterrupted`
+- `meeting.reportPanel.errorLLMNetwork`
+
+`en.ts` 早已有 `errorEmptyStream` / `errorGeneric`，所以只补 5 个新增；`zh.ts` / `zh-TW.ts` 之前连旧 key 都没有，本轮顺手补全。
+
+`ar / de / es / fr / ja / ko / pt / ru` 8 个 locale 文件**根本没有 `meeting:` section**（只有 news 字符串里出现过"meetings"），属于 baseline i18n 覆盖缺口，不在本轮 scope 内。后续 i18n pass 单独处理。
+
+### 验证
+
+- `vue-tsc -b --noEmit`：**0 错误**
+- `npx tsc --noEmit -p packages/server/tsconfig.json`：**0 错误**（commit 后追加，修复一个 vue-tsc 没抓到但 ts-node 启动会爆的类型陷阱：见下面「补遗」一节）
+- `npx vitest run tests/server/meeting-report-fallback.test.ts tests/client/meeting-report-error.test.ts tests/client/chat-store-switch-error.test.ts`：**3 文件 / 20 测试全通过**
+  - `meeting-report-fallback.test.ts`：**8/8 通过**
+    - 翻转契约：「agent 中途失败 → 仍回退 + sentinel」✅
+    - 新增「两路都失败 → ReportStreamBothFailed 合并错误」✅
+    - 新增「fallback 0 chunks + 非流式 retry 也失败」→ 仍是 ReportStreamBothFailed，根因在前缀 ✅
+  - `meeting-report-error.test.ts`：**9/9 通过**（覆盖全部 7 个分类 + 过度匹配保护）
+  - `chat-store-switch-error.test.ts`：**3/3 通过**（上一轮会话产出，未受本轮影响）
+- 全量 vitest：516/4885 通过、150 失败、10 skipped
+  - **所有 150 个失败都在 server 测试**，根因是 `spawn fake-python ENOENT`（pre-existing baseline，测试环境没有 fake-python 桩二进制）；与 A+C 改动**无关**，本轮相关文件 0 失败。
+
+#### 补遗：ts-node 启动崩溃修复（commit `d0b2d22f`）
+
+本地 commit `378eb61d` 后启动 `npm run dev`，ts-node 在第一次加载 `realtime-assist.ts` 时报：
+
+```
+TSError: ⨯ Unable to compile TypeScript:
+packages/server/src/services/meeting-asr/realtime-assist.ts(468,11): error TS2322:
+  Type 'typeof import(".../realtime-assist").REPORT_FALLBACK_MARKER' is not assignable to type 'string'.
+```
+
+**根因**：`generateReportStream` 之前声明返回类型为 `AsyncGenerator<string>`，但 `yield REPORT_FALLBACK_MARKER` 在该声明下是类型错误。`vue-tsc -b` 没抓到是因为它走的是项目级 type-check 路径，TS 项目引用配置不覆盖 ts-node 启动 server 的 transpile-only 模式。
+
+**修复**：声明改为 `AsyncGenerator<string | typeof REPORT_FALLBACK_MARKER>`。`streamReport` controller 已经用 `typeof chunk === 'symbol'` 显式 narrow，调用方契约不变。
+
+**教训**：commit 含 server 代码改动时，必须跑 `npx tsc --noEmit -p packages/server/tsconfig.json`——这才是 ts-node 真正使用的 checker。`vue-tsc -b` 只覆盖 client + 项目级 type references。下次写验证清单时把这个加进去。
+
+通过 `--amend` 把修复合并进原 commit，hash 变更为 `d0b2d22f`，git history 里不留中间状态。
+
+### 改动文件
+
+- `packages/server/src/services/meeting-asr/realtime-assist.ts`（`generateReportStream` 重写 + 新增 `REPORT_FALLBACK_MARKER`）
+- `packages/server/src/controllers/hermes/meeting-asr.ts`（streamReport 翻译 marker）
+- `packages/client/src/components/hermes/meeting/MeetingAgentPanel.vue`（SSE 循环识别 `{ fallback: true }`）
+- `packages/client/src/components/hermes/meeting/report-error.ts`（分类器从 2 类扩到 7 类）
+- `packages/client/src/i18n/locales/en.ts`（+5 keys）
+- `packages/client/src/i18n/locales/zh.ts`（+7 keys，含旧 2 个）
+- `packages/client/src/i18n/locales/zh-TW.ts`（+7 keys，含旧 2 个）
+- `tests/server/meeting-report-fallback.test.ts`（契约翻转 + 新增 2 测试）
+- `tests/client/meeting-report-error.test.ts`（覆盖 7 个分类）
+
+### 设计权衡 / 已知限制
+
+- **方案 B（拼接）放弃原因**：半截 agent + 半截 LLM 的拼接体会出现"句子从一种风格突然切到另一种风格"，对结构化报告尤其致命（前半有"## 议程"小标题，后半没有）。A 方案虽然丢部分内容，但用户拿到一份连贯报告 > 半截拼接体。
+- **sentinel 用 Symbol 而非字符串**：之前的 `__FALLBACK__` 字符串方案有致命缺陷——LLM 在生成报告时理论上完全可能产出 `__FALLBACK__` 这串字符（虽然概率极低），导致前端误清空。Symbol 是 JS 运行时层面不可序列化的对象，String() 后是 `"Symbol(...)"`，永远不可能等于 LLM 的文本。
+- **i18n 8 语言缺口**：本轮只补了 zh / zh-TW / en。其他 8 个 locale 文件根本无 `meeting:` section，是更大的 i18n 覆盖工作，应单独议题。
+- **底层 provider 抽风问题本身没修**：错误归一化 + 强制回退让用户**不再看到原始 SDK 报错**且**更高概率拿到完整报告**，但如果 LLM 真的全挂了（两路都失败），用户看到的将是合并错误 `agent: X | fallback: Y`——前端用 `errorBothFailed` 文案明确说明"两侧都挂了请看 server logs"。
+
+### 用户感知预期
+
+- **场景 1**（典型）：agent 流中断 → 用户原本看到 `Provider returned an empty stream with no finish_reason` + 红色错误块；现在看到一次性连续输出的完整报告（中间有一闪而过的"sentinel"清空动作，肉眼几乎不可见）。
+- **场景 2**（agent bridge 完全不可用）：行为不变，仍走 fallback 直接 LLM 出报告。
+- **场景 3**（agent + LLM 都挂）：用户现在看到的是 `errorBothFailed` 文案，明确告知"两侧都失败，请查 server logs"，比之前的 `errorGeneric` 更具体。
+- **场景 4**（纯网络问题）：用户现在看到 `errorLLMNetwork` 文案，提示"检查到提供商的连通性"，比之前的 generic 更可操作。
+
+#### 补遗 2：A+C 还有一层漏洞 —— agent 优雅失败不抛异常（commit `6304f543` + 后续 fix）
+
+加了诊断日志后又跑了一次 B 会议报告，server 端日志只看到：
+
+```
+[meeting-assist] generateReportStream start: session=meeting-mtb4ptsn-24qd0s ...
+[meeting-assist] agent path completed cleanly: 141 chars
+```
+
+按 A+C 契约，"completed cleanly" 之后 generator 应该 `return`，根本不该进入 fallback。但客户端依然报 `API call failed after 3 retries: Provider returned an empty stream with no finish_reason`。
+
+**真正的根因**：外部 `agent` Python 包在 OpenAI SDK 重试 3 次失败后，**不会抛异常**，而是把错误信息写成一段 ≤2000 字符的 final_response（典型 `API call failed after 3 retries: ...`），run 状态标为 `complete`。我的旧契约只检查 `lastChunk.status === 'error'`，对这种"假完成"完全失明 —— 把错误信息当报告 yield 出去，generator 走到 `return`，fallback 不触发，用户看到的就是这条错误文本。
+
+**修复**（commit 后续 fixup）：
+
+1. 在 `realtime-assist.ts` 加 `looksLikeStandaloneAgentFailure(value: string)` 函数，复刻 `handle-bridge-run.ts:170` 的检测规则 —— 包含 `API call failed after`、`HTTP 4xx/5xx`、`Provider returned an empty stream`、`unauthorized/forbidden`、`rate limit/429`、`无可用渠道/认证失败/鉴权失败` 等中英文模式。
+2. `generateReportViaAgent` 在 **每个 chunk 流末尾**（`chunk.done === true`）累积 delta 后做一次失败检测；若识别为 agent 优雅失败，直接 `throw` —— 此时 throw 会触发 `generateReportStream` 的 catch 分支，正常进入 fallback 路径。
+3. 兜底路径（`!yieldedAny` 从 `result.final_response` 提取）同样检测一遍，避免同样的漏网。
+
+**新增回归测试** `meeting-report-fallback.test.ts`：模拟 `streamOutput` yield `''` + `'API call failed after 3 retries: ...'`（done=true），断言 agent 错误文本**不出现在最终输出里**，且必须出现 `REPORT_FALLBACK_MARKER` + direct LLM 输出 `Recovered via direct LLM`。9/9 通过。
+
+**教训**：外部 `agent` 包失败语义和 Node 层的异常语义不一致 —— 任何"读取外部 agent 输出然后当成功内容 yield 出去"的路径都必须用内容检测兜底，不能只信 status 字段。这个 helper 后续可提取到 `run-chat/handle-bridge-run.ts` 共用，本轮先本地复刻避免跨域改动。
+
+---
+
+## 2026-08-28 · 会议报告"是不是模块化拆坏的？" — 明确归因：和重构无关
+
+### 用户提问
+
+> "本问题是否和我们的重构有关？"
+
+直接回答：**无关**。三轮回合（`ace6d455` → `6304f543` → `71fba298`）修的所有问题都在 `realtime-assist.ts` / `meeting-asr.ts` / `MeetingAgentPanel.vue` 这一条错误链路上，**没有任何一处**触及正在进行的 chat store 模块化拆分。
+
+### 证据链
+
+**1. 错误来源不在本仓库**：
+
+- `Provider returned an empty stream with no finish_reason (possible upstream error or malformed SSE response)` 这条**带括号**的字符串是 OpenAI Python SDK 在 provider SSE 中断时 raise 的原始异常。
+- Node 原生 `fetch` 不抛这条（只会 `TypeError: fetch failed` + `cause.code`）。
+- 本仓库代码 grep 完全搜不到这条字符串，唯一出现的位置是 `tests/server/...test.ts` 里的 fixture。
+- → 100% 来自外部 `agent` Python 包。
+
+**2. 出错链路未被重构碰过**：
+
+```
+MeetingAgentPanel.vue  →  /api/meeting-asr/report/stream  →  meeting-asr.ts#streamReport controller
+                     →  realtime-assist.ts#generateReportStream
+                     →  generateReportViaAgent  →  agent-bridge/client.ts
+                     →  bridge_pool.py  →  外部 OpenAI Python SDK
+```
+
+chat store 模块化拆分只动 `packages/client/src/stores/hermes/chat.ts` 及其子域，上面这条链上**没有一个文件被重构触及**——`realtime-assist.ts`、`meeting-asr.ts`、`MeetingAgentPanel.vue` 都是拆分前的同一份代码。
+
+**3. 这个 bug 在重构之前就存在**：
+
+- `7f3d267e` (重构前) `fix(report-stream): SSE 错误帧检测 + 末尾 buffer flush + 错误格式归一化` — 改的就是这条错误链路
+- `d921c5d4` (重构前) `feat(report-error): SDK 错误归一化 + 重试按钮` — 还是这条错误链路
+- 本轮 `ace6d455` / `6304f543` / `71fba298` — 还是这条错误链路
+
+**4. 间接关系（非因果）**：
+
+重构期间给 `MeetingAgentPanel.vue` SSE 解析循环加了 `chunk.error` 检测 —— 把这个 bug 从「默默显示残缺报告」升级为「明确报错」。所以**重构提高了 bug 的可见性**，但没改变它的根因。
+
+### 结论
+
+本仓库代码无论重构前还是重构后都没修这个 bug，因为根因在外部 Python 包 + LLM provider 网络。本轮三个 commit 的能力上限：**让 agent 失败时用户拿到一份完整的 direct LLM 报告**，而不是"agent 半截内容 + 错误块"。如果 provider 真的一直抽风（两路都挂），最终用户看到的是 `errorBothFailed` 文案，因为我们没办法让挂掉的 provider 凭空复活。
+
+#### 时间线复盘 — 「先前为什么没这个问题」
+
+用户原话：**"先前没这个问题"**。这个观察是对的，我前一轮归因说"重构前就一直有"是错的，修正如下。
+
+| 时间 | Commit | 报告生成路径 | 影响 |
+|------|--------|-------------|------|
+| `c618f6e0` 之前 | — | **100% 走 direct LLM**（Node 原生 `fetch`） | 没机会触发 agent 优雅失败路径 → 用户看不到这条错误 |
+| `c618f6e0` | `feat(meeting): 报告生成改走 Hermes Agent 复用训练好的 profile - bridge 不可用自动回退直调 LLM` | **引入双路径**：优先 agent（外部 Python `agent` 包），bridge 不可用时回退 direct LLM | **从此有概率触发 agent 优雅失败路径**（外部包 OpenAI SDK 重试 3 次失败后写 `final_response="API call failed after 3 retries: ..."` 并把 status 标 `complete`，Node 这边当成功内容 yield 出去） |
+| `765656e0` ~ `d921c5d4` | `fix(meeting): 修复报告生成为空`、`fix(report-stream): SSE 错误帧检测 + 末尾 buffer flush`、`feat(report-error): SDK 错误归一化 + 重试按钮` | — | 都是基于「agent 异常会抛」假设打补丁，**都没识别「假完成」这条失败模式** |
+| 本轮 `ace6d455` + `71fba298` | `feat(report): A+C 方案` + `fix(report): agent 优雅失败` | agent 失败时识别「假完成」内容并强制回退 | **真正修掉这条路径** —— agent 失败时用户拿到一份完整的 direct LLM 报告 |
+
+**真正的归因**：
+
+- ❌ 跟 chat store 模块化拆分**无关**（这条说对了）。
+- ✅ 跟 **`c618f6e0` 引入 agent 优先路径**直接相关。在这之前，报告不经过 agent，自然不会触发 agent 优雅失败。
+- ✅ **「先前没这个问题」**是因为那时报告不经过 agent。
+- ✅ 后续 4 个补丁（`765656e0` ~ `d921c5d4`）都没识别这条失败模式，因为它们都假设 agent 失败会抛异常 —— 实际上外部 agent 包在 OpenAI SDK 失败时**优雅返回 final_response**而不是抛异常。
+
+### 留给未来 agent 的判据
+
+如果你以后看到「会议报告相关」的错误，**先去看 `realtime-assist.ts` / `MeetingAgentPanel.vue` 的 git blame**，这条链路从 2026-08-26 之前就在被反复打补丁，与 chat store 拆分毫无关系。任何把它归因到模块化的猜测都是错的。
+
+### 留给未来 agent 的判据
+
+如果你以后看到「会议报告相关」的错误，**先去看 `realtime-assist.ts` / `MeetingAgentPanel.vue` 的 git blame**，这条链路从 2026-08-26 之前就在被反复打补丁，与 chat store 拆分毫无关系。任何把它归因到模块化的猜测都是错的。
+
+---
+
+## 2026-08-28 — 会议报告导出：默认 Word（极致样式）+ 下拉菜单
+
+### 需求
+
+用户要求：会议报告的导出按钮默认导出 Word 文档，样式对齐现有 HTML 报告（极致版：渐变标题色、H2 编号徽章、表格主色表头、引用块主色左边框、页脚主色分隔线），并通过下拉菜单可切换 Word / HTML / Markdown 三种格式。
+
+### 范围
+
+**新增**：
+
+- `packages/client/src/utils/hermes/meeting-report-docx.ts` —— 会议报告专用 docx 工厂。复用 `markdown-it` AST → docx 块级元素的映射模式（与 `group-discussion-docx.ts` 同源思路，但**重写样式**对齐 `report-html.ts` 的视觉）。导出 `buildMeetingReportDocx()` / `downloadMeetingReportDocx()` / `sanitizeFileName()`。Markdown 元素缺位静默跳过，标题转义，XML 注入防护。
+- `packages/client/src/composables/useMeetingReportExport.ts` —— Vue composable 包装 docx/html/markdown 三种导出，暴露 `isExporting` 用于按钮 loading 态。
+- `packages/client/src/components/hermes/meeting/MeetingExportDropdown.vue` —— Split-button 模式（主按钮触发 docx，紧邻的下拉箭头按钮打开 NDropdown 切换格式），避免单按钮既要默认 export 又要打开 dropdown 的冲突。
+- `tests/client/meeting-report-docx.test.ts` —— 14 个测试：Blob 类型 / H2 标题 / GFM 表格主色 header / Consolas 代码块 / 主色左边框 blockquote / hr 视觉分隔 / XML 转义 / 空 Markdown 占位 / sanitizeFileName / 下载触发 + 文件名格式。
+- `tests/client/meeting-export-dropdown.test.ts` —— 5 个测试：scope label 切换、disabled 状态、exporting 态。
+
+**修改**：
+
+- `MeetingAgentPanel.vue`：删除 `exportReportHtml()` 函数（内联 HTML 下载逻辑），按钮替换为 `<MeetingExportDropdown scope="reportPanel" />`。
+- `SpeechEvaluationPanel.vue`：同理，scope="speechEval"。
+- i18n `en.ts` / `zh.ts` / `zh-TW.ts`：补 `meeting.reportPanel.{exportWord, exportHtml, exportMarkdown, exporting, exportEmpty}`、`meeting.reportExport.{failed, moreFormats}`、`meeting.speechEval.{exportWord, exportHtml, exportMarkdown, exporting}` 共 11 个 key。
+
+### 样式与原 HTML 版对齐策略
+
+| HTML 版（report-html.ts） | Word 版（meeting-report-docx.ts） |
+|---|---|
+| `.doc-title` 渐变背景填充文本 | `HeadingLevel.TITLE` + `color: 6366F1`（主色起点） + 居中 |
+| `.report-body h2::before` 数字徽章 | 编号徽章段（`01 / 02` …，白字 + 主色 H2 大字号） |
+| `.report-body table th` 灰底 | `TableCell shading` 主色（`6366F1`） + 白字加粗 |
+| 偶数行 `.report-body tr:nth-child(even)` | zebra 行 shading `F8FAFC` |
+| `blockquote` 主色左边框 + 浅灰底 | `border: { left: { size: 24, color: '6366F1' } }` + `shading F8FAFC` |
+| `code` Consolas + 浅灰底 | `font: 'Consolas'` + `shading F1F5F9` |
+| `hr` 浅灰 1px | 居中段 + 浅灰 `─────────────────────────────` 字符 |
+| 顶部渐变条 | 副标题行（标题前缀 + 生成时间 + 来源） |
+| 页脚浅灰小字 | 同色小字 + `border: { top: 主色 4 }` |
+
+### 不动的东西
+
+- `packages/client/src/utils/report-html.ts`（HTML 版导出器，MeetingView 还在用）。
+- `packages/client/src/views/hermes/MeetingView.vue` 的 `downloadReport` 流。
+- `group-discussion-docx.ts`（群聊讨论 docx 工具，与会议场景独立）。
+- 8 个其他 locale（vue-i18n fallbackLocale='en' 自动回退，不补键不崩 UI；后续翻译任务清单已在 todo 列表）。
+
+### 验证
+
+- `vue-tsc -b`（client + 模板）：零错。
+- `npx vitest run tests/client/meeting-report-docx.test.ts tests/client/meeting-export-dropdown.test.ts`：19/19 通过。
+- `npx vitest run tests/client`：1519/1524 通过；4 个失败文件（`device-connections-locales.test.ts` / `ekko-display-name.test.ts` / `profile-card-config-edit.test.ts` / `rtl-logical-css.test.ts`）是 main 既有失败，与本次改动无关（git stash 验证过）。
+- `npx vitest run tests/server/meeting-report-fallback.test.ts`：9/9 通过（回归 A+C 路径）。
+
+### 后续手测清单（不在本期代码内）
+
+- headless Chromium 打开 `/#/hermes/meeting` → 录入/生成报告 → 点导出 → 下载文件验证：
+  - 文件名形如 `${title}_报告-YYYYMMDD.docx`
+  - Word 打开后标题主色大字、H2 编号徽章、表格主色表头、引用块主色左边框、页脚分隔线齐全
+- dropdown 第二项导出 `.html`：与旧版视觉一致
+- dropdown 第三项导出 `.md`：文本编辑器打开是 LLM 原 Markdown
+
+### 浏览器交互细节
+
+split-button 设计（不是单按钮 + dropdown）的原因：单按钮 click 既要触发 docx 又要切换 dropdown 会冲突。naive-ui 没有官方 SplitButton 组件，所以手动拼两个 NButton，圆角各取一边、中间缝 1px 白线，保持视觉一体。dropdown 用 `trigger="manual"` + `@clickoutside` 关闭，避免与主按钮 hover 交互冲突。

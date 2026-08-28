@@ -1,11 +1,19 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { NButton, NSpin, NTag, NTooltip, NInput, NPopconfirm, NModal, NSelect, NRadio, NRadioGroup, NPopover, NSteps, NStep, NAlert } from 'naive-ui'
-import PageSidebarNav from '@/components/layout/PageSidebarNav.vue'
-import PageSidebarFooter from '@/components/layout/PageSidebarFooter.vue'
+import { NButton, NSpin, NTag, NTooltip, NInput, NPopconfirm, NModal, NSelect, NRadio, NRadioGroup } from 'naive-ui'
 import MeetingAgentPanel from '@/components/hermes/meeting/MeetingAgentPanel.vue'
 import SpeechEvaluationPanel from '@/components/hermes/meeting/SpeechEvaluationPanel.vue'
+import RealtimeDialogPanel from '@/components/hermes/meeting/RealtimeDialogPanel.vue'
+import SceneTemplatePicker from '@/components/hermes/meeting/SceneTemplatePicker.vue'
+import WaveformCanvas from '@/components/hermes/meeting/WaveformCanvas.vue'
+import MeetingSidebar, { type SidebarSession } from '@/components/hermes/meeting/MeetingSidebar.vue'
+import CreateMeetingDialog from '@/components/hermes/meeting/CreateMeetingDialog.vue'
+import AsrConfigWizardDialog from '@/components/hermes/meeting/AsrConfigWizardDialog.vue'
+import MeetingTopBar from '@/components/hermes/meeting/MeetingTopBar.vue'
+import MeetingRightPanel from '@/components/hermes/meeting/MeetingRightPanel.vue'
+import TranscriptList from '@/components/hermes/meeting/TranscriptList.vue'
+import type { SceneId } from '@/components/hermes/meeting/scene-templates'
 import { useMeetingStore } from '@/stores/hermes/meeting'
 import type { MeetingSession, TranscriptSentence, AgentConfig, SpeechEvalState } from '@/stores/hermes/meeting'
 import { useModelsStore } from '@/stores/hermes/models'
@@ -15,8 +23,11 @@ import { meetingASRApi } from '@/utils/meeting-asr-api'
 import { getApiKey } from '@/api/client'
 import { useMessage } from '@/composables/useAppMessage'
 import { meetingStorageApi } from '@/utils/meeting-storage-api'
-import { buildReportHtml } from '@/utils/report-html'
 import { getProfileDisplayName } from '@/utils/hermes/profile-display'
+import { useMeetingAudio } from '@/composables/useMeetingAudio'
+import { useDraggableWidth } from '@/composables/useDraggableWidth'
+import { useDiarizeMerge } from '@/composables/useDiarizeMerge'
+import { useMeetingDownloads } from '@/composables/useMeetingDownloads'
 
 const { t } = useI18n()
 const message = useMessage()
@@ -27,6 +38,17 @@ const profilesStore = useProfilesStore()
 // --- 侧边栏状态 ---
 const showSidebar = ref(true)
 
+// 把 store 数据压扁成 MeetingSidebar 期望的最小结构（避免组件依赖 store 内部类型）
+const sidebarSessions = computed<SidebarSession[]>(() =>
+  meetingStore.sortedSessions.map((s) => ({
+    id: s.id,
+    title: s.title,
+    updatedAt: s.updatedAt,
+    sentencesCount: s.sentences.length,
+    hasAnalysis: s.analysisResult !== null && s.analysisResult !== undefined,
+  })),
+)
+
 // --- 创建会议对话框 ---
 const showCreateModal = ref(false)
 const newMeetingTitle = ref('')
@@ -34,17 +56,7 @@ const newMeetingAnalysisMode = ref<'hermes' | 'custom'>('hermes')
 const newMeetingHermesProfile = ref('')
 const newMeetingCustomProvider = ref('')
 const newMeetingCustomModel = ref('')
-const newMeetingSceneTemplate = ref('general')
-
-// 场景模板选项
-const sceneTemplateOptions = computed(() => [
-  { label: t('meeting.scene.general'), value: 'general' },
-  { label: t('meeting.scene.legal'), value: 'legal' },
-  { label: t('meeting.scene.business'), value: 'business' },
-  { label: t('meeting.scene.medical'), value: 'medical' },
-  { label: t('meeting.scene.interview'), value: 'interview' },
-  { label: t('meeting.scene.speech'), value: 'speech' },
-])
+const newMeetingSceneTemplate = ref<SceneId>('general')
 
 // --- Agent 配置 ---
 const newMeetingAgentType = ref<'hermes' | 'claude-code' | 'codex'>('hermes')
@@ -64,44 +76,14 @@ const codingAgentModeOptions = computed(() => [
 ])
 
 // --- ASR 配置 ---
+// DashScope Key 由父级持有（"创建"按钮禁用条件需要响应式依赖它）；
+// 其余向导字段（LLM/OSS/步骤/ASR 模型）由 AsrConfigWizardDialog 自持，
+// 通过 collectConfig() 取值、reset() 重播种。
 const asrApiKey = ref(meetingStore.asrConfig.dashscopeApiKey)
-const llmApiKey = ref(meetingStore.asrConfig.llmApiKey)
-const llmBaseUrl = ref(meetingStore.asrConfig.llmBaseUrl)
-const llmModel = ref(meetingStore.asrConfig.llmModel)
-const asrWizardStep = ref(1) // 1=DashScope, 2=LLM, 3=Review
-
-// --- OSS 配置（说话人分离模式必填）---
-const ossBucket = ref(meetingStore.asrConfig.ossBucket)
-const ossAccessKeyId = ref(meetingStore.asrConfig.ossAccessKeyId)
-const ossAccessKeySecret = ref(meetingStore.asrConfig.ossAccessKeySecret)
-const ossEndpoint = ref(meetingStore.asrConfig.ossEndpoint)
-const ossPathPrefix = ref(meetingStore.asrConfig.ossPathPrefix)
-const newMeetingAsrModel = ref('paraformer-v2')
-
-// ASR 模型选项
-const asrModelOptions = computed(() => [
-  { 
-    label: 'Paraformer V2', 
-    value: 'paraformer-v2',
-    description: t('meeting.asrModelParaformerDesc')
-  },
-  { 
-    label: 'Fun-ASR', 
-    value: 'fun-asr',
-    description: t('meeting.asrModelFunAsrDesc')
-  },
-  { 
-    label: 'Fun-ASR MTL', 
-    value: 'fun-asr-mtl',
-    description: t('meeting.asrModelFunAsrMtlDesc')
-  },
-])
+const asrWizardRef = ref<InstanceType<typeof AsrConfigWizardDialog> | null>(null)
 
 // --- 当前会议状态 ---
-const isRecording = ref(false)
 const isLoading = ref(false)
-const isConnecting = ref(false)
-const statusText = ref('')
 const partialText = ref('')
 const finalSentences = ref<TranscriptSentence[]>([])
 const speakerMap = ref<Record<string, string>>({})
@@ -112,7 +94,6 @@ const HIDE_SPEAKER_DIARIZATION = true
 const useDiarize = ref(false)
 const saveMode = ref(true)  // 节省模式：只走说话人分离，不走实时ASR
 const speakerCount = ref(0) // 0 = auto
-const errorMessage = ref('')
 
 const sentences = computed(() => finalSentences.value)
 
@@ -129,17 +110,6 @@ const speakerCountOptions = computed(() => [
 ])
 
 // --- 说话人重命名 ---
-const renamingKey = ref<string | null>(null)  // 格式: "speakerId:index"
-const renameInput = ref('')
-
-// --- 配置 ---
-// WebSocket goes through the Node server proxy (/ws/asr, /ws/diarize) so the
-// browser uses the same origin (wss://host:6060) — no Mixed Content, no
-// self-signed cert issues. The proxy forwards plaintext to the Python backend.
-const ASR_URL = '/ws/asr'
-const DIARIZE_URL = '/ws/diarize'
-
-
 
 // --- ASR 服务状态 ---
 const asrServiceStatus = ref({
@@ -152,45 +122,6 @@ const asrServiceStatus = ref({
 })
 const isStartingASR = ref(false)
 const asrServiceError = ref('')
-
-// --- WebSocket & Audio ---
-let ws: WebSocket | null = null
-let diarizeWs: WebSocket | null = null  // 说话人分离专用WebSocket
-let audioContext: AudioContext | null = null
-let mediaStream: MediaStream | null = null
-let analyser: AnalyserNode | null = null
-let animationFrameId: number | null = null
-
-// --- 音频录制 ---
-let mediaRecorder: MediaRecorder | null = null
-const audioChunks = ref<Blob[]>([])
-const recordingStartTime = ref(0)
-const audioBlob = ref<Blob | null>(null)
-const audioUrl = ref('')
-const isPlaying = ref(false)
-const playbackTime = ref(0)
-const playbackDuration = ref(0)
-
-watch(audioUrl, (url) => {
-  if (url) {
-    const tempAudio = new Audio(url)
-    tempAudio.onloadedmetadata = () => {
-      if (isFinite(tempAudio.duration)) {
-        playbackDuration.value = tempAudio.duration
-      } else {
-        tempAudio.currentTime = 1e10
-        tempAudio.ondurationchange = () => {
-          if (isFinite(tempAudio.duration)) {
-            playbackDuration.value = tempAudio.duration
-            tempAudio.ondurationchange = null
-          }
-        }
-      }
-    }
-  } else {
-    playbackDuration.value = 0
-  }
-})
 
 // --- 分析相关 ---
 const analysisResult = ref<any>(null)
@@ -206,6 +137,57 @@ const showAnalysisConfig = ref(false)
 // --- Agent 分析相关 ---
 const showAgentPanel = ref(false)
 const assistPanelRef = ref<InstanceType<typeof MeetingAgentPanel> | null>(null)
+
+// --- 实时对话面板 (qwen3.5-omni-flash-realtime) ---
+const showRealtimeDialog = ref(false)
+
+// --- 音频录制/播放（拆分至 useMeetingAudio，行为保持不变） ---
+const {
+  isRecording,
+  isConnecting,
+  statusText,
+  errorMessage,
+  analyser,
+  audioBlob,
+  audioUrl,
+  startRecording,
+  stopRecording,
+  isPlaying,
+  playbackTime,
+  playbackDuration,
+  progressPercent,
+  highlightedSentenceIndex,
+  togglePlayPause,
+  seekToSentence,
+  seekToPosition,
+  startProgressDrag,
+  stopAudio,
+} = useMeetingAudio({
+  useDiarize,
+  saveMode,
+  speakerCount,
+  asrServiceStatus,
+  asrServiceError,
+  openCreateModal,
+  startASRService,
+  handleWsMessage,
+  saveCurrentMeeting,
+  assistPanelRef,
+  sentences: finalSentences,
+})
+
+// --- 说话人分离结果合并（拆分至 useDiarizeMerge，行为保持不变） ---
+const { addDiarizeResultDirectly, matchAndMergeDiarizeResult } = useDiarizeMerge({
+  finalSentences,
+  speakerMap,
+  pushSentenceToAssist,
+})
+
+// --- 产物下载（拆分至 useMeetingDownloads，行为保持不变） ---
+const { downloadAudio, downloadTranscript, downloadJson, downloadReport, formatDuration } = useMeetingDownloads({
+  audioBlob,
+  htmlContent,
+})
 
 // 当前活动会议
 const activeSession = computed(() => meetingStore.activeSession)
@@ -279,57 +261,13 @@ function onRequestReport() {
 
 // --- 右侧面板 ---
 const showRightPanel = ref(true)
-const rightPanelWidth = ref(360)
-const RIGHT_PANEL_MIN_WIDTH = 280
-const RIGHT_PANEL_MAX_WIDTH = 600
-const RIGHT_PANEL_STORAGE_KEY = 'hermes.meeting.rightPanelWidth'
-let resizeStart: { x: number; width: number } | null = null
-
-// 加载保存的面板宽度
-function loadRightPanelWidth(): number {
-  try {
-    const saved = localStorage.getItem(RIGHT_PANEL_STORAGE_KEY)
-    if (saved) {
-      const width = parseInt(saved, 10)
-      if (!isNaN(width) && width >= RIGHT_PANEL_MIN_WIDTH && width <= RIGHT_PANEL_MAX_WIDTH) {
-        return width
-      }
-    }
-  } catch {}
-  return 360
-}
-
-rightPanelWidth.value = loadRightPanelWidth()
-
-function startRightPanelResize(e: PointerEvent) {
-  resizeStart = { x: e.clientX, width: rightPanelWidth.value }
-  document.addEventListener('pointermove', onRightPanelResize)
-  document.addEventListener('pointerup', stopRightPanelResize)
-  document.body.style.cursor = 'col-resize'
-  document.body.style.userSelect = 'none'
-}
-
-function onRightPanelResize(e: PointerEvent) {
-  if (!resizeStart) return
-  const delta = resizeStart.x - e.clientX
-  const newWidth = Math.max(RIGHT_PANEL_MIN_WIDTH, Math.min(RIGHT_PANEL_MAX_WIDTH, resizeStart.width + delta))
-  rightPanelWidth.value = newWidth
-}
-
-function stopRightPanelResize() {
-  resizeStart = null
-  document.removeEventListener('pointermove', onRightPanelResize)
-  document.removeEventListener('pointerup', stopRightPanelResize)
-  document.body.style.cursor = ''
-  document.body.style.userSelect = ''
-  try {
-    localStorage.setItem(RIGHT_PANEL_STORAGE_KEY, String(rightPanelWidth.value))
-  } catch {}
-}
-
-const rightPanelStyle = computed(() => ({
-  width: `${rightPanelWidth.value}px`,
-}))
+// 拖拽调宽逻辑（拆分至 useDraggableWidth，行为保持不变）
+const { style: rightPanelStyle, startResize: startRightPanelResize } = useDraggableWidth({
+  storageKey: 'hermes.meeting.rightPanelWidth',
+  minWidth: 280,
+  maxWidth: 600,
+  defaultWidth: 360,
+})
 
 // --- 模型选择相关 ---
 const profileOptions = computed(() => {
@@ -369,42 +307,43 @@ function openCreateModal() {
   newMeetingCodingAgentMode.value = 'scoped'
   newMeetingSceneTemplate.value = 'general'
   asrApiKey.value = meetingStore.asrConfig.dashscopeApiKey
-  llmApiKey.value = meetingStore.asrConfig.llmApiKey
-  llmBaseUrl.value = meetingStore.asrConfig.llmBaseUrl
-  llmModel.value = meetingStore.asrConfig.llmModel
-  ossBucket.value = meetingStore.asrConfig.ossBucket
-  ossAccessKeyId.value = meetingStore.asrConfig.ossAccessKeyId
-  ossAccessKeySecret.value = meetingStore.asrConfig.ossAccessKeySecret
-  ossEndpoint.value = meetingStore.asrConfig.ossEndpoint
-  ossPathPrefix.value = meetingStore.asrConfig.ossPathPrefix
-  asrWizardStep.value = meetingStore.hasASRConfig && meetingStore.hasLLMConfig ? 3 : 1
+  // LLM/OSS/步骤的重播种已随向导拆入 AsrConfigWizardDialog
+  asrWizardRef.value?.reset()
   showCreateModal.value = true
 }
 
 function handleCreateMeeting() {
   if (!newMeetingTitle.value.trim()) return
   if (!asrApiKey.value.trim() && !meetingStore.hasASRConfig) return
-  
+
+  const wizard = asrWizardRef.value?.collectConfig()
+
   // 保存 ASR API Key（如果有更新）
   if (asrApiKey.value.trim()) {
     meetingStore.updateASRConfig({ dashscopeApiKey: asrApiKey.value.trim() })
   }
   // 保存 LLM 配置（可选 — 没填也不阻塞创建）
-  if (llmApiKey.value.trim() || llmBaseUrl.value.trim() || llmModel.value.trim()) {
+  const wizardLlmApiKey = wizard?.llmApiKey ?? ''
+  const wizardLlmBaseUrl = wizard?.llmBaseUrl ?? ''
+  const wizardLlmModel = wizard?.llmModel ?? ''
+  if (wizardLlmApiKey.trim() || wizardLlmBaseUrl.trim() || wizardLlmModel.trim()) {
     meetingStore.updateASRConfig({
-      llmApiKey: llmApiKey.value.trim(),
-      llmBaseUrl: llmBaseUrl.value.trim() || 'https://api.deepseek.com',
-      llmModel: llmModel.value.trim() || 'deepseek-chat',
+      llmApiKey: wizardLlmApiKey.trim(),
+      llmBaseUrl: wizardLlmBaseUrl.trim() || 'https://api.deepseek.com',
+      llmModel: wizardLlmModel.trim() || 'deepseek-chat',
     })
   }
   // 保存 OSS 配置（说话人分离用，可选）
-  if (ossBucket.value.trim() || ossAccessKeyId.value.trim() || ossAccessKeySecret.value.trim()) {
+  const wizardOssBucket = wizard?.ossBucket ?? ''
+  const wizardOssAccessKeyId = wizard?.ossAccessKeyId ?? ''
+  const wizardOssAccessKeySecret = wizard?.ossAccessKeySecret ?? ''
+  if (wizardOssBucket.trim() || wizardOssAccessKeyId.trim() || wizardOssAccessKeySecret.trim()) {
     meetingStore.updateASRConfig({
-      ossBucket: ossBucket.value.trim(),
-      ossAccessKeyId: ossAccessKeyId.value.trim(),
-      ossAccessKeySecret: ossAccessKeySecret.value.trim(),
-      ossEndpoint: ossEndpoint.value.trim() || 'oss-cn-beijing.aliyuncs.com',
-      ossPathPrefix: ossPathPrefix.value.trim() || 'meeting-asr-uploads/',
+      ossBucket: wizardOssBucket.trim(),
+      ossAccessKeyId: wizardOssAccessKeyId.trim(),
+      ossAccessKeySecret: wizardOssAccessKeySecret.trim(),
+      ossEndpoint: (wizard?.ossEndpoint ?? '').trim() || 'oss-cn-beijing.aliyuncs.com',
+      ossPathPrefix: (wizard?.ossPathPrefix ?? '').trim() || 'meeting-asr-uploads/',
     })
   }
   
@@ -434,7 +373,7 @@ function handleCreateMeeting() {
   
   meetingStore.createSession({
     title: newMeetingTitle.value.trim(),
-    asrModel: newMeetingAsrModel.value,
+    asrModel: asrWizardRef.value?.collectConfig()?.asrModel || 'paraformer-v2',
     analysisMode,
     hermesProfile: effectiveAgentType === 'hermes' ? (newMeetingHermesProfile.value || 'default') : undefined,
     customProvider: effectiveAgentType !== 'hermes' && newMeetingCodingAgentMode.value === 'scoped' ? newMeetingCustomProvider.value : undefined,
@@ -442,9 +381,15 @@ function handleCreateMeeting() {
     agentConfig,
     sceneTemplate: newMeetingSceneTemplate.value,
   })
-  
+
   resetMeetingState()
   showCreateModal.value = false
+}
+
+// MeetingSidebar 只传 sessionId；这里把它查回 store 中的完整 session，再走原 loadMeeting。
+function selectMeetingById(sessionId: string) {
+  const session = meetingStore.sortedSessions.find((s) => s.id === sessionId)
+  if (session) loadMeeting(session)
 }
 
 async function loadMeeting(session: MeetingSession) {
@@ -548,7 +493,6 @@ function resetMeetingState() {
   isConnecting.value = false
   statusText.value = ''
   highlightedSentenceIndex.value = -1
-  renamingKey.value = null
   stopAudio()
 }
 
@@ -589,31 +533,15 @@ async function saveCurrentMeeting() {
 }
 
 // --- 说话人重命名 ---
-function startRenameSpeaker(speakerId: string | undefined, index: number) {
-  if (!speakerId || !meetingStore.activeSession) return
-  renamingKey.value = `${speakerId}:${index}`
-  const displayName = meetingStore.getSpeakerDisplayName(meetingStore.activeSession, speakerId)
-  renameInput.value = displayName
-}
-
-function confirmRenameSpeaker() {
-  // 从 renamingKey 中提取 speakerId
-  const speakerId = renamingKey.value?.split(':')[0]
-  if (!speakerId || !renameInput.value.trim() || !meetingStore.activeSessionId) return
-  meetingStore.renameSpeaker(meetingStore.activeSessionId, speakerId, renameInput.value.trim())
-  // 更新本地 finalSentences 和 speakerMap
+// TranscriptList 负责 UI state（弹窗开合/输入框），这里只做持久化。
+function onTranscriptRename(speakerId: string, name: string) {
+  if (!meetingStore.activeSessionId) return
+  meetingStore.renameSpeaker(meetingStore.activeSessionId, speakerId, name)
   const session = meetingStore.activeSession
   if (session) {
     finalSentences.value = [...session.sentences]
     speakerMap.value = { ...session.speakerMap }
   }
-  renamingKey.value = null
-  renameInput.value = ''
-}
-
-function cancelRenameSpeaker() {
-  renamingKey.value = null
-  renameInput.value = ''
 }
 
 // --- ASR 服务管理 ---
@@ -629,15 +557,16 @@ async function checkASRServiceStatus() {
 }
 
 async function startASRService() {
-  // Check both the persisted store AND the current wizard input refs — when
+  // Check both the persisted store AND the current wizard input — when
   // the browser origin changes (different dev port, incognito, etc.)
   // localStorage is empty but the user may have just re-entered OSS config
-  // in the wizard. Without checking the local refs we'd skip restart and
+  // in the wizard. Without checking the wizard we'd skip restart and
   // keep using the already-running (OSS-less) service.
+  const wizard = asrWizardRef.value?.collectConfig()
   const hasOSS =
-    meetingStore.asrConfig.ossBucket || ossBucket.value.trim() ||
-    meetingStore.asrConfig.ossAccessKeyId || ossAccessKeyId.value.trim() ||
-    meetingStore.asrConfig.ossAccessKeySecret || ossAccessKeySecret.value.trim()
+    meetingStore.asrConfig.ossBucket || (wizard?.ossBucket ?? '').trim() ||
+    meetingStore.asrConfig.ossAccessKeyId || (wizard?.ossAccessKeyId ?? '').trim() ||
+    meetingStore.asrConfig.ossAccessKeySecret || (wizard?.ossAccessKeySecret ?? '').trim()
   if (asrServiceStatus.value.isRunning && !hasOSS) return true
 
   isStartingASR.value = true
@@ -656,25 +585,25 @@ async function startASRService() {
       asrModel: activeSession?.asrModel || 'paraformer-v2',
     }
     // Pass LLM config if user provided it, so backend has it from the start.
-    if (meetingStore.asrConfig.llmApiKey || llmApiKey.value) {
-      config.llmApiKey = meetingStore.asrConfig.llmApiKey || llmApiKey.value
-      config.llmBaseUrl = meetingStore.asrConfig.llmBaseUrl || llmBaseUrl.value
-      config.llmModel = meetingStore.asrConfig.llmModel || llmModel.value
+    if (meetingStore.asrConfig.llmApiKey || wizard?.llmApiKey) {
+      config.llmApiKey = meetingStore.asrConfig.llmApiKey || wizard?.llmApiKey
+      config.llmBaseUrl = meetingStore.asrConfig.llmBaseUrl || wizard?.llmBaseUrl
+      config.llmModel = meetingStore.asrConfig.llmModel || wizard?.llmModel
     }
     // Pass OSS config if user configured it (speaker diarization chunk flow).
-    // Fallback to local refs (current modal input) when the persisted store
+    // Fallback to the current wizard input when the persisted store
     // is empty — without this, edits made in the wizard that haven't yet been
     // flushed via updateASRConfig() would silently get dropped on the wire.
     const store = meetingStore.asrConfig
-    const ossBucketValue = store.ossBucket || ossBucket.value.trim()
-    const ossAccessKeyIdValue = store.ossAccessKeyId || ossAccessKeyId.value.trim()
-    const ossAccessKeySecretValue = store.ossAccessKeySecret || ossAccessKeySecret.value.trim()
+    const ossBucketValue = store.ossBucket || (wizard?.ossBucket ?? '').trim()
+    const ossAccessKeyIdValue = store.ossAccessKeyId || (wizard?.ossAccessKeyId ?? '').trim()
+    const ossAccessKeySecretValue = store.ossAccessKeySecret || (wizard?.ossAccessKeySecret ?? '').trim()
     if (ossBucketValue || ossAccessKeyIdValue || ossAccessKeySecretValue) {
       config.ossBucket = ossBucketValue
       config.ossAccessKeyId = ossAccessKeyIdValue
       config.ossAccessKeySecret = ossAccessKeySecretValue
-      config.ossEndpoint = store.ossEndpoint || ossEndpoint.value.trim() || 'oss-cn-beijing.aliyuncs.com'
-      config.ossPathPrefix = store.ossPathPrefix || ossPathPrefix.value.trim() || 'meeting-asr-uploads/'
+      config.ossEndpoint = store.ossEndpoint || (wizard?.ossEndpoint ?? '').trim() || 'oss-cn-beijing.aliyuncs.com'
+      config.ossPathPrefix = store.ossPathPrefix || (wizard?.ossPathPrefix ?? '').trim() || 'meeting-asr-uploads/'
     }
 
     console.log('[meeting] Calling ASR start API with config:', { ...config, dashscopeApiKey: config.dashscopeApiKey ? '***' : 'not set' })
@@ -743,374 +672,6 @@ onUnmounted(() => {
   // Note: We don't stop the ASR service on unmount as it should persist across page navigations
 })
 
-// --- 录音中关页/刷新兜底：把内存里的音频块落库到 IndexedDB ---
-// 音频只在 stopRecording 一次性正式落库，但用户在录音中直接刷新或关闭页面时，
-// 组件不会走 onUnmounted（浏览器通常跳过 beforeunload 之后的清理），此时内存中的
-// audioChunks 会全部丢失。这里用 beforeunload/unload 把尚未落库的块写成 IndexedDB
-// 备份——注意 IndexedDB 事务在页面卸载进程中是非阻塞的，即便耗时也能完成写入。
-let beforeUnloadHandlerAttached = false
-
-function attachBeforeUnloadAudioBackup() {
-  if (beforeUnloadHandlerAttached) return
-  beforeUnloadHandlerAttached = true
-
-  const backup = () => {
-    const sessionId = meetingStore.activeSessionId
-    if (!isRecording.value || !sessionId || audioChunks.value.length === 0) return
-    try {
-      const blob = new Blob(audioChunks.value, { type: 'audio/webm' })
-      meetingStore.saveAudioData(sessionId, blob)
-    } catch (err) {
-      console.error('[meeting] Failed to backup audio on unload:', err)
-    }
-  }
-
-  window.addEventListener('beforeunload', backup)
-  window.addEventListener('pagehide', backup)
-  window.addEventListener('unload', backup)
-}
-
-function detachBeforeUnloadAudioBackup() {
-  if (!beforeUnloadHandlerAttached) return
-  beforeUnloadHandlerAttached = false
-  const noop = () => {}
-  window.removeEventListener('beforeunload', noop)
-  window.removeEventListener('pagehide', noop)
-  window.removeEventListener('unload', noop)
-}
-
-// --- 麦克风检测（仅做浏览器兼容性检查，不阻断 getUserMedia） ---
-async function checkMicrophoneAvailability(): Promise<{ available: boolean; reason?: string }> {
-  if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
-    // 某些浏览器在 HTTP 非安全上下文中直接隐藏 navigator.mediaDevices，
-    // 此时应提示 HTTPS 访问而非"浏览器不支持"，给用户一条可操作的路径。
-    if (typeof window !== 'undefined' && !window.isSecureContext) {
-      return { available: false, reason: 'micInsecureContext' }
-    }
-    return { available: false, reason: 'micUnsupported' }
-  }
-
-  try {
-    const devices = await navigator.mediaDevices.enumerateDevices()
-    const hasAudioInput = devices.some(d => d.kind === 'audioinput')
-    if (hasAudioInput) return { available: true }
-  } catch {
-    // enumerateDevices 失败不阻断，让 getUserMedia 自己处理
-  }
-
-  // enumerateDevices 在 HTTP 局域网 IP 下可能返回空数组
-  // 不做硬阻断，继续走 getUserMedia，让浏览器弹出权限请求或抛出 NotFoundError
-  return { available: true }
-}
-
-// --- 音频处理 ---
-async function startRecording() {
-  // 没有活动会议时，先引导用户新建会议
-  if (!meetingStore.activeSessionId) {
-    openCreateModal()
-    return
-  }
-
-  try {
-    errorMessage.value = ''
-    isConnecting.value = true
-    statusText.value = t('meeting.connecting')
-
-    // 第 1 阶段：麦克风检测
-    const micCheck = await checkMicrophoneAvailability()
-    if (!micCheck.available) {
-      errorMessage.value = t(`meeting.${micCheck.reason}`)
-      isConnecting.value = false
-      return
-    }
-
-    // 检查并启动 ASR 服务（服务已运行时也会调用，确保 OSS 配置变更后重启进程）
-    statusText.value = t('meeting.startingASRService')
-    console.log('[meeting] Ensuring ASR service is running with current config...')
-    const started = await startASRService()
-    if (!started) {
-      const errorMsg = asrServiceError.value || t('meeting.asrServiceStartError')
-      console.error('[meeting] Failed to start ASR service:', errorMsg)
-      errorMessage.value = errorMsg
-      isConnecting.value = false
-      return
-    }
-    console.log('[meeting] ASR service ready, ports:', asrServiceStatus.value.asrPort, asrServiceStatus.value.diarizePort)
-    
-    // 等待服务完全就绪并验证
-    statusText.value = t('meeting.connecting')
-    await new Promise(resolve => setTimeout(resolve, 2000))
-    
-    // 验证服务是否真的启动了
-    try {
-      const healthCheck = await meetingASRApi.healthCheck()
-      console.log('[meeting] ASR service health check:', healthCheck)
-      if (healthCheck.status !== 'ok') {
-        throw new Error('ASR service health check failed')
-      }
-    } catch (err) {
-      console.error('[meeting] ASR service health check failed:', err)
-      errorMessage.value = t('meeting.asrServiceStartError')
-      isConnecting.value = false
-      return
-    }
-
-    // 获取麦克风权限。
-    // 注意：sampleRate 和 channelCount 不在此处约束（精确约束会触发 NotReadableError），
-    // 而是在下游 worklet handler 中做重采样到 16kHz / 转 Int16。
-    mediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: { ideal: false },
-        noiseSuppression: { ideal: false },
-        autoGainControl: { ideal: false },
-      },
-    })
-
-    // 创建音频上下文
-    audioContext = new AudioContext({ sampleRate: 16000 })
-
-    // 如果采样率不是16000，需要重采样
-    if (audioContext.sampleRate !== 16000) {
-      console.log(`Browser sample rate: ${audioContext.sampleRate}, will resample to 16000`)
-    }
-
-    const source = audioContext.createMediaStreamSource(mediaStream)
-
-    // 创建分析节点用于可视化
-    analyser = audioContext.createAnalyser()
-    analyser.fftSize = 256
-
-    // AudioWorklet 替代 deprecated ScriptProcessorNode，跑在 audio 线程不抢主线程。
-    // JS 副本在 public/audio/pcm-worklet.js（源文件 src/audio/pcm-worklet.ts）。
-    await audioContext.audioWorklet.addModule('/audio/pcm-worklet.js')
-    const pcmNode = new AudioWorkletNode(audioContext, 'pcm-processor')
-    source.connect(analyser)
-    analyser.connect(pcmNode)
-    // 注意：worklet node 不能 connect 到 destination（会回声）。仅做 passthrough 处理。
-
-    // 开始录制音频用于保存。timeslice=1000ms 切分，避免长会议占满内存。
-    audioChunks.value = []
-    recordingStartTime.value = Date.now()
-    mediaRecorder = new MediaRecorder(mediaStream, { mimeType: 'audio/webm' })
-    mediaRecorder.ondataavailable = (e) => {
-      if (e.data.size > 0) {
-        audioChunks.value.push(e.data)
-      }
-    }
-    mediaRecorder.start(1000) // 每秒收集一次数据
-
-    // 录音开始后，挂载关页/刷新兜底（把内存音频块落库到 IndexedDB）
-    attachBeforeUnloadAudioBackup()
-
-    // 根据模式决定连接哪些 WebSocket
-    const isSaveMode = useDiarize.value && saveMode.value
-    
-    if (isSaveMode) {
-      // 节省模式：只连接 Diarize WebSocket，不走实时ASR
-      console.log('[meeting] Save mode: only connecting to Diarize WebSocket:', DIARIZE_URL)
-      diarizeWs = new WebSocket(DIARIZE_URL)
-
-      diarizeWs.onopen = () => {
-        console.log('Diarize WebSocket connected (save mode)')
-        isConnecting.value = false
-        isRecording.value = true
-        statusText.value = t('meeting.recording')
-        diarizeWs?.send(JSON.stringify({ 
-          type: 'start', 
-          sample_rate: 16000, 
-          speaker_count: speakerCount.value || 'auto' 
-        }))
-      }
-
-      diarizeWs.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data)
-          handleWsMessage(data, 'diarize')
-        } catch (e) {
-          console.error('Failed to parse Diarize WS message:', e)
-        }
-      }
-
-      diarizeWs.onerror = (error) => {
-        console.error('Diarize WebSocket error:', error)
-        errorMessage.value = t('meeting.connectionError')
-        stopRecording()
-      }
-
-      diarizeWs.onclose = () => {
-        console.log('Diarize WebSocket closed')
-        if (isRecording.value) {
-          stopRecording()
-        }
-      }
-
-      // 音频统一由下方共享的 AudioWorklet handler 发送
-    } else if (useDiarize.value) {
-      // 启用说话人分离的正常模式：连接 ASR + Diarize 两个 WebSocket
-      console.log('[meeting] Diarize mode: connecting to both ASR and Diarize WebSockets')
-      
-      // 连接 ASR WebSocket (实时转写)
-      console.log('[meeting] Connecting to ASR WebSocket:', ASR_URL)
-      ws = new WebSocket(ASR_URL)
-
-      ws.onopen = () => {
-        console.log('ASR WebSocket connected')
-        isConnecting.value = false
-        isRecording.value = true
-        statusText.value = t('meeting.recording')
-        ws?.send(JSON.stringify({ type: 'start' }))
-      }
-
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data)
-          handleWsMessage(data, 'asr')
-        } catch (e) {
-          console.error('Failed to parse ASR WS message:', e)
-        }
-      }
-
-      ws.onerror = (error) => {
-        console.error('ASR WebSocket error:', error)
-        errorMessage.value = t('meeting.connectionError')
-        stopRecording()
-      }
-
-      ws.onclose = () => {
-        console.log('ASR WebSocket closed')
-        if (isRecording.value) {
-          stopRecording()
-        }
-      }
-
-      // 同时连接 Diarize WebSocket (说话人分离)
-      console.log('[meeting] Connecting to Diarize WebSocket:', DIARIZE_URL)
-      diarizeWs = new WebSocket(DIARIZE_URL)
-
-      diarizeWs.onopen = () => {
-        console.log('Diarize WebSocket connected')
-        diarizeWs?.send(JSON.stringify({ 
-          type: 'start', 
-          sample_rate: 16000, 
-          speaker_count: speakerCount.value || 'auto' 
-        }))
-      }
-
-      diarizeWs.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data)
-          handleWsMessage(data, 'diarize')
-        } catch (e) {
-          console.error('Failed to parse Diarize WS message:', e)
-        }
-      }
-
-      diarizeWs.onerror = (error) => {
-        console.error('Diarize WebSocket error:', error)
-      }
-
-      diarizeWs.onclose = () => {
-        console.log('Diarize WebSocket closed')
-      }
-
-      // 音频由下方共享的 AudioWorklet handler 同时发给 ASR 和 Diarize
-    } else {
-      // 仅 ASR 模式：只连接 ASR WebSocket（不启用说话人分离）
-      console.log('[meeting] ASR only mode: connecting to ASR WebSocket only')
-      
-      const asrUrl = ASR_URL
-      console.log('[meeting] Connecting to ASR WebSocket:', asrUrl)
-      ws = new WebSocket(asrUrl)
-
-      ws.onopen = () => {
-        console.log('ASR WebSocket connected')
-        isConnecting.value = false
-        isRecording.value = true
-        statusText.value = t('meeting.recording')
-        ws?.send(JSON.stringify({ type: 'start' }))
-      }
-
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data)
-          handleWsMessage(data, 'asr')
-        } catch (e) {
-          console.error('Failed to parse ASR WS message:', e)
-        }
-      }
-
-      ws.onerror = (error) => {
-        console.error('ASR WebSocket error:', error)
-        errorMessage.value = t('meeting.connectionError')
-        stopRecording()
-      }
-
-      ws.onclose = () => {
-        console.log('ASR WebSocket closed')
-        if (isRecording.value) {
-          stopRecording()
-        }
-      }
-    }
-
-    // 处理音频数据：通过 AudioWorklet 接收 Float32 buffer，主线程 resample + Int16 转换，
-    // 再分发给当前已打开的 socket（ASR / Diarize）
-    pcmNode.port.onmessage = (event: MessageEvent<{ samples: Float32Array; sourceSampleRate: number }>) => {
-      const wsOpen = !!ws && ws.readyState === WebSocket.OPEN
-      const diarizeOpen = !!diarizeWs && diarizeWs.readyState === WebSocket.OPEN
-      if (!wsOpen && !diarizeOpen) return
-      const { samples, sourceSampleRate } = event.data
-
-      // 重采样到 16000 Hz（如果需要）
-      let resampledData: Float32Array
-      if (sourceSampleRate !== 16000) {
-        const ratio = sourceSampleRate / 16000
-        const newLength = Math.round(samples.length / ratio)
-        resampledData = new Float32Array(newLength)
-        for (let i = 0; i < newLength; i++) {
-          resampledData[i] = samples[Math.round(i * ratio)]
-        }
-      } else {
-        resampledData = samples
-      }
-
-      // 转换为 Int16 PCM
-      const int16Data = new Int16Array(resampledData.length)
-      for (let i = 0; i < resampledData.length; i++) {
-        const s = Math.max(-1, Math.min(1, resampledData[i]))
-        int16Data[i] = s < 0 ? s * 0x8000 : s * 0x7FFF
-      }
-
-      if (wsOpen) ws!.send(int16Data.buffer)
-      if (diarizeOpen) diarizeWs!.send(int16Data.buffer)
-    }
-
-    // 开始可视化
-    drawWaveform()
-
-  } catch (error: any) {
-    console.error('[meeting] Failed to start recording:', error)
-
-    // 按 DOMException.name 区分错误类型
-    switch (error.name) {
-      case 'NotFoundError':
-        errorMessage.value = t('meeting.micNotFound')
-        break
-      case 'NotAllowedError':
-        errorMessage.value = window.isSecureContext
-          ? t('meeting.micPermissionDenied')
-          : t('meeting.micInsecureContext')
-        break
-      case 'NotReadableError':
-        errorMessage.value = t('meeting.micPermissionDenied')
-        break
-      default:
-        errorMessage.value = error.message || t('meeting.microphoneError')
-    }
-    isConnecting.value = false
-  }
-}
-
 // 推送句子到实时辅助服务（fire-and-forget）
 function pushSentenceToAssist(sessionId: string, sentence: TranscriptSentence) {
   fetch('/api/meeting-asr/assist/sentence', {
@@ -1126,98 +687,6 @@ function pushSentenceToAssist(sessionId: string, sentence: TranscriptSentence) {
       timestamp: sentence.timestamp,
     }),
   }).catch(() => { /* best effort */ })
-}
-
-async function stopRecording() {
-  isRecording.value = false
-  isConnecting.value = false
-  statusText.value = ''
-
-  // 停止可视化
-  if (animationFrameId) {
-    cancelAnimationFrame(animationFrameId)
-    animationFrameId = null
-  }
-
-  // 停止媒体录制器
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-    mediaRecorder.stop()
-  }
-  mediaRecorder = null
-
-  // 录音结束，移除关页/刷新兜底监听（正式落库由下方 saveAudioData 完成）
-  detachBeforeUnloadAudioBackup()
-
-  // 发送停止消息给 ASR（ASR 已在录音过程中流式返回结果，500ms 后安全关闭）
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'stop' }))
-    setTimeout(() => ws?.close(), 500)
-  }
-  ws = null
-
-  // 发送停止消息给 Diarize
-  if (diarizeWs && diarizeWs.readyState === WebSocket.OPEN) {
-    diarizeWs.send(JSON.stringify({ type: 'stop' }))
-    setTimeout(() => diarizeWs?.close(), 500)
-  }
-  diarizeWs = null
-
-  // 停止音频 + 关闭 worklet
-  if (mediaStream) {
-    mediaStream.getTracks().forEach(track => track.stop())
-    mediaStream = null
-  }
-  if (audioContext) {
-    audioContext.close().catch(() => { /* best effort */ })
-    audioContext = null
-  }
-  analyser = null
-
-  // 保存音频（会议结束一次性落库）。录音期间 audioChunks 只累积在内存，
-  // MediaRecorder 每 1000ms 切一块，这里统一合成整段 webm 落库：
-  //  - 服务器：优先写，失败时 IndexedDB 仍兜底保留本机数据
-  //  - IndexedDB：直接存 Blob，作为离线备份
-  if (audioChunks.value.length > 0 && meetingStore.activeSessionId) {
-    audioBlob.value = new Blob(audioChunks.value, { type: 'audio/webm' })
-    audioUrl.value = URL.createObjectURL(audioBlob.value)
-
-    const meetingId = meetingStore.activeSessionId
-    const meeting = meetingStore.activeSession
-
-    // 先落会议数据（含 transcript），再上传音频，两件事互相隔离
-    saveCurrentMeeting()
-
-    // 上传音频到服务器（失败不阻断 IndexedDB 本地备份）
-    await meetingStorageApi
-      .uploadAudio(meetingId, audioBlob.value)
-      .then(() => console.log('Audio saved to server'))
-      .catch(err => {
-        console.error('Failed to save audio to server:', err)
-        message.error(t('meeting.errorUploadAudioFailed'))
-      })
-
-    // 保存到 IndexedDB 作为本机备份（直接存 Blob，避免 base64 编码 33% 膨胀）
-    try {
-      await meetingStore.saveAudioData(meetingId, audioBlob.value)
-    } catch (err) {
-      console.error('Failed to save audio to IndexedDB:', err)
-    }
-
-    // 完成落库后，清空内存引用让 GC 回收，避免大会议残留内存
-    audioChunks.value = []
-    if (meeting) {
-      meetingStore.updateSession(meetingId, { audioDuration: meeting.audioDuration })
-    }
-  }
-
-  // 录音停止后自动触发报告生成
-  const session = meetingStore.activeSession
-  if (session && session.sentences.length > 0 && assistPanelRef.value) {
-    const transcript = session.sentences
-      .map(s => `${s.speaker ? `[${s.speaker}] ` : ''}${s.text}`)
-      .join('\n')
-    assistPanelRef.value.generateReport(transcript)
-  }
 }
 
 function handleWsMessage(data: any, source: 'asr' | 'diarize' = 'asr') {
@@ -1288,7 +757,16 @@ function handleWsMessage(data: any, source: 'asr' | 'diarize' = 'asr') {
       break
     case 'error':
       if (source === 'asr') {
-        errorMessage.value = data.message || t('meeting.unknownError')
+        // 后端 ASR 服务目前只 emit 错误文本（realtime-assist.ts:200），所以 data
+        // 经常是字符串而不是对象；这里三种形态都兼容：字符串本身、空字符串、
+        // { message: '' }。空 message 多半是 ASR 进程崩溃 / 未启动，此时让用户看到
+        // 'service not ready' 比 'unknown error' 更可操作。
+        const rawMessage =
+          typeof data === 'string'
+            ? data
+            : (data?.message as string | undefined) ?? ''
+        const trimmed = rawMessage.trim()
+        errorMessage.value = trimmed || t('meeting.errorServiceNotReady')
         stopRecording()
       } else {
         // Diarize错误只记录日志，不中断录音
@@ -1301,492 +779,6 @@ function handleWsMessage(data: any, source: 'asr' | 'diarize' = 'asr') {
       }
       break
   }
-}
-
-function addDiarizeResultDirectly(diarizeSentences: any[], offsetSec: number = 0) {
-  // 节省模式：直接添加 Diarize 结果（带说话人标签）
-  console.log('[diarize-save] Adding', diarizeSentences.length, 'sentences directly')
-  
-  for (const diarizeSent of diarizeSentences) {
-    const diarizeStartMs = offsetSec * 1000 + (diarizeSent.begin_ms || 0)
-    const diarizeEndMs = offsetSec * 1000 + (diarizeSent.end_ms || 0)
-    const speakerId = String(diarizeSent.speaker_id || 'unknown')
-    
-    // 获取或创建说话人显示名称
-    if (!speakerMap.value[speakerId]) {
-      speakerMap.value[speakerId] = `说话人 ${Object.keys(speakerMap.value).length + 1}`
-    }
-    const session = meetingStore.activeSession
-    const registeredName = session?.speakers.find(s => s.id === speakerId)?.displayName
-    const speakerName = registeredName || speakerMap.value[speakerId]
-    
-    // 检查是否是重复的文本（避免overlap导致的重复）
-    const isDuplicate = finalSentences.value.some(s => 
-      s.text === diarizeSent.text && 
-      Math.abs((s.startTime || 0) - diarizeStartMs) < 2000
-    )
-    
-    if (!isDuplicate && diarizeSent.text) {
-      const sentenceObj: TranscriptSentence = {
-        text: diarizeSent.text,
-        timestamp: Date.now(),
-        startTime: diarizeStartMs,
-        endTime: diarizeEndMs,
-        speaker: speakerName,
-        speakerId: speakerId,
-      }
-      finalSentences.value.push(sentenceObj)
-      
-      if (meetingStore.activeSessionId) {
-        meetingStore.addSentence(meetingStore.activeSessionId, sentenceObj)
-        // 推送到实时辅助服务
-        pushSentenceToAssist(meetingStore.activeSessionId, sentenceObj)
-      }
-    }
-  }
-  
-  // 按时间戳排序
-  finalSentences.value.sort((a, b) => (a.startTime || 0) - (b.startTime || 0))
-  
-  // 自动滚动到底部
-  nextTick(() => {
-    const container = document.getElementById('transcript-container')
-    if (container) container.scrollTop = container.scrollHeight
-  })
-}
-
-function matchAndMergeDiarizeResult(diarizeSentences: any[], offsetSec: number = 0) {
-  // 将说话人分离结果与已有的ASR句子按时间戳匹配
-  // offsetSec: chunk在整个音频中的偏移量（秒）
-  const timeThreshold = 2000 // 2秒容差（考虑ASR和Diarize的时间戳差异）
-  
-  console.log('[diarize] Processing', diarizeSentences.length, 'sentences with offset', offsetSec, 'sec')
-  
-  for (const diarizeSent of diarizeSentences) {
-    // 计算绝对时间（毫秒）
-    const diarizeStartMs = offsetSec * 1000 + (diarizeSent.begin_ms || 0)
-    const diarizeEndMs = offsetSec * 1000 + (diarizeSent.end_ms || 0)
-    const speakerId = String(diarizeSent.speaker_id || 'unknown')
-    
-    // 获取或创建说话人显示名称
-    if (!speakerMap.value[speakerId]) {
-      speakerMap.value[speakerId] = `说话人 ${Object.keys(speakerMap.value).length + 1}`
-    }
-    const session = meetingStore.activeSession
-    const registeredName = session?.speakers.find(s => s.id === speakerId)?.displayName
-    const speakerName = registeredName || speakerMap.value[speakerId]
-    
-    console.log('[diarize] Sentence:', diarizeSent.text?.substring(0, 20), 'speaker:', speakerName, 'time:', diarizeStartMs, '-', diarizeEndMs)
-    
-    // 查找匹配的ASR句子
-    let matched = false
-    for (const asrSent of finalSentences.value) {
-      // 如果ASR句子已经有说话人标签，跳过
-      if (asrSent.speakerId) continue
-      
-      // 按时间戳匹配
-      const asrStartMs = asrSent.startTime || 0
-      const asrEndMs = asrSent.endTime || 0
-      
-      // 计算时间差
-      const startDiff = Math.abs(asrStartMs - diarizeStartMs)
-      const endDiff = Math.abs(asrEndMs - diarizeEndMs)
-      
-      if (startDiff < timeThreshold && endDiff < timeThreshold) {
-        // 匹配成功，回填说话人信息
-        asrSent.speaker = speakerName
-        asrSent.speakerId = speakerId
-        matched = true
-        console.log('[diarize] Matched ASR sentence:', asrSent.text?.substring(0, 20))
-        
-        // 同步更新到 store
-        if (meetingStore.activeSessionId) {
-          meetingStore.updateSentence(meetingStore.activeSessionId, asrSent)
-        }
-        break
-      }
-    }
-    
-    // 如果没有匹配到已有句子，可能是新的句子（边界情况）
-    if (!matched && diarizeSent.text) {
-      // 检查是否是重复的文本（避免overlap导致的重复）
-      const isDuplicate = finalSentences.value.some(s => 
-        s.text === diarizeSent.text && 
-        Math.abs((s.startTime || 0) - diarizeStartMs) < timeThreshold
-      )
-      
-      if (!isDuplicate) {
-        const sentenceObj: TranscriptSentence = {
-          text: diarizeSent.text,
-          timestamp: Date.now(),
-          startTime: diarizeStartMs,
-          endTime: diarizeEndMs,
-          speaker: speakerName,
-          speakerId: speakerId,
-        }
-        finalSentences.value.push(sentenceObj)
-        console.log('[diarize] Added new sentence from diarize:', diarizeSent.text?.substring(0, 20))
-        
-        if (meetingStore.activeSessionId) {
-          meetingStore.addSentence(meetingStore.activeSessionId, sentenceObj)
-        }
-      }
-    }
-  }
-  
-  // 按时间戳排序
-  finalSentences.value.sort((a, b) => (a.startTime || 0) - (b.startTime || 0))
-  
-  // 自动滚动到底部
-  nextTick(() => {
-    const container = document.getElementById('transcript-container')
-    if (container) container.scrollTop = container.scrollHeight
-  })
-}
-
-// --- 音频播放 ---
-const audioElement = ref<HTMLAudioElement | null>(null)
-
-function playAudio() {
-  if (!audioUrl.value) return
-  
-  // 如果已经有 Audio 实例，直接继续播放
-  if (audioElement.value) {
-    audioElement.value.play()
-    isPlaying.value = true
-    return
-  }
-  
-  audioElement.value = new Audio(audioUrl.value)
-  audioElement.value.play()
-  isPlaying.value = true
-  
-  audioElement.value.ontimeupdate = () => {
-    if (!audioElement.value) return
-    playbackTime.value = audioElement.value.currentTime
-    
-    // 检查是否到达句子结束时间
-    if (playEndAt.value !== null && audioElement.value.currentTime >= playEndAt.value) {
-      audioElement.value.pause()
-      isPlaying.value = false
-      playEndAt.value = null
-      return
-    }
-    
-    // 根据播放时间高亮对应的字幕
-    highlightCurrentSentence(audioElement.value.currentTime)
-  }
-  
-  audioElement.value.onended = () => {
-    isPlaying.value = false
-    playbackTime.value = 0
-    audioElement.value = null
-    highlightedSentenceIndex.value = -1
-    playEndAt.value = null
-  }
-  
-  audioElement.value.onloadedmetadata = () => {
-    if (audioElement.value && isFinite(audioElement.value.duration)) {
-      playbackDuration.value = audioElement.value.duration
-    }
-  }
-}
-
-function pauseAudio() {
-  if (audioElement.value) {
-    audioElement.value.pause()
-    isPlaying.value = false
-  }
-}
-
-function togglePlayPause() {
-  if (isPlaying.value) {
-    pauseAudio()
-  } else {
-    playAudio()
-  }
-}
-
-function stopAudio() {
-  if (audioElement.value) {
-    audioElement.value.pause()
-    audioElement.value.currentTime = 0
-    audioElement.value = null
-  }
-  isPlaying.value = false
-  playbackTime.value = 0
-  highlightedSentenceIndex.value = -1
-  playEndAt.value = null
-}
-
-function seekTo(seconds: number) {
-  if (!audioElement.value) return
-  audioElement.value.currentTime = Math.max(0, Math.min(seconds, playbackDuration.value))
-  playbackTime.value = audioElement.value.currentTime
-}
-
-// 播放到指定句子结束时停止
-const playEndAt = ref<number | null>(null)
-
-function seekToSentence(index: number) {
-  const sentence = finalSentences.value[index]
-  if (!sentence?.startTime || !audioUrl.value) return
-  // startTime 是毫秒，需要转换为秒
-  const startTimeSec = sentence.startTime / 1000
-  const endTimeSec = sentence.endTime ? sentence.endTime / 1000 : null
-
-  // 设置结束时间
-  playEndAt.value = endTimeSec
-
-  seekTo(startTimeSec)
-  if (!isPlaying.value) {
-    playAudio()
-  }
-}
-
-// --- 进度条 ---
-const isDraggingProgress = ref(false)
-
-const progressPercent = computed(() => {
-  if (playbackDuration.value <= 0) return 0
-  return (playbackTime.value / playbackDuration.value) * 100
-})
-
-function seekToPosition(event: MouseEvent) {
-  const target = event.currentTarget as HTMLElement
-  const rect = target.getBoundingClientRect()
-  const percent = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
-  const time = percent * playbackDuration.value
-  playEndAt.value = null  // 用户手动拖拽时取消句子结束限制
-  seekTo(time)
-}
-
-function startProgressDrag(event: MouseEvent) {
-  isDraggingProgress.value = true
-  playEndAt.value = null  // 用户手动拖拽时取消句子结束限制
-  seekToPosition(event)
-  document.addEventListener('mousemove', onProgressDrag)
-  document.addEventListener('mouseup', stopProgressDrag)
-}
-
-function onProgressDrag(event: MouseEvent) {
-  if (!isDraggingProgress.value) return
-  const target = document.querySelector('.progress-track') as HTMLElement
-  if (!target) return
-  const rect = target.getBoundingClientRect()
-  const percent = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
-  const time = percent * playbackDuration.value
-  seekTo(time)
-}
-
-function stopProgressDrag() {
-  isDraggingProgress.value = false
-  document.removeEventListener('mousemove', onProgressDrag)
-  document.removeEventListener('mouseup', stopProgressDrag)
-}
-
-// 高亮当前播放的字幕
-const highlightedSentenceIndex = ref(-1)
-
-function highlightCurrentSentence(currentTimeSec: number) {
-  const session = meetingStore.activeSession
-  if (!session || session.sentences.length === 0) return
-  
-  const currentTimeMs = currentTimeSec * 1000
-  
-  // 使用 startTime 匹配（相对于音频开始的时间）
-  for (let i = session.sentences.length - 1; i >= 0; i--) {
-    const sentence = session.sentences[i]
-    if (sentence.startTime && sentence.startTime <= currentTimeMs) {
-      if (highlightedSentenceIndex.value !== i) {
-        highlightedSentenceIndex.value = i
-        
-        // 自动滚动到当前字幕
-        nextTick(() => {
-          const element = document.querySelector(`.sentence-item[data-index="${i}"]`)
-          if (element) {
-            element.scrollIntoView({ behavior: 'smooth', block: 'center' })
-          }
-        })
-      }
-      break
-    }
-  }
-}
-
-async function downloadAudio() {
-  if (!meetingStore.activeSessionId) return
-  
-  try {
-    // 尝试从服务器下载
-    const blob = await meetingStorageApi.downloadAudio(meetingStore.activeSessionId)
-    if (blob) {
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `${meetingStore.activeSession?.title || 'meeting'}.webm`
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
-      return
-    }
-  } catch (err) {
-    console.error('Failed to download audio from server:', err)
-  }
-  
-  // 回退到本地 blob
-  if (!audioBlob.value) return
-  const url = URL.createObjectURL(audioBlob.value)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `${meetingStore.activeSession?.title || 'meeting'}.webm`
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
-}
-
-async function downloadTranscript() {
-  if (!meetingStore.activeSessionId || !meetingStore.activeSession) return
-  
-  try {
-    // 尝试从服务器下载
-    const sentences = await meetingStorageApi.getTranscript(meetingStore.activeSessionId)
-    if (sentences && sentences.length > 0) {
-      const content = sentences.map((s: any, i: number) => {
-        const time = s.startTime ? formatDuration(s.startTime / 1000) : new Date(s.timestamp).toLocaleTimeString('zh-CN')
-        const speaker = s.speaker ? `[${s.speaker}] ` : ''
-        return `${i + 1}. ${time} ${speaker}${s.text}`
-      }).join('\n')
-      
-      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `${meetingStore.activeSession.title || 'meeting'}.txt`
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
-      return
-    }
-  } catch (err) {
-    console.error('Failed to download transcript from server:', err)
-  }
-  
-  // 回退到本地数据
-  const session = meetingStore.activeSession
-  const content = session.sentences.map((s, i) => {
-    const time = s.startTime ? formatDuration(s.startTime / 1000) : new Date(s.timestamp).toLocaleTimeString('zh-CN')
-    const speaker = s.speaker ? `[${s.speaker}] ` : ''
-    return `${i + 1}. ${time} ${speaker}${s.text}`
-  }).join('\n')
-  
-  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `${session.title || 'meeting'}.txt`
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
-}
-
-async function downloadJson() {
-  if (!meetingStore.activeSessionId || !meetingStore.activeSession) return
-  
-  try {
-    // 尝试从服务器下载
-    const data = await meetingStorageApi.downloadJsonReport(meetingStore.activeSessionId)
-    if (data) {
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `${meetingStore.activeSession.title || 'meeting'}.json`
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
-      return
-    }
-  } catch (err) {
-    console.error('Failed to download JSON from server:', err)
-  }
-  
-  // 回退到本地数据
-  const session = meetingStore.activeSession
-  
-  const jsonData = {
-    title: session.title,
-    createdAt: new Date(session.createdAt).toISOString(),
-    duration: session.audioDuration,
-    speakers: session.speakers,
-    sentences: session.sentences.map((s, i) => ({
-      index: i + 1,
-      text: s.text,
-      startTimeMs: s.startTime,
-      endTimeMs: s.endTime,
-      speakerId: s.speakerId,
-      speakerName: s.speaker || null,
-      timestamp: new Date(s.timestamp).toISOString(),
-    })),
-    analysis: session.analysisResult,
-  }
-  
-  const blob = new Blob([JSON.stringify(jsonData, null, 2)], { type: 'application/json;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `${session.title || 'meeting'}.json`
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
-}
-
-async function downloadReport() {
-  if (!meetingStore.activeSessionId) return
-
-  let content = ''
-  let source = 'server'
-  try {
-    // 尝试从服务器下载
-    content = (await meetingStorageApi.downloadHtmlReport(meetingStore.activeSessionId)) || ''
-  } catch (err) {
-    console.error('Failed to download report from server:', err)
-  }
-
-  // 回退到本地数据（store 是报告生成后的权威来源，局部 ref 可能未同步）
-  if (!content) {
-    source = 'local'
-    content = meetingStore.activeSession?.htmlContent || htmlContent.value
-  }
-  console.log('[downloadReport] 内容来源:', source, '长度:', content.length)
-  if (!content) return
-
-  const title = meetingStore.activeSession?.title || '会议报告'
-  const html = toPrettyReportHtml(content, title)
-  const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `${title}_report.html`
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
-}
-
-// 报告内容若为 Markdown（实时辅助生成）则转换为精美 HTML 页面；若已是 HTML（Agent 生成）则直接包装
-function toPrettyReportHtml(content: string, title: string): string {
-  const trimmed = content.trim()
-  const looksLikeHtml = /^<(!doctype|html|div|h[1-6]|p\b)/i.test(trimmed)
-  console.log('[downloadReport] looksLikeHtml:', looksLikeHtml, '内容开头:', JSON.stringify(trimmed.slice(0, 40)))
-  if (looksLikeHtml) return content
-  return buildReportHtml(trimmed, title)
 }
 
 function onAgentCompleted() {
@@ -1844,12 +836,6 @@ async function analyzeWithHermesAgent() {
   }
 }
 
-function formatDuration(seconds: number): string {
-  const m = Math.floor(seconds / 60)
-  const s = Math.floor(seconds % 60)
-  return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
-}
-
 // --- Action item formatters (support both string and object forms) ---
 function formatActionItem(item: any): string {
   if (item == null) return ''
@@ -1867,49 +853,7 @@ function formatActionDeadline(item: any): string {
   return ''
 }
 
-// --- 可视化 ---
-const canvasRef = ref<HTMLCanvasElement | null>(null)
-
-function drawWaveform() {
-  const canvas = canvasRef.value
-  if (!canvas || !analyser) return
-
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return
-
-  const width = canvas.width
-  const height = canvas.height
-  const bufferLength = analyser.frequencyBinCount
-  const dataArray = new Uint8Array(bufferLength)
-
-  function draw() {
-    animationFrameId = requestAnimationFrame(draw)
-    analyser!.getByteFrequencyData(dataArray)
-
-    if (!ctx) return
-    
-    ctx.fillStyle = 'rgb(15, 23, 42)'
-    ctx.fillRect(0, 0, width, height)
-
-    const barWidth = (width / bufferLength) * 2.5
-    let x = 0
-
-    for (let i = 0; i < bufferLength; i++) {
-      const barHeight = (dataArray[i] / 255) * height * 0.8
-
-      const gradient = ctx.createLinearGradient(0, height - barHeight, 0, height)
-      gradient.addColorStop(0, '#8b5cf6')
-      gradient.addColorStop(1, '#6366f1')
-
-      ctx.fillStyle = gradient
-      ctx.fillRect(x, height - barHeight, barWidth, barHeight)
-
-      x += barWidth + 1
-    }
-  }
-
-  draw()
-}
+// 声浪可视化已迁移到 <WaveformCanvas>，本组件只保留 analyser ref 与录音控制。
 
 // --- 分析功能 ---
 async function startAnalysis() {
@@ -1998,187 +942,64 @@ async function clearTranscript() {
 
 <template>
   <div class="meeting-view">
-    <!-- 左侧边栏背景遮罩 -->
-    <div
-      class="sidebar-backdrop"
-      :class="{ active: showSidebar }"
-      @click="showSidebar = false"
-    />
-
-    <!-- 左侧边栏 -->
-    <aside class="meeting-sidebar" :class="{ collapsed: !showSidebar }">
-      <div v-if="showSidebar" class="page-sidebar-top">
-        <PageSidebarNav
-          active="meeting"
-          :primary-label="t('meeting.newMeeting')"
-          @primary="openCreateModal"
-        />
-        <div class="meeting-list">
-          <div v-if="meetingStore.sortedSessions.length === 0" class="meeting-list-empty">
-            {{ t('meeting.noMeetings') }}
-          </div>
-          <button
-            v-for="session in meetingStore.sortedSessions"
-            :key="session.id"
-            class="meeting-list-item"
-            :class="{ active: session.id === meetingStore.activeSessionId }"
-            @click="loadMeeting(session)"
-          >
-            <div class="meeting-item-icon">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/>
-                <path d="M8 12l3 3 5-5"/>
+    <!-- 左侧边栏（拆分自 MeetingView 主体） -->
+    <MeetingSidebar
+      v-model:expanded="showSidebar"
+      :sessions="sidebarSessions"
+      :active-id="meetingStore.activeSessionId"
+      @create="openCreateModal"
+      @select="selectMeetingById"
+    >
+      <template #item-actions="{ session }">
+        <NPopconfirm @positive-click.stop="deleteMeeting(session.id)">
+          <template #trigger>
+            <button
+              class="meeting-item-delete"
+              @click.stop
+              :title="t('common.delete')"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"/>
+                <line x1="6" y1="6" x2="18" y2="18"/>
               </svg>
-            </div>
-            <div class="meeting-item-content">
-              <div class="meeting-item-title">{{ session.title }}</div>
-              <div class="meeting-item-meta">
-                {{ new Date(session.updatedAt).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) }}
-                · {{ session.sentences.length }} {{ t('meeting.sentences') }}
-                <span v-if="session.analysisResult" class="meeting-item-badge">AI</span>
-              </div>
-            </div>
-            <NPopconfirm @positive-click.stop="deleteMeeting(session.id)">
-              <template #trigger>
-                <button
-                  class="meeting-item-delete"
-                  @click.stop
-                  :title="t('common.delete')"
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <line x1="18" y1="6" x2="6" y2="18"/>
-                    <line x1="6" y1="6" x2="18" y2="18"/>
-                  </svg>
-                </button>
-              </template>
-              {{ t('meeting.deleteConfirm') }}
-            </NPopconfirm>
-          </button>
-        </div>
-      </div>
-      <PageSidebarFooter v-if="showSidebar" />
-    </aside>
+            </button>
+          </template>
+          {{ t('meeting.deleteConfirm') }}
+        </NPopconfirm>
+      </template>
+    </MeetingSidebar>
 
     <!-- 主内容区 -->
     <div class="meeting-main">
       <!-- 顶部标题栏 -->
-      <div class="meeting-header">
-        <div class="meeting-title">
-          <button
-            class="header-avatar-toggle"
-            @click="showSidebar = !showSidebar"
-            :title="showSidebar ? t('sidebar.collapse') : t('sidebar.expand')"
-          >
-            <img src="/logo.png" alt="QuantHermes" class="header-logo" />
-          </button>
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/>
-            <path d="M8 12l3 3 5-5"/>
-          </svg>
-          <h1>{{ t('meeting.title') }}</h1>
-        </div>
-        <div class="meeting-controls">
-          <!-- Agent 切换按钮 -->
-          <NTooltip trigger="hover">
-            <template #trigger>
-              <NButton
-                size="small"
-                :type="showAgentPanel ? 'primary' : 'default'"
-                @click="showAgentPanel = !showAgentPanel"
-              >
-                <template #icon>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                    <path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"/>
-                    <path d="M16 14H8a4 4 0 0 0-4 4v2h16v-2a4 4 0 0 0-4-4z"/>
-                  </svg>
-                </template>
-                {{ t('meeting.agentChat') }}
-              </NButton>
-            </template>
-            {{ t('meeting.showAgentChat') }}
-          </NTooltip>
-
-          <template v-if="!HIDE_SPEAKER_DIARIZATION">
-            <NTooltip trigger="hover">
-              <template #trigger>
-                <NButton
-                  size="small"
-                  :type="useDiarize ? 'primary' : 'default'"
-                  @click="useDiarize = !useDiarize"
-                  :disabled="isRecording"
-                >
-                  <template #icon>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
-                      <circle cx="9" cy="7" r="4"/>
-                      <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
-                      <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-                    </svg>
-                  </template>
-                  {{ t('meeting.diarize') }}
-                </NButton>
-              </template>
-              {{ t('meeting.diarizeHint') }}
-            </NTooltip>
-
-            <NTooltip v-if="useDiarize" trigger="hover">
-              <template #trigger>
-                <NButton
-                  size="small"
-                  :type="saveMode ? 'warning' : 'default'"
-                  @click="saveMode = !saveMode"
-                  :disabled="isRecording"
-                >
-                  <template #icon>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                      <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
-                    </svg>
-                  </template>
-                  {{ saveMode ? t('meeting.saveMode') : t('meeting.normalMode') }}
-                </NButton>
-              </template>
-              {{ saveMode ? t('meeting.saveModeHint') : t('meeting.normalModeHint') }}
-            </NTooltip>
-
-            <NSelect
-              v-if="useDiarize"
-              v-model:value="speakerCount"
-              :options="speakerCountOptions"
-              size="small"
-              style="width: 120px"
-              :disabled="isRecording"
-              :placeholder="t('meeting.speakerCount')"
-            />
-          </template>
-
-          <NTooltip trigger="hover">
-            <template #trigger>
-              <NButton
-                size="small"
-                type="error"
-                @click="clearTranscript"
-                :disabled="isRecording || sentences.length === 0"
-              >
-                <template #icon>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                    <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                  </svg>
-                </template>
-                {{ t('meeting.clear') }}
-              </NButton>
-            </template>
-            {{ t('meeting.clearHint') }}
-          </NTooltip>
-        </div>
-      </div>
+      <!-- 顶部控制条（拆分自 MeetingView 主体） -->
+      <MeetingTopBar
+        :sidebar-expanded="showSidebar"
+        :show-agent-panel="showAgentPanel"
+        :show-realtime-dialog="showRealtimeDialog"
+        :use-diarize="useDiarize"
+        :save-mode="saveMode"
+        :speaker-count="speakerCount"
+        :speaker-count-options="speakerCountOptions"
+        :is-recording="isRecording"
+        :has-sentences="sentences.length > 0"
+        :hide-speaker-diarization="HIDE_SPEAKER_DIARIZATION"
+        @toggle-sidebar="showSidebar = !showSidebar"
+        @toggle-agent-panel="showAgentPanel = !showAgentPanel"
+        @toggle-realtime-dialog="showRealtimeDialog = !showRealtimeDialog"
+        @toggle-diarize="useDiarize = !useDiarize"
+        @toggle-save-mode="saveMode = !saveMode"
+        @update:speaker-count="speakerCount = $event"
+        @clear-transcript="clearTranscript"
+      />
 
       <!-- 主内容区 -->
       <div class="meeting-content">
       <!-- 左侧：转写区域 -->
       <div class="transcript-panel" :class="{ 'speech-scene': isSpeechScene }">
         <!-- 可视化区域 -->
-        <div class="waveform-container" :class="`phase-${speechPhase}`">
-          <canvas ref="canvasRef" width="600" height="100"></canvas>
+        <div class="waveform-stage" :class="`phase-${speechPhase}`">
+          <WaveformCanvas :analyser="analyser" :connecting="isConnecting" />
 
           <!-- 演讲评分：波形上叠加计时器（与右侧时间卡同步） -->
           <div v-if="isSpeechScene" class="speech-timer-overlay" :class="`phase-${speechPhase}`">
@@ -2197,11 +1018,6 @@ async function clearTranscript() {
               </NButton>
               <NButton size="tiny" @click="resetSpeechTimer">{{ t('meeting.speechEval.reset') }}</NButton>
             </div>
-          </div>
-
-          <div v-if="isConnecting" class="connecting-overlay">
-            <NSpin size="small" />
-            <span>{{ t('meeting.connecting') }}</span>
           </div>
         </div>
 
@@ -2246,69 +1062,16 @@ async function clearTranscript() {
           </div>
         </div>
 
-        <!-- 转写内容 -->
-        <div id="transcript-container" class="transcript-content">
-          <div v-if="sentences.length === 0 && !partialText" class="empty-state">
-            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3">
-              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/>
-              <path d="M8 12l3 3 5-5"/>
-            </svg>
-            <p>{{ t('meeting.emptyState') }}</p>
-          </div>
-
-          <div 
-            v-for="(sentence, index) in sentences" 
-            :key="index" 
-            :data-index="index"
-            class="sentence-item"
-            :class="{ 
-              highlighted: highlightedSentenceIndex === index,
-              clickable: sentence.startTime && !isRecording
-            }"
-            @click="sentence.startTime && !isRecording ? seekToSentence(index) : undefined"
-          >
-            <span class="sentence-index">{{ index + 1 }}</span>
-            <div class="sentence-body">
-              <NPopover
-                v-if="sentence.speakerId && !HIDE_SPEAKER_DIARIZATION"
-                trigger="click"
-                placement="top"
-                :show="renamingKey === `${sentence.speakerId}:${index}`"
-                @update:show="(val: boolean) => { if (!val) cancelRenameSpeaker() }"
-              >
-                <template #trigger>
-                  <span 
-                    class="sentence-speaker"
-                    @click.stop="startRenameSpeaker(sentence.speakerId, index)"
-                    :title="t('meeting.renameSpeaker')"
-                  >
-                    {{ sentence.speaker }}
-                  </span>
-                </template>
-                <div class="speaker-rename-popover">
-                  <div class="speaker-rename-title">{{ t('meeting.renameSpeaker') }}</div>
-                  <NInput
-                    v-model:value="renameInput"
-                    size="small"
-                    :placeholder="t('meeting.speakerPlaceholder')"
-                    @keyup.enter="confirmRenameSpeaker"
-                    autofocus
-                  />
-                  <div class="speaker-rename-actions">
-                    <NButton size="tiny" @click="cancelRenameSpeaker">{{ t('common.cancel') }}</NButton>
-                    <NButton size="tiny" type="primary" @click="confirmRenameSpeaker">{{ t('common.confirm') }}</NButton>
-                  </div>
-                </div>
-              </NPopover>
-              <span class="sentence-text">{{ sentence.text }}</span>
-            </div>
-          </div>
-
-          <div v-if="partialText" class="partial-text">
-            <span class="partial-indicator">{{ t('meeting.partial') }}</span>
-            {{ partialText }}
-          </div>
-        </div>
+        <!-- 转写内容（拆分自 MeetingView 主体） -->
+        <TranscriptList
+          :sentences="sentences"
+          :partial-text="partialText"
+          :highlighted-index="highlightedSentenceIndex"
+          :is-recording="isRecording"
+          :hide-speaker-diarization="HIDE_SPEAKER_DIARIZATION"
+          @seek="seekToSentence"
+          @rename="onTranscriptRename"
+        />
 
         <!-- 录音按钮 -->
         <div class="record-button-container">
@@ -2333,110 +1096,88 @@ async function clearTranscript() {
         </div>
       </div>
 
-      <!-- 右侧：分析面板（可调整大小） -->
-      <aside
-        v-if="showRightPanel"
-        class="right-panel"
-        :style="rightPanelStyle"
+      <!-- 右侧：分析面板（壳已拆出 MeetingRightPanel） -->
+      <MeetingRightPanel
+        :visible="showRightPanel"
+        :is-speech-scene="isSpeechScene"
+        :show-agent-panel="showAgentPanel"
+        :show-realtime-dialog="showRealtimeDialog"
+        :resize-style="rightPanelStyle"
+        @close="showRightPanel = false"
+        @resize-start="startRightPanelResize"
       >
-        <div
-          class="right-panel-resize-handle"
-          @pointerdown="startRightPanelResize"
-        />
-        <div class="right-panel-inner">
-          <div class="right-panel-header">
-            <h2>{{ isSpeechScene ? t('meeting.scene.speech') : (showAgentPanel ? t('meeting.agentChat') : t('meeting.analysis')) }}</h2>
-            <div class="right-panel-actions">
-              <!-- 关闭按钮：始终位于最右，确保不被遮挡 -->
-              <button
-                class="panel-close-btn"
-                :title="t('sidebar.collapse')"
-                @click="showRightPanel = false"
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <line x1="18" y1="6" x2="6" y2="18"/>
-                  <line x1="6" y1="6" x2="18" y2="18"/>
-                </svg>
-              </button>
-            </div>
-          </div>
-
-          <!-- 分析工具栏：独立一行，避免与标题互相挤压 -->
-          <div v-if="!showAgentPanel && !isSpeechScene" class="right-panel-toolbar">
-            <div class="toolbar-actions">
-              <NTooltip trigger="hover">
-                <template #trigger>
-                  <NButton
-                    size="tiny"
-                    type="primary"
-                    :loading="isLoading && !isAnalyzing"
-                    :disabled="sentences.length === 0"
-                    @click="triggerAnalysis"
-                  >
-                    <template #icon>
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <polygon points="5 3 19 12 5 21 5 3"/>
-                      </svg>
-                    </template>
-                    {{ t('meeting.triggerAnalysis') }}
-                  </NButton>
-                </template>
-                {{ sentences.length === 0 ? t('meeting.noTranscript') : '' }}
-              </NTooltip>
-
-              <!-- 生成报告按钮（仅在非 Agent 面板时显示） -->
-              <template v-if="!showAgentPanel">
+        <template #toolbar>
+          <div class="toolbar-actions">
+            <NTooltip trigger="hover">
+              <template #trigger>
                 <NButton
                   size="tiny"
                   type="primary"
-                  @click="triggerAnalysis"
-                  :loading="isLoading"
+                  :loading="isLoading && !isAnalyzing"
                   :disabled="sentences.length === 0"
+                  @click="triggerAnalysis"
                 >
-                  {{ t('meeting.generateReport') }}
+                  <template #icon>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <polygon points="5 3 19 12 5 21 5 3"/>
+                    </svg>
+                  </template>
+                  {{ t('meeting.triggerAnalysis') }}
                 </NButton>
               </template>
-              <NTooltip trigger="hover">
-                <template #trigger>
-                  <NButton
-                    size="tiny"
-                    :type="isAnalyzing ? 'warning' : 'default'"
-                    :disabled="sentences.length === 0"
-                    @click="isAnalyzing ? stopAnalysis() : startAnalysis()"
-                  >
-                    <template #icon>
-                      <svg v-if="!isAnalyzing" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="10"/>
-                        <polyline points="12 6 12 12 16 14"/>
-                      </svg>
-                      <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <rect x="6" y="4" width="4" height="16"/>
-                        <rect x="14" y="4" width="4" height="16"/>
-                      </svg>
-                    </template>
-                    {{ isAnalyzing ? t('meeting.stopAnalysis') : t('meeting.startAnalysis') }}
-                  </NButton>
-                </template>
-              </NTooltip>
+              {{ sentences.length === 0 ? t('meeting.noTranscript') : '' }}
+            </NTooltip>
 
-              <NTooltip trigger="hover">
-                <template #trigger>
-                  <NButton
-                    size="tiny"
-                    quaternary
-                    @click="showAnalysisConfig = true"
-                  >
-                    <template #icon>
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="3"/>
-                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-                      </svg>
-                    </template>
-                  </NButton>
-                </template>
-                {{ t('meeting.analysisTriggerConfig') }}
-              </NTooltip>
-            </div>
+            <NButton
+              size="tiny"
+              type="primary"
+              @click="triggerAnalysis"
+              :loading="isLoading"
+              :disabled="sentences.length === 0"
+            >
+              {{ t('meeting.generateReport') }}
+            </NButton>
+
+            <NTooltip trigger="hover">
+              <template #trigger>
+                <NButton
+                  size="tiny"
+                  :type="isAnalyzing ? 'warning' : 'default'"
+                  :disabled="sentences.length === 0"
+                  @click="isAnalyzing ? stopAnalysis() : startAnalysis()"
+                >
+                  <template #icon>
+                    <svg v-if="!isAnalyzing" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <circle cx="12" cy="12" r="10"/>
+                      <polyline points="12 6 12 12 16 14"/>
+                    </svg>
+                    <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="6" y="4" width="4" height="16"/>
+                      <rect x="14" y="4" width="4" height="16"/>
+                    </svg>
+                  </template>
+                  {{ isAnalyzing ? t('meeting.stopAnalysis') : t('meeting.startAnalysis') }}
+                </NButton>
+              </template>
+            </NTooltip>
+
+            <NTooltip trigger="hover">
+              <template #trigger>
+                <NButton
+                  size="tiny"
+                  quaternary
+                  @click="showAnalysisConfig = true"
+                >
+                  <template #icon>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <circle cx="12" cy="12" r="3"/>
+                      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                    </svg>
+                  </template>
+                </NButton>
+              </template>
+              {{ t('meeting.analysisTriggerConfig') }}
+            </NTooltip>
 
             <!-- Agent 切换：靠右 -->
             <NTooltip trigger="hover">
@@ -2457,294 +1198,295 @@ async function clearTranscript() {
               {{ showAgentPanel ? t('meeting.showAnalysis') : t('meeting.showAgentChat') }}
             </NTooltip>
           </div>
+        </template>
 
-          <!-- 演讲评分场景：专用评估面板（计时员/赘语记录员/语法官） -->
-          <template v-if="isSpeechScene">
-            <SpeechEvaluationPanel
-              v-if="meetingStore.activeSessionId"
-              :key="meetingStore.activeSessionId"
-              :session-id="meetingStore.activeSessionId"
-              :is-recording="isRecording"
-              @report-generated="onReportGenerated"
-            />
-          </template>
+        <template #speech>
+          <SpeechEvaluationPanel
+            v-if="meetingStore.activeSessionId"
+            :key="meetingStore.activeSessionId"
+            :session-id="meetingStore.activeSessionId"
+            :is-recording="isRecording"
+            @report-generated="onReportGenerated"
+          />
+        </template>
 
-          <!-- Agent 实时辅助面板 -->
-          <template v-else-if="showAgentPanel">
-            <MeetingAgentPanel
-              v-if="meetingStore.activeSessionId"
-              ref="assistPanelRef"
-              :session-id="meetingStore.activeSessionId"
-              :scene-template="activeSession?.sceneTemplate || 'general'"
-              :is-recording="isRecording"
-              @report-generated="onReportGenerated"
-              @request-report="onRequestReport"
-              :start-trigger="agentStartAnalysisTrigger"
-              @update:analysis-result="onAgentAnalysisResult"
-              @update:report-html="onAgentReportHtml"
-              @completed="onAgentCompleted"
-              @corrected="onAgentCorrected"
-            />
-          </template>
+        <template #agent>
+          <MeetingAgentPanel
+            v-if="meetingStore.activeSessionId"
+            ref="assistPanelRef"
+            :session-id="meetingStore.activeSessionId"
+            :scene-template="activeSession?.sceneTemplate || 'general'"
+            :is-recording="isRecording"
+            @report-generated="onReportGenerated"
+            @request-report="onRequestReport"
+            :start-trigger="agentStartAnalysisTrigger"
+            @update:analysis-result="onAgentAnalysisResult"
+            @update:report-html="onAgentReportHtml"
+            @completed="onAgentCompleted"
+            @corrected="onAgentCorrected"
+          />
+        </template>
 
-          <!-- 分析和下载面板 -->
-          <template v-else>
-            <div class="right-panel-content">
-              <!-- 下载区域 - 始终显示 -->
-              <div class="download-section">
-                <h3>{{ t('meeting.downloads') }}</h3>
-                <!-- 音频播放器 -->
-                <div v-if="audioUrl" class="audio-section">
-                  <div class="audio-player">
-                    <button class="audio-play-btn" @click="togglePlayPause()">
-                      <svg v-if="!isPlaying" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                        <path d="M8 5v14l11-7z"/>
-                      </svg>
-                      <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                        <rect x="6" y="4" width="4" height="16"/>
-                        <rect x="14" y="4" width="4" height="16"/>
-                      </svg>
-                    </button>
-                    <div class="audio-info">
-                      <span class="audio-time">{{ formatDuration(playbackTime) }}</span>
-                      <div class="progress-track" @click="seekToPosition" @mousedown="startProgressDrag">
-                        <div class="progress-fill" :style="{ width: progressPercent + '%' }"></div>
-                        <div class="progress-thumb" :style="{ left: progressPercent + '%' }"></div>
-                      </div>
-                      <span class="audio-time">{{ formatDuration(playbackDuration) }}</span>
+        <template #realtime>
+          <RealtimeDialogPanel
+            :has-dashscope-key="!!meetingStore.asrConfig.dashscopeApiKey"
+            @close="showRealtimeDialog = false"
+          />
+        </template>
+
+        <template #analysis>
+          <div class="right-panel-content">
+            <!-- 下载区域 - 始终显示 -->
+            <div class="download-section">
+              <h3>{{ t('meeting.downloads') }}</h3>
+              <!-- 音频播放器 -->
+              <div v-if="audioUrl" class="audio-section">
+                <div class="audio-player">
+                  <button class="audio-play-btn" @click="togglePlayPause()">
+                    <svg v-if="!isPlaying" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M8 5v14l11-7z"/>
+                    </svg>
+                    <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                      <rect x="6" y="4" width="4" height="16"/>
+                      <rect x="14" y="4" width="4" height="16"/>
+                    </svg>
+                  </button>
+                  <div class="audio-info">
+                    <span class="audio-time">{{ formatDuration(playbackTime) }}</span>
+                    <div class="progress-track" @click="seekToPosition" @mousedown="startProgressDrag">
+                      <div class="progress-fill" :style="{ width: progressPercent + '%' }"></div>
+                      <div class="progress-thumb" :style="{ left: progressPercent + '%' }"></div>
                     </div>
+                    <span class="audio-time">{{ formatDuration(playbackDuration) }}</span>
                   </div>
-                </div>
-                <!-- 下载按钮 -->
-                <div class="download-actions">
-                  <NButton size="small" @click="downloadAudio" :disabled="isRecording || !audioUrl">
-                    <template #icon>
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                        <polyline points="7 10 12 15 17 10"/>
-                        <line x1="12" y1="15" x2="12" y2="3"/>
-                      </svg>
-                    </template>
-                    {{ t('meeting.downloadAudio') }}
-                  </NButton>
-                  <NButton size="small" @click="downloadTranscript" :disabled="isRecording || sentences.length === 0">
-                    <template #icon>
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                        <polyline points="14 2 14 8 20 8"/>
-                        <line x1="16" y1="13" x2="8" y2="13"/>
-                        <line x1="16" y1="17" x2="8" y2="17"/>
-                      </svg>
-                    </template>
-                    {{ t('meeting.downloadTranscript') }}
-                  </NButton>
-                  <NButton size="small" @click="downloadJson" :disabled="isRecording || sentences.length === 0">
-                    <template #icon>
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                        <polyline points="14 2 14 8 20 8"/>
-                        <line x1="16" y1="13" x2="8" y2="13"/>
-                        <line x1="16" y1="17" x2="8" y2="17"/>
-                        <polyline points="10 9 9 9 8 9"/>
-                      </svg>
-                    </template>
-                    {{ t('meeting.downloadJson') }}
-                  </NButton>
-                  <NButton v-if="htmlContent" size="small" @click="downloadReport" :disabled="isRecording">
-                    <template #icon>
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                        <polyline points="14 2 14 8 20 8"/>
-                        <line x1="16" y1="13" x2="8" y2="13"/>
-                        <line x1="16" y1="17" x2="8" y2="17"/>
-                      </svg>
-                    </template>
-                    {{ t('meeting.downloadReport') }}
-                  </NButton>
                 </div>
               </div>
-
-              <!-- 分析结果区域 - 只在有分析结果时显示 -->
-              <template v-if="analysisResult">
-                <div v-if="analysisResult.summary" class="result-section">
-                  <h3>{{ t('meeting.summary') }}</h3>
-                  <p>{{ analysisResult.summary }}</p>
-                </div>
-
-                <div v-if="analysisResult.key_points?.length" class="result-section">
-                  <h3>{{ t('meeting.keyPoints') }}</h3>
-                  <ul>
-                    <li v-for="(point, i) in analysisResult.key_points" :key="i">{{ point }}</li>
-                  </ul>
-                </div>
-
-                <div v-if="analysisResult.action_items?.length" class="result-section">
-                  <h3>{{ t('meeting.actionItems') }}</h3>
-                  <ul class="action-list">
-                    <li v-for="(item, i) in analysisResult.action_items" :key="i">
-                      <input type="checkbox" />
-                      <div class="action-body">
-                        <span class="action-text">{{ formatActionItem(item) }}</span>
-                        <span v-if="formatActionAssignee(item)" class="action-assignee">
-                          👤 {{ formatActionAssignee(item) }}
-                        </span>
-                        <span v-if="formatActionDeadline(item)" class="action-deadline">
-                          📅 {{ formatActionDeadline(item) }}
-                        </span>
-                      </div>
-                    </li>
-                  </ul>
-                </div>
-
-                <div v-if="analysisResult.decisions?.length" class="result-section">
-                  <h3>{{ t('meeting.decisions') }}</h3>
-                  <ol class="decision-list">
-                    <li v-for="(d, i) in analysisResult.decisions" :key="i">{{ d }}</li>
-                  </ol>
-                </div>
-
-                <div v-if="analysisResult.risks?.length" class="result-section">
-                  <h3>{{ t('meeting.risks') }}</h3>
-                  <ul>
-                    <li v-for="(r, i) in analysisResult.risks" :key="i">{{ r }}</li>
-                  </ul>
-                </div>
-
-                <div v-if="analysisResult.learnings?.length" class="result-section">
-                  <h3>{{ t('meeting.learnings') }}</h3>
-                  <ul>
-                    <li v-for="(l, i) in analysisResult.learnings" :key="i">{{ l }}</li>
-                  </ul>
-                </div>
-
-                <div v-if="analysisResult.feedback?.positive?.length || analysisResult.feedback?.negative?.length" class="result-section">
-                  <h3>{{ t('meeting.feedback') }}</h3>
-                  <div class="feedback-grid">
-                    <div v-if="analysisResult.feedback.positive?.length" class="feedback-positive">
-                      <h4>{{ t('meeting.feedbackPositive') }}</h4>
-                      <ul>
-                        <li v-for="(f, i) in analysisResult.feedback.positive" :key="i">{{ f }}</li>
-                      </ul>
-                    </div>
-                    <div v-if="analysisResult.feedback.negative?.length" class="feedback-negative">
-                      <h4>{{ t('meeting.feedbackNegative') }}</h4>
-                      <ul>
-                        <li v-for="(f, i) in analysisResult.feedback.negative" :key="i">{{ f }}</li>
-                      </ul>
-                    </div>
-                  </div>
-                </div>
-
-                <div v-if="analysisResult.people_mentioned?.length" class="result-section">
-                  <h3>{{ t('meeting.peopleMentioned') }}</h3>
-                  <div class="people-container">
-                    <NTag v-for="(p, i) in analysisResult.people_mentioned" :key="i" type="info" size="small">
-                      {{ p }}
-                    </NTag>
-                  </div>
-                </div>
-
-                <div v-if="analysisResult.relationships?.length" class="result-section">
-                  <h3>{{ t('meeting.relationships') }}</h3>
-                  <div class="relationship-list">
-                    <div v-for="(r, i) in analysisResult.relationships" :key="i" class="relationship-item">
-                      <span class="rel-source">{{ r.source }}</span>
-                      <span class="rel-arrow">→</span>
-                      <span class="rel-target">{{ r.target }}</span>
-                      <span class="rel-desc">{{ r.relation }}</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div v-if="analysisResult.meeting_type" class="result-section meeting-type">
-                  <NTag type="primary" size="small">{{ analysisResult.meeting_type }}</NTag>
-                </div>
-
-                <div v-if="analysisResult.topics?.length" class="result-section">
-                  <h3>{{ t('meeting.topics') }}</h3>
-                  <div class="topic-tags">
-                    <NTag v-for="(topic, i) in analysisResult.topics" :key="i" type="info" size="small">
-                      {{ topic }}
-                    </NTag>
-                  </div>
-                </div>
-
-                <div class="result-section result-actions">
-                  <NButton type="primary" @click="showReport = true" block size="small" :disabled="!htmlContent">
-                    {{ t('meeting.viewReport') }}
-                  </NButton>
-                  <NButton v-if="htmlContent" @click="downloadReport" block size="small">
-                    {{ t('meeting.downloadReport') }}
-                  </NButton>
-                </div>
-              </template>
-
-              <!-- 提示区域 - 当有转写内容但没有分析结果时显示 -->
-              <div v-if="!analysisResult && sentences.length > 0" class="analysis-hint">
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.5">
-                  <circle cx="12" cy="12" r="10"/>
-                  <path d="M12 16v-4"/>
-                  <path d="M12 8h.01"/>
-                </svg>
-                <p>{{ t('meeting.analysisHint') }}</p>
-                <NButton
-                  type="primary"
-                  size="small"
-                  :loading="isLoading && !isAnalyzing"
-                  :disabled="sentences.length === 0"
-                  @click="triggerAnalysis"
-                >
+              <!-- 下载按钮 -->
+              <div class="download-actions">
+                <NButton size="small" @click="downloadAudio" :disabled="isRecording || !audioUrl">
                   <template #icon>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <polygon points="5 3 19 12 5 21 5 3"/>
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                      <polyline points="7 10 12 15 17 10"/>
+                      <line x1="12" y1="15" x2="12" y2="3"/>
                     </svg>
                   </template>
-                  {{ t('meeting.triggerAnalysis') }}
+                  {{ t('meeting.downloadAudio') }}
+                </NButton>
+                <NButton size="small" @click="downloadTranscript" :disabled="isRecording || sentences.length === 0">
+                  <template #icon>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                      <polyline points="14 2 14 8 20 8"/>
+                      <line x1="16" y1="13" x2="8" y2="13"/>
+                      <line x1="16" y1="17" x2="8" y2="17"/>
+                    </svg>
+                  </template>
+                  {{ t('meeting.downloadTranscript') }}
+                </NButton>
+                <NButton size="small" @click="downloadJson" :disabled="isRecording || sentences.length === 0">
+                  <template #icon>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                      <polyline points="14 2 14 8 20 8"/>
+                      <line x1="16" y1="13" x2="8" y2="13"/>
+                      <line x1="16" y1="17" x2="8" y2="17"/>
+                      <polyline points="10 9 9 9 8 9"/>
+                    </svg>
+                  </template>
+                  {{ t('meeting.downloadJson') }}
+                </NButton>
+                <NButton v-if="htmlContent" size="small" @click="downloadReport" :disabled="isRecording">
+                  <template #icon>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                      <polyline points="14 2 14 8 20 8"/>
+                      <line x1="16" y1="13" x2="8" y2="13"/>
+                      <line x1="16" y1="17" x2="8" y2="17"/>
+                    </svg>
+                  </template>
+                  {{ t('meeting.downloadReport') }}
                 </NButton>
               </div>
+            </div>
 
-              <!-- 报告预览：有 htmlContent 时直接渲染，HTML 内容始终可见 -->
-              <div v-if="htmlContent" class="report-preview-section">
-                <div class="report-preview-header">
-                  <h3>{{ t('meeting.reportPreview') }}</h3>
-                  <div class="report-preview-actions">
-                    <NButton size="tiny" @click="showReport = true">
-                      {{ t('meeting.openReport') }}
-                    </NButton>
-                    <NButton size="tiny" @click="downloadReport" :disabled="isRecording">
-                      {{ t('meeting.downloadReport') }}
-                    </NButton>
+            <!-- 分析结果区域 - 只在有分析结果时显示 -->
+            <template v-if="analysisResult">
+              <div v-if="analysisResult.summary" class="result-section">
+                <h3>{{ t('meeting.summary') }}</h3>
+                <p>{{ analysisResult.summary }}</p>
+              </div>
+
+              <div v-if="analysisResult.key_points?.length" class="result-section">
+                <h3>{{ t('meeting.keyPoints') }}</h3>
+                <ul>
+                  <li v-for="(point, i) in analysisResult.key_points" :key="i">{{ point }}</li>
+                </ul>
+              </div>
+
+              <div v-if="analysisResult.action_items?.length" class="result-section">
+                <h3>{{ t('meeting.actionItems') }}</h3>
+                <ul class="action-list">
+                  <li v-for="(item, i) in analysisResult.action_items" :key="i">
+                    <input type="checkbox" />
+                    <div class="action-body">
+                      <span class="action-text">{{ formatActionItem(item) }}</span>
+                      <span v-if="formatActionAssignee(item)" class="action-assignee">
+                        👤 {{ formatActionAssignee(item) }}
+                      </span>
+                      <span v-if="formatActionDeadline(item)" class="action-deadline">
+                        📅 {{ formatActionDeadline(item) }}
+                      </span>
+                    </div>
+                  </li>
+                </ul>
+              </div>
+
+              <div v-if="analysisResult.decisions?.length" class="result-section">
+                <h3>{{ t('meeting.decisions') }}</h3>
+                <ol class="decision-list">
+                  <li v-for="(d, i) in analysisResult.decisions" :key="i">{{ d }}</li>
+                </ol>
+              </div>
+
+              <div v-if="analysisResult.risks?.length" class="result-section">
+                <h3>{{ t('meeting.risks') }}</h3>
+                <ul>
+                  <li v-for="(r, i) in analysisResult.risks" :key="i">{{ r }}</li>
+                </ul>
+              </div>
+
+              <div v-if="analysisResult.learnings?.length" class="result-section">
+                <h3>{{ t('meeting.learnings') }}</h3>
+                <ul>
+                  <li v-for="(l, i) in analysisResult.learnings" :key="i">{{ l }}</li>
+                </ul>
+              </div>
+
+              <div v-if="analysisResult.feedback?.positive?.length || analysisResult.feedback?.negative?.length" class="result-section">
+                <h3>{{ t('meeting.feedback') }}</h3>
+                <div class="feedback-grid">
+                  <div v-if="analysisResult.feedback.positive?.length" class="feedback-positive">
+                    <h4>{{ t('meeting.feedbackPositive') }}</h4>
+                    <ul>
+                      <li v-for="(f, i) in analysisResult.feedback.positive" :key="i">{{ f }}</li>
+                    </ul>
+                  </div>
+                  <div v-if="analysisResult.feedback.negative?.length" class="feedback-negative">
+                    <h4>{{ t('meeting.feedbackNegative') }}</h4>
+                    <ul>
+                      <li v-for="(f, i) in analysisResult.feedback.negative" :key="i">{{ f }}</li>
+                    </ul>
                   </div>
                 </div>
-                <iframe :srcdoc="htmlContent" class="report-preview-iframe"></iframe>
               </div>
 
-              <!-- 空状态 -->
-              <div v-if="sentences.length === 0" class="right-panel-empty">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3">
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                  <polyline points="14 2 14 8 20 8"/>
-                  <line x1="16" y1="13" x2="8" y2="13"/>
-                  <line x1="16" y1="17" x2="8" y2="17"/>
-                  <polyline points="10 9 9 9 8 9"/>
-                </svg>
-                <p>{{ t('meeting.emptyState') }}</p>
+              <div v-if="analysisResult.people_mentioned?.length" class="result-section">
+                <h3>{{ t('meeting.peopleMentioned') }}</h3>
+                <div class="people-container">
+                  <NTag v-for="(p, i) in analysisResult.people_mentioned" :key="i" type="info" size="small">
+                    {{ p }}
+                  </NTag>
+                </div>
               </div>
+
+              <div v-if="analysisResult.relationships?.length" class="result-section">
+                <h3>{{ t('meeting.relationships') }}</h3>
+                <div class="relationship-list">
+                  <div v-for="(r, i) in analysisResult.relationships" :key="i" class="relationship-item">
+                    <span class="rel-source">{{ r.source }}</span>
+                    <span class="rel-arrow">→</span>
+                    <span class="rel-target">{{ r.target }}</span>
+                    <span class="rel-desc">{{ r.relation }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div v-if="analysisResult.meeting_type" class="result-section meeting-type">
+                <NTag type="primary" size="small">{{ analysisResult.meeting_type }}</NTag>
+              </div>
+
+              <div v-if="analysisResult.topics?.length" class="result-section">
+                <h3>{{ t('meeting.topics') }}</h3>
+                <div class="topic-tags">
+                  <NTag v-for="(topic, i) in analysisResult.topics" :key="i" type="info" size="small">
+                    {{ topic }}
+                  </NTag>
+                </div>
+              </div>
+
+              <div class="result-section result-actions">
+                <NButton type="primary" @click="showReport = true" block size="small" :disabled="!htmlContent">
+                  {{ t('meeting.viewReport') }}
+                </NButton>
+                <NButton v-if="htmlContent" @click="downloadReport" block size="small">
+                  {{ t('meeting.downloadReport') }}
+                </NButton>
+              </div>
+            </template>
+
+            <!-- 提示区域 - 当有转写内容但没有分析结果时显示 -->
+            <div v-if="!analysisResult && sentences.length > 0" class="analysis-hint">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.5">
+                <circle cx="12" cy="12" r="10"/>
+                <path d="M12 16v-4"/>
+                <path d="M12 8h.01"/>
+              </svg>
+              <p>{{ t('meeting.analysisHint') }}</p>
+              <NButton
+                type="primary"
+                size="small"
+                :loading="isLoading && !isAnalyzing"
+                :disabled="sentences.length === 0"
+                @click="triggerAnalysis"
+              >
+                <template #icon>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polygon points="5 3 19 12 5 21 5 3"/>
+                  </svg>
+                </template>
+                {{ t('meeting.triggerAnalysis') }}
+              </NButton>
             </div>
-          </template>
-        </div>
-      </aside>
+
+            <!-- 报告预览：有 htmlContent 时直接渲染，HTML 内容始终可见 -->
+            <div v-if="htmlContent" class="report-preview-section">
+              <div class="report-preview-header">
+                <h3>{{ t('meeting.reportPreview') }}</h3>
+                <div class="report-preview-actions">
+                  <NButton size="tiny" @click="showReport = true">
+                    {{ t('meeting.openReport') }}
+                  </NButton>
+                  <NButton size="tiny" @click="downloadReport" :disabled="isRecording">
+                    {{ t('meeting.downloadReport') }}
+                  </NButton>
+                </div>
+              </div>
+              <iframe :srcdoc="htmlContent" class="report-preview-iframe"></iframe>
+            </div>
+
+            <!-- 空状态 -->
+            <div v-if="sentences.length === 0" class="right-panel-empty">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                <polyline points="14 2 14 8 20 8"/>
+                <line x1="16" y1="13" x2="8" y2="13"/>
+                <line x1="16" y1="17" x2="8" y2="17"/>
+                <polyline points="10 9 9 9 8 9"/>
+              </svg>
+              <p>{{ t('meeting.emptyState') }}</p>
+            </div>
+          </div>
+        </template>
+      </MeetingRightPanel>
       </div>
     </div>
 
-    <!-- 创建会议对话框 -->
-    <NModal
-      v-model:show="showCreateModal"
-      preset="card"
-      :title="t('meeting.createMeeting')"
-      :style="{ width: '580px' }"
-      :bordered="false"
-      :mask-closable="false"
+<!-- 创建会议对话框（外壳已拆出 CreateMeetingDialog） -->
+    <CreateMeetingDialog
+      v-model:visible="showCreateModal"
+      :create-disabled="!newMeetingTitle.trim() || (!asrApiKey.trim() && !meetingStore.hasASRConfig)"
+      @create="handleCreateMeeting"
     >
       <div class="create-meeting-form">
         <div class="form-item">
@@ -2758,153 +1500,16 @@ async function clearTranscript() {
 
         <div class="form-item">
           <label class="form-label">{{ t('meeting.scene.label') }}</label>
-          <NSelect
-            v-model:value="newMeetingSceneTemplate"
-            :options="sceneTemplateOptions"
-            :placeholder="t('meeting.scene.placeholder')"
-          />
+          <SceneTemplatePicker v-model="newMeetingSceneTemplate" />
           <div class="form-hint">{{ t('meeting.scene.hint') }}</div>
         </div>
 
-        <div class="form-section">
-          <div class="form-section-title">{{ t('meeting.asrConfig') }}</div>
-          <NSteps :current="asrWizardStep" size="small" status="process" class="asr-wizard-steps">
-            <NStep :title="t('meeting.wizardStepAsr')" :description="meetingStore.hasASRConfig ? t('meeting.configured') : ''" />
-            <NStep :title="t('meeting.wizardStepLlm')" :description="newMeetingAnalysisMode === 'hermes' ? t('meeting.hermesAgent') : (meetingStore.hasLLMConfig ? t('meeting.configured') : t('meeting.optional'))" />
-            <NStep :title="t('meeting.wizardStepReview')" />
-          </NSteps>
-
-          <!-- Step 1: DashScope API Key (required) -->
-          <div v-if="asrWizardStep === 1" class="form-item">
-            <label class="form-label">
-              {{ t('meeting.dashscopeApiKey') }}
-              <a
-                href="https://dashscope.aliyun.com/"
-                target="_blank"
-                rel="noopener noreferrer"
-                class="form-tutorial-link"
-                @click.stop
-              >{{ t('meeting.howToGetApiKey') }}</a>
-              <span v-if="meetingStore.hasASRConfig" class="form-label-badge">{{ t('meeting.configured') }}</span>
-            </label>
-            <NInput
-              v-model:value="asrApiKey"
-              type="password"
-              show-password-on="click"
-              :placeholder="meetingStore.hasASRConfig ? t('meeting.apiKeySaved') : t('meeting.dashscopeApiKeyPlaceholder')"
-            />
-            <div class="form-hint">{{ t('meeting.dashscopeApiKeyHint') }}</div>
-
-            <!-- OSS 配置（说话人分离必填，可折叠）——隐藏说话人分离时一并隐藏 -->
-            <details v-if="!HIDE_SPEAKER_DIARIZATION" class="oss-config-details">
-              <summary class="oss-config-summary">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
-                  <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
-                  <line x1="12" y1="22.08" x2="12" y2="12"/>
-                </svg>
-                {{ t('meeting.ossConfig') }}
-                <span v-if="meetingStore.asrConfig.ossBucket" class="form-label-badge">{{ t('meeting.configured') }}</span>
-              </summary>
-              <div class="oss-config-body">
-                <NAlert type="info" :show-icon="false" closable style="margin-bottom: 12px">
-                  {{ t('meeting.ossConfigHint') }}
-                </NAlert>
-                <label class="form-label">{{ t('meeting.ossBucket') }}</label>
-                <NInput v-model:value="ossBucket" :placeholder="t('meeting.ossBucketPlaceholder')" />
-                <label class="form-label" style="margin-top: 12px">{{ t('meeting.ossAccessKeyId') }}</label>
-                <NInput v-model:value="ossAccessKeyId" type="password" show-password-on="click" :placeholder="t('meeting.ossAccessKeyIdPlaceholder')" />
-                <label class="form-label" style="margin-top: 12px">{{ t('meeting.ossAccessKeySecret') }}</label>
-                <NInput v-model:value="ossAccessKeySecret" type="password" show-password-on="click" :placeholder="t('meeting.ossAccessKeySecretPlaceholder')" />
-                <label class="form-label" style="margin-top: 12px">{{ t('meeting.ossEndpoint') }}</label>
-                <NInput v-model:value="ossEndpoint" :placeholder="t('meeting.ossEndpointPlaceholder')" />
-                <label class="form-label" style="margin-top: 12px">{{ t('meeting.ossPathPrefix') }}</label>
-                <NInput v-model:value="ossPathPrefix" :placeholder="t('meeting.ossPathPrefixPlaceholder')" />
-              </div>
-            </details>
-
-            <div class="wizard-actions">
-              <NButton type="primary" size="small" @click="asrWizardStep = 2">
-                {{ t('meeting.wizardNext') }}
-              </NButton>
-            </div>
-          </div>
-
-          <!-- Step 2: 智能分析（可选 — 默认直接使用 Hermes Agent，无需 LLM 配置） -->
-          <div v-if="asrWizardStep === 2" class="form-item">
-            <NAlert type="info" :show-icon="false" style="margin-bottom: 12px">
-              {{ t('meeting.llmOptionalHint') }}
-            </NAlert>
-            <label class="form-label">{{ t('meeting.analysisMode') }}</label>
-            <NRadioGroup v-model:value="newMeetingAnalysisMode">
-              <NRadio value="hermes">
-                <div class="radio-content">
-                  <span class="radio-title">{{ t('meeting.hermesAgent') }}</span>
-                  <span class="radio-desc">{{ t('meeting.hermesAgentDesc') }}</span>
-                </div>
-              </NRadio>
-              <NRadio value="custom">
-                <div class="radio-content">
-                  <span class="radio-title">{{ t('meeting.customModel') }}</span>
-                  <span class="radio-desc">{{ t('meeting.customModelDesc') }}</span>
-                </div>
-              </NRadio>
-            </NRadioGroup>
-            <!-- 自定义 LLM 配置（仅在选择自定义模式时显示） -->
-            <template v-if="newMeetingAnalysisMode === 'custom'">
-              <label class="form-label" style="margin-top: 12px">{{ t('meeting.llmApiKey') }}</label>
-              <NInput
-                v-model:value="llmApiKey"
-                type="password"
-                show-password-on="click"
-                :placeholder="t('meeting.llmApiKeyPlaceholder')"
-              />
-              <label class="form-label" style="margin-top: 12px">{{ t('meeting.llmBaseUrl') }}</label>
-              <NInput v-model:value="llmBaseUrl" :placeholder="t('meeting.llmBaseUrlPlaceholder')" />
-              <label class="form-label" style="margin-top: 12px">{{ t('meeting.llmModel') }}</label>
-              <NInput v-model:value="llmModel" :placeholder="t('meeting.llmModelPlaceholder')" />
-            </template>
-            <div class="wizard-actions">
-              <NButton size="small" @click="asrWizardStep = 1">{{ t('meeting.wizardBack') }}</NButton>
-              <NButton type="primary" size="small" @click="asrWizardStep = 3">
-                {{ t('meeting.wizardNext') }}
-              </NButton>
-            </div>
-          </div>
-
-          <!-- Step 3: Review -->
-          <div v-if="asrWizardStep === 3" class="form-item">
-            <NAlert v-if="!meetingStore.hasASRConfig && !asrApiKey" type="warning" :show-icon="true" style="margin-bottom: 8px">
-              {{ t('meeting.wizardWarnMissingAsr') }}
-            </NAlert>
-            <NAlert v-if="newMeetingAnalysisMode === 'custom' && !meetingStore.hasLLMConfig && !llmApiKey" type="info" :show-icon="false" style="margin-bottom: 8px">
-              {{ t('meeting.wizardWarnMissingLlm') }}
-            </NAlert>
-            <ul class="wizard-review-list">
-              <li>
-                <span class="wizard-review-label">{{ t('meeting.wizardStepAsr') }}:</span>
-                <span class="wizard-review-value">{{ (asrApiKey || meetingStore.asrConfig.dashscopeApiKey) ? '✓ ' + t('meeting.configured') : '— ' + t('meeting.notConfigured') }}</span>
-              </li>
-              <li>
-                <span class="wizard-review-label">{{ t('meeting.wizardStepLlm') }}:</span>
-                <span class="wizard-review-value">{{ newMeetingAnalysisMode === 'hermes' ? '✓ ' + t('meeting.hermesAgent') : ((llmApiKey || meetingStore.asrConfig.llmApiKey) ? '✓ ' + t('meeting.configured') : '— ' + t('meeting.notConfigured')) }}</span>
-              </li>
-            </ul>
-            <div class="wizard-actions">
-              <NButton size="small" @click="asrWizardStep = 2">{{ t('meeting.wizardBack') }}</NButton>
-              <NButton size="small" @click="asrWizardStep = 1">{{ t('meeting.wizardRestart') }}</NButton>
-            </div>
-          </div>
-          <div class="form-item">
-            <label class="form-label">{{ t('meeting.asrModel') }}</label>
-            <NSelect
-              v-model:value="newMeetingAsrModel"
-              :options="asrModelOptions"
-              :placeholder="t('meeting.selectAsrModel')"
-            />
-            <div class="form-hint">{{ t('meeting.asrModelHint') }}</div>
-          </div>
-        </div>
+        <!-- ASR 配置向导（拆分至 AsrConfigWizardDialog，行为保持不变） -->
+        <AsrConfigWizardDialog
+          ref="asrWizardRef"
+          v-model:asr-api-key="asrApiKey"
+          v-model:analysis-mode="newMeetingAnalysisMode"
+        />
 
         <div class="form-section">
           <div class="form-section-title">{{ t('meeting.agentConfig') }}</div>
@@ -2979,18 +1584,7 @@ async function clearTranscript() {
           </template>
         </div>
       </div>
-      
-      <template #action>
-        <NButton @click="showCreateModal = false">{{ t('common.cancel') }}</NButton>
-        <NButton
-          type="primary"
-          :disabled="!newMeetingTitle.trim() || (!asrApiKey.trim() && !meetingStore.hasASRConfig)"
-          @click="handleCreateMeeting"
-        >
-          {{ t('meeting.create') }}
-        </NButton>
-      </template>
-    </NModal>
+    </CreateMeetingDialog>
 
     <!-- 分析触发配置弹窗 -->
     <NModal
@@ -3072,8 +1666,8 @@ async function clearTranscript() {
   overflow: hidden;
 }
 
-// 左侧边栏样式
-.sidebar-backdrop {
+// 左侧边栏布局（容器+删除按钮样式由父级提供；列表项内层样式已迁入 MeetingSidebar）
+:deep(.sidebar-backdrop) {
   display: none;
 
   @media (max-width: 768px) {
@@ -3093,7 +1687,7 @@ async function clearTranscript() {
   }
 }
 
-.meeting-sidebar {
+:deep(.meeting-sidebar) {
   width: 260px;
   min-width: 260px;
   height: 100%;
@@ -3130,7 +1724,7 @@ async function clearTranscript() {
   }
 }
 
-.page-sidebar-top {
+:deep(.page-sidebar-top) {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -3139,7 +1733,7 @@ async function clearTranscript() {
   gap: 8px;
 }
 
-.meeting-list {
+:deep(.meeting-list) {
   flex: 1;
   overflow-y: auto;
   display: flex;
@@ -3147,14 +1741,7 @@ async function clearTranscript() {
   gap: 2px;
 }
 
-.meeting-list-empty {
-  padding: 16px;
-  text-align: center;
-  color: $text-secondary;
-  font-size: 13px;
-}
-
-.meeting-list-item {
+:deep(.meeting-list-item) {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -3176,7 +1763,7 @@ async function clearTranscript() {
   }
 }
 
-.meeting-item-icon {
+:deep(.meeting-item-icon) {
   flex-shrink: 0;
   width: 28px;
   height: 28px;
@@ -3188,42 +1775,13 @@ async function clearTranscript() {
   color: $accent-primary;
 }
 
-.meeting-item-content {
+:deep(.meeting-item-content) {
   flex: 1;
   min-width: 0;
 }
 
-.meeting-item-title {
-  font-size: 13px;
-  font-weight: 500;
-  color: $text-primary;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.meeting-item-meta {
-  font-size: 11px;
-  color: $text-secondary;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-top: 2px;
-}
-
-.meeting-item-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 1px 4px;
-  border-radius: 3px;
-  background: rgba($accent-primary, 0.15);
-  color: $accent-primary;
-  font-size: 10px;
-  font-weight: 600;
-}
-
-.meeting-item-delete {
+// 删除按钮由父级 slot 渲染（包 NPopconfirm），故其样式留在父级
+:deep(.meeting-item-delete) {
   flex-shrink: 0;
   width: 20px;
   height: 20px;
@@ -3238,14 +1796,15 @@ async function clearTranscript() {
   opacity: 0;
   transition: all 0.2s ease;
 
-  .meeting-list-item:hover & {
-    opacity: 1;
-  }
-
   &:hover {
     background: rgba(239, 68, 68, 0.1);
     color: #ef4444;
   }
+}
+
+// 让 hover 父级（列表项）时显示删除按钮——拆成独立规则，因为 SCSS 嵌套 + :deep + & 不能正确编译。
+:deep(.meeting-list-item:hover) .meeting-item-delete {
+  opacity: 1;
 }
 
 .meeting-main {
@@ -3256,7 +1815,7 @@ async function clearTranscript() {
   overflow: hidden;
 }
 
-.header-avatar-toggle {
+:deep(.header-avatar-toggle) {
   flex-shrink: 0;
   width: 32px;
   height: 32px;
@@ -3281,13 +1840,14 @@ async function clearTranscript() {
   }
 }
 
-.header-logo {
+:deep(.header-logo) {
   width: 24px;
   height: 24px;
   object-fit: contain;
 }
 
-.meeting-header {
+// 顶部控制条样式（MeetingTopBar 子组件内部 DOM，scoped 需用 :deep 穿透）
+:deep(.meeting-header) {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -3297,7 +1857,7 @@ async function clearTranscript() {
   flex-shrink: 0;
 }
 
-.meeting-title {
+:deep(.meeting-title) {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -3313,7 +1873,7 @@ async function clearTranscript() {
   }
 }
 
-.meeting-controls {
+:deep(.meeting-controls) {
   display: flex;
   gap: 8px;
 }
@@ -3332,30 +1892,12 @@ async function clearTranscript() {
   min-width: 0;
 }
 
-.waveform-container {
-  height: 100px;
-  background: rgb(15, 23, 42);
+// .waveform-container / .connecting-overlay 已迁入 WaveformCanvas 组件。
+// 演讲评分：波形区外层舞台（相位描边 + 承载计时器浮层，org 演讲功能移植）。
+.waveform-stage {
   position: relative;
   overflow: hidden;
 
-  canvas {
-    width: 100%;
-    height: 100%;
-  }
-
-  .connecting-overlay {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    background: rgba(0, 0, 0, 0.5);
-    color: white;
-    font-size: 14px;
-  }
-
-  // 演讲评分：波形区相位描边（与倒计时红黄绿同步）
   &.phase-green { box-shadow: inset 0 0 0 2px rgba(24, 160, 88, 0.35); }
   &.phase-yellow { box-shadow: inset 0 0 0 2px rgba(240, 160, 32, 0.5); }
   &.phase-red { box-shadow: inset 0 0 0 2px rgba(208, 48, 80, 0.65); }
@@ -3497,6 +2039,7 @@ async function clearTranscript() {
   50% { opacity: 0.4; }
 }
 
+
 .status-bar {
   display: flex;
   justify-content: space-between;
@@ -3569,134 +2112,8 @@ async function clearTranscript() {
   font-size: 12px;
 }
 
-.transcript-content {
-  flex: 1;
-  overflow-y: auto;
-  padding: 16px;
-}
-
-.empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  gap: 12px;
-  color: $text-secondary;
-
-  p {
-    font-size: 14px;
-  }
-}
-
-.sentence-item {
-  display: flex;
-  gap: 12px;
-  padding: 8px;
-  border-bottom: 1px solid rgba($border-color, 0.5);
-  border-radius: 4px;
-  transition: background-color 0.2s ease;
-
-  &:last-child {
-    border-bottom: none;
-  }
-
-  &.highlighted {
-    background: rgba($accent-primary, 0.15);
-    border-left: 3px solid $accent-primary;
-  }
-
-  &.clickable {
-    cursor: pointer;
-
-    &:hover {
-      background: rgba($accent-primary, 0.06);
-    }
-  }
-}
-
-.sentence-index {
-  flex-shrink: 0;
-  width: 24px;
-  height: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba($accent-primary, 0.1);
-  color: $accent-primary;
-  border-radius: 50%;
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.sentence-body {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-  flex: 1;
-}
-
-.sentence-speaker {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  background: rgba($accent-primary, 0.1);
-  color: $accent-primary;
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  width: fit-content;
-
-  &:hover {
-    background: rgba($accent-primary, 0.2);
-  }
-}
-
-.sentence-text {
-  font-size: 14px;
-  line-height: 1.6;
-}
-
-.speaker-rename-popover {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 4px 0;
-}
-
-.speaker-rename-title {
-  font-size: 13px;
-  font-weight: 500;
-  color: $text-primary;
-}
-
-.speaker-rename-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.partial-text {
-  padding: 8px 0;
-  color: $text-secondary;
-  font-style: italic;
-  font-size: 14px;
-}
-
-.partial-indicator {
-  display: inline-block;
-  padding: 2px 6px;
-  background: rgba($accent-primary, 0.1);
-  color: $accent-primary;
-  border-radius: 4px;
-  font-size: 11px;
-  font-style: normal;
-  margin-right: 8px;
-}
+// 转写内容样式（.transcript-content/.empty-state/.sentence-item/.sentence-speaker/
+// .partial-text 等）已迁入 TranscriptList.vue scoped 样式。
 
 .record-button-container {
   display: flex;
@@ -3756,190 +2173,8 @@ async function clearTranscript() {
   color: $text-secondary;
 }
 
-// 右侧面板样式
-.right-panel {
-  position: relative;
-  flex: 0 0 auto;
-  min-width: 280px;
-  max-width: 100%;
-  background: $bg-card;
-  border-left: 1px solid $border-color;
-  display: flex;
-  align-self: stretch;
-  min-height: 0;
-  overflow: hidden; // 改为 hidden，避免按钮溢出屏幕
-}
-
-.right-panel-resize-handle {
-  position: absolute;
-  left: -7px;
-  top: 0;
-  bottom: 0;
-  width: 14px;
-  cursor: col-resize;
-  z-index: 20;
-
-  &::after {
-    content: "";
-    position: absolute;
-    left: 6px;
-    top: 0;
-    bottom: 0;
-    width: 1px;
-    background:
-      linear-gradient($border-color, $border-color) top / 1px calc(50% - 26px) no-repeat,
-      linear-gradient($border-color, $border-color) bottom / 1px calc(50% - 26px) no-repeat;
-    transition: background $transition-fast;
-    z-index: 1;
-  }
-
-  &::before {
-    content: "";
-    position: absolute;
-    left: 1px;
-    top: 50%;
-    width: 12px;
-    height: 38px;
-    transform: translateY(-50%);
-    border-radius: 6px;
-    background:
-      linear-gradient($text-muted, $text-muted) center 12px / 6px 1px no-repeat,
-      linear-gradient($text-muted, $text-muted) center 19px / 6px 1px no-repeat,
-      linear-gradient($text-muted, $text-muted) center 26px / 6px 1px no-repeat,
-      $bg-card;
-    border: 1px solid $border-color;
-    opacity: 0.9;
-    transition: all $transition-fast;
-    z-index: 2;
-  }
-
-  &:hover::after {
-    background:
-      linear-gradient(var(--accent-primary), var(--accent-primary)) top / 1px calc(50% - 26px) no-repeat,
-      linear-gradient(var(--accent-primary), var(--accent-primary)) bottom / 1px calc(50% - 26px) no-repeat;
-  }
-
-  &:hover::before {
-    background:
-      linear-gradient(var(--accent-primary), var(--accent-primary)) center 12px / 6px 1px no-repeat,
-      linear-gradient(var(--accent-primary), var(--accent-primary)) center 19px / 6px 1px no-repeat,
-      linear-gradient(var(--accent-primary), var(--accent-primary)) center 26px / 6px 1px no-repeat,
-      $bg-card;
-    border-color: var(--accent-primary);
-    opacity: 1;
-  }
-}
-
-.right-panel-inner {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.right-panel-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px 12px;
-  border-bottom: 1px solid $border-color;
-  flex-shrink: 0;
-  gap: 8px;
-
-  h2 {
-    font-size: 14px;
-    font-weight: 600;
-    margin: 0;
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-}
-
-.right-panel-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
-}
-
-// 新增：分析工具栏（独立一行，承载触发/启动/配置 + Agent 切换）
-.right-panel-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  padding: 8px 12px;
-  border-bottom: 1px solid $border-color;
-  background: rgba($accent-primary, 0.02);
-  flex-shrink: 0;
-  min-width: 0;
-}
-
-.toolbar-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex: 1;
-  min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-
-  &::-webkit-scrollbar {
-    display: none;
-  }
-
-  // 让按钮在窄面板中优雅收缩
-  :deep(.n-button) {
-    flex-shrink: 0;
-  }
-}
-
-.panel-close-btn {
-  width: 24px;
-  height: 24px;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: $text-secondary;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.2s ease;
-
-  &:hover {
-    background: rgba(239, 68, 68, 0.1);
-    color: #ef4444;
-  }
-}
-
-.right-panel-content {
-  flex: 1;
-  overflow-y: auto;
-  padding: 16px;
-}
-
-.right-panel-empty {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  color: $text-secondary;
-  padding: 40px;
-
-  p {
-    font-size: 14px;
-    text-align: center;
-  }
-}
+// 右侧面板：chrome 已迁入 MeetingRightPanel.vue
+// 父组件只保留分析内容区域的样式（result-section / download-section / ...）
 
 .result-section {
   margin-bottom: 20px;

@@ -1085,10 +1085,17 @@ build_webui() {
 # Pre-warm the Python venv used by the meeting-asr backend so that the first
 # meeting start on ARM64 doesn't block 5-10 minutes on `pip install`.
 # Runs as the app user so the resulting .venv is owned correctly.
+#
+# v0.7.16+: the venv lives under the meeting-asr data directory, NOT under
+# `dist/server/python-backend/`. The dist tree is owned by the deploy user and
+# must not be writable by the runtime user; keeping the venv next to
+# `config.json` / `analysis.json` / `.env` means it shares the data-dir
+# ownership guarantees and survives device-package upgrades.
 prewarm_meeting_asr_venv() {
   local python_backend_dir="${DEPLOY_DIR}/dist/server/python-backend"
   local requirements_file="${DEPLOY_DIR}/dist/server/requirements.txt"
-  local venv_dir="${python_backend_dir}/.venv"
+  local data_dir="${MEETING_ASR_DATA_DIR:-/var/lib/hermes-web-ui/meeting-asr}"
+  local venv_dir="${data_dir}/.venv"
 
   if [[ ! -d "${python_backend_dir}" ]]; then
     info "Meeting ASR backend not packaged (no ${python_backend_dir}); skipping venv pre-warm."
@@ -1099,16 +1106,19 @@ prewarm_meeting_asr_venv() {
     return 0
   fi
 
-  step "Pre-warm Meeting ASR Python venv (ARM64 pip install may take several minutes)"
-  run_as_app_user "cd '${python_backend_dir}' && python3 -m venv .venv"
+  step "Pre-warm Meeting ASR Python venv at ${venv_dir} (ARM64 pip install may take several minutes)"
+  run_as_app_user "mkdir -p '${data_dir}' && python3 -m venv '${venv_dir}'"
   # Use the venv pip directly. Avoid printing the full install log on success;
-  # surface only tail on failure.
-  if ! run_as_app_user "cd '${python_backend_dir}' && .venv/bin/pip install --disable-pip-version-check -r '${requirements_file}'" 2>&1 | tail -20; then
+  # surface only tail on failure. cwd stays in backend dir so relative paths in
+  # requirements.txt resolve; the venv itself is under the data dir.
+  if ! run_as_app_user "cd '${python_backend_dir}' && '${venv_dir}/bin/pip' install --disable-pip-version-check -r '${requirements_file}'" 2>&1 | tail -20; then
     warn "Meeting ASR venv pre-warm failed. The service will retry on first /api/meeting-asr/start."
     warn "Check 'journalctl -u ${SYSTEMD_SERVICE_NAME}' for details."
     return 0
   fi
-  info "Meeting ASR venv pre-warmed successfully."
+  # Marker is written by the service on first successful start; we don't
+  # pre-create it so the marker always reflects a runtime-verified install.
+  info "Meeting ASR venv pre-warmed successfully at ${venv_dir}."
 }
 
 write_service_env() {
@@ -1135,6 +1145,11 @@ HERMES_HOME=${HERMES_HOME_DIR}
 HERMES_BIN=${hermes_bin}
 ${hermes_agent_root:+HERMES_AGENT_ROOT=${hermes_agent_root}}
 HERMES_WEB_UI_HOME=${webui_home}
+# Meeting ASR data dir (must match prewarm_meeting_asr_venv so the pre-warmed
+# venv is the one the runtime service reuses; see v0.7.16 audit #1). Must
+# also match hermes-web-ui.service's StateDirectory= so systemd chowns it
+# to the runtime user before first start.
+MEETING_ASR_DATA_DIR=${MEETING_ASR_DATA_DIR:-/var/lib/hermes-web-ui/meeting-asr}
 LANG=C.UTF-8
 LC_ALL=C.UTF-8
 EOF

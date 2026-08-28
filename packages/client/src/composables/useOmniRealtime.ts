@@ -130,20 +130,13 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
   let currentSlot: PlaybackSlot | null = null
   let nextPlayTime = 0
 
-  function ensurePlaybackContext(): AudioContext {
-    if (playbackCtx) return playbackCtx
-    // Pick a context rate that matches the device; the AudioBuffer will resample
-    // when we schedule it because we declare its sampleRate as TARGET_SAMPLE_RATE.
-    const Ctor = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
-    playbackCtx = new Ctor()
-    return playbackCtx
-  }
-
   function flushPendingToSlot(): void {
     if (!playbackCtx) return
     if (!pendingSamples || pendingLength === 0) return
     const buf = playbackCtx.createBuffer(1, pendingLength, TARGET_SAMPLE_RATE)
-    buf.copyToChannel(pendingSamples.subarray(0, pendingLength), 0, 0)
+    // slice() (not subarray()) so the copied view is ArrayBuffer-backed —
+    // copyToChannel requires Float32Array<ArrayBuffer> on TS 5.7+ typed arrays.
+    buf.copyToChannel(pendingSamples.slice(0, pendingLength), 0, 0)
     const slot: PlaybackSlot = {
       buffer: buf,
       source: null,
@@ -306,7 +299,10 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
       const { samples, sourceSampleRate } = event.data
       const resampled = resampleLinear(samples, sourceSampleRate, TARGET_SAMPLE_RATE)
       const int16 = float32ToInt16(resampled)
-      ws.send(int16.buffer)
+      // int16.buffer types as ArrayBufferLike (SharedArrayBuffer possible on
+      // generic typed arrays); WebSocket.send only accepts ArrayBuffer, and we
+      // always allocate fresh buffers here, so the cast is safe.
+      ws.send(int16.buffer as ArrayBuffer)
     }
 
     // visual feedback: simple peak level derived from analyser
@@ -474,6 +470,7 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
     liveUserText,
     liveAssistantText,
     inputLevel,
+    isPushing,
     isReady,
     connect,
     disconnect,

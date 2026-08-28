@@ -85,6 +85,19 @@ const sessionBrowserPrefsStore = useSessionBrowserPrefsStore();
 const router = useRouter();
 const message = useMessage();
 const { t } = useI18n();
+
+// switchSession 失败（resume timeout / socket error）时 store 会写到
+// chatStore.lastSwitchError；这里 surface 成一条非阻断 toast，避免用户只看到空白页。
+// 立即清空 ref 防止下次无意义的 toast 重弹（store 内部用 `${sessionId}:${reason}`
+// 做去重键，外部不需要理解那个格式）。
+watch(
+  () => chatStore.lastSwitchError,
+  (value) => {
+    if (!value) return
+    message.warning(t('meeting.sessionSwitchResumeFailed'), { duration: 6000 })
+    chatStore.clearLastSwitchError()
+  },
+)
 const isSuperAdmin = computed(() => isStoredSuperAdmin());
 
 const showOutline = ref(false);

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { NButton, NTag, NTooltip, NEmpty, NAlert, NSelect, NInput } from 'naive-ui'
+import { NButton, NTag, NTooltip, NEmpty, NAlert, NSelect, NInput, type SelectOption } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useOmniRealtime } from '@/composables/useOmniRealtime'
 
@@ -15,15 +15,10 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
-interface VoiceOption {
-  label: string
-  value: string
-}
-
 // A small curated voice list. DashScope accepts additional values; the ones
 // below are the ones most commonly listed in their docs and stay stable
 // across Omni-Realtime model upgrades.
-const voiceOptions: VoiceOption[] = [
+const voiceOptions: SelectOption[] = [
   { label: 'Cherry (女声 · 中文)', value: 'Cherry' },
   { label: 'Serena (女声 · 中文)', value: 'Serena' },
   { label: 'Ethan (男声 · 中文)', value: 'Ethan' },
@@ -52,7 +47,6 @@ const {
   liveUserText,
   liveAssistantText,
   inputLevel,
-  isReady: _omniIsReady,
 } = omni
 
 const phaseLabel = computed(() => {
@@ -130,7 +124,6 @@ watch(
     })
   },
 )
-void _omniIsReady
 </script>
 
 <template>
@@ -153,7 +146,7 @@ void _omniIsReady
         <NTag :type="phaseTagType" size="small" round>{{ phaseLabel }}</NTag>
         <NTooltip>
           <template #trigger>
-            <NButton size="tiny" quaternary @click="emit('close')">{{ t('common.close') }}</NButton>
+            <NButton size="tiny" quaternary @click="emit('close')">{{ t('sidebar.collapse') }}</NButton>
           </template>
           {{ t('meeting.realtime.closeHint') }}
         </NTooltip>

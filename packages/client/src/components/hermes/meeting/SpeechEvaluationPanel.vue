@@ -6,8 +6,9 @@ import { useMeetingStore } from '@/stores/hermes/meeting'
 import type { SpeechEvalState, SpeechTimerRecord } from '@/stores/hermes/meeting'
 import { useMeetingAssist, type GoldenQuote, type GrammarIssue } from '@/composables/useMeetingAssist'
 import { useSpeechTimer } from '@/composables/useSpeechTimer'
+import { useSpeechFillerCounter } from '@/composables/useSpeechFillerCounter'
 import { request, getApiKey } from '@/api/client'
-import { buildReportHtml } from '@/utils/report-html'
+import MeetingExportDropdown from './MeetingExportDropdown.vue'
 
 const MarkdownRenderer = defineAsyncComponent(async () => (await import('@/components/hermes/chat/MarkdownRenderer.vue')).default)
 
@@ -69,33 +70,29 @@ function persist(patch: Partial<SpeechEvalState>) {
 }
 
 // ---------- 计时员 (Timer) ----------
-// 使用共享计时器：与左侧波形/转写区同步显示
+// 共享计时器（单例）：与左侧波形/转写区同步显示；面板层（环节记录/设置）经 deps 启用。
 const {
   timerRunning,
   timerRemainingMs,
   phase,
   display: timerDisplay,
+  phaseLabel,
+  timerLabel,
+  timerRecords,
+  fmtSec,
   setThresholds,
   reset: resetTimer,
   toggle: toggleTimer,
-} = useSpeechTimer()
-
-const timerLabel = ref('')
-
-function fmtSec(sec: number): string {
-  const s = Math.max(0, Math.round(sec))
-  const m = Math.floor(s / 60)
-  return `${String(m).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
-}
-
-const phaseLabel = computed(() => {
-  const map = {
-    green: t('meeting.speechEval.greenCard'),
-    yellow: t('meeting.speechEval.yellowCard'),
-    red: t('meeting.speechEval.redCard'),
-  }
-  return map[phase.value]
-})
+  // 注：recordSegment 不从这里解构——面板在下方定义本地覆盖版，
+  // 以支持"串场计时"标签分支与语音播报标志复位。
+  removeRecord,
+  showSettings,
+  settingsDuration,
+  settingsYellow,
+  settingsRed,
+  openSettings,
+  saveSettings,
+} = useSpeechTimer({ evalState, persist })
 
 // 阈值变更时同步共享计时器（时长/黄牌/红牌剩余秒数）
 watch(() => ({
@@ -105,11 +102,6 @@ watch(() => ({
 }), (v) => {
   setThresholds({ durationSec: v.durationSec, yellowAtSec: v.yellowAtSec, redAtSec: v.redAtSec })
 }, { immediate: true })
-
-function nextLabel(): string {
-  const n = timerRecords.value.length + 1
-  return `${t('meeting.speechEval.segmentLabelPrefix')} ${n}`
-}
 
 // ---------- 串场计时（主持人过渡/串场用时） ----------
 // 计时器同一份运行态：切换"演讲计时/串场计时"模式，记录时打上不同标签，
@@ -135,6 +127,13 @@ function switchTimerMode(mode: 'segment' | 'transition') {
   }
 }
 
+// 本地 nextLabel：useSpeechTimer 内部有同名实现但未导出，这里为覆盖版 recordSegment 提供
+function nextLabel(): string {
+  const n = timerRecords.value.length + 1
+  return `${t('meeting.speechEval.segmentLabelPrefix')} ${n}`
+}
+
+// 覆盖 useSpeechTimer 提供的 recordSegment：增加 transition 标签分支
 function recordSegment() {
   const durationSec = evalState.value.timerDurationSec - timerRemainingMs.value / 1000
   const overtimeSec = Math.max(0, -timerRemainingMs.value / 1000)
@@ -149,12 +148,6 @@ function recordSegment() {
   timerLabel.value = ''
   resetVoiceFlags()
   resetTimer()
-}
-
-function removeRecord(index: number) {
-  const records = [...evalState.value.timerRecords]
-  records.splice(index, 1)
-  persist({ timerRecords: records })
 }
 
 // ---------- 计时声音提醒（黄牌/红牌/时间到 语音播报） ----------
@@ -222,15 +215,6 @@ function handleResetTimer() {
   resetTimer()
 }
 
-const timerRecords = computed(() => evalState.value.timerRecords || [])
-
-// ---------- 计时设置 ----------
-
-const showSettings = ref(false)
-const settingsDuration = ref(180)
-const settingsYellow = ref(30)
-const settingsRed = ref(10)
-
 // Toastmasters 常见环节预设（一键套用时长/黄牌/红牌）
 const SEGMENT_PRESETS = [
   { key: 'tableTopics', durationSec: 120, yellowAtSec: 30, redAtSec: 10 },   // 即兴演讲 2 分钟
@@ -246,23 +230,6 @@ function applyPreset(presetKey: string) {
   settingsDuration.value = preset.durationSec
   settingsYellow.value = preset.yellowAtSec
   settingsRed.value = preset.redAtSec
-}
-
-function openSettings() {
-  settingsDuration.value = evalState.value.timerDurationSec
-  settingsYellow.value = evalState.value.yellowAtSec
-  settingsRed.value = evalState.value.redAtSec
-  showSettings.value = true
-}
-
-function saveSettings() {
-  persist({
-    timerDurationSec: Math.max(10, Math.round(settingsDuration.value || 180)),
-    yellowAtSec: Math.max(0, Math.round(settingsYellow.value || 30)),
-    redAtSec: Math.max(0, Math.round(settingsRed.value || 10)),
-  })
-  showSettings.value = false
-  resetTimer()
 }
 
 // ---------- 演讲上下文（注入 AI 提示词：计时/每日一词） ----------
@@ -343,18 +310,18 @@ function analyzeNow() {
 
 // ---------- AI 实时点评聚合 ----------
 
-const aiFillerTotals = computed<Record<string, number>>(() => {
-  const totals: Record<string, number> = {}
-  for (const r of rounds.value) {
-    for (const f of r.fillerWords || []) {
-      if (!f?.word) continue
-      totals[f.word] = (totals[f.word] || 0) + f.count
-    }
-  }
-  return totals
-})
+// 赘语（拆分至 useSpeechFillerCounter，行为保持不变）
+const {
+  aiFillerTotals,
+  fillerWords,
+  fillerTotal,
+  incrementFiller,
+  removeFiller,
+  newFiller,
+  addFiller,
+} = useSpeechFillerCounter({ evalState, persist, rounds })
 
-// 赘语按发言人区分（AI 尽量带 speaker，便于精准汇报与展示）
+// 赘语按发言人区分（AI 尽量带 speaker，便于精准汇报与展示；useSpeechFillerCounter 未提供此聚合）
 const aiFillerBySpeaker = computed<Array<{ speaker: string; totals: Record<string, number>; total: number }>>(() => {
   const map = new Map<string, { totals: Record<string, number>; total: number }>()
   for (const r of rounds.value) {
@@ -369,29 +336,6 @@ const aiFillerBySpeaker = computed<Array<{ speaker: string; totals: Record<strin
   }
   return [...map.entries()].map(([speaker, v]) => ({ speaker, totals: v.totals, total: v.total }))
 })
-
-// 赘语展示 = AI 检测汇总 + 手动修正
-const fillerWords = computed<Record<string, number>>(() => {
-  const merged: Record<string, number> = { ...evalState.value.fillerWords }
-  for (const [w, c] of Object.entries(aiFillerTotals.value)) {
-    merged[w] = (merged[w] || 0) + c
-  }
-  return merged
-})
-
-const fillerTotal = computed(() => Object.values(fillerWords.value).reduce((a, b) => a + b, 0))
-
-// 手动修正只累加在 evalState.fillerWords（与 AI 检测分开计数，展示时合并）
-function incrementFiller(word: string) {
-  persist({ fillerWords: { ...evalState.value.fillerWords, [word]: (evalState.value.fillerWords[word] || 0) + 1 } })
-}
-
-// 仅允许删除纯手动添加的词（AI 检测的词由 AI 数据驱动，删除无意义）
-function removeFiller(word: string) {
-  const next = { ...evalState.value.fillerWords }
-  delete next[word]
-  persist({ fillerWords: next })
-}
 
 // 金句（定义：有观点、有感染力、能让人记住、可单独引用的一句话），按发言人区分
 const aiGoldenQuotes = computed<GoldenQuote[]>(() => {
@@ -465,18 +409,6 @@ const scoreLabelMap: Record<string, string> = {
   language: 'meeting.speechEval.scoreLanguage',
   timeControl: 'meeting.speechEval.scoreTimeControl',
   overall: 'meeting.speechEval.scoreOverall',
-}
-
-// ---------- 赘语记录员 (Ah-Counter) ----------
-
-const newFiller = ref('')
-
-function addFiller() {
-  const word = newFiller.value.trim()
-  if (!word) return
-  // 手动登记该词（保留当前合并计数，使其可被删除；AI 词只读）
-  persist({ fillerWords: { ...evalState.value.fillerWords, [word]: evalState.value.fillerWords[word] || 0 } })
-  newFiller.value = ''
 }
 
 // ---------- 语法官 (Grammarian) ----------
@@ -697,18 +629,8 @@ async function generateReport() {
   }
 }
 
-function exportReportHtml() {
-  if (!reportMarkdown.value) return
-  const title = session.value?.title || t('meeting.reportPanel.title')
-  const html = buildReportHtml(reportMarkdown.value, title)
-  const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `${title}_演讲评估.html`
-  a.click()
-  URL.revokeObjectURL(url)
-}
+// 导出报告：拆分按钮 + 下拉菜单，默认 Word（极致样式），可切 HTML / Markdown。
+const exportTitle = computed(() => session.value?.title || t('meeting.reportPanel.title'))
 
 // 切换会话时重置
 watch(() => props.sessionId, () => {
@@ -1056,7 +978,11 @@ onUnmounted(() => {
 
       <div v-if="reportMarkdown" class="report-content">
         <div class="report-actions">
-          <NButton size="tiny" @click="exportReportHtml">{{ t('meeting.speechEval.exportReport') }}</NButton>
+          <MeetingExportDropdown
+            :markdown="reportMarkdown"
+            :title="exportTitle"
+            scope="speechEval"
+          />
         </div>
         <MarkdownRenderer :content="reportMarkdown" />
       </div>

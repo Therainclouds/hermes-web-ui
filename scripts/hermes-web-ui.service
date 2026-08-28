@@ -12,6 +12,12 @@ Environment=HOME={{APP_USER_HOME}}
 EnvironmentFile={{SERVICE_ENV_FILE}}
 ExecStartPre={{DEPLOY_DIR}}/scripts/generate-server-cert.sh {{DEPLOY_DIR}}
 ExecStart={{NODE_BIN}} {{DEPLOY_DIR}}/dist/server/index.js
+# Meeting ASR data dir (config.json, .env, .venv). systemd creates
+# /var/lib/hermes-web-ui/meeting-asr on first start, chowns it to User=/Group=,
+# and leaves it across restarts so the pip-install venv survives. The
+# deploy script sets MEETING_ASR_DATA_DIR=/var/lib/hermes-web-ui/meeting-asr
+# (matching this) so the pre-warmed venv lines up with the runtime path.
+StateDirectory=hermes-web-ui/meeting-asr
 # Meeting mode first start may pip install a venv on ARM64 (3-10 min);
 # v0.7.6+ ensures Python venv pre-warmed at deploy time, but keep generous timeout as fallback.
 TimeoutStartSec=900
