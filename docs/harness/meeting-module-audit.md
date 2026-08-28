@@ -239,13 +239,13 @@ client/src/components/hermes/meeting/
 
 ## 附录 B — 后续追踪清单
 
-实施 #1 时建议同步记录：
+实施 #1 时建议同步记录（v0.8 模块化已实施，状态见 [`meeting-modularization-spec.md`](./meeting-modularization-spec.md) 附录）：
 
-- [ ] `realtime-assist.ts` 拆出 `agent-bridge.ts` / `direct-llm.ts` / `report-parser.ts`
-- [ ] 新增单测：`tests/server/agent-bridge.test.ts`、`tests/server/direct-llm.test.ts`、`tests/server/report-parser.test.ts`
-- [ ] `meeting-asr-safety-audit.md` 红线对照检查表（拆完后再走一遍）
-- [ ] `MeetingView.vue` 拆出 `useMeetingAudio` / `useDraggableWidth` / `AsrConfigWizardDialog`
-- [ ] `SpeechEvaluationPanel` 拆出 `useSpeechTimer` / `useSpeechFillerCounter`
-- [ ] `MeetingAgentPanel` 拆出 `useReportStream`
-- [ ] `meeting-asr/index.ts` 拆出 `venv-manager` / `dashscope-key-store`
-- [ ] `diarize_endpoint.py` router/service 分层
+- [x] `realtime-assist.ts` 拆出 `agent-bridge.ts` / `direct-llm.ts` / `report-parser.ts`（PR-1，762→283）
+- [x] 新增单测：`tests/server/agent-bridge.test.ts`、`tests/server/direct-llm.test.ts`、`tests/server/report-parser.test.ts`
+- [x] `meeting-asr-safety-audit.md` 红线对照检查表（拆完后再走一遍）——子进程 env 注入、CSP、venv 创建序列均未触碰
+- [x] `MeetingView.vue` 拆出 `useMeetingAudio` / `useDraggableWidth` / `AsrConfigWizardDialog`（另加 `useDiarizeMerge` / `useMeetingDownloads`，3842→2690）
+- [x] `SpeechEvaluationPanel` 拆出 `useSpeechTimer` / `useSpeechFillerCounter`（1065→946）
+- [x] `MeetingAgentPanel` 拆出 `useReportStream`（865→755）
+- [x] `meeting-asr/index.ts` 拆出 `venv-manager` / `dashscope-key-store`（1066→781）
+- [x] `diarize_endpoint.py` router/service 分层（750→282 + diarize_service.py 504）

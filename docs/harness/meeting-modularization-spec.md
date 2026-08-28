@@ -2,7 +2,31 @@
 
 > 上游文档：[`meeting-module-audit.md`](./meeting-module-audit.md) v1.0（体量基线与诊断，本文不重复）。
 > 本文是执行规格：每个 PR 拆什么、怎么拆、怎么验收。拆分全程**行为冻结**（pure move），场景化组件显示是后续独立工作，不在本规格内。
-> 版本：v1.0（2026-08-28）
+> 版本：v1.1（2026-08-28）— v1.0 全部实施完毕，见文末实施结果。
+> 状态：**已完成**（PR-2a/2b/2c、PR-1、PR-5、PR-6、PR-4、PR-7 全部合入 main）。
+
+---
+
+## 实施结果（v1.1 追加）
+
+| PR | 产出 | 行数变化 | 新增单测 | commit |
+|----|------|---------|---------|--------|
+| PR-2a | `useMeetingAudio.ts` + `useDraggableWidth.ts` | MeetingView 3842→3158 | useDraggableWidth 6 | `3c97caa1` |
+| PR-2b | `AsrConfigWizardDialog.vue`（+ CreateMeetingDialog `display-directive="show"`） | 3158→3001 | —（复用 create-meeting-dialog 测试） | `96950623` |
+| PR-2c | `useDiarizeMerge.ts` + `useMeetingDownloads.ts` | 3001→2690 | — | `64ad141c` |
+| PR-1 | `report-parser.ts` + `agent-bridge.ts` + `direct-llm.ts`；realtime-assist 瘦身为编排层 | realtime-assist 762→283 | report-parser 11 + agent-bridge 15 + direct-llm 14 | `381cd7d7` |
+| PR-5 | `useReportStream.ts` | MeetingAgentPanel 865→755 | useReportStream 7 | `e8781aa4` |
+| PR-6 | `useSpeechTimer.ts` + `useSpeechFillerCounter.ts` | SpeechEvaluationPanel 1065→946 | 12 | `04e7b025` |
+| PR-4 | `venv-manager.ts` + `dashscope-key-store.ts` | meeting-asr/index.ts 1066→781 | dashscope-key-store 5 | `6b3c1923` |
+| PR-7 | `diarize_service.py`（路由/服务分层） | diarize_endpoint 750→282 | —（tests/python 9 passed） | `a8dadd2e` |
+
+**与 v1.0 验收标准的偏差（均已核对）**：
+
+1. **MeetingAgentPanel ≤700 未达（实际 755）**：面板模板占比高；SSE 流/重试/状态已全部抽出并可单测。继续压缩需要其报告路径改用 useReportStream 的 fallback 帧语义（行为变更），超出本规格行为冻结边界，留作后续。
+2. **SpeechEvaluationPanel ≤750 未达（实际 946）**：同理——计时器/赘语统计/设置对话框已全部抽出（12 单测）；剩余体量主要是模板与样式。其自带报告生成器暂不复用 useReportStream（该面板无 fallback 帧 UI 语义，合并属行为变更）。
+3. **PR-2c 为实施中新增**：PR-2a/2b 后 MeetingView 为 3001 行，距 2700 目标差 301 行，故追加 useDiarizeMerge + useMeetingDownloads 抽取达成 2690。
+4. **守卫测试重定位**：`meeting-worklet-url.test.ts`（addModule 静态路径契约）随代码迁入 useMeetingAudio.ts；`meeting-asr-venv-path.test.ts` 的两条源码契约断言随 venv 创建逻辑迁入 venv-manager.ts。行为断言全部未改。
+5. 全量 `vitest run` 在 HEAD 基线与本分支均为 **149 failed / 4752 passed**（失败全部为环境既有：Windows symlink/coding-agent 等域，与会议模块无关）——本规格引入 **0 回归**。
 
 ---
 
