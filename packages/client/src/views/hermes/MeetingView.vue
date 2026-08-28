@@ -21,10 +21,11 @@ import { meetingASRApi } from '@/utils/meeting-asr-api'
 import { getApiKey } from '@/api/client'
 import { useMessage } from '@/composables/useAppMessage'
 import { meetingStorageApi } from '@/utils/meeting-storage-api'
-import { buildReportHtml } from '@/utils/report-html'
 import { getProfileDisplayName } from '@/utils/hermes/profile-display'
 import { useMeetingAudio } from '@/composables/useMeetingAudio'
 import { useDraggableWidth } from '@/composables/useDraggableWidth'
+import { useDiarizeMerge } from '@/composables/useDiarizeMerge'
+import { useMeetingDownloads } from '@/composables/useMeetingDownloads'
 
 const { t } = useI18n()
 const message = useMessage()
@@ -168,6 +169,19 @@ const {
   saveCurrentMeeting,
   assistPanelRef,
   sentences: finalSentences,
+})
+
+// --- 说话人分离结果合并（拆分至 useDiarizeMerge，行为保持不变） ---
+const { addDiarizeResultDirectly, matchAndMergeDiarizeResult } = useDiarizeMerge({
+  finalSentences,
+  speakerMap,
+  pushSentenceToAssist,
+})
+
+// --- 产物下载（拆分至 useMeetingDownloads，行为保持不变） ---
+const { downloadAudio, downloadTranscript, downloadJson, downloadReport, formatDuration } = useMeetingDownloads({
+  audioBlob,
+  htmlContent,
 })
 
 // 当前活动会议
@@ -615,8 +629,6 @@ onUnmounted(() => {
 })
 
 // 推送句子到实时辅助服务（fire-and-forget）
-
-// 推送句子到实时辅助服务（fire-and-forget）
 function pushSentenceToAssist(sessionId: string, sentence: TranscriptSentence) {
   fetch('/api/meeting-asr/assist/sentence', {
     method: 'POST',
@@ -725,322 +737,6 @@ function handleWsMessage(data: any, source: 'asr' | 'diarize' = 'asr') {
   }
 }
 
-function addDiarizeResultDirectly(diarizeSentences: any[], offsetSec: number = 0) {
-  // 节省模式：直接添加 Diarize 结果（带说话人标签）
-  console.log('[diarize-save] Adding', diarizeSentences.length, 'sentences directly')
-  
-  for (const diarizeSent of diarizeSentences) {
-    const diarizeStartMs = offsetSec * 1000 + (diarizeSent.begin_ms || 0)
-    const diarizeEndMs = offsetSec * 1000 + (diarizeSent.end_ms || 0)
-    const speakerId = String(diarizeSent.speaker_id || 'unknown')
-    
-    // 获取或创建说话人显示名称
-    if (!speakerMap.value[speakerId]) {
-      speakerMap.value[speakerId] = `说话人 ${Object.keys(speakerMap.value).length + 1}`
-    }
-    const session = meetingStore.activeSession
-    const registeredName = session?.speakers.find(s => s.id === speakerId)?.displayName
-    const speakerName = registeredName || speakerMap.value[speakerId]
-    
-    // 检查是否是重复的文本（避免overlap导致的重复）
-    const isDuplicate = finalSentences.value.some(s => 
-      s.text === diarizeSent.text && 
-      Math.abs((s.startTime || 0) - diarizeStartMs) < 2000
-    )
-    
-    if (!isDuplicate && diarizeSent.text) {
-      const sentenceObj: TranscriptSentence = {
-        text: diarizeSent.text,
-        timestamp: Date.now(),
-        startTime: diarizeStartMs,
-        endTime: diarizeEndMs,
-        speaker: speakerName,
-        speakerId: speakerId,
-      }
-      finalSentences.value.push(sentenceObj)
-      
-      if (meetingStore.activeSessionId) {
-        meetingStore.addSentence(meetingStore.activeSessionId, sentenceObj)
-        // 推送到实时辅助服务
-        pushSentenceToAssist(meetingStore.activeSessionId, sentenceObj)
-      }
-    }
-  }
-  
-  // 按时间戳排序
-  finalSentences.value.sort((a, b) => (a.startTime || 0) - (b.startTime || 0))
-  
-  // 自动滚动到底部
-  nextTick(() => {
-    const container = document.getElementById('transcript-container')
-    if (container) container.scrollTop = container.scrollHeight
-  })
-}
-
-function matchAndMergeDiarizeResult(diarizeSentences: any[], offsetSec: number = 0) {
-  // 将说话人分离结果与已有的ASR句子按时间戳匹配
-  // offsetSec: chunk在整个音频中的偏移量（秒）
-  const timeThreshold = 2000 // 2秒容差（考虑ASR和Diarize的时间戳差异）
-  
-  console.log('[diarize] Processing', diarizeSentences.length, 'sentences with offset', offsetSec, 'sec')
-  
-  for (const diarizeSent of diarizeSentences) {
-    // 计算绝对时间（毫秒）
-    const diarizeStartMs = offsetSec * 1000 + (diarizeSent.begin_ms || 0)
-    const diarizeEndMs = offsetSec * 1000 + (diarizeSent.end_ms || 0)
-    const speakerId = String(diarizeSent.speaker_id || 'unknown')
-    
-    // 获取或创建说话人显示名称
-    if (!speakerMap.value[speakerId]) {
-      speakerMap.value[speakerId] = `说话人 ${Object.keys(speakerMap.value).length + 1}`
-    }
-    const session = meetingStore.activeSession
-    const registeredName = session?.speakers.find(s => s.id === speakerId)?.displayName
-    const speakerName = registeredName || speakerMap.value[speakerId]
-    
-    console.log('[diarize] Sentence:', diarizeSent.text?.substring(0, 20), 'speaker:', speakerName, 'time:', diarizeStartMs, '-', diarizeEndMs)
-    
-    // 查找匹配的ASR句子
-    let matched = false
-    for (const asrSent of finalSentences.value) {
-      // 如果ASR句子已经有说话人标签，跳过
-      if (asrSent.speakerId) continue
-      
-      // 按时间戳匹配
-      const asrStartMs = asrSent.startTime || 0
-      const asrEndMs = asrSent.endTime || 0
-      
-      // 计算时间差
-      const startDiff = Math.abs(asrStartMs - diarizeStartMs)
-      const endDiff = Math.abs(asrEndMs - diarizeEndMs)
-      
-      if (startDiff < timeThreshold && endDiff < timeThreshold) {
-        // 匹配成功，回填说话人信息
-        asrSent.speaker = speakerName
-        asrSent.speakerId = speakerId
-        matched = true
-        console.log('[diarize] Matched ASR sentence:', asrSent.text?.substring(0, 20))
-        
-        // 同步更新到 store
-        if (meetingStore.activeSessionId) {
-          meetingStore.updateSentence(meetingStore.activeSessionId, asrSent)
-        }
-        break
-      }
-    }
-    
-    // 如果没有匹配到已有句子，可能是新的句子（边界情况）
-    if (!matched && diarizeSent.text) {
-      // 检查是否是重复的文本（避免overlap导致的重复）
-      const isDuplicate = finalSentences.value.some(s => 
-        s.text === diarizeSent.text && 
-        Math.abs((s.startTime || 0) - diarizeStartMs) < timeThreshold
-      )
-      
-      if (!isDuplicate) {
-        const sentenceObj: TranscriptSentence = {
-          text: diarizeSent.text,
-          timestamp: Date.now(),
-          startTime: diarizeStartMs,
-          endTime: diarizeEndMs,
-          speaker: speakerName,
-          speakerId: speakerId,
-        }
-        finalSentences.value.push(sentenceObj)
-        console.log('[diarize] Added new sentence from diarize:', diarizeSent.text?.substring(0, 20))
-        
-        if (meetingStore.activeSessionId) {
-          meetingStore.addSentence(meetingStore.activeSessionId, sentenceObj)
-        }
-      }
-    }
-  }
-  
-  // 按时间戳排序
-  finalSentences.value.sort((a, b) => (a.startTime || 0) - (b.startTime || 0))
-  
-  // 自动滚动到底部
-  nextTick(() => {
-    const container = document.getElementById('transcript-container')
-    if (container) container.scrollTop = container.scrollHeight
-  })
-}
-
-async function downloadAudio() {
-  if (!meetingStore.activeSessionId) return
-  
-  try {
-    // 尝试从服务器下载
-    const blob = await meetingStorageApi.downloadAudio(meetingStore.activeSessionId)
-    if (blob) {
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `${meetingStore.activeSession?.title || 'meeting'}.webm`
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
-      return
-    }
-  } catch (err) {
-    console.error('Failed to download audio from server:', err)
-  }
-  
-  // 回退到本地 blob
-  if (!audioBlob.value) return
-  const url = URL.createObjectURL(audioBlob.value)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `${meetingStore.activeSession?.title || 'meeting'}.webm`
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
-}
-
-async function downloadTranscript() {
-  if (!meetingStore.activeSessionId || !meetingStore.activeSession) return
-  
-  try {
-    // 尝试从服务器下载
-    const sentences = await meetingStorageApi.getTranscript(meetingStore.activeSessionId)
-    if (sentences && sentences.length > 0) {
-      const content = sentences.map((s: any, i: number) => {
-        const time = s.startTime ? formatDuration(s.startTime / 1000) : new Date(s.timestamp).toLocaleTimeString('zh-CN')
-        const speaker = s.speaker ? `[${s.speaker}] ` : ''
-        return `${i + 1}. ${time} ${speaker}${s.text}`
-      }).join('\n')
-      
-      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `${meetingStore.activeSession.title || 'meeting'}.txt`
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
-      return
-    }
-  } catch (err) {
-    console.error('Failed to download transcript from server:', err)
-  }
-  
-  // 回退到本地数据
-  const session = meetingStore.activeSession
-  const content = session.sentences.map((s, i) => {
-    const time = s.startTime ? formatDuration(s.startTime / 1000) : new Date(s.timestamp).toLocaleTimeString('zh-CN')
-    const speaker = s.speaker ? `[${s.speaker}] ` : ''
-    return `${i + 1}. ${time} ${speaker}${s.text}`
-  }).join('\n')
-  
-  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `${session.title || 'meeting'}.txt`
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
-}
-
-async function downloadJson() {
-  if (!meetingStore.activeSessionId || !meetingStore.activeSession) return
-  
-  try {
-    // 尝试从服务器下载
-    const data = await meetingStorageApi.downloadJsonReport(meetingStore.activeSessionId)
-    if (data) {
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `${meetingStore.activeSession.title || 'meeting'}.json`
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
-      return
-    }
-  } catch (err) {
-    console.error('Failed to download JSON from server:', err)
-  }
-  
-  // 回退到本地数据
-  const session = meetingStore.activeSession
-  
-  const jsonData = {
-    title: session.title,
-    createdAt: new Date(session.createdAt).toISOString(),
-    duration: session.audioDuration,
-    speakers: session.speakers,
-    sentences: session.sentences.map((s, i) => ({
-      index: i + 1,
-      text: s.text,
-      startTimeMs: s.startTime,
-      endTimeMs: s.endTime,
-      speakerId: s.speakerId,
-      speakerName: s.speaker || null,
-      timestamp: new Date(s.timestamp).toISOString(),
-    })),
-    analysis: session.analysisResult,
-  }
-  
-  const blob = new Blob([JSON.stringify(jsonData, null, 2)], { type: 'application/json;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `${session.title || 'meeting'}.json`
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
-}
-
-async function downloadReport() {
-  if (!meetingStore.activeSessionId) return
-
-  let content = ''
-  let source = 'server'
-  try {
-    // 尝试从服务器下载
-    content = (await meetingStorageApi.downloadHtmlReport(meetingStore.activeSessionId)) || ''
-  } catch (err) {
-    console.error('Failed to download report from server:', err)
-  }
-
-  // 回退到本地数据（store 是报告生成后的权威来源，局部 ref 可能未同步）
-  if (!content) {
-    source = 'local'
-    content = meetingStore.activeSession?.htmlContent || htmlContent.value
-  }
-  console.log('[downloadReport] 内容来源:', source, '长度:', content.length)
-  if (!content) return
-
-  const title = meetingStore.activeSession?.title || '会议报告'
-  const html = toPrettyReportHtml(content, title)
-  const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `${title}_report.html`
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
-}
-
-// 报告内容若为 Markdown（实时辅助生成）则转换为精美 HTML 页面；若已是 HTML（Agent 生成）则直接包装
-function toPrettyReportHtml(content: string, title: string): string {
-  const trimmed = content.trim()
-  const looksLikeHtml = /^<(!doctype|html|div|h[1-6]|p\b)/i.test(trimmed)
-  console.log('[downloadReport] looksLikeHtml:', looksLikeHtml, '内容开头:', JSON.stringify(trimmed.slice(0, 40)))
-  if (looksLikeHtml) return content
-  return buildReportHtml(trimmed, title)
-}
-
 function onAgentCompleted() {
   // 分析完成后自动切换到报告视图
   if (htmlContent.value) {
@@ -1094,12 +790,6 @@ async function analyzeWithHermesAgent() {
   if (assistPanelRef.value) {
     assistPanelRef.value.generateReport(transcript)
   }
-}
-
-function formatDuration(seconds: number): string {
-  const m = Math.floor(seconds / 60)
-  const s = Math.floor(seconds % 60)
-  return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
 }
 
 // --- Action item formatters (support both string and object forms) ---
