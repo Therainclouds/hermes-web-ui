@@ -1809,3 +1809,30 @@ en.ts 和 zh.ts 已经有完整的 `usb.explorer.*` 命名空间（toolbar / bre
 - `vue-tsc -b --noEmit`：0 错误（删除解构中不再直接调用的 markDequeuedQueueId）。
 - 29 个 chat 测试文件：**264/264 全过**。
 - chat.ts 5,332 → 3,516 行（累计 −1,816）；已抽出 5 个模块共 ~2,060 行。
+
+---
+
+## 2026-08-28 · MeetingView 模块化蓝图复核 — 8 个内聚块已全部抽完
+
+### 背景
+
+`.zcode/plans/plan-sess_c781a70e-b408-46dd-8a96-80341511eac2.md` 描述的
+「清理场景壳 + 提取 WaveformCanvas 样品 + 输出拆分蓝图」任务。
+会话恢复时审计发现 commit `e8f6648a refactor(meeting): MeetingView 模块化拆分 — 回滚场景壳 + 6 个内聚组件`
+已把这套工作全部完成：路由 `hermes.meeting.scene` 已删除、`scenes/` 目录已删除、
+`docs/design/meeting-scenes/` 已删除、MeetingView 不再调 `router.push` 不再含 `openSessionScene`、
+`WaveformCanvas.vue` 已抽出并接入、`waveform-canvas.test.ts` 5/5 通过、
+`docs/meeting-view-split-blueprint.md` 已存在（103 行）。
+
+### 本轮收尾
+
+- **蓝图状态校正**：原蓝图第 2 节「MeetingView 内聚块清单」未标状态、第 4 节「推荐拆分顺序」列出的 6 个批次实际都已完成。改为：
+  - 第 2 节增加「拆分状态」列
+  - 第 4 节改为「拆分执行记录」，按推荐顺序列已完成的 6 个组件 + 各自测试文件 + MeetingView 接入行号
+  - 第 7 节「等你拍板的点」删除已决项，只留 audio setup / Storybook 两个开放问题
+- **验证**：`vue-tsc -b --noEmit` 0 错误；7 个 meeting 相关测试文件 69/69 通过（waveform 5 + right-panel 13 + sidebar 7 + topbar 14 + create-dialog 5 + scene-picker 5 + scene-templates 8，其他 meeting 测试未纳入本轮）。
+- **MeetingView 当前体量**：3831 行（4400 → 3831，−569），剩余主体为 audio setup 编排（770-1120 区段）+ 状态机 + 事件分发。
+
+### 后续
+
+chat store 剩余 ~3,500 行主要为高度耦合的发送/事件编排域（loadSessions / switchSession / sendMessage / handleAgentEvent / resumeServerWorkingRun），互相调用并共享全部 refs，是真正难拆的部分。按之前节奏，等用户验收本轮蓝图校正后再继续。

@@ -1,6 +1,6 @@
 # MeetingView 模块化拆分蓝图
 
-> 状态：**验证样品已通过**（WaveformCanvas），剩余拆分批次等待你拍板。
+> 状态：**8 个内聚块全部抽完**（commit e8f6648a 后 MeetingView 缩到 3831 行，主要剩余 audio setup 编排）。
 > 文件位置：本文档在 `docs/meeting-view-split-blueprint.md`。
 
 ## 0. 背景与原则
@@ -45,38 +45,36 @@ defineProps<{ analyser: AnalyserNode | null; connecting: boolean }>()
 
 ## 2. MeetingView 当前内聚块清单
 
-| # | 块名 | 当前行号范围（近似） | 内聚职责 | 外部依赖 |
+| # | 块名 | 当前行号范围（近似） | 内聚职责 | 外部依赖 | 拆分状态 |
+|---|---|---|---|---|---|
+| 1 | 顶部控制条 | 1939-2025 | 录音按钮、状态文本、保存/分享 | analyser、isRecording | ✅ MeetingTopBar.vue |
+| 2 | 波形可视化 | 1962 | 频谱 RAF 渲染 | analyser | ✅ WaveformCanvas.vue |
+| 3 | 转写流列表 | 1993-2025 | 句子气泡 + 自动滚动 | transcriptSentences | ✅ TranscriptList.vue |
+| 4 | 侧栏会话列表 | 1909-1937 | 会议历史列表、新建按钮 | meetingStore | ✅ MeetingSidebar.vue |
+| 5 | 创建会议对话框 | 2405-2500 | 标题/场景选择/麦克风设备 | SceneTemplatePicker | ✅ CreateMeetingDialog.vue |
+| 6 | 右面板（Agent/Speech） | 2027-2400 | MeetingAgentPanel / SpeechEvaluationPanel | sceneTemplate、isSpeechScene | ✅ MeetingRightPanel.vue + MeetingAgentPanel + SpeechEvaluationPanel |
+| 7 | 报告/分析面板 | 2140-2400 | transcript analysis tab、报告弹窗 | sentences、analysis | ✅ MeetingAgentPanel（内嵌） |
+| 8 | audio setup（核心） | 770-1120 | MediaStream + AnalyserNode + WebSocket + Diarize | 浏览器 API | ⏸️ 暂留父组件 |
+
+## 4. 拆分执行记录
+
+按推荐顺序全部完成（commit `e8f6648a refactor(meeting): MeetingView 模块化拆分 — 回滚场景壳 + 6 个内聚组件`）。
+其中第 6 块（RightPanel）同时把 MeetingAgentPanel / SpeechEvaluationPanel 一起聚合到新的 MeetingRightPanel 壳里，
+dispatch 顺序在 props 里显式传入（speech > agent > analysis）。
+
+### 当前实际拆分结果（e8f6648a 后）
+
+| 批次 | 组件 | 文件 | 测试 | MeetingView 接入行 |
 |---|---|---|---|---|
-| 1 | 顶部控制条 | ~2100-2130 | 录音按钮、状态文本、保存/分享 | analyser、isRecording |
-| 2 | 波形可视化 | **已拆出** | 频谱 RAF 渲染 | analyser |
-| 3 | 转写流列表 | ~2145-2200 | 句子气泡 + 自动滚动 | transcriptSentences |
-| 4 | 侧栏会话列表 | ~1915-2000 | 会议历史列表、新建按钮 | meetingStore |
-| 5 | 创建会议对话框 | ~2680-2750 | 标题/场景选择/麦克风设备 | SceneTemplatePicker |
-| 6 | 右面板（Agent/Speech） | ~2270-2400 | MeetingAgentPanel / SpeechEvaluationPanel | sceneTemplate、isSpeechScene |
-| 7 | 报告/分析面板 | ~2410-2700 | transcript analysis tab、报告弹窗 | sentences、analysis |
-| 8 | audio setup（核心） | ~770-1120 | MediaStream + AnalyserNode + WebSocket + Diarize | 浏览器 API |
+| 1 | WaveformCanvas | `components/hermes/meeting/WaveformCanvas.vue` | `tests/client/waveform-canvas.test.ts` (5/5) | 1962 |
+| 2 | MeetingSidebar | `components/hermes/meeting/MeetingSidebar.vue` | `tests/client/meeting-sidebar.test.ts` (7/7) | 1909-1937 |
+| 3 | CreateMeetingDialog | `components/hermes/meeting/CreateMeetingDialog.vue` | `tests/client/create-meeting-dialog.test.ts` (5/5) | 2405-2500 |
+| 4 | MeetingTopBar | `components/hermes/meeting/MeetingTopBar.vue` | `tests/client/meeting-topbar.test.ts` | 1939-2025 |
+| 5 | MeetingRightPanel + MeetingAgentPanel + SpeechEvaluationPanel | `components/hermes/meeting/{MeetingRightPanel,MeetingAgentPanel,SpeechEvaluationPanel}.vue` | `tests/client/meeting-right-panel.test.ts` (13/13) | 2027-2400 |
+| 6 | TranscriptList | `components/hermes/meeting/TranscriptList.vue` | （与 MeetingSidebar/MeetingView 共测） | 1993-2025 |
 
-## 4. 推荐拆分顺序（按风险/价值排序）
-
-### 第二批：MeetingSidebar（第 4 块）
-**理由**：与 MeetingView 主体耦合最轻，纯展示 + meetingStore 切片；拆出来即可在 Storybook 或隔离测试中演练。
-**预估**：~150 行 → `<MeetingSidebar :sessions :activeId @select="loadSession" />`
-**验证**：列表点击 → 仍由父级处理 → 父级不调 `router.push`（已实现）。
-
-### 第三批：CreateMeetingDialog（第 5 块）
-**理由**：第 5 块是包含 SceneTemplatePicker 的独立 modal。NModal 已自带，拆出来后更利于 Storybook 演练。
-**预估**：~80 行 → `<CreateMeetingDialog v-model:visible :sessionTemplate @create="handleCreate" />`
-**注意**：父级保留 `handleCreate` 逻辑（创建后保留在原页面，不要再 push）。
-
-### 第四批：MeetingTopBar（第 1 块）
-**理由**：状态展示 + 录音按钮。耦合在 analyser 切换上，但本身纯展示。
-**预估**：~100 行 → `<MeetingTopBar :recording :connecting :statusText @toggle-record />`
-
-### 第五批：RightPanel（第 6 块）
-**理由**：右面板已是 `v-if="showRightPanel"` + 内部分支 if/else。MeetingAgentPanel 与 SpeechEvaluationPanel 已是子组件，再包一层 `<MeetingRightPanel :scene :show>` 即可聚合。
-
-### 第六批：TranscriptList（第 3 块）+ ReportDialog（第 7 块）
-**理由**：纯展示，依赖转写流与句子数组。
+合计从 ~4400 行 MeetingView 缩到 3831 行；
+新拆 6 个组件（含 WaveformCanvas）单文件均 < 250 行，测试覆盖 props 契约 + DOM 行为。
 
 ### 暂不拆：audio setup（第 8 块）
 **理由**：与 MediaRecorder / AnalyserNode / WebSocket / AudioWorklet / Diarize 协议强耦合，是 MeetingView 的核心调度点。强行抽出需要传 10+ 个 ref，反而损害可读性。建议**等测试覆盖加深**后再评估。
@@ -97,8 +95,7 @@ defineProps<{ analyser: AnalyserNode | null; connecting: boolean }>()
 - **主题一致性**：组件自带 scoped 样式，主题色走 CSS 变量，dark/comic 自动适配。
 - **录音控制解耦**：父级不再持有 canvasRef / animationFrameId，只用 ref 化的 `analyser.value` 单一信号。
 
-## 7. 等你拍板的点
+## 7. 遗留决议（待你拍板）
 
-1. **是否按本次推荐的顺序**（Sidebar → CreateDialog → TopBar → RightPanel → Transcript/Report）拆？
-2. **audio setup** 暂时保留在 MeetingView，等测试覆盖加深后再拆——你是否同意？
-3. 是否需要在 `apps/dev` 临时再加一个 Storybook（**未做**，需先与你确认是否纳入下一批工作）？
+1. **audio setup** 暂时保留在 MeetingView，等测试覆盖加深后再拆——你是否同意？
+2. 是否需要在 `apps/dev` 临时再加一个 Storybook（**未做**，需先与你确认是否纳入下一批工作）？
