@@ -4,6 +4,8 @@ import path from 'path'
 import fs from 'fs/promises'
 import os from 'os'
 import { logger } from '../logger'
+import * as venvManager from './venv-manager'
+import * as dashscopeKeyStore from './dashscope-key-store'
 
 export interface MeetingASRConfig {
   dashscopeApiKey?: string
@@ -180,323 +182,36 @@ export class MeetingASRService extends EventEmitter {
     )
   }
 
-  /**
-   * Resolve where the Python virtual environment should live.
-   *
-   * The venv must NOT sit under `python-backend/` because that directory is
-   * part of the deployed bundle (`dist/server/services/meeting-asr/python-backend/`)
-   * and is owned by the deploy user. If the runtime service runs as a
-   * different (non-root) user it cannot write into the venv directory and
-   * the first `start` call fails with EACCES — see incident at
-   * `docs/planning/meeting-mode-rk3528-audit.md` #1 and #5.
-   *
-   * We co-locate the venv with the rest of the meeting-asr persistent state
-   * under `dataDir/.venv/`. The data directory is owned by the runtime user
-   * (`WorkingDirectory={{DEPLOY_DIR}}` in systemd + mkdir at bootstrap) and
-   * survives device-package upgrades because it's outside the dist tree.
-   *
-   * `pythonBackendPath` is kept as an argument so the same helper is callable
-   * from tests with arbitrary tmp paths and so future overrides (env var,
-   * per-profile data dirs) can be added without churning call sites.
-   */
   resolveVenvPath(dataDir: string, _pythonBackendPath: string): string {
-    return path.join(dataDir, '.venv')
+    return venvManager.resolveVenvPath(dataDir, _pythonBackendPath)
   }
 
   resolveVenvMarkerPath(venvPath: string): string {
-    return path.join(venvPath, '.hermes-ready')
+    return venvManager.resolveVenvMarkerPath(venvPath)
   }
 
-  /**
-   * Recover the DashScope API key from persistent storage when the caller
-   * didn't pass one inline. The Python backend stores secrets in two files
-   * under dataDir, and we must check both:
-   *
-   *   - config.json: written by the Node controller's /api/config proxy and
-   *     by updateLLMConfig(). Key lives at `llm.api_key` or `asr.dashscope_api_key`.
-   *   - config.env: written by Python `storage.update_config()` as shell-style
-   *     `DASHSCOPE_API_KEY=sk-...` lines, consumed by `config.py` at import
-   *     time via python-dotenv.
-   *
-   * Before this fix, the fallback only read config.json, so auto-restart or
-   * first-start-after-deploy failed with "DASHSCOPE_API_KEY is not configured"
-   * whenever the key had been persisted exclusively via the Python path
-   * (config.env) — which is the common case after the user saves ASR config
-   * from the UI.
-   */
+  getVenvPythonPath(venvPath: string): string {
+    return venvManager.getVenvPythonPath(venvPath)
+  }
+
   async readStoredDashScopeKey(dataDir: string): Promise<string | null> {
-    // 1. config.json (JSON)
-    try {
-      const configPath = path.join(dataDir, 'config.json')
-      const raw = await fs.readFile(configPath, 'utf-8')
-      const stored = JSON.parse(raw)
-      const key = stored?.asr?.dashscope_api_key || stored?.llm?.api_key
-      if (key) return key
-    } catch { /* file missing or invalid JSON */ }
-
-    // 2. config.env (shell-style KEY=VALUE lines)
-    try {
-      const envPath = path.join(dataDir, 'config.env')
-      const raw = await fs.readFile(envPath, 'utf-8')
-      for (const line of raw.split('\n')) {
-        const trimmed = line.trim()
-        if (!trimmed || trimmed.startsWith('#')) continue
-        const eq = trimmed.indexOf('=')
-        if (eq === -1) continue
-        if (trimmed.slice(0, eq).trim() === 'DASHSCOPE_API_KEY') {
-          let val = trimmed.slice(eq + 1).trim()
-          // Strip surrounding quotes if present
-          if ((val.startsWith('"') && val.endsWith('"')) ||
-              (val.startsWith("'") && val.endsWith("'"))) {
-            val = val.slice(1, -1)
-          }
-          if (val) return val
-        }
-      }
-    } catch { /* file missing */ }
-
-    return null
-  }
-
-  private async findPython(): Promise<string> {
-    const candidates = os.platform() === 'win32'
-      ? ['python', 'python3', 'py -3', 'py']
-      : ['python3', 'python']
-
-    for (const cmd of candidates) {
-      try {
-        await new Promise<void>((resolve, reject) => {
-          const proc = spawn(cmd, ['--version'], { stdio: 'pipe' })
-          proc.on('close', (code) => {
-            if (code === 0) resolve()
-            else reject(new Error(`exit code ${code}`))
-          })
-          proc.on('error', reject)
-        })
-        return cmd
-      } catch {
-        continue
-      }
-    }
-    throw new Error('Python not found. Please install Python 3.')
-  }
-
-  private getVenvPythonPath(venvPath: string): string {
-    return os.platform() === 'win32'
-      ? path.join(venvPath, 'Scripts', 'python.exe')
-      : path.join(venvPath, 'bin', 'python')
+    return dashscopeKeyStore.readStoredDashScopeKey(dataDir)
   }
 
   private async ensureVirtualEnv(): Promise<string> {
     const backendPath = this.getPythonBackendPath()
     const dataDir = this.getDataDir()
-    const venvPath = this.resolveVenvPath(dataDir, backendPath)
-    const pythonPath = this.getVenvPythonPath(venvPath)
-    // Marker file written after a successful pip install — lets us skip the
-    // ~3-10 minute install on ARM64 after the first successful run. Treated
-    // as a hint, not a hard guarantee: the probe below still verifies that
-    // the binary actually executes.
-    const markerPath = this.resolveVenvMarkerPath(venvPath)
-
-    const probePython = async (): Promise<void> => {
-      await new Promise<void>((resolve, reject) => {
-        const probe = spawn(pythonPath, ['-c', 'import sys; sys.exit(0)'], { stdio: 'pipe' })
-        probe.on('close', (code) => {
-          if (code === 0) resolve()
-          else reject(new Error(`venv python exited ${code}`))
-        })
-        probe.on('error', reject)
-      })
-    }
-
-    // Fast path: marker present + python executable + probe passes → reuse.
-    try {
-      await fs.access(pythonPath)
-      await fs.access(markerPath)
-      this._startupPhase = 'venv'
-      this.emit('phase', this._startupPhase)
-      await probePython()
-      this._isVenvReady = true
-      logger.info('[meeting-asr] Reusing existing Python virtual environment at %s', venvPath)
-      return pythonPath
-    } catch {
-      // fall through to slow path
-    }
-
-    // Migration path (v0.7.16+): if the legacy venv at
-    // `<pythonBackend>/.venv` exists and is probe-healthy, move it to the
-    // new data-dir location atomically. This preserves the multi-minute
-    // `pip install` work already done on the device and keeps the
-    // "start → ready in seconds" UX contract. Without this, every upgrade
-    // would trigger a fresh 5-10 min pip install on ARM64.
-    const legacyVenvPath = path.join(backendPath, '.venv')
-    const legacyPythonPath = this.getVenvPythonPath(legacyVenvPath)
-    try {
-      await fs.access(legacyPythonPath)
-      // Legacy venv exists — verify it actually works before moving it,
-      // so we don't relocate a broken venv and then trust it.
-      await new Promise<void>((resolve, reject) => {
-        const probe = spawn(legacyPythonPath, ['-c', 'import sys; sys.exit(0)'], { stdio: 'pipe' })
-        probe.on('close', (code) => {
-          if (code === 0) resolve()
-          else reject(new Error(`legacy venv python exited ${code}`))
-        })
-        probe.on('error', reject)
-      })
-      // Legacy venv is healthy. Move it. fs.rename is atomic on the same
-      // filesystem; if cross-device (unlikely for /opt → /var/lib on the
-      // same root partition) it falls back to copy + remove below.
-      await fs.mkdir(path.dirname(venvPath), { recursive: true })
-      try {
-        await fs.rename(legacyVenvPath, venvPath)
-      } catch (renameErr) {
-        // Cross-device rename: fall back to recursive copy then remove.
-        // Node fs.cp is available on Node 16.7+; we use it explicitly so
-        // the failure mode is observable instead of silent.
-        logger.warn(
-          '[meeting-asr] fs.rename failed (%s); falling back to recursive copy',
-          renameErr instanceof Error ? renameErr.message : String(renameErr),
-        )
-        await fs.cp(legacyVenvPath, venvPath, { recursive: true, force: true })
-        await fs.rm(legacyVenvPath, { recursive: true, force: true })
-      }
-      // Re-link the venv's absolute python path if the venv was created
-      // with absolute symlinks. Most venvs use relative symlinks so a move
-      // is safe; if the probe below fails, the slow path recreates.
-      try {
-        await probePython()
-        // Move succeeded and the relocated venv probes clean — write the
-        // marker so the next start hits the fast path.
-        try {
-          await fs.writeFile(markerPath, new Date().toISOString(), 'utf-8')
-        } catch (err) {
-          logger.warn('[meeting-asr] Could not write venv marker %s: %s', markerPath, err)
-        }
-        this._isVenvReady = true
-        logger.info(
-          '[meeting-asr] Migrated legacy venv %s -> %s (fast path preserved)',
-          legacyVenvPath,
-          venvPath,
-        )
-        return pythonPath
-      } catch (probeErr) {
-        logger.warn(
-          '[meeting-asr] Migrated venv failed probe (%s); proceeding to recreate',
-          probeErr instanceof Error ? probeErr.message : String(probeErr),
-        )
-        // Remove the broken relocated venv so createVenv starts clean.
-        await fs.rm(venvPath, { recursive: true, force: true })
-      }
-    } catch {
-      // Legacy venv absent or broken — proceed to fresh creation below.
-    }
-
-    // Slow path: venv missing, broken, or marker absent — recreate + install.
-    const createVenv = async (): Promise<void> => {
-      this._startupPhase = 'venv'
-      this.emit('phase', this._startupPhase)
-      logger.info('[meeting-asr] Creating Python virtual environment at %s', venvPath)
-      const pythonCmd = await this.findPython()
-      const createStderr = await this.runCaptured(pythonCmd, ['-m', 'venv', venvPath], backendPath)
-      if (createStderr.code !== 0) {
-        const hint = createStderr.stderr.includes('ensurepip')
-          ? ' On Debian/Ubuntu/Armbian, ensure python3-venv is installed: apt-get install -y python3-venv python3-dev'
-          : ''
-        throw new Error(
-          `Failed to create Python venv (exit ${createStderr.code}): ${createStderr.stderr.trim() || 'no stderr'}.${hint}`,
-        )
-      }
-    }
-
-    try {
-      await fs.access(pythonPath)
-    } catch {
-      await createVenv()
-    }
-
-    // Guard against a partial venv left behind by an interrupted creation:
-    // the venv python exists but pip is missing (e.g. the service was
-    // restarted mid-`python -m venv`). Proceeding straight to `pip install`
-    // would loop on "No module named pip" forever, so wipe and recreate.
-    const pipProbe = await this.runCaptured(pythonPath, ['-m', 'pip', '--version'], backendPath, 60_000)
-    if (pipProbe.code !== 0) {
-      logger.warn(
-        '[meeting-asr] venv python exists but pip is missing (%s); recreating venv',
-        pipProbe.stderr.trim().slice(-200) || `exit ${pipProbe.code}`,
-      )
-      await fs.rm(venvPath, { recursive: true, force: true })
-      await createVenv()
-    }
-
-    // Install requirements. May take 5-10 minutes on ARM64 — surface phase so
-    // the UI can show "installing dependencies (~3 min)…" instead of "connecting".
-    this._startupPhase = 'pip_install'
-    this.emit('phase', this._startupPhase)
-    logger.info('[meeting-asr] Installing Python dependencies (this may take several minutes on ARM64)...')
-    const requirementsPath = path.join(__dirname, 'requirements.txt')
-    const installStderr = await this.runCaptured(
-      pythonPath,
-      ['-m', 'pip', 'install', '--disable-pip-version-check', '-r', requirementsPath],
+    const pythonPath = await venvManager.ensureVirtualEnv({
       backendPath,
-    )
-    if (installStderr.code !== 0) {
-      throw new Error(
-        `Failed to install Python dependencies (exit ${installStderr.code}): ` +
-          `${installStderr.stderr.trim().slice(-500) || 'no stderr'}. ` +
-          `Verify the device has network access to PyPI.`,
-      )
-    }
-
-    // Write the marker so subsequent starts can take the fast path.
-    try {
-      await fs.writeFile(markerPath, new Date().toISOString(), 'utf-8')
-    } catch (err) {
-      logger.warn('[meeting-asr] Could not write venv marker %s: %s', markerPath, err)
-    }
-
+      dataDir,
+      requirementsPath: path.join(__dirname, 'requirements.txt'),
+      onPhase: (phase) => {
+        this._startupPhase = phase
+        this.emit('phase', phase)
+      },
+    })
     this._isVenvReady = true
     return pythonPath
-  }
-
-  /**
-   * Run a child process to completion, capturing stderr so we can surface
-   * actionable errors instead of opaque exit codes.
-   */
-  private runCaptured(
-    cmd: string,
-    args: string[],
-    cwd: string,
-    timeoutMs = 15 * 60 * 1000,
-  ): Promise<{ code: number | null; stderr: string }> {
-    return new Promise((resolve, reject) => {
-      let stderr = ''
-      let proc: ChildProcess
-      try {
-        proc = spawn(cmd, args, { cwd, stdio: 'pipe' })
-      } catch (err) {
-        reject(err)
-        return
-      }
-      proc.stderr?.on('data', (d) => {
-        stderr += d.toString()
-        // Cap memory: only keep the last 64KB of stderr
-        if (stderr.length > 64 * 1024) {
-          stderr = stderr.slice(-64 * 1024)
-        }
-      })
-      const timer = setTimeout(() => {
-        proc.kill('SIGKILL')
-        reject(new Error(`Process ${cmd} ${args.join(' ')} timed out after ${timeoutMs}ms`))
-      }, timeoutMs)
-      proc.on('close', (code) => {
-        clearTimeout(timer)
-        resolve({ code, stderr })
-      })
-      proc.on('error', (err) => {
-        clearTimeout(timer)
-        reject(err)
-      })
-    })
   }
 
   async start(config: MeetingASRConfig = {}): Promise<void> {

@@ -95,11 +95,12 @@ describe('MeetingASRService path resolution (v0.7.16 venv relocation)', () => {
 
   it('source contract: venv creation never targets pythonBackendPath/.venv', async () => {
     const { readFileSync } = await import('fs')
-    const srcPath = join(
-      process.cwd(),
-      'packages/server/src/services/meeting-asr/index.ts',
+    // The creation logic now lives in venv-manager.ts (v0.8 modularization);
+    // index.ts keeps delegating methods with the same names/semantics.
+    const src = readFileSync(
+      join(process.cwd(), 'packages/server/src/services/meeting-asr/venv-manager.ts'),
+      'utf-8',
     )
-    const src = readFileSync(srcPath, 'utf-8')
 
     // The `createVenv` helper must target the data-dir venv, not the
     // backend-path venv. We assert that the `python -m venv` spawn line
@@ -117,14 +118,20 @@ describe('MeetingASRService path resolution (v0.7.16 venv relocation)', () => {
 
   it('source contract: getDataDir + pip install -r keep using absolute requirements path', async () => {
     const { readFileSync } = await import('fs')
-    const src = readFileSync(
+    const indexSrc = readFileSync(
       join(process.cwd(), 'packages/server/src/services/meeting-asr/index.ts'),
+      'utf-8',
+    )
+    const venvSrc = readFileSync(
+      join(process.cwd(), 'packages/server/src/services/meeting-asr/venv-manager.ts'),
       'utf-8',
     )
 
     // getDataDir reads MEETING_ASR_DATA_DIR so deploy + runtime agree.
-    expect(src).toMatch(/process\.env\.MEETING_ASR_DATA_DIR/)
-    // pip install -r uses an absolute path so cwd can be anywhere.
-    expect(src).toMatch(/path\.join\(__dirname,\s*['"]requirements\.txt['"]\)/)
+    expect(indexSrc).toMatch(/process\.env\.MEETING_ASR_DATA_DIR/)
+    // pip install -r uses an absolute path so cwd can be anywhere
+    // (the requirements path is computed in index.ts and injected).
+    expect(indexSrc).toMatch(/path\.join\(__dirname,\s*['"]requirements\.txt['"]\)/)
+    expect(venvSrc).toMatch(/opts\.requirementsPath/)
   })
 })
