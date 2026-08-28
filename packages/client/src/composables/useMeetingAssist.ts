@@ -16,6 +16,11 @@ export interface AnalysisRound {
   wotdUsed?: boolean
   score?: Record<string, number>
   timeNote?: string
+  // 增量评价模式：AI 判断本段是否出现新的评价点
+  hasNewPoint?: boolean
+  highlights?: string[]
+  improvements?: string[]
+  topics?: string[]
 }
 
 export function useMeetingAssist(sessionId: string) {

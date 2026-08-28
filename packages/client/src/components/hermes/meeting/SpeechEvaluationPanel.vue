@@ -61,19 +61,20 @@ function persist(patch: Partial<SpeechEvalState>) {
   meetingStore.updateSession(props.sessionId, { speechEval: { ...evalState.value, ...patch } })
 }
 
-// ---------- 计时员 (Timer)（拆分至 useSpeechTimer，行为保持不变） ----------
-
+// ---------- 计时员 (Timer) ----------
+// 共享计时器（单例）：与左侧波形/转写区同步显示；面板层（环节记录/设置）经 deps 启用。
 const {
   timerRunning,
   timerRemainingMs,
-  timerLabel,
-  timerDisplay,
   phase,
+  display: timerDisplay,
   phaseLabel,
+  timerLabel,
   timerRecords,
   fmtSec,
-  resetTimer,
-  toggleTimer,
+  setThresholds,
+  reset: resetTimer,
+  toggle: toggleTimer,
   recordSegment,
   removeRecord,
   showSettings,
@@ -83,6 +84,32 @@ const {
   openSettings,
   saveSettings,
 } = useSpeechTimer({ evalState, persist })
+
+// 阈值变更时同步共享计时器（时长/黄牌/红牌剩余秒数）
+watch(() => ({
+  durationSec: evalState.value.timerDurationSec,
+  yellowAtSec: evalState.value.yellowAtSec,
+  redAtSec: evalState.value.redAtSec,
+}), (v) => {
+  setThresholds({ durationSec: v.durationSec, yellowAtSec: v.yellowAtSec, redAtSec: v.redAtSec })
+}, { immediate: true })
+
+// Toastmasters 常见环节预设（一键套用时长/黄牌/红牌）
+const SEGMENT_PRESETS = [
+  { key: 'tableTopics', durationSec: 120, yellowAtSec: 30, redAtSec: 10 },   // 即兴演讲 2 分钟
+  { key: 'prepared', durationSec: 420, yellowAtSec: 60, redAtSec: 15 },      // 备稿演讲 5-7 分钟（按 6 分钟黄牌）
+  { key: 'evaluation', durationSec: 180, yellowAtSec: 30, redAtSec: 10 },    // 评估 2-3 分钟
+  { key: 'iceBreaker', durationSec: 300, yellowAtSec: 45, redAtSec: 10 },    // 破冰演讲 4-6 分钟
+  { key: 'custom', durationSec: 180, yellowAtSec: 30, redAtSec: 10 },        // 自定义
+] as const
+
+function applyPreset(presetKey: string) {
+  const preset = SEGMENT_PRESETS.find(p => p.key === presetKey)
+  if (!preset) return
+  settingsDuration.value = preset.durationSec
+  settingsYellow.value = preset.yellowAtSec
+  settingsRed.value = preset.redAtSec
+}
 
 // ---------- 演讲上下文（注入 AI 提示词：计时/每日一词） ----------
 
@@ -198,6 +225,45 @@ const aiGrammarIssues = computed<Array<{ quote: string; issue: string }>>(() => 
 
 const aiWotdUsedCount = computed(() => rounds.value.filter(r => r.wotdUsed).length)
 
+// ---------- 增量评价聚合（评分实时更新 + 亮点/改进点/主题累积 + 仅新评价点弹出） ----------
+
+// 只有 AI 判断出现新的评价点（hasNewPoint === true）的轮次才作为"新点评"弹出
+const newPointRounds = computed(() => {
+  return rounds.value.filter(r => r.hasNewPoint === true)
+})
+
+// 最新一轮评分：评分不弹出新卡，而是作为"更新中的数值"实时刷新
+const liveScore = computed<Record<string, number> | undefined>(() => {
+  for (let i = rounds.value.length - 1; i >= 0; i--) {
+    const s = rounds.value[i].score
+    if (s && Object.keys(s).length > 0) return s
+  }
+  return undefined
+})
+
+const scoreUpdatedAt = computed(() => {
+  for (let i = rounds.value.length - 1; i >= 0; i--) {
+    const s = rounds.value[i].score
+    if (s && Object.keys(s).length > 0) return rounds.value[i].timestamp
+  }
+  return undefined
+})
+
+// 亮点 / 改进点 / 主题：跨轮次累积并去重（AI 每轮只报新增项）
+function uniqueStrings(items: string[] | undefined): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const it of items || []) {
+    const s = it?.trim()
+    if (s && !seen.has(s)) { seen.add(s); out.push(s) }
+  }
+  return out
+}
+
+const highlights = computed(() => uniqueStrings(rounds.value.flatMap(r => r.highlights || [])))
+const improvements = computed(() => uniqueStrings(rounds.value.flatMap(r => r.improvements || [])))
+const topics = computed(() => uniqueStrings(rounds.value.flatMap(r => r.topics || [])))
+
 const scoreLabelMap: Record<string, string> = {
   content: 'meeting.speechEval.scoreContent',
   structure: 'meeting.speechEval.scoreStructure',
@@ -278,6 +344,13 @@ function buildTranscriptWithEval(): string {
     ...(goodLines.length ? goodLines.map(p => `- ${p}`) : ['（无）']),
     '## 语法错误',
     ...(grammarLines.length ? grammarLines : ['（无）']),
+    '## 亮点',
+    ...(highlights.value.length ? highlights.value.map(h => `- ${h}`) : ['（无）']),
+    '## 可提升的点',
+    ...(improvements.value.length ? improvements.value.map(i => `- ${i}`) : ['（无）']),
+    '## 主题',
+    ...(topics.value.length ? topics.value.map(tp => `- ${tp}`) : ['（无）']),
+    ...(liveScore.value ? [`## 实时评分（最终）：${JSON.stringify(liveScore.value)}`] : []),
   ]
   return [...lines, '', ...evalBlock].join('\n')
 }
@@ -356,12 +429,13 @@ watch(() => props.sessionId, () => {
 })
 
 onMounted(() => {
-  resetTimer()
+  // 计时器由共享模块持有且已在阈值 watch 中同步，这里不重置，避免打断左侧覆盖层正在走的表。
   wotdInput.value = evalState.value.wordOfTheDay || ''
 })
 
 onUnmounted(() => {
-  // 计时器 interval 的清理已随 useSpeechTimer 内置。
+  // 计时器由共享模块持有：面板卸载时不停表（左侧波形/转写区覆盖层继续走表），
+  // 由 MeetingView 在页面卸载/切换会话时统一 reset/stop。
   if (contextPushTimer) { clearTimeout(contextPushTimer); contextPushTimer = null }
   disconnect()
 })
@@ -390,54 +464,86 @@ onUnmounted(() => {
       </div>
       <p class="section-desc">{{ t('meeting.speechEval.aiRoundsDesc') }}</p>
 
-      <div v-if="rounds.length === 0" class="empty-hint">{{ t('meeting.speechEval.emptyRounds') }}</div>
-
-      <TransitionGroup name="round-fade">
-        <div v-for="round in rounds" :key="round.id" class="round-card" :class="`priority-${round.priority}`">
-          <div class="round-meta">
-            <span class="round-time">{{ new Date(round.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) }}</span>
-            <span v-if="round.priority === 'urgent'" class="priority-badge urgent">{{ t('meeting.assist.urgent') }}</span>
-            <span v-else-if="round.priority === 'attention'" class="priority-badge attention">{{ t('meeting.assist.attention') }}</span>
-          </div>
-
-          <div v-if="round.keyPoint" class="round-keypoint" :class="`priority-${round.priority}`">{{ round.keyPoint }}</div>
-          <div v-if="round.context" class="round-context">「{{ round.context }}」</div>
-          <div v-if="round.analysis" class="round-analysis">{{ round.analysis }}</div>
-          <div v-if="round.timeNote" class="round-timenote">⏱️ {{ round.timeNote }}</div>
-
-          <!-- 评分表 -->
-          <div v-if="round.score && Object.keys(round.score).length" class="score-table">
-            <div class="score-row" v-for="(labelKey, key) in scoreLabelMap" :key="key">
-              <span class="score-label">{{ t(labelKey) }}</span>
-              <span class="score-value">{{ round.score[key] ?? '—' }}</span>
-            </div>
-          </div>
-
-          <!-- 赘语 -->
-          <div v-if="round.fillerWords?.length" class="round-chips">
-            <NTag v-for="f in round.fillerWords" :key="f.word" size="small" type="warning" :bordered="false">
-              {{ f.word }} ×{{ f.count }}
-            </NTag>
-          </div>
-
-          <!-- 好词好句 -->
-          <div v-if="round.goodPhrases?.length" class="round-lists">
-            <div class="round-list-title">✨ {{ t('meeting.speechEval.goodPhrases') }}</div>
-            <div v-for="(p, i) in round.goodPhrases" :key="i" class="round-list-item">「{{ p }}」</div>
-          </div>
-
-          <!-- 语法问题 -->
-          <div v-if="round.grammarIssues?.length" class="round-lists">
-            <div class="round-list-title">⚠️ {{ t('meeting.speechEval.grammarIssues') }}</div>
-            <div v-for="(g, i) in round.grammarIssues" :key="i" class="round-list-item">
-              「{{ g.quote }}」— {{ g.issue }}
-            </div>
-          </div>
-
-          <!-- 每日一词使用 -->
-          <div v-if="round.wotdUsed" class="round-wotd">📖 {{ t('meeting.speechEval.wotdUsedFlag') }}</div>
+      <!-- 实时评分（更新式，不弹出新卡） -->
+      <div v-if="liveScore" class="live-score" :key="scoreUpdatedAt">
+        <div class="live-score-header">
+          <span class="live-score-title">📊 {{ t('meeting.speechEval.liveScore') }}</span>
+          <span v-if="scoreUpdatedAt" class="live-score-time">
+            {{ t('meeting.speechEval.updatedAt') }} {{ new Date(scoreUpdatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) }}
+          </span>
         </div>
-      </TransitionGroup>
+        <div class="live-score-grid">
+          <div v-for="(labelKey, key) in scoreLabelMap" :key="key" class="live-score-item" :class="{ overall: key === 'overall' }">
+            <span class="live-score-label">{{ t(labelKey) }}</span>
+            <span class="live-score-value">{{ liveScore[key] ?? '—' }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 累积亮点 -->
+      <div v-if="highlights.length" class="eval-block">
+        <div class="eval-block-title">✨ {{ t('meeting.speechEval.highlights') }}</div>
+        <div class="eval-tags">
+          <NTag v-for="(h, i) in highlights" :key="i" size="small" type="success" :bordered="false">✓ {{ h }}</NTag>
+        </div>
+      </div>
+
+      <!-- 累积可提升的点 -->
+      <div v-if="improvements.length" class="eval-block">
+        <div class="eval-block-title">💡 {{ t('meeting.speechEval.improvements') }}</div>
+        <div class="eval-tags">
+          <NTag v-for="(imp, i) in improvements" :key="i" size="small" type="warning" :bordered="false">↗ {{ imp }}</NTag>
+        </div>
+      </div>
+
+      <!-- 累积主题 -->
+      <div v-if="topics.length" class="eval-block">
+        <div class="eval-block-title">🏷️ {{ t('meeting.speechEval.topics') }}</div>
+        <div class="eval-tags">
+          <NTag v-for="(tp, i) in topics" :key="i" size="small" type="info" :bordered="false">{{ tp }}</NTag>
+        </div>
+      </div>
+
+      <!-- 仅 AI 判断出现新的评价点时才弹出的点评卡 -->
+      <div v-if="newPointRounds.length" class="eval-block">
+        <div class="eval-block-title">🆕 {{ t('meeting.speechEval.newPoints') }}</div>
+        <TransitionGroup name="round-fade">
+          <div v-for="round in newPointRounds" :key="round.id" class="round-card" :class="`priority-${round.priority}`">
+            <div class="round-meta">
+              <span class="round-time">{{ new Date(round.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) }}</span>
+              <span v-if="round.priority === 'urgent'" class="priority-badge urgent">{{ t('meeting.assist.urgent') }}</span>
+              <span v-else-if="round.priority === 'attention'" class="priority-badge attention">{{ t('meeting.assist.attention') }}</span>
+            </div>
+
+            <div v-if="round.keyPoint" class="round-keypoint" :class="`priority-${round.priority}`">{{ round.keyPoint }}</div>
+            <div v-if="round.context" class="round-context">「{{ round.context }}」</div>
+            <div v-if="round.analysis" class="round-analysis">{{ round.analysis }}</div>
+            <div v-if="round.timeNote" class="round-timenote">⏱️ {{ round.timeNote }}</div>
+
+            <div v-if="round.fillerWords?.length" class="round-chips">
+              <NTag v-for="f in round.fillerWords" :key="f.word" size="small" type="warning" :bordered="false">
+                {{ f.word }} ×{{ f.count }}
+              </NTag>
+            </div>
+
+            <div v-if="round.goodPhrases?.length" class="round-lists">
+              <div class="round-list-title">✨ {{ t('meeting.speechEval.goodPhrases') }}</div>
+              <div v-for="(p, i) in round.goodPhrases" :key="i" class="round-list-item">「{{ p }}」</div>
+            </div>
+
+            <div v-if="round.grammarIssues?.length" class="round-lists">
+              <div class="round-list-title">⚠️ {{ t('meeting.speechEval.grammarIssues') }}</div>
+              <div v-for="(g, i) in round.grammarIssues" :key="i" class="round-list-item">
+                「{{ g.quote }}」— {{ g.issue }}
+              </div>
+            </div>
+
+            <div v-if="round.wotdUsed" class="round-wotd">📖 {{ t('meeting.speechEval.wotdUsedFlag') }}</div>
+          </div>
+        </TransitionGroup>
+      </div>
+
+      <div v-if="rounds.length === 0" class="empty-hint">{{ t('meeting.speechEval.emptyRounds') }}</div>
 
       <div v-if="isAnalyzing" class="analyzing-indicator">
         <NSpin size="small" />
@@ -608,6 +714,20 @@ onUnmounted(() => {
     >
       <div class="settings-form">
         <div class="setting-field">
+          <label>{{ t('meeting.speechEval.presetsLabel') }}</label>
+          <div class="preset-grid">
+            <NButton
+              v-for="p in SEGMENT_PRESETS"
+              :key="p.key"
+              size="small"
+              quaternary
+              @click="applyPreset(p.key)"
+            >
+              {{ t(`meeting.speechEval.preset_${p.key}`) }}
+            </NButton>
+          </div>
+        </div>
+        <div class="setting-field">
           <label>{{ t('meeting.speechEval.durationLabel') }}</label>
           <NInputNumber v-model:value="settingsDuration" :min="10" :max="3600" size="small" style="width: 100%" />
         </div>
@@ -760,19 +880,77 @@ onUnmounted(() => {
 .round-analysis { font-size: 12px; color: #c8c8c8; line-height: 1.6; }
 .round-timenote { font-size: 12px; color: #f0a020; }
 
-.score-table {
+// --- 实时评分（更新式面板） ---
+.live-score {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-  padding: 6px 8px;
-  border-radius: 6px;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
   background: rgba(112, 192, 232, 0.06);
-  border: 1px solid rgba(112, 192, 232, 0.15);
+  border: 1px solid rgba(112, 192, 232, 0.2);
+  animation: score-flash 0.6s ease;
 }
 
-.score-row { display: flex; align-items: center; gap: 6px; font-size: 12px; }
-.score-label { color: var(--n-text-color3, #999); }
-.score-value { font-weight: 700; color: #70c0e8; font-variant-numeric: tabular-nums; }
+@keyframes score-flash {
+  0% { background: rgba(112, 192, 232, 0.2); }
+  100% { background: rgba(112, 192, 232, 0.06); }
+}
+
+.live-score-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.live-score-title { font-size: 13px; font-weight: 700; color: #70c0e8; }
+.live-score-time { font-size: 11px; color: var(--n-text-color3, #888); font-variant-numeric: tabular-nums; }
+
+.live-score-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+}
+
+.live-score-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 2px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+
+  &.overall {
+    background: rgba(99, 226, 183, 0.08);
+    border-color: rgba(99, 226, 183, 0.3);
+  }
+}
+
+.live-score-label { font-size: 10px; color: var(--n-text-color3, #999); text-align: center; }
+.live-score-value { font-size: 18px; font-weight: 700; color: #70c0e8; font-variant-numeric: tabular-nums; }
+.live-score-item.overall .live-score-value { color: #63e2b7; }
+
+// --- 累积评价块（亮点/改进点/主题） ---
+.eval-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.eval-block-title { font-size: 12px; font-weight: 600; color: var(--n-text-color3, #bbb); }
+
+.eval-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
 
 .round-chips { display: flex; flex-wrap: wrap; gap: 4px; }
 
@@ -936,6 +1114,12 @@ onUnmounted(() => {
   gap: 4px;
 
   label { font-size: 12px; color: var(--n-text-color3, #999); }
+}
+
+.preset-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .settings-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }

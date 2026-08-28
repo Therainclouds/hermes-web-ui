@@ -14,6 +14,11 @@ export interface AnalysisRound {
   wotdUsed?: boolean
   score?: Record<string, number>
   timeNote?: string
+  // 增量评价模式：AI 判断本段是否出现新的评价点
+  hasNewPoint?: boolean
+  highlights?: string[]       // 新增亮点（仅 hasNewPoint 时可能非空）
+  improvements?: string[]     // 新增可提升的点（仅 hasNewPoint 时可能非空）
+  topics?: string[]           // 新增主题（仅 hasNewPoint 时可能非空）
 }
 
 /** 演讲评分场景的评估上下文：随分析批次注入提示词，供 AI 实时点评/评分。 */
@@ -63,9 +68,20 @@ export function parseAnalysisRound(raw: string): AnalysisRound | null {
             .map(([k, v]) => [k.slice(0, 20), Math.max(0, Math.min(100, Math.round(Number(v))))]),
         )
       : undefined
+    const hasNewPoint = typeof parsed.hasNewPoint === 'boolean' ? parsed.hasNewPoint : undefined
+    const highlights = Array.isArray(parsed.highlights)
+      ? parsed.highlights.filter((h: any) => typeof h === 'string').slice(0, 8).map((h: string) => h.slice(0, 120))
+      : undefined
+    const improvements = Array.isArray(parsed.improvements)
+      ? parsed.improvements.filter((i: any) => typeof i === 'string').slice(0, 8).map((i: string) => i.slice(0, 120))
+      : undefined
+    const topics = Array.isArray(parsed.topics)
+      ? parsed.topics.filter((tp: any) => typeof tp === 'string').slice(0, 8).map((tp: string) => tp.slice(0, 80))
+      : undefined
 
-    // 演讲评分场景：只要有任何一项内容就保留该轮（评分/赘语/好词好句也算）。
-    const hasSpeechContent = !!keyPoint || !!analysis || !!fillerWords?.length || !!goodPhrases?.length || !!grammarIssues?.length || !!score
+    // 演讲评分场景：只要有任何一项内容就保留该轮（评分/赘语/好词好句/新评价点也算）。
+    const hasSpeechContent = !!keyPoint || !!analysis || !!fillerWords?.length || !!goodPhrases?.length
+      || !!grammarIssues?.length || !!score || !!highlights?.length || !!improvements?.length || !!topics?.length || hasNewPoint === true
     if (!parsed || !hasSpeechContent) {
       return null
     }
@@ -81,10 +97,14 @@ export function parseAnalysisRound(raw: string): AnalysisRound | null {
       ...(fillerWords ? { fillerWords } : {}),
       ...(goodPhrases ? { goodPhrases } : {}),
       ...(grammarIssues ? { grammarIssues } : {}),
-      ...(typeof parsed.wotdUsed === 'boolean' ? { wotdUsed: parsed.wotdUsed } : {}),
-      ...(score ? { score } : {}),
-      ...(typeof parsed.timeNote === 'string' ? { timeNote: parsed.timeNote.slice(0, 200) } : {}),
-    }
+        ...(typeof parsed.wotdUsed === 'boolean' ? { wotdUsed: parsed.wotdUsed } : {}),
+        ...(score ? { score } : {}),
+        ...(typeof parsed.timeNote === 'string' ? { timeNote: parsed.timeNote.slice(0, 200) } : {}),
+        ...(hasNewPoint !== undefined ? { hasNewPoint } : {}),
+        ...(highlights ? { highlights } : {}),
+        ...(improvements ? { improvements } : {}),
+        ...(topics ? { topics } : {}),
+      }
   } catch {
     logger.warn('[meeting-assist] failed to parse LLM response as JSON: %s', raw.slice(0, 100))
     return null

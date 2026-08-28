@@ -6,6 +6,17 @@ import { prepareAnalysisSkillSection } from './skill-resolver'
 import { parseAnalysisRound, type AnalysisRound, type SpeechContext } from './report-parser'
 
 /**
+ * 服务端累积的演讲评价摘要：跨批次保留，注入后续提示词，供 AI 判断是否出现新的评价点。
+ * 由 realtime-assist 的 accumulateSpeechSummary 维护（源自 org 演讲功能增量评价模式）。
+ */
+export interface SpeechSummary {
+  highlights: string[]
+  improvements: string[]
+  topics: string[]
+  score?: Record<string, number>
+}
+
+/**
  * Direct LLM 路径（拆分自 realtime-assist.ts，行为保持一致）。
  *
  * 不经过 Hermes Agent、直接调用 OpenAI 兼容端点的所有请求都在这里：
@@ -68,6 +79,7 @@ export async function analyzeViaDirectLLM(
   template: SceneTemplate,
   profile: string,
   speechContext?: SpeechContext | null,
+  speechSummary?: SpeechSummary,
   deps?: DirectLLMDeps,
 ): Promise<AnalysisRound | null> {
   const config = await resolveConfig(deps)
@@ -82,22 +94,38 @@ export async function analyzeViaDirectLLM(
     ? `${template.systemPrompt}\n\n${skillSection}`
     : template.systemPrompt
 
-  // 演讲评分场景：把计时记录/每日一词/当前倒计时注入提示词，让 AI 的点评与评分以实际用时为依据。
-  if (template.id === 'speech' && speechContext) {
-    const ctx = speechContext
+  // 演讲评分场景：把计时记录/每日一词/当前倒计时/已累积评价注入提示词。
+  if (template.id === 'speech') {
     const lines: string[] = ['', '【当前演讲评估上下文（请据此点评与评分）】']
-    if (ctx.wordOfTheDay) lines.push(`- 每日一词：${ctx.wordOfTheDay}`)
-    if (ctx.timerDurationSec) {
-      lines.push(`- 计时设置：单环节标准时长 ${ctx.timerDurationSec} 秒；黄牌触发剩余 ${ctx.yellowAtSec ?? 30} 秒；红牌触发剩余 ${ctx.redAtSec ?? 10} 秒`)
+    if (speechContext) {
+      const ctx = speechContext
+      if (ctx.wordOfTheDay) lines.push(`- 每日一词：${ctx.wordOfTheDay}`)
+      if (ctx.timerDurationSec) {
+        lines.push(`- 计时设置：单环节标准时长 ${ctx.timerDurationSec} 秒；黄牌触发剩余 ${ctx.yellowAtSec ?? 30} 秒；红牌触发剩余 ${ctx.redAtSec ?? 10} 秒`)
+      }
+      if (ctx.currentRemainingSec != null) {
+        lines.push(`- 当前倒计时：剩余 ${Math.round(ctx.currentRemainingSec)} 秒（${ctx.currentPhase || 'green'}）`)
+      }
+      if (ctx.timerRecords && ctx.timerRecords.length > 0) {
+        lines.push('- 已记录环节用时：')
+        for (const r of ctx.timerRecords) {
+          const overtime = r.overtimeSec > 0 ? `（超时 ${r.overtimeSec} 秒）` : ''
+          lines.push(`  - ${r.label}：${r.durationSec} 秒${overtime}`)
+        }
+      }
     }
-    if (ctx.currentRemainingSec != null) {
-      lines.push(`- 当前倒计时：剩余 ${Math.round(ctx.currentRemainingSec)} 秒（${ctx.currentPhase || 'green'}）`)
-    }
-    if (ctx.timerRecords && ctx.timerRecords.length > 0) {
-      lines.push('- 已记录环节用时：')
-      for (const r of ctx.timerRecords) {
-        const overtime = r.overtimeSec > 0 ? `（超时 ${r.overtimeSec} 秒）` : ''
-        lines.push(`  - ${r.label}：${r.durationSec} 秒${overtime}`)
+    if (speechSummary) {
+      if (speechSummary.highlights.length > 0) {
+        lines.push(`- 已累积亮点：${speechSummary.highlights.join('；')}`)
+      }
+      if (speechSummary.improvements.length > 0) {
+        lines.push(`- 已累积改进点：${speechSummary.improvements.join('；')}`)
+      }
+      if (speechSummary.topics.length > 0) {
+        lines.push(`- 已出现主题：${speechSummary.topics.join('；')}`)
+      }
+      if (speechSummary.score && Object.keys(speechSummary.score).length > 0) {
+        lines.push(`- 当前评分：${JSON.stringify(speechSummary.score)}`)
       }
     }
     systemPrompt = `${systemPrompt}\n${lines.join('\n')}`

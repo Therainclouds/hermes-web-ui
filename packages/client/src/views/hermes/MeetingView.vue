@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
+import { ref, watch, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NButton, NSpin, NTag, NTooltip, NInput, NPopconfirm, NModal, NSelect, NRadio, NRadioGroup } from 'naive-ui'
 import MeetingAgentPanel from '@/components/hermes/meeting/MeetingAgentPanel.vue'
@@ -14,9 +14,10 @@ import MeetingRightPanel from '@/components/hermes/meeting/MeetingRightPanel.vue
 import TranscriptList from '@/components/hermes/meeting/TranscriptList.vue'
 import type { SceneId } from '@/components/hermes/meeting/scene-templates'
 import { useMeetingStore } from '@/stores/hermes/meeting'
-import type { MeetingSession, TranscriptSentence, AgentConfig } from '@/stores/hermes/meeting'
+import type { MeetingSession, TranscriptSentence, AgentConfig, SpeechEvalState } from '@/stores/hermes/meeting'
 import { useModelsStore } from '@/stores/hermes/models'
 import { useProfilesStore } from '@/stores/hermes/profiles'
+import { useSpeechTimer } from '@/composables/useSpeechTimer'
 import { meetingASRApi } from '@/utils/meeting-asr-api'
 import { getApiKey } from '@/api/client'
 import { useMessage } from '@/composables/useAppMessage'
@@ -189,6 +190,44 @@ const activeSession = computed(() => meetingStore.activeSession)
 
 // 演讲评分场景：右侧面板切换为专用评估面板（计时员/赘语记录员/语法官）
 const isSpeechScene = computed(() => activeSession.value?.sceneTemplate === 'speech')
+
+// 共享计时器（与右侧演讲评估面板同步，左侧波形/转写区叠加显示）
+const {
+  timerRunning: speechTimerRunning,
+  phase: speechPhase,
+  display: speechTimerDisplay,
+  setThresholds: setSpeechTimerThresholds,
+  reset: resetSpeechTimer,
+  toggle: toggleSpeechTimer,
+  stop: stopSpeechTimer,
+} = useSpeechTimer()
+
+const speechEval = computed<SpeechEvalState | undefined>(() => activeSession.value?.speechEval)
+
+// 演讲会话的计时阈值变更时同步共享计时器
+watch(speechEval, (st) => {
+  if (st) {
+    setSpeechTimerThresholds({
+      durationSec: st.timerDurationSec,
+      yellowAtSec: st.yellowAtSec,
+      redAtSec: st.redAtSec,
+    })
+  }
+}, { deep: true, immediate: true })
+
+// 切换到演讲会话时重置计时器（与右侧面板一致）
+watch(() => activeSession.value?.id, (id) => {
+  if (id) resetSpeechTimer()
+})
+
+const speechPhaseLabel = computed(() => {
+  const map = {
+    green: t('meeting.speechEval.greenCard'),
+    yellow: t('meeting.speechEval.yellowCard'),
+    red: t('meeting.speechEval.redCard'),
+  }
+  return map[speechPhase.value]
+})
 
 // 报告生成完成回调
 function onReportGenerated(markdown: string) {
@@ -625,6 +664,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   stopRecording()
+  stopSpeechTimer()
   // Note: We don't stop the ASR service on unmount as it should persist across page navigations
 })
 
@@ -950,9 +990,43 @@ async function clearTranscript() {
       <!-- 主内容区 -->
       <div class="meeting-content">
       <!-- 左侧：转写区域 -->
-      <div class="transcript-panel">
+      <div class="transcript-panel" :class="{ 'speech-scene': isSpeechScene }">
         <!-- 可视化区域 -->
-        <WaveformCanvas :analyser="analyser" :connecting="isConnecting" />
+        <div class="waveform-stage" :class="`phase-${speechPhase}`">
+          <WaveformCanvas :analyser="analyser" :connecting="isConnecting" />
+
+          <!-- 演讲评分：波形上叠加计时器（与右侧时间卡同步） -->
+          <div v-if="isSpeechScene" class="speech-timer-overlay" :class="`phase-${speechPhase}`">
+            <div class="speech-timer-main">
+              <span class="speech-timer-time">{{ speechTimerDisplay }}</span>
+              <span class="speech-timer-phase">{{ speechPhaseLabel }}</span>
+            </div>
+            <div class="speech-timer-cards">
+              <span class="tm-card green" :class="{ active: speechPhase === 'green' }">🟢 {{ t('meeting.speechEval.greenCard') }}</span>
+              <span class="tm-card yellow" :class="{ active: speechPhase === 'yellow' }">🟡 {{ t('meeting.speechEval.yellowCard') }}</span>
+              <span class="tm-card red" :class="{ active: speechPhase === 'red' }">🔴 {{ t('meeting.speechEval.redCard') }}</span>
+            </div>
+            <div class="speech-timer-actions">
+              <NButton size="tiny" :type="speechTimerRunning ? 'warning' : 'primary'" @click="toggleSpeechTimer">
+                {{ speechTimerRunning ? t('meeting.speechEval.pause') : t('meeting.speechEval.start') }}
+              </NButton>
+              <NButton size="tiny" @click="resetSpeechTimer">{{ t('meeting.speechEval.reset') }}</NButton>
+            </div>
+          </div>
+        </div>
+
+        <!-- 演讲评分：转写区顶部计时状态条（刻意练习提示） -->
+        <div v-if="isSpeechScene" class="speech-transcript-strip" :class="`phase-${speechPhase}`">
+          <div class="strip-left">
+            <span class="strip-dot" :class="{ running: speechTimerRunning }" />
+            <span class="strip-time">{{ speechTimerDisplay }}</span>
+            <span class="strip-phase">{{ speechPhaseLabel }}</span>
+          </div>
+          <div class="strip-right">
+            <span class="strip-count">{{ sentences.length }} {{ t('meeting.sentences') }}</span>
+            <span class="strip-hint">{{ t('meeting.speechEval.practiceHint') }}</span>
+          </div>
+        </div>
 
         <!-- 状态栏 -->
         <div class="status-bar">
@@ -1805,6 +1879,152 @@ async function clearTranscript() {
 }
 
 // .waveform-container / .connecting-overlay 已迁入 WaveformCanvas 组件。
+// 演讲评分：波形区外层舞台（相位描边 + 承载计时器浮层，org 演讲功能移植）。
+.waveform-stage {
+  position: relative;
+  overflow: hidden;
+
+  &.phase-green { box-shadow: inset 0 0 0 2px rgba(24, 160, 88, 0.35); }
+  &.phase-yellow { box-shadow: inset 0 0 0 2px rgba(240, 160, 32, 0.5); }
+  &.phase-red { box-shadow: inset 0 0 0 2px rgba(208, 48, 80, 0.65); }
+}
+
+// --- 演讲评分：波形上计时覆盖层 ---
+.speech-timer-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 0 24px;
+  background: linear-gradient(90deg, rgba(15, 23, 42, 0.85), rgba(15, 23, 42, 0.45) 40%, rgba(15, 23, 42, 0.6));
+  pointer-events: none;
+
+  &.phase-green { background: linear-gradient(90deg, rgba(15, 23, 42, 0.85), rgba(24, 160, 88, 0.12) 55%, rgba(15, 23, 42, 0.6)); }
+  &.phase-yellow { background: linear-gradient(90deg, rgba(15, 23, 42, 0.85), rgba(240, 160, 32, 0.16) 55%, rgba(15, 23, 42, 0.6)); }
+  &.phase-red { background: linear-gradient(90deg, rgba(15, 23, 42, 0.85), rgba(208, 48, 80, 0.2) 55%, rgba(15, 23, 42, 0.6)); }
+
+  .speech-timer-main {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+  }
+
+  .speech-timer-time {
+    font-size: 42px;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    color: #fff;
+    text-shadow: 0 0 20px rgba(0, 0, 0, 0.6);
+  }
+
+  &.phase-green .speech-timer-time { color: #63e2b7; }
+  &.phase-yellow .speech-timer-time { color: #f0a020; }
+  &.phase-red .speech-timer-time { color: #ff4d4f; }
+
+  .speech-timer-phase {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 2px;
+    color: rgba(255, 255, 255, 0.85);
+  }
+
+  .speech-timer-cards {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .tm-card {
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    opacity: 0.45;
+    background: rgba(0, 0, 0, 0.35);
+    transition: all 0.2s ease;
+    white-space: nowrap;
+
+    &.green.active { opacity: 1; border-color: #18a058; background: rgba(24, 160, 88, 0.35); color: #63e2b7; }
+    &.yellow.active { opacity: 1; border-color: #f0a020; background: rgba(240, 160, 32, 0.35); color: #f0c060; }
+    &.red.active { opacity: 1; border-color: #d03050; background: rgba(208, 48, 80, 0.4); color: #ff8a8a; }
+  }
+
+  .speech-timer-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+    pointer-events: auto;
+  }
+}
+
+// --- 演讲评分：转写区顶部计时状态条 ---
+.speech-transcript-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 16px;
+  border-bottom: 1px solid $border-color;
+  background: $bg-card;
+  font-size: 12px;
+
+  &.phase-green { border-left: 3px solid #18a058; }
+  &.phase-yellow { border-left: 3px solid #f0a020; }
+  &.phase-red { border-left: 3px solid #d03050; }
+
+  .strip-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .strip-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #555;
+
+    &.running { background: #18a058; animation: strip-pulse 1.5s infinite; }
+  }
+
+  .strip-time {
+    font-size: 15px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+
+  &.phase-green .strip-time { color: #63e2b7; }
+  &.phase-yellow .strip-time { color: #f0a020; }
+  &.phase-red .strip-time { color: #ff4d4f; }
+
+  .strip-phase {
+    font-size: 11px;
+    color: $text-secondary;
+  }
+
+  .strip-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    color: $text-secondary;
+  }
+
+  .strip-hint {
+    font-size: 11px;
+    opacity: 0.7;
+  }
+}
+
+@keyframes strip-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 
 .status-bar {
   display: flex;

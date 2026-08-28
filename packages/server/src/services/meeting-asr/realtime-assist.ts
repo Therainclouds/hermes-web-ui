@@ -8,6 +8,14 @@ import type { AnalysisRound, SpeechContext } from './report-parser'
 
 export type { AnalysisRound, SpeechContext } from './report-parser'
 
+/** 服务端累积的演讲评价摘要：跨批次保留，注入后续提示词，供 AI 判断是否出现新的评价点。 */
+interface SpeechSummary {
+  highlights: string[]
+  improvements: string[]
+  topics: string[]
+  score?: Record<string, number>
+}
+
 interface TranscriptSentence {
   speaker?: string
   text: string
@@ -19,6 +27,7 @@ interface ActiveSession {
   sceneTemplate: string
   profile?: string
   speechContext?: SpeechContext | null
+  speechSummary?: SpeechSummary
   buffer: TranscriptSentence[]
   timer: NodeJS.Timeout | null
   isAnalyzing: boolean
@@ -171,8 +180,10 @@ class RealtimeAssistService {
     this.nsp?.to(`meeting:${session.sessionId}`).emit('analyzing', true)
 
     try {
-      const round = await this.analyzeBatch(sentences, session.sceneTemplate, session.profile, session.speechContext)
+      const round = await this.analyzeBatch(sentences, session.sceneTemplate, session.profile, session.speechContext, session.speechSummary)
       if (round) {
+        // 演讲评分场景：把本轮新增的亮点/改进点/主题/评分累积进会话摘要，供下一批提示词使用
+        this.accumulateSpeechSummary(session, round)
         this.nsp?.to(`meeting:${session.sessionId}`).emit('analysis', round)
       }
     } catch (err) {
@@ -184,11 +195,31 @@ class RealtimeAssistService {
     }
   }
 
+  /** 将本轮演讲评分的新增内容合并进会话摘要（去重），供后续批次判断"是否出现新的评价点"。 */
+  private accumulateSpeechSummary(session: ActiveSession, round: AnalysisRound): void {
+    if (session.sceneTemplate !== 'speech') return
+    const summary = session.speechSummary || { highlights: [], improvements: [], topics: [] }
+    const pushUnique = (list: string[] | undefined, target: string[]) => {
+      for (const item of list || []) {
+        const s = item?.trim()
+        if (s && !target.includes(s)) target.push(s)
+      }
+    }
+    pushUnique(round.highlights, summary.highlights)
+    pushUnique(round.improvements, summary.improvements)
+    pushUnique(round.topics, summary.topics)
+    if (round.score && Object.keys(round.score).length > 0) {
+      summary.score = round.score
+    }
+    session.speechSummary = summary
+  }
+
   private async analyzeBatch(
     sentences: TranscriptSentence[],
     sceneTemplateId: string,
     profile?: string,
     speechContext?: SpeechContext | null,
+    speechSummary?: SpeechSummary,
   ): Promise<AnalysisRound | null> {
     const template = getSceneTemplateOrDefault(sceneTemplateId)
     const transcriptText = sentences
@@ -199,7 +230,10 @@ class RealtimeAssistService {
 
     // 实时提示始终走直调 LLM 快速路径（~3s），不走 Agent。
     // Agent + MCP 工具查询仅用于报告生成（需要真实法条/数据核实的深度分析）。
-    return analyzeViaDirectLLM(transcriptText, template, resolvedProfile, speechContext)
+    // 实时提示始终走直调 LLM 快速路径（~3s），不走 Agent。
+    // Agent + MCP 工具查询仅用于报告生成（需要真实法条/数据核实的深度分析）。
+    // 演讲评分场景：speechSummary（已累积亮点/改进点/主题/评分）随批次注入提示词。
+    return analyzeViaDirectLLM(transcriptText, template, resolvedProfile, speechContext, speechSummary)
   }
 
   /**

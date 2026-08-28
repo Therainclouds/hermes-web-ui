@@ -84,7 +84,7 @@ describe('analyzeViaDirectLLM', () => {
     })
     const loadConfig = vi.fn().mockResolvedValue({ apiKey: 'sk', baseUrl: 'https://example.invalid/v1', model: 'm' })
 
-    const round = await analyzeViaDirectLLM('transcript', fakeTemplate(), 'default', null, { fetchImpl: fetchImpl as any, loadConfig })
+    const round = await analyzeViaDirectLLM('transcript', fakeTemplate(), 'default', null, undefined, { fetchImpl: fetchImpl as any, loadConfig })
 
     expect(round!.keyPoint).toBe('kp')
     const [url, init] = fetchImpl.mock.calls[0]
@@ -110,7 +110,7 @@ describe('analyzeViaDirectLLM', () => {
       currentRemainingSec: 41.6,
       currentPhase: 'yellow',
       timerRecords: [{ label: '开场', durationSec: 65, overtimeSec: 5 }],
-    }, { fetchImpl: fetchImpl as any, loadConfig })
+    }, undefined, { fetchImpl: fetchImpl as any, loadConfig })
 
     const body = JSON.parse((fetchImpl.mock.calls[0][1] as any).body)
     expect(body.messages[0].content).toContain('每日一词：resilience')
@@ -121,7 +121,7 @@ describe('analyzeViaDirectLLM', () => {
 
   it('returns null without calling the API when no config is available', async () => {
     const fetchImpl = vi.fn()
-    const round = await analyzeViaDirectLLM('t', fakeTemplate(), 'default', null, {
+    const round = await analyzeViaDirectLLM('t', fakeTemplate(), 'default', null, undefined, {
       fetchImpl: fetchImpl as any,
       loadConfig: async () => null,
     })
@@ -135,7 +135,7 @@ describe('analyzeViaDirectLLM', () => {
       status: 502,
       text: async () => 'bad gateway',
     })
-    await expect(analyzeViaDirectLLM('t', fakeTemplate(), 'default', null, {
+    await expect(analyzeViaDirectLLM('t', fakeTemplate(), 'default', null, undefined, {
       fetchImpl: fetchImpl as any,
       loadConfig: async () => ({ apiKey: 'sk', baseUrl: 'https://x/v1', model: 'm' }),
     })).rejects.toThrow('LLM API error 502: bad gateway')
