@@ -1,49 +1,17 @@
 import type { Server, Namespace } from 'socket.io'
-import fs from 'fs/promises'
-import path from 'path'
 import { logger } from '../logger'
-import { getSceneTemplateOrDefault, type SceneTemplate } from './scene-templates'
-import { prepareAnalysisSkillSection } from './skill-resolver'
+import { getSceneTemplateOrDefault } from './scene-templates'
 import { getActiveProfileName } from '../hermes/hermes-profile'
-import type { AgentBridgeOutput } from '../hermes/agent-bridge/client'
+import { streamAgentReport } from './agent-bridge'
+import { analyzeViaDirectLLM, streamDirectLLMReport } from './direct-llm'
+import type { AnalysisRound, SpeechContext } from './report-parser'
 
-export interface AnalysisRound {
-  id: string
-  context: string
-  priority: 'normal' | 'attention' | 'urgent'
-  keyPoint: string
-  analysis: string
-  timestamp: number
-  // 演讲评分场景（Toastmasters 风格）附加字段
-  fillerWords?: Array<{ word: string; count: number }>
-  goodPhrases?: string[]
-  grammarIssues?: Array<{ quote: string; issue: string }>
-  wotdUsed?: boolean
-  score?: Record<string, number>
-  timeNote?: string
-}
-
-/** 演讲评分场景的评估上下文：随分析批次注入提示词，供 AI 实时点评/评分。 */
-export interface SpeechContext {
-  wordOfTheDay?: string
-  timerDurationSec?: number
-  yellowAtSec?: number
-  redAtSec?: number
-  timerRecords?: Array<{ label: string; durationSec: number; overtimeSec: number }>
-  currentRemainingSec?: number
-  currentPhase?: 'green' | 'yellow' | 'red'
-}
+export type { AnalysisRound, SpeechContext } from './report-parser'
 
 interface TranscriptSentence {
   speaker?: string
   text: string
   timestamp?: number
-}
-
-interface LLMConfig {
-  apiKey: string
-  baseUrl: string
-  model: string
 }
 
 interface ActiveSession {
@@ -73,17 +41,6 @@ const NAMESPACE = '/meeting-assist'
  */
 export const REPORT_FALLBACK_MARKER = Symbol.for('meeting-assist.report.fallback')
 
-/**
- * 各场景下触发 Agent + MCP 工具查询的关键词正则。
- * 匹配到这些信号说明对话涉及需要查询核实的专业内容，值得走慢路径。
- * 未列出的场景（如 general）始终走快速直调路径。
- */
-const SCENE_TOOL_TRIGGER: Record<string, RegExp> = {
-  legal: /第[\d一二三四五六七八九十百千]+条|第[\d一二三四五六七八九十百千]+款|民法典|刑法|劳动法|合同法|公司法|婚姻法|继承法|物权法|侵权法|司法解释|行政法规|部门规章|地方性法规|诉讼时效|追诉时效|仲裁时效|违约金|赔偿金|经济补偿|劳动报酬|知识产权|专利权|商标权|著作权|担保|抵押|质押|留置|不可抗力|情势变更|正当防卫|紧急避险/,
-  business: /合同条款|违约责任|保密协议|竞业禁止|独家代理|排他性|对赌|估值|市盈率|净利润|营收|毛利率|报价|底价|市场价|行业规范|招投标|政府采购|反垄断|商业贿赂|尽职调查|审计|税务|发票|税率/,
-  medical: /禁忌|不良反应|相互作用|配伍禁忌|剂量|用量|毫克|mg|毫升|ml|指南|共识|禁忌证|适应证|耐药|过敏|肝肾功能|孕妇|哺乳|儿童用药|药物相互作用|半衰期|血药浓度/,
-}
-
 function safeActiveProfileName(): string {
   try {
     return getActiveProfileName()
@@ -93,37 +50,15 @@ function safeActiveProfileName(): string {
 }
 
 /**
- * 判断一段文本是不是 agent 优雅失败的产物。外部 `agent` Python 包在
- * provider 错误时（如 OpenAI SDK 抛 "Provider returned an empty stream with
- * no finish_reason"）通常会写一段 ≤2000 字符的 final_response（典型形如
- * "API call failed after 3 retries: ..."），而不是让 run_conversation 抛
- * 异常。这种情况下 record.status 仍是 'complete'，需要从内容本身判断。
+ * Socket 房间绑定 + 会话生命周期编排（v0.8 模块化拆分后的编排层）。
  *
- * 借鉴 packages/server/src/services/hermes/run-chat/handle-bridge-run.ts
- * 的 looksLikeStandaloneAgentFailure。后续可提取到独立模块共享，本轮先本地
- * 复刻，避免跨域改动扩大 blast radius。
+ * 职责边界：
+ *   - 本文件：socket namespace 注册、会话 buffer/计时器、批次触发节奏、
+ *     报告生成的 agent→direct-LLM fallback 编排。
+ *   - agent-bridge.ts：一切经过 Hermes Agent bridge 的调用。
+ *   - direct-llm.ts：一切直调 OpenAI 兼容端点的请求（含 config.json 读取）。
+ *   - report-parser.ts：LLM 输出 → AnalysisRound 的解析与裁剪。
  */
-function looksLikeStandaloneAgentFailure(value: string): boolean {
-  const text = value.replace(/\s+/g, ' ').trim()
-  if (!text) return false
-  // 报告通常远大于 2 KB，agent 失败短消息一般 ≤ 2 KB（与 handle-bridge-run 保持一致）
-  if (text.length > 2_000) return false
-  return (
-    /\bAPI call failed after\b/i.test(text)
-    || /\bHTTP\s+(?:4\d\d|5\d\d)\b/i.test(text)
-    || /\bProvider returned an empty stream\b/i.test(text)
-    || /\b(?:401|403)\b.{0,100}\b(?:unauthorized|forbidden|authentication|auth|invalid api key|permission denied)\b/i.test(text)
-    || /\b(?:unauthorized|forbidden|authentication|auth|invalid api key|permission denied)\b.{0,100}\b(?:401|403)\b/i.test(text)
-    || /\b429\b.{0,100}\b(?:rate limit|too many requests|quota)\b/i.test(text)
-    || /\b(?:rate limit|too many requests|quota)\b.{0,100}\b429\b/i.test(text)
-    || /\b(?:500|502|503|504)\b.{0,100}\b(?:server error|bad gateway|service unavailable|gateway timeout|upstream|provider|request failed|api)\b/i.test(text)
-    || /\b(?:server error|bad gateway|service unavailable|gateway timeout|upstream|provider|request failed|api)\b.{0,100}\b(?:500|502|503|504)\b/i.test(text)
-    || /(?:无可用渠道|渠道不可用|认证失败|鉴权失败|额度不足|余额不足|请求失败|接口调用失败)/i.test(text)
-    || /(?:请求|接口|模型|渠道|API).{0,20}(?:被限流|触发限流|因限流失败)/i.test(text)
-    || /(?:限流|频率限制).{0,20}(?:失败|错误|重试|稍后)/i.test(text)
-  )
-}
-
 class RealtimeAssistService {
   private io: Server | null = null
   private nsp: Namespace | null = null
@@ -264,190 +199,7 @@ class RealtimeAssistService {
 
     // 实时提示始终走直调 LLM 快速路径（~3s），不走 Agent。
     // Agent + MCP 工具查询仅用于报告生成（需要真实法条/数据核实的深度分析）。
-    return this.analyzeBatchViaDirectLLM(transcriptText, template, resolvedProfile, speechContext)
-  }
-
-  /**
-   * 判断当前对话内容是否需要走 Agent + MCP 工具路径。
-   * 根据场景查找对应的触发正则，未配置的场景始终走快速路径。
-   */
-  private needsToolLookup(sceneTemplateId: string, transcriptText: string): boolean {
-    const re = SCENE_TOOL_TRIGGER[sceneTemplateId]
-    if (!re) return false
-    return re.test(transcriptText)
-  }
-
-  /**
-   * 经过 Hermes Agent 进行实时分析，可调用 MCP 工具（如法规查询）。
-   * 20s 超时限制，超时或 bridge 不可用时由上层回退到直调 LLM。
-   */
-  private async analyzeBatchViaAgent(transcriptText: string, template: SceneTemplate, profile: string): Promise<AnalysisRound | null> {
-    const { AgentBridgeClient } = await import('../hermes/agent-bridge/client')
-    const bridge = new AgentBridgeClient({ connectRetryMs: 1500 })
-    const agentSessionId = `meeting-analyze-${Date.now()}`
-
-    try {
-      const started = await bridge.chat(
-        agentSessionId,
-        `以下是最近的对话内容：\n\n${transcriptText}`,
-        undefined,
-        template.systemPrompt,
-        profile,
-        { source: 'meeting-asr' },
-      )
-
-      let finalText = ''
-      for await (const chunk of bridge.streamOutput(started.run_id, { timeoutMs: 20_000 })) {
-        if (chunk.delta) finalText += chunk.delta
-        if (chunk.done) {
-          // 部分 bridge 不增量返回 delta，从 result 提取
-          if (!finalText.trim()) {
-            const result = chunk.result as { final_response?: string } | undefined
-            finalText = result?.final_response || chunk.output || ''
-          }
-          break
-        }
-        if (chunk.status === 'error') {
-          throw new Error(chunk.error || 'Agent analysis run failed')
-        }
-      }
-
-      if (!finalText.trim()) throw new Error('Agent analysis produced no output')
-      return this.parseAnalysis(finalText)
-    } finally {
-      void bridge.destroy(agentSessionId, profile).catch(() => {})
-    }
-  }
-
-  /**
-   * 回退路径：直接调用 LLM API 进行实时分析（不经过 Agent）。
-   */
-  private async analyzeBatchViaDirectLLM(
-    transcriptText: string,
-    template: SceneTemplate,
-    profile: string,
-    speechContext?: SpeechContext | null,
-  ): Promise<AnalysisRound | null> {
-    const config = await this.loadLLMConfig()
-    if (!config) {
-      logger.warn('[meeting-assist] LLM config not available, skipping analysis')
-      return null
-    }
-
-    // 动态加载 profile 下的会议分析技能并追加到 system prompt。
-    const skillSection = await prepareAnalysisSkillSection(profile)
-    let systemPrompt = skillSection
-      ? `${template.systemPrompt}\n\n${skillSection}`
-      : template.systemPrompt
-
-    // 演讲评分场景：把计时记录/每日一词/当前倒计时注入提示词，让 AI 的点评与评分以实际用时为依据。
-    if (template.id === 'speech' && speechContext) {
-      const ctx = speechContext
-      const lines: string[] = ['', '【当前演讲评估上下文（请据此点评与评分）】']
-      if (ctx.wordOfTheDay) lines.push(`- 每日一词：${ctx.wordOfTheDay}`)
-      if (ctx.timerDurationSec) {
-        lines.push(`- 计时设置：单环节标准时长 ${ctx.timerDurationSec} 秒；黄牌触发剩余 ${ctx.yellowAtSec ?? 30} 秒；红牌触发剩余 ${ctx.redAtSec ?? 10} 秒`)
-      }
-      if (ctx.currentRemainingSec != null) {
-        lines.push(`- 当前倒计时：剩余 ${Math.round(ctx.currentRemainingSec)} 秒（${ctx.currentPhase || 'green'}）`)
-      }
-      if (ctx.timerRecords && ctx.timerRecords.length > 0) {
-        lines.push('- 已记录环节用时：')
-        for (const r of ctx.timerRecords) {
-          const overtime = r.overtimeSec > 0 ? `（超时 ${r.overtimeSec} 秒）` : ''
-          lines.push(`  - ${r.label}：${r.durationSec} 秒${overtime}`)
-        }
-      }
-      systemPrompt = `${systemPrompt}\n${lines.join('\n')}`
-    }
-
-    const body = {
-      model: config.model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: `以下是最近的对话内容：\n\n${transcriptText}` },
-      ],
-      temperature: 0.3,
-      // 演讲评分场景需要输出评分表/赘语/语法等多字段 JSON，给更大输出空间。
-      max_tokens: template.id === 'speech' ? 1200 : 800,
-    }
-
-    const response = await fetch(`${config.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${config.apiKey}`,
-      },
-      body: JSON.stringify(body),
-    })
-
-    if (!response.ok) {
-      const text = await response.text().catch(() => '')
-      throw new Error(`LLM API error ${response.status}: ${text.slice(0, 200)}`)
-    }
-
-    const data = await response.json() as any
-    const content = data?.choices?.[0]?.message?.content || '{}'
-
-    return this.parseAnalysis(content)
-  }
-
-  private parseAnalysis(raw: string): AnalysisRound | null {
-    try {
-      // Strip markdown code fences if present
-      const cleaned = raw.replace(/^```(?:json)?\s*/m, '').replace(/\s*```$/m, '').trim()
-      const parsed = JSON.parse(cleaned)
-
-      const keyPoint = typeof parsed.keyPoint === 'string' ? parsed.keyPoint.trim() : ''
-      const analysis = typeof parsed.analysis === 'string' ? parsed.analysis.trim() : ''
-      const fillerWords = Array.isArray(parsed.fillerWords)
-        ? parsed.fillerWords
-            .filter((f: any) => f && typeof f.word === 'string' && Number.isFinite(Number(f.count)))
-            .slice(0, 20)
-            .map((f: any) => ({ word: f.word.slice(0, 30), count: Math.max(0, Math.round(Number(f.count))) }))
-        : undefined
-      const goodPhrases = Array.isArray(parsed.goodPhrases)
-        ? parsed.goodPhrases.filter((p: any) => typeof p === 'string').slice(0, 10).map((p: string) => p.slice(0, 120))
-        : undefined
-      const grammarIssues = Array.isArray(parsed.grammarIssues)
-        ? parsed.grammarIssues
-            .filter((g: any) => g && typeof g.quote === 'string')
-            .slice(0, 10)
-            .map((g: any) => ({ quote: g.quote.slice(0, 120), issue: typeof g.issue === 'string' ? g.issue.slice(0, 200) : '' }))
-        : undefined
-      const score = parsed.score && typeof parsed.score === 'object' && !Array.isArray(parsed.score)
-        ? Object.fromEntries(
-            Object.entries(parsed.score)
-              .filter(([, v]) => Number.isFinite(Number(v)))
-              .map(([k, v]) => [k.slice(0, 20), Math.max(0, Math.min(100, Math.round(Number(v))))]),
-          )
-        : undefined
-
-      // 演讲评分场景：只要有任何一项内容就保留该轮（评分/赘语/好词好句也算）。
-      const hasSpeechContent = !!keyPoint || !!analysis || !!fillerWords?.length || !!goodPhrases?.length || !!grammarIssues?.length || !!score
-      if (!parsed || !hasSpeechContent) {
-        return null
-      }
-
-      const now = Date.now()
-      return {
-        id: `round-${now}`,
-        context: typeof parsed.context === 'string' ? parsed.context.slice(0, 200) : '',
-        priority: (['normal', 'attention', 'urgent'].includes(parsed.priority) ? parsed.priority : 'normal') as AnalysisRound['priority'],
-        keyPoint: keyPoint.slice(0, 120),
-        analysis: analysis.slice(0, 500),
-        timestamp: now,
-        ...(fillerWords ? { fillerWords } : {}),
-        ...(goodPhrases ? { goodPhrases } : {}),
-        ...(grammarIssues ? { grammarIssues } : {}),
-        ...(typeof parsed.wotdUsed === 'boolean' ? { wotdUsed: parsed.wotdUsed } : {}),
-        ...(score ? { score } : {}),
-        ...(typeof parsed.timeNote === 'string' ? { timeNote: parsed.timeNote.slice(0, 200) } : {}),
-      }
-    } catch {
-      logger.warn('[meeting-assist] failed to parse LLM response as JSON: %s', raw.slice(0, 100))
-      return null
-    }
+    return analyzeViaDirectLLM(transcriptText, template, resolvedProfile, speechContext)
   }
 
   /**
@@ -466,7 +218,7 @@ class RealtimeAssistService {
     logger.info('[meeting-assist] generateReportStream start: session=%s template=%s profile=%s transcript_len=%d',
       sessionId, template.id, resolvedProfile, transcript.length)
     try {
-      for await (const chunk of this.generateReportViaAgent(sessionId, transcript, template, resolvedProfile)) {
+      for await (const chunk of streamAgentReport(sessionId, transcript, template, resolvedProfile)) {
         yieldedAny = true
         partialFromAgent += chunk
         yield chunk
@@ -504,7 +256,7 @@ class RealtimeAssistService {
     logger.info('[meeting-assist] falling back to direct LLM path')
     try {
       let fallbackYielded = 0
-      for await (const chunk of this.generateReportViaDirectLLM(transcript, template, resolvedProfile)) {
+      for await (const chunk of streamDirectLLMReport(transcript, template, resolvedProfile)) {
         fallbackYielded++
         yield chunk
       }
@@ -524,237 +276,6 @@ class RealtimeAssistService {
       const merged = new Error(`agent: ${agentMsg} | fallback: ${fallbackMsg}`)
       merged.name = 'ReportStreamBothFailed'
       throw merged
-    }
-  }
-
-  /**
-   * 经过 Hermes Agent bridge 生成报告，复用用户训练好的 profile（系统提示词 / 技能 / 记忆）。
-   * 场景的 reportPrompt 作为任务级 instructions 叠加在用户 agent 之上。
-   */
-  private async *generateReportViaAgent(sessionId: string, transcript: string, template: SceneTemplate, profile: string): AsyncGenerator<string> {
-    const { AgentBridgeClient } = await import('../hermes/agent-bridge/client')
-    // 较短的连接重试窗口：bridge 不可用时快速失败，便于上层回退到直调 LLM。
-    const bridge = new AgentBridgeClient({ connectRetryMs: 1500 })
-    const agentSessionId = `meeting-report-${sessionId}`
-
-    try {
-      const started = await bridge.chat(
-        agentSessionId,
-        `以下是完整的会议转写内容：\n\n${transcript}`,
-        undefined,
-        template.reportPrompt,
-        profile,
-        { source: 'meeting-asr' },
-      )
-
-      let lastChunk: AgentBridgeOutput | null = null
-      let yieldedAny = false
-      // 累计本次 run 已经看到的所有 delta 文本，用来检查末态是不是 agent
-      // 优雅失败的产物——外部 `agent` 包在 provider 错误时会写一段形如
-      // "API call failed after 3 retries: ..." 的 final_response，而不是抛
-      // 异常。这种情况下 record.status = 'complete'（不是 'error'），
-      // 旧的 status 检查抓不到，但用户看到的依然是错误文本。借鉴
-      // handle-bridge-run.ts 的 looksLikeStandaloneAgentFailure 思路检测并抛错。
-      let accumulatedDelta = ''
-      for await (const chunk of bridge.streamOutput(started.run_id, { timeoutMs: 180_000 })) {
-        lastChunk = chunk
-        if (chunk.delta) {
-          accumulatedDelta += chunk.delta
-          // 流末尾的最终一段 delta 才有可能是"假完成"信号；中途的 delta 不算
-          // （agent 可能在解释它为什么失败，但仍有可能真出过内容）。
-          if (chunk.done && looksLikeStandaloneAgentFailure(accumulatedDelta)) {
-            throw new Error(accumulatedDelta.trim() || 'Agent reported provider failure')
-          }
-          yieldedAny = true
-          yield chunk.delta
-        } else if (chunk.done) {
-          // 没有 delta 但 done：典型情况是 agent 整体失败（status=error），
-          // 真正的错误信息在 lastChunk.error 里。
-          if (chunk.status === 'error') {
-            throw new Error(chunk.error || 'Agent report run failed')
-          }
-          // 既有 done 又无 delta 且状态非 error：当作 no-output 处理（下方
-          // yieldedAny 分支会兜底）。
-          break
-        }
-      }
-
-      // 兜底：本次 run 没有 stream 出任何 delta，从 result.final_response 提取。
-      // 该路径同样要避开 agent-failure 的"假完成"内容，否则会把错误信息当报告 yield 出去。
-      if (!yieldedAny) {
-        const result = lastChunk?.result as { final_response?: string } | undefined
-        const finalText = (result?.final_response || lastChunk?.output || '').trim()
-        if (!finalText) throw new Error('Agent report produced no output')
-        if (looksLikeStandaloneAgentFailure(finalText)) {
-          throw new Error(finalText)
-        }
-        yield finalText
-      }
-    } finally {
-      // 报告生成是一次性场景，结束后立即销毁临时会话，避免占用 bridge 资源。
-      void bridge.destroy(agentSessionId, profile).catch(() => {})
-    }
-  }
-
-  /**
-   * 回退路径：直接调用 LLM API 生成报告（不经过 Hermes Agent）。
-   * 保留 profile 下会议分析技能的动态注入。
-   */
-  private async *generateReportViaDirectLLM(transcript: string, template: SceneTemplate, profile: string): AsyncGenerator<string> {
-    const config = await this.loadLLMConfig()
-    if (!config) throw new Error('LLM config not available')
-
-    // 动态加载 profile 下的会议分析技能并追加到报告 system prompt。
-    const skillSection = await prepareAnalysisSkillSection(profile)
-    const reportPrompt = skillSection
-      ? `${template.reportPrompt}\n\n${skillSection}`
-      : template.reportPrompt
-
-    const body = {
-      model: config.model,
-      messages: [
-        { role: 'system', content: reportPrompt },
-        { role: 'user', content: `以下是完整的会议转写内容：\n\n${transcript}` },
-      ],
-      temperature: 0.4,
-      max_tokens: 4000,
-      stream: true,
-    }
-
-    const response = await fetch(`${config.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${config.apiKey}`,
-      },
-      body: JSON.stringify(body),
-    })
-
-    if (!response.ok) {
-      const text = await response.text().catch(() => '')
-      throw new Error(`LLM API error ${response.status}: ${text.slice(0, 200)}`)
-    }
-
-    const reader = response.body?.getReader()
-    if (!reader) throw new Error('No response body')
-
-    const decoder = new TextDecoder()
-    let buffer = ''
-    let yieldedAny = false
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) {
-        // 流结束时把 buffer 里剩余的最后一行（可能是不带换行的最后一条 data:）flush 出去。
-        // 否则最后一段 chunk 会留在 buffer 里永远不到前端。
-        if (buffer.trim()) {
-          const trimmed = buffer.trim()
-          if (trimmed.startsWith('data:')) {
-            const payload = trimmed.slice(5).trim()
-            if (payload && payload !== '[DONE]') {
-              try {
-                const chunk = JSON.parse(payload)
-                // provider 也可能把错误放在流里（{error: {...}}），这种帧必须立即抛错
-                // 让外层 fallback / 上层 catch 处理，否则会被静默忽略。
-                if (chunk?.error) {
-                  throw new Error(typeof chunk.error === 'string' ? chunk.error : (chunk.error?.message || JSON.stringify(chunk.error)))
-                }
-                const delta = chunk?.choices?.[0]?.delta?.content ?? chunk?.choices?.[0]?.message?.content
-                if (delta) {
-                  yieldedAny = true
-                  yield delta
-                }
-              } catch (err) {
-                if (err instanceof SyntaxError) {
-                  console.warn('[report-stream] 无法解析的 SSE 块:', payload.slice(0, 200))
-                } else {
-                  throw err
-                }
-              }
-            }
-          }
-        }
-        break
-      }
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        const trimmed = line.trim()
-        // 兼容 "data: {...}" 和 "data:{...}" 两种格式
-        if (!trimmed.startsWith('data:')) continue
-        const payload = trimmed.slice(5).trim()
-        if (!payload || payload === '[DONE]') continue
-
-        try {
-          const chunk = JSON.parse(payload)
-          // provider 也可能把错误放在流里（{error: {...}}），这种帧必须立即抛错
-          // 让外层 fallback / 上层 catch 处理，否则会被静默忽略。
-          if (chunk?.error) {
-            throw new Error(typeof chunk.error === 'string' ? chunk.error : (chunk.error?.message || JSON.stringify(chunk.error)))
-          }
-          // 标准 OpenAI 流式：delta.content；部分端点：message.content
-          const delta = chunk?.choices?.[0]?.delta?.content ?? chunk?.choices?.[0]?.message?.content
-          if (delta) {
-            yieldedAny = true
-            yield delta
-          }
-        } catch (err) {
-          if (err instanceof SyntaxError) {
-            console.warn('[report-stream] 无法解析的 SSE 块:', payload.slice(0, 200))
-          } else {
-            throw err
-          }
-        }
-      }
-    }
-
-    // 流式未产出任何内容时，回退到非流式调用（与分析接口相同的可靠路径）
-    if (!yieldedAny) {
-      console.warn('[report-stream] 流式响应为空，回退到非流式调用')
-      const fallbackBody = { ...body, stream: false }
-      const fallbackRes = await fetch(`${config.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${config.apiKey}`,
-        },
-        body: JSON.stringify(fallbackBody),
-      })
-      if (!fallbackRes.ok) {
-        const text = await fallbackRes.text().catch(() => '')
-        throw new Error(`LLM API error ${fallbackRes.status}: ${text.slice(0, 200)}`)
-      }
-      const data = await fallbackRes.json() as any
-      const content = data?.choices?.[0]?.message?.content
-      if (content) yield content
-    }
-  }
-
-  private async loadLLMConfig(): Promise<LLMConfig | null> {
-    // Mirror MeetingASRService.getDataDir() default so we read from the same
-    // root as the rest of the meeting-asr persistent state (config.json,
-    // analysis.json, .env). Keep the literal here in sync if the default ever
-    // moves; the helper lives on MeetingASRService.
-    const dataDir = path.join(process.cwd(), 'data', 'meeting-asr')
-    const configFile = path.join(dataDir, 'config.json')
-
-    try {
-      const content = await fs.readFile(configFile, 'utf-8')
-      const stored = JSON.parse(content)
-
-      const apiKey = stored?.llm?.api_key || stored?.asr?.dashscope_api_key
-      if (!apiKey) return null
-
-      return {
-        apiKey,
-        baseUrl: stored?.llm?.base_url || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-        model: stored?.llm?.model || 'qwen-plus',
-      }
-    } catch {
-      return null
     }
   }
 }
