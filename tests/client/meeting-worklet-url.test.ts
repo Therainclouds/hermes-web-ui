@@ -13,9 +13,9 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-const MEETING_VIEW = resolve(
+const MEETING_AUDIO = resolve(
   process.cwd(),
-  'packages/client/src/views/hermes/MeetingView.vue',
+  'packages/client/src/composables/useMeetingAudio.ts',
 )
 const STATIC_WORKLET = resolve(
   process.cwd(),
@@ -23,7 +23,9 @@ const STATIC_WORKLET = resolve(
 )
 
 describe('MeetingView AudioWorklet URL contract', () => {
-  const src = readFileSync(MEETING_VIEW, 'utf-8')
+  // The addModule call lives in useMeetingAudio since the v0.8 modularization
+  // moved the recording lifecycle out of MeetingView.vue (PR-2a).
+  const src = readFileSync(MEETING_AUDIO, 'utf-8')
 
   it('addModule receives a literal /audio/ path', () => {
     expect(src).toMatch(/addModule\(\s*["']\/audio\/pcm-worklet\.js["']\s*\)/)
