@@ -2278,6 +2278,28 @@ chat store 模块化拆分只动 `packages/client/src/stores/hermes/chat.ts` 及
 
 本仓库代码无论重构前还是重构后都没修这个 bug，因为根因在外部 Python 包 + LLM provider 网络。本轮三个 commit 的能力上限：**让 agent 失败时用户拿到一份完整的 direct LLM 报告**，而不是"agent 半截内容 + 错误块"。如果 provider 真的一直抽风（两路都挂），最终用户看到的是 `errorBothFailed` 文案，因为我们没办法让挂掉的 provider 凭空复活。
 
+#### 时间线复盘 — 「先前为什么没这个问题」
+
+用户原话：**"先前没这个问题"**。这个观察是对的，我前一轮归因说"重构前就一直有"是错的，修正如下。
+
+| 时间 | Commit | 报告生成路径 | 影响 |
+|------|--------|-------------|------|
+| `c618f6e0` 之前 | — | **100% 走 direct LLM**（Node 原生 `fetch`） | 没机会触发 agent 优雅失败路径 → 用户看不到这条错误 |
+| `c618f6e0` | `feat(meeting): 报告生成改走 Hermes Agent 复用训练好的 profile - bridge 不可用自动回退直调 LLM` | **引入双路径**：优先 agent（外部 Python `agent` 包），bridge 不可用时回退 direct LLM | **从此有概率触发 agent 优雅失败路径**（外部包 OpenAI SDK 重试 3 次失败后写 `final_response="API call failed after 3 retries: ..."` 并把 status 标 `complete`，Node 这边当成功内容 yield 出去） |
+| `765656e0` ~ `d921c5d4` | `fix(meeting): 修复报告生成为空`、`fix(report-stream): SSE 错误帧检测 + 末尾 buffer flush`、`feat(report-error): SDK 错误归一化 + 重试按钮` | — | 都是基于「agent 异常会抛」假设打补丁，**都没识别「假完成」这条失败模式** |
+| 本轮 `ace6d455` + `71fba298` | `feat(report): A+C 方案` + `fix(report): agent 优雅失败` | agent 失败时识别「假完成」内容并强制回退 | **真正修掉这条路径** —— agent 失败时用户拿到一份完整的 direct LLM 报告 |
+
+**真正的归因**：
+
+- ❌ 跟 chat store 模块化拆分**无关**（这条说对了）。
+- ✅ 跟 **`c618f6e0` 引入 agent 优先路径**直接相关。在这之前，报告不经过 agent，自然不会触发 agent 优雅失败。
+- ✅ **「先前没这个问题」**是因为那时报告不经过 agent。
+- ✅ 后续 4 个补丁（`765656e0` ~ `d921c5d4`）都没识别这条失败模式，因为它们都假设 agent 失败会抛异常 —— 实际上外部 agent 包在 OpenAI SDK 失败时**优雅返回 final_response**而不是抛异常。
+
+### 留给未来 agent 的判据
+
+如果你以后看到「会议报告相关」的错误，**先去看 `realtime-assist.ts` / `MeetingAgentPanel.vue` 的 git blame**，这条链路从 2026-08-26 之前就在被反复打补丁，与 chat store 拆分毫无关系。任何把它归因到模块化的猜测都是错的。
+
 ### 留给未来 agent 的判据
 
 如果你以后看到「会议报告相关」的错误，**先去看 `realtime-assist.ts` / `MeetingAgentPanel.vue` 的 git blame**，这条链路从 2026-08-26 之前就在被反复打补丁，与 chat store 拆分毫无关系。任何把它归因到模块化的猜测都是错的。
