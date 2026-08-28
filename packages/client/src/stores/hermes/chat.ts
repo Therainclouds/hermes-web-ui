@@ -168,6 +168,10 @@ export const useChatStore = defineStore('chat', () => {
   })
   const isLoadingSessions = ref(false)
   const sessionsLoaded = ref(false)
+  // 最近一次 switchSession 失败的原因（'resume timeout' / 'socket error' / ...）。
+  // UI 可以 watch 这个 ref 出 toast。resume 失败时 store 内只能 console.error
+  // （没有可继续上抛的调用方），否则用户在录音中切会话只会看到「空白」却不知道为什么。
+  const lastSwitchError = ref<string | null>(null)
   const messageLoadRequests = ref<Map<string, number>>(new Map())
   const isLoadingMessages = computed(() => {
     const sid = activeSessionId.value
@@ -933,6 +937,12 @@ export const useChatStore = defineStore('chat', () => {
       }
     } catch (err) {
       console.error('Failed to load session messages via resume:', err)
+      // 只在「这次切会话请求还是当前活跃请求」时 surface，避免快速连切导致旧错误
+      // 覆盖新错误。同时把错误归一化：timeout / network / 其他都有区分。
+      if (activeSessionId.value === sessionId && requestSequence === switchSessionRequestSequence) {
+        const reason = err instanceof Error ? err.message : String(err)
+        lastSwitchError.value = `${sessionId}:${reason}`
+      }
     } finally {
       endMessageLoad(sessionId, requestSequence)
     }
@@ -3477,6 +3487,10 @@ if (codingAgentId === 'dsh') {
     isLoadingSessions,
     sessionsLoaded,
     isLoadingMessages,
+    lastSwitchError,
+    clearLastSwitchError: () => {
+      lastSwitchError.value = null
+    },
 
     newChat,
     newChatWithRemoteCreate,

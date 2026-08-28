@@ -699,8 +699,12 @@ onUnmounted(() => {
 // --- 录音中关页/刷新兜底：把内存里的音频块落库到 IndexedDB ---
 // 音频只在 stopRecording 一次性正式落库，但用户在录音中直接刷新或关闭页面时，
 // 组件不会走 onUnmounted（浏览器通常跳过 beforeunload 之后的清理），此时内存中的
-// audioChunks 会全部丢失。这里用 beforeunload/unload 把尚未落库的块写成 IndexedDB
-// 备份——注意 IndexedDB 事务在页面卸载进程中是非阻塞的，即便耗时也能完成写入。
+// audioChunks 会全部丢失。这里用 pagehide/beforeunload 把尚未落库的块写成
+// IndexedDB 备份——注意 IndexedDB 事务在页面卸载进程中是非阻塞的，即便耗时也能完成写入。
+//
+// 不再监听 unload：嵌入到 iframe / in-app browser 容器时 Permissions-Policy 会拒绝
+// 'unload' 事件，浏览器只打违规日志并不会调用回调，所以 unload 监听是个无效冗余；
+// pagehide 在 SPA 切页 / 移动端 / 嵌入容器里都会触发，覆盖更全。
 let beforeUnloadHandlerAttached = false
 
 function attachBeforeUnloadAudioBackup() {
@@ -720,7 +724,6 @@ function attachBeforeUnloadAudioBackup() {
 
   window.addEventListener('beforeunload', backup)
   window.addEventListener('pagehide', backup)
-  window.addEventListener('unload', backup)
 }
 
 function detachBeforeUnloadAudioBackup() {
@@ -729,7 +732,6 @@ function detachBeforeUnloadAudioBackup() {
   const noop = () => {}
   window.removeEventListener('beforeunload', noop)
   window.removeEventListener('pagehide', noop)
-  window.removeEventListener('unload', noop)
 }
 
 // --- 麦克风检测（仅做浏览器兼容性检查，不阻断 getUserMedia） ---
@@ -1237,7 +1239,16 @@ function handleWsMessage(data: any, source: 'asr' | 'diarize' = 'asr') {
       break
     case 'error':
       if (source === 'asr') {
-        errorMessage.value = data.message || t('meeting.unknownError')
+        // 后端 ASR 服务目前只 emit 错误文本（realtime-assist.ts:200），所以 data
+        // 经常是字符串而不是对象；这里三种形态都兼容：字符串本身、空字符串、
+        // { message: '' }。空 message 多半是 ASR 进程崩溃 / 未启动，此时让用户看到
+        // 'service not ready' 比 'unknown error' 更可操作。
+        const rawMessage =
+          typeof data === 'string'
+            ? data
+            : (data?.message as string | undefined) ?? ''
+        const trimmed = rawMessage.trim()
+        errorMessage.value = trimmed || t('meeting.errorServiceNotReady')
         stopRecording()
       } else {
         // Diarize错误只记录日志，不中断录音

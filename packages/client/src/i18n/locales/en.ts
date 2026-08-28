@@ -4071,6 +4071,7 @@ export default {
     errorDeleteAudioFailed: 'Failed to clean up old audio data; local storage may be full',
     errorConfigUpdateFailed: 'Failed to push config update: service may be restarting, please retry',
     errorServiceNotReady: 'Speech recognition service is not ready yet, please wait',
+    sessionSwitchResumeFailed: 'Session messages failed to load (network or server timeout). The list is up to date but this session\'s history may be incomplete.',
     // Startup phase (mirrors MeetingASRService.startupPhase on the server)
     startup: {
       idle: 'Idle',

@@ -1812,6 +1812,70 @@ en.ts 和 zh.ts 已经有完整的 `usb.explorer.*` 命名空间（toolbar / bre
 
 ---
 
+## 2026-08-28 · 三条录音/切会话症状整体修复 — 与模块化拆分无关
+
+### 背景
+
+浏览器 in-app 嵌入视图（`https://localhost:8649/`）抓到三条同时出现的症状：
+1. `Permissions policy violation: unload is not allowed`（×3 次）— `MeetingView.vue:723`
+2. `Failed to load session messages via resume: Error: resume timeout` — `chat.ts:935`
+3. UI 提示「录音未知错误」— `MeetingView.vue:1240` 的 ASR error 分支
+
+用户问「是不是模块化引起的？」。先用 git history 排查。
+
+### 调查结论：**三条症状都是预存问题，与模块化无关**
+
+| 症状 | 引入 commit | 时间 |
+|---|---|---|
+| `attachBeforeUnloadAudioBackup` 含 `unload` 监听 | `98ee4349 fix(meeting): 音频改为结束一次性落库...` | 2026-08-11 |
+| `switchSession` 15s `resume timeout` | `75ecc04b feat(session): add Hermes session sync on first startup` | 模块化前 |
+| ASR `case 'error': data.message || unknownError` | `9ed56302 fix(meeting-asr): 修复 DashScope 端点...` | 模块化前 |
+
+模块化拆分（8 月下旬开始）只动了 chat.ts 的位置和 MeetingView 的内部结构，
+没有新增任何以上三类监听或错误处理逻辑。
+
+### 修复
+
+**修 1（控制台违规）**：`MeetingView.vue` 的 `attachBeforeUnloadAudioBackup` 去掉 `unload` 监听，
+保留 `beforeunload` + `pagehide`。理由：
+- 嵌入式容器（iframe / in-app browser）Permissions-Policy 拒绝 `unload`，违规是无效冗余
+- `pagehide` 在 SPA 切页 / 移动端 / 嵌入容器都会触发，覆盖更全
+- 注释里写清这条限制，避免后人再加回来
+
+**修 2（resume timeout 静默）**：chat store 新增 `lastSwitchError` ref + `clearLastSwitchError()` 方法；
+`switchSession` 的 catch 块在「本次请求仍是当前活跃请求」时把 `${sessionId}:${reason}` 写进去。
+ChatPanel.vue 加 watcher 把它 surface 成 `message.warning(t('meeting.sessionSwitchResumeFailed'))`，
+持续 6 秒，然后立即清空 ref 避免重弹。
+
+**修 3（ASR 空 message 兜底太弱）**：MeetingView.vue:1240 之前是
+`errorMessage.value = data.message || t('meeting.unknownError')`，
+后端 ASR 进程崩溃 / 未启动时 `data.message` 经常是空字符串，落到的就是字面量「未知错误」。
+改成三种形态兼容（字符串 / 对象 / 空），空 message 落 `meeting.errorServiceNotReady` 而不是
+`meeting.unknownError`，对用户更可操作。
+
+新增 i18n key：`meeting.sessionSwitchResumeFailed`（仅 en.ts，因为其他 10 个 locale
+之前也没有 unknownError 的具体翻译，按"先英文过审"的策略落地）。
+
+### 验证
+
+- `vue-tsc -b --noEmit`：**0 错误**
+- 新增 `tests/client/chat-store-switch-error.test.ts`（3 项）— 超时写入 / 不匹配 session_id 不写 / 清理方法
+- 22 个 chat 相关测试文件：**179/179 通过**
+- 5 个 meeting 相关测试文件：**69/69 通过**
+- 全 `tests/client` 总数：1496 项，其中 **5 项失败已确认是预存在**（`ekko-display-name` / `rtl-logical-css`
+  / `device-connections-locales` / `profile-card-config-edit` / `group-chat-store-{baseline,streaming}`），
+  与本次改动无关 — 已通过 `git stash` 在 baseline 复现。
+
+### 改动文件
+
+- `packages/client/src/views/hermes/MeetingView.vue`（修 1 + 修 3）
+- `packages/client/src/stores/hermes/chat.ts`（修 2：新增 ref + 写入 + clear）
+- `packages/client/src/components/hermes/chat/ChatPanel.vue`（修 2：watcher）
+- `packages/client/src/i18n/locales/en.ts`（新增 key）
+- `tests/client/chat-store-switch-error.test.ts`（新增测试）
+
+---
+
 ## 2026-08-28 · MeetingView 模块化蓝图复核 — 8 个内聚块已全部抽完
 
 ### 背景
