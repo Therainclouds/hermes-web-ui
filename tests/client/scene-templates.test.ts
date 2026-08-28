@@ -2,7 +2,7 @@
  * Tests for the meeting scene-template metadata module.
  *
  * Guards:
- * - SCENE_IDS lists the five pickable templates (speech removed) in order
+ * - SCENE_IDS lists the six pickable templates (speech restored) in order
  * - DEFAULT_SCENE_ID = general
  * - isSceneId() accepts/rejects correctly
  * - normalizeSceneId() passes valid ids through, falls back for unknown
@@ -20,13 +20,14 @@ import {
 } from '../../packages/client/src/components/hermes/meeting/scene-templates'
 
 describe('meeting scene templates', () => {
-  it('exposes the five pickable scene ids (no speech)', () => {
+  it('exposes the six pickable scene ids (speech restored for the Toastmasters flow)', () => {
     expect(SCENE_IDS).toEqual([
       'general',
       'business',
       'medical',
       'legal',
       'interview',
+      'speech',
     ])
   })
 
@@ -39,7 +40,7 @@ describe('meeting scene templates', () => {
       expect(isSceneId(id)).toBe(true)
     })
 
-    it.each(['foo', '', 'GENERAL', null, undefined, 42, {}, 'speech'])(
+    it.each(['foo', '', 'GENERAL', null, undefined, 42, {}, 'Speech'])(
       'rejects %p',
       (id) => {
         expect(isSceneId(id)).toBe(false)
@@ -54,7 +55,7 @@ describe('meeting scene templates', () => {
       }
     })
 
-    it.each(['foo', null, undefined, 42, '', 'speech'])(
+    it.each(['foo', null, undefined, 42, '', 'Speech'])(
       'falls back to DEFAULT_SCENE_ID for %p',
       (id) => {
         expect(normalizeSceneId(id)).toBe(DEFAULT_SCENE_ID)
@@ -62,7 +63,7 @@ describe('meeting scene templates', () => {
     )
   })
 
-  it('SceneId type narrows to the five ids (compile-time guard)', () => {
+  it('SceneId type narrows to the pickable ids (compile-time guard)', () => {
     // If isSceneId is a proper type guard, assigning the narrowed value
     // to a SceneId-typed const must type-check.
     const sample: unknown = 'business'

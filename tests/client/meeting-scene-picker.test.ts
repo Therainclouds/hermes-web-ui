@@ -12,21 +12,23 @@ import { SCENE_IDS } from '@/components/hermes/meeting/scene-templates'
 /**
  * The template picker is the entry point users reach when creating a meeting:
  * pick a scene → the meeting is created with that sceneTemplate and opens in
- * the matching scene page. Guard the five pickable templates (speech is gone),
- * the selection contract, and that every option still exists in the registry.
+ * the matching scene page. Guard the six pickable templates (speech restored
+ * for the Toastmasters evaluation flow), the selection contract, and that
+ * every option still exists in the registry.
  */
 describe('SceneTemplatePicker', () => {
   function cards(wrapper: ReturnType<typeof mount>) {
     return wrapper.findAll<HTMLElement>('button[role="radio"]')
   }
 
-  it('renders exactly the five registered scene ids, no speech', () => {
+  it('renders exactly the six registered scene ids, including speech', () => {
     const wrapper = mount(SceneTemplatePicker, { props: { modelValue: 'general' } })
     const buttons = cards(wrapper)
     expect(buttons).toHaveLength(SCENE_IDS.length)
-    expect(buttons).toHaveLength(5)
+    expect(buttons).toHaveLength(6)
     const texts = buttons.map(b => b.text())
-    expect(texts.some(text => /speech|演讲|演講/.test(text))).toBe(false)
+    // 演讲评分（speech）卡片必须存在——它对应 SpeechEvaluationPanel + 波形浮层
+    expect(texts.some(text => /meeting\.scene\.speech|speech/.test(text))).toBe(true)
   })
 
   it('checks the card matching modelValue and unchecks the others', () => {
