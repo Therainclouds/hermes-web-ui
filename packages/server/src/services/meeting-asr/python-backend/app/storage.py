@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 from .models import AllConfig, AnalysisResult, AnalysisStatus, ASRConfig, LLMConfig, AnalysisConfig
+from .config import settings
 
 log = logging.getLogger("storage")
 
@@ -84,6 +85,16 @@ class Storage:
             self._save_to_env()
         except Exception as e:
             log.error("Failed to save config: %s", e)
+        finally:
+            # Keep the runtime Settings object (what asr_proxy / diarize_*
+            # actually read) in lockstep with what was just persisted. Without
+            # this, a hot config push writes the new key to disk + config.env
+            # but the handlers keep using the process-start value, surfacing
+            # "DASHSCOPE_API_KEY is not configured" after the user edits the
+            # key in the Web UI (v0.7.17 incident). Always runs — even if the
+            # disk write failed, the in-memory source of truth is still the
+            # merged config the caller intended to save.
+            settings.sync_from(self._config.asr)
 
     def _save_to_env(self) -> None:
         try:

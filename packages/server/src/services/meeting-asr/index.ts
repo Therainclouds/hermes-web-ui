@@ -165,7 +165,97 @@ export class MeetingASRService extends EventEmitter {
   }
 
   private getDataDir(): string {
-    return this._config.dataDir || path.join(process.cwd(), 'data', 'meeting-asr')
+    // Resolution order (highest priority first):
+    //   1. start({ dataDir }) constructor arg — used by tests and ad-hoc
+    //      overrides from /api/meeting-asr/start.
+    //   2. MEETING_ASR_DATA_DIR env var — set by deploy-source-armbian.sh
+    //      so the pre-warmed venv and the runtime venv share the same path
+    //      (was a regression risk before v0.7.16; see audit #1).
+    //   3. <cwd>/data/meeting-asr — the historical default for non-systemd
+    //      dev runs.
+    return (
+      this._config.dataDir
+      || process.env.MEETING_ASR_DATA_DIR
+      || path.join(process.cwd(), 'data', 'meeting-asr')
+    )
+  }
+
+  /**
+   * Resolve where the Python virtual environment should live.
+   *
+   * The venv must NOT sit under `python-backend/` because that directory is
+   * part of the deployed bundle (`dist/server/services/meeting-asr/python-backend/`)
+   * and is owned by the deploy user. If the runtime service runs as a
+   * different (non-root) user it cannot write into the venv directory and
+   * the first `start` call fails with EACCES — see incident at
+   * `docs/planning/meeting-mode-rk3528-audit.md` #1 and #5.
+   *
+   * We co-locate the venv with the rest of the meeting-asr persistent state
+   * under `dataDir/.venv/`. The data directory is owned by the runtime user
+   * (`WorkingDirectory={{DEPLOY_DIR}}` in systemd + mkdir at bootstrap) and
+   * survives device-package upgrades because it's outside the dist tree.
+   *
+   * `pythonBackendPath` is kept as an argument so the same helper is callable
+   * from tests with arbitrary tmp paths and so future overrides (env var,
+   * per-profile data dirs) can be added without churning call sites.
+   */
+  resolveVenvPath(dataDir: string, _pythonBackendPath: string): string {
+    return path.join(dataDir, '.venv')
+  }
+
+  resolveVenvMarkerPath(venvPath: string): string {
+    return path.join(venvPath, '.hermes-ready')
+  }
+
+  /**
+   * Recover the DashScope API key from persistent storage when the caller
+   * didn't pass one inline. The Python backend stores secrets in two files
+   * under dataDir, and we must check both:
+   *
+   *   - config.json: written by the Node controller's /api/config proxy and
+   *     by updateLLMConfig(). Key lives at `llm.api_key` or `asr.dashscope_api_key`.
+   *   - config.env: written by Python `storage.update_config()` as shell-style
+   *     `DASHSCOPE_API_KEY=sk-...` lines, consumed by `config.py` at import
+   *     time via python-dotenv.
+   *
+   * Before this fix, the fallback only read config.json, so auto-restart or
+   * first-start-after-deploy failed with "DASHSCOPE_API_KEY is not configured"
+   * whenever the key had been persisted exclusively via the Python path
+   * (config.env) — which is the common case after the user saves ASR config
+   * from the UI.
+   */
+  async readStoredDashScopeKey(dataDir: string): Promise<string | null> {
+    // 1. config.json (JSON)
+    try {
+      const configPath = path.join(dataDir, 'config.json')
+      const raw = await fs.readFile(configPath, 'utf-8')
+      const stored = JSON.parse(raw)
+      const key = stored?.asr?.dashscope_api_key || stored?.llm?.api_key
+      if (key) return key
+    } catch { /* file missing or invalid JSON */ }
+
+    // 2. config.env (shell-style KEY=VALUE lines)
+    try {
+      const envPath = path.join(dataDir, 'config.env')
+      const raw = await fs.readFile(envPath, 'utf-8')
+      for (const line of raw.split('\n')) {
+        const trimmed = line.trim()
+        if (!trimmed || trimmed.startsWith('#')) continue
+        const eq = trimmed.indexOf('=')
+        if (eq === -1) continue
+        if (trimmed.slice(0, eq).trim() === 'DASHSCOPE_API_KEY') {
+          let val = trimmed.slice(eq + 1).trim()
+          // Strip surrounding quotes if present
+          if ((val.startsWith('"') && val.endsWith('"')) ||
+              (val.startsWith("'") && val.endsWith("'"))) {
+            val = val.slice(1, -1)
+          }
+          if (val) return val
+        }
+      }
+    } catch { /* file missing */ }
+
+    return null
   }
 
   private async findPython(): Promise<string> {
@@ -199,13 +289,14 @@ export class MeetingASRService extends EventEmitter {
 
   private async ensureVirtualEnv(): Promise<string> {
     const backendPath = this.getPythonBackendPath()
-    const venvPath = path.join(backendPath, '.venv')
+    const dataDir = this.getDataDir()
+    const venvPath = this.resolveVenvPath(dataDir, backendPath)
     const pythonPath = this.getVenvPythonPath(venvPath)
     // Marker file written after a successful pip install — lets us skip the
     // ~3-10 minute install on ARM64 after the first successful run. Treated
     // as a hint, not a hard guarantee: the probe below still verifies that
     // the binary actually executes.
-    const markerPath = path.join(venvPath, '.hermes-ready')
+    const markerPath = this.resolveVenvMarkerPath(venvPath)
 
     const probePython = async (): Promise<void> => {
       await new Promise<void>((resolve, reject) => {
@@ -230,6 +321,74 @@ export class MeetingASRService extends EventEmitter {
       return pythonPath
     } catch {
       // fall through to slow path
+    }
+
+    // Migration path (v0.7.16+): if the legacy venv at
+    // `<pythonBackend>/.venv` exists and is probe-healthy, move it to the
+    // new data-dir location atomically. This preserves the multi-minute
+    // `pip install` work already done on the device and keeps the
+    // "start → ready in seconds" UX contract. Without this, every upgrade
+    // would trigger a fresh 5-10 min pip install on ARM64.
+    const legacyVenvPath = path.join(backendPath, '.venv')
+    const legacyPythonPath = this.getVenvPythonPath(legacyVenvPath)
+    try {
+      await fs.access(legacyPythonPath)
+      // Legacy venv exists — verify it actually works before moving it,
+      // so we don't relocate a broken venv and then trust it.
+      await new Promise<void>((resolve, reject) => {
+        const probe = spawn(legacyPythonPath, ['-c', 'import sys; sys.exit(0)'], { stdio: 'pipe' })
+        probe.on('close', (code) => {
+          if (code === 0) resolve()
+          else reject(new Error(`legacy venv python exited ${code}`))
+        })
+        probe.on('error', reject)
+      })
+      // Legacy venv is healthy. Move it. fs.rename is atomic on the same
+      // filesystem; if cross-device (unlikely for /opt → /var/lib on the
+      // same root partition) it falls back to copy + remove below.
+      await fs.mkdir(path.dirname(venvPath), { recursive: true })
+      try {
+        await fs.rename(legacyVenvPath, venvPath)
+      } catch (renameErr) {
+        // Cross-device rename: fall back to recursive copy then remove.
+        // Node fs.cp is available on Node 16.7+; we use it explicitly so
+        // the failure mode is observable instead of silent.
+        logger.warn(
+          '[meeting-asr] fs.rename failed (%s); falling back to recursive copy',
+          renameErr instanceof Error ? renameErr.message : String(renameErr),
+        )
+        await fs.cp(legacyVenvPath, venvPath, { recursive: true, force: true })
+        await fs.rm(legacyVenvPath, { recursive: true, force: true })
+      }
+      // Re-link the venv's absolute python path if the venv was created
+      // with absolute symlinks. Most venvs use relative symlinks so a move
+      // is safe; if the probe below fails, the slow path recreates.
+      try {
+        await probePython()
+        // Move succeeded and the relocated venv probes clean — write the
+        // marker so the next start hits the fast path.
+        try {
+          await fs.writeFile(markerPath, new Date().toISOString(), 'utf-8')
+        } catch (err) {
+          logger.warn('[meeting-asr] Could not write venv marker %s: %s', markerPath, err)
+        }
+        this._isVenvReady = true
+        logger.info(
+          '[meeting-asr] Migrated legacy venv %s -> %s (fast path preserved)',
+          legacyVenvPath,
+          venvPath,
+        )
+        return pythonPath
+      } catch (probeErr) {
+        logger.warn(
+          '[meeting-asr] Migrated venv failed probe (%s); proceeding to recreate',
+          probeErr instanceof Error ? probeErr.message : String(probeErr),
+        )
+        // Remove the broken relocated venv so createVenv starts clean.
+        await fs.rm(venvPath, { recursive: true, force: true })
+      }
+    } catch {
+      // Legacy venv absent or broken — proceed to fresh creation below.
     }
 
     // Slow path: venv missing, broken, or marker absent — recreate + install.
@@ -412,16 +571,20 @@ export class MeetingASRService extends EventEmitter {
       if (config.dashscopeApiKey) {
         env.DASHSCOPE_API_KEY = config.dashscopeApiKey
       } else {
-        // Auto-restart fallback: try stored config
+        // Auto-restart fallback: the caller (UI or auto-restart) didn't
+        // provide a key inline, so recover it from persistent storage.
+        // The Python backend stores secrets in TWO files under dataDir:
+        //   - config.json  (LLM section: llm.api_key)
+        //   - config.env    (shell-style: DASHSCOPE_API_KEY=...)
+        // We check both because the Python `storage.update_config` writes
+        // config.env for env-based consumption (used by config.py at import
+        // time) while the Node controller's updateASRConfig pushes via
+        // /api/config which only touches config.json. Missing either source
+        // meant "DASHSCOPE_API_KEY is not configured" on auto-restart or
+        // first UI start after a deploy.
         try {
-          const fs = require('fs') as typeof import('fs')
-          const p = require('path') as typeof import('path')
-          const storedPath = p.join(dataDir, 'config.json')
-          if (fs.existsSync(storedPath)) {
-            const stored = JSON.parse(fs.readFileSync(storedPath, 'utf-8'))
-            const key = stored.asr?.dashscope_api_key || stored.llm?.api_key
-            if (key) env.DASHSCOPE_API_KEY = key
-          }
+          const key = await this.readStoredDashScopeKey(dataDir)
+          if (key) env.DASHSCOPE_API_KEY = key
         } catch { /* best effort */ }
       }
       if (config.asrModel) {
@@ -813,35 +976,38 @@ export class MeetingASRService extends EventEmitter {
   }
 
   private async updateLLMConfig(config: MeetingASRConfig): Promise<void> {
+    // Route through the Python backend's /api/config/llm endpoint instead of
+    // writing config.json directly. Direct file writes bypassed Storage's
+    // in-memory config AND its runtime Settings sync, so llm_service (which
+    // reads storage.get_config()) kept serving the old key after an update —
+    // the same class of desync that caused the v0.7.17
+    // "DASHSCOPE_API_KEY is not configured" incident for ASR.
     try {
-      const dataDir = this.getDataDir()
-      const configFile = path.join(dataDir, 'config.json')
-
-      let currentConfig: any = {}
-      try {
-        const content = await fs.readFile(configFile, 'utf-8')
-        currentConfig = JSON.parse(content)
-      } catch {
-        // Config file doesn't exist or is invalid
+      const scheme = this._useTls ? 'https' : 'http'
+      const init: RequestInit = {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          api_key: config.llmApiKey || '',
+          base_url: config.llmBaseUrl || '',
+          model: config.llmModel || '',
+        }),
       }
-
-      // Update LLM config
-      if (!currentConfig.llm) {
-        currentConfig.llm = {}
+      if (this._useTls) {
+        const { Agent } = await import('node:https')
+        ;(init as any).dispatcher = new Agent({ rejectUnauthorized: false })
       }
-      if (config.llmApiKey) {
-        currentConfig.llm.api_key = config.llmApiKey
+      const response = await fetch(
+        `${scheme}://127.0.0.1:${this._asrPort}/api/config/llm`,
+        init,
+      )
+      if (!response.ok) {
+        throw new Error(`Python backend rejected LLM config: ${response.status} ${response.statusText}`)
       }
-      if (config.llmBaseUrl) {
-        currentConfig.llm.base_url = config.llmBaseUrl
-      }
-      if (config.llmModel) {
-        currentConfig.llm.model = config.llmModel
-      }
-
-      await fs.writeFile(configFile, JSON.stringify(currentConfig, null, 2), 'utf-8')
+      logger.info('[meeting-asr] LLM config persisted via Python backend')
     } catch (err) {
-      logger.error('[meeting-asr] Failed to update LLM config: %s', err)
+      // Best-effort: a failed LLM push must not fail the whole ASR start.
+      logger.error('[meeting-asr] Failed to update LLM config via backend: %s', err)
     }
   }
 

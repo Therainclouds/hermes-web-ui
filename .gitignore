@@ -32,6 +32,9 @@ pnpm-workspace.yaml
 packages/server/data/
 packages/server/node_modules/
 
+# Meeting ASR runtime state — contains API keys, never commit
+data/meeting-asr/config.env
+
 # Local meeting recordings (user data — never commit)
 meetings/
 .hermes-web-ui/
