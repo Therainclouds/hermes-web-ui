@@ -6,7 +6,7 @@ import { useMeetingStore } from '@/stores/hermes/meeting'
 import type { SpeechEvalState, SpeechTimerRecord } from '@/stores/hermes/meeting'
 import { useMeetingAssist } from '@/composables/useMeetingAssist'
 import { request, getApiKey } from '@/api/client'
-import { buildReportHtml } from '@/utils/report-html'
+import MeetingExportDropdown from './MeetingExportDropdown.vue'
 
 const MarkdownRenderer = defineAsyncComponent(async () => (await import('@/components/hermes/chat/MarkdownRenderer.vue')).default)
 
@@ -460,18 +460,8 @@ async function generateReport() {
   }
 }
 
-function exportReportHtml() {
-  if (!reportMarkdown.value) return
-  const title = session.value?.title || t('meeting.reportPanel.title')
-  const html = buildReportHtml(reportMarkdown.value, title)
-  const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `${title}_演讲评估.html`
-  a.click()
-  URL.revokeObjectURL(url)
-}
+// 导出报告：拆分按钮 + 下拉菜单，默认 Word（极致样式），可切 HTML / Markdown。
+const exportTitle = computed(() => session.value?.title || t('meeting.reportPanel.title'))
 
 // 切换会话时重置
 watch(() => props.sessionId, () => {
@@ -717,7 +707,11 @@ onUnmounted(() => {
 
       <div v-if="reportMarkdown" class="report-content">
         <div class="report-actions">
-          <NButton size="tiny" @click="exportReportHtml">{{ t('meeting.speechEval.exportReport') }}</NButton>
+          <MeetingExportDropdown
+            :markdown="reportMarkdown"
+            :title="exportTitle"
+            scope="speechEval"
+          />
         </div>
         <MarkdownRenderer :content="reportMarkdown" />
       </div>

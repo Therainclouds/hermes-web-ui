@@ -4328,6 +4328,10 @@ export default {
       generateReport: '生成评估报告',
       generating: '正在生成评估报告…',
       exportReport: '导出报告',
+      exportWord: '导出为 Word (.docx)',
+      exportHtml: '导出为 HTML',
+      exportMarkdown: '导出为 Markdown',
+      exporting: '正在导出…',
     },
     // 实时辅助面板
     assist: {
@@ -4351,6 +4355,11 @@ export default {
     reportPanel: {
       title: '会议报告',
       export: '导出',
+      exportWord: '导出为 Word (.docx)',
+      exportHtml: '导出为 HTML',
+      exportMarkdown: '导出为 Markdown',
+      exporting: '正在导出…',
+      exportEmpty: '暂无报告内容，无法导出',
       generating: '正在生成报告...',
       generate: '生成会议报告',
       retry: '重试',
@@ -4361,6 +4370,10 @@ export default {
       errorAgentFailed: 'Hermes Agent 运行失败（工具、技能或记忆错误），报告未生成，请重试，或检查服务器日志获取堆栈。',
       errorLLMStreamInterrupted: 'LLM 提供商在发送结束标记前关闭了响应流，通常为上游瞬时问题，请稍后重试。',
       errorLLMNetwork: 'LLM 提供商不可达（网络、DNS、TLS 或 HTTP 错误），请检查到提供商的连通性后重试。',
+    },
+    reportExport: {
+      failed: '导出失败，请重试。',
+      moreFormats: '更多导出格式',
     },
     // 分析触发配置
     analysisTriggerConfig: '分析触发配置',

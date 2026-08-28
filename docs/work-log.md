@@ -2303,3 +2303,67 @@ chat store 模块化拆分只动 `packages/client/src/stores/hermes/chat.ts` 及
 ### 留给未来 agent 的判据
 
 如果你以后看到「会议报告相关」的错误，**先去看 `realtime-assist.ts` / `MeetingAgentPanel.vue` 的 git blame**，这条链路从 2026-08-26 之前就在被反复打补丁，与 chat store 拆分毫无关系。任何把它归因到模块化的猜测都是错的。
+
+---
+
+## 2026-08-28 — 会议报告导出：默认 Word（极致样式）+ 下拉菜单
+
+### 需求
+
+用户要求：会议报告的导出按钮默认导出 Word 文档，样式对齐现有 HTML 报告（极致版：渐变标题色、H2 编号徽章、表格主色表头、引用块主色左边框、页脚主色分隔线），并通过下拉菜单可切换 Word / HTML / Markdown 三种格式。
+
+### 范围
+
+**新增**：
+
+- `packages/client/src/utils/hermes/meeting-report-docx.ts` —— 会议报告专用 docx 工厂。复用 `markdown-it` AST → docx 块级元素的映射模式（与 `group-discussion-docx.ts` 同源思路，但**重写样式**对齐 `report-html.ts` 的视觉）。导出 `buildMeetingReportDocx()` / `downloadMeetingReportDocx()` / `sanitizeFileName()`。Markdown 元素缺位静默跳过，标题转义，XML 注入防护。
+- `packages/client/src/composables/useMeetingReportExport.ts` —— Vue composable 包装 docx/html/markdown 三种导出，暴露 `isExporting` 用于按钮 loading 态。
+- `packages/client/src/components/hermes/meeting/MeetingExportDropdown.vue` —— Split-button 模式（主按钮触发 docx，紧邻的下拉箭头按钮打开 NDropdown 切换格式），避免单按钮既要默认 export 又要打开 dropdown 的冲突。
+- `tests/client/meeting-report-docx.test.ts` —— 14 个测试：Blob 类型 / H2 标题 / GFM 表格主色 header / Consolas 代码块 / 主色左边框 blockquote / hr 视觉分隔 / XML 转义 / 空 Markdown 占位 / sanitizeFileName / 下载触发 + 文件名格式。
+- `tests/client/meeting-export-dropdown.test.ts` —— 5 个测试：scope label 切换、disabled 状态、exporting 态。
+
+**修改**：
+
+- `MeetingAgentPanel.vue`：删除 `exportReportHtml()` 函数（内联 HTML 下载逻辑），按钮替换为 `<MeetingExportDropdown scope="reportPanel" />`。
+- `SpeechEvaluationPanel.vue`：同理，scope="speechEval"。
+- i18n `en.ts` / `zh.ts` / `zh-TW.ts`：补 `meeting.reportPanel.{exportWord, exportHtml, exportMarkdown, exporting, exportEmpty}`、`meeting.reportExport.{failed, moreFormats}`、`meeting.speechEval.{exportWord, exportHtml, exportMarkdown, exporting}` 共 11 个 key。
+
+### 样式与原 HTML 版对齐策略
+
+| HTML 版（report-html.ts） | Word 版（meeting-report-docx.ts） |
+|---|---|
+| `.doc-title` 渐变背景填充文本 | `HeadingLevel.TITLE` + `color: 6366F1`（主色起点） + 居中 |
+| `.report-body h2::before` 数字徽章 | 编号徽章段（`01 / 02` …，白字 + 主色 H2 大字号） |
+| `.report-body table th` 灰底 | `TableCell shading` 主色（`6366F1`） + 白字加粗 |
+| 偶数行 `.report-body tr:nth-child(even)` | zebra 行 shading `F8FAFC` |
+| `blockquote` 主色左边框 + 浅灰底 | `border: { left: { size: 24, color: '6366F1' } }` + `shading F8FAFC` |
+| `code` Consolas + 浅灰底 | `font: 'Consolas'` + `shading F1F5F9` |
+| `hr` 浅灰 1px | 居中段 + 浅灰 `─────────────────────────────` 字符 |
+| 顶部渐变条 | 副标题行（标题前缀 + 生成时间 + 来源） |
+| 页脚浅灰小字 | 同色小字 + `border: { top: 主色 4 }` |
+
+### 不动的东西
+
+- `packages/client/src/utils/report-html.ts`（HTML 版导出器，MeetingView 还在用）。
+- `packages/client/src/views/hermes/MeetingView.vue` 的 `downloadReport` 流。
+- `group-discussion-docx.ts`（群聊讨论 docx 工具，与会议场景独立）。
+- 8 个其他 locale（vue-i18n fallbackLocale='en' 自动回退，不补键不崩 UI；后续翻译任务清单已在 todo 列表）。
+
+### 验证
+
+- `vue-tsc -b`（client + 模板）：零错。
+- `npx vitest run tests/client/meeting-report-docx.test.ts tests/client/meeting-export-dropdown.test.ts`：19/19 通过。
+- `npx vitest run tests/client`：1519/1524 通过；4 个失败文件（`device-connections-locales.test.ts` / `ekko-display-name.test.ts` / `profile-card-config-edit.test.ts` / `rtl-logical-css.test.ts`）是 main 既有失败，与本次改动无关（git stash 验证过）。
+- `npx vitest run tests/server/meeting-report-fallback.test.ts`：9/9 通过（回归 A+C 路径）。
+
+### 后续手测清单（不在本期代码内）
+
+- headless Chromium 打开 `/#/hermes/meeting` → 录入/生成报告 → 点导出 → 下载文件验证：
+  - 文件名形如 `${title}_报告-YYYYMMDD.docx`
+  - Word 打开后标题主色大字、H2 编号徽章、表格主色表头、引用块主色左边框、页脚分隔线齐全
+- dropdown 第二项导出 `.html`：与旧版视觉一致
+- dropdown 第三项导出 `.md`：文本编辑器打开是 LLM 原 Markdown
+
+### 浏览器交互细节
+
+split-button 设计（不是单按钮 + dropdown）的原因：单按钮 click 既要触发 docx 又要切换 dropdown 会冲突。naive-ui 没有官方 SplitButton 组件，所以手动拼两个 NButton，圆角各取一边、中间缝 1px 白线，保持视觉一体。dropdown 用 `trigger="manual"` + `@clickoutside` 关闭，避免与主按钮 hover 交互冲突。

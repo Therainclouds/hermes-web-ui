@@ -4282,6 +4282,10 @@ export default {
       generateReport: 'Generate Evaluation Report',
       generating: 'Generating evaluation report…',
       exportReport: 'Export Report',
+      exportWord: 'Export as Word (.docx)',
+      exportHtml: 'Export as HTML',
+      exportMarkdown: 'Export as Markdown',
+      exporting: 'Exporting…',
     },
     // Realtime assist panel
     assist: {
@@ -4305,6 +4309,11 @@ export default {
     reportPanel: {
       title: 'Meeting Report',
       export: 'Export',
+      exportWord: 'Export as Word (.docx)',
+      exportHtml: 'Export as HTML',
+      exportMarkdown: 'Export as Markdown',
+      exporting: 'Exporting…',
+      exportEmpty: 'No report content available to export',
       generating: 'Generating report...',
       generate: 'Generate Report',
       retry: 'Retry',
@@ -4316,6 +4325,10 @@ export default {
       errorAgentFailed: 'The Hermes Agent run failed (tool, skill, or memory error). The report was not generated — please retry, or check server logs for the agent stack trace.',
       errorLLMStreamInterrupted: 'The LLM provider closed the response stream before sending a finish marker. This is usually a transient upstream issue — please retry in a moment.',
       errorLLMNetwork: 'The LLM provider is unreachable (network, DNS, TLS, or HTTP error). Please check connectivity to the provider and retry.',
+    },
+    reportExport: {
+      failed: 'Export failed. Please try again.',
+      moreFormats: 'More export formats',
     },
     // Analysis trigger config
     analysisTriggerConfig: 'Analysis Trigger Config',

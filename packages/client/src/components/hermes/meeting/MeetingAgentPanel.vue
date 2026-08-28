@@ -5,8 +5,8 @@ import { NButton, NSpin, NTag } from 'naive-ui'
 import { useMeetingAssist } from '@/composables/useMeetingAssist'
 import { request, getApiKey } from '@/api/client'
 import { useMeetingStore } from '@/stores/hermes/meeting'
-import { buildReportHtml } from '@/utils/report-html'
 import { classifyReportError } from './report-error'
+import MeetingExportDropdown from './MeetingExportDropdown.vue'
 
 const MarkdownRenderer = defineAsyncComponent(async () => (await import('@/components/hermes/chat/MarkdownRenderer.vue')).default)
 
@@ -286,19 +286,8 @@ function retryReport() {
   void generateReport(lastTranscript.value)
 }
 
-// 导出报告：将 Markdown 转换为精简美观的独立 HTML 页面下载
-function exportReportHtml() {
-  if (!reportMarkdown.value) return
-  const title = meetingStore.activeSession?.title || t('meeting.reportPanel.title')
-  const html = buildReportHtml(reportMarkdown.value, title)
-  const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `${title}_报告.html`
-  a.click()
-  URL.revokeObjectURL(url)
-}
+// 导出报告：拆分按钮 + 下拉菜单，默认 Word（极致样式），可切 HTML / Markdown。
+const exportTitle = computed(() => meetingStore.activeSession?.title || t('meeting.reportPanel.title'))
 
 // Expose generateReport for parent component
 defineExpose({ generateReport })
@@ -450,9 +439,12 @@ onUnmounted(() => {
       <div class="report-header">
         <span class="report-title">{{ t('meeting.reportPanel.title') }}</span>
         <div class="report-actions">
-          <NButton v-if="reportMarkdown && !isGeneratingReport" size="tiny" @click="exportReportHtml">
-            {{ t('meeting.reportPanel.export') }}
-          </NButton>
+          <MeetingExportDropdown
+            v-if="reportMarkdown && !isGeneratingReport"
+            :markdown="reportMarkdown"
+            :title="exportTitle"
+            scope="reportPanel"
+          />
         </div>
       </div>
 
