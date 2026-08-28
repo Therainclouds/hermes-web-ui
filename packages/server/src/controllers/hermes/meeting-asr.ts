@@ -1,6 +1,7 @@
 import type { Context } from 'koa'
 import { PassThrough } from 'node:stream'
 import { meetingASRService } from '../../services/meeting-asr'
+import { REPORT_FALLBACK_MARKER } from '../../services/meeting-asr/realtime-assist'
 import { logger } from '../../services/logger'
 
 async function proxyToBackend(ctx: Context, path: string, method: 'GET' | 'POST' = 'GET', body?: any): Promise<any> {
@@ -366,6 +367,13 @@ export async function streamReport(ctx: Context): Promise<void> {
     try {
       const stream = realtimeAssistService.generateReportStream(sessionId, transcript, sceneTemplate, profile)
       for await (const chunk of stream) {
+        // 服务层会在「agent 中途失败、回退到 direct LLM」时 yield 一个 Symbol sentinel；
+        // 把它翻译成专用的 SSE 控制帧，前端识别后清空已累积的部分内容，
+        // 再继续接收 LLM 的真实 chunks。Symbol 永远不会出现在 LLM 文本里，安全。
+        if (typeof chunk === 'symbol' && chunk === REPORT_FALLBACK_MARKER) {
+          passthrough.write(`data: ${JSON.stringify({ fallback: true })}\n\n`)
+          continue
+        }
         passthrough.write(`data: ${JSON.stringify({ text: chunk })}\n\n`)
       }
       passthrough.write('data: [DONE]\n\n')

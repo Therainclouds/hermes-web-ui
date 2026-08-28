@@ -52,9 +52,15 @@ function stubDirectLLM(content: string): void {
   vi.stubGlobal('fetch', mocks.fetchMock)
 }
 
-async function collect(gen: AsyncGenerator<string>): Promise<string> {
+async function collect(gen: AsyncGenerator<string | symbol>): Promise<string> {
   let out = ''
-  for await (const chunk of gen) out += chunk
+  for await (const chunk of gen) {
+    if (typeof chunk === 'symbol') {
+      // 跳过 fallback marker，只统计可见文本。
+      continue
+    }
+    out += chunk
+  }
   return out
 }
 
@@ -100,21 +106,36 @@ describe('meeting report generation (agent-first with fallback)', () => {
     expect(mocks.fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  it('does not fall back once the agent has already streamed output', async () => {
+  it('falls back to direct LLM even after the agent streams partial output (A+C contract)', async () => {
+    // 之前契约：agent 已经 yield 过部分内容就直接抛错。
+    // 现在契约（A+C）：仍强制回退到 direct LLM，丢弃部分内容；
+    // 服务层 yield 一个 REPORT_FALLBACK_MARKER sentinel 作为"我已切换路径"的信号，
+    // 由 controller 翻译成 { fallback: true } SSE 帧，前端收到后再清空已显示的部分。
     wireBridge()
     mocks.chatMock.mockResolvedValue({ ok: true, run_id: 'run-1' })
     mocks.streamOutputMock.mockImplementation(async function* () {
       yield { delta: 'partial', done: false }
       throw new Error('stream broken mid-way')
     })
-    stubDirectLLM('SHOULD NOT BE USED')
+    stubDirectLLM('Fresh LLM Report')
 
-    const { realtimeAssistService } = await import('../../packages/server/src/services/meeting-asr/realtime-assist')
+    const { realtimeAssistService, REPORT_FALLBACK_MARKER } = await import(
+      '../../packages/server/src/services/meeting-asr/realtime-assist'
+    )
 
-    await expect(collect(realtimeAssistService.generateReportStream('s3', 'transcript', 'general', 'default')))
-      .rejects.toThrow('stream broken mid-way')
-    // 已经流出过内容，不能再回退造成重复输出。
-    expect(mocks.fetchMock).not.toHaveBeenCalled()
+    // 直接消费生成器，验证 sentinel 出现在 agent 部分与 LLM 部分之间。
+    const seen: Array<string | symbol> = []
+    for await (const chunk of realtimeAssistService.generateReportStream('s3', 'transcript', 'general', 'default')) {
+      seen.push(chunk)
+    }
+
+    expect(seen[0]).toBe('partial')
+    expect(seen).toContain(REPORT_FALLBACK_MARKER)
+    // sentinel 之后只能出现 LLM 的输出，不应重复 agent 的 'partial'。
+    const afterMarker = seen.slice(seen.indexOf(REPORT_FALLBACK_MARKER) + 1)
+    expect(afterMarker.join('')).toBe('Fresh LLM Report')
+    // fallback 路径必须真的被调用过。
+    expect(mocks.fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it('extracts final text from result when the agent yields no incremental delta', async () => {
@@ -153,7 +174,12 @@ describe('meeting report generation (agent-first with fallback)', () => {
     const collected: string[] = []
     const gen = realtimeAssistService.generateReportStream('s5', 'transcript', 'general', 'default')
     await expect((async () => {
-      for await (const c of gen) collected.push(c)
+      for await (const c of gen) {
+        // generator 现在会先 yield 一个 REPORT_FALLBACK_MARKER sentinel，
+        // 测试过滤掉它，只统计可见文本 chunk。
+        if (typeof c === 'symbol') continue
+        collected.push(c)
+      }
     })()).rejects.toThrow(/empty stream/)
     expect(collected.join('')).toBe('partial')
   })
@@ -179,5 +205,66 @@ describe('meeting report generation (agent-first with fallback)', () => {
     const report = await collect(realtimeAssistService.generateReportStream('s6', 'transcript', 'general', 'default'))
 
     expect(report).toBe('headtail')
+  })
+
+  it('merges agent and fallback errors when both paths fail (ReportStreamBothFailed)', async () => {
+    wireBridge()
+    mocks.chatMock.mockRejectedValue(new Error('bridge pool exhausted'))
+    // fallback 路径产出一个 SSE error 帧 → 触发 generator 抛错。
+    mocks.fetchMock.mockResolvedValue({
+      ok: true,
+      body: {
+        getReader: () => sseReader([
+          `data: ${JSON.stringify({ error: { message: 'Provider returned an empty stream with no finish_reason', type: 'upstream_error' } })}\n\n`,
+        ]),
+      },
+    })
+    vi.stubGlobal('fetch', mocks.fetchMock)
+
+    const { realtimeAssistService } = await import('../../packages/server/src/services/meeting-asr/realtime-assist')
+    const gen = realtimeAssistService.generateReportStream('s7', 'transcript', 'general', 'default')
+    let captured: unknown = null
+    try {
+      for await (const _chunk of gen) { /* no-op */ }
+    } catch (e) {
+      captured = e
+    }
+    expect(captured).toBeInstanceOf(Error)
+    const err = captured as Error & { name?: string }
+    expect(err.name).toBe('ReportStreamBothFailed')
+    expect(err.message).toMatch(/agent: bridge pool exhausted/)
+    expect(err.message).toMatch(/fallback: /)
+  })
+
+  it('rethrows the original agent error when the fallback stream produces zero chunks', async () => {
+    wireBridge()
+    const originalError = new Error('empty stream with no finish_reason')
+    mocks.chatMock.mockRejectedValue(originalError)
+    // 直接 LLM 路径：第一次调用 (streaming) 返回空；第二次调用 (non-streaming retry) 也失败。
+    // 两次失败都会被合并到 ReportStreamBothFailed，但我们要验证 agent 原错信息保留在前缀里。
+    mocks.fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        body: {
+          getReader: () => sseReader(['data: [DONE]\n\n']),
+        },
+      })
+      .mockRejectedValueOnce(new Error('non-streaming fallback also down'))
+    vi.stubGlobal('fetch', mocks.fetchMock)
+
+    const { realtimeAssistService } = await import('../../packages/server/src/services/meeting-asr/realtime-assist')
+    const gen = realtimeAssistService.generateReportStream('s8', 'transcript', 'general', 'default')
+    let captured: unknown = null
+    try {
+      for await (const _chunk of gen) { /* no-op */ }
+    } catch (e) {
+      captured = e
+    }
+    expect(captured).toBeInstanceOf(Error)
+    const err = captured as Error & { name?: string }
+    expect(err.name).toBe('ReportStreamBothFailed')
+    // 原始 agent 错误必须在合并消息的前缀里（更接近根因）。
+    expect(err.message).toMatch(/agent: empty stream with no finish_reason/)
+    expect(err.message).toMatch(/fallback: /)
   })
 })

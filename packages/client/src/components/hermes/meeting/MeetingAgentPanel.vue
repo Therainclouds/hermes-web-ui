@@ -242,6 +242,14 @@ async function generateReport(transcript: string) {
             if (type) (e as Error & { cause?: unknown }).cause = type
             throw e
           }
+          // server 把 agent 中途失败、回退到 direct LLM 的瞬间翻译成 { fallback: true } 帧。
+          // 此时之前累积的可能是 agent 半截产出或错误方向上的内容，必须先清空，
+          // 再让后续 { text } 帧正常续写到空容器里。结果：用户看到的是一份连贯的 LLM 输出。
+          if (chunk.fallback === true) {
+            console.info('[report] agent path fell back to direct LLM; discarding partial content')
+            reportMarkdown.value = ''
+            continue
+          }
           if (chunk.text) reportMarkdown.value += chunk.text
         } catch (e) {
           if (e instanceof SyntaxError) continue

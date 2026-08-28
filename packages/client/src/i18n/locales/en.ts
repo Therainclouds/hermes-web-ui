@@ -4310,6 +4310,12 @@ export default {
       retry: 'Retry',
       errorEmptyStream: 'The AI model\'s response stream ended unexpectedly. This is usually a temporary network issue — please retry. If the problem persists, check the LLM provider\'s service status.',
       errorGeneric: 'Report generation failed. Please retry. If the problem persists, check the server logs.',
+      // A+C：按错误根源细分文案（保留 errorEmptyStream/errorGeneric 作为向后兼容别名）。
+      errorBothFailed: 'Report generation failed on both the agent path and the direct LLM path. Please retry. If the problem persists, check the server logs for the underlying provider or bridge error.',
+      errorAgentUnavailable: 'The Hermes Agent bridge is unavailable (not started, or unreachable on its local socket). Falling back to the direct LLM path; if you want the agent path, start the bridge and retry.',
+      errorAgentFailed: 'The Hermes Agent run failed (tool, skill, or memory error). The report was not generated — please retry, or check server logs for the agent stack trace.',
+      errorLLMStreamInterrupted: 'The LLM provider closed the response stream before sending a finish marker. This is usually a transient upstream issue — please retry in a moment.',
+      errorLLMNetwork: 'The LLM provider is unreachable (network, DNS, TLS, or HTTP error). Please check connectivity to the provider and retry.',
     },
     // Analysis trigger config
     analysisTriggerConfig: 'Analysis Trigger Config',

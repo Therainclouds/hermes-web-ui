@@ -61,6 +61,19 @@ const WINDOW_INTERVAL_MS = 18_000
 const NAMESPACE = '/meeting-assist'
 
 /**
+ * Sentinel yielded by `generateReportStream` to signal "agent path failed, now
+ * switching to direct LLM fallback — discard any partial content received so far".
+ *
+ * Streamed as an internal token only. `streamReport` translates it into an
+ * SSE frame of shape `{ fallback: true }`, which the client recognizes and
+ * clears its `reportMarkdown` accumulator before rendering new chunks.
+ *
+ * Lives at module scope so the controller (`meeting-asr.ts#streamReport`)
+ * and the service generator agree on a single source of truth.
+ */
+export const REPORT_FALLBACK_MARKER = Symbol.for('meeting-assist.report.fallback')
+
+/**
  * 各场景下触发 Agent + MCP 工具查询的关键词正则。
  * 匹配到这些信号说明对话涉及需要查询核实的专业内容，值得走慢路径。
  * 未列出的场景（如 general）始终走快速直调路径。
@@ -411,24 +424,69 @@ class RealtimeAssistService {
    * 优先经过 Hermes Agent，这样可以复用用户为该 profile 训练好的系统提示词、技能与记忆；
    * 当 bridge 不可用或尚未产出任何内容时，自动回退到直调 LLM，用户无感知。
    */
-  async *generateReportStream(sessionId: string, transcript: string, sceneTemplateId: string, profile?: string): AsyncGenerator<string> {
+  async *generateReportStream(sessionId: string, transcript: string, sceneTemplateId: string, profile?: string): AsyncGenerator<string | typeof REPORT_FALLBACK_MARKER> {
     const template = getSceneTemplateOrDefault(sceneTemplateId)
     const resolvedProfile = (profile || safeActiveProfileName() || 'default').trim() || 'default'
 
     let yieldedAny = false
+    let partialFromAgent = ''
+    let agentError: unknown = null
     try {
       for await (const chunk of this.generateReportViaAgent(sessionId, transcript, template, resolvedProfile)) {
         yieldedAny = true
+        partialFromAgent += chunk
         yield chunk
       }
       return
     } catch (err) {
-      // 已经向客户端流出过内容时不能再回退（避免重复输出），原样抛出。
-      if (yieldedAny) throw err
-      logger.warn('[meeting-assist] agent report path unavailable, falling back to direct LLM: %s', err instanceof Error ? err.message : String(err))
+      agentError = err
+      const reason = err instanceof Error ? err.message : String(err)
+      if (yieldedAny) {
+        // A+C 方案：agent 已流出部分内容但中途失败（典型：provider SSE 中断）。
+        // 之前的行为：直接抛错 → 用户看到错误报告 → 必须重录。
+        // 现在的行为：放弃已流出部分，强制回退到 direct LLM 重新生成整份报告。
+        // 风险：理论上"半截 agent 输出 + 完整 LLM 输出"会让 markdown 不一致，但
+        // （a）前端 UI 的 reportMarkdown.value 在收到 fallback 标记后会被清空，
+        // （b）用户拿到一份完整报告 > 用户看到错误。
+        // 见 streamReport + MeetingAgentPanel 对应处理。
+        logger.warn(
+          '[meeting-assist] agent path produced %d chars then failed mid-stream (%s); discarding partial and falling back to direct LLM',
+          partialFromAgent.length, reason,
+        )
+      } else {
+        logger.warn('[meeting-assist] agent report path unavailable, falling back to direct LLM: %s', reason)
+      }
     }
 
-    yield* this.generateReportViaDirectLLM(transcript, template, resolvedProfile)
+    // 这里有两种情形：
+    //   (1) agent 从未 yield（yieldedAny=false）→ 直接走 fallback
+    //   (2) agent yield 过部分内容又失败 → 仍走 fallback，但需要告诉前端清空旧内容
+    //
+    // 设计：在 yield 一个特殊 "fallback marker" 之后才让 LLM chunks 流出。
+    // 用一个不可能与 LLM 输出混淆的格式：流控制用单独的 sentinel 字段。
+    // 详见 streamReport controller，它会把 sentinel 翻译成 SSE 帧 { fallback: true }。
+    yield REPORT_FALLBACK_MARKER
+    try {
+      let fallbackYielded = 0
+      for await (const chunk of this.generateReportViaDirectLLM(transcript, template, resolvedProfile)) {
+        fallbackYielded++
+        yield chunk
+      }
+      if (fallbackYielded === 0) {
+        // fallback 路径也返回空内容（典型：provider 也抽风）。
+        // 抛出与 agent 同样的错误，让上游 catch 写出 error 帧。
+        throw agentError instanceof Error
+          ? agentError
+          : new Error('Direct LLM fallback produced no output')
+      }
+    } catch (fallbackErr) {
+      // fallback 也失败：合并两次错误信息，原始 agent 错误在前（更接近根因）。
+      const agentMsg = agentError instanceof Error ? agentError.message : String(agentError)
+      const fallbackMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)
+      const merged = new Error(`agent: ${agentMsg} | fallback: ${fallbackMsg}`)
+      merged.name = 'ReportStreamBothFailed'
+      throw merged
+    }
   }
 
   /**

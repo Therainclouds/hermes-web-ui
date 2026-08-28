@@ -2033,3 +2033,180 @@ load balancer 问题，本仓库无法从 server 侧解决。如果用户频繁�
 2. 在 Python OpenAI SDK 上调 `stream_options={"include_usage": true}` 让 SDK 知道这是正常流终止
 
 如需做这两项修复，告诉我，我再走一轮 server-side retry。
+
+---
+
+## 2026-08-28 · 会议报告「A+C」方案：agent 失败强制回退 + 错误细分归类
+
+### 背景
+
+2026-08-26 那一轮把 `Provider returned an empty stream with no finish_reason` 错误归一化到了友好的 i18n 文案，但**真正的生成失败问题没解决**——agent bridge 在 provider 流中断时仍会失败，用户必须手动重试。B 会议报告实测仍报"API call failed after 3 retries: Provider returned an empty stream with no finish_reason"。
+
+讨论三个方案：
+
+- **A**：agent 失败时**强制回退到直接 LLM**（即使 agent 已经流出过部分内容），UI 在切换瞬间清空已累积的 markdown，重新渲染 LLM 输出。代价：agent 部分输出被丢弃。
+- **B**：agent 失败时**保留已流出部分**，把后续部分用直接 LLM 续上。代价：风格不一致 + 用户看到的是"半截 agent + 半截 LLM"的拼接体。
+- **C**：服务端把原始错误字符串**细粒度归类**，前端按类别给用户精确文案 + 具体可执行建议。
+
+A+C 拍板。
+
+### 改动
+
+#### 1. `packages/server/src/services/meeting-asr/realtime-assist.ts`
+
+`generateReportStream` 整体重写（关键逻辑）：
+
+```ts
+async *generateReportStream(sessionId, transcript, sceneTemplateId, profile?) {
+  // ... resolve template + profile ...
+
+  let yieldedAny = false
+  let partialFromAgent = ''
+  let agentError: unknown = null
+  try {
+    for await (const chunk of this.generateReportViaAgent(...)) {
+      yieldedAny = true
+      partialFromAgent += chunk
+      yield chunk
+    }
+    return
+  } catch (err) {
+    agentError = err
+    // 之前契约：yieldedAny=true → 直接 throw（agent 半截丢给用户）
+    // 现在契约：无论是否 yield 过，都强制回退到 direct LLM
+    logger.warn('[meeting-assist] agent path %s; discarding partial and falling back',
+      yieldedAny ? `produced ${partialFromAgent.length} chars then failed mid-stream` : 'unavailable', err)
+  }
+
+  // sentinel：通知 controller "我已切换路径，请告诉前端清空已显示的内容"
+  yield REPORT_FALLBACK_MARKER
+
+  try {
+    let fallbackYielded = 0
+    for await (const chunk of this.generateReportViaDirectLLM(...)) {
+      fallbackYielded++
+      yield chunk
+    }
+    if (fallbackYielded === 0) throw agentError ?? new Error('Direct LLM fallback produced no output')
+  } catch (fallbackErr) {
+    // 两路都失败：合并错误信息，方便 UI 一次性展示根因
+    const merged = new Error(`agent: ${agentMsg} | fallback: ${fallbackMsg}`)
+    merged.name = 'ReportStreamBothFailed'
+    throw merged
+  }
+}
+```
+
+新增模块顶层常量 `REPORT_FALLBACK_MARKER = Symbol.for('meeting-assist.report.fallback')`——Symbol 类型是流控制信号，绝不会和 LLM 真实输出文本冲突（之前考虑用字符串 `__FALLBACK__` 但 LLM 可能恰好产出同样的字面量，风险不可接受）。
+
+#### 2. `packages/server/src/controllers/hermes/meeting-asr.ts`
+
+`streamReport` 在循环里识别 marker，翻译成 SSE 控制帧 `{ fallback: true }`：
+
+```ts
+for await (const chunk of stream) {
+  if (typeof chunk === 'symbol' && chunk === REPORT_FALLBACK_MARKER) {
+    passthrough.write(`data: ${JSON.stringify({ fallback: true })}\n\n`)
+    continue
+  }
+  passthrough.write(`data: ${JSON.stringify({ text: chunk })}\n\n`)
+}
+```
+
+#### 3. `packages/client/src/components/hermes/meeting/MeetingAgentPanel.vue`
+
+SSE 解析循环增加分支：`{ fallback: true }` 帧 → 清空 `reportMarkdown.value`，让后续 LLM chunks 写到空容器里。
+
+```ts
+if (chunk.fallback === true) {
+  console.info('[report] agent path fell back to direct LLM; discarding partial content')
+  reportMarkdown.value = ''
+  continue
+}
+```
+
+#### 4. `packages/client/src/components/hermes/meeting/report-error.ts`
+
+把分类器从 2 类扩展到 7 类（顺序自上而下，更具体的优先）：
+
+- `errorBothFailed` — `ReportStreamBothFailed` 合并错误（A+C 新增）
+- `errorAgentUnavailable` — `AgentBridge / bridge_pool / unix socket` 相关
+- `errorAgentFailed` — `AIAgent / tool_call / agent run failed` 相关
+- `errorLLMNetwork` — `ECONN* / ETIMEDOUT / fetch failed / HTTP 4xx-5xx`（之前被笼统归到 generic，现在区分出来）
+- `errorLLMStreamInterrupted` — `empty stream.*no finish_reason / stream ended unexpectedly / stream reset / stream closed`（替代旧的 `errorEmptyStream`）
+- `errorEmptyStream`（保留兼容别名，已不在主路径使用）
+- `errorGeneric` — 兜底
+
+每个正则都有意收紧边界（如 `LLM_NETWORK_PATTERN` 要求 `\b...\b` 包裹），避免误命中普通错误消息里的子串。
+
+#### 5. i18n
+
+新增 5 个 i18n key + 给 `zh.ts` / `zh-TW.ts` 补齐旧 key：
+
+- `meeting.reportPanel.errorBothFailed`
+- `meeting.reportPanel.errorAgentUnavailable`
+- `meeting.reportPanel.errorAgentFailed`
+- `meeting.reportPanel.errorLLMStreamInterrupted`
+- `meeting.reportPanel.errorLLMNetwork`
+
+`en.ts` 早已有 `errorEmptyStream` / `errorGeneric`，所以只补 5 个新增；`zh.ts` / `zh-TW.ts` 之前连旧 key 都没有，本轮顺手补全。
+
+`ar / de / es / fr / ja / ko / pt / ru` 8 个 locale 文件**根本没有 `meeting:` section**（只有 news 字符串里出现过"meetings"），属于 baseline i18n 覆盖缺口，不在本轮 scope 内。后续 i18n pass 单独处理。
+
+### 验证
+
+- `vue-tsc -b --noEmit`：**0 错误**
+- `npx tsc --noEmit -p packages/server/tsconfig.json`：**0 错误**（commit 后追加，修复一个 vue-tsc 没抓到但 ts-node 启动会爆的类型陷阱：见下面「补遗」一节）
+- `npx vitest run tests/server/meeting-report-fallback.test.ts tests/client/meeting-report-error.test.ts tests/client/chat-store-switch-error.test.ts`：**3 文件 / 20 测试全通过**
+  - `meeting-report-fallback.test.ts`：**8/8 通过**
+    - 翻转契约：「agent 中途失败 → 仍回退 + sentinel」✅
+    - 新增「两路都失败 → ReportStreamBothFailed 合并错误」✅
+    - 新增「fallback 0 chunks + 非流式 retry 也失败」→ 仍是 ReportStreamBothFailed，根因在前缀 ✅
+  - `meeting-report-error.test.ts`：**9/9 通过**（覆盖全部 7 个分类 + 过度匹配保护）
+  - `chat-store-switch-error.test.ts`：**3/3 通过**（上一轮会话产出，未受本轮影响）
+- 全量 vitest：516/4885 通过、150 失败、10 skipped
+  - **所有 150 个失败都在 server 测试**，根因是 `spawn fake-python ENOENT`（pre-existing baseline，测试环境没有 fake-python 桩二进制）；与 A+C 改动**无关**，本轮相关文件 0 失败。
+
+#### 补遗：ts-node 启动崩溃修复（commit `d0b2d22f`）
+
+本地 commit `378eb61d` 后启动 `npm run dev`，ts-node 在第一次加载 `realtime-assist.ts` 时报：
+
+```
+TSError: ⨯ Unable to compile TypeScript:
+packages/server/src/services/meeting-asr/realtime-assist.ts(468,11): error TS2322:
+  Type 'typeof import(".../realtime-assist").REPORT_FALLBACK_MARKER' is not assignable to type 'string'.
+```
+
+**根因**：`generateReportStream` 之前声明返回类型为 `AsyncGenerator<string>`，但 `yield REPORT_FALLBACK_MARKER` 在该声明下是类型错误。`vue-tsc -b` 没抓到是因为它走的是项目级 type-check 路径，TS 项目引用配置不覆盖 ts-node 启动 server 的 transpile-only 模式。
+
+**修复**：声明改为 `AsyncGenerator<string | typeof REPORT_FALLBACK_MARKER>`。`streamReport` controller 已经用 `typeof chunk === 'symbol'` 显式 narrow，调用方契约不变。
+
+**教训**：commit 含 server 代码改动时，必须跑 `npx tsc --noEmit -p packages/server/tsconfig.json`——这才是 ts-node 真正使用的 checker。`vue-tsc -b` 只覆盖 client + 项目级 type references。下次写验证清单时把这个加进去。
+
+通过 `--amend` 把修复合并进原 commit，hash 变更为 `d0b2d22f`，git history 里不留中间状态。
+
+### 改动文件
+
+- `packages/server/src/services/meeting-asr/realtime-assist.ts`（`generateReportStream` 重写 + 新增 `REPORT_FALLBACK_MARKER`）
+- `packages/server/src/controllers/hermes/meeting-asr.ts`（streamReport 翻译 marker）
+- `packages/client/src/components/hermes/meeting/MeetingAgentPanel.vue`（SSE 循环识别 `{ fallback: true }`）
+- `packages/client/src/components/hermes/meeting/report-error.ts`（分类器从 2 类扩到 7 类）
+- `packages/client/src/i18n/locales/en.ts`（+5 keys）
+- `packages/client/src/i18n/locales/zh.ts`（+7 keys，含旧 2 个）
+- `packages/client/src/i18n/locales/zh-TW.ts`（+7 keys，含旧 2 个）
+- `tests/server/meeting-report-fallback.test.ts`（契约翻转 + 新增 2 测试）
+- `tests/client/meeting-report-error.test.ts`（覆盖 7 个分类）
+
+### 设计权衡 / 已知限制
+
+- **方案 B（拼接）放弃原因**：半截 agent + 半截 LLM 的拼接体会出现"句子从一种风格突然切到另一种风格"，对结构化报告尤其致命（前半有"## 议程"小标题，后半没有）。A 方案虽然丢部分内容，但用户拿到一份连贯报告 > 半截拼接体。
+- **sentinel 用 Symbol 而非字符串**：之前的 `__FALLBACK__` 字符串方案有致命缺陷——LLM 在生成报告时理论上完全可能产出 `__FALLBACK__` 这串字符（虽然概率极低），导致前端误清空。Symbol 是 JS 运行时层面不可序列化的对象，String() 后是 `"Symbol(...)"`，永远不可能等于 LLM 的文本。
+- **i18n 8 语言缺口**：本轮只补了 zh / zh-TW / en。其他 8 个 locale 文件根本无 `meeting:` section，是更大的 i18n 覆盖工作，应单独议题。
+- **底层 provider 抽风问题本身没修**：错误归一化 + 强制回退让用户**不再看到原始 SDK 报错**且**更高概率拿到完整报告**，但如果 LLM 真的全挂了（两路都失败），用户看到的将是合并错误 `agent: X | fallback: Y`——前端用 `errorBothFailed` 文案明确说明"两侧都挂了请看 server logs"。
+
+### 用户感知预期
+
+- **场景 1**（典型）：agent 流中断 → 用户原本看到 `Provider returned an empty stream with no finish_reason` + 红色错误块；现在看到一次性连续输出的完整报告（中间有一闪而过的"sentinel"清空动作，肉眼几乎不可见）。
+- **场景 2**（agent bridge 完全不可用）：行为不变，仍走 fallback 直接 LLM 出报告。
+- **场景 3**（agent + LLM 都挂）：用户现在看到的是 `errorBothFailed` 文案，明确告知"两侧都失败，请查 server logs"，比之前的 `errorGeneric` 更具体。
+- **场景 4**（纯网络问题）：用户现在看到 `errorLLMNetwork` 文案，提示"检查到提供商的连通性"，比之前的 generic 更可操作。
