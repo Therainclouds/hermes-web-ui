@@ -1,4 +1,6 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { mkdir, readFile, rm, writeFile } from 'fs/promises'
+import { dirname, join } from 'path'
 
 // 用 vi.hoisted 保证 mock 在 vi.mock 工厂被提升后仍可引用。
 const mocks = vi.hoisted(() => ({
@@ -17,6 +19,43 @@ vi.mock('../../packages/server/src/services/hermes/agent-bridge/client', () => (
 vi.mock('../../packages/server/src/services/meeting-asr/skill-resolver', () => ({
   prepareAnalysisSkillSection: vi.fn().mockResolvedValue(''),
 }))
+
+// loadLLMConfig 会读 <cwd>/data/meeting-asr/config.json。历史上仓库里恰好
+// 提交过带真实 key 的该文件，测试隐式依赖它；设备侧清理密钥后此依赖断裂。
+// 现在测试自给自足：写一个假 key 的配置，结束后恢复原状（密钥永不入库）。
+const RUNTIME_CONFIG = join(process.cwd(), 'data', 'meeting-asr', 'config.json')
+let originalConfig: string | null = null
+
+beforeAll(async () => {
+  try {
+    originalConfig = await readFile(RUNTIME_CONFIG, 'utf-8')
+  } catch {
+    originalConfig = null
+  }
+  await mkdir(dirname(RUNTIME_CONFIG), { recursive: true })
+  await writeFile(
+    RUNTIME_CONFIG,
+    JSON.stringify({ llm: { api_key: 'sk-test-fallback', base_url: 'https://mock.local/v1', model: 'test-model' } }),
+    'utf-8',
+  )
+})
+
+afterEach(async () => {
+  // 每个用例后恢复假配置（部分用例可能触发对文件系统的意外写路径）
+  await writeFile(
+    RUNTIME_CONFIG,
+    JSON.stringify({ llm: { api_key: 'sk-test-fallback', base_url: 'https://mock.local/v1', model: 'test-model' } }),
+    'utf-8',
+  ).catch(() => {})
+})
+
+afterAll(async () => {
+  if (originalConfig === null) {
+    await rm(RUNTIME_CONFIG, { force: true })
+  } else {
+    await writeFile(RUNTIME_CONFIG, originalConfig, 'utf-8')
+  }
+})
 
 function wireBridge(): void {
   mocks.AgentBridgeClientMock.mockImplementation(() => ({
