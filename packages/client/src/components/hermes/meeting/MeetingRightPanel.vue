@@ -1,13 +1,15 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 /**
  * Right panel shell for the meeting view. Owns the outer chrome (aside,
  * resize handle, header with title + close button, scrollable inner area)
- * and exposes three mutually-exclusive slots for the content modes:
+ * and exposes four mutually-exclusive slots for the content modes:
  *
- *   #analysis  - rendered when !showAgentPanel && !isSpeechScene
+ *   #analysis  - rendered when !showAgentPanel && !isSpeechScene && !showRealtimeDialog
  *   #agent     - rendered when showAgentPanel (Agent realtime assist)
+ *   #realtime  - rendered when showRealtimeDialog (Omni Realtime dialog)
  *   #speech    - rendered when isSpeechScene (SpeechEvaluationPanel)
  *
  * The toolbar above the content (analysis trigger / report buttons /
@@ -17,16 +19,18 @@ import { useI18n } from 'vue-i18n'
  * passes a `resizeStyle` + pointerdown handler through props.
  *
  * Modes are derived in the parent and passed as booleans, not computed
- * here, so the dispatch order (speech > agent > analysis) stays explicit
- * and matches the original template.
+ * here, so the dispatch order (speech > agent > realtime > analysis) stays
+ * explicit and matches the original template.
  */
 
 const props = withDefaults(defineProps<{
   visible: boolean
   isSpeechScene: boolean
   showAgentPanel: boolean
+  showRealtimeDialog?: boolean
   resizeStyle?: Record<string, string>
 }>(), {
+  showRealtimeDialog: false,
   resizeStyle: () => ({}),
 })
 
@@ -36,6 +40,13 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+
+const panelTitle = computed(() => {
+  if (props.isSpeechScene) return t('meeting.scene.speech')
+  if (props.showAgentPanel) return t('meeting.agentChat')
+  if (props.showRealtimeDialog) return t('meeting.realtime.title')
+  return t('meeting.analysis')
+})
 </script>
 
 <template>
@@ -50,7 +61,7 @@ const { t } = useI18n()
     />
     <div class="right-panel-inner">
       <div class="right-panel-header">
-        <h2>{{ props.isSpeechScene ? t('meeting.scene.speech') : (props.showAgentPanel ? t('meeting.agentChat') : t('meeting.analysis')) }}</h2>
+        <h2>{{ panelTitle }}</h2>
         <div class="right-panel-actions">
           <!-- 关闭按钮：始终位于最右，确保不被遮挡 -->
           <button
@@ -67,16 +78,19 @@ const { t } = useI18n()
       </div>
 
       <!-- 分析工具栏：仅在 analysis 模式下显示（parent passes the wired buttons） -->
-      <div v-if="!props.showAgentPanel && !props.isSpeechScene" class="right-panel-toolbar">
+      <div v-if="!props.showAgentPanel && !props.isSpeechScene && !props.showRealtimeDialog" class="right-panel-toolbar">
         <slot name="toolbar" />
       </div>
 
-      <!-- 三类内容分发：speech > agent > analysis -->
+      <!-- 四类内容分发：speech > agent > realtime > analysis -->
       <template v-if="props.isSpeechScene">
         <slot name="speech" />
       </template>
       <template v-else-if="props.showAgentPanel">
         <slot name="agent" />
+      </template>
+      <template v-else-if="props.showRealtimeDialog">
+        <slot name="realtime" />
       </template>
       <template v-else>
         <slot name="analysis" />

@@ -92,7 +92,7 @@ describe('parseAnalysisRound', () => {
     expect(round!.timeNote).toHaveLength(200)
   })
 
-  it('keeps grammarIssues and goodPhrases with their caps', () => {
+  it('keeps grammarIssues and normalizes legacy goodPhrases into goldenQuotes with their caps', () => {
     const round = parseAnalysisRound(JSON.stringify({
       keyPoint: 'kp',
       goodPhrases: ['g'.repeat(200), 42],
@@ -101,7 +101,8 @@ describe('parseAnalysisRound', () => {
         { quote: 7 },
       ],
     }))
-    expect(round!.goodPhrases).toEqual(['g'.repeat(120)])
+    // 旧字段 goodPhrases 归一化为金句 goldenQuotes（字符串条目保留，非字符串丢弃）
+    expect(round!.goldenQuotes).toEqual([{ quote: 'g'.repeat(120) }])
     expect(round!.grammarIssues).toEqual([{ quote: 'q'.repeat(120), issue: 'i'.repeat(200) }])
   })
 

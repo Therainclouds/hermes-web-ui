@@ -89,7 +89,9 @@ export async function analyzeViaDirectLLM(
   }
 
   // 动态加载 profile 下的会议分析技能并追加到 system prompt。
-  const skillSection = await prepareAnalysisSkillSection(profile)
+  // 演讲评分场景使用自成一体的专业提示词（3+1 反馈 / 金句定义 / 赘语阈值 / 说人话鼓励式点评等），
+  // 不追加通用会议分析技能，避免其通用方法论稀释演讲点评风格。
+  const skillSection = template.id === 'speech' ? '' : await prepareAnalysisSkillSection(profile)
   let systemPrompt = skillSection
     ? `${template.systemPrompt}\n\n${skillSection}`
     : template.systemPrompt
@@ -177,7 +179,9 @@ export async function* streamDirectLLMReport(
   if (!config) throw new Error('LLM config not available')
 
   // 动态加载 profile 下的会议分析技能并追加到报告 system prompt。
-  const skillSection = await prepareAnalysisSkillSection(profile)
+  // 演讲评分场景不追加通用会议分析技能：报告要求是公众号风格、不是正式文档，
+  // 通用技能的会议纪要式结构会稀释该风格（见 analyzeViaDirectLLM 同款注释）。
+  const skillSection = template.id === 'speech' ? '' : await prepareAnalysisSkillSection(profile)
   const reportPrompt = skillSection
     ? `${template.reportPrompt}\n\n${skillSection}`
     : template.reportPrompt

@@ -5,8 +5,8 @@ import { getActiveProfileName } from '../hermes/hermes-profile'
 import { streamAgentReport } from './agent-bridge'
 import { analyzeViaDirectLLM, streamDirectLLMReport } from './direct-llm'
 import type { AnalysisRound, SpeechContext } from './report-parser'
-
-export type { AnalysisRound, SpeechContext } from './report-parser'
+export { parseAnalysisRound as parseAnalysisResponse } from './report-parser'
+export type { AnalysisRound, SpeechContext, GoldenQuote, GrammarIssue, FillerWord } from './report-parser'
 
 /** 服务端累积的演讲评价摘要：跨批次保留，注入后续提示词，供 AI 判断是否出现新的评价点。 */
 interface SpeechSummary {
@@ -228,8 +228,6 @@ class RealtimeAssistService {
 
     const resolvedProfile = (profile || safeActiveProfileName() || 'default').trim() || 'default'
 
-    // 实时提示始终走直调 LLM 快速路径（~3s），不走 Agent。
-    // Agent + MCP 工具查询仅用于报告生成（需要真实法条/数据核实的深度分析）。
     // 实时提示始终走直调 LLM 快速路径（~3s），不走 Agent。
     // Agent + MCP 工具查询仅用于报告生成（需要真实法条/数据核实的深度分析）。
     // 演讲评分场景：speechSummary（已累积亮点/改进点/主题/评分）随批次注入提示词。

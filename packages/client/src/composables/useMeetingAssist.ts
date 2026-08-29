@@ -2,6 +2,26 @@ import { ref, onUnmounted } from 'vue'
 import { io, type Socket } from 'socket.io-client'
 import { getApiKey, getBaseUrlValue } from '@/api/client'
 
+export interface FillerWord {
+  word: string
+  count: number
+  /** 说话人（转写带 [姓名] 标注时尽量带上，做到按发言人区分） */
+  speaker?: string
+}
+
+export interface GoldenQuote {
+  /** 金句原文（定义：有观点、有感染力、能让人记住、可单独引用的一句话） */
+  quote: string
+  speaker?: string
+  reason?: string
+}
+
+export interface GrammarIssue {
+  quote: string
+  issue: string
+  speaker?: string
+}
+
 export interface AnalysisRound {
   id: string
   context: string
@@ -10,9 +30,9 @@ export interface AnalysisRound {
   analysis: string
   timestamp: number
   // 演讲评分场景（Toastmasters 风格）附加字段
-  fillerWords?: Array<{ word: string; count: number }>
-  goodPhrases?: string[]
-  grammarIssues?: Array<{ quote: string; issue: string }>
+  fillerWords?: FillerWord[]
+  goldenQuotes?: GoldenQuote[]
+  grammarIssues?: GrammarIssue[]
   wotdUsed?: boolean
   score?: Record<string, number>
   timeNote?: string

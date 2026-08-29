@@ -11,6 +11,7 @@ import MeetingTopBar from '@/components/hermes/meeting/MeetingTopBar.vue'
 const baseProps = {
   sidebarExpanded: true,
   showAgentPanel: false,
+  showRealtimeDialog: false,
   useDiarize: false,
   saveMode: false,
   speakerCount: 0,

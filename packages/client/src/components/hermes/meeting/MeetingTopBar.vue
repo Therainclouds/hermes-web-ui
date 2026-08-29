@@ -20,6 +20,7 @@ interface SpeakerCountOption {
 const props = defineProps<{
   sidebarExpanded: boolean
   showAgentPanel: boolean
+  showRealtimeDialog: boolean
   useDiarize: boolean
   saveMode: boolean
   speakerCount: number
@@ -32,6 +33,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'toggle-sidebar'): void
   (e: 'toggle-agent-panel'): void
+  (e: 'toggle-realtime-dialog'): void
   (e: 'toggle-diarize'): void
   (e: 'toggle-save-mode'): void
   (e: 'update:speakerCount', value: number): void
@@ -82,6 +84,27 @@ function onSpeakerCountUpdate(value: number | null) {
           </NButton>
         </template>
         {{ t('meeting.showAgentChat') }}
+      </NTooltip>
+
+      <!-- 实时对话 (Qwen Omni Realtime) -->
+      <NTooltip trigger="hover">
+        <template #trigger>
+          <NButton
+            size="small"
+            :type="props.showRealtimeDialog ? 'primary' : 'default'"
+            @click="emit('toggle-realtime-dialog')"
+          >
+            <template #icon>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+                <path d="M21 19a2 2 0 0 1-2 2h-1v-6h1a2 2 0 0 1 2 2z" />
+                <path d="M3 19a2 2 0 0 0 2 2h1v-6H5a2 2 0 0 0-2 2z" />
+              </svg>
+            </template>
+            {{ t('meeting.realtime.tabLabel') }}
+          </NButton>
+        </template>
+        {{ t('meeting.realtime.tabTooltip') }}
       </NTooltip>
 
       <template v-if="!props.hideSpeakerDiarization">

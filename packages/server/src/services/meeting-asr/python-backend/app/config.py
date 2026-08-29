@@ -87,6 +87,25 @@ class Settings:
         "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
     )
     paraformer_model: str = os.environ.get("PARAFORMER_MODEL", "paraformer-realtime-v2")
+    # Omni-Realtime (multimodal conversation model, e.g.
+    # `qwen3.5-omni-flash-realtime`). Reuses the same DASHSCOPE_API_KEY as the
+    # ASR service — we never expose a per-session key from the client.
+    omni_realtime_ws_url: str = os.environ.get(
+        "OMNI_REALTIME_WS_URL",
+        "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
+    )
+    omni_realtime_model: str = os.environ.get(
+        "OMNI_REALTIME_MODEL",
+        "qwen3.5-omni-flash-realtime",
+    )
+    omni_realtime_voice: str = os.environ.get(
+        "OMNI_REALTIME_VOICE",
+        "Cherry",
+    )
+    omni_realtime_instructions: str = os.environ.get(
+        "OMNI_REALTIME_INSTRUCTIONS",
+        "",
+    )
     paraformer_format: str = os.environ.get("PARAFORMER_FORMAT", "pcm")
     paraformer_sample_rate: int = int(os.environ.get("PARAFORMER_SAMPLE_RATE", "16000"))
     paraformer_semantic_punctuation: bool = os.environ.get(

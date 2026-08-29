@@ -1,5 +1,37 @@
 # Work Log
 
+## 2026-08-28 深夜续 · 实时对话接入会议上下文 + 演讲评分逐字稿下载
+
+按用户需求更新实时对话（RealtimeDialogPanel）：
+
+- **会议上下文注入**：在对应会议下开启实时对话时，MeetingView 计算
+  `realtimeMeetingContext`（会议标题 / 开始时间 / 发言人 / 带时间戳逐字稿，最近 60
+  句截断避免超长），经 `meeting-context` prop 传给面板；开启会话时拼进
+  instructions 注入 DashScope system prompt —— AI 能根据"现在正在开的会"回答
+  （音频即现有按住说话实时采集，字幕即逐字稿上下文）。面板在未启动时显示
+  "已载入当前会议上下文（含逐字稿）"提示。
+- **下载演讲评分逐字稿按钮**：SpeechEvaluationPanel 报告区新增「下载演讲评分
+  逐字稿」按钮，复用 `buildTranscriptWithEval()`（逐字稿 + 计时/发言人用时/串场/
+  赘语/金句/语法/肢体/亮点/评分等评估数据）导出为 `.txt`。
+- i18n：zh/en/zh-TW 新增 `realtime.contextLoaded` + `speechEval.downloadVerbatim`。
+- 验证：`vue-tsc -b` 零错误；`npm run build` 全链路通过；守卫测试 17 个全绿
+  （omni-realtime-wiring 14 + speech-eval-verbatim-download 3）；全量 vitest
+  45 failed 与基线同集合（0 新增回归）；真实 DashScope key 冒烟验证**带会议上下文
+  instructions** 握手成功（ready 事件）。
+- 备注：测试运行期间 meeting-asr 服务把源码树 venv 迁至 `data/meeting-asr/.venv`
+  （v0.7.16 数据目录迁移语义，预期行为）。
+
+## 2026-08-28 深夜 · 合并对齐收尾：全链路验证 + 实时对话冒烟验证 + 密钥清理
+
+承接 `fcde4264`「merge: origin/main → meeting/v0.73」后的工作区合并对齐：
+
+- 工作区与 origin/main 对齐（chat store 拆分 chat-core/messages/queue/…、MeetingView 模块化、realtime-assist 拆 report-parser/agent-bridge/direct-llm、diarize 分层），其上嫁接实时对话面板（`RealtimeDialogPanel` + `useOmniRealtime` + `omni_realtime_proxy`）。
+- 验证：`vue-tsc -b` + server `tsc --noEmit` 零错误；`npm run build` 全链路通过（含 python 打包）；`omni-realtime-wiring`（13）+ python proxy 单测（19）全绿；全量 vitest 45 failed 与 origin/main 同集合（hermes-schemas / update-controller / coding-agents-launch / rtl-logical-css / ekko-display-name 等环境 flake，抽查逐文件核对均与本次改动无关）。
+- **实时对话链路冒烟验证（真实 DashScope key）**：WS → FastAPI `/ws/omni-realtime` → `OmniRealtimeProxy` → DashScope `qwen3.5-omni-flash-realtime` 握手成功，收到 `ready` 事件（session_id 正常返回）。
+- 修复 vue-tsc 6 处类型错误：`isPushing` 补进 composable 导出、`Float32Array<ArrayBuffer>` 泛型（`.subarray`→`.slice`、`ws.send` 显式 cast）、NSelect `SelectOption` 类型。
+- 安全：`data/meeting-asr/config.json`（含 DashScope key）移出 git 跟踪并加入 .gitignore；该 key 此前已存在于历史提交（`288919b3`/`8ec92110`，origin/main 已有），**建议轮换**。
+
+
 ## 2026-08-28 · 会议模块模块化落地（审计 7 项任务全部完成，0 行为变更 0 回归）
 
 ### 背景

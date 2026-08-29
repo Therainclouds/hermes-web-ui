@@ -1,5 +1,33 @@
 import { logger } from '../logger'
 
+/** 演讲场景中的填充词/赘语（尽量带 speaker，便于按发言人区分）。 */
+export interface FillerWord {
+  word: string
+  count: number
+  /** 说话人（转写带 [姓名] 标注时尽量带上，做到按发言人区分） */
+  speaker?: string
+}
+
+/**
+ * 金句——有观点、有感染力、能让人记住、可单独引用的一句话。
+ * （替代早期 goodPhrases 字段，保留归一化兼容。）
+ */
+export interface GoldenQuote {
+  /** 金句原文 */
+  quote: string
+  /** 说话人 */
+  speaker?: string
+  /** 入选理由（一句话即可） */
+  reason?: string
+}
+
+/** 演讲场景中的语法/用词问题（带说话人，便于按发言人区分）。 */
+export interface GrammarIssue {
+  quote: string
+  issue: string
+  speaker?: string
+}
+
 export interface AnalysisRound {
   id: string
   context: string
@@ -8,16 +36,17 @@ export interface AnalysisRound {
   analysis: string
   timestamp: number
   // 演讲评分场景（Toastmasters 风格）附加字段
-  fillerWords?: Array<{ word: string; count: number }>
-  goodPhrases?: string[]
-  grammarIssues?: Array<{ quote: string; issue: string }>
+  fillerWords?: FillerWord[]
+  /** 金句（替代早期 goodPhrases；归一化时仍兼容旧字段）。 */
+  goldenQuotes?: GoldenQuote[]
+  grammarIssues?: GrammarIssue[]
   wotdUsed?: boolean
   score?: Record<string, number>
   timeNote?: string
   // 增量评价模式：AI 判断本段是否出现新的评价点
   hasNewPoint?: boolean
-  highlights?: string[]       // 新增亮点（仅 hasNewPoint 时可能非空）
-  improvements?: string[]     // 新增可提升的点（仅 hasNewPoint 时可能非空）
+  highlights?: string[]       // 新增亮点（仅 hasNewPoint 时可能非空；最多 3 条）
+  improvements?: string[]     // 新增可提升的点（最多 1 条：最重要且可落地）
   topics?: string[]           // 新增主题（仅 hasNewPoint 时可能非空）
 }
 
@@ -33,10 +62,39 @@ export interface SpeechContext {
 }
 
 /**
+ * 归一化金句列表：兼容 string[] 与 {quote, speaker?, reason?}[] 两种模型输出。
+ * （合并自 realtime-assist.ts 的 normalizeGoldenQuotes。）
+ */
+export function normalizeGoldenQuotes(raw: unknown): GoldenQuote[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const out: GoldenQuote[] = []
+  for (const q of raw) {
+    if (typeof q === 'string') {
+      const s = q.trim()
+      if (s) out.push({ quote: s.slice(0, 120) })
+    } else if (q && typeof q === 'object' && typeof q.quote === 'string') {
+      const quote = q.quote.trim().slice(0, 120)
+      if (!quote) continue
+      out.push({
+        quote,
+        ...(typeof q.speaker === 'string' && q.speaker.trim() ? { speaker: q.speaker.trim().slice(0, 30) } : {}),
+        ...(typeof q.reason === 'string' && q.reason.trim() ? { reason: q.reason.trim().slice(0, 120) } : {}),
+      })
+    }
+    if (out.length >= 10) break
+  }
+  return out.length ? out : undefined
+}
+
+/**
  * 把 LLM 返回的原始文本解析成 AnalysisRound（拆分自 realtime-assist.ts，行为保持一致）。
  *
  * 兼容 markdown 代码围栏包裹的 JSON；对演讲评分场景的多余字段做长度/数值
  * 裁剪；任何解析失败都返回 null 并打 warn（不抛错——分析是尽力而为的旁路）。
+ *
+ * 归一化：
+ * - goldenQuotes 同时支持新字段与旧字段 goodPhrases（string[] 或对象数组）；
+ * - fillerWords / grammarIssues 上的 speaker 字段（按发言人区分）。
  */
 export function parseAnalysisRound(raw: string): AnalysisRound | null {
   try {
@@ -50,16 +108,23 @@ export function parseAnalysisRound(raw: string): AnalysisRound | null {
       ? parsed.fillerWords
           .filter((f: any) => f && typeof f.word === 'string' && Number.isFinite(Number(f.count)))
           .slice(0, 20)
-          .map((f: any) => ({ word: f.word.slice(0, 30), count: Math.max(0, Math.round(Number(f.count))) }))
+          .map((f: any) => ({
+            word: f.word.slice(0, 30),
+            count: Math.max(0, Math.round(Number(f.count))),
+            ...(typeof f.speaker === 'string' && f.speaker.trim() ? { speaker: f.speaker.trim().slice(0, 30) } : {}),
+          }))
       : undefined
-    const goodPhrases = Array.isArray(parsed.goodPhrases)
-      ? parsed.goodPhrases.filter((p: any) => typeof p === 'string').slice(0, 10).map((p: string) => p.slice(0, 120))
-      : undefined
+    // 金句：归一化（兼容旧字段 goodPhrases）
+    const goldenQuotes = normalizeGoldenQuotes(parsed.goldenQuotes ?? parsed.goodPhrases)
     const grammarIssues = Array.isArray(parsed.grammarIssues)
       ? parsed.grammarIssues
           .filter((g: any) => g && typeof g.quote === 'string')
           .slice(0, 10)
-          .map((g: any) => ({ quote: g.quote.slice(0, 120), issue: typeof g.issue === 'string' ? g.issue.slice(0, 200) : '' }))
+          .map((g: any) => ({
+            quote: g.quote.slice(0, 120),
+            issue: typeof g.issue === 'string' ? g.issue.slice(0, 200) : '',
+            ...(typeof g.speaker === 'string' && g.speaker.trim() ? { speaker: g.speaker.trim().slice(0, 30) } : {}),
+          }))
       : undefined
     const score = parsed.score && typeof parsed.score === 'object' && !Array.isArray(parsed.score)
       ? Object.fromEntries(
@@ -79,8 +144,8 @@ export function parseAnalysisRound(raw: string): AnalysisRound | null {
       ? parsed.topics.filter((tp: any) => typeof tp === 'string').slice(0, 8).map((tp: string) => tp.slice(0, 80))
       : undefined
 
-    // 演讲评分场景：只要有任何一项内容就保留该轮（评分/赘语/好词好句/新评价点也算）。
-    const hasSpeechContent = !!keyPoint || !!analysis || !!fillerWords?.length || !!goodPhrases?.length
+    // 演讲评分场景：只要有任何一项内容就保留该轮（评分/赘语/金句/语法/新评价点也算）。
+    const hasSpeechContent = !!keyPoint || !!analysis || !!fillerWords?.length || !!goldenQuotes?.length
       || !!grammarIssues?.length || !!score || !!highlights?.length || !!improvements?.length || !!topics?.length || hasNewPoint === true
     if (!parsed || !hasSpeechContent) {
       return null
@@ -95,7 +160,7 @@ export function parseAnalysisRound(raw: string): AnalysisRound | null {
       analysis: analysis.slice(0, 500),
       timestamp: now,
       ...(fillerWords ? { fillerWords } : {}),
-      ...(goodPhrases ? { goodPhrases } : {}),
+      ...(goldenQuotes ? { goldenQuotes } : {}),
       ...(grammarIssues ? { grammarIssues } : {}),
         ...(typeof parsed.wotdUsed === 'boolean' ? { wotdUsed: parsed.wotdUsed } : {}),
         ...(score ? { score } : {}),
