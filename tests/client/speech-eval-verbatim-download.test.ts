@@ -10,30 +10,42 @@ import { readFileSync } from 'node:fs'
  * wired to that builder and keeps its i18n key in every primary locale — a
  * future refactor that renames the builder or drops the button will fail CI
  * loudly instead of silently losing the export.
+ *
+ * v0.8 场景定制化（S4）：builder 移入 useSpeechEvalReport.ts，按钮经
+ * SpeechEvalReportSection 组件渲染；面板保留事件转发。
  */
 
 const CLIENT_SRC = 'packages/client/src'
 
 const PANEL = `${CLIENT_SRC}/components/hermes/meeting/SpeechEvaluationPanel.vue`
+const REPORT_COMPOSABLE = `${CLIENT_SRC}/composables/useSpeechEvalReport.ts`
+const REPORT_SECTION = `${CLIENT_SRC}/components/hermes/meeting/speech/right-panel/SpeechEvalReportSection.vue`
 
 describe('speech evaluation verbatim-transcript download', () => {
-  it('SpeechEvaluationPanel builds the transcript-with-eval document', () => {
-    const source = readFileSync(PANEL, 'utf8')
+  it('useSpeechEvalReport builds the transcript-with-eval document', () => {
+    const source = readFileSync(REPORT_COMPOSABLE, 'utf8')
     // builder combines the meeting transcript with the evaluation block
     expect(source).toContain('buildTranscriptWithEval')
     expect(source).toContain('【演讲评估数据】')
-    expect(source).toContain('session.value?.sentences')
+    expect(source).toContain("session?.sentences")
   })
 
-  it('SpeechEvaluationPanel exposes a download-verbatim button', () => {
-    const source = readFileSync(PANEL, 'utf8')
+  it('the download-verbatim flow creates a .txt download', () => {
+    const source = readFileSync(REPORT_COMPOSABLE, 'utf8')
     // handler creates a Blob and triggers a .txt download
     expect(source).toContain('function downloadVerbatim()')
     expect(source).toContain("type: 'text/plain;charset=utf-8'")
     expect(source).toContain('_逐字稿.txt')
+  })
+
+  it('panel keeps the button wired through the report section', () => {
+    const panel = readFileSync(PANEL, 'utf8')
+    expect(panel).toContain('@download-verbatim="downloadVerbatim"')
+
+    const section = readFileSync(REPORT_SECTION, 'utf8')
     // button bound to the handler + i18n label
-    expect(source).toContain('@click="downloadVerbatim"')
-    expect(source).toContain("t('meeting.speechEval.downloadVerbatim')")
+    expect(section).toContain("@click=\"emit('download-verbatim')\"")
+    expect(section).toContain("t('meeting.speechEval.downloadVerbatim')")
   })
 
   it('primary locales declare the downloadVerbatim key in the speechEval block', () => {
