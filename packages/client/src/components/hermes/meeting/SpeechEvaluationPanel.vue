@@ -3,7 +3,7 @@ import { ref, computed, watch, onMounted, onUnmounted, defineAsyncComponent } fr
 import { useI18n } from 'vue-i18n'
 import { NButton, NInput, NInputNumber, NModal, NSpin, NTag } from 'naive-ui'
 import { useMeetingStore } from '@/stores/hermes/meeting'
-import type { SpeechEvalState, SpeechTimerRecord } from '@/stores/hermes/meeting'
+import type { SpeechEvalState } from '@/stores/hermes/meeting'
 import { useMeetingAssist, type GoldenQuote, type GrammarIssue } from '@/composables/useMeetingAssist'
 import { useSpeechTimer } from '@/composables/useSpeechTimer'
 import { useSpeechFillerCounter } from '@/composables/useSpeechFillerCounter'
@@ -70,22 +70,30 @@ function persist(patch: Partial<SpeechEvalState>) {
 }
 
 // ---------- 计时员 (Timer) ----------
-// 共享计时器（单例）：与左侧波形/转写区同步显示；面板层（环节记录/设置）经 deps 启用。
+// 共享计时器（单例）：与左侧波形/转写区同步显示；面板层（环节/串场记录、
+// 设置、语音提醒）经 deps 启用——timerMode/串场/TTS 已收编进 composable。
 const {
   timerRunning,
   timerRemainingMs,
+  timerMode,
   phase,
   display: timerDisplay,
   phaseLabel,
   timerLabel,
   timerRecords,
+  transitionRecords,
+  transitionTotalSec,
   fmtSec,
   setThresholds,
+  switchTimerMode,
   reset: resetTimer,
   toggle: toggleTimer,
-  // 注：recordSegment 不从这里解构——面板在下方定义本地覆盖版，
-  // 以支持"串场计时"标签分支与语音播报标志复位。
+  recordSegment,
   removeRecord,
+  voiceAlert,
+  toggleVoiceAlert,
+  cancelAnnouncement,
+  resetVoiceFlags,
   showSettings,
   settingsDuration,
   settingsYellow,
@@ -102,118 +110,6 @@ watch(() => ({
 }), (v) => {
   setThresholds({ durationSec: v.durationSec, yellowAtSec: v.yellowAtSec, redAtSec: v.redAtSec })
 }, { immediate: true })
-
-// ---------- 串场计时（主持人过渡/串场用时） ----------
-// 计时器同一份运行态：切换"演讲计时/串场计时"模式，记录时打上不同标签，
-// 报告里按标签汇总串场用时，让 AI 在时间把控评分中体现串场是否拖沓。
-const timerMode = ref<'segment' | 'transition'>('segment')
-
-const transitionRecords = computed(() =>
-  timerRecords.value.filter(r => r.label.includes(t('meeting.speechEval.transitionLabel'))),
-)
-const transitionTotalSec = computed(() => transitionRecords.value.reduce((a, r) => a + r.durationSec, 0))
-
-function transitionLabel(): string {
-  const n = transitionRecords.value.length + 1
-  return `${t('meeting.speechEval.transitionLabel')} ${n}`
-}
-
-function switchTimerMode(mode: 'segment' | 'transition') {
-  timerMode.value = mode
-  // 切换模式时若计时器已停，清零准备新一段计时
-  if (!timerRunning.value) {
-    resetVoiceFlags()
-    resetTimer()
-  }
-}
-
-// 本地 nextLabel：useSpeechTimer 内部有同名实现但未导出，这里为覆盖版 recordSegment 提供
-function nextLabel(): string {
-  const n = timerRecords.value.length + 1
-  return `${t('meeting.speechEval.segmentLabelPrefix')} ${n}`
-}
-
-// 覆盖 useSpeechTimer 提供的 recordSegment：增加 transition 标签分支
-function recordSegment() {
-  const durationSec = evalState.value.timerDurationSec - timerRemainingMs.value / 1000
-  const overtimeSec = Math.max(0, -timerRemainingMs.value / 1000)
-  const isTransition = timerMode.value === 'transition'
-  const record: SpeechTimerRecord = {
-    label: isTransition ? transitionLabel() : (timerLabel.value.trim() || nextLabel()),
-    durationSec,
-    overtimeSec,
-    timestamp: Date.now(),
-  }
-  persist({ timerRecords: [...evalState.value.timerRecords, record] })
-  timerLabel.value = ''
-  resetVoiceFlags()
-  resetTimer()
-}
-
-// ---------- 计时声音提醒（黄牌/红牌/时间到 语音播报） ----------
-
-const voiceAlert = computed(() => evalState.value.voiceAlert !== false)
-
-function toggleVoiceAlert() {
-  persist({ voiceAlert: !voiceAlert.value })
-}
-
-function cancelAnnouncement() {
-  try {
-    const synth = window.speechSynthesis
-    if (synth && typeof synth.cancel === 'function') synth.cancel()
-  } catch { /* ignore */ }
-}
-
-function speakAnnouncement(text: string) {
-  try {
-    const synth = window.speechSynthesis
-    if (!synth || typeof synth.speak !== 'function') return
-    synth.cancel()
-    const u = new SpeechSynthesisUtterance(text)
-    u.lang = 'zh-CN'
-    u.rate = 1.05
-    synth.speak(u)
-  } catch { /* 语音播报失败不影响主流程 */ }
-}
-
-let lastVoicePhase: 'green' | 'yellow' | 'red' | null = null
-let voiceWasOver = false
-
-function resetVoiceFlags() {
-  lastVoicePhase = null
-  voiceWasOver = false
-}
-
-// 红黄绿牌切换时语音提醒
-watch(phase, (p) => {
-  if (!timerRunning.value || !voiceAlert.value) return
-  if (lastVoicePhase === null) { lastVoicePhase = p; return }
-  if (p !== lastVoicePhase) {
-    lastVoicePhase = p
-    if (p === 'yellow') {
-      speakAnnouncement(`黄牌，还剩 ${Math.ceil(timerRemainingMs.value / 1000)} 秒`)
-    } else if (p === 'red') {
-      speakAnnouncement('红牌，请注意时间')
-    }
-  }
-})
-
-// 超时瞬间语音提醒
-watch(timerRemainingMs, (ms) => {
-  if (!timerRunning.value || !voiceAlert.value) return
-  if (ms <= 0 && !voiceWasOver) {
-    voiceWasOver = true
-    speakAnnouncement('时间到，请结束发言')
-  } else if (ms > 0) {
-    voiceWasOver = false
-  }
-})
-
-function handleResetTimer() {
-  resetVoiceFlags()
-  resetTimer()
-}
 
 // Toastmasters 常见环节预设（一键套用时长/黄牌/红牌）
 const SEGMENT_PRESETS = [
@@ -820,7 +716,7 @@ onUnmounted(() => {
         <NButton size="small" :type="timerRunning ? 'warning' : 'primary'" @click="toggleTimer">
           {{ timerRunning ? t('meeting.speechEval.pause') : t('meeting.speechEval.start') }}
         </NButton>
-        <NButton size="small" @click="handleResetTimer">{{ t('meeting.speechEval.reset') }}</NButton>
+        <NButton size="small" @click="resetTimer">{{ t('meeting.speechEval.reset') }}</NButton>
         <NButton size="small" :type="timerMode === 'segment' ? 'info' : 'default'" @click="switchTimerMode('segment')">
           {{ t('meeting.speechEval.segmentMode') }}
         </NButton>

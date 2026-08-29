@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import { useSpeechTimer, fmtSec } from '@/composables/useSpeechTimer'
 import type { SpeechEvalState } from '@/stores/hermes/meeting'
 
@@ -158,5 +158,94 @@ describe('useSpeechTimer（面板功能层，deps 启用）', () => {
     timer.openSettings()
     timer.saveSettings()
     expect(timer.showSettings.value).toBe(false)
+  })
+})
+
+describe('useSpeechTimer（计时模式 / 串场 / 语音提醒）', () => {
+  it('switchTimerMode switches mode and resets the ticker when stopped', () => {
+    const { evalState, persist } = makeEvalState()
+    const timer = useSpeechTimer({ evalState, persist })
+    timer.setThresholds({ durationSec: 60, yellowAtSec: 30, redAtSec: 10 })
+
+    timer.switchTimerMode('transition')
+    expect(timer.timerMode.value).toBe('transition')
+    // 已停表：切换时清零为满时长
+    expect(timer.timerRemainingMs.value).toBe(60_000)
+  })
+
+  it('records transition segments with auto transition labels', () => {
+    const { evalState, persist } = makeEvalState({ timerDurationSec: 60 })
+    const timer = useSpeechTimer({ evalState, persist })
+    timer.setThresholds({ durationSec: 60, yellowAtSec: 30, redAtSec: 10 })
+    timer.switchTimerMode('transition')
+    timer.timerRemainingMs.value = 50_000 // 已用 10 秒
+
+    timer.recordSegment()
+
+    const record = evalState.value.timerRecords[0]
+    expect(record.label).toBe('i18n:meeting.speechEval.transitionLabel 1')
+    expect(record.durationSec).toBeCloseTo(10, 5)
+  })
+
+  it('aggregates transition records separately from segment records', () => {
+    const { evalState } = makeEvalState()
+    evalState.value.timerRecords = [
+      { label: '段落 1', durationSec: 60, overtimeSec: 0, timestamp: 1 },
+      { label: 'i18n:meeting.speechEval.transitionLabel 1', durationSec: 15, overtimeSec: 0, timestamp: 2 },
+      { label: 'i18n:meeting.speechEval.transitionLabel 2', durationSec: 25, overtimeSec: 0, timestamp: 3 },
+    ]
+    const timer = useSpeechTimer({ evalState, persist: vi.fn() })
+    expect(timer.transitionRecords.value).toHaveLength(2)
+    expect(timer.transitionTotalSec.value).toBe(40)
+  })
+
+  it('toggles the voice alert through persist', () => {
+    const { persist } = makeEvalState({ voiceAlert: true })
+    const timer = useSpeechTimer({ evalState: makeEvalState({ voiceAlert: true }).evalState, persist })
+    expect(timer.voiceAlert.value).toBe(true)
+    timer.toggleVoiceAlert()
+    expect(persist).toHaveBeenCalledWith({ voiceAlert: false })
+  })
+
+  it('announces yellow card via TTS when phase changes while running', async () => {
+    const speak = vi.fn()
+    const cancel = vi.fn()
+    ;(window as any).speechSynthesis = { cancel, speak }
+    ;(window as any).SpeechSynthesisUtterance = class {
+      constructor(public text: string) {}
+      lang = 'zh-CN'
+      rate = 1
+    }
+
+    const { evalState, persist } = makeEvalState({ timerDurationSec: 60 })
+    const timer = useSpeechTimer({ evalState, persist })
+    timer.setThresholds({ durationSec: 60, yellowAtSec: 30, redAtSec: 10 })
+    timer.toggle()
+    // 既有语义：watch 首次触发只建立基线（green→yellow 不播报），
+    // 之后的相位变化才播报——先入黄牌区建基线，再进红牌区触发。
+    timer.timerRemainingMs.value = 20_000
+    await nextTick()
+    timer.timerRemainingMs.value = 5_000
+    await nextTick()
+
+    expect(speak).toHaveBeenCalled()
+    expect(speak.mock.calls.some(([u]) => String((u as any)?.text).includes('红牌'))).toBe(true)
+    delete (window as any).speechSynthesis
+  })
+
+  it('does not announce when no deps are provided (MeetingView usage)', async () => {
+    const speak = vi.fn()
+    ;(window as any).speechSynthesis = { cancel: vi.fn(), speak }
+    const { nextTick } = await import('vue')
+
+    const timer = useSpeechTimer()
+    timer.setThresholds({ durationSec: 60, yellowAtSec: 30, redAtSec: 10 })
+    timer.toggle()
+    timer.timerRemainingMs.value = 20_000
+    await nextTick()
+
+    expect(speak).not.toHaveBeenCalled()
+    timer.stop()
+    delete (window as any).speechSynthesis
   })
 })
