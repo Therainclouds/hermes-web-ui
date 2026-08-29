@@ -8,7 +8,8 @@ import { useMeetingAssist } from '@/composables/useMeetingAssist'
 import { useSpeechAiAggregation } from '@/composables/useSpeechAiAggregation'
 import { provideSpeechTimer } from './speech/speechTimerContext'
 import { useSpeechFillerCounter } from '@/composables/useSpeechFillerCounter'
-import { request, getApiKey } from '@/api/client'
+import { request } from '@/api/client'
+import { useSpeechEvalReport } from '@/composables/useSpeechEvalReport'
 import LiveScoreCard from './speech/right-panel/LiveScoreCard.vue'
 import SpeechEvalBlocks from './speech/right-panel/SpeechEvalBlocks.vue'
 import SpeechTimerCard from './speech/right-panel/SpeechTimerCard.vue'
@@ -257,153 +258,37 @@ function removeBodyNote(index: number) {
 }
 
 
-// ---------- 评估报告 ----------
-
-const isGeneratingReport = ref(false)
-const reportMarkdown = ref('')
-const reportError = ref<string | null>(null)
-
-function buildTranscriptWithEval(): string {
-  const sentences = session.value?.sentences || []
-  const lines = sentences.map(s => `${s.speaker ? `[${s.speaker}] ` : ''}${s.text}`)
-  const st = evalState.value
-  const timerLines = (st.timerRecords || []).length
-    ? (st.timerRecords || []).map(r => `- ${r.label}：${timer.fmtSec(r.durationSec)}${r.overtimeSec > 0 ? `（超时 ${timer.fmtSec(r.overtimeSec)}）` : ''}`)
-    : ['（无记录）']
-  const fillerLines = Object.entries(fillerWords.value)
-    .filter(([, c]) => c > 0)
-    .map(([w, c]) => `- ${w}：${c} 次`)
-  const fillerBySpeakerLines = aiFillerBySpeaker.value.map(entry => {
-    const words = Object.entries(entry.totals).map(([w, c]) => `${w}×${c}`).join('、')
-    return `- ${entry.speaker}：${words || '（无）'}（共 ${entry.total} 次）`
-  })
-  const goldenLines = [
-    ...aiGoldenQuotes.value.map(q => `- ${q.quote}${q.speaker ? `（${q.speaker}）` : ''}${q.reason ? `：${q.reason}` : ''}`),
-    ...(st.goodPhrases || []).map(p => `- ${p}`),
-  ]
-  const grammarLines = [
-    ...aiGrammarIssues.value.map(g => `- ${g.quote}${g.speaker ? `（${g.speaker}）` : ''}：${g.issue}`),
-    ...(st.grammarNotes || []).map(n => `- ${n}`),
-  ]
-  const speakerLines = speakerDurations.value.map(d => `- ${d.speaker}：${timer.fmtSec(d.durationSec)}`)
-  const transitionLines = timer.transitionRecords.length
-    ? [
-        `- 串场 ${timer.transitionRecords.length} 次，共 ${timer.fmtSec(timer.transitionTotalSec)}`,
-        ...timer.transitionRecords.map(r => `- ${r.label}：${timer.fmtSec(r.durationSec)}`),
-      ]
-    : ['（无）']
-  const bodyLines = (st.bodyNotes || []).map(n => `- ${n}`)
-  const evalBlock = [
-    '【演讲评估数据】',
-    '## 计时员记录',
-    ...timerLines,
-    '## 发言人用时',
-    ...(speakerLines.length ? speakerLines : ['（无）']),
-    '## 串场用时',
-    ...transitionLines,
-    '## 赘语统计',
-    ...(fillerLines.length ? fillerLines : ['（无赘语）']),
-    '## 赘语统计（按发言人）',
-    ...(fillerBySpeakerLines.length ? fillerBySpeakerLines : ['（无）']),
-    `## 每日一词：${st.wordOfTheDay || '（未设置）'}（AI 检测使用 ${aiWotdUsedCount.value} 次${st.wotdUsedCount ? `，手动标记 ${st.wotdUsedCount} 次` : ''}）`,
-    '## 金句',
-    ...(goldenLines.length ? goldenLines : ['（无）']),
-    '## 语法错误',
-    ...(grammarLines.length ? grammarLines : ['（无）']),
-    '## 肢体语言观察',
-    ...(bodyLines.length ? bodyLines : ['（无）']),
-    '## 亮点',
-    ...(highlights.value.length ? highlights.value.map(h => `- ${h}`) : ['（无）']),
-    '## 可提升的点',
-    ...(improvements.value.length ? improvements.value.map(i => `- ${i}`) : ['（无）']),
-    '## 主题',
-    ...(topics.value.length ? topics.value.map(tp => `- ${tp}`) : ['（无）']),
-    ...(liveScore.value ? [`## 实时评分（最终）：${JSON.stringify(liveScore.value)}`] : []),
-  ]
-  return [...lines, '', ...evalBlock].join('\n')
-}
-
-/** 下载演讲评分逐字稿：逐字稿 + 评估数据（计时/赘语/金句/语法/肢体/评分）落盘为 .txt。 */
-function downloadVerbatim() {
-  const transcript = buildTranscriptWithEval()
-  if (!transcript.trim()) return
-  const header = [
-    `演讲评分逐字稿：${session.value?.title || ''}`,
-    `导出时间：${new Date().toLocaleString('zh-CN')}`,
-    '',
-  ].join('\n')
-  const blob = new Blob([header + transcript], { type: 'text/plain;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `${session.value?.title || '演讲评分'}_逐字稿.txt`
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
-}
-
-async function generateReport() {
-  if (isGeneratingReport.value) return
-  const transcript = buildTranscriptWithEval()
-  if (!transcript.trim()) return
-
-  isGeneratingReport.value = true
-  reportError.value = null
-  reportMarkdown.value = ''
-
-  try {
-    const response = await fetch('/api/meeting-asr/report/stream', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(getApiKey() ? { Authorization: `Bearer ${getApiKey()}` } : {}),
-      },
-      body: JSON.stringify({
-        sessionId: props.sessionId,
-        sceneTemplate: 'speech',
-        transcript,
-        profile: session.value?.hermesProfile || undefined,
-      }),
-    })
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-
-    const reader = response.body?.getReader()
-    if (!reader) throw new Error('No response body')
-
-    const decoder = new TextDecoder()
-    let buffer = ''
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-      for (const line of lines) {
-        const trimmed = line.trim()
-        if (!trimmed.startsWith('data: ')) continue
-        const payload = trimmed.slice(6)
-        if (payload === '[DONE]') break
-        try {
-          const chunk = JSON.parse(payload)
-          if (chunk.error) throw new Error(chunk.error)
-          if (chunk.text) reportMarkdown.value += chunk.text
-        } catch (e) {
-          if (e instanceof SyntaxError) continue
-          throw e
-        }
-      }
-    }
-    emit('report-generated', reportMarkdown.value)
-  } catch (err) {
-    reportError.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    isGeneratingReport.value = false
-  }
-}
-
 // 导出报告：拆分按钮 + 下拉菜单，默认 Word（极致样式），可切 HTML / Markdown。
 const exportTitle = computed(() => session.value?.title || t('meeting.reportPanel.title'))
+
+// ---------- 评估报告（抽至 useSpeechEvalReport；S4 行为改进：走 useReportStream） ----------
+const {
+  reportMarkdown,
+  isGeneratingReport,
+  reportError,
+  downloadVerbatim,
+  generateReport,
+} = useSpeechEvalReport({
+  getSessionId: () => props.sessionId,
+  getSession: () => session.value,
+  evalState: () => evalState.value,
+  transcriptData: {
+    fillerWords: () => fillerWords.value,
+    aiFillerBySpeaker: () => aiFillerBySpeaker.value,
+    aiGoldenQuotes: () => aiGoldenQuotes.value,
+    aiGrammarIssues: () => aiGrammarIssues.value,
+    aiWotdUsedCount: () => aiWotdUsedCount.value,
+    highlights: () => highlights.value,
+    improvements: () => improvements.value,
+    topics: () => topics.value,
+    liveScore: () => liveScore.value,
+    speakerDurations: () => speakerDurations.value,
+    transitionRecords: () => timer.transitionRecords,
+    transitionTotalSec: () => timer.transitionTotalSec,
+    fmtSec: timer.fmtSec,
+  },
+  onReportGenerated: (markdown) => emit('report-generated', markdown),
+})
 
 // 切换会话时重置
 watch(() => props.sessionId, () => {
