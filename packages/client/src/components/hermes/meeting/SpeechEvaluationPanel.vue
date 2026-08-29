@@ -7,6 +7,7 @@ import type { SpeechEvalState, SpeechTimerRecord } from '@/stores/hermes/meeting
 import { useMeetingAssist, type GoldenQuote, type GrammarIssue } from '@/composables/useMeetingAssist'
 import { useSpeechTimer } from '@/composables/useSpeechTimer'
 import { useSpeechFillerCounter } from '@/composables/useSpeechFillerCounter'
+import { buildSegmentRanges, isTransitionRecord, resolveSegmentSpeaker, splitSegmentLabel } from '@/utils/speech-segments'
 import { request, getApiKey } from '@/api/client'
 import MeetingExportDropdown from './MeetingExportDropdown.vue'
 
@@ -80,6 +81,7 @@ const {
   timerLabel,
   timerRecords,
   fmtSec,
+  getSegmentStart,
   setThresholds,
   reset: resetTimer,
   toggle: toggleTimer,
@@ -133,16 +135,21 @@ function nextLabel(): string {
   return `${t('meeting.speechEval.segmentLabelPrefix')} ${n}`
 }
 
-// 覆盖 useSpeechTimer 提供的 recordSegment：增加 transition 标签分支
+// 覆盖 useSpeechTimer 提供的 recordSegment：增加 transition 标签分支。
+// 用时 = 上一条记录时刻（首段为开始走表时刻）→ 本次点击 的墙钟区间，
+// 段与段无缝衔接，后续赘语/金句/语法都按这些区间归属演讲者。
 function recordSegment() {
-  const durationSec = evalState.value.timerDurationSec - timerRemainingMs.value / 1000
-  const overtimeSec = Math.max(0, -timerRemainingMs.value / 1000)
+  const now = Date.now()
+  const startTs = getSegmentStart()
+  const durationSec = Math.max(0, (now - startTs) / 1000)
   const isTransition = timerMode.value === 'transition'
   const record: SpeechTimerRecord = {
     label: isTransition ? transitionLabel() : (timerLabel.value.trim() || nextLabel()),
     durationSec,
-    overtimeSec,
-    timestamp: Date.now(),
+    overtimeSec: isTransition ? 0 : Math.max(0, durationSec - evalState.value.timerDurationSec),
+    timestamp: now,
+    startTs,
+    kind: isTransition ? 'transition' : 'segment',
   }
   persist({ timerRecords: [...evalState.value.timerRecords, record] })
   timerLabel.value = ''
@@ -241,6 +248,11 @@ function buildSpeechContext() {
     yellowAtSec: evalState.value.yellowAtSec,
     redAtSec: evalState.value.redAtSec,
     timerRecords: evalState.value.timerRecords || [],
+    // 环节-演讲者时间线：服务端据此把转写句子的声纹名标注为真实姓名，
+    // AI 的赘语/金句/语法归属与分析点评都会引用环节/演讲者名称。
+    speakerTimeline: buildSegmentRanges(evalState.value.timerRecords || [])
+      .filter(r => r.speaker)
+      .map(r => ({ speaker: r.speaker, segment: r.segment, startMs: r.startMs, endMs: r.endMs })),
     // 倒计时状态始终上报（含暂停/超时），让 AI 的评分以实际时间情况为依据
     currentRemainingSec: Math.max(0, timerRemainingMs.value / 1000),
     currentPhase: phase.value,
@@ -321,13 +333,17 @@ const {
   addFiller,
 } = useSpeechFillerCounter({ evalState, persist, rounds })
 
-// 赘语按发言人区分（AI 尽量带 speaker，便于精准汇报与展示；useSpeechFillerCounter 未提供此聚合）
+// 环节时间区间：由用时记录展开（上一条记录 → 本次点击），作为演讲者归属的依据
+const segmentRanges = computed(() => buildSegmentRanges(evalState.value.timerRecords || []))
+
+// 赘语按发言人区分：优先按 AI 轮次时间戳落入的环节区间归属（标签"/"后的演讲者名），
+// 区间未命中时回退 AI 自带的 speaker 字段（声纹分离名）
 const aiFillerBySpeaker = computed<Array<{ speaker: string; totals: Record<string, number>; total: number }>>(() => {
   const map = new Map<string, { totals: Record<string, number>; total: number }>()
   for (const r of rounds.value) {
     for (const f of r.fillerWords || []) {
       if (!f?.word) continue
-      const sp = (f.speaker || '').trim() || t('meeting.speechEval.unknownSpeaker')
+      const sp = resolveSegmentSpeaker(segmentRanges.value, r.timestamp, f.speaker) || t('meeting.speechEval.unknownSpeaker')
       let entry = map.get(sp)
       if (!entry) { entry = { totals: {}, total: 0 }; map.set(sp, entry) }
       entry.totals[f.word] = (entry.totals[f.word] || 0) + f.count
@@ -338,13 +354,17 @@ const aiFillerBySpeaker = computed<Array<{ speaker: string; totals: Record<strin
 })
 
 // 金句（定义：有观点、有感染力、能让人记住、可单独引用的一句话），按发言人区分
+// （演讲者名同样以环节区间归属优先）
 const aiGoldenQuotes = computed<GoldenQuote[]>(() => {
   const seen = new Set<string>()
   const out: GoldenQuote[] = []
   for (const r of rounds.value) {
     for (const q of r.goldenQuotes || []) {
       if (!q?.quote) continue
-      if (!seen.has(q.quote)) { seen.add(q.quote); out.push(q) }
+      if (!seen.has(q.quote)) {
+        seen.add(q.quote)
+        out.push({ ...q, speaker: resolveSegmentSpeaker(segmentRanges.value, r.timestamp, q.speaker) || undefined })
+      }
     }
   }
   return out
@@ -356,7 +376,10 @@ const aiGrammarIssues = computed<GrammarIssue[]>(() => {
   for (const r of rounds.value) {
     for (const g of r.grammarIssues || []) {
       const key = `${g.quote}|${g.issue}`
-      if (!seen.has(key)) { seen.add(key); out.push(g) }
+      if (!seen.has(key)) {
+        seen.add(key)
+        out.push({ ...g, speaker: resolveSegmentSpeaker(segmentRanges.value, r.timestamp, g.speaker) || undefined })
+      }
     }
   }
   return out
@@ -474,12 +497,32 @@ function removeBodyNote(index: number) {
   persist({ bodyNotes: next })
 }
 
-// ---------- 发言人用时（由转写时间戳估算，用于时间把控/串场分析） ----------
+// ---------- 发言人用时（优先按环节记录区间汇总，回退转写时间戳估算） ----------
 
 // 设备/系统播报不算发言人（"不是多一个设备官"）
 const DEVICE_SPEAKER_RE = /设备|系统|device|assistant|播报/i
 
-const speakerDurations = computed<Array<{ speaker: string; durationSec: number }>>(() => {
+// 发言人用时：优先按计时员环节记录汇总（标签"/"后的演讲者名，区间即发言时长），
+// 无人工记录时回退到转写时间戳估算
+const timerSpeakerDurations = computed<Array<{ speaker: string; durationSec: number }>>(() => {
+  const transitionPrefix = t('meeting.speechEval.transitionLabel')
+  const bySpeaker: Record<string, number> = {}
+  const order: string[] = []
+  for (const r of timerRecords.value) {
+    if (isTransitionRecord(r, transitionPrefix)) continue
+    const { speaker } = splitSegmentLabel(r.label)
+    // 无"/"的标签（如只写了名字）按整个标签作为演讲者
+    const sp = speaker || r.label.trim()
+    if (!sp) continue
+    if (!(sp in bySpeaker)) order.push(sp)
+    bySpeaker[sp] = (bySpeaker[sp] || 0) + Math.max(0, r.durationSec)
+  }
+  return order
+    .map(sp => ({ speaker: sp, durationSec: Math.round(bySpeaker[sp]) }))
+    .filter(d => d.durationSec > 0)
+})
+
+const transcriptSpeakerDurations = computed<Array<{ speaker: string; durationSec: number }>>(() => {
   const sentences = session.value?.sentences || []
   const bySpeaker: Record<string, number> = {}
   const order: string[] = []
@@ -504,6 +547,11 @@ const speakerDurations = computed<Array<{ speaker: string; durationSec: number }
     .filter(d => d.durationSec > 0)
 })
 
+const speakerDurations = computed<Array<{ speaker: string; durationSec: number }>>(() => {
+  const fromTimer = timerSpeakerDurations.value
+  return fromTimer.length ? fromTimer : transcriptSpeakerDurations.value
+})
+
 // ---------- 评估报告 ----------
 
 const isGeneratingReport = ref(false)
@@ -512,8 +560,19 @@ const reportError = ref<string | null>(null)
 
 function buildTranscriptWithEval(): string {
   const sentences = session.value?.sentences || []
-  const lines = sentences.map(s => `${s.speaker ? `[${s.speaker}] ` : ''}${s.text}`)
+  // 逐字稿行按环节-演讲者时间线标注真实姓名（回退声纹名），与报告数据一致
+  const lines = sentences.map(s => {
+    const name = resolveSegmentSpeaker(segmentRanges.value, s.timestamp, s.speaker || '')
+    const label = name || (s.speaker || '').trim()
+    return `${label ? `[${label}] ` : ''}${s.text}`
+  })
   const st = evalState.value
+  const timelineLines = segmentRanges.value
+    .filter(r => r.speaker)
+    .map(r => {
+      const name = r.segment ? `${r.segment}/${r.speaker}` : r.speaker
+      return `- ${name}：${new Date(r.startMs).toLocaleTimeString('zh-CN', { hour12: false })} - ${new Date(r.endMs).toLocaleTimeString('zh-CN', { hour12: false })}`
+    })
   const timerLines = (st.timerRecords || []).length
     ? (st.timerRecords || []).map(r => `- ${r.label}：${fmtSec(r.durationSec)}${r.overtimeSec > 0 ? `（超时 ${fmtSec(r.overtimeSec)}）` : ''}`)
     : ['（无记录）']
@@ -544,6 +603,8 @@ function buildTranscriptWithEval(): string {
     '【演讲评估数据】',
     '## 计时员记录',
     ...timerLines,
+    '## 环节与发言人时间线',
+    ...(timelineLines.length ? timelineLines : ['（无）']),
     '## 发言人用时',
     ...(speakerLines.length ? speakerLines : ['（无）']),
     '## 串场用时',
@@ -851,7 +912,7 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- 发言人用时（由转写时间戳估算，供时间把控/串场分析） -->
+      <!-- 发言人用时（优先按环节记录，回退转写时间戳估算） -->
       <div class="time-records">
         <div class="records-title">👥 {{ t('meeting.speechEval.speakerDuration') }}</div>
         <div v-if="speakerDurations.length === 0" class="empty-hint">{{ t('meeting.speechEval.emptySpeakerDurations') }}</div>
