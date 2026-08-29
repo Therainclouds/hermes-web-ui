@@ -1,16 +1,19 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted, defineAsyncComponent } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { NButton, NInput, NInputNumber, NModal, NSpin, NTag } from 'naive-ui'
+import { NButton, NInput, NSpin, NTag } from 'naive-ui'
 import { useMeetingStore } from '@/stores/hermes/meeting'
 import type { SpeechEvalState } from '@/stores/hermes/meeting'
-import { useMeetingAssist, type GoldenQuote, type GrammarIssue } from '@/composables/useMeetingAssist'
-import { useSpeechTimer } from '@/composables/useSpeechTimer'
+import { useMeetingAssist } from '@/composables/useMeetingAssist'
+import { useSpeechAiAggregation } from '@/composables/useSpeechAiAggregation'
+import { provideSpeechTimer } from './speech/speechTimerContext'
 import { useSpeechFillerCounter } from '@/composables/useSpeechFillerCounter'
 import { request, getApiKey } from '@/api/client'
-import MeetingExportDropdown from './MeetingExportDropdown.vue'
-
-const MarkdownRenderer = defineAsyncComponent(async () => (await import('@/components/hermes/chat/MarkdownRenderer.vue')).default)
+import LiveScoreCard from './speech/right-panel/LiveScoreCard.vue'
+import SpeechEvalBlocks from './speech/right-panel/SpeechEvalBlocks.vue'
+import SpeechTimerCard from './speech/right-panel/SpeechTimerCard.vue'
+import SpeechTimerSettingsDialog from './speech/right-panel/SpeechTimerSettingsDialog.vue'
+import SpeechEvalReportSection from './speech/right-panel/SpeechEvalReportSection.vue'
 
 const props = withDefaults(defineProps<{
   sessionId: string
@@ -72,35 +75,8 @@ function persist(patch: Partial<SpeechEvalState>) {
 // ---------- 计时员 (Timer) ----------
 // 共享计时器（单例）：与左侧波形/转写区同步显示；面板层（环节/串场记录、
 // 设置、语音提醒）经 deps 启用——timerMode/串场/TTS 已收编进 composable。
-const {
-  timerRunning,
-  timerRemainingMs,
-  timerMode,
-  phase,
-  display: timerDisplay,
-  phaseLabel,
-  timerLabel,
-  timerRecords,
-  transitionRecords,
-  transitionTotalSec,
-  fmtSec,
-  setThresholds,
-  switchTimerMode,
-  reset: resetTimer,
-  toggle: toggleTimer,
-  recordSegment,
-  removeRecord,
-  voiceAlert,
-  toggleVoiceAlert,
-  cancelAnnouncement,
-  resetVoiceFlags,
-  showSettings,
-  settingsDuration,
-  settingsYellow,
-  settingsRed,
-  openSettings,
-  saveSettings,
-} = useSpeechTimer({ evalState, persist })
+// 共享计时器唯一实例（reactive 化供子组件经上下文注入；面板自身经 timer.* 访问）
+const timer = provideSpeechTimer({ evalState, persist })
 
 // 阈值变更时同步共享计时器（时长/黄牌/红牌剩余秒数）
 watch(() => ({
@@ -108,25 +84,8 @@ watch(() => ({
   yellowAtSec: evalState.value.yellowAtSec,
   redAtSec: evalState.value.redAtSec,
 }), (v) => {
-  setThresholds({ durationSec: v.durationSec, yellowAtSec: v.yellowAtSec, redAtSec: v.redAtSec })
+  timer.setThresholds({ durationSec: v.durationSec, yellowAtSec: v.yellowAtSec, redAtSec: v.redAtSec })
 }, { immediate: true })
-
-// Toastmasters 常见环节预设（一键套用时长/黄牌/红牌）
-const SEGMENT_PRESETS = [
-  { key: 'tableTopics', durationSec: 120, yellowAtSec: 30, redAtSec: 10 },   // 即兴演讲 2 分钟
-  { key: 'prepared', durationSec: 420, yellowAtSec: 60, redAtSec: 15 },      // 备稿演讲 5-7 分钟（按 6 分钟黄牌）
-  { key: 'evaluation', durationSec: 180, yellowAtSec: 30, redAtSec: 10 },    // 评估 2-3 分钟
-  { key: 'iceBreaker', durationSec: 300, yellowAtSec: 45, redAtSec: 10 },    // 破冰演讲 4-6 分钟
-  { key: 'custom', durationSec: 180, yellowAtSec: 30, redAtSec: 10 },        // 自定义
-] as const
-
-function applyPreset(presetKey: string) {
-  const preset = SEGMENT_PRESETS.find(p => p.key === presetKey)
-  if (!preset) return
-  settingsDuration.value = preset.durationSec
-  settingsYellow.value = preset.yellowAtSec
-  settingsRed.value = preset.redAtSec
-}
 
 // ---------- 演讲上下文（注入 AI 提示词：计时/每日一词） ----------
 
@@ -138,8 +97,8 @@ function buildSpeechContext() {
     redAtSec: evalState.value.redAtSec,
     timerRecords: evalState.value.timerRecords || [],
     // 倒计时状态始终上报（含暂停/超时），让 AI 的评分以实际时间情况为依据
-    currentRemainingSec: Math.max(0, timerRemainingMs.value / 1000),
-    currentPhase: phase.value,
+    currentRemainingSec: Math.max(0, timer.timerRemainingMs / 1000),
+    currentPhase: timer.phase,
   }
 }
 
@@ -190,8 +149,8 @@ watch(() => props.isRecording, async (recording) => {
 
 // 录音开始时自动开始倒计时（仅当计时器尚未启动/处于满时长状态时）
 watch(() => props.isRecording, (recording) => {
-  if (recording && !timerRunning.value && timerRemainingMs.value === evalState.value.timerDurationSec * 1000) {
-    toggleTimer()
+  if (recording && !timer.timerRunning && timer.timerRemainingMs === evalState.value.timerDurationSec * 1000) {
+    timer.toggle()
   }
 })
 
@@ -217,95 +176,22 @@ const {
   addFiller,
 } = useSpeechFillerCounter({ evalState, persist, rounds })
 
-// 赘语按发言人区分（AI 尽量带 speaker，便于精准汇报与展示；useSpeechFillerCounter 未提供此聚合）
-const aiFillerBySpeaker = computed<Array<{ speaker: string; totals: Record<string, number>; total: number }>>(() => {
-  const map = new Map<string, { totals: Record<string, number>; total: number }>()
-  for (const r of rounds.value) {
-    for (const f of r.fillerWords || []) {
-      if (!f?.word) continue
-      const sp = (f.speaker || '').trim() || t('meeting.speechEval.unknownSpeaker')
-      let entry = map.get(sp)
-      if (!entry) { entry = { totals: {}, total: 0 }; map.set(sp, entry) }
-      entry.totals[f.word] = (entry.totals[f.word] || 0) + f.count
-      entry.total += f.count
-    }
-  }
-  return [...map.entries()].map(([speaker, v]) => ({ speaker, totals: v.totals, total: v.total }))
-})
+// ---------- AI 实时点评聚合（抽至 useSpeechAiAggregation：评分/增量评价/金句/发言人用时） ----------
+const {
+  aiFillerBySpeaker,
+  aiGoldenQuotes,
+  aiGrammarIssues,
+  aiWotdUsedCount,
+  newPointRounds,
+  liveScore,
+  scoreUpdatedAt,
+  highlights,
+  improvements,
+  topics,
+  speakerDurations,
+} = useSpeechAiAggregation({ rounds, session })
 
-// 金句（定义：有观点、有感染力、能让人记住、可单独引用的一句话），按发言人区分
-const aiGoldenQuotes = computed<GoldenQuote[]>(() => {
-  const seen = new Set<string>()
-  const out: GoldenQuote[] = []
-  for (const r of rounds.value) {
-    for (const q of r.goldenQuotes || []) {
-      if (!q?.quote) continue
-      if (!seen.has(q.quote)) { seen.add(q.quote); out.push(q) }
-    }
-  }
-  return out
-})
 
-const aiGrammarIssues = computed<GrammarIssue[]>(() => {
-  const seen = new Set<string>()
-  const out: GrammarIssue[] = []
-  for (const r of rounds.value) {
-    for (const g of r.grammarIssues || []) {
-      const key = `${g.quote}|${g.issue}`
-      if (!seen.has(key)) { seen.add(key); out.push(g) }
-    }
-  }
-  return out
-})
-
-const aiWotdUsedCount = computed(() => rounds.value.filter(r => r.wotdUsed).length)
-
-// ---------- 增量评价聚合（评分实时更新 + 亮点/改进点/主题累积 + 仅新评价点弹出） ----------
-
-// 只有 AI 判断出现新的评价点（hasNewPoint === true）的轮次才作为"新点评"弹出
-const newPointRounds = computed(() => {
-  return rounds.value.filter(r => r.hasNewPoint === true)
-})
-
-// 最新一轮评分：评分不弹出新卡，而是作为"更新中的数值"实时刷新
-const liveScore = computed<Record<string, number> | undefined>(() => {
-  for (let i = rounds.value.length - 1; i >= 0; i--) {
-    const s = rounds.value[i].score
-    if (s && Object.keys(s).length > 0) return s
-  }
-  return undefined
-})
-
-const scoreUpdatedAt = computed(() => {
-  for (let i = rounds.value.length - 1; i >= 0; i--) {
-    const s = rounds.value[i].score
-    if (s && Object.keys(s).length > 0) return rounds.value[i].timestamp
-  }
-  return undefined
-})
-
-// 亮点 / 改进点 / 主题：跨轮次累积并去重（AI 每轮只报新增项）
-function uniqueStrings(items: string[] | undefined): string[] {
-  const seen = new Set<string>()
-  const out: string[] = []
-  for (const it of items || []) {
-    const s = it?.trim()
-    if (s && !seen.has(s)) { seen.add(s); out.push(s) }
-  }
-  return out
-}
-
-const highlights = computed(() => uniqueStrings(rounds.value.flatMap(r => r.highlights || [])))
-const improvements = computed(() => uniqueStrings(rounds.value.flatMap(r => r.improvements || [])))
-const topics = computed(() => uniqueStrings(rounds.value.flatMap(r => r.topics || [])))
-
-const scoreLabelMap: Record<string, string> = {
-  content: 'meeting.speechEval.scoreContent',
-  structure: 'meeting.speechEval.scoreStructure',
-  language: 'meeting.speechEval.scoreLanguage',
-  timeControl: 'meeting.speechEval.scoreTimeControl',
-  overall: 'meeting.speechEval.scoreOverall',
-}
 
 // ---------- 语法官 (Grammarian) ----------
 
@@ -370,35 +256,6 @@ function removeBodyNote(index: number) {
   persist({ bodyNotes: next })
 }
 
-// ---------- 发言人用时（由转写时间戳估算，用于时间把控/串场分析） ----------
-
-// 设备/系统播报不算发言人（"不是多一个设备官"）
-const DEVICE_SPEAKER_RE = /设备|系统|device|assistant|播报/i
-
-const speakerDurations = computed<Array<{ speaker: string; durationSec: number }>>(() => {
-  const sentences = session.value?.sentences || []
-  const bySpeaker: Record<string, number> = {}
-  const order: string[] = []
-  for (let i = 0; i < sentences.length; i++) {
-    const s = sentences[i]
-    const sp = (s.speaker || '').trim()
-    if (!sp || DEVICE_SPEAKER_RE.test(sp)) continue
-    let durMs = 0
-    if (typeof s.startTime === 'number' && typeof s.endTime === 'number') {
-      durMs = s.endTime - s.startTime
-    } else if (typeof s.timestamp === 'number') {
-      const next = sentences[i + 1]?.timestamp
-      durMs = typeof next === 'number' && next > s.timestamp ? next - s.timestamp : 0
-    }
-    // 单句上限 30s：避免录音暂停等大间隔把时长撑爆
-    durMs = Math.min(Math.max(0, durMs), 30_000)
-    if (!(sp in bySpeaker)) order.push(sp)
-    bySpeaker[sp] = (bySpeaker[sp] || 0) + durMs
-  }
-  return order
-    .map(sp => ({ speaker: sp, durationSec: Math.round(bySpeaker[sp] / 1000) }))
-    .filter(d => d.durationSec > 0)
-})
 
 // ---------- 评估报告 ----------
 
@@ -411,7 +268,7 @@ function buildTranscriptWithEval(): string {
   const lines = sentences.map(s => `${s.speaker ? `[${s.speaker}] ` : ''}${s.text}`)
   const st = evalState.value
   const timerLines = (st.timerRecords || []).length
-    ? (st.timerRecords || []).map(r => `- ${r.label}：${fmtSec(r.durationSec)}${r.overtimeSec > 0 ? `（超时 ${fmtSec(r.overtimeSec)}）` : ''}`)
+    ? (st.timerRecords || []).map(r => `- ${r.label}：${timer.fmtSec(r.durationSec)}${r.overtimeSec > 0 ? `（超时 ${timer.fmtSec(r.overtimeSec)}）` : ''}`)
     : ['（无记录）']
   const fillerLines = Object.entries(fillerWords.value)
     .filter(([, c]) => c > 0)
@@ -428,11 +285,11 @@ function buildTranscriptWithEval(): string {
     ...aiGrammarIssues.value.map(g => `- ${g.quote}${g.speaker ? `（${g.speaker}）` : ''}：${g.issue}`),
     ...(st.grammarNotes || []).map(n => `- ${n}`),
   ]
-  const speakerLines = speakerDurations.value.map(d => `- ${d.speaker}：${fmtSec(d.durationSec)}`)
-  const transitionLines = transitionRecords.value.length
+  const speakerLines = speakerDurations.value.map(d => `- ${d.speaker}：${timer.fmtSec(d.durationSec)}`)
+  const transitionLines = timer.transitionRecords.length
     ? [
-        `- 串场 ${transitionRecords.value.length} 次，共 ${fmtSec(transitionTotalSec.value)}`,
-        ...transitionRecords.value.map(r => `- ${r.label}：${fmtSec(r.durationSec)}`),
+        `- 串场 ${timer.transitionRecords.length} 次，共 ${timer.fmtSec(timer.transitionTotalSec)}`,
+        ...timer.transitionRecords.map(r => `- ${r.label}：${timer.fmtSec(r.durationSec)}`),
       ]
     : ['（无）']
   const bodyLines = (st.bodyNotes || []).map(n => `- ${n}`)
@@ -553,9 +410,9 @@ watch(() => props.sessionId, () => {
   if (contextPushTimer) { clearTimeout(contextPushTimer); contextPushTimer = null }
   disconnect()
   clear()
-  resetVoiceFlags()
-  cancelAnnouncement()
-  resetTimer()
+  timer.resetVoiceFlags()
+  timer.cancelAnnouncement()
+  timer.reset()
   wotdInput.value = evalState.value.wordOfTheDay || ''
   reportMarkdown.value = ''
   reportError.value = null
@@ -570,8 +427,8 @@ onUnmounted(() => {
   // 计时器由共享模块持有：面板卸载时不停表（左侧波形/转写区覆盖层继续走表），
   // 由 MeetingView 在页面卸载/切换会话时统一 reset/stop。
   if (contextPushTimer) { clearTimeout(contextPushTimer); contextPushTimer = null }
-  resetVoiceFlags()
-  cancelAnnouncement()
+  timer.resetVoiceFlags()
+  timer.cancelAnnouncement()
   disconnect()
 })
 </script>
@@ -599,87 +456,14 @@ onUnmounted(() => {
       </div>
       <p class="section-desc">{{ t('meeting.speechEval.aiRoundsDesc') }}</p>
 
-      <!-- 实时评分（更新式，不弹出新卡） -->
-      <div v-if="liveScore" class="live-score" :key="scoreUpdatedAt">
-        <div class="live-score-header">
-          <span class="live-score-title">📊 {{ t('meeting.speechEval.liveScore') }}</span>
-          <span v-if="scoreUpdatedAt" class="live-score-time">
-            {{ t('meeting.speechEval.updatedAt') }} {{ new Date(scoreUpdatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) }}
-          </span>
-        </div>
-        <div class="live-score-grid">
-          <div v-for="(labelKey, key) in scoreLabelMap" :key="key" class="live-score-item" :class="{ overall: key === 'overall' }">
-            <span class="live-score-label">{{ t(labelKey) }}</span>
-            <span class="live-score-value">{{ liveScore[key] ?? '—' }}</span>
-          </div>
-        </div>
-      </div>
+      <LiveScoreCard :live-score="liveScore" :score-updated-at="scoreUpdatedAt" />
 
-      <!-- 累积亮点 -->
-      <div v-if="highlights.length" class="eval-block">
-        <div class="eval-block-title">✨ {{ t('meeting.speechEval.highlights') }}</div>
-        <div class="eval-tags">
-          <NTag v-for="(h, i) in highlights" :key="i" size="small" type="success" :bordered="false">✓ {{ h }}</NTag>
-        </div>
-      </div>
-
-      <!-- 累积可提升的点（3+1：只给最重要的一个可落地提升点） -->
-      <div v-if="improvements.length" class="eval-block">
-        <div class="eval-block-title">💡 {{ t('meeting.speechEval.topImprovement') }}</div>
-        <div class="eval-tags">
-          <NTag v-for="(imp, i) in improvements" :key="i" size="small" type="warning" :bordered="false">↗ {{ imp }}</NTag>
-        </div>
-      </div>
-
-      <!-- 累积主题 -->
-      <div v-if="topics.length" class="eval-block">
-        <div class="eval-block-title">🏷️ {{ t('meeting.speechEval.topics') }}</div>
-        <div class="eval-tags">
-          <NTag v-for="(tp, i) in topics" :key="i" size="small" type="info" :bordered="false">{{ tp }}</NTag>
-        </div>
-      </div>
-
-      <!-- 仅 AI 判断出现新的评价点时才弹出的点评卡 -->
-      <div v-if="newPointRounds.length" class="eval-block">
-        <div class="eval-block-title">🆕 {{ t('meeting.speechEval.newPoints') }}</div>
-        <TransitionGroup name="round-fade">
-          <div v-for="round in newPointRounds" :key="round.id" class="round-card" :class="`priority-${round.priority}`">
-            <div class="round-meta">
-              <span class="round-time">{{ new Date(round.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) }}</span>
-              <span v-if="round.priority === 'urgent'" class="priority-badge urgent">{{ t('meeting.assist.urgent') }}</span>
-              <span v-else-if="round.priority === 'attention'" class="priority-badge attention">{{ t('meeting.assist.attention') }}</span>
-            </div>
-
-            <div v-if="round.keyPoint" class="round-keypoint" :class="`priority-${round.priority}`">{{ round.keyPoint }}</div>
-            <div v-if="round.context" class="round-context">「{{ round.context }}」</div>
-            <div v-if="round.analysis" class="round-analysis">{{ round.analysis }}</div>
-            <div v-if="round.timeNote" class="round-timenote">⏱️ {{ round.timeNote }}</div>
-
-            <div v-if="round.fillerWords?.length" class="round-chips">
-              <NTag v-for="f in round.fillerWords" :key="f.word" size="small" type="warning" :bordered="false">
-                {{ f.word }} ×{{ f.count }}<template v-if="f.speaker"> · {{ f.speaker }}</template>
-              </NTag>
-            </div>
-
-            <div v-if="round.goldenQuotes?.length" class="round-lists">
-              <div class="round-list-title">✨ {{ t('meeting.speechEval.goldenQuotes') }}</div>
-              <div v-for="(q, i) in round.goldenQuotes" :key="i" class="round-list-item">
-                「{{ q.quote }}」<template v-if="q.speaker"><span class="quote-speaker">—— {{ q.speaker }}</span></template>
-                <div v-if="q.reason" class="quote-reason">{{ q.reason }}</div>
-              </div>
-            </div>
-
-            <div v-if="round.grammarIssues?.length" class="round-lists">
-              <div class="round-list-title">⚠️ {{ t('meeting.speechEval.grammarIssues') }}</div>
-              <div v-for="(g, i) in round.grammarIssues" :key="i" class="round-list-item">
-                「{{ g.quote }}」— {{ g.issue }}<template v-if="g.speaker"><span class="quote-speaker">（{{ g.speaker }}）</span></template>
-              </div>
-            </div>
-
-            <div v-if="round.wotdUsed" class="round-wotd">📖 {{ t('meeting.speechEval.wotdUsedFlag') }}</div>
-          </div>
-        </TransitionGroup>
-      </div>
+      <SpeechEvalBlocks
+        :highlights="highlights"
+        :improvements="improvements"
+        :topics="topics"
+        :new-point-rounds="newPointRounds"
+      />
 
       <div v-if="rounds.length === 0" class="empty-hint">{{ t('meeting.speechEval.emptyRounds') }}</div>
 
@@ -695,67 +479,13 @@ onUnmounted(() => {
       <div class="section-title">
         <span class="role-icon">⏱️</span>
         <span class="section-name">{{ t('meeting.speechEval.timer') }}</span>
-        <NButton size="tiny" quaternary class="settings-btn" @click="openSettings">
+        <NButton size="tiny" quaternary class="settings-btn" @click="timer.openSettings">
           ⚙️ {{ t('meeting.speechEval.settings') }}
         </NButton>
       </div>
       <p class="section-desc">{{ t('meeting.speechEval.timerDesc') }}</p>
 
-      <div class="timer-display" :class="`phase-${phase}`">
-        <span class="timer-time">{{ timerDisplay }}</span>
-        <span class="timer-phase-label">{{ phaseLabel }}</span>
-      </div>
-
-      <div class="timer-cards">
-        <span class="card green" :class="{ active: phase === 'green' }">🟢 {{ t('meeting.speechEval.greenCard') }}</span>
-        <span class="card yellow" :class="{ active: phase === 'yellow' }">🟡 {{ t('meeting.speechEval.yellowCard') }}</span>
-        <span class="card red" :class="{ active: phase === 'red' }">🔴 {{ t('meeting.speechEval.redCard') }}</span>
-      </div>
-
-      <div class="timer-controls">
-        <NButton size="small" :type="timerRunning ? 'warning' : 'primary'" @click="toggleTimer">
-          {{ timerRunning ? t('meeting.speechEval.pause') : t('meeting.speechEval.start') }}
-        </NButton>
-        <NButton size="small" @click="resetTimer">{{ t('meeting.speechEval.reset') }}</NButton>
-        <NButton size="small" :type="timerMode === 'segment' ? 'info' : 'default'" @click="switchTimerMode('segment')">
-          {{ t('meeting.speechEval.segmentMode') }}
-        </NButton>
-        <NButton size="small" :type="timerMode === 'transition' ? 'info' : 'default'" @click="switchTimerMode('transition')">
-          {{ t('meeting.speechEval.transitionMode') }}
-        </NButton>
-        <NButton size="small" :type="voiceAlert ? 'success' : 'default'" @click="toggleVoiceAlert" :title="t('meeting.speechEval.voiceAlertDesc')">
-          {{ voiceAlert ? t('meeting.speechEval.voiceAlertOn') : t('meeting.speechEval.voiceAlertOff') }}
-        </NButton>
-      </div>
-
-      <div v-if="timerMode === 'transition'" class="transition-hint">⏭️ {{ t('meeting.speechEval.transitionHint') }}</div>
-
-      <div class="segment-row">
-        <NInput v-if="timerMode === 'segment'" v-model:value="timerLabel" size="small" :placeholder="t('meeting.speechEval.segmentLabelPlaceholder')" />
-        <NButton size="small" type="primary" @click="recordSegment">
-          {{ timerMode === 'transition' ? t('meeting.speechEval.recordTransition') : t('meeting.speechEval.recordSegment') }}
-        </NButton>
-      </div>
-
-      <div class="time-records">
-        <div class="records-title">{{ t('meeting.speechEval.timeRecords') }}</div>
-        <div v-if="timerRecords.length === 0" class="empty-hint">{{ t('meeting.speechEval.emptyRecords') }}</div>
-        <div v-for="(r, i) in timerRecords" :key="i" class="record-item">
-          <span class="record-label">{{ r.label }}</span>
-          <span class="record-duration">{{ fmtSec(r.durationSec) }}<span v-if="r.overtimeSec > 0" class="record-overtime"> (+{{ fmtSec(r.overtimeSec) }})</span></span>
-          <button class="record-remove" @click="removeRecord(i)">×</button>
-        </div>
-      </div>
-
-      <!-- 发言人用时（由转写时间戳估算，供时间把控/串场分析） -->
-      <div class="time-records">
-        <div class="records-title">👥 {{ t('meeting.speechEval.speakerDuration') }}</div>
-        <div v-if="speakerDurations.length === 0" class="empty-hint">{{ t('meeting.speechEval.emptySpeakerDurations') }}</div>
-        <div v-for="d in speakerDurations" :key="d.speaker" class="record-item">
-          <span class="record-label">{{ d.speaker }}</span>
-          <span class="record-duration">{{ fmtSec(d.durationSec) }}</span>
-        </div>
-      </div>
+      <SpeechTimerCard :speaker-durations="speakerDurations" />
     </section>
 
     <!-- 赘语记录员（AI 检测） -->
@@ -881,75 +611,18 @@ onUnmounted(() => {
         <span class="role-icon">📊</span>
         <span class="section-name">{{ t('meeting.speechEval.reportTitle') }}</span>
       </div>
-      <div class="report-generate-row">
-        <NButton type="primary" size="small" :loading="isGeneratingReport" :disabled="!session?.sentences?.length" @click="generateReport">
-          {{ t('meeting.speechEval.generateReport') }}
-        </NButton>
-        <NButton size="small" :disabled="!session?.sentences?.length" @click="downloadVerbatim">
-          {{ t('meeting.speechEval.downloadVerbatim') }}
-        </NButton>
-      </div>
-
-      <div v-if="reportError" class="report-error">{{ reportError }}</div>
-
-      <div v-if="isGeneratingReport && !reportMarkdown" class="report-loading">
-        <NSpin size="small" />
-        <span>{{ t('meeting.speechEval.generating') }}</span>
-      </div>
-
-      <div v-if="reportMarkdown" class="report-content">
-        <div class="report-actions">
-          <MeetingExportDropdown
-            :markdown="reportMarkdown"
-            :title="exportTitle"
-            scope="speechEval"
-          />
-        </div>
-        <MarkdownRenderer :content="reportMarkdown" />
-      </div>
+      <SpeechEvalReportSection
+        :report-markdown="reportMarkdown"
+        :report-error="reportError"
+        :is-generating-report="isGeneratingReport"
+        :can-generate="!!session?.sentences?.length"
+        :export-title="exportTitle"
+        @generate="generateReport"
+        @download-verbatim="downloadVerbatim"
+      />
     </section>
 
-    <!-- 计时设置弹窗 -->
-    <NModal
-      v-model:show="showSettings"
-      preset="card"
-      :title="t('meeting.speechEval.settingsTitle')"
-      :style="{ width: '380px' }"
-      :bordered="false"
-    >
-      <div class="settings-form">
-        <div class="setting-field">
-          <label>{{ t('meeting.speechEval.presetsLabel') }}</label>
-          <div class="preset-grid">
-            <NButton
-              v-for="p in SEGMENT_PRESETS"
-              :key="p.key"
-              size="small"
-              quaternary
-              @click="applyPreset(p.key)"
-            >
-              {{ t(`meeting.speechEval.preset_${p.key}`) }}
-            </NButton>
-          </div>
-        </div>
-        <div class="setting-field">
-          <label>{{ t('meeting.speechEval.durationLabel') }}</label>
-          <NInputNumber v-model:value="settingsDuration" :min="10" :max="3600" size="small" style="width: 100%" />
-        </div>
-        <div class="setting-field">
-          <label>{{ t('meeting.speechEval.yellowLabel') }}</label>
-          <NInputNumber v-model:value="settingsYellow" :min="0" :max="300" size="small" style="width: 100%" />
-        </div>
-        <div class="setting-field">
-          <label>{{ t('meeting.speechEval.redLabel') }}</label>
-          <NInputNumber v-model:value="settingsRed" :min="0" :max="300" size="small" style="width: 100%" />
-        </div>
-        <div class="settings-actions">
-          <NButton size="small" @click="showSettings = false">{{ t('common.cancel') }}</NButton>
-          <NButton size="small" type="primary" @click="saveSettings">{{ t('common.confirm') }}</NButton>
-        </div>
-      </div>
-    </NModal>
+    <SpeechTimerSettingsDialog />
   </div>
 </template>
 

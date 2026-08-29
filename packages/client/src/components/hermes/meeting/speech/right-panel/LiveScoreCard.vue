@@ -1,0 +1,82 @@
+<script setup lang="ts">
+// 演讲评分 · 实时评分卡（更新式展示，不弹出新卡）。
+// 纯展示组件：评分数据由 SpeechEvaluationPanel 经 useSpeechAiAggregation 提供。
+import { useI18n } from 'vue-i18n'
+import { SCORE_LABEL_MAP } from '@/composables/useSpeechAiAggregation'
+
+const props = defineProps<{
+  liveScore: Record<string, number> | undefined
+  scoreUpdatedAt: number | undefined
+}>()
+
+const { t } = useI18n()
+</script>
+
+<template>
+  <div v-if="props.liveScore" class="live-score" :key="props.scoreUpdatedAt">
+    <div class="live-score-header">
+      <span class="live-score-title">📊 {{ t('meeting.speechEval.liveScore') }}</span>
+      <span v-if="props.scoreUpdatedAt" class="live-score-time">
+        {{ t('meeting.speechEval.updatedAt') }} {{ new Date(props.scoreUpdatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) }}
+      </span>
+    </div>
+    <div class="live-score-grid">
+      <div v-for="(labelKey, key) in SCORE_LABEL_MAP" :key="key" class="live-score-item" :class="{ overall: key === 'overall' }">
+        <span class="live-score-label">{{ t(labelKey) }}</span>
+        <span class="live-score-value">{{ props.liveScore[key] ?? '—' }}</span>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped lang="scss">
+// --- 实时评分（更新式面板，自 SpeechEvaluationPanel 原样搬出） ---
+.live-score {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(112, 192, 232, 0.06);
+  border: 1px solid rgba(112, 192, 232, 0.2);
+  animation: score-flash 0.6s ease;
+}
+
+@keyframes score-flash {
+  0% { background: rgba(112, 192, 232, 0.2); }
+  100% { background: rgba(112, 192, 232, 0.06); }
+}
+
+.live-score-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.live-score-title { font-size: 13px; font-weight: 700; color: #70c0e8; }
+.live-score-time { font-size: 11px; color: var(--n-text-color3, #888); font-variant-numeric: tabular-nums; }
+
+.live-score-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+}
+
+.live-score-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 4px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+
+  &.overall {
+    background: rgba(99, 226, 183, 0.08);
+  }
+}
+
+.live-score-label { font-size: 10px; color: var(--n-text-color3, #999); text-align: center; }
+.live-score-value { font-size: 18px; font-weight: 700; color: #70c0e8; font-variant-numeric: tabular-nums; }
+.live-score-item.overall .live-score-value { color: #63e2b7; }
+</style>
