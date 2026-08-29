@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { getSceneTemplate } from '../../packages/server/src/services/meeting-asr/scene-templates'
 import { parseAnalysisResponse } from '../../packages/server/src/services/meeting-asr/realtime-assist'
+
+// S8 提示词 Skill 化：方法论细则（发言人区分/赘语宽容/金句定义/方言/肢体/3+1）
+// 已迁入内置技能 meeting-speech-coach，systemPrompt 保留输出契约骨架。
+const SKILL = readFileSync(
+  'packages/skills/meeting-speech-coach/SKILL.md',
+  'utf8',
+)
 
 describe('speech scene templates (演讲评分 AI 评价优化)', () => {
   const speech = getSceneTemplate('speech')
@@ -20,35 +28,35 @@ describe('speech scene templates (演讲评分 AI 评价优化)', () => {
     })
 
     it('方言/口音导致的问题不作语法错误报出（可过滤）', () => {
-      expect(p).toContain('方言')
-      expect(p).toContain('口音')
-      expect(p).toContain('当作语法问题报出')
+      expect(SKILL).toContain('方言')
+      expect(SKILL).toContain('口音')
+      expect(SKILL).toContain('当作语法问题报出')
     })
 
     it('赘语按发言人区分，明确赘语有哪些，且 3 分钟 10 个以下不算问题', () => {
-      expect(p).toContain('按发言人区分')
-      expect(p).toContain('呃')
-      expect(p).toContain('那个')
-      expect(p).toContain('3 分钟 10 个以下')
-      expect(p).toContain('宽容判定')
+      expect(SKILL).toContain('按发言人区分')
+      expect(SKILL).toContain('呃')
+      expect(SKILL).toContain('那个')
+      expect(SKILL).toContain('3 分钟 10 个以下')
+      expect(SKILL).toContain('宽容判定')
       expect(p).toContain('speaker')
     })
 
     it('金句有明确定义（有观点、有感染力、能让人记住、可单独引用）', () => {
-      expect(p).toContain('金句定义')
-      expect(p).toContain('有观点、有感染力、能让人记住、可单独引用')
+      expect(SKILL).toContain('金句定义')
+      expect(SKILL).toContain('有观点、有感染力、能让人记住、可单独引用')
       expect(p).toContain('goldenQuotes')
     })
 
     it('3+1 反馈：亮点最多 3 条，提升点最多 1 条且可落地', () => {
-      expect(p).toContain('最多 3 条')
-      expect(p).toContain('最多 1 条')
-      expect(p).toContain('可落地执行')
+      expect(SKILL).toContain('最多 3 条')
+      expect(SKILL).toContain('只给 1 条')
+      expect(SKILL).toContain('可落地执行')
     })
 
     it('肢体语言：AI 看不到画面，不得编造观察', () => {
-      expect(p).toContain('看不到表情、动作、肢体语言')
-      expect(p).toContain('严禁编造')
+      expect(SKILL).toContain('看不到表情、动作、肢体语言')
+      expect(SKILL).toContain('严禁编造')
     })
 
     it('串场计时纳入时间把控点评', () => {
@@ -58,8 +66,8 @@ describe('speech scene templates (演讲评分 AI 评价优化)', () => {
     })
 
     it('设备/主持人串场词不作为演讲内容评价（不是多一个设备官）', () => {
-      expect(p).toContain('设备播报')
-      expect(p).toContain('不作为演讲内容评分')
+      expect(SKILL).toContain('设备播报')
+      expect(SKILL).toContain('不作为演讲内容评分')
     })
 
     it('保持增量评价原则（不重复输出、不硬凑）', () => {

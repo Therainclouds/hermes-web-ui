@@ -24,6 +24,10 @@ import { HermesSkillInjector } from '../hermes/skill-injector'
 
 /** 内置的会议分析技能名（缺失时自动安装）。 */
 export const MEETING_SKILL_NAME = 'meeting-analysis'
+/** 演讲评分场景专属技能（仅 speech 场景注入，其他会议场景排除）。 */
+export const MEETING_SPEECH_COACH_NAME = 'meeting-speech-coach'
+/** 全部内置会议技能（按 profile 自动安装）。 */
+export const BUNDLED_MEETING_SKILLS = [MEETING_SKILL_NAME, MEETING_SPEECH_COACH_NAME]
 
 /** 判定一个技能是否适用于会议分析的标签关键词。 */
 const MEETING_TAG_KEYWORDS = ['meeting', '会议']
@@ -147,23 +151,26 @@ export async function ensureMeetingAnalysisSkill(profile: string): Promise<void>
   if (ensuredProfiles.has(profile)) return
   ensuredProfiles.add(profile)
 
-  const targetDir = join(profileSkillsDir(profile), MEETING_SKILL_NAME)
-  if (existsSync(join(targetDir, 'SKILL.md'))) {
-    return
-  }
+  for (const skillName of BUNDLED_MEETING_SKILLS) {
+    const targetDir = join(profileSkillsDir(profile), skillName)
+    if (existsSync(join(targetDir, 'SKILL.md'))) {
+      continue
+    }
 
-  const sourceDir = join(HermesSkillInjector.resolveSourceDir(), MEETING_SKILL_NAME)
-  if (!existsSync(join(sourceDir, 'SKILL.md'))) {
-    logger.warn('[meeting-skill] bundled skill source not found: %s', sourceDir)
-    return
-  }
+    const sourceDir = join(HermesSkillInjector.resolveSourceDir(), skillName)
+    if (!existsSync(join(sourceDir, 'SKILL.md'))) {
+      // meeting-speech-coach 缺源属可降级场景（scene-templates 仍保留骨架提示词）
+      logger.warn('[meeting-skill] bundled skill source not found: %s', sourceDir)
+      continue
+    }
 
-  try {
-    await mkdir(targetDir, { recursive: true })
-    await cp(sourceDir, targetDir, { recursive: true })
-    logger.info('[meeting-skill] auto-installed %s into profile %s', MEETING_SKILL_NAME, profile)
-  } catch (err) {
-    logger.warn({ err }, '[meeting-skill] failed to auto-install %s for profile %s', MEETING_SKILL_NAME, profile)
+    try {
+      await mkdir(targetDir, { recursive: true })
+      await cp(sourceDir, targetDir, { recursive: true })
+      logger.info('[meeting-skill] auto-installed %s into profile %s', skillName, profile)
+    } catch (err) {
+      logger.warn({ err }, '[meeting-skill] failed to auto-install %s for profile %s', skillName, profile)
+    }
   }
 }
 
@@ -225,10 +232,12 @@ export function buildSkillInstructionsSection(skills: ParsedSkill[]): string {
  * 顶层入口：返回用于追加到 system prompt 的技能片段。
  * 自动安装缺失的内置技能，并带 60s 缓存。
  */
-export async function prepareAnalysisSkillSection(profile?: string): Promise<string> {
+export async function prepareAnalysisSkillSection(profile?: string, sceneId?: string): Promise<string> {
   const resolvedProfile = (profile || getActiveProfileName() || 'default').trim() || 'default'
+  // 缓存键带场景：speech 场景会额外注入 speech-coach 技能
+  const cacheKey = `${resolvedProfile}:${sceneId || 'all'}`
 
-  const cached = skillSectionCache.get(resolvedProfile)
+  const cached = skillSectionCache.get(cacheKey)
   if (cached && Date.now() - cached.at < SKILL_CACHE_TTL_MS) {
     return cached.section
   }
@@ -236,12 +245,16 @@ export async function prepareAnalysisSkillSection(profile?: string): Promise<str
   try {
     await ensureMeetingAnalysisSkill(resolvedProfile)
     const skills = await loadAnalysisSkills(resolvedProfile)
-    const section = buildSkillInstructionsSection(skills)
+    // 场景过滤：meeting-speech-* 仅注入 speech 场景，避免演讲教练方法论污染其他会议
+    const applicable = sceneId && sceneId !== 'speech'
+      ? skills.filter(s => !s.name.startsWith('meeting-speech'))
+      : skills
+    const section = buildSkillInstructionsSection(applicable)
     logger.info(
-      '[meeting-skill] profile %s → %d meeting skill(s): %s',
-      resolvedProfile, skills.length, skills.map(s => s.name).join(', ') || '(none)',
+      '[meeting-skill] profile %s (scene %s) → %d meeting skill(s): %s',
+      resolvedProfile, sceneId || '(all)', applicable.length, applicable.map(s => s.name).join(', ') || '(none)',
     )
-    skillSectionCache.set(resolvedProfile, { section, at: Date.now() })
+    skillSectionCache.set(cacheKey, { section, at: Date.now() })
     return section
   } catch (err) {
     logger.warn({ err }, '[meeting-skill] failed to prepare skills for profile %s', resolvedProfile)
