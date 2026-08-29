@@ -162,7 +162,17 @@ export async function analyzeViaDirectLLM(
   const data = await response.json() as any
   const content = data?.choices?.[0]?.message?.content || '{}'
 
-  return parseAnalysisRound(content)
+  // H1 赘语阈值：实际发言时长 = 设置时长 - 当前倒计时（缺省不启用阈值过滤）
+  let speechDurationSec: number | undefined
+  if (template.id === 'speech' && speechContext) {
+    const { timerDurationSec, currentRemainingSec } = speechContext
+    if (typeof timerDurationSec === 'number' && typeof currentRemainingSec === 'number') {
+      const elapsed = timerDurationSec - currentRemainingSec
+      if (elapsed > 0) speechDurationSec = elapsed
+    }
+  }
+
+  return parseAnalysisRound(content, { speechDurationSec })
 }
 
 /**

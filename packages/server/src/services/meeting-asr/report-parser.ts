@@ -50,6 +50,51 @@ export interface AnalysisRound {
   topics?: string[]           // 新增主题（仅 hasNewPoint 时可能非空）
 }
 
+// ── 确定性护栏（Hook 层，S7）：提示词管意图，代码管保证 ──
+
+/** 设备/系统播报不算发言人（"不是多一个设备官"）。 */
+const DEVICE_SPEAKER_RE = /设备|系统|播报|device|assistant/i
+
+/**
+ * 演讲场景确定性护栏，parse 出口统一执行：
+ *
+ *  - H3 设备官过滤：speaker 命中设备播报正则的赘语/金句/语法条目剔除。
+ *  - H1 赘语阈值（仅提供 speechDurationSec ≥ 60s 时启用）：总赘语数
+ *    ≤ 10 个/3 分钟（按实际发言时长折算）时清空 fillerWords，
+ *    且不因赘语标 attention（宽容判定不靠 AI 自觉）。
+ *  - H2 3+1 强制：highlights 截 3 条、improvements 截 1 条。
+ */
+export function applySpeechGuards(round: AnalysisRound, speechDurationSec?: number): AnalysisRound {
+  let out = round
+
+  // H3 设备官过滤
+  const isDevice = (sp?: string) => !!sp && DEVICE_SPEAKER_RE.test(sp)
+  if (out.fillerWords?.length) out = { ...out, fillerWords: out.fillerWords.filter(f => !isDevice(f.speaker)) }
+  if (out.goldenQuotes?.length) out = { ...out, goldenQuotes: out.goldenQuotes.filter(q => !isDevice(q.speaker)) }
+  if (out.grammarIssues?.length) out = { ...out, grammarIssues: out.grammarIssues.filter(g => !isDevice(g.speaker)) }
+
+  // H1 赘语阈值（宽容判定）
+  if (out.fillerWords?.length && speechDurationSec && speechDurationSec >= 60) {
+    const allowed = 10 * (speechDurationSec / 180)
+    const total = out.fillerWords.reduce((a, f) => a + f.count, 0)
+    if (total <= allowed) {
+      out = { ...out, fillerWords: undefined }
+      if (out.priority === 'attention') out = { ...out, priority: 'normal' }
+    }
+  }
+
+  // H2 3+1 强制
+  if (out.highlights && out.highlights.length > 3) out = { ...out, highlights: out.highlights.slice(0, 3) }
+  if (out.improvements && out.improvements.length > 1) out = { ...out, improvements: out.improvements.slice(0, 1) }
+
+  return out
+}
+
+export interface ParseAnalysisOptions {
+  /** 实际已发言秒数（H1 赘语阈值判定用；由 speechContext 的设置时长-当前倒计时推得） */
+  speechDurationSec?: number
+}
+
 /** 演讲评分场景的评估上下文：随分析批次注入提示词，供 AI 实时点评/评分。 */
 export interface SpeechContext {
   wordOfTheDay?: string
@@ -96,7 +141,7 @@ export function normalizeGoldenQuotes(raw: unknown): GoldenQuote[] | undefined {
  * - goldenQuotes 同时支持新字段与旧字段 goodPhrases（string[] 或对象数组）；
  * - fillerWords / grammarIssues 上的 speaker 字段（按发言人区分）。
  */
-export function parseAnalysisRound(raw: string): AnalysisRound | null {
+export function parseAnalysisRound(raw: string, options?: ParseAnalysisOptions): AnalysisRound | null {
   try {
     // Strip markdown code fences if present
     const cleaned = raw.replace(/^```(?:json)?\s*/m, '').replace(/\s*```$/m, '').trim()
@@ -152,7 +197,7 @@ export function parseAnalysisRound(raw: string): AnalysisRound | null {
     }
 
     const now = Date.now()
-    return {
+    const round: AnalysisRound = {
       id: `round-${now}`,
       context: typeof parsed.context === 'string' ? parsed.context.slice(0, 200) : '',
       priority: (['normal', 'attention', 'urgent'].includes(parsed.priority) ? parsed.priority : 'normal') as AnalysisRound['priority'],
@@ -170,6 +215,8 @@ export function parseAnalysisRound(raw: string): AnalysisRound | null {
         ...(improvements ? { improvements } : {}),
         ...(topics ? { topics } : {}),
       }
+      // Hook 层：设备官过滤 / 赘语阈值 / 3+1 强制
+      return applySpeechGuards(round, options?.speechDurationSec)
   } catch {
     logger.warn('[meeting-assist] failed to parse LLM response as JSON: %s', raw.slice(0, 100))
     return null

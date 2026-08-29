@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseAnalysisRound } from '../../packages/server/src/services/meeting-asr/report-parser'
+import { applySpeechGuards, parseAnalysisRound, type AnalysisRound } from '../../packages/server/src/services/meeting-asr/report-parser'
 
 describe('parseAnalysisRound', () => {
   it('parses a plain JSON round with the core fields', () => {
@@ -109,5 +109,103 @@ describe('parseAnalysisRound', () => {
   it('passes through wotdUsed only when boolean', () => {
     expect(parseAnalysisRound(JSON.stringify({ keyPoint: 'kp', wotdUsed: true }))!.wotdUsed).toBe(true)
     expect(parseAnalysisRound(JSON.stringify({ keyPoint: 'kp', wotdUsed: 'yes' }))!.wotdUsed).toBeUndefined()
+  })
+})
+
+describe('applySpeechGuards（Hook 层：确定性护栏）', () => {
+  const base: AnalysisRound = {
+    id: 'r1',
+    context: '',
+    priority: 'normal',
+    keyPoint: 'kp',
+    analysis: 'an',
+    timestamp: 1,
+  }
+
+  it('H3 设备官过滤：剔除 speaker 为设备/系统/播报的条目', () => {
+    const round: AnalysisRound = {
+      ...base,
+      fillerWords: [
+        { word: '呃', count: 2 },
+        { word: '那个', count: 1, speaker: '设备播报' },
+        { word: '嗯', count: 3, speaker: '张三' },
+      ],
+      goldenQuotes: [
+        { quote: '好句', speaker: '张三' },
+        { quote: '系统提示', speaker: '系统' },
+      ],
+      grammarIssues: [
+        { quote: '真实问题', issue: 'x', speaker: '李四' },
+        { quote: '播报词', issue: 'y', speaker: 'device' },
+      ],
+    }
+    const out = applySpeechGuards(round)
+    expect(out.fillerWords).toHaveLength(2)
+    expect(out.goldenQuotes).toHaveLength(1)
+    expect(out.grammarIssues).toHaveLength(1)
+  })
+
+  it('H1 阈值：实际发言 3 分钟内 10 个以下赘语 → 清空且不标 attention', () => {
+    const round: AnalysisRound = {
+      ...base,
+      priority: 'attention',
+      fillerWords: [
+        { word: '呃', count: 4 },
+        { word: '那个', count: 3 },
+        { word: '然后', count: 3 },
+      ], // 共 10 个 / 180s = 恰好达标（≤10）
+    }
+    const out = applySpeechGuards(round, 180)
+    expect(out.fillerWords).toBeUndefined()
+    expect(out.priority).toBe('normal')
+  })
+
+  it('H1 阈值：明显高频（超 10 个/3min）保留赘语与 attention', () => {
+    const round: AnalysisRound = {
+      ...base,
+      priority: 'attention',
+      fillerWords: [{ word: '呃', count: 25 }],
+    }
+    const out = applySpeechGuards(round, 180)
+    expect(out.fillerWords).toHaveLength(1)
+    expect(out.priority).toBe('attention')
+  })
+
+  it('H1 阈值：按时长折算（90 秒允许 5 个）', () => {
+    const atLimit: AnalysisRound = { ...base, fillerWords: [{ word: '呃', count: 5 }] }
+    expect(applySpeechGuards(atLimit, 90).fillerWords).toBeUndefined()
+
+    const over: AnalysisRound = { ...base, fillerWords: [{ word: '呃', count: 6 }] }
+    expect(applySpeechGuards(over, 90).fillerWords).toHaveLength(1)
+  })
+
+  it('H1 阈值：未提供时长或缺时长样本（<60s）不启用', () => {
+    const round: AnalysisRound = { ...base, fillerWords: [{ word: '呃', count: 8 }] }
+    expect(applySpeechGuards(round).fillerWords).toHaveLength(1)
+    expect(applySpeechGuards(round, 30).fillerWords).toHaveLength(1)
+  })
+
+  it('H2 3+1 强制：highlights 截 3、improvements 截 1', () => {
+    const round: AnalysisRound = {
+      ...base,
+      highlights: ['a', 'b', 'c', 'd', 'e'],
+      improvements: ['最重要', '次重要'],
+    }
+    const out = applySpeechGuards(round)
+    expect(out.highlights).toEqual(['a', 'b', 'c'])
+    expect(out.improvements).toEqual(['最重要'])
+  })
+
+  it('parseAnalysisRound 出口执行护栏（经 options 传时长）', () => {
+    const raw = JSON.stringify({
+      keyPoint: 'kp',
+      fillerWords: [
+        { word: '呃', count: 2, speaker: '设备播报' },
+        { word: '那个', count: 3 },
+      ],
+    })
+    // 180s 内共 5 个（设备播报的 2 个先被 H3 剔除后仅 3 个）→ H1 清空
+    const round = parseAnalysisRound(raw, { speechDurationSec: 180 })
+    expect(round!.fillerWords).toBeUndefined()
   })
 })
