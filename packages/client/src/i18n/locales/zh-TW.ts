@@ -4021,6 +4021,13 @@ export default {
     },
     speechEval: {
       analyzeNow: '開始分析',
+      tabReview: 'AI 點評',
+      tabTimer: '計時',
+      tabNotes: '記錄',
+      tabReport: '報告',
+      kpiOverall: '總分',
+      kpiFillers: '贅語',
+      kpiSpeakers: '發言人',
       analyzing: 'AI 分析中…',
       connected: 'AI 已連線',
       notConnected: 'AI 未連線（錄音後自動連線）',

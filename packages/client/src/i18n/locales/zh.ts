@@ -4277,6 +4277,13 @@ export default {
     // 演讲评分场景（Toastmasters 风格）
     speechEval: {
       analyzeNow: '开始分析',
+      tabReview: 'AI 点评',
+      tabTimer: '计时',
+      tabNotes: '记录',
+      tabReport: '报告',
+      kpiOverall: '总分',
+      kpiFillers: '赘语',
+      kpiSpeakers: '发言人',
       analyzing: 'AI 分析中…',
       connected: 'AI 已连接',
       notConnected: 'AI 未连接（录音后自动连接）',

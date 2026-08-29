@@ -4230,7 +4230,14 @@ export default {
     },
     // Speech evaluation scene (Toastmasters style)
     speechEval: {
-      analyzeNow: 'Analyze Now',
+      analyzeNow: 'Start analysis',
+      tabReview: 'AI Review',
+      tabTimer: 'Timer',
+      tabNotes: 'Records',
+      tabReport: 'Report',
+      kpiOverall: 'Overall',
+      kpiFillers: 'Fillers',
+      kpiSpeakers: 'Speakers',
       analyzing: 'AI analyzing…',
       connected: 'AI connected',
       notConnected: 'AI not connected (auto-connects when recording)',

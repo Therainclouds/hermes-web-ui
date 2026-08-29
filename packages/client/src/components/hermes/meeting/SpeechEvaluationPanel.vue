@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { NButton, NInput, NSpin, NTag } from 'naive-ui'
+import { NButton, NInput, NSpin, NTag, NTabPane, NTabs } from 'naive-ui'
 import { useMeetingStore } from '@/stores/hermes/meeting'
 import type { SpeechEvalState } from '@/stores/hermes/meeting'
 import { useMeetingAssist } from '@/composables/useMeetingAssist'
@@ -10,6 +10,7 @@ import { provideSpeechTimer } from './speech/speechTimerContext'
 import { useSpeechFillerCounter } from '@/composables/useSpeechFillerCounter'
 import { request } from '@/api/client'
 import { useSpeechEvalReport } from '@/composables/useSpeechEvalReport'
+const activeTab = ref('review')
 import LiveScoreCard from './speech/right-panel/LiveScoreCard.vue'
 import SpeechEvalBlocks from './speech/right-panel/SpeechEvalBlocks.vue'
 import SpeechTimerCard from './speech/right-panel/SpeechTimerCard.vue'
@@ -333,6 +334,29 @@ onUnmounted(() => {
       </NButton>
     </div>
 
+    <!-- 常驻仪表头（sticky）：总分/相位/时间/赘语 四个 KPI 一眼可见 -->
+    <div class="kpi-bar">
+      <div class="kpi-cell kpi-score">
+        <span class="kpi-value">{{ liveScore?.overall ?? '—' }}</span>
+        <span class="kpi-label">{{ t('meeting.speechEval.kpiOverall') }}</span>
+      </div>
+      <div class="kpi-cell kpi-phase" :class="`phase-${timer.phase}`">
+        <span class="kpi-value">{{ timer.display }}</span>
+        <span class="kpi-label">{{ timer.phaseLabel }}</span>
+      </div>
+      <div class="kpi-cell">
+        <span class="kpi-value">{{ fillerTotal }}</span>
+        <span class="kpi-label">{{ t('meeting.speechEval.kpiFillers') }}</span>
+      </div>
+      <div class="kpi-cell">
+        <span class="kpi-value">{{ speakerDurations.length }}</span>
+        <span class="kpi-label">{{ t('meeting.speechEval.kpiSpeakers') }}</span>
+      </div>
+    </div>
+
+    <!-- 四 Tab 分区：Tab 栏即功能目录 -->
+    <NTabs v-model:value="activeTab" type="line" size="small" class="eval-tabs">
+    <NTabPane name="review" :tab="t('meeting.speechEval.tabReview')">
     <!-- AI 实时点评与评分 -->
     <section class="eval-section">
       <div class="section-title">
@@ -358,7 +382,9 @@ onUnmounted(() => {
       </div>
       <div v-if="assistError" class="assist-error">{{ assistError }}</div>
     </section>
+    </NTabPane>
 
+    <NTabPane name="timer" :tab="t('meeting.speechEval.tabTimer')">
     <!-- 计时员 -->
     <section class="eval-section">
       <div class="section-title">
@@ -372,7 +398,9 @@ onUnmounted(() => {
 
       <SpeechTimerCard :speaker-durations="speakerDurations" />
     </section>
+    </NTabPane>
 
+    <NTabPane name="notes" :tab="t('meeting.speechEval.tabNotes')">
     <!-- 赘语记录员（AI 检测） -->
     <section class="eval-section">
       <div class="section-title">
@@ -489,7 +517,9 @@ onUnmounted(() => {
         <button class="note-remove" @click="removeBodyNote(i)">×</button>
       </div>
     </section>
+    </NTabPane>
 
+    <NTabPane name="report" :tab="t('meeting.speechEval.tabReport')">
     <!-- 评估报告 -->
     <section class="eval-section report-section">
       <div class="section-title">
@@ -506,6 +536,8 @@ onUnmounted(() => {
         @download-verbatim="downloadVerbatim"
       />
     </section>
+    </NTabPane>
+    </NTabs>
 
     <SpeechTimerSettingsDialog />
   </div>
@@ -521,6 +553,55 @@ onUnmounted(() => {
   overflow-y: auto;
   padding: 12px 14px;
   gap: 12px;
+}
+
+/* 常驻仪表头：录音时不用滚动即可看到 4 个关键数字 */
+.kpi-bar {
+  position: sticky;
+  top: -12px; /* 抵消面板 padding，贴住滚动容器顶部 */
+  z-index: 5;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: $bg-primary;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+}
+
+.kpi-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 2px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.kpi-value {
+  font-size: 18px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--n-text-color, #fff);
+  line-height: 1.1;
+}
+
+.kpi-label { font-size: 10px; color: var(--n-text-color3, #999); }
+
+.kpi-phase {
+  &.phase-green .kpi-value { color: #63e2b7; }
+  &.phase-yellow .kpi-value { color: #f0a020; }
+  &.phase-red .kpi-value { color: #ff4d4f; }
+}
+
+.eval-tabs {
+  flex: 1;
+  min-height: 0;
+
+  :deep(.n-tabs-nav) { position: sticky; top: 52px; z-index: 4; background: $bg-primary; }
+  :deep(.n-tab-pane) { padding: 4px 0 0; }
 }
 
 .eval-topbar {
