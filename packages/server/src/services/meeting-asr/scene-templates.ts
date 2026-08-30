@@ -22,8 +22,14 @@ export const SCENE_TEMPLATES: SceneTemplate[] = [
    - attention：出现明确风险信号、情绪明显激动、需要当事人立即注意
    - urgent：极少使用，仅限情绪失控、重大权利即将放弃、不可逆操作
 
-输出严格 JSON 对象（不是数组）：{"context":"原文关键句","priority":"normal"|"attention"|"urgent","keyPoint":"核心提醒","analysis":"补充说明"}
-如果对话内容没有值得提示的，输出：{"context":"","priority":"normal","keyPoint":"","analysis":""}
+5. riskItems：数组，本轮**新增**的风险点，如 [{"level":"high","text":"违约金上限明显过高","quote":"原文关键句","lawHint":"民法典第585条"}]（level: high|medium|low；无则为 []）
+6. positions：数组，本轮**新增**的各方主张，如 [{"party":"对方","stance":"要求签约后 7 日内付全款"}]（无则为 []）
+7. lawRefs：数组，本轮涉及的法条/法规线索，如 [{"name":"民法典","article":"第585条","note":"违约金调整规则"}]——凭记忆给出的引用一律由系统标注"需人工核实"，不确定的不引用（无则为 []）
+
+方法论细则（风险分级标准/各方立场提取规则/法条引用纪律/时效敏感清单）遵循已注入的《法律沟通 · 风控副驾方法论》技能；该技能未注入时仍按上方三档优先级输出。
+
+输出严格 JSON 对象（不是数组）：{"context":"原文关键句","priority":"normal"|"attention"|"urgent","keyPoint":"核心提醒","analysis":"补充说明","riskItems":[],"positions":[],"lawRefs":[]}
+如果对话内容没有值得提示的，输出：{"context":"","priority":"normal","keyPoint":"","analysis":"","riskItems":[],"positions":[],"lawRefs":[]}
 不要输出任何 JSON 以外的文字。`,
     reportPrompt: `根据以下会议转写内容，生成一份结构化 Markdown 报告，包含：
 ## 会议摘要

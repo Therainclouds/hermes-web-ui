@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applySpeechGuards, parseAnalysisRound, type AnalysisRound } from '../../packages/server/src/services/meeting-asr/report-parser'
+import { applyLegalGuards, applySpeechGuards, parseAnalysisRound, type AnalysisRound } from '../../packages/server/src/services/meeting-asr/report-parser'
 
 describe('parseAnalysisRound', () => {
   it('parses a plain JSON round with the core fields', () => {
@@ -207,5 +207,79 @@ describe('applySpeechGuards（Hook 层：确定性护栏）', () => {
     // 180s 内共 5 个（设备播报的 2 个先被 H3 剔除后仅 3 个）→ H1 清空
     const round = parseAnalysisRound(raw, { speechDurationSec: 180 })
     expect(round!.fillerWords).toBeUndefined()
+  })
+})
+
+describe('applyLegalGuards（Hook 层：法律场景确定性护栏）', () => {
+  const base: AnalysisRound = {
+    id: 'l1',
+    context: '对方要求签约后七日内付全款',
+    priority: 'normal',
+    keyPoint: '付款节奏风险',
+    analysis: '全款要求偏离行业惯例',
+    timestamp: 1,
+  }
+
+  it('H-L1 urgent 白名单：时效届满语义允许 urgent', () => {
+    const round: AnalysisRound = { ...base, priority: 'urgent', keyPoint: '诉讼时效即将届满' }
+    expect(applyLegalGuards(round).priority).toBe('urgent')
+  })
+
+  it('H-L1 urgent 白名单：普通争议 urgent 降级 attention', () => {
+    const round: AnalysisRound = { ...base, priority: 'urgent', keyPoint: '对方情绪激动争执激烈' }
+    expect(applyLegalGuards(round).priority).toBe('attention')
+  })
+
+  it('H-L2 法条纪律：LLM 引用一律标注需人工核实', () => {
+    const round: AnalysisRound = {
+      ...base,
+      lawRefs: [
+        { name: '民法典', article: '第585条', note: '违约金调整' },
+        { name: '劳动法' },
+      ],
+    }
+    const out = applyLegalGuards(round)
+    expect(out.lawRefs!.every(l => l.verified === false)).toBe(true)
+    expect(out.lawRefs![0].note).toContain('需人工核实')
+    expect(out.lawRefs![1].note).toContain('需人工核实')
+  })
+
+  it('H-L3 去重：riskItems 按 text、positions 按 party+stance、lawRefs 按 name+article', () => {
+    const round: AnalysisRound = {
+      ...base,
+      riskItems: [
+        { level: 'high', text: '违约金过高' },
+        { level: 'low', text: '违约金过高' },
+      ],
+      positions: [
+        { party: '对方', stance: '要求全款' },
+        { party: '对方', stance: '要求全款' },
+        { party: '对方', stance: '要求分期' },
+      ],
+      lawRefs: [
+        { name: '民法典', article: '第585条' },
+        { name: '民法典', article: '第585条' },
+      ],
+    }
+    const out = applyLegalGuards(round)
+    expect(out.riskItems).toHaveLength(1)
+    expect(out.positions).toHaveLength(2)
+    expect(out.lawRefs).toHaveLength(1)
+  })
+
+  it('parseAnalysisRound 出口执行法律护栏', () => {
+    const raw = JSON.stringify({
+      keyPoint: '付款节奏风险',
+      riskItems: [
+        { level: 'high', text: '违约金过高' },
+        { level: 'invalid', text: '应被过滤' },
+        { level: 'medium', text: '违约金过高' },
+      ],
+      lawRefs: [{ name: '民法典', article: '第585条' }],
+    })
+    const round = parseAnalysisRound(raw)
+    expect(round!.riskItems).toHaveLength(1)
+    expect(round!.riskItems![0].level).toBe('high')
+    expect(round!.lawRefs![0].note).toContain('需人工核实')
   })
 })

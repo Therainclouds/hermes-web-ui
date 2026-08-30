@@ -26,8 +26,32 @@ import { HermesSkillInjector } from '../hermes/skill-injector'
 export const MEETING_SKILL_NAME = 'meeting-analysis'
 /** 演讲评分场景专属技能（仅 speech 场景注入，其他会议场景排除）。 */
 export const MEETING_SPEECH_COACH_NAME = 'meeting-speech-coach'
+/** 法律沟通场景专属技能（仅 legal 场景注入）。 */
+export const MEETING_LEGAL_REVIEW_NAME = 'meeting-legal-review'
 /** 全部内置会议技能（按 profile 自动安装）。 */
-export const BUNDLED_MEETING_SKILLS = [MEETING_SKILL_NAME, MEETING_SPEECH_COACH_NAME]
+export const BUNDLED_MEETING_SKILLS = [MEETING_SKILL_NAME, MEETING_SPEECH_COACH_NAME, MEETING_LEGAL_REVIEW_NAME]
+
+/**
+ * 场景专属技能前缀映射：带这些前缀的技能仅注入对应场景，
+ * meeting-analysis（无前缀）全场景注入。
+ */
+const SCENE_SKILL_PREFIXES: Record<string, string[]> = {
+  speech: ['meeting-speech'],
+  legal: ['meeting-legal'],
+}
+
+/** 场景过滤：非本场景的专属技能排除（通用技能保留）。 */
+function filterSkillsForScene<T extends { name: string }>(skills: T[], sceneId?: string): T[] {
+  if (!sceneId) return skills
+  const own = SCENE_SKILL_PREFIXES[sceneId]
+  return skills.filter(s => {
+    for (const [scene, prefixes] of Object.entries(SCENE_SKILL_PREFIXES)) {
+      if (scene === sceneId) continue
+      if (prefixes.some(prefix => s.name.startsWith(prefix))) return false
+    }
+    return true
+  })
+}
 
 /** 判定一个技能是否适用于会议分析的标签关键词。 */
 const MEETING_TAG_KEYWORDS = ['meeting', '会议']
@@ -245,10 +269,8 @@ export async function prepareAnalysisSkillSection(profile?: string, sceneId?: st
   try {
     await ensureMeetingAnalysisSkill(resolvedProfile)
     const skills = await loadAnalysisSkills(resolvedProfile)
-    // 场景过滤：meeting-speech-* 仅注入 speech 场景，避免演讲教练方法论污染其他会议
-    const applicable = sceneId && sceneId !== 'speech'
-      ? skills.filter(s => !s.name.startsWith('meeting-speech'))
-      : skills
+    // 场景过滤：场景专属技能（speech-coach/legal-review）仅注入对应场景
+    const applicable = filterSkillsForScene(skills, sceneId)
     const section = buildSkillInstructionsSection(applicable)
     logger.info(
       '[meeting-skill] profile %s (scene %s) → %d meeting skill(s): %s',

@@ -28,6 +28,30 @@ export interface GrammarIssue {
   speaker?: string
 }
 
+// ── 法律沟通场景（legal）结构化字段 ──
+
+/** 风险清单条目：level 与优先级映射（urgent→high, attention→medium, normal→low）。 */
+export interface RiskItem {
+  level: 'high' | 'medium' | 'low'
+  text: string
+  quote?: string
+  lawHint?: string
+}
+
+/** 各方立场（本轮新增的主张）。 */
+export interface Position {
+  party: string
+  stance: string
+}
+
+/** 法条/法规引用。LLM 输出一律 verified: false（需人工核实），仅核实工具可置 true。 */
+export interface LawRef {
+  name: string
+  article?: string
+  note?: string
+  verified?: boolean
+}
+
 export interface AnalysisRound {
   id: string
   context: string
@@ -48,6 +72,10 @@ export interface AnalysisRound {
   highlights?: string[]       // 新增亮点（仅 hasNewPoint 时可能非空；最多 3 条）
   improvements?: string[]     // 新增可提升的点（最多 1 条：最重要且可落地）
   topics?: string[]           // 新增主题（仅 hasNewPoint 时可能非空）
+  // 法律沟通场景（legal）结构化字段
+  riskItems?: RiskItem[]      // 风险清单（≤10 条，去重后）
+  positions?: Position[]      // 各方立场（≤8 条，去重后）
+  lawRefs?: LawRef[]          // 法条/法规引用（≤8 条，一律需人工核实）
 }
 
 // ── 确定性护栏（Hook 层，S7）：提示词管意图，代码管保证 ──
@@ -93,6 +121,105 @@ export function applySpeechGuards(round: AnalysisRound, speechDurationSec?: numb
 export interface ParseAnalysisOptions {
   /** 实际已发言秒数（H1 赘语阈值判定用；由 speechContext 的设置时长-当前倒计时推得） */
   speechDurationSec?: number
+}
+
+// ── 法律场景确定性护栏（Hook 层，L1） ──
+
+/** urgent 白名单：仅时效届满/重大权利放弃/情绪失控语义允许 urgent（H-L1）。 */
+const URGENT_WHITELIST_RE = /(时效|期限)[^。]{0,8}(届满|将至|临近)|放弃(权利|继承|抗辩|担保)|情绪失控|当庭|(撤销|解除)[^。]{0,6}(权|合同)/
+
+/**
+ * 法律场景确定性护栏，parse 出口执行：
+ *
+ *  - H-L1 urgent 白名单：不在白名单语义的 urgent 降级 attention。
+ *  - H-L2 法条纪律：lawRefs 无核实来源一律 verified: false + note 追加
+ *    "需人工核实"（禁编造纪律的代码保证）。
+ *  - H-L3 去重：riskItems 按 text、lawRefs 按 name+article、positions 按
+ *    party+stance 去重。
+ */
+export function applyLegalGuards(round: AnalysisRound): AnalysisRound {
+  let out = round
+
+  // H-L1 urgent 白名单
+  if (out.priority === 'urgent') {
+    const text = `${out.keyPoint} ${out.analysis} ${out.context}`
+    if (!URGENT_WHITELIST_RE.test(text)) {
+      out = { ...out, priority: 'attention' }
+    }
+  }
+
+  // H-L3 去重 + H-L2 法条纪律
+  if (out.riskItems?.length) {
+    const seen = new Set<string>()
+    out = { ...out, riskItems: out.riskItems.filter(r => {
+      const key = r.text?.trim()
+      if (!key || seen.has(key)) return false
+      seen.add(key)
+      return true
+    }).slice(0, 10) }
+  }
+  if (out.positions?.length) {
+    const seen = new Set<string>()
+    out = { ...out, positions: out.positions.filter(p => {
+      const key = `${p.party?.trim()}|${p.stance?.trim()}`
+      if (!p.party?.trim() || seen.has(key)) return false
+      seen.add(key)
+      return true
+    }).slice(0, 8) }
+  }
+  if (out.lawRefs?.length) {
+    const seen = new Set<string>()
+    out = { ...out, lawRefs: out.lawRefs.filter(l => {
+      const key = `${l.name?.trim()}|${l.article?.trim()}`
+      if (!l.name?.trim() || seen.has(key)) return false
+      seen.add(key)
+      return true
+    }).slice(0, 8).map(l => l.verified
+      ? l
+      : { ...l, verified: false, note: l.note ? `${l.note}（需人工核实）` : '需人工核实' }) }
+  }
+
+  return out
+}
+
+/** legal 场景结构化字段的解析钳制（来自 LLM 的原始数组）。 */
+function parseLegalFields(parsed: any): {
+  riskItems?: RiskItem[]
+  positions?: Position[]
+  lawRefs?: LawRef[]
+} {
+  const riskItems = Array.isArray(parsed.riskItems)
+    ? parsed.riskItems
+        .filter((r: any) => r && typeof r.text === 'string' && ['high', 'medium', 'low'].includes(r.level))
+        .slice(0, 12)
+        .map((r: any) => ({
+          level: r.level,
+          text: r.text.slice(0, 200),
+          ...(typeof r.quote === 'string' && r.quote ? { quote: r.quote.slice(0, 200) } : {}),
+          ...(typeof r.lawHint === 'string' && r.lawHint ? { lawHint: r.lawHint.slice(0, 120) } : {}),
+        }))
+    : undefined
+  const positions = Array.isArray(parsed.positions)
+    ? parsed.positions
+        .filter((p: any) => p && typeof p.party === 'string' && typeof p.stance === 'string')
+        .slice(0, 10)
+        .map((p: any) => ({ party: p.party.slice(0, 60), stance: p.stance.slice(0, 200) }))
+    : undefined
+  const lawRefs = Array.isArray(parsed.lawRefs)
+    ? parsed.lawRefs
+        .filter((l: any) => l && typeof l.name === 'string')
+        .slice(0, 10)
+        .map((l: any) => ({
+          name: l.name.slice(0, 120),
+          ...(typeof l.article === 'string' && l.article ? { article: l.article.slice(0, 120) } : {}),
+          ...(typeof l.note === 'string' && l.note ? { note: l.note.slice(0, 200) } : {}),
+        }))
+    : undefined
+  return {
+    ...(riskItems?.length ? { riskItems } : {}),
+    ...(positions?.length ? { positions } : {}),
+    ...(lawRefs?.length ? { lawRefs } : {}),
+  }
 }
 
 /** 演讲评分场景的评估上下文：随分析批次注入提示词，供 AI 实时点评/评分。 */
@@ -221,8 +348,13 @@ export function parseAnalysisRound(raw: string, options?: ParseAnalysisOptions):
         ...(improvements ? { improvements } : {}),
         ...(topics ? { topics } : {}),
       }
+      // 法律场景结构化字段（存在即视为 legal 轮次，应用法律护栏）
+      const legalFields = parseLegalFields(parsed)
+      const withLegal = { ...round, ...legalFields }
+      const guarded = applyLegalGuards(withLegal)
+
       // Hook 层：设备官过滤 / 赘语阈值 / 3+1 强制
-      return applySpeechGuards(round, options?.speechDurationSec)
+      return applySpeechGuards(guarded, options?.speechDurationSec)
   } catch {
     logger.warn('[meeting-assist] failed to parse LLM response as JSON: %s', raw.slice(0, 100))
     return null
