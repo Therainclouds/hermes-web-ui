@@ -15,6 +15,7 @@ import json
 import os
 import sys
 import unittest
+import asyncio
 from pathlib import Path
 from unittest import mock
 
@@ -102,6 +103,16 @@ class TranslateEventTest(unittest.TestCase):
         ))
         self.assertEqual(created, {"type": "response_started"})
         self.assertEqual(done, {"type": "response_done"})
+
+    def test_response_cancelled_is_translated_to_response_done(self) -> None:
+        # When the client sends `cancel` mid-stream DashScope emits
+        # `response.cancelled`. We surface that as the same `response_done`
+        # frame the rest of the client understands, so the composable can
+        # clear its post-cancel audio-drop window without a new event type.
+        cancelled = json.loads(self.omni.translate_event(
+            json.dumps({"type": "response.cancelled"})
+        ))
+        self.assertEqual(cancelled, {"type": "response_done"})
 
     def test_error_event_surfaces_message(self) -> None:
         msg = {"type": "error", "error": {"message": "upstream rejected session"}}
@@ -195,6 +206,309 @@ class OmniProxyConnectTest(unittest.TestCase):
         # Should be a no-op, not raise
         import asyncio
         asyncio.get_event_loop().run_until_complete(proxy.cancel())
+
+
+class OmniProxyResponseGatingTest(unittest.TestCase):
+    """Regression guard for the 'Conversation already has an active response'
+    upstream rejection.
+
+    DashScope emits ``response.function_call_arguments.done`` (which the
+    proxy translates to the client as ``function_call``) BEFORE it emits
+    ``response.done`` for the same turn. If the proxy fires
+    ``response.create`` immediately on the function-call event, DashScope
+    sees the new request while the prior response is still draining and
+    rejects with ``Conversation already has an active response``.
+
+    The proxy must therefore observe the response lifecycle and gate
+    response-creating actions on the in-flight response finishing first.
+    """
+
+    def setUp(self) -> None:
+        _import_app()
+        self.omni = importlib.import_module("app.omni_realtime_proxy")
+        self.sent: list[dict] = []
+
+    def _make_proxy(self, frames: list[str]) -> tuple["self.omni.OmniRealtimeProxy", "_AsyncFrames"]:
+        proxy = self.omni.OmniRealtimeProxy()
+        proxy.upstream = mock.MagicMock()
+
+        async def _send(payload):
+            if isinstance(payload, (bytes, bytearray)):
+                self.sent.append({"_bytes": len(payload)})
+            else:
+                self.sent.append(json.loads(payload))
+
+        proxy.upstream.send = mock.AsyncMock(side_effect=_send)
+
+        # Single stateful async iterator shared by all upstream_events()
+        # generators — re-creating it per __aiter__ call would restart
+        # playback from the first frame.
+        frames_iter = _AsyncFrames(frames)
+        proxy.upstream.__aiter__ = lambda self=None: frames_iter
+        return proxy, frames_iter
+
+    async def _drain_one(self, proxy, frames_iter) -> None:
+        gen = proxy.upstream_events()
+        try:
+            await asyncio.wait_for(gen.__anext__(), timeout=1.0)
+        except (StopAsyncIteration, asyncio.TimeoutError):
+            pass
+
+    def test_response_lifecycle_marks_active_then_idle(self) -> None:
+        async def scenario():
+            proxy, frames = self._make_proxy([
+                json.dumps({"type": "response.created"}),
+                json.dumps({"type": "response.done"}),
+                json.dumps({"type": "response.created"}),
+                json.dumps({"type": "response.cancelled"}),
+            ])
+
+            # Initially no response is active.
+            self.assertFalse(proxy._response_active)
+            self.assertTrue(proxy._response_done_event.is_set())
+
+            # response.created flips the gate closed.
+            await self._drain_one(proxy, frames)
+            self.assertTrue(proxy._response_active)
+            self.assertFalse(proxy._response_done_event.is_set())
+
+            # response.done opens the gate again.
+            await self._drain_one(proxy, frames)
+            self.assertFalse(proxy._response_active)
+            self.assertTrue(proxy._response_done_event.is_set())
+
+            # response.cancelled also opens the gate.
+            await self._drain_one(proxy, frames)
+            self.assertTrue(proxy._response_active)
+            await self._drain_one(proxy, frames)
+            self.assertFalse(proxy._response_active)
+            self.assertTrue(proxy._response_done_event.is_set())
+
+        asyncio.get_event_loop().run_until_complete(scenario())
+
+    def test_buffer_commit_events_reset_audio_appended_since_commit(self) -> None:
+        # Regression guard: DashScope clears the audio + image buffers on
+        # input_audio_buffer.commit (VAD auto-commit at end-of-utterance),
+        # after which "audio before image" applies again. Observing the
+        # upstream commit / speech events must flip the freshness flag off so
+        # send_image drops frames in the post-commit window.
+        async def scenario():
+            for evt in (
+                "input_audio_buffer.speech_started",
+                "input_audio_buffer.speech_stopped",
+                "input_audio_buffer.committed",
+                "input_audio_buffer.cleared",
+            ):
+                with self.subTest(evt=evt):
+                    proxy, frames = self._make_proxy([json.dumps({"type": evt})])
+                    proxy._audio_appended_since_commit = True
+                    await self._drain_one(proxy, frames)
+                    self.assertFalse(proxy._audio_appended_since_commit)
+
+        asyncio.get_event_loop().run_until_complete(scenario())
+
+    def test_send_tool_output_waits_for_response_done(self) -> None:
+        """send_tool_output must not send response.create while the prior
+        response is still active — that's exactly what causes the upstream
+        'Conversation already has an active response' rejection."""
+
+        async def scenario():
+            proxy, _ = self._make_proxy([])  # no upstream frames needed
+            proxy._response_active = True
+            proxy._response_done_event.clear()
+            self.sent.clear()
+
+            # Kick off send_tool_output — it MUST NOT immediately send
+            # `response.create`. Drain the response a moment later and
+            # observe that the queued send then completes.
+            task = asyncio.get_event_loop().create_task(
+                proxy.send_tool_output("call_1", "ok")
+            )
+            await asyncio.sleep(0.05)
+            self.assertEqual(
+                self.sent, [],
+                "send_tool_output fired upstream before in-flight response drained",
+            )
+
+            proxy._response_done_event.set()
+            await asyncio.wait_for(task, timeout=1.0)
+            self.assertEqual(
+                [s.get("type") for s in self.sent],
+                ["conversation.item.create", "response.create"],
+            )
+
+        asyncio.get_event_loop().run_until_complete(scenario())
+
+    def test_send_tool_output_proceeds_immediately_when_no_response_active(self) -> None:
+        async def scenario():
+            proxy, _ = self._make_proxy([])
+            # no response in flight
+            await proxy.send_tool_output("call_2", "ok")
+            self.assertEqual(
+                [s.get("type") for s in self.sent],
+                ["conversation.item.create", "response.create"],
+            )
+
+        asyncio.get_event_loop().run_until_complete(scenario())
+
+    def test_commit_audio_waits_for_response_done(self) -> None:
+        async def scenario():
+            proxy, _ = self._make_proxy([])
+            proxy._response_active = True
+            proxy._response_done_event.clear()
+            self.sent.clear()
+
+            task = asyncio.get_event_loop().create_task(proxy.commit_audio())
+            await asyncio.sleep(0.05)
+            self.assertEqual(self.sent, [], "commit_audio fired before response drained")
+
+            proxy._response_done_event.set()
+            await asyncio.wait_for(task, timeout=1.0)
+            self.assertEqual(self.sent, [{"type": "input_audio_buffer.commit"}])
+
+        asyncio.get_event_loop().run_until_complete(scenario())
+
+
+class OmniProxySendImageTest(unittest.TestCase):
+    """Camera-frame forwarding: client `{"type": "image", ...}` frames must
+    reach DashScope as `input_image_buffer.append` with raw base64 JPEG, with
+    the documented audio-first constraint enforced."""
+
+    def setUp(self) -> None:
+        _import_app()
+        self.omni = importlib.import_module("app.omni_realtime_proxy")
+        self.sent: list[dict] = []
+
+    def _make_proxy(self, audio_seen: bool = True, audio_appended_since_commit: bool = True):
+        proxy = self.omni.OmniRealtimeProxy()
+        proxy.upstream = mock.MagicMock()
+        proxy._audio_seen = audio_seen
+        proxy._audio_appended_since_commit = audio_appended_since_commit
+
+        async def _send(payload):
+            self.sent.append(json.loads(payload))
+
+        proxy.upstream.send = mock.AsyncMock(side_effect=_send)
+        return proxy
+
+    def test_send_image_forwards_input_image_buffer_append(self) -> None:
+        async def scenario():
+            proxy = self._make_proxy()
+            await proxy.send_image("aGVsbG8=")
+            self.assertEqual(
+                self.sent,
+                [{"type": "input_image_buffer.append", "image": "aGVsbG8="}],
+            )
+
+        asyncio.get_event_loop().run_until_complete(scenario())
+
+    def test_send_image_strips_data_url_prefix(self) -> None:
+        async def scenario():
+            proxy = self._make_proxy()
+            await proxy.send_image("data:image/jpeg;base64,aGVsbG8=")
+            self.assertEqual(
+                self.sent,
+                [{"type": "input_image_buffer.append", "image": "aGVsbG8="}],
+            )
+
+        asyncio.get_event_loop().run_until_complete(scenario())
+
+    def test_send_image_empty_or_whitespace_is_dropped(self) -> None:
+        async def scenario():
+            proxy = self._make_proxy()
+            await proxy.send_image("")
+            await proxy.send_image("   ")
+            await proxy.send_image("data:image/jpeg;base64,")
+            self.assertEqual(self.sent, [])
+
+        asyncio.get_event_loop().run_until_complete(scenario())
+
+    def test_send_image_requires_audio_first(self) -> None:
+        # DashScope docs: "You must send audio data at least once before you
+        # send image data." Frames arriving before the first audio append must
+        # be dropped, not forwarded (which would 4xx upstream).
+        async def scenario():
+            proxy = self._make_proxy(audio_seen=False)
+            await proxy.send_image("aGVsbG8=")
+            self.assertEqual(self.sent, [])
+
+        asyncio.get_event_loop().run_until_complete(scenario())
+
+    def test_send_image_dropped_in_post_commit_window(self) -> None:
+        # Regression guard for the "append image before append audio" error:
+        # DashScope clears the image buffer together with the audio buffer on
+        # every input_audio_buffer.commit (in VAD mode the server auto-commits
+        # at the end of each utterance) and requires a fresh audio append
+        # before the next image frame. A camera frame landing right after a
+        # commit — before the next (continuously streaming, but in-flight)
+        # audio chunk arrives — must be dropped locally, otherwise DashScope
+        # rejects it and the error event kills the client session.
+        async def scenario():
+            proxy = self._make_proxy(audio_appended_since_commit=False)
+            await proxy.send_image("aGVsbG8=")
+            self.assertEqual(self.sent, [])
+
+        asyncio.get_event_loop().run_until_complete(scenario())
+
+    def test_send_image_forwarded_after_fresh_audio_append(self) -> None:
+        # After the post-commit drop, one audio append re-arms the gate so
+        # the next camera frame is forwarded again.
+        async def scenario():
+            proxy = self._make_proxy(audio_appended_since_commit=False)
+            await proxy.send_image("aGVsbG8=")
+            self.assertEqual(self.sent, [])
+            await proxy.send_audio(b"\x00\x01")
+            await proxy.send_image("aGVsbG8=")
+            self.assertEqual(
+                self.sent,
+                [
+                    {
+                        "type": "input_audio_buffer.append",
+                        "audio": base64.b64encode(b"\x00\x01").decode("ascii"),
+                    },
+                    {"type": "input_image_buffer.append", "image": "aGVsbG8="},
+                ],
+            )
+
+        asyncio.get_event_loop().run_until_complete(scenario())
+
+    def test_send_audio_marks_audio_seen(self) -> None:
+        async def scenario():
+            proxy = self._make_proxy(audio_seen=False)
+            self.assertFalse(proxy._audio_seen)
+            await proxy.send_audio(b"\x00\x01")
+            self.assertTrue(proxy._audio_seen)
+
+        asyncio.get_event_loop().run_until_complete(scenario())
+
+    def test_send_image_requires_connection(self) -> None:
+        proxy = self.omni.OmniRealtimeProxy()
+        with self.assertRaises(RuntimeError) as ctx:
+            asyncio.get_event_loop().run_until_complete(proxy.send_image("aGVsbG8="))
+        self.assertIn("not connected", str(ctx.exception))
+
+
+class _AsyncFrames:
+    """Single-pass async iterator over a list of pre-recorded upstream frames.
+
+    The proxy does ``async for raw in self.upstream`` (which calls
+    ``__aiter__`` once per generator instance) and treats each yielded value
+    as either ``bytes`` (audio delta / ping) or ``str`` (JSON event). We hand
+    the same instance back from every ``__aiter__`` call so successive
+    generators see the next frame, not frame 1 again.
+    """
+
+    def __init__(self, frames) -> None:
+        self._iter = iter(list(frames))
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._iter)
+        except StopIteration as exc:
+            raise StopAsyncIteration from exc
 
 
 if __name__ == "__main__":

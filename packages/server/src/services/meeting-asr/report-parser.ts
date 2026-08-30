@@ -222,6 +222,16 @@ function parseLegalFields(parsed: any): {
   }
 }
 
+/** 环节与发言人时间线条目：由客户端计时员用时记录展开（墙钟毫秒区间）。 */
+export interface SpeakerTimelineEntry {
+  /** 演讲者姓名（标签"/"后的名字） */
+  speaker: string
+  /** 环节名（标签"/"前的部分） */
+  segment?: string
+  startMs: number
+  endMs: number
+}
+
 /** 演讲评分场景的评估上下文：随分析批次注入提示词，供 AI 实时点评/评分。 */
 export interface SpeechContext {
   wordOfTheDay?: string
@@ -237,6 +247,41 @@ export interface SpeechContext {
     grammarNotes?: string[]
     bodyNotes?: string[]
   }
+  /** 环节-演讲者时间线：句子/点评按时间归属到人工记录的演讲者姓名 */
+  speakerTimeline?: SpeakerTimelineEntry[]
+}
+
+/** AI 点评轮次有延迟：允许归属到「区间结束后 60s 内」的最近一段（与客户端一致）。 */
+export const TIMELINE_MATCH_LATENCY_MS = 60_000
+
+/** 按墙钟时间戳归属环节演讲者名：精确命中优先，其次吸收 60s 延迟；无匹配返回空串。 */
+export function resolveTimelineSpeaker(timeline: SpeakerTimelineEntry[] | undefined, tsMs?: number): string {
+  if (!timeline || timeline.length === 0 || typeof tsMs !== 'number' || !Number.isFinite(tsMs)) return ''
+  for (let i = timeline.length - 1; i >= 0; i--) {
+    const e = timeline[i]
+    if (tsMs >= e.startMs && tsMs <= e.endMs) return e.speaker
+  }
+  for (let i = timeline.length - 1; i >= 0; i--) {
+    const e = timeline[i]
+    if (tsMs > e.endMs && tsMs - e.endMs <= TIMELINE_MATCH_LATENCY_MS) return e.speaker
+  }
+  return ''
+}
+
+/**
+ * 用环节-演讲者时间线标注转写句子：时间戳落入区间的句子把声纹名
+ * （"说话人1"）替换为人工记录的真实姓名，让 LLM 直接按姓名归属
+ * 赘语/金句/语法问题。未命中区间的句子保留原 speaker。
+ */
+export function annotateTranscriptSpeakers<T extends { speaker?: string; text: string; timestamp?: number }>(
+  sentences: T[],
+  timeline?: SpeakerTimelineEntry[],
+): Array<{ speaker?: string; text: string }> {
+  return (sentences || []).map(s => {
+    const name = resolveTimelineSpeaker(timeline, s.timestamp)
+    if (name) return { speaker: name, text: s.text }
+    return { speaker: s.speaker, text: s.text }
+  })
 }
 
 /**

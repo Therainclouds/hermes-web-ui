@@ -3,6 +3,9 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { NButton, NTag, NTooltip, NEmpty, NAlert, NSelect, NInput, type SelectOption } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useOmniRealtime } from '@/composables/useOmniRealtime'
+import { meetingASRApi } from '@/utils/meeting-asr-api'
+import { useMeetingStore } from '@/stores/hermes/meeting'
+import { useRealtimeModelStore } from '@/stores/hermes/realtime-model'
 
 const props = defineProps<{
   /** Used to surface a friendly error if no DashScope key has been configured. */
@@ -20,18 +23,24 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
-// A small curated voice list. DashScope accepts additional values; the ones
-// below are the ones most commonly listed in their docs and stay stable
-// across Omni-Realtime model upgrades.
+const meetingStore = useMeetingStore()
+const realtimeModelStore = useRealtimeModelStore()
+
+// Voices verified against the DashScope `qwen3.5-omni-flash-realtime`
+// catalogue (default model for this stage). `Cherry`, `Chelsie`, and `Adam`
+// are NOT valid for that model — DashScope closes the WS with 1007
+// `Voice 'X' is not supported.` if any of them is sent upstream.
 const voiceOptions: SelectOption[] = [
-  { label: 'Cherry (女声 · 中文)', value: 'Cherry' },
+  { label: 'Tina (女声 · 中文 · 默认)', value: 'Tina' },
   { label: 'Serena (女声 · 中文)', value: 'Serena' },
   { label: 'Ethan (男声 · 中文)', value: 'Ethan' },
-  { label: 'Chelsie (女声 · 英文)', value: 'Chelsie' },
-  { label: 'Adam (男声 · 英文)', value: 'Adam' },
+  { label: 'Jennifer (女声 · 中文)', value: 'Jennifer' },
+  { label: 'Ryan (男声 · 中文)', value: 'Ryan' },
 ]
 
-const selectedVoice = ref<string>('Cherry')
+const selectedVoice = ref<string>('Tina')
+// Apply the default voice configured in the Realtime model panel.
+selectedVoice.value = realtimeModelStore.config.voice || 'Tina'
 const instructions = ref<string>(
   '你是一个友好的中文会议助手，名字叫\"小合\"。请用简洁、自然、口语化的中文回答，适合直接朗读。',
 )
@@ -82,18 +91,63 @@ const canStart = computed(() => props.hasDashscopeKey && phase.value === 'idle')
 const isActive = computed(() => phase.value !== 'idle' && phase.value !== 'closed')
 const hasMeetingContext = computed(() => Boolean(props.meetingContext?.trim()))
 
+/**
+ * The Omni-Realtime WebSocket is relayed through the meeting ASR Python
+ * backend. When it is not running the upgrade fails and the client only sees
+ * a generic connection error — so make sure the service is up (starting it
+ * with the stored meeting config, falling back to the unified Qwen API key
+ * configured in the Realtime model panel) before opening the session.
+ */
+async function ensureBackendAvailable(timeoutMs = 30_000): Promise<boolean> {
+  try {
+    const status = await meetingASRApi.getStatus()
+    if (status.isRunning) return true
+    await meetingASRApi.start({
+      dashscopeApiKey: meetingStore.asrConfig.dashscopeApiKey || realtimeModelStore.config.apiKey || undefined,
+    })
+  } catch {
+    // fall through to polling — status/start failures are surfaced below
+  }
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 800))
+    try {
+      const status = await meetingASRApi.getStatus()
+      if (status.isRunning) return true
+    } catch {
+      // keep polling until the deadline
+    }
+  }
+  return false
+}
+
+const preparing = ref(false)
+const backendError = ref('')
+
 async function startSession() {
   if (!props.hasDashscopeKey) return
-  // 会议上下文注入：在用户设定的人设/指令之后追加当前会议的逐字稿与时间信息，
-  // 让 AI 根据"现在正在开的会"来回答。仅当上下文非空时才拼，避免污染自定义指令。
-  const baseInstructions = instructions.value.trim()
-  const contextBlock = hasMeetingContext.value && props.meetingContext
-    ? `\n\n——\n以下是开启本实时对话时所在的会议上下文（逐字稿带时间戳）。请结合这些内容回答，不要编造上下文之外的事实；若用户问题与会议无关也可以正常闲聊。\n${props.meetingContext.trim()}`
-    : ''
-  await omni.connect({
-    voice: selectedVoice.value,
-    instructions: `${baseInstructions}${contextBlock}`,
-  })
+  preparing.value = true
+  backendError.value = ''
+  try {
+    const ready = await ensureBackendAvailable()
+    if (!ready) {
+      backendError.value = t('omniRealtime.backendUnavailable')
+      return
+    }
+    // 会议上下文注入：在用户设定的人设/指令之后追加当前会议的逐字稿与时间信息，
+    // 让 AI 根据"现在正在开的会"来回答。仅当上下文非空时才拼，避免污染自定义指令。
+    const baseInstructions = instructions.value.trim()
+    const contextBlock = hasMeetingContext.value && props.meetingContext
+      ? `\n\n——\n以下是开启本实时对话时所在的会议上下文（逐字稿带时间戳）。请结合这些内容回答，不要编造上下文之外的事实；若用户问题与会议无关也可以正常闲聊。\n${props.meetingContext.trim()}`
+      : ''
+    await omni.connect({
+      voice: selectedVoice.value,
+      model: realtimeModelStore.config.model || undefined,
+      instructions: `${baseInstructions}${contextBlock}`,
+    })
+  } finally {
+    preparing.value = false
+  }
 }
 
 function stopSession() {
@@ -169,6 +223,10 @@ watch(
       {{ t('meeting.realtime.needApiKey') }}
     </NAlert>
 
+    <div v-if="backendError" class="realtime-error">
+      {{ backendError }}
+    </div>
+
     <div v-if="errorMessage" class="realtime-error">
       {{ errorMessage }}
     </div>
@@ -202,6 +260,7 @@ watch(
           type="primary"
           size="small"
           :disabled="!canStart"
+          :loading="preparing"
           @click="startSession"
         >
           {{ t('meeting.realtime.startSession') }}

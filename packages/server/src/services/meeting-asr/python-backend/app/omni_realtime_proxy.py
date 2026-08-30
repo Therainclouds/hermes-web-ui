@@ -15,11 +15,15 @@ is OpenAI-Realtime-API compatible:
 Frontend protocol (binary in, JSON events out):
 
   Frame 1 (text, required): control JSON
-      {"type": "start", "voice": "Cherry", "instructions": "...", "model": "..."}
-    `model` / `voice` / `instructions` are optional; the server-side config.py
-    defaults apply otherwise. We send `session.update` upstream with these
-    values immediately after the upstream handshake so the user can switch
-    persona / voice per session without restarting the backend.
+      {"type": "start", "voice": "Tina", "instructions": "...", "model": "...",
+       "tools": [{"type": "function", "name": "...", "description": "...",
+                  "parameters": {...}}, ...]}
+    `model` / `voice` / `instructions` / `tools` are optional; the server-side
+    config.py defaults apply otherwise. We send `session.update` upstream with
+    these values immediately after the upstream handshake so the user can
+    switch persona / voice per session without restarting the backend. When
+    `tools` is provided, the session is configured with `tool_choice: "auto"`
+    and the model may emit function calls that are relayed to the client.
 
   Subsequent frames (binary): raw PCM16 @ 24 kHz mono little-endian Int16
     samples, exactly what the upstream API expects in `input_audio_buffer.append`
@@ -28,6 +32,23 @@ Frontend protocol (binary in, JSON events out):
   Text frames (JSON): control frames the frontend can send at any time:
       {"type": "cancel"}   — abort the current in-flight response
       {"type": "ping"}     — heartbeat (echoed back as {"type": "pong"})
+      {"type": "tool_result", "call_id": "...", "output": "..."}
+                           — client-side function-call result; forwarded
+                             upstream as `function_call_output` followed by
+                             `response.create` so the model continues.
+      {"type": "image", "image": "<base64 JPEG>"}
+                           — one camera frame (data URL or raw base64);
+                             forwarded upstream as `input_image_buffer.append`.
+                             DashScope constraints: JPG/JPEG only, ≤256 KB
+                             base64, ~1 fps recommended, and audio must be
+                             appended before image data — enforced per commit
+                             cycle (DashScope clears the audio + image
+                             buffers on every `input_audio_buffer.commit`,
+                             which in VAD mode the server does automatically
+                             at the end of each utterance), so frames landing
+                             in a post-commit window are dropped locally
+                             instead of surfacing the upstream "append image
+                             before append audio" error.
 
 Server → frontend frames:
 
@@ -90,7 +111,7 @@ class OmniRealtimeProxy:
 
     Lifecycle:
 
-        proxy = OmniRealtimeProxy(voice="Cherry", instructions="...")
+        proxy = OmniRealtimeProxy(voice="Tina", instructions="...")
         await proxy.connect()                 # opens upstream + sends session.update
         await proxy.send_audio(pcm_bytes)     # binary frame, PCM16@24k mono
         await proxy.commit_audio()            # optional: flush buffer (server VAD also flushes)
@@ -106,14 +127,45 @@ class OmniRealtimeProxy:
         model: str | None = None,
         voice: str | None = None,
         instructions: str | None = None,
+        tools: list[dict] | None = None,
     ) -> None:
         self.model = model or settings.omni_realtime_model
         self.voice = voice or settings.omni_realtime_voice
         self.instructions = instructions or settings.omni_realtime_instructions or DEFAULT_INSTRUCTIONS
+        # Function-calling tools (OpenAI-Realtime flat format:
+        # {"type": "function", "name", "description", "parameters"}). The
+        # client owns execution — the proxy only relays calls and results.
+        self.tools = [dict(tool) for tool in tools or [] if isinstance(tool, dict)]
         self.session_id = str(uuid.uuid4())
         self.upstream: websockets.WebSocketClientProtocol | None = None
         self._send_lock = asyncio.Lock()
         self._closed = False
+        # Response-lifecycle gate: DashScope rejects any attempt to create a
+        # new response while one is still in flight with
+        # "Conversation already has an active response". The proxy observes
+        # `response.created` / `response.done` / `response.cancelled` and gates
+        # the actions that can trigger a new response (`commit_audio`,
+        # `send_tool_output`) on the previous one fully draining.
+        self._response_active = False
+        self._response_done_event = asyncio.Event()
+        self._response_done_event.set()
+        # DashScope requires at least one audio append before any image frame
+        # ("You must send audio data at least once before you send image data").
+        # We track it so camera frames arriving before the mic feed drop
+        # silently instead of surfacing a confusing upstream error.
+        self._audio_seen = False
+        # ...and the audio + image buffers are BOTH cleared on every
+        # `input_audio_buffer.commit` (in VAD mode the server auto-commits at
+        # the end of each utterance), so the "audio before image" rule applies
+        # per commit cycle, not just per session. Track whether fresh audio has
+        # been appended since the last observed commit so a camera frame that
+        # lands in the post-commit window is dropped locally instead of
+        # surfacing DashScope's "append image before append audio" error.
+        self._audio_appended_since_commit = False
+        # Counter for observability: send_image logs the first frame and then
+        # every 60th (~1/min at the recommended 1 fps), so operators can see
+        # camera frames actually flowing without flooding the log.
+        self._image_frames_sent = 0
 
     # --- upstream lifecycle --------------------------------------------------
 
@@ -138,7 +190,7 @@ class OmniRealtimeProxy:
 
         # Configure the session: text + audio I/O, voice, persona instructions.
         # The Omni endpoint accepts an OpenAI-Realtime-shaped session object.
-        session_update = {
+        session_update: dict[str, Any] = {
             "type": "session.update",
             "session": {
                 "modalities": ["text", "audio"],
@@ -148,6 +200,9 @@ class OmniRealtimeProxy:
                 "instructions": self.instructions,
             },
         }
+        if self.tools:
+            session_update["session"]["tools"] = self.tools
+            session_update["session"]["tool_choice"] = "auto"
         async with self._send_lock:
             await self.upstream.send(json.dumps(session_update))
 
@@ -182,6 +237,8 @@ class OmniRealtimeProxy:
             raise RuntimeError("omni-realtime: upstream not connected")
         if not pcm_bytes:
             return
+        self._audio_seen = True
+        self._audio_appended_since_commit = True
         event = {
             "type": "input_audio_buffer.append",
             "audio": base64.b64encode(pcm_bytes).decode("ascii"),
@@ -189,15 +246,72 @@ class OmniRealtimeProxy:
         async with self._send_lock:
             await self.upstream.send(json.dumps(event))
 
+    async def send_image(self, image: str) -> None:
+        """Append one JPEG camera frame to the upstream input_image_buffer.
+
+        DashScope's Omni-Realtime API accepts frames via
+        ``input_image_buffer.append`` with the image as raw base64 (no data
+        URL prefix). The browser ``canvas.toDataURL`` payload arrives with a
+        ``data:image/jpeg;base64,`` prefix, so we strip it before forwarding.
+
+        Upstream constraints (see official docs): JPG/JPEG only, single image
+        ≤ 256 KB base64, ~1 fps recommended, and audio must have been
+        appended first. The check is per commit cycle, not just per session:
+        DashScope commits (and thereby clears) the audio + image buffers on
+        every ``input_audio_buffer.commit`` (in VAD mode the server
+        auto-commits at the end of each utterance), so a frame arriving
+        after a commit but before the next audio append would be rejected
+        with "append image before append audio". ``_audio_seen`` guards the
+        session start; ``_audio_appended_since_commit`` guards every
+        post-commit window.
+        """
+        if self.upstream is None:
+            raise RuntimeError("omni-realtime: upstream not connected")
+        if not self._audio_seen:
+            log.warning("omni-realtime: dropping image frame — no audio appended yet")
+            return
+        if not self._audio_appended_since_commit:
+            log.warning(
+                "omni-realtime: dropping image frame — no audio appended since the last "
+                "input_audio_buffer commit (DashScope clears the image buffer on commit "
+                "and requires a fresh audio append before each image frame)",
+            )
+            return
+        image = (image or "").strip()
+        if not image:
+            return
+        if image.startswith("data:"):
+            _, _, image = image.partition(",")
+            image = image.strip()
+        if not image:
+            return
+        event = {"type": "input_image_buffer.append", "image": image}
+        async with self._send_lock:
+            await self.upstream.send(json.dumps(event))
+        self._image_frames_sent += 1
+        if self._image_frames_sent == 1 or self._image_frames_sent % 60 == 0:
+            log.info(
+                "omni-realtime: forwarded image frame #%d (base64 %d chars, session=%s)",
+                self._image_frames_sent,
+                len(image),
+                self.session_id,
+            )
+
     async def commit_audio(self) -> None:
         """Commit the buffered audio upstream (server VAD also does this automatically).
 
         Used by push-to-talk clients that want to force the model to respond
         even before VAD closes the turn. Without this the server waits for
         its own speech-stopped event.
+
+        If a response is still in flight when the commit arrives we wait for
+        it to finish before sending — otherwise DashScope's auto-create logic
+        collides with the live response and returns
+        "Conversation already has an active response".
         """
         if self.upstream is None:
             return
+        await self._await_response_done("commit_audio")
         event = {"type": "input_audio_buffer.commit"}
         try:
             async with self._send_lock:
@@ -216,6 +330,57 @@ class OmniRealtimeProxy:
         except ConnectionClosed:
             pass
 
+    async def send_tool_output(self, call_id: str, output: str) -> None:
+        """Return a client-side function-call result and ask for the next turn.
+
+        Follows the OpenAI-Realtime shape: append a `function_call_output`
+        conversation item, then trigger `response.create` so the model
+        speaks the answer that uses the tool result.
+
+        `response.create` MUST wait for the in-flight response to drain —
+        `response.function_call_arguments.done` arrives *before* `response.done`
+        for the same turn, so firing `response.create` immediately would
+        race with the still-active response and DashScope would reject with
+        "Conversation already has an active response".
+        """
+        if self.upstream is None or not call_id:
+            return
+        await self._await_response_done("send_tool_output")
+        item = {
+            "type": "conversation.item.create",
+            "item": {
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": output,
+            },
+        }
+        try:
+            async with self._send_lock:
+                await self.upstream.send(json.dumps(item))
+                await self.upstream.send(json.dumps({"type": "response.create"}))
+        except ConnectionClosed:
+            pass
+
+    async def _await_response_done(self, action: str, timeout: float = 30.0) -> None:
+        """Block until no response is in flight, with a safety timeout.
+
+        The upstream can stall in pathological cases (network blip mid-turn,
+        model timeout, etc.); we don't want a single stuck response to wedge
+        every subsequent client action forever. If the timeout fires we log
+        and proceed — the resulting upstream error will be surfaced to the
+        client as a normal `error` event.
+        """
+        if not self._response_active:
+            return
+        try:
+            await asyncio.wait_for(self._response_done_event.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            log.warning(
+                "omni-realtime: %s timed out waiting %.1fs for in-flight response to drain; proceeding anyway",
+                action,
+                timeout,
+            )
+
     # --- upstream event pump -------------------------------------------------
 
     async def upstream_events(self) -> AsyncIterator[bytes | str]:
@@ -231,6 +396,39 @@ class OmniRealtimeProxy:
             async for raw in self.upstream:
                 if self._closed:
                     return
+                # Track response lifecycle so downstream actions that request
+                # a new response (`commit_audio`, `send_tool_output`) can
+                # wait for the in-flight one to finish — see `_response_active`
+                # docstring in __init__.
+                if isinstance(raw, str):
+                    try:
+                        msg = json.loads(raw)
+                    except json.JSONDecodeError:
+                        pass
+                    else:
+                        evt = msg.get("type") or msg.get("event")
+                        if evt == "response.created":
+                            self._response_active = True
+                            self._response_done_event.clear()
+                        elif evt in ("response.done", "response.cancelled"):
+                            if self._response_active:
+                                self._response_active = False
+                                self._response_done_event.set()
+                        elif evt in (
+                            "input_audio_buffer.speech_started",
+                            "input_audio_buffer.speech_stopped",
+                            "input_audio_buffer.committed",
+                            "input_audio_buffer.cleared",
+                        ):
+                            # DashScope commits (and thereby clears) the
+                            # audio + image buffers at the end of each VAD
+                            # utterance, and truncates the buffer at speech
+                            # onset. Until fresh audio is appended again any
+                            # image frame would be rejected with "append
+                            # image before append audio" — reset the
+                            # freshness flag so `send_image` drops frames
+                            # that land in the post-commit window.
+                            self._audio_appended_since_commit = False
                 yield raw
         except ConnectionClosed:
             log.info("omni-realtime: upstream connection closed")
@@ -304,6 +502,35 @@ def translate_event(raw: str | bytes) -> str | bytes | None:
 
     if event == "response.done":
         return json.dumps({"type": "response_done"}, ensure_ascii=False)
+
+    # DashScope emits `response.cancelled` when the client sends
+    # `response.cancel` mid-stream. We translate it to the same
+    # `response_done` frame the client already understands — both events
+    # mean "the response is fully drained, no more audio / text for it" —
+    # so the client can clear its post-cancel audio-drop window without
+    # needing a separate event type.
+    if event == "response.cancelled":
+        return json.dumps({"type": "response_done"}, ensure_ascii=False)
+
+    # Function calling: the canonical payload lives in the `.done` event.
+    # `conversation.item.created` repeats the same call for protocol
+    # bookkeeping — the caller dedupes by call_id.
+    if event == "response.function_call_arguments.done":
+        return json.dumps({
+            "type": "function_call",
+            "call_id": msg.get("call_id") or "",
+            "name": msg.get("name") or "",
+            "arguments": msg.get("arguments") or "{}",
+        }, ensure_ascii=False)
+
+    item = msg.get("item")
+    if event == "conversation.item.created" and isinstance(item, dict) and item.get("type") == "function_call":
+        return json.dumps({
+            "type": "function_call",
+            "call_id": item.get("call_id") or "",
+            "name": item.get("name") or "",
+            "arguments": item.get("arguments") or "{}",
+        }, ensure_ascii=False)
 
     if event == "error":
         err = msg.get("error") or {}

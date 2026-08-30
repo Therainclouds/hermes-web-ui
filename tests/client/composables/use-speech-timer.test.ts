@@ -104,9 +104,60 @@ describe('useSpeechTimer（面板功能层，deps 启用）', () => {
     expect(record.label).toBe('开场')
     expect(record.durationSec).toBeCloseTo(10, 5)
     expect(record.overtimeSec).toBe(0)
+    expect(record.kind).toBe('segment')
     // 记录后清空标签并重置计时器
     expect(timer.timerLabel.value).toBe('')
     expect(timer.timerRemainingMs.value).toBe(60_000)
+  })
+
+  it('first segment spans from the timer start wall-clock to the click', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(500_000)
+      const { evalState, persist } = makeEvalState()
+      evalState.value.timerDurationSec = 60
+      const timer = useSpeechTimer({ evalState, persist })
+      timer.setThresholds({ durationSec: 60, yellowAtSec: 30, redAtSec: 10 })
+      timer.timerLabel.value = '开场介绍/燕灵'
+      timer.toggle() // 开始走表：区间起点锚定
+      vi.setSystemTime(540_000)
+
+      timer.recordSegment()
+
+      const record = evalState.value.timerRecords[0]
+      expect(record.startTs).toBe(500_000)
+      expect(record.timestamp).toBe(540_000)
+      expect(record.durationSec).toBeCloseTo(40, 5)
+      expect(record.overtimeSec).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('next segments span from the previous record timestamp to the click', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(1_000_000)
+      const { evalState, persist } = makeEvalState()
+      evalState.value.timerDurationSec = 60
+      evalState.value.timerRecords = [
+        { label: '开场介绍/燕灵', durationSec: 30, overtimeSec: 0, timestamp: 900_000, startTs: 870_000, kind: 'segment' },
+      ]
+      const timer = useSpeechTimer({ evalState, persist })
+      timer.setThresholds({ durationSec: 60, yellowAtSec: 30, redAtSec: 10 })
+      timer.timerLabel.value = '小组共创/UU'
+
+      timer.recordSegment()
+
+      const record = evalState.value.timerRecords[1]
+      expect(record.startTs).toBe(900_000) // 上一条记录时刻 → 本次点击
+      expect(record.timestamp).toBe(1_000_000)
+      expect(record.durationSec).toBeCloseTo(100, 5)
+      expect(record.overtimeSec).toBeCloseTo(40, 5)
+      expect(record.kind).toBe('segment')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('auto-labels segments when no label was typed', () => {

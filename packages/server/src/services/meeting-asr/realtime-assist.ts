@@ -4,7 +4,7 @@ import { getSceneTemplateOrDefault } from './scene-templates'
 import { getActiveProfileName } from '../hermes/hermes-profile'
 import { streamAgentReport } from './agent-bridge'
 import { analyzeViaDirectLLM, streamDirectLLMReport } from './direct-llm'
-import type { AnalysisRound, SpeechContext } from './report-parser'
+import { annotateTranscriptSpeakers, type AnalysisRound, type SpeechContext } from './report-parser'
 export { parseAnalysisRound as parseAnalysisResponse } from './report-parser'
 export type { AnalysisRound, SpeechContext, GoldenQuote, GrammarIssue, FillerWord } from './report-parser'
 
@@ -222,7 +222,10 @@ class RealtimeAssistService {
     speechSummary?: SpeechSummary,
   ): Promise<AnalysisRound | null> {
     const template = getSceneTemplateOrDefault(sceneTemplateId)
-    const transcriptText = sentences
+    // 转写句子按环节-演讲者时间线标注真实姓名（替换"说话人1"等声纹名），
+    // 让 LLM 的赘语/金句/语法归属与计时员记录的环节/演讲者一致。
+    const annotated = annotateTranscriptSpeakers(sentences, speechContext?.speakerTimeline)
+    const transcriptText = annotated
       .map(s => `${s.speaker ? `[${s.speaker}] ` : ''}${s.text}`)
       .join('\n')
 
