@@ -1906,10 +1906,13 @@ async function clearTranscript() {
 }
 
 // .waveform-container / .connecting-overlay 已迁入 WaveformCanvas 组件。
-// 演讲评分：波形区外层舞台。极简原则——无边框无描边，相位由倒计时颜色表达。
+// 演讲评分：波形区外层舞台。圆角悬浮卡对齐主设计——
+// 方角深蓝底（WaveformCanvas 容器）随 overflow:hidden 被圆角裁切。
 .waveform-stage {
   position: relative;
   overflow: hidden;
+  margin: 12px 12px 0;
+  border-radius: 12px;
 }
 
 .status-bar {

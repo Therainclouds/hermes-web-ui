@@ -6,7 +6,7 @@ import { useMeetingStore } from '@/stores/hermes/meeting'
 import type { SpeechEvalState } from '@/stores/hermes/meeting'
 import { useMeetingAssist } from '@/composables/useMeetingAssist'
 import { useSpeechAiAggregation } from '@/composables/useSpeechAiAggregation'
-import { provideSpeechTimer } from './speech/speechTimerContext'
+import { useSpeechTimerInjectOrCreate } from './speech/speechTimerContext'
 import { useSpeechFillerCounter } from '@/composables/useSpeechFillerCounter'
 import { request } from '@/api/client'
 import { useSpeechEvalReport } from '@/composables/useSpeechEvalReport'
@@ -78,7 +78,7 @@ function persist(patch: Partial<SpeechEvalState>) {
 // 共享计时器（单例）：与左侧波形/转写区同步显示；面板层（环节/串场记录、
 // 设置、语音提醒）经 deps 启用——timerMode/串场/TTS 已收编进 composable。
 // 共享计时器唯一实例（reactive 化供子组件经上下文注入；面板自身经 timer.* 访问）
-const timer = provideSpeechTimer({ evalState, persist })
+const timer = useSpeechTimerInjectOrCreate({ evalState, persist })
 
 // 阈值变更时同步共享计时器（时长/黄牌/红牌剩余秒数）
 watch(() => ({
@@ -346,10 +346,6 @@ onUnmounted(() => {
         <span class="kpi-value">{{ liveScore?.overall ?? '—' }}</span>
         <span class="kpi-label">{{ t('meeting.speechEval.kpiOverall') }}</span>
       </div>
-      <div class="kpi-cell kpi-phase" :class="`phase-${timer.phase}`">
-        <span class="kpi-value">{{ timer.display }}</span>
-        <span class="kpi-label">{{ timer.phaseLabel }}</span>
-      </div>
       <div class="kpi-cell">
         <span class="kpi-value">{{ fillerTotal }}</span>
         <span class="kpi-label">{{ t('meeting.speechEval.kpiFillers') }}</span>
@@ -561,7 +557,7 @@ onUnmounted(() => {
   top: -12px; /* 抵消面板 padding，贴住滚动容器顶部 */
   z-index: 5;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 6px;
   padding: 8px 10px;
   border-radius: 10px;
@@ -590,8 +586,6 @@ onUnmounted(() => {
 
 .kpi-label { font-size: 10px; color: var(--n-text-color3, #999); }
 
-.kpi-phase {
-  &.phase-green .kpi-value { color: #63e2b7; }
   &.phase-yellow .kpi-value { color: #f0a020; }
   &.phase-red .kpi-value { color: #ff4d4f; }
 }
