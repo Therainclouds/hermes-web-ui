@@ -725,6 +725,23 @@ export default {
     started: '시작됨', running: '실행 중', completed: '완료됨', failed: '실패함', cancelled: '취소됨', interrupted: '중단됨',
   },
 
+  omniRealtime: {
+    entry: '실시간 대화',
+    entryHint: '말만 하면 되는 핸즈프리 실시간 음성 대화, 언제든 끼어들기 가능',
+    backendUnavailable: '실시간 서비스가 준비되지 않았습니다. 먼저 회의 모드에서 음성 서비스를 설정하고 시작한 후 다시 시도하세요',
+    sessionError: '실시간 연결에 오류가 발생했습니다. 다시 시도하세요. 계속 실패하면 회의 음성 서비스가 실행 중인지 확인하세요',
+    toolRunning: '조회 중: {tool} …',
+    toolsHint: '워크스페이스 도구 활성화: 메모리·스킬·세션·작업',
+    modelNote: 'Qwen3.5-Omni-Flash-Realtime · 회의 실시간 대화와 동일한 모델',
+    camera: '카메라 켜기',
+    mute: '마이크 음소거',
+    unmute: '음소거 해제',
+    handsFreeHint: '핸즈프리: 그냥 말하세요. 말하면 언제든 AI 응답을 중단할 수 있습니다',
+    cameraFailed: '카메라를 열지 못했습니다. 음성만으로 계속합니다',
+    cameraActive: '카메라가 켜져 있어요 — AI가 보고 있어요',
+    savedToChat: '실시간 대화 기록이 이 세션에 저장되었습니다',
+  },
+
   realtimeVoice: {
     title: '실시간 음성', mode: '음성 모드', open: '실시간 음성 열기', back: '채팅으로 돌아가기', connected: '음성 연결 준비됨',
     turnMode: '실시간 미리보기 · 턴 방식', browserStt: '브라우저', browserTts: '브라우저', untitledSession: '제목 없는 대화',
@@ -861,6 +878,8 @@ export default {
     recentCount: '최근 세션 수',
     loadMoreSessions: '세션 더 불러오기',
     newChat: '새 채팅',
+    newChatMode: '대화 방식',
+    standardChat: '일반 대화',
     category: '카테고리',
     uncategorized: '미분류',
     categoryPlaceholder: '카테고리 선택 또는 만들기',

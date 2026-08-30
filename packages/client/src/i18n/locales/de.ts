@@ -725,6 +725,23 @@ export default {
     started: 'Gestartet', running: 'Wird ausgeführt', completed: 'Abgeschlossen', failed: 'Fehlgeschlagen', cancelled: 'Abgebrochen', interrupted: 'Unterbrochen',
   },
 
+  omniRealtime: {
+    entry: 'Echtzeit',
+    entryHint: 'Freihändige Sprachkonversation mit der KI — jederzeit unterbrechbar',
+    backendUnavailable: 'Der Echtzeitdienst ist nicht bereit. Konfigurieren und starten Sie zuerst den Sprachdienst im Meeting-Modus und versuchen Sie es erneut.',
+    sessionError: 'Echtzeitverbindung fehlgeschlagen. Bitte erneut versuchen; falls es weiterhin fehlschlägt, prüfen Sie, ob der Meeting-Sprachdienst läuft.',
+    toolRunning: 'Abfrage läuft: {tool} …',
+    toolsHint: 'Arbeitsbereich-Tools aktiv: Gedächtnis, Skills, Sitzungen, Aufgaben',
+    modelNote: 'Qwen3.5-Omni-Flash-Realtime · gleiches Modell wie das Meeting-Echtzeitgespräch',
+    camera: 'Kamera öffnen',
+    mute: 'Mikrofon stummschalten',
+    unmute: 'Stummschaltung aufheben',
+    handsFreeHint: 'Freihändig: sprechen Sie einfach; Ihre Stimme unterbricht die KI jederzeit',
+    cameraFailed: 'Kamera konnte nicht geöffnet werden; nur mit Sprache fortsetzen',
+    cameraActive: 'Kamera aktiv — die KI kann Sie sehen',
+    savedToChat: 'Echtzeit-Protokoll in dieser Konversation gespeichert',
+  },
+
   realtimeVoice: {
     title: 'Echtzeit-Sprache', mode: 'Sprachmodus', open: 'Echtzeit-Sprache öffnen', back: 'Zurück zum Chat', connected: 'Sprachverbindung bereit',
     turnMode: 'Echtzeit-Vorschau · rundenbasiert', browserStt: 'Browser', browserTts: 'Browser', untitledSession: 'Unbenannte Unterhaltung',
@@ -861,6 +878,8 @@ export default {
     recentCount: 'Anzahl letzter Sitzungen',
     loadMoreSessions: 'Weitere Sitzungen laden',
     newChat: 'Neuer Chat',
+    newChatMode: 'Chat-Typ',
+    standardChat: 'Standard',
     category: 'Kategorie',
     uncategorized: 'Ohne Kategorie',
     categoryPlaceholder: 'Kategorie auswählen oder erstellen',

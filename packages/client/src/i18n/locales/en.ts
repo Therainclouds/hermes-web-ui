@@ -688,6 +688,23 @@ export default {
     started: 'Started', running: 'Running', completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled', interrupted: 'Interrupted',
   },
 
+  omniRealtime: {
+    entry: 'Realtime',
+    entryHint: 'Hands-free voice conversation with the AI — interrupt anytime',
+    backendUnavailable: 'The realtime service is not ready. Configure and start the voice service in Meeting mode first, then try again.',
+    sessionError: 'Realtime connection failed. Please try again; if it keeps failing, check that the meeting voice service is running.',
+    toolRunning: 'Looking up: {tool} …',
+    toolsHint: 'Workspace tools enabled: memory, skills, sessions, jobs',
+    modelNote: 'Qwen3.5-Omni-Flash-Realtime · same model as meeting realtime',
+    camera: 'Open camera',
+    mute: 'Mute microphone',
+    unmute: 'Unmute microphone',
+    handsFreeHint: 'Hands-free: just start talking; speak anytime to interrupt the AI',
+    cameraFailed: 'Could not open the camera; continuing with voice only',
+    cameraActive: 'Camera on — the AI can see you',
+    savedToChat: 'Realtime transcript saved to this conversation',
+  },
+
   realtimeVoice: {
     title: 'Realtime Voice',
     mode: 'Voice mode',
@@ -890,6 +907,8 @@ export default {
     searchEnterHint: 'Enter to open · Esc to close',
     searchFailed: 'Failed to search sessions',
     newChat: 'New Chat',
+    newChatMode: 'Chat type',
+    standardChat: 'Standard',
     category: 'Category',
     uncategorized: 'Uncategorized',
     categoryPlaceholder: 'Select or create a category',

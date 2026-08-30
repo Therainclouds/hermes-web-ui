@@ -725,6 +725,23 @@ export default {
     started: 'Iniciada', running: 'En ejecución', completed: 'Completada', failed: 'Fallida', cancelled: 'Cancelada', interrupted: 'Interrumpida',
   },
 
+  omniRealtime: {
+    entry: 'Tiempo real',
+    entryHint: 'Conversación de voz manos libres con la IA — interrumpe cuando quieras',
+    backendUnavailable: 'El servicio en tiempo real no está listo. Configura e inicia el servicio de voz en modo Reunión y vuelve a intentarlo.',
+    sessionError: 'Error de conexión en tiempo real. Inténtalo de nuevo; si sigue fallando, comprueba que el servicio de voz de reuniones esté iniciado.',
+    toolRunning: 'Consultando: {tool} …',
+    toolsHint: 'Herramientas del espacio de trabajo activas: memoria, habilidades, sesiones, tareas',
+    modelNote: 'Qwen3.5-Omni-Flash-Realtime · mismo modelo que el tiempo real de reuniones',
+    camera: 'Abrir cámara',
+    mute: 'Silenciar micrófono',
+    unmute: 'Activar micrófono',
+    handsFreeHint: 'Manos libres: simplemente habla; tu voz interrumpe a la IA en cualquier momento',
+    cameraFailed: 'No se pudo abrir la cámara; se continúa solo con voz',
+    cameraActive: 'Cámara activada: la IA puede verte',
+    savedToChat: 'Transcripción en tiempo real guardada en esta conversación',
+  },
+
   realtimeVoice: {
     title: 'Voz en tiempo real', mode: 'Modo de voz', open: 'Abrir voz en tiempo real', back: 'Volver al chat', connected: 'Enlace de voz listo',
     turnMode: 'Vista previa en tiempo real · por turnos', browserStt: 'Navegador', browserTts: 'Navegador', untitledSession: 'Conversación sin título',
@@ -861,6 +878,8 @@ export default {
     recentCount: 'Cantidad de sesiones recientes',
     loadMoreSessions: 'Cargar más sesiones',
     newChat: 'Nuevo chat',
+    newChatMode: 'Tipo de chat',
+    standardChat: 'Estándar',
     category: 'Categoría',
     uncategorized: 'Sin categoría',
     categoryPlaceholder: 'Seleccionar o crear una categoría',

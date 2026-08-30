@@ -100,7 +100,10 @@ class Settings:
     )
     omni_realtime_voice: str = os.environ.get(
         "OMNI_REALTIME_VOICE",
-        "Cherry",
+        # `Tina` is the default voice for `qwen3.5-omni-flash-realtime`.
+        # `Cherry` (the previous default) is NOT in that model's voice
+        # catalogue — DashScope rejects it with 1007 / InvalidParameter.
+        "Tina",
     )
     omni_realtime_instructions: str = os.environ.get(
         "OMNI_REALTIME_INSTRUCTIONS",

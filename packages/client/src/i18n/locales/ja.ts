@@ -725,6 +725,23 @@ export default {
     started: '開始済み', running: '実行中', completed: '完了', failed: '失敗', cancelled: 'キャンセル済み', interrupted: '中断済み',
   },
 
+  omniRealtime: {
+    entry: 'リアルタイム会話',
+    entryHint: 'ハンズフリーで AI とリアルタイム音声会話、いつでも割り込み可能',
+    backendUnavailable: 'リアルタイムサービスの準備ができていません。まず会議モードで音声サービスを設定・起動してから再試行してください',
+    sessionError: 'リアルタイム接続でエラーが発生しました。再試行してください。繰り返す場合は会議音声サービスの起動を確認してください',
+    toolRunning: '照会中：{tool} …',
+    toolsHint: 'ワークスペースツール有効：記憶・スキル・セッション・タスク',
+    modelNote: 'Qwen3.5-Omni-Flash-Realtime · 会議のリアルタイム会話と同じモデル',
+    camera: 'カメラを開く',
+    mute: 'マイクをミュート',
+    unmute: 'ミュート解除',
+    handsFreeHint: 'ハンズフリー：そのまま話しかけてください。話すことで AI の応答を中断できます',
+    cameraFailed: 'カメラを開けませんでした。音声のみで続行します',
+    cameraActive: 'カメラ起動中 — AI から見えています',
+    savedToChat: 'リアルタイム会話の記録をこのセッションに保存しました',
+  },
+
   realtimeVoice: {
     title: 'リアルタイム音声', mode: '音声モード', open: 'リアルタイム音声を開く', back: 'チャットに戻る', connected: '音声リンク準備完了',
     turnMode: 'リアルタイムプレビュー · ターン方式', browserStt: 'ブラウザ', browserTts: 'ブラウザ', untitledSession: '無題の会話',
@@ -861,6 +878,8 @@ export default {
     recentCount: '最近のセッション数',
     loadMoreSessions: 'さらにセッションを読み込む',
     newChat: '新しいチャット',
+    newChatMode: '会話方式',
+    standardChat: '標準会話',
     category: 'カテゴリー',
     uncategorized: '未分類',
     categoryPlaceholder: 'カテゴリーを選択または作成',

@@ -631,6 +631,23 @@ export default {
     started: '已啟動', running: '執行中', completed: '已完成', failed: '執行失敗', cancelled: '已取消', interrupted: '已停止',
   },
 
+  omniRealtime: {
+    entry: '即時對話',
+    entryHint: '免持與 AI 即時語音對話，可隨時打斷',
+    backendUnavailable: '即時對話服務未就緒，請先在會議模式中設定並啟動語音服務後再試',
+    sessionError: '即時連線出錯，請重試；若反覆失敗請檢查會議語音服務是否已啟動',
+    toolRunning: '正在查詢：{tool} …',
+    toolsHint: '已啟用工作台工具：記憶、技能、會話、任務',
+    modelNote: 'Qwen3.5-Omni-Flash-Realtime · 與會議即時對話一致',
+    camera: '開啟攝影機',
+    mute: '靜音麥克風',
+    unmute: '取消靜音',
+    handsFreeHint: '免持模式：直接說話即可，開口即可打斷 AI',
+    cameraFailed: '攝影機開啟失敗，已繼續語音對話',
+    cameraActive: '攝影機已開啟，AI 可以看到你',
+    savedToChat: '即時對話紀錄已儲存到目前會話',
+  },
+
   realtimeVoice: {
     title: '即時語音',
     mode: '語音模式',
@@ -835,6 +852,8 @@ export default {
     searchEnterHint: 'Enter 開啟 · Esc 關閉',
     searchFailed: '搜尋工作階段失敗',
     newChat: '新增對話',
+    newChatMode: '對話方式',
+    standardChat: '標準對話',
     category: '分類',
     uncategorized: '未分類',
     categoryPlaceholder: '選擇或新增分類',

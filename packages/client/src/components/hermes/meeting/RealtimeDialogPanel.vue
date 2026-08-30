@@ -20,18 +20,19 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
-// A small curated voice list. DashScope accepts additional values; the ones
-// below are the ones most commonly listed in their docs and stay stable
-// across Omni-Realtime model upgrades.
+// Voices verified against the DashScope `qwen3.5-omni-flash-realtime`
+// catalogue (default model for this stage). `Cherry`, `Chelsie`, and `Adam`
+// are NOT valid for that model — DashScope closes the WS with 1007
+// `Voice 'X' is not supported.` if any of them is sent upstream.
 const voiceOptions: SelectOption[] = [
-  { label: 'Cherry (女声 · 中文)', value: 'Cherry' },
+  { label: 'Tina (女声 · 中文 · 默认)', value: 'Tina' },
   { label: 'Serena (女声 · 中文)', value: 'Serena' },
   { label: 'Ethan (男声 · 中文)', value: 'Ethan' },
-  { label: 'Chelsie (女声 · 英文)', value: 'Chelsie' },
-  { label: 'Adam (男声 · 英文)', value: 'Adam' },
+  { label: 'Jennifer (女声 · 中文)', value: 'Jennifer' },
+  { label: 'Ryan (男声 · 中文)', value: 'Ryan' },
 ]
 
-const selectedVoice = ref<string>('Cherry')
+const selectedVoice = ref<string>('Tina')
 const instructions = ref<string>(
   '你是一个友好的中文会议助手，名字叫\"小合\"。请用简洁、自然、口语化的中文回答，适合直接朗读。',
 )

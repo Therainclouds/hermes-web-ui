@@ -584,6 +584,23 @@ export default {
     started: 'بدأت', running: 'قيد التشغيل', completed: 'مكتملة', failed: 'فشلت', cancelled: 'أُلغيت', interrupted: 'تمت المقاطعة',
   },
 
+  omniRealtime: {
+    entry: 'محادثة فورية',
+    entryHint: 'محادثة صوتية حرة مع الذكاء الاصطناعي — يمكن المقاطعة في أي وقت',
+    backendUnavailable: 'خدمة المحادثة الفورية غير جاهزة. يرجى إعداد خدمة الصوت وتشغيلها من وضع الاجتماعات أولاً ثم إعادة المحاولة',
+    sessionError: 'فشل الاتصال الفوري. حاول مرة أخرى؛ وإذا تكرر الأمر، تحقق من تشغيل خدمة صوت الاجتماعات',
+    toolRunning: 'جارٍ البحث: {tool} …',
+    toolsHint: 'أدوات مساحة العمل مفعّلة: الذاكرة، المهارات، الجلسات، المهام',
+    modelNote: 'Qwen3.5-Omni-Flash-Realtime · نفس نموذج المحادثة الفورية في الاجتماعات',
+    camera: 'فتح الكاميرا',
+    mute: 'كتم الميكروفون',
+    unmute: 'إلغاء الكتم',
+    handsFreeHint: 'وضع حر: تحدث فقط؛ كلامك يقاطع رد الذكاء الاصطناعي في أي وقت',
+    cameraFailed: 'تعذر فتح الكاميرا؛ سنتابع بالصوت فقط',
+    cameraActive: 'الكاميرا مفعّلة — يمكن للذكاء الاصطناعي رؤيتك',
+    savedToChat: 'تم حفظ نص المحادثة الفورية في هذه المحادثة',
+  },
+
   realtimeVoice: {
     title: 'الصوت الفوري',
     mode: 'الوضع الصوتي',
@@ -786,6 +803,8 @@ export default {
     searchEnterHint: 'Enter للفتح · Esc للإغلاق',
     searchFailed: 'تعذّر البحث في الجلسات',
     newChat: 'محادثة جديدة',
+    newChatMode: 'نوع المحادثة',
+    standardChat: 'عادي',
     category: 'الفئة',
     uncategorized: 'غير مصنّف',
     categoryPlaceholder: 'اختر فئة أو أنشئ واحدة',
