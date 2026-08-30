@@ -598,13 +598,18 @@ onUnmounted(() => {
 
 // 指示条在右栏宽度动画/隐藏挂载时会测宽失败（渲染成超宽），隐藏规避
 .eval-tabs :deep(.n-tabs-bar) {
-  display: none;
+  display: none !important;
+}
+
+// Tab 距面板边缘留出呼吸空间（naive 的 nav 自身 padding 会盖外层）
+.eval-tabs :deep(.n-tabs-nav-scroll-content) {
+  padding: 0 8px;
 }
 
 .eval-tabs {
   flex: 1;
   min-height: 0;
-  padding: 0 12px;
+  padding: 0 4px;
 
   :deep(.n-tabs-nav) { position: sticky; top: 52px; z-index: 4; background: $bg-primary; }
   :deep(.n-tab-pane) { padding: 4px 0 0; }
