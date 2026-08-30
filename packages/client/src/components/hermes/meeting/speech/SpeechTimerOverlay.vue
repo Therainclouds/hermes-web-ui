@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // 演讲评分场景 · 波形舞台计时舱（经 scene-ui-registry 渲染，MeetingView provide 的
-// 单例实例向下注入——记录/提醒副作用只在面板侧注册一次）。
-// 布局：上半 = 倒计时 + 相位 + 模式徽章；下半 = 完整控制组（开始/重置/模式/提醒/记录）。
+// 单例实例向下注入）。双层结构：
+//   - cabin-overlay：倒计时 + 相位 + 模式徽章 + 红黄绿卡，绝对定位覆盖 canvas；
+//   - cabin-dock：控制工具条，正常文档流排在 canvas 下方（舞台自动长高，不挤压）。
 import { useI18n } from 'vue-i18n'
 import { NButton, NInput } from 'naive-ui'
 import { injectSpeechTimer } from './speechTimerContext'
@@ -11,18 +12,23 @@ const timer = injectSpeechTimer()
 </script>
 
 <template>
-  <div class="speech-timer-overlay" :class="`phase-${timer.phase}`">
-    <div class="speech-timer-main">
-      <span v-if="timer.timerMode === 'transition'" class="speech-timer-mode">⏭️ {{ t('meeting.speechEval.transitionMode') }}</span>
-      <span class="speech-timer-time">{{ timer.display }}</span>
-      <span class="speech-timer-phase">{{ timer.phaseLabel }}</span>
+  <!-- 浮层：只覆盖 canvas 区域（100px），纯展示 -->
+  <div class="cabin-overlay" :class="`phase-${timer.phase}`">
+    <div class="cabin-main">
+      <span v-if="timer.timerMode === 'transition'" class="cabin-mode">⏭️ {{ t('meeting.speechEval.transitionMode') }}</span>
+      <span class="cabin-time">{{ timer.display }}</span>
+      <span class="cabin-phase">{{ timer.phaseLabel }}</span>
     </div>
-    <div class="speech-timer-cards">
-      <span class="tm-card green" :class="{ active: timer.phase === 'green' }">🟢 {{ t('meeting.speechEval.greenCard') }}</span>
-      <span class="tm-card yellow" :class="{ active: timer.phase === 'yellow' }">🟡 {{ t('meeting.speechEval.yellowCard') }}</span>
-      <span class="tm-card red" :class="{ active: timer.phase === 'red' }">🔴 {{ t('meeting.speechEval.redCard') }}</span>
+    <div class="cabin-cards">
+      <span class="cabin-card green" :class="{ active: timer.phase === 'green' }">🟢 {{ t('meeting.speechEval.greenCard') }}</span>
+      <span class="cabin-card yellow" :class="{ active: timer.phase === 'yellow' }">🟡 {{ t('meeting.speechEval.yellowCard') }}</span>
+      <span class="cabin-card red" :class="{ active: timer.phase === 'red' }">🔴 {{ t('meeting.speechEval.redCard') }}</span>
     </div>
-    <div class="speech-timer-actions">
+  </div>
+
+  <!-- 工具条：正常文档流，canvas 下方，所有计时控制集中于此 -->
+  <div class="cabin-dock">
+    <div class="dock-row">
       <NButton size="tiny" :type="timer.timerRunning ? 'warning' : 'primary'" @click="timer.toggle">
         {{ timer.timerRunning ? t('meeting.speechEval.pause') : t('meeting.speechEval.start') }}
       </NButton>
@@ -39,7 +45,7 @@ const timer = injectSpeechTimer()
         {{ timer.voiceAlert ? t('meeting.speechEval.voiceAlertOn') : t('meeting.speechEval.voiceAlertOff') }}
       </NButton>
     </div>
-    <div class="speech-timer-record">
+    <div class="dock-row dock-record">
       <NInput
         v-if="timer.timerMode === 'segment'"
         v-model:value="timer.timerLabel"
@@ -55,33 +61,34 @@ const timer = injectSpeechTimer()
 </template>
 
 <style scoped lang="scss">
-// --- 演讲评分：波形舞台计时舱（收拢为单舱三行，去掉与右栏重复的一切） ---
-.speech-timer-overlay {
+// ── 浮层：倒计时覆盖 canvas（100px 内，纯展示不挤压） ──
+.cabin-overlay {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 100px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 8px 12px;
-  background: linear-gradient(90deg, rgba(15, 23, 42, 0.88), rgba(15, 23, 42, 0.55) 40%, rgba(15, 23, 42, 0.65));
+  gap: 4px;
+  background: linear-gradient(90deg, rgba(15, 23, 42, 0.85), rgba(15, 23, 42, 0.45) 40%, rgba(15, 23, 42, 0.6));
   pointer-events: none;
 
-  &.phase-green { background: linear-gradient(90deg, rgba(15, 23, 42, 0.88), rgba(24, 160, 88, 0.12) 55%, rgba(15, 23, 42, 0.65)); }
-  &.phase-yellow { background: linear-gradient(90deg, rgba(15, 23, 42, 0.88), rgba(240, 160, 32, 0.16) 55%, rgba(15, 23, 42, 0.65)); }
-  &.phase-red { background: linear-gradient(90deg, rgba(15, 23, 42, 0.88), rgba(208, 48, 80, 0.2) 55%, rgba(15, 23, 42, 0.65)); }
+  &.phase-green { background: linear-gradient(90deg, rgba(15, 23, 42, 0.85), rgba(24, 160, 88, 0.12) 55%, rgba(15, 23, 42, 0.6)); }
+  &.phase-yellow { background: linear-gradient(90deg, rgba(15, 23, 42, 0.85), rgba(240, 160, 32, 0.16) 55%, rgba(15, 23, 42, 0.6)); }
+  &.phase-red { background: linear-gradient(90deg, rgba(15, 23, 42, 0.85), rgba(208, 48, 80, 0.2) 55%, rgba(15, 23, 42, 0.6)); }
 
-  .speech-timer-main {
+  .cabin-main {
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: 2px;
-    flex-shrink: 0;
   }
 
-  .speech-timer-time {
-    font-size: 30px;
+  .cabin-time {
+    font-size: 26px;
     font-weight: 800;
     font-variant-numeric: tabular-nums;
     line-height: 1;
@@ -89,11 +96,11 @@ const timer = injectSpeechTimer()
     text-shadow: 0 0 20px rgba(0, 0, 0, 0.6);
   }
 
-  &.phase-green .speech-timer-time { color: #63e2b7; }
-  &.phase-yellow .speech-timer-time { color: #f0a020; }
-  &.phase-red .speech-timer-time { color: #ff4d4f; }
+  &.phase-green .cabin-time { color: #63e2b7; }
+  &.phase-yellow .cabin-time { color: #f0a020; }
+  &.phase-red .cabin-time { color: #ff4d4f; }
 
-  .speech-timer-mode {
+  .cabin-mode {
     font-size: 10px;
     color: #70c0e8;
     background: rgba(112, 192, 232, 0.12);
@@ -102,21 +109,19 @@ const timer = injectSpeechTimer()
     padding: 0 8px;
   }
 
-  .speech-timer-phase {
+  .cabin-phase {
     font-size: 10px;
     font-weight: 600;
     letter-spacing: 2px;
     color: rgba(255, 255, 255, 0.85);
   }
 
-  .speech-timer-cards {
+  .cabin-cards {
     display: flex;
     gap: 4px;
-    flex-shrink: 0;
-    justify-content: center;
   }
 
-  .tm-card {
+  .cabin-card {
     font-size: 10px;
     padding: 1px 6px;
     border-radius: 12px;
@@ -130,14 +135,24 @@ const timer = injectSpeechTimer()
     &.yellow.active { opacity: 1; border-color: #f0a020; background: rgba(240, 160, 32, 0.35); color: #f0c060; }
     &.red.active { opacity: 1; border-color: #d03050; background: rgba(208, 48, 80, 0.4); color: #ff8a8a; }
   }
+}
 
-  .speech-timer-actions,
-  .speech-timer-record {
+// ── 工具条：canvas 下方，正常文档流 ──
+.cabin-dock {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px 8px;
+  background: rgba(0, 0, 0, 0.25);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+
+  .dock-row {
     display: flex;
     align-items: center;
     gap: 6px;
-    flex-shrink: 0;
-    pointer-events: auto;
+    flex-wrap: wrap;
+    justify-content: center;
   }
 
   .mode-switch {
