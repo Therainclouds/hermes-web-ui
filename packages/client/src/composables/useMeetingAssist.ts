@@ -41,6 +41,10 @@ export interface AnalysisRound {
   highlights?: string[]
   improvements?: string[]
   topics?: string[]
+  // 法律沟通场景（legal）结构化字段
+  riskItems?: Array<{ level: 'high' | 'medium' | 'low'; text: string; quote?: string; lawHint?: string }>
+  positions?: Array<{ party: string; stance: string }>
+  lawRefs?: Array<{ name: string; article?: string; note?: string; verified?: boolean }>
 }
 
 export function useMeetingAssist(sessionId: string) {

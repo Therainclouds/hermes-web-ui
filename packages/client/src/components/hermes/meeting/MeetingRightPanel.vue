@@ -26,6 +26,7 @@ import { useI18n } from 'vue-i18n'
 const props = withDefaults(defineProps<{
   visible: boolean
   isSpeechScene: boolean
+  isLegalScene?: boolean
   showAgentPanel: boolean
   showRealtimeDialog?: boolean
   resizeStyle?: Record<string, string>
@@ -43,6 +44,7 @@ const { t } = useI18n()
 
 const panelTitle = computed(() => {
   if (props.isSpeechScene) return t('meeting.scene.speech')
+  if (props.isLegalScene) return t('meeting.scene.legal')
   if (props.showAgentPanel) return t('meeting.agentChat')
   if (props.showRealtimeDialog) return t('meeting.realtime.title')
   return t('meeting.analysis')
@@ -85,6 +87,9 @@ const panelTitle = computed(() => {
       <!-- 四类内容分发：speech > agent > realtime > analysis -->
       <template v-if="props.isSpeechScene">
         <slot name="speech" />
+      </template>
+      <template v-else-if="props.isLegalScene">
+        <slot name="legal" />
       </template>
       <template v-else-if="props.showAgentPanel">
         <slot name="agent" />
