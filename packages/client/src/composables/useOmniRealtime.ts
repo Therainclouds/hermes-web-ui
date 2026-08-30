@@ -307,12 +307,24 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
    * response so the model can listen and re-answer.
    */
   function maybeBargeIn(): void {
-    if (!options.autoBargeIn || phase.value !== 'speaking') return
+    if (!options.autoBargeIn) return
+    // `phase` flips back to 'ready' the moment upstream emits `response_done`,
+    // which is well before the last queued buffer finishes playing through
+    // the speakers. Gating on `phase === 'speaking'` alone therefore misses
+    // the user speaking during that tail-drain window — the most common
+    // interrupt moment — and the AI keeps talking over them. Barge-in must
+    // also fire whenever audio is *actually* playing (`isOutputPlaying`).
+    if (!isOutputPlaying.value && phase.value !== 'speaking') return
     stopPlayback()
-    droppingAssistantAudio = true
     // A cancelled response never emits a final `transcript` event, so drop
     // the partial build-up instead of leaving it dangling.
     liveAssistantText.value = ''
+    // During the tail-drain window the upstream response has already fully
+    // drained — there is nothing left to cancel, and `response.cancel` with
+    // no active response can surface an upstream error. Silence the local
+    // playback graph only; the user's turn will create a fresh response.
+    if (phase.value !== 'speaking') return
+    droppingAssistantAudio = true
     if (ws && ws.readyState === WebSocket.OPEN) {
       try { ws.send(JSON.stringify({ type: 'cancel' })) } catch { /* ignore */ }
     }
@@ -379,6 +391,13 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
         break
       case 'response_started':
         phase.value = 'speaking'
+        // A new response is beginning upstream — any audio still playing or
+        // queued belongs to the previous (already-finished) response. Cut it
+        // now: `flushPendingToSlot` schedules each chunk at
+        // `Math.max(currentTime, nextPlayTime)`, so without this the new
+        // reply's audio chains behind the old tail and the user hears the
+        // previous segment while the subtitles already show the new one.
+        stopPlayback()
         // Start the new turn with a clean caption. The watch on
         // `isOutputPlaying` already clears `liveAssistantText` once the
         // previous turn's audio finishes, but in the gap between turns
@@ -502,7 +521,10 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
       if (
         bargeInStreak >= 3
         && options.autoBargeIn
-        && phase.value === 'speaking'
+        // Same tail-drain caveat as `maybeBargeIn`: `phase` is already
+        // 'ready' while the last queued buffer still plays, so the local
+        // peak must also gate on real playback, not just phase.
+        && (isOutputPlaying.value || phase.value === 'speaking')
         && performance.now() - lastLocalBargeInAt > LOCAL_BARGE_IN_DEBOUNCE_MS
       ) {
         lastLocalBargeInAt = performance.now()

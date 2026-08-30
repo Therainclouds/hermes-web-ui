@@ -342,6 +342,60 @@ describe('omni-realtime client wiring', () => {
     ).toMatch(/lastLocalBargeInAt/)
   })
 
+  it('useOmniRealtime barge-in fires during the tail-drain window (phase already "ready" while audio still plays)', () => {
+    // Regression guard: `response_done` flips `phase` back to 'ready' the
+    // moment upstream finishes generating, which is well before the last
+    // queued buffer actually finishes playing through the speakers. The old
+    // gate `phase === 'speaking'` therefore swallowed the most common
+    // interrupt moment — the user speaking right after the AI stops
+    // talking — and the AI's audio tail kept playing over them.
+    const source = readFileSync(`${CLIENT_SRC}/composables/useOmniRealtime.ts`, 'utf8')
+
+    // 1. maybeBargeIn must gate on real playback (isOutputPlaying), not just phase.
+    const maybeBargeInBody = source.match(/function\s+maybeBargeIn[\s\S]*?\n  \}/)?.[0] ?? ''
+    expect(
+      maybeBargeInBody,
+      'maybeBargeIn must fire while audio is actually playing even if phase already flipped back to ready',
+    ).toMatch(/!isOutputPlaying\.value\s*&&\s*phase\.value\s*!==\s*['"]speaking['"]/)
+
+    // 2. `response.cancel` must only be sent while an upstream response is
+    //    in flight (`phase === 'speaking'`) — in the tail-drain window there
+    //    is nothing upstream to cancel, and cancel-with-no-active-response
+    //    can surface an upstream error that would kill the session.
+    expect(
+      maybeBargeInBody,
+      'maybeBargeIn must skip the upstream cancel when phase is not "speaking" (tail-drain window)',
+    ).toMatch(/if\s*\(\s*phase\.value\s*!==\s*['"]speaking['"]\s*\)\s*return[\s\S]*?droppingAssistantAudio\s*=\s*true/)
+
+    // 3. The local analyser tick must use the same gate so real-time
+    //    barge-in (before the server VAD answers) works in the drain window too.
+    const tickBody = source.match(/const\s+tick\s*=\s*\(\)\s*:\s*void\s*=>\s*\{([\s\S]*?)\n\s\s\}\)/)?.[0] ?? ''
+    expect(tickBody, 'analyser tick not found').not.toBe('')
+    expect(
+      tickBody,
+      'analyser tick must gate barge-in on isOutputPlaying OR phase === "speaking"',
+    ).toMatch(/isOutputPlaying\.value\s*\|\|\s*phase\.value\s*===\s*['"]speaking['"]/)
+  })
+
+  it('useOmniRealtime cuts leftover playback when a new response starts', () => {
+    // Regression guard: when the next response begins, the previous
+    // response's audio may still be playing or queued (e.g. the user spoke
+    // during the tail-drain window, or a function-call continuation arrived
+    // before the old tail drained). `flushPendingToSlot` chains each new
+    // chunk behind `nextPlayTime`, so without stopping the old sources the
+    // new reply's audio queues behind the old tail — the user hears the
+    // previous segment while the subtitles already show the new response.
+    const source = readFileSync(`${CLIENT_SRC}/composables/useOmniRealtime.ts`, 'utf8')
+    const responseStartedMatch = source.match(
+      /case\s+['"]response_started['"][\s\S]*?\n\s*case\s+['"]response_done['"]/,
+    )
+    expect(responseStartedMatch, 'response_started handler not found').not.toBeNull()
+    expect(
+      responseStartedMatch![0],
+      'response_started must stop leftover playback so the new response audio does not queue behind the old tail',
+    ).toMatch(/stopPlayback\(\)/)
+  })
+
   it('useOmniRealtime routes assistant audio through a master gain so barge-in can mute instantly', () => {
     // The OpenAI Realtime reference pattern is: every assistant source
     // goes through one `GainNode` and barge-in is `gain.value = 0`. Just
