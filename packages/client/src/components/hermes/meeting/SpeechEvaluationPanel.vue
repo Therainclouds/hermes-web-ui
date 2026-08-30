@@ -586,10 +586,6 @@ onUnmounted(() => {
 
 .kpi-label { font-size: 10px; color: var(--n-text-color3, #999); }
 
-  &.phase-yellow .kpi-value { color: #f0a020; }
-  &.phase-red .kpi-value { color: #ff4d4f; }
-}
-
 // 指示条在右栏宽度动画/隐藏挂载时会测宽失败（渲染成超宽），隐藏规避
 .eval-tabs :deep(.n-tabs-bar) {
   display: none !important;
