@@ -1906,14 +1906,10 @@ async function clearTranscript() {
 }
 
 // .waveform-container / .connecting-overlay 已迁入 WaveformCanvas 组件。
-// 演讲评分：波形区外层舞台（相位描边 + 承载计时器浮层，org 演讲功能移植）。
+// 演讲评分：波形区外层舞台。极简原则——无边框无描边，相位由倒计时颜色表达。
 .waveform-stage {
   position: relative;
   overflow: hidden;
-
-  &.phase-green { box-shadow: inset 0 0 0 2px rgba(24, 160, 88, 0.35); }
-  &.phase-yellow { box-shadow: inset 0 0 0 2px rgba(240, 160, 32, 0.5); }
-  &.phase-red { box-shadow: inset 0 0 0 2px rgba(208, 48, 80, 0.65); }
 }
 
 .status-bar {

@@ -1,8 +1,8 @@
 <script setup lang="ts">
-// 演讲评分场景 · 波形舞台计时舱（经 scene-ui-registry 渲染，MeetingView provide 的
-// 单例实例向下注入）。双层结构：
-//   - cabin-overlay：倒计时 + 相位 + 模式徽章 + 红黄绿卡，绝对定位覆盖 canvas；
-//   - cabin-dock：控制工具条，正常文档流排在 canvas 下方（舞台自动长高，不挤压）。
+// 演讲评分 · 计时舱（极简版）。
+// 设计语言：舞台唯一英雄元素 = 倒计时（细字重、相位色）；
+// 控制全部为无边框幽灵按钮，主操作唯一实色；无 emoji、无渐变色块。
+// 结构：cabin-overlay（覆盖 canvas，纯展示）+ cabin-dock（下方单行控制条）。
 import { useI18n } from 'vue-i18n'
 import { NButton, NInput } from 'naive-ui'
 import { injectSpeechTimer } from './speechTimerContext'
@@ -12,56 +12,53 @@ const timer = injectSpeechTimer()
 </script>
 
 <template>
-  <!-- 浮层：只覆盖 canvas 区域（100px），纯展示 -->
+  <!-- 倒计时层：覆盖 canvas，唯一英雄元素 -->
   <div class="cabin-overlay" :class="`phase-${timer.phase}`">
-    <div class="cabin-main">
-      <span v-if="timer.timerMode === 'transition'" class="cabin-mode">⏭️ {{ t('meeting.speechEval.transitionMode') }}</span>
-      <span class="cabin-time">{{ timer.display }}</span>
-      <span class="cabin-phase">{{ timer.phaseLabel }}</span>
-    </div>
-    <div class="cabin-cards">
-      <span class="cabin-card green" :class="{ active: timer.phase === 'green' }">🟢 {{ t('meeting.speechEval.greenCard') }}</span>
-      <span class="cabin-card yellow" :class="{ active: timer.phase === 'yellow' }">🟡 {{ t('meeting.speechEval.yellowCard') }}</span>
-      <span class="cabin-card red" :class="{ active: timer.phase === 'red' }">🔴 {{ t('meeting.speechEval.redCard') }}</span>
-    </div>
+    <span v-if="timer.timerMode === 'transition'" class="cabin-mode">{{ t('meeting.speechEval.transitionMode') }}</span>
+    <span class="cabin-time">{{ timer.display }}</span>
+    <span class="cabin-phase">{{ timer.phaseLabel }}</span>
   </div>
 
-  <!-- 工具条：正常文档流，canvas 下方，所有计时控制集中于此 -->
+  <!-- 控制条：canvas 下方单行，全部幽灵按钮，主操作唯一实色 -->
   <div class="cabin-dock">
-    <div class="dock-row">
-      <NButton size="tiny" :type="timer.timerRunning ? 'warning' : 'primary'" @click="timer.toggle">
-        {{ timer.timerRunning ? t('meeting.speechEval.pause') : t('meeting.speechEval.start') }}
-      </NButton>
-      <NButton size="tiny" quaternary @click="timer.reset">{{ t('meeting.speechEval.reset') }}</NButton>
-      <span class="mode-switch">
-        <NButton size="tiny" :type="timer.timerMode === 'segment' ? 'info' : 'default'" @click="timer.switchTimerMode('segment')">
-          {{ t('meeting.speechEval.segmentMode') }}
-        </NButton>
-        <NButton size="tiny" :type="timer.timerMode === 'transition' ? 'info' : 'default'" @click="timer.switchTimerMode('transition')">
-          {{ t('meeting.speechEval.transitionMode') }}
-        </NButton>
-      </span>
-      <NButton size="tiny" :type="timer.voiceAlert ? 'success' : 'default'" @click="timer.toggleVoiceAlert" :title="t('meeting.speechEval.voiceAlertDesc')">
-        {{ timer.voiceAlert ? t('meeting.speechEval.voiceAlertOn') : t('meeting.speechEval.voiceAlertOff') }}
-      </NButton>
-    </div>
-    <div class="dock-row dock-record">
-      <NInput
-        v-if="timer.timerMode === 'segment'"
-        v-model:value="timer.timerLabel"
-        size="tiny"
-        :placeholder="t('meeting.speechEval.segmentLabelPlaceholder')"
-        class="record-input"
-      />
-      <NButton size="tiny" type="primary" @click="timer.recordSegment">
-        {{ timer.timerMode === 'transition' ? t('meeting.speechEval.recordTransition') : t('meeting.speechEval.recordSegment') }}
-      </NButton>
-    </div>
+    <NButton size="small" type="primary" class="ctl-start" @click="timer.toggle">
+      {{ timer.timerRunning ? t('meeting.speechEval.pause') : t('meeting.speechEval.start') }}
+    </NButton>
+    <NButton size="small" quaternary class="ctl-ghost" @click="timer.reset">
+      {{ t('meeting.speechEval.reset') }}
+    </NButton>
+    <span class="ctl-divider" />
+    <span class="ctl-segment" :data-mode="timer.timerMode">
+      <button
+        class="seg-btn"
+        :class="{ active: timer.timerMode === 'segment' }"
+        @click="timer.switchTimerMode('segment')"
+      >{{ t('meeting.speechEval.segmentMode') }}</button>
+      <button
+        class="seg-btn"
+        :class="{ active: timer.timerMode === 'transition' }"
+        @click="timer.switchTimerMode('transition')"
+      >{{ t('meeting.speechEval.transitionMode') }}</button>
+    </span>
+    <span class="ctl-divider" />
+    <button class="ctl-toggle" :class="{ on: timer.voiceAlert }" @click="timer.toggleVoiceAlert">
+      {{ t('meeting.speechEval.voiceAlert') }}
+    </button>
+    <span class="ctl-divider" />
+    <NInput
+      v-if="timer.timerMode === 'segment'"
+      v-model:value="timer.timerLabel"
+      size="tiny"
+      :placeholder="t('meeting.speechEval.segmentLabelPlaceholder')"
+      class="ctl-input"
+    />
+    <NButton size="small" type="primary" secondary class="ctl-start" @click="timer.recordSegment">
+      {{ timer.timerMode === 'transition' ? t('meeting.speechEval.recordTransition') : t('meeting.speechEval.recordSegment') }}
+    </NButton>
   </div>
 </template>
 
 <style scoped lang="scss">
-// ── 浮层：倒计时覆盖 canvas（100px 内，纯展示不挤压） ──
 .cabin-overlay {
   position: absolute;
   top: 0;
@@ -73,100 +70,107 @@ const timer = injectSpeechTimer()
   align-items: center;
   justify-content: center;
   gap: 4px;
-  background: linear-gradient(90deg, rgba(15, 23, 42, 0.85), rgba(15, 23, 42, 0.45) 40%, rgba(15, 23, 42, 0.6));
+  background: rgba(0, 0, 0, 0.35);
   pointer-events: none;
+}
 
-  &.phase-green { background: linear-gradient(90deg, rgba(15, 23, 42, 0.85), rgba(24, 160, 88, 0.12) 55%, rgba(15, 23, 42, 0.6)); }
-  &.phase-yellow { background: linear-gradient(90deg, rgba(15, 23, 42, 0.85), rgba(240, 160, 32, 0.16) 55%, rgba(15, 23, 42, 0.6)); }
-  &.phase-red { background: linear-gradient(90deg, rgba(15, 23, 42, 0.85), rgba(208, 48, 80, 0.2) 55%, rgba(15, 23, 42, 0.6)); }
+.cabin-time {
+  font-size: 56px;
+  font-weight: 200;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  letter-spacing: 2px;
+  color: #fff;
+  transition: color 0.4s ease;
 
-  .cabin-main {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 2px;
-  }
+  .phase-green & { color: #63e2b7; }
+  .phase-yellow & { color: #f0a020; }
+  .phase-red & { color: #ff4d4f; }
+}
 
-  .cabin-time {
-    font-size: 26px;
-    font-weight: 800;
-    font-variant-numeric: tabular-nums;
-    line-height: 1;
-    color: #fff;
-    text-shadow: 0 0 20px rgba(0, 0, 0, 0.6);
-  }
+.cabin-phase {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.4);
 
-  &.phase-green .cabin-time { color: #63e2b7; }
-  &.phase-yellow .cabin-time { color: #f0a020; }
-  &.phase-red .cabin-time { color: #ff4d4f; }
+  .phase-green & { color: rgba(99, 226, 183, 0.7); }
+  .phase-yellow & { color: rgba(240, 160, 32, 0.7); }
+  .phase-red & { color: rgba(255, 77, 79, 0.7); }
+}
 
-  .cabin-mode {
-    font-size: 10px;
-    color: #70c0e8;
-    background: rgba(112, 192, 232, 0.12);
-    border: 1px solid rgba(112, 192, 232, 0.3);
-    border-radius: 10px;
-    padding: 0 8px;
-  }
+.cabin-mode {
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  color: rgba(255, 255, 255, 0.5);
+}
 
-  .cabin-phase {
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 2px;
-    color: rgba(255, 255, 255, 0.85);
-  }
+// ── 控制条：单行幽灵按钮 ──
+.cabin-dock {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 8px 16px;
+  background: rgba(0, 0, 0, 0.3);
+}
 
-  .cabin-cards {
-    display: flex;
-    gap: 4px;
-  }
+.ctl-start {
+  min-width: 72px;
+}
 
-  .cabin-card {
-    font-size: 10px;
-    padding: 1px 6px;
-    border-radius: 12px;
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    opacity: 0.45;
-    background: rgba(0, 0, 0, 0.35);
-    transition: all 0.2s ease;
-    white-space: nowrap;
+.ctl-ghost {
+  color: rgba(255, 255, 255, 0.65);
+}
 
-    &.green.active { opacity: 1; border-color: #18a058; background: rgba(24, 160, 88, 0.35); color: #63e2b7; }
-    &.yellow.active { opacity: 1; border-color: #f0a020; background: rgba(240, 160, 32, 0.35); color: #f0c060; }
-    &.red.active { opacity: 1; border-color: #d03050; background: rgba(208, 48, 80, 0.4); color: #ff8a8a; }
+.ctl-divider {
+  width: 1px;
+  height: 16px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.ctl-segment {
+  display: flex;
+  gap: 2px;
+
+  .seg-btn {
+    border: none;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.4);
+    font-size: 12px;
+    padding: 4px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+
+    &:hover { color: rgba(255, 255, 255, 0.8); }
+    &.active {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.08);
+    }
   }
 }
 
-// ── 工具条：canvas 下方，正常文档流 ──
-.cabin-dock {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  padding: 6px 12px 8px;
-  background: rgba(0, 0, 0, 0.25);
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+.ctl-toggle {
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
 
-  .dock-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    flex-wrap: wrap;
-    justify-content: center;
-  }
+  &:hover { color: rgba(255, 255, 255, 0.8); }
+  &.on { color: #63e2b7; }
+}
 
-  .mode-switch {
-    display: flex;
-    border-radius: 6px;
-    overflow: hidden;
-
-    :deep(.n-button) { border-radius: 0; }
-    :deep(.n-button:first-child) { border-radius: 6px 0 0 6px; }
-    :deep(.n-button:last-child) { border-radius: 0 6px 6px 0; }
-  }
-
-  .record-input {
-    width: 150px;
-  }
+.ctl-input {
+  width: 140px;
 }
 </style>

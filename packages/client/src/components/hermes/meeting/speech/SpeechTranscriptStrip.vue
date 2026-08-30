@@ -33,57 +33,42 @@ const sentenceCount = computed(() => meetingStore.activeSession?.sentences.lengt
 <style scoped lang="scss">
 @use "@/styles/variables" as *;
 
-// --- 演讲评分：转写区顶部计时状态条（自 MeetingView 原样搬出） ---
 .speech-transcript-strip {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 6px 16px;
-  border-bottom: 1px solid $border-color;
-  background: $bg-card;
-  font-size: 12px;
-
-  &.phase-green { border-left: 3px solid #18a058; }
-  &.phase-yellow { border-left: 3px solid #f0a020; }
-  &.phase-red { border-left: 3px solid #d03050; }
-
-  .strip-left {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .strip-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: #555;
-
-    &.running { background: #18a058; animation: strip-pulse 1.5s infinite; }
-  }
-
-  .strip-label {
-    font-size: 11px;
-    font-weight: 600;
-    color: $text-secondary;
-  }
-
-  .strip-right {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    color: $text-secondary;
-  }
-
-  .strip-hint {
-    font-size: 11px;
-    opacity: 0.7;
-  }
+  padding: 8px 16px;
+  font-size: 11px;
 }
 
-@keyframes strip-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+.strip-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
+
+.strip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.2);
+
+  &.running { background: #63e2b7; animation: strip-pulse 1.6s infinite; }
+}
+
+.strip-label {
+  font-weight: 600;
+  color: $text-secondary;
+}
+
+.strip-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: $text-secondary;
+}
+
+.strip-count { font-variant-numeric: tabular-nums; }
+.strip-hint { opacity: 0.55; }
 </style>

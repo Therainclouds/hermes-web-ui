@@ -366,7 +366,6 @@ onUnmounted(() => {
     <!-- AI 实时点评与评分 -->
     <section class="eval-section">
       <div class="section-title">
-        <span class="role-icon">🤖</span>
         <span class="section-name">{{ t('meeting.speechEval.aiRounds') }}</span>
       </div>
       <p class="section-desc">{{ t('meeting.speechEval.aiRoundsDesc') }}</p>
@@ -394,7 +393,6 @@ onUnmounted(() => {
     <!-- 计时员 -->
     <section class="eval-section">
       <div class="section-title">
-        <span class="role-icon">⏱️</span>
         <span class="section-name">{{ t('meeting.speechEval.timer') }}</span>
         <NButton size="tiny" quaternary class="settings-btn" @click="timer.openSettings">
           ⚙️ {{ t('meeting.speechEval.settings') }}
@@ -410,7 +408,6 @@ onUnmounted(() => {
     <!-- 赘语记录员（AI 检测） -->
     <section class="eval-section">
       <div class="section-title">
-        <span class="role-icon">🔤</span>
         <span class="section-name">{{ t('meeting.speechEval.ahCounter') }}</span>
       </div>
       <p class="section-desc">{{ t('meeting.speechEval.ahCounterDesc') }}</p>
@@ -449,7 +446,6 @@ onUnmounted(() => {
     <!-- 语法官（AI 检测 + 手动补充） -->
     <section class="eval-section">
       <div class="section-title">
-        <span class="role-icon">📖</span>
         <span class="section-name">{{ t('meeting.speechEval.grammarian') }}</span>
       </div>
       <p class="section-desc">{{ t('meeting.speechEval.grammarianDesc') }}</p>
@@ -507,7 +503,6 @@ onUnmounted(() => {
     <!-- 肢体语言与台风（手动观察，AI 结合点评） -->
     <section class="eval-section">
       <div class="section-title">
-        <span class="role-icon">🧍</span>
         <span class="section-name">{{ t('meeting.speechEval.bodyLanguage') }}</span>
       </div>
       <p class="section-desc">{{ t('meeting.speechEval.bodyLanguageDesc') }}</p>
@@ -529,7 +524,6 @@ onUnmounted(() => {
     <!-- 评估报告 -->
     <section class="eval-section report-section">
       <div class="section-title">
-        <span class="role-icon">📊</span>
         <span class="section-name">{{ t('meeting.speechEval.reportTitle') }}</span>
       </div>
       <SpeechEvalReportSection
@@ -580,10 +574,10 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
-  padding: 4px 2px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.03);
+  gap: 3px;
+  padding: 2px 0;
+
+  & + & { border-left: 1px solid rgba(255, 255, 255, 0.05); }
 }
 
 .kpi-value {
@@ -648,13 +642,11 @@ onUnmounted(() => {
 }
 
 .eval-section {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 10px;
-  padding: 12px;
+  padding: 14px 2px;
   display: flex;
   flex-direction: column;
   gap: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
 }
 
 .section-title {
@@ -665,7 +657,6 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
-.role-icon { font-size: 15px; }
 .section-name { flex: 1; }
 .settings-btn { flex-shrink: 0; }
 
