@@ -229,6 +229,7 @@ const activeSession = computed(() => meetingStore.activeSession)
 // 演讲评分场景：右侧面板切换为专用评估面板（计时员/赘语记录员/语法官）
 const isSpeechScene = computed(() => activeSession.value?.sceneTemplate === 'speech')
 const isLegalScene = computed(() => activeSession.value?.sceneTemplate === 'legal')
+const isInterviewScene = computed(() => activeSession.value?.sceneTemplate === 'interview')
 
 // 场景 UI 注册表：舞台浮层/状态条按 sceneTemplate 声明式渲染（演讲场景的
 // 计时器浮层与状态条已组件化至 scene-ui-registry）
@@ -1037,7 +1038,7 @@ async function clearTranscript() {
       <!-- 主内容区 -->
       <div class="meeting-content">
       <!-- 左侧：转写区域 -->
-      <div class="transcript-panel" :class="{ 'speech-scene': isSpeechScene, 'legal-scene': isLegalScene }">
+      <div class="transcript-panel" :class="{ 'speech-scene': isSpeechScene, 'legal-scene': isLegalScene, 'interview-scene': isInterviewScene }">
         <!-- 可视化区域（场景浮层经 scene-ui-registry 声明式渲染） -->
         <div class="waveform-stage" :class="`phase-${speechPhase}`">
           <WaveformCanvas :analyser="analyser" :connecting="isConnecting" />
@@ -1113,6 +1114,7 @@ async function clearTranscript() {
         :visible="showRightPanel"
         :is-speech-scene="isSpeechScene"
         :is-legal-scene="isLegalScene"
+        :is-interview-scene="isInterviewScene"
         :show-agent-panel="showAgentPanel"
         :show-realtime-dialog="showRealtimeDialog"
         :resize-style="rightPanelStyle"
@@ -1211,6 +1213,17 @@ async function clearTranscript() {
               {{ showAgentPanel ? t('meeting.showAnalysis') : t('meeting.showAgentChat') }}
             </NTooltip>
           </div>
+        </template>
+
+        <template #interview>
+          <component
+            v-if="sceneUI.rightPanel && meetingStore.activeSessionId"
+            :is="sceneUI.rightPanel"
+            :key="meetingStore.activeSessionId"
+            :session-id="meetingStore.activeSessionId"
+            :is-recording="isRecording"
+            @report-generated="onReportGenerated"
+          />
         </template>
 
         <template #legal>

@@ -27,6 +27,7 @@ const props = withDefaults(defineProps<{
   visible: boolean
   isSpeechScene: boolean
   isLegalScene?: boolean
+  isInterviewScene?: boolean
   showAgentPanel: boolean
   showRealtimeDialog?: boolean
   resizeStyle?: Record<string, string>
@@ -45,6 +46,7 @@ const { t } = useI18n()
 const panelTitle = computed(() => {
   if (props.isSpeechScene) return t('meeting.scene.speech')
   if (props.isLegalScene) return t('meeting.scene.legal')
+  if (props.isInterviewScene) return t('meeting.scene.interview')
   if (props.showAgentPanel) return t('meeting.agentChat')
   if (props.showRealtimeDialog) return t('meeting.realtime.title')
   return t('meeting.analysis')
@@ -90,6 +92,9 @@ const panelTitle = computed(() => {
       </template>
       <template v-else-if="props.isLegalScene">
         <slot name="legal" />
+      </template>
+      <template v-else-if="props.isInterviewScene">
+        <slot name="interview" />
       </template>
       <template v-else-if="props.showAgentPanel">
         <slot name="agent" />

@@ -4,6 +4,8 @@ import SpeechTimerOverlay from './speech/SpeechTimerOverlay.vue'
 import SpeechTranscriptStrip from './speech/SpeechTranscriptStrip.vue'
 import LegalReviewPanel from './legal/LegalReviewPanel.vue'
 import LegalRiskStrip from './legal/LegalRiskStrip.vue'
+import InterviewPanel from './interview/InterviewPanel.vue'
+import InterviewStrip from './interview/InterviewStrip.vue'
 
 /**
  * 场景 → UI 组件注册表（会议场景定制化的扩展点）。
@@ -39,7 +41,10 @@ export const SCENE_UI: Record<SceneId, SceneUIContribution> = {
     transcriptStrip: LegalRiskStrip,
     rightPanel: LegalReviewPanel,
   },
-  interview: {},
+  interview: {
+    transcriptStrip: InterviewStrip,
+    rightPanel: InterviewPanel,
+  },
   speech: {
     stageOverlay: SpeechTimerOverlay,
     transcriptStrip: SpeechTranscriptStrip,

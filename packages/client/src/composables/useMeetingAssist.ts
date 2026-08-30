@@ -45,6 +45,11 @@ export interface AnalysisRound {
   riskItems?: Array<{ level: 'high' | 'medium' | 'low'; text: string; quote?: string; lawHint?: string }>
   positions?: Array<{ party: string; stance: string }>
   lawRefs?: Array<{ name: string; article?: string; note?: string; verified?: boolean }>
+  // 客户访谈场景（interview）结构化字段
+  insights?: Array<{ type: 'need' | 'pain' | 'opportunity' | 'competitor'; text: string; quote?: string }>
+  keyQuotes?: Array<{ quote: string; speaker?: string }>
+  followUps?: string[]
+  engagement?: 'engaged' | 'neutral' | 'distracted' | 'at_risk'
 }
 
 export function useMeetingAssist(sessionId: string) {
