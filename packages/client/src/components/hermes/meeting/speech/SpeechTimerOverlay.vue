@@ -80,12 +80,11 @@ const timer = injectSpeechTimer()
   font-variant-numeric: tabular-nums;
   line-height: 1;
   letter-spacing: 2px;
-  color: #fff;
-  transition: color 0.4s ease;
-
-  .phase-green & { color: #63e2b7; }
-  .phase-yellow & { color: #f0a020; }
-  .phase-red & { color: #ff4d4f; }
+  // 荧光绿固定：数字恒为荧光绿 + 辉光，相位紧迫度由标签与提示色表达
+  color: #00ff9c;
+  text-shadow:
+    0 0 22px rgba(0, 255, 156, 0.45),
+    0 0 6px rgba(0, 255, 156, 0.5);
 }
 
 .cabin-phase {

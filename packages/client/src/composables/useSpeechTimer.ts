@@ -21,8 +21,9 @@ import type { SpeechEvalState, SpeechTimerRecord } from '@/stores/hermes/meeting
  */
 
 // ── 模块级单例状态 ──
+// 初始即满时长：阈值同步前的 boot 阶段不出现"满时间却红牌"的错乱
 const timerRunning = ref(false)
-const timerRemainingMs = ref(0)
+const timerRemainingMs = ref(180_000)
 /** 计时模式：演讲环节 / 主持人串场（记录时打不同标签，报告按标签汇总） */
 const timerMode = ref<'segment' | 'transition'>('segment')
 
