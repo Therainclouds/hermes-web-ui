@@ -7,6 +7,7 @@ import { meetingASRApi } from '@/utils/meeting-asr-api'
 import { executeOmniTool, OMNI_REALTIME_TOOLS } from '@/api/hermes/omni-tools'
 import { uid, useChatStore } from '@/stores/hermes/chat'
 import { useMeetingStore } from '@/stores/hermes/meeting'
+import { useRealtimeModelStore } from '@/stores/hermes/realtime-model'
 
 /**
  * GPT-Realtime 风格的单聊实时对话舞台。
@@ -29,6 +30,10 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
+const chatStore = useChatStore()
+const meetingStore = useMeetingStore()
+const realtimeModelStore = useRealtimeModelStore()
+
 // Voices verified against the DashScope `qwen3.5-omni-flash-realtime`
 // catalogue (default model for this stage). `Cherry`, `Chelsie`, and `Adam`
 // are NOT valid for that model — DashScope closes the WS with 1007
@@ -42,6 +47,8 @@ const voiceOptions: SelectOption[] = [
 ]
 
 const selectedVoice = ref('Tina')
+// Apply the default voice configured in the Realtime model panel.
+selectedVoice.value = realtimeModelStore.config.voice || 'Tina'
 const cameraEnabled = ref(false)
 const cameraStream = ref<MediaStream | null>(null)
 const videoRef = ref<HTMLVideoElement | null>(null)
@@ -60,9 +67,6 @@ const FRAME_INTERVAL_MS = 1000
 const MAX_FRAME_DIM = 640
 let captureTimer: number | null = null
 let framesCaptured = 0
-
-const chatStore = useChatStore()
-const meetingStore = useMeetingStore()
 
 /**
  * 会话提示词：在默认人设之上告知模型它可以调用的工作台工具
@@ -226,7 +230,7 @@ async function ensureBackendAvailable(timeoutMs = 30_000): Promise<boolean> {
     const status = await meetingASRApi.getStatus()
     if (status.isRunning) return true
     await meetingASRApi.start({
-      dashscopeApiKey: meetingStore.asrConfig.dashscopeApiKey || undefined,
+      dashscopeApiKey: meetingStore.asrConfig.dashscopeApiKey || realtimeModelStore.config.apiKey || undefined,
     })
   } catch {
     // fall through to polling — status/start failures are surfaced below
@@ -259,6 +263,7 @@ async function startSession(): Promise<void> {
     if (cameraEnabled.value) await startCamera()
     await omni.connect({
       voice: selectedVoice.value,
+      model: realtimeModelStore.config.model || undefined,
       instructions: REALTIME_INSTRUCTIONS,
     })
     // Once the session is live the mic feed is already flowing upstream

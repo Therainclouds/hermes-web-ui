@@ -20,6 +20,7 @@ import { useFilesStore } from "@/stores/hermes/files";
 import { useToolPanelStore } from "@/stores/hermes/tool-panel";
 import { useSessionBrowserPrefsStore } from "@/stores/hermes/session-browser-prefs";
 import { useMeetingStore } from "@/stores/hermes/meeting";
+import { useRealtimeModelStore } from "@/stores/hermes/realtime-model";
 import {
   NButton,
   NDrawer,
@@ -106,7 +107,8 @@ const showOutline = ref(false);
 const showRealtimeVoice = ref(false);
 const showOmniRealtime = ref(false);
 const meetingStore = useMeetingStore();
-const hasDashscopeKey = computed(() => !!meetingStore.asrConfig.dashscopeApiKey);
+const realtimeModelStore = useRealtimeModelStore();
+const hasDashscopeKey = computed(() => !!meetingStore.asrConfig.dashscopeApiKey || realtimeModelStore.hasApiKey);
 const messageListRef = ref<InstanceType<typeof MessageList> | null>(null);
 const chatInputRef = ref<(InstanceType<typeof ChatInput> & {
   addFiles?: (files: File[]) => void;

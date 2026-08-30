@@ -18,6 +18,7 @@ import { useMeetingStore } from '@/stores/hermes/meeting'
 import type { MeetingSession, TranscriptSentence, AgentConfig, SpeechEvalState } from '@/stores/hermes/meeting'
 import { useModelsStore } from '@/stores/hermes/models'
 import { useProfilesStore } from '@/stores/hermes/profiles'
+import { useRealtimeModelStore } from '@/stores/hermes/realtime-model'
 import { useSpeechTimer } from '@/composables/useSpeechTimer'
 import { meetingASRApi } from '@/utils/meeting-asr-api'
 import { getApiKey } from '@/api/client'
@@ -34,6 +35,7 @@ const message = useMessage()
 const meetingStore = useMeetingStore()
 const modelsStore = useModelsStore()
 const profilesStore = useProfilesStore()
+const realtimeModelStore = useRealtimeModelStore()
 
 // --- 侧边栏状态 ---
 const showSidebar = ref(true)
@@ -79,7 +81,8 @@ const codingAgentModeOptions = computed(() => [
 // DashScope Key 由父级持有（"创建"按钮禁用条件需要响应式依赖它）；
 // 其余向导字段（LLM/OSS/步骤/ASR 模型）由 AsrConfigWizardDialog 自持，
 // 通过 collectConfig() 取值、reset() 重播种。
-const asrApiKey = ref(meetingStore.asrConfig.dashscopeApiKey)
+// 未单独配置时默认回落 Realtime 模型面板里统一管理的千问 API Key。
+const asrApiKey = ref(meetingStore.asrConfig.dashscopeApiKey || realtimeModelStore.config.apiKey)
 const asrWizardRef = ref<InstanceType<typeof AsrConfigWizardDialog> | null>(null)
 
 // --- 当前会议状态 ---
@@ -339,7 +342,7 @@ function openCreateModal() {
   newMeetingAgentType.value = 'hermes'
   newMeetingCodingAgentMode.value = 'scoped'
   newMeetingSceneTemplate.value = 'general'
-  asrApiKey.value = meetingStore.asrConfig.dashscopeApiKey
+  asrApiKey.value = meetingStore.asrConfig.dashscopeApiKey || realtimeModelStore.config.apiKey
   // LLM/OSS/步骤的重播种已随向导拆入 AsrConfigWizardDialog
   asrWizardRef.value?.reset()
   showCreateModal.value = true
@@ -347,7 +350,7 @@ function openCreateModal() {
 
 function handleCreateMeeting() {
   if (!newMeetingTitle.value.trim()) return
-  if (!asrApiKey.value.trim() && !meetingStore.hasASRConfig) return
+  if (!asrApiKey.value.trim() && !meetingStore.hasASRConfig && !realtimeModelStore.hasApiKey) return
 
   const wizard = asrWizardRef.value?.collectConfig()
 
@@ -614,7 +617,7 @@ async function startASRService() {
     // Get ASR config from meeting store and current session
     const activeSession = meetingStore.activeSession
     const config: Record<string, unknown> = {
-      dashscopeApiKey: meetingStore.asrConfig.dashscopeApiKey || asrApiKey.value,
+      dashscopeApiKey: meetingStore.asrConfig.dashscopeApiKey || asrApiKey.value || realtimeModelStore.config.apiKey,
       asrModel: activeSession?.asrModel || 'paraformer-v2',
     }
     // Pass LLM config if user provided it, so backend has it from the start.
@@ -1262,7 +1265,7 @@ async function clearTranscript() {
 
         <template #realtime>
           <RealtimeDialogPanel
-            :has-dashscope-key="!!meetingStore.asrConfig.dashscopeApiKey"
+            :has-dashscope-key="!!meetingStore.asrConfig.dashscopeApiKey || realtimeModelStore.hasApiKey"
             :meeting-context="realtimeMeetingContext"
             @close="showRealtimeDialog = false"
           />
@@ -1519,7 +1522,7 @@ async function clearTranscript() {
 <!-- 创建会议对话框（外壳已拆出 CreateMeetingDialog） -->
     <CreateMeetingDialog
       v-model:visible="showCreateModal"
-      :create-disabled="!newMeetingTitle.trim() || (!asrApiKey.trim() && !meetingStore.hasASRConfig)"
+      :create-disabled="!newMeetingTitle.trim() || (!asrApiKey.trim() && !meetingStore.hasASRConfig && !realtimeModelStore.hasApiKey)"
       @create="handleCreateMeeting"
     >
       <div class="create-meeting-form">
