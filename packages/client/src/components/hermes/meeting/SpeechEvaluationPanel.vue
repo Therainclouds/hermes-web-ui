@@ -596,6 +596,11 @@ onUnmounted(() => {
   &.phase-red .kpi-value { color: #ff4d4f; }
 }
 
+// 指示条在右栏宽度动画/隐藏挂载时会测宽失败（渲染成超宽），隐藏规避
+.eval-tabs :deep(.n-tabs-bar) {
+  display: none;
+}
+
 .eval-tabs {
   flex: 1;
   min-height: 0;

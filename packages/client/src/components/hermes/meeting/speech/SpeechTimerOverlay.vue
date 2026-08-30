@@ -45,8 +45,10 @@ const {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 16px;
-  padding: 0 24px;
+  gap: 10px;
+  padding: 0 12px;
+  flex-wrap: wrap;
+  align-content: center;
   background: linear-gradient(90deg, rgba(15, 23, 42, 0.85), rgba(15, 23, 42, 0.45) 40%, rgba(15, 23, 42, 0.6));
   pointer-events: none;
 
@@ -63,7 +65,7 @@ const {
   }
 
   .speech-timer-time {
-    font-size: 42px;
+    font-size: 26px;
     font-weight: 800;
     font-variant-numeric: tabular-nums;
     line-height: 1;
@@ -84,13 +86,15 @@ const {
 
   .speech-timer-cards {
     display: flex;
-    gap: 6px;
+    gap: 4px;
     flex-shrink: 0;
+    flex-wrap: wrap;
+    justify-content: center;
   }
 
   .tm-card {
-    font-size: 11px;
-    padding: 3px 10px;
+    font-size: 10px;
+    padding: 2px 6px;
     border-radius: 12px;
     border: 1px solid rgba(255, 255, 255, 0.15);
     opacity: 0.45;

@@ -12,8 +12,6 @@ const meetingStore = useMeetingStore()
 const {
   timerRunning,
   phase,
-  display,
-  phaseLabel,
 } = useSpeechTimer()
 
 const sentenceCount = computed(() => meetingStore.activeSession?.sentences.length ?? 0)
@@ -23,8 +21,7 @@ const sentenceCount = computed(() => meetingStore.activeSession?.sentences.lengt
   <div class="speech-transcript-strip" :class="`phase-${phase}`">
     <div class="strip-left">
       <span class="strip-dot" :class="{ running: timerRunning }" />
-      <span class="strip-time">{{ display }}</span>
-      <span class="strip-phase">{{ phaseLabel }}</span>
+      <span class="strip-label">{{ timerRunning ? t('meeting.recording') : t('meeting.idle') }}</span>
     </div>
     <div class="strip-right">
       <span class="strip-count">{{ sentenceCount }} {{ t('meeting.sentences') }}</span>
@@ -66,18 +63,9 @@ const sentenceCount = computed(() => meetingStore.activeSession?.sentences.lengt
     &.running { background: #18a058; animation: strip-pulse 1.5s infinite; }
   }
 
-  .strip-time {
-    font-size: 15px;
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-  }
-
-  &.phase-green .strip-time { color: #63e2b7; }
-  &.phase-yellow .strip-time { color: #f0a020; }
-  &.phase-red .strip-time { color: #ff4d4f; }
-
-  .strip-phase {
+  .strip-label {
     font-size: 11px;
+    font-weight: 600;
     color: $text-secondary;
   }
 
