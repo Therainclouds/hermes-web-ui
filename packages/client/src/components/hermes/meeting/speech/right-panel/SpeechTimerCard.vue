@@ -3,7 +3,6 @@
 // 走表控制与倒计时展示以舞台浮层（SpeechTimerOverlay）为唯一操作面，
 // 本卡片不再重复渲染计时器（用户反馈：两个计时功能太多余）。
 import { useI18n } from 'vue-i18n'
-import { NButton, NInput } from 'naive-ui'
 import { injectSpeechTimer } from '../speechTimerContext'
 import { fmtSec } from '@/composables/useSpeechTimer'
 
@@ -17,27 +16,6 @@ const timer = injectSpeechTimer()
 </script>
 
 <template>
-  <div class="timer-mode-row">
-    <NButton size="small" :type="timer.timerMode === 'segment' ? 'info' : 'default'" @click="timer.switchTimerMode('segment')">
-      {{ t('meeting.speechEval.segmentMode') }}
-    </NButton>
-    <NButton size="small" :type="timer.timerMode === 'transition' ? 'info' : 'default'" @click="timer.switchTimerMode('transition')">
-      {{ t('meeting.speechEval.transitionMode') }}
-    </NButton>
-    <NButton size="small" :type="timer.voiceAlert ? 'success' : 'default'" @click="timer.toggleVoiceAlert" :title="t('meeting.speechEval.voiceAlertDesc')">
-      🔊 {{ timer.voiceAlert ? t('meeting.speechEval.voiceAlertOn') : t('meeting.speechEval.voiceAlertOff') }}
-    </NButton>
-  </div>
-
-  <div v-if="timer.timerMode === 'transition'" class="transition-hint">⏭️ {{ t('meeting.speechEval.transitionHint') }}</div>
-
-  <div class="segment-row">
-    <NInput v-if="timer.timerMode === 'segment'" v-model:value="timer.timerLabel" size="small" :placeholder="t('meeting.speechEval.segmentLabelPlaceholder')" />
-    <NButton size="small" type="primary" @click="timer.recordSegment">
-      {{ timer.timerMode === 'transition' ? t('meeting.speechEval.recordTransition') : t('meeting.speechEval.recordSegment') }}
-    </NButton>
-  </div>
-
   <div class="time-records">
     <div class="records-title">{{ t('meeting.speechEval.timeRecords') }}</div>
     <div v-if="timer.timerRecords.length === 0" class="empty-hint">{{ t('meeting.speechEval.emptyRecords') }}</div>
@@ -61,17 +39,7 @@ const timer = injectSpeechTimer()
 
 <style scoped lang="scss">
 // --- 计时员卡（去重后：仅保留浮层没有的记录与管理功能） ---
-.timer-mode-row { display: flex; gap: 6px; flex-wrap: wrap; }
-.segment-row { display: flex; gap: 8px; align-items: center; }
 
-.transition-hint {
-  font-size: 11px;
-  color: #70c0e8;
-  padding: 4px 8px;
-  border-radius: 6px;
-  background: rgba(112, 192, 232, 0.08);
-  border: 1px solid rgba(112, 192, 232, 0.15);
-}
 
 .time-records { display: flex; flex-direction: column; gap: 4px; }
 .records-title { font-size: 11px; color: var(--n-text-color3, #888); }

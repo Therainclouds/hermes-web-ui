@@ -101,6 +101,12 @@ function buildSpeechContext() {
     // 倒计时状态始终上报（含暂停/超时），让 AI 的评分以实际时间情况为依据
     currentRemainingSec: Math.max(0, timer.timerRemainingMs / 1000),
     currentPhase: timer.phase,
+    // 手动记录（语法官/肢体语言）：AI 实时点评结合这些人工观察做专项点评
+    manualNotes: {
+      goodPhrases: evalState.value.goodPhrases || [],
+      grammarNotes: evalState.value.grammarNotes || [],
+      bodyNotes: evalState.value.bodyNotes || [],
+    },
   }
 }
 
@@ -604,6 +610,7 @@ onUnmounted(() => {
 .eval-tabs {
   flex: 1;
   min-height: 0;
+  padding: 0 12px;
 
   :deep(.n-tabs-nav) { position: sticky; top: 52px; z-index: 4; background: $bg-primary; }
   :deep(.n-tab-pane) { padding: 4px 0 0; }

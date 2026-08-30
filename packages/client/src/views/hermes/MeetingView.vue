@@ -19,7 +19,7 @@ import { useMeetingStore } from '@/stores/hermes/meeting'
 import type { MeetingSession, TranscriptSentence, AgentConfig, SpeechEvalState } from '@/stores/hermes/meeting'
 import { useModelsStore } from '@/stores/hermes/models'
 import { useProfilesStore } from '@/stores/hermes/profiles'
-import { useSpeechTimer } from '@/composables/useSpeechTimer'
+import { DEFAULT_EVAL, provideSpeechTimer } from '@/components/hermes/meeting/speech/speechTimerContext'
 import { meetingASRApi } from '@/utils/meeting-asr-api'
 import { getApiKey } from '@/api/client'
 import { useMessage } from '@/composables/useAppMessage'
@@ -236,14 +236,26 @@ const sceneUI = computed(() => SCENE_UI[normalizeSceneId(activeSession.value?.sc
 // 共享计时器（与右侧演讲评估面板/场景组件同步——单例状态）。
 // 视图侧只保留生命周期职责：阈值同步、切会话重置、页面卸载停表；
 // 展示（浮层/状态条）由注册表组件自行从单例读取。
+const activeSpeechEval = computed<SpeechEvalState>(() => ({
+  ...DEFAULT_EVAL,
+  ...(activeSession.value?.speechEval || {}),
+}))
+
+function persistSpeechEval(patch: Partial<SpeechEvalState>) {
+  const id = activeSession.value?.id
+  if (id) meetingStore.updateSession(id, { speechEval: { ...activeSpeechEval.value, ...patch } })
+}
+
+// 计时器唯一实例由 MeetingView 创建并向下 provide：
+// 舞台浮层（唯一操控面）与右栏记录面板共享同一份状态与副作用。
 const {
   phase: speechPhase,
   setThresholds: setSpeechTimerThresholds,
   reset: resetSpeechTimer,
   stop: stopSpeechTimer,
-} = useSpeechTimer()
+} = provideSpeechTimer({ evalState: activeSpeechEval, persist: persistSpeechEval })
 
-const speechEval = computed<SpeechEvalState | undefined>(() => activeSession.value?.speechEval)
+const speechEval = activeSpeechEval
 
 // 演讲会话的计时阈值变更时同步共享计时器
 watch(speechEval, (st) => {
@@ -1033,9 +1045,9 @@ async function clearTranscript() {
 
         <component v-if="sceneUI.transcriptStrip" :is="sceneUI.transcriptStrip" />
 
-        <!-- 状态栏 -->
+        <!-- 状态栏（演讲场景：状态由上方状态条承载，这里只留面板开关与错误） -->
         <div class="status-bar">
-          <div class="status-indicator" :class="{ active: isRecording }">
+          <div v-if="!isSpeechScene" class="status-indicator" :class="{ active: isRecording }">
             <span class="status-dot"></span>
             <span>{{ statusText || t('meeting.idle') }}</span>
           </div>

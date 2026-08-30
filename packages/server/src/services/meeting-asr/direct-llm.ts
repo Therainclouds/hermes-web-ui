@@ -130,6 +130,17 @@ export async function analyzeViaDirectLLM(
         lines.push(`- 当前评分：${JSON.stringify(speechSummary.score)}`)
       }
     }
+    // 用户手动记录（语法官/肢体语言观察）：AI 点评必须结合这些人工观察
+    const mn = speechContext?.manualNotes
+    if (mn?.goodPhrases?.length) {
+      lines.push(`- 手动记录金句：${mn.goodPhrases.join('；')}（点评时呼应这些被标记的句子）`)
+    }
+    if (mn?.grammarNotes?.length) {
+      lines.push(`- 手动语法/用词记录：${mn.grammarNotes.join('；')}（核实后可纳入 grammarIssues）`)
+    }
+    if (mn?.bodyNotes?.length) {
+      lines.push(`- 肢体语言观察（人工记录，你看不到画面，务必结合）：${mn.bodyNotes.join('；')}`)
+    }
     systemPrompt = `${systemPrompt}\n${lines.join('\n')}`
   }
 

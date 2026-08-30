@@ -104,6 +104,12 @@ export interface SpeechContext {
   timerRecords?: Array<{ label: string; durationSec: number; overtimeSec: number }>
   currentRemainingSec?: number
   currentPhase?: 'green' | 'yellow' | 'red'
+  /** 用户手动记录（语法官/肢体语言观察），随上下文注入让 AI 结合点评 */
+  manualNotes?: {
+    goodPhrases?: string[]
+    grammarNotes?: string[]
+    bodyNotes?: string[]
+  }
 }
 
 /**
