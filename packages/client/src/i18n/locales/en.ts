@@ -3544,6 +3544,11 @@ export default {
 
   // Changelog
   changelog: {
+    new_0_7_20_1: 'Three meeting scenes (Speech Evaluation / Legal Review / Customer Interview) now have dedicated component trees and UI: speech gains a timer cabin (neon-green countdown + transition mode + voice alerts), legal gains a Risk Radar, and interview gains an Insight Stream — all declaratively assembled via the Scene UI registry',
+    new_0_7_20_2: 'Speech scene introduces deterministic guard rails: filler-word thresholds scale with actual speaking duration (≤10 per 3 min auto-clears), 3+1 feedback is force-truncated (≤3 highlights / ≤1 improvement), and device announcer entries are filtered — no longer relying on AI self-discipline',
+    new_0_7_20_3: 'Legal scene bundles the meeting-legal-review skill (risk-level whitelist / statute citation discipline with mandatory "needs verification" tagging / disclaimer); interview scene bundles meeting-interview-review (insight taxonomy / probe technique / engagement signals / interview ethics)',
+    new_0_7_20_4: 'Realtime dialog upgraded: camera frame input (send_image protocol), barge-in fix (no more false triggers during audio tail-drain), unified Qwen model settings tab for API key management, and speaker timeline (per-segment/name duration breakdown)',
+    new_0_7_20_5: 'Meeting module restructured: realtime-assist split into agent-bridge / direct-llm / report-parser (all with injectable deps for unit testing), diarize layered into route + service, and a Scene UI registry (SCENE_UI) so new scenes only need components + one registry line',
     new_0_6_46_1: 'This release covers all 13 PRs merged after v0.6.45, bringing clearer session and history navigation, reusable Group Chat Agents, Git-aware workspaces, safer App Relay routing, and more reliable resumable runs',
     new_0_6_46_2: 'Recent sessions can be collapsed and now show category state, while History folds completed tool calls into the same compact run groups used by live chat (#2642, #2697)',
     new_0_6_46_3: 'Group Chat adds reusable Agent presets with separate selection and management, localized duplicate-name errors, validation for disabled models, and restored rainbow activity glow (#2644, #2670, #2678)',
