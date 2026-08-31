@@ -52,6 +52,7 @@ export default {
     deviceLoginFailed: '裝置登入失敗',
     tokenPlatformNoModel: '你的綁定帳號沒有授予任何可用模型，請聯絡中轉站管理員。',
     tokenPlatformConfigureFailed: '自動接入綁定的 API 失敗，請重試。',
+    wechatRestorePick: '本機已綁定多個微信帳號，請選擇要恢復的帳號',
     wechatRestore: '恢復已綁定帳號（{account}）',
     accessDenied: '你沒有權限存取此資源',
     bindSuperAdminTitle: '綁定超級管理員',
@@ -2165,7 +2166,7 @@ export default {
     setAccountPasswordHint: 'Once set, you can sign in with your username and password. Forgot it? Re-scan with WeChat and set a new one.',
     passwordSet: 'Account password set',
     unbindWechat: '解除微信綁定',
-    unbindWechatConfirm: '確定要解除微信帳號「{account}」的綁定嗎？解除後將刪除該帳號在本機的登入憑證並清除裝置綁定，之後可用新的微信重新掃碼綁定。',
+    unbindWechatConfirm: '確定要解綁微信帳號「{account}」嗎？解綁將刪除該帳號的全部資料：本機帳號、專屬 Agent 及其對話記錄和登入憑證。該微信再次掃碼綁定後將得到全新的空白帳號。',
     unbindWechatSuccess: '已解除微信綁定',
     unbindWechatFailed: '解除微信綁定失敗',
     tabs: {

@@ -23,7 +23,7 @@ import { detectHermesRootHome } from '../../services/hermes/hermes-path'
 import { getActiveProfileName } from '../../services/hermes/hermes-profile'
 import { HermesSkillInjector } from '../../services/hermes/skill-injector'
 import type { HermesProfile } from '../../services/hermes/hermes-cli'
-import { listUserProfiles, replaceUserProfiles } from '../../db/hermes/users-store'
+import { listUserProfiles, replaceUserProfiles, deleteProfileBindingsByName } from '../../db/hermes/users-store'
 import { readAppProfileAvatar } from '../../services/hermes/app-profile-avatar'
 
 const bridgeCleanupClient = () => new AgentBridgeClient({ connectRetryMs: 0, timeoutMs: 5000 })
@@ -789,12 +789,16 @@ export async function remove(ctx: any) {
     const ok = await hermesCli.deleteProfile(name)
     if (ok && !profileDirectoryExists(name)) {
       removeProfileMetadata(name)
+      // Drop orphan user_profiles rows so no user keeps a binding to a
+      // profile that no longer exists on disk.
+      deleteProfileBindingsByName(name)
       ctx.body = { success: true }
     } else if (ok) {
       ctx.status = 500
       ctx.body = { error: 'Failed to delete profile: profile directory still exists' }
     } else if (deleteForbiddenProfileFromDisk(name)) {
       removeProfileMetadata(name)
+      deleteProfileBindingsByName(name)
       ctx.body = { success: true, fallback: 'removed_reserved_profile_from_disk' }
     } else {
       ctx.status = 500

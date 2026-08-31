@@ -62,8 +62,10 @@ describe('auth routes: device login endpoints', () => {
     expect(findLayer(authPublicRoutes, 'GET', '/api/auth/device-binding')).toBeDefined()
   })
 
-  it('mounts DELETE /api/auth/device-binding on the public router', async () => {
-    const { authPublicRoutes } = await import('../../packages/server/src/routes/auth')
-    expect(findLayer(authPublicRoutes, 'DELETE', '/api/auth/device-binding')).toBeDefined()
+  it('does not mount DELETE /api/auth/device-binding on the public router', async () => {
+    const { authPublicRoutes, authProtectedRoutes } = await import('../../packages/server/src/routes/auth')
+    expect(findLayer(authPublicRoutes, 'DELETE', '/api/auth/device-binding')).toBeUndefined()
+    // Unbind deletes user data, so it must sit behind authentication.
+    expect(findLayer(authProtectedRoutes, 'DELETE', '/api/auth/device-binding')).toBeDefined()
   })
 })

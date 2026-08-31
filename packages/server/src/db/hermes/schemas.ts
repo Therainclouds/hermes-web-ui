@@ -419,6 +419,26 @@ export const USER_PROFILES_INDEXES = {
   idx_user_profiles_default: 'CREATE UNIQUE INDEX IF NOT EXISTS idx_user_profiles_default ON user_profiles(user_id) WHERE is_default = 1',
 }
 
+export const WECHAT_BINDINGS_TABLE = 'wechat_bindings'
+
+export const WECHAT_BINDINGS_SCHEMA: Record<string, string> = {
+  id: 'INTEGER PRIMARY KEY AUTOINCREMENT',
+  user_id: 'INTEGER',
+  platform_profile_id: 'INTEGER NOT NULL UNIQUE',
+  platform_username: "TEXT NOT NULL DEFAULT ''",
+  api_base: 'TEXT NOT NULL',
+  api_key: 'TEXT NOT NULL',
+  device_id: "TEXT NOT NULL DEFAULT ''",
+  models_json: "TEXT NOT NULL DEFAULT '[]'",
+  display_name: "TEXT NOT NULL DEFAULT ''",
+  bound_at: 'INTEGER NOT NULL',
+  updated_at: 'INTEGER NOT NULL',
+}
+
+export const WECHAT_BINDINGS_INDEXES = {
+  idx_wechat_bindings_user: 'CREATE INDEX IF NOT EXISTS idx_wechat_bindings_user ON wechat_bindings(user_id)',
+}
+
 export const USER_THEMES_TABLE = 'user_themes'
 
 export const USER_THEMES_SCHEMA: Record<string, string> = {
@@ -1645,6 +1665,9 @@ export function initAllHermesTables(): void {
       indexes: USER_PROFILES_INDEXES,
     })
     syncTable(USER_THEMES_TABLE, USER_THEMES_SCHEMA)
+    syncTable(WECHAT_BINDINGS_TABLE, WECHAT_BINDINGS_SCHEMA, {
+      indexes: WECHAT_BINDINGS_INDEXES,
+    })
 
     // LAN devices and link request status
     syncTable(DEVICES_TABLE, DEVICES_SCHEMA, {

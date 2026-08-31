@@ -152,6 +152,7 @@ export default {
     deviceLoginFailed: 'デバイスログインに失敗しました',
     tokenPlatformNoModel: '連携アカウントに利用可能なモデルがありません。トークンプラットフォーム管理者にお問い合わせください。',
     tokenPlatformConfigureFailed: '連携APIの自動設定に失敗しました。もう一度お試しください。',
+    wechatRestorePick: 'この端末には複数のWeChatアカウントが紐づいています。復元するアカウントを選択してください',
     wechatRestore: '連携済みアカウントを復元（{account}）',
     accessDenied: 'このリソースにアクセスする権限がありません。',
     bindSuperAdminTitle: 'Bind to Super Administrator',
@@ -1763,7 +1764,7 @@ export default {
     setAccountPasswordHint: 'Once set, you can sign in with your username and password. Forgot it? Re-scan with WeChat and set a new one.',
     passwordSet: 'Account password set',
     unbindWechat: 'WeChat のバインド解除',
-    unbindWechatConfirm: 'WeChat アカウント「{account}」のバインドを解除しますか？このアカウントのローカル認証情報が削除され、デバイスのバインドが解除されるため、新しい WeChat アカウントで再度スキャンしてバインドできます。',
+    unbindWechatConfirm: 'WeChatアカウント「{account}」を解除しますか？ローカルアカウント、専用エージェントとその履歴、ログイン情報が完全に削除されます。再度バインドした場合は新しい空のアカウントから始まります。',
     unbindWechatSuccess: 'WeChat のバインドを解除しました',
     unbindWechatFailed: 'WeChat のバインド解除に失敗しました',
     tabs: {

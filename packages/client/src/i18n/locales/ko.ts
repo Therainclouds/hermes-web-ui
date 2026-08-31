@@ -152,6 +152,7 @@ export default {
     deviceLoginFailed: '기기 로그인 실패',
     tokenPlatformNoModel: '연결된 계정에 사용 가능한 모델이 없습니다. 토큰 플랫폼 관리자에게 문의하세요.',
     tokenPlatformConfigureFailed: '연결된 API를 자동으로 설정하지 못했습니다. 다시 시도하세요.',
+    wechatRestorePick: '이 기기에 여러 WeChat 계정이 연결되어 있습니다. 복원할 계정을 선택하세요',
     wechatRestore: '연결된 계정 복원 ({account})',
     accessDenied: '이 리소스에 접근할 권한이 없습니다.',
     bindSuperAdminTitle: 'Bind to Super Administrator',
@@ -1763,7 +1764,7 @@ export default {
     setAccountPasswordHint: 'Once set, you can sign in with your username and password. Forgot it? Re-scan with WeChat and set a new one.',
     passwordSet: 'Account password set',
     unbindWechat: 'WeChat 연결 해제',
-    unbindWechatConfirm: 'WeChat 계정 "{account}"의 연결을 해제할까요? 이 계정의 로컬 자격 증명이 삭제되고 기기 연결이 해제되어 새 WeChat 계정으로 다시 스캔하여 연결할 수 있습니다.',
+    unbindWechatConfirm: 'WeChat 계정 "{account}"의 연결을 해제하시겠습니까? 로컬 계정, 전용 에이전트 및 대화 기록, 로그인 정보가 모두 삭제됩니다. 다시 연결하면 새로운 빈 계정으로 시작합니다.',
     unbindWechatSuccess: 'WeChat 연결이 해제되었습니다',
     unbindWechatFailed: 'WeChat 연결 해제에 실패했습니다',
     tabs: {

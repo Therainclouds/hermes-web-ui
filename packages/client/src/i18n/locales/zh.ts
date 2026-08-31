@@ -52,6 +52,7 @@ export default {
     deviceLoginFailed: '设备登录失败',
     tokenPlatformNoModel: '你的绑定账号没有授予任何可用模型，请联系中转站管理员。',
     tokenPlatformConfigureFailed: '自动接入绑定的 API 失败，请重试。',
+    wechatRestorePick: '本机已绑定多个微信账号，选择要恢复的账号',
     wechatRestore: '恢复已绑定账号（{account}）',
     accessDenied: '你没有权限访问该资源',
     bindSuperAdminTitle: '绑定超级管理员',
@@ -2228,7 +2229,7 @@ export default {
     setAccountPasswordHint: '设置后可在此账号页面用用户名和密码登录；忘记密码时可重新微信扫码登录后再设置。',
     passwordSet: '账号密码已设置',
     unbindWechat: '解绑微信',
-    unbindWechatConfirm: '确定要解绑微信账号「{account}」吗？解绑后将删除该账号在本机的登录凭据并清除设备绑定，之后可用新的微信重新扫码绑定。',
+    unbindWechatConfirm: '确定要解绑微信账号「{account}」吗？解绑将删除该账号的全部数据：本地账号、专属 Agent 及其会话记录和登录凭据。该微信再次扫码绑定后将得到全新的空白账号。',
     unbindWechatSuccess: '已解绑微信',
     unbindWechatFailed: '解绑微信失败',
     tabs: {

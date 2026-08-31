@@ -1,23 +1,37 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_USERNAME, DEFAULT_PASSWORD } from '../../packages/server/src/db/hermes/users-store'
+import { DEFAULT_USERNAME } from '../../packages/server/src/db/hermes/users-store'
 
-const { fetchDeviceSelfMock, verifyDeviceApiKeyMock, saveDeviceBindingMock, loadDeviceBindingMock } = vi.hoisted(() => ({
+const {
+  fetchDeviceSelfMock,
+  verifyDeviceApiKeyMock,
+  ensurePersonalWorkspaceMock,
+  applyTokenPlatformProviderMock,
+  deleteProfileFromDiskMock,
+  clearProfileIdentityMock,
+} = vi.hoisted(() => ({
   fetchDeviceSelfMock: vi.fn(),
   verifyDeviceApiKeyMock: vi.fn(),
-  saveDeviceBindingMock: vi.fn(),
-  loadDeviceBindingMock: vi.fn(async () => null),
+  ensurePersonalWorkspaceMock: vi.fn(async () => null),
+  applyTokenPlatformProviderMock: vi.fn(async () => true),
+  deleteProfileFromDiskMock: vi.fn(async () => true),
+  clearProfileIdentityMock: vi.fn(),
 }))
 
 vi.mock('../../packages/server/src/services/token-platform-client', () => ({
   fetchDeviceSelf: fetchDeviceSelfMock,
   verifyDeviceApiKey: verifyDeviceApiKeyMock,
 }))
-vi.mock('../../packages/server/src/services/device-binding', () => ({
-  saveDeviceBinding: saveDeviceBindingMock,
-  clearDeviceBinding: vi.fn(async () => undefined),
-  loadDeviceBinding: loadDeviceBindingMock,
-  getOrCreateHardwareId: vi.fn(async () => 'uuid'),
-  getHardwareId: vi.fn(async () => 'uuid'),
+vi.mock('../../packages/server/src/services/hermes/wechat-user-provisioning', () => ({
+  ensurePersonalWorkspace: ensurePersonalWorkspaceMock,
+  applyTokenPlatformProvider: applyTokenPlatformProviderMock,
+  deleteProfileFromDisk: deleteProfileFromDiskMock,
+  personalProfileNameFor: (platformProfileId: number) => `u_${platformProfileId}`,
+}))
+vi.mock('../../packages/server/src/services/hermes/profile-metadata', () => ({
+  setProfileDisplayName: vi.fn(),
+  setProfileAvatarRemote: vi.fn(),
+  setProfileAvatarGenerated: vi.fn(),
+  clearProfileIdentity: clearProfileIdentityMock,
 }))
 vi.mock('../../packages/server/src/services/logger', () => ({
   logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
@@ -32,9 +46,7 @@ describe('deviceLogin controller', () => {
     vi.unstubAllEnvs()
     vi.unstubAllGlobals()
     vi.stubEnv('AUTH_JWT_SECRET', 'test-secret')
-    // Default: the device has no persisted WeChat binding. Tests that exercise
-    // the "already bound owner" rejection override this inside the test body.
-    loadDeviceBindingMock.mockResolvedValue(null)
+    ensurePersonalWorkspaceMock.mockImplementation(async (input: { platformProfileId: number }) => `u_${input.platformProfileId}`)
 
     const { DatabaseSync } = await import('node:sqlite')
     db = new DatabaseSync(':memory:')
@@ -51,20 +63,38 @@ describe('deviceLogin controller', () => {
     return {
       ctrl: await import('../../packages/server/src/controllers/auth'),
       users: await import('../../packages/server/src/db/hermes/users-store'),
+      bindings: await import('../../packages/server/src/db/hermes/wechat-bindings-store'),
     }
   }
 
-  function makeCtx(body: Record<string, unknown>) {
+  function makeCtx(body: Record<string, unknown>, query: Record<string, string> = {}) {
     return {
       request: { body },
       headers: {},
-      query: {},
+      query,
       ip: '127.0.0.1',
       status: 200,
       body: null,
       get: vi.fn(() => ''),
       req: { socket: { remoteAddress: '127.0.0.1' } },
     } as any
+  }
+
+  function makeAuthedCtx(body: Record<string, unknown>, user: { id: number; username: string; role: string } | null, query: Record<string, string> = {}) {
+    const ctx = makeCtx(body, query) as any
+    ctx.state = { user }
+    return ctx
+  }
+
+  function scanCtx(platformId: number, apiKey: string, models: string[], displayName: string) {
+    fetchDeviceSelfMock.mockResolvedValue({ id: platformId, username: `wechat_${platformId}`, display_name: displayName })
+    verifyDeviceApiKeyMock.mockResolvedValue(models)
+    return makeCtx({
+      api_base: 'https://api.quantclaw.vip',
+      api_key: apiKey,
+      device_id: 100 + platformId,
+      models,
+    })
   }
 
   it('rejects when api_base or api_key are missing', async () => {
@@ -85,164 +115,122 @@ describe('deviceLogin controller', () => {
     expect(ctx.body).toEqual({ error: '密钥无效' })
   })
 
-  it('auto-bootstraps a super_admin on first run and issues a JWT', async () => {
-    fetchDeviceSelfMock.mockResolvedValue({ id: 7, username: 'wechat_3', display_name: '量迹用户' })
-    verifyDeviceApiKeyMock.mockResolvedValue(['gpt-4o'])
-    saveDeviceBindingMock.mockResolvedValue(undefined)
+  it('provisions a regular user with a personal agent profile on first scan', async () => {
+    const { ctrl, users, bindings } = await loadModules()
 
-    const { ctrl, users } = await loadModules()
-    expect(users.countUsers()).toBe(0)
-
-    const ctx = makeCtx({
-      api_base: 'https://api.quantclaw.vip',
-      api_key: 'sk-good',
-      device_id: 42,
-      device_name: 'Hermes',
-      models: ['gpt-4o'],
-    })
+    const ctx = scanCtx(7, 'sk-good', ['gpt-4o'], '量迹用户')
     await ctrl.deviceLogin(ctx)
 
     expect(ctx.status).toBe(200)
     expect(ctx.body.token).toBeTruthy()
     expect(ctx.body.user.username).toBe('tp_7')
-    expect(ctx.body.user.role).toBe('super_admin')
+    expect(ctx.body.user.role).toBe('admin')
     expect(ctx.body.binding.display_name).toBe('量迹用户')
+    expect(ctx.body.binding.platform_profile_id).toBe(7)
 
     const created = users.findUserByUsername('tp_7')
     expect(created).not.toBeNull()
-    expect(created!.role).toBe('super_admin')
-    expect(saveDeviceBindingMock).toHaveBeenCalledWith(expect.objectContaining({
-      device_id: '42',
-      api_key: 'sk-good',
+    expect(created!.role).toBe('admin')
+    // The personal profile is bound to the user and isolated from `default`.
+    expect(users.listUserProfiles(created!.id).map(p => p.profile_name)).toEqual(['u_7'])
+    // The per-user api_key is written into the personal profile's provider.
+    expect(ensurePersonalWorkspaceMock).toHaveBeenCalledWith(expect.objectContaining({
+      platformProfileId: 7,
+      displayName: '量迹用户',
+      apiBase: 'https://api.quantclaw.vip',
+      apiKey: 'sk-good',
       models: ['gpt-4o'],
-      display_name: '量迹用户',
     }))
+    // The binding row is persisted per WeChat account.
+    const binding = bindings.findBindingByPlatformId(7)
+    expect(binding?.api_key).toBe('sk-good')
+    expect(binding?.user_id).toBe(created!.id)
   })
 
-  it('makes the first scanning WeChat the owner even when local users already exist', async () => {
-    // A freshly deployed device may already have local accounts (e.g. a
-    // bootstrap super admin) while having no WeChat binding at all. The first
-    // scanning WeChat must still become the owner (super_admin).
-    const { ctrl, users } = await loadModules()
+  it('lets multiple different WeChat accounts bind to the same device', async () => {
+    const { ctrl, users, bindings } = await loadModules()
     users.createDefaultSuperAdmin()
-    expect(users.countUsers()).toBe(1)
-    loadDeviceBindingMock.mockResolvedValue(null) // no WeChat binding on this device
 
-    fetchDeviceSelfMock.mockResolvedValue({ id: 8, username: 'wechat_8', display_name: '新用户' })
-    verifyDeviceApiKeyMock.mockResolvedValue(['claude-3-5-sonnet'])
+    await ctrl.deviceLogin(scanCtx(8, 'sk-a', ['gpt-4o'], '用户甲'))
+    await ctrl.deviceLogin(scanCtx(9, 'sk-b', ['claude-3-5-sonnet'], '用户乙'))
 
-    const ctx = makeCtx({
-      api_base: 'https://api.quantclaw.vip',
-      api_key: 'sk-good-2',
-      device_id: 43,
-      models: ['claude-3-5-sonnet'],
-    })
-    await ctrl.deviceLogin(ctx)
-
-    expect(ctx.status).toBe(200)
-    expect(ctx.body.user.username).toBe('tp_8')
-    expect(ctx.body.user.role).toBe('super_admin')
-  })
-
-  it('rejects a second WeChat account when the device already has a bound owner', async () => {
-    const { ctrl, users } = await loadModules()
-    users.createDefaultSuperAdmin()
-    expect(users.countUsers()).toBe(1)
-    // The device already owns a WeChat binding for a different account.
-    loadDeviceBindingMock.mockResolvedValue({
-      device_id: '43',
-      api_base: 'https://api.quantclaw.vip',
-      api_key: 'sk-owner',
-      models: ['gpt-4o'],
-      display_name: '老用户',
-      username: 'wechat_8',
-      bound_at: Date.now(),
-    })
-
-    fetchDeviceSelfMock.mockResolvedValue({ id: 9, username: 'wechat_9', display_name: '新用户' })
-    verifyDeviceApiKeyMock.mockResolvedValue(['claude-3-5-sonnet'])
-
-    const ctx = makeCtx({
-      api_base: 'https://api.quantclaw.vip',
-      api_key: 'sk-good-2',
-      device_id: 44,
-      models: ['claude-3-5-sonnet'],
-    })
-    await ctrl.deviceLogin(ctx)
-
-    // Single-machine, single-owner: a WeChat account that is not the bound
-    // owner must NOT be auto-provisioned (it would overwrite the default
-    // profile the owner set).
-    expect(ctx.status).toBe(403)
-    expect(ctx.body.code).toBe('DEVICE_ALREADY_BOUND')
-    expect(ctx.body.owner).toBeTruthy()
-    expect(users.findUserByUsername('tp_9')).toBeNull()
-  })
-
-  it('grants the default profile to an existing admin that has no profile bindings', async () => {
-    const { ctrl, users } = await loadModules()
-    users.createUser({ username: 'tp_8', password: 'x', role: 'admin' })
-    expect(users.listUserProfiles(users.findUserByUsername('tp_8')!.id)).toHaveLength(0)
-
-    fetchDeviceSelfMock.mockResolvedValue({ id: 8, username: 'wechat_8', display_name: '新用户' })
-    verifyDeviceApiKeyMock.mockResolvedValue(['claude-3-5-sonnet'])
-
-    const ctx = makeCtx({
-      api_base: 'https://api.quantclaw.vip',
-      api_key: 'sk-good-2',
-      device_id: 43,
-    })
-    await ctrl.deviceLogin(ctx)
-
-    expect(ctx.status).toBe(200)
-    const created = users.findUserByUsername('tp_8')
-    const boundProfiles = users.listUserProfiles(created!.id).map(p => p.profile_name)
-    expect(boundProfiles).toContain('default')
+    expect(users.findUserByUsername('tp_8')!.role).toBe('admin')
+    expect(users.findUserByUsername('tp_9')!.role).toBe('admin')
+    expect(bindings.countWeChatBindings()).toBe(2)
+    expect(bindings.findBindingByPlatformId(8)?.api_key).toBe('sk-a')
+    expect(bindings.findBindingByPlatformId(9)?.api_key).toBe('sk-b')
+    // Each user only sees their own personal profile.
+    expect(users.listUserProfiles(users.findUserByUsername('tp_8')!.id).map(p => p.profile_name)).toEqual(['u_8'])
+    expect(users.listUserProfiles(users.findUserByUsername('tp_9')!.id).map(p => p.profile_name)).toEqual(['u_9'])
   })
 
   it('reuses an existing local user bound to the same Token Platform id', async () => {
     const { ctrl, users } = await loadModules()
-    users.createUser({ username: 'tp_9', password: 'x', role: 'super_admin' })
-    expect(users.countUsers()).toBe(1)
+    users.createDefaultSuperAdmin()
+    users.createUser({ username: 'tp_9', password: 'x', role: 'admin' })
+    expect(users.countUsers()).toBe(2)
 
-    fetchDeviceSelfMock.mockResolvedValue({ id: 9, username: 'wechat_9', display_name: '老用户' })
-    verifyDeviceApiKeyMock.mockResolvedValue(['gpt-4o'])
-
-    const ctx = makeCtx({
-      api_base: 'https://api.quantclaw.vip',
-      api_key: 'sk-good-3',
-      device_id: 44,
-    })
+    const ctx = scanCtx(9, 'sk-good-3', ['gpt-4o'], '老用户')
     await ctrl.deviceLogin(ctx)
 
     expect(ctx.status).toBe(200)
     expect(ctx.body.user.username).toBe('tp_9')
-    expect(ctx.body.user.role).toBe('super_admin')
+    expect(users.countUsers()).toBe(2)
+  })
+
+  it('keeps super admin exclusive to the built-in account (no WeChat promotion)', async () => {
+    const { ctrl, users } = await loadModules()
+    users.createDefaultSuperAdmin()
     expect(users.countUsers()).toBe(1)
+
+    const ctx = scanCtx(10, 'sk-good-4', ['gpt-4o'], '新用户')
+    await ctrl.deviceLogin(ctx)
+
+    expect(ctx.status).toBe(200)
+    expect(ctx.body.user.role).toBe('admin')
+    // Only the built-in super admin remains a super_admin.
+    expect(users.listUsers().filter((u: any) => u.role === 'super_admin')).toHaveLength(1)
+    expect(users.listUsers().find((u: any) => u.role === 'super_admin')!.username).toBe(DEFAULT_USERNAME)
+  })
+
+  it('still succeeds when personal profile provisioning fails', async () => {
+    ensurePersonalWorkspaceMock.mockResolvedValue(null)
+    const { ctrl, users } = await loadModules()
+
+    const ctx = scanCtx(11, 'sk-good-5', ['gpt-4o'], '新用户')
+    await ctrl.deviceLogin(ctx)
+
+    expect(ctx.status).toBe(200)
+    expect(ctx.body.token).toBeTruthy()
+    const created = users.findUserByUsername('tp_11')
+    expect(created).not.toBeNull()
+    expect(users.listUserProfiles(created!.id)).toHaveLength(0)
   })
 
   it('falls back to the relay-verified models when the client omits models', async () => {
-    fetchDeviceSelfMock.mockResolvedValue({ id: 10, username: 'wechat_10' })
+    fetchDeviceSelfMock.mockResolvedValue({ id: 12, username: 'wechat_12' })
     verifyDeviceApiKeyMock.mockResolvedValue(['gpt-4o', 'gpt-4o-mini'])
 
-    const { ctrl } = await loadModules()
+    const { ctrl, bindings } = await loadModules()
     const ctx = makeCtx({
       api_base: 'https://api.quantclaw.vip',
-      api_key: 'sk-good-4',
+      api_key: 'sk-good-6',
       device_id: 45,
     })
     await ctrl.deviceLogin(ctx)
 
     expect(ctx.status).toBe(200)
-    expect(saveDeviceBindingMock).toHaveBeenCalledWith(expect.objectContaining({
+    expect(bindings.findBindingByPlatformId(12)?.models_json).toBe(JSON.stringify(['gpt-4o', 'gpt-4o-mini']))
+    expect(ensurePersonalWorkspaceMock).toHaveBeenCalledWith(expect.objectContaining({
+      platformProfileId: 12,
       models: ['gpt-4o', 'gpt-4o-mini'],
     }))
   })
 
   it('syncs the WeChat avatar url and display name onto the local user', async () => {
     fetchDeviceSelfMock.mockResolvedValue({
-      id: 11,
-      username: 'wechat_11',
+      id: 13,
+      username: 'wechat_13',
       display_name: '微信用户甲',
       avatar_url: 'https://thirdwx.qlogo.cn/mmopen/xxx',
     })
@@ -251,13 +239,13 @@ describe('deviceLogin controller', () => {
     const { ctrl, users } = await loadModules()
     const ctx = makeCtx({
       api_base: 'https://api.quantclaw.vip',
-      api_key: 'sk-good-5',
+      api_key: 'sk-good-7',
       device_id: 46,
     })
     await ctrl.deviceLogin(ctx)
 
     expect(ctx.status).toBe(200)
-    const created = users.findUserByUsername('tp_11')
+    const created = users.findUserByUsername('tp_13')
     expect(created).not.toBeNull()
     const avatar = JSON.parse(users.getUserAvatar(created!.id))
     expect(avatar.type).toBe('image')
@@ -265,119 +253,156 @@ describe('deviceLogin controller', () => {
   })
 
   it('falls back to a seeded multiavatar when no avatar url is present', async () => {
-    fetchDeviceSelfMock.mockResolvedValue({ id: 12, username: 'wechat_12', display_name: '微信用户乙' })
+    fetchDeviceSelfMock.mockResolvedValue({ id: 14, username: 'wechat_14', display_name: '微信用户乙' })
     verifyDeviceApiKeyMock.mockResolvedValue(['gpt-4o'])
 
     const { ctrl, users } = await loadModules()
     const ctx = makeCtx({
       api_base: 'https://api.quantclaw.vip',
-      api_key: 'sk-good-6',
+      api_key: 'sk-good-8',
       device_id: 47,
     })
     await ctrl.deviceLogin(ctx)
 
     expect(ctx.status).toBe(200)
-    const created = users.findUserByUsername('tp_12')
+    const created = users.findUserByUsername('tp_14')
     expect(created).not.toBeNull()
     const avatar = JSON.parse(users.getUserAvatar(created!.id))
     expect(avatar.type).toBe('default')
     expect(avatar.seed).toBe('微信用户乙')
   })
 
-  describe('bindSuperAdmin', () => {
-    function makeAuthedCtx(body: Record<string, unknown>, user: { id: number; username: string; role: string }) {
-      const ctx = makeCtx(body) as any
-      ctx.state = { user }
-      return ctx
-    }
+  describe('getDeviceBinding + restoreDeviceLogin (multi-account)', () => {
+    it('returns the bound account list without api keys', async () => {
+      const { ctrl, bindings } = await loadModules()
+      bindings.upsertBindingByPlatformId({
+        userId: null,
+        platformProfileId: 20,
+        platformUsername: 'wechat_20',
+        apiBase: 'https://api.quantclaw.vip',
+        apiKey: 'sk-20',
+        models: ['gpt-4o'],
+        displayName: '账号二十',
+      })
 
-    it('upgrades the current admin to super_admin with valid credentials', async () => {
-      const { ctrl, users } = await loadModules()
-      users.createDefaultSuperAdmin()
-      const admin = users.createUser({ username: 'tp_20', password: 'x', role: 'admin' })
-      expect(admin!.role).toBe('admin')
+      const ctx = makeCtx({})
+      await ctrl.getDeviceBinding(ctx)
 
-      const ctx = makeAuthedCtx(
-        { username: DEFAULT_USERNAME, password: DEFAULT_PASSWORD },
-        { id: admin!.id, username: 'tp_20', role: 'admin' },
-      )
-      await ctrl.bindSuperAdmin(ctx)
+      expect(ctx.body).toEqual({
+        bound: true,
+        accounts: [{
+          platform_profile_id: 20,
+          display_name: '账号二十',
+          username: 'wechat_20',
+          bound_at: expect.any(Number),
+        }],
+      })
+      expect(JSON.stringify(ctx.body)).not.toContain('sk-20')
+    })
+
+    it('restores the single bound account without an explicit id', async () => {
+      const { ctrl, users, bindings } = await loadModules()
+      const user = users.createUser({ username: 'tp_21', password: 'x', role: 'admin' })
+      bindings.upsertBindingByPlatformId({
+        userId: user!.id,
+        platformProfileId: 21,
+        platformUsername: 'wechat_21',
+        apiBase: 'https://api.quantclaw.vip',
+        apiKey: 'sk-21',
+        models: ['gpt-4o'],
+        displayName: '账号廿一',
+      })
+      fetchDeviceSelfMock.mockResolvedValue({ id: 21, username: 'wechat_21', display_name: '账号廿一' })
+
+      const ctx = makeCtx({})
+      await ctrl.restoreDeviceLogin(ctx)
 
       expect(ctx.status).toBe(200)
       expect(ctx.body.token).toBeTruthy()
-      expect(ctx.body.user.role).toBe('super_admin')
-      expect(users.findUserById(admin!.id)!.role).toBe('super_admin')
+      expect(ctx.body.user.username).toBe('tp_21')
+      // Restore provisions the personal workspace with the stored api_key.
+      expect(ensurePersonalWorkspaceMock).toHaveBeenCalledWith(expect.objectContaining({
+        platformProfileId: 21,
+        apiKey: 'sk-21',
+      }))
     })
 
-    it('rejects wrong super administrator password and keeps the user as admin', async () => {
+    it('asks which account to restore when several are bound', async () => {
+      const { ctrl, users, bindings } = await loadModules()
+      const first = users.createUser({ username: 'tp_22', password: 'x', role: 'admin' })
+      const second = users.createUser({ username: 'tp_23', password: 'x', role: 'admin' })
+      bindings.upsertBindingByPlatformId({
+        userId: first!.id, platformProfileId: 22, platformUsername: 'wechat_22',
+        apiBase: 'https://api.quantclaw.vip', apiKey: 'sk-22', models: [], displayName: '甲',
+      })
+      bindings.upsertBindingByPlatformId({
+        userId: second!.id, platformProfileId: 23, platformUsername: 'wechat_23',
+        apiBase: 'https://api.quantclaw.vip', apiKey: 'sk-23', models: [], displayName: '乙',
+      })
+
+      const ctx = makeCtx({})
+      await ctrl.restoreDeviceLogin(ctx)
+
+      expect(ctx.status).toBe(409)
+      expect(ctx.body.code).toBe('MULTIPLE_BINDINGS')
+      expect(ctx.body.accounts.map((a: any) => a.platform_profile_id)).toEqual([22, 23])
+      expect(fetchDeviceSelfMock).not.toHaveBeenCalled()
+    })
+
+    it('restores a specific account when platform_profile_id is provided', async () => {
+      const { ctrl, users, bindings } = await loadModules()
+      const first = users.createUser({ username: 'tp_24', password: 'x', role: 'admin' })
+      const second = users.createUser({ username: 'tp_25', password: 'x', role: 'admin' })
+      bindings.upsertBindingByPlatformId({
+        userId: first!.id, platformProfileId: 24, platformUsername: 'wechat_24',
+        apiBase: 'https://api.quantclaw.vip', apiKey: 'sk-24', models: [], displayName: '甲',
+      })
+      bindings.upsertBindingByPlatformId({
+        userId: second!.id, platformProfileId: 25, platformUsername: 'wechat_25',
+        apiBase: 'https://api.quantclaw.vip', apiKey: 'sk-25', models: [], displayName: '乙',
+      })
+      fetchDeviceSelfMock.mockResolvedValue({ id: 25, username: 'wechat_25', display_name: '乙' })
+
+      const ctx = makeCtx({ platform_profile_id: 25 })
+      await ctrl.restoreDeviceLogin(ctx)
+
+      expect(ctx.status).toBe(200)
+      expect(ctx.body.user.username).toBe('tp_25')
+    })
+
+    it('returns 404 when nothing is bound', async () => {
+      const { ctrl } = await loadModules()
+      const ctx = makeCtx({})
+      await ctrl.restoreDeviceLogin(ctx)
+      expect(ctx.status).toBe(404)
+      expect(ctx.body).toEqual({ error: 'No device binding found' })
+    })
+  })
+
+  describe('bindSuperAdmin', () => {
+    it('is rejected: super admin stays exclusive to the built-in account', async () => {
       const { ctrl, users } = await loadModules()
       users.createDefaultSuperAdmin()
-      const admin = users.createUser({ username: 'tp_21', password: 'x', role: 'admin' })
+      const admin = users.createUser({ username: 'tp_30', password: 'x', role: 'admin' })
 
-      const ctx = makeAuthedCtx(
-        { username: DEFAULT_USERNAME, password: 'wrong-password' },
-        { id: admin!.id, username: 'tp_21', role: 'admin' },
-      )
-      await ctrl.bindSuperAdmin(ctx)
-
-      expect(ctx.status).toBe(401)
-      expect(ctx.body).toEqual({ error: 'Invalid super administrator credentials' })
-      expect(users.findUserById(admin!.id)!.role).toBe('admin')
-    })
-
-    it('rejects when the provided account is not a super administrator', async () => {
-      const { ctrl, users } = await loadModules()
-      users.createDefaultSuperAdmin()
-      const admin = users.createUser({ username: 'tp_22', password: 'x', role: 'admin' })
-      users.createUser({ username: 'regular', password: 'y', role: 'admin' })
-
-      const ctx = makeAuthedCtx(
-        { username: 'regular', password: 'y' },
-        { id: admin!.id, username: 'tp_22', role: 'admin' },
-      )
-      await ctrl.bindSuperAdmin(ctx)
-
-      expect(ctx.status).toBe(401)
-      expect(users.findUserById(admin!.id)!.role).toBe('admin')
-    })
-
-    it('rejects when credentials are missing', async () => {
-      const { ctrl, users } = await loadModules()
-      const admin = users.createUser({ username: 'tp_23', password: 'x', role: 'admin' })
-
-      const ctx = makeAuthedCtx({}, { id: admin!.id, username: 'tp_23', role: 'admin' })
+      const ctx = makeAuthedCtx({ username: DEFAULT_USERNAME, password: 'whatever' }, { id: admin!.id, username: 'tp_30', role: 'admin' })
       await ctrl.bindSuperAdmin(ctx)
 
       expect(ctx.status).toBe(400)
+      expect(ctx.body.code).toBe('BIND_SUPER_ADMIN_DEPRECATED')
       expect(users.findUserById(admin!.id)!.role).toBe('admin')
-    })
-
-    it('requires an authenticated user', async () => {
-      const { ctrl } = await loadModules()
-      const ctx = makeCtx({ username: DEFAULT_USERNAME, password: DEFAULT_PASSWORD }) as any
-      ctx.state = { user: null }
-      await ctrl.bindSuperAdmin(ctx)
-
-      expect(ctx.status).toBe(401)
-      expect(ctx.body).toEqual({ error: 'Unauthorized' })
     })
   })
 
   describe('unbindSuperAdmin', () => {
-    function makeAuthedCtx(user: { id: number; username: string; role: string }) {
-      const ctx = makeCtx({}) as any
-      ctx.state = { user }
-      return ctx
-    }
-
     it('demotes the current super_admin to admin and re-issues a token', async () => {
       const { ctrl, users } = await loadModules()
       users.createDefaultSuperAdmin()
       // A second super admin exists so the first one can be safely demoted.
-      const admin = users.createUser({ username: 'tp_30', password: 'x', role: 'admin' })
+      const admin = users.createUser({ username: 'tp_31', password: 'x', role: 'admin' })
       users.updateUser({ userId: admin!.id, role: 'super_admin' })
 
-      const ctx = makeAuthedCtx({ id: admin!.id, username: 'tp_30', role: 'super_admin' })
+      const ctx = makeAuthedCtx({}, { id: admin!.id, username: 'tp_31', role: 'super_admin' })
       await ctrl.unbindSuperAdmin(ctx)
 
       expect(ctx.status).toBe(200)
@@ -389,9 +414,9 @@ describe('deviceLogin controller', () => {
     it('rejects when the current user is not a super_admin', async () => {
       const { ctrl, users } = await loadModules()
       users.createDefaultSuperAdmin()
-      const admin = users.createUser({ username: 'tp_31', password: 'x', role: 'admin' })
+      const admin = users.createUser({ username: 'tp_32', password: 'x', role: 'admin' })
 
-      const ctx = makeAuthedCtx({ id: admin!.id, username: 'tp_31', role: 'admin' })
+      const ctx = makeAuthedCtx({}, { id: admin!.id, username: 'tp_32', role: 'admin' })
       await ctrl.unbindSuperAdmin(ctx)
 
       expect(ctx.status).toBe(403)
@@ -401,9 +426,9 @@ describe('deviceLogin controller', () => {
 
     it('rejects when it would leave no active super administrator', async () => {
       const { ctrl, users } = await loadModules()
-      const admin = users.createUser({ username: 'tp_32', password: 'x', role: 'super_admin' })
+      const admin = users.createUser({ username: 'tp_33', password: 'x', role: 'super_admin' })
 
-      const ctx = makeAuthedCtx({ id: admin!.id, username: 'tp_32', role: 'super_admin' })
+      const ctx = makeAuthedCtx({}, { id: admin!.id, username: 'tp_33', role: 'super_admin' })
       await ctrl.unbindSuperAdmin(ctx)
 
       expect(ctx.status).toBe(400)
@@ -413,8 +438,7 @@ describe('deviceLogin controller', () => {
 
     it('requires an authenticated user', async () => {
       const { ctrl } = await loadModules()
-      const ctx = makeCtx({}) as any
-      ctx.state = { user: null }
+      const ctx = makeAuthedCtx({}, null)
       await ctrl.unbindSuperAdmin(ctx)
 
       expect(ctx.status).toBe(401)
@@ -423,13 +447,7 @@ describe('deviceLogin controller', () => {
   })
 
   describe('setPassword', () => {
-    function makeAuthedCtx(body: Record<string, unknown>, user: { id: number; username: string; role: string }) {
-      const ctx = makeCtx(body) as any
-      ctx.state = { user }
-      return ctx
-    }
-
-    it('sets the password for the current user without requiring the current password', async () => {
+    it('sets the password for a WeChat-provisioned user without the current password', async () => {
       const { ctrl, users } = await loadModules()
       const user = users.createUser({ username: 'tp_40', password: 'old-pass', role: 'admin' })
 
@@ -439,7 +457,17 @@ describe('deviceLogin controller', () => {
       expect(ctx.status).toBe(200)
       expect(ctx.body).toEqual({ success: true })
       expect(users.verifyPassword('brand-new-pass', users.findUserById(user!.id)!.password_hash)).toBe(true)
-      expect(users.verifyPassword('old-pass', users.findUserById(user!.id)!.password_hash)).toBe(false)
+    })
+
+    it('rejects non-WeChat users: they must use change-password', async () => {
+      const { ctrl, users } = await loadModules()
+      const user = users.createUser({ username: 'human', password: 'old-pass', role: 'admin' })
+
+      const ctx = makeAuthedCtx({ newPassword: 'brand-new-pass' }, { id: user!.id, username: 'human', role: 'admin' })
+      await ctrl.setPassword(ctx)
+
+      expect(ctx.status).toBe(403)
+      expect(users.verifyPassword('old-pass', users.findUserById(user!.id)!.password_hash)).toBe(true)
     })
 
     it('rejects a password shorter than 6 characters', async () => {
@@ -453,21 +481,9 @@ describe('deviceLogin controller', () => {
       expect(ctx.body).toEqual({ error: 'New password must be at least 6 characters' })
     })
 
-    it('requires a new password', async () => {
-      const { ctrl, users } = await loadModules()
-      const user = users.createUser({ username: 'tp_42', password: 'old-pass', role: 'admin' })
-
-      const ctx = makeAuthedCtx({}, { id: user!.id, username: 'tp_42', role: 'admin' })
-      await ctrl.setPassword(ctx)
-
-      expect(ctx.status).toBe(400)
-      expect(ctx.body).toEqual({ error: 'New password is required' })
-    })
-
     it('requires an authenticated user', async () => {
       const { ctrl } = await loadModules()
-      const ctx = makeCtx({ newPassword: 'brand-new-pass' }) as any
-      ctx.state = { user: null }
+      const ctx = makeAuthedCtx({ newPassword: 'brand-new-pass' }, null)
       await ctrl.setPassword(ctx)
 
       expect(ctx.status).toBe(401)

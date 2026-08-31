@@ -42,17 +42,20 @@ import {
   type TokenPlatformUserProfile,
 } from '../services/token-platform-client'
 import {
-  loadDeviceBinding,
-  saveDeviceBinding,
-  clearDeviceBinding,
-  type DeviceBinding,
-} from '../services/device-binding'
+  deleteBindingByPlatformId,
+  deleteBindingByUserId,
+  findBindingByPlatformId,
+  findBindingByUserId,
+  listWeChatBindings,
+  upsertBindingByPlatformId,
+} from '../db/hermes/wechat-bindings-store'
 import {
-  setProfileDisplayName,
-  setProfileAvatarRemote,
-  setProfileAvatarGenerated,
-  clearProfileIdentity,
-} from '../services/hermes/profile-metadata'
+  deleteProfileFromDisk,
+  ensurePersonalWorkspace,
+  personalProfileNameFor,
+} from '../services/hermes/wechat-user-provisioning'
+import { clearProfileIdentity } from '../services/hermes/profile-metadata'
+import { logger } from '../services/logger'
 
 /**
  * GET /api/auth/status
@@ -471,9 +474,15 @@ async function localRelayMachineInfo(url: string) {
  * The client already received {api_base, api_key, models, device_id} from the
  * Token Platform device-login status endpoint (the user scanned the QR with
  * WeChat). This endpoint validates the device API key, resolves the bound user
- * profile, provisions a local Hermes user (auto-bootstrapping a super_admin on
- * first run), issues a Hermes JWT, and persists the device binding so later
- * boots can restore the session without re-scanning.
+ * profile, provisions a local regular user (role=admin — super admin stays
+ * exclusive to the built-in `quanthermes` account) with a dedicated personal
+ * agent profile (`u_<platform id>`), issues a Hermes JWT, and persists the
+ * per-user binding so later boots can restore the session without re-scanning.
+ *
+ * Multiple different WeChat accounts can bind to the same device; each gets
+ * its own user, its own personal profile, and its own api_key. The personal
+ * profile's token_platform provider is written with the caller's api_key so
+ * model calls are isolated per user.
  *
  * Body: { api_base, api_key, device_id, device_name, models }.
  */
@@ -531,46 +540,23 @@ export async function deviceLogin(ctx: Context) {
   const localUsername = `tp_${profile.id}`
   let user = findUserByUsername(localUsername)
   if (!user) {
-    // Single-machine, single-owner policy: a Hermes device serves the first
-    // WeChat account that binds to it. The authority for "already bound" is
-    // the persisted device binding (device-binding.json) — NOT the presence of
-    // local users. A freshly deployed device may already have local accounts
-    // (e.g. a bootstrap super admin) while having no WeChat binding at all;
-    // in that case the first scanning WeChat must still become the owner.
-    const existingBinding = await loadDeviceBinding()
-    if (!existingBinding) {
-      // No WeChat binding on this device yet: the first WeChat account to scan
-      // becomes the owner (super_admin) bound to this device.
-      user = createUser({
-        username: localUsername,
-        password: randomUUID(),
-        role: 'super_admin',
-        status: 'active',
-      })
-    } else {
-      // This device already owns a WeChat binding for a different account. Do
-      // NOT auto-provision a fresh admin that would share and overwrite the
-      // same default agent profile. Reject loudly with the bound owner's name
-      // so the human logs in as the owned account instead of clobbering it.
-      const ownerName = existingBinding?.display_name || '已绑定账号'
-      ctx.status = 403
-      ctx.body = {
-        error: `这台设备已绑定微信账号「${ownerName}」，请用该账号登录`,
-        code: 'DEVICE_ALREADY_BOUND',
-        owner: ownerName,
-      }
-      return
-    }
-  } else if (user.role !== 'super_admin' && listUserProfiles(user.id).length === 0) {
-    // A previously-provisioned device user without any profile binding: grant
-    // access to the default agent profile so login stays usable.
-    replaceUserProfiles(user.id, ['default'], 'default')
+    // Every WeChat account that scans gets its own regular user. Super admin
+    // is reserved for the built-in `quanthermes` account and is never granted
+    // through a WeChat scan.
+    user = createUser({
+      username: localUsername,
+      password: randomUUID(),
+      role: 'admin',
+      status: 'active',
+    })
   }
   if (!user) {
     ctx.status = 500
     ctx.body = { error: 'Failed to provision local user' }
     return
   }
+
+  const displayName = profile.display_name || profile.username || localUsername
 
   if (profile.display_name || profile.avatar_url) {
     // Sync the WeChat avatar/name onto the local user: use the real avatar URL
@@ -581,22 +567,41 @@ export async function deviceLogin(ctx: Context) {
       : JSON.stringify({ type: 'default', seed: profile.display_name || '' }))
   }
 
+  // Provision (or refresh) the user's personal agent profile: create it when
+  // missing, bind it, write the WeChat identity onto it, and point its
+  // token_platform provider at this user's own api_key. Login must not fail
+  // when provisioning does — the user can still sign in and create an agent.
+  const personalProfile = await ensurePersonalWorkspace({
+    userId: user.id,
+    platformProfileId: profile.id,
+    displayName,
+    avatarUrl: profile.avatar_url || null,
+    apiBase,
+    apiKey: key,
+    models: modelList,
+  })
+  if (personalProfile) {
+    const bound = listUserProfiles(user.id).map(p => p.profile_name)
+    if (!bound.includes(personalProfile)) {
+      replaceUserProfiles(user.id, [...bound, personalProfile], bound[0] || personalProfile)
+    }
+  } else {
+    logger.warn({ platformProfileId: profile.id }, '[device-login] personal profile provisioning failed')
+  }
+
   const token = await issueUserJwt(user)
   touchUserLogin(user.id)
 
-  const displayName = profile.display_name || profile.username || localUsername
-  syncProfileIdentity(displayName, profile.avatar_url)
-  const binding: DeviceBinding = {
-    device_id: String(deviceId ?? ''),
-    api_base: apiBase,
-    api_key: key,
+  const binding = upsertBindingByPlatformId({
+    userId: user.id,
+    platformProfileId: profile.id,
+    platformUsername: profile.username || '',
+    apiBase,
+    apiKey: key,
+    deviceId: String(deviceId ?? ''),
     models: modelList,
-    display_name: displayName,
-    username: profile.username || localUsername,
-    profile_id: profile.id,
-    bound_at: Date.now(),
-  }
-  await saveDeviceBinding(binding)
+    displayName,
+  })
 
   ctx.body = {
     token,
@@ -608,99 +613,173 @@ export async function deviceLogin(ctx: Context) {
       bound_models: modelList,
     },
     binding: {
-      device_id: binding.device_id,
+      device_id: binding?.device_id || String(deviceId ?? ''),
       display_name: displayName,
+      platform_profile_id: profile.id,
     },
   }
 }
 
 /**
- * Reflect the Token Platform identity onto the "default" Hermes profile only:
- * the default agent profile is displayed by its internal name in the meeting,
- * group chat, coding and profile selector surfaces. Writing the Web-UI
- * displayName metadata (plus the WeChat avatar) makes every surface scoped to
- * "default" show the user's name. Other agent profiles (e.g. "research",
- * "travel", or expert-installed agents) keep their own names and avatars and
- * are intentionally NOT overwritten by the WeChat identity.
- */
-function syncProfileIdentity(displayName: string, avatarUrl?: string | null): void {
-  const profileName = 'default'
-  setProfileDisplayName(profileName, displayName)
-  if (avatarUrl) {
-    setProfileAvatarRemote(profileName, avatarUrl)
-  } else {
-    setProfileAvatarGenerated(profileName, displayName)
-  }
-}
-
-/**
  * GET /api/auth/device-binding
- * Return whether this Hermes device has a persisted Token Platform binding.
- * Used by the login page to offer "restore previous scan" without re-scanning.
+ * Return the WeChat accounts bound to this device. Used by the login page to
+ * offer "restore previous scan" without re-scanning, and to disambiguate when
+ * multiple WeChat accounts are bound.
  */
 export async function getDeviceBinding(ctx: Context) {
-  const binding = await loadDeviceBinding()
-  if (!binding) {
-    ctx.body = { bound: false }
+  const bindings = listWeChatBindings()
+  if (bindings.length === 0) {
+    ctx.body = { bound: false, accounts: [] }
     return
   }
   ctx.body = {
     bound: true,
-    display_name: binding.display_name,
-    username: binding.username,
-    models: binding.models,
-    bound_at: binding.bound_at,
+    accounts: bindings.map(binding => ({
+      platform_profile_id: binding.platform_profile_id,
+      display_name: binding.display_name,
+      username: binding.platform_username,
+      bound_at: binding.bound_at,
+    })),
   }
 }
 
 /**
- * DELETE /api/auth/device-binding
- * Unbind the WeChat account bound to this device.
- *
- * Full unbind semantics (public, callable from the login page before signing
- * in): forget the persisted Token Platform binding so the device is available
- * for a new WeChat owner, remove the WeChat identity from the default agent
- * profile, and delete the local `tp_<id>` user provisioned by the scan login.
- * No "at least one super administrator" guard is enforced: unbinding is a
- * device-handover operation and the next scan bootstraps a fresh owner.
- *
- * Response: { success, hadBinding, deletedUser }.
+ * Delete every piece of data owned by a WeChat user: their personal agent
+ * profile (`u_<platform id>`, disk + metadata), the binding row, theme assets,
+ * and the local user record itself. Profiles that were merely assigned to or
+ * created under other names stay on disk for the super administrator — they
+ * are never visible to other regular users once the binding rows are gone.
+ * Used by unbind and by super-admin user deletion.
  */
-export async function clearDeviceBindingController(ctx: Context) {
-  const binding = await loadDeviceBinding()
-  let deletedUser: string | null = null
-  if (binding) {
-    // Resolve the local user provisioned by the scan login. Prefer the stored
-    // profile id (`tp_<id>`); fall back to the recorded username when it was
-    // persisted in the tp_ form (older bindings may not carry profile_id).
-    const localUsername = binding.profile_id != null
-      ? `tp_${binding.profile_id}`
-      : (binding.username && binding.username.startsWith('tp_') ? binding.username : null)
-    if (localUsername) {
-      const user = findUserByUsername(localUsername)
-      if (user) {
-        await removeAllUserThemeAssets(user.id)
-        deleteUser(user.id)
-        deletedUser = user.username
+async function deleteWeChatUserData(user: UserRecord): Promise<string[]> {
+  const deletedProfiles: string[] = []
+  const personalMatch = /^tp_(\d+)$/.exec(user.username)
+  if (personalMatch) {
+    const personalProfile = personalProfileNameFor(Number(personalMatch[1]))
+    if (listUserProfiles(user.id).some(p => p.profile_name === personalProfile)) {
+      if (await deleteProfileFromDisk(personalProfile)) {
+        deletedProfiles.push(personalProfile)
       }
     }
-    // Restore the default agent profile's original identity (name/avatar).
-    clearProfileIdentity('default')
-    await clearDeviceBinding()
   }
-  ctx.body = { success: true, hadBinding: Boolean(binding), deletedUser }
+  await removeAllUserThemeAssets(user.id)
+  deleteBindingByUserId(user.id)
+  deleteUser(user.id)
+  return deletedProfiles
+}
+
+/**
+ * DELETE /api/auth/device-binding (protected)
+ * Unbind a WeChat account from this device and wipe its data.
+ *
+ * Callable by the bound WeChat user themselves or by a super administrator
+ * (who may pass ?platform_profile_id= to unbind another account). Deletion
+ * covers the local `tp_<id>` user, its personal agent profiles (disk + Web-UI
+ * metadata), its binding row, and its theme assets. Idempotent: unbinding
+ * with no binding reports hadBinding=false. A previously bound WeChat account
+ * that scans again starts from a clean slate.
+ */
+export async function clearDeviceBindingController(ctx: Context) {
+  const actor = ctx.state.user
+  if (!actor) {
+    ctx.status = 401
+    ctx.body = { error: 'Unauthorized' }
+    return
+  }
+
+  let binding = findBindingByUserId(actor.id)
+  if (!binding && actor.username.startsWith('tp_')) {
+    const platformId = Number(actor.username.slice('tp_'.length))
+    if (Number.isInteger(platformId)) {
+      binding = findBindingByPlatformId(platformId) || binding
+    }
+  }
+  // Super administrators may unbind a specific account on behalf of its owner.
+  // A non-admin naming someone else's binding is rejected outright instead of
+  // silently unbinding their own (or nothing).
+  const requestedPlatformId = Number(ctx.query.platform_profile_id)
+  if (Number.isInteger(requestedPlatformId) && requestedPlatformId > 0) {
+    if (actor.role === 'super_admin') {
+      binding = findBindingByPlatformId(requestedPlatformId)
+    } else if (binding?.platform_profile_id !== requestedPlatformId) {
+      ctx.status = 403
+      ctx.body = { error: 'Only the bound WeChat owner or a super administrator can unbind' }
+      return
+    }
+  }
+
+  let deletedUser: string | null = null
+  let deletedProfiles: string[] = []
+  if (binding) {
+    const isOwner = actor.id === binding.user_id
+    if (!isOwner && actor.role !== 'super_admin') {
+      ctx.status = 403
+      ctx.body = { error: 'Only the bound WeChat owner or a super administrator can unbind' }
+      return
+    }
+    const localUsername = binding.user_id
+      ? null
+      : `tp_${binding.platform_profile_id}`
+    const user = (binding.user_id ? findUserById(binding.user_id) : null)
+      || (localUsername ? findUserByUsername(localUsername) : null)
+    if (user) {
+      deletedProfiles = await deleteWeChatUserData(user)
+      deletedUser = user.username
+    } else {
+      deleteBindingByPlatformId(binding.platform_profile_id)
+    }
+  } else if (actor.username.startsWith('tp_')) {
+    // Legacy user without an imported binding row: still wipe their account
+    // data so "unbind" always means a clean slate.
+    const user = findUserByUsername(actor.username)
+    if (user) {
+      deletedProfiles = await deleteWeChatUserData(user)
+      deletedUser = user.username
+    }
+  }
+
+  logger.info({
+    actor: actor.username,
+    deletedUser,
+    deletedProfiles,
+  }, '[device-binding] wechat account unbound')
+  ctx.body = { success: true, hadBinding: Boolean(binding), deletedUser, deletedProfiles }
 }
 
 /**
  * POST /api/auth/device-login/restore
- * Restore a previous Token Platform binding and re-issue a Hermes JWT without
+ * Restore a previous WeChat binding and re-issue a Hermes JWT without
  * requiring a new WeChat scan. Verifies the stored api_key is still valid.
+ * Body/query: { platform_profile_id? } — optional when exactly one account is
+ * bound; required to pick between multiple bound accounts (409 otherwise).
  */
 export async function restoreDeviceLogin(ctx: Context) {
-  const binding = await loadDeviceBinding()
-  if (!binding?.api_key || !binding.api_base) {
+  const bindings = listWeChatBindings()
+  if (bindings.length === 0) {
     ctx.status = 404
     ctx.body = { error: 'No device binding found' }
+    return
+  }
+
+  const requestedId = Number(
+    (ctx.request.body as { platform_profile_id?: unknown } | undefined)?.platform_profile_id
+    ?? ctx.query.platform_profile_id,
+  )
+  const binding = Number.isInteger(requestedId) && requestedId > 0
+    ? bindings.find(item => item.platform_profile_id === requestedId) || null
+    : (bindings.length === 1 ? bindings[0] : null)
+  if (!binding) {
+    ctx.status = 409
+    ctx.body = {
+      error: 'Multiple WeChat accounts are bound to this device; pick one',
+      code: 'MULTIPLE_BINDINGS',
+      accounts: bindings.map(item => ({
+        platform_profile_id: item.platform_profile_id,
+        display_name: item.display_name,
+        username: item.platform_username,
+        bound_at: item.bound_at,
+      })),
+    }
     return
   }
 
@@ -718,117 +797,56 @@ export async function restoreDeviceLogin(ctx: Context) {
     return
   }
 
-  const localUsername = `tp_${profile.id}`
-  const user = findUserByUsername(localUsername)
+  const localUsername = `tp_${binding.platform_profile_id}`
+  const user = (binding.user_id ? findUserById(binding.user_id) : null)
+    || findUserByUsername(localUsername)
   if (!user || user.status !== 'active') {
     ctx.status = 401
     ctx.body = { error: 'Bound local user no longer exists' }
     return
   }
 
-  // Ensure a non-super-admin device user always has the default profile bound.
-  if (user.role !== 'super_admin' && listUserProfiles(user.id).length === 0) {
-    replaceUserProfiles(user.id, ['default'], 'default')
+  const displayName = profile.display_name || binding.display_name || localUsername
+  const personalProfile = await ensurePersonalWorkspace({
+    userId: user.id,
+    platformProfileId: binding.platform_profile_id,
+    displayName,
+    avatarUrl: profile.avatar_url || null,
+    apiBase: binding.api_base,
+    apiKey: binding.api_key,
+    models: (() => {
+      try {
+        const parsed = JSON.parse(binding.models_json)
+        return Array.isArray(parsed) ? parsed.map(String) : []
+      } catch {
+        return []
+      }
+    })(),
+  })
+  if (personalProfile) {
+    const bound = listUserProfiles(user.id).map(p => p.profile_name)
+    if (!bound.includes(personalProfile)) {
+      replaceUserProfiles(user.id, [...bound, personalProfile], bound[0] || personalProfile)
+    }
   }
 
   const token = await issueUserJwt(user)
   touchUserLogin(user.id)
-  syncProfileIdentity(profile.display_name || profile.username || localUsername, profile.avatar_url)
   ctx.body = { token, user: { id: user.id, username: user.username, role: user.role } }
 }
 
 /**
  * POST /api/auth/bind-super-admin
- * Upgrade the currently authenticated user to a super administrator, after
- * verifying that they can provide valid super-admin credentials.
- *
- * Used by WeChat device-login users who are provisioned as regular admins:
- * after scanning they can choose to bind to the super administrator account by
- * entering its username/password. Wrong credentials are rejected and the user
- * stays a regular admin. A fresh JWT is issued because the old token still
- * carries the previous role.
- *
- * Body: { username, password }.
+ * Deprecated. The multi-user model reserves super admin for the built-in
+ * `quanthermes` account; WeChat users are always regular users. Kept as a
+ * stub so older clients fail with an explicit error instead of a 404.
  */
 export async function bindSuperAdmin(ctx: Context) {
-  const userId = ctx.state.user?.id
-  if (!userId) {
-    ctx.status = 401
-    ctx.body = { error: 'Unauthorized' }
-    return
+  ctx.status = 400
+  ctx.body = {
+    error: 'Binding to the super administrator account is no longer supported',
+    code: 'BIND_SUPER_ADMIN_DEPRECATED',
   }
-
-  const body = ctx.request.body as { username?: unknown; password?: unknown }
-  const username = String(body?.username || '').trim()
-  const password = String(body?.password || '')
-
-  if (!username || !password) {
-    ctx.status = 400
-    ctx.body = { error: 'Super administrator username and password are required' }
-    return
-  }
-
-  const target = findUserByUsername(username)
-  if (!target || target.role !== 'super_admin' || target.status !== 'active') {
-    ctx.status = 401
-    ctx.body = { error: 'Invalid super administrator credentials' }
-    return
-  }
-
-  if (!verifyPassword(password, target.password_hash)) {
-    ctx.status = 401
-    ctx.body = { error: 'Invalid super administrator credentials' }
-    return
-  }
-
-  const user = findUserById(userId)
-  if (!user) {
-    ctx.status = 404
-    ctx.body = { error: 'User not found' }
-    return
-  }
-
-  if (user.role === 'super_admin') {
-    ctx.body = { token: await issueUserJwt(user), user: { id: user.id, username: user.username, role: user.role } }
-    return
-  }
-
-  const upgraded = updateUser({ userId, role: 'super_admin' })
-  if (!upgraded) {
-    ctx.status = 500
-    ctx.body = { error: 'Failed to bind super administrator' }
-    return
-  }
-
-  // Permanently reflect the bound WeChat identity on the default agent profile.
-  syncProfileIdentityFromUser(upgraded)
-
-  const token = await issueUserJwt(upgraded)
-  touchUserLogin(upgraded.id)
-  ctx.body = { token, user: { id: upgraded.id, username: upgraded.username, role: upgraded.role } }
-}
-
-/**
- * Sync the default agent profile's display name and avatar from the current
- * user's persisted identity (WeChat name/avatar stored in the user record).
- * Used when binding to super administrator so the change is permanent.
- */
-function syncProfileIdentityFromUser(user: UserRecord): void {
-  let displayName = user.username || 'default'
-  let avatarUrl: string | null = null
-  const raw = getUserAvatar(user.id)
-  if (raw) {
-    try {
-      const parsed = JSON.parse(raw)
-      if (parsed && typeof parsed === 'object') {
-        if (typeof parsed.seed === 'string' && parsed.seed.trim()) displayName = parsed.seed.trim()
-        if (typeof parsed.dataUrl === 'string' && parsed.dataUrl.startsWith('http')) avatarUrl = parsed.dataUrl
-      }
-    } catch {
-      // ignore malformed avatar
-    }
-  }
-  syncProfileIdentity(displayName, avatarUrl)
 }
 
 /**
@@ -1036,10 +1054,10 @@ export async function changePassword(ctx: Context) {
  * Set or reset the current user's password without requiring the current
  * password.
  *
- * Identity is already established by the caller (JWT issued after a WeChat
- * scan login, or a normal password login). This lets WeChat device users set
- * their own account password for the first time, or reset it after forgetting
- * it by re-scanning with WeChat.
+ * Restricted to WeChat-provisioned users (`tp_` prefix): their password is a
+ * random secret they never see, so a scan-verified JWT is the only way to set
+ * a real one. Everyone else must use change-password with their current
+ * password, otherwise any stolen JWT could silently take over the account.
  */
 export async function setPassword(ctx: Context) {
   const { newPassword } = ctx.request.body as { newPassword?: unknown }
@@ -1065,6 +1083,11 @@ export async function setPassword(ctx: Context) {
   if (!user) {
     ctx.status = 404
     ctx.body = { error: 'User not found' }
+    return
+  }
+  if (!user.username.startsWith('tp_')) {
+    ctx.status = 403
+    ctx.body = { error: 'Use change-password to update your password' }
     return
   }
 
@@ -1336,7 +1359,8 @@ export async function updateManagedUser(ctx: Context) {
 
 /**
  * DELETE /api/auth/users/:id
- * Delete a user account. Super admin only.
+ * Delete a user account and wipe everything it owns (WeChat bindings,
+ * personal agent profiles). Super admin only.
  */
 export async function deleteManagedUser(ctx: Context) {
   const id = Number(ctx.params.id)
@@ -1358,9 +1382,8 @@ export async function deleteManagedUser(ctx: Context) {
     return
   }
 
-  await removeAllUserThemeAssets(user.id)
-  deleteUser(user.id)
-  ctx.body = { success: true, users: listUsers() }
+  const deletedProfiles = await deleteWeChatUserData(user)
+  ctx.body = { success: true, deletedProfiles, users: listUsers() }
 }
 
 /**

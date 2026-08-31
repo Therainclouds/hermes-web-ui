@@ -3,6 +3,25 @@ import { PassThrough } from 'node:stream'
 import { meetingASRService } from '../../services/meeting-asr'
 import { REPORT_FALLBACK_MARKER } from '../../services/meeting-asr/realtime-assist'
 import { logger } from '../../services/logger'
+import { userCanAccessProfile } from '../../db/hermes/users-store'
+
+/**
+ * Meeting assist runs against an agent profile's knowledge. Enforce the same
+ * profile-ownership rules as the rest of the app for JWT users; loopback
+ * server-token callers (the local ASR service itself) and super admins pass.
+ * Returns true when access was denied (response already written).
+ */
+function denyProfileAccess(ctx: Context, profile: unknown): boolean {
+  if (typeof profile !== 'string' || !profile.trim()) return false
+  const user = ctx.state.user
+  if (!user || user.role === 'super_admin' || ctx.state.serverTokenAuth) return false
+  if (!userCanAccessProfile(user.id, profile.trim())) {
+    ctx.status = 403
+    ctx.body = { error: `Profile "${profile}" is not accessible for this user` }
+    return true
+  }
+  return false
+}
 
 async function proxyToBackend(ctx: Context, path: string, method: 'GET' | 'POST' = 'GET', body?: any): Promise<any> {
   const status = meetingASRService.status
@@ -285,6 +304,7 @@ export async function startAssist(ctx: Context): Promise<void> {
     ctx.body = { error: 'sessionId is required' }
     return
   }
+  if (denyProfileAccess(ctx, profile)) return
   await realtimeAssistService.startSession(sessionId, sceneTemplate || 'general', profile, speechContext || null)
   ctx.body = { status: 'started', sessionId, sceneTemplate: sceneTemplate || 'general', profile: profile || null }
 }
@@ -352,6 +372,7 @@ export async function streamReport(ctx: Context): Promise<void> {
     ctx.body = { error: 'sessionId and transcript are required' }
     return
   }
+  if (denyProfileAccess(ctx, profile)) return
 
   ctx.type = 'text/event-stream'
   ctx.set('Cache-Control', 'no-cache')

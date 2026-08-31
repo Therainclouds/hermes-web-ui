@@ -406,6 +406,12 @@ export async function bootstrap() {
   startChatWebhookDispatcher()
   console.log('[bootstrap] all stores initialized')
   try {
+    const { migrateLegacyDeviceBinding } = await import('./services/wechat-binding-migration')
+    await migrateLegacyDeviceBinding()
+  } catch (err) {
+    logger.warn(err, '[bootstrap] wechat binding migration failed')
+  }
+  try {
     startUSBService()
     console.log('[bootstrap] usb service initialized')
   } catch (err) {

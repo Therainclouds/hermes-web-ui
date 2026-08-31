@@ -52,6 +52,7 @@ export default {
     deviceLoginFailed: 'Device login failed',
     tokenPlatformNoModel: 'Your bound account did not grant any available model. Please contact the token platform administrator.',
     tokenPlatformConfigureFailed: 'Failed to enable the bound API automatically. Please try again.',
+    wechatRestorePick: 'Several WeChat accounts are bound to this device; pick one to restore',
     wechatRestore: 'Restore bound account ({account})',
     accessDenied: 'You do not have permission to access this resource.',
     bindSuperAdminTitle: 'Bind to Super Administrator',
@@ -2190,7 +2191,7 @@ export default {
     setAccountPasswordHint: 'Once set, you can sign in with your username and password. Forgot it? Re-scan with WeChat and set a new one.',
     passwordSet: 'Account password set',
     unbindWechat: 'Unbind WeChat',
-    unbindWechatConfirm: 'Unbind the WeChat account "{account}"? This removes the account\'s local credentials and clears the device binding, so a new WeChat account can scan and bind again.',
+    unbindWechatConfirm: 'Unbind the WeChat account "{account}"? This permanently deletes the account data: the local account, its personal agent with its sessions, and its login credentials. If this WeChat account binds again it starts from a clean slate.',
     unbindWechatSuccess: 'WeChat unbound',
     unbindWechatFailed: 'Failed to unbind WeChat',
     tabs: {

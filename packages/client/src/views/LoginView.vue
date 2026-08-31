@@ -5,17 +5,14 @@ import { useI18n } from "vue-i18n";
 import { setApiKey, clearApiKey, hasApiKey } from "@/api/client";
 import { fetchAuthStatus, loginWithPassword } from "@/api/auth";
 import { clearLoginLocks, resetDefaultLogin } from "@/api/recovery";
-import { useMessage } from "@/composables/useAppMessage";
 import RecoveryConfirmModal, {
   type RecoveryAction,
 } from "@/components/auth/RecoveryConfirmModal.vue";
-import BindSuperAdminModal from "@/components/auth/BindSuperAdminModal.vue";
 import WeChatQrPanel from "@/components/auth/WeChatQrPanel.vue";
 import {
   completeHermesDeviceLogin,
   type TokenPlatformDeviceLoginStatus,
 } from "@/api/device-login";
-import { addCustomProvider } from "@/api/hermes/system";
 import { useDeviceBinding } from "@/composables/useDeviceBinding";
 import { isDesktopShell } from "@/utils/desktop-bridge";
 import { resolveLoginRedirect } from "@/utils/login-redirect";
@@ -24,7 +21,6 @@ import { useTheme } from "@/composables/useTheme";
 const { t } = useI18n();
 const router = useRouter();
 const route = useRoute();
-const message = useMessage();
 const { activateUserTheme } = useTheme();
 
 const username = ref("");
@@ -34,26 +30,20 @@ const errorMsg = ref("");
 const showLockResetHint = ref(false);
 const desktopShell = isDesktopShell();
 
-// Token Platform WeChat binding restore (previously scanned device)
+// WeChat binding restore (previously scanned accounts on this device)
 const {
   checking: bindingChecking,
   hasBinding,
+  accounts: bindingAccounts,
   restoring: bindingRestoring,
   restoreError: bindingRestoreError,
-  binding,
   restore,
-  unbind,
 } = useDeviceBinding();
-const unbindingDevice = ref(false);
 
 // WeChat scan login state
 const wechatMode = ref(false);
 const wechatSyncing = ref(false);
 const wechatError = ref("");
-
-// Bind super admin prompt (only for non-super-admin WeChat device users)
-const showBindSuperAdmin = ref(false);
-const pendingLoginToken = ref("");
 
 // Recovery modal state
 type RecoveryModalState = { open: false } | { open: true; action: RecoveryAction };
@@ -121,53 +111,10 @@ async function handleWeChatApproved(
       device_name: "Hermes",
       models: result.api.models,
     });
-    pendingLoginToken.value = hermesResult.token;
 
-    // Set the Hermes session token FIRST so the addCustomProvider call below
-    // (which requires a Bearer JWT) carries the Authorization header. Without
-    // this the provider onboarding request is rejected with 401 and the
-    // account logs in with no usable model (falls back to whatever the default
-    // profile already had).
-    setApiKey(hermesResult.token);
-
-    // Sync the user's model capabilities into Hermes as the default provider.
-    // The Token Platform reports an OpenAI-compatible api_base (e.g.
-    // https://api.quantclaw.vip). Its /v1/chat/completions, /v1/models and
-    // /v1/completions endpoints are served from that origin, so the base URL
-    // must NOT have "/v1" appended (the gateway/tooling appends "/v1" itself).
-    const models = hermesResult.user.bound_models?.length
-      ? hermesResult.user.bound_models
-      : result.api.models;
-    const defaultModel = models[0];
-    if (!defaultModel) {
-      wechatError.value = t("login.tokenPlatformNoModel");
-      return;
-    }
-    try {
-      await addCustomProvider({
-        name: "token_platform",
-        base_url: result.api.api_base.replace(/\/+$/, ""),
-        api_key: result.api.api_key,
-        model: defaultModel,
-        api_mode: "chat_completions",
-      });
-    } catch (providerErr: any) {
-      // Auto-onboarding the user into the default provider is the whole point
-      // of WeChat login. If it fails the account is unusable, so surface the
-      // error instead of silently logging in without any model.
-      console.error("Failed to configure Token Platform provider:", providerErr);
-      wechatError.value = providerErr?.message || t("login.tokenPlatformConfigureFailed");
-      return;
-    }
-
-    // WeChat device users are regular admins. Offer to bind the account to the
-    // super administrator by verifying its credentials. The session token is
-    // already set above, so the bind request carries the Authorization header.
-    if (hermesResult.user.role !== "super_admin") {
-      showBindSuperAdmin.value = true;
-      return;
-    }
-
+    // The server provisions the personal agent profile and writes this
+    // account's Token Platform api_key into that profile's provider config,
+    // so no client-side provider onboarding is needed here.
     setApiKey(hermesResult.token);
     router.replace("/hermes/chat");
   } catch (err: any) {
@@ -175,24 +122,6 @@ async function handleWeChatApproved(
   } finally {
     wechatSyncing.value = false;
   }
-}
-
-function handleBindSuperAdminSkip() {
-  showBindSuperAdmin.value = false;
-  if (pendingLoginToken.value) {
-    setApiKey(pendingLoginToken.value);
-    router.replace("/hermes/chat");
-  }
-}
-
-function handleBindSuperAdminBound(
-  token: string,
-  _user: { id: number; username: string; role: string },
-) {
-  showBindSuperAdmin.value = false;
-  pendingLoginToken.value = token;
-  setApiKey(token);
-  router.replace("/hermes/chat");
 }
 
 function openRecoveryModal(action: RecoveryAction) {
@@ -203,18 +132,8 @@ function closeRecoveryModal() {
   recoveryModal.value = { open: false };
 }
 
-async function handleUnbindDevice() {
-  const account = binding.value?.display_name || "";
-  if (!window.confirm(t("login.unbindDeviceConfirm", { account }))) return;
-  unbindingDevice.value = true;
-  try {
-    await unbind();
-    message.success(t("login.unbindDeviceSuccess"));
-  } catch (err: any) {
-    message.error(err?.message || t("login.unbindDeviceFailed"));
-  } finally {
-    unbindingDevice.value = false;
-  }
+function restoreAccountLabel(account: { display_name?: string; username?: string }) {
+  return account.display_name || account.username || "";
 }
 
 async function handleRecoverySubmit(recoveryPassword: string) {
@@ -321,24 +240,30 @@ async function handleRecoverySubmit(recoveryPassword: string) {
           {{ t("login.passwordLogin") }}
         </button>
 
-        <button
-          v-if="hasBinding && !bindingChecking"
-          type="button"
-          class="login-restore-btn"
-          :disabled="bindingRestoring"
-          @click="restore"
-        >
-          {{ bindingRestoring ? "..." : t("login.wechatRestore", { account: binding?.display_name || "" }) }}
-        </button>
-        <button
-          v-if="hasBinding && !bindingChecking"
-          type="button"
-          class="login-unbind-btn"
-          :disabled="unbindingDevice"
-          @click="handleUnbindDevice"
-        >
-          {{ unbindingDevice ? "..." : t("login.unbindDevice") }}
-        </button>
+        <template v-if="hasBinding && !bindingChecking">
+          <button
+            v-if="bindingAccounts.length <= 1"
+            type="button"
+            class="login-restore-btn"
+            :disabled="bindingRestoring"
+            @click="restore()"
+          >
+            {{ bindingRestoring ? "..." : t("login.wechatRestore", { account: restoreAccountLabel(bindingAccounts[0] || {}) }) }}
+          </button>
+          <template v-else>
+            <p class="login-restore-pick">{{ t("login.wechatRestorePick") }}</p>
+            <button
+              v-for="account in bindingAccounts"
+              :key="account.platform_profile_id"
+              type="button"
+              class="login-restore-btn"
+              :disabled="bindingRestoring"
+              @click="restore(account.platform_profile_id)"
+            >
+              {{ bindingRestoring ? "..." : t("login.wechatRestore", { account: restoreAccountLabel(account) }) }}
+            </button>
+          </template>
+        </template>
         <div v-if="bindingRestoreError" class="login-error">
           {{ bindingRestoreError }}
         </div>
@@ -368,12 +293,6 @@ async function handleRecoverySubmit(recoveryPassword: string) {
       :action="recoveryModal.action"
       @close="closeRecoveryModal"
       @submit="handleRecoverySubmit"
-    />
-
-    <BindSuperAdminModal
-      :open="showBindSuperAdmin"
-      @close="handleBindSuperAdminSkip"
-      @bound="handleBindSuperAdminBound"
     />
   </div>
 </template>
@@ -609,28 +528,10 @@ async function handleRecoverySubmit(recoveryPassword: string) {
   }
 }
 
-.login-unbind-btn {
-  width: 100%;
-  margin-top: 8px;
-  padding: 10px 16px;
-  border: 1px dashed rgba($error, 0.55);
-  border-radius: $radius-sm;
-  background: transparent;
-  color: $error;
-  font-size: 13px;
-  cursor: pointer;
-  transition: color $transition-fast, border-color $transition-fast;
-  font-family: $font-code;
-
-  &:hover:not(:disabled) {
-    color: $error;
-    border-color: $error;
-  }
-
-  &:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
+.login-restore-pick {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: $text-muted;
 }
 
 .login-wechat-mode {

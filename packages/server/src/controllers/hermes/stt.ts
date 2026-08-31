@@ -27,6 +27,7 @@ import { normalizeMcuAgentRuntime } from '../../services/global-agent/mcu-agent-
 import { MCU_TTS_SAMPLE_RATE, mcuPromptText, mcuPromptUrl } from '../../services/hermes/mcu-prompts'
 import { syncVoiceConfigToHermesProfile } from '../../services/hermes/voice-config-sync'
 import { listProfileNamesFromDisk } from '../../services/hermes/hermes-profile'
+import { getDefaultProfileForUser } from '../../db/hermes/users-store'
 import {
   cancelLocalSttStreamSession,
   createLocalSttStreamSession,
@@ -68,7 +69,25 @@ function authUserId(ctx: Context): number | null {
 function requestedProfile(ctx: Context): string {
   const queryProfile = typeof ctx.query?.profile === 'string' ? ctx.query.profile : ''
   const headerProfile = ctx.get?.('x-hermes-profile') || ''
-  return (ctx.state?.profile?.name || queryProfile || headerProfile || 'default').trim() || 'default'
+  const explicit = (ctx.state?.profile?.name || queryProfile || headerProfile || '').trim()
+  if (explicit) return explicit
+  // Implicit fallback: resolve to a profile the user actually owns instead of
+  // blindly landing on the shared active/default profile. Users without any
+  // profile binding keep the legacy `default` fallback.
+  const user = ctx.state?.user
+  if (user && user.role !== 'super_admin' && !ctx.state?.serverTokenAuth) {
+    const bound: string[] = user.profiles || []
+    if (bound.length === 1) return bound[0]
+    if (bound.length > 1) {
+      const fallback = getDefaultProfileForUser(user.id)
+      if (bound.includes(fallback)) return fallback
+      const err: any = new Error('Profile is required')
+      err.status = 400
+      err.code = 'profile_required'
+      throw err
+    }
+  }
+  return 'default'
 }
 
 function requestedVoiceProxyProfile(ctx: Context): string | null {

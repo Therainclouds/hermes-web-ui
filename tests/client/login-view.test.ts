@@ -13,6 +13,8 @@ const mockResetDefaultLogin = vi.hoisted(() => vi.fn())
 const mockActivateUserTheme = vi.hoisted(() => vi.fn())
 const mockRoute = vi.hoisted(() => ({ query: {} as Record<string, unknown> }))
 const mockIsDesktopShell = vi.hoisted(() => vi.fn())
+const mockFetchDeviceBinding = vi.hoisted(() => vi.fn(async () => ({ bound: false, accounts: [] })))
+const mockRestoreDeviceLogin = vi.hoisted(() => vi.fn(async () => ({ token: 'jwt-token', user: { id: 7, username: 'tp_7', role: 'admin' } })))
 
 vi.mock('vue-router', () => ({
   useRouter: () => ({
@@ -23,7 +25,8 @@ vi.mock('vue-router', () => ({
 
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
-    t: (key: string) => key,
+    t: (key: string, params?: Record<string, unknown>) =>
+      params ? `${key}:${JSON.stringify(params)}` : key,
   }),
 }))
 
@@ -51,6 +54,13 @@ vi.mock('@/composables/useTheme', () => ({
   useTheme: () => ({
     activateUserTheme: mockActivateUserTheme,
   }),
+}))
+
+vi.mock('@/api/device-login', () => ({
+  fetchHermesDeviceBinding: mockFetchDeviceBinding,
+  restoreHermesDeviceLogin: mockRestoreDeviceLogin,
+  completeHermesDeviceLogin: vi.fn(),
+  unbindHermesDevice: vi.fn(),
 }))
 
 import LoginView from '@/views/LoginView.vue'
@@ -242,5 +252,73 @@ describe('LoginView password login', () => {
     await flushPromises()
 
     expect(mockResetDefaultLogin).toHaveBeenCalledWith('12345678')
+  })
+})
+
+describe('LoginView WeChat binding restore', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockIsDesktopShell.mockReturnValue(false)
+    mockRoute.query = {}
+    mockHasApiKey.mockReturnValue(false)
+    mockFetchAuthStatus.mockResolvedValue({ hasPasswordLogin: true })
+    mockRestoreDeviceLogin.mockResolvedValue({ token: 'jwt-token', user: { id: 7, username: 'tp_7', role: 'admin' } })
+    document.body.innerHTML = ''
+  })
+
+  it('offers a single restore button when one account is bound and restores it without an id', async () => {
+    mockFetchDeviceBinding.mockResolvedValue({
+      bound: true,
+      accounts: [{ platform_profile_id: 7, display_name: '用户甲' }],
+    })
+    const wrapper = mount(LoginView)
+    await flushPromises()
+
+    const buttons = wrapper.findAll('.login-restore-btn')
+    expect(buttons).toHaveLength(1)
+    expect(buttons[0].text()).toContain('用户甲')
+    // Unbinding is no longer offered from the login page: it requires an
+    // authenticated session (owner or super admin) and deletes user data.
+    expect(wrapper.find('.login-unbind-btn').exists()).toBe(false)
+
+    await buttons[0].trigger('click')
+    await flushPromises()
+
+    expect(mockRestoreDeviceLogin).toHaveBeenCalledWith(undefined)
+    expect(mockSetApiKey).toHaveBeenCalledWith('jwt-token')
+    expect(mockReplace).toHaveBeenCalledWith('/hermes/chat')
+  })
+
+  it('renders one restore button per bound account when several are bound', async () => {
+    mockFetchDeviceBinding.mockResolvedValue({
+      bound: true,
+      accounts: [
+        { platform_profile_id: 7, display_name: '用户甲' },
+        { platform_profile_id: 9, display_name: '用户乙' },
+      ],
+    })
+    const wrapper = mount(LoginView)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('login.wechatRestorePick')
+    const buttons = wrapper.findAll('.login-restore-btn')
+    expect(buttons).toHaveLength(2)
+    expect(buttons[1].text()).toContain('用户乙')
+
+    await buttons[1].trigger('click')
+    await flushPromises()
+
+    expect(mockRestoreDeviceLogin).toHaveBeenCalledWith(9)
+    expect(mockSetApiKey).toHaveBeenCalledWith('jwt-token')
+    expect(mockReplace).toHaveBeenCalledWith('/hermes/chat')
+  })
+
+  it('hides restore actions when nothing is bound', async () => {
+    mockFetchDeviceBinding.mockResolvedValue({ bound: false, accounts: [] })
+    const wrapper = mount(LoginView)
+    await flushPromises()
+
+    expect(wrapper.findAll('.login-restore-btn')).toHaveLength(0)
+    expect(mockRestoreDeviceLogin).not.toHaveBeenCalled()
   })
 })

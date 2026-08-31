@@ -157,6 +157,21 @@ export function countActiveSuperAdmins(excludeUserId?: UserId): number {
   return Number((row as { count?: number } | undefined)?.count || 0)
 }
 
+/**
+ * Legacy WeChat device users were provisioned as super_admin (single-owner
+ * model). The multi-user model keeps super admin exclusive to the built-in
+ * `quanthermes` account, so demote any `tp_`-prefixed WeChat user that still
+ * carries the legacy role. Returns the number of demoted users.
+ */
+export function demoteLegacyWeChatSuperAdmins(): number {
+  const db = getDb()
+  if (!db) return 0
+  const result = db.prepare(
+    `UPDATE ${USERS_TABLE} SET role = 'admin', updated_at = ? WHERE role = 'super_admin' AND username LIKE 'tp\\_%' ESCAPE '\\'`
+  ).run(Date.now())
+  return Number(result.changes)
+}
+
 export function touchUserLogin(userId: UserId, at = Date.now()): void {
   const db = getDb()
   if (!db) return
@@ -286,6 +301,19 @@ export function deleteUser(userId: UserId): boolean {
     db.exec('ROLLBACK')
     throw err
   }
+}
+
+/**
+ * Remove every user_profiles binding row for a deleted profile name so the
+ * rows don't linger as orphans after profile deletion.
+ */
+export function deleteProfileBindingsByName(profileName: string): number {
+  const db = getDb()
+  if (!db) return 0
+  const name = String(profileName || '').trim()
+  if (!name) return 0
+  const result = db.prepare(`DELETE FROM ${USER_PROFILES_TABLE} WHERE profile_name = ?`).run(name)
+  return Number(result.changes)
 }
 
 export function replaceUserProfiles(userId: UserId, profiles: string[], defaultProfile?: string | null): void {

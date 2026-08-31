@@ -44,9 +44,13 @@ export interface HermesDeviceLoginResult {
 
 export interface HermesDeviceBindingStatus {
   bound: boolean
+  accounts?: HermesDeviceBindingAccount[]
+}
+
+export interface HermesDeviceBindingAccount {
+  platform_profile_id: number
   display_name?: string
   username?: string
-  models?: string[]
   bound_at?: number
 }
 
@@ -129,11 +133,19 @@ export async function completeHermesDeviceLogin(
 }
 
 /**
- * Restore a previous Token Platform binding and re-issue a Hermes session token.
+ * Restore a previous WeChat binding and re-issue a Hermes session token.
+ * `platformProfileId` picks between multiple bound accounts; omitting it
+ * restores the only bound account (the server answers 409 MULTIPLE_BINDINGS
+ * with the account list when several are bound and no id is given).
  */
-export async function restoreHermesDeviceLogin(): Promise<HermesDeviceLoginResult> {
+export async function restoreHermesDeviceLogin(
+  platformProfileId?: number,
+): Promise<HermesDeviceLoginResult> {
   return request<HermesDeviceLoginResult>('/api/auth/device-login/restore', {
     method: 'POST',
+    ...(platformProfileId
+      ? { body: JSON.stringify({ platform_profile_id: platformProfileId }) }
+      : {}),
   })
 }
 
@@ -145,12 +157,16 @@ export async function fetchHermesDeviceBinding(): Promise<HermesDeviceBindingSta
 }
 
 /**
- * Unbind the WeChat account from this device: forget the persisted Token
- * Platform binding, delete the local `tp_<id>` user, and restore the default
- * profile identity. After this the device is available for a new WeChat owner.
+ * Unbind the current WeChat account (owner) — or another account when called
+ * by a super administrator with `platformProfileId`. Requires an
+ * authenticated session and deletes that user's data: the local `tp_<id>`
+ * user, its personal agent profile(s), and its binding row.
  */
-export async function unbindHermesDevice(): Promise<{ hadBinding: boolean; deletedUser?: string | null }> {
-  return request<{ hadBinding: boolean; deletedUser?: string | null }>('/api/auth/device-binding', {
-    method: 'DELETE',
-  })
+export async function unbindHermesDevice(
+  platformProfileId?: number,
+): Promise<{ hadBinding: boolean; deletedUser?: string | null; deletedProfiles?: string[] }> {
+  return request<{ hadBinding: boolean; deletedUser?: string | null; deletedProfiles?: string[] }>(
+    '/api/auth/device-binding' + (platformProfileId ? `?platform_profile_id=${platformProfileId}` : ''),
+    { method: 'DELETE' },
+  )
 }

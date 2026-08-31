@@ -33,6 +33,8 @@ export default {
     unbindDevice: 'إلغاء ربط الجهاز',
     unbindDeviceConfirm: 'هل أنت متأكد من إلغاء ربط الجهاز المرتبط بـ {account}؟',
     unbindDeviceSuccess: 'تم إلغاء ربط الجهاز بنجاح',
+    wechatRestore: 'استعادة الحساب المرتبط ({account})',
+    wechatRestorePick: 'تم ربط عدة حسابات WeChat بهذا الجهاز؛ اختر حسابًا لاستعادته',
     unbindDeviceFailed: 'فشل إلغاء ربط الجهاز',
     passwordOption: 'أو تسجيل الدخول بكلمة المرور',
     accessDenied: 'لا تملك صلاحية الوصول إلى هذا المورد.',
@@ -2121,7 +2123,7 @@ export default {
     saved: 'تم الحفظ',
     saveFailed: 'فشل الحفظ',
     unbindWechat: 'إلغاء ربط WeChat',
-    unbindWechatConfirm: 'هل تريد إلغاء ربط حساب WeChat «{account}»؟ سيؤدي هذا إلى إزالة بيانات الاعتماد المحلية للحساب ومسح ربط الجهاز، بحيث يمكن لحساب WeChat جديد المسح والربط مرة أخرى.',
+    unbindWechatConfirm: 'هل تريد إلغاء ربط حساب WeChat «{account}»؟ سيتم حذف جميع بياناته: الحساب المحلي والوكيل الشخصي وجلساته وبيانات الدخول. عند الربط مرة أخرى سيبدأ الحساب من الصفر.',
     unbindWechatSuccess: 'تم إلغاء ربط WeChat',
     unbindWechatFailed: 'فشل إلغاء ربط WeChat',
     tabs: {

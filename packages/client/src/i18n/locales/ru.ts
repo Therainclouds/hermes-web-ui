@@ -50,6 +50,7 @@ export default {
     deviceLoginFailed: 'Сбой входа на устройстве',
     tokenPlatformNoModel: 'В вашей привязанной учетной записи нет доступных моделей. Обратитесь к администратору платформы.',
     tokenPlatformConfigureFailed: 'Не удалось автоматически подключить API. Попробуйте еще раз.',
+    wechatRestorePick: 'К этому устройству привязано несколько WeChat-аккаунтов; выберите один для восстановления',
     wechatRestore: 'Восстановить привязанный аккаунт ({account})',
     accessDenied: 'У вас нет прав доступа к этому ресурсу',
     bindSuperAdminTitle: 'Bind to Super Administrator',
@@ -1928,7 +1929,7 @@ export default {
     setAccountPasswordHint: 'Once set, you can sign in with your username and password. Forgot it? Re-scan with WeChat and set a new one.',
     passwordSet: 'Account password set',
     unbindWechat: 'Отвязать WeChat',
-    unbindWechatConfirm: 'Отвязать аккаунт WeChat «{account}»? Локальные учётные данные аккаунта будут удалены, привязка устройства очищена, и новый аккаунт WeChat сможет отсканировать код и привязаться заново.',
+    unbindWechatConfirm: 'Отвязать WeChat-аккаунт «{account}»? Все его данные будут удалены: локальная учётная запись, личный агент с сессиями и учётные данные. При повторной привязке аккаунт начнётся с чистого листа.',
     unbindWechatSuccess: 'WeChat отвязан',
     unbindWechatFailed: 'Не удалось отвязать WeChat',
     tabs: {

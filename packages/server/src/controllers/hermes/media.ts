@@ -2,6 +2,7 @@ import type { Context } from 'koa'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { dirname, extname, isAbsolute, join, resolve } from 'path'
 import { getActiveProfileName, getProfileDir, listProfileNamesFromDisk } from '../../services/hermes/hermes-profile'
+import { userCanAccessProfile } from '../../db/hermes/users-store'
 import { config } from '../../config'
 import { readConfigYamlForProfile } from '../../services/config-helpers'
 import { getCompatibleCustomProviders } from '../../services/hermes/custom-providers-compat'
@@ -85,6 +86,17 @@ function resolveMediaProfile(ctx: Context): string {
     const err: any = new Error(`Profile "${profile}" does not exist`)
     err.status = 404
     err.code = 'profile_not_found'
+    throw err
+  }
+  // Belt-and-braces ownership check: resolveUserProfile already validates
+  // explicitly requested profiles; this also covers the active-profile
+  // fallback so a non-admin user never touches another user's agent.
+  const user = ctx.state.user
+  if (user && user.role !== 'super_admin' && !ctx.state.serverTokenAuth
+      && !userCanAccessProfile(user.id, profile)) {
+    const err: any = new Error(`Profile "${profile}" is not accessible for this user`)
+    err.status = 403
+    err.code = 'profile_forbidden'
     throw err
   }
   return profile

@@ -4,23 +4,26 @@ import { setApiKey, hasApiKey } from '@/api/client'
 import {
   fetchHermesDeviceBinding,
   restoreHermesDeviceLogin,
-  unbindHermesDevice,
+  type HermesDeviceBindingAccount,
   type HermesDeviceBindingStatus,
 } from '@/api/device-login'
 
 /**
- * Boot-time Token Platform binding restore.
+ * Boot-time WeChat binding restore.
  *
- * A device that previously completed a WeChat scan has a persisted server-side
- * binding. On later boots the login page can offer to restore that session
- * without requiring a new scan: it verifies the stored api_key against the
- * Token Platform and re-issues a Hermes JWT.
+ * A device may have several bound WeChat accounts (each with its own user and
+ * personal agent profile). On later boots the login page can offer to restore
+ * one of those sessions without requiring a new scan: it verifies the stored
+ * api_key against the Token Platform and re-issues a Hermes JWT. With exactly
+ * one bound account the restore is automatic; with several, the caller passes
+ * the chosen `platform_profile_id`.
  */
 export function useDeviceBinding() {
   const router = useRouter()
   const checking = ref(false)
   const binding = ref<HermesDeviceBindingStatus | null>(null)
   const hasBinding = ref(false)
+  const accounts = ref<HermesDeviceBindingAccount[]>([])
   const restoring = ref(false)
   const restoreError = ref('')
 
@@ -29,14 +32,16 @@ export function useDeviceBinding() {
     try {
       binding.value = await fetchHermesDeviceBinding()
       hasBinding.value = binding.value?.bound === true
+      accounts.value = binding.value?.accounts || []
     } catch {
       hasBinding.value = false
+      accounts.value = []
     } finally {
       checking.value = false
     }
   }
 
-  async function restore() {
+  async function restore(platformProfileId?: number) {
     if (hasApiKey()) {
       router.replace('/hermes/chat')
       return
@@ -44,7 +49,7 @@ export function useDeviceBinding() {
     restoring.value = true
     restoreError.value = ''
     try {
-      const result = await restoreHermesDeviceLogin()
+      const result = await restoreHermesDeviceLogin(platformProfileId)
       setApiKey(result.token)
       router.replace('/hermes/chat')
     } catch (err: any) {
@@ -52,14 +57,6 @@ export function useDeviceBinding() {
     } finally {
       restoring.value = false
     }
-  }
-
-  async function unbind() {
-    const result = await unbindHermesDevice()
-    // Forget the local binding state so the restore/unbind buttons disappear.
-    binding.value = null
-    hasBinding.value = false
-    return result
   }
 
   onMounted(() => {
@@ -70,9 +67,9 @@ export function useDeviceBinding() {
     checking,
     binding,
     hasBinding,
+    accounts,
     restoring,
     restoreError,
     restore,
-    unbind,
   }
 }

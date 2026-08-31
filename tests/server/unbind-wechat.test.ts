@@ -1,19 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_USERNAME } from '../../packages/server/src/db/hermes/users-store'
 
-const { loadDeviceBindingMock, clearDeviceBindingMock, clearProfileIdentityMock, removeAllUserThemeAssetsMock } = vi.hoisted(() => ({
-  loadDeviceBindingMock: vi.fn(async () => null),
-  clearDeviceBindingMock: vi.fn(async () => undefined),
+const { deleteProfileFromDiskMock, clearProfileIdentityMock, removeAllUserThemeAssetsMock } = vi.hoisted(() => ({
+  deleteProfileFromDiskMock: vi.fn(async () => true),
   clearProfileIdentityMock: vi.fn(),
   removeAllUserThemeAssetsMock: vi.fn(async () => undefined),
 }))
 
-vi.mock('../../packages/server/src/services/device-binding', () => ({
-  saveDeviceBinding: vi.fn(async () => undefined),
-  clearDeviceBinding: clearDeviceBindingMock,
-  loadDeviceBinding: loadDeviceBindingMock,
-  getOrCreateHardwareId: vi.fn(async () => 'uuid'),
-  getHardwareId: vi.fn(async () => 'uuid'),
+vi.mock('../../packages/server/src/services/hermes/wechat-user-provisioning', () => ({
+  deleteProfileFromDisk: deleteProfileFromDiskMock,
+  ensurePersonalWorkspace: vi.fn(async () => null),
+  personalProfileNameFor: (platformProfileId: number) => `u_${platformProfileId}`,
+  applyTokenPlatformProvider: vi.fn(async () => true),
 }))
 vi.mock('../../packages/server/src/services/hermes/profile-metadata', () => ({
   setProfileDisplayName: vi.fn(),
@@ -37,7 +35,7 @@ describe('clearDeviceBindingController (protected WeChat unbind)', () => {
     vi.unstubAllEnvs()
     vi.unstubAllGlobals()
     vi.stubEnv('AUTH_JWT_SECRET', 'test-secret')
-    loadDeviceBindingMock.mockResolvedValue(null)
+    deleteProfileFromDiskMock.mockResolvedValue(true)
 
     const { DatabaseSync } = await import('node:sqlite')
     db = new DatabaseSync(':memory:')
@@ -54,14 +52,15 @@ describe('clearDeviceBindingController (protected WeChat unbind)', () => {
     return {
       ctrl: await import('../../packages/server/src/controllers/auth'),
       users: await import('../../packages/server/src/db/hermes/users-store'),
+      bindings: await import('../../packages/server/src/db/hermes/wechat-bindings-store'),
     }
   }
 
-  function makeAuthedCtx(user: { id: number; username: string; role: string } | null) {
+  function makeAuthedCtx(user: { id: number; username: string; role: string } | null, query: Record<string, string> = {}) {
     return {
       request: { body: {} },
       headers: {},
-      query: {},
+      query,
       ip: '127.0.0.1',
       status: 200,
       body: null,
@@ -71,18 +70,17 @@ describe('clearDeviceBindingController (protected WeChat unbind)', () => {
     } as any
   }
 
-  function ownerBinding(profileId: number, extra: Record<string, unknown> = {}) {
-    return {
-      device_id: '42',
-      api_base: 'https://api.quantclaw.vip',
-      api_key: 'sk-owner',
+  function seedBinding(bindings: any, opts: { platformId: number; userId: number; displayName?: string }) {
+    return bindings.upsertBindingByPlatformId({
+      userId: opts.userId,
+      platformProfileId: opts.platformId,
+      platformUsername: `wechat_${opts.platformId}`,
+      apiBase: 'https://api.quantclaw.vip',
+      apiKey: 'sk-owner',
+      deviceId: '42',
       models: ['gpt-4o'],
-      display_name: '微信主人',
-      username: `wechat_${profileId}`,
-      profile_id: profileId,
-      bound_at: Date.now(),
-      ...extra,
-    }
+      displayName: opts.displayName || '微信用户',
+    })
   }
 
   it('requires an authenticated user', async () => {
@@ -92,67 +90,71 @@ describe('clearDeviceBindingController (protected WeChat unbind)', () => {
 
     expect(ctx.status).toBe(401)
     expect(ctx.body).toEqual({ error: 'Unauthorized' })
-    expect(clearDeviceBindingMock).not.toHaveBeenCalled()
   })
 
-  it('lets the bound owner unbind even when they are the only super administrator', async () => {
-    // Regression: the sole WeChat owner used to be stuck behind the
-    // "at least one active super administrator" guard. Unbinding is a
-    // device-handover operation — the owner deletes themselves and the next
-    // scan bootstraps a fresh owner.
-    const { ctrl, users } = await loadModules()
-    const owner = users.createUser({ username: 'tp_7', password: 'x', role: 'super_admin' })
-    expect(users.countActiveSuperAdmins()).toBe(1)
-    loadDeviceBindingMock.mockResolvedValue(ownerBinding(7))
+  it('lets the bound WeChat user unbind themselves and wipes their data', async () => {
+    const { ctrl, users, bindings } = await loadModules()
+    const superAdmin = users.createDefaultSuperAdmin()
+    const owner = users.createUser({ username: 'tp_7', password: 'x', role: 'admin' })
+    users.replaceUserProfiles(owner!.id, ['u_7'], 'u_7')
+    seedBinding(bindings, { platformId: 7, userId: owner!.id })
 
-    const ctx = makeAuthedCtx({ id: owner!.id, username: 'tp_7', role: 'super_admin' })
+    const ctx = makeAuthedCtx({ id: owner!.id, username: 'tp_7', role: 'admin' })
     await ctrl.clearDeviceBindingController(ctx)
 
     expect(ctx.status).toBe(200)
-    expect(ctx.body).toEqual({ success: true, hadBinding: true, deletedUser: 'tp_7' })
+    expect(ctx.body).toEqual({ success: true, hadBinding: true, deletedUser: 'tp_7', deletedProfiles: ['u_7'] })
     expect(users.findUserByUsername('tp_7')).toBeNull()
+    expect(users.findUserById(superAdmin!.id)).not.toBeNull()
+    expect(deleteProfileFromDiskMock).toHaveBeenCalledWith('u_7')
     expect(removeAllUserThemeAssetsMock).toHaveBeenCalledWith(owner!.id)
-    expect(clearProfileIdentityMock).toHaveBeenCalledWith('default')
-    expect(clearDeviceBindingMock).toHaveBeenCalled()
+    expect(bindings.findBindingByPlatformId(7)).toBeNull()
   })
 
-  it('lets a different super administrator unbind the device (handover)', async () => {
-    const { ctrl, users } = await loadModules()
-    users.createDefaultSuperAdmin()
-    users.createUser({ username: 'tp_8', password: 'x', role: 'super_admin' })
-    loadDeviceBindingMock.mockResolvedValue(ownerBinding(8))
+  it('lets a super administrator unbind another WeChat account via platform_profile_id', async () => {
+    const { ctrl, users, bindings } = await loadModules()
+    const superAdmin = users.createDefaultSuperAdmin()
+    const wechatUser = users.createUser({ username: 'tp_8', password: 'x', role: 'admin' })
+    users.replaceUserProfiles(wechatUser!.id, ['u_8'], 'u_8')
+    seedBinding(bindings, { platformId: 8, userId: wechatUser!.id })
 
-    const ctx = makeAuthedCtx({ id: 1, username: DEFAULT_USERNAME, role: 'super_admin' })
+    const ctx = makeAuthedCtx(
+      { id: superAdmin!.id, username: DEFAULT_USERNAME, role: 'super_admin' },
+      { platform_profile_id: '8' },
+    )
     await ctrl.clearDeviceBindingController(ctx)
 
     expect(ctx.status).toBe(200)
-    expect(ctx.body).toEqual({ success: true, hadBinding: true, deletedUser: 'tp_8' })
+    expect(ctx.body.deletedUser).toBe('tp_8')
     expect(users.findUserByUsername('tp_8')).toBeNull()
-    expect(clearDeviceBindingMock).toHaveBeenCalled()
+    expect(deleteProfileFromDiskMock).toHaveBeenCalledWith('u_8')
   })
 
-  it('rejects a regular admin who is neither the owner nor a super administrator', async () => {
-    const { ctrl, users } = await loadModules()
+  it('rejects a regular admin who is not the bound owner', async () => {
+    const { ctrl, users, bindings } = await loadModules()
     users.createDefaultSuperAdmin()
-    users.createUser({ username: 'tp_8', password: 'x', role: 'super_admin' })
+    const wechatUser = users.createUser({ username: 'tp_8', password: 'x', role: 'admin' })
+    seedBinding(bindings, { platformId: 8, userId: wechatUser!.id })
     const helper = users.createUser({ username: 'helper', password: 'y', role: 'admin' })
-    loadDeviceBindingMock.mockResolvedValue(ownerBinding(8))
 
-    const ctx = makeAuthedCtx({ id: helper!.id, username: 'helper', role: 'admin' })
+    const ctx = makeAuthedCtx(
+      { id: helper!.id, username: 'helper', role: 'admin' },
+      { platform_profile_id: '8' },
+    )
     await ctrl.clearDeviceBindingController(ctx)
 
     expect(ctx.status).toBe(403)
-    expect(ctx.body).toEqual({ error: 'Only the bound WeChat owner or a super administrator can unbind this device' })
+    expect(ctx.body).toEqual({ error: 'Only the bound WeChat owner or a super administrator can unbind' })
     expect(users.findUserByUsername('tp_8')).not.toBeNull()
-    expect(clearDeviceBindingMock).not.toHaveBeenCalled()
-    expect(clearProfileIdentityMock).not.toHaveBeenCalled()
+    expect(bindings.findBindingByPlatformId(8)).not.toBeNull()
+    expect(removeAllUserThemeAssetsMock).not.toHaveBeenCalled()
   })
 
-  it('lets a non-super-admin bound owner unbind (legacy bindings)', async () => {
+  it('wipes a legacy tp_ user without an imported binding row', async () => {
     const { ctrl, users } = await loadModules()
     users.createDefaultSuperAdmin()
     const owner = users.createUser({ username: 'tp_9', password: 'x', role: 'admin' })
-    loadDeviceBindingMock.mockResolvedValue(ownerBinding(9))
+    users.replaceUserProfiles(owner!.id, ['default'], 'default')
 
     const ctx = makeAuthedCtx({ id: owner!.id, username: 'tp_9', role: 'admin' })
     await ctrl.clearDeviceBindingController(ctx)
@@ -160,35 +162,20 @@ describe('clearDeviceBindingController (protected WeChat unbind)', () => {
     expect(ctx.status).toBe(200)
     expect(ctx.body.deletedUser).toBe('tp_9')
     expect(users.findUserByUsername('tp_9')).toBeNull()
+    // Legacy users were only bound to the shared default profile; nothing
+    // personal to remove from disk.
+    expect(deleteProfileFromDiskMock).not.toHaveBeenCalled()
   })
 
-  it('resolves the owner from the stored username for older bindings without profile_id', async () => {
+  it('is idempotent for a user with no binding and a non-tp_ username', async () => {
     const { ctrl, users } = await loadModules()
-    users.createDefaultSuperAdmin()
-    const owner = users.createUser({ username: 'tp_10', password: 'x', role: 'super_admin' })
-    loadDeviceBindingMock.mockResolvedValue(ownerBinding(10, {
-      profile_id: undefined,
-      username: 'tp_10',
-    }))
+    const admin = users.createDefaultSuperAdmin()
 
-    const ctx = makeAuthedCtx({ id: owner!.id, username: 'tp_10', role: 'super_admin' })
+    const ctx = makeAuthedCtx({ id: admin!.id, username: DEFAULT_USERNAME, role: 'super_admin' })
     await ctrl.clearDeviceBindingController(ctx)
 
     expect(ctx.status).toBe(200)
-    expect(ctx.body.deletedUser).toBe('tp_10')
-  })
-
-  it('is idempotent when no binding exists', async () => {
-    const { ctrl, users } = await loadModules()
-    const admin = users.createUser({ username: 'tp_11', password: 'x', role: 'super_admin' })
-    loadDeviceBindingMock.mockResolvedValue(null)
-
-    const ctx = makeAuthedCtx({ id: admin!.id, username: 'tp_11', role: 'super_admin' })
-    await ctrl.clearDeviceBindingController(ctx)
-
-    expect(ctx.status).toBe(200)
-    expect(ctx.body).toEqual({ success: true, hadBinding: false, deletedUser: null })
-    expect(clearDeviceBindingMock).not.toHaveBeenCalled()
-    expect(users.findUserByUsername('tp_11')).not.toBeNull()
+    expect(ctx.body).toEqual({ success: true, hadBinding: false, deletedUser: null, deletedProfiles: [] })
+    expect(users.findUserByUsername(DEFAULT_USERNAME)).not.toBeNull()
   })
 })
