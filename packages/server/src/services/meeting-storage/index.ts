@@ -2,6 +2,7 @@ import fs from 'fs/promises'
 import path from 'path'
 import { existsSync, mkdirSync } from 'fs'
 import { logger } from '../logger'
+import { getWebUiHome } from '../../config'
 
 export interface MeetingData {
   id: string
@@ -56,10 +57,13 @@ export class MeetingStorageService {
   private baseDir: string
 
   private constructor() {
-    // 使用 HERMES_WEB_UI_HOME 或默认目录
-    const homeDir = process.env.HERMES_WEB_UI_HOME || process.cwd()
+    // 与全仓统一: HERMES_WEB_UI_HOME > HERMES_WEBUI_STATE_DIR > ~/.hermes-web-ui
+    // 不再回落到 process.cwd() — 那是隐性 BUG 的根源, systemd 下 cwd 是
+    // WorkingDirectory (deploy 目录), 会把数据写到不该写的地方。
+    const homeDir = getWebUiHome()
     this.baseDir = path.join(homeDir, 'meetings')
     this.ensureBaseDir()
+    logger.info('[meeting-storage] baseDir resolved to %s', this.baseDir)
   }
 
   static getInstance(): MeetingStorageService {

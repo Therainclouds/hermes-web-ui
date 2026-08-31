@@ -20,7 +20,7 @@
  *   - the AGENTS.md hard rules describing this contract are present.
  */
 
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, resolve as resolvePath } from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -73,11 +73,15 @@ function seedRepo(prefix: string, options: FixtureOptions = {}) {
   )
   writeFileSync(resolvePath(repoRoot, 'dist', 'client', 'index.html'), '<html></html>\n', 'utf-8')
   writeFileSync(resolvePath(repoRoot, 'scripts', 'deploy-source-armbian.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+  chmodSync(resolvePath(repoRoot, 'scripts', 'deploy-source-armbian.sh'), 0o755)
   writeFileSync(resolvePath(repoRoot, 'scripts', 'hermes-web-ui-update-runner.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+  chmodSync(resolvePath(repoRoot, 'scripts', 'hermes-web-ui-update-runner.sh'), 0o755)
   writeFileSync(resolvePath(repoRoot, 'scripts', 'hermes-web-ui-update.service'), '[Service]\nExecStart=/usr/local/sbin/hermes-web-ui-update-runner\n', 'utf-8')
   writeFileSync(resolvePath(repoRoot, 'scripts', 'hermes-web-ui.service'), '[Service]\nExecStart=node dist/server/index.js\n', 'utf-8')
   writeFileSync(resolvePath(repoRoot, 'scripts', 'install-device-package.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+  chmodSync(resolvePath(repoRoot, 'scripts', 'install-device-package.sh'), 0o755)
   writeFileSync(resolvePath(repoRoot, 'scripts', 'update-source-deploy.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+  chmodSync(resolvePath(repoRoot, 'scripts', 'update-source-deploy.sh'), 0o755)
   writeFileSync(resolvePath(repoRoot, 'hermes_data', 'bots', 'usb', 'config.py'), 'WEBUI_HOME = "/tmp/hermes"\n', 'utf-8')
   writeFileSync(resolvePath(repoRoot, 'hermes_data', 'bots', 'usb', 'usb_monitor.py'), 'print("usb monitor")\n', 'utf-8')
   writeFileSync(resolvePath(repoRoot, 'release', 'device-host-dependencies.json'), JSON.stringify({

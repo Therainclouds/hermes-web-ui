@@ -14,6 +14,8 @@ step()  { echo -e "${BLUE}[STEP]${NC} $*"; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TASK_STATE_HELPER="${SCRIPT_DIR}/update-task-state.py"
+# Defensive: re-apply +x on scripts after tar extraction. See scripts/_lib/fixup-script-modes.sh.
+source "${SCRIPT_DIR}/_lib/fixup-script-modes.sh"
 DEPLOY_DIR="${DEPLOY_DIR:-/opt/hermes-web-ui}"
 PACKAGE_ARCHIVE="${HERMES_WEB_UI_UPDATE_PACKAGE_ARCHIVE:-}"
 TARGET_VERSION="${HERMES_WEB_UI_UPDATE_VERSION:-}"
@@ -685,6 +687,10 @@ sync_package_tree() {
   find_args+=(-exec rm -rf {} +)
   run find "${find_args[@]}"
   run tar -C "${SOURCE_DIR}" -cf - . | tar -C "${DEPLOY_DIR}" -xf -
+  # tar|x|tar through a FIFO can lose mode bits; Windows git checkouts often
+  # record scripts as 100644. Restore +x on deployed scripts before systemd
+  # sees them (ExecStartPre 203/EXEC is the failure this prevents).
+  fixup_script_modes "${DEPLOY_DIR}"
 }
 
 run_deploy_script() {

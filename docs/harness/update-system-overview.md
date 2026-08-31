@@ -271,6 +271,71 @@ not exist at all. There was nothing to back up and nothing to swap.
 accept a missing `DEPLOY_DIR` (bootstrap case) and create it, but this is
 out of scope for the current sprint.
 
+### 6. Script `+x` bit lost on Windows checkout (6.6.6.31, v0.7.20)
+
+**Symptom**: After a successful update, `systemctl restart hermes-web-ui`
+entered an auto-restart loop. `journalctl` showed `status=203/EXEC` on
+`ExecStartPre=.../generate-server-cert.sh`. The file existed on disk but
+had mode `0664`.
+
+**Root cause**: Three independent failure modes combined:
+(1) `git ls-tree HEAD -- scripts/` showed every `.sh` recorded as `100644`
+— the repo had been maintained from a Windows checkout with
+`core.filemode=false`, so `chmod +x` was never persisted to git.
+(2) `build-device-package.mjs`'s `createTar({portable: true})` preserved
+that 0644 mode into the tarball.
+(3) `install-device-package.sh`'s `tar -cf - . | tar -xf -` pipeline
+through a FIFO did not restore `+x`.
+The device's systemd `ExecStartPre` then refused to execute a non-
+executable script.
+
+**Fix (three-layer defence)**:
+- Repo-level: `git update-index --chmod=+x scripts/*.sh scripts/*.py`
+  makes the index record `100755`. Windows contributors must set
+  `core.filemode=true` or re-run this after every script edit.
+- Build-time: `scripts/build-device-package.mjs` adds
+  `assertArchiveScriptModes()` post-build — the build fails loud if any
+  `.sh` or `.py`-with-shebang in the tarball lacks `+x`.
+- Install-time: `scripts/_lib/fixup-script-modes.sh` is sourced by
+  `install-device-package.sh` and `update-source-deploy.sh`; after the
+  `tar|x|tar` pipeline it walks `${DEPLOY_DIR}/scripts` and re-applies
+  `0755` to every script. This is the "last mile" that absorbs any
+  upstream regression.
+- Runtime: `deploy-source-armbian.sh`'s end-of-script self-check
+  iterates the whole `scripts/` tree and refuses the deploy if any
+  script is still missing `+x` after fixup — before systemd can
+  silently enter the auto-restart loop.
+
+### 7. `MeetingStorageService` read `HERMES_WEB_UI_HOME` directly (6.6.6.31, v0.7.20)
+
+**Symptom**: `GET /api/meeting-storage/:id/audio` returned 404 for a
+meeting that had been successfully uploaded. The browser's Network tab
+showed 404 but the server logs had nothing.
+
+**Root cause**: `MeetingStorageService` (the only major service that
+didn't go through `config.getWebUiHome()`) read
+`process.env.HERMES_WEB_UI_HOME || process.cwd()`. Every other
+subsystem (auth, uploads, profiles, update, coding-agents, USB, MCP)
+honoured both `HERMES_WEB_UI_HOME` and `HERMES_WEBUI_STATE_DIR` via
+`getWebUiHome()`. When the device's systemd env-file exported only
+`HERMES_WEBUI_STATE_DIR`, `MeetingStorageService` silently fell back to
+`process.cwd()` (the systemd `WorkingDirectory`), which was the deploy
+tree — so audio uploaded to `/home/hermesui/.hermes-web-ui/meetings/`
+was read from `/opt/hermes-web-ui/src/meetings/` → 404, with no log
+trail.
+
+**Fix**:
+- `MeetingStorageService` constructor now calls `getWebUiHome()` — the
+  same resolver every other subsystem uses.
+- The `process.cwd()` fallback was removed — it was the silent bug
+  source. The new fallback (`~/.hermes-web-ui`) is documented and
+  deterministic.
+- A startup `logger.info('[meeting-storage] baseDir resolved to %s',
+  this.baseDir)` makes the resolved path visible in `journalctl` so the
+  next env drift shows up in logs, not in 404s.
+- `tests/server/meeting-storage-path-resolution.test.ts` pins the
+  resolution contract (HOME > STATE_DIR > ~/.hermes-web-ui, never cwd).
+
 ## Compatibility Matrix
 
 What is and is not forward- and backward-compatible across the update

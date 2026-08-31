@@ -4,6 +4,8 @@ set -Eeuo pipefail
 SELF_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TASK_STATE_HELPER="${SCRIPT_DIR}/update-task-state.py"
+# Defensive: re-apply +x on scripts after tar extraction. See scripts/_lib/fixup-script-modes.sh.
+source "${SCRIPT_DIR}/_lib/fixup-script-modes.sh"
 LOG_FILE="${HERMES_WEB_UI_UPDATE_LOG:-/var/log/hermes-web-ui-update.log}"
 DEPLOY_DIR="${DEPLOY_DIR:-/opt/hermes-web-ui}"
 APP_USER="${APP_USER:-hermesui}"
@@ -423,6 +425,10 @@ sync_source_tree() {
   find_args+=(-exec rm -rf {} +)
   find "${find_args[@]}"
   tar -C "${SOURCE_DIR}" -cf - . | tar -C "${DEPLOY_DIR}" -xf -
+  # tar|x|tar through a FIFO can lose mode bits; Windows git checkouts often
+  # record scripts as 100644. Restore +x on deployed scripts before systemd
+  # sees them (ExecStartPre 203/EXEC is the failure this prevents).
+  fixup_script_modes "${DEPLOY_DIR}"
 }
 
 run_deploy_script() {

@@ -1674,16 +1674,28 @@ show_summary() {
   info "Source deployment completed"
   echo "----------------------------------------"
 
-  # Self-check: verify critical scripts are still executable before systemd
-  # tries to use them via ExecStartPre. If git drops the +x bit on us again,
-  # this catches it before the service silently enters an auto-restart loop.
-  local f
-  for f in scripts/generate-server-cert.sh scripts/update-source-deploy.sh scripts/hermes-web-ui-update-runner.sh; do
-    if [[ -f "${DEPLOY_DIR}/${f}" && ! -x "${DEPLOY_DIR}/${f}" ]]; then
-      err "DEPLOY BUG: ${f} missing +x bit — systemd ExecStartPre will fail with 203/EXEC"
-      exit 1
-    fi
-  done
+  # Self-check: verify EVERY script is executable before systemd tries to use
+  # them via ExecStartPre. A single missing +x bit produces 203/EXEC and puts
+  # the service into an auto-restart loop. Iterate the whole scripts/ tree
+  # instead of a hardcoded list so adding a new script is automatically covered.
+  local -a broken_scripts=()
+  if [[ -d "${DEPLOY_DIR}/scripts" ]]; then
+    while IFS= read -r -d '' f; do
+      if [[ ! -x "$f" ]]; then
+        broken_scripts+=("${f#${DEPLOY_DIR}/}")
+      fi
+    done < <(find "${DEPLOY_DIR}/scripts" -type f -name '*.sh' -print0 2>/dev/null)
+    while IFS= read -r -d '' f; do
+      if [[ ! -x "$f" ]] && head -1 "$f" 2>/dev/null | grep -q '^#!.*python'; then
+        broken_scripts+=("${f#${DEPLOY_DIR}/}")
+      fi
+    done < <(find "${DEPLOY_DIR}/scripts" -type f -name '*.py' -print0 2>/dev/null)
+  fi
+  if [[ ${#broken_scripts[@]} -gt 0 ]]; then
+    err "DEPLOY BUG: ${#broken_scripts[@]} script(s) missing +x bit — systemd ExecStartPre will fail with 203/EXEC"
+    err "  ${broken_scripts[*]}"
+    exit 1
+  fi
 
   echo "Server URL: ${server_url}"
   echo "Local URL: http://127.0.0.1:${PORT}"

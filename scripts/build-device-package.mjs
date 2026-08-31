@@ -288,6 +288,41 @@ async function assertArchiveMatchesAllowlist(archivePath, packageEntries) {
 }
 
 /**
+ * Verify that every script in the tarball carries +x. Without this check, a Windows
+ * git checkout (core.filemode=false) can silently record scripts as 100644, and the
+ * device installer ends up deploying non-executable scripts — producing systemd
+ * 203/EXEC on ExecStartPre the moment the service restarts. The defensive
+ * `fixup_script_modes` function in scripts/_lib/fixup-script-modes.sh recovers at
+ * install time; this assertion catches the problem upstream in CI so the tarball
+ * is never published in a broken state.
+ *
+ * Scripts matching: any .sh file, or any .py file under a scripts/ directory.
+ */
+export async function assertArchiveScriptModes(archivePath) {
+  const broken = []
+  await listTar({
+    file: archivePath,
+    onentry: (entry) => {
+      const p = entry.path || ''
+      const mode = (entry.mode || 0) & 0o777
+      const isScript = p.endsWith('.sh')
+        || (p.endsWith('.py') && p.includes('/scripts/'))
+      if (!isScript) return
+      // Accept 0755, 0775, 0777. Anything else means the bit is missing.
+      if ((mode & 0o111) === 0) {
+        broken.push(`${p} (mode=${mode.toString(8)})`)
+      }
+    },
+  })
+  if (broken.length > 0) {
+    throw new Error(
+      `Device package archive contains non-executable scripts (systemd ExecStartPre will 203/EXEC):\n  ${broken.join('\n  ')}\n`
+      + 'Run `git update-index --chmod=+x scripts/*.sh scripts/*.py` and rebuild.',
+    )
+  }
+}
+
+/**
  * Build a release-ready device package from the repository's allowlisted runtime assets.
  *
  * Why: the device installer must consume a minimal, deterministic bundle that excludes
@@ -400,9 +435,21 @@ export async function buildDevicePackageRelease(options = {}) {
       gzip: true,
       portable: true,
       noMtime: true,
+      // Guarantee +x on scripts in the archive regardless of host filesystem
+      // semantics (Windows `chmodSync` does not set Unix execute bits). Without
+      // this, a build on Windows would silently ship 0644 scripts → systemd
+      // 203/EXEC on the device. The post-build `assertArchiveScriptModes` check
+      // verifies the result.
+      onWriteEntry: (entry) => {
+        if (entry.path && entry.path.endsWith('.sh')) {
+          entry.stat.mode = entry.stat.mode | 0o111
+        }
+      },
     }, ['.'])
 
     await assertArchiveMatchesAllowlist(artifactPath, packageEntries)
+    // CI gate: refuse to publish a tarball whose scripts lost +x (systemd 203/EXEC).
+    await assertArchiveScriptModes(artifactPath)
 
     const sha256 = computeSha256(artifactPath)
     const size = statSync(artifactPath).size
@@ -418,7 +465,15 @@ export async function buildDevicePackageRelease(options = {}) {
         gzip: true,
         portable: true,
         noMtime: true,
+        onWriteEntry: (entry) => {
+          if (entry.path && entry.path.endsWith('.sh')) {
+            entry.stat.mode = entry.stat.mode | 0o111
+          }
+        },
       }, ['.'])
+      // Source tarball may also be consumed by devices in source-deploy mode;
+      // it must also carry executable bits on its scripts.
+      await assertArchiveScriptModes(sourceArtifactPath)
       sourceSha256 = computeSha256(sourceArtifactPath)
       sourceSize = statSync(sourceArtifactPath).size
     }
@@ -456,8 +511,20 @@ export async function buildDevicePackageRelease(options = {}) {
       hostDependencies: hostDependencies.manifest,
       environment: {
         requiredNodeRange: compatibleNodeRange,
+        // Declarative contract: these scripts MUST exist AND be executable on
+        // the device. `fixup_script_modes` in scripts/_lib/fixup-script-modes.sh
+        // restores +x at install time as a defensive "last mile"; the device's
+        // deploy-source-armbian.sh self-check (end of script) refuses a deploy
+        // where any script is still missing +x after fixup. The manifest
+        // entries here let `capture_environment` (reconcile mode) detect drift
+        // post-facto so a silent chmod regression is caught before systemd
+        // puts the service into a 203/EXEC auto-restart loop.
         requiredSystemFiles: [
           { path: 'scripts/install-device-package.sh', kind: 'executable' },
+          { path: 'scripts/update-source-deploy.sh', kind: 'executable' },
+          { path: 'scripts/deploy-source-armbian.sh', kind: 'executable' },
+          { path: 'scripts/generate-server-cert.sh', kind: 'executable' },
+          { path: 'scripts/hermes-web-ui-update-runner.sh', kind: 'executable' },
         ],
       },
     }
