@@ -13,6 +13,8 @@ const DEFAULT_RELEASE_CONFIG_PATH = '.github/device-package-release.json'
 const DEFAULT_UPDATE_CHANNEL = 'stable'
 const DEVICE_PACKAGE_ARTIFACT_FORMAT = 'tar.gz'
 const CHANNEL_SEGMENT_PATTERN = /^[A-Za-z0-9._-]+$/
+const ALLOWED_PACKAGE_TYPES = new Set(['source-deploy', 'device-package'])
+const DEFAULT_PACKAGE_TYPE = 'source-deploy'
 
 function parseArgs(argv) {
   const parsed = {}
@@ -352,6 +354,10 @@ export async function buildDevicePackageRelease(options = {}) {
     ? buildPackageEntries(repoRoot, sourcePathAllowlist)
     : []
   const manifestBranch = (options.manifestBranch || releaseConfig.manifestBranch || DEFAULT_MANIFEST_BRANCH).trim() || DEFAULT_MANIFEST_BRANCH
+  const packageType = (options.packageType || releaseConfig.packageType || DEFAULT_PACKAGE_TYPE).trim() || DEFAULT_PACKAGE_TYPE
+  if (!ALLOWED_PACKAGE_TYPES.has(packageType)) {
+    throw new Error(`packageType must be one of ${[...ALLOWED_PACKAGE_TYPES].join(', ')}: ${packageType}`)
+  }
   const compatibleNodeRange = (
     options.compatibleNodeRange
     || releaseConfig.compatibleNodeRange
@@ -435,7 +441,7 @@ export async function buildDevicePackageRelease(options = {}) {
       version,
       channel,
       sourceLabel,
-      packageType: 'device-package',
+      packageType,
       artifactFormat: DEVICE_PACKAGE_ARTIFACT_FORMAT,
       packageUrl,
       packageUrls,
@@ -448,14 +454,19 @@ export async function buildDevicePackageRelease(options = {}) {
       healthcheckUrl,
       hostDependenciesPath: hostDependencies.relativePath,
       hostDependencies: hostDependencies.manifest,
-      installerScriptPath: 'scripts/install-device-package.sh',
-      installerScriptSha256: computeSha256(resolve(stageRoot, 'scripts/install-device-package.sh')),
       environment: {
         requiredNodeRange: compatibleNodeRange,
         requiredSystemFiles: [
           { path: 'scripts/install-device-package.sh', kind: 'executable' },
         ],
       },
+    }
+    if (packageType === 'device-package') {
+      manifest.installerScriptPath = 'scripts/install-device-package.sh'
+      manifest.installerScriptSha256 = computeSha256(resolve(stageRoot, 'scripts/install-device-package.sh'))
+    } else if (packageType === 'source-deploy') {
+      manifest.installerScriptPath = 'scripts/update-source-deploy.sh'
+      manifest.installerScriptSha256 = computeSha256(resolve(stageRoot, 'scripts/update-source-deploy.sh'))
     }
     if (sourceStageRoot) {
       manifest.sourceArtifactFormat = sourceArtifactFormat
@@ -550,6 +561,7 @@ async function main() {
     minCurrentVersion: args['min-current-version'],
     manifestBranch: args['manifest-branch'],
     compatibleNodeRange: args['compatible-node-range'],
+    packageType: args.strategy,
   })
 
   process.stdout.write(`${JSON.stringify({

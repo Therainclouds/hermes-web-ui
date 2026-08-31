@@ -17,6 +17,7 @@ const PACKAGE_ALLOWLIST = [
   'scripts/hermes-web-ui-update.service',
   'scripts/hermes-web-ui.service',
   'scripts/install-device-package.sh',
+  'scripts/update-source-deploy.sh',
 ]
 
 function createTempDir(prefix: string): string {
@@ -78,6 +79,7 @@ describe('build-device-package script', () => {
     writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui-update.service'), '[Service]\nExecStart=/usr/local/sbin/hermes-web-ui-update-runner\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui.service'), '[Service]\nExecStart=node dist/server/index.js\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'install-device-package.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'scripts', 'update-source-deploy.sh'), '#!/usr/bin/env bash\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb', 'config.py'), 'WEBUI_HOME = "/tmp/hermes"\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb', 'usb_monitor.py'), 'print("usb monitor")\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'release', 'device-host-dependencies.json'), JSON.stringify({
@@ -112,6 +114,7 @@ describe('build-device-package script', () => {
       channel: 'stable',
       releaseRepo: 'example/hermes-web-ui',
       tag: 'v1.2.3',
+      packageType: 'device-package',
     })
 
     const manifest = JSON.parse(readFileSync(result.manifestPath, 'utf-8'))
@@ -157,6 +160,7 @@ describe('build-device-package script', () => {
       'scripts/hermes-web-ui-update.service',
       'scripts/hermes-web-ui.service',
       'scripts/install-device-package.sh',
+      'scripts/update-source-deploy.sh',
       'hermes_data/bots/usb/config.py',
       'hermes_data/bots/usb/usb_monitor.py',
     ]))
@@ -188,6 +192,7 @@ describe('build-device-package script', () => {
     writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui-update.service'), '[Service]\nExecStart=/usr/local/sbin/hermes-web-ui-update-runner\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui.service'), '[Service]\nExecStart=node dist/server/index.js\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'install-device-package.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'scripts', 'update-source-deploy.sh'), '#!/usr/bin/env bash\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb', 'config.py'), 'WEBUI_HOME = "/tmp/hermes"\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb', 'usb_monitor.py'), 'print("usb monitor")\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'release', 'device-host-dependencies.json'), JSON.stringify({
@@ -218,6 +223,7 @@ describe('build-device-package script', () => {
       outputDir,
       releaseRepo: 'example/hermes-web-ui',
       tag: 'v1.2.3',
+      packageType: 'device-package',
     })
 
     expect(existsSync(result.artifactPath)).toBe(true)
@@ -246,6 +252,7 @@ describe('build-device-package script', () => {
     writeFileSync(resolve(repoRoot, 'scripts', 'deploy-source-armbian.sh'), '#!/usr/bin/env bash\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui.service'), '[Service]\nExecStart=node dist/server/index.js\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'install-device-package.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'scripts', 'update-source-deploy.sh'), '#!/usr/bin/env bash\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb', 'config.py'), 'WEBUI_HOME = "/tmp/hermes"\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb', 'usb_monitor.py'), 'print("usb monitor")\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'release', 'device-host-dependencies.json'), JSON.stringify({
@@ -300,6 +307,7 @@ describe('build-device-package script', () => {
     writeFileSync(resolve(repoRoot, 'scripts', 'deploy-source-armbian.sh'), '#!/usr/bin/env bash\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui.service'), '[Service]\nExecStart=node dist/server/index.js\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'install-device-package.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'scripts', 'update-source-deploy.sh'), '#!/usr/bin/env bash\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb', 'config.py'), 'WEBUI_HOME = "/tmp/hermes"\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'hermes_data', 'bots', 'usb', 'usb_monitor.py'), 'print("usb monitor")\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'release', 'device-host-dependencies.json'), JSON.stringify({
@@ -354,6 +362,7 @@ describe('build-device-package script', () => {
     writeFileSync(resolve(repoRoot, 'scripts', 'deploy-source-armbian.sh'), '#!/usr/bin/env bash\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'hermes-web-ui.service'), '[Service]\nExecStart=node dist/server/index.js\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'scripts', 'install-device-package.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+    writeFileSync(resolve(repoRoot, 'scripts', 'update-source-deploy.sh'), '#!/usr/bin/env bash\n', 'utf-8')
     writeFileSync(resolve(repoRoot, 'release', 'device-host-dependencies.json'), JSON.stringify({
       schema: 1,
       aptPackages: ['python3-pyudev', 'ntfs-3g'],
