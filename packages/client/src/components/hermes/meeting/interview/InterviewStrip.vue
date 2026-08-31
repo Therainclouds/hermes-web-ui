@@ -37,6 +37,8 @@ const engagementLabel = computed(() => {
 </template>
 
 <style scoped lang="scss">
+@use "@/styles/variables" as *;
+
 .interview-strip {
   display: flex;
   align-items: center;
