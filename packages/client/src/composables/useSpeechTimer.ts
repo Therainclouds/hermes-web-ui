@@ -31,6 +31,9 @@ let timerInterval: number | null = null
 let timerStartAt = 0        // 本次开始计时的墙钟时间戳
 let timerStartRemaining = 0 // 本次开始时的剩余毫秒
 
+// 当前测量周期的起点墙钟（开始走表时刻）：第一条环节记录的区间起点
+let segmentAnchor = 0
+
 // 阈值：由各组件从 session.speechEval 同步进来
 const durationSec = ref(180)
 const yellowAtSec = ref(30)
@@ -127,6 +130,7 @@ export function useSpeechTimer(deps?: UseSpeechTimerDeps) {
     clearTicker()
     timerRunning.value = false
     timerRemainingMs.value = durationSec.value * 1000
+    segmentAnchor = 0
     resetVoiceFlags()
   }
 
@@ -141,6 +145,8 @@ export function useSpeechTimer(deps?: UseSpeechTimerDeps) {
     timerStartAt = Date.now()
     timerStartRemaining = timerRemainingMs.value
     timerRunning.value = true
+    // 第一段环节记录的区间起点（后续段以上一条记录时刻为起点）
+    if (segmentAnchor === 0) segmentAnchor = timerStartAt
     timerInterval = window.setInterval(() => {
       timerRemainingMs.value = timerStartRemaining - (Date.now() - timerStartAt)
     }, 250)
@@ -186,16 +192,31 @@ export function useSpeechTimer(deps?: UseSpeechTimerDeps) {
     return `${t('meeting.speechEval.segmentLabelPrefix')} ${n}`
   }
 
+  /**
+   * 当前段起点墙钟：优先「上一条记录时刻」（段与段无缝衔接），
+   * 首段用开始走表时刻；从未走表时按当前倒计时已走时间回推兜底。
+   */
+  function getSegmentStart(now: number = Date.now()): number {
+    const records = deps?.evalState.value.timerRecords || []
+    if (records.length) return records[records.length - 1].timestamp
+    if (segmentAnchor) return segmentAnchor
+    return now - Math.max(0, durationSec.value * 1000 - timerRemainingMs.value)
+  }
+
   function recordSegment() {
     if (!deps) return
-    const duration = durationSec.value - timerRemainingMs.value / 1000
-    const overtimeSec = Math.max(0, -timerRemainingMs.value / 1000)
+    const now = Date.now()
+    // 用时 = 上一条记录时刻（或开始走表时刻）→ 本次点击 的墙钟区间
+    const startTs = getSegmentStart(now)
+    const duration = Math.max(0, (now - startTs) / 1000)
     const isTransition = timerMode.value === 'transition'
     const record: SpeechTimerRecord = {
       label: isTransition ? transitionLabel() : (timerLabel.value.trim() || nextLabel()),
       durationSec: duration,
-      overtimeSec,
-      timestamp: Date.now(),
+      overtimeSec: Math.max(0, duration - durationSec.value),
+      timestamp: now,
+      startTs,
+      kind: isTransition ? 'transition' : 'segment',
     }
     deps.persist({ timerRecords: [...deps.evalState.value.timerRecords, record] })
     timerLabel.value = ''
@@ -295,6 +316,7 @@ export function useSpeechTimer(deps?: UseSpeechTimerDeps) {
     transitionRecords,
     transitionTotalSec,
     switchTimerMode,
+    getSegmentStart,
     recordSegment,
     removeRecord,
     voiceAlert,

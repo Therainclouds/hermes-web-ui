@@ -42,10 +42,14 @@ export interface MeetingSession {
 }
 
 export interface SpeechTimerRecord {
-  label: string      // 环节/演讲者名称
+  label: string      // 环节/演讲者名称（"开场介绍/燕灵"，"/"前为环节、后为演讲者）
   durationSec: number // 实际用时（秒）
   overtimeSec: number // 超时秒数（未超时为 0）
   timestamp: number
+  /** 本段起点墙钟（上一条记录时刻或开始走表时刻）；旧数据缺省，由区间工具回推 */
+  startTs?: number
+  /** 记录类型：segment=演讲环节，transition=串场；旧数据缺省（按标签前缀识别） */
+  kind?: 'segment' | 'transition'
 }
 
 export interface SpeechEvalState {

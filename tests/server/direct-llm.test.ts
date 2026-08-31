@@ -119,6 +119,28 @@ describe('analyzeViaDirectLLM', () => {
     expect(body.max_tokens).toBe(1200)
   })
 
+  it('injects the speaker timeline and naming rule for the speech scene', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: '{}' } }] }),
+    })
+    const loadConfig = vi.fn().mockResolvedValue({ apiKey: 'sk', baseUrl: 'https://x/v1', model: 'm' })
+
+    await analyzeViaDirectLLM('t', fakeTemplate({ id: 'speech', systemPrompt: 'S' }), 'default', {
+      timerRecords: [{ label: '开场介绍/燕灵', durationSec: 60, overtimeSec: 0 }],
+      speakerTimeline: [
+        { speaker: '燕灵', segment: '开场介绍', startMs: new Date('2026-01-01T10:00:00').getTime(), endMs: new Date('2026-01-01T10:01:00').getTime() },
+        { speaker: 'UU', segment: '小组共创', startMs: new Date('2026-01-01T10:01:00').getTime(), endMs: new Date('2026-01-01T10:02:00').getTime() },
+      ],
+    }, undefined, { fetchImpl: fetchImpl as any, loadConfig })
+
+    const prompt = JSON.parse((fetchImpl.mock.calls[0][1] as any).body).messages[0].content as string
+    expect(prompt).toContain('环节与发言人时间线')
+    expect(prompt).toContain('开场介绍/燕灵：10:00:00 - 10:01:00')
+    expect(prompt).toContain('小组共创/UU：10:01:00 - 10:02:00')
+    expect(prompt).toContain('speaker 字段必须使用时间线中的演讲者姓名')
+  })
+
   it('returns null without calling the API when no config is available', async () => {
     const fetchImpl = vi.fn()
     const round = await analyzeViaDirectLLM('t', fakeTemplate(), 'default', null, undefined, {

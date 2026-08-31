@@ -433,6 +433,9 @@ async def ws_omni_realtime(ws: WebSocket) -> None:
     await ws.accept()
     proxy: OmniRealtimeProxy | None = None
     upstream_task: asyncio.Task | None = None
+    # Function-call events can arrive twice (response.*_arguments.done plus
+    # conversation.item.created) — dedupe by call_id before forwarding.
+    seen_call_ids: set[str] = set()
 
     async def pump_upstream() -> None:
         if proxy is None:
@@ -442,6 +445,17 @@ async def ws_omni_realtime(ws: WebSocket) -> None:
                 translated = translate_omni_event(raw)
                 if translated is None:
                     continue
+                if isinstance(translated, str):
+                    try:
+                        evt = json.loads(translated)
+                    except json.JSONDecodeError:
+                        evt = None
+                    if isinstance(evt, dict) and evt.get("type") == "function_call":
+                        call_id = str(evt.get("call_id") or "")
+                        if call_id:
+                            if call_id in seen_call_ids:
+                                continue
+                            seen_call_ids.add(call_id)
                 try:
                     if isinstance(translated, (bytes, bytearray)):
                         await ws.send_bytes(bytes(translated))
@@ -478,6 +492,7 @@ async def ws_omni_realtime(ws: WebSocket) -> None:
             model=start_msg.get("model"),
             voice=start_msg.get("voice"),
             instructions=start_msg.get("instructions"),
+            tools=start_msg.get("tools"),
         )
         await proxy.connect()
         await ws.send_json({"type": "ready", "session_id": proxy.session_id, "model": proxy.model})
@@ -512,6 +527,13 @@ async def ws_omni_realtime(ws: WebSocket) -> None:
                     await proxy.commit_audio()
                 elif mtype == "cancel":
                     await proxy.cancel()
+                elif mtype == "image":
+                    await proxy.send_image(str(msg.get("image") or ""))
+                elif mtype == "tool_result":
+                    await proxy.send_tool_output(
+                        str(msg.get("call_id") or ""),
+                        str(msg.get("output") or ""),
+                    )
                 elif mtype == "ping":
                     try:
                         await ws.send_json({"type": "pong"})

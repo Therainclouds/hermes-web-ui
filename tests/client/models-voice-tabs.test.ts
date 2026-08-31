@@ -78,6 +78,7 @@ vi.mock('@/components/hermes/models/AuxiliaryModelsPanel.vue', () => ({ default:
 vi.mock('@/components/hermes/models/CombinationModelsPanel.vue', () => ({ default: { template: '<div />' } }))
 vi.mock('@/components/hermes/models/ProvidersPanel.vue', () => ({ default: { template: '<div />' } }))
 vi.mock('@/components/hermes/models/ProviderFormModal.vue', () => ({ default: { template: '<div />' } }))
+vi.mock('@/components/hermes/models/RealtimeModelsPanel.vue', () => ({ default: { template: '<div />' } }))
 vi.mock('@/components/hermes/settings/VoiceSettings.vue', () => ({
   default: {
     props: ['kind'],

@@ -37,6 +37,14 @@ export interface DirectLLMDeps {
   loadConfig?: () => Promise<LLMConfig | null>
 }
 
+/** 墙钟毫秒 → HH:mm:ss（环节时间线展示用）。 */
+function fmtClock(ms: number): string {
+  if (!Number.isFinite(ms)) return '??:??:??'
+  const d = new Date(ms)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
 /**
  * 读取 meeting-asr 持久化目录里的 LLM 配置（config.json）。
  *
@@ -114,6 +122,14 @@ export async function analyzeViaDirectLLM(
           const overtime = r.overtimeSec > 0 ? `（超时 ${r.overtimeSec} 秒）` : ''
           lines.push(`  - ${r.label}：${r.durationSec} 秒${overtime}`)
         }
+      }
+      if (ctx.speakerTimeline && ctx.speakerTimeline.length > 0) {
+        lines.push('- 环节与发言人时间线（计时员人工登记，转写中的 [姓名] 已按此标注）：')
+        for (const e of ctx.speakerTimeline) {
+          const name = e.segment ? `${e.segment}/${e.speaker}` : e.speaker
+          lines.push(`  - ${name}：${fmtClock(e.startMs)} - ${fmtClock(e.endMs)}`)
+        }
+        lines.push('- 赘语/金句/语法问题的 speaker 字段必须使用时间线中的演讲者姓名（禁止输出"说话人1"这类编号），分析点评也直接称呼姓名。')
       }
     }
     if (speechSummary) {

@@ -19,6 +19,8 @@ import { useProfilesStore } from "@/stores/hermes/profiles";
 import { useFilesStore } from "@/stores/hermes/files";
 import { useToolPanelStore } from "@/stores/hermes/tool-panel";
 import { useSessionBrowserPrefsStore } from "@/stores/hermes/session-browser-prefs";
+import { useMeetingStore } from "@/stores/hermes/meeting";
+import { useRealtimeModelStore } from "@/stores/hermes/realtime-model";
 import {
   NButton,
   NDrawer,
@@ -44,6 +46,7 @@ import { getProfileDisplayName } from "@/utils/hermes/profile-display";
 import FolderPicker from "./FolderPicker.vue";
 import ChatInput from "./ChatInput.vue";
 import RealtimeVoiceStage from "./RealtimeVoiceStage.vue";
+import OmniRealtimeStage from "./OmniRealtimeStage.vue";
 import ConversationMonitorPane from "./ConversationMonitorPane.vue";
 import MessageList from "./MessageList.vue";
 import SessionListItem from "./SessionListItem.vue";
@@ -102,6 +105,10 @@ const isSuperAdmin = computed(() => isStoredSuperAdmin());
 
 const showOutline = ref(false);
 const showRealtimeVoice = ref(false);
+const showOmniRealtime = ref(false);
+const meetingStore = useMeetingStore();
+const realtimeModelStore = useRealtimeModelStore();
+const hasDashscopeKey = computed(() => !!meetingStore.asrConfig.dashscopeApiKey || realtimeModelStore.hasApiKey);
 const messageListRef = ref<InstanceType<typeof MessageList> | null>(null);
 const chatInputRef = ref<(InstanceType<typeof ChatInput> & {
   addFiles?: (files: File[]) => void;
@@ -171,6 +178,18 @@ function openRealtimeVoice() {
 
 function closeRealtimeVoice() {
   showRealtimeVoice.value = false;
+}
+
+function openOmniRealtime() {
+  // 新建对话入口：还没有会话时先本地建一个，实时记录结束后落到这个会话里。
+  if (!chatStore.activeSessionId) {
+    chatStore.newChat();
+  }
+  showOmniRealtime.value = true;
+}
+
+function closeOmniRealtime() {
+  showOmniRealtime.value = false;
 }
 
 function sessionHref(sessionId: string) {
@@ -732,6 +751,7 @@ const headerTitle = computed(() =>
 );
 
 const showNewChatModal = ref(false);
+const newChatMode = ref<"standard" | "realtime">("standard");
 const newChatAgent = ref<"hermes" | ChatCodingAgentId>("hermes");
 const newChatAgentMode = ref<"global" | "scoped">("scoped");
 const newChatProfile = ref<string>("default");
@@ -1028,6 +1048,7 @@ const newChatNeedsApiKey = computed(() =>
   !selectedNewChatProviderGroup.value?.api_key,
 );
 const canConfirmNewChat = computed(() => {
+  if (newChatMode.value === "realtime") return !newChatLoading.value;
   if (newChatCategoryCreating.value) return false;
   if (!newChatProfile.value) return false;
   if (!newChatUsesProviderModel.value) return true;
@@ -1118,6 +1139,7 @@ async function openNewChatModal() {
   showNewChatModal.value = true;
   newChatLoading.value = true;
   newChatCategoryId.value = null;
+  newChatMode.value = "standard";
   try {
     await loadSessionCategories();
     if (profilesStore.profiles.length === 0) await profilesStore.fetchProfiles();
@@ -1160,6 +1182,12 @@ function handleNewChatProviderChange(value: string) {
 }
 
 async function confirmNewChat() {
+  if (newChatMode.value === "realtime") {
+    showNewChatModal.value = false;
+    openOmniRealtime();
+    return;
+  }
+
   if (isNewChatExternalCodingAgent.value) {
     newChatLoading.value = true;
     try {
@@ -2526,6 +2554,19 @@ async function handleSessionModelCustomSubmit() {
       <NDrawerContent :title="t('chat.newChat')" closable>
         <div class="new-chat-form">
           <label class="new-chat-field">
+            <span class="new-chat-label">{{ t("chat.newChatMode") }}</span>
+            <NRadioGroup v-model:value="newChatMode" name="new-chat-mode">
+              <NRadioButton value="standard">{{ t("chat.standardChat") }}</NRadioButton>
+              <NRadioButton value="realtime" data-testid="new-chat-realtime-option">
+                {{ t("omniRealtime.entry") }}
+              </NRadioButton>
+            </NRadioGroup>
+          </label>
+          <div v-if="newChatMode === 'realtime'" class="new-chat-field-hint new-chat-realtime-hint">
+            {{ t("omniRealtime.entryHint") }}
+          </div>
+          <template v-if="newChatMode === 'standard'">
+          <label class="new-chat-field">
             <span class="new-chat-label">{{ t("chat.agent") }}</span>
             <NSelect
               v-model:value="newChatAgent"
@@ -2703,6 +2744,7 @@ async function handleSessionModelCustomSubmit() {
               </div>
             </div>
           </div>
+          </template>
         </div>
         <template #footer>
           <div class="new-chat-actions">
@@ -2712,7 +2754,7 @@ async function handleSessionModelCustomSubmit() {
               :disabled="!canConfirmNewChat"
               @click="confirmNewChat"
             >
-              {{ t("common.create") }}
+              {{ newChatMode === "realtime" ? t("meeting.realtime.startSession") : t("common.create") }}
             </NButton>
           </div>
         </template>
@@ -3025,6 +3067,11 @@ async function handleSessionModelCustomSubmit() {
       <RealtimeVoiceStage
         v-if="showRealtimeVoice"
         @close="closeRealtimeVoice"
+      />
+      <OmniRealtimeStage
+        v-if="showOmniRealtime"
+        :has-dashscope-key="hasDashscopeKey"
+        @close="closeOmniRealtime"
       />
     </Teleport>
   </div>
@@ -3518,6 +3565,11 @@ async function handleSessionModelCustomSubmit() {
 .new-chat-field-hint {
   font-size: 11px;
   color: $text-muted;
+}
+
+.new-chat-realtime-hint {
+  margin-top: -4px;
+  line-height: 1.5;
 }
 
 .new-chat-actions {

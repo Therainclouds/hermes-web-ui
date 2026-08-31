@@ -1,0 +1,228 @@
+import { fetchMemory, fetchSkillContent, fetchSkillFiles, fetchSkills } from './skills'
+import { listJobs } from './jobs'
+import { fetchSessions } from './sessions'
+
+/**
+ * Qwen3.5-Omni-Flash-Realtime 的 function calling 工具集。
+ *
+ * 形状遵循 OpenAI-Realtime 的扁平格式（type/name/description/parameters），
+ * 由 `useOmniRealtime` 通过 `start` 帧下发给 Python 代理写入 session.update，
+ * 模型触发后回传 `function_call` 事件，客户端执行并把结果以 `tool_result`
+ * 控制帧回传，模型继续作答。
+ */
+
+export interface OmniRealtimeToolDefinition {
+  type: 'function'
+  name: string
+  description: string
+  parameters: {
+    type: 'object'
+    properties: Record<string, unknown>
+    required?: string[]
+  }
+}
+
+/** 工具结果送回上游前的最大字符数，避免撑爆会话上下文。 */
+const TOOL_OUTPUT_LIMIT = 4_000
+
+export const OMNI_REALTIME_TOOLS: OmniRealtimeToolDefinition[] = [
+  {
+    type: 'function',
+    name: 'query_agent_memory',
+    description:
+      '查询用户 Agent 的长期记忆，包括 memory（长期记忆）、user（用户画像）、soul（人格）三个分区。'
+      + '当用户问到「还记得吗 / 我是谁 / 我的偏好 / 我们之前聊过什么」等问题时调用，不要凭空编造记忆。',
+    parameters: {
+      type: 'object',
+      properties: {
+        keyword: {
+          type: 'string',
+          description: '可选。只返回包含该关键词的记忆条目；不传则返回记忆摘要。',
+        },
+        section: {
+          type: 'string',
+          enum: ['memory', 'user', 'soul', 'all'],
+          description: '可选。要查询的记忆分区，默认 all。',
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    type: 'function',
+    name: 'list_agent_skills',
+    description:
+      '列出用户 Agent 已配置的技能（名称、简介、分类、是否启用）。'
+      + '当用户问「你能做什么 / 有哪些技能 / 会不会某某能力」时调用。',
+    parameters: {
+      type: 'object',
+      properties: {
+        keyword: {
+          type: 'string',
+          description: '可选。按名称或简介过滤技能。',
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    type: 'function',
+    name: 'read_skill_detail',
+    description:
+      '读取某个技能的 SKILL.md 详细说明。需要先通过 list_agent_skills 拿到 category 与 skill 名称。',
+    parameters: {
+      type: 'object',
+      properties: {
+        category: { type: 'string', description: '技能分类名。' },
+        skill: { type: 'string', description: '技能名。' },
+      },
+      required: ['category', 'skill'],
+    },
+  },
+  {
+    type: 'function',
+    name: 'list_recent_sessions',
+    description:
+      '查看用户最近的对话会话列表（标题、消息数、最近活跃时间）。'
+      + '当用户问「最近聊了什么 / 之前那个会话」时调用。',
+    parameters: {
+      type: 'object',
+      properties: {
+        limit: {
+          type: 'integer',
+          description: '可选。返回条数，默认 8，最大 20。',
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    type: 'function',
+    name: 'list_jobs',
+    description:
+      '查看当前配置的定时任务 / 自动化任务（名称、计划、是否启用、下次运行时间）。'
+      + '当用户问「我有哪些定时任务 / 自动化在跑什么」时调用。',
+    parameters: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+]
+
+function clip(value: string, limit = TOOL_OUTPUT_LIMIT): string {
+  if (value.length <= limit) return value
+  return `${value.slice(0, limit)}…(truncated)`
+}
+
+function normalize(value: unknown): string {
+  if (value == null) return ''
+  return String(value).replace(/\s+/g, ' ').trim()
+}
+
+async function toolQueryMemory(rawArgs: Record<string, unknown>): Promise<string> {
+  const keyword = normalize(rawArgs.keyword).toLowerCase()
+  const section = normalize(rawArgs.section) || 'all'
+  const data = await fetchMemory()
+  const sections: Array<[string, string]> = [
+    ['memory', data.memory],
+    ['user', data.user],
+    ['soul', data.soul],
+  ]
+  const parts: string[] = []
+  for (const [name, content] of sections) {
+    if (section !== 'all' && section !== name) continue
+    let text = (content || '').trim()
+    if (!text) continue
+    if (keyword) {
+      const lines = text.split('\n').filter(line => line.toLowerCase().includes(keyword))
+      text = lines.join('\n')
+    }
+    if (!text) continue
+    parts.push(`## ${name}\n${clip(text, 1_500)}`)
+  }
+  return clip(parts.length > 0 ? parts.join('\n\n') : '（记忆为空，未找到相关内容）')
+}
+
+async function toolListSkills(rawArgs: Record<string, unknown>): Promise<string> {
+  const keyword = normalize(rawArgs.keyword).toLowerCase()
+  const data = await fetchSkills()
+  const rows: string[] = []
+  for (const category of data.categories || []) {
+    for (const skill of category.skills || []) {
+      const haystack = `${skill.name} ${skill.description} ${category.name}`.toLowerCase()
+      if (keyword && !haystack.includes(keyword)) continue
+      rows.push(`- ${category.name}/${skill.name}${skill.enabled === false ? '（未启用）' : '（启用）'}：${normalize(skill.description)}`)
+    }
+  }
+  return clip(rows.length > 0 ? rows.slice(0, 80).join('\n') : '（没有匹配的技能）')
+}
+
+async function toolReadSkillDetail(rawArgs: Record<string, unknown>): Promise<string> {
+  const category = normalize(rawArgs.category)
+  const skill = normalize(rawArgs.skill)
+  if (!category || !skill) return JSON.stringify({ error: 'category 和 skill 必填' })
+  const files = await fetchSkillFiles(category, skill)
+  const entryFile = (files || []).find(file => file.path.endsWith('SKILL.md'))
+  if (!entryFile) {
+    return clip(JSON.stringify({ files: (files || []).map(file => file.path) }))
+  }
+  const content = await fetchSkillContent(entryFile.path)
+  return clip((content || '').trim() || '（该技能没有内容）')
+}
+
+async function toolListRecentSessions(rawArgs: Record<string, unknown>): Promise<string> {
+  const rawLimit = Number(rawArgs.limit)
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(20, Math.floor(rawLimit)) : 8
+  const sessions = await fetchSessions(undefined, limit)
+  const rows = (sessions || []).map(session => ({
+    title: session.title || '(未命名)',
+    agent: session.agent || 'hermes',
+    messages: session.message_count,
+    lastActiveAt: session.last_active ?? session.started_at,
+  }))
+  return clip(JSON.stringify(rows, null, 1))
+}
+
+async function toolListJobs(): Promise<string> {
+  const jobs = await listJobs()
+  const rows = (jobs || []).map(job => ({
+    name: job.name,
+    enabled: job.enabled,
+    state: job.state,
+    schedule: job.schedule_display,
+    nextRunAt: job.next_run_at,
+    lastStatus: job.last_status,
+  }))
+  return clip(JSON.stringify(rows, null, 1))
+}
+
+/**
+ * 执行一个工具调用并把结果序列化为字符串（失败时返回 {"error": ...}，
+ * 让模型能够向用户如实说明）。
+ */
+export async function executeOmniTool(name: string, argsJson: string): Promise<string> {
+  let args: Record<string, unknown> = {}
+  try {
+    const parsed: unknown = argsJson ? JSON.parse(argsJson) : {}
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      args = parsed as Record<string, unknown>
+    }
+  } catch {
+    return JSON.stringify({ error: '无效的工具参数 JSON' })
+  }
+
+  try {
+    switch (name) {
+      case 'query_agent_memory': return await toolQueryMemory(args)
+      case 'list_agent_skills': return await toolListSkills(args)
+      case 'read_skill_detail': return await toolReadSkillDetail(args)
+      case 'list_recent_sessions': return await toolListRecentSessions(args)
+      case 'list_jobs': return await toolListJobs()
+      default: return JSON.stringify({ error: `未知工具：${name}` })
+    }
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause)
+    return JSON.stringify({ error: message })
+  }
+}
