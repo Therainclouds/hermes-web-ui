@@ -6,7 +6,7 @@ set -Eeuo pipefail
 #   - installs dependencies when missing
 #   - repairs native modules that failed to build (e.g. sharp)
 #   - generates a self-signed TLS cert when missing (enables HTTPS on 8647/8649)
-#   - starts `npm run dev`
+#   - starts `npm run dev` bound to 0.0.0.0 (LAN-accessible)
 #
 # Usage: ./start-dev.sh
 
@@ -16,6 +16,9 @@ CERT_FILE="${CERTS_DIR}/server.crt"
 KEY_FILE="${CERTS_DIR}/server.key"
 
 cd "${ROOT_DIR}"
+
+# 默认监听 0.0.0.0，允许局域网设备访问（可用 BIND_HOST 覆盖）
+export BIND_HOST="${BIND_HOST:-0.0.0.0}"
 
 has_module() {
   node -e "require.resolve('$1')" >/dev/null 2>&1
@@ -69,5 +72,5 @@ ensure_cert() {
 ensure_cert
 
 # 4. Start
-echo "[start-dev] starting dev servers (client https://localhost:8649, API https://localhost:8647)..."
+echo "[start-dev] starting dev servers bound to ${BIND_HOST} (client :8649, API :8647)..."
 npm run dev
