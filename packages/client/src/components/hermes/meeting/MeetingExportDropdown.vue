@@ -17,7 +17,7 @@ interface Props {
  *   - 'reportPanel' → meeting.reportPanel.{exportWord,exportHtml,exportMarkdown}
  *   - 'speechEval' → meeting.speechEval.{exportWord,exportHtml,exportMarkdown}
  */
-scope: 'reportPanel' | 'speechEval' | 'legalReview'
+scope: 'reportPanel' | 'speechEval' | 'legalReview' | 'interviewReview'
   /** 按钮尺寸（默认 tiny，对齐原 NButton size="tiny"）。 */
   buttonSize?: 'tiny' | 'small' | 'medium'
 }

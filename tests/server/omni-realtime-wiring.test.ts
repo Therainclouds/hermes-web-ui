@@ -487,7 +487,7 @@ describe('omni-realtime camera frame wiring', () => {
     expect(source).toMatch(/self\._audio_appended_since_commit\s*=\s*False/)
 
     // 2. send_audio re-arms it (fresh audio appended) right after _audio_seen.
-    expect(source).toMatch(/self\._audio_seen\s*=\s*True\n\s*self\._audio_appended_since_commit\s*=\s*True/)
+    expect(source).toMatch(/self\._audio_seen\s*=\s*True\r?\n\s*self\._audio_appended_since_commit\s*=\s*True/)
 
     // 3. send_image consults it before forwarding.
     expect(source).toMatch(/if\s+not\s+self\._audio_appended_since_commit:/)

@@ -52,6 +52,24 @@ export interface LawRef {
   verified?: boolean
 }
 
+// ── 客户访谈场景（interview）结构化字段 ──
+
+/** 洞察条目：客户访谈中实时提取的需求/痛点/机会/竞品提及。 */
+export interface InsightItem {
+  type: 'need' | 'pain' | 'opportunity' | 'competitor'
+  text: string
+  quote?: string
+}
+
+/** 客户关键引语（有场景、可指导决策的原话）。 */
+export interface KeyQuote {
+  quote: string
+  speaker?: string
+}
+
+/** 参与度（客户关系风险信号）：urgent 语义由 Hook 白名单归一。 */
+export type Engagement = 'engaged' | 'neutral' | 'distracted' | 'at_risk'
+
 export interface AnalysisRound {
   id: string
   context: string
@@ -76,6 +94,11 @@ export interface AnalysisRound {
   riskItems?: RiskItem[]      // 风险清单（≤10 条，去重后）
   positions?: Position[]      // 各方立场（≤8 条，去重后）
   lawRefs?: LawRef[]          // 法条/法规引用（≤8 条，一律需人工核实）
+  // 客户访谈场景（interview）结构化字段
+  insights?: InsightItem[]    // 洞察流（≤4 条/轮，去重后）
+  keyQuotes?: KeyQuote[]      // 客户关键引语（≤3 条/轮，去重后）
+  followUps?: string[]        // 建议追问（≤2 条/轮）
+  engagement?: Engagement     // 参与度（本轮快照）
 }
 
 // ── 确定性护栏（Hook 层，S7）：提示词管意图，代码管保证 ──
@@ -114,6 +137,50 @@ export function applySpeechGuards(round: AnalysisRound, speechDurationSec?: numb
   // H2 3+1 强制
   if (out.highlights && out.highlights.length > 3) out = { ...out, highlights: out.highlights.slice(0, 3) }
   if (out.improvements && out.improvements.length > 1) out = { ...out, improvements: out.improvements.slice(0, 1) }
+
+  return out
+}
+
+// ── 客户访谈场景确定性护栏（Hook 层，I1）──
+
+/** at_risk 白名单：仅客户关系风险语义允许（其余 distracted）。 */
+const AT_RISK_RE = /不满|终止|终止合作|取消合作|换掉|失望|投诉|unhappy|churn|cancel/i
+
+/**
+ * 访谈场景确定性护栏，parse 出口统一执行（interview 字段存在时）：
+ *
+ *  - H-I1 洞察上限：insights ≤ 4 条（type 白名单已在 parse 阶段过滤）
+ *  - H-I2 引语去重与上限：keyQuotes 按 quote 去重，≤ 3 条
+ *  - H-I3 追问上限：followUps ≤ 2 条
+ *  - H-I4 参与度归一：at_risk 仅限客户关系风险语义命中，否则降级 distracted
+ */
+export function applyInterviewGuards(round: AnalysisRound): AnalysisRound {
+  let out = round
+
+  // H-I1 洞察上限
+  if (out.insights && out.insights.length > 4) out = { ...out, insights: out.insights.slice(0, 4) }
+
+  // H-I2 引语去重与上限
+  if (out.keyQuotes?.length) {
+    const seen = new Set<string>()
+    const deduped: KeyQuote[] = []
+    for (const q of out.keyQuotes) {
+      const key = q.quote.trim()
+      if (!key || seen.has(key)) continue
+      seen.add(key)
+      deduped.push(q)
+      if (deduped.length >= 3) break
+    }
+    out = { ...out, keyQuotes: deduped }
+  }
+
+  // H-I3 追问上限
+  if (out.followUps && out.followUps.length > 2) out = { ...out, followUps: out.followUps.slice(0, 2) }
+
+  // H-I4 参与度归一
+  if (out.engagement === 'at_risk' && !AT_RISK_RE.test(`${out.keyPoint} ${out.analysis} ${out.context}`)) {
+    out = { ...out, engagement: 'distracted' }
+  }
 
   return out
 }
@@ -219,6 +286,49 @@ function parseLegalFields(parsed: any): {
     ...(riskItems?.length ? { riskItems } : {}),
     ...(positions?.length ? { positions } : {}),
     ...(lawRefs?.length ? { lawRefs } : {}),
+  }
+}
+
+// ── 客户访谈场景（interview）字段解析 ──
+
+const INSIGHT_TYPES = ['need', 'pain', 'opportunity', 'competitor'] as const
+
+function parseInterviewFields(parsed: any): {
+  insights?: InsightItem[]
+  keyQuotes?: KeyQuote[]
+  followUps?: string[]
+  engagement?: Engagement
+} {
+  const insights = Array.isArray(parsed.insights)
+    ? parsed.insights
+        .filter((i: any) => i && typeof i.text === 'string' && (INSIGHT_TYPES as readonly string[]).includes(i.type))
+        .slice(0, 6)
+        .map((i: any) => ({
+          type: i.type,
+          text: i.text.slice(0, 200),
+          ...(typeof i.quote === 'string' && i.quote ? { quote: i.quote.slice(0, 200) } : {}),
+        }))
+    : undefined
+  const keyQuotes = Array.isArray(parsed.keyQuotes)
+    ? parsed.keyQuotes
+        .filter((q: any) => q && typeof q.quote === 'string')
+        .slice(0, 5)
+        .map((q: any) => ({
+          quote: q.quote.slice(0, 200),
+          ...(typeof q.speaker === 'string' && q.speaker ? { speaker: q.speaker.slice(0, 60) } : {}),
+        }))
+    : undefined
+  const followUps = Array.isArray(parsed.followUps)
+    ? parsed.followUps.filter((f: any) => typeof f === 'string' && f.trim()).slice(0, 4).map((f: string) => f.slice(0, 150))
+    : undefined
+  const engagement = ['engaged', 'neutral', 'distracted', 'at_risk'].includes(parsed.engagement)
+    ? (parsed.engagement as Engagement)
+    : undefined
+  return {
+    ...(insights?.length ? { insights } : {}),
+    ...(keyQuotes?.length ? { keyQuotes } : {}),
+    ...(followUps?.length ? { followUps } : {}),
+    ...(engagement ? { engagement } : {}),
   }
 }
 
@@ -398,8 +508,13 @@ export function parseAnalysisRound(raw: string, options?: ParseAnalysisOptions):
       const withLegal = { ...round, ...legalFields }
       const guarded = applyLegalGuards(withLegal)
 
+      // 访谈场景结构化字段（存在即视为 interview 轮次，应用访谈护栏）
+      const interviewFields = parseInterviewFields(parsed)
+      const withInterview = { ...guarded, ...interviewFields }
+      const interviewGuarded = applyInterviewGuards(withInterview)
+
       // Hook 层：设备官过滤 / 赘语阈值 / 3+1 强制
-      return applySpeechGuards(guarded, options?.speechDurationSec)
+      return applySpeechGuards(interviewGuarded, options?.speechDurationSec)
   } catch {
     logger.warn('[meeting-assist] failed to parse LLM response as JSON: %s', raw.slice(0, 100))
     return null

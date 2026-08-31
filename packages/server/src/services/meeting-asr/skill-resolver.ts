@@ -29,7 +29,13 @@ export const MEETING_SPEECH_COACH_NAME = 'meeting-speech-coach'
 /** 法律沟通场景专属技能（仅 legal 场景注入）。 */
 export const MEETING_LEGAL_REVIEW_NAME = 'meeting-legal-review'
 /** 全部内置会议技能（按 profile 自动安装）。 */
-export const BUNDLED_MEETING_SKILLS = [MEETING_SKILL_NAME, MEETING_SPEECH_COACH_NAME, MEETING_LEGAL_REVIEW_NAME]
+export const MEETING_INTERVIEW_REVIEW_NAME = 'meeting-interview-review'
+export const BUNDLED_MEETING_SKILLS = [
+  MEETING_SKILL_NAME,
+  MEETING_SPEECH_COACH_NAME,
+  MEETING_LEGAL_REVIEW_NAME,
+  MEETING_INTERVIEW_REVIEW_NAME,
+]
 
 /**
  * 场景专属技能前缀映射：带这些前缀的技能仅注入对应场景，
@@ -38,6 +44,7 @@ export const BUNDLED_MEETING_SKILLS = [MEETING_SKILL_NAME, MEETING_SPEECH_COACH_
 const SCENE_SKILL_PREFIXES: Record<string, string[]> = {
   speech: ['meeting-speech'],
   legal: ['meeting-legal'],
+  interview: ['meeting-interview'],
 }
 
 /** 场景过滤：非本场景的专属技能排除（通用技能保留）。 */

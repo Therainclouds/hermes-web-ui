@@ -148,8 +148,18 @@ export const SCENE_TEMPLATES: SceneTemplate[] = [
    - attention：客户明显不耐烦、防备心理增强、即将结束对话
    - urgent：极少使用，仅限客户明确表达不满、即将终止合作
 
-输出严格 JSON 对象（不是数组）：{"context":"原文关键句","priority":"normal"|"attention"|"urgent","keyPoint":"核心提醒","analysis":"补充说明"}
-如果对话内容没有值得提示的，输出：{"context":"","priority":"normal","keyPoint":"","analysis":""}
+输出严格 JSON 对象（不是数组），字段如下：
+- context：引用触发你分析的客户原话关键句
+- priority：normal | attention | urgent（按上述三档判定）
+- keyPoint：一句简短有力的洞察或提醒（不超过30字，口语化）
+- analysis：1-2 句话补充说明（客户需求/追问方向/参与度）
+- insights：数组，本段新提取的洞察，如 [{"type":"need"|"pain"|"opportunity"|"competitor","text":"洞察描述","quote":"客户原话短句"}]（无则为 []）
+- keyQuotes：数组，客户关键引语（具体、有场景、可指导决策的原话），如 [{"quote":"原话","speaker":"客户"}]（无则为 []）
+- followUps：数组，建议访谈者下一步追问的问题（最多 2 条；客户参与度 attention 以上时不给追问，给降温建议）
+- engagement：本段客户参与度快照（"engaged" | "neutral" | "distracted" | "at_risk"）
+
+示例：{"context":"客户说月底对账要花两天","priority":"normal","keyPoint":"对账成本是明确痛点","analysis":"可深挖错误率与人力代价","insights":[{"type":"pain","text":"月底手工对账耗时两天","quote":"每个月对账要花两天"}],"keyQuotes":[{"quote":"我宁可多花一倍价钱也不要每月对两天账","speaker":"客户"}],"followUps":["追问对账具体耗在哪个环节","问错误率的后果"],"engagement":"engaged"}
+如果本段对话没有值得提取的内容，输出：{"context":"","priority":"normal","keyPoint":"","analysis":"","insights":[],"keyQuotes":[],"followUps":[],"engagement":"neutral"}
 不要输出任何 JSON 以外的文字。`,
     reportPrompt: `根据以下客户访谈转写内容，生成一份结构化 Markdown 报告，包含：
 ## 访谈摘要
