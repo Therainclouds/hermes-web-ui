@@ -3545,6 +3545,9 @@ export default {
 
   // Changelog
   changelog: {
+    new_0_7_21_1: 'Fix meeting-storage 404: MeetingStorageService now uses getWebUiHome() for path resolution, preventing data written to the wrong directory when systemd WorkingDirectory differs',
+    new_0_7_21_2: 'Fix systemd 203/EXEC restart loop: build now guarantees +x on scripts in tarballs (cross-platform onWriteEntry + CI assertion + install-time fixup), eliminating non-executable scripts from Windows checkouts',
+    new_0_7_21_3: 'Dev servers bind to 0.0.0.0 for LAN access; frontend and backend ports unified to 6060',
     new_0_7_20_1: 'Three meeting scenes (Speech Evaluation / Legal Review / Customer Interview) now have dedicated component trees and UI: speech gains a timer cabin (neon-green countdown + transition mode + voice alerts), legal gains a Risk Radar, and interview gains an Insight Stream — all declaratively assembled via the Scene UI registry',
     new_0_7_20_2: 'Speech scene introduces deterministic guard rails: filler-word thresholds scale with actual speaking duration (≤10 per 3 min auto-clears), 3+1 feedback is force-truncated (≤3 highlights / ≤1 improvement), and device announcer entries are filtered — no longer relying on AI self-discipline',
     new_0_7_20_3: 'Legal scene bundles the meeting-legal-review skill (risk-level whitelist / statute citation discipline with mandatory "needs verification" tagging / disclaimer); interview scene bundles meeting-interview-review (insight taxonomy / probe technique / engagement signals / interview ethics)',
