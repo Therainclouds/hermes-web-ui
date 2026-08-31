@@ -22,8 +22,8 @@ command -v node >/dev/null 2>&1 || { echo "❌ node 未安装"; exit 1; }
 echo "✓ node $(node -v)"
 echo "✓ 监听地址: $BIND_HOST (局域网 IP: $LAN_IP)"
 
-# 清理旧的进程 (8649=Vite前端, 8647=Koa后端)
-for port in 8649 8647; do
+# 清理旧的进程 (6060=Vite前端, 8647=Koa后端)
+for port in 6060 8647; do
   pid=$(ss -tlnp 2>/dev/null | grep ":$port " | grep -oP 'pid=\K[0-9]+' | head -1)
   if [ -n "$pid" ]; then
     echo "→ 关闭端口 $port (PID $pid)"
@@ -35,7 +35,7 @@ sleep 1
 
 # 同时启动前后端
 echo ""
-echo "→ 启动 Vite 前端 (端口 8649) + Koa 后端 (端口 8647) ..."
+echo "→ 启动 Vite 前端 (端口 6060) + Koa 后端 (端口 8647) ..."
 echo ""
 
 npm run dev 2>&1 &
@@ -53,10 +53,10 @@ for i in $(seq 1 30); do
 done
 [ "$i" -eq 30 ] && { echo ""; echo "❌ 后端未在 30s 内启动"; }
 
-echo -n "等待前端 8649"
+echo -n "等待前端 6060"
 for i in $(seq 1 30); do
   sleep 1
-  if ss -tlnp 2>/dev/null | grep -q ':8649 '; then
+  if ss -tlnp 2>/dev/null | grep -q ':6060 '; then
     echo " ✅"
     break
   fi
@@ -66,8 +66,8 @@ done
 
 echo ""
 echo "=== 启动完成 ==="
-echo "  本机 Web UI:  http://localhost:8649  (HTTPS: https://localhost:8649)"
-echo "  局域网 Web UI: http://$LAN_IP:8649  (HTTPS: https://$LAN_IP:8649)"
+echo "  本机 Web UI:  http://localhost:6060  (HTTPS: https://localhost:6060)"
+echo "  局域网 Web UI: http://$LAN_IP:6060  (HTTPS: https://$LAN_IP:6060)"
 echo "  API:          http://$LAN_IP:8647"
 echo "  日志:         ~/.hermes-web-ui/logs/server.log"
 echo ""

@@ -5,7 +5,7 @@ set -Eeuo pipefail
 # One-click development start for Hermes Web UI.
 #   - installs dependencies when missing
 #   - repairs native modules that failed to build (e.g. sharp)
-#   - generates a self-signed TLS cert when missing (enables HTTPS on 8647/8649)
+#   - generates a self-signed TLS cert when missing (enables HTTPS on 8647/6060)
 #   - starts `npm run dev` bound to 0.0.0.0 (LAN-accessible)
 #
 # Usage: ./start-dev.sh
@@ -72,5 +72,5 @@ ensure_cert() {
 ensure_cert
 
 # 4. Start
-echo "[start-dev] starting dev servers bound to ${BIND_HOST} (client :8649, API :8647)..."
+echo "[start-dev] starting dev servers bound to ${BIND_HOST} (client :6060, API :8647)..."
 npm run dev
