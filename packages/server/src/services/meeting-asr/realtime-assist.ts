@@ -4,7 +4,7 @@ import { getSceneTemplateOrDefault } from './scene-templates'
 import { getActiveProfileName } from '../hermes/hermes-profile'
 import { streamAgentReport } from './agent-bridge'
 import { analyzeViaDirectLLM, streamDirectLLMReport } from './direct-llm'
-import { annotateTranscriptSpeakers, type AnalysisRound, type SpeechContext } from './report-parser'
+import { annotateTranscriptSpeakers, resolveDominantSpeaker, type AnalysisRound, type SpeechContext } from './report-parser'
 export { parseAnalysisRound as parseAnalysisResponse } from './report-parser'
 export type { AnalysisRound, SpeechContext, GoldenQuote, GrammarIssue, FillerWord } from './report-parser'
 
@@ -234,7 +234,14 @@ class RealtimeAssistService {
     // 实时提示始终走直调 LLM 快速路径（~3s），不走 Agent。
     // Agent + MCP 工具查询仅用于报告生成（需要真实法条/数据核实的深度分析）。
     // 演讲评分场景：speechSummary（已累积亮点/改进点/主题/评分）随批次注入提示词。
-    return analyzeViaDirectLLM(transcriptText, template, resolvedProfile, speechContext, speechSummary)
+    const round = await analyzeViaDirectLLM(transcriptText, template, resolvedProfile, speechContext, speechSummary)
+    if (round) {
+      // 主导演讲者由批次内已标注句子确定性推导（非 LLM 输出）：
+      // 多演讲者场景客户端据此把评分/亮点/提升点按演讲者分组。
+      const dominant = resolveDominantSpeaker(annotated)
+      if (dominant) round.speaker = dominant
+    }
+    return round
   }
 
   /**

@@ -1,6 +1,7 @@
 import { computed, ref, watch, type ComputedRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { SpeechEvalState, SpeechTimerRecord } from '@/stores/hermes/meeting'
+import { normalizeSegmentLabel } from '@/utils/speech-segments'
 
 /**
  * 演讲评分场景的共享计时器（合并自 org「会议模式演讲功能」与本地 PR-6 拆分；
@@ -87,6 +88,8 @@ export interface UseSpeechTimerDeps {
   evalState: ComputedRef<SpeechEvalState>
   /** 持久化补丁写入 */
   persist: (patch: Partial<SpeechEvalState>) => void
+  /** 启动前异步门控：返回 false 则中止启动（用于确保录音就绪） */
+  onBeforeStart?: () => boolean | Promise<boolean>
 }
 
 export function useSpeechTimer(deps?: UseSpeechTimerDeps) {
@@ -134,13 +137,18 @@ export function useSpeechTimer(deps?: UseSpeechTimerDeps) {
     resetVoiceFlags()
   }
 
-  function toggle() {
+  async function toggle() {
     if (timerRunning.value) {
       // 暂停：按墙钟结算剩余时间
       timerRemainingMs.value = timerStartRemaining - (Date.now() - timerStartAt)
       clearTicker()
       timerRunning.value = false
       return
+    }
+    // 启动前异步门控（例如等待录音就绪）
+    if (deps?.onBeforeStart) {
+      const ready = await deps.onBeforeStart()
+      if (!ready) return
     }
     timerStartAt = Date.now()
     timerStartRemaining = timerRemainingMs.value
@@ -211,7 +219,9 @@ export function useSpeechTimer(deps?: UseSpeechTimerDeps) {
     const duration = Math.max(0, (now - startTs) / 1000)
     const isTransition = timerMode.value === 'transition'
     const record: SpeechTimerRecord = {
-      label: isTransition ? transitionLabel() : (timerLabel.value.trim() || nextLabel()),
+      // 裸姓名（无斜杠）归一化为「环节 N / 姓名」：否则 speaker 解析为空，
+      // 时间线/句子归属/LLM 点评整条链路拿不到演讲者
+      label: isTransition ? transitionLabel() : normalizeSegmentLabel(timerLabel.value, nextLabel()),
       durationSec: duration,
       overtimeSec: Math.max(0, duration - durationSec.value),
       timestamp: now,

@@ -1,6 +1,8 @@
 import type { MeetingSession, SpeechEvalState } from '@/stores/hermes/meeting'
 import { useReportStream } from '@/composables/useReportStream'
 import type { GoldenQuote, GrammarIssue } from '@/composables/useMeetingAssist'
+import { groupSentencesBySpeaker, downloadTextFile } from '@/utils/speech-export'
+import { buildSegmentRanges } from '@/utils/speech-segments'
 
 /**
  * 报告构建所需的转写数据快照。全部以取值函数注入（兼容 ComputedRef、
@@ -132,6 +134,37 @@ export function useSpeechEvalReport(deps: UseSpeechEvalReportDeps) {
     URL.revokeObjectURL(url)
   }
 
+  /**
+   * 逐字稿按演讲者分组（保持出现顺序；句子缺 speaker 时按已记录环节时间线兜底）。
+   * 返回演讲者名列表（'' = 未标注桶），供报告区渲染「按演讲者导出」下拉选项。
+   */
+  function getVerbatimSpeakers(): string[] {
+    const session = deps.getSession()
+    const sentences = session?.sentences || []
+    if (!sentences.length) return []
+    const ranges = buildSegmentRanges(deps.evalState().timerRecords || [])
+    return groupSentencesBySpeaker(sentences, ranges).map(g => g.speaker)
+  }
+
+  /** 下载指定演讲者的逐字稿（仅该演讲者的句子 + 标注了 speaker 前缀）。 */
+  function downloadVerbatimBySpeaker(speaker: string) {
+    const session = deps.getSession()
+    const sentences = session?.sentences || []
+    if (!sentences.length) return
+    const ranges = buildSegmentRanges(deps.evalState().timerRecords || [])
+    const group = groupSentencesBySpeaker(sentences, ranges).find(g => g.speaker === speaker)
+    if (!group || !group.sentences.length) return
+    const displayName = speaker || '未标注'
+    const header = [
+      `演讲评分逐字稿：${session?.title || ''}`,
+      `演讲者：${displayName}`,
+      `导出时间：${new Date().toLocaleString('zh-CN')}`,
+      '',
+    ].join('\n')
+    const body = group.sentences.map(s => `${s.speaker ? `[${s.speaker}] ` : ''}${s.text}`).join('\n')
+    downloadTextFile(`${session?.title || '演讲评分'}_${displayName}_逐字稿.txt`, header + body)
+  }
+
   async function generateReport() {
     const transcript = buildTranscriptWithEval()
     if (!transcript.trim()) return
@@ -144,6 +177,8 @@ export function useSpeechEvalReport(deps: UseSpeechEvalReportDeps) {
     reportError,
     buildTranscriptWithEval,
     downloadVerbatim,
+    getVerbatimSpeakers,
+    downloadVerbatimBySpeaker,
     generateReport,
   }
 }

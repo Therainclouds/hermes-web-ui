@@ -1,6 +1,7 @@
 import { computed, type ComputedRef, type Ref } from 'vue'
 import type { AnalysisRound, GoldenQuote, GrammarIssue } from '@/composables/useMeetingAssist'
 import type { MeetingSession } from '@/stores/hermes/meeting'
+import { buildSegmentRanges, resolveActiveSegmentSpeaker } from '@/utils/speech-segments'
 
 /** 评分卡的固定标签映射（i18n key）。 */
 export const SCORE_LABEL_MAP: Record<string, string> = {
@@ -18,11 +19,28 @@ interface RoundFillerWord {
   speaker?: string
 }
 
+/** 按演讲者分组累积的评价区（亮点/提升点/主题）；speaker 为空串表示「未标注」桶 */
+export interface SpeechSpeakerSection {
+  speaker: string
+  highlights: string[]
+  improvements: string[]
+  topics: string[]
+}
+
 export interface SpeechAiAggregationDeps {
   /** AI 实时点评轮次流（调用方的 useMeetingAssist().rounds——此处不得自建连接） */
   rounds: Ref<AnalysisRound[]>
   /** 当前会议（发言人用时从转写时间戳估算） */
   session?: Ref<MeetingSession | undefined> | ComputedRef<MeetingSession | undefined>
+  /**
+   * 当前计时器标签（演讲者在 SpeechTimerOverlay 输入的内容）。
+   * 传入后，sentence.speaker 为空时会按 [当前标签 → 已记录时间线 → fallback] 反查归属，
+   * 让"走表但还没点记录本段用时"期间的句子也能计入发言人用时。
+   * 不传则维持原行为（仅靠 sentence.speaker 字段）。
+   */
+  timerLabel?: Ref<string>
+  /** 计时器是否在走表——只有 true 时 timerLabel 反查才生效（防止停止后错归） */
+  timerRunning?: Ref<boolean>
 }
 
 /**
@@ -120,17 +138,72 @@ export function useSpeechAiAggregation(deps: SpeechAiAggregationDeps) {
   const improvements = computed(() => uniqueStrings(roundsRef.value.flatMap(r => r.improvements || [])))
   const topics = computed(() => uniqueStrings(roundsRef.value.flatMap(r => r.topics || [])))
 
+  // ── 按演讲者分组（多演讲者场景：评分/评价独立记分牌） ──
+
+  /** 每位演讲者的最新评分（round.speaker 由服务端按批次句子确定性推导） */
+  const speakerScores = computed<Array<{ speaker: string; score: Record<string, number>; updatedAt: number }>>(() => {
+    const bySpeaker = new Map<string, { speaker: string; score: Record<string, number>; updatedAt: number }>()
+    for (const r of roundsRef.value) {
+      const sp = r.speaker?.trim()
+      if (!sp) continue
+      const s = r.score
+      if (!s || Object.keys(s).length === 0) continue
+      bySpeaker.set(sp, { speaker: sp, score: s, updatedAt: r.timestamp })
+    }
+    return [...bySpeaker.values()].sort((a, b) => a.updatedAt - b.updatedAt)
+  })
+
+  /** 按演讲者分组累积亮点/提升点/主题（round.speaker 为空的轮次归入「未标注」桶 ''） */
+  const speakerSections = computed<SpeechSpeakerSection[]>(() => {
+    const bySpeaker = new Map<string, SpeechSpeakerSection>()
+    for (const r of roundsRef.value) {
+      const sp = r.speaker?.trim() || ''
+      let section = bySpeaker.get(sp)
+      if (!section) {
+        section = { speaker: sp, highlights: [], improvements: [], topics: [] }
+        bySpeaker.set(sp, section)
+      }
+      pushUnique(section.highlights, r.highlights)
+      pushUnique(section.improvements, r.improvements)
+      pushUnique(section.topics, r.topics)
+    }
+    return [...bySpeaker.values()]
+  })
+
+  function pushUnique(target: string[], items: string[] | undefined) {
+    for (const item of items || []) {
+      const s = item?.trim()
+      if (s && !target.includes(s)) target.push(s)
+    }
+  }
+
   // 发言人用时（由转写时间戳估算，用于时间把控/串场分析）
   // 设备/系统播报不算发言人（"不是多一个设备官"）
   const DEVICE_SPEAKER_RE = /设备|系统|device|assistant|播报/i
 
   const speakerDurations = computed<Array<{ speaker: string; durationSec: number }>>(() => {
     const sentences = sessionRef?.value?.sentences || []
+    // 计时器标签反查所需的"已记录区间"：仅在调用方传了 timerLabel/timerRunning 时才构建。
+    // 在响应式闭包里读取 deps.timerRunning.value 以保证依赖被追踪。
+    const ranges = (deps.timerLabel || deps.timerRunning)
+      ? buildSegmentRanges(sessionRef?.value?.speechEval?.timerRecords || [])
+      : []
+    const useActiveResolver = !!deps.timerLabel && !!deps.timerRunning
+
     const bySpeaker: Record<string, number> = {}
     const order: string[] = []
     for (let i = 0; i < sentences.length; i++) {
       const s = sentences[i]
-      const sp = (s.speaker || '').trim()
+      let sp = (s.speaker || '').trim()
+      // speaker 缺失时按 [当前标签（仅走表） → 已记录时间线] 反查
+      if (!sp && useActiveResolver) {
+        sp = resolveActiveSegmentSpeaker(
+          deps.timerLabel!.value,
+          ranges,
+          s.timestamp,
+          '',
+        )
+      }
       if (!sp || DEVICE_SPEAKER_RE.test(sp)) continue
       let durMs = 0
       if (typeof s.startTime === 'number' && typeof s.endTime === 'number') {
@@ -161,6 +234,8 @@ export function useSpeechAiAggregation(deps: SpeechAiAggregationDeps) {
     highlights,
     improvements,
     topics,
+    speakerScores,
+    speakerSections,
     speakerDurations,
   }
 }

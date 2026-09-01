@@ -101,13 +101,26 @@ describe('useSpeechTimer（面板功能层，deps 启用）', () => {
 
     expect(persist).toHaveBeenCalledTimes(1)
     const record = evalState.value.timerRecords[0]
-    expect(record.label).toBe('开场')
+    // 裸姓名（无斜杠）归一化为「环节 N / 姓名」：保证 speaker 链路可用
+    expect(record.label).toBe('i18n:meeting.speechEval.segmentLabelPrefix 1 / 开场')
     expect(record.durationSec).toBeCloseTo(10, 5)
     expect(record.overtimeSec).toBe(0)
     expect(record.kind).toBe('segment')
     // 记录后清空标签并重置计时器
     expect(timer.timerLabel.value).toBe('')
     expect(timer.timerRemainingMs.value).toBe(60_000)
+  })
+
+  it('keeps an explicitly slashed label as-is when recording', () => {
+    const { evalState, persist } = makeEvalState()
+    evalState.value.timerDurationSec = 60
+    const timer = useSpeechTimer({ evalState, persist })
+    timer.setThresholds({ durationSec: 60, yellowAtSec: 30, redAtSec: 10 })
+    timer.timerLabel.value = '开场介绍 / 燕灵'
+
+    timer.recordSegment()
+
+    expect(evalState.value.timerRecords[0].label).toBe('开场介绍 / 燕灵')
   })
 
   it('first segment spans from the timer start wall-clock to the click', () => {

@@ -4221,6 +4221,7 @@ export default {
     stop: '停止录音',
     start: '开始录音',
     connectionError: '连接失败，请检查后端服务',
+    reconnecting: '语音识别断开，重连中…',
     microphoneError: '无法访问麦克风',
     micNotFound: '当前设备未检测到麦克风',
     micPermissionDenied: '麦克风权限被拒绝，请在浏览器设置中允许访问麦克风',
@@ -4333,6 +4334,7 @@ export default {
       atRisk: '有风险',
       insights: '洞察流',
       insightsDesc: '实时提取客户的需求、痛点、机会与竞品提及，按类型着色。',
+      insightCount: '{n} 条洞察',
       emptyInsights: '暂无洞察。开始录音后 AI 自动提取。',
       quotes: '关键引语',
       quotesDesc: '客户原话中具体、有场景、可指导决策的句子。',
@@ -4392,7 +4394,7 @@ export default {
       notConnected: 'AI 未连接（录音后自动连接）',
       aiRounds: 'AI 实时点评与评分',
       aiRoundsDesc: 'AI 以"陪伴型成长教练"的口吻实时点评：按发言人检测赘语、金句与语法问题，给出 3 条亮点和 1 个最重要的可落地提升点，说人话、多鼓励。',
-      emptyRounds: '暂无 AI 点评。开始录音后 AI 自动分析，也可随时点击「开始分析」。',
+      emptyRounds: '暂无 AI 点评。填写演讲者名称并启动计时后 AI 自动分析，也可随时点击「开始分析」。',
       thinking: 'AI 正在分析…',
       liveScore: '实时评分（持续更新）',
       updatedAt: '更新于',
@@ -4430,7 +4432,7 @@ export default {
       pause: '暂停',
       reset: '重置',
       segmentLabelPrefix: '环节',
-      segmentLabelPlaceholder: '环节 / 演讲者名称',
+      segmentLabelPlaceholder: '演讲者姓名（或 环节 / 姓名）',
       recordSegment: '记录本段用时',
       segmentMode: '演讲计时',
       transitionMode: '串场计时',
@@ -4479,6 +4481,14 @@ export default {
       preset_evaluation: '评估 2-3分',
       preset_iceBreaker: '破冰演讲 4-6分',
       preset_custom: '自定义',
+      // 演讲者姓名按需提示：引导用户在计时器上方填写姓名，让 AI 按发言人归属
+      speakerHint: '请在计时器上方输入当前演讲者姓名（可直接填姓名，或用 环节 / 姓名 区分多环节），AI 才能按发言人归属点评',
+      speakerHintHistory: '已记录的环节没有演讲者姓名，后续请在计时器上方补填',
+      kpiSpeakersZeroHint: '发言人计数为 0：请在计时器上方输入当前演讲者姓名',
+      // 按演讲者折叠子模块与导出
+      exportSpeakerFeedback: '导出点评',
+      exportAllSpeakerFeedback: '导出全部点评',
+      downloadVerbatimBySpeaker: '按演讲者导出逐字稿',
     },
     // 实时辅助面板
     assist: {

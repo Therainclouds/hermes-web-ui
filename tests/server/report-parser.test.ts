@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { applyLegalGuards, applySpeechGuards, parseAnalysisRound, type AnalysisRound } from '../../packages/server/src/services/meeting-asr/report-parser'
+import {
+  annotateTranscriptSpeakers,
+  applyLegalGuards,
+  applySpeechGuards,
+  parseAnalysisRound,
+  resolveDominantSpeaker,
+  resolveTimelineSpeaker,
+  TIMELINE_MATCH_LATENCY_MS,
+  type AnalysisRound,
+  type SpeakerTimelineEntry,
+} from '../../packages/server/src/services/meeting-asr/report-parser'
 
 describe('parseAnalysisRound', () => {
   it('parses a plain JSON round with the core fields', () => {
@@ -281,5 +291,124 @@ describe('applyLegalGuards（Hook 层：法律场景确定性护栏）', () => {
     expect(round!.riskItems).toHaveLength(1)
     expect(round!.riskItems![0].level).toBe('high')
     expect(round!.lawRefs![0].note).toContain('需人工核实')
+  })
+})
+
+describe('resolveTimelineSpeaker（按墙钟归属环节演讲者）', () => {
+  const timeline: SpeakerTimelineEntry[] = [
+    { speaker: '燕灵', segment: '开场介绍', startMs: 1000, endMs: 5000 },
+    { speaker: 'UU', segment: '小组共创', startMs: 6000, endMs: 12000 },
+  ]
+
+  it('空 timeline / 空 ts 返回空串', () => {
+    expect(resolveTimelineSpeaker(undefined, 2000)).toBe('')
+    expect(resolveTimelineSpeaker([], 2000)).toBe('')
+    expect(resolveTimelineSpeaker(timeline, undefined)).toBe('')
+    expect(resolveTimelineSpeaker(timeline, NaN)).toBe('')
+  })
+
+  it('精确命中区间返回对应 speaker', () => {
+    expect(resolveTimelineSpeaker(timeline, 2000)).toBe('燕灵')
+    expect(resolveTimelineSpeaker(timeline, 6000)).toBe('UU') // 边界 = 起点
+    expect(resolveTimelineSpeaker(timeline, 12000)).toBe('UU') // 边界 = 终点
+  })
+
+  it('超出区间但在 60s 延迟窗内，归到最近一段（吸收 AI 轮次出结果延迟）', () => {
+    expect(resolveTimelineSpeaker(timeline, 12000 + 1_000)).toBe('UU') // 刚出区间 1s
+    expect(resolveTimelineSpeaker(timeline, 12000 + TIMELINE_MATCH_LATENCY_MS)).toBe('UU') // 边界 = 60s 仍归到 UU
+    expect(resolveTimelineSpeaker(timeline, 12000 + TIMELINE_MATCH_LATENCY_MS + 1)).toBe('') // 超过 60s 不归
+  })
+
+  it('多个区间取最后一个（按顺序遍历，reverse 命中最近段）', () => {
+    const overlapping: SpeakerTimelineEntry[] = [
+      { speaker: 'A', startMs: 1000, endMs: 5000 },
+      { speaker: 'B', startMs: 3000, endMs: 7000 },
+    ]
+    // 5000 在 A 区间内、也在 B 区间 [3000,7000] 内，按 reverse 应取 B
+    expect(resolveTimelineSpeaker(overlapping, 5000)).toBe('B')
+  })
+
+  it('区间起点前的 ts 不算命中（精确命中区间闭区间但起点前不计）', () => {
+    expect(resolveTimelineSpeaker(timeline, 500)).toBe('') // 在第一段前
+  })
+})
+
+describe('annotateTranscriptSpeakers（用时间线标注转写）', () => {
+  const timeline: SpeakerTimelineEntry[] = [
+    { speaker: '燕灵', segment: '开场介绍', startMs: 1000, endMs: 5000 },
+    { speaker: 'UU', segment: '小组共创', startMs: 6000, endMs: 12000 },
+  ]
+
+  it('时间线命中时用 timeline 名覆盖原 speaker', () => {
+    const annotated = annotateTranscriptSpeakers(
+      [{ speaker: '说话人1', text: '大家好', timestamp: 2000 }],
+      timeline,
+    )
+    expect(annotated).toEqual([{ speaker: '燕灵', text: '大家好' }])
+  })
+
+  it('时间线未命中时保留原 speaker', () => {
+    const annotated = annotateTranscriptSpeakers(
+      [{ speaker: '说话人1', text: '未来时', timestamp: 999_999 }],
+      timeline,
+    )
+    expect(annotated).toEqual([{ speaker: '说话人1', text: '未来时' }])
+  })
+
+  it('时间线为空时保留原 speaker（不丢字段）', () => {
+    const annotated = annotateTranscriptSpeakers(
+      [{ speaker: '说话人1', text: 'hi', timestamp: 2000 }],
+      undefined,
+    )
+    expect(annotated).toEqual([{ speaker: '说话人1', text: 'hi' }])
+  })
+
+  it('原 speaker 缺省时，时间线命中会补上 speaker 字段', () => {
+    const annotated = annotateTranscriptSpeakers(
+      [{ text: 'hi', timestamp: 2000 }],
+      timeline,
+    )
+    expect(annotated).toEqual([{ speaker: '燕灵', text: 'hi' }])
+  })
+
+  it('60s 延迟窗内的句子仍归属到刚结束的段（吸收 AI 延迟）', () => {
+    const annotated = annotateTranscriptSpeakers(
+      [{ text: '...', timestamp: 12000 + 30_000 }], // 距最后一段 30s
+      timeline,
+    )
+    expect(annotated).toEqual([{ speaker: 'UU', text: '...' }])
+  })
+})
+
+describe('resolveDominantSpeaker（批次主导演讲者推导）', () => {
+  it('按句子计数取最多者', () => {
+    const annotated = [
+      { speaker: '张三' }, { speaker: '张三' }, { speaker: '李四' },
+    ]
+    expect(resolveDominantSpeaker(annotated)).toBe('张三')
+  })
+
+  it('并列时取先出现者', () => {
+    const annotated = [
+      { speaker: '李四' }, { speaker: '张三' }, { speaker: '李四' }, { speaker: '张三' },
+    ]
+    expect(resolveDominantSpeaker(annotated)).toBe('李四')
+  })
+
+  it('空名与设备播报不计入', () => {
+    const annotated = [
+      { speaker: '' }, { speaker: '系统播报' }, { speaker: 'device' },
+      { speaker: '张三' }, { speaker: undefined },
+    ]
+    expect(resolveDominantSpeaker(annotated)).toBe('张三')
+  })
+
+  it('全部无有效姓名时返回空串', () => {
+    expect(resolveDominantSpeaker([{ speaker: '' }, {}])).toBe('')
+    expect(resolveDominantSpeaker([])).toBe('')
+  })
+
+  it('名字首尾空白被 trim', () => {
+    expect(resolveDominantSpeaker([{ speaker: '  张三  ' }])).toBe('张三')
   })
 })

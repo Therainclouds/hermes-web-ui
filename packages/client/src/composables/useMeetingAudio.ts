@@ -75,6 +75,14 @@ export function useMeetingAudio(deps: UseMeetingAudioDeps) {
   let mediaStream: MediaStream | null = null
   const analyser = ref<AnalyserNode | null>(null)
 
+  // --- ASR WebSocket 重连机制 ---
+  // 区分用户主动停止（stopRecording）与异常断开（网络/Python 进程崩溃）
+  let cleanStop = false
+  let reconnectAttempts = 0
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  const MAX_RECONNECT_ATTEMPTS = 3
+  const RECONNECT_BASE_DELAY_MS = 2000
+
   // --- 音频录制 ---
   let mediaRecorder: MediaRecorder | null = null
   const audioChunks = ref<Blob[]>([])
@@ -168,6 +176,79 @@ export function useMeetingAudio(deps: UseMeetingAudioDeps) {
     return { available: true }
   }
 
+  // --- ASR WebSocket 重连 ---
+  // 清理旧的重连定时器
+  function clearReconnectTimer() {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = null
+    }
+  }
+
+  // 尝试重连 ASR WebSocket（音频管线保持运行，仅重建 socket）
+  async function tryReconnectASR() {
+    if (cleanStop || !isRecording.value) return
+    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      console.warn('[meeting] ASR reconnect: max attempts reached, stopping recording')
+      stopRecording()
+      return
+    }
+
+    reconnectAttempts++
+    const delay = RECONNECT_BASE_DELAY_MS * reconnectAttempts
+    console.log(`[meeting] ASR reconnect attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} in ${delay}ms...`)
+    statusText.value = t('meeting.reconnecting')
+
+    reconnectTimer = setTimeout(async () => {
+      if (cleanStop || !isRecording.value) return
+
+      try {
+        // 先确保服务端 ASR 进程仍在运行（可能因崩溃而不可用）
+        const started = await deps.startASRService()
+        if (!started) {
+          console.warn('[meeting] ASR reconnect: startASRService failed, will retry')
+          // 继续重试，不立即放弃
+          tryReconnectASR()
+          return
+        }
+
+        // 创建新的 ASR WebSocket
+        ws = new WebSocket(ASR_URL)
+
+        ws.onopen = () => {
+          console.log('[meeting] ASR WebSocket reconnected')
+          reconnectAttempts = 0 // 重连成功，重置计数
+          ws?.send(JSON.stringify({ type: 'start' }))
+        }
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data)
+            deps.handleWsMessage(data, 'asr')
+          } catch (e) {
+            console.error('Failed to parse ASR WS message:', e)
+          }
+        }
+
+        ws.onerror = (error) => {
+          console.error('[meeting] ASR reconnect WebSocket error:', error)
+          // onclose 会紧跟 onerror 触发，由 onclose 统一处理重试
+        }
+
+        ws.onclose = () => {
+          console.log('[meeting] ASR reconnect WebSocket closed')
+          // 仍在录音中 → 继续尝试重连
+          if (!cleanStop && isRecording.value) {
+            tryReconnectASR()
+          }
+        }
+      } catch (err) {
+        console.error('[meeting] ASR reconnect failed:', err)
+        tryReconnectASR()
+      }
+    }, delay)
+  }
+
   // --- 音频处理 ---
   async function startRecording() {
     // 没有活动会议时，先引导用户新建会议
@@ -180,6 +261,9 @@ export function useMeetingAudio(deps: UseMeetingAudioDeps) {
       errorMessage.value = ''
       isConnecting.value = true
       statusText.value = t('meeting.connecting')
+      cleanStop = false
+      reconnectAttempts = 0
+      clearReconnectTimer()
 
       // 第 1 阶段：麦克风检测
       const micCheck = await checkMicrophoneAvailability()
@@ -297,14 +381,15 @@ export function useMeetingAudio(deps: UseMeetingAudioDeps) {
         }
 
         diarizeWs.onerror = (error) => {
-          console.error('Diarize WebSocket error:', error)
-          errorMessage.value = t('meeting.connectionError')
-          stopRecording()
+          console.error('Diarize WebSocket error (save mode):', error)
+          // onclose 会紧跟 onerror 触发，由 onclose 统一处理
         }
 
         diarizeWs.onclose = () => {
-          console.log('Diarize WebSocket closed')
-          if (isRecording.value) {
+          console.log('Diarize WebSocket closed (save mode)')
+          if (!cleanStop && isRecording.value) {
+            // 保存模式下仅 Diarize，无 ASR 重连逻辑——直接停止录音
+            // （Diarize 服务崩溃通常需要人工介入）
             stopRecording()
           }
         }
@@ -337,14 +422,14 @@ export function useMeetingAudio(deps: UseMeetingAudioDeps) {
 
         ws.onerror = (error) => {
           console.error('ASR WebSocket error:', error)
-          errorMessage.value = t('meeting.connectionError')
-          stopRecording()
+          // onclose 会紧跟 onerror 触发，由 onclose 统一处理重连
         }
 
         ws.onclose = () => {
           console.log('ASR WebSocket closed')
-          if (isRecording.value) {
-            stopRecording()
+          if (!cleanStop && isRecording.value) {
+            // 非用户主动停止 → 尝试重连
+            tryReconnectASR()
           }
         }
 
@@ -406,14 +491,14 @@ export function useMeetingAudio(deps: UseMeetingAudioDeps) {
 
         ws.onerror = (error) => {
           console.error('ASR WebSocket error:', error)
-          errorMessage.value = t('meeting.connectionError')
-          stopRecording()
+          // onclose 会紧跟 onerror 触发，由 onclose 统一处理重连
         }
 
         ws.onclose = () => {
           console.log('ASR WebSocket closed')
-          if (isRecording.value) {
-            stopRecording()
+          if (!cleanStop && isRecording.value) {
+            // 非用户主动停止 → 尝试重连
+            tryReconnectASR()
           }
         }
       }
@@ -476,6 +561,9 @@ export function useMeetingAudio(deps: UseMeetingAudioDeps) {
   }
 
   async function stopRecording() {
+    cleanStop = true
+    clearReconnectTimer()
+    reconnectAttempts = 0
     isRecording.value = false
     isConnecting.value = false
     statusText.value = ''

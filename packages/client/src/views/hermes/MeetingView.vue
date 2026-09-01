@@ -30,6 +30,7 @@ import { useMeetingAudio } from '@/composables/useMeetingAudio'
 import { useDraggableWidth } from '@/composables/useDraggableWidth'
 import { useDiarizeMerge } from '@/composables/useDiarizeMerge'
 import { useMeetingDownloads } from '@/composables/useMeetingDownloads'
+import { buildSegmentRanges, resolveActiveSegmentSpeaker } from '@/utils/speech-segments'
 
 const { t } = useI18n()
 const message = useMessage()
@@ -253,12 +254,24 @@ function persistSpeechEval(patch: Partial<SpeechEvalState>) {
 
 // 计时器唯一实例由 MeetingView 创建并向下 provide：
 // 舞台浮层（唯一操控面）与右栏记录面板共享同一份状态与副作用。
-const {
-  phase: speechPhase,
-  setThresholds: setSpeechTimerThresholds,
-  reset: resetSpeechTimer,
-  stop: stopSpeechTimer,
-} = provideSpeechTimer({ evalState: activeSpeechEval, persist: persistSpeechEval })
+// 注意：provideSpeechTimer 返回 reactive 包装，不能解构 timerRunning（会丢失响应性）；
+// 必须保留对象引用，通过 speechTimer.timerRunning 访问。
+const speechTimer = provideSpeechTimer({
+  evalState: activeSpeechEval,
+  persist: persistSpeechEval,
+  // 计时器启动前必须先确认录音已就绪（录音启动需要数秒：麦克风检测、ASR 服务、WebSocket 握手）
+  // 返回 false 则中止计时器启动；录音失败时用户会看到 errorMessage
+  onBeforeStart: async () => {
+    if (isRecording.value) return true // 已在录音，直接放行
+    if (isConnecting.value) return false // 正在连接中，等待用户手动重试
+    await startRecording()
+    return isRecording.value
+  },
+})
+const speechPhase = computed(() => speechTimer.phase)
+const setSpeechTimerThresholds = speechTimer.setThresholds
+const resetSpeechTimer = speechTimer.reset
+const stopSpeechTimer = speechTimer.stop
 
 const speechEval = activeSpeechEval
 
@@ -752,11 +765,25 @@ function handleWsMessage(data: any, source: 'asr' | 'diarize' = 'asr') {
     case 'final':
       // ASR实时转写结果 - 无说话人标签
       if (source === 'asr' && data.text) {
+        const nowMs = Date.now()
+        // 演讲场景：按当前 timerLabel / 已记录环节用时反查 speaker；
+        // 非演讲场景 / 计时器停止 / 标签空：speaker 留空（保持原行为）
+        let activeSpeaker = ''
+        if (isSpeechScene.value && speechTimer.timerRunning) {
+          const ranges = buildSegmentRanges(activeSpeechEval.value.timerRecords || [])
+          activeSpeaker = resolveActiveSegmentSpeaker(
+            speechTimer.timerLabel,
+            ranges,
+            nowMs,
+            '',
+          )
+        }
         const sentence: TranscriptSentence = {
           text: data.text,
-          timestamp: Date.now(),
+          timestamp: nowMs,
           startTime: data.begin_time,
           endTime: data.end_time,
+          ...(activeSpeaker ? { speaker: activeSpeaker } : {}),
         }
         finalSentences.value.push(sentence)
         partialText.value = ''
@@ -767,8 +794,12 @@ function handleWsMessage(data: any, source: 'asr' | 'diarize' = 'asr') {
         }
         
         // 推送到实时辅助服务
+        // 演讲场景：仅在计时器走表时推送（计时器停止 = 演讲者间隙，不做分析）
+        // 其他场景：始终推送
         if (meetingStore.activeSessionId) {
-          pushSentenceToAssist(meetingStore.activeSessionId, sentence)
+          if (!isSpeechScene.value || speechTimer.timerRunning) {
+            pushSentenceToAssist(meetingStore.activeSessionId, sentence)
+          }
         }
         
         // 自动滚动到底部

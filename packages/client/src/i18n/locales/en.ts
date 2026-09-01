@@ -4175,6 +4175,7 @@ export default {
     stop: 'Stop Recording',
     start: 'Start Recording',
     connectionError: 'Connection failed. Please check the backend service',
+    reconnecting: 'Speech recognition disconnected, reconnecting…',
     microphoneError: 'Cannot access microphone',
     micNotFound: 'No microphone detected on this device',
     micPermissionDenied: 'Microphone permission denied. Please allow microphone access in your browser settings',
@@ -4287,6 +4288,7 @@ export default {
       atRisk: 'At risk',
       insights: 'Insight stream',
       insightsDesc: 'Real-time extraction of customer needs, pains, opportunities and competitor mentions, color-coded by type.',
+      insightCount: '{n} insights',
       emptyInsights: 'No insights yet. AI extracts automatically once recording starts.',
       quotes: 'Key quotes',
       quotesDesc: 'Customer verbatims that are specific, contextual and decision-guiding.',
@@ -4346,7 +4348,7 @@ export default {
       notConnected: 'AI not connected (auto-connects when recording)',
       aiRounds: 'AI Real-time Feedback & Scores',
       aiRoundsDesc: 'AI coaches you like a warm, human growth coach: filler words, golden quotes and grammar issues are tracked per speaker, with up to 3 highlights and 1 most actionable improvement point.',
-      emptyRounds: 'No AI feedback yet. It runs automatically once recording starts; you can also click "Analyze Now" anytime.',
+      emptyRounds: 'No AI feedback yet. AI analyzes automatically once you fill in the speaker name and start the timer; you can also click "Analyze Now" anytime.',
       thinking: 'AI is analyzing…',
       liveScore: 'Live score (updates continuously)',
       updatedAt: 'Updated at',
@@ -4384,7 +4386,7 @@ export default {
       pause: 'Pause',
       reset: 'Reset',
       segmentLabelPrefix: 'Segment',
-      segmentLabelPlaceholder: 'Segment / speaker name',
+      segmentLabelPlaceholder: 'Speaker name (or segment / name)',
       recordSegment: 'Record this segment',
       segmentMode: 'Speech timing',
       transitionMode: 'Transition timing',
@@ -4433,6 +4435,15 @@ export default {
       preset_evaluation: 'Evaluation 2-3m',
       preset_iceBreaker: 'Ice Breaker 4-6m',
       preset_custom: 'Custom',
+      // Speaker name on-demand hint: prompt the user to fill in the current
+      // speaker's name above the timer so AI can attribute feedback by speaker.
+      speakerHint: "Enter the current speaker's name above the timer (a bare name works, or use segment / name to separate multiple segments) so AI can attribute feedback by speaker",
+      speakerHintHistory: "Past records have no speaker name. Fill it in for subsequent records above the timer",
+      kpiSpeakersZeroHint: "Speaker count is 0: enter the current speaker's name above the timer",
+      // Collapsible per-speaker modules and exports
+      exportSpeakerFeedback: 'Export',
+      exportAllSpeakerFeedback: "Export all feedback",
+      downloadVerbatimBySpeaker: 'Verbatim by speaker',
     },
     // Realtime assist panel
     assist: {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, toRef, watch, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { NButton, NInput, NSpin, NTag, NTabPane, NTabs } from 'naive-ui'
+import { NAlert, NButton, NInput, NSpin, NTag, NTabPane, NTabs, NTooltip } from 'naive-ui'
 import { useMeetingStore } from '@/stores/hermes/meeting'
 import type { SpeechEvalState } from '@/stores/hermes/meeting'
 import { useMeetingAssist } from '@/composables/useMeetingAssist'
@@ -10,6 +10,7 @@ import { useSpeechTimerInjectOrCreate } from './speech/speechTimerContext'
 import { useSpeechFillerCounter } from '@/composables/useSpeechFillerCounter'
 import { request } from '@/api/client'
 import { useSpeechEvalReport } from '@/composables/useSpeechEvalReport'
+import { buildSpeakerTimeline } from '@/utils/speech-segments'
 const activeTab = ref('review')
 import LiveScoreCard from './speech/right-panel/LiveScoreCard.vue'
 import SpeechEvalBlocks from './speech/right-panel/SpeechEvalBlocks.vue'
@@ -92,6 +93,16 @@ watch(() => ({
 // ---------- 演讲上下文（注入 AI 提示词：计时/每日一词） ----------
 
 function buildSpeechContext() {
+  // 把"已记录环节 + 当前走表中的标签"展开为 speakerTimeline，注入服务端 AI 提示词。
+  // 服务端会按时间戳把每条转写句子按真实姓名归属，让 LLM 直接按 [姓名] 标签点评。
+  const speakerTimeline = buildSpeakerTimeline(
+    evalState.value.timerRecords || [],
+    {
+      timerLabel: timer.timerLabel,
+      // 仅在走表期间把当前标签展开为 open 段，避免停止后还把句子错归到当前标签
+      timerRunning: timer.timerRunning,
+    },
+  )
   return {
     wordOfTheDay: evalState.value.wordOfTheDay || undefined,
     timerDurationSec: evalState.value.timerDurationSec,
@@ -107,10 +118,13 @@ function buildSpeechContext() {
       grammarNotes: evalState.value.grammarNotes || [],
       bodyNotes: evalState.value.bodyNotes || [],
     },
+    // 环节-演讲者时间线：覆盖原声纹 speaker（"说话人1"），让 LLM 拿真实姓名
+    speakerTimeline: speakerTimeline.length > 0 ? speakerTimeline : undefined,
   }
 }
 
-// 上下文变更（计时记录/每日一词）时同步给服务端，后续自动分析会带上最新数据。
+// 上下文变更（计时记录/每日一词/当前标签）时同步给服务端，后续自动分析会带上最新数据。
+// 依赖 timerLabel / timerRunning 是关键：用户在 SpeechTimerOverlay 输入名字后 400ms 内就推到服务端。
 let contextPushTimer: number | null = null
 watch(() => JSON.stringify({
   wordOfTheDay: evalState.value.wordOfTheDay,
@@ -118,6 +132,8 @@ watch(() => JSON.stringify({
   timerDurationSec: evalState.value.timerDurationSec,
   yellowAtSec: evalState.value.yellowAtSec,
   redAtSec: evalState.value.redAtSec,
+  timerLabel: timer.timerLabel,
+  timerRunning: timer.timerRunning,
 }), () => {
   if (!props.isRecording) return
   if (contextPushTimer) { clearTimeout(contextPushTimer); contextPushTimer = null }
@@ -128,6 +144,30 @@ watch(() => JSON.stringify({
     }).catch(() => {})
   }, 400)
 })
+
+// ---------- 按需提示：演讲者姓名未填写时的 UI 引导 ----------
+// 仅在录音中提示，避免未开始会议时显示干扰。
+// 规则：
+//   - 从未记录 + 当前标签空 → info 提示"请在计时器上方填写"
+//   - 已记录 + 全部记录的 speaker 都为空 → warning 提示"历史记录中没有姓名"
+const speakerHint = computed<{ type: 'info' | 'warning'; key: string } | null>(() => {
+  if (!props.isRecording) return null
+  const records = evalState.value.timerRecords || []
+  if (records.length === 0 && !timer.timerLabel.trim()) {
+    return { type: 'info', key: 'speakerHint' }
+  }
+  if (records.length > 0) {
+    const anySpeaker = records.some(r => /[／/]/.test(r.label || '') && r.label.split(/[／/]/).pop()!.trim())
+    if (!anySpeaker && !timer.timerLabel.trim()) {
+      return { type: 'warning', key: 'speakerHintHistory' }
+    }
+  }
+  return null
+})
+
+const speakerKpiZero = computed(() =>
+  speakerDurations.value.length === 0 && (evalState.value.timerRecords || []).length > 0,
+)
 
 // 录音开始/停止：连接 assist 会话（与其他模式一致）
 watch(() => props.isRecording, async (recording) => {
@@ -162,9 +202,24 @@ watch(() => props.isRecording, (recording) => {
   }
 })
 
-// 立即分析：把最新上下文（含当前倒计时）一并发给服务端并触发一次分析
-function analyzeNow() {
+// 立即分析：先把当前所有已转写句子推到服务端（演讲场景在计时器停止期间不推送，
+// 服务端缓冲区可能为空），再把最新上下文发给服务端并触发一次分析。
+async function analyzeNow() {
   if (isAnalyzing.value) return
+  const sentences = session.value?.sentences || []
+  if (sentences.length) {
+    await Promise.all(sentences.map(s =>
+      request('/api/meeting-asr/assist/sentence', {
+        method: 'POST',
+        body: JSON.stringify({
+          sessionId: props.sessionId,
+          speaker: s.speaker,
+          text: s.text,
+          timestamp: s.timestamp,
+        }),
+      }).catch(() => {})
+    ))
+  }
   request('/api/meeting-asr/assist/analyze', {
     method: 'POST',
     body: JSON.stringify({ sessionId: props.sessionId, speechContext: buildSpeechContext() }),
@@ -196,8 +251,17 @@ const {
   highlights,
   improvements,
   topics,
+  speakerScores,
+  speakerSections,
   speakerDurations,
-} = useSpeechAiAggregation({ rounds, session })
+} = useSpeechAiAggregation({
+  rounds,
+  session,
+  // 传 timerLabel/timerRunning 让 speakerDurations 在 sentence.speaker 缺失时
+  // 仍能按"当前标签 / 已记录时间线"反查归属（修复 KPI 卡一直显示 0 的问题）
+  timerLabel: toRef(timer, 'timerLabel'),
+  timerRunning: toRef(timer, 'timerRunning'),
+})
 
 
 
@@ -274,6 +338,8 @@ const {
   isGeneratingReport,
   reportError,
   downloadVerbatim,
+  getVerbatimSpeakers,
+  downloadVerbatimBySpeaker,
   generateReport,
 } = useSpeechEvalReport({
   getSessionId: () => props.sessionId,
@@ -297,8 +363,34 @@ const {
   onReportGenerated: (markdown) => emit('report-generated', markdown),
 })
 
+// 逐字稿按演讲者分组（报告 Tab 的「按演讲者导出」下拉选项）。
+// 句子缺 speaker 时由 groupSentencesBySpeaker 按已记录环节时间线兜底归属。
+const verbatimSpeakers = computed(() => getVerbatimSpeakers())
+
+// 切换会话时不持久化空 rounds（clear() 会触发 rounds watch）
+let suppressRoundPersist = false
+
+// 新分析到达时同步持久化到 store（与其他面板 MeetingAgentPanel / InterviewPanel 行为一致）
+watch(rounds, (newRounds) => {
+  if (suppressRoundPersist) return
+  if (newRounds.length) {
+    meetingStore.updateSession(props.sessionId, { analysisRounds: [...newRounds] })
+  }
+}, { deep: true })
+
+onMounted(() => {
+  // 计时器由共享模块持有且已在阈值 watch 中同步，这里不重置，避免打断左侧覆盖层正在走的表。
+  wotdInput.value = evalState.value.wordOfTheDay || ''
+  // 恢复已持久化的 AI 点评记录（切换会议/刷新页面后保留）
+  const s = session.value
+  if (s?.analysisRounds?.length) {
+    rounds.value = [...s.analysisRounds]
+  }
+})
+
 // 切换会话时重置
 watch(() => props.sessionId, () => {
+  suppressRoundPersist = true
   if (contextPushTimer) { clearTimeout(contextPushTimer); contextPushTimer = null }
   disconnect()
   clear()
@@ -308,11 +400,12 @@ watch(() => props.sessionId, () => {
   wotdInput.value = evalState.value.wordOfTheDay || ''
   reportMarkdown.value = ''
   reportError.value = null
-})
-
-onMounted(() => {
-  // 计时器由共享模块持有且已在阈值 watch 中同步，这里不重置，避免打断左侧覆盖层正在走的表。
-  wotdInput.value = evalState.value.wordOfTheDay || ''
+  // 加载新会话的历史 AI 点评
+  const s = session.value
+  if (s?.analysisRounds?.length) {
+    rounds.value = [...s.analysisRounds]
+  }
+  suppressRoundPersist = false
 })
 
 onUnmounted(() => {
@@ -351,10 +444,28 @@ onUnmounted(() => {
         <span class="kpi-label">{{ t('meeting.speechEval.kpiFillers') }}</span>
       </div>
       <div class="kpi-cell">
-        <span class="kpi-value">{{ speakerDurations.length }}</span>
+        <NTooltip v-if="speakerKpiZero" trigger="hover">
+          <template #trigger>
+            <span class="kpi-value kpi-value-warn">{{ speakerDurations.length }}</span>
+          </template>
+          {{ t('meeting.speechEval.kpiSpeakersZeroHint') }}
+        </NTooltip>
+        <span v-else class="kpi-value">{{ speakerDurations.length }}</span>
         <span class="kpi-label">{{ t('meeting.speechEval.kpiSpeakers') }}</span>
       </div>
     </div>
+
+    <!-- 按需提示：未填写演讲者姓名时引导用户 -->
+    <NAlert
+      v-if="speakerHint"
+      :type="speakerHint.type"
+      :show-icon="true"
+      :bordered="false"
+      class="speaker-hint"
+      size="small"
+    >
+      {{ t(`meeting.speechEval.${speakerHint.key}`) }}
+    </NAlert>
 
     <!-- 四 Tab 分区：Tab 栏即功能目录 -->
     <NTabs v-model:value="activeTab" type="line" size="small" class="eval-tabs">
@@ -366,13 +477,15 @@ onUnmounted(() => {
       </div>
       <p class="section-desc">{{ t('meeting.speechEval.aiRoundsDesc') }}</p>
 
-      <LiveScoreCard :live-score="liveScore" :score-updated-at="scoreUpdatedAt" />
+      <LiveScoreCard :live-score="liveScore" :score-updated-at="scoreUpdatedAt" :speaker-scores="speakerScores" />
 
       <SpeechEvalBlocks
         :highlights="highlights"
         :improvements="improvements"
         :topics="topics"
         :new-point-rounds="newPointRounds"
+        :speaker-sections="speakerSections"
+        :speaker-scores="speakerScores"
       />
 
       <div v-if="rounds.length === 0" class="empty-hint">{{ t('meeting.speechEval.emptyRounds') }}</div>
@@ -528,8 +641,10 @@ onUnmounted(() => {
         :is-generating-report="isGeneratingReport"
         :can-generate="!!session?.sentences?.length"
         :export-title="exportTitle"
+        :verbatim-speakers="verbatimSpeakers"
         @generate="generateReport"
         @download-verbatim="downloadVerbatim"
+        @download-verbatim-speaker="downloadVerbatimBySpeaker"
       />
     </section>
     </NTabPane>
@@ -547,6 +662,11 @@ onUnmounted(() => {
   flex-direction: column;
   height: 100%;
   overflow-y: auto;
+  // 横向一律不出滚动条：长英文标签等超宽内容直接裁掉，
+  // 防止把右栏 flex item 撑宽越界盖住左侧转写区
+  overflow-x: hidden;
+  min-width: 0;
+  max-width: 100%;
   padding: 12px 14px;
   gap: 12px;
 }
@@ -584,7 +704,17 @@ onUnmounted(() => {
   line-height: 1.1;
 }
 
+.kpi-value-warn {
+  color: #f56c6c; // 红色：标识"已有记录但 speaker 全部为空"
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
 .kpi-label { font-size: 10px; color: var(--n-text-color3, #999); }
+
+.speaker-hint {
+  margin: 0 0 12px;
+}
 
 // 指示条在右栏宽度动画/隐藏挂载时会测宽失败（渲染成超宽），隐藏规避
 .eval-tabs :deep(.n-tabs-bar) {

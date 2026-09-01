@@ -3,7 +3,7 @@
   "info": {
     "title": "Hermes Studio API",
     "description": "Hermes Studio API — chat sessions, scheduled jobs, platform channels, model management, skills, memory, logs, file browser, group chat, and terminal.",
-    "version": "0.7.19"
+    "version": "0.7.21"
   },
   "servers": [
     {
@@ -488,30 +488,6 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "password": {
-                    "type": "object",
-                    "additionalProperties": true
-                  },
-                  "username": {
-                    "type": "object",
-                    "additionalProperties": true
-                  }
-                },
-                "required": [
-                  "password",
-                  "username"
-                ]
-              }
-            }
-          }
         }
       }
     },
@@ -681,6 +657,40 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "api_base": {
+                    "type": "string"
+                  },
+                  "api_key": {
+                    "type": "string"
+                  },
+                  "device_id": {
+                    "type": "number"
+                  },
+                  "device_name": {
+                    "type": "string"
+                  },
+                  "models": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "api_base",
+                  "api_key"
+                ]
+              }
+            }
+          }
         }
       }
     },
@@ -706,6 +716,32 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "platform_profile_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "platform_profile_id": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                }
+              }
+            }
           }
         }
       }

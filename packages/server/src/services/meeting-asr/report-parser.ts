@@ -77,6 +77,9 @@ export interface AnalysisRound {
   keyPoint: string
   analysis: string
   timestamp: number
+  /** 本轮批次的主导演讲者（由批次内已标注句子的姓名计数确定性推导，非 LLM 输出）。
+   *  多演讲者场景下客户端据此把评分/亮点/提升点按演讲者分组展示；无归属信息时为空。 */
+  speaker?: string
   // 演讲评分场景（Toastmasters 风格）附加字段
   fillerWords?: FillerWord[]
   /** 金句（替代早期 goodPhrases；归一化时仍兼容旧字段）。 */
@@ -332,8 +335,7 @@ function parseInterviewFields(parsed: any): {
   }
 }
 
-/** 环节与发言人时间线条目：由客户端计时员用时记录展开（墙钟毫秒区间）。 */
-export interface SpeakerTimelineEntry {
+/** 环节与发言人时间线条目：由客户端计时员用时记录展开（墙钟毫秒区间）。 */export interface SpeakerTimelineEntry {
   /** 演讲者姓名（标签"/"后的名字） */
   speaker: string
   /** 环节名（标签"/"前的部分） */
@@ -392,6 +394,28 @@ export function annotateTranscriptSpeakers<T extends { speaker?: string; text: s
     if (name) return { speaker: name, text: s.text }
     return { speaker: s.speaker, text: s.text }
   })
+}
+
+/**
+ * 推导一批已标注句子的主导演讲者：按姓名计数取最多（并列取先出现者）。
+ * 空名与设备播报（"设备官"）不计入；无任何有效姓名返回空串。
+ * 用于给每轮 AI 点评打上 speaker 标记，供客户端按演讲者分组展示评分与评价。
+ */
+export function resolveDominantSpeaker(
+  annotated: Array<{ speaker?: string }>,
+): string {
+  const counts = new Map<string, number>()
+  for (const s of annotated || []) {
+    const sp = (s.speaker || '').trim()
+    if (!sp || DEVICE_SPEAKER_RE.test(sp)) continue
+    counts.set(sp, (counts.get(sp) || 0) + 1)
+  }
+  let best = ''
+  let bestCount = 0
+  for (const [sp, n] of counts) {
+    if (n > bestCount) { best = sp; bestCount = n }
+  }
+  return best
 }
 
 /**

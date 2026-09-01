@@ -1,8 +1,9 @@
 <script setup lang="ts">
-// 演讲评分 · 评估报告区：生成/下载逐字稿/导出/渲染。
+// 演讲评分 · 评估报告区：生成/下载逐字稿/按演讲者导出逐字稿/导出/渲染。
 // 纯展示组件：报告状态由面板提供，动作以事件回传。
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { NButton, NSpin } from 'naive-ui'
+import { NButton, NDropdown, NSpin } from 'naive-ui'
 import { defineAsyncComponent } from 'vue'
 import MeetingExportDropdown from '@/components/hermes/meeting/MeetingExportDropdown.vue'
 
@@ -15,14 +16,24 @@ const props = defineProps<{
   /** 是否具备生成条件（有逐字稿） */
   canGenerate: boolean
   exportTitle: string
+  /** 逐字稿按演讲者分组后的演讲者名列表（'' = 未标注）；>1 人时显示按人导出下拉 */
+  verbatimSpeakers?: string[]
 }>()
 
 const emit = defineEmits<{
   (e: 'generate'): void
   (e: 'download-verbatim'): void
+  (e: 'download-verbatim-speaker', speaker: string): void
 }>()
 
 const { t } = useI18n()
+
+const verbatimOptions = computed(() =>
+  (props.verbatimSpeakers || []).map(sp => ({
+    key: sp,
+    label: sp || t('meeting.speechEval.unknownSpeaker'),
+  })),
+)
 </script>
 
 <template>
@@ -33,6 +44,16 @@ const { t } = useI18n()
     <NButton size="small" :disabled="!props.canGenerate" @click="emit('download-verbatim')">
       {{ t('meeting.speechEval.downloadVerbatim') }}
     </NButton>
+    <NDropdown
+      v-if="verbatimOptions.length > 1"
+      trigger="click"
+      :options="verbatimOptions"
+      @select="(key: string | number) => emit('download-verbatim-speaker', String(key))"
+    >
+      <NButton size="small" :disabled="!props.canGenerate">
+        {{ t('meeting.speechEval.downloadVerbatimBySpeaker') }}
+      </NButton>
+    </NDropdown>
   </div>
 
   <div v-if="props.reportError" class="report-error">{{ props.reportError }}</div>
@@ -56,7 +77,7 @@ const { t } = useI18n()
 
 <style scoped lang="scss">
 // --- 评估报告（自 SpeechEvaluationPanel 原样搬出） ---
-.report-generate-row { display: flex; gap: 8px; }
+.report-generate-row { display: flex; gap: 8px; flex-wrap: wrap; }
 .report-generate-row .n-button { flex: 1; }
 .report-error { font-size: 12px; color: #d03050; padding: 6px 8px; background: rgba(208, 48, 80, 0.08); border-radius: 6px; }
 .report-loading { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--n-text-color3, #888); }

@@ -130,6 +130,10 @@ export async function analyzeViaDirectLLM(
           lines.push(`  - ${name}：${fmtClock(e.startMs)} - ${fmtClock(e.endMs)}`)
         }
         lines.push('- 赘语/金句/语法问题的 speaker 字段必须使用时间线中的演讲者姓名（禁止输出"说话人1"这类编号），分析点评也直接称呼姓名。')
+      } else {
+        // 无时间线且转写无 [姓名] 标注时明确禁止编造：LLM 在无归属信息的转写上
+        // 会自行虚构姓名（如"张三"），误导用户以为系统真的识别到了演讲者。
+        lines.push('- 本次未提供演讲者时间线，转写也没有 [姓名] 标注：speaker 字段一律留空字符串，禁止编造或猜测任何姓名（如"张三""发言人"）。')
       }
     }
     if (speechSummary) {

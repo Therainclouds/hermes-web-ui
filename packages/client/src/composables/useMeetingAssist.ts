@@ -29,6 +29,8 @@ export interface AnalysisRound {
   keyPoint: string
   analysis: string
   timestamp: number
+  /** 本轮批次的主导演讲者（服务端按已标注句子推导）；多演讲者分组展示用 */
+  speaker?: string
   // 演讲评分场景（Toastmasters 风格）附加字段
   fillerWords?: FillerWord[]
   goldenQuotes?: GoldenQuote[]
@@ -96,6 +98,12 @@ export function useMeetingAssist(sessionId: string) {
 
     socket.on('error', (msg: string) => {
       error.value = msg
+    })
+
+    // 抑制 Socket.IO 内部轮询/WebSocket 握手失败时的未处理错误
+    // （浏览器会把底层 fetch/XHR 失败抛成 TypeError: fetch failed）
+    socket.on('connect_error', (err) => {
+      console.warn('[meeting-assist] connect_error:', err.message)
     })
   }
 
