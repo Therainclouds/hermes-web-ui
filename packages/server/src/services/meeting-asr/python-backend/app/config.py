@@ -109,6 +109,34 @@ class Settings:
         "OMNI_REALTIME_INSTRUCTIONS",
         "",
     )
+    # Per Qwen-Omni-Realtime docs the audio.input.format / audio.output.format
+    # `sample_rate` is one of 8000/16000/24000/48000. Defaults match the docs:
+    # 16 kHz on input (mic capture rate), 24 kHz on output (TTS rate). Operators
+    # can override via env when a specific device profile demands a different
+    # rate, but the proxy must keep client + server in lock-step.
+    omni_realtime_input_sample_rate: int = int(
+        os.environ.get("OMNI_REALTIME_INPUT_SAMPLE_RATE", "16000")
+    )
+    omni_realtime_output_sample_rate: int = int(
+        os.environ.get("OMNI_REALTIME_OUTPUT_SAMPLE_RATE", "24000")
+    )
+    # Optional WorkspaceId for region-routed WSS endpoints. The docs give
+    # `wss://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime`;
+    # operators that need that route instead of the international
+    # `wss://dashscope.aliyuncs.com/api-ws/v1/realtime` can set
+    # OMNI_REALTIME_WORKSPACE_ID. When unset we use the bare international
+    # URL above (which already routes to Beijing when the API key was issued
+    # there).
+    omni_realtime_workspace_id: str = os.environ.get(
+        "OMNI_REALTIME_WORKSPACE_ID", ""
+    )
+    # `enable_search` per the Bailian docs is opt-in. The proxy wires it on
+    # only when (a) the operator opts in via env, AND (b) no tools are
+    # declared for the session — tool calling and web search are mutually
+    # exclusive per the docs.
+    omni_realtime_enable_search: bool = os.environ.get(
+        "OMNI_REALTIME_ENABLE_SEARCH", "false"
+    ).lower() in ("true", "1", "yes")
     paraformer_format: str = os.environ.get("PARAFORMER_FORMAT", "pcm")
     paraformer_sample_rate: int = int(os.environ.get("PARAFORMER_SAMPLE_RATE", "16000"))
     paraformer_semantic_punctuation: bool = os.environ.get(

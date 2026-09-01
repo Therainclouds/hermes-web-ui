@@ -180,9 +180,33 @@ function closeRealtimeVoice() {
   showRealtimeVoice.value = false;
 }
 
-function openOmniRealtime() {
-  // 新建对话入口：还没有会话时先本地建一个，实时记录结束后落到这个会话里。
-  if (!chatStore.activeSessionId) {
+async function openOmniRealtime(options: { createFresh?: boolean; persistRemote?: boolean } = {}) {
+  // Two entry points reach this handler:
+  //   1. The 「新建对话 → realtime」 drawer flow passes `{ createFresh: true,
+  //      persistRemote: true }`. We must always mint a brand-new session
+  //      (the user explicitly chose 新建) AND persist it server-side so it
+  //      shows up in the sidebar and survives a reload. The previous
+  //      implementation only created the session locally with `newChat()`,
+  //      which left `isLocalOnly=true`, hid it from the sidebar, and the
+  //      realtime transcript was lost on any navigation away.
+  //   2. A future in-place 「continue realtime here」 button can call this
+  //      without options and reuse the existing session.
+  if (options.createFresh) {
+    if (options.persistRemote) {
+      try {
+        await chatStore.newChatWithRemoteCreate({
+          source: 'cli',
+          agent: 'hermes',
+        });
+      } catch {
+        // Fall back to the local-only path; the session still works for
+        // the lifetime of this page even if remote create failed.
+        chatStore.newChat({ source: 'cli', agent: 'hermes' });
+      }
+    } else {
+      chatStore.newChat({ source: 'cli', agent: 'hermes' });
+    }
+  } else if (!chatStore.activeSessionId) {
     chatStore.newChat();
   }
   showOmniRealtime.value = true;
@@ -752,6 +776,13 @@ const headerTitle = computed(() =>
 
 const showNewChatModal = ref(false);
 const newChatMode = ref<"standard" | "realtime">("standard");
+// Qwen-Omni-Realtime model family — see docs:
+//   * qwen3.5-omni-flash-realtime  : faster, ≤80 audio turns / 480s audio / 120s video
+//   * qwen3.5-omni-plus-realtime   : smarter, ≤100 audio turns / 600s audio / 240s video
+// The user picks one from the drawer; we then seed realtime-model store so the
+// dialog reads the right config.
+type NewChatRealtimeModel = "qwen3.5-omni-flash-realtime" | "qwen3.5-omni-plus-realtime";
+const newChatRealtimeModel = ref<NewChatRealtimeModel>("qwen3.5-omni-flash-realtime");
 const newChatAgent = ref<"hermes" | ChatCodingAgentId>("hermes");
 const newChatAgentMode = ref<"global" | "scoped">("scoped");
 const newChatProfile = ref<string>("default");
@@ -1140,6 +1171,10 @@ async function openNewChatModal() {
   newChatLoading.value = true;
   newChatCategoryId.value = null;
   newChatMode.value = "standard";
+  // Reset the realtime model picker to the default each time the drawer
+  // opens so a previous pick doesn't leak into a new session. The user can
+  // override again before confirming.
+  newChatRealtimeModel.value = "qwen3.5-omni-flash-realtime";
   try {
     await loadSessionCategories();
     if (profilesStore.profiles.length === 0) await profilesStore.fetchProfiles();
@@ -1184,7 +1219,19 @@ function handleNewChatProviderChange(value: string) {
 async function confirmNewChat() {
   if (newChatMode.value === "realtime") {
     showNewChatModal.value = false;
-    openOmniRealtime();
+    // Persist the user-picked Qwen-Omni-Realtime model into the realtime
+    // store BEFORE we hand off to the dialog so OmniRealtimeStage reads
+    // the right config on connect. Without this the user is silently
+    // routed to whatever was last saved in localStorage, which is
+    // surprising when they explicitly picked the other variant.
+    realtimeModelStore.updateConfig({ model: newChatRealtimeModel.value });
+    // Always open realtime in a fresh session (the drawer is named
+    // "新建对话") and persist it server-side immediately so the dialog is
+    // visible in the sidebar / survives a page reload. Without the
+    // remote-create call the new session stayed `isLocalOnly=true`, the
+    // sidebar never showed it, and any subsequent refresh dropped the
+    // realtime transcript.
+    await openOmniRealtime({ createFresh: true, persistRemote: true });
     return;
   }
 
@@ -2565,6 +2612,21 @@ async function handleSessionModelCustomSubmit() {
           <div v-if="newChatMode === 'realtime'" class="new-chat-field-hint new-chat-realtime-hint">
             {{ t("omniRealtime.entryHint") }}
           </div>
+          <label
+            v-if="newChatMode === 'realtime'"
+            class="new-chat-field new-chat-realtime-model-field"
+            data-testid="new-chat-realtime-model-field"
+          >
+            <span class="new-chat-label">{{ t("omniRealtime.modelPickerLabel") }}</span>
+            <NRadioGroup v-model:value="newChatRealtimeModel" name="new-chat-realtime-model">
+              <NRadioButton value="qwen3.5-omni-flash-realtime" data-testid="new-chat-realtime-model-flash">
+                {{ t("omniRealtime.modelFlash") }}
+              </NRadioButton>
+              <NRadioButton value="qwen3.5-omni-plus-realtime" data-testid="new-chat-realtime-model-plus">
+                {{ t("omniRealtime.modelPlus") }}
+              </NRadioButton>
+            </NRadioGroup>
+          </label>
           <template v-if="newChatMode === 'standard'">
           <label class="new-chat-field">
             <span class="new-chat-label">{{ t("chat.agent") }}</span>

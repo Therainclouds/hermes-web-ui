@@ -2,10 +2,10 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { NAlert, NButton, NSelect, NSwitch, type SelectOption } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import { useOmniRealtime } from '@/composables/useOmniRealtime'
+import { useOmniRealtime, type OmniDialogToolCall } from '@/composables/useOmniRealtime'
 import { meetingASRApi } from '@/utils/meeting-asr-api'
 import { executeOmniTool, OMNI_REALTIME_TOOLS } from '@/api/hermes/omni-tools'
-import { uid, useChatStore } from '@/stores/hermes/chat'
+import { uid, useChatStore, type Message } from '@/stores/hermes/chat'
 import { useMeetingStore } from '@/stores/hermes/meeting'
 import { useRealtimeModelStore } from '@/stores/hermes/realtime-model'
 
@@ -16,7 +16,10 @@ import { useRealtimeModelStore } from '@/stores/hermes/realtime-model'
  *   - 免提：麦克风持续推流，服务端 VAD 负责分轮；
  *   - 打断：用户开口时自动停止本地播放并取消上游响应（barge-in）；
  *   - 摄像头：开始前可选择开启本地预览；
- *   - 结束：把逐轮对话写回当前聊天会话的消息列表。
+ *   - 工具调用：右侧卡片面板实时显示，并通过 `query_hermes_agent` 把需要
+ *     真实工作区/MCP能力的问题交给 Hermes Agent 执行；
+ *   - 持久化：每完成一轮对话、每完成一次工具调用都立即写入当前 chat
+ *     session，刷新页面 / 点击「新建对话」也不会丢。
  */
 
 const props = defineProps<{
@@ -34,9 +37,11 @@ const chatStore = useChatStore()
 const meetingStore = useMeetingStore()
 const realtimeModelStore = useRealtimeModelStore()
 
-// Voices verified against the DashScope `qwen3.5-omni-flash-realtime`
-// catalogue (default model for this stage). `Cherry`, `Chelsie`, and `Adam`
-// are NOT valid for that model — DashScope closes the WS with 1007
+// Voices verified against the DashScope Qwen-Omni-Realtime catalogue.
+// The same `Tina/Serena/Ethan/Jennifer/Ryan` voice IDs are accepted by every
+// qwen3.5-omni-* and qwen3-omni-* model — they share the DashScope voice
+// registry. Voices from the previous Cherry/Chelsie/Adam family are NOT
+// accepted by Qwen-Omni-Realtime and DashScope closes the WS with 1007
 // `Voice 'X' is not supported.` if any of them is sent upstream.
 const voiceOptions: SelectOption[] = [
   { label: 'Tina (女声 · 中文 · 默认)', value: 'Tina' },
@@ -49,13 +54,50 @@ const voiceOptions: SelectOption[] = [
 const selectedVoice = ref('Tina')
 // Apply the default voice configured in the Realtime model panel.
 selectedVoice.value = realtimeModelStore.config.voice || 'Tina'
+
+/**
+ * Surface a heads-up banner on the setup card when the chosen model has a
+ * tight turn / duration cap per the Bailian docs. Most relevant for
+ * `qwen3-omni-flash-realtime` (only 8 audio turns before older turns drop)
+ * — but the qwen3.5 family also has 80/100-turn limits and 120-480 second
+ * audio retention that surprise users during long meetings.
+ */
+const modelLimits = computed(() => realtimeModelStore.limits)
+const showLimitsBanner = computed(() => {
+  const limits = modelLimits.value
+  if (!limits) return false
+  // Only surface when the cap is restrictive enough to bite a normal session.
+  if (limits.audioTurns != null && limits.audioTurns <= 8) return true
+  if (limits.audioSeconds != null && limits.audioSeconds <= 240) return true
+  return false
+})
+const limitsBannerText = computed(() => {
+  const limits = modelLimits.value
+  if (!limits) return ''
+  const parts: string[] = []
+  if (limits.audioTurns != null) {
+    parts.push(t('omniRealtime.limitsAudioTurns', { count: limits.audioTurns }))
+  }
+  if (limits.videoTurns != null) {
+    parts.push(t('omniRealtime.limitsVideoTurns', { count: limits.videoTurns }))
+  }
+  if (limits.audioSeconds != null) {
+    parts.push(t('omniRealtime.limitsAudioSeconds', {
+      seconds: limits.audioSeconds,
+      minutes: Math.round(limits.audioSeconds / 60),
+    }))
+  }
+  return t('omniRealtime.limitsBanner', {
+    model: limits.label,
+    parts: parts.join(' · '),
+  })
+})
 const cameraEnabled = ref(false)
 const cameraStream = ref<MediaStream | null>(null)
 const videoRef = ref<HTMLVideoElement | null>(null)
 const cameraNotice = ref('')
 const backendError = ref('')
 const preparing = ref(false)
-let transcriptSaved = false
 
 // Camera frame capture: DashScope's Omni-Realtime API sees the world through
 // `input_image_buffer.append` — base64 JPEG frames (≤256 KB, ~1 fps
@@ -73,18 +115,18 @@ let framesCaptured = 0
  * （定义通过 OMNI_REALTIME_TOOLS 随 start 帧下发），以及调用守则。
  */
 const REALTIME_INSTRUCTIONS = [
-  '你是"小合"，用户的中文语音助手，贯穿 Hermes 工作台。回答口语化、简洁自然（通常两三句话），适合直接朗读。',
+  '你是"小合"，用户的中文语音助手，贯穿 Hermes 工作台。回答口语化、简洁自然，适合直接朗读。',
   '',
   '你可以调用以下工具查询工作台的实时事实：',
-  '- query_agent_memory：查询 Agent 的长期记忆（memory 记忆 / user 用户画像 / soul 人格）。用户问到"还记得吗、我是谁、我的偏好、之前聊过什么"时必须先查记忆再回答。',
-  '- list_agent_skills：列出 Agent 已配置的技能。用户问"你能做什么、有哪些技能"时调用。',
-  '- read_skill_detail：查看某个技能的详细说明（参数 category、skill）。',
-  '- list_recent_sessions：查看最近的对话会话列表。用户问"最近聊了什么"时调用。',
-  '- list_jobs：查看当前的定时任务与自动化任务。用户问"有哪些定时任务、自动化在跑什么"时调用。',
+  '- query_agent_memory：查询 Agent 的长期记忆（memory 记忆 / user 用户画像 / soul 人格）。',
+  '- list_agent_skills / read_skill_detail：查看当前 Agent 已配置的技能及其 SKILL.md。',
+  '- list_recent_sessions：查看最近的对话会话列表。',
+  '- list_jobs：查看当前的定时任务与自动化任务。',
+  '- query_hermes_agent：把一个具体问题丢给后端 Hermes Agent 跑一次，它会用上当前 profile 的 MCP 工具 / 技能 / 终端 / 文件系统等真实能力，再把最终回复文本返回给你。当用户问的问题需要真实工具操作或工作区读取时优先调用它。',
   '',
   '工具使用守则：',
-  '1. 涉及上述工作台数据时必须调用工具获取事实，禁止凭空编造。',
-  '2. 拿到结果后用口语总结关键信息；结果为空或出错时如实说明。',
+  '1. 涉及工作台数据或工具操作时必须调用工具获取事实，禁止凭空编造。',
+  '2. 拿到结果后用口语简短总结关键结论；结果为空或出错时如实说明。',
   '3. 一次只调用一个必要的工具；回答完再考虑是否需要下一个。',
 ].join('\n')
 
@@ -99,6 +141,36 @@ const omni = useOmniRealtime({
 const phase = omni.phase
 const isActive = computed(() => phase.value !== 'idle' && phase.value !== 'closed')
 const canStart = computed(() => props.hasDashscopeKey && !isActive.value)
+
+/**
+ * Newest single tool call for the inline indicator under the caption.
+ *
+ * Per the user's preference the realtime dialog should NOT render a card
+ * panel of every function-calling invocation — instead we surface only the
+ * most recent call as a slim in-caption pill: a spinning ring while it
+ * runs, a checkmark + a short snippet of the returned text once it lands.
+ * Older calls remain persisted to the chat history via the existing
+ * incremental-write pipeline so the conversation record is complete; they
+ * just don't clutter the live dialog.
+ */
+const latestToolCall = computed<OmniDialogToolCall | null>(() => {
+  const list = omni.toolCalls.value
+  return list.length > 0 ? list[list.length - 1] : null
+})
+
+/**
+ * Render the tool output (or args) as a single inline snippet for the
+ * post-completion checkmark indicator. Caps at 160 chars so the caption row
+ * stays single-line; multi-line output is always available in the chat
+ * history view after persistence.
+ */
+function toolInlineResult(call: OmniDialogToolCall): string {
+  if (call.status === 'running') return ''
+  const text = (call.output || '').trim()
+  if (!text || text.startsWith('{')) return ''
+  const compact = text.replace(/\s+/g, ' ').trim()
+  return compact.length > 160 ? `${compact.slice(0, 160)}…` : compact
+}
 
 const statusLabel = computed(() => t(`meeting.realtime.phase.${phase.value}`))
 
@@ -250,7 +322,8 @@ async function ensureBackendAvailable(timeoutMs = 30_000): Promise<boolean> {
 
 async function startSession(): Promise<void> {
   if (!canStart.value || preparing.value) return
-  transcriptSaved = false
+  writtenTurnIds.clear()
+  writtenToolCallIds.clear()
   cameraNotice.value = ''
   backendError.value = ''
   preparing.value = true
@@ -275,30 +348,145 @@ async function startSession(): Promise<void> {
   }
 }
 
-function writeTranscriptToChat(): void {
-  if (transcriptSaved) return
-  transcriptSaved = true
+/**
+ * Per-call persistence: write a single turn or a single tool-call message
+ * into the active chat session and keep its `updatedAt` fresh.
+ *
+ * Incremental on purpose: the user can navigate away, refresh, or click
+ * 「新建对话」 mid-session and still find the conversation intact. The
+ * previous implementation wrote every turn in one batch on `endSession`,
+ * so any other navigation path lost the dialog.
+ */
+function persistMessage(message: Message): void {
   const sessionId = chatStore.activeSessionId
-  const turns = omni.turns.value
-  if (!sessionId || turns.length === 0) return
-  for (const turn of turns) {
-    chatStore.addMessage(sessionId, {
-      id: uid(),
-      role: turn.role === 'user' ? 'user' : 'assistant',
-      content: turn.text,
-      timestamp: turn.timestamp,
-    })
-  }
+  if (!sessionId) return
+  const session = chatStore.sessions.find(s => s.id === sessionId)
+  if (!session) return
+  // Defensive dedupe: if the same id is already in the session (e.g. after a
+  // race between endSession + watch flush), don't append a duplicate.
+  if (session.messages.some(existing => existing.id === message.id)) return
+  chatStore.addMessage(sessionId, message)
+  session.updatedAt = Date.now()
+}
+
+function touchSession(): void {
+  const sessionId = chatStore.activeSessionId
+  if (!sessionId) return
   const session = chatStore.sessions.find(s => s.id === sessionId)
   if (session) session.updatedAt = Date.now()
 }
 
+/** Map a finalized realtime turn into the chat Message shape. */
+function turnToMessage(turn: { role: 'user' | 'assistant'; text: string; timestamp: number }): Message {
+  return {
+    id: uid(),
+    role: turn.role === 'user' ? 'user' : 'assistant',
+    content: turn.text,
+    timestamp: turn.timestamp,
+  }
+}
+
+/**
+ * 把一条已经完成（done / error）的工具调用写成一条 chat 消息。失败/错误的
+ * 工具调用也会写入——用户能看到模型尝试了什么，而不是一条隐形的轮次。
+ */
+function toolCallToMessage(call: OmniDialogToolCall): Message {
+  const startedAt = call.startedAt
+  const finishedAt = call.finishedAt || Date.now()
+  const durationMs = Math.max(0, finishedAt - startedAt)
+  let preview = ''
+  try {
+    const parsed = JSON.parse(call.argsJson || '{}') as Record<string, unknown>
+    const question = typeof parsed.question === 'string' ? parsed.question : ''
+    if (question) preview = question.slice(0, 220)
+    else preview = JSON.stringify(parsed).slice(0, 220)
+  } catch {
+    preview = (call.argsJson || '').slice(0, 220)
+  }
+  const resultSnippet = (call.output || '').slice(0, 280)
+  return {
+    id: uid(),
+    role: 'tool',
+    content: '',
+    timestamp: startedAt,
+    toolName: call.name,
+    toolCallId: call.callId,
+    toolArgs: safeParseJson(call.argsJson),
+    toolResult: resultSnippet,
+    toolPreview: preview,
+    toolStatus: call.status,
+    toolDuration: Math.round((durationMs / 1000) * 10) / 10,
+  }
+}
+
+function safeParseJson(value: string): unknown {
+  try {
+    return JSON.parse(value)
+  } catch {
+    return value
+  }
+}
+
+const writtenTurnIds = new Set<string>()
+const writtenToolCallIds = new Set<string>()
+
+// Persist each completed turn as soon as it lands so the chat history is
+// always in sync with what's been said on stage — even if the user closes
+// the dialog, refreshes the page, or clicks 「新建对话」 mid-conversation.
+watch(() => omni.turns.value, (turns) => {
+  if (!chatStore.activeSessionId) return
+  for (const turn of turns) {
+    const key = `${turn.role}:${turn.timestamp}:${turn.text}`
+    if (writtenTurnIds.has(key)) continue
+    writtenTurnIds.add(key)
+    persistMessage(turnToMessage(turn))
+  }
+}, { deep: true })
+
+// Same for tool calls: write the running card immediately, then update its
+// status / output / duration when the call completes. We re-write the same
+// message by id (addMessage guards against duplicates) so the message-list
+// store stays in lock-step with the stage UI.
+watch(() => omni.toolCalls.value, (calls) => {
+  if (!chatStore.activeSessionId) return
+  for (const call of calls) {
+    if (call.status === 'running') {
+      if (writtenToolCallIds.has(call.callId)) continue
+      writtenToolCallIds.add(call.callId)
+      persistMessage(toolCallToMessage(call))
+    } else if (!writtenToolCallIds.has(call.callId + ':done')) {
+      writtenToolCallIds.add(call.callId + ':done')
+      persistMessage(toolCallToMessage(call))
+    } else {
+      touchSession()
+    }
+  }
+}, { deep: true })
+
 function endSession(): void {
   stopFrameCapture()
   omni.disconnect()
-  writeTranscriptToChat()
+  // Final flush: anything still pending in the composable refs (turns that
+  // arrived after the last deep-watch tick) gets one more chance to persist.
+  flushPendingPersistence()
   stopCamera()
   emit('close')
+}
+
+function flushPendingPersistence(): void {
+  if (!chatStore.activeSessionId) return
+  for (const turn of omni.turns.value) {
+    const key = `${turn.role}:${turn.timestamp}:${turn.text}`
+    if (writtenTurnIds.has(key)) continue
+    writtenTurnIds.add(key)
+    persistMessage(turnToMessage(turn))
+  }
+  for (const call of omni.toolCalls.value) {
+    const flag = call.status === 'running' ? '' : ':done'
+    if (writtenToolCallIds.has(call.callId + flag)) continue
+    writtenToolCallIds.add(call.callId + flag)
+    persistMessage(toolCallToMessage(call))
+  }
 }
 
 function closeStage(): void {
@@ -327,6 +515,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleKeydown)
+  flushPendingPersistence()
   omni.disconnect()
   stopFrameCapture()
   stopCamera()
@@ -372,6 +561,15 @@ onBeforeUnmount(() => {
         <NAlert v-if="backendError" type="error" :show-icon="false" class="omni-stage__alert" data-testid="omni-realtime-backend-error">
           {{ backendError }}
         </NAlert>
+        <NAlert
+          v-if="showLimitsBanner && !backendError"
+          type="info"
+          :show-icon="false"
+          class="omni-stage__alert"
+          data-testid="omni-realtime-limits-banner"
+        >
+          {{ limitsBannerText }}
+        </NAlert>
 
         <div class="omni-stage__card">
           <h2>{{ t('meeting.realtime.title') }}</h2>
@@ -415,6 +613,45 @@ onBeforeUnmount(() => {
           aria-atomic="true"
           data-testid="omni-realtime-caption"
         >{{ caption }}</p>
+
+        <div
+          v-if="latestToolCall"
+          class="omni-stage__tool-inline"
+          aria-live="polite"
+          data-testid="omni-realtime-tool-calls"
+        >
+          <span
+            class="omni-stage__tool-indicator"
+            :class="`omni-stage__tool-indicator--${latestToolCall.status}`"
+            aria-hidden="true"
+          >
+            <span
+              v-if="latestToolCall.status === 'running'"
+              class="omni-stage__tool-spinner"
+            />
+            <svg v-else-if="latestToolCall.status === 'error'" viewBox="0 0 20 20">
+              <path d="m6.5 6.5 7 7m0-7-7 7" />
+            </svg>
+            <svg v-else viewBox="0 0 20 20">
+              <path d="m5.5 10.2 2.8 2.8 6.2-6.2" />
+            </svg>
+          </span>
+          <span class="omni-stage__tool-inline-copy">
+            <span v-if="latestToolCall.status === 'running'">
+              {{ t('omniRealtime.toolRunningInline', { tool: latestToolCall.name }) }}
+            </span>
+            <span v-else-if="latestToolCall.status === 'error'">
+              {{ t('omniRealtime.toolFailedInline', { tool: latestToolCall.name }) }}
+            </span>
+            <span v-else>
+              {{ t('omniRealtime.toolCompletedInline', { tool: latestToolCall.name }) }}
+            </span>
+            <span
+              v-if="latestToolCall.status !== 'running' && toolInlineResult(latestToolCall)"
+              class="omni-stage__tool-inline-result"
+            >{{ toolInlineResult(latestToolCall) }}</span>
+          </span>
+        </div>
 
         <div class="omni-stage__controls">
           <button
@@ -555,7 +792,7 @@ onBeforeUnmount(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: stretch;
   justify-content: center;
   padding: 24px;
 }
@@ -580,13 +817,20 @@ onBeforeUnmount(() => {
   transform: scaleX(-1);
 }
 
-.omni-stage__setup { width: min(400px, calc(100% - 32px)); }
+.omni-stage__setup {
+  /* Center the setup card in the dialog instead of hugging the left edge
+   * (the previous left-aligned look felt asymmetric on wider viewports). */
+  width: min(440px, calc(100% - 32px));
+  margin: 0 auto;
+}
 
 .omni-stage__alert { margin-bottom: 14px; }
 
 .omni-stage__card {
   display: flex;
   flex-direction: column;
+  align-items: center;
+  text-align: center;
   gap: 16px;
   padding: 26px 24px;
   border: 1px solid rgba(171, 224, 255, 0.14);
@@ -596,14 +840,30 @@ onBeforeUnmount(() => {
 }
 
 .omni-stage__card h2 { margin: 0; font-size: 18px; font-weight: 620; }
-.omni-stage__card-sub { margin: -10px 0 0; color: rgba(183, 224, 247, 0.6); font-size: 12px; }
+.omni-stage__card-sub { margin: -10px 0 0; color: rgba(183, 224, 247, 0.6); font-size: 12px; text-align: center; }
 .omni-stage__card-tools { margin-top: -8px; color: rgba(130, 245, 255, 0.66); }
 
-.omni-stage__field { display: flex; flex-direction: column; gap: 6px; }
-.omni-stage__field--row { flex-direction: row; align-items: center; justify-content: space-between; }
+/* Center each form row inside the card; the field label sits above the
+ * control and both are center-aligned, matching the rest of the card. */
+.omni-stage__field {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+.omni-stage__field--row { flex-direction: row; align-items: center; justify-content: center; gap: 18px; }
 .omni-stage__field label { color: rgba(200, 231, 250, 0.72); font-size: 12px; }
 
+/* The voice picker should sit comfortably inside the centered card without
+ * spilling past the 440px column width. */
+.omni-stage__field :deep(.n-select) { width: 100%; max-width: 320px; }
+
 .omni-stage__live {
+  /* Centered vertical stack: orb, caption, inline tool indicator, controls.
+   * The previous two-column layout (live + side panel) was removed in
+   * favour of the inline tool pill; going back to a clean centered stack
+   * matches the rest of the dialog's calm aesthetic. */
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -613,7 +873,7 @@ onBeforeUnmount(() => {
 
 .omni-stage__orb-wrap {
   position: relative;
-  width: min(300px, 62vw);
+  width: min(280px, 56vw);
   aspect-ratio: 1;
   display: grid;
   place-items: center;
@@ -667,18 +927,100 @@ onBeforeUnmount(() => {
 .omni-stage--error .omni-stage__orb { filter: saturate(0.4) hue-rotate(-60deg) brightness(0.9); }
 
 .omni-stage__caption {
-  max-width: min(560px, calc(100% - 40px));
-  min-height: 3.2em;
+  /* 解除之前的 2 行 clamp：长回复被静默截断是用户报告的第一个 bug。
+   * 改为单段自然换行、最多展示最近 10 行（再长就启用滚动），保证全文可见。 */
+  max-width: min(620px, calc(100% - 40px));
+  max-height: 14.5em;
+  overflow-y: auto;
   margin: 0;
+  padding: 0 4px;
   color: rgba(233, 246, 255, 0.92);
   font-size: 16px;
   line-height: 1.6;
   text-align: center;
   text-shadow: 0 1px 12px rgba(0, 0, 0, 0.55);
+  white-space: pre-wrap;
+  word-break: break-word;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(112, 244, 255, 0.4) transparent;
+}
+
+.omni-stage__caption::-webkit-scrollbar { width: 6px; }
+.omni-stage__caption::-webkit-scrollbar-thumb { background: rgba(112, 244, 255, 0.4); border-radius: 3px; }
+.omni-stage__caption::-webkit-scrollbar-track { background: transparent; }
+
+/* Inline tool-call indicator. A single slim pill under the caption that
+ * shows the latest function-calling invocation: a soft rotating ring while
+ * the tool runs, then a checkmark + one-line result snippet when it
+ * completes. No card chrome, no JSON dump — full result is always
+ * available in the persisted chat history behind the dialog. */
+.omni-stage__tool-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(560px, calc(100% - 40px));
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: rgba(112, 244, 255, 0.07);
+  border: 1px solid rgba(171, 224, 255, 0.16);
+  color: rgba(233, 246, 255, 0.9);
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: left;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.45);
+  animation: omni-tool-inline-in 220ms ease-out;
+}
+
+.omni-stage__tool-inline--error {
+  background: rgba(239, 68, 68, 0.08);
+  border-color: rgba(248, 113, 113, 0.4);
+}
+
+.omni-stage__tool-inline-copy {
+  display: inline-flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.omni-stage__tool-inline-result {
+  margin-top: 2px;
+  color: rgba(220, 235, 250, 0.7);
+  font-size: 12px;
   overflow: hidden;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: min(420px, 60vw);
+}
+
+.omni-stage__tool-indicator {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(112, 244, 255, 0.18);
+  color: rgba(130, 245, 255, 0.95);
+}
+
+.omni-stage__tool-indicator--error { background: rgba(239, 68, 68, 0.22); color: #fecaca; }
+.omni-stage__tool-indicator--done { background: rgba(74, 222, 128, 0.22); color: #bbf7d0; }
+
+.omni-stage__tool-indicator svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+
+.omni-stage__tool-spinner {
+  width: 11px;
+  height: 11px;
+  border: 2px solid rgba(130, 245, 255, 0.3);
+  border-top-color: rgba(130, 245, 255, 0.95);
+  border-radius: 50%;
+  animation: omni-tool-spin 0.85s linear infinite;
+}
+
+@keyframes omni-tool-spin { to { transform: rotate(360deg); } }
+@keyframes omni-tool-inline-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .omni-stage__controls {

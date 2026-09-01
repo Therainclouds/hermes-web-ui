@@ -40,6 +40,25 @@ export interface OmniDialogTurn {
   timestamp: number
 }
 
+/**
+ * One completed function-calling invocation by the realtime model. The UI
+ * surfaces these on the right-side tool-call panel and the parent stage
+ * persists them to the chat session so the history survives a page reload.
+ */
+export interface OmniDialogToolCall {
+  /** DashScope call id, used to dedupe across server events. */
+  callId: string
+  name: string
+  argsJson: string
+  /** Final textual output sent back to the model (already clipped). */
+  output: string
+  /** Execution status from the model's perspective. */
+  status: 'running' | 'done' | 'error'
+  /** Epoch ms when the call started; duration is computed on completion. */
+  startedAt: number
+  finishedAt?: number
+}
+
 export interface UseOmniRealtimeOptions {
   /** Push-to-talk release handler — UI fires this to commit audio & request reply. */
   onTurnCommitted?: (text: string) => void
@@ -69,8 +88,15 @@ export interface UseOmniRealtimeOptions {
 /**
  * Same wire constants as `omni_realtime_proxy.py`. Hard-coded rather than
  * fetched at runtime so the client doesn't need an extra handshake round-trip.
+ *
+ * Per the Qwen-Omni-Realtime docs the input sample_rate defaults to 16 kHz
+ * and the output defaults to 24 kHz. Both must match the `audio.input.format`
+ * / `audio.output.format` sent in `session.update` upstream, otherwise the
+ * upstream decodes the input audio at the wrong rate (Qwen3.5 will refuse
+ * mismatched audio with `input_audio_format_mismatch`).
  */
-const TARGET_SAMPLE_RATE = 24000
+const INPUT_SAMPLE_RATE = 16_000
+const OUTPUT_SAMPLE_RATE = 24_000
 
 /**
  * Local barge-in: the upstream server VAD takes 100–300 ms to emit
@@ -140,6 +166,8 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
   const liveAssistantText = ref('')
   /** Name of the function call currently being executed (empty otherwise). */
   const activeTool = ref('')
+  /** History of every function-calling invocation in this session, in order. */
+  const toolCalls = ref<OmniDialogToolCall[]>([])
 
   const isReady = computed(() => phase.value === 'ready' || phase.value === 'listening' || phase.value === 'speaking')
   const isPushing = shallowRef(false)
@@ -236,7 +264,7 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
   function flushPendingToSlot(): void {
     if (!playbackCtx) return
     if (!pendingSamples || pendingLength === 0) return
-    const buf = playbackCtx.createBuffer(1, pendingLength, TARGET_SAMPLE_RATE)
+    const buf = playbackCtx.createBuffer(1, pendingLength, OUTPUT_SAMPLE_RATE)
     // slice() (not subarray()) so the copied view is ArrayBuffer-backed —
     // copyToChannel requires Float32Array<ArrayBuffer> on TS 5.7+ typed arrays.
     buf.copyToChannel(pendingSamples.slice(0, pendingLength), 0, 0)
@@ -355,20 +383,39 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
     const name = String(msg.name ?? '')
     if (!callId || !name) return
     const argsJson = typeof msg.arguments === 'string' ? msg.arguments : '{}'
+    const startedAt = Date.now()
 
     let output: string
+    let status: OmniDialogToolCall['status'] = 'done'
     if (!options.onToolCall) {
       output = JSON.stringify({ error: '该会话未配置工具执行器' })
+      status = 'error'
     } else {
       activeTool.value = name
+      toolCalls.value = [...toolCalls.value, {
+        callId, name, argsJson, output: '', status: 'running', startedAt,
+      }]
       try {
         output = await options.onToolCall(name, argsJson)
       } catch (cause) {
         output = JSON.stringify({ error: cause instanceof Error ? cause.message : String(cause) })
+        status = 'error'
       } finally {
         activeTool.value = ''
       }
     }
+
+    const finishedAt = Date.now()
+    // Dedupe by callId: DashScope occasionally emits the same call twice
+    // (once via conversation.item.created, once via
+    // response.function_call_arguments.done — see translate_event in the
+    // Python proxy). Replace the matching running row in-place so the UI
+    // shows a single completed card per call.
+    toolCalls.value = toolCalls.value.map(entry =>
+      entry.callId === callId
+        ? { ...entry, output, status, finishedAt }
+        : entry,
+    )
 
     if (!ws || ws.readyState !== WebSocket.OPEN) return
     try {
@@ -485,7 +532,7 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
     workletNode.port.onmessage = (event: MessageEvent<{ samples: Float32Array; sourceSampleRate: number }>) => {
       if (!ws || ws.readyState !== WebSocket.OPEN || !isPushing.value) return
       const { samples, sourceSampleRate } = event.data
-      const resampled = resampleLinear(samples, sourceSampleRate, TARGET_SAMPLE_RATE)
+      const resampled = resampleLinear(samples, sourceSampleRate, INPUT_SAMPLE_RATE)
       const int16 = float32ToInt16(resampled)
       // int16.buffer types as ArrayBufferLike (SharedArrayBuffer possible on
       // generic typed arrays); WebSocket.send only accepts ArrayBuffer, and we
@@ -579,6 +626,7 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
     liveUserText.value = ''
     liveAssistantText.value = ''
     activeTool.value = ''
+    toolCalls.value = []
     // Reset client-side barge-in bookkeeping for the new session.
     bargeInStreak = 0
     lastLocalBargeInAt = 0
@@ -748,6 +796,7 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
     turns.value = []
     liveUserText.value = ''
     liveAssistantText.value = ''
+    toolCalls.value = []
   }
 
   onUnmounted(() => {
@@ -761,6 +810,7 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
     liveUserText,
     liveAssistantText,
     activeTool,
+    toolCalls,
     inputLevel,
     isPushing,
     isReady,

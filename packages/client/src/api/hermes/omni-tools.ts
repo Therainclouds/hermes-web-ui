@@ -1,9 +1,12 @@
 import { fetchMemory, fetchSkillContent, fetchSkillFiles, fetchSkills } from './skills'
 import { listJobs } from './jobs'
 import { fetchSessions } from './sessions'
+import { getApiKey } from '@/api/client'
 
 /**
- * Qwen3.5-Omni-Flash-Realtime 的 function calling 工具集。
+ * Qwen Omni Realtime 模型（`qwen3.5-omni-flash-realtime`、DashScope 模型 id
+ * 3041584，以及 `qwen3-omni-flash-realtime`、模型 id 2880812 都走同一份
+ * OpenAI-Realtime 兼容协议）的 function calling 工具集。
  *
  * 形状遵循 OpenAI-Realtime 的扁平格式（type/name/description/parameters），
  * 由 `useOmniRealtime` 通过 `start` 帧下发给 Python 代理写入 session.update，
@@ -108,6 +111,27 @@ export const OMNI_REALTIME_TOOLS: OmniRealtimeToolDefinition[] = [
       required: [],
     },
   },
+  {
+    type: 'function',
+    name: 'query_hermes_agent',
+    description:
+      '把用户随口问的一个具体问题交给后端 Hermes Agent 跑一次。Agent 会使用当前 profile '
+      + '的 MCP 工具、技能、终端、文件系统等真实能力，并把最终回复文本返回。'
+      + '当用户问的问题需要真实工具操作或工作区读取时调用（例如「读一下 ~/projects/xxx 下的 README」、'
+      + '「运行某个脚本查一下端口占用」、「查 MCP 数据库里 X 表的内容」）。'
+      + '不要把语音对话中整段最近的转写塞进来——一次只问一件具体的事。'
+      + '回答时不要逐字复述工具返回的文本，用口语简短总结关键结论。',
+    parameters: {
+      type: 'object',
+      properties: {
+        question: {
+          type: 'string',
+          description: '要交给 Hermes Agent 执行的自然语言问题，简洁具体。',
+        },
+      },
+      required: ['question'],
+    },
+  },
 ]
 
 function clip(value: string, limit = TOOL_OUTPUT_LIMIT): string {
@@ -198,6 +222,47 @@ async function toolListJobs(): Promise<string> {
 }
 
 /**
+ * 通过服务端 `/api/hermes/realtime/agent-query` 把问题丢给 Hermes Agent
+ * 跑一次（Agent 可使用当前 profile 的 MCP / skills / terminal / 文件系统）。
+ * 服务端已经做了 agent 优雅失败识别与 16 KB 输出截断，这里只负责包装结果。
+ */
+async function toolQueryHermesAgent(rawArgs: Record<string, unknown>): Promise<string> {
+  const question = normalize(rawArgs.question)
+  if (!question) return JSON.stringify({ error: 'question 必填' })
+  if (question.length > 2_000) return JSON.stringify({ error: 'question 太长（最多 2000 字）' })
+
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), 75_000)
+  try {
+    const response = await fetch('/api/hermes/realtime/agent-query', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(getApiKey() ? { Authorization: `Bearer ${getApiKey()}` } : {}),
+      },
+      body: JSON.stringify({ question }),
+      signal: controller.signal,
+    })
+    const payload = await response.json().catch(() => ({} as Record<string, unknown>))
+    if (!response.ok || payload?.ok === false) {
+      const message = String(payload?.error || `agent-query failed (${response.status})`)
+      return JSON.stringify({ error: message })
+    }
+    const text = String(payload?.text || '').trim()
+    if (!text) return JSON.stringify({ error: 'agent 返回为空' })
+    return clip(text, 3_500)
+  } catch (cause) {
+    if ((cause as Error)?.name === 'AbortError') {
+      return JSON.stringify({ error: 'agent 调用超时（>75s）' })
+    }
+    const message = cause instanceof Error ? cause.message : String(cause)
+    return JSON.stringify({ error: message })
+  } finally {
+    window.clearTimeout(timeout)
+  }
+}
+
+/**
  * 执行一个工具调用并把结果序列化为字符串（失败时返回 {"error": ...}，
  * 让模型能够向用户如实说明）。
  */
@@ -219,6 +284,7 @@ export async function executeOmniTool(name: string, argsJson: string): Promise<s
       case 'read_skill_detail': return await toolReadSkillDetail(args)
       case 'list_recent_sessions': return await toolListRecentSessions(args)
       case 'list_jobs': return await toolListJobs()
+      case 'query_hermes_agent': return await toolQueryHermesAgent(args)
       default: return JSON.stringify({ error: `未知工具：${name}` })
     }
   } catch (cause) {

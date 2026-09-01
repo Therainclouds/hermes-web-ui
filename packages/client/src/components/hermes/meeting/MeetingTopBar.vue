@@ -186,3 +186,68 @@ function onSpeakerCountUpdate(value: number | null) {
     </div>
   </div>
 </template>
+
+<style scoped>
+.meeting-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color, #e0e0e0);
+  background: var(--bg-card, #fff);
+  flex-shrink: 0;
+}
+
+.meeting-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+
+  h1 {
+    font-size: 16px;
+    font-weight: 600;
+    margin: 0;
+  }
+
+  svg {
+    color: var(--accent-primary, #1a1a1a);
+  }
+}
+
+.meeting-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.header-avatar-toggle {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: all 0.2s ease;
+  overflow: hidden;
+
+  &:hover {
+    background: rgba(var(--accent-primary-rgb, 26, 26, 26), 0.1);
+    transform: scale(1.05);
+  }
+
+  &:active {
+    transform: scale(0.95);
+  }
+}
+
+.header-logo {
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+}
+</style>

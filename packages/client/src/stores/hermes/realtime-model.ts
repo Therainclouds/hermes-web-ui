@@ -17,10 +17,53 @@ export interface RealtimeModelConfig {
   voice: string
 }
 
+/**
+ * Per-model turn / duration limits from the Bailian docs
+ * (https://help.aliyun.com/zh/model-studio/qwen-omni-realtime). The UI uses
+ * these to surface a banner before the user starts a session that will hit
+ * the cap mid-conversation. Single session hard ceiling (120 minutes) is the
+ * same for every model and is exposed separately.
+ */
+export interface RealtimeModelLimits {
+  /** Maximum audio turns the model keeps in context before older turns drop. */
+  audioTurns: number | null
+  /** Maximum video turns the model keeps in context. */
+  videoTurns: number | null
+  /** Maximum cumulative audio duration in seconds the model keeps. */
+  audioSeconds: number | null
+  /** Maximum cumulative video duration in seconds. */
+  videoSeconds: number | null
+  /** Short human-readable label for the UI banner. */
+  label: string
+}
+
 const STORAGE_KEY = 'hermes.realtimeModel'
 
 const DEFAULT_MODEL = 'qwen3.5-omni-flash-realtime'
 const DEFAULT_VOICE = 'Tina'
+
+/** Per-model limits from the Bailian docs (https://help.aliyun.com/zh/model-studio/qwen-omni-realtime). */
+const MODEL_LIMITS: Record<string, RealtimeModelLimits> = {
+  'qwen3.5-omni-plus-realtime': {
+    audioTurns: 100, videoTurns: 50, audioSeconds: 600, videoSeconds: 240,
+    label: 'qwen3.5-omni-plus-realtime',
+  },
+  'qwen3.5-omni-flash-realtime': {
+    audioTurns: 80, videoTurns: 50, audioSeconds: 480, videoSeconds: 120,
+    label: 'qwen3.5-omni-flash-realtime',
+  },
+  'qwen3-omni-flash-realtime': {
+    audioTurns: 8, videoTurns: 8, audioSeconds: null, videoSeconds: null,
+    label: 'qwen3-omni-flash-realtime',
+  },
+}
+
+/** Single-session hard ceiling (every Omni-Realtime model). */
+export const OMNI_REALTIME_MAX_SESSION_SECONDS = 120 * 60
+
+export function getRealtimeModelLimits(model: string): RealtimeModelLimits | null {
+  return MODEL_LIMITS[model] ?? null
+}
 
 function loadConfig(): RealtimeModelConfig {
   try {
@@ -51,6 +94,9 @@ export const useRealtimeModelStore = defineStore('realtimeModel', () => {
   const config = ref<RealtimeModelConfig>(loadConfig())
 
   const hasApiKey = computed(() => !!config.value.apiKey.trim())
+  const limits = computed<RealtimeModelLimits | null>(() =>
+    getRealtimeModelLimits(config.value.model),
+  )
 
   function updateConfig(patch: Partial<RealtimeModelConfig>) {
     config.value = { ...config.value, ...patch }
@@ -60,6 +106,7 @@ export const useRealtimeModelStore = defineStore('realtimeModel', () => {
   return {
     config,
     hasApiKey,
+    limits,
     updateConfig,
   }
 })

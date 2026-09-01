@@ -43,6 +43,30 @@ describe('omni-realtime endpoint wiring', () => {
     expect(source).toContain('wss://dashscope.aliyuncs.com/api-ws/v1/realtime')
   })
 
+  it('OmniRealtimeProxy uses the qwen3.5 audio.input/output.format shape and semantic_vad', () => {
+    const source = readFileSync(`${PY_APP}/omni_realtime_proxy.py`, 'utf8')
+    // New (qwen3.5) audio config shape per the docs.
+    expect(source).toContain('"audio": {')
+    expect(source).toContain('"input": {')
+    expect(source).toContain('"output": {')
+    expect(source).toContain('"sample_rate": settings.omni_realtime_input_sample_rate')
+    expect(source).toContain('"sample_rate": settings.omni_realtime_output_sample_rate')
+    // VAD per docs: semantic_vad for qwen3.5 family, server_vad fallback for qwen3.
+    expect(source).toContain('"semantic_vad"')
+    expect(source).toContain('_is_qwen35_family')
+    // `session.finish` close event per docs.
+    expect(source).toContain('"type": "session.finish"')
+    // Tool calling is incompatible with enable_search; the proxy must not
+    // forward enable_search when tools are present.
+    expect(source).toMatch(/session\.pop\(\s*["']enable_search["']/)
+  })
+
+  it('OmniRealtimeProxy rewrites the WSS URL with WorkspaceId when configured', () => {
+    const source = readFileSync(`${PY_APP}/omni_realtime_proxy.py`, 'utf8')
+    expect(source).toContain('settings.omni_realtime_workspace_id')
+    expect(source).toContain('cn-beijing.maas.aliyuncs.com')
+  })
+
   it('Python config exposes omni-realtime defaults overridable by env', () => {
     const source = readFileSync(`${PY_APP}/config.py`, 'utf8')
     expect(source).toMatch(/omni_realtime_ws_url:\s*str\s*=\s*os\.environ\.get\(/)
@@ -50,6 +74,11 @@ describe('omni-realtime endpoint wiring', () => {
     expect(source).toMatch(/omni_realtime_voice:\s*str\s*=\s*os\.environ\.get\(/)
     // default model must be the user-requested qwen3.5 omni flash realtime
     expect(source).toContain('qwen3.5-omni-flash-realtime')
+    // New per the Bailian docs: input/output sample rates + workspace-id
+    // override for region-routed WSS endpoints.
+    expect(source).toMatch(/omni_realtime_input_sample_rate:\s*int/)
+    expect(source).toMatch(/omni_realtime_output_sample_rate:\s*int/)
+    expect(source).toMatch(/omni_realtime_workspace_id:\s*str/)
   })
 })
 
@@ -128,8 +157,12 @@ describe('omni-realtime client wiring', () => {
 
   it('useOmniRealtime composable wires binary PCM16 audio both directions', () => {
     const source = readFileSync(`${CLIENT_SRC}/composables/useOmniRealtime.ts`, 'utf8')
-    // 24 kHz PCM16 mono matches the Omni-Realtime wire spec
-    expect(source).toContain('TARGET_SAMPLE_RATE = 24000')
+    // 16 kHz input / 24 kHz output PCM16 mono matches the Omni-Realtime
+    // wire spec (per Bailian docs the input defaults to 16 kHz; output
+    // defaults to 24 kHz — both must match the audio.input/output.format
+    // sample_rate sent upstream or DashScope rejects the audio stream).
+    expect(source).toContain('INPUT_SAMPLE_RATE = 16_000')
+    expect(source).toContain('OUTPUT_SAMPLE_RATE = 24_000')
     // linear resample on capture + playback so AudioContext can run at native rate
     expect(source).toContain('resampleLinear')
     expect(source).toContain('float32ToInt16')
@@ -616,3 +649,183 @@ describe('omni-realtime i18n keys present in primary locales', () => {
     }
   })
 })
+
+/**
+ * Realtime → Hermes Agent function-calling integration surface.
+ *
+ * Source-text guardrails so the wiring cannot drift silently:
+ *   - The new client tool `query_hermes_agent` is declared in the OpenAI-Realtime
+ *     flat format (matches what Qwen Omni Realtime models, both 3041584 and
+ *     2880812, accept via session.update).
+ *   - The client executor posts to the server route registered by
+ *     `realtime-agent.ts`.
+ *   - The server route is mounted before the proxy catch-all (see routes/index.ts)
+ *     so it can never be shadowed by a generic 404 fallback.
+ *   - The server controller drives Hermes Agent through `AgentBridgeClient` and
+ *     carries the agent graceful-failure heuristic that already protects
+ *     `meeting-asr/agent-bridge.ts` from surfacing provider errors as replies.
+ */
+describe('omni-realtime Hermes Agent function-calling integration', () => {
+  it('omni-tools declares query_hermes_agent in the OpenAI-Realtime flat format', () => {
+    const source = readFileSync(
+      'packages/client/src/api/hermes/omni-tools.ts',
+      'utf8',
+    )
+    expect(source).toContain("name: 'query_hermes_agent'")
+    expect(source).toContain("type: 'function'")
+    // The description must mention the runtime path (Hermes Agent + MCP / skills /
+    // terminal / filesystem) so the realtime model knows when to call it.
+    expect(source).toMatch(/query_hermes_agent[\s\S]{0,800}Hermes Agent/)
+  })
+
+  it('omni-tools executor posts to /api/hermes/realtime/agent-query', () => {
+    const source = readFileSync(
+      'packages/client/src/api/hermes/omni-tools.ts',
+      'utf8',
+    )
+    expect(source).toContain('/api/hermes/realtime/agent-query')
+    expect(source).toMatch(/fetch\(\s*'\/api\/hermes\/realtime\/agent-query'/)
+    // Failure path must surface upstream error string instead of dropping it.
+    expect(source).toMatch(/payload\?\.ok === false/)
+  })
+
+  it('server routes/hermes/realtime-agent.ts exports the new route', () => {
+    const source = readFileSync(
+      'packages/server/src/routes/hermes/realtime-agent.ts',
+      'utf8',
+    )
+    expect(source).toContain('realtimeAgentRoutes.post(\'/api/hermes/realtime/agent-query\'')
+    expect(source).toContain('ctrl.queryAgent')
+  })
+
+  it('routes/index.ts registers realtimeAgentRoutes after meetingStorageRoutes (before proxy catch-all)', () => {
+    const source = readFileSync('packages/server/src/routes/index.ts', 'utf8')
+    const meetingIdx = source.indexOf('meetingStorageRoutes.routes()')
+    const realtimeIdx = source.indexOf('realtimeAgentRoutes.routes()')
+    expect(meetingIdx).toBeGreaterThan(-1)
+    expect(realtimeIdx).toBeGreaterThan(-1)
+    // Mounted after the meeting-storage routes (and the catch-all proxy lives
+    // even later in this file); the relative order is the invariant that
+    // prevents the catch-all from shadowing the realtime route.
+    expect(realtimeIdx).toBeGreaterThan(meetingIdx)
+  })
+
+  it('realtime-agent controller drives Hermes Agent through AgentBridgeClient', () => {
+    const source = readFileSync(
+      'packages/server/src/controllers/hermes/realtime-agent.ts',
+      'utf8',
+    )
+    expect(source).toContain("await import('../../services/hermes/agent-bridge/client')")
+    expect(source).toContain('new AgentBridgeClient')
+    // The agent graceful-failure heuristic must be reused so provider errors
+    // do not leak back as success replies.
+    expect(source).toContain('looksLikeStandaloneAgentFailure')
+    // Output is hard-capped before crossing the WS boundary.
+    expect(source).toMatch(/MAX_OUTPUT_CHARS\s*=\s*\d/)
+  })
+
+  it('useOmniRealtime forwards the tools array to the proxy (no shape munging)', () => {
+    const source = readFileSync(
+      'packages/client/src/composables/useOmniRealtime.ts',
+      'utf8',
+    )
+    // The start frame must include the OpenAI-Realtime-flat `tools` array.
+    expect(source).toMatch(/tools:\s*options\.tools/)
+    // Function-call completion is wired to the user-provided executor and the
+    // result is posted back via the OpenAI-Realtime shape (`tool_result` →
+    // `function_call_output` + `response.create`, done in the Python proxy).
+    expect(source).toMatch(/type:\s*'tool_result'/)
+    expect(source).toMatch(/await options\.onToolCall\(name, argsJson\)/)
+  })
+})
+
+/**
+ * Caption + history + new-chat regressions the user reported on the Realtime
+ * dialog page. Each test guards one user-visible invariant so a future
+ * refactor cannot silently re-introduce the bug.
+ */
+describe('OmniRealtimeStage UI regressions', () => {
+  it('caption no longer clamps to 2 lines', () => {
+    const source = readFileSync(
+      'packages/client/src/components/hermes/chat/OmniRealtimeStage.vue',
+      'utf8',
+    )
+    // The old `-webkit-line-clamp: 2` silently truncated every assistant reply.
+    expect(source).not.toMatch(/-webkit-line-clamp:\s*2/)
+    // New caption must wrap on its own and remain scrollable after ~10 lines.
+    expect(source).toContain('white-space: pre-wrap')
+    expect(source).toMatch(/max-height:\s*\d/)
+  })
+
+  it('right-side tool-call panel renders cards with state + duration', () => {
+    const source = readFileSync(
+      'packages/client/src/components/hermes/chat/OmniRealtimeStage.vue',
+      'utf8',
+    )
+    // Per the user's redesign: function calling no longer shows a list of
+    // cards — it shows a single inline pill (spinner while running, checkmark
+    // + result snippet once done). The card-panel class names must be gone
+    // so a future refactor cannot silently bring back the old UI.
+    expect(source).not.toMatch(/omni-stage__tools(?!\s*--|\s*-)/)
+    expect(source).not.toContain('toolCallCards')
+    expect(source).not.toContain('omni-stage__tool-state')
+    expect(source).not.toContain('toolDurationSeconds')
+    expect(source).toContain('omni-stage__tool-inline')
+    expect(source).toContain('latestToolCall')
+    expect(source).toContain('toolInlineResult')
+  })
+
+  it('setup card centers voice + camera + start button', () => {
+    const source = readFileSync(
+      'packages/client/src/components/hermes/chat/OmniRealtimeStage.vue',
+      'utf8',
+    )
+    // The setup card must center its children — left-aligned looked
+    // asymmetric on wide viewports.
+    expect(source).toMatch(/omni-stage__card\s*\{[^}]*align-items:\s*center/)
+    expect(source).toMatch(/omni-stage__setup\s*\{[^}]*margin:\s*0\s+auto/)
+    expect(source).toMatch(/omni-stage__field\s*\{[^}]*align-items:\s*center/)
+  })
+
+  it('persists tool calls and turns incrementally into the active session', () => {
+    const source = readFileSync(
+      'packages/client/src/components/hermes/chat/OmniRealtimeStage.vue',
+      'utf8',
+    )
+    expect(source).toContain('writtenTurnIds')
+    expect(source).toContain('writtenToolCallIds')
+    expect(source).toContain('toolCallToMessage')
+    expect(source).toContain('flushPendingPersistence')
+    // Final flush must run from BOTH endSession and the unmount path so the
+    // transcript survives page navigation away from the dialog.
+    expect(source.match(/flushPendingPersistence\(\)/g)?.length ?? 0).toBeGreaterThanOrEqual(2)
+  })
+
+  it('newChatWithRemoteCreate drives confirmNewChat realtime branch', () => {
+    const panel = readFileSync(
+      'packages/client/src/components/hermes/chat/ChatPanel.vue',
+      'utf8',
+    )
+    expect(panel).toContain('newChatWithRemoteCreate')
+    // The realtime drawer entry must use the persisted remote path. The
+    // function bodies are split across the file (confirmNewChat passes
+    // `{ persistRemote: true }`, and openOmniRealtime wires that flag to
+    // newChatWithRemoteCreate), so the regex matches the whole file.
+    expect(panel).toMatch(/persistRemote:\s*true/)
+    expect(panel).toMatch(/openOmniRealtime\(\s*\{\s*createFresh:\s*true,\s*persistRemote:\s*true/)
+  })
+
+  it('realtime drawer exposes a Flash vs Plus model picker', () => {
+    const panel = readFileSync(
+      'packages/client/src/components/hermes/chat/ChatPanel.vue',
+      'utf8',
+    )
+    // Both Qwen-Omni-Realtime model ids must appear in the drawer template.
+    expect(panel).toContain('qwen3.5-omni-flash-realtime')
+    expect(panel).toContain('qwen3.5-omni-plus-realtime')
+    // The picker must be wired to the realtime model store on confirm so
+    // OmniRealtimeStage reads the user's choice on connect.
+    expect(panel).toMatch(/realtimeModelStore\.updateConfig\(\s*\{\s*model:\s*newChatRealtimeModel\.value/)
+  })
+})
+
