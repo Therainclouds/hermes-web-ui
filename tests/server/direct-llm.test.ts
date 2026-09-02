@@ -74,6 +74,26 @@ describe('loadLLMConfig', () => {
     await writeFile(join(dir, 'config.json'), JSON.stringify({ llm: {} }), 'utf-8')
     expect(await loadLLMConfig(dir)).toBeNull()
   })
+
+  it('honors MEETING_ASR_DATA_DIR before falling back to cwd/data', async () => {
+    const override = await tempDir()
+    const previous = process.env.MEETING_ASR_DATA_DIR
+    process.env.MEETING_ASR_DATA_DIR = override
+    try {
+      await writeFile(join(override, 'config.json'), JSON.stringify({
+        llm: { api_key: 'sk-env', base_url: 'https://env.invalid/v1', model: 'env-model' },
+      }), 'utf-8')
+      const config = await loadLLMConfig()
+      expect(config).toEqual({
+        apiKey: 'sk-env',
+        baseUrl: 'https://env.invalid/v1',
+        model: 'env-model',
+      })
+    } finally {
+      if (previous === undefined) delete process.env.MEETING_ASR_DATA_DIR
+      else process.env.MEETING_ASR_DATA_DIR = previous
+    }
+  })
 })
 
 describe('analyzeViaDirectLLM', () => {

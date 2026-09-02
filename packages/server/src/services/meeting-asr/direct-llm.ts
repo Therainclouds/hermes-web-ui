@@ -49,13 +49,16 @@ function fmtClock(ms: number): string {
 /**
  * 读取 meeting-asr 持久化目录里的 LLM 配置（config.json）。
  *
- * Mirror MeetingASRService.getDataDir() default so we read from the same
- * root as the rest of the meeting-asr persistent state (config.json,
- * analysis.json, .env). Keep the literal here in sync if the default ever
- * moves; the helper lives on MeetingASRService.
+ * 路径解析与 MeetingASRService.getDataDir() 保持一致（而不是只 mirror 它的
+ * cwd fallback）：设备端 deploy 会通过 MEETING_ASR_DATA_DIR 指到
+ * /var/lib/hermes-web-ui/meeting-asr，若这里只读 <cwd>/data/meeting-asr，
+ * 服务跑在 /opt/hermes-web-ui/src 下就会读不到 config.json（那下面只有
+ * .venv），导致实时分析一直报 "LLM config not available"。
  */
 export async function loadLLMConfig(dataDir?: string): Promise<LLMConfig | null> {
-  const dir = dataDir || path.join(process.cwd(), 'data', 'meeting-asr')
+  const dir = dataDir
+    || process.env.MEETING_ASR_DATA_DIR?.trim()
+    || path.join(process.cwd(), 'data', 'meeting-asr')
   const configFile = path.join(dir, 'config.json')
 
   try {
