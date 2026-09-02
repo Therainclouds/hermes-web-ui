@@ -214,8 +214,13 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
    * Parallel analyser tap on the playback graph (masterGain → analyser, no
    * connection to destination) so the UI visualizer can render the AI's
    * actual output energy. Zero impact on the audio path.
+   *
+   * Exposed as a shallowRef so the OmniVisualizer can attach() to the
+   * same node and read raw frequency data for the perimeter waveform
+   * (32 bands around a circle). Vue doesn't need to deep-track an
+   * AnalyserNode — shallowRef is enough.
    */
-  let outputAnalyser: AnalyserNode | null = null
+  const outputAnalyser = shallowRef<AnalyserNode | null>(null)
   let outputLevelBuf: Uint8Array<ArrayBuffer> | null = null
   let outputLevelRaf: number | null = null
   /** Smoothed AI playback level (0-1), sampled from the analyser tap. */
@@ -281,11 +286,14 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
     masterGain.gain.value = 1
     masterGain.connect(playbackCtx.destination)
     // Analyser tap for the visualizer: parallel branch off masterGain (not in
-    // series), so the audible routing above is untouched.
-    outputAnalyser = playbackCtx.createAnalyser()
-    outputAnalyser.fftSize = 256
-    outputLevelBuf = new Uint8Array(new ArrayBuffer(outputAnalyser.fftSize))
-    masterGain.connect(outputAnalyser)
+    // series), so the audible routing above is untouched. Exposed via the
+    // shallow ref so OmniVisualizer can read frequency data for the
+    // perimeter waveform without owning the AnalyserNode itself.
+    const analyserNode = playbackCtx.createAnalyser()
+    analyserNode.fftSize = 256
+    outputAnalyser.value = analyserNode
+    outputLevelBuf = new Uint8Array(new ArrayBuffer(analyserNode.fftSize))
+    masterGain.connect(analyserNode)
     startOutputLevelLoop()
     if (playbackCtx.state === 'suspended') {
       try { await playbackCtx.resume() } catch { /* ignore — will be surfaced on play() */ }
@@ -301,11 +309,12 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
   function startOutputLevelLoop(): void {
     if (outputLevelRaf !== null) return
     const tick = (): void => {
-      if (!outputAnalyser || !playbackCtx || !outputLevelBuf) {
+      const analyserNode = outputAnalyser.value
+      if (!analyserNode || !playbackCtx || !outputLevelBuf) {
         outputLevelRaf = null
         return
       }
-      outputAnalyser.getByteTimeDomainData(outputLevelBuf)
+      analyserNode.getByteTimeDomainData(outputLevelBuf)
       let sumSquares = 0
       for (let i = 0; i < outputLevelBuf.length; i += 1) {
         const v = ((outputLevelBuf[i] ?? 128) - 128) / 128
@@ -607,7 +616,15 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
       ws.send(int16.buffer as ArrayBuffer)
     }
 
-    // visual feedback: simple peak level derived from analyser
+    // visual feedback: peak/RMS blend with EMA smoothing on the peak channel.
+    //
+    // Without smoothing `inputLevel` carried raw peaks (one spike per click,
+    // AEC-residual echo during AI playback). The visualizer then drove its
+    // twinkle frequency and radial position off this raw signal — every
+    // residual echo frame moved the starfield, producing the "鬼畜" jitter.
+    // Blending peak with the already-smoothed RMS and running an EMA gives
+    // a signal that still spikes on real speech (RMS rises during sustained
+    // voice) but rejects single-frame transients.
     const buf = new Uint8Array(analyser.frequencyBinCount)
     const tick = (): void => {
       if (!analyser) return
@@ -620,11 +637,15 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
         if (a > peak) peak = a
         sumSquares += v * v
       }
-      inputLevel.value = peak
       // Smoothed RMS (EMA): speech sustains energy across frames, transients
       // (clicks, one loud echo frame) don't move it much. Used below as a
       // sustained-voice gate so the streak can't fire on a single spike.
       rmsSmoothed = rmsSmoothed * 0.7 + Math.sqrt(sumSquares / buf.length) * 0.3
+      // Visual-level blend: 0.4 peak + 0.6 RMS-smoothed, then EMA. Keeps
+      // punch for hard consonants (plosives, taps) while removing the
+      // single-frame echo spikes that caused the visualizer to twitch.
+      const blended = peak * 0.4 + rmsSmoothed * 0.6
+      inputLevel.value += (blended - inputLevel.value) * (blended > inputLevel.value ? 0.35 : 0.1)
       // Client-side barge-in: the upstream server VAD takes 100–300 ms to
       // emit `listening`, during which the AI audio keeps playing and the
       // user perceives the interrupt as "broken". Trigger `maybeBargeIn`
@@ -781,7 +802,7 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
       stopCapture()
       stopPlayback()
       stopOutputLevelLoop()
-      outputAnalyser = null
+      outputAnalyser.value = null
       outputLevelBuf = null
       if (playbackCtx) {
         playbackCtx.close().catch(() => { /* ignore */ })
@@ -807,7 +828,7 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
     stopCapture()
     stopPlayback()
     stopOutputLevelLoop()
-    outputAnalyser = null
+    outputAnalyser.value = null
     outputLevelBuf = null
     if (playbackCtx) {
       playbackCtx.close().catch(() => { /* ignore */ })
@@ -843,6 +864,14 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
   /** Stop assistant playback and cancel the in-flight response (manual barge-in). */
   function interrupt(): void {
     stopPlayback()
+    // Clear the live subtitle text synchronously so the bubble layer
+    // reflows once, in this tick. Without this, the watcher on
+    // `isOutputPlaying` (cleared inside `stopPlayback()`) fires in a
+    // separate Vue flush and the bubble-stack recomputes twice in one
+    // interrupt — that double recompute is the visible "chat log
+    // jumps" flicker. The watcher still serves the natural-playback
+    // finish path; this is the manual-cancel companion.
+    liveAssistantText.value = ''
     if (!ws || ws.readyState !== WebSocket.OPEN) return
     try { ws.send(JSON.stringify({ type: 'cancel' })) } catch { /* ignore */ }
   }
@@ -896,6 +925,10 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
     toolCalls,
     inputLevel,
     outputLevel,
+    /** Shallow ref to the playback AnalyserNode — OmniVisualizer
+     *  attach()es to it on mount so the perimeter waveform reflects
+     *  real spectrum data, not just smoothed level. */
+    outputAnalyser,
     isPushing,
     isReady,
     isOutputPlaying,

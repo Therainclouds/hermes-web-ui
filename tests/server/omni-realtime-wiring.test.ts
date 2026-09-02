@@ -531,6 +531,30 @@ describe('omni-realtime camera frame wiring', () => {
     expect(source).toMatch(/input_audio_buffer\.(?:speech_started|speech_stopped|committed|cleared)[\s\S]{0,1000}_audio_appended_since_commit\s*=\s*False/)
   })
 
+  it('proxy swallows "append image before append audio" instead of surfacing it as a UI error', () => {
+    // Regression guard for the user-reported red-banner "Error append image
+    // before append audio": the local per-commit guard above (test 510)
+    // catches the common path, but a stale race can still let a frame slip
+    // through to DashScope. The proxy must drop the upstream error event
+    // silently — it is a proxy-internal audit issue, not a user-facing
+    // fault. The filter belongs server-side so every future client (web,
+    // mobile, etc.) inherits the suppression without regex-matching third
+    // party English error copy.
+    const source = readFileSync(proxy, 'utf8')
+    expect(source).toMatch(/append image before append audio/)
+    // The filter must be inside the `translate_event()` error branch — pin
+    // to that function's body so the regex cannot accidentally match an
+    // unrelated upstream pump `event == "error"` branch elsewhere.
+    // The proxy file is CRLF, so allow either line ending in the anchor.
+    const translateEventBody = source.match(
+      /def translate_event\([\s\S]*?\r?\n    return None\r?\n/,
+    )
+    expect(translateEventBody, 'translate_event() body must end with return None').toBeTruthy()
+    expect(translateEventBody![0]).toMatch(/event == "error"/)
+    expect(translateEventBody![0]).toMatch(/append image before append audio/)
+    expect(translateEventBody![0]).toMatch(/return\s+None/)
+  })
+
   it('useOmniRealtime exposes sendImage and sends the image control frame', () => {
     const source = readFileSync(`${CLIENT_SRC}/composables/useOmniRealtime.ts`, 'utf8')
     expect(source).toMatch(/function sendImage\(/)
@@ -847,9 +871,12 @@ describe('omni-realtime particle visualizer + Quanta soul seeding', () => {
     const source = readFileSync(`${CLIENT_SRC}/composables/useOmniRealtime.ts`, 'utf8')
     expect(source).toContain('outputLevel')
     // Parallel analyser branch off masterGain — the audible routing
-    // (masterGain → destination) must stay untouched.
-    expect(source).toMatch(/outputAnalyser\s*=\s*playbackCtx\.createAnalyser\(\)/)
-    expect(source).toMatch(/masterGain\.connect\(outputAnalyser\)/)
+    // (masterGain → destination) must stay untouched. The node lives on a
+    // shallowRef so OmniVisualizer can attach() to it without Vue deep-
+    // tracking an Audio node, so the assignment goes through `.value`.
+    expect(source).toMatch(/playbackCtx\.createAnalyser\(\)/)
+    expect(source).toMatch(/outputAnalyser\.value\s*=\s*analyserNode/)
+    expect(source).toMatch(/masterGain\.connect\(analyserNode\)/)
     // The sampling loop must be torn down in every close path (definition +
     // onclose + disconnect).
     expect(source.match(/stopOutputLevelLoop\(\)/g)?.length ?? 0).toBeGreaterThanOrEqual(3)
@@ -869,6 +896,25 @@ describe('omni-realtime particle visualizer + Quanta soul seeding', () => {
     const proxy = readFileSync(`${PY_APP}/omni_realtime_proxy.py`, 'utf8')
     expect(proxy).toContain('你是 Quanta')
     expect(proxy).not.toContain('小合')
+  })
+
+  // inputLevel used to be a raw peak updated every analyser frame with NO
+  // smoothing — that drove the visualizer's twinkle frequency and radial
+  // position off AEC-residual echo, producing the "鬼畜" jitter. The fix
+  // blends peak with the already-smoothed RMS and runs an EMA before
+  // exposing the value. We assert the new pipeline is wired.
+  it('inputLevel is EMA-smoothed (peak + RMS blend) so the visualizer stops twitching', () => {
+    const source = readFileSync(`${CLIENT_SRC}/composables/useOmniRealtime.ts`, 'utf8')
+    // peak/RMS blend is the first defence against single-frame transients.
+    expect(source).toMatch(/rmsSmoothed\s*\*\s*0\.7/)
+    expect(source).toMatch(/peak\s*\*\s*0\.4\s*\+\s*rmsSmoothed\s*\*\s*0\.6/)
+    // EMA on the exposed inputLevel is the second defence.
+    expect(source).toMatch(/inputLevel\.value\s*\+=\s*\(blended\s*-\s*inputLevel\.value\)\s*\*\s*\(blended\s*>\s*inputLevel\.value\s*\?\s*0\.35\s*:\s*0\.1\)/)
+    // Visualizer must no longer couple particle angularSpeed/twinkle to
+    // smoothInput — that's the contract change that kills the jitter.
+    const visualizer = readFileSync(`${CLIENT_SRC}/components/hermes/chat/OmniVisualizer.vue`, 'utf8')
+    expect(visualizer).not.toMatch(/smoothInput\s*\*\s*1\.2/)
+    expect(visualizer).not.toMatch(/radialPush\s*=\s*smoothOutput\s*\*\s*0\.3\s*-\s*smoothInput/)
   })
 })
 

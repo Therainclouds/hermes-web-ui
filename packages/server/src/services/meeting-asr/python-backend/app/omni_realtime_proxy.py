@@ -666,6 +666,13 @@ def translate_event(raw: str | bytes) -> str | bytes | None:
         message = err.get("message") if isinstance(err, dict) else str(err)
         if not message:
             message = "unknown upstream error"
+        # The proxy enforces "no image without fresh audio" locally via
+        # `_audio_appended_since_commit`. If a stale image still slips
+        # through and DashScope complains, the user never asked for that
+        # frame — drop the error silently. Only the server has the local
+        # pre-filter context, so the filter belongs here (not the client).
+        if isinstance(message, str) and "append image before append audio" in message.lower():
+            return None
         return json.dumps({"type": "error", "message": message}, ensure_ascii=False)
 
     # Everything else (session events, response.audio.done, usage, etc.) is
