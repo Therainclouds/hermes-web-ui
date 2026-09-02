@@ -41,6 +41,7 @@ import {
 import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
+import { useTheme } from "@/composables/useTheme";
 import { copyToClipboard } from "@/utils/clipboard";
 import { getProfileDisplayName } from "@/utils/hermes/profile-display";
 import FolderPicker from "./FolderPicker.vue";
@@ -88,6 +89,10 @@ const sessionBrowserPrefsStore = useSessionBrowserPrefsStore();
 const router = useRouter();
 const message = useMessage();
 const { t } = useI18n();
+// Naive UI 在运行时切主题时，个别已挂载的 NSelect 实例偶发不重算 CSS
+// 变量（观察到 sidebar 配置过滤器保持暗色 --n-color）。按主题 re-key
+// 强制重建实例，保证变量与主题一致。
+const { isDark: isDarkTheme } = useTheme();
 
 // switchSession 失败（resume timeout / socket error）时 store 会写到
 // chatStore.lastSwitchError；这里 surface 成一条非阻断 toast，避免用户只看到空白页。
@@ -2030,6 +2035,7 @@ async function handleSessionModelCustomSubmit() {
         />
         <div class="session-list-toolbar">
           <NSelect
+            :key="isDarkTheme ? 'theme-dark' : 'theme-light'"
             class="session-profile-filter"
             :value="sessionProfileFilter || '__all__'"
             :options="profileFilterOptions"

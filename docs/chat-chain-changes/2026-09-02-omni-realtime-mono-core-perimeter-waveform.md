@@ -1,8 +1,8 @@
 ---
 date: 2026-09-02
 pr: local
-feature: Omni-Realtime 月亮球体 + 径向柱状声纹 + 底部控件布局
-impact: 实时对话舞台视觉与布局三轮迭代后的最终形态：背景不透明单色水墨、球体重塑为月亮质感（左上受光渐变 + 月海斑，去掉圆心 accent 暗斑）、声纹从连续线条改为 64 根径向柱状均衡器（左右镜像频谱、高频在上低频在下）、visualizer 区 flex:1 撑满上方使气泡/提示/控件自然沉到页面底部、live 气泡改为流内子项彻底消除与 committed 气泡的叠字挤兑、气泡入场从 420ms 弹簧改为 180ms 轻淡入、免提提示文本不再滚动、live 气泡不再钉到屏幕底端、query_hermes_agent 在语音模式被系统提示禁用并引导用户回到文字对话页或工作区。
+feature: Omni-Realtime 月亮/太阳双主题天体 + 径向柱状声纹 + 主题分设计
+impact: 暗主题天体为手绘 SVG 月亮（celestial-moon.svg：左上受光、月海、五座环形山、terminator 渐暗），亮主题为 SVG 太阳（celestial-sun.svg：暖金核心、双层日冕、光斑 mottling），OmniVisualizer 按主题经 MutationObserver 跟随 html.dark 切换素材并保留 64 根径向柱状声纹（月亮柱顶光为紫蓝 accent、太阳为暖琥珀）；素材加载失败回退 canvas 矢量球。亮主题舞台单独设计：星云隐藏、改为太阳暖光 + 天光蓝反光晨光渐变背层，控件实底白 + 深描边 + 投影，气泡玻璃对比度增强。修复 sidebar 配置过滤 NSelect 运行时切主题偶发不刷新 CSS 变量的问题（按 isDark re-key 强制重建实例）。
 ---
 
 # Omni-Realtime: 实心圆 + 圆周声纹 + 单色水墨 + 气泡居中 + query_hermes_agent 回退

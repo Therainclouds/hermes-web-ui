@@ -1367,4 +1367,52 @@ onBeforeUnmount(() => {
 }
 
 .omni-stage__control--end:hover { background: rgba(var(--accent-primary-rgb), 0.30); }
+
+/* ---- light 主题（日间）单独设计 ---------------------------------------
+ * 暗主题是"夜空 + 月亮"：星云氛围 + 紫蓝 accent。把星云原样搬到白底
+ * 上会读成粉/蓝污渍（用户截图反馈"搭配很不好看"）。日间换一套语言：
+ * 隐藏星云，改成太阳位置的一束暖光 + 地面天光蓝反光的晨光渐变；控件
+ * 用实底白 + 深描边 + 投影保证对比度，挂断键用 accent 淡金强调。 */
+html:not(.dark) .omni-stage__nebula,
+html:not(.dark) .omni-stage__halo {
+  opacity: 0;
+}
+
+html:not(.dark) .omni-stage__backdrop {
+  background:
+    radial-gradient(ellipse 72% 44% at 50% 24%, rgba(255, 205, 110, 0.20), rgba(255, 205, 110, 0) 72%),
+    radial-gradient(ellipse 95% 44% at 50% 114%, rgba(150, 180, 235, 0.13), rgba(150, 180, 235, 0) 70%),
+    var(--bg-primary);
+}
+
+html:not(.dark) .omni-stage__control {
+  background: rgba(255, 255, 255, 0.90);
+  border-color: rgba(26, 26, 26, 0.16);
+  box-shadow: 0 2px 14px rgba(26, 26, 26, 0.10);
+}
+
+html:not(.dark) .omni-stage__control:hover {
+  background: #ffffff;
+  border-color: rgba(26, 26, 26, 0.42);
+}
+
+html:not(.dark) .omni-stage__control--muted {
+  border-color: rgba(26, 26, 26, 0.44);
+  background: rgba(26, 26, 26, 0.08);
+}
+
+html:not(.dark) .omni-stage__control--end {
+  border-color: rgba(var(--accent-primary-rgb), 0.55);
+  background: rgba(var(--accent-primary-rgb), 0.14);
+}
+
+html:not(.dark) .omni-stage__control--end:hover {
+  background: rgba(var(--accent-primary-rgb), 0.26);
+}
+
+html:not(.dark) .omni-stage__bubble--assistant {
+  background: rgba(255, 255, 255, 0.92);
+  border-color: rgba(26, 26, 26, 0.14);
+  box-shadow: 0 2px 16px rgba(26, 26, 26, 0.08);
+}
 </style>

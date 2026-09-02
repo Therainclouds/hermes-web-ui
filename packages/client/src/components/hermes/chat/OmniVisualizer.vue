@@ -2,21 +2,21 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 /**
- * Omni-Realtime 视觉核心（月亮 + 高密度径向柱状声纹版）。
+ * Omni-Realtime 视觉核心（月亮/太阳双主题 + 径向柱状声纹版）。
  *
- * 三层叠加（全部 canvas 绘制）：
- *  1. 月亮本体 —— 实心圆用"左上受光"的亮度渐变：受光面接近纯 ink，
- *     暗侧边缘渐弱（terminator），加几块固定位置的 onInk 色月海斑
- *     （低 alpha 椭圆），整体读作一轮水墨月亮。**没有任何深色中心
- *     阴影**——旧版把 accent 高光画在圆心，暗主题下读成一团黑斑，
- *     用户反馈"不像月亮"。accent 紫蓝只留作球体外的柔光环。
- *  2. 径向柱状声纹 —— 64 根柱子均匀分布在圆周，每根柱子从内圈半径
- *     沿径向向外伸出，长度 = 该段频谱能量。频谱做了左右镜像（低频
- *     在正下方、高频在正上方，两侧对称），读起来像环形均衡器。
- *  3. 柔光环 —— 月亮外一圈 accent 低 alpha 光晕，AI 说话时微微增亮。
+ * 天体本身用预渲染 SVG 素材（public/realtime/celestial-moon.svg /
+ * celestial-sun.svg，圆盘半径 150 @ 480 画布），每帧按能量缩放
+ * drawImage 进 canvas——矢量素材的月海/环形山/日冕细节远比 canvas
+ * 手绘圆细腻。暗主题画月亮、亮主题画太阳，主题跟随 html.dark class
+ * （MutationObserver 监听，不引 useTheme 以免测试环境拉起它的模块
+ * 副作用）。素材加载失败时回退到 canvas 矢量球。
  *
- * 颜色完全跟随 --text-primary（mono 水墨） + --accent-primary（紫蓝
- * 高光），light/dark 主题下都一致。
+ * canvas 叠层：
+ *  1. 天体（SVG drawImage，单一能量驱动呼吸缩放）
+ *  2. 径向柱状声纹 —— 64 根柱均匀分布圆周，低频正下、高频正上镜像
+ *     对称；柱身 ink 色，能量柱顶叠一道主题色短光（月亮=紫蓝 accent，
+ *     太阳=暖琥珀）。
+ *  3. 主题色柔光环（月亮明显、太阳由 SVG 日冕承担只补内圈）。
  */
 const props = defineProps<{
   phase: 'idle' | 'connecting' | 'ready' | 'listening' | 'speaking' | 'error' | 'closed'
@@ -42,12 +42,33 @@ let freqBuf: Uint8Array<ArrayBuffer> | null = null
 const BAR_COUNT = 64
 const freqBuckets = new Float32Array(BAR_COUNT)
 
+/** SVG 素材里天体圆盘的半径（画布 480）。drawImage 缩放比 = discR / 此值。 */
+const SVG_DISC_RADIUS = 150
+const SVG_CANVAS_SIZE = 480
+
+/** 太阳的暖琥珀高光（light 主题专属）——紫蓝 accent 在白底上读不出
+ *  "热"，太阳的柱顶光用琥珀色。 */
+const SUN_ACCENT_RGB = '232, 152, 34'
+
 let smoothInput = 0
 let smoothOutput = 0
-// 综合能量"呼吸"——驱动月亮半径 / 柱状透明度 / 光环。attack 与 release
-// 都慢到听不出逐音节跳变：TTS 每个音节的 RMS 起伏由此被滤成一次平滑的
-// "呼吸"。这是**唯一**驱动核心形状/位置的信号。
+// 综合能量"呼吸"——驱动天体缩放 / 柱状透明度。attack 与 release 都慢
+// 到听不出逐音节跳变：TTS 每个音节的 RMS 起伏由此被滤成一次平滑呼吸。
 let energySmooth = 0
+
+// --- 天体素材（moon/sun 预加载，跨主题切换即时可用） ------------------
+const moonImg = new Image()
+const sunImg = new Image()
+let moonReady = false
+let sunReady = false
+let moonFailed = false
+let sunFailed = false
+
+// --- 主题（html.dark class） -----------------------------------------
+const isDarkTheme = ref(
+  typeof document !== 'undefined' && document.documentElement.classList.contains('dark'),
+)
+let themeObserver: MutationObserver | null = null
 
 function smoothLevel(current: number, target: number): number {
   return current + (target - current) * (target > current ? 0.3 : 0.08)
@@ -59,16 +80,45 @@ function readCSSVar(name: string, fallback: string): string {
   return v && v.trim() ? v.trim() : fallback
 }
 
-/** 固定伪随机（确定性），用于月海斑的位置——不能每帧抖动。 */
-function craterSpec(i: number): { dx: number; dy: number; r: number; a: number } {
-  const specs = [
-    { dx: -0.32, dy: -0.18, r: 0.30, a: 0.16 },
-    { dx: 0.22, dy: 0.10, r: 0.22, a: 0.13 },
-    { dx: -0.05, dy: 0.38, r: 0.17, a: 0.11 },
-    { dx: 0.38, dy: -0.30, r: 0.13, a: 0.10 },
-    { dx: -0.42, dy: 0.22, r: 0.11, a: 0.09 },
-  ]
-  return specs[i % specs.length]!
+function loadCelestial(img: HTMLImageElement, src: string, onReady: () => void, onFail: () => void): void {
+  img.onload = onReady
+  img.onerror = onFail
+  img.src = src
+}
+
+/** 素材未加载/加载失败时的兜底矢量球（保留旧版月亮画法，够用即可）。 */
+function drawFallbackCore(
+  ctx: CanvasRenderingContext2D,
+  cx: number, cy: number, coreR: number,
+  inkRGB: string, onInkRGB: string,
+): void {
+  const bodyGrad = ctx.createRadialGradient(
+    cx - coreR * 0.38, cy - coreR * 0.42, coreR * 0.08,
+    cx + coreR * 0.10, cy + coreR * 0.14, coreR * 1.04,
+  )
+  bodyGrad.addColorStop(0, `rgba(${inkRGB}, 0.96)`)
+  bodyGrad.addColorStop(0.55, `rgba(${inkRGB}, 0.86)`)
+  bodyGrad.addColorStop(1, `rgba(${inkRGB}, 0.52)`)
+  ctx.fillStyle = bodyGrad
+  ctx.beginPath()
+  ctx.arc(cx, cy, coreR, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.strokeStyle = `rgba(${inkRGB}, 0.28)`
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.arc(cx, cy, coreR, 0, Math.PI * 2)
+  ctx.stroke()
+  // 左上柔光
+  const hl = ctx.createRadialGradient(
+    cx - coreR * 0.35, cy - coreR * 0.4, 0,
+    cx - coreR * 0.35, cy - coreR * 0.4, coreR * 0.7,
+  )
+  hl.addColorStop(0, `rgba(${onInkRGB}, 0.30)`)
+  hl.addColorStop(1, `rgba(${onInkRGB}, 0)`)
+  ctx.fillStyle = hl
+  ctx.beginPath()
+  ctx.arc(cx - coreR * 0.35, cy - coreR * 0.4, coreR * 0.7, 0, Math.PI * 2)
+  ctx.fill()
 }
 
 function draw(): void {
@@ -102,10 +152,11 @@ function draw(): void {
   const cy = cssHeight / 2
   const unit = Math.min(cssWidth, cssHeight) / 2
 
-  // 颜色 token：mono 主色 + 紫蓝高光。完全跟随主题。
-  const inkRGB = readCSSVar('--text-primary-rgb', '26, 26, 26')         // 月亮 / 声纹柱
-  const accentRGB = readCSSVar('--accent-primary-rgb', '74, 144, 217')  // 柔光环
-  const onInkRGB = readCSSVar('--bg-primary-rgb', '250, 250, 250')      // 月海斑 / 高光
+  const dark = isDarkTheme.value
+  const inkRGB = readCSSVar('--text-primary-rgb', '26, 26, 26')
+  const accentRGB = dark
+    ? readCSSVar('--accent-primary-rgb', '74, 144, 217')
+    : SUN_ACCENT_RGB
 
   // 读取 analyser 频谱（如果上游尚未 attach，则全 0，声纹自然静止）。
   if (analyser && freqBuf) {
@@ -125,60 +176,32 @@ function draw(): void {
       for (let k = start; k < end && k < total; k += 1) {
         if (freqBuf[k]! > peak) peak = freqBuf[k]!
       }
-      // 平滑每根柱，避免单帧跳变。attack 快、release 慢。
       const target = peak / 255
       const prev = freqBuckets[i]!
       freqBuckets[i] = prev + (target - prev) * (target > prev ? 0.6 : 0.15)
     }
   } else {
-    // 没有 analyser 时让声纹自然衰减到 0——不假动。
     for (let i = 0; i < BAR_COUNT; i += 1) {
       freqBuckets[i]! *= 0.9
     }
   }
 
-  // ---- 1) 月亮本体 ------------------------------------------------
-  // 整体半径由单点能量驱动，做一次"呼吸"——圆本身无任何顶点级起伏。
-  const coreR = unit * (0.20 + energy * 0.04)
-  // 受光面在左上：受光处接近纯 ink，向右下边缘（terminator）渐弱。
-  // 全程都是 ink 色系——**圆心不再画 accent 高光**，暗主题下不会再
-  // 出现"中间一团黑影"。accent 只留到最外圈柔光。
-  const bodyGrad = ctx.createRadialGradient(
-    cx - coreR * 0.38, cy - coreR * 0.42, coreR * 0.08,
-    cx + coreR * 0.10, cy + coreR * 0.14, coreR * 1.04,
-  )
-  bodyGrad.addColorStop(0, `rgba(${inkRGB}, 0.96)`)
-  bodyGrad.addColorStop(0.55, `rgba(${inkRGB}, 0.86)`)
-  bodyGrad.addColorStop(1, `rgba(${inkRGB}, 0.52)`)
-  ctx.fillStyle = bodyGrad
-  ctx.beginPath()
-  ctx.arc(cx, cy, coreR, 0, Math.PI * 2)
-  ctx.fill()
-
-  // 月海斑：固定位置的低 alpha onInk 椭圆。暗主题下是白月亮上的暗斑，
-  // 亮主题下是黑月亮上的亮斑——两种主题都符合"月面纹理"的读法。
-  for (let i = 0; i < 5; i += 1) {
-    const c = craterSpec(i)
-    ctx.save()
-    ctx.translate(cx + c.dx * coreR, cy + c.dy * coreR)
-    ctx.scale(1, 0.78)
-    ctx.beginPath()
-    ctx.arc(0, 0, c.r * coreR, 0, Math.PI * 2)
-    ctx.fillStyle = `rgba(${onInkRGB}, ${c.a})`
-    ctx.fill()
-    ctx.restore()
-  }
-
-  // 边缘描边：极细 ink 边，把月亮从背景里衬出来。
-  ctx.strokeStyle = `rgba(${inkRGB}, 0.28)`
-  ctx.lineWidth = 1
-  ctx.beginPath()
-  ctx.arc(cx, cy, coreR, 0, Math.PI * 2)
-  ctx.stroke()
+  // ---- 1) 天体（SVG 素材 / 矢量兜底） ----------------------------
+  const discR = unit * (0.20 + energy * 0.045)
+  const img = dark ? moonImg : sunImg
+  const ready = dark ? moonReady : sunReady
+  const failed = dark ? moonFailed : sunFailed
+  if (ready && !failed) {
+    // SVG 里圆盘半径 150，柔光外溢到画布边缘；按 discR 等比缩放整图，
+    // 呼吸时光晕随之缩放。
+    const scale = discR / SVG_DISC_RADIUS
+    const size = SVG_CANVAS_SIZE * scale
+    ctx.drawImage(img, cx - size / 2, cy - size / 2, size, size)
+  } else if (failed) {
+    drawFallbackCore(ctx, cx, cy, discR, inkRGB, readCSSVar('--bg-primary-rgb', '250, 250, 250'))
+  } // 都不是：素材还在加载，本帧留空，下一帧即有
 
   // ---- 2) 径向柱状声纹 -------------------------------------------
-  // 64 根柱子均匀分布在圆周。每根从内圈半径沿径向向外伸，长度随该段
-  // 频谱能量。内圈留出"呼吸空腔"，柱子不与月面粘连。
   const innerRadius = unit * (0.30 + energy * 0.04)
   const gain = unit * 0.15
   const step = (Math.PI * 2) / BAR_COUNT
@@ -201,8 +224,7 @@ function draw(): void {
     ctx.stroke()
   }
 
-  // 柱顶柔光层：能量高的柱子补一道 accent 短光，读作"发热"的均衡器。
-  // 只画 v > 0.35 的柱，安静时完全不出现。
+  // 柱顶柔光层：能量高的柱子补一道主题色短光，读作"发热"的均衡器。
   for (let i = 0; i < BAR_COUNT; i += 1) {
     const v = freqBuckets[i]!
     if (v <= 0.35) continue
@@ -214,24 +236,28 @@ function draw(): void {
     ctx.beginPath()
     ctx.moveTo(cx + cos * r0, cy + sin * r0)
     ctx.lineTo(cx + cos * r1, cy + sin * r1)
-    ctx.strokeStyle = `rgba(${accentRGB}, ${((v - 0.35) * 0.85).toFixed(3)})`
+    ctx.strokeStyle = `rgba(${accentRGB}, ${((v - 0.35) * (dark ? 0.85 : 0.7)).toFixed(3)})`
     ctx.lineWidth = barWidth + 0.6
     ctx.lineCap = 'round'
     ctx.stroke()
   }
 
-  // ---- 3) 柔光环 --------------------------------------------------
-  // 月亮外一圈 accent 低 alpha 光晕 + 一层 ink 淡晕，AI 说话时整体
-  // 增亮。安静时几乎不可见。
-  const haloR = innerRadius * 1.02
-  const halo = ctx.createRadialGradient(cx, cy, coreR * 1.05, cx, cy, haloR * 1.28)
-  halo.addColorStop(0, `rgba(${accentRGB}, ${(0.05 + energy * 0.10).toFixed(3)})`)
-  halo.addColorStop(0.55, `rgba(${accentRGB}, ${(0.02 + energy * 0.05).toFixed(3)})`)
-  halo.addColorStop(1, `rgba(${accentRGB}, 0)`)
-  ctx.fillStyle = halo
-  ctx.beginPath()
-  ctx.arc(cx, cy, haloR * 1.28, 0, Math.PI * 2)
-  ctx.fill()
+  // ---- 3) 内圈柔光环 ----------------------------------------------
+  // 月亮：accent 紫蓝外晕（SVG 自带柔光之上再补一层能量光）；
+  // 太阳：SVG 日冕已足够，只在能量高时补内圈暖光。
+  const haloInner = discR * 1.05
+  const haloOuter = innerRadius * 1.02
+  if (dark || energy > 0.05) {
+    const haloAlpha = (dark ? 0.05 : 0.03) + energy * (dark ? 0.10 : 0.07)
+    const halo = ctx.createRadialGradient(cx, cy, haloInner, cx, cy, haloOuter * 1.26)
+    halo.addColorStop(0, `rgba(${accentRGB}, ${haloAlpha.toFixed(3)})`)
+    halo.addColorStop(0.55, `rgba(${accentRGB}, 0.03)`)
+    halo.addColorStop(1, `rgba(${accentRGB}, 0)`)
+    ctx.fillStyle = halo
+    ctx.beginPath()
+    ctx.arc(cx, cy, haloOuter * 1.26, 0, Math.PI * 2)
+    ctx.fill()
+  }
 }
 
 /** Wire a (possibly-null) AnalyserNode into the visualizer. The parent
@@ -264,6 +290,22 @@ onMounted(() => {
     resizeObserver = new ResizeObserver(() => { /* draw() 自适应尺寸 */ })
     if (canvasRef.value) resizeObserver.observe(canvasRef.value)
   }
+  // 预载两套天体素材：主题切换时无需等待网络/磁盘。
+  loadCelestial(moonImg, '/realtime/celestial-moon.svg',
+    () => { moonReady = true },
+    () => { moonFailed = true })
+  loadCelestial(sunImg, '/realtime/celestial-sun.svg',
+    () => { sunReady = true },
+    () => { sunFailed = true })
+  // 主题跟随 html.dark class——useTheme 用 classList.toggle('dark')，
+  // MutationObserver 与其天然同步，也不把 useTheme 的模块副作用拉进
+  // 测试环境。
+  if (typeof MutationObserver === 'function') {
+    themeObserver = new MutationObserver(() => {
+      isDarkTheme.value = document.documentElement.classList.contains('dark')
+    })
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
+  }
 })
 
 onBeforeUnmount(() => {
@@ -271,6 +313,8 @@ onBeforeUnmount(() => {
   rafId = null
   resizeObserver?.disconnect()
   resizeObserver = null
+  themeObserver?.disconnect()
+  themeObserver = null
   analyser = null
   freqBuf = null
 })

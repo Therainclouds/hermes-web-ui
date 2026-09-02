@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="480" viewBox="0 0 480 480">
+  <!--
+    Omni-Realtime 亮主题天体：太阳。
+    画布 480×480，日面圆盘圆心 (240,240) 半径 150——OmniVisualizer 以
+    discR/150 为缩放比 drawImage 进 canvas。暖金核心 + 双层日冕柔光 +
+    光斑mottling，边缘带轻微 limb darkening，读作"正午暖阳"而不是
+    一个纯黄圆点。
+  -->
+  <defs>
+    <radialGradient id="sun-corona-outer" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0.55" stop-color="#ffcf6e" stop-opacity="0.30"/>
+      <stop offset="0.72" stop-color="#ffcf6e" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#ffcf6e" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="sun-corona-inner" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0.66" stop-color="#ffdf9e" stop-opacity="0.55"/>
+      <stop offset="0.8" stop-color="#ffdf9e" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#ffdf9e" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="sun-body" cx="0.4" cy="0.36" r="0.95">
+      <stop offset="0" stop-color="#fffef9"/>
+      <stop offset="0.32" stop-color="#fff3c8"/>
+      <stop offset="0.62" stop-color="#ffd97a"/>
+      <stop offset="0.88" stop-color="#f6b24a"/>
+      <stop offset="1" stop-color="#e89932"/>
+    </radialGradient>
+    <radialGradient id="sun-limb" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0.62" stop-color="#c97e1d" stop-opacity="0"/>
+      <stop offset="1" stop-color="#c97e1d" stop-opacity="0.30"/>
+    </radialGradient>
+    <radialGradient id="sun-bloom" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.75"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- 双层日冕 -->
+  <circle cx="240" cy="240" r="236" fill="url(#sun-corona-outer)"/>
+  <circle cx="240" cy="240" r="192" fill="url(#sun-corona-inner)"/>
+
+  <!-- 日盘 -->
+  <circle cx="240" cy="240" r="150" fill="url(#sun-body)"/>
+
+  <!-- 表面光斑 mottling -->
+  <ellipse cx="196" cy="192" rx="46" ry="36" fill="#fff7d6" opacity="0.45"/>
+  <ellipse cx="284" cy="230" rx="34" ry="30" fill="#ffe9a8" opacity="0.35"/>
+  <ellipse cx="222" cy="292" rx="38" ry="26" fill="#ffdf9e" opacity="0.32"/>
+  <ellipse cx="160" cy="264" rx="20" ry="16" fill="#fff7d6" opacity="0.30"/>
+
+  <!-- 边缘 limb darkening -->
+  <circle cx="240" cy="240" r="150" fill="url(#sun-limb)"/>
+
+  <!-- 左上高光 bloom -->
+  <ellipse cx="186" cy="178" rx="92" ry="80" fill="url(#sun-bloom)" opacity="0.55"/>
+</svg>
