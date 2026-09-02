@@ -56,6 +56,25 @@ run() {
   "${SUDO[@]}" "$@"
 }
 
+# Recursively chown a path but never cross into mounted filesystems (e.g. an
+# exFAT USB drive the Web UI mounts under the app home). Those don't support
+# ownership changes, so chown -R aborts the whole deploy early with
+# "Operation not permitted" (seen on 6.6.6.31 with a USB stick mounted at
+# ~/.hermes-web-ui/mnt/usb). Fall back to plain chown -R when mountpoint(1)
+# isn't available.
+chown_r_mount_safe() {
+  local owner="$1"
+  local target="$2"
+  run chown "${owner}" "${target}"
+  if ! command -v mountpoint >/dev/null 2>&1; then
+    run find "${target}" -mindepth 1 -exec chown "${owner}" '{}' +
+    return
+  fi
+  run find "${target}" -mindepth 1 -xdev \
+    \( -type d -exec mountpoint -q '{}' \; \) -prune \
+    -o -exec chown "${owner}" '{}' +
+}
+
 command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
@@ -276,7 +295,7 @@ ensure_app_user() {
   fi
 
   run mkdir -p "${APP_USER_HOME}/.local/bin"
-  run chown -R "${APP_USER}:${APP_USER}" "${APP_USER_HOME}"
+  chown_r_mount_safe "${APP_USER}:${APP_USER}" "${APP_USER_HOME}"
 }
 
 prepare_usb_mount_environment() {
@@ -360,7 +379,7 @@ EOF
   # 6. Create USB mount root directory owned by APP_USER
   local usb_mount_root="${APP_USER_HOME}/.hermes-web-ui/mnt/usb"
   run mkdir -p "${usb_mount_root}"
-  run chown -R "${APP_USER}:${APP_USER}" "${APP_USER_HOME}/.hermes-web-ui/mnt"
+  chown_r_mount_safe "${APP_USER}:${APP_USER}" "${APP_USER_HOME}/.hermes-web-ui/mnt"
   info "USB mount root directory ready: ${usb_mount_root}"
 }
 
@@ -407,7 +426,8 @@ resolve_repo_dir() {
 prepare_deploy_dirs() {
   step "Prepare deployment directories"
   run mkdir -p "${DEPLOY_DIR}" "${HERMES_HOME_DIR}" "${NODE_INSTALL_DIR}" "$(dirname "${SERVICE_ENV_FILE}")"
-  run chown -R "${APP_USER}:${APP_USER}" "${DEPLOY_DIR}" "${HERMES_HOME_DIR}"
+  chown_r_mount_safe "${APP_USER}:${APP_USER}" "${DEPLOY_DIR}"
+  chown_r_mount_safe "${APP_USER}:${APP_USER}" "${HERMES_HOME_DIR}"
   info "Source directory: ${DEPLOY_DIR}"
   info "Hermes data directory: ${HERMES_HOME_DIR}"
 }
@@ -987,7 +1007,7 @@ persist_dependency_snapshot() {
   snapshot_dir="$(dirname "${snapshot_file}")"
   run mkdir -p "${snapshot_dir}"
   printf '%s\n' "${DEPENDENCY_SNAPSHOT_JSON}" | run tee "${snapshot_file}" >/dev/null
-  run chown -R "${APP_USER}:${APP_USER}" "${snapshot_dir}"
+  chown_r_mount_safe "${APP_USER}:${APP_USER}" "${snapshot_dir}"
   info "Recorded dependency snapshot: ${snapshot_file}"
 }
 
@@ -1030,7 +1050,7 @@ install_webui_dependencies() {
   path_env="${NODE_INSTALL_DIR}/bin:${APP_USER_HOME}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
   evaluate_dependency_snapshot
-  run chown -R "${APP_USER}:${APP_USER}" "${DEPLOY_DIR}"
+  chown_r_mount_safe "${APP_USER}:${APP_USER}" "${DEPLOY_DIR}"
   if [[ "${WEBUI_UPDATE_AUTO_INSTALL_DEPENDENCIES}" != "true" ]]; then
     err "Automatic dependency installation is disabled, but update-only deploys require node_modules to be rebuilt."
     exit 1
@@ -1107,7 +1127,14 @@ prewarm_meeting_asr_venv() {
   fi
 
   step "Pre-warm Meeting ASR Python venv at ${venv_dir} (ARM64 pip install may take several minutes)"
-  run_as_app_user "mkdir -p '${data_dir}' && python3 -m venv '${venv_dir}'"
+  # /var/lib is root-owned, so create the state dir as root first, then hand
+  # it to the app user; the venv itself must be created by the app user so the
+  # deployed tree stays non-writable by runtime. (StateDirectory= in the unit
+  # template would do this on first start, but pre-warming happens before the
+  # service ever runs — see the v0.8.0 6.6.6.31 failure.)
+  run mkdir -p "${data_dir}"
+  run chown "${APP_USER}:${APP_USER}" "${data_dir}"
+  run_as_app_user "python3 -m venv '${venv_dir}'"
   # Use the venv pip directly. Avoid printing the full install log on success;
   # surface only tail on failure. cwd stays in backend dir so relative paths in
   # requirements.txt resolve; the venv itself is under the data dir.
@@ -1435,7 +1462,7 @@ require_log_dir_writable() {
   local log_dir="${state_dir}/logs"
   step "Check runtime directory permissions"
   run mkdir -p "${log_dir}"
-  run chown -R "${APP_USER}:${APP_USER}" "${state_dir}"
+  chown_r_mount_safe "${APP_USER}:${APP_USER}" "${state_dir}"
   run_as_app_user "test -w '${state_dir}' && test -w '${log_dir}'"
   info "Runtime directories are writable: ${log_dir}"
 }

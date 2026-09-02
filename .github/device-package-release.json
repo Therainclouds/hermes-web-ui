@@ -34,7 +34,11 @@
     "packages",
     "scripts",
     "release",
+    "docs",
     "tsconfig.json",
+    "tsconfig.app.json",
+    "tsconfig.node.json",
+    "vite.config.ts",
     ".github/device-package-release.json"
   ]
 }

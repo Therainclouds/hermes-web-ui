@@ -239,9 +239,9 @@ function buildPackageEntries(repoRoot, packageAllowlist) {
   })
 }
 
-function copyPackageEntries(stageRoot, packageEntries) {
+function copyPackageEntries(stageRoot, packageEntries, rootName) {
   for (const entry of packageEntries) {
-    const targetPath = resolve(stageRoot, entry.path)
+    const targetPath = rootName ? resolve(stageRoot, rootName, entry.path) : resolve(stageRoot, entry.path)
     mkdirSync(dirname(targetPath), { recursive: true })
     cpSync(entry.sourcePath, targetPath, { recursive: true })
   }
@@ -298,16 +298,18 @@ async function assertArchiveMatchesAllowlist(archivePath, packageEntries) {
  *
  * Scripts matching: any .sh file, or any .py file under a scripts/ directory.
  */
-export async function assertArchiveScriptModes(archivePath) {
+export function isScriptEntry(entryPath) {
+  return entryPath.endsWith('.sh') || (entryPath.endsWith('.py') && entryPath.includes('/scripts/'))
+}
+
+async function assertArchiveScriptModes(archivePath) {
   const broken = []
   await listTar({
     file: archivePath,
     onentry: (entry) => {
       const p = entry.path || ''
       const mode = (entry.mode || 0) & 0o777
-      const isScript = p.endsWith('.sh')
-        || (p.endsWith('.py') && p.includes('/scripts/'))
-      if (!isScript) return
+      if (!isScriptEntry(p)) return
       // Accept 0755, 0775, 0777. Anything else means the bit is missing.
       if ((mode & 0o111) === 0) {
         broken.push(`${p} (mode=${mode.toString(8)})`)
@@ -441,7 +443,7 @@ export async function buildDevicePackageRelease(options = {}) {
       // 203/EXEC on the device. The post-build `assertArchiveScriptModes` check
       // verifies the result.
       onWriteEntry: (entry) => {
-        if (entry.path && entry.path.endsWith('.sh')) {
+        if (entry.path && isScriptEntry(entry.path)) {
           entry.stat.mode = entry.stat.mode | 0o111
         }
       },
@@ -458,7 +460,16 @@ export async function buildDevicePackageRelease(options = {}) {
     let sourceSha256 = ''
     let sourceSize = 0
     if (sourceStageRoot && sourceArtifactPath) {
-      copyPackageEntries(sourceStageRoot, sourcePackageEntries)
+      // Devices unpack the source archive and expect a single top-level
+      // directory (GitHub codeload layout, e.g. `hermes-web-ui-0.7.20/`) —
+      // `update-source-deploy.sh` resolves the source root via
+      // `find -mindepth 1 -maxdepth 1 -type d | head -n 1` and then requires
+      // `package.json` and `scripts/deploy-source-armbian.sh` under it. A flat
+      // archive breaks that resolution and dies with "Downloaded archive is
+      // not a valid hermes-web-ui source tree". Wrap allowlisted entries in a
+      // `hermes-web-ui-<version>/` dir to mirror the codeload layout.
+      const sourceRootName = `hermes-web-ui-${version}`
+      copyPackageEntries(sourceStageRoot, sourcePackageEntries, sourceRootName)
       await createTar({
         cwd: sourceStageRoot,
         file: sourceArtifactPath,
@@ -466,7 +477,7 @@ export async function buildDevicePackageRelease(options = {}) {
         portable: true,
         noMtime: true,
         onWriteEntry: (entry) => {
-          if (entry.path && entry.path.endsWith('.sh')) {
+          if (entry.path && isScriptEntry(entry.path)) {
             entry.stat.mode = entry.stat.mode | 0o111
           }
         },

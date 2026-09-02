@@ -23,6 +23,7 @@
 import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, resolve as resolvePath } from 'path'
+import { list as listTar } from 'tar'
 import { afterEach, describe, expect, it } from 'vitest'
 
 const tempDirs: string[] = []
@@ -63,8 +64,10 @@ function seedRepo(prefix: string, options: FixtureOptions = {}) {
   mkdirSync(resolvePath(repoRoot, 'release'), { recursive: true })
   mkdirSync(resolvePath(repoRoot, 'scripts'), { recursive: true })
   mkdirSync(resolvePath(repoRoot, 'packages'), { recursive: true })
-  writeFileSync(resolvePath(repoRoot, 'packages', 'README.md'), '# packages placeholder\n', 'utf-8')
+  mkdirSync(resolvePath(repoRoot, 'docs'), { recursive: true })
   mkdirSync(resolvePath(repoRoot, '.github'), { recursive: true })
+  writeFileSync(resolvePath(repoRoot, 'packages', 'README.md'), '# packages placeholder\n', 'utf-8')
+  writeFileSync(resolvePath(repoRoot, 'docs', 'openapi.json'), '{ "openapi": "3.0.0" }\n', 'utf-8')
 
   writeFileSync(
     resolvePath(repoRoot, 'dist', 'server', 'index.js'),
@@ -99,6 +102,9 @@ function seedRepo(prefix: string, options: FixtureOptions = {}) {
     engines: { node: '>=23.0.0' },
   }, null, 2), 'utf-8')
   writeFileSync(resolvePath(repoRoot, 'tsconfig.json'), '{}\n', 'utf-8')
+  writeFileSync(resolvePath(repoRoot, 'tsconfig.app.json'), '{}\n', 'utf-8')
+  writeFileSync(resolvePath(repoRoot, 'tsconfig.node.json'), '{}\n', 'utf-8')
+  writeFileSync(resolvePath(repoRoot, 'vite.config.ts'), 'export default {}\n', 'utf-8')
   writeFileSync(resolvePath(repoRoot, '.github', 'device-package-release.json'), JSON.stringify({
     version: '1.2.3',
     channel: 'stable',
@@ -112,7 +118,11 @@ function seedRepo(prefix: string, options: FixtureOptions = {}) {
       'package.json',
       'packages',
       'scripts',
+      'docs',
       'tsconfig.json',
+      'tsconfig.app.json',
+      'tsconfig.node.json',
+      'vite.config.ts',
       '.github/device-package-release.json',
     ],
   }, null, 2), 'utf-8')
@@ -163,6 +173,71 @@ describe('device-package manifest contract', () => {
     const { manifest } = await buildAndReadManifest({})
     expect(manifest.installerScriptPath).toBe('scripts/update-source-deploy.sh')
     expect(manifest.installerScriptSha256).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('source archive is wrapped in a single top-level dir (update-source-deploy.sh contract)', async () => {
+    // Regression guard for the 6.6.6.31 v0.8.0 failure: devices unpack the
+    // source artifact and resolve the repo root via
+    // `find -mindepth 1 -maxdepth 1 -type d | head -n 1`, then require
+    // `package.json` and `scripts/deploy-source-armbian.sh` under it. A flat
+    // archive makes that resolution pick `.github/` or `packages/` and die with
+    // "Downloaded archive is not a valid hermes-web-ui source tree".
+    const { buildDevicePackageRelease } = await import('../../scripts/build-device-package.mjs')
+    const { repoRoot, outputDir } = seedRepo('manifest-source-layout-')
+    const result = await buildDevicePackageRelease({
+      repoRoot,
+      outputDir,
+      channel: 'stable',
+      releaseRepo: 'example/hermes-web-ui',
+      tag: 'v1.2.3',
+    })
+    const meta = JSON.parse(readFileSync(result.metadataPath, 'utf-8'))
+    expect(meta.sourceArtifactPath).toBeTruthy()
+
+    const entries = new Set<string>()
+    await listTar({
+      file: meta.sourceArtifactPath,
+      onentry: (e) => entries.add(e.path.replace(/^\.\//, '').replace(/\/+$/, '')),
+    })
+    const topLevelDirs = [...entries]
+      .filter(p => !p.includes('/'))
+      .filter(p => p !== '' && p !== '.')
+    expect(topLevelDirs).toEqual(['hermes-web-ui-1.2.3'])
+    expect(entries.has('hermes-web-ui-1.2.3/package.json')).toBe(true)
+    expect(entries.has('hermes-web-ui-1.2.3/scripts/deploy-source-armbian.sh')).toBe(true)
+  })
+
+  it('source archive carries every root file the device build needs', async () => {
+    // Regression guard for the 6.6.6.31 v0.8.0 failure: after the wrapper-dir
+    // fix let the archive unpack, the device `npm run build` still died with
+    // `Error: ENOENT ... docs/openapi.json` and `error TS5083: Cannot read
+    // file 'tsconfig.app.json'` because those root entries were missing from
+    // `sourcePathAllowlist`. Build on the device runs from the source root, so
+    // the archive must ship docs/, tsconfig.app/node, and vite.config.ts.
+    const { buildDevicePackageRelease } = await import('../../scripts/build-device-package.mjs')
+    const { repoRoot, outputDir } = seedRepo('manifest-source-buildfiles-')
+    const result = await buildDevicePackageRelease({
+      repoRoot,
+      outputDir,
+      channel: 'stable',
+      releaseRepo: 'example/hermes-web-ui',
+      tag: 'v1.2.3',
+    })
+    const meta = JSON.parse(readFileSync(result.metadataPath, 'utf-8'))
+
+    const entries = new Set<string>()
+    await listTar({
+      file: meta.sourceArtifactPath,
+      onentry: (e) => entries.add(e.path.replace(/^\.\//, '').replace(/\/+$/, '')),
+    })
+    for (const required of [
+      'hermes-web-ui-1.2.3/docs/openapi.json',
+      'hermes-web-ui-1.2.3/tsconfig.app.json',
+      'hermes-web-ui-1.2.3/tsconfig.node.json',
+      'hermes-web-ui-1.2.3/vite.config.ts',
+    ]) {
+      expect(entries.has(required), `source archive must contain ${required}`).toBe(true)
+    }
   })
 
   it('device-package manifest emits installerScriptPath + installerScriptSha256', async () => {

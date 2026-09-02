@@ -406,11 +406,21 @@ download_source_archive() {
 
 extract_source_archive() {
   tar -xzf "${ARCHIVE_PATH}" -C "${TMP_DIR}"
+  # Expected layout: a single top-level directory (GitHub codeload style,
+  # e.g. `hermes-web-ui-0.8.0/`) with package.json + scripts under it. Accept
+  # both that and a flat archive (entries directly at TMP_DIR root) so a
+  # manifest-published artifact built by an older build script still works.
   SOURCE_DIR="$(find "${TMP_DIR}" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
-  if [[ -z "${SOURCE_DIR}" || ! -f "${SOURCE_DIR}/package.json" || ! -f "${SOURCE_DIR}/scripts/deploy-source-armbian.sh" ]]; then
-    err "Downloaded archive is not a valid hermes-web-ui source tree."
-    exit 1
+  if [[ -n "${SOURCE_DIR}" && -f "${SOURCE_DIR}/package.json" && -f "${SOURCE_DIR}/scripts/deploy-source-armbian.sh" ]]; then
+    return 0
   fi
+  if [[ -f "${TMP_DIR}/package.json" && -f "${TMP_DIR}/scripts/deploy-source-armbian.sh" ]]; then
+    SOURCE_DIR="${TMP_DIR}"
+    warn "Archive is flat (no top-level wrapper directory); treating archive root as source root."
+    return 0
+  fi
+  err "Downloaded archive is not a valid hermes-web-ui source tree."
+  exit 1
 }
 
 sync_source_tree() {
