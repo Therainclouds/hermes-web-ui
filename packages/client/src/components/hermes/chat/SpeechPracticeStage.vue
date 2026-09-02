@@ -8,7 +8,6 @@ import { meetingASRApi } from '@/utils/meeting-asr-api'
 import { executeOmniTool, PRACTICE_REALTIME_TOOLS } from '@/api/hermes/omni-tools'
 import { savePracticeReport } from '@/api/hermes/practice-report'
 import { getDownloadUrl } from '@/api/hermes/download'
-import { fetchMemory } from '@/api/hermes/skills'
 import { uid, useChatStore, type Message } from '@/stores/hermes/chat'
 import { useMeetingStore } from '@/stores/hermes/meeting'
 import { useRealtimeModelStore } from '@/stores/hermes/realtime-model'
@@ -22,6 +21,7 @@ import {
   buildPracticeInstructionBlock,
   buildPracticeReportMarkdown,
   practiceReportFileStem,
+  PRACTICE_COACH_SOUL,
   PRACTICE_DIFFICULTY_LABELS,
   PRACTICE_LANGUAGE_LABELS,
   type PracticeFeedbackRecord,
@@ -304,11 +304,11 @@ function buildHistoryContext(): string {
   return serializeChatHistory(session.messages)
 }
 
-async function connectWithSoul(): Promise<boolean> {
-  const [ready, memory] = await Promise.all([
-    ensureBackendAvailable(),
-    fetchMemory().catch(() => null),
-  ])
+async function connectWithCoachPersona(): Promise<boolean> {
+  // 不注入用户 Agent 的 SOUL.md——工作台助理人格与「目标语言口语教练」
+  // 人格直接冲突（中文回复 vs 全程目标语言、助理行为 vs 陪练行为）。对练
+  // 用固定教练人格作为 soul 位输入，工具守则/历史摘要/对练守则照常叠加。
+  const ready = await ensureBackendAvailable()
   if (!ready) {
     backendError.value = t('omniRealtime.backendUnavailable')
     return false
@@ -316,7 +316,7 @@ async function connectWithSoul(): Promise<boolean> {
   await omni.connect({
     voice: selectedVoice.value,
     model: realtimeModelStore.config.model || undefined,
-    instructions: buildRealtimeInstructions(String(memory?.soul || ''), {
+    instructions: buildRealtimeInstructions(PRACTICE_COACH_SOUL, {
       history: buildHistoryContext(),
       scenario: buildPracticeInstructionBlock(props.config),
     }),
@@ -333,7 +333,7 @@ async function startSession(): Promise<void> {
   feedbacks.value = []
   preparing.value = true
   try {
-    const ok = await connectWithSoul()
+    const ok = await connectWithCoachPersona()
     if (ok) sessionStartedAt.value = Date.now()
   } finally {
     preparing.value = false
@@ -345,7 +345,7 @@ async function resumeSession(): Promise<void> {
   backendError.value = ''
   preparing.value = true
   try {
-    await connectWithSoul()
+    await connectWithCoachPersona()
   } finally {
     preparing.value = false
   }

@@ -196,6 +196,18 @@ async function openOmniRealtime(options: { createFresh?: boolean; persistRemote?
   //      reuse path as #2. It used to open the legacy RealtimeVoiceStage
   //      (browser STT/TTS), which was superseded by the Omni realtime
   //      dialog; the leftover wiring opened the deprecated page.
+  //
+  //  会话类型分流：若当前活动会话是口语对练会话（openSpeechPractice 在
+  //  localStorage 里按 sessionId 落了练习配置），不带 createFresh 的进入
+  //  一律改开口语对练舞台——用户从聊天页对练习会话点 🎙️ /「语音模式」
+  //  期望回到的是对练，而不是普通实时对话。
+  if (!options.createFresh) {
+    const practiceConfig = readPracticeConfigFor(chatStore.activeSessionId);
+    if (practiceConfig) {
+      await openSpeechPractice({ config: practiceConfig });
+      return;
+    }
+  }
   if (options.createFresh) {
     if (options.persistRemote) {
       try {
@@ -235,6 +247,43 @@ const practiceLanguageLabelKeys: Record<PracticeLanguage, string> = {
   ko: "speechPractice.lang.ko",
 };
 
+// 口语对练会话标记：练习配置按 sessionId 落 localStorage（会话本身没有
+// 结构化元数据字段，标题前缀又会随 UI 语言变）。读取方：
+//  1. openSpeechPractice 重开时恢复 speechPracticeConfig（刷新后历史里的
+//     对练会话也能再次进入）；
+//  2. openOmniRealtime 的会话类型分流（对练会话进对练舞台）。
+const PRACTICE_CONFIG_STORAGE_PREFIX = "hermes_practice_config_v1:";
+const PRACTICE_LANGUAGES: ReadonlySet<string> = new Set(["zh", "en", "ja", "ko"]);
+const PRACTICE_DIFFICULTIES: ReadonlySet<string> = new Set(["beginner", "intermediate", "advanced"]);
+
+function readPracticeConfigFor(sessionId: string | null | undefined): PracticeSessionConfig | null {
+  if (!sessionId || typeof localStorage === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(PRACTICE_CONFIG_STORAGE_PREFIX + sessionId);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const language = typeof parsed.language === "string" ? parsed.language : "";
+    const difficulty = typeof parsed.difficulty === "string" ? parsed.difficulty : "";
+    if (!PRACTICE_LANGUAGES.has(language) || !PRACTICE_DIFFICULTIES.has(difficulty)) return null;
+    return {
+      language: language as PracticeSessionConfig["language"],
+      direction: typeof parsed.direction === "string" ? parsed.direction : "",
+      difficulty: difficulty as PracticeSessionConfig["difficulty"],
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writePracticeConfigFor(sessionId: string | null | undefined, config: PracticeSessionConfig) {
+  if (!sessionId || typeof localStorage === "undefined") return;
+  try {
+    localStorage.setItem(PRACTICE_CONFIG_STORAGE_PREFIX + sessionId, JSON.stringify(config));
+  } catch {
+    // 配额满 / 隐私模式：标记丢失只影响「再次进入时回到对练」，可接受。
+  }
+}
+
 async function openSpeechPractice(options: {
   createFresh?: boolean;
   persistRemote?: boolean;
@@ -263,6 +312,7 @@ async function openSpeechPractice(options: {
     chatStore.newChat();
   }
   speechPracticeConfig.value = { ...options.config };
+  writePracticeConfigFor(chatStore.activeSessionId, options.config);
   showSpeechPractice.value = true;
 }
 

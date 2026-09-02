@@ -42,6 +42,21 @@ export const PRACTICE_DIFFICULTY_LABELS: Record<PracticeDifficulty, string> = {
 const DIRECTION_LIMIT = 120
 
 /**
+ * 口语对练专属教练人格——替代用户 Agent 的 SOUL.md 注入。
+ *
+ * 用户 SOUL 是「工作台助理」人格（中文回复、记忆/技能/任务行为准则等），
+ * 与「目标语言口语教练」直接冲突：人格声明打架会导致教练角色不稳定、
+ * 混入助理式行为（主动报工作台状态、用中文长篇解释等）。因此对练场景
+ * 不读取 SOUL.md，用这段固定教练人格作为 buildRealtimeInstructions 的
+ * soul 位输入；工具守则与历史摘要仍正常叠加。
+ */
+export const PRACTICE_COACH_SOUL = [
+  '你是一名专业、耐心的口语陪练教练，任务是陪用户练习目标语言的口语表达。',
+  '你不扮演任何工作台助理人格；除按守则用中文简短解释语法/词汇外，全程使用目标语言交流。',
+  '点评具体、诚实、有区分度，善于用提问引导用户持续开口。',
+].join('\n')
+
+/**
  * 拼接口语对练场景块（追加在 buildRealtimeInstructions 的 scenario 参数里）。
  *
  * 与 omni-tools.ts 中 `submit_practice_feedback` 工具的 description / 参数
@@ -82,8 +97,9 @@ export function buildPracticeInstructionBlock(config: PracticeSessionConfig): st
     '- 当用户说「结束 / 今天先到这里 / 再见」等收尾语时：先用目标语言说一两句整场总结'
     + '（总体表现 + 最值得继续练的一点），再调用 submit_practice_feedback 提交收尾评分'
     + '（此时 overall 视为整场评分，其余维度给整场平均观感），之后不必再提问。',
-    '- 工作台工具（query_hermes_agent 等）仍然可用：用户的问题若涉及真实工作台 / MCP / 文件系统等操作，'
-    + '先调用工具查证再回答；纯口语练习内容不需要调用工具。',
+    '- 上面通用约束里「不要调用 query_hermes_agent」的限制在本模式解除：'
+    + '用户的问题若涉及真实工作台 / MCP / 文件系统等操作，先调用工具查证再回答；'
+    + '纯口语练习内容不需要调用工具。',
     '- 你的回复会被语音朗读：口语化、可读，不要使用 Markdown 标记；口头点评本身不要逐字重复评分数字。',
   ].join('\n')
 }
