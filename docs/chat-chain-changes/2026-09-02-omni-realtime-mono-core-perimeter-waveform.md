@@ -1,8 +1,8 @@
 ---
 date: 2026-09-02
 pr: local
-feature: Omni-Realtime 实心圆 + 圆周声纹 + 单色水墨
-impact: 实时对话舞台从透明改为不透明单色水墨背景、星体从扭动 blob 改为静止实心圆加圆周连续声纹（32 段 log 频谱映射）、配色统一为黑白水墨加紫蓝高光、气泡容器全宽居中贴边、免提提示文本不再上下滚动、live 气泡不再钉到屏幕底端（嵌套进 bubbles 容器 absolute 覆盖 committed 行）、query_hermes_agent 在语音模式被系统提示禁用并引导用户回到文字对话页或工作区。
+feature: Omni-Realtime 月亮球体 + 径向柱状声纹 + 底部控件布局
+impact: 实时对话舞台视觉与布局三轮迭代后的最终形态：背景不透明单色水墨、球体重塑为月亮质感（左上受光渐变 + 月海斑，去掉圆心 accent 暗斑）、声纹从连续线条改为 64 根径向柱状均衡器（左右镜像频谱、高频在上低频在下）、visualizer 区 flex:1 撑满上方使气泡/提示/控件自然沉到页面底部、live 气泡改为流内子项彻底消除与 committed 气泡的叠字挤兑、气泡入场从 420ms 弹簧改为 180ms 轻淡入、免提提示文本不再滚动、live 气泡不再钉到屏幕底端、query_hermes_agent 在语音模式被系统提示禁用并引导用户回到文字对话页或工作区。
 ---
 
 # Omni-Realtime: 实心圆 + 圆周声纹 + 单色水墨 + 气泡居中 + query_hermes_agent 回退
@@ -19,11 +19,16 @@ impact: 实时对话舞台从透明改为不透明单色水墨背景、星体从
 ### 2. 气泡容器全宽居中贴边
 `.omni-stage__bubbles` 改为 `width: 100%; max-width: 760px; margin: 0 auto`，live-slot 同步 `max-width: 760px` 居中，去掉了 mask 渐变；AI 回复不再"飘到左下角"。免提提示条 max-height 14.5em → 4.8em，去掉了 `overflow-y: auto`，不再上下滚动。
 
-### 3. 实心圆 + 圆周连续声纹（替代旧 blob）
-`OmniVisualizer.vue` 整块重写：
-- **中心实心圆** —— 径向渐变（左上高光、右下暗），整体半径由能量做唯一驱动，不再有任何顶点级起伏。
-- **圆周连续声纹** —— 32 段 log 频谱映射到圆周 32 个等分角，线条 + accent 紫蓝柔光层 + 32 端点颗粒三层叠加，从 12 点钟顺时针闭合。
-- 颜色完全跟随 `--text-primary-rgb`（mono 水墨） + `--accent-primary-rgb`（紫蓝高光），不再用旧红/紫/青独立调色板。
+### 3. 月亮球体 + 64 根径向柱状声纹（替代旧 blob / 线条声纹）
+`OmniVisualizer.vue` 整块重写（第三轮）：
+- **月亮本体** —— 左上受光的 ink 渐变球（受光面 0.96 alpha → 边缘 0.52），5 块固定位置的低 alpha onInk 月海斑。**圆心不再画 accent 高光**——旧版在圆心叠 accent 渐变，暗主题下读成一团黑影，用户反馈"不像月亮"。accent 紫蓝只留作球外柔光环。
+- **径向柱状声纹** —— 64 根柱均匀分布圆周（每 5.6° 一根），从内圈沿径向伸出，长度 = 该段频谱能量；频谱左右镜像（低频在正下、高频在正上），能量 >0.35 的柱顶叠加 accent 短光。静音段不画柱。
+- 颜色完全跟随 `--text-primary-rgb`（mono 水墨） + `--accent-primary-rgb`（紫蓝高光）。
+
+### 3.5 布局：控件沉底 + 气泡不叠字
+- `.omni-stage__visualizer-zone` 改 `flex: 1 1 auto` 撑满上方剩余空间（月亮垂直居中），气泡 + caption + 控件自然贴住页面底部，控件带 `max(24px, env(safe-area-inset-bottom))` 底边距。之前固定 38vh 的 visualizer 高度把一切都挤在屏幕中段。
+- live 气泡不再是 absolute 叠加层（叠在 committed 气泡上导致文字叠文字的"挤兑"）：TransitionGroup 去掉 `tag` 渲染 fragment，live 气泡作为普通流内子项排在 committed 之后。
+- 气泡入场从 420ms scale 弹簧改为 180ms 轻淡入 + 10px 上浮——弹簧和 live 淡出叠跑就是"挤出再弹入"的丑感来源。
 
 ### 4. outputAnalyser 升级为 shallowRef
 `useOmniRealtime.ts` 把 `let outputAnalyser` 改成 `shallowRef<AnalyserNode | null>(null)`，暴露给 `OmniVisualizer`，让声纹能读到真实频谱而不是仅平滑电平。
