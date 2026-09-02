@@ -2312,6 +2312,7 @@ export default {
     setAccountPassword: '设置账号密码',
     setAccountPasswordHint: '设置后可在此账号页面用用户名和密码登录；忘记密码时可重新微信扫码登录后再设置。',
     passwordSet: '账号密码已设置',
+    nicknameMojibakeHint: '检测到当前账号的微信昵称被错误解码（看上去像乱码）。请到登录页重新扫码登录一次，系统会自动用正确昵称覆盖本地缓存。',
     unbindWechat: '解绑微信',
     unbindWechatConfirm: '确定要解绑微信账号「{account}」吗？解绑将删除该账号的全部数据：本地账号、专属 Agent 及其会话记录和登录凭据。该微信再次扫码绑定后将得到全新的空白账号。',
     unbindWechatSuccess: '已解绑微信',

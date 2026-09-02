@@ -2,24 +2,21 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 /**
- * Omni-Realtime 视觉核心（黑白水墨 + 紫蓝高光版）。
+ * Omni-Realtime 视觉核心（月亮/太阳双主题 + 径向柱状声纹版）。
  *
- * 三层叠加（全部 canvas 绘制）：
- *  1. 中心规整实心圆 —— 单色水墨白（暗主题）/ 黑（亮主题），径向高光
- *     用 accent-primary 紫蓝做单点高光。整体半径由能量缓慢呼吸，**不
- *     抖动**。这是"星体不再扭动"的根本：去掉顶点级起伏，整圆从单点
- *     径向伸缩。
- *  2. 圆周连续声纹 —— 32 段频谱映射到圆周 32 个等分角，每点的径向距
- *     离 = baseRadius * (1 + freq * gain)。相邻点用直线连成连续波形，
- *     顺时针闭合。波形线 1.4px，色调仍是 text-primary，仅透明度随
- *     能量浮动（安静时半透，AI 说话时饱满）。底部对中点小三角的垂线
- *     朝向不旋转——声纹以"音乐环形均衡器"的视觉读法呈现。
- *  3. 顶部柔光高光 —— 实心圆表面的一束斜光，固定在左上 ≈ 30° 方向。
- *     AI 说话时整体 alpha 提升。
+ * 天体本身用预渲染 SVG 素材（public/realtime/celestial-moon.svg /
+ * celestial-sun.svg，圆盘半径 150 @ 480 画布），每帧按能量缩放
+ * drawImage 进 canvas——矢量素材的月海/环形山/日冕细节远比 canvas
+ * 手绘圆细腻。暗主题画月亮、亮主题画太阳，主题跟随 html.dark class
+ * （MutationObserver 监听，不引 useTheme 以免测试环境拉起它的模块
+ * 副作用）。素材加载失败时回退到 canvas 矢量球。
  *
- * 颜色完全跟随 --text-primary（mono 黑白水墨） + --accent-primary（紫蓝
- * 高光）—— 老版本的"红/紫/青"独立调色板取消，全部并入主色族，light/dark
- * 主题下都一致。
+ * canvas 叠层：
+ *  1. 天体（SVG drawImage，单一能量驱动呼吸缩放）
+ *  2. 径向柱状声纹 —— 64 根柱均匀分布圆周，低频正下、高频正上镜像
+ *     对称；柱身 ink 色，能量柱顶叠一道主题色短光（月亮=紫蓝 accent，
+ *     太阳=暖琥珀）。
+ *  3. 主题色柔光环（月亮明显、太阳由 SVG 日冕承担只补内圈）。
  */
 const props = defineProps<{
   phase: 'idle' | 'connecting' | 'ready' | 'listening' | 'speaking' | 'error' | 'closed'
@@ -29,7 +26,7 @@ const props = defineProps<{
   outputLevel: number
   /** 播放分析器（playback AnalyserNode 的 shallowRef），由父组件
    *  注入。visualizer 监听它的变化并 attach 到内部 analyser slot，
-   *  让圆周连续声纹读到真实频谱而不是仅仅平滑电平。 */
+   *  让柱状声纹读到真实频谱而不是仅仅平滑电平。 */
   analyser?: AnalyserNode | null
 }>()
 
@@ -39,19 +36,39 @@ let resizeObserver: ResizeObserver | null = null
 let analyser: AnalyserNode | null = null
 let freqBuf: Uint8Array<ArrayBuffer> | null = null
 
-/** Number of waveform segments around the ring — must match the analyser
- *  fftSize (fftSize/2 buckets). 32 is the sweet spot for a perimeter waveform
- *  that reads as a circle from a few meters away while still resolving
- *  vowel/consonant energy differences. */
-const WAVEFORM_SEGMENTS = 32
-const freqBuckets = new Float32Array(WAVEFORM_SEGMENTS)
+/** 圆周柱状声纹的柱数——64 根在 360° 里切割密度足够细（每 5.6° 一根，
+ *  相邻柱心距在 r≈120px 处约 12px，柱宽 2.4px 时视觉上是连续的密集
+ *  均衡器）。fftSize=256 → 128 个 bin，取 75% 频段 max-pool 到 64 柱。 */
+const BAR_COUNT = 64
+const freqBuckets = new Float32Array(BAR_COUNT)
+
+/** SVG 素材里天体圆盘的半径（画布 480）。drawImage 缩放比 = discR / 此值。 */
+const SVG_DISC_RADIUS = 150
+const SVG_CANVAS_SIZE = 480
+
+/** 太阳的暖琥珀高光（light 主题专属）——紫蓝 accent 在白底上读不出
+ *  "热"，太阳的柱顶光用琥珀色。 */
+const SUN_ACCENT_RGB = '232, 152, 34'
 
 let smoothInput = 0
 let smoothOutput = 0
-// 综合能量"呼吸"——驱动实心圆半径 / 声纹透明度 / 高光。attack 与 release
-// 都慢到听不出逐音节跳变：TTS 每个音节的 RMS 起伏由此被滤成一次平滑的
-// "呼吸"。这是**唯一**驱动核心形状/位置的信号。
+// 综合能量"呼吸"——驱动天体缩放 / 柱状透明度。attack 与 release 都慢
+// 到听不出逐音节跳变：TTS 每个音节的 RMS 起伏由此被滤成一次平滑呼吸。
 let energySmooth = 0
+
+// --- 天体素材（moon/sun 预加载，跨主题切换即时可用） ------------------
+const moonImg = new Image()
+const sunImg = new Image()
+let moonReady = false
+let sunReady = false
+let moonFailed = false
+let sunFailed = false
+
+// --- 主题（html.dark class） -----------------------------------------
+const isDarkTheme = ref(
+  typeof document !== 'undefined' && document.documentElement.classList.contains('dark'),
+)
+let themeObserver: MutationObserver | null = null
 
 function smoothLevel(current: number, target: number): number {
   return current + (target - current) * (target > current ? 0.3 : 0.08)
@@ -61,6 +78,47 @@ function readCSSVar(name: string, fallback: string): string {
   if (typeof window === 'undefined') return fallback
   const v = getComputedStyle(document.documentElement).getPropertyValue(name)
   return v && v.trim() ? v.trim() : fallback
+}
+
+function loadCelestial(img: HTMLImageElement, src: string, onReady: () => void, onFail: () => void): void {
+  img.onload = onReady
+  img.onerror = onFail
+  img.src = src
+}
+
+/** 素材未加载/加载失败时的兜底矢量球（保留旧版月亮画法，够用即可）。 */
+function drawFallbackCore(
+  ctx: CanvasRenderingContext2D,
+  cx: number, cy: number, coreR: number,
+  inkRGB: string, onInkRGB: string,
+): void {
+  const bodyGrad = ctx.createRadialGradient(
+    cx - coreR * 0.38, cy - coreR * 0.42, coreR * 0.08,
+    cx + coreR * 0.10, cy + coreR * 0.14, coreR * 1.04,
+  )
+  bodyGrad.addColorStop(0, `rgba(${inkRGB}, 0.96)`)
+  bodyGrad.addColorStop(0.55, `rgba(${inkRGB}, 0.86)`)
+  bodyGrad.addColorStop(1, `rgba(${inkRGB}, 0.52)`)
+  ctx.fillStyle = bodyGrad
+  ctx.beginPath()
+  ctx.arc(cx, cy, coreR, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.strokeStyle = `rgba(${inkRGB}, 0.28)`
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.arc(cx, cy, coreR, 0, Math.PI * 2)
+  ctx.stroke()
+  // 左上柔光
+  const hl = ctx.createRadialGradient(
+    cx - coreR * 0.35, cy - coreR * 0.4, 0,
+    cx - coreR * 0.35, cy - coreR * 0.4, coreR * 0.7,
+  )
+  hl.addColorStop(0, `rgba(${onInkRGB}, 0.30)`)
+  hl.addColorStop(1, `rgba(${onInkRGB}, 0)`)
+  ctx.fillStyle = hl
+  ctx.beginPath()
+  ctx.arc(cx - coreR * 0.35, cy - coreR * 0.4, coreR * 0.7, 0, Math.PI * 2)
+  ctx.fill()
 }
 
 function draw(): void {
@@ -82,10 +140,6 @@ function draw(): void {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   ctx.clearRect(0, 0, cssWidth, cssHeight)
 
-  // 60Hz 时间累计——只用于 sin 抖动相位（高光 8% 范围内的极小游走）。
-  // 不参与核心形状或声纹驱动。
-  const time = (performance.now() ?? Date.now()) / 1000
-
   // 防御性再平滑——useOmniRealtime 已经做 EMA + RMS blend，这里再
   // 压一下 0.3/0.08 attack/release，保证 raw input 不再进入声纹。
   smoothInput = smoothLevel(smoothInput, props.inputLevel)
@@ -98,139 +152,110 @@ function draw(): void {
   const cy = cssHeight / 2
   const unit = Math.min(cssWidth, cssHeight) / 2
 
-  // 颜色 token：mono 主色 + 紫蓝高光。完全跟随主题。
-  const inkRGB = readCSSVar('--text-primary-rgb', '26, 26, 26')         // 实心圆 / 声纹线
-  const accentRGB = readCSSVar('--accent-primary-rgb', '74, 144, 217')   // 高光 / 声纹柔光
-  const onInkRGB = readCSSVar('--bg-primary-rgb', '250, 250, 250')       // 实心圆内部空腔
+  const dark = isDarkTheme.value
+  const inkRGB = readCSSVar('--text-primary-rgb', '26, 26, 26')
+  const accentRGB = dark
+    ? readCSSVar('--accent-primary-rgb', '74, 144, 217')
+    : SUN_ACCENT_RGB
 
   // 读取 analyser 频谱（如果上游尚未 attach，则全 0，声纹自然静止）。
   if (analyser && freqBuf) {
     analyser.getByteFrequencyData(freqBuf)
-    // 把 0..fftSize/2 的桶按对数感知重新分布到 WAVEFORM_SEGMENTS 段，
-    // 每段取一段桶的最大值——细节感更强。
     const total = freqBuf.length
-    for (let i = 0; i < WAVEFORM_SEGMENTS; i += 1) {
-      // 对数起点 ~ 200Hz，止点 ~ Nyquist；这样元音能量集中在低段，
-      // 谐波向高段衰减，符合音乐可视化器的读法。
-      const start = Math.floor((i / WAVEFORM_SEGMENTS) * (total * 0.6))
-      const end = Math.floor(((i + 1) / WAVEFORM_SEGMENTS) * (total * 0.6))
+    const usable = Math.floor(total * 0.75)
+    for (let i = 0; i < BAR_COUNT; i += 1) {
+      // 镜像映射：柱 0 在正上方，向两侧展开到正下方。低频（人声基频
+      // 能量最大）落在正下方两侧，高频在正上方——两侧对称的环形均衡
+      // 器读法。|i - BAR_COUNT/2| = 距正下方的柱距。
+      const mirrored = i <= BAR_COUNT / 2 ? BAR_COUNT / 2 - i : i - BAR_COUNT / 2
+      const t0 = mirrored / (BAR_COUNT / 2)
+      const t1 = (mirrored + 1) / (BAR_COUNT / 2)
+      const start = Math.floor(t0 * usable)
+      const end = Math.max(start + 1, Math.floor(t1 * usable))
       let peak = 0
       for (let k = start; k < end && k < total; k += 1) {
         if (freqBuf[k]! > peak) peak = freqBuf[k]!
       }
-      // 平滑每段，避免单帧跳变。attack 快、release 慢。
       const target = peak / 255
       const prev = freqBuckets[i]!
       freqBuckets[i] = prev + (target - prev) * (target > prev ? 0.6 : 0.15)
     }
   } else {
-    // 没有 analyser 时让声纹自然衰减到 0——不假动。
-    for (let i = 0; i < WAVEFORM_SEGMENTS; i += 1) {
+    for (let i = 0; i < BAR_COUNT; i += 1) {
       freqBuckets[i]! *= 0.9
     }
   }
 
-  // ---- 1) 中心实心圆 ---------------------------------------------
-  // 整体半径由单点能量驱动，做一次"呼吸"——圆本身无任何顶点级起伏。
-  const coreR = unit * (0.22 + energy * 0.045)
-  // 主体 fill：径向渐变（左上微亮，右下进入 onInk 色，让暗主题里有
-  // 一束斜光的体积感；亮主题里同样有体积感，只是亮的在 onInk 端）。
-  const coreGrad = ctx.createRadialGradient(
-    cx - coreR * 0.35, cy - coreR * 0.42, coreR * 0.05,
-    cx + coreR * 0.15, cy + coreR * 0.25, coreR * 1.05,
-  )
-  coreGrad.addColorStop(0, `rgba(${accentRGB}, ${(0.55 + energy * 0.25).toFixed(3)})`)
-  coreGrad.addColorStop(0.45, `rgba(${inkRGB}, ${(0.78 + energy * 0.10).toFixed(3)})`)
-  coreGrad.addColorStop(1, `rgba(${inkRGB}, ${(0.55 + energy * 0.10).toFixed(3)})`)
-  ctx.fillStyle = coreGrad
-  ctx.beginPath()
-  ctx.arc(cx, cy, coreR, 0, Math.PI * 2)
-  ctx.fill()
+  // ---- 1) 天体（SVG 素材 / 矢量兜底） ----------------------------
+  const discR = unit * (0.20 + energy * 0.045)
+  const img = dark ? moonImg : sunImg
+  const ready = dark ? moonReady : sunReady
+  const failed = dark ? moonFailed : sunFailed
+  if (ready && !failed) {
+    // SVG 里圆盘半径 150，柔光外溢到画布边缘；按 discR 等比缩放整图，
+    // 呼吸时光晕随之缩放。
+    const scale = discR / SVG_DISC_RADIUS
+    const size = SVG_CANVAS_SIZE * scale
+    ctx.drawImage(img, cx - size / 2, cy - size / 2, size, size)
+  } else if (failed) {
+    drawFallbackCore(ctx, cx, cy, discR, inkRGB, readCSSVar('--bg-primary-rgb', '250, 250, 250'))
+  } // 都不是：素材还在加载，本帧留空，下一帧即有
 
-  // 圆描边：极淡的 1px mono 边，给"剪影"感。
-  ctx.strokeStyle = `rgba(${inkRGB}, 0.35)`
-  ctx.lineWidth = 1
-  ctx.beginPath()
-  ctx.arc(cx, cy, coreR, 0, Math.PI * 2)
-  ctx.stroke()
+  // ---- 2) 径向柱状声纹 -------------------------------------------
+  const innerRadius = unit * (0.30 + energy * 0.04)
+  const gain = unit * 0.15
+  const step = (Math.PI * 2) / BAR_COUNT
+  const barWidth = 2.4
 
-  // 顶部柔光高光：固定在左上方 ≈ 30° 方向的小椭圆白点，给圆加
-  // 一束斜光"湿润感"。AI 说话时 alpha 提升。
-  const hlR = coreR * 0.45
-  const hlOx = cx - Math.cos(Math.PI * 0.6 + Math.sin(time * 0.4) * 0.05) * coreR * 0.42
-  const hlOy = cy - Math.sin(Math.PI * 0.6 + Math.sin(time * 0.27) * 0.05) * coreR * 0.42
-  const highlight = ctx.createRadialGradient(hlOx, hlOy, 0, hlOx, hlOy, hlR)
-  highlight.addColorStop(0, `rgba(${onInkRGB}, ${(0.30 + energy * 0.20).toFixed(3)})`)
-  highlight.addColorStop(0.5, `rgba(${onInkRGB}, ${(0.10 + energy * 0.08).toFixed(3)})`)
-  highlight.addColorStop(1, `rgba(${onInkRGB}, 0)`)
-  ctx.fillStyle = highlight
-  ctx.beginPath()
-  ctx.arc(hlOx, hlOy, hlR, 0, Math.PI * 2)
-  ctx.fill()
-
-  // ---- 2) 圆周连续声纹 -------------------------------------------
-  // 32 段频谱映射到圆周 32 个等分角的径向距离。baseRadius 是核心圆外
-  // 留出的一圈"呼吸空腔"，让声纹线不和实心圆粘连。
-  const baseRadius = unit * (0.32 + energy * 0.05)
-  const gain = unit * 0.13
-  // 起角：让 0 度指向屏幕正上方（12 点钟），从 12 点顺时针展开 32 段。
-  // 这样声纹读起来是"上方 = 第 0 段"，与人声的中频泛音峰值位置
-  // （元音共振峰）落在上半圆，符合直觉。
-  const startAngle = -Math.PI / 2
-  const step = (Math.PI * 2) / WAVEFORM_SEGMENTS
-
-  // 取这一帧的"声纹能量"——给线条整体 alpha 用。安静时线条半透，
-  // 说话时饱满。
-  let freqMean = 0
-  for (let i = 0; i < WAVEFORM_SEGMENTS; i += 1) freqMean += freqBuckets[i]!
-  freqMean /= WAVEFORM_SEGMENTS
-  const lineAlpha = 0.32 + energy * 0.45 + freqMean * 0.18
-
-  // 声纹主线条：先画"环"，再画波形径向偏移。
-  ctx.beginPath()
-  for (let i = 0; i < WAVEFORM_SEGMENTS; i += 1) {
-    const angle = startAngle + i * step
-    const r = baseRadius + freqBuckets[i]! * gain
-    const x = cx + Math.cos(angle) * r
-    const y = cy + Math.sin(angle) * r
-    if (i === 0) ctx.moveTo(x, y)
-    else ctx.lineTo(x, y)
-  }
-  ctx.closePath()
-  ctx.strokeStyle = `rgba(${inkRGB}, ${Math.min(0.95, lineAlpha).toFixed(3)})`
-  ctx.lineWidth = 1.4
-  ctx.lineJoin = 'round'
-  ctx.lineCap = 'round'
-  ctx.stroke()
-
-  // 声纹柔光层：同一形状，accent 色 0.35 alpha 叠在主线上方，
-  // 给线条一层紫蓝高光（安静时几乎不可见，AI 说话时发光）。
-  ctx.beginPath()
-  for (let i = 0; i < WAVEFORM_SEGMENTS; i += 1) {
-    const angle = startAngle + i * step
-    const r = baseRadius + freqBuckets[i]! * gain
-    const x = cx + Math.cos(angle) * r
-    const y = cy + Math.sin(angle) * r
-    if (i === 0) ctx.moveTo(x, y)
-    else ctx.lineTo(x, y)
-  }
-  ctx.closePath()
-  ctx.strokeStyle = `rgba(${accentRGB}, ${(0.10 + energy * 0.22 + freqMean * 0.10).toFixed(3)})`
-  ctx.lineWidth = 1.4
-  ctx.stroke()
-
-  // ---- 3) 声纹端点（32 个小圆点）--------------------------------
-  // 给连续波形加颗粒感——每个端点画一个 1.2px 圆点，alpha 跟该段
-  // 频谱能量正相关。整体看仍是"环形均衡器"，但连续线条 + 端点颗粒
-  // 双重读法。
-  ctx.fillStyle = `rgba(${inkRGB}, ${(0.55 + freqMean * 0.25).toFixed(3)})`
-  for (let i = 0; i < WAVEFORM_SEGMENTS; i += 1) {
-    const angle = startAngle + i * step
-    const r = baseRadius + freqBuckets[i]! * gain
-    const x = cx + Math.cos(angle) * r
-    const y = cy + Math.sin(angle) * r
+  for (let i = 0; i < BAR_COUNT; i += 1) {
+    const v = freqBuckets[i]!
+    if (v < 0.015) continue   // 静音段不画柱——避免一整圈均匀细点的假象
+    const angle = -Math.PI / 2 + i * step
+    const cos = Math.cos(angle)
+    const sin = Math.sin(angle)
+    const r0 = innerRadius
+    const r1 = innerRadius + Math.max(barWidth, v * gain)
     ctx.beginPath()
-    ctx.arc(x, y, 1.2 + freqBuckets[i]! * 0.6, 0, Math.PI * 2)
+    ctx.moveTo(cx + cos * r0, cy + sin * r0)
+    ctx.lineTo(cx + cos * r1, cy + sin * r1)
+    ctx.strokeStyle = `rgba(${inkRGB}, ${(0.30 + v * 0.65).toFixed(3)})`
+    ctx.lineWidth = barWidth
+    ctx.lineCap = 'round'
+    ctx.stroke()
+  }
+
+  // 柱顶柔光层：能量高的柱子补一道主题色短光，读作"发热"的均衡器。
+  for (let i = 0; i < BAR_COUNT; i += 1) {
+    const v = freqBuckets[i]!
+    if (v <= 0.35) continue
+    const angle = -Math.PI / 2 + i * step
+    const cos = Math.cos(angle)
+    const sin = Math.sin(angle)
+    const r0 = innerRadius + v * gain * 0.55
+    const r1 = innerRadius + v * gain
+    ctx.beginPath()
+    ctx.moveTo(cx + cos * r0, cy + sin * r0)
+    ctx.lineTo(cx + cos * r1, cy + sin * r1)
+    ctx.strokeStyle = `rgba(${accentRGB}, ${((v - 0.35) * (dark ? 0.85 : 0.7)).toFixed(3)})`
+    ctx.lineWidth = barWidth + 0.6
+    ctx.lineCap = 'round'
+    ctx.stroke()
+  }
+
+  // ---- 3) 内圈柔光环 ----------------------------------------------
+  // 月亮：accent 紫蓝外晕（SVG 自带柔光之上再补一层能量光）；
+  // 太阳：SVG 日冕已足够，只在能量高时补内圈暖光。
+  const haloInner = discR * 1.05
+  const haloOuter = innerRadius * 1.02
+  if (dark || energy > 0.05) {
+    const haloAlpha = (dark ? 0.05 : 0.03) + energy * (dark ? 0.10 : 0.07)
+    const halo = ctx.createRadialGradient(cx, cy, haloInner, cx, cy, haloOuter * 1.26)
+    halo.addColorStop(0, `rgba(${accentRGB}, ${haloAlpha.toFixed(3)})`)
+    halo.addColorStop(0.55, `rgba(${accentRGB}, 0.03)`)
+    halo.addColorStop(1, `rgba(${accentRGB}, 0)`)
+    ctx.fillStyle = halo
+    ctx.beginPath()
+    ctx.arc(cx, cy, haloOuter * 1.26, 0, Math.PI * 2)
     ctx.fill()
   }
 }
@@ -249,7 +274,7 @@ function attachAnalyser(node: AnalyserNode | null): void {
     }
   } else {
     freqBuf = null
-    for (let i = 0; i < WAVEFORM_SEGMENTS; i += 1) freqBuckets[i] = 0
+    for (let i = 0; i < BAR_COUNT; i += 1) freqBuckets[i] = 0
   }
 }
 
@@ -265,6 +290,22 @@ onMounted(() => {
     resizeObserver = new ResizeObserver(() => { /* draw() 自适应尺寸 */ })
     if (canvasRef.value) resizeObserver.observe(canvasRef.value)
   }
+  // 预载两套天体素材：主题切换时无需等待网络/磁盘。
+  loadCelestial(moonImg, '/realtime/celestial-moon.svg',
+    () => { moonReady = true },
+    () => { moonFailed = true })
+  loadCelestial(sunImg, '/realtime/celestial-sun.svg',
+    () => { sunReady = true },
+    () => { sunFailed = true })
+  // 主题跟随 html.dark class——useTheme 用 classList.toggle('dark')，
+  // MutationObserver 与其天然同步，也不把 useTheme 的模块副作用拉进
+  // 测试环境。
+  if (typeof MutationObserver === 'function') {
+    themeObserver = new MutationObserver(() => {
+      isDarkTheme.value = document.documentElement.classList.contains('dark')
+    })
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
+  }
 })
 
 onBeforeUnmount(() => {
@@ -272,6 +313,8 @@ onBeforeUnmount(() => {
   rafId = null
   resizeObserver?.disconnect()
   resizeObserver = null
+  themeObserver?.disconnect()
+  themeObserver = null
   analyser = null
   freqBuf = null
 })

@@ -749,11 +749,13 @@ onBeforeUnmount(() => {
           />
         </div>
 
-        <!-- 气泡容器：committed + live 共享同一 flex 空间。live 行嵌套
-             在容器内 absolute 覆盖 committed 行，不挤占 flex 高度，
-             也不会因 `bottom: 0` 冒泡到全屏而钉在屏幕底端。 -->
+        <!-- 气泡容器：committed + live 都是普通流内 flex 子项
+             （TransitionGroup 不带 tag 渲染 fragment），live 气泡排在
+             committed 之后，绝不叠字。容器 justify-content:flex-end +
+             overflow:hidden，超出 max-height 的旧行从顶部裁掉，最新
+             气泡始终贴着 caption/控件。 -->
         <div class="omni-stage__bubbles" aria-live="polite">
-          <TransitionGroup name="omni-bubble" tag="div" class="omni-stage__bubbles-committed">
+          <TransitionGroup name="omni-bubble">
             <div
               v-for="b in committedBubbles"
               :key="b.key"
@@ -762,14 +764,14 @@ onBeforeUnmount(() => {
             >{{ b.text }}</div>
           </TransitionGroup>
 
-          <TransitionGroup name="omni-bubble-live" tag="div" class="omni-stage__bubble-live-slot" aria-live="polite">
+          <Transition name="omni-bubble-live">
             <div
               v-if="liveBubble"
               :key="liveBubble.key"
               class="omni-stage__bubble omni-stage__bubble--live"
               :class="[`omni-stage__bubble--${liveBubble.role}`]"
             >{{ liveBubble.text }}</div>
-          </TransitionGroup>
+          </Transition>
         </div>
 
         <p
@@ -1097,16 +1099,16 @@ onBeforeUnmount(() => {
 }
 
 .omni-stage__visualizer-zone {
-  /* visualizer 不再 flex:1 撑满，否则把气泡/caption/控件挤到底部，
-   * 视觉上变成"圆在中心、气泡在左下"的诡异布局。改成固定高比例
-   * 的盒子：上限 38vh 留出 60% 给对话气泡和控件。 */
-  flex: 0 0 auto;
-  min-height: 0;
+  /* flex:1 撑满气泡/控件上方的全部剩余空间，月亮在其中垂直居中；
+   * 气泡、caption、控件随之自然沉到页面底部。之前用固定高度
+   * clamp(220px,38vh,320px) + flex:0，月亮和气泡挤在屏幕中段，
+   * 按钮悬在半空——用户要求控件贴底。 */
+  flex: 1 1 auto;
+  min-height: 160px;
   width: 100%;
-  height: clamp(220px, 38vh, 320px);
   display: grid;
   place-items: center;
-  margin-top: clamp(8px, 2vh, 18px);
+  padding: clamp(8px, 2vh, 18px) 0 8px;
 }
 
 .omni-stage__visualizer {
@@ -1129,23 +1131,11 @@ onBeforeUnmount(() => {
   gap: 8px;
   width: 100%;
   max-width: 760px;
-  max-height: min(34vh, 320px);
+  max-height: min(32vh, 300px);
   overflow: hidden;
   justify-content: flex-end;
-  padding: 8px clamp(20px, 4vw, 48px) 0;
+  padding: 0 clamp(20px, 4vw, 48px);
   margin: 0 auto;
-  /* 给嵌套的 live-slot 提供绝对定位锚点——不设置的话
-   * live-slot 的 `bottom: 0` 会冒泡到全屏固定层。 */
-  position: relative;
-}
-
-.omni-stage__bubbles-committed {
-  /* 作为 TransitionGroup 的 tag="div" 容器，占据 committed 行的 flex
-   * 空间；live-slot 以 absolute 覆盖它，不挤占高度。 */
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-height: 0;
 }
 
 .omni-stage__bubble {
@@ -1194,54 +1184,37 @@ onBeforeUnmount(() => {
   50% { border-color: var(--glass-realtime-border-strong); }
 }
 
+/* committed 行入场：180ms 轻淡入 + 10px 上浮，不用弹簧。之前的
+ * 420ms scale(0.6)→1.06 弹簧在 live→committed 交接时和 live 气泡
+ * 的淡出叠跑，视觉上是两次"挤出再弹入"的挤兑感。 */
 .omni-bubble-enter-active {
-  animation: omni-bubble-spring-in 420ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  transition: opacity 180ms ease-out, transform 180ms ease-out;
+}
+
+.omni-bubble-enter-from {
+  opacity: 0;
+  transform: translateY(10px);
 }
 
 .omni-bubble-leave-active {
-  transition: opacity 280ms ease-out, transform 280ms ease-out;
+  transition: opacity 200ms ease-out, transform 200ms ease-out;
 }
 
 .omni-bubble-leave-to {
   opacity: 0;
-  transform: translateY(-16px) scale(0.92);
+  transform: translateY(-10px);
 }
 
-/* live 气泡独立命名空间：opacity-only 80ms 淡入淡出，不带弹簧/位移。
- * 替换时不会和 committed 行的弹簧 leave 同时跑造成 bubble 高度上下
- * 跳动。容器嵌套在 .omni-stage__bubbles 内 absolute 覆盖 committed
- * 行，inset:0 填满同空间，不挤占 flex 高度。 */
+/* live 气泡独立命名空间：opacity-only 120ms 淡入淡出。live 是流内
+ * 子项，过渡只动透明度，宽度/高度布局不跳。 */
 .omni-bubble-live-enter-active,
 .omni-bubble-live-leave-active {
-  transition: opacity 80ms linear;
+  transition: opacity 120ms linear;
 }
 
 .omni-bubble-live-enter-from,
 .omni-bubble-live-leave-to {
   opacity: 0;
-}
-
-/* live 气泡容器：absolute 嵌套在 .omni-stage__bubbles 内，inset:0
- * 填满 committed 行的同一空间，不挤占 flex 高度。justify-content:
- * flex-end 让 live 气泡出现在 committed 行的相同位置（底部）。 */
-.omni-stage__bubble-live-slot {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-end;
-  gap: 8px;
-  pointer-events: none;
-}
-
-.omni-stage__bubble-live-slot .omni-stage__bubble {
-  pointer-events: auto;
-}
-
-@keyframes omni-bubble-spring-in {
-  0% { opacity: 0; transform: translateY(16px) scale(0.6); }
-  60% { opacity: 1; transform: translateY(-4px) scale(1.06); }
-  100% { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 .omni-stage__caption {
@@ -1350,6 +1323,11 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 22px;
+  /* 上方 visualizer-zone flex:1 吸收剩余空间后，气泡 + caption +
+   * 控件已经贴在 live 区底部；这里再给控件一个明确的底部间距
+   * （含 iOS 安全区），让"三个按钮在页面底部"读感成立。 */
+  margin-top: 14px;
+  margin-bottom: max(24px, env(safe-area-inset-bottom));
 }
 
 .omni-stage__control {
@@ -1394,4 +1372,52 @@ onBeforeUnmount(() => {
 }
 
 .omni-stage__control--end:hover { background: rgba(var(--accent-primary-rgb), 0.30); }
+
+/* ---- light 主题（日间）单独设计 ---------------------------------------
+ * 暗主题是"夜空 + 月亮"：星云氛围 + 紫蓝 accent。把星云原样搬到白底
+ * 上会读成粉/蓝污渍（用户截图反馈"搭配很不好看"）。日间换一套语言：
+ * 隐藏星云，改成太阳位置的一束暖光 + 地面天光蓝反光的晨光渐变；控件
+ * 用实底白 + 深描边 + 投影保证对比度，挂断键用 accent 淡金强调。 */
+html:not(.dark) .omni-stage__nebula,
+html:not(.dark) .omni-stage__halo {
+  opacity: 0;
+}
+
+html:not(.dark) .omni-stage__backdrop {
+  background:
+    radial-gradient(ellipse 72% 44% at 50% 24%, rgba(255, 205, 110, 0.20), rgba(255, 205, 110, 0) 72%),
+    radial-gradient(ellipse 95% 44% at 50% 114%, rgba(150, 180, 235, 0.13), rgba(150, 180, 235, 0) 70%),
+    var(--bg-primary);
+}
+
+html:not(.dark) .omni-stage__control {
+  background: rgba(255, 255, 255, 0.90);
+  border-color: rgba(26, 26, 26, 0.16);
+  box-shadow: 0 2px 14px rgba(26, 26, 26, 0.10);
+}
+
+html:not(.dark) .omni-stage__control:hover {
+  background: #ffffff;
+  border-color: rgba(26, 26, 26, 0.42);
+}
+
+html:not(.dark) .omni-stage__control--muted {
+  border-color: rgba(26, 26, 26, 0.44);
+  background: rgba(26, 26, 26, 0.08);
+}
+
+html:not(.dark) .omni-stage__control--end {
+  border-color: rgba(var(--accent-primary-rgb), 0.55);
+  background: rgba(var(--accent-primary-rgb), 0.14);
+}
+
+html:not(.dark) .omni-stage__control--end:hover {
+  background: rgba(var(--accent-primary-rgb), 0.26);
+}
+
+html:not(.dark) .omni-stage__bubble--assistant {
+  background: rgba(255, 255, 255, 0.92);
+  border-color: rgba(26, 26, 26, 0.14);
+  box-shadow: 0 2px 16px rgba(26, 26, 26, 0.08);
+}
 </style>

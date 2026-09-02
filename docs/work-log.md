@@ -1,5 +1,61 @@
 # Work Log
 
+## 2026-09-02 · 微信扫码用户名乱码修复 + WeChat 用户修改用户名免密码
+
+### 问题 1: 微信扫码登录的用户名显示乱码
+
+**现象**: 微信昵称 `白云雨幕` 显示为 `ç»å¤©é¸æ°å¹` 或 `鐧戒簯闆ㄥ箷`。
+
+**根因**: Token Platform 后端(`api.quantclaw.vip`)存在双重 UTF-8 编码 bug — 把 UTF-8 bytes 当作 Latin1 字符读取后再 UTF-8 编码输出。`白云雨幕` (12 bytes) → `ç½äºé¨å¹` (12 个 Latin1 字符 → 24 bytes UTF-8)。
+
+**修复**:
+- 新增 `packages/server/src/utils/double-utf8.ts`: `reverseDoubleUtf8()` 检测并反转双 UTF-8 编码(所有 codepoint ≤ 0xFF 且 latin1→utf8 解码成功且与原值不同)
+- `fetchDeviceSelf()` 返回前调用 `reverseDoubleUtf8Fields()` 修复所有字符串字段
+- 新增 `migrate-wechat-double-utf8.ts` 启动迁移,修复历史 `wechat_bindings.display_name` 和 `users.avatar.seed`
+- 新增 `mojibake.ts` 前端检测工具 + 11 语言 locale 支持
+
+**验证**:
+```
+GET /api/auth/device-binding → display_name: "白云雨幕" ✓
+POST /api/auth/device-login → user.display_name: "白云雨幕" ✓
+```
+
+### 问题 2: WeChat 用户无法修改用户名
+
+**现象**: 修改用户名时提示"Current password is incorrect",即使输入正确密码也失败。
+
+**根因**: `tp_*` 用户(微信扫码创建)的初始密码是随机 UUID,他们自己不知道。`changeUsername` 对所有用户都要求 currentPassword,导致永远无法修改用户名。
+
+**修复**:
+- 后端 `changeUsername`: 对 `tp_*` 用户跳过 currentPassword 校验(他们的 JWT 已通过微信扫码验证)
+- 前端 `AccountSettings.vue`: WeChat 设备用户修改用户名时隐藏"当前密码"输入框
+- `packages/client/src/api/auth.ts`: `changeUsername` 允许 `currentPassword: null`
+
+**验证**:
+```
+POST /api/auth/change-username (不带 currentPassword) → {"success":true} ✓
+```
+
+### Commit
+
+`079e87a8` fix(wechat): 修复微信扫码用户名乱码 + WeChat 用户修改用户名免密码 (21 files, +601 -12)
+
+### 文件清单
+
+- `packages/server/src/utils/double-utf8.ts` (new)
+- `packages/server/src/services/token-platform-client.ts` (modified)
+- `packages/server/src/db/hermes/migrate-wechat-double-utf8.ts` (new)
+- `packages/server/src/db/hermes/schemas.ts` (modified)
+- `packages/server/src/controllers/auth.ts` (modified)
+- `packages/client/src/utils/mojibake.ts` (new)
+- `packages/client/src/api/auth.ts` (modified)
+- `packages/client/src/components/hermes/settings/AccountSettings.vue` (modified)
+- `packages/client/src/i18n/locales/*.ts` (11 files modified)
+- `tests/server/migrate-wechat-double-utf8.test.ts` (new)
+- `tests/server/token-platform-client.test.ts` (modified)
+
+---
+
 ## 2026-08-28 深夜续 · 实时对话接入会议上下文 + 演讲评分逐字稿下载
 
 按用户需求更新实时对话（RealtimeDialogPanel）：
