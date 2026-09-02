@@ -832,7 +832,7 @@ const headerTitle = computed(() =>
 );
 
 const showNewChatModal = ref(false);
-const newChatMode = ref<"standard" | "realtime" | "practice">("standard");
+const newChatMode = ref<"standard" | "realtime">("standard");
 // Qwen-Omni-Realtime model family — see docs:
 //   * qwen3.5-omni-flash-realtime  : faster, ≤80 audio turns / 480s audio / 120s video
 //   * qwen3.5-omni-plus-realtime   : smarter, ≤100 audio turns / 600s audio / 240s video
@@ -840,7 +840,27 @@ const newChatMode = ref<"standard" | "realtime" | "practice">("standard");
 // dialog reads the right config.
 type NewChatRealtimeModel = "qwen3.5-omni-flash-realtime" | "qwen3.5-omni-plus-realtime";
 const newChatRealtimeModel = ref<NewChatRealtimeModel>("qwen3.5-omni-flash-realtime");
-// 口语对练模式的配置：练习语言 / 练习方向（手动输入）/ 难度。
+
+/**
+ * realtime 实时对话之下的子模式（选择 realtime 后出现）：
+ *   - agent   （默认）：语音驱动 Hermes Agent —— 沿用既有 OmniRealtimeStage，
+ *     模型可通过 function calling 调用记忆/技能/会话/任务与 query_hermes_agent
+ *     的真实 Agent 工作台能力；
+ *   - practice（口语对练）：教练逐轮点评打分 + Markdown 分析报告。
+ *
+ * 扩展新模式：在 realtimeSubModeOptions 加一项（value + i18n labelKey）、
+ * 在抽屉加对应配置区、在 confirmNewChat 的 realtime 分支加一个子分支即可；
+ * 教练类模式（面试 / 销售话术等）复用 practice 的语言/方向/难度配置，
+ * 无需改动 SpeechPracticeStage。
+ */
+type NewChatRealtimeSubMode = "agent" | "practice";
+const newChatRealtimeSubMode = ref<NewChatRealtimeSubMode>("agent");
+const realtimeSubModeOptions: Array<{ value: NewChatRealtimeSubMode; labelKey: string }> = [
+  { value: "agent", labelKey: "omniRealtime.agentMode" },
+  { value: "practice", labelKey: "speechPractice.entry" },
+];
+
+// 口语对练（practice 子模式）的配置：练习语言 / 练习方向（手动输入）/ 难度。
 const newChatPracticeLanguage = ref<PracticeLanguage>("en");
 const newChatPracticeDirection = ref("");
 const newChatPracticeDifficulty = ref<PracticeDifficulty>("intermediate");
@@ -1147,7 +1167,6 @@ const newChatNeedsApiKey = computed(() =>
 );
 const canConfirmNewChat = computed(() => {
   if (newChatMode.value === "realtime") return !newChatLoading.value;
-  if (newChatMode.value === "practice") return !newChatLoading.value;
   if (newChatCategoryCreating.value) return false;
   if (!newChatProfile.value) return false;
   if (!newChatUsesProviderModel.value) return true;
@@ -1243,7 +1262,8 @@ async function openNewChatModal() {
   // opens so a previous pick doesn't leak into a new session. The user can
   // override again before confirming.
   newChatRealtimeModel.value = "qwen3.5-omni-flash-realtime";
-  // Reset the practice pickers (language / direction / difficulty) each time.
+  // Realtime 子模式默认回到 Agent 模式；对练配置（语言/方向/难度）也复位。
+  newChatRealtimeSubMode.value = "agent";
   newChatPracticeLanguage.value = "en";
   newChatPracticeDirection.value = "";
   newChatPracticeDifficulty.value = "intermediate";
@@ -1291,34 +1311,33 @@ function handleNewChatProviderChange(value: string) {
 async function confirmNewChat() {
   if (newChatMode.value === "realtime") {
     showNewChatModal.value = false;
-    // Persist the user-picked Qwen-Omni-Realtime model into the realtime
-    // store BEFORE we hand off to the dialog so OmniRealtimeStage reads
-    // the right config on connect. Without this the user is silently
-    // routed to whatever was last saved in localStorage, which is
-    // surprising when they explicitly picked the other variant.
-    realtimeModelStore.updateConfig({ model: newChatRealtimeModel.value });
-    // Always open realtime in a fresh session (the drawer is named
-    // "新建对话") and persist it server-side immediately so the dialog is
-    // visible in the sidebar / survives a page reload. Without the
-    // remote-create call the new session stayed `isLocalOnly=true`, the
-    // sidebar never showed it, and any subsequent refresh dropped the
-    // realtime transcript.
-    await openOmniRealtime({ createFresh: true, persistRemote: true });
-    return;
-  }
-
-  if (newChatMode.value === "practice") {
-    showNewChatModal.value = false;
-    // 口语对练：远端新建会话（标题带练习方向），再把练习配置交给舞台。
-    await openSpeechPractice({
-      createFresh: true,
-      persistRemote: true,
-      config: {
-        language: newChatPracticeLanguage.value,
-        direction: newChatPracticeDirection.value.trim().slice(0, 200),
-        difficulty: newChatPracticeDifficulty.value,
-      },
-    });
+    if (newChatRealtimeSubMode.value === "agent") {
+      // Agent 模式（默认）：语音实时对话 + Hermes Agent 工具能力。
+      // Persist the user-picked Qwen-Omni-Realtime model into the realtime
+      // store BEFORE we hand off to the dialog so OmniRealtimeStage reads
+      // the right config on connect. Without this the user is silently
+      // routed to whatever was last saved in localStorage, which is
+      // surprising when they explicitly picked the other variant.
+      realtimeModelStore.updateConfig({ model: newChatRealtimeModel.value });
+      // Always open realtime in a fresh session (the drawer is named
+      // "新建对话") and persist it server-side immediately so the dialog is
+      // visible in the sidebar / survives a page reload. Without the
+      // remote-create call the new session stayed `isLocalOnly=true`, the
+      // sidebar never showed it, and any subsequent refresh dropped the
+      // realtime transcript.
+      await openOmniRealtime({ createFresh: true, persistRemote: true });
+    } else {
+      // 口语对练子模式：远端新建会话（标题带练习方向），再把练习配置交给舞台。
+      await openSpeechPractice({
+        createFresh: true,
+        persistRemote: true,
+        config: {
+          language: newChatPracticeLanguage.value,
+          direction: newChatPracticeDirection.value.trim().slice(0, 200),
+          difficulty: newChatPracticeDifficulty.value,
+        },
+      });
+    }
     return;
   }
 
@@ -2694,59 +2713,70 @@ async function handleSessionModelCustomSubmit() {
               <NRadioButton value="realtime" data-testid="new-chat-realtime-option">
                 {{ t("omniRealtime.entry") }}
               </NRadioButton>
-              <NRadioButton value="practice" data-testid="new-chat-practice-option">
-                {{ t("speechPractice.entry") }}
-              </NRadioButton>
             </NRadioGroup>
           </label>
-          <div v-if="newChatMode === 'realtime'" class="new-chat-field-hint new-chat-realtime-hint">
-            {{ t("omniRealtime.entryHint") }}
-          </div>
-          <div v-if="newChatMode === 'practice'" class="new-chat-field-hint new-chat-realtime-hint">
-            {{ t("speechPractice.entryHint") }}
-          </div>
-          <label
-            v-if="newChatMode === 'realtime'"
-            class="new-chat-field new-chat-realtime-model-field"
-            data-testid="new-chat-realtime-model-field"
-          >
-            <span class="new-chat-label">{{ t("omniRealtime.modelPickerLabel") }}</span>
-            <NRadioGroup v-model:value="newChatRealtimeModel" name="new-chat-realtime-model">
-              <NRadioButton value="qwen3.5-omni-flash-realtime" data-testid="new-chat-realtime-model-flash">
-                {{ t("omniRealtime.modelFlash") }}
-              </NRadioButton>
-              <NRadioButton value="qwen3.5-omni-plus-realtime" data-testid="new-chat-realtime-model-plus">
-                {{ t("omniRealtime.modelPlus") }}
-              </NRadioButton>
-            </NRadioGroup>
-          </label>
-          <template v-if="newChatMode === 'practice'">
-            <label class="new-chat-field" data-testid="new-chat-practice-language-field">
-              <span class="new-chat-label">{{ t("speechPractice.language") }}</span>
-              <NSelect
-                v-model:value="newChatPracticeLanguage"
-                :options="practiceLanguageOptions.map((option) => ({ label: t(option.labelKey), value: option.value }))"
-              />
-            </label>
-            <label class="new-chat-field" data-testid="new-chat-practice-direction-field">
-              <span class="new-chat-label">{{ t("speechPractice.direction") }}</span>
-              <NInput
-                v-model:value="newChatPracticeDirection"
-                type="textarea"
-                :rows="3"
-                :maxlength="200"
-                show-count
-                :placeholder="t('speechPractice.directionPlaceholder')"
-              />
-            </label>
-            <label class="new-chat-field" data-testid="new-chat-practice-difficulty-field">
-              <span class="new-chat-label">{{ t("speechPractice.difficulty") }}</span>
-              <NRadioGroup v-model:value="newChatPracticeDifficulty" name="new-chat-practice-difficulty">
-                <NRadioButton value="beginner">{{ t("speechPractice.diffBeginner") }}</NRadioButton>
-                <NRadioButton value="intermediate">{{ t("speechPractice.diffIntermediate") }}</NRadioButton>
-                <NRadioButton value="advanced">{{ t("speechPractice.diffAdvanced") }}</NRadioButton>
+          <template v-if="newChatMode === 'realtime'">
+            <div class="new-chat-field-hint new-chat-realtime-hint">
+              {{ newChatRealtimeSubMode === "practice" ? t("speechPractice.entryHint") : t("omniRealtime.entryHint") }}
+            </div>
+            <!-- realtime 子模式：agent（默认）| practice（口语对练）。扩展新模式 =
+                 在 realtimeSubModeOptions 注册 + 下方加配置区 + confirmNewChat 加分分支。 -->
+            <label class="new-chat-field" data-testid="new-chat-realtime-submode-field">
+              <span class="new-chat-label">{{ t("omniRealtime.modeLabel") }}</span>
+              <NRadioGroup v-model:value="newChatRealtimeSubMode" name="new-chat-realtime-submode">
+                <NRadioButton
+                  v-for="option in realtimeSubModeOptions"
+                  :key="option.value"
+                  :value="option.value"
+                  :data-testid="`new-chat-realtime-submode-${option.value}`"
+                >
+                  {{ t(option.labelKey) }}
+                </NRadioButton>
               </NRadioGroup>
             </label>
+            <label
+              v-if="newChatRealtimeSubMode === 'agent'"
+              class="new-chat-field new-chat-realtime-model-field"
+              data-testid="new-chat-realtime-model-field"
+            >
+              <span class="new-chat-label">{{ t("omniRealtime.modelPickerLabel") }}</span>
+              <NRadioGroup v-model:value="newChatRealtimeModel" name="new-chat-realtime-model">
+                <NRadioButton value="qwen3.5-omni-flash-realtime" data-testid="new-chat-realtime-model-flash">
+                  {{ t("omniRealtime.modelFlash") }}
+                </NRadioButton>
+                <NRadioButton value="qwen3.5-omni-plus-realtime" data-testid="new-chat-realtime-model-plus">
+                  {{ t("omniRealtime.modelPlus") }}
+                </NRadioButton>
+              </NRadioGroup>
+            </label>
+            <template v-if="newChatRealtimeSubMode === 'practice'">
+              <label class="new-chat-field" data-testid="new-chat-practice-language-field">
+                <span class="new-chat-label">{{ t("speechPractice.language") }}</span>
+                <NSelect
+                  v-model:value="newChatPracticeLanguage"
+                  :options="practiceLanguageOptions.map((option) => ({ label: t(option.labelKey), value: option.value }))"
+                />
+              </label>
+              <label class="new-chat-field" data-testid="new-chat-practice-direction-field">
+                <span class="new-chat-label">{{ t("speechPractice.direction") }}</span>
+                <NInput
+                  v-model:value="newChatPracticeDirection"
+                  type="textarea"
+                  :rows="3"
+                  :maxlength="200"
+                  show-count
+                  :placeholder="t('speechPractice.directionPlaceholder')"
+                />
+              </label>
+              <label class="new-chat-field" data-testid="new-chat-practice-difficulty-field">
+                <span class="new-chat-label">{{ t("speechPractice.difficulty") }}</span>
+                <NRadioGroup v-model:value="newChatPracticeDifficulty" name="new-chat-practice-difficulty">
+                  <NRadioButton value="beginner">{{ t("speechPractice.diffBeginner") }}</NRadioButton>
+                  <NRadioButton value="intermediate">{{ t("speechPractice.diffIntermediate") }}</NRadioButton>
+                  <NRadioButton value="advanced">{{ t("speechPractice.diffAdvanced") }}</NRadioButton>
+                </NRadioGroup>
+              </label>
+            </template>
           </template>
           <template v-if="newChatMode === 'standard'">
           <label class="new-chat-field">
@@ -2938,10 +2968,10 @@ async function handleSessionModelCustomSubmit() {
               @click="confirmNewChat"
             >
               {{ newChatMode === "realtime"
-                ? t("meeting.realtime.startSession")
-                : newChatMode === "practice"
+                ? newChatRealtimeSubMode === "practice"
                   ? t("speechPractice.startSession")
-                  : t("common.create") }}
+                  : t("meeting.realtime.startSession")
+                : t("common.create") }}
             </NButton>
           </div>
         </template>

@@ -22,24 +22,36 @@ const instructionsSource = readFileSync(`${CLIENT_SRC}/utils/realtime-instructio
 const practiceModeSource = readFileSync(`${CLIENT_SRC}/utils/practice-mode.ts`, 'utf8')
 const routesSource = readFileSync(`${SERVER_SRC}/routes/index.ts`, 'utf8')
 
-describe('speech-practice new-chat entry', () => {
-  it('ChatPanel renders the practice radio option with a test id', () => {
-    expect(panelSource).toContain('value="practice"')
-    expect(panelSource).toContain('data-testid="new-chat-practice-option"')
+describe('speech-practice new-chat entry (realtime sub-mode)', () => {
+  it('keeps the top-level conversation mode at standard | realtime only', () => {
+    // 口语对练不是顶层第三档，而是 realtime 下的一个子模式选项
+    expect(panelSource).toContain('value="realtime"')
+    expect(panelSource).not.toContain('newChatMode = ref<"standard" | "realtime" | "practice">')
+  })
+
+  it('realtime defaults to the agent sub-mode and offers practice via a registry', () => {
+    expect(panelSource).toContain('NewChatRealtimeSubMode = "agent" | "practice"')
+    expect(panelSource).toContain('const newChatRealtimeSubMode = ref<NewChatRealtimeSubMode>("agent")')
+    expect(panelSource).toContain('realtimeSubModeOptions')
+    expect(panelSource).toContain('omniRealtime.agentMode')
+    expect(panelSource).toContain('new-chat-realtime-submode-')
     expect(panelSource).toContain('t("speechPractice.entry")')
   })
 
-  it('ChatPanel collects language / direction / difficulty before starting', () => {
+  it('shows the practice config (language / direction / difficulty) inside realtime', () => {
     expect(panelSource).toContain('newChatPracticeLanguage')
     expect(panelSource).toContain('newChatPracticeDirection')
     expect(panelSource).toContain('newChatPracticeDifficulty')
     expect(panelSource).toContain('data-testid="new-chat-practice-direction-field"')
+    expect(panelSource).toContain("newChatRealtimeSubMode === 'practice'")
   })
 
-  it('ChatPanel mounts SpeechPracticeStage in the teleport with the config', () => {
+  it('routes the agent sub-mode to OmniRealtimeStage and practice to SpeechPracticeStage', () => {
     expect(panelSource).toContain('SpeechPracticeStage')
     expect(panelSource).toContain('showSpeechPractice && speechPracticeConfig')
     expect(panelSource).toContain(':config="speechPracticeConfig"')
+    expect(panelSource).toContain('openOmniRealtime({ createFresh: true, persistRemote: true })')
+    expect(panelSource).toContain('openSpeechPractice({')
   })
 })
 

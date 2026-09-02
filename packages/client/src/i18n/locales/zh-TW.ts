@@ -635,6 +635,8 @@ export default {
   omniRealtime: {
     entry: '即時對話',
     entryHint: '免持與 AI 即時語音對話，可隨時打斷',
+    modeLabel: '模式',
+    agentMode: 'Agent 模式',
     backendUnavailable: '即時對話服務未就緒，請先在會議模式中設定並啟動語音服務後再試',
     sessionError: '即時連線出錯，請重試；若反覆失敗請檢查會議語音服務是否已啟動',
     toolRunning: '正在查詢：{tool} …',

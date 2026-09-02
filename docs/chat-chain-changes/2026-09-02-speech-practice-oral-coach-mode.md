@@ -1,15 +1,18 @@
 ---
 date: 2026-09-02
 pr: pending
-feature: Speech-practice (口语对练) conversation mode in New Chat
-impact: New Chat now offers a third conversation mode — 口语对练 — where the user picks a target language, difficulty, and types a practice direction; the Omni-Realtime voice session runs under a coach persona that calls a new `submit_practice_feedback` tool after every user turn (structured 1–10 scores on fluency/pronunciation/grammar/vocabulary/content plus comments), keeps all existing workspace tools (memory/skills/sessions/jobs/`query_hermes_agent`) available, persists each turn and tool call into the chat session, and lets the user save the full per-turn analysis + transcript as a Markdown report (persisted server-side under the Web UI state dir and downloadable).
+feature: Realtime sub-modes — Agent mode (default) + speech-practice (口语对练) coach mode in New Chat
+impact: New Chat's realtime entry now hosts extensible sub-modes: Agent mode (default; unchanged voice dialog where the model can drive the Hermes Agent toolchain via function calling) and 口语对练 (speech practice), where the user picks a target language, difficulty, and types a practice direction. The practice session runs under a coach persona that calls a new `submit_practice_feedback` tool after every user turn (structured 1–10 scores on fluency/pronunciation/grammar/vocabulary/content plus comments), keeps all existing workspace tools (memory/skills/sessions/jobs/`query_hermes_agent`) available, persists each turn and tool call into the chat session, and lets the user save the full per-turn analysis + transcript as a Markdown report (persisted server-side under the Web UI state dir and downloadable). New coach modes (interview / sales practice, etc.) are added by registering one sub-mode option + a drawer branch and reuse the same practice stage/config.
 ---
 
-# Speech-practice (口语对练) conversation mode in New Chat
+# Realtime sub-modes: Agent mode (default) + speech-practice (口语对练) in New Chat
 
 ## Mode entry (新建对话 drawer)
 
-- **`ChatPanel.vue`** adds a third radio option `practice` (口语对练) next to `standard` / `realtime`, with a language picker (中文/English/日本語/한국어), a free-text 练习方向 textarea (optional — empty means free conversation), and a difficulty selector (入门/进阶/高级). Confirming creates a fresh server-persisted session titled with the direction, then mounts the practice stage with the chosen config.
+- **`ChatPanel.vue`** keeps the top-level conversation-mode radio at `standard | realtime`; picking realtime reveals a 模式 (sub-mode) picker driven by the `realtimeSubModeOptions` registry (`{ value, labelKey }`):
+  - `agent`（默认）— the original Agent-mode behavior: hands-free voice dialog (`OmniRealtimeStage`) whose model can drive the Hermes Agent toolchain via function calling (memory / skills / sessions / jobs / `query_hermes_agent` real workspace capabilities), plus the Qwen-Omni model picker;
+  - `practice`（口语对练）— the coach mode with a language picker (中文/English/日本語/한국어), a free-text 练习方向 textarea (optional — empty means free conversation), and a difficulty selector (入门/进阶/高级). Confirming creates a fresh server-persisted session titled with the direction, then mounts the practice stage with the chosen config.
+- Extensibility: future coach modes (面试 / 销售话术 …) add one `realtimeSubModeOptions` entry (label key in `omniRealtime` / `speechPractice` namespaces), a drawer config area, and a `confirmNewChat` sub-branch — `SpeechPracticeStage` and the language/direction/difficulty config are reused unchanged.
 - **`SpeechPracticeStage.vue` (new).** Full-screen voice stage reusing the exact `useOmniRealtime` audio chain as `OmniRealtimeStage` (hands-free mic, server VAD, barge-in, transcript bubbles, mute/interrupt/end controls). Distinctive additions:
   - Session instructions are composed via `buildRealtimeInstructions(soul, { history, scenario })` — the scenario block (from `utils/practice-mode.ts`) is appended last and instructs the model to act as an oral coach in the target language around the user's direction.
   - Right-hand scoreboard shows the latest turn's structured feedback plus the history of earlier turns (每轮评分); overall/fluency/pronunciation/grammar/vocabulary/content are color-coded.

@@ -729,6 +729,8 @@ export default {
   omniRealtime: {
     entry: 'Echtzeit',
     entryHint: 'Freihändige Sprachkonversation mit der KI — jederzeit unterbrechbar',
+    modeLabel: 'Modus',
+    agentMode: 'Agent-Modus',
     backendUnavailable: 'Der Echtzeitdienst ist nicht bereit. Konfigurieren und starten Sie zuerst den Sprachdienst im Meeting-Modus und versuchen Sie es erneut.',
     sessionError: 'Echtzeitverbindung fehlgeschlagen. Bitte erneut versuchen; falls es weiterhin fehlschlägt, prüfen Sie, ob der Meeting-Sprachdienst läuft.',
     toolRunning: 'Abfrage läuft: {tool} …',
