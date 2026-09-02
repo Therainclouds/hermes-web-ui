@@ -69,6 +69,21 @@ export const meetingStorageApi = {
     return data.meetings || []
   },
 
+  /**
+   * 仅更新标题（若该会议在服务端已存在），用于 AI 自动命名后的同步。
+   * 只对已在服务端落库的会议生效，避免给纯本地会议凭空创建服务端空壳。
+   */
+  async updateMeetingTitle(meetingId: string, title: string): Promise<void> {
+    if (!meetingId || !title) return
+    const existing = await this.getMeeting(meetingId)
+    if (!existing) return
+    await this.saveMeeting(meetingId, {
+      ...existing,
+      title,
+      updatedAt: Date.now(),
+    })
+  },
+
   // Audio
   async uploadAudio(meetingId: string, audioBlob: Blob): Promise<void> {
     const headers = getAuthHeaders()

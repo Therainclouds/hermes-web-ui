@@ -5,7 +5,8 @@
  * 在其上叠加语音场景行为约束与工具使用守则。纯函数、无副作用，便于单测。
  *
  * 拼接顺序（沿用 RealtimeDialogPanel 的 `——` 分隔符风格）：
- *   {soul} → {实时补充指令} → {工具守则} → 可选 {历史摘要}
+ *   {soul} → {实时补充指令} → {工具守则} → 可选 {历史摘要} / {会议上下文}
+ *   → 可选 {场景块（scenario，追加在最末，优先级最高）}
  */
 
 /** SOUL.md 注入上限（与 omni-tools 中 per-section 记忆上限 1500 一致）。 */
@@ -65,10 +66,18 @@ function truncate(value: string, limit: number, suffix: string): string {
  *    断线续聊场景）；
  *  - `meetingContext`：会议上下文（标题 / 时间 / 带时间戳逐字稿，会议侧
  *    实时对话面板注入）。两者语义不同，分别标注，互不混用。
+ *  - `scenario`：场景块（如口语对练的行为守则与评分契约），原样追加在
+ *    所有既有块之后。调用方负责按场景维护其文案（例如与下发的工具列表
+ *    保持一致），本函数不解释其内容。
  */
 export function buildRealtimeInstructions(
   soul: string | null | undefined,
-  extras: { history?: string; meetingContext?: string } = {},
+  extras: {
+    history?: string
+    meetingContext?: string
+    /** 场景块原文，追加在所有既有块之后；空串/undefined 时不追加。 */
+    scenario?: string
+  } = {},
 ): string {
   const baseSoul = (soul || '').trim() || DEFAULT_SOUL_FALLBACK
   const soulSnippet = truncate(baseSoul, SOUL_LIMIT, '（人格描述已截断）')
@@ -84,6 +93,10 @@ export function buildRealtimeInstructions(
       + '不要编造上下文之外的事实；若用户问题与会议无关也可以正常闲聊。\n'
       + trimmedContext,
     )
+  }
+  const trimmedScenario = (extras.scenario || '').trim()
+  if (trimmedScenario) {
+    parts.push(`——\n${trimmedScenario}`)
   }
   return parts.join('\n\n')
 }

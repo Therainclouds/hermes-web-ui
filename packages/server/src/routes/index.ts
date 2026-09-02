@@ -56,6 +56,7 @@ import { expertsRoutes } from './hermes/experts'
 import { meetingASRRoutes } from './hermes/meeting-asr'
 import { meetingStorageRoutes } from './hermes/meeting-storage'
 import { realtimeAgentRoutes } from './hermes/realtime-agent'
+import { speechPracticeRoutes } from './hermes/speech-practice'
 
 /**
  * Register all routes on the Koa app.
@@ -127,4 +128,5 @@ export function registerRoutes(app: any, authMiddleware: Array<(ctx: Context, ne
   app.use(meetingASRRoutes.routes())            // Meeting ASR service management
   app.use(meetingStorageRoutes.routes())        // Meeting data storage
   app.use(realtimeAgentRoutes.routes())         // Realtime tool → Hermes Agent one-shot bridge
+  app.use(speechPracticeRoutes.routes())        // Speech-practice Markdown report persistence
 }

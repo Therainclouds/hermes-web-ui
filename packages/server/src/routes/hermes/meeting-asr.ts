@@ -38,6 +38,9 @@ meetingASRRoutes.post('/api/meeting-asr/assist/analyze', ctrl.analyzeAssist)
 // Report generation (SSE streaming)
 meetingASRRoutes.post('/api/meeting-asr/report/stream', ctrl.streamReport)
 
+// Meeting auto-naming (single lightweight title request after first AI analysis)
+meetingASRRoutes.post('/api/meeting-asr/title', ctrl.meetingTitle)
+
 // Note: transcript and prompts endpoints were removed as dead code (v0.7.6 audit #17).
 // Frontend manages transcripts locally via meetingStore; prompts are configured
 // via /api/meeting-asr/config and used directly by the Python analysis service.

@@ -1,4 +1,5 @@
 import type { SceneTemplate } from './scene-templates'
+import { REPORT_TITLE_INSTRUCTION } from './scene-templates'
 import { parseAnalysisRound, type AnalysisRound } from './report-parser'
 import type { AgentBridgeOutput } from '../hermes/agent-bridge/client'
 
@@ -146,7 +147,7 @@ export async function* streamAgentReport(
       agentSessionId,
       `以下是完整的会议转写内容：\n\n${transcript}`,
       undefined,
-      template.reportPrompt,
+      `${template.reportPrompt}\n\n${REPORT_TITLE_INSTRUCTION}`,
       profile,
       { source: 'meeting-asr' },
     )

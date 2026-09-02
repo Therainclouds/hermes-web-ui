@@ -363,7 +363,6 @@ export async function pushAssistSentence(ctx: Context): Promise<void> {
 
 // Report generation (SSE streaming)
 export async function streamReport(ctx: Context): Promise<void> {
-  console.log('[streamReport] 收到报告请求, method:', ctx.method)
   const { realtimeAssistService } = await import('../../services/meeting-asr/realtime-assist')
   const { sessionId, sceneTemplate, transcript, profile } = (ctx.request.body as any) || {}
 
@@ -414,3 +413,26 @@ export async function streamReport(ctx: Context): Promise<void> {
 // Note: transcripts and prompts were removed as dead code (v0.7.6 audit #17).
 // Frontend manages transcript locally via meetingStore; prompts are configured
 // via /api/meeting-asr/config and used by the Python analysis service directly.
+
+/**
+ * 会议自动命名（首次 AI 分析完成时，前端基于当前已有转写调用一次，拿到简短标题）。
+ * 走 meeting-asr 直调 LLM 快路径（config.json），任一步失败都返回 { title: null }，
+ * 不打断会议主流程（最终报告标题行仍会兜底命名）。
+ */
+export async function meetingTitle(ctx: Context): Promise<void> {
+  const { transcript } = (ctx.request.body as any) || {}
+  if (!transcript || typeof transcript !== 'string' || !transcript.trim()) {
+    ctx.status = 400
+    ctx.body = { error: 'transcript is required' }
+    return
+  }
+
+  try {
+    const { generateMeetingTitle } = await import('../../services/meeting-asr/direct-llm')
+    const title = await generateMeetingTitle(transcript)
+    ctx.body = { title }
+  } catch (err) {
+    logger.warn('[meeting-asr-ctrl] meetingTitle failed: %s', err instanceof Error ? err.message : String(err))
+    ctx.body = { title: null }
+  }
+}
