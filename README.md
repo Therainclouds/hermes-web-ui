@@ -355,6 +355,15 @@ Real-time voice dialogue with AI-powered oral practice and coaching.
 - Strict target-language enforcement: coach responds only in the practice language
 - Session entry routes automatically based on session type
 
+**Audio & Report Enhancements (v0.8.0):**
+
+- **Graceful audio shutdown:** Timed practice now drains the current sentence before disconnecting — AI speech is no longer cut off mid-word when the timer expires
+- **Cross-tool call fix:** AI responses spanning multiple tool calls no longer get truncated when a new response arrives while audio is still playing
+- **Echo interrupt protection:** Improved barge-in threshold on Linux/speakers with weak AEC — AI no longer cuts itself off
+- **Qwen3.5-Omni multimodal report:** After each session, audio recordings and camera frames are submitted to DashScope Qwen3.5-Omni for AI-powered full-modal depth analysis, appended to the deterministic report
+- **Streaming AI report:** AI analysis streams in real-time as markdown while generating — no waiting for the full result
+- **Report download:** After saving, the report file appears as a downloadable attachment in the chat page — accessible even after closing the practice stage
+
 **Legacy Voice Retirement (v0.8.0):**
 
 - The legacy realtime voice page has been retired
