@@ -79,7 +79,6 @@ let energySmooth = 0
 let paletteMix = 1
 let prevPaletteKey = 'idle'
 let time = 0
-let blobRotation = 0
 
 function smoothLevel(current: number, target: number): number {
   return current + (target - current) * (target > current ? 0.3 : 0.08)
@@ -183,79 +182,74 @@ function draw(): void {
     ctx.fill()
   }
 
-  // --- 3) 中心液体星体（canvas blob） ---------------------------
-  drawBlob(ctx, cx, cy, unit, energy, coreInTriplet, coreInAlpha)
+  // --- 3) 中心水滴（静止形状 + 整体呼吸） -----------------------
+  drawDrop(ctx, cx, cy, unit, energy, coreInTriplet, coreInAlpha)
+
+  // 顶部柔光高光，固定位置不游走。
+  drawHighlight(ctx, cx, cy, unit, energy)
 
   // 顶部高光：跟随 blob 上半弧最高点的位置，给液珠打一束斜光。
   drawHighlight(ctx, cx, cy, unit, energy)
 }
 
 /**
- * 在 N=10 顶点的 catmull-rom 圆周上叠加多频正弦波，bezier 闭合为液珠。
+ * 中心水滴：用户要的"静止水滴，对话时跟随音量整体波动"。
  *
- * 每顶点半径：
- *   r_i = baseRadius * (1 + baseWave_i * 0.18 + audioWave_i * 0.28)
+ * 关键差异（旧版是 10 顶点 catmull-rom blob + 多频正弦 + 慢自旋）：
+ *  - 单一垂直方向的水滴形状（底圆 + 顶部微凸尖），左右严格对称
+ *  - 没有顶点级起伏，只有"整体高度"由单一能量信号驱动
+ *  - 不自旋（去掉 blobRotation）
+ *  - 用户说话时整体短促微鼓；AI 说话时整体缓慢上下呼吸
  *
- * baseWave_i = 基线起伏（始终存在，让液珠"活着"）
- * audioWave_i = 由能量驱动，AI 说话时主呼吸方向固定向"上"（垂直方向）
- *
- * 用户说话时 inputSmooth 单独把整体基础半径上推 5%，让液珠"鼓一下"。
+ * 路径：左侧半圆 → 底部 → 右侧半圆 → 顶部尖顶 → 闭合。
+ * 高度 h 受 energy 调制（呼吸），宽度 w 跟随 h 等比例缩放。
  */
-function drawBlob(
+function drawDrop(
   ctx: CanvasRenderingContext2D,
   cx: number, cy: number, unit: number,
   energy: number, colorTriplet: string, alpha: number,
 ): void {
-  const N = 10
-  // 用户说话时液珠微鼓：基线半径 +5% 峰值，由独立平滑通道驱动。
-  const userPulse = smoothInput * 0.06
-  const baseRadius = unit * (0.30 + energy * 0.06 + userPulse)
+  // 用户说话时短促微鼓，由 smoothInput 独立通道驱动。
+  const userPulse = smoothInput * 0.07
+  // 静态基础尺寸：宽 w = 0.28 × unit，高 h = 1.18 × w（水滴）
+  const w = unit * (0.28 + energy * 0.04 + userPulse)
+  const h = w * (1.18 + energy * 0.08)
 
-  // 液珠慢速自旋（≤ 0.3 rad/s），跟随能量微调但不抽搐。
-  blobRotation += 0.0035 + energy * 0.004
-
-  // 收集每帧顶点位置（N+1 个首尾相接）。
-  const points: Array<{ x: number; y: number }> = []
-  for (let i = 0; i < N; i += 1) {
-    const theta = (i / N) * Math.PI * 2 + blobRotation
-    // 基波：低频多谐波叠加，呼吸感来自多个不同时长的正弦。
-    const baseWave =
-      0.6 * Math.sin(time * 0.55 + i * 0.7) +
-      0.4 * Math.sin(time * 0.31 + i * 1.3 + 1.2)
-    // 音频驱动波：方向固定向上，让 AI 说话时液珠向"上"凸起，模拟发声方向。
-    // i=7 附近对应 top (sin(theta) ≈ 1)。
-    const audioWave =
-      0.7 * Math.sin(time * 1.7 + i * 0.9) +
-      0.3 * Math.sin(time * 2.4 + i * 1.7 + 0.6)
-    const radial = baseRadius * (1 + baseWave * 0.18 + audioWave * energy * 0.28)
-    points.push({
-      x: cx + Math.cos(theta) * radial,
-      y: cy + Math.sin(theta) * radial,
-    })
-  }
-
-  // Catmull-Rom → Bezier 闭合：每段用一个控制点前后加权绘制。
+  // 单一对称水滴路径（左半圆 → 底 → 右半圆 → 顶部尖顶 → 闭合）。
   ctx.beginPath()
-  ctx.moveTo(points[0]!.x, points[0]!.y)
-  for (let i = 0; i < N; i += 1) {
-    const p0 = points[(i - 1 + N) % N]!
-    const p1 = points[i]!
-    const p2 = points[(i + 1) % N]!
-    const p3 = points[(i + 2) % N]!
-    const cp1x = p1.x + (p2.x - p0.x) / 6
-    const cp1y = p1.y + (p2.y - p0.y) / 6
-    const cp2x = p2.x - (p3.x - p1.x) / 6
-    const cp2y = p2.y - (p3.y - p1.y) / 6
-    ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y)
-  }
+  ctx.moveTo(cx - w, cy)
+  // 左下半圆
+  ctx.bezierCurveTo(
+    cx - w, cy + h * 0.55,
+    cx - w * 0.42, cy + h,
+    cx, cy + h,
+  )
+  // 右下半圆
+  ctx.bezierCurveTo(
+    cx + w * 0.42, cy + h,
+    cx + w, cy + h * 0.55,
+    cx + w, cy,
+  )
+  // 右上到顶部尖顶
+  ctx.bezierCurveTo(
+    cx + w, cy - h * 0.6,
+    cx + w * 0.32, cy - h * 1.04,
+    cx, cy - h * 1.08,
+  )
+  // 顶部尖顶到左上
+  ctx.bezierCurveTo(
+    cx - w * 0.32, cy - h * 1.04,
+    cx - w, cy - h * 0.6,
+    cx - w, cy,
+  )
   ctx.closePath()
 
-  // 内部径向渐变填色：左上是亮区，右下是暗区，模拟立体打光。
+  // 内部径向渐变：左上亮区（受光），右下暗区。能量高时中心更亮。
   const grad = ctx.createRadialGradient(
-    cx - baseRadius * 0.4, cy - baseRadius * 0.5, baseRadius * 0.05,
-    cx + baseRadius * 0.2, cy + baseRadius * 0.3, baseRadius * 1.1,
+    cx - w * 0.42, cy - h * 0.45, w * 0.06,
+    cx + w * 0.25, cy + h * 0.35, Math.max(w, h) * 1.15,
   )
-  grad.addColorStop(0, `rgba(${colorTriplet}, ${Math.min(1, alpha + energy * 0.1)})`)
+  grad.addColorStop(0, `rgba(${colorTriplet}, ${Math.min(1, alpha + energy * 0.12)})`)
   grad.addColorStop(0.55, `rgba(${colorTriplet}, ${alpha * 0.55})`)
   grad.addColorStop(1, `rgba(${colorTriplet}, 0)`)
   ctx.fillStyle = grad

@@ -855,6 +855,14 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
   /** Stop assistant playback and cancel the in-flight response (manual barge-in). */
   function interrupt(): void {
     stopPlayback()
+    // Clear the live subtitle text synchronously so the bubble layer
+    // reflows once, in this tick. Without this, the watcher on
+    // `isOutputPlaying` (cleared inside `stopPlayback()`) fires in a
+    // separate Vue flush and the bubble-stack recomputes twice in one
+    // interrupt — that double recompute is the visible "chat log
+    // jumps" flicker. The watcher still serves the natural-playback
+    // finish path; this is the manual-cancel companion.
+    liveAssistantText.value = ''
     if (!ws || ws.readyState !== WebSocket.OPEN) return
     try { ws.send(JSON.stringify({ type: 'cancel' })) } catch { /* ignore */ }
   }

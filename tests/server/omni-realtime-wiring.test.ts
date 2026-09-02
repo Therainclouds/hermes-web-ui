@@ -531,6 +531,30 @@ describe('omni-realtime camera frame wiring', () => {
     expect(source).toMatch(/input_audio_buffer\.(?:speech_started|speech_stopped|committed|cleared)[\s\S]{0,1000}_audio_appended_since_commit\s*=\s*False/)
   })
 
+  it('proxy swallows "append image before append audio" instead of surfacing it as a UI error', () => {
+    // Regression guard for the user-reported red-banner "Error append image
+    // before append audio": the local per-commit guard above (test 510)
+    // catches the common path, but a stale race can still let a frame slip
+    // through to DashScope. The proxy must drop the upstream error event
+    // silently — it is a proxy-internal audit issue, not a user-facing
+    // fault. The filter belongs server-side so every future client (web,
+    // mobile, etc.) inherits the suppression without regex-matching third
+    // party English error copy.
+    const source = readFileSync(proxy, 'utf8')
+    expect(source).toMatch(/append image before append audio/)
+    // The filter must be inside the `translate_event()` error branch — pin
+    // to that function's body so the regex cannot accidentally match an
+    // unrelated upstream pump `event == "error"` branch elsewhere.
+    // The proxy file is CRLF, so allow either line ending in the anchor.
+    const translateEventBody = source.match(
+      /def translate_event\([\s\S]*?\r?\n    return None\r?\n/,
+    )
+    expect(translateEventBody, 'translate_event() body must end with return None').toBeTruthy()
+    expect(translateEventBody![0]).toMatch(/event == "error"/)
+    expect(translateEventBody![0]).toMatch(/append image before append audio/)
+    expect(translateEventBody![0]).toMatch(/return\s+None/)
+  })
+
   it('useOmniRealtime exposes sendImage and sends the image control frame', () => {
     const source = readFileSync(`${CLIENT_SRC}/composables/useOmniRealtime.ts`, 'utf8')
     expect(source).toMatch(/function sendImage\(/)

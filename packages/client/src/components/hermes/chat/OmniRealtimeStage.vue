@@ -196,16 +196,19 @@ interface StageBubble {
 }
 
 /**
- * Q 弹对话气泡层：最近 3 条已完成轮次 + 进行中的 live 文本（各角色最多一条，
- * 拼在气泡内实时增长）。第 4 条入列时最旧的自然被挤出，TransitionGroup 的
- * leave 动画负责上移淡出。完整历史已增量持久化到聊天会话，舞台只保留
- * 沉浸所需的最近几条。
+ * Q 弹对话气泡层：分两段渲染——
+ *   - committedBubbles：最近 3 条已完成轮次，使用 omni-bubble 命名空间的
+ *     弹簧入场动画
+ *   - liveBubble：最多一条进行中的 live 文本，使用 omni-bubble-live 命名
+ *     空间的 80ms 淡入淡出，没有弹簧
+ * 两段用独立的 TransitionGroup，避免用户打断时 committed 行的弹簧 leave
+ * 与 live 行的 leave 同时跑造成 bubble 高度上下跳动。
  *
  * 重影守卫：commitAssistantTurn 刻意保留 liveAssistantText 直到音频播完
  * （字幕跟随播放），这会让「刚提交的 assistant 轮次」和「live 气泡」同屏
  * 显示同一段文字——两者文本一致时只保留 live 气泡。
  */
-const bubbles = computed<StageBubble[]>(() => {
+const committedBubbles = computed<StageBubble[]>(() => {
   const turns = [...omni.turns.value]
   const liveAssistant = omni.liveAssistantText.value.trim()
   if (liveAssistant) {
@@ -214,19 +217,22 @@ const bubbles = computed<StageBubble[]>(() => {
       turns.pop()
     }
   }
-  const list: StageBubble[] = turns.slice(-3).map(t => ({
+  return turns.slice(-3).map(t => ({
     key: `${t.role}:${t.timestamp}`,
     role: t.role,
     text: t.text,
     live: false,
   }))
+})
+
+const liveBubble = computed<StageBubble | null>(() => {
   if (omni.liveUserText.value) {
-    list.push({ key: 'live-user', role: 'user', text: omni.liveUserText.value, live: true })
+    return { key: 'live-user', role: 'user', text: omni.liveUserText.value, live: true }
   }
-  if (liveAssistant) {
-    list.push({ key: 'live-assistant', role: 'assistant', text: omni.liveAssistantText.value, live: true })
+  if (omni.liveAssistantText.value) {
+    return { key: 'live-assistant', role: 'assistant', text: omni.liveAssistantText.value, live: true }
   }
-  return list.slice(-4)
+  return null
 })
 
 const caption = computed(() => {
@@ -622,30 +628,32 @@ onBeforeUnmount(() => {
     :aria-label="t('meeting.realtime.title')"
     data-testid="omni-realtime-stage"
   >
-    <!-- 星云 / 光晕氛围叠层（public/realtime/*.svg）：pointer-events:none、
-         mix-blend-mode 融合，让浅色背景的银河不被硬切。位置用百分比相对
-         容器，缩放靠 aspect-ratio 保持比例。 -->
-    <img
-      src="/realtime/nebula-a.svg"
-      class="omni-stage__nebula omni-stage__nebula--a"
-      alt=""
-      aria-hidden="true"
-      draggable="false"
-    />
-    <img
-      src="/realtime/nebula-b.svg"
-      class="omni-stage__nebula omni-stage__nebula--b"
-      alt=""
-      aria-hidden="true"
-      draggable="false"
-    />
-    <img
-      src="/realtime/halo-soft.svg"
-      class="omni-stage__halo"
-      alt=""
-      aria-hidden="true"
-      draggable="false"
-    />
+    <!-- Backdrop 层：承载主底色 + 星云/光晕氛围，z-index:0 让玻璃面板的
+         backdrop-filter 能真正模糊到这些层（之前 .omni-stage 直接用
+         不透明 var(--bg-primary) 把 nebula 盖死了）。 -->
+    <div class="omni-stage__backdrop" aria-hidden="true">
+      <img
+        src="/realtime/nebula-a.svg"
+        class="omni-stage__nebula omni-stage__nebula--a"
+        alt=""
+        aria-hidden="true"
+        draggable="false"
+      />
+      <img
+        src="/realtime/nebula-b.svg"
+        class="omni-stage__nebula omni-stage__nebula--b"
+        alt=""
+        aria-hidden="true"
+        draggable="false"
+      />
+      <img
+        src="/realtime/halo-soft.svg"
+        class="omni-stage__halo"
+        alt=""
+        aria-hidden="true"
+        draggable="false"
+      />
+    </div>
 
     <header class="omni-stage__header">
       <button class="omni-stage__back" type="button" :aria-label="t('realtimeVoice.back')" @click="closeStage">
@@ -737,11 +745,23 @@ onBeforeUnmount(() => {
 
         <TransitionGroup name="omni-bubble" tag="div" class="omni-stage__bubbles" aria-live="polite">
           <div
-            v-for="b in bubbles"
+            v-for="b in committedBubbles"
             :key="b.key"
             class="omni-stage__bubble"
-            :class="[`omni-stage__bubble--${b.role}`, { 'omni-stage__bubble--live': b.live }]"
+            :class="[`omni-stage__bubble--${b.role}`]"
           >{{ b.text }}</div>
+        </TransitionGroup>
+
+        <!-- live 气泡独立命名空间 + 短淡入淡出，避免与 committed 行的弹簧
+             leave 同时跑造成 bubble 高度上下跳动。容器绝对定位在 committed
+             之上同一区域，opacity-only 切换。 -->
+        <TransitionGroup name="omni-bubble-live" tag="div" class="omni-stage__bubble-live-slot" aria-live="polite">
+          <div
+            v-if="liveBubble"
+            :key="liveBubble.key"
+            class="omni-stage__bubble omni-stage__bubble--live"
+            :class="[`omni-stage__bubble--${liveBubble.role}`]"
+          >{{ liveBubble.text }}</div>
         </TransitionGroup>
 
         <p
@@ -871,10 +891,25 @@ onBeforeUnmount(() => {
   flex-direction: column;
   isolation: isolate;
   overflow: hidden;
-  /* 主体色全跟随：light 下浅白、dark 下墨黑。canvas 内部的星体保留三态
-   * 调色板作为视觉锚点不跟随，但外部所有面板文字都跟主题走。 */
-  background: var(--bg-primary);
+  /* 透明背景：把 "用什么颜色作为底色" 的决定权让给 backdrop 层。
+   * 之前用 var(--bg-primary) 不透明背景，会把 nebula/halo 盖死（z-index:-1
+   * 仍在 stacking context 内部），玻璃面板的 backdrop-filter 只能"模糊"
+   * 一块平涂颜色 → 看起来还是不透明色块。改为 transparent 让
+   * 玻璃面板透过 nebula 看到星空。 */
+  background: transparent;
   color: var(--text-primary);
+}
+
+/* 全屏 backdrop 层：承担 var(--bg-primary) 主底色 + nebula/halo 氛围。
+ * z-index:0（不再 -1）让玻璃面板的 backdrop-filter 能真正"模糊"它。
+ * --bg-primary 是 rgba(--bg-primary-rgb, 0.85) 而不是纯不透明，避免
+ * 完全压死 body 透出的微弱底色。 */
+.omni-stage__backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: rgba(var(--bg-primary-rgb), 0.88);
 }
 
 /* 星云 / 光晕氛围叠层：nebula-a 顶部粉紫、nebula-b 底部蓝青、halo-soft
@@ -885,7 +920,7 @@ onBeforeUnmount(() => {
   position: absolute;
   pointer-events: none;
   user-select: none;
-  z-index: -1;
+  z-index: 1;
 }
 
 .omni-stage__nebula {
@@ -1142,6 +1177,35 @@ onBeforeUnmount(() => {
 .omni-bubble-leave-to {
   opacity: 0;
   transform: translateY(-16px) scale(0.92);
+}
+
+/* live 气泡独立命名空间：opacity-only 80ms 淡入淡出，不带弹簧/位移。
+ * 替换时不会和 committed 行的弹簧 leave 同时跑造成 bubble 高度上下
+ * 跳动。容器位置（见 .omni-stage__bubble-live-slot）在 committed 行
+ * 同一区域的顶层。 */
+.omni-bubble-live-enter-active,
+.omni-bubble-live-leave-active {
+  transition: opacity 80ms linear;
+}
+
+.omni-bubble-live-enter-from,
+.omni-bubble-live-leave-to {
+  opacity: 0;
+}
+
+/* live 气泡容器：absolute 浮在 committed 行同一区域，不挤 committed 高度 */
+.omni-stage__bubble-live-slot {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 0;
+  pointer-events: none;
+}
+
+.omni-stage__bubble-live-slot .omni-stage__bubble {
+  pointer-events: auto;
 }
 
 @keyframes omni-bubble-spring-in {
