@@ -752,6 +752,8 @@ export default {
     toolRunningInline: 'Appel de {tool} …',
     toolFailedInline: '{tool} a échoué',
     toolCompletedInline: '{tool} terminé',
+    modeLabel: 'Mode',
+    agentMode: 'Mode Agent',
   },
 
   realtimeVoice: {
@@ -767,6 +769,7 @@ export default {
   speechPractice: {
     entry: 'Pratique orale',
     entryHint: 'Entraînez-vous à l\'oral avec un coach IA sur le thème de votre choix : chaque tour est commenté et noté, et l\'analyse peut être enregistrée en Markdown à la fin',
+    cameraHint: 'Caméra activée : le coach évalue aussi le langage corporel et la posture',
     language: 'Langue d\'entraînement',
     lang: { zh: 'Chinois', en: 'Anglais', ja: 'Japonais', ko: 'Coréen' },
     direction: 'Thème d\'entraînement',
@@ -803,6 +806,7 @@ export default {
       grammar: 'Grammaire',
       vocabulary: 'Vocabulaire',
       content: 'Contenu',
+      bodyLanguage: 'Langage corporel',
     },
     strengths: 'Points forts',
     improvements: 'Points à améliorer',
@@ -821,6 +825,11 @@ export default {
     reportSaved: 'Rapport d\'analyse enregistré',
     download: 'Télécharger le rapport',
     saveFailed: 'Échec de l\'enregistrement du rapport, veuillez réessayer',
+    duration: 'Durée (min)',
+    durationHint: 'Minutes ; 0 = sans limite. À la fin du décompte, la session se termine et le rapport d\'analyse est généré automatiquement.',
+    timedMinutes: 'Chronométré · {minutes} min',
+    timeRemaining: 'Temps restant',
+    timeUpNotice: 'Le temps est écoulé : la session s\'est terminée et le rapport d\'analyse a été généré automatiquement.',
   },
 
   // Chat

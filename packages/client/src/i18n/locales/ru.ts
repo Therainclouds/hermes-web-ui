@@ -579,6 +579,8 @@ export default {
     toolRunningInline: 'Вызов {tool} …',
     toolFailedInline: '{tool} не выполнено',
     toolCompletedInline: '{tool} готово',
+    modeLabel: 'Режим',
+    agentMode: 'Режим агента',
   },
 
   realtimeVoice: {
@@ -594,6 +596,7 @@ export default {
   speechPractice: {
     entry: 'Разговорная практика',
     entryHint: 'Голосовая практика с ИИ-тренером по выбранной теме: каждый раунд комментируется и оценивается, а по завершении анализ можно сохранить в Markdown',
+    cameraHint: 'При включённой камере тренер также оценивает язык тела и осанку',
     language: 'Язык практики',
     lang: { zh: 'Китайский', en: 'Английский', ja: 'Японский', ko: 'Корейский' },
     direction: 'Тема практики',
@@ -630,6 +633,7 @@ export default {
       grammar: 'Грамматика',
       vocabulary: 'Лексика',
       content: 'Содержание',
+      bodyLanguage: 'Язык тела',
     },
     strengths: 'Сильные стороны',
     improvements: 'Что улучшить',
@@ -648,6 +652,11 @@ export default {
     reportSaved: 'Отчёт с анализом сохранён',
     download: 'Скачать отчёт',
     saveFailed: 'Не удалось сохранить отчёт. Попробуйте ещё раз',
+    duration: 'Длительность (мин)',
+    durationHint: 'Минут; 0 = без ограничения. По истечении отсчёта сеанс завершается, отчёт создаётся автоматически.',
+    timedMinutes: 'Таймер · {minutes} мин',
+    timeRemaining: 'Осталось времени',
+    timeUpNotice: 'Время вышло: сеанс завершён, отчёт создан автоматически.',
   },
 
   chat: {

@@ -719,6 +719,8 @@ export default {
     contextNearLimit: '对话已接近模型上下文上限（{used}/{total} 轮），较早的轮次即将被丢弃，建议结束后新建对话继续。',
     resumeVoiceChat: '继续对话',
     voiceChat: '语音对话',
+    modeLabel: '模式',
+    agentMode: 'Agent 模式',
   },
 
   realtimeVoice: {
@@ -760,6 +762,7 @@ export default {
   speechPractice: {
     entry: '口语对练',
     entryHint: '与 AI 教练语音对练指定方向：每轮点评打分，结束后分析内容可保存为 Markdown',
+    cameraHint: '开启摄像头后，教练会额外对肢体语言 / 仪态评分并给出建议',
     language: '练习语言',
     lang: { zh: '中文', en: '英语', ja: '日语', ko: '韩语' },
     direction: '练习方向',
@@ -796,6 +799,7 @@ export default {
       grammar: '语法准确',
       vocabulary: '词汇表达',
       content: '内容逻辑',
+      bodyLanguage: '肢体语言',
     },
     strengths: '亮点',
     improvements: '可提升点',
@@ -814,6 +818,11 @@ export default {
     reportSaved: '分析报告已保存',
     download: '下载报告',
     saveFailed: '报告保存失败，请重试',
+    duration: '练习时长',
+    durationHint: '分钟；0 表示不限时，倒计时到点自动结束并生成分析报告',
+    timedMinutes: '定时 {minutes} 分钟',
+    timeRemaining: '剩余时间',
+    timeUpNotice: '练习时长已到，已自动结束并生成分析报告',
   },
 
   // 对话

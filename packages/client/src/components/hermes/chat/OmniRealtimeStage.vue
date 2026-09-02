@@ -417,6 +417,10 @@ async function connectWithSoul(): Promise<boolean> {
 
 async function startSession(): Promise<void> {
   if (!canStart.value || preparing.value) return
+  // 在用户点击手势内预建播放 AudioContext：ws.onopen 时后端可能还在启动，
+  // 浏览器自动播放策略会拒绝在非手势回调里恢复音频 → AI 无声。见
+  // useOmniRealtime.prearmPlayback。
+  void omni.prearmPlayback()
   writtenTurnIds.clear()
   writtenToolCallIds.clear()
   cameraNotice.value = ''
@@ -436,6 +440,7 @@ async function startSession(): Promise<void> {
  */
 async function resumeSession(): Promise<void> {
   if (phase.value !== 'error' || preparing.value) return
+  void omni.prearmPlayback()
   backendError.value = ''
   preparing.value = true
   try {

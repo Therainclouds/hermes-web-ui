@@ -752,6 +752,8 @@ export default {
     toolRunningInline: 'Rufe {tool} auf …',
     toolFailedInline: '{tool} fehlgeschlagen',
     toolCompletedInline: '{tool} fertig',
+    modeLabel: 'Modus',
+    agentMode: 'Agent-Modus',
   },
 
   realtimeVoice: {
@@ -767,6 +769,7 @@ export default {
   speechPractice: {
     entry: 'Sprechübung',
     entryHint: 'Sprich mit einem KI-Coach zu einem Thema deiner Wahl: Jede Runde wird kommentiert und bewertet; die Analyse kannst du am Ende als Markdown speichern',
+    cameraHint: 'Bei aktiver Kamera bewertet der Coach auch Körpersprache und Haltung',
     language: 'Übungssprache',
     lang: { zh: 'Chinesisch', en: 'Englisch', ja: 'Japanisch', ko: 'Koreanisch' },
     direction: 'Übungsthema',
@@ -803,6 +806,7 @@ export default {
       grammar: 'Grammatik',
       vocabulary: 'Wortschatz',
       content: 'Inhalt',
+      bodyLanguage: 'Körpersprache',
     },
     strengths: 'Stärken',
     improvements: 'Verbesserungspotenzial',
@@ -821,6 +825,11 @@ export default {
     reportSaved: 'Analysebericht gespeichert',
     download: 'Bericht herunterladen',
     saveFailed: 'Bericht konnte nicht gespeichert werden. Bitte erneut versuchen',
+    duration: 'Dauer (Min.)',
+    durationHint: 'Minuten; 0 = ohne Begrenzung. Nach Ablauf des Countdowns endet die Übung und der Analysebericht wird automatisch erstellt.',
+    timedMinutes: 'Zeitlimit · {minutes} Min.',
+    timeRemaining: 'Verbleibende Zeit',
+    timeUpNotice: 'Die Zeit ist um: Die Übung wurde beendet und der Analysebericht automatisch erstellt.',
   },
 
   // Chat

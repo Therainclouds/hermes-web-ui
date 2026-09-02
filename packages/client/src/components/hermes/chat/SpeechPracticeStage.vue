@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { NAlert, NButton, NSelect, type SelectOption } from 'naive-ui'
+import { NAlert, NButton, NSelect, NSwitch, type SelectOption } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useOmniRealtime, type OmniDialogToolCall } from '@/composables/useOmniRealtime'
 import OmniVisualizer from '@/components/hermes/chat/OmniVisualizer.vue'
@@ -21,6 +21,7 @@ import {
 import {
   buildPracticeInstructionBlock,
   buildPracticeReportMarkdown,
+  formatPracticeCountdown,
   practiceReportFileStem,
   PRACTICE_DIFFICULTY_LABELS,
   PRACTICE_LANGUAGE_LABELS,
@@ -95,10 +96,132 @@ const canStart = computed(() => props.hasDashscopeKey && !isActive.value && !end
 
 const preparing = ref(false)
 const backendError = ref('')
+
+// --- 摄像头（可选）：开启后模型「看得到」用户，评分维度会加入肢体语言 ---
+
+const cameraEnabled = ref(false)
+const cameraStream = ref<MediaStream | null>(null)
+const videoRef = ref<HTMLVideoElement | null>(null)
+const cameraNotice = ref('')
+const FRAME_INTERVAL_MS = 1000
+const MAX_FRAME_DIM = 640
+let captureTimer: number | null = null
+let framesCaptured = 0
+
+async function startCamera(): Promise<void> {
+  if (cameraStream.value || typeof navigator.mediaDevices?.getUserMedia !== 'function') return
+  try {
+    cameraStream.value = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false,
+    })
+  } catch {
+    cameraNotice.value = t('omniRealtime.cameraFailed')
+    cameraEnabled.value = false
+    setTimeout(() => { cameraNotice.value = '' }, 4000)
+  }
+}
+
+function stopCamera(): void {
+  cameraStream.value?.getTracks().forEach(track => track.stop())
+  cameraStream.value = null
+}
+
+function captureAndSendFrame(): void {
+  const video = videoRef.value
+  if (!video || !cameraStream.value) return
+  if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.videoWidth === 0) return
+  const scale = Math.min(1, MAX_FRAME_DIM / Math.max(video.videoWidth, video.videoHeight))
+  const width = Math.max(1, Math.round(video.videoWidth * scale))
+  const height = Math.max(1, Math.round(video.videoHeight * scale))
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+  ctx.translate(width, 0)
+  ctx.scale(-1, 1)
+  ctx.drawImage(video, 0, 0, width, height)
+  try {
+    framesCaptured += 1
+    if (framesCaptured === 1) {
+      console.log(`[speech-practice] camera capture started (${width}x${height})`)
+    }
+    omni.sendImage(canvas.toDataURL('image/jpeg', 0.6))
+  } catch {
+    // canvas tainted or toDataURL unavailable — keep the voice session going
+  }
+}
+
+function startFrameCapture(): void {
+  stopFrameCapture()
+  captureTimer = window.setInterval(captureAndSendFrame, FRAME_INTERVAL_MS)
+}
+
+function stopFrameCapture(): void {
+  if (captureTimer !== null) {
+    window.clearInterval(captureTimer)
+    captureTimer = null
+  }
+}
+
 /** 会话已结束（disconnect 完成），展示总结 / 报告面板。 */
 const ended = ref(false)
 const sessionStartedAt = ref(0)
 const sessionEndedAt = ref(0)
+
+// --- 练习时长 / 倒计时（定时练习：到点自动结束并生成报告） ----------------
+
+/** 配置的练习时长（毫秒）；0 = 不限时。 */
+const durationTotalMs = computed(() => {
+  const minutes = Number(props.config.durationMinutes) || 0
+  return minutes > 0 ? minutes * 60_000 : 0
+})
+/** 剩余毫秒（仅在定时练习且会话进行中持续更新）。 */
+const timeLeftMs = ref(0)
+/** 本次会话是被倒计时自动结束的（结束时自动保存报告）。 */
+const autoFinished = ref(false)
+const countdownActive = computed(() => durationTotalMs.value > 0 && isActive.value && !ended.value)
+const countdownText = computed(() => formatPracticeCountdown(timeLeftMs.value))
+const countdownWarning = computed(() => countdownActive.value && timeLeftMs.value <= 60_000)
+
+let countdownHandle: number | null = null
+let countdownDeadline = 0
+
+function stopCountdown(): void {
+  if (countdownHandle !== null) {
+    window.clearTimeout(countdownHandle)
+    countdownHandle = null
+  }
+}
+
+function startCountdown(): void {
+  stopCountdown()
+  if (durationTotalMs.value <= 0) {
+    timeLeftMs.value = 0
+    return
+  }
+  countdownDeadline = Date.now() + durationTotalMs.value
+  const tick = (): void => {
+    const left = countdownDeadline - Date.now()
+    timeLeftMs.value = Math.max(0, left)
+    if (left <= 0) {
+      stopCountdown()
+      autoFinishByTimer()
+      return
+    }
+    countdownHandle = window.setTimeout(tick, 250)
+  }
+  tick()
+}
+
+/** 倒计时到点：结束会话并自动生成 / 保存分析报告。 */
+function autoFinishByTimer(): void {
+  if (ended.value) return
+  autoFinished.value = true
+  endSession()
+  void handleSaveReport()
+}
 
 /** 模型经 submit_practice_feedback 提交的逐轮评分（过程数据，报告来源）。 */
 const feedbacks = ref<PracticeFeedbackRecord[]>([])
@@ -213,6 +336,9 @@ function recordPracticeFeedback(args: Record<string, unknown>): string {
     grammar: toScore(args.grammar),
     vocabulary: toScore(args.vocabulary),
     content: toScore(args.content),
+    // 摄像头开启时模型才会提交 bodyLanguage；关摄像头时即便模型误填也忽略，
+    // 避免“看不见却打分”的编造。
+    bodyLanguage: cameraEnabled.value ? toScore(args.bodyLanguage) : null,
     comment: cleanText(args.comment),
     strengths: cleanText(args.strengths),
     improvements: cleanText(args.improvements),
@@ -313,28 +439,40 @@ async function connectWithSoul(): Promise<boolean> {
     backendError.value = t('omniRealtime.backendUnavailable')
     return false
   }
+  // 摄像头在连接前打开，模型从第一轮起就能看到用户画面
+  if (cameraEnabled.value) await startCamera()
   await omni.connect({
     voice: selectedVoice.value,
     model: realtimeModelStore.config.model || undefined,
     instructions: buildRealtimeInstructions(String(memory?.soul || ''), {
       history: buildHistoryContext(),
-      scenario: buildPracticeInstructionBlock(props.config),
+      scenario: buildPracticeInstructionBlock(props.config, { cameraOn: cameraEnabled.value }),
     }),
   })
+  // 音频流已开始推流后（DashScope 要求先有音频再补图像），启动取帧
+  if (cameraStream.value) startFrameCapture()
   return true
 }
 
 async function startSession(): Promise<void> {
   if (!canStart.value || preparing.value) return
+  // 用户手势内预建播放 AudioContext：ws.onopen 时后端可能仍在启动，浏览器
+  // 自动播放策略会拒绝在非手势回调里恢复音频 → AI 无声。见
+  // useOmniRealtime.prearmPlayback。
+  void omni.prearmPlayback()
   writtenTurnIds.clear()
   writtenToolCallIds.clear()
   backendError.value = ''
   ended.value = false
+  autoFinished.value = false
   feedbacks.value = []
   preparing.value = true
   try {
     const ok = await connectWithSoul()
-    if (ok) sessionStartedAt.value = Date.now()
+    if (ok) {
+      sessionStartedAt.value = Date.now()
+      startCountdown()
+    }
   } finally {
     preparing.value = false
   }
@@ -342,6 +480,7 @@ async function startSession(): Promise<void> {
 
 async function resumeSession(): Promise<void> {
   if (phase.value !== 'error' || preparing.value || ended.value) return
+  void omni.prearmPlayback()
   backendError.value = ''
   preparing.value = true
   try {
@@ -355,6 +494,10 @@ function endSession(): void {
   if (ended.value) return
   ended.value = true
   sessionEndedAt.value = Date.now()
+  stopCountdown()
+  timeLeftMs.value = 0
+  stopFrameCapture()
+  stopCamera()
   omni.disconnect()
   flushPendingPersistence()
 }
@@ -369,6 +512,9 @@ function handleClose(): void {
 }
 
 function stopEverything(): void {
+  stopCountdown()
+  stopFrameCapture()
+  stopCamera()
   flushPendingPersistence()
   omni.disconnect()
 }
@@ -377,6 +523,12 @@ function toggleMute(): void {
   omni.setMicStreaming(!omni.isPushing.value)
 }
 const isMuted = computed(() => !omni.isPushing.value && isActive.value)
+
+// 摄像头预览流绑定到 <video>（flush post：等 v-if 挂载完成）
+watch(cameraStream, (stream) => {
+  const el = videoRef.value
+  if (el) el.srcObject = stream ?? null
+}, { flush: 'post' })
 
 function handleKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape') handleClose()
@@ -508,6 +660,11 @@ const SCORE_DIMENSION_KEYS = [
 /** 最新反馈卡里逐条展示的五个细分维度（不含 overall）。 */
 const detailDimKeys = ['fluency', 'pronunciation', 'grammar', 'vocabulary', 'content'] as const
 
+/** 是否有任意一轮填了肢体语言分（摄像头开启时才会有）。 */
+const hasBodyLanguageScores = computed(() =>
+  feedbacks.value.some(f => f.bodyLanguage != null),
+)
+
 function dimensionLabel(key: string): string {
   const map: Record<string, string> = {
     overall: t('speechPractice.score.overall'),
@@ -516,6 +673,7 @@ function dimensionLabel(key: string): string {
     grammar: t('speechPractice.score.grammar'),
     vocabulary: t('speechPractice.score.vocabulary'),
     content: t('speechPractice.score.content'),
+    bodyLanguage: t('speechPractice.score.bodyLanguage'),
   }
   return map[key] || key
 }
@@ -534,19 +692,26 @@ function averageOf(values: Array<number | null | undefined>): number | null {
   return Math.round((nums.reduce((acc, n) => acc + n, 0) / nums.length) * 10) / 10
 }
 
-const scoreSummary = computed<ScoreSummaryRow[]>(() =>
-  SCORE_DIMENSION_KEYS.map((key) => {
-    const samples = feedbacks.value.map(f => f[key])
-    const nums = samples.filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
-    return {
-      key,
-      label: dimensionLabel(key),
-      avg: averageOf(samples),
-      max: nums.length ? String(Math.max(...nums)) : '—',
-      min: nums.length ? String(Math.min(...nums)) : '—',
-    }
-  }),
-)
+type PracticeScoreKey = 'overall' | 'fluency' | 'pronunciation' | 'grammar' | 'vocabulary' | 'content' | 'bodyLanguage'
+
+function summaryRow(key: PracticeScoreKey): ScoreSummaryRow {
+  const samples = feedbacks.value.map(f => f[key])
+  const nums = samples.filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
+  return {
+    key,
+    label: dimensionLabel(key),
+    avg: averageOf(samples),
+    max: nums.length ? String(Math.max(...nums)) : '—',
+    min: nums.length ? String(Math.min(...nums)) : '—',
+  }
+}
+
+const scoreSummary = computed<ScoreSummaryRow[]>(() => {
+  const rows = [...SCORE_DIMENSION_KEYS].map(key => summaryRow(key))
+  // 肢体语言只有在「至少一轮填了分」（摄像头开启）时才进入汇总表
+  if (hasBodyLanguageScores.value) rows.push(summaryRow('bodyLanguage'))
+  return rows
+})
 
 const avgOverall = computed(() => {
   const samples = feedbacks.value.filter(f => f.overall > 0).map(f => f.overall)
@@ -647,7 +812,16 @@ async function handleCopyMarkdown(): Promise<void> {
           <template v-if="(config.direction || '').trim()">· {{ config.direction.trim() }}</template>
         </span>
       </div>
-      <span v-if="!ended" class="practice-stage__phase" data-testid="speech-practice-phase">{{ statusLabel }}</span>
+      <div class="practice-stage__header-right">
+        <span
+          v-if="countdownActive"
+          class="practice-stage__timer"
+          :class="{ 'practice-stage__timer--warning': countdownWarning }"
+          :aria-label="`${t('speechPractice.timeRemaining')} ${countdownText}`"
+          data-testid="speech-practice-timer"
+        >⏱ {{ countdownText }}</span>
+        <span v-if="!ended" class="practice-stage__phase" data-testid="speech-practice-phase">{{ statusLabel }}</span>
+      </div>
     </header>
 
     <main class="practice-stage__main">
@@ -673,6 +847,11 @@ async function handleCopyMarkdown(): Promise<void> {
           <p class="practice-stage__card-meta" data-testid="speech-practice-config">
             <span class="practice-stage__chip">{{ languageLabel }}</span>
             <span class="practice-stage__chip">{{ difficultyLabel }}</span>
+            <span
+              v-if="durationTotalMs > 0"
+              class="practice-stage__chip practice-stage__chip--duration"
+              data-testid="speech-practice-duration-chip"
+            >⏱ {{ t('speechPractice.timedMinutes', { minutes: config.durationMinutes }) }}</span>
             <span v-if="(config.direction || '').trim()" class="practice-stage__chip practice-stage__chip--direction">
               {{ config.direction.trim() }}
             </span>
@@ -682,6 +861,19 @@ async function handleCopyMarkdown(): Promise<void> {
             <label>{{ t('meeting.realtime.voice') }}</label>
             <NSelect v-model:value="selectedVoice" :options="voiceOptions" size="small" />
           </div>
+          <div class="practice-stage__field practice-stage__field--row">
+            <label>{{ t('omniRealtime.camera') }}</label>
+            <NSwitch
+              v-model:value="cameraEnabled"
+              size="small"
+              :disabled="!canStart"
+              data-testid="speech-practice-camera"
+            />
+          </div>
+          <p v-if="cameraEnabled" class="practice-stage__card-hint" data-testid="speech-practice-camera-hint">
+            {{ t('speechPractice.cameraHint') }}
+          </p>
+          <p v-else-if="cameraNotice" class="practice-stage__card-hint practice-stage__card-hint--error">{{ cameraNotice }}</p>
           <NButton
             type="primary"
             block
@@ -699,6 +891,15 @@ async function handleCopyMarkdown(): Promise<void> {
       <section v-else-if="ended" class="practice-stage__ended" data-testid="speech-practice-ended">
         <div class="practice-stage__ended-card">
           <h2>{{ t('speechPractice.endedTitle') }}</h2>
+          <NAlert
+            v-if="autoFinished"
+            type="info"
+            :show-icon="false"
+            class="practice-stage__alert practice-stage__alert--timeup"
+            data-testid="speech-practice-timeup-notice"
+          >
+            {{ t('speechPractice.timeUpNotice') }}
+          </NAlert>
           <p class="practice-stage__card-sub">
             {{ t('speechPractice.endedSummary', { user: dialogueTurns.userCount, assistant: dialogueTurns.assistantCount, scored: feedbacks.length }) }}
           </p>
@@ -772,6 +973,13 @@ async function handleCopyMarkdown(): Promise<void> {
       <section v-else class="practice-stage__live" data-testid="speech-practice-live">
         <div class="practice-stage__body">
           <div class="practice-stage__stage">
+            <div
+              v-if="cameraStream"
+              class="practice-stage__camera"
+              data-testid="speech-practice-camera-preview"
+            >
+              <video ref="videoRef" autoplay playsinline muted />
+            </div>
             <NAlert
               v-if="nearContextLimit && contextLimitTotal"
               type="warning"
@@ -924,6 +1132,15 @@ async function handleCopyMarkdown(): Promise<void> {
                     <i>{{ dimensionLabel(key) }}</i>
                     <b>{{ fmtScore(latestFeedback[key]) }}</b>
                   </span>
+                  <span
+                    v-if="latestFeedback.bodyLanguage != null"
+                    class="practice-stage__dim"
+                    :data-tone="scoreTone(latestFeedback.bodyLanguage)"
+                    data-testid="speech-practice-bodylanguage-chip"
+                  >
+                    <i>{{ dimensionLabel('bodyLanguage') }}</i>
+                    <b>{{ fmtScore(latestFeedback.bodyLanguage) }}</b>
+                  </span>
                 </div>
                 <p v-if="latestFeedback.comment" class="practice-stage__feedback-comment">{{ latestFeedback.comment }}</p>
                 <p v-if="latestFeedback.strengths" class="practice-stage__feedback-line">
@@ -1036,6 +1253,45 @@ async function handleCopyMarkdown(): Promise<void> {
   letter-spacing: 0.04em;
 }
 
+.practice-stage__header-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+}
+
+.practice-stage__timer {
+  padding: 5px 12px;
+  border: 1px solid rgba(124, 231, 169, 0.3);
+  border-radius: 999px;
+  color: rgba(150, 245, 195, 0.95);
+  background: rgba(16, 46, 33, 0.55);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.practice-stage__timer--warning {
+  border-color: rgba(255, 190, 120, 0.55);
+  color: #ffd9a0;
+  background: rgba(70, 42, 12, 0.6);
+  animation: practice-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes practice-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+.practice-stage__chip--duration {
+  background: rgba(124, 231, 169, 0.1);
+  border-color: rgba(124, 231, 169, 0.3);
+}
+
+.practice-stage__alert--timeup { width: 100%; }
+
 .practice-stage__main {
   position: relative;
   flex: 1;
@@ -1103,8 +1359,10 @@ async function handleCopyMarkdown(): Promise<void> {
   gap: 6px;
   width: 100%;
 }
+.practice-stage__field--row { flex-direction: row; align-items: center; justify-content: center; gap: 12px; }
 .practice-stage__field label { color: rgba(210, 192, 240, 0.72); font-size: 12px; }
 .practice-stage__field :deep(.n-select) { width: 100%; max-width: 320px; }
+.practice-stage__card-hint--error { color: rgba(255, 157, 157, 0.9); }
 
 .practice-stage__live { flex: 1; min-height: 0; display: flex; }
 .practice-stage__body {
@@ -1127,6 +1385,26 @@ async function handleCopyMarkdown(): Promise<void> {
 
 .practice-stage__visualizer-zone { position: relative; width: min(46vw, 420px); aspect-ratio: 1; margin: 6px 0 0; }
 .practice-stage__visualizer { position: absolute; inset: 0; }
+
+.practice-stage__camera {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: min(210px, 28vw);
+  aspect-ratio: 16 / 10;
+  border: 1px solid rgba(201, 175, 255, 0.24);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45);
+  z-index: 4;
+}
+
+.practice-stage__camera video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1);
+}
 
 .practice-stage__bubbles {
   display: flex;

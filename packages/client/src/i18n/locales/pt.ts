@@ -752,6 +752,8 @@ export default {
     toolRunningInline: 'Chamando {tool} …',
     toolFailedInline: '{tool} falhou',
     toolCompletedInline: '{tool} concluído',
+    modeLabel: 'Modo',
+    agentMode: 'Modo Agente',
   },
 
   realtimeVoice: {
@@ -767,6 +769,7 @@ export default {
   speechPractice: {
     entry: 'Prática oral',
     entryHint: 'Pratique em voz alta com um coach de IA sobre o tema que escolher: cada turno é comentado e pontuado, e no final o conteúdo da análise pode ser salvo como Markdown',
+    cameraHint: 'Com a câmera ativa, o coach também avalia linguagem corporal e postura',
     language: 'Idioma da prática',
     lang: { zh: 'Chinês', en: 'Inglês', ja: 'Japonês', ko: 'Coreano' },
     direction: 'Tema da prática',
@@ -803,6 +806,7 @@ export default {
       grammar: 'Gramática',
       vocabulary: 'Vocabulário',
       content: 'Conteúdo',
+      bodyLanguage: 'Linguagem corporal',
     },
     strengths: 'Pontos fortes',
     improvements: 'Pontos a melhorar',
@@ -821,6 +825,11 @@ export default {
     reportSaved: 'Relatório de análise salvo',
     download: 'Baixar relatório',
     saveFailed: 'Falha ao salvar o relatório. Tente novamente',
+    duration: 'Duração (min)',
+    durationHint: 'Minutos; 0 = sem limite. Ao final da contagem regressiva, a sessão termina e o relatório de análise é gerado automaticamente.',
+    timedMinutes: 'Com tempo · {minutes} min',
+    timeRemaining: 'Tempo restante',
+    timeUpNotice: 'O tempo acabou: a sessão terminou e o relatório de análise foi gerado automaticamente.',
   },
 
   // Chat

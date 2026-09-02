@@ -719,6 +719,8 @@ export default {
     contextNearLimit: 'The conversation is close to the model context cap ({used}/{total} turns); earlier turns will soon be dropped. Consider ending this session and starting a new one.',
     resumeVoiceChat: 'Resume conversation',
     voiceChat: 'Voice chat',
+    modeLabel: 'Mode',
+    agentMode: 'Agent mode',
   },
 
   realtimeVoice: {
@@ -760,6 +762,7 @@ export default {
   speechPractice: {
     entry: 'Practice',
     entryHint: 'Voice practice with an AI coach for the direction you pick: per-turn scores, analysis saved as Markdown',
+    cameraHint: 'With the camera on, the coach also scores your body language and posture',
     language: 'Practice language',
     lang: { zh: 'Chinese', en: 'English', ja: 'Japanese', ko: 'Korean' },
     direction: 'Practice direction',
@@ -796,6 +799,7 @@ export default {
       grammar: 'Grammar',
       vocabulary: 'Vocabulary',
       content: 'Content',
+      bodyLanguage: 'Body language',
     },
     strengths: 'Strengths',
     improvements: 'To improve',
@@ -814,6 +818,11 @@ export default {
     reportSaved: 'Analysis report saved',
     download: 'Download report',
     saveFailed: 'Failed to save the report, please retry',
+    duration: 'Duration (minutes)',
+    durationHint: 'Minutes; 0 = no time limit. The session ends and the report is generated automatically when the countdown hits zero.',
+    timedMinutes: 'Timed · {minutes} min',
+    timeRemaining: 'Time remaining',
+    timeUpNotice: 'Time is up — the session ended and the analysis report was generated automatically.',
   },
 
   // Chat

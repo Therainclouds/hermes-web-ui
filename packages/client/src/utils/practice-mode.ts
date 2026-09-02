@@ -22,6 +22,8 @@ export interface PracticeSessionConfig {
   direction: string
   /** 难度档位。 */
   difficulty: PracticeDifficulty
+  /** 练习时长（分钟）；0 / undefined = 不限时。设置后倒计时到点自动结束并生成报告。 */
+  durationMinutes?: number
 }
 
 /** 语言 → 供模型指令/报告使用的中文名（模型指令本身固定为中文，见下方说明）。 */
@@ -50,8 +52,15 @@ const DIRECTION_LIMIT = 120
  *
  * 模型指令文案固定为中文（与 SOUL 兜底人格、工具守则一致的既有做法），
  * 但要求模型实际「说」目标语言；UI 侧对应用户展示走 i18n。
+ *
+ * @param cameraOn 会话开始时摄像头是否开启。开启时额外要求模型给出
+ *   bodyLanguage（肢体语言/仪态）维度评分——模型只在“看得到用户画面”时
+ *   才能填该维度，否则一律不填。
  */
-export function buildPracticeInstructionBlock(config: PracticeSessionConfig): string {
+export function buildPracticeInstructionBlock(
+  config: PracticeSessionConfig,
+  options: { cameraOn?: boolean } = {},
+): string {
   const languageName = PRACTICE_LANGUAGE_LABELS[config.language] || '目标语言'
   const difficultyName = PRACTICE_DIFFICULTY_LABELS[config.difficulty] || '适中'
   const direction = (config.direction || '').trim().slice(0, DIRECTION_LIMIT)
@@ -67,17 +76,49 @@ export function buildPracticeInstructionBlock(config: PracticeSessionConfig): st
     difficultyTips.push('使用更地道、更丰富的表达，追问细节，鼓励用户展开论述。')
   }
 
+  // 定时练习：客户端在倒计时结束时会自动结束会话并生成报告；让教练按节奏
+  // 分配轮次、在时间过半与最后阶段主动收束，避免被切断在长篇回复中间。
+  const durationMinutes = Number(config.durationMinutes) || 0
+  const pacingTips: string[] = []
+  if (durationMinutes > 0) {
+    pacingTips.push(
+      `- 本次练习定时 ${durationMinutes} 分钟，到点会自动结束并生成报告：控制节奏，时间过半时用目标语言提醒用户剩余时间。`,
+      `- 最后约 1 分钟引导用户做一句整场总结，并在此时调用 submit_practice_feedback 提交收尾评分（overall 视为整场评分），不要开启需要长时间展开的新话题。`,
+    )
+  }
+
+  const cameraTips: string[] = options.cameraOn
+    ? [
+        '- 摄像头已开启，你能看到用户的画面：每轮在语言维度之外，还要对肢体语言 / 仪态 / 眼神交流打分'
+        + '（submit_practice_feedback 的 bodyLanguage，1-10 整数），并在口头点评或 comment 里给一句相关建议。',
+        '- 如果你看不到用户画面（摄像头实际未开启 / 图像中断），一律不要填写 bodyLanguage。',
+      ]
+    : [
+        '- 摄像头未开启，你看不到用户画面：不要填写 bodyLanguage 维度，也不要编造任何关于肢体语言的评价。',
+      ]
+
+  // 语言纪律（用户反馈：选了英语却用中文说话时，教练会顺着中文聊跑题）。
+  // 放在守则靠前位置并明确给“用户切换语言”的应对动作，避免模型镜像用户语言。
+  const languageDiscipline = [
+    `- 语言纪律（最重要，任何情况下不得违反）：你只能用${languageName}输出——包括回复、点评、提问、鼓励。`,
+    `- 用户用${languageName}以外的语言说话（例如选了英语却说中文）：先用${languageName}说一句简短提醒（表达“我们练的是${languageName}，请用${languageName}再说一遍”）；`
+    + `如果用户确实没听懂题目，再用中文简要解释一两句，随后引导用户用${languageName}重说。绝对不要顺着用户的母语整段聊天、脱离对练场景。`,
+    '- 用户表示理解不了题目时：用目标语言降速、换更简单的说法示范，而不是放弃目标语言。',
+  ].join('\n')
+
   return [
-    '【口语对练模式 · 行为守则（优先级最高，覆盖以上通用约束中与本段冲突的部分）】',
+    '【口语对练模式 · 行为守则（优先级最高，覆盖以上通用约束中与本段冲突的部分，尤其是「默认用中文回答」那条——口语对练必须使用目标语言）】',
     `- 你现在是用户的${languageName}口语陪练教练。${directionLine}`,
     `- 全程使用${languageName}与用户对话（难度：${difficultyName}）。`,
+    ...languageDiscipline.split('\n'),
     ...difficultyTips.map(tip => `  - ${tip}`),
+    ...cameraTips,
+    ...pacingTips,
     '- 每轮用户发言结束后：先用目标语言给出一句话的简短口头点评，然后立刻调用 submit_practice_feedback 提交本轮结构化打分'
     + '（overall 及 fluency / pronunciation / grammar / vocabulary / content，1-10 整数，另附 comment / strengths / improvements / example）。'
     + '打分必须诚实、具体、有区分度——不要每轮都打高分或雷同分数。',
     '- 每轮只聚焦 1-2 个最重要的可提升点，用 example 字段给出更自然、更地道的说法示范。',
     '- 点评之后要继续推进练习：根据练习方向与用户当前水平，提出一个自然的后续问题或小任务，引导用户多说。',
-    '- 用户偶尔用其它语言提问或要求解释时，可以用中文简要解释，解释完回到目标语言继续对练。',
     '- 每 4-6 轮可以自然切换到同方向下的一个小话题，避免长期重复同一问法。',
     '- 当用户说「结束 / 今天先到这里 / 再见」等收尾语时：先用目标语言说一两句整场总结'
     + '（总体表现 + 最值得继续练的一点），再调用 submit_practice_feedback 提交收尾评分'
@@ -105,6 +146,8 @@ export interface PracticeFeedbackRecord {
   grammar: number | null
   vocabulary: number | null
   content: number | null
+  /** 肢体语言/仪态评分（仅摄像头开启时模型会填；否则为 null）。 */
+  bodyLanguage: number | null
   comment: string
   strengths: string
   improvements: string
@@ -177,12 +220,15 @@ export function buildPracticeReportMarkdown(input: PracticeReportInput): string 
     grammar: '语法准确',
     vocabulary: '词汇表达',
     content: '内容逻辑',
+    bodyLanguage: '肢体语言',
   }
 
   const out: string[] = ['# 🗣️ 口语对练分析报告']
+  const durationMinutes = Number(cfg.durationMinutes) || 0
   out.push('', '> 练习语言：' + languageName
     + (direction ? ` ｜ 练习方向：${direction}` : ' ｜ 练习方向：自由对话')
-    + ` ｜ 难度：${difficultyName}`)
+    + ` ｜ 难度：${difficultyName}`
+    + (durationMinutes > 0 ? ` ｜ 定时：${durationMinutes} 分钟` : ''))
   out.push('', `> 开始：${fmtDateTime(input.startedAt)} ｜ 结束：${fmtDateTime(input.endedAt)}`
     + ` ｜ 用户发言 ${userTurns.length} 轮 ｜ 已评分 ${feedbackByRound.size + unattached.length} 轮`)
 
@@ -195,7 +241,10 @@ export function buildPracticeReportMarkdown(input: PracticeReportInput): string 
       : null
     out.push('', `## 一、综合评分${avgOverall != null ? `（整场平均 ${avgOverall}/10）` : ''}`, '')
     out.push('| 维度 | 平均 | 最高 | 最低 |', '| --- | --- | --- | --- |')
-    for (const key of scoreKeys) {
+    const rows: Array<(typeof scoreKeys)[number] | 'bodyLanguage'> = [...scoreKeys]
+    // 肢体语言维度只在「至少有一轮填了该分」（摄像头开启时模型才会填）才入表
+    if (validFeedback.some(f => f.bodyLanguage != null)) rows.push('bodyLanguage')
+    for (const key of rows) {
       const samples = validFeedback.map(f => f[key])
       const avg = average(samples)
       const { min, max } = minMax(samples)
@@ -227,7 +276,8 @@ export function buildPracticeReportMarkdown(input: PracticeReportInput): string 
       if (feedback) {
         out.push('', `**评分：** 总分 ${fmtScore(feedback.overall)}/10 ｜ 流利度 ${fmtScore(feedback.fluency)}/10`
           + ` ｜ 发音语调 ${fmtScore(feedback.pronunciation)}/10 ｜ 语法 ${fmtScore(feedback.grammar)}/10`
-          + ` ｜ 词汇 ${fmtScore(feedback.vocabulary)}/10 ｜ 内容 ${fmtScore(feedback.content)}/10`)
+          + ` ｜ 词汇 ${fmtScore(feedback.vocabulary)}/10 ｜ 内容 ${fmtScore(feedback.content)}/10`
+          + (feedback.bodyLanguage != null ? ` ｜ 肢体语言 ${fmtScore(feedback.bodyLanguage)}/10` : ''))
         const comment = cleanText(feedback.comment)
         const strengths = cleanText(feedback.strengths)
         const improvements = cleanText(feedback.improvements)
@@ -245,7 +295,8 @@ export function buildPracticeReportMarkdown(input: PracticeReportInput): string 
     }
     for (const f of unattached) {
       const comment = cleanText(f.comment)
-      out.push('', `### 补充点评（未归属轮次）`, `**评分：** 总分 ${fmtScore(f.overall)}/10`)
+      out.push('', `### 补充点评（未归属轮次）`, `**评分：** 总分 ${fmtScore(f.overall)}/10`
+        + (f.bodyLanguage != null ? ` ｜ 肢体语言 ${fmtScore(f.bodyLanguage)}/10` : ''))
       if (comment) out.push('', `**点评：** ${comment}`)
     }
   }
@@ -280,4 +331,18 @@ export function practiceReportFileStem(config: PracticeSessionConfig, ts: number
   const stamp = `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}`
   const direction = (config.direction || '').trim().replace(/[\\/:*?"<>|\s]+/g, '-').slice(0, 20)
   return `口语对练-${languageName}${direction ? `-${direction}` : ''}-${stamp}`
+}
+
+/**
+ * 练习倒计时显示文本：`mm:ss`，≥ 1 小时时用 `h:mm:ss`。
+ * 负数 / 0 一律归零为 `00:00`。纯展示用，便于单测。
+ */
+export function formatPracticeCountdown(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000))
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  const pad = (n: number) => String(n).padStart(2, '0')
+  if (hours > 0) return `${hours}:${pad(minutes)}:${pad(seconds)}`
+  return `${pad(minutes)}:${pad(seconds)}`
 }

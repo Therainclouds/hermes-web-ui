@@ -752,6 +752,8 @@ export default {
     toolRunningInline: '{tool} を呼び出し中 …',
     toolFailedInline: '{tool} 失敗',
     toolCompletedInline: '{tool} 完了',
+    modeLabel: 'モード',
+    agentMode: 'Agent モード',
   },
 
   realtimeVoice: {
@@ -767,6 +769,7 @@ export default {
   speechPractice: {
     entry: 'スピーキング練習',
     entryHint: 'AI コーチと指定したテーマで音声練習：毎ターン講評・採点し、終了後は分析内容を Markdown として保存できます',
+    cameraHint: 'カメラをオンにすると、コーチがボディランゲージ／姿勢も評価します',
     language: '練習言語',
     lang: { zh: '中国語', en: '英語', ja: '日本語', ko: '韓国語' },
     direction: '練習テーマ',
@@ -803,6 +806,7 @@ export default {
       grammar: '文法',
       vocabulary: '語彙',
       content: '内容・論理性',
+      bodyLanguage: 'ボディランゲージ',
     },
     strengths: '良かった点',
     improvements: '改善点',
@@ -821,6 +825,11 @@ export default {
     reportSaved: '分析レポートを保存しました',
     download: 'レポートをダウンロード',
     saveFailed: 'レポートの保存に失敗しました。もう一度お試しください',
+    duration: '練習時間（分）',
+    durationHint: '分。0 は制限なし。カウントダウン終了時に自動終了して分析レポートを生成します。',
+    timedMinutes: '{minutes} 分タイマー',
+    timeRemaining: '残り時間',
+    timeUpNotice: '練習時間が終了しました。自動終了して分析レポートを生成しました。',
   },
 
   // チャット
