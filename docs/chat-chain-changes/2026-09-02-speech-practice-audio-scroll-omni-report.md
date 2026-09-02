@@ -96,6 +96,31 @@ impact: (1) 口语对练/实时对话里 AI 语音不再被「跨工具调用的
   `tests/client/utils/practice-mode.test.ts`、
   `tests/server/speech-practice-wiring.test.ts`（扩展）
 
+## 追加（同日二次反馈）：结束面板改“md 看板” + AI 流式生成 + 聊天页下载按钮
+
+用户反馈：结束后想看方便阅读的渲染报告，而不是纯数字评分页；AI 生成过程要
+实时流式返回（默认 text-only 省 token，有音频才播）；报告文件要在 Hermes
+对话页出现可下载按钮。
+
+- **结束面板改为渲染整份报告的 “md 看板”**：替换原来的平均分/汇总表数字区，
+  直接 `MarkdownRenderer` 渲染 `基础报告 + AI 全模态分析`（含评分表、逐轮
+  点评、对话记录与 AI 评审章节），内部纵向可滚、矮屏也能看全文。
+- **AI 流式实时生成**：服务端 `streamOmniPracticeAnalysis`（async generator）
+  把 DashScope 兼容端点 SSE 的文本增量逐段 yield；controller 在
+  `body.stream=true`（或 `?stream=1`）时以 `text/event-stream` 转发
+  `data: {"type":"delta"|"error"|"done",…}`，客户端断开即 abort 上游省 token；
+  客户端 `streamOmniPracticeAnalysis` 解析增量并把每段实时追加进 aiSection，
+  看板随生成过程实时渲染（贴底跟随，用户上翻不打扰）。请求保持
+  `modalities:["text"]`（不申请音频、最省 token）；若将来需要朗读报告再开
+  `audio`，客户端已能忽略未知事件字段。
+- **结束即自动出报告**：`finalizeSession` 触发 `runEndReportFlow`——流式生成
+  AI 段 → 拼最终 Markdown 落盘（/report）→ 保存成功后往该对练会话插入一条
+  带附件（文件名 + 大小 + 下载图标）的 assistant 消息，聊天页气泡里即出现
+  **可下载按钮**（MessageItem 的 attachment 文件块），关闭对练舞台后仍可点。
+  保存失败时面板保留“保存分析报告”按钮供重试。
+- 旧的数字汇总（avg/table）相关脚本与样式已随看板移除；确定性 md 中本身含
+  综合评分表，因此无信息丢失。
+
 ## 未做 / 后续
 
 - 播放截断的修复面向「跨工具续接 + 回声误打断 + 定时收尾」三类根因；若在
@@ -104,3 +129,5 @@ impact: (1) 口语对练/实时对话里 AI 语音不再被「跨工具调用的
   阈值。
 - Omni 分析的模型与温度等未暴露到 UI（走常量 `qwen3.5-omni-flash`）；如需
   在设置里选 Plus / 自定义，可扩展 realtime-model store。
+- AI 报告看板当前只出文本（省 token）；如用户要“AI 朗读报告”，需要请求
+  `modalities:["text","audio"]` 并处理音频播放，属于后续可选增强。
