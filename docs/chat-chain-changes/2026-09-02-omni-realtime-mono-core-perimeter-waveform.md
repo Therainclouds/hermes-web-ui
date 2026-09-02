@@ -2,7 +2,7 @@
 date: 2026-09-02
 pr: local
 feature: Omni-Realtime 实心圆 + 圆周声纹 + 单色水墨
-impact: 实时对话舞台从透明改为不透明单色水墨背景、星体从扭动 blob 改为静止实心圆加圆周连续声纹（32 段 log 频谱映射）、配色统一为黑白水墨加紫蓝高光、气泡容器全宽居中贴边、免提提示文本不再上下滚动、query_hermes_agent 在语音模式被系统提示禁用并引导用户回到文字对话页或工作区。
+impact: 实时对话舞台从透明改为不透明单色水墨背景、星体从扭动 blob 改为静止实心圆加圆周连续声纹（32 段 log 频谱映射）、配色统一为黑白水墨加紫蓝高光、气泡容器全宽居中贴边、免提提示文本不再上下滚动、live 气泡不再钉到屏幕底端（嵌套进 bubbles 容器 absolute 覆盖 committed 行）、query_hermes_agent 在语音模式被系统提示禁用并引导用户回到文字对话页或工作区。
 ---
 
 # Omni-Realtime: 实心圆 + 圆周声纹 + 单色水墨 + 气泡居中 + query_hermes_agent 回退

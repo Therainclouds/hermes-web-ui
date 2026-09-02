@@ -744,26 +744,28 @@ onBeforeUnmount(() => {
           />
         </div>
 
-        <TransitionGroup name="omni-bubble" tag="div" class="omni-stage__bubbles" aria-live="polite">
-          <div
-            v-for="b in committedBubbles"
-            :key="b.key"
-            class="omni-stage__bubble"
-            :class="[`omni-stage__bubble--${b.role}`]"
-          >{{ b.text }}</div>
-        </TransitionGroup>
+        <!-- 气泡容器：committed + live 共享同一 flex 空间。live 行嵌套
+             在容器内 absolute 覆盖 committed 行，不挤占 flex 高度，
+             也不会因 `bottom: 0` 冒泡到全屏而钉在屏幕底端。 -->
+        <div class="omni-stage__bubbles" aria-live="polite">
+          <TransitionGroup name="omni-bubble" tag="div" class="omni-stage__bubbles-committed">
+            <div
+              v-for="b in committedBubbles"
+              :key="b.key"
+              class="omni-stage__bubble"
+              :class="[`omni-stage__bubble--${b.role}`]"
+            >{{ b.text }}</div>
+          </TransitionGroup>
 
-        <!-- live 气泡独立命名空间 + 短淡入淡出，避免与 committed 行的弹簧
-             leave 同时跑造成 bubble 高度上下跳动。容器绝对定位在 committed
-             之上同一区域，opacity-only 切换。 -->
-        <TransitionGroup name="omni-bubble-live" tag="div" class="omni-stage__bubble-live-slot" aria-live="polite">
-          <div
-            v-if="liveBubble"
-            :key="liveBubble.key"
-            class="omni-stage__bubble omni-stage__bubble--live"
-            :class="[`omni-stage__bubble--${liveBubble.role}`]"
-          >{{ liveBubble.text }}</div>
-        </TransitionGroup>
+          <TransitionGroup name="omni-bubble-live" tag="div" class="omni-stage__bubble-live-slot" aria-live="polite">
+            <div
+              v-if="liveBubble"
+              :key="liveBubble.key"
+              class="omni-stage__bubble omni-stage__bubble--live"
+              :class="[`omni-stage__bubble--${liveBubble.role}`]"
+            >{{ liveBubble.text }}</div>
+          </TransitionGroup>
+        </div>
 
         <p
           class="omni-stage__caption"
@@ -1127,6 +1129,18 @@ onBeforeUnmount(() => {
   justify-content: flex-end;
   padding: 8px clamp(20px, 4vw, 48px) 0;
   margin: 0 auto;
+  /* 给嵌套的 live-slot 提供绝对定位锚点——不设置的话
+   * live-slot 的 `bottom: 0` 会冒泡到全屏固定层。 */
+  position: relative;
+}
+
+.omni-stage__bubbles-committed {
+  /* 作为 TransitionGroup 的 tag="div" 容器，占据 committed 行的 flex
+   * 空间；live-slot 以 absolute 覆盖它，不挤占高度。 */
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
 }
 
 .omni-stage__bubble {
@@ -1190,8 +1204,8 @@ onBeforeUnmount(() => {
 
 /* live 气泡独立命名空间：opacity-only 80ms 淡入淡出，不带弹簧/位移。
  * 替换时不会和 committed 行的弹簧 leave 同时跑造成 bubble 高度上下
- * 跳动。容器位置（见 .omni-stage__bubble-live-slot）在 committed 行
- * 同一区域的顶层。 */
+ * 跳动。容器嵌套在 .omni-stage__bubbles 内 absolute 覆盖 committed
+ * 行，inset:0 填满同空间，不挤占 flex 高度。 */
 .omni-bubble-live-enter-active,
 .omni-bubble-live-leave-active {
   transition: opacity 80ms linear;
@@ -1202,21 +1216,16 @@ onBeforeUnmount(() => {
   opacity: 0;
 }
 
-/* live 气泡容器：absolute 浮在 committed 行同一区域（同样宽 760px
- * 居中），不挤 committed 高度。容器和 committed 行使用同样的
- * 横向 padding，气泡自身 align-self 决定靠左/靠右。 */
+/* live 气泡容器：absolute 嵌套在 .omni-stage__bubbles 内，inset:0
+ * 填满 committed 行的同一空间，不挤占 flex 高度。justify-content:
+ * flex-end 让 live 气泡出现在 committed 行的相同位置（底部）。 */
 .omni-stage__bubble-live-slot {
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  inset: 0;
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  gap: 0;
-  max-width: 760px;
-  margin: 0 auto;
-  padding: 0 clamp(20px, 4vw, 48px);
+  gap: 8px;
   pointer-events: none;
 }
 
