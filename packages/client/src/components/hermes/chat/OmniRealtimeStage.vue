@@ -622,8 +622,30 @@ onBeforeUnmount(() => {
     :aria-label="t('meeting.realtime.title')"
     data-testid="omni-realtime-stage"
   >
-    <div class="omni-stage__wash omni-stage__wash--top" aria-hidden="true" />
-    <div class="omni-stage__wash omni-stage__wash--bottom" aria-hidden="true" />
+    <!-- 星云 / 光晕氛围叠层（public/realtime/*.svg）：pointer-events:none、
+         mix-blend-mode 融合，让浅色背景的银河不被硬切。位置用百分比相对
+         容器，缩放靠 aspect-ratio 保持比例。 -->
+    <img
+      src="/realtime/nebula-a.svg"
+      class="omni-stage__nebula omni-stage__nebula--a"
+      alt=""
+      aria-hidden="true"
+      draggable="false"
+    />
+    <img
+      src="/realtime/nebula-b.svg"
+      class="omni-stage__nebula omni-stage__nebula--b"
+      alt=""
+      aria-hidden="true"
+      draggable="false"
+    />
+    <img
+      src="/realtime/halo-soft.svg"
+      class="omni-stage__halo"
+      alt=""
+      aria-hidden="true"
+      draggable="false"
+    />
 
     <header class="omni-stage__header">
       <button class="omni-stage__back" type="button" :aria-label="t('realtimeVoice.back')" @click="closeStage">
@@ -833,6 +855,14 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* ---------------------------------------------------------------------------
+ * 主题色全跟随 + 苹果风毛玻璃
+ *
+ * 老实现把整个舞台硬编码成"深空蓝调"，与 Hermes Web 主页的"黑白水墨"
+ * 主题脱节。现在所有面板/按钮/气泡都接 --glass-realtime-* / --bg-primary /
+ * --text-primary-rgb，light 下是浅灰玻璃，dark 下是深邃墨玻璃——主体色
+ * 自动跟随主题切换。星云 SVG 用 mix-blend-mode 让两种模式下都不扎眼。
+ * --------------------------------------------------------------------------- */
 .omni-stage {
   position: fixed;
   inset: 0;
@@ -841,22 +871,52 @@ onBeforeUnmount(() => {
   flex-direction: column;
   isolation: isolate;
   overflow: hidden;
-  color: #f4fbff;
-  /* 单层干净的深空底色：中心光晕全部交给 canvas 星环绘制，CSS 层不再
-   * 叠第二团径向光斑——之前三层光效互相压出色块，观感浑浊。 */
-  background: linear-gradient(168deg, #060911 0%, #0a1020 48%, #050810 100%);
+  /* 主体色全跟随：light 下浅白、dark 下墨黑。canvas 内部的星体保留三态
+   * 调色板作为视觉锚点不跟随，但外部所有面板文字都跟主题走。 */
+  background: var(--bg-primary);
+  color: var(--text-primary);
 }
 
-.omni-stage__wash {
+/* 星云 / 光晕氛围叠层：nebula-a 顶部粉紫、nebula-b 底部蓝青、halo-soft
+ * 核心周围。soft-light / screen 模式让深浅背景下都不刺眼，opacity 控制在
+ * 0.18~0.28 区间。 */
+.omni-stage__nebula,
+.omni-stage__halo {
   position: absolute;
-  inset-inline: 0;
-  height: 26vh;
-  z-index: -1;
   pointer-events: none;
+  user-select: none;
+  z-index: -1;
 }
 
-.omni-stage__wash--top { top: 0; background: linear-gradient(rgba(112, 244, 255, 0.045), transparent); }
-.omni-stage__wash--bottom { bottom: 0; background: linear-gradient(transparent, rgba(128, 109, 255, 0.055)); }
+.omni-stage__nebula {
+  width: 62vmax;
+  height: 62vmax;
+  max-width: 70vw;
+  max-height: 70vw;
+  opacity: 0.22;
+  mix-blend-mode: soft-light;
+  filter: blur(2px);
+}
+
+.omni-stage__nebula--a {
+  top: -22vmax;
+  left: -16vmax;
+}
+
+.omni-stage__nebula--b {
+  bottom: -24vmax;
+  right: -18vmax;
+}
+
+.omni-stage__halo {
+  top: 50%;
+  left: 50%;
+  width: 78vmin;
+  height: 78vmin;
+  transform: translate(-50%, -50%);
+  opacity: 0.22;
+  mix-blend-mode: screen;
+}
 
 .omni-stage__header {
   z-index: 3;
@@ -866,9 +926,10 @@ onBeforeUnmount(() => {
   grid-template-columns: 44px minmax(0, 1fr) auto;
   align-items: center;
   gap: 14px;
-  border-bottom: 1px solid rgba(154, 215, 255, 0.1);
-  background: rgba(3, 7, 14, 0.42);
-  backdrop-filter: blur(22px);
+  border-bottom: 1px solid var(--glass-realtime-border);
+  background: var(--glass-realtime-bg);
+  -webkit-backdrop-filter: var(--glass-realtime-blur);
+  backdrop-filter: var(--glass-realtime-blur);
 }
 
 .omni-stage__back {
@@ -876,14 +937,18 @@ onBeforeUnmount(() => {
   height: 38px;
   display: grid;
   place-items: center;
-  border: 1px solid rgba(171, 224, 255, 0.14);
+  border: 1px solid var(--glass-realtime-border);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.035);
+  background: var(--glass-realtime-bg-subtle);
   color: inherit;
   cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
 }
 
-.omni-stage__back:hover { background: rgba(112, 244, 255, 0.09); border-color: rgba(112, 244, 255, 0.34); }
+.omni-stage__back:hover {
+  background: var(--glass-realtime-bg-strong);
+  border-color: var(--glass-realtime-border-strong);
+}
 .omni-stage__back svg { width: 20px; fill: none; stroke: currentColor; stroke-width: 1.7; }
 
 .omni-stage__identity { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
@@ -896,7 +961,7 @@ onBeforeUnmount(() => {
 }
 .omni-stage__identity span {
   overflow: hidden;
-  color: rgba(183, 224, 247, 0.55);
+  color: rgba(var(--text-primary-rgb), 0.6);
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -904,10 +969,10 @@ onBeforeUnmount(() => {
 
 .omni-stage__phase {
   padding: 5px 12px;
-  border: 1px solid rgba(112, 244, 255, 0.22);
+  border: 1px solid var(--glass-realtime-border-strong);
   border-radius: 999px;
-  color: rgba(130, 245, 255, 0.85);
-  background: rgba(9, 19, 33, 0.52);
+  color: var(--text-primary);
+  background: var(--glass-realtime-bg-subtle);
   font-size: 11px;
   letter-spacing: 0.04em;
 }
@@ -929,10 +994,10 @@ onBeforeUnmount(() => {
   right: 18px;
   width: min(220px, 30vw);
   aspect-ratio: 16 / 10;
-  border: 1px solid rgba(171, 224, 255, 0.22);
+  border: 1px solid var(--glass-realtime-border-strong);
   border-radius: 16px;
   overflow: hidden;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--glass-realtime-shadow);
   z-index: 4;
 }
 
@@ -944,8 +1009,6 @@ onBeforeUnmount(() => {
 }
 
 .omni-stage__setup {
-  /* Center the setup card in the dialog instead of hugging the left edge
-   * (the previous left-aligned look felt asymmetric on wider viewports). */
   width: min(440px, calc(100% - 32px));
   margin: 0 auto;
 }
@@ -959,20 +1022,20 @@ onBeforeUnmount(() => {
   text-align: center;
   gap: 16px;
   padding: 26px 24px;
-  border: 1px solid rgba(171, 224, 255, 0.14);
+  border: 1px solid var(--glass-realtime-border);
   border-radius: 20px;
-  background: rgba(9, 16, 32, 0.62);
-  backdrop-filter: blur(18px);
+  background: var(--glass-realtime-bg-strong);
+  -webkit-backdrop-filter: var(--glass-realtime-blur-strong);
+  backdrop-filter: var(--glass-realtime-blur-strong);
+  box-shadow: var(--glass-realtime-shadow);
 }
 
 .omni-stage__card h2 { margin: 0; font-size: 18px; font-weight: 620; }
-.omni-stage__card-sub { margin: -10px 0 0; color: rgba(183, 224, 247, 0.6); font-size: 12px; text-align: center; }
-.omni-stage__card-tools { margin-top: -8px; color: rgba(130, 245, 255, 0.66); }
-.omni-stage__card-soul { margin-top: -4px; color: rgba(167, 139, 250, 0.75); }
+.omni-stage__card-sub { margin: -10px 0 0; color: rgba(var(--text-primary-rgb), 0.65); font-size: 12px; text-align: center; }
+.omni-stage__card-tools { margin-top: -8px; color: var(--accent-info); }
+.omni-stage__card-soul { margin-top: -4px; color: rgba(var(--text-primary-rgb), 0.7); }
 .omni-stage__alert--live { max-width: 560px; margin: 0 auto 18px; }
 
-/* Center each form row inside the card; the field label sits above the
- * control and both are center-aligned, matching the rest of the card. */
 .omni-stage__field {
   display: flex;
   flex-direction: column;
@@ -981,17 +1044,11 @@ onBeforeUnmount(() => {
   width: 100%;
 }
 .omni-stage__field--row { flex-direction: row; align-items: center; justify-content: center; gap: 18px; }
-.omni-stage__field label { color: rgba(200, 231, 250, 0.72); font-size: 12px; }
+.omni-stage__field label { color: rgba(var(--text-primary-rgb), 0.72); font-size: 12px; }
 
-/* The voice picker should sit comfortably inside the centered card without
- * spilling past the 440px column width. */
 .omni-stage__field :deep(.n-select) { width: 100%; max-width: 320px; }
 
 .omni-stage__live {
-  /* Centered vertical stack: visualizer zone (flexible), bubble layer
-   * (capped), inline tool indicator, controls. The visualizer zone absorbs
-   * all spare space so longer bubbles can never push it around — they only
-   * eat into their own capped region. */
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1014,16 +1071,14 @@ onBeforeUnmount(() => {
 }
 
 /* --- Q 弹对话气泡层 -------------------------------------------------------
- * 最近 3 条已完成轮次 + live 文本。入场用弹簧过冲曲线（scale 0.6 → 1.06 → 1
- * + 上浮），离开时上移淡出。用户消息靠右（蓝紫渐变胶囊），AI 消息靠左
- * （玻璃拟态），live 气泡带呼吸描边。 */
+ * 用户消息靠右（accent 主色渐变胶囊），AI 消息靠左（玻璃拟态半透明）。
+ * 边框/背景全部走 --glass-realtime-* token，主题切换时自动反转。 */
 .omni-stage__bubbles {
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   gap: 10px;
   width: min(620px, calc(100% - 40px));
-  /* 高度硬上限：超出的旧气泡被顶部渐隐 mask 吃掉，绝不挤压上方布局。 */
   max-height: min(34vh, 320px);
   overflow: hidden;
   justify-content: flex-end;
@@ -1040,24 +1095,30 @@ onBeforeUnmount(() => {
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
-  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.4);
+  color: var(--text-primary);
 }
 
 .omni-stage__bubble--user {
   align-self: flex-end;
   border-bottom-right-radius: 6px;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.34), rgba(56, 189, 248, 0.26));
-  border: 1px solid rgba(129, 168, 255, 0.3);
-  color: #eaf4ff;
+  /* 用户气泡保留渐变以区隔身份：accent 主色 + 一点 accent hover。
+   * light 模式对比度够，dark 模式靠 accent-info 副色补足区分度。 */
+  background: linear-gradient(135deg,
+    rgba(var(--accent-primary-rgb), 0.18),
+    rgba(var(--accent-info-rgb), 0.16));
+  border: 1px solid rgba(var(--accent-primary-rgb), 0.28);
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
+  backdrop-filter: blur(14px) saturate(150%);
 }
 
 .omni-stage__bubble--assistant {
   align-self: flex-start;
   border-bottom-left-radius: 6px;
-  background: rgba(255, 255, 255, 0.055);
-  border: 1px solid rgba(171, 224, 255, 0.16);
-  backdrop-filter: blur(10px);
-  color: rgba(238, 248, 255, 0.95);
+  background: var(--glass-realtime-bg-subtle);
+  border: 1px solid var(--glass-realtime-border);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+  backdrop-filter: blur(16px) saturate(160%);
+  color: var(--text-primary);
 }
 
 .omni-stage__bubble--live {
@@ -1066,8 +1127,8 @@ onBeforeUnmount(() => {
 }
 
 @keyframes omni-live-pulse {
-  0%, 100% { border-color: rgba(171, 224, 255, 0.16); }
-  50% { border-color: rgba(112, 244, 255, 0.45); }
+  0%, 100% { border-color: var(--glass-realtime-border); }
+  50% { border-color: var(--glass-realtime-border-strong); }
 }
 
 .omni-bubble-enter-active {
@@ -1090,33 +1151,26 @@ onBeforeUnmount(() => {
 }
 
 .omni-stage__caption {
-  /* 解除之前的 2 行 clamp：长回复被静默截断是用户报告的第一个 bug。
-   * 改为单段自然换行、最多展示最近 10 行（再长就启用滚动），保证全文可见。 */
   max-width: min(620px, calc(100% - 40px));
   max-height: 14.5em;
   overflow-y: auto;
   margin: 0;
   padding: 0 4px;
-  color: rgba(233, 246, 255, 0.92);
+  color: var(--text-primary);
   font-size: 16px;
   line-height: 1.6;
   text-align: center;
-  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.55);
   white-space: pre-wrap;
   word-break: break-word;
   scrollbar-width: thin;
-  scrollbar-color: rgba(112, 244, 255, 0.4) transparent;
+  scrollbar-color: rgba(var(--text-primary-rgb), 0.3) transparent;
 }
 
 .omni-stage__caption::-webkit-scrollbar { width: 6px; }
-.omni-stage__caption::-webkit-scrollbar-thumb { background: rgba(112, 244, 255, 0.4); border-radius: 3px; }
+.omni-stage__caption::-webkit-scrollbar-thumb { background: rgba(var(--text-primary-rgb), 0.3); border-radius: 3px; }
 .omni-stage__caption::-webkit-scrollbar-track { background: transparent; }
 
-/* Inline tool-call indicator. A single slim pill under the caption that
- * shows the latest function-calling invocation: a soft rotating ring while
- * the tool runs, then a checkmark + one-line result snippet when it
- * completes. No card chrome, no JSON dump — full result is always
- * available in the persisted chat history behind the dialog. */
+/* Inline tool-call indicator — Apple-style slim glass pill. */
 .omni-stage__tool-inline {
   display: inline-flex;
   align-items: center;
@@ -1124,19 +1178,20 @@ onBeforeUnmount(() => {
   max-width: min(560px, calc(100% - 40px));
   padding: 8px 14px;
   border-radius: 999px;
-  background: rgba(112, 244, 255, 0.07);
-  border: 1px solid rgba(171, 224, 255, 0.16);
-  color: rgba(233, 246, 255, 0.9);
+  background: var(--glass-realtime-bg-subtle);
+  border: 1px solid var(--glass-realtime-border);
+  -webkit-backdrop-filter: var(--glass-realtime-blur);
+  backdrop-filter: var(--glass-realtime-blur);
+  color: var(--text-primary);
   font-size: 13px;
   line-height: 1.4;
   text-align: left;
-  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.45);
   animation: omni-tool-inline-in 220ms ease-out;
 }
 
 .omni-stage__tool-inline--error {
-  background: rgba(239, 68, 68, 0.08);
-  border-color: rgba(248, 113, 113, 0.4);
+  background: rgba(var(--error-rgb), 0.08);
+  border-color: rgba(var(--error-rgb), 0.4);
 }
 
 .omni-stage__tool-inline-copy {
@@ -1147,7 +1202,7 @@ onBeforeUnmount(() => {
 
 .omni-stage__tool-inline-result {
   margin-top: 2px;
-  color: rgba(220, 235, 250, 0.7);
+  color: rgba(var(--text-primary-rgb), 0.65);
   font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1162,20 +1217,20 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   border-radius: 50%;
-  background: rgba(112, 244, 255, 0.18);
-  color: rgba(130, 245, 255, 0.95);
+  background: rgba(var(--accent-primary-rgb), 0.18);
+  color: var(--text-primary);
 }
 
-.omni-stage__tool-indicator--error { background: rgba(239, 68, 68, 0.22); color: #fecaca; }
-.omni-stage__tool-indicator--done { background: rgba(74, 222, 128, 0.22); color: #bbf7d0; }
+.omni-stage__tool-indicator--error { background: rgba(var(--error-rgb), 0.22); color: rgba(var(--error-rgb), 0.9); }
+.omni-stage__tool-indicator--done { background: rgba(var(--success-rgb), 0.22); color: rgba(var(--success-rgb), 0.9); }
 
 .omni-stage__tool-indicator svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
 
 .omni-stage__tool-spinner {
   width: 11px;
   height: 11px;
-  border: 2px solid rgba(130, 245, 255, 0.3);
-  border-top-color: rgba(130, 245, 255, 0.95);
+  border: 2px solid rgba(var(--text-primary-rgb), 0.3);
+  border-top-color: var(--text-primary);
   border-radius: 50%;
   animation: omni-tool-spin 0.85s linear infinite;
 }
@@ -1197,27 +1252,37 @@ onBeforeUnmount(() => {
   height: 56px;
   display: grid;
   place-items: center;
-  border: 1px solid rgba(171, 224, 255, 0.2);
+  border: 1px solid var(--glass-realtime-border-strong);
   border-radius: 50%;
-  color: #eaf7ff;
-  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+  background: var(--glass-realtime-bg);
+  -webkit-backdrop-filter: var(--glass-realtime-blur);
+  backdrop-filter: var(--glass-realtime-blur);
   cursor: pointer;
   transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
+  box-shadow: var(--glass-realtime-shadow);
 }
 
-.omni-stage__control:hover { background: rgba(112, 244, 255, 0.14); transform: scale(1.05); }
+.omni-stage__control:hover {
+  background: var(--glass-realtime-bg-strong);
+  border-color: var(--text-primary);
+  transform: scale(1.05);
+}
 .omni-stage__control svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 
-.omni-stage__control--muted { border-color: rgba(248, 113, 113, 0.55); background: rgba(239, 68, 68, 0.16); }
+.omni-stage__control--muted {
+  border-color: rgba(var(--error-rgb), 0.55);
+  background: rgba(var(--error-rgb), 0.16);
+}
 
 .omni-stage__control--interrupt:disabled { opacity: 0.35; cursor: default; transform: none; }
 
 .omni-stage__control--end {
   width: 66px;
   height: 66px;
-  border-color: rgba(239, 68, 68, 0.6);
-  background: rgba(239, 68, 68, 0.24);
+  border-color: rgba(var(--error-rgb), 0.6);
+  background: rgba(var(--error-rgb), 0.24);
 }
 
-.omni-stage__control--end:hover { background: rgba(239, 68, 68, 0.38); }
+.omni-stage__control--end:hover { background: rgba(var(--error-rgb), 0.38); }
 </style>

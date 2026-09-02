@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  nebula-a.svg — 粉紫色椭圆星云，用作实时对话舞台左上角氛围叠层。
+  设计要点：
+   * 256×256 viewBox，使用 SVG `<radialGradient>` + 多 stop 模拟星云云气层次
+   * 内核偏暖（#f4a8d8 玫粉），外围渐变到冷紫蓝（#7c5fd8）再透明
+   * 嵌入式 `<filter>` 用 feGaussianBlur 让边缘自然羽化，避免硬切
+   * 透明背景（无 fill rect），靠 mix-blend-mode 与 opacity 控制最终显隐
+  颜色偏暖以打破舞台全冷调的平衡，配合右下蓝青 nebula-b 形成冷暖呼应。
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none">
+  <defs>
+    <radialGradient id="nebula-a-core" cx="50%" cy="48%" r="55%">
+      <stop offset="0%" stop-color="#f4a8d8" stop-opacity="0.95"/>
+      <stop offset="20%" stop-color="#e879c0" stop-opacity="0.75"/>
+      <stop offset="45%" stop-color="#a266dc" stop-opacity="0.45"/>
+      <stop offset="70%" stop-color="#5e4cc8" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#3a2d8a" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="nebula-a-halo" cx="50%" cy="50%" r="60%">
+      <stop offset="0%" stop-color="#f4a8d8" stop-opacity="0.3"/>
+      <stop offset="60%" stop-color="#a266dc" stop-opacity="0.1"/>
+      <stop offset="100%" stop-color="#3a2d8a" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="nebula-a-blur" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="4"/>
+    </filter>
+  </defs>
+  <!-- 外圈柔光晕（更模糊、更大） -->
+  <ellipse cx="128" cy="128" rx="120" ry="100" fill="url(#nebula-a-halo)" filter="url(#nebula-a-blur)"/>
+  <!-- 内核云气 -->
+  <ellipse cx="128" cy="120" rx="86" ry="74" fill="url(#nebula-a-core)" filter="url(#nebula-a-blur)"/>
+  <!-- 几个高密度星点 -->
+  <circle cx="138" cy="108" r="2.5" fill="#fff5fb" opacity="0.85"/>
+  <circle cx="98" cy="142" r="1.5" fill="#fce8f3" opacity="0.7"/>
+  <circle cx="166" cy="92" r="1.2" fill="#fff5fb" opacity="0.6"/>
+  <circle cx="118" cy="168" r="1" fill="#fff5fb" opacity="0.5"/>
+</svg>

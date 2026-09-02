@@ -35,4 +35,19 @@ describe('OmniVisualizer', () => {
     await new Promise(resolve => setTimeout(resolve, 50))
     expect(() => wrapper.unmount()).not.toThrow()
   })
+
+  // The blob drawing path runs every RAF tick — jsdom has no 2D context, so
+  // we exercise the catmull-rom → bezier vertex math by re-importing the
+  // internal helpers indirectly: a high outputLevel must still mount without
+  // throwing (the blob radius/bezier math is exercised inside draw() which
+  // returns early when ctx is missing, but the pre-draw arithmetic still runs).
+  it('high audio levels do not destabilize the mount', () => {
+    for (let i = 0; i < 4; i += 1) {
+      const wrapper = mount(OmniVisualizer, {
+        props: { phase: 'speaking', inputLevel: 0.95, outputLevel: 0.95 },
+      })
+      expect(wrapper.find('canvas').exists()).toBe(true)
+      wrapper.unmount()
+    }
+  })
 })

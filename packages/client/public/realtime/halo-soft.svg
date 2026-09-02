@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  halo-soft.svg — 柔和圆形光晕，用作实时对话舞台核心液体星体周围的氛围光。
+  设计要点：
+   * 240×240 viewBox，圆形居中
+   * 单层径向渐变：内核亮（#e8f4ff 60%）→ 中环（#94c4ff 20%）→ 外圈透明
+   * 大半径 feGaussianBlur（stdDeviation=12）让光晕非常柔软、几乎看不出边缘
+   * 居中叠放后由 mix-blend-mode: screen 控制其与背景/星体的混合方式
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" fill="none">
+  <defs>
+    <radialGradient id="halo-soft-gradient" cx="50%" cy="50%" r="48%">
+      <stop offset="0%" stop-color="#e8f4ff" stop-opacity="0.85"/>
+      <stop offset="18%" stop-color="#cce4ff" stop-opacity="0.55"/>
+      <stop offset="42%" stop-color="#94c4ff" stop-opacity="0.22"/>
+      <stop offset="72%" stop-color="#6098e0" stop-opacity="0.06"/>
+      <stop offset="100%" stop-color="#3a6cc0" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="halo-soft-blur" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="12"/>
+    </filter>
+  </defs>
+  <circle cx="120" cy="120" r="100" fill="url(#halo-soft-gradient)" filter="url(#halo-soft-blur)"/>
+</svg>

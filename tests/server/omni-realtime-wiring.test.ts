@@ -870,5 +870,24 @@ describe('omni-realtime particle visualizer + Quanta soul seeding', () => {
     expect(proxy).toContain('你是 Quanta')
     expect(proxy).not.toContain('小合')
   })
+
+  // inputLevel used to be a raw peak updated every analyser frame with NO
+  // smoothing — that drove the visualizer's twinkle frequency and radial
+  // position off AEC-residual echo, producing the "鬼畜" jitter. The fix
+  // blends peak with the already-smoothed RMS and runs an EMA before
+  // exposing the value. We assert the new pipeline is wired.
+  it('inputLevel is EMA-smoothed (peak + RMS blend) so the visualizer stops twitching', () => {
+    const source = readFileSync(`${CLIENT_SRC}/composables/useOmniRealtime.ts`, 'utf8')
+    // peak/RMS blend is the first defence against single-frame transients.
+    expect(source).toMatch(/rmsSmoothed\s*\*\s*0\.7/)
+    expect(source).toMatch(/peak\s*\*\s*0\.4\s*\+\s*rmsSmoothed\s*\*\s*0\.6/)
+    // EMA on the exposed inputLevel is the second defence.
+    expect(source).toMatch(/inputLevel\.value\s*\+=\s*\(blended\s*-\s*inputLevel\.value\)\s*\*\s*\(blended\s*>\s*inputLevel\.value\s*\?\s*0\.35\s*:\s*0\.1\)/)
+    // Visualizer must no longer couple particle angularSpeed/twinkle to
+    // smoothInput — that's the contract change that kills the jitter.
+    const visualizer = readFileSync(`${CLIENT_SRC}/components/hermes/chat/OmniVisualizer.vue`, 'utf8')
+    expect(visualizer).not.toMatch(/smoothInput\s*\*\s*1\.2/)
+    expect(visualizer).not.toMatch(/radialPush\s*=\s*smoothOutput\s*\*\s*0\.3\s*-\s*smoothInput/)
+  })
 })
 

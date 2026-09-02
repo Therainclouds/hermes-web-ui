@@ -607,7 +607,15 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
       ws.send(int16.buffer as ArrayBuffer)
     }
 
-    // visual feedback: simple peak level derived from analyser
+    // visual feedback: peak/RMS blend with EMA smoothing on the peak channel.
+    //
+    // Without smoothing `inputLevel` carried raw peaks (one spike per click,
+    // AEC-residual echo during AI playback). The visualizer then drove its
+    // twinkle frequency and radial position off this raw signal — every
+    // residual echo frame moved the starfield, producing the "鬼畜" jitter.
+    // Blending peak with the already-smoothed RMS and running an EMA gives
+    // a signal that still spikes on real speech (RMS rises during sustained
+    // voice) but rejects single-frame transients.
     const buf = new Uint8Array(analyser.frequencyBinCount)
     const tick = (): void => {
       if (!analyser) return
@@ -620,11 +628,15 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
         if (a > peak) peak = a
         sumSquares += v * v
       }
-      inputLevel.value = peak
       // Smoothed RMS (EMA): speech sustains energy across frames, transients
       // (clicks, one loud echo frame) don't move it much. Used below as a
       // sustained-voice gate so the streak can't fire on a single spike.
       rmsSmoothed = rmsSmoothed * 0.7 + Math.sqrt(sumSquares / buf.length) * 0.3
+      // Visual-level blend: 0.4 peak + 0.6 RMS-smoothed, then EMA. Keeps
+      // punch for hard consonants (plosives, taps) while removing the
+      // single-frame echo spikes that caused the visualizer to twitch.
+      const blended = peak * 0.4 + rmsSmoothed * 0.6
+      inputLevel.value += (blended - inputLevel.value) * (blended > inputLevel.value ? 0.35 : 0.1)
       // Client-side barge-in: the upstream server VAD takes 100–300 ms to
       // emit `listening`, during which the AI audio keeps playing and the
       // user perceives the interrupt as "broken". Trigger `maybeBargeIn`

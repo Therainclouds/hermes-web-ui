@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  nebula-b.svg — 蓝青色椭圆星云，用作实时对话舞台右下角氛围叠层。
+  与 nebula-a 冷暖呼应：青蓝主调 (#5ed8ff → #2b6dd2 → 透明)。
+  同样的 radialGradient + feGaussianBlur 手法。
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none">
+  <defs>
+    <radialGradient id="nebula-b-core" cx="52%" cy="52%" r="55%">
+      <stop offset="0%" stop-color="#9be8ff" stop-opacity="0.92"/>
+      <stop offset="22%" stop-color="#5ed8ff" stop-opacity="0.72"/>
+      <stop offset="48%" stop-color="#3b9fe8" stop-opacity="0.4"/>
+      <stop offset="72%" stop-color="#2b6dd2" stop-opacity="0.16"/>
+      <stop offset="100%" stop-color="#1a3a8a" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="nebula-b-halo" cx="50%" cy="50%" r="60%">
+      <stop offset="0%" stop-color="#9be8ff" stop-opacity="0.3"/>
+      <stop offset="60%" stop-color="#3b9fe8" stop-opacity="0.1"/>
+      <stop offset="100%" stop-color="#1a3a8a" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="nebula-b-blur" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="4"/>
+    </filter>
+  </defs>
+  <ellipse cx="128" cy="128" rx="120" ry="100" fill="url(#nebula-b-halo)" filter="url(#nebula-b-blur)"/>
+  <ellipse cx="124" cy="134" rx="88" ry="72" fill="url(#nebula-b-core)" filter="url(#nebula-b-blur)"/>
+  <circle cx="118" cy="122" r="2.2" fill="#eaf8ff" opacity="0.85"/>
+  <circle cx="160" cy="146" r="1.6" fill="#eaf8ff" opacity="0.72"/>
+  <circle cx="92" cy="98" r="1.2" fill="#eaf8ff" opacity="0.6"/>
+  <circle cx="148" cy="180" r="1" fill="#eaf8ff" opacity="0.5"/>
+</svg>

@@ -64,6 +64,19 @@
   // stage visual elements). Keep usage to entrance animations only.
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 
+  // Realtime-dialog glass surfaces — Apple-style translucent panels that
+  // float above the body background rather than punching through it. The
+  // stage reads `--bg-primary` so light mode gets soft milky panels and
+  // dark mode gets deep ink glass without per-theme overrides.
+  --glass-realtime-bg: rgba(var(--bg-primary-rgb), 0.62);
+  --glass-realtime-bg-strong: rgba(var(--bg-primary-rgb), 0.78);
+  --glass-realtime-bg-subtle: rgba(var(--bg-primary-rgb), 0.42);
+  --glass-realtime-border: rgba(var(--text-primary-rgb), 0.14);
+  --glass-realtime-border-strong: rgba(var(--text-primary-rgb), 0.22);
+  --glass-realtime-shadow: 0 12px 40px rgba(var(--text-primary-rgb), 0.08);
+  --glass-realtime-blur: blur(22px) saturate(160%);
+  --glass-realtime-blur-strong: blur(28px) saturate(180%);
+
   // Utility
   --text-on-accent: #ffffff;
   --text-on-overlay: #ffffff;
@@ -135,6 +148,15 @@
   --text-on-accent: #1a1a1a;
   --text-on-overlay: #ffffff;
   --accent-info: #6ba3d6;
+
+  // Realtime-dialog glass surfaces — override the body-color references so
+  // dark-mode panels are deep-ink glass instead of milky white.
+  --glass-realtime-bg: rgba(var(--bg-primary-rgb), 0.62);
+  --glass-realtime-bg-strong: rgba(var(--bg-primary-rgb), 0.78);
+  --glass-realtime-bg-subtle: rgba(var(--bg-primary-rgb), 0.42);
+  --glass-realtime-border: rgba(var(--text-primary-rgb), 0.18);
+  --glass-realtime-border-strong: rgba(var(--text-primary-rgb), 0.28);
+  --glass-realtime-shadow: 0 18px 48px rgba(0, 0, 0, 0.6);
 
   // RGB components
   --accent-primary-rgb: 224, 224, 224;
