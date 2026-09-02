@@ -739,6 +739,7 @@ onBeforeUnmount(() => {
             :phase="orbPhase"
             :input-level="omni.inputLevel.value"
             :output-level="omni.outputLevel.value"
+            :analyser="omni.outputAnalyser.value"
             class="omni-stage__visualizer"
           />
         </div>
@@ -876,12 +877,14 @@ onBeforeUnmount(() => {
 
 <style scoped>
 /* ---------------------------------------------------------------------------
- * 主题色全跟随 + 苹果风毛玻璃
+ * 主题色全跟随 + 苹果风毛玻璃（v3：背景回到不透明水墨）
  *
- * 老实现把整个舞台硬编码成"深空蓝调"，与 Hermes Web 主页的"黑白水墨"
- * 主题脱节。现在所有面板/按钮/气泡都接 --glass-realtime-* / --bg-primary /
- * --text-primary-rgb，light 下是浅灰玻璃，dark 下是深邃墨玻璃——主体色
- * 自动跟随主题切换。星云 SVG 用 mix-blend-mode 让两种模式下都不扎眼。
+ * 历史：v1 把舞台硬编码成"深空蓝调"，脱离黑白水墨；v2 改成
+ * transparent 背景 + nebula/halo z-index 提到 1，玻璃面板的
+ * backdrop-filter 真的能模糊到 nebula——但用户反馈"全透明背景太丑，
+ * 应该是不透明底色 + 局部玻璃面板"。v3 退回 var(--bg-primary)
+ * 不透明底色，玻璃面板只用在 header / 设置卡片 / 工具条 / 控件上，
+ * nebula/halo 缩成轻量氛围（0.10 透明度，仅作为深浅背景上的微弱肌理）。
  * --------------------------------------------------------------------------- */
 .omni-stage {
   position: fixed;
@@ -891,36 +894,27 @@ onBeforeUnmount(() => {
   flex-direction: column;
   isolation: isolate;
   overflow: hidden;
-  /* 透明背景：把 "用什么颜色作为底色" 的决定权让给 backdrop 层。
-   * 之前用 var(--bg-primary) 不透明背景，会把 nebula/halo 盖死（z-index:-1
-   * 仍在 stacking context 内部），玻璃面板的 backdrop-filter 只能"模糊"
-   * 一块平涂颜色 → 看起来还是不透明色块。改为 transparent 让
-   * 玻璃面板透过 nebula 看到星空。 */
-  background: transparent;
+  /* 不透明水墨底色——light 是 #fafafa，dark 是 #1a1a1a。完全跟随主题。 */
+  background: var(--bg-primary);
   color: var(--text-primary);
 }
 
-/* 全屏 backdrop 层：承担 var(--bg-primary) 主底色 + nebula/halo 氛围。
- * z-index:0（不再 -1）让玻璃面板的 backdrop-filter 能真正"模糊"它。
- * --bg-primary 是 rgba(--bg-primary-rgb, 0.85) 而不是纯不透明，避免
- * 完全压死 body 透出的微弱底色。 */
+/* 全屏 backdrop 层：保留 nebula/halo 氛围，z-index:0 在底色之上、
+ * 内容之下。氛围 SVG 已经缩到 0.10 透明度，light/dark 都不抢戏，
+ * 只是给主底色一层极淡的肌理。 */
 .omni-stage__backdrop {
   position: absolute;
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  background: rgba(var(--bg-primary-rgb), 0.88);
 }
 
-/* 星云 / 光晕氛围叠层：nebula-a 顶部粉紫、nebula-b 底部蓝青、halo-soft
- * 核心周围。soft-light / screen 模式让深浅背景下都不刺眼，opacity 控制在
- * 0.18~0.28 区间。 */
 .omni-stage__nebula,
 .omni-stage__halo {
   position: absolute;
   pointer-events: none;
   user-select: none;
-  z-index: 1;
+  z-index: 0;
 }
 
 .omni-stage__nebula {
@@ -928,7 +922,7 @@ onBeforeUnmount(() => {
   height: 62vmax;
   max-width: 70vw;
   max-height: 70vw;
-  opacity: 0.22;
+  opacity: 0.10;
   mix-blend-mode: soft-light;
   filter: blur(2px);
 }
@@ -949,8 +943,8 @@ onBeforeUnmount(() => {
   width: 78vmin;
   height: 78vmin;
   transform: translate(-50%, -50%);
-  opacity: 0.22;
-  mix-blend-mode: screen;
+  opacity: 0.10;
+  mix-blend-mode: soft-light;
 }
 
 .omni-stage__header {
@@ -1087,18 +1081,25 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: clamp(10px, 1.8vh, 18px);
+  /* 不再用 gap，避免 0-height 元素撑大 flex——改用各 section 自己的
+   * margin 表达间距，caption / tool 行可折叠时不会让 controls 跳位。 */
+  gap: 0;
   width: 100%;
   flex: 1;
   min-height: 0;
 }
 
 .omni-stage__visualizer-zone {
-  flex: 1 1 auto;
+  /* visualizer 不再 flex:1 撑满，否则把气泡/caption/控件挤到底部，
+   * 视觉上变成"圆在中心、气泡在左下"的诡异布局。改成固定高比例
+   * 的盒子：上限 38vh 留出 60% 给对话气泡和控件。 */
+  flex: 0 0 auto;
   min-height: 0;
   width: 100%;
+  height: clamp(220px, 38vh, 320px);
   display: grid;
   place-items: center;
+  margin-top: clamp(8px, 2vh, 18px);
 }
 
 .omni-stage__visualizer {
@@ -1107,19 +1108,25 @@ onBeforeUnmount(() => {
 
 /* --- Q 弹对话气泡层 -------------------------------------------------------
  * 用户消息靠右（accent 主色渐变胶囊），AI 消息靠左（玻璃拟态半透明）。
- * 边框/背景全部走 --glass-realtime-* token，主题切换时自动反转。 */
+ * 容器全宽 + padding 控制左右留白，气泡本身在容器内 align-self 贴边。
+ * 之前用 width:min(620px, ...) + 居中 column + mask 渐变，AI 气泡
+ * 视觉上"挤在屏幕左下"——620px 容器在大屏里偏左，气泡在容器里
+ * 又靠左 align-self，两次偏左放大成"诡异的左下角"错觉。
+ *
+ * 现在改成 width:100% + 内部 padding，气泡贴边自然，左右完全对称。
+ * 去掉 mask 渐变（不再裁顶部），高度自适配。 */
 .omni-stage__bubbles {
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  width: min(620px, calc(100% - 40px));
+  gap: 8px;
+  width: 100%;
+  max-width: 760px;
   max-height: min(34vh, 320px);
   overflow: hidden;
   justify-content: flex-end;
-  padding-top: 30px;
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 30px);
-  mask-image: linear-gradient(to bottom, transparent 0, #000 30px);
+  padding: 8px clamp(20px, 4vw, 48px) 0;
+  margin: 0 auto;
 }
 
 .omni-stage__bubble {
@@ -1136,12 +1143,12 @@ onBeforeUnmount(() => {
 .omni-stage__bubble--user {
   align-self: flex-end;
   border-bottom-right-radius: 6px;
-  /* 用户气泡保留渐变以区隔身份：accent 主色 + 一点 accent hover。
-   * light 模式对比度够，dark 模式靠 accent-info 副色补足区分度。 */
+  /* 用户气泡：单一 accent 渐变 + mono 玻璃。不再掺 accent-info 副色，
+   * 整体保持"单色 + 一点紫蓝高光"的克制。 */
   background: linear-gradient(135deg,
-    rgba(var(--accent-primary-rgb), 0.18),
-    rgba(var(--accent-info-rgb), 0.16));
-  border: 1px solid rgba(var(--accent-primary-rgb), 0.28);
+    rgba(var(--accent-primary-rgb), 0.22),
+    rgba(var(--accent-primary-rgb), 0.10));
+  border: 1px solid rgba(var(--accent-primary-rgb), 0.34);
   -webkit-backdrop-filter: blur(14px) saturate(150%);
   backdrop-filter: blur(14px) saturate(150%);
 }
@@ -1149,8 +1156,10 @@ onBeforeUnmount(() => {
 .omni-stage__bubble--assistant {
   align-self: flex-start;
   border-bottom-left-radius: 6px;
-  background: var(--glass-realtime-bg-subtle);
-  border: 1px solid var(--glass-realtime-border);
+  /* AI 气泡：mono 玻璃，跟随主题底色——light 下浅灰，dark 下深墨。
+   * 没有任何彩色，纯水墨质感。 */
+  background: var(--glass-realtime-bg-strong);
+  border: 1px solid var(--glass-realtime-border-strong);
   -webkit-backdrop-filter: blur(16px) saturate(160%);
   backdrop-filter: blur(16px) saturate(160%);
   color: var(--text-primary);
@@ -1193,14 +1202,21 @@ onBeforeUnmount(() => {
   opacity: 0;
 }
 
-/* live 气泡容器：absolute 浮在 committed 行同一区域，不挤 committed 高度 */
+/* live 气泡容器：absolute 浮在 committed 行同一区域（同样宽 760px
+ * 居中），不挤 committed 高度。容器和 committed 行使用同样的
+ * 横向 padding，气泡自身 align-self 决定靠左/靠右。 */
 .omni-stage__bubble-live-slot {
   position: absolute;
-  inset: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
   gap: 0;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 0 clamp(20px, 4vw, 48px);
   pointer-events: none;
 }
 
@@ -1215,24 +1231,24 @@ onBeforeUnmount(() => {
 }
 
 .omni-stage__caption {
+  /* 引导文字"免提模式：直接说话即可，开口即可打断 AI"应当整段可见——
+   * 之前用 max-height: 14.5em + overflow-y: auto，文字一超过单行
+   * 就出现 1-2 像素的纵向滚动条，上下拉动很诡异。改为两行之内
+   * 的不滚动布局，超出两行则让整体 flex 自然推开。 */
   max-width: min(620px, calc(100% - 40px));
-  max-height: 14.5em;
-  overflow-y: auto;
-  margin: 0;
-  padding: 0 4px;
-  color: var(--text-primary);
-  font-size: 16px;
+  max-height: 4.8em;            /* 13px × 1.6 × 2 行 ≈ 41.6px，够两行 */
+  margin: 4px 0 0;
+  padding: 4px 12px;
+  color: rgba(var(--text-primary-rgb), 0.62);
+  font-size: 13px;
   line-height: 1.6;
   text-align: center;
-  white-space: pre-wrap;
+  white-space: normal;
   word-break: break-word;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(var(--text-primary-rgb), 0.3) transparent;
+  /* 不再 overflow-y: auto——绝不出现"上下滑动"的滚动条。 */
 }
 
-.omni-stage__caption::-webkit-scrollbar { width: 6px; }
-.omni-stage__caption::-webkit-scrollbar-thumb { background: rgba(var(--text-primary-rgb), 0.3); border-radius: 3px; }
-.omni-stage__caption::-webkit-scrollbar-track { background: transparent; }
+/* Caption 不再可滚，::-webkit-scrollbar 规则全部移除。 */
 
 /* Inline tool-call indicator — Apple-style slim glass pill. */
 .omni-stage__tool-inline {
@@ -1254,8 +1270,11 @@ onBeforeUnmount(() => {
 }
 
 .omni-stage__tool-inline--error {
-  background: rgba(var(--error-rgb), 0.08);
-  border-color: rgba(var(--error-rgb), 0.4);
+  /* 不再走 error-rgb 红色——视觉上只用一个 mono 灰色加深 + 文字
+   * 透明度降低表达"未完成"，保留水墨调色板一致性。 */
+  background: var(--glass-realtime-bg-subtle);
+  border-color: var(--glass-realtime-border-strong);
+  color: rgba(var(--text-primary-rgb), 0.7);
 }
 
 .omni-stage__tool-inline-copy {
@@ -1285,8 +1304,16 @@ onBeforeUnmount(() => {
   color: var(--text-primary);
 }
 
-.omni-stage__tool-indicator--error { background: rgba(var(--error-rgb), 0.22); color: rgba(var(--error-rgb), 0.9); }
-.omni-stage__tool-indicator--done { background: rgba(var(--success-rgb), 0.22); color: rgba(var(--success-rgb), 0.9); }
+.omni-stage__tool-indicator--error {
+  /* 不再红/绿：error 用 60% 透明度的 ink 灰，done 用更深 ink 灰 +
+   * 一个细微的 "完成" 感（更强的对比度）。统一 mono 调色板。 */
+  background: rgba(var(--text-primary-rgb), 0.16);
+  color: rgba(var(--text-primary-rgb), 0.7);
+}
+.omni-stage__tool-indicator--done {
+  background: rgba(var(--text-primary-rgb), 0.32);
+  color: var(--text-primary);
+}
 
 .omni-stage__tool-indicator svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
 
@@ -1334,9 +1361,13 @@ onBeforeUnmount(() => {
 }
 .omni-stage__control svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 
+/* 静音/挂断/打断按钮：mono 调色板 + 一点紫蓝高光表达"激活"状态。
+ * 不再用 error-rgb 红色——红色对水墨主题太刺眼。mute 是关闭录音，
+ * 用更深 ink 灰表达"非激活"。 */
 .omni-stage__control--muted {
-  border-color: rgba(var(--error-rgb), 0.55);
-  background: rgba(var(--error-rgb), 0.16);
+  border-color: rgba(var(--text-primary-rgb), 0.55);
+  background: rgba(var(--text-primary-rgb), 0.10);
+  color: rgba(var(--text-primary-rgb), 0.6);
 }
 
 .omni-stage__control--interrupt:disabled { opacity: 0.35; cursor: default; transform: none; }
@@ -1344,9 +1375,9 @@ onBeforeUnmount(() => {
 .omni-stage__control--end {
   width: 66px;
   height: 66px;
-  border-color: rgba(var(--error-rgb), 0.6);
-  background: rgba(var(--error-rgb), 0.24);
+  border-color: rgba(var(--accent-primary-rgb), 0.5);
+  background: rgba(var(--accent-primary-rgb), 0.18);
 }
 
-.omni-stage__control--end:hover { background: rgba(var(--error-rgb), 0.38); }
+.omni-stage__control--end:hover { background: rgba(var(--accent-primary-rgb), 0.30); }
 </style>

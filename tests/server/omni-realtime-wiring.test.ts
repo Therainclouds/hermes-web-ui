@@ -871,9 +871,12 @@ describe('omni-realtime particle visualizer + Quanta soul seeding', () => {
     const source = readFileSync(`${CLIENT_SRC}/composables/useOmniRealtime.ts`, 'utf8')
     expect(source).toContain('outputLevel')
     // Parallel analyser branch off masterGain — the audible routing
-    // (masterGain → destination) must stay untouched.
-    expect(source).toMatch(/outputAnalyser\s*=\s*playbackCtx\.createAnalyser\(\)/)
-    expect(source).toMatch(/masterGain\.connect\(outputAnalyser\)/)
+    // (masterGain → destination) must stay untouched. The node lives on a
+    // shallowRef so OmniVisualizer can attach() to it without Vue deep-
+    // tracking an Audio node, so the assignment goes through `.value`.
+    expect(source).toMatch(/playbackCtx\.createAnalyser\(\)/)
+    expect(source).toMatch(/outputAnalyser\.value\s*=\s*analyserNode/)
+    expect(source).toMatch(/masterGain\.connect\(analyserNode\)/)
     // The sampling loop must be torn down in every close path (definition +
     // onclose + disconnect).
     expect(source.match(/stopOutputLevelLoop\(\)/g)?.length ?? 0).toBeGreaterThanOrEqual(3)

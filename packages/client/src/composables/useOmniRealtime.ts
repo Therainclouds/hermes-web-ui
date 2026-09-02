@@ -214,8 +214,13 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
    * Parallel analyser tap on the playback graph (masterGain → analyser, no
    * connection to destination) so the UI visualizer can render the AI's
    * actual output energy. Zero impact on the audio path.
+   *
+   * Exposed as a shallowRef so the OmniVisualizer can attach() to the
+   * same node and read raw frequency data for the perimeter waveform
+   * (32 bands around a circle). Vue doesn't need to deep-track an
+   * AnalyserNode — shallowRef is enough.
    */
-  let outputAnalyser: AnalyserNode | null = null
+  const outputAnalyser = shallowRef<AnalyserNode | null>(null)
   let outputLevelBuf: Uint8Array<ArrayBuffer> | null = null
   let outputLevelRaf: number | null = null
   /** Smoothed AI playback level (0-1), sampled from the analyser tap. */
@@ -281,11 +286,14 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
     masterGain.gain.value = 1
     masterGain.connect(playbackCtx.destination)
     // Analyser tap for the visualizer: parallel branch off masterGain (not in
-    // series), so the audible routing above is untouched.
-    outputAnalyser = playbackCtx.createAnalyser()
-    outputAnalyser.fftSize = 256
-    outputLevelBuf = new Uint8Array(new ArrayBuffer(outputAnalyser.fftSize))
-    masterGain.connect(outputAnalyser)
+    // series), so the audible routing above is untouched. Exposed via the
+    // shallow ref so OmniVisualizer can read frequency data for the
+    // perimeter waveform without owning the AnalyserNode itself.
+    const analyserNode = playbackCtx.createAnalyser()
+    analyserNode.fftSize = 256
+    outputAnalyser.value = analyserNode
+    outputLevelBuf = new Uint8Array(new ArrayBuffer(analyserNode.fftSize))
+    masterGain.connect(analyserNode)
     startOutputLevelLoop()
     if (playbackCtx.state === 'suspended') {
       try { await playbackCtx.resume() } catch { /* ignore — will be surfaced on play() */ }
@@ -301,11 +309,12 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
   function startOutputLevelLoop(): void {
     if (outputLevelRaf !== null) return
     const tick = (): void => {
-      if (!outputAnalyser || !playbackCtx || !outputLevelBuf) {
+      const analyserNode = outputAnalyser.value
+      if (!analyserNode || !playbackCtx || !outputLevelBuf) {
         outputLevelRaf = null
         return
       }
-      outputAnalyser.getByteTimeDomainData(outputLevelBuf)
+      analyserNode.getByteTimeDomainData(outputLevelBuf)
       let sumSquares = 0
       for (let i = 0; i < outputLevelBuf.length; i += 1) {
         const v = ((outputLevelBuf[i] ?? 128) - 128) / 128
@@ -793,7 +802,7 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
       stopCapture()
       stopPlayback()
       stopOutputLevelLoop()
-      outputAnalyser = null
+      outputAnalyser.value = null
       outputLevelBuf = null
       if (playbackCtx) {
         playbackCtx.close().catch(() => { /* ignore */ })
@@ -819,7 +828,7 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
     stopCapture()
     stopPlayback()
     stopOutputLevelLoop()
-    outputAnalyser = null
+    outputAnalyser.value = null
     outputLevelBuf = null
     if (playbackCtx) {
       playbackCtx.close().catch(() => { /* ignore */ })
@@ -916,6 +925,10 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
     toolCalls,
     inputLevel,
     outputLevel,
+    /** Shallow ref to the playback AnalyserNode — OmniVisualizer
+     *  attach()es to it on mount so the perimeter waveform reflects
+     *  real spectrum data, not just smoothed level. */
+    outputAnalyser,
     isPushing,
     isReady,
     isOutputPlaying,

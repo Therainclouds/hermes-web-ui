@@ -2,19 +2,24 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 /**
- * Omni-Realtime 视觉核心。
+ * Omni-Realtime 视觉核心（黑白水墨 + 紫蓝高光版）。
  *
  * 三层叠加（全部 canvas 绘制）：
- *  1. 外圈粒子环 —— 仅做缓慢公转 + 闪烁，**完全不接音频电平**。
- *     早期实现里粒子速度/径向位置/闪烁频率都耦合了 inputLevel，导致
- *     AI 说话时麦克风 AEC 残音会拉偏整片星云（"鬼畜"）。本版把音频
- *     影响限制在中心液体核心——星环是恒星，不再随声音颤动。
- *  2. 中心液体星体 —— 由 N=10 个顶点的 catmull-rom 圆周组成，每个顶点
- *     半径由基波 + 音频能量驱动，闭合为 bezier 路径，形成"液珠呼吸"
- *     效果。AI 说话时整体缓推外扩并缓慢旋转；用户说话时核心瞬间
- *     微鼓（inputLevel 只走一条单独的低权重通道）。
- *  3. 光晕层 —— 跟随能量做径向呼吸；色相随 phase 切换（listening=
- *     蓝青、speaking=紫、error=暖红）。
+ *  1. 中心规整实心圆 —— 单色水墨白（暗主题）/ 黑（亮主题），径向高光
+ *     用 accent-primary 紫蓝做单点高光。整体半径由能量缓慢呼吸，**不
+ *     抖动**。这是"星体不再扭动"的根本：去掉顶点级起伏，整圆从单点
+ *     径向伸缩。
+ *  2. 圆周连续声纹 —— 32 段频谱映射到圆周 32 个等分角，每点的径向距
+ *     离 = baseRadius * (1 + freq * gain)。相邻点用直线连成连续波形，
+ *     顺时针闭合。波形线 1.4px，色调仍是 text-primary，仅透明度随
+ *     能量浮动（安静时半透，AI 说话时饱满）。底部对中点小三角的垂线
+ *     朝向不旋转——声纹以"音乐环形均衡器"的视觉读法呈现。
+ *  3. 顶部柔光高光 —— 实心圆表面的一束斜光，固定在左上 ≈ 30° 方向。
+ *     AI 说话时整体 alpha 提升。
+ *
+ * 颜色完全跟随 --text-primary（mono 黑白水墨） + --accent-primary（紫蓝
+ * 高光）—— 老版本的"红/紫/青"独立调色板取消，全部并入主色族，light/dark
+ * 主题下都一致。
  */
 const props = defineProps<{
   phase: 'idle' | 'connecting' | 'ready' | 'listening' | 'speaking' | 'error' | 'closed'
@@ -22,82 +27,40 @@ const props = defineProps<{
   inputLevel: number
   /** AI 播放输出电平（0-1），已经过 EMA 平滑。 */
   outputLevel: number
+  /** 播放分析器（playback AnalyserNode 的 shallowRef），由父组件
+   *  注入。visualizer 监听它的变化并 attach 到内部 analyser slot，
+   *  让圆周连续声纹读到真实频谱而不是仅仅平滑电平。 */
+  analyser?: AnalyserNode | null
 }>()
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 let rafId: number | null = null
 let resizeObserver: ResizeObserver | null = null
+let analyser: AnalyserNode | null = null
+let freqBuf: Uint8Array<ArrayBuffer> | null = null
 
-interface Particle {
-  baseAngle: number
-  angularSpeed: number
-  ringIndex: 0 | 1
-  radiusJitter: number
-  size: number
-  twinklePhase: number
-  twinkleSpeed: number
-}
-
-const RINGS = [{ radius: 0.62, tilt: 0.32, count: 56 }, { radius: 0.82, tilt: 0.2, count: 36 }]
-const particles: Particle[] = []
-
-function seedParticles(): void {
-  particles.length = 0
-  for (let ring = 0; ring < RINGS.length; ring += 1) {
-    const ringDef = RINGS[ring]!
-    for (let i = 0; i < ringDef.count; i += 1) {
-      particles.push({
-        baseAngle: (i / ringDef.count) * Math.PI * 2 + ring * 0.5,
-        // 星环速度只跟 time 走，不再被能量调制。
-        angularSpeed: (0.045 - ring * 0.015) * (0.85 + Math.random() * 0.3),
-        ringIndex: ring as 0 | 1,
-        radiusJitter: 0.86 + Math.random() * 0.3,
-        size: 0.8 + Math.random() * 2.2,
-        twinklePhase: Math.random() * Math.PI * 2,
-        twinkleSpeed: 0.4 + Math.random() * 1.2,
-      })
-    }
-  }
-}
-
-const PALETTES: Record<string, { coreIn: string; coreOut: string; particle: string; halo: string }> = {
-  idle:       { coreIn: 'rgba(126, 156, 255, 0.85)', coreOut: 'rgba(59, 91, 219, 0)',   particle: '126, 156, 255', halo: 'rgba(80, 110, 220, 0.14)' },
-  connecting: { coreIn: 'rgba(103, 232, 249, 0.80)', coreOut: 'rgba(34, 150, 220, 0)',   particle: '103, 210, 249', halo: 'rgba(60, 160, 230, 0.20)' },
-  ready:      { coreIn: 'rgba(126, 156, 255, 0.85)', coreOut: 'rgba(59, 91, 219, 0)',   particle: '126, 156, 255', halo: 'rgba(80, 110, 220, 0.14)' },
-  listening:  { coreIn: 'rgba(94, 226, 244, 0.95)',  coreOut: 'rgba(14, 165, 210, 0)',  particle: '94, 226, 244',  halo: 'rgba(34, 211, 238, 0.22)' },
-  speaking:   { coreIn: 'rgba(178, 148, 250, 0.95)', coreOut: 'rgba(109, 84, 250, 0)',  particle: '178, 148, 250', halo: 'rgba(139, 108, 250, 0.24)' },
-  closed:     { coreIn: 'rgba(126, 156, 255, 0.70)', coreOut: 'rgba(59, 91, 219, 0)',   particle: '126, 156, 255', halo: 'rgba(80, 110, 220, 0.10)' },
-  error:      { coreIn: 'rgba(252, 148, 128, 0.90)', coreOut: 'rgba(220, 60, 60, 0)',    particle: '250, 156, 132', halo: 'rgba(240, 90, 80, 0.22)' },
-}
+/** Number of waveform segments around the ring — must match the analyser
+ *  fftSize (fftSize/2 buckets). 32 is the sweet spot for a perimeter waveform
+ *  that reads as a circle from a few meters away while still resolving
+ *  vowel/consonant energy differences. */
+const WAVEFORM_SEGMENTS = 32
+const freqBuckets = new Float32Array(WAVEFORM_SEGMENTS)
 
 let smoothInput = 0
 let smoothOutput = 0
-// 综合能量"呼吸"——驱动液体核心半径 / 整体外推 / 光晕。attack 与 release
+// 综合能量"呼吸"——驱动实心圆半径 / 声纹透明度 / 高光。attack 与 release
 // 都慢到听不出逐音节跳变：TTS 每个音节的 RMS 起伏由此被滤成一次平滑的
 // "呼吸"。这是**唯一**驱动核心形状/位置的信号。
 let energySmooth = 0
-let paletteMix = 1
-let prevPaletteKey = 'idle'
-let time = 0
 
 function smoothLevel(current: number, target: number): number {
   return current + (target - current) * (target > current ? 0.3 : 0.08)
 }
 
-function lerpPalette(currentKey: string): { a: typeof PALETTES.idle, b: typeof PALETTES.idle, t: number } {
-  const b = PALETTES[currentKey] ?? PALETTES.idle!
-  const a = PALETTES[prevPaletteKey] ?? PALETTES.idle!
-  return { a, b, t: paletteMix }
-}
-
-function mix(a: number, b: number, t: number): number {
-  return a + (b - a) * t
-}
-
-function mixTriplet(a: string, b: string, t: number): string {
-  const pa = a.split(',').map(s => parseFloat(s.trim()))
-  const pb = b.split(',').map(s => parseFloat(s.trim()))
-  return `${Math.round(mix(pa[0] ?? 0, pb[0] ?? 0, t))}, ${Math.round(mix(pa[1] ?? 0, pb[1] ?? 0, t))}, ${Math.round(mix(pa[2] ?? 0, pb[2] ?? 0, t))}`
+function readCSSVar(name: string, fallback: string): string {
+  if (typeof window === 'undefined') return fallback
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name)
+  return v && v.trim() ? v.trim() : fallback
 }
 
 function draw(): void {
@@ -119,184 +82,184 @@ function draw(): void {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   ctx.clearRect(0, 0, cssWidth, cssHeight)
 
-  time += 1 / 60
+  // 60Hz 时间累计——只用于 sin 抖动相位（高光 8% 范围内的极小游走）。
+  // 不参与核心形状或声纹驱动。
+  const time = (performance.now() ?? Date.now()) / 1000
 
-  // 输入端平滑（继承 useOmniRealtime 已做 EMA + RMS blend，这里再做一道
-  // 防御性平滑，把残余抖动进一步压扁）。粒子/核心两者都基于同一个
-  // 平滑过的能量驱动——不会再出现"麦克风噪声拉偏星云"的现象。
+  // 防御性再平滑——useOmniRealtime 已经做 EMA + RMS blend，这里再
+  // 压一下 0.3/0.08 attack/release，保证 raw input 不再进入声纹。
   smoothInput = smoothLevel(smoothInput, props.inputLevel)
   smoothOutput = smoothLevel(smoothOutput, props.outputLevel)
-  // 用户权重 0.55 + AI 权重 0.75 —— 二者都被同一慢速 EMA 滤过。
   const rawEnergy = Math.min(1, smoothInput * 0.55 + smoothOutput * 0.75)
   energySmooth += (rawEnergy - energySmooth) * (rawEnergy > energySmooth ? 0.12 : 0.045)
   const energy = Math.pow(energySmooth, 0.8)
-
-  // 调色板过渡。
-  if (props.phase !== prevPaletteKey) {
-    if (paletteMix >= 1) {
-      prevPaletteKey = props.phase
-      paletteMix = 0
-    }
-  }
-  paletteMix = Math.min(1, paletteMix + 0.05)
-  const { a, b, t: mixT } = lerpPalette(props.phase)
-  const particleColor = mixTriplet(a.particle, b.particle, mixT)
-  const coreInTriplet = mixTriplet(rgbTripletOf(a.coreIn), rgbTripletOf(b.coreIn), mixT)
-  const coreInAlpha = alphaOf(a.coreIn) + (alphaOf(b.coreIn) - alphaOf(a.coreIn)) * mixT
-  const haloAlpha = alphaOf(a.halo) + (alphaOf(b.halo) - alphaOf(a.halo)) * mixT
 
   const cx = cssWidth / 2
   const cy = cssHeight / 2
   const unit = Math.min(cssWidth, cssHeight) / 2
 
-  // --- 1) 外圈光晕（径向呼吸） -----------------------------------
-  const haloRadius = unit * (0.74 + energy * 0.14)
-  const halo = ctx.createRadialGradient(cx, cy, unit * 0.2, cx, cy, haloRadius)
-  halo.addColorStop(0, withAlpha(b.halo, haloAlpha * (0.65 + energy * 0.4)))
-  halo.addColorStop(1, 'rgba(0,0,0,0)')
-  ctx.fillStyle = halo
-  ctx.beginPath()
-  ctx.arc(cx, cy, haloRadius, 0, Math.PI * 2)
-  ctx.fill()
+  // 颜色 token：mono 主色 + 紫蓝高光。完全跟随主题。
+  const inkRGB = readCSSVar('--text-primary-rgb', '26, 26, 26')         // 实心圆 / 声纹线
+  const accentRGB = readCSSVar('--accent-primary-rgb', '74, 144, 217')   // 高光 / 声纹柔光
+  const onInkRGB = readCSSVar('--bg-primary-rgb', '250, 250, 250')       // 实心圆内部空腔
 
-  // --- 2) 粒子星环（与音频解耦） -------------------------------
-  // 关键改动：粒子位置/亮度/大小只由 time + 自身 phase + 缓慢公转决定，
-  // 完全不接 smoothInput/smoothOutput。energy 仅通过一个**极低权重**的
-  // 通道影响整体 alpha（让星环在活跃时微微变亮，但仍是无声的）。
-  // AI 说话时整个星环**绝对不**抖——只有中心液体核心在动。
-  for (const p of particles) {
-    const ringDef = RINGS[p.ringIndex]!
-    const angle = p.baseAngle + time * p.angularSpeed
-    const orbit = unit * ringDef.radius * p.radiusJitter
-    // 不再有任何 radialPush，粒子在固定轨道上公转。
-    const px = cx + Math.cos(angle) * orbit
-    const py = cy + Math.sin(angle) * orbit * ringDef.tilt
-    const depth = 0.55 + ((Math.sin(angle) + 1) / 2) * 0.65
-    // twinkle 也只接 time 与自身 phase，闪烁节奏固定、无音频耦合。
-    const twinkle = 0.55 + 0.45 * Math.sin(time * p.twinkleSpeed + p.twinklePhase)
-    const baseAlpha = (0.18 + energy * 0.18) * depth * twinkle + 0.04
-    const size = p.size * depth
-    ctx.fillStyle = `rgba(${particleColor}, ${Math.min(1, baseAlpha).toFixed(3)})`
-    ctx.beginPath()
-    ctx.arc(px, py, size, 0, Math.PI * 2)
-    ctx.fill()
+  // 读取 analyser 频谱（如果上游尚未 attach，则全 0，声纹自然静止）。
+  if (analyser && freqBuf) {
+    analyser.getByteFrequencyData(freqBuf)
+    // 把 0..fftSize/2 的桶按对数感知重新分布到 WAVEFORM_SEGMENTS 段，
+    // 每段取一段桶的最大值——细节感更强。
+    const total = freqBuf.length
+    for (let i = 0; i < WAVEFORM_SEGMENTS; i += 1) {
+      // 对数起点 ~ 200Hz，止点 ~ Nyquist；这样元音能量集中在低段，
+      // 谐波向高段衰减，符合音乐可视化器的读法。
+      const start = Math.floor((i / WAVEFORM_SEGMENTS) * (total * 0.6))
+      const end = Math.floor(((i + 1) / WAVEFORM_SEGMENTS) * (total * 0.6))
+      let peak = 0
+      for (let k = start; k < end && k < total; k += 1) {
+        if (freqBuf[k]! > peak) peak = freqBuf[k]!
+      }
+      // 平滑每段，避免单帧跳变。attack 快、release 慢。
+      const target = peak / 255
+      const prev = freqBuckets[i]!
+      freqBuckets[i] = prev + (target - prev) * (target > prev ? 0.6 : 0.15)
+    }
+  } else {
+    // 没有 analyser 时让声纹自然衰减到 0——不假动。
+    for (let i = 0; i < WAVEFORM_SEGMENTS; i += 1) {
+      freqBuckets[i]! *= 0.9
+    }
   }
 
-  // --- 3) 中心水滴（静止形状 + 整体呼吸） -----------------------
-  drawDrop(ctx, cx, cy, unit, energy, coreInTriplet, coreInAlpha)
-
-  // 顶部柔光高光，固定位置不游走。
-  drawHighlight(ctx, cx, cy, unit, energy)
-
-  // 顶部高光：跟随 blob 上半弧最高点的位置，给液珠打一束斜光。
-  drawHighlight(ctx, cx, cy, unit, energy)
-}
-
-/**
- * 中心水滴：用户要的"静止水滴，对话时跟随音量整体波动"。
- *
- * 关键差异（旧版是 10 顶点 catmull-rom blob + 多频正弦 + 慢自旋）：
- *  - 单一垂直方向的水滴形状（底圆 + 顶部微凸尖），左右严格对称
- *  - 没有顶点级起伏，只有"整体高度"由单一能量信号驱动
- *  - 不自旋（去掉 blobRotation）
- *  - 用户说话时整体短促微鼓；AI 说话时整体缓慢上下呼吸
- *
- * 路径：左侧半圆 → 底部 → 右侧半圆 → 顶部尖顶 → 闭合。
- * 高度 h 受 energy 调制（呼吸），宽度 w 跟随 h 等比例缩放。
- */
-function drawDrop(
-  ctx: CanvasRenderingContext2D,
-  cx: number, cy: number, unit: number,
-  energy: number, colorTriplet: string, alpha: number,
-): void {
-  // 用户说话时短促微鼓，由 smoothInput 独立通道驱动。
-  const userPulse = smoothInput * 0.07
-  // 静态基础尺寸：宽 w = 0.28 × unit，高 h = 1.18 × w（水滴）
-  const w = unit * (0.28 + energy * 0.04 + userPulse)
-  const h = w * (1.18 + energy * 0.08)
-
-  // 单一对称水滴路径（左半圆 → 底 → 右半圆 → 顶部尖顶 → 闭合）。
+  // ---- 1) 中心实心圆 ---------------------------------------------
+  // 整体半径由单点能量驱动，做一次"呼吸"——圆本身无任何顶点级起伏。
+  const coreR = unit * (0.22 + energy * 0.045)
+  // 主体 fill：径向渐变（左上微亮，右下进入 onInk 色，让暗主题里有
+  // 一束斜光的体积感；亮主题里同样有体积感，只是亮的在 onInk 端）。
+  const coreGrad = ctx.createRadialGradient(
+    cx - coreR * 0.35, cy - coreR * 0.42, coreR * 0.05,
+    cx + coreR * 0.15, cy + coreR * 0.25, coreR * 1.05,
+  )
+  coreGrad.addColorStop(0, `rgba(${accentRGB}, ${(0.55 + energy * 0.25).toFixed(3)})`)
+  coreGrad.addColorStop(0.45, `rgba(${inkRGB}, ${(0.78 + energy * 0.10).toFixed(3)})`)
+  coreGrad.addColorStop(1, `rgba(${inkRGB}, ${(0.55 + energy * 0.10).toFixed(3)})`)
+  ctx.fillStyle = coreGrad
   ctx.beginPath()
-  ctx.moveTo(cx - w, cy)
-  // 左下半圆
-  ctx.bezierCurveTo(
-    cx - w, cy + h * 0.55,
-    cx - w * 0.42, cy + h,
-    cx, cy + h,
-  )
-  // 右下半圆
-  ctx.bezierCurveTo(
-    cx + w * 0.42, cy + h,
-    cx + w, cy + h * 0.55,
-    cx + w, cy,
-  )
-  // 右上到顶部尖顶
-  ctx.bezierCurveTo(
-    cx + w, cy - h * 0.6,
-    cx + w * 0.32, cy - h * 1.04,
-    cx, cy - h * 1.08,
-  )
-  // 顶部尖顶到左上
-  ctx.bezierCurveTo(
-    cx - w * 0.32, cy - h * 1.04,
-    cx - w, cy - h * 0.6,
-    cx - w, cy,
-  )
-  ctx.closePath()
-
-  // 内部径向渐变：左上亮区（受光），右下暗区。能量高时中心更亮。
-  const grad = ctx.createRadialGradient(
-    cx - w * 0.42, cy - h * 0.45, w * 0.06,
-    cx + w * 0.25, cy + h * 0.35, Math.max(w, h) * 1.15,
-  )
-  grad.addColorStop(0, `rgba(${colorTriplet}, ${Math.min(1, alpha + energy * 0.12)})`)
-  grad.addColorStop(0.55, `rgba(${colorTriplet}, ${alpha * 0.55})`)
-  grad.addColorStop(1, `rgba(${colorTriplet}, 0)`)
-  ctx.fillStyle = grad
+  ctx.arc(cx, cy, coreR, 0, Math.PI * 2)
   ctx.fill()
-}
 
-/**
- * 顶部柔光高光——液珠最凸点附近打一个椭圆白点，给液珠加体积感。
- * 偏移随能量轻微游走，但量极小（≤ 8% 半径），不会出现跳变。
- */
-function drawHighlight(
-  ctx: CanvasRenderingContext2D,
-  cx: number, cy: number, unit: number, energy: number,
-): void {
-  const r = unit * (0.18 + energy * 0.03)
-  const ox = cx - r * (0.5 + Math.sin(time * 0.4) * 0.06)
-  const oy = cy - r * (0.55 + Math.sin(time * 0.27) * 0.06)
-  const highlight = ctx.createRadialGradient(ox, oy, 0, ox, oy, r * 1.3)
-  highlight.addColorStop(0, `rgba(255, 255, 255, ${0.22 + energy * 0.12})`)
-  highlight.addColorStop(0.45, `rgba(255, 255, 255, ${0.05 + energy * 0.04})`)
-  highlight.addColorStop(1, 'rgba(255, 255, 255, 0)')
+  // 圆描边：极淡的 1px mono 边，给"剪影"感。
+  ctx.strokeStyle = `rgba(${inkRGB}, 0.35)`
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.arc(cx, cy, coreR, 0, Math.PI * 2)
+  ctx.stroke()
+
+  // 顶部柔光高光：固定在左上方 ≈ 30° 方向的小椭圆白点，给圆加
+  // 一束斜光"湿润感"。AI 说话时 alpha 提升。
+  const hlR = coreR * 0.45
+  const hlOx = cx - Math.cos(Math.PI * 0.6 + Math.sin(time * 0.4) * 0.05) * coreR * 0.42
+  const hlOy = cy - Math.sin(Math.PI * 0.6 + Math.sin(time * 0.27) * 0.05) * coreR * 0.42
+  const highlight = ctx.createRadialGradient(hlOx, hlOy, 0, hlOx, hlOy, hlR)
+  highlight.addColorStop(0, `rgba(${onInkRGB}, ${(0.30 + energy * 0.20).toFixed(3)})`)
+  highlight.addColorStop(0.5, `rgba(${onInkRGB}, ${(0.10 + energy * 0.08).toFixed(3)})`)
+  highlight.addColorStop(1, `rgba(${onInkRGB}, 0)`)
   ctx.fillStyle = highlight
   ctx.beginPath()
-  ctx.arc(ox, oy, r * 1.3, 0, Math.PI * 2)
+  ctx.arc(hlOx, hlOy, hlR, 0, Math.PI * 2)
   ctx.fill()
+
+  // ---- 2) 圆周连续声纹 -------------------------------------------
+  // 32 段频谱映射到圆周 32 个等分角的径向距离。baseRadius 是核心圆外
+  // 留出的一圈"呼吸空腔"，让声纹线不和实心圆粘连。
+  const baseRadius = unit * (0.32 + energy * 0.05)
+  const gain = unit * 0.13
+  // 起角：让 0 度指向屏幕正上方（12 点钟），从 12 点顺时针展开 32 段。
+  // 这样声纹读起来是"上方 = 第 0 段"，与人声的中频泛音峰值位置
+  // （元音共振峰）落在上半圆，符合直觉。
+  const startAngle = -Math.PI / 2
+  const step = (Math.PI * 2) / WAVEFORM_SEGMENTS
+
+  // 取这一帧的"声纹能量"——给线条整体 alpha 用。安静时线条半透，
+  // 说话时饱满。
+  let freqMean = 0
+  for (let i = 0; i < WAVEFORM_SEGMENTS; i += 1) freqMean += freqBuckets[i]!
+  freqMean /= WAVEFORM_SEGMENTS
+  const lineAlpha = 0.32 + energy * 0.45 + freqMean * 0.18
+
+  // 声纹主线条：先画"环"，再画波形径向偏移。
+  ctx.beginPath()
+  for (let i = 0; i < WAVEFORM_SEGMENTS; i += 1) {
+    const angle = startAngle + i * step
+    const r = baseRadius + freqBuckets[i]! * gain
+    const x = cx + Math.cos(angle) * r
+    const y = cy + Math.sin(angle) * r
+    if (i === 0) ctx.moveTo(x, y)
+    else ctx.lineTo(x, y)
+  }
+  ctx.closePath()
+  ctx.strokeStyle = `rgba(${inkRGB}, ${Math.min(0.95, lineAlpha).toFixed(3)})`
+  ctx.lineWidth = 1.4
+  ctx.lineJoin = 'round'
+  ctx.lineCap = 'round'
+  ctx.stroke()
+
+  // 声纹柔光层：同一形状，accent 色 0.35 alpha 叠在主线上方，
+  // 给线条一层紫蓝高光（安静时几乎不可见，AI 说话时发光）。
+  ctx.beginPath()
+  for (let i = 0; i < WAVEFORM_SEGMENTS; i += 1) {
+    const angle = startAngle + i * step
+    const r = baseRadius + freqBuckets[i]! * gain
+    const x = cx + Math.cos(angle) * r
+    const y = cy + Math.sin(angle) * r
+    if (i === 0) ctx.moveTo(x, y)
+    else ctx.lineTo(x, y)
+  }
+  ctx.closePath()
+  ctx.strokeStyle = `rgba(${accentRGB}, ${(0.10 + energy * 0.22 + freqMean * 0.10).toFixed(3)})`
+  ctx.lineWidth = 1.4
+  ctx.stroke()
+
+  // ---- 3) 声纹端点（32 个小圆点）--------------------------------
+  // 给连续波形加颗粒感——每个端点画一个 1.2px 圆点，alpha 跟该段
+  // 频谱能量正相关。整体看仍是"环形均衡器"，但连续线条 + 端点颗粒
+  // 双重读法。
+  ctx.fillStyle = `rgba(${inkRGB}, ${(0.55 + freqMean * 0.25).toFixed(3)})`
+  for (let i = 0; i < WAVEFORM_SEGMENTS; i += 1) {
+    const angle = startAngle + i * step
+    const r = baseRadius + freqBuckets[i]! * gain
+    const x = cx + Math.cos(angle) * r
+    const y = cy + Math.sin(angle) * r
+    ctx.beginPath()
+    ctx.arc(x, y, 1.2 + freqBuckets[i]! * 0.6, 0, Math.PI * 2)
+    ctx.fill()
+  }
 }
 
-function rgbTripletOf(rgba: string): string {
-  const m = rgba.match(/rgba?\(([^)]+)\)/)
-  if (!m) return '126, 156, 255'
-  const parts = m[1]!.split(',').map(s => s.trim())
-  return `${parts[0]}, ${parts[1]}, ${parts[2]}`
+/** Wire a (possibly-null) AnalyserNode into the visualizer. The parent
+ *  passes `analyser` as a prop; the watcher below re-runs this on any
+ *  change. Re-allocation of freqBuf is needed only when the underlying
+ *  frequencyBinCount changes (which only happens if the parent re-creates
+ *  the node — e.g. on a fresh session). */
+function attachAnalyser(node: AnalyserNode | null): void {
+  analyser = node
+  if (node) {
+    node.smoothingTimeConstant = 0.6
+    if (!freqBuf || freqBuf.length !== node.frequencyBinCount) {
+      freqBuf = new Uint8Array(node.frequencyBinCount)
+    }
+  } else {
+    freqBuf = null
+    for (let i = 0; i < WAVEFORM_SEGMENTS; i += 1) freqBuckets[i] = 0
+  }
 }
 
-function alphaOf(rgba: string): number {
-  const m = rgba.match(/rgba?\(([^)]+)\)/)
-  if (!m) return 1
-  const parts = m[1]!.split(',').map(s => s.trim())
-  return parts.length >= 4 ? parseFloat(parts[3]!) : 1
-}
-
-function withAlpha(rgba: string, alpha: number): string {
-  return `rgba(${rgbTripletOf(rgba)}, ${alpha.toFixed(3)})`
-}
+watch(
+  () => props.analyser,
+  (next) => attachAnalyser(next ?? null),
+  { immediate: true },
+)
 
 onMounted(() => {
-  seedParticles()
   rafId = requestAnimationFrame(draw)
   if (typeof ResizeObserver === 'function') {
     resizeObserver = new ResizeObserver(() => { /* draw() 自适应尺寸 */ })
@@ -309,9 +272,9 @@ onBeforeUnmount(() => {
   rafId = null
   resizeObserver?.disconnect()
   resizeObserver = null
+  analyser = null
+  freqBuf = null
 })
-
-watch(() => props.phase, () => { /* palette 过渡在 draw 内处理 */ })
 </script>
 
 <template>
@@ -323,7 +286,7 @@ watch(() => props.phase, () => { /* palette 过渡在 draw 内处理 */ })
 <style scoped>
 .omni-visualizer {
   position: relative;
-  width: min(560px, 62vw, 52vh);
+  width: min(520px, 58vw, 50vh);
   aspect-ratio: 1;
   display: flex;
   align-items: center;
