@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { NButton, NInput, NModal, NForm, NFormItem, NPopconfirm } from "naive-ui";
 import { useMessage } from "@/composables/useAppMessage";
@@ -9,6 +9,7 @@ import type { LockedIp, UserAvatar } from "@/api/auth";
 import { clearApiKey } from "@/api/client";
 import { unbindHermesDevice } from "@/api/device-login";
 import ProfileAvatar from "@/components/hermes/profiles/ProfileAvatar.vue";
+import { looksLikeMojibake } from "@/utils/mojibake";
 import multiavatar from "@multiavatar/multiavatar";
 
 const { t } = useI18n();
@@ -178,9 +179,12 @@ async function handleChangeUsername() {
     message.error(t("login.usernameTooShort"));
     return;
   }
+  // WeChat device users (tp_*) don't need current password — their JWT is
+  // authenticated via WeChat device binding scan.
+  const password = isWeChatDeviceUser.value ? null : currentPasswordForName.value;
   loading.value = true;
   try {
-    await changeUsername(currentPasswordForName.value, newUsernameVal.value.trim());
+    await changeUsername(password, newUsernameVal.value.trim());
     username.value = newUsernameVal.value.trim();
     showChangeUsernameModal.value = false;
     currentPasswordForName.value = "";
@@ -294,6 +298,8 @@ function lockedIpTypeLabel(type: LockedIp["type"]): string {
   return t(`settings.lockedIps.type.${type}`);
 }
 
+const nicknameLooksCorrupt = computed(() => looksLikeMojibake(username.value));
+
 onMounted(() => { loadLockedIps(); });
 </script>
 
@@ -346,6 +352,9 @@ onMounted(() => { loadLockedIps(); });
         </div>
       </div>
       <p v-if="isWeChatDeviceUser" class="set-password-hint">{{ t("settings.setAccountPasswordHint") }}</p>
+      <p v-if="isWeChatDeviceUser && nicknameLooksCorrupt" class="nickname-mojibake-hint">
+        ⚠️ {{ t("settings.nicknameMojibakeHint") }}
+      </p>
     </div>
 
     <!-- Locked IPs management -->
@@ -414,7 +423,7 @@ onMounted(() => { loadLockedIps(); });
     <!-- Change username modal -->
     <NModal v-model:show="showChangeUsernameModal" preset="dialog" :title="t('login.changeUsername')">
       <NForm label-placement="top">
-        <NFormItem :label="t('login.currentPassword')">
+        <NFormItem v-if="!isWeChatDeviceUser" :label="t('login.currentPassword')">
           <NInput v-model:value="currentPasswordForName" type="password" show-password-on="click" :placeholder="t('login.currentPassword')" />
         </NFormItem>
         <NFormItem :label="t('login.newUsername')">
@@ -465,6 +474,17 @@ onMounted(() => { loadLockedIps(); });
   margin: 8px 0 0;
   font-size: 12px;
   color: $text-muted;
+}
+
+.nickname-mojibake-hint {
+  margin: 8px 0 0;
+  padding: 8px 12px;
+  border-left: 3px solid $warning;
+  background: rgba($warning, 0.08);
+  border-radius: $radius-sm;
+  font-size: 12px;
+  color: $warning;
+  line-height: 1.5;
 }
 
 .locked-ips-section {

@@ -2133,6 +2133,7 @@ export default {
     title: 'الإعدادات',
     saved: 'تم الحفظ',
     saveFailed: 'فشل الحفظ',
+    nicknameMojibakeHint: 'Your WeChat nickname looks corrupted (mojibake). Go to the login page and re-scan once with WeChat — the system will overwrite the cached nickname with the correct one.',
     unbindWechat: 'إلغاء ربط WeChat',
     unbindWechatConfirm: 'هل تريد إلغاء ربط حساب WeChat «{account}»؟ سيتم حذف جميع بياناته: الحساب المحلي والوكيل الشخصي وجلساته وبيانات الدخول. عند الربط مرة أخرى سيبدأ الحساب من الصفر.',
     unbindWechatSuccess: 'تم إلغاء ربط WeChat',

@@ -1938,6 +1938,7 @@ export default {
     saveFailed: 'Ошибка сохранения',
     setAccountPassword: 'Set Account Password',
     setAccountPasswordHint: 'Once set, you can sign in with your username and password. Forgot it? Re-scan with WeChat and set a new one.',
+    nicknameMojibakeHint: 'Ваш ник WeChat выглядит повреждённым (mojibake). Перейдите на страницу входа и отсканируйте WeChat ещё раз — система перезапишет кэшированный ник правильным значением.',
     passwordSet: 'Account password set',
     unbindWechat: 'Отвязать WeChat',
     unbindWechatConfirm: 'Отвязать WeChat-аккаунт «{account}»? Все его данные будут удалены: локальная учётная запись, личный агент с сессиями и учётные данные. При повторной привязке аккаунт начнётся с чистого листа.',

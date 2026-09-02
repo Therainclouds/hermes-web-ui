@@ -2179,6 +2179,7 @@ export default {
     saveFailed: '儲存失敗',
     setAccountPassword: 'Set Account Password',
     setAccountPasswordHint: 'Once set, you can sign in with your username and password. Forgot it? Re-scan with WeChat and set a new one.',
+    nicknameMojibakeHint: '你的微信暱稱看起來已損壞(亂碼)。請到登入頁用微信重新掃一次,系統會用正確暱稱覆蓋本地快取。',
     passwordSet: 'Account password set',
     unbindWechat: '解除微信綁定',
     unbindWechatConfirm: '確定要解綁微信帳號「{account}」嗎？解綁將刪除該帳號的全部資料：本機帳號、專屬 Agent 及其對話記錄和登入憑證。該微信再次掃碼綁定後將得到全新的空白帳號。',

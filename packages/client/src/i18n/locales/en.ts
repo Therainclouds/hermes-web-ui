@@ -2204,6 +2204,7 @@ export default {
     saveFailed: 'Save failed',
     setAccountPassword: 'Set Account Password',
     setAccountPasswordHint: 'Once set, you can sign in with your username and password. Forgot it? Re-scan with WeChat and set a new one.',
+    nicknameMojibakeHint: 'Your WeChat nickname looks corrupted (mojibake). Go to the login page and re-scan once with WeChat — the system will overwrite the cached nickname with the correct one.',
     passwordSet: 'Account password set',
     unbindWechat: 'Unbind WeChat',
     unbindWechatConfirm: 'Unbind the WeChat account "{account}"? This permanently deletes the account data: the local account, its personal agent with its sessions, and its login credentials. If this WeChat account binds again it starts from a clean slate.',

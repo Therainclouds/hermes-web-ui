@@ -1773,6 +1773,7 @@ export default {
     saveFailed: '저장 실패',
     setAccountPassword: 'Set Account Password',
     setAccountPasswordHint: 'Once set, you can sign in with your username and password. Forgot it? Re-scan with WeChat and set a new one.',
+    nicknameMojibakeHint: 'WeChat 닉네임이 손상된 것처럼 보입니다(mojibake). 로그인 페이지에서 WeChat을 한 번 다시 스캔하세요 — 시스템이 캐시된 닉네임을 올바른 값으로 덮어씁니다.',
     passwordSet: 'Account password set',
     unbindWechat: 'WeChat 연결 해제',
     unbindWechatConfirm: 'WeChat 계정 "{account}"의 연결을 해제하시겠습니까? 로컬 계정, 전용 에이전트 및 대화 기록, 로그인 정보가 모두 삭제됩니다. 다시 연결하면 새로운 빈 계정으로 시작합니다.',
