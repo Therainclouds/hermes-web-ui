@@ -26,6 +26,7 @@ const showModeSwitch = computed(() => !props.hideModeSwitch)
 const historyButtonLabel = computed(() =>
   props.active === 'history' ? t('chat.sessions') : t('sidebar.history'),
 )
+const hasUsbRoute = computed(() => router.hasRoute('hermes.usb'))
 
 function openChat() {
   if (props.active === 'chat') return
@@ -82,6 +83,11 @@ function openApiRelay() {
 
 function openExperts() {
   void router.push({ name: 'hermes.experts' })
+}
+
+function openUsb() {
+  if (typeof window === 'undefined') return
+  void router.push({ name: 'hermes.usb' })
 }
 </script>
 
@@ -183,6 +189,25 @@ function openExperts() {
           <line x1="10" y1="14" x2="21" y2="3" />
         </svg>
         <span>{{ t('sidebar.apiRelay') }}</span>
+      </button>
+      <button v-if="hasUsbRoute" class="page-sidebar-tab" type="button" @click="openUsb">
+        <svg
+          width="15"
+          height="15"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M8 7v5a4 4 0 0 0 8 0V7" />
+          <path d="M12 3v12" />
+          <path d="M8 4h8" />
+          <path d="M10 17h4" />
+          <path d="M9 21h6" />
+        </svg>
+        <span>{{ t('sidebar.usb') }}</span>
       </button>
     </div>
     <div v-if="showModeSwitch" class="conversation-switch conversation-switch--four" role="tablist" aria-label="Conversation type">
