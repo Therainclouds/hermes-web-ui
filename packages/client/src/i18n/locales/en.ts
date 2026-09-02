@@ -715,6 +715,10 @@ export default {
     toolRunningInline: 'Calling {tool} …',
     toolFailedInline: '{tool} failed',
     toolCompletedInline: '{tool} done',
+    soulSource: 'Persona: {name} · inherited from SOUL.md',
+    contextNearLimit: 'The conversation is close to the model context cap ({used}/{total} turns); earlier turns will soon be dropped. Consider ending this session and starting a new one.',
+    resumeVoiceChat: 'Resume conversation',
+    voiceChat: 'Voice chat',
   },
 
   realtimeVoice: {

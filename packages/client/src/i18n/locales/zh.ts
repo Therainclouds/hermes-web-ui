@@ -715,6 +715,10 @@ export default {
     toolRunningInline: '正在调用 {tool} …',
     toolFailedInline: '{tool} 调用失败',
     toolCompletedInline: '{tool} 已完成',
+    soulSource: '当前人格：{name} · 继承自 SOUL.md',
+    contextNearLimit: '对话已接近模型上下文上限（{used}/{total} 轮），较早的轮次即将被丢弃，建议结束后新建对话继续。',
+    resumeVoiceChat: '继续对话',
+    voiceChat: '语音对话',
   },
 
   realtimeVoice: {

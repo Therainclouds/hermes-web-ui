@@ -2,9 +2,9 @@
 
 The translator (`omni_realtime_proxy.translate_event`) is the unit-tested
 seam between DashScope's OpenAI-Realtime-compatible wire protocol and the
-small frontend protocol our `RealtimeDialogPanel.vue` speaks. Covering it
-gives us a regression net for protocol-shape changes without standing up a
-live DashScope upstream.
+small frontend protocol our realtime clients (OmniRealtimeStage.vue and
+InlineRealtimePanel.vue) speak. Covering it gives us a regression net for
+protocol-shape changes without standing up a live DashScope upstream.
 """
 
 from __future__ import annotations

@@ -5,9 +5,17 @@ import { useI18n } from 'vue-i18n'
 import { useOmniRealtime, type OmniDialogToolCall } from '@/composables/useOmniRealtime'
 import { meetingASRApi } from '@/utils/meeting-asr-api'
 import { executeOmniTool, OMNI_REALTIME_TOOLS } from '@/api/hermes/omni-tools'
+import { fetchMemory } from '@/api/hermes/skills'
 import { uid, useChatStore, type Message } from '@/stores/hermes/chat'
 import { useMeetingStore } from '@/stores/hermes/meeting'
 import { useRealtimeModelStore } from '@/stores/hermes/realtime-model'
+import { useProfilesStore } from '@/stores/hermes/profiles'
+import {
+  buildRealtimeInstructions,
+  serializeChatHistory,
+  countUserTurns,
+  CONTEXT_WARNING_RATIO,
+} from '@/utils/realtime-instructions'
 
 /**
  * GPT-Realtime 风格的单聊实时对话舞台。
@@ -36,6 +44,7 @@ const { t } = useI18n()
 const chatStore = useChatStore()
 const meetingStore = useMeetingStore()
 const realtimeModelStore = useRealtimeModelStore()
+const profilesStore = useProfilesStore()
 
 // Voices verified against the DashScope Qwen-Omni-Realtime catalogue.
 // The same `Tina/Serena/Ethan/Jennifer/Ryan` voice IDs are accepted by every
@@ -111,24 +120,18 @@ let captureTimer: number | null = null
 let framesCaptured = 0
 
 /**
- * 会话提示词：在默认人设之上告知模型它可以调用的工作台工具
- * （定义通过 OMNI_REALTIME_TOOLS 随 start 帧下发），以及调用守则。
+ * 会话 instructions 由 `buildRealtimeInstructions` 组合（见
+ * utils/realtime-instructions.ts）：当前激活 profile 的 SOUL.md 人格 →
+ * 语音场景补充指令 → function calling 工具列表说明与调用守则 → 可选
+ * 历史对话摘要。工具列表（OMNI_REALTIME_TOOLS）随 start 帧下发，此处
+ * 守则文案与其保持一致。
  */
-const REALTIME_INSTRUCTIONS = [
-  '你是"小合"，用户的中文语音助手，贯穿 Hermes 工作台。回答口语化、简洁自然，适合直接朗读。',
-  '',
-  '你可以调用以下工具查询工作台的实时事实：',
-  '- query_agent_memory：查询 Agent 的长期记忆（memory 记忆 / user 用户画像 / soul 人格）。',
-  '- list_agent_skills / read_skill_detail：查看当前 Agent 已配置的技能及其 SKILL.md。',
-  '- list_recent_sessions：查看最近的对话会话列表。',
-  '- list_jobs：查看当前的定时任务与自动化任务。',
-  '- query_hermes_agent：把一个具体问题丢给后端 Hermes Agent 跑一次，它会用上当前 profile 的 MCP 工具 / 技能 / 终端 / 文件系统等真实能力，再把最终回复文本返回给你。当用户问的问题需要真实工具操作或工作区读取时优先调用它。',
-  '',
-  '工具使用守则：',
-  '1. 涉及工作台数据或工具操作时必须调用工具获取事实，禁止凭空编造。',
-  '2. 拿到结果后用口语简短总结关键结论；结果为空或出错时如实说明。',
-  '3. 一次只调用一个必要的工具；回答完再考虑是否需要下一个。',
-].join('\n')
+
+/**
+ * 会话连接期间的人格来源（Setup 卡片展示）。activeProfileName 为空时回落
+ * 'default'（default profile 是 ~/.hermes 根目录，无命名 profile）。
+ */
+const soulProfileName = computed(() => profilesStore.activeProfileName?.trim() || 'default')
 
 const omni = useOmniRealtime({
   handsFree: true,
@@ -220,6 +223,19 @@ const displayError = computed(() => {
 })
 
 const sessionTitle = computed(() => chatStore.activeSession?.title?.trim() || t('realtimeVoice.untitledSession'))
+
+/**
+ * 上下文近上限告警（live 舞台独立 banner，不进 caption——caption 的分支
+ * 顺序被 omni-realtime-wiring.test.ts 锚定）。只计 user 轮次：DashScope
+ * 的 audioTurns 按一次发言计数，turns 数组里 user/assistant 各占一条。
+ */
+const usedUserTurns = computed(() => countUserTurns(omni.turns.value))
+const contextLimitTotal = computed(() => realtimeModelStore.limits?.audioTurns ?? null)
+const nearContextLimit = computed(() => {
+  const total = contextLimitTotal.value
+  if (!total) return false
+  return usedUserTurns.value >= Math.floor(total * CONTEXT_WARNING_RATIO)
+})
 
 watch(cameraStream, (stream) => {
   const el = videoRef.value
@@ -320,6 +336,46 @@ async function ensureBackendAvailable(timeoutMs = 30_000): Promise<boolean> {
   return false
 }
 
+/**
+ * 序列化当前 chat session 的历史消息（最近 20 条非 tool 消息）注入
+ * instructions。三种场景共用：
+ *  - 全新语音会话：messages 为空 → 返回空串，不注入；
+ *  - 已有文本会话切语音（阶段二的入口）：注入此前文字聊天内容；
+ *  - 断线续聊（resumeSession）：语音轮次已增量持久化，回注实现上下文衔接。
+ */
+function buildHistoryContext(): string {
+  const session = chatStore.activeSession
+  if (!session?.messages?.length) return ''
+  return serializeChatHistory(session.messages)
+}
+
+/**
+ * 拉取后端就绪状态与当前激活 profile 的 SOUL.md，二者并行（ensureBackend
+ * 最多 30s 轮询，soul 读取不能串行叠加在它后面）；记忆读取失败不阻断会话，
+ * 落到通用人格兜底。
+ */
+async function connectWithSoul(): Promise<boolean> {
+  const [ready, memory] = await Promise.all([
+    ensureBackendAvailable(),
+    fetchMemory().catch(() => null),
+  ])
+  if (!ready) {
+    backendError.value = t('omniRealtime.backendUnavailable')
+    return false
+  }
+  if (cameraEnabled.value) await startCamera()
+  await omni.connect({
+    voice: selectedVoice.value,
+    model: realtimeModelStore.config.model || undefined,
+    instructions: buildRealtimeInstructions(String(memory?.soul || ''), { history: buildHistoryContext() }),
+  })
+  // Once the session is live the mic feed is already flowing upstream
+  // (DashScope requires audio before image frames), so we can start
+  // sampling camera frames for the model.
+  if (cameraStream.value) startFrameCapture()
+  return true
+}
+
 async function startSession(): Promise<void> {
   if (!canStart.value || preparing.value) return
   writtenTurnIds.clear()
@@ -328,21 +384,23 @@ async function startSession(): Promise<void> {
   backendError.value = ''
   preparing.value = true
   try {
-    const ready = await ensureBackendAvailable()
-    if (!ready) {
-      backendError.value = t('omniRealtime.backendUnavailable')
-      return
-    }
-    if (cameraEnabled.value) await startCamera()
-    await omni.connect({
-      voice: selectedVoice.value,
-      model: realtimeModelStore.config.model || undefined,
-      instructions: REALTIME_INSTRUCTIONS,
-    })
-    // Once the session is live the mic feed is already flowing upstream
-    // (DashScope requires audio before image frames), so we can start
-    // sampling camera frames for the model.
-    if (cameraStream.value) startFrameCapture()
+    await connectWithSoul()
+  } finally {
+    preparing.value = false
+  }
+}
+
+/**
+ * 断线续聊：WS 断开后 phase 停在 'error'，live 舞台保留（ws 已置空、采集
+ * 已停止）。重新走 connectWithSoul —— 历史轮次已持久化到当前 session，
+ * buildHistoryContext 会把它们回注，模型拿到上下文衔接而非失忆重开。
+ */
+async function resumeSession(): Promise<void> {
+  if (phase.value !== 'error' || preparing.value) return
+  backendError.value = ''
+  preparing.value = true
+  try {
+    await connectWithSoul()
   } finally {
     preparing.value = false
   }
@@ -575,6 +633,9 @@ onBeforeUnmount(() => {
           <h2>{{ t('meeting.realtime.title') }}</h2>
           <p class="omni-stage__card-sub">{{ t('meeting.realtime.subtitle') }}</p>
           <p class="omni-stage__card-sub omni-stage__card-tools">{{ t('omniRealtime.toolsHint') }}</p>
+          <p class="omni-stage__card-sub omni-stage__card-soul" data-testid="omni-realtime-soul-source">
+            {{ t('omniRealtime.soulSource', { name: soulProfileName }) }}
+          </p>
 
           <div class="omni-stage__field">
             <label>{{ t('meeting.realtime.voice') }}</label>
@@ -600,6 +661,16 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-else class="omni-stage__live">
+        <NAlert
+          v-if="nearContextLimit && contextLimitTotal"
+          type="warning"
+          :show-icon="false"
+          class="omni-stage__alert omni-stage__alert--live"
+          data-testid="omni-realtime-context-warning"
+        >
+          {{ t('omniRealtime.contextNearLimit', { used: usedUserTurns, total: contextLimitTotal }) }}
+        </NAlert>
+
         <div class="omni-stage__orb-wrap" :style="orbStyle">
           <div class="omni-stage__halo" aria-hidden="true" />
           <div class="omni-stage__orb" data-testid="omni-realtime-orb">
@@ -652,6 +723,17 @@ onBeforeUnmount(() => {
             >{{ toolInlineResult(latestToolCall) }}</span>
           </span>
         </div>
+
+        <NButton
+          v-if="phase === 'error'"
+          type="primary"
+          size="small"
+          :loading="preparing"
+          data-testid="omni-realtime-resume"
+          @click="resumeSession"
+        >
+          {{ t('omniRealtime.resumeVoiceChat') }}
+        </NButton>
 
         <div class="omni-stage__controls">
           <button
@@ -842,6 +924,8 @@ onBeforeUnmount(() => {
 .omni-stage__card h2 { margin: 0; font-size: 18px; font-weight: 620; }
 .omni-stage__card-sub { margin: -10px 0 0; color: rgba(183, 224, 247, 0.6); font-size: 12px; text-align: center; }
 .omni-stage__card-tools { margin-top: -8px; color: rgba(130, 245, 255, 0.66); }
+.omni-stage__card-soul { margin-top: -4px; color: rgba(167, 139, 250, 0.75); }
+.omni-stage__alert--live { max-width: 560px; margin: 0 auto 18px; }
 
 /* Center each form row inside the card; the field label sits above the
  * control and both are center-aligned, matching the rest of the card. */

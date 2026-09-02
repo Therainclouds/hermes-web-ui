@@ -112,12 +112,21 @@ const OUTPUT_SAMPLE_RATE = 24_000
  * self-interrupt loops on a particular platform; lower it if the user has
  * to speak loudly before the AI yields.
  */
-const LOCAL_BARGE_IN_THRESHOLD = 0.15
+const LOCAL_BARGE_IN_THRESHOLD = 0.12
+/**
+ * Sustained-voice floor on the exponentially-smoothed RMS (see the analyser
+ * tick). Lowering the peak threshold above makes barge-in feel faster, but a
+ * peak alone also fires on single transients (a click, one loud echo frame).
+ * Speech sustains energy across frames, so requiring the smoothed RMS to
+ * stay above this floor filters transients while keeping real speech
+ * responsive. Raise it if echo still sneaks through on loud speaker setups.
+ */
+const LOCAL_BARGE_IN_RMS_FLOOR = 0.035
 /**
  * Debounce window after a local barge-in so a single loud echo frame
  * doesn't trigger a second interrupt while the AI is still tearing down.
  */
-const LOCAL_BARGE_IN_DEBOUNCE_MS = 600
+const LOCAL_BARGE_IN_DEBOUNCE_MS = 800
 
 /**
  * Resample a Float32 buffer from `sourceSampleRate` to `targetSampleRate`
@@ -186,6 +195,12 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
   let lastLocalBargeInAt = 0
   /** Consecutive frames the mic peak has stayed above the barge-in threshold. */
   let bargeInStreak = 0
+  /**
+   * Exponentially-smoothed RMS of the mic input (EMA, alpha 0.3). Speech
+   * sustains energy across frames while transients don't, so the smoothed
+   * value gates the barge-in streak against single-frame false triggers.
+   */
+  let rmsSmoothed = 0
 
   // --- playback queue ----------------------------------------------------
   // AI audio arrives as a stream of binary PCM16 frames; we keep appending
@@ -546,21 +561,29 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
       if (!analyser) return
       analyser.getByteTimeDomainData(buf)
       let peak = 0
+      let sumSquares = 0
       for (let i = 0; i < buf.length; i += 1) {
-        const v = Math.abs(((buf[i] ?? 128) - 128) / 128)
-        if (v > peak) peak = v
+        const v = ((buf[i] ?? 128) - 128) / 128
+        const a = Math.abs(v)
+        if (a > peak) peak = a
+        sumSquares += v * v
       }
       inputLevel.value = peak
+      // Smoothed RMS (EMA): speech sustains energy across frames, transients
+      // (clicks, one loud echo frame) don't move it much. Used below as a
+      // sustained-voice gate so the streak can't fire on a single spike.
+      rmsSmoothed = rmsSmoothed * 0.7 + Math.sqrt(sumSquares / buf.length) * 0.3
       // Client-side barge-in: the upstream server VAD takes 100–300 ms to
       // emit `listening`, during which the AI audio keeps playing and the
       // user perceives the interrupt as "broken". Trigger `maybeBargeIn`
       // directly off the local mic input peak so the response feels
       // real-time. AEC is enabled above so the residual echo after the
-      // AI's own playback is well below `LOCAL_BARGE_IN_THRESHOLD`; we
-      // still require the peak to clear the threshold for several
-      // consecutive frames (hysteresis) so a single loud echo frame can't
-      // start a self-interrupt loop.
-      if (peak >= LOCAL_BARGE_IN_THRESHOLD) {
+      // AI's own playback is well below `LOCAL_BARGE_IN_THRESHOLD`; the
+      // smoothed-RMS floor additionally rejects one-off transients, and the
+      // streak still requires several consecutive qualifying frames
+      // (hysteresis) so a single loud echo frame can't start a
+      // self-interrupt loop.
+      if (peak >= LOCAL_BARGE_IN_THRESHOLD && rmsSmoothed >= LOCAL_BARGE_IN_RMS_FLOOR) {
         bargeInStreak += 1
       } else {
         bargeInStreak = 0
@@ -614,6 +637,7 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
     // cycle can't fire a spurious interrupt).
     bargeInStreak = 0
     lastLocalBargeInAt = 0
+    rmsSmoothed = 0
   }
 
   // --- lifecycle ---------------------------------------------------------
@@ -630,6 +654,7 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
     // Reset client-side barge-in bookkeeping for the new session.
     bargeInStreak = 0
     lastLocalBargeInAt = 0
+    rmsSmoothed = 0
     droppingAssistantAudio = false
 
     const apiKey = getApiKey()

@@ -3,7 +3,7 @@ import { ref, watch, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NButton, NSpin, NTag, NTooltip, NInput, NPopconfirm, NModal, NSelect, NRadio, NRadioGroup } from 'naive-ui'
 import MeetingAgentPanel from '@/components/hermes/meeting/MeetingAgentPanel.vue'
-import RealtimeDialogPanel from '@/components/hermes/meeting/RealtimeDialogPanel.vue'
+import InlineRealtimePanel from '@/components/hermes/meeting/InlineRealtimePanel.vue'
 import SceneTemplatePicker from '@/components/hermes/meeting/SceneTemplatePicker.vue'
 import WaveformCanvas from '@/components/hermes/meeting/WaveformCanvas.vue'
 import MeetingSidebar, { type SidebarSession } from '@/components/hermes/meeting/MeetingSidebar.vue'
@@ -1300,7 +1300,7 @@ async function clearTranscript() {
         </template>
 
         <template #realtime>
-          <RealtimeDialogPanel
+          <InlineRealtimePanel
             :has-dashscope-key="!!meetingStore.asrConfig.dashscopeApiKey || realtimeModelStore.hasApiKey"
             :meeting-context="realtimeMeetingContext"
             @close="showRealtimeDialog = false"

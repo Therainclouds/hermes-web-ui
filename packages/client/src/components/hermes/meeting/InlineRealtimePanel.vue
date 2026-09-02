@@ -4,8 +4,23 @@ import { NButton, NTag, NTooltip, NEmpty, NAlert, NSelect, NInput, type SelectOp
 import { useI18n } from 'vue-i18n'
 import { useOmniRealtime } from '@/composables/useOmniRealtime'
 import { meetingASRApi } from '@/utils/meeting-asr-api'
+import { fetchMemory } from '@/api/hermes/skills'
+import { buildRealtimeInstructions } from '@/utils/realtime-instructions'
 import { useMeetingStore } from '@/stores/hermes/meeting'
 import { useRealtimeModelStore } from '@/stores/hermes/realtime-model'
+
+/**
+ * 会议侧栏的实时语音对话面板（OmniRealtimeStage 的 inline 薄包装变体）。
+ *
+ * 与 Chat 侧全屏舞台共享同一条 `useOmniRealtime` 音频链路（/ws/omni-realtime、
+ * 双路 barge-in、服务端 VAD 分轮），但按会议场景定制：
+ *  - inline 布局填充 MeetingRightPanel 的 #realtime 槽，非全屏遮罩；
+ *  - 按键说话（push-to-talk）为主交互，避免免提抢话打断会议进行；
+ *  - 会议上下文（标题 / 时间 / 逐字稿）经 buildRealtimeInstructions 的同一条
+ *    追加路径注入 instructions；
+ *  - 人格继承当前激活 profile 的 SOUL.md（fetchMemory 并行拉取，失败兜底）；
+ *  - 不写 chatStore——会议语音对话即开即用，不落入聊天会话历史。
+ */
 
 const props = defineProps<{
   /** Used to surface a friendly error if no DashScope key has been configured. */
@@ -41,9 +56,12 @@ const voiceOptions: SelectOption[] = [
 const selectedVoice = ref<string>('Tina')
 // Apply the default voice configured in the Realtime model panel.
 selectedVoice.value = realtimeModelStore.config.voice || 'Tina'
-const instructions = ref<string>(
-  '你是一个友好的中文会议助手，名字叫\"小合\"。请用简洁、自然、口语化的中文回答，适合直接朗读。',
-)
+
+/**
+ * 用户追加的自定义指令（可选）。人格与语音行为约束由 SOUL.md + 补充指令
+ * 自动提供，这里只承载用户想额外追加的会议特定要求；留空则不追加。
+ */
+const extraInstructions = ref<string>('')
 
 const omni = useOmniRealtime({
   onError: (msg) => {
@@ -129,21 +147,26 @@ async function startSession() {
   preparing.value = true
   backendError.value = ''
   try {
-    const ready = await ensureBackendAvailable()
+    // 后端就绪与 SOUL.md 读取并行（后端启动最多轮询 30s，人格读取不能
+    // 串行叠加）；记忆读取失败不阻断会话，buildRealtimeInstructions 内部
+    // 会落到通用人格兜底。
+    const [ready, memory] = await Promise.all([
+      ensureBackendAvailable(),
+      fetchMemory().catch(() => null),
+    ])
     if (!ready) {
       backendError.value = t('omniRealtime.backendUnavailable')
       return
     }
-    // 会议上下文注入：在用户设定的人设/指令之后追加当前会议的逐字稿与时间信息，
-    // 让 AI 根据"现在正在开的会"来回答。仅当上下文非空时才拼，避免污染自定义指令。
-    const baseInstructions = instructions.value.trim()
-    const contextBlock = hasMeetingContext.value && props.meetingContext
-      ? `\n\n——\n以下是开启本实时对话时所在的会议上下文（逐字稿带时间戳）。请结合这些内容回答，不要编造上下文之外的事实；若用户问题与会议无关也可以正常闲聊。\n${props.meetingContext.trim()}`
-      : ''
+    const baseInstructions = buildRealtimeInstructions(String(memory?.soul || ''), {
+      meetingContext: hasMeetingContext.value && props.meetingContext ? props.meetingContext : '',
+    })
+    const extra = extraInstructions.value.trim()
+    const instructions = extra ? `${baseInstructions}\n\n——\n${extra}` : baseInstructions
     await omni.connect({
       voice: selectedVoice.value,
       model: realtimeModelStore.config.model || undefined,
-      instructions: `${baseInstructions}${contextBlock}`,
+      instructions,
     })
   } finally {
     preparing.value = false
@@ -247,7 +270,7 @@ watch(
       <div class="realtime-config-row">
         <label>{{ t('meeting.realtime.instructions') }}</label>
         <NInput
-          v-model:value="instructions"
+          v-model:value="extraInstructions"
           type="textarea"
           :autosize="{ minRows: 2, maxRows: 4 }"
           size="small"

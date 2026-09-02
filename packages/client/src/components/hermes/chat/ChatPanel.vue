@@ -189,8 +189,10 @@ async function openOmniRealtime(options: { createFresh?: boolean; persistRemote?
   //      implementation only created the session locally with `newChat()`,
   //      which left `isLocalOnly=true`, hid it from the sidebar, and the
   //      realtime transcript was lost on any navigation away.
-  //   2. A future in-place 「continue realtime here」 button can call this
-  //      without options and reuse the existing session.
+  //   2. The chat-header 🎙️ button calls this without options and reuses
+  //      the existing session — OmniRealtimeStage serializes the session's
+  //      recent messages into the instructions (buildHistoryContext) so the
+  //      voice dialog continues from what was already discussed in text.
   if (options.createFresh) {
     if (options.persistRemote) {
       try {
@@ -2928,6 +2930,32 @@ async function handleSessionModelCustomSubmit() {
                 </NButton>
               </template>
               {{ t("chat.outlineTitle") }}
+            </NTooltip>
+            <NTooltip trigger="hover">
+              <template #trigger>
+                <NButton
+                  quaternary
+                  size="small"
+                  @click="openOmniRealtime()"
+                  circle
+                >
+                  <template #icon>
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                    >
+                      <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" />
+                      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                      <line x1="12" y1="19" x2="12" y2="23" />
+                    </svg>
+                  </template>
+                </NButton>
+              </template>
+              {{ t("omniRealtime.voiceChat") }}
             </NTooltip>
             <NTooltip trigger="hover">
               <template #trigger>

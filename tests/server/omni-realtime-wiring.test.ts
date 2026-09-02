@@ -99,8 +99,9 @@ describe('omni-realtime client wiring', () => {
     expect(source).toContain('show-realtime-dialog=')
     expect(source).toContain('showRealtimeDialog')
     expect(source).toMatch(/@toggle-realtime-dialog="showRealtimeDialog/)
-    // RealtimeDialogPanel is mounted into MeetingRightPanel's realtime slot
-    expect(source).toContain('<RealtimeDialogPanel')
+    // InlineRealtimePanel (the meeting-side thin wrapper around the shared
+    // useOmniRealtime audio chain) is mounted into MeetingRightPanel's realtime slot
+    expect(source).toContain('<InlineRealtimePanel')
     expect(source).toContain('has-dashscope-key')
   })
 
@@ -125,28 +126,28 @@ describe('omni-realtime client wiring', () => {
     expect(source).toContain('<slot name="realtime"')
   })
 
-  it('RealtimeDialogPanel implements push-to-talk and renders the conversation', () => {
+  it('InlineRealtimePanel implements push-to-talk and soul-based instructions', () => {
     const source = readFileSync(
-      `${CLIENT_SRC}/components/hermes/meeting/RealtimeDialogPanel.vue`,
+      `${CLIENT_SRC}/components/hermes/meeting/InlineRealtimePanel.vue`,
       'utf8',
     )
     // receives the DashScope-key availability as a prop from MeetingView
     expect(source).toContain('hasDashscopeKey')
     // receives the current meeting context (transcript + time) as a prop
     expect(source).toContain('meetingContext')
-    // injects the meeting context into the instructions at session start
-    expect(source).toContain('contextBlock')
-    expect(source).toContain('instructions:')
+    // meeting context + SOUL.md persona are combined through the shared
+    // buildRealtimeInstructions path (same injection seam as the Chat stage)
+    expect(source).toContain('buildRealtimeInstructions')
+    expect(source).toContain('meetingContext:')
     // speak/release handlers
     expect(source).toContain('togglePush')
     expect(source).toContain('releasePush')
     // delegates WS lifecycle to useOmniRealtime (covered in the next test)
     expect(source).toContain('useOmniRealtime')
-    // passes the user-supplied voice + instructions through to the server
-    // (instructions = user prompt + injected meeting context block)
+    // passes the user-supplied voice through to the server; instructions are
+    // composed from soul + meeting context (optionally user extras)
     expect(source).toMatch(/voice:\s*selectedVoice/)
     expect(source).toContain('baseInstructions')
-    expect(source).toContain('contextBlock')
   })
 
   it('MeetingView forwards the DashScope key availability to RealtimeDialogPanel', () => {
@@ -222,7 +223,7 @@ describe('omni-realtime client wiring', () => {
     const disallowed = ['Cherry', 'Chelsie', 'Adam']
     const pickers = [
       `${CLIENT_SRC}/components/hermes/chat/OmniRealtimeStage.vue`,
-      `${CLIENT_SRC}/components/hermes/meeting/RealtimeDialogPanel.vue`,
+      `${CLIENT_SRC}/components/hermes/meeting/InlineRealtimePanel.vue`,
     ]
     for (const path of pickers) {
       const source = readFileSync(path, 'utf8')

@@ -658,6 +658,10 @@ export default {
     toolRunningInline: '正在呼叫 {tool} …',
     toolFailedInline: '{tool} 呼叫失敗',
     toolCompletedInline: '{tool} 已完成',
+    soulSource: '目前人格：{name} · 繼承自 SOUL.md',
+    contextNearLimit: '對話已接近模型內容上限（{used}/{total} 輪），較早的輪次即將被捨棄，建議結束後新建對話繼續。',
+    resumeVoiceChat: '繼續對話',
+    voiceChat: '語音對話',
   },
 
   realtimeVoice: {
