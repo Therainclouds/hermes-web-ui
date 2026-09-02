@@ -959,6 +959,11 @@ async function handleCopyMarkdown(): Promise<void> {
 </template>
 
 <style scoped>
+/* 口语对练舞台——沿用 Omni 实时对话的设计语言：
+ * 不透明 var(--bg-primary) 底 + accent 紫蓝低透明渐变氛围 + 玻璃拟态
+ * 面板（--glass-realtime-* 令牌），全部颜色跟随 light/dark 主题。
+ * 评分语义色（good/ok/weak）保留，但改用 --success/--warning/--error
+ * 主题令牌，两种主题下都做柔化处理。 */
 .practice-stage {
   position: fixed;
   inset: 0;
@@ -967,8 +972,8 @@ async function handleCopyMarkdown(): Promise<void> {
   flex-direction: column;
   isolation: isolate;
   overflow: hidden;
-  color: #f4fbff;
-  background: linear-gradient(168deg, #0c0817 0%, #150f26 48%, #0a0713 100%);
+  color: var(--text-primary);
+  background: var(--bg-primary);
 }
 
 .practice-stage__wash {
@@ -979,8 +984,8 @@ async function handleCopyMarkdown(): Promise<void> {
   pointer-events: none;
 }
 
-.practice-stage__wash--top { top: 0; background: linear-gradient(rgba(214, 179, 255, 0.06), transparent); }
-.practice-stage__wash--bottom { bottom: 0; background: linear-gradient(transparent, rgba(64, 224, 200, 0.05)); }
+.practice-stage__wash--top { background: linear-gradient(rgba(var(--accent-primary-rgb), 0.07), transparent); }
+.practice-stage__wash--bottom { background: linear-gradient(transparent, rgba(var(--accent-primary-rgb), 0.05)); }
 
 .practice-stage__header {
   z-index: 3;
@@ -990,9 +995,10 @@ async function handleCopyMarkdown(): Promise<void> {
   grid-template-columns: 44px minmax(0, 1fr) auto;
   align-items: center;
   gap: 14px;
-  border-bottom: 1px solid rgba(201, 175, 255, 0.12);
-  background: rgba(10, 7, 18, 0.46);
-  backdrop-filter: blur(22px);
+  border-bottom: 1px solid var(--glass-realtime-border);
+  background: var(--glass-realtime-bg-subtle);
+  -webkit-backdrop-filter: var(--glass-realtime-blur);
+  backdrop-filter: var(--glass-realtime-blur);
 }
 
 .practice-stage__back {
@@ -1000,14 +1006,15 @@ async function handleCopyMarkdown(): Promise<void> {
   height: 38px;
   display: grid;
   place-items: center;
-  border: 1px solid rgba(205, 180, 255, 0.16);
+  border: 1px solid var(--glass-realtime-border);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--glass-realtime-bg);
   color: inherit;
   cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
 }
 
-.practice-stage__back:hover { background: rgba(214, 179, 255, 0.1); border-color: rgba(214, 179, 255, 0.36); }
+.practice-stage__back:hover { background: var(--glass-realtime-bg-strong); border-color: rgba(var(--text-primary-rgb), 0.4); }
 .practice-stage__back svg { width: 20px; fill: none; stroke: currentColor; stroke-width: 1.7; }
 
 .practice-stage__identity { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
@@ -1020,7 +1027,7 @@ async function handleCopyMarkdown(): Promise<void> {
 }
 .practice-stage__identity span {
   overflow: hidden;
-  color: rgba(210, 192, 240, 0.58);
+  color: rgba(var(--text-primary-rgb), 0.58);
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1028,10 +1035,10 @@ async function handleCopyMarkdown(): Promise<void> {
 
 .practice-stage__phase {
   padding: 5px 12px;
-  border: 1px solid rgba(214, 179, 255, 0.28);
+  border: 1px solid rgba(var(--accent-primary-rgb), 0.34);
   border-radius: 999px;
-  color: rgba(221, 199, 255, 0.9);
-  background: rgba(30, 20, 50, 0.55);
+  color: var(--text-primary);
+  background: rgba(var(--accent-primary-rgb), 0.14);
   font-size: 11px;
   letter-spacing: 0.04em;
 }
@@ -1062,14 +1069,16 @@ async function handleCopyMarkdown(): Promise<void> {
   text-align: center;
   gap: 14px;
   padding: 26px 24px;
-  border: 1px solid rgba(201, 175, 255, 0.16);
+  border: 1px solid var(--glass-realtime-border);
   border-radius: 20px;
-  background: rgba(24, 15, 44, 0.66);
-  backdrop-filter: blur(18px);
+  background: var(--glass-realtime-bg-strong);
+  -webkit-backdrop-filter: var(--glass-realtime-blur-strong);
+  backdrop-filter: var(--glass-realtime-blur-strong);
+  box-shadow: var(--glass-realtime-shadow);
 }
 
 .practice-stage__card h2 { margin: 0; font-size: 18px; font-weight: 620; }
-.practice-stage__card-sub { margin: -8px 0 0; color: rgba(210, 192, 240, 0.62); font-size: 12px; text-align: center; }
+.practice-stage__card-sub { margin: -8px 0 0; color: rgba(var(--text-primary-rgb), 0.62); font-size: 12px; text-align: center; }
 
 .practice-stage__card-meta {
   display: flex;
@@ -1082,9 +1091,9 @@ async function handleCopyMarkdown(): Promise<void> {
 .practice-stage__chip {
   padding: 4px 12px;
   border-radius: 999px;
-  background: rgba(214, 179, 255, 0.12);
-  border: 1px solid rgba(214, 179, 255, 0.22);
-  color: rgba(231, 214, 255, 0.92);
+  background: rgba(var(--accent-primary-rgb), 0.12);
+  border: 1px solid rgba(var(--accent-primary-rgb), 0.26);
+  color: var(--text-primary);
   font-size: 12px;
   max-width: 260px;
   overflow: hidden;
@@ -1092,9 +1101,9 @@ async function handleCopyMarkdown(): Promise<void> {
   white-space: nowrap;
 }
 
-.practice-stage__chip--direction { background: rgba(64, 224, 200, 0.1); border-color: rgba(64, 224, 200, 0.26); }
+.practice-stage__chip--direction { background: rgba(var(--accent-primary-rgb), 0.2); border-color: rgba(var(--accent-primary-rgb), 0.4); }
 
-.practice-stage__card-hint { margin: -6px 0 0; color: rgba(210, 192, 240, 0.52); font-size: 12px; }
+.practice-stage__card-hint { margin: -6px 0 0; color: rgba(var(--text-primary-rgb), 0.52); font-size: 12px; }
 
 .practice-stage__field {
   display: flex;
@@ -1103,7 +1112,7 @@ async function handleCopyMarkdown(): Promise<void> {
   gap: 6px;
   width: 100%;
 }
-.practice-stage__field label { color: rgba(210, 192, 240, 0.72); font-size: 12px; }
+.practice-stage__field label { color: rgba(var(--text-primary-rgb), 0.72); font-size: 12px; }
 .practice-stage__field :deep(.n-select) { width: 100%; max-width: 320px; }
 
 .practice-stage__live { flex: 1; min-height: 0; display: flex; }
@@ -1145,15 +1154,36 @@ async function handleCopyMarkdown(): Promise<void> {
   border-radius: 16px;
   font-size: 14px;
   line-height: 1.55;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(210, 192, 240, 0.14);
-  color: rgba(244, 239, 255, 0.94);
+  background: var(--glass-realtime-bg-subtle);
+  border: 1px solid var(--glass-realtime-border);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+  backdrop-filter: blur(16px) saturate(160%);
+  color: var(--text-primary);
   word-break: break-word;
 }
 
-.practice-stage__bubble--user { align-self: flex-end; background: rgba(120, 100, 220, 0.34); border-color: rgba(160, 140, 255, 0.3); }
-.practice-stage__bubble--assistant { align-self: flex-start; background: rgba(18, 26, 40, 0.72); border-color: rgba(120, 200, 220, 0.22); }
-.practice-stage__bubble--live { opacity: 0.88; }
+/* 用户气泡：与 Omni 舞台一致的单一 accent 渐变胶囊。 */
+.practice-stage__bubble--user {
+  align-self: flex-end;
+  background: linear-gradient(135deg,
+    rgba(var(--accent-primary-rgb), 0.22),
+    rgba(var(--accent-primary-rgb), 0.10));
+  border-color: rgba(var(--accent-primary-rgb), 0.34);
+}
+.practice-stage__bubble--assistant {
+  align-self: flex-start;
+  background: var(--glass-realtime-bg-strong);
+  border-color: var(--glass-realtime-border-strong);
+}
+.practice-stage__bubble--live {
+  border-style: dashed;
+  animation: practice-live-pulse 2.2s ease-in-out infinite;
+}
+
+@keyframes practice-live-pulse {
+  0%, 100% { border-color: var(--glass-realtime-border); }
+  50% { border-color: var(--glass-realtime-border-strong); }
+}
 
 .practice-bubble-enter-active, .practice-bubble-leave-active { transition: all 0.32s ease; }
 .practice-bubble-enter-from { opacity: 0; transform: translateY(10px) scale(0.98); }
@@ -1162,7 +1192,7 @@ async function handleCopyMarkdown(): Promise<void> {
 .practice-stage__caption {
   margin: 8px 0 0;
   min-height: 18px;
-  color: rgba(214, 196, 240, 0.66);
+  color: rgba(var(--text-primary-rgb), 0.62);
   font-size: 12px;
   text-align: center;
 }
@@ -1174,23 +1204,26 @@ async function handleCopyMarkdown(): Promise<void> {
   margin-top: 8px;
   padding: 5px 12px;
   border-radius: 999px;
-  background: rgba(30, 20, 55, 0.66);
-  border: 1px solid rgba(214, 179, 255, 0.18);
+  background: var(--glass-realtime-bg-subtle);
+  border: 1px solid var(--glass-realtime-border);
+  -webkit-backdrop-filter: var(--glass-realtime-blur);
+  backdrop-filter: var(--glass-realtime-blur);
   font-size: 12px;
-  color: rgba(214, 196, 240, 0.85);
+  color: rgba(var(--text-primary-rgb), 0.85);
 }
 
 .practice-stage__tool-indicator { width: 14px; height: 14px; display: grid; place-items: center; }
 .practice-stage__tool-indicator svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; }
-.practice-stage__tool-indicator--running { color: #9fe8ff; }
-.practice-stage__tool-indicator--done { color: #7ce7a9; }
-.practice-stage__tool-indicator--error { color: #ff9d9d; }
+/* 与 Omni 舞台一致：running 用 accent 紫蓝，done/error 用 ink 灰——不再红/绿。 */
+.practice-stage__tool-indicator--running { color: rgb(var(--accent-primary-rgb)); }
+.practice-stage__tool-indicator--done { color: rgba(var(--text-primary-rgb), 0.55); }
+.practice-stage__tool-indicator--error { color: rgba(var(--text-primary-rgb), 0.4); }
 .practice-stage__tool-spinner {
   width: 12px;
   height: 12px;
   border-radius: 50%;
-  border: 2px solid rgba(159, 232, 255, 0.3);
-  border-top-color: #9fe8ff;
+  border: 2px solid rgba(var(--accent-primary-rgb), 0.3);
+  border-top-color: rgb(var(--accent-primary-rgb));
   animation: practice-spin 0.8s linear infinite;
 }
 @keyframes practice-spin { to { transform: rotate(360deg); } }
@@ -1209,15 +1242,28 @@ async function handleCopyMarkdown(): Promise<void> {
   display: grid;
   place-items: center;
   border-radius: 50%;
-  border: 1px solid rgba(210, 192, 240, 0.18);
-  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--glass-realtime-border-strong);
+  background: var(--glass-realtime-bg);
+  -webkit-backdrop-filter: var(--glass-realtime-blur);
+  backdrop-filter: var(--glass-realtime-blur);
   color: inherit;
   cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
+  box-shadow: var(--glass-realtime-shadow);
 }
 .practice-stage__control svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.7; }
-.practice-stage__control:hover { background: rgba(214, 179, 255, 0.1); }
-.practice-stage__control--muted { background: rgba(255, 170, 120, 0.22); border-color: rgba(255, 190, 150, 0.4); }
-.practice-stage__control--end { background: rgba(255, 120, 120, 0.2); border-color: rgba(255, 150, 150, 0.4); }
+.practice-stage__control:hover { background: var(--glass-realtime-bg-strong); border-color: rgba(var(--text-primary-rgb), 0.4); }
+/* 静音 = ink 灰表达"非激活"；挂断 = accent 紫蓝强调（同 Omni 舞台）。 */
+.practice-stage__control--muted {
+  border-color: rgba(var(--text-primary-rgb), 0.55);
+  background: rgba(var(--text-primary-rgb), 0.10);
+  color: rgba(var(--text-primary-rgb), 0.6);
+}
+.practice-stage__control--end {
+  border-color: rgba(var(--accent-primary-rgb), 0.5);
+  background: rgba(var(--accent-primary-rgb), 0.18);
+}
+.practice-stage__control--end:hover { background: rgba(var(--accent-primary-rgb), 0.3); }
 .practice-stage__control:disabled { opacity: 0.35; cursor: not-allowed; }
 
 /* 右侧评分卡 */
@@ -1226,10 +1272,12 @@ async function handleCopyMarkdown(): Promise<void> {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid rgba(201, 175, 255, 0.16);
+  border: 1px solid var(--glass-realtime-border);
   border-radius: 18px;
-  background: rgba(24, 15, 44, 0.62);
-  backdrop-filter: blur(18px);
+  background: var(--glass-realtime-bg-strong);
+  -webkit-backdrop-filter: var(--glass-realtime-blur-strong);
+  backdrop-filter: var(--glass-realtime-blur-strong);
+  box-shadow: var(--glass-realtime-shadow);
 }
 
 .practice-stage__scores-header {
@@ -1238,7 +1286,7 @@ async function handleCopyMarkdown(): Promise<void> {
   gap: 8px;
   padding: 14px 16px 10px;
   font-size: 13px;
-  border-bottom: 1px solid rgba(201, 175, 255, 0.1);
+  border-bottom: 1px solid var(--glass-realtime-border);
 }
 
 .practice-stage__scores-count {
@@ -1247,14 +1295,14 @@ async function handleCopyMarkdown(): Promise<void> {
   display: grid;
   place-items: center;
   border-radius: 999px;
-  background: rgba(214, 179, 255, 0.2);
+  background: rgba(var(--accent-primary-rgb), 0.18);
   font-size: 11px;
 }
 
 .practice-stage__scores-empty {
   padding: 26px 18px;
   text-align: center;
-  color: rgba(210, 192, 240, 0.5);
+  color: rgba(var(--text-primary-rgb), 0.5);
   font-size: 12px;
   line-height: 1.7;
 }
@@ -1266,7 +1314,7 @@ async function handleCopyMarkdown(): Promise<void> {
 
 .practice-stage__feedback-round {
   font-size: 11px;
-  color: rgba(214, 196, 240, 0.62);
+  color: rgba(var(--text-primary-rgb), 0.62);
 }
 
 .practice-stage__feedback-score-row {
@@ -1277,12 +1325,14 @@ async function handleCopyMarkdown(): Promise<void> {
 }
 
 .practice-stage__feedback-overall { font-size: 30px; font-weight: 700; line-height: 1; }
-.practice-stage__feedback-overall-label { font-size: 12px; color: rgba(214, 196, 240, 0.68); }
+.practice-stage__feedback-overall-label { font-size: 12px; color: rgba(var(--text-primary-rgb), 0.68); }
 
-[data-tone='good'] { color: #7ce7a9; }
-[data-tone='ok'] { color: #ffd479; }
-[data-tone='weak'] { color: #ff9d9d; }
-[data-tone='none'] { color: rgba(214, 196, 240, 0.55); }
+/* 评分语义色：good/ok/weak 保留红绿黄的"反馈可读性"，但改用主题令牌
+ * 并降低饱和——水墨底上不刺眼，light/dark 都可读。 */
+[data-tone='good'] { color: rgb(var(--success-rgb)); }
+[data-tone='ok'] { color: rgb(var(--warning-rgb)); }
+[data-tone='weak'] { color: rgb(var(--error-rgb)); }
+[data-tone='none'] { color: rgba(var(--text-primary-rgb), 0.55); }
 
 .practice-stage__feedback-dims {
   display: flex;
@@ -1297,30 +1347,30 @@ async function handleCopyMarkdown(): Promise<void> {
   gap: 5px;
   padding: 3px 9px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(var(--text-primary-rgb), 0.06);
   font-size: 11px;
 }
-.practice-stage__dim i { font-style: normal; color: rgba(210, 192, 240, 0.72); }
+.practice-stage__dim i { font-style: normal; color: rgba(var(--text-primary-rgb), 0.72); }
 .practice-stage__dim b { font-weight: 650; }
 
 .practice-stage__feedback-comment {
   margin: 4px 0 8px;
   font-size: 13px;
   line-height: 1.6;
-  color: rgba(244, 239, 255, 0.95);
+  color: var(--text-primary);
 }
 
 .practice-stage__feedback-line {
   margin: 4px 0;
   font-size: 12px;
   line-height: 1.6;
-  color: rgba(214, 196, 240, 0.82);
+  color: rgba(var(--text-primary-rgb), 0.82);
 }
-.practice-stage__feedback-line em { font-style: normal; color: rgba(124, 231, 169, 0.9); }
-.practice-stage__feedback-line--example em { color: rgba(255, 212, 121, 0.9); }
+.practice-stage__feedback-line em { font-style: normal; color: rgb(var(--success-rgb)); }
+.practice-stage__feedback-line--example em { color: rgb(var(--warning-rgb)); }
 
 .practice-stage__history {
-  border-top: 1px solid rgba(201, 175, 255, 0.1);
+  border-top: 1px solid var(--glass-realtime-border);
   overflow-y: auto;
   padding: 6px 16px 14px;
 }
@@ -1331,17 +1381,17 @@ async function handleCopyMarkdown(): Promise<void> {
   gap: 8px;
   padding: 7px 0;
   font-size: 12px;
-  border-bottom: 1px dashed rgba(201, 175, 255, 0.08);
+  border-bottom: 1px dashed var(--glass-realtime-border);
 }
 
-.practice-stage__history-round { color: rgba(210, 192, 240, 0.6); white-space: nowrap; }
+.practice-stage__history-round { color: rgba(var(--text-primary-rgb), 0.6); white-space: nowrap; }
 .practice-stage__history-score { font-weight: 650; white-space: nowrap; }
 .practice-stage__history-comment {
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: rgba(214, 196, 240, 0.8);
+  color: rgba(var(--text-primary-rgb), 0.8);
 }
 
 /* 结束面板 */
@@ -1357,10 +1407,12 @@ async function handleCopyMarkdown(): Promise<void> {
   align-items: center;
   gap: 12px;
   padding: 28px 26px;
-  border: 1px solid rgba(201, 175, 255, 0.16);
+  border: 1px solid var(--glass-realtime-border);
   border-radius: 20px;
-  background: rgba(24, 15, 44, 0.66);
-  backdrop-filter: blur(18px);
+  background: var(--glass-realtime-bg-strong);
+  -webkit-backdrop-filter: var(--glass-realtime-blur-strong);
+  backdrop-filter: var(--glass-realtime-blur-strong);
+  box-shadow: var(--glass-realtime-shadow);
   text-align: center;
 }
 
@@ -1375,7 +1427,7 @@ async function handleCopyMarkdown(): Promise<void> {
 }
 
 .practice-stage__avg-score { font-size: 42px; font-weight: 750; line-height: 1; }
-.practice-stage__avg-label { font-size: 12px; color: rgba(210, 192, 240, 0.62); }
+.practice-stage__avg-label { font-size: 12px; color: rgba(var(--text-primary-rgb), 0.62); }
 
 .practice-stage__table {
   width: 100%;
@@ -1386,15 +1438,15 @@ async function handleCopyMarkdown(): Promise<void> {
 
 .practice-stage__table th, .practice-stage__table td {
   padding: 7px 10px;
-  border-bottom: 1px solid rgba(201, 175, 255, 0.1);
+  border-bottom: 1px solid var(--glass-realtime-border);
 }
 
-.practice-stage__table th { color: rgba(210, 192, 240, 0.6); font-weight: 500; font-size: 12px; }
-.practice-stage__table td { color: rgba(244, 239, 255, 0.94); }
+.practice-stage__table th { color: rgba(var(--text-primary-rgb), 0.6); font-weight: 500; font-size: 12px; }
+.practice-stage__table td { color: var(--text-primary); }
 
 .practice-stage__no-data {
   padding: 10px 0;
-  color: rgba(210, 192, 240, 0.55);
+  color: rgba(var(--text-primary-rgb), 0.55);
   font-size: 12px;
 }
 
@@ -1406,24 +1458,24 @@ async function handleCopyMarkdown(): Promise<void> {
   width: 100%;
   padding: 12px;
   border-radius: 12px;
-  background: rgba(64, 224, 200, 0.08);
-  border: 1px solid rgba(64, 224, 200, 0.28);
+  background: rgba(var(--accent-primary-rgb), 0.1);
+  border: 1px solid rgba(var(--accent-primary-rgb), 0.3);
   font-size: 13px;
 }
 
-.practice-stage__saved-name { color: rgba(210, 192, 240, 0.72); font-size: 12px; word-break: break-all; }
+.practice-stage__saved-name { color: rgba(var(--text-primary-rgb), 0.72); font-size: 12px; word-break: break-all; }
 
 .practice-stage__download-link {
   padding: 6px 16px;
   border-radius: 999px;
-  background: rgba(64, 224, 200, 0.16);
-  border: 1px solid rgba(64, 224, 200, 0.4);
-  color: #a9f5e8;
+  background: rgba(var(--accent-primary-rgb), 0.16);
+  border: 1px solid rgba(var(--accent-primary-rgb), 0.42);
+  color: rgb(var(--accent-primary-rgb));
   font-size: 13px;
   text-decoration: none;
 }
 
-.practice-stage__download-link:hover { background: rgba(64, 224, 200, 0.26); }
+.practice-stage__download-link:hover { background: rgba(var(--accent-primary-rgb), 0.28); }
 
 .practice-stage__actions {
   display: flex;
@@ -1431,6 +1483,30 @@ async function handleCopyMarkdown(): Promise<void> {
   justify-content: center;
   gap: 10px;
   margin-top: 6px;
+}
+
+/* light 主题（日间）补充：与 Omni 舞台一致——控件实底白 + 深描边 +
+ * 投影保证白底对比度；AI 气泡玻璃增强描边。 */
+html:not(.dark) .practice-stage__control {
+  background: rgba(255, 255, 255, 0.90);
+  border-color: rgba(26, 26, 26, 0.16);
+  box-shadow: 0 2px 14px rgba(26, 26, 26, 0.10);
+}
+
+html:not(.dark) .practice-stage__control:hover {
+  background: #ffffff;
+  border-color: rgba(26, 26, 26, 0.42);
+}
+
+html:not(.dark) .practice-stage__control--muted {
+  border-color: rgba(26, 26, 26, 0.44);
+  background: rgba(26, 26, 26, 0.08);
+}
+
+html:not(.dark) .practice-stage__bubble--assistant {
+  background: rgba(255, 255, 255, 0.92);
+  border-color: rgba(26, 26, 26, 0.14);
+  box-shadow: 0 2px 16px rgba(26, 26, 26, 0.08);
 }
 
 @media (max-width: 960px) {
