@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { NAlert, NButton, NSelect, NSwitch, type SelectOption } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useOmniRealtime, type OmniDialogToolCall } from '@/composables/useOmniRealtime'
+import OmniVisualizer from '@/components/hermes/chat/OmniVisualizer.vue'
 import { meetingASRApi } from '@/utils/meeting-asr-api'
 import { executeOmniTool, OMNI_REALTIME_TOOLS } from '@/api/hermes/omni-tools'
 import { fetchMemory } from '@/api/hermes/skills'
@@ -187,12 +188,33 @@ const orbPhase = computed(() => {
   }
 })
 
-const orbStyle = computed(() => {
-  let energy = 0.18
-  if (phase.value === 'listening') energy = Math.min(1, 0.3 + omni.inputLevel.value * 1.7)
-  else if (phase.value === 'speaking') energy = 0.68
-  else if (phase.value === 'connecting') energy = 0.3
-  return { '--omni-energy': energy.toFixed(3) }
+interface StageBubble {
+  key: string
+  role: 'user' | 'assistant'
+  text: string
+  live: boolean
+}
+
+/**
+ * Q 弹对话气泡层：最近 3 条已完成轮次 + 进行中的 live 文本（各角色最多一条，
+ * 拼在气泡内实时增长）。第 4 条入列时最旧的自然被挤出，TransitionGroup 的
+ * leave 动画负责上移淡出。完整历史已增量持久化到聊天会话，舞台只保留
+ * 沉浸所需的最近几条。
+ */
+const bubbles = computed<StageBubble[]>(() => {
+  const list: StageBubble[] = omni.turns.value.slice(-3).map(t => ({
+    key: `${t.role}:${t.timestamp}`,
+    role: t.role,
+    text: t.text,
+    live: false,
+  }))
+  if (omni.liveUserText.value) {
+    list.push({ key: 'live-user', role: 'user', text: omni.liveUserText.value, live: true })
+  }
+  if (omni.liveAssistantText.value) {
+    list.push({ key: 'live-assistant', role: 'assistant', text: omni.liveAssistantText.value, live: true })
+  }
+  return list.slice(-4)
 })
 
 const caption = computed(() => {
@@ -200,8 +222,7 @@ const caption = computed(() => {
   if (displayError.value) return displayError.value
   if (omni.activeTool.value) return t('omniRealtime.toolRunning', { tool: omni.activeTool.value })
   if (cameraNotice.value) return cameraNotice.value
-  if (phase.value === 'listening' && omni.liveUserText.value) return omni.liveUserText.value
-  if (omni.liveAssistantText.value) return omni.liveAssistantText.value
+  // 对话内容（用户/回复文本）由气泡层展示；caption 只承担状态与错误提示。
   // Hide the hint whenever audio is still playing through the speakers.
   // `phase` flips back to 'ready' the moment upstream emits `response_done`,
   // which is well before the last queued buffer actually finishes, so we
@@ -671,12 +692,21 @@ onBeforeUnmount(() => {
           {{ t('omniRealtime.contextNearLimit', { used: usedUserTurns, total: contextLimitTotal }) }}
         </NAlert>
 
-        <div class="omni-stage__orb-wrap" :style="orbStyle">
-          <div class="omni-stage__halo" aria-hidden="true" />
-          <div class="omni-stage__orb" data-testid="omni-realtime-orb">
-            <span class="omni-stage__sheen" aria-hidden="true" />
-          </div>
-        </div>
+        <OmniVisualizer
+          :phase="orbPhase"
+          :input-level="omni.inputLevel.value"
+          :output-level="omni.outputLevel.value"
+          class="omni-stage__visualizer"
+        />
+
+        <TransitionGroup name="omni-bubble" tag="div" class="omni-stage__bubbles" aria-live="polite">
+          <div
+            v-for="b in bubbles"
+            :key="b.key"
+            class="omni-stage__bubble"
+            :class="[`omni-stage__bubble--${b.role}`, { 'omni-stage__bubble--live': b.live }]"
+          >{{ b.text }}</div>
+        </TransitionGroup>
 
         <p
           class="omni-stage__caption"
@@ -955,60 +985,79 @@ onBeforeUnmount(() => {
   width: 100%;
 }
 
-.omni-stage__orb-wrap {
-  position: relative;
-  width: min(280px, 56vw);
-  aspect-ratio: 1;
-  display: grid;
-  place-items: center;
+.omni-stage__visualizer {
+  flex-shrink: 0;
 }
 
-.omni-stage__halo {
-  position: absolute;
-  inset: -12%;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(99, 132, 255, 0.28), transparent 66%);
-  filter: blur(30px);
-  opacity: calc(0.4 + var(--omni-energy) * 0.6);
-  transition: opacity 160ms linear;
+/* --- Q 弹对话气泡层 -------------------------------------------------------
+ * 最近 3 条已完成轮次 + live 文本。入场用弹簧过冲曲线（scale 0.6 → 1.06 → 1
+ * + 上浮），离开时上移淡出。用户消息靠右（蓝紫渐变胶囊），AI 消息靠左
+ * （玻璃拟态），live 气泡带呼吸描边。 */
+.omni-stage__bubbles {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(620px, calc(100% - 40px));
+  min-height: 96px;
+  justify-content: flex-end;
 }
 
-.omni-stage__orb {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  background:
-    radial-gradient(circle at 34% 28%, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0) 26%),
-    radial-gradient(circle at 66% 74%, rgba(56, 189, 248, 0.55), rgba(56, 189, 248, 0) 58%),
-    conic-gradient(from 210deg, #22d3ee, #6366f1, #a855f7, #38bdf8, #22d3ee);
-  box-shadow:
-    0 0 calc(28px + var(--omni-energy) * 70px) rgba(99, 132, 255, calc(0.22 + var(--omni-energy) * 0.3)),
-    inset 0 0 44px rgba(255, 255, 255, 0.22);
-  animation:
-    omni-breathe 3.4s ease-in-out infinite,
-    omni-morph 10s ease-in-out infinite;
-  transform: scale(calc(1 + var(--omni-energy) * 0.12));
-  transition: transform 90ms linear;
+.omni-stage__bubble {
+  max-width: 82%;
+  padding: 10px 16px;
+  border-radius: 18px;
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.4);
 }
 
-.omni-stage__sheen {
-  position: absolute;
-  inset: 12%;
-  border-radius: inherit;
-  background: linear-gradient(125deg, rgba(255, 255, 255, 0.35), rgba(255, 255, 255, 0) 46%);
-  mix-blend-mode: screen;
+.omni-stage__bubble--user {
+  align-self: flex-end;
+  border-bottom-right-radius: 6px;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.34), rgba(56, 189, 248, 0.26));
+  border: 1px solid rgba(129, 168, 255, 0.3);
+  color: #eaf4ff;
 }
 
-.omni-stage--speaking .omni-stage__orb {
-  animation:
-    omni-breathe 1.5s ease-in-out infinite,
-    omni-morph 6s ease-in-out infinite;
+.omni-stage__bubble--assistant {
+  align-self: flex-start;
+  border-bottom-left-radius: 6px;
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid rgba(171, 224, 255, 0.16);
+  backdrop-filter: blur(10px);
+  color: rgba(238, 248, 255, 0.95);
 }
 
-.omni-stage--connecting .omni-stage__orb,
-.omni-stage--idle .omni-stage__orb { filter: saturate(0.55) brightness(0.82); animation-duration: 4.6s, 12s; }
+.omni-stage__bubble--live {
+  border-style: dashed;
+  animation: omni-live-pulse 2.2s ease-in-out infinite;
+}
 
-.omni-stage--error .omni-stage__orb { filter: saturate(0.4) hue-rotate(-60deg) brightness(0.9); }
+@keyframes omni-live-pulse {
+  0%, 100% { border-color: rgba(171, 224, 255, 0.16); }
+  50% { border-color: rgba(112, 244, 255, 0.45); }
+}
+
+.omni-bubble-enter-active {
+  animation: omni-bubble-spring-in 420ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+.omni-bubble-leave-active {
+  transition: opacity 280ms ease-out, transform 280ms ease-out;
+}
+
+.omni-bubble-leave-to {
+  opacity: 0;
+  transform: translateY(-16px) scale(0.92);
+}
+
+@keyframes omni-bubble-spring-in {
+  0% { opacity: 0; transform: translateY(16px) scale(0.6); }
+  60% { opacity: 1; transform: translateY(-4px) scale(1.06); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
 
 .omni-stage__caption {
   /* 解除之前的 2 行 clamp：长回复被静默截断是用户报告的第一个 bug。
@@ -1141,15 +1190,4 @@ onBeforeUnmount(() => {
 }
 
 .omni-stage__control--end:hover { background: rgba(239, 68, 68, 0.38); }
-
-@keyframes omni-breathe {
-  0%, 100% { filter: brightness(1); }
-  50% { filter: brightness(1.16); }
-}
-
-@keyframes omni-morph {
-  0%, 100% { border-radius: 52% 48% 55% 45% / 48% 52% 45% 55%; }
-  33% { border-radius: 45% 55% 48% 52% / 55% 45% 52% 48%; }
-  66% { border-radius: 55% 45% 52% 48% / 45% 55% 48% 52%; }
-}
 </style>

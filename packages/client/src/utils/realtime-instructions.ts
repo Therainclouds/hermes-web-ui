@@ -19,7 +19,7 @@ export const HISTORY_MAX_MESSAGES = 20
 
 /** SOUL.md 为空（未配置人格）时的回落人格。 */
 export const DEFAULT_SOUL_FALLBACK =
-  '你是一个友好的中文语音助手，贯穿 Hermes 工作台。回答口语化、简洁自然，适合直接朗读。'
+  '你是 Quanta，贯穿用户工作台的中文语音助手。回答口语化、简洁自然，适合直接朗读。'
 
 /** 语音场景行为约束（叠加在人格之后，无论 soul 是否存在都生效）。 */
 const REALTIME_SUPPLEMENT = [

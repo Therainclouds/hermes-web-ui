@@ -19,6 +19,7 @@ import {
 import { logger } from '../../services/logger'
 import { setProfileDisplayName, clearProfileDisplayName } from '../../services/hermes/profile-metadata'
 import { smartCloneCleanup, copyModelProviderAuthForClone } from '../../services/hermes/profile-credentials'
+import { seedQuantaSoul } from '../../services/hermes/profiles/seed-quanta-soul'
 import { detectHermesRootHome } from '../../services/hermes/hermes-path'
 import { getActiveProfileName } from '../../services/hermes/hermes-profile'
 import { HermesSkillInjector } from '../../services/hermes/skill-injector'
@@ -521,6 +522,10 @@ export async function create(ctx: any) {
     }
 
     await injectBundledSkillsForProfile(name)
+
+    // Quanta 人格种子：SOUL.md 缺失或仍是出厂默认模板时写入 Quanta 人格；
+    // 用户自定义过的 soul 绝不覆盖。失败仅记日志，不阻断创建。
+    await seedQuantaSoul(name)
 
     // Optional display name: written as Web-UI metadata only (never touches the
     // underlying Hermes profile directory), so all surfaces show the friendly

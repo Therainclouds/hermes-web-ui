@@ -210,6 +210,16 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
 
   let playbackCtx: AudioContext | null = null
   let masterGain: GainNode | null = null
+  /**
+   * Parallel analyser tap on the playback graph (masterGain → analyser, no
+   * connection to destination) so the UI visualizer can render the AI's
+   * actual output energy. Zero impact on the audio path.
+   */
+  let outputAnalyser: AnalyserNode | null = null
+  let outputLevelBuf: Uint8Array<ArrayBuffer> | null = null
+  let outputLevelRaf: number | null = null
+  /** Smoothed AI playback level (0-1), sampled from the analyser tap. */
+  const outputLevel = ref(0)
   let pendingSamples: Float32Array | null = null
   let pendingLength = 0
   /** All scheduled-but-not-yet-ended playback sources; cleared on barge-in. */
@@ -270,10 +280,49 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
     masterGain = playbackCtx.createGain()
     masterGain.gain.value = 1
     masterGain.connect(playbackCtx.destination)
+    // Analyser tap for the visualizer: parallel branch off masterGain (not in
+    // series), so the audible routing above is untouched.
+    outputAnalyser = playbackCtx.createAnalyser()
+    outputAnalyser.fftSize = 256
+    outputLevelBuf = new Uint8Array(new ArrayBuffer(outputAnalyser.fftSize))
+    masterGain.connect(outputAnalyser)
+    startOutputLevelLoop()
     if (playbackCtx.state === 'suspended') {
       try { await playbackCtx.resume() } catch { /* ignore — will be surfaced on play() */ }
     }
     return playbackCtx
+  }
+
+  /**
+   * Sample the playback analyser each frame into `outputLevel` (RMS with
+   * headroom scaling so normal TTS loudness reads ~0.3-0.8 on the visual).
+   * Runs while the playback context exists; a silent graph simply reads 0.
+   */
+  function startOutputLevelLoop(): void {
+    if (outputLevelRaf !== null) return
+    const tick = (): void => {
+      if (!outputAnalyser || !playbackCtx || !outputLevelBuf) {
+        outputLevelRaf = null
+        return
+      }
+      outputAnalyser.getByteTimeDomainData(outputLevelBuf)
+      let sumSquares = 0
+      for (let i = 0; i < outputLevelBuf.length; i += 1) {
+        const v = ((outputLevelBuf[i] ?? 128) - 128) / 128
+        sumSquares += v * v
+      }
+      outputLevel.value = Math.min(1, Math.sqrt(sumSquares / outputLevelBuf.length) * 2.5)
+      outputLevelRaf = requestAnimationFrame(tick)
+    }
+    outputLevelRaf = requestAnimationFrame(tick)
+  }
+
+  function stopOutputLevelLoop(): void {
+    if (outputLevelRaf !== null) {
+      cancelAnimationFrame(outputLevelRaf)
+      outputLevelRaf = null
+    }
+    outputLevel.value = 0
   }
 
   function flushPendingToSlot(): void {
@@ -728,6 +777,9 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
     ws.onclose = () => {
       stopCapture()
       stopPlayback()
+      stopOutputLevelLoop()
+      outputAnalyser = null
+      outputLevelBuf = null
       if (playbackCtx) {
         playbackCtx.close().catch(() => { /* ignore */ })
         playbackCtx = null
@@ -751,6 +803,9 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
     isPushing.value = false
     stopCapture()
     stopPlayback()
+    stopOutputLevelLoop()
+    outputAnalyser = null
+    outputLevelBuf = null
     if (playbackCtx) {
       playbackCtx.close().catch(() => { /* ignore */ })
       playbackCtx = null
@@ -837,6 +892,7 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
     activeTool,
     toolCalls,
     inputLevel,
+    outputLevel,
     isPushing,
     isReady,
     isOutputPlaying,

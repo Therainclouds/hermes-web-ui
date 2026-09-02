@@ -830,3 +830,45 @@ describe('OmniRealtimeStage UI regressions', () => {
   })
 })
 
+/**
+ * Particle-ring visualizer + Quanta soul seeding regressions.
+ */
+describe('omni-realtime particle visualizer + Quanta soul seeding', () => {
+  it('OmniRealtimeStage renders the OmniVisualizer canvas and feeds both audio levels', () => {
+    const stage = readFileSync(`${CLIENT_SRC}/components/hermes/chat/OmniRealtimeStage.vue`, 'utf8')
+    expect(stage).toContain('<OmniVisualizer')
+    expect(stage).toMatch(/:input-level="omni\.inputLevel\.value"/)
+    expect(stage).toMatch(/:output-level="omni\.outputLevel\.value"/)
+    // The legacy CSS orb must be fully replaced by the canvas visualizer.
+    expect(stage).not.toContain('omni-stage__orb')
+  })
+
+  it('useOmniRealtime taps the playback graph for the output level', () => {
+    const source = readFileSync(`${CLIENT_SRC}/composables/useOmniRealtime.ts`, 'utf8')
+    expect(source).toContain('outputLevel')
+    // Parallel analyser branch off masterGain — the audible routing
+    // (masterGain → destination) must stay untouched.
+    expect(source).toMatch(/outputAnalyser\s*=\s*playbackCtx\.createAnalyser\(\)/)
+    expect(source).toMatch(/masterGain\.connect\(outputAnalyser\)/)
+    // The sampling loop must be torn down in every close path (definition +
+    // onclose + disconnect).
+    expect(source.match(/stopOutputLevelLoop\(\)/g)?.length ?? 0).toBeGreaterThanOrEqual(3)
+  })
+
+  it('profile create seeds the Quanta soul (missing or factory template only)', () => {
+    const controller = readFileSync(`${SERVER_SRC}/controllers/hermes/profiles.ts`, 'utf8')
+    expect(controller).toContain("from '../../services/hermes/profiles/seed-quanta-soul'")
+    expect(controller).toMatch(/await seedQuantaSoul\(name\)/)
+
+    const service = readFileSync(`${SERVER_SRC}/services/hermes/profiles/seed-quanta-soul.ts`, 'utf8')
+    expect(service).toContain('You are Quanta')
+    // Overwrite guard: only the factory-default template may be replaced —
+    // a user-customized soul must never be touched by the seeding path.
+    expect(service).toContain("'You are Hermes Agent'")
+    // Python proxy fallback persona is Quanta too (no more "小合").
+    const proxy = readFileSync(`${PY_APP}/omni_realtime_proxy.py`, 'utf8')
+    expect(proxy).toContain('你是 Quanta')
+    expect(proxy).not.toContain('小合')
+  })
+})
+

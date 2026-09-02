@@ -13,8 +13,9 @@ describe('buildRealtimeInstructions', () => {
   it('falls back to the default persona when soul is empty', () => {
     for (const soul of ['', '   ', null, undefined]) {
       const result = buildRealtimeInstructions(soul as string | null | undefined)
-      // The fallback persona must be the first block, followed by supplement + tools.
-      expect(result).toContain('友好的中文语音助手')
+      // The fallback persona (Quanta) must be the first block, followed by supplement + tools.
+      expect(result).toContain('Quanta')
+      expect(result).toContain('中文语音助手')
       expect(result).toContain('补充指令')
       expect(result).toContain('query_hermes_agent')
       // No history block.
