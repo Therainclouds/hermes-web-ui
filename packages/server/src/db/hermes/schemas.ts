@@ -3,6 +3,8 @@
  * All table schemas are defined here for unified management and migration.
  */
 
+import { migrateWeChatDoubleUtf8 } from './migrate-wechat-double-utf8'
+
 // ============================================================================
 // Usage Store (usage-store.ts)
 // ============================================================================
@@ -1827,6 +1829,14 @@ export function initAllHermesTables(): void {
         idx_expert_bindings_parent: 'CREATE INDEX IF NOT EXISTS idx_expert_bindings_parent ON expert_profile_bindings(parent_team_slug)',
       }
     })
+
+    // Idempotent data-fix migrations. Safe to run on every startup; each
+    // migration self-gates on its own server_migrations row.
+    try {
+      migrateWeChatDoubleUtf8()
+    } catch (migrationErr: any) {
+      console.warn('[migrate] wechat-double-utf8 migration failed:', migrationErr?.message || migrationErr)
+    }
   } catch (e) {
     console.error('Error initializing Hermes SQLite tables:', e)
     console.error(`[Schema] Database initialization failed. Existing database was left untouched: ${getStoragePath()}`)

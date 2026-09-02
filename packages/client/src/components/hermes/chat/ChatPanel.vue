@@ -41,11 +41,11 @@ import {
 import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
+import { useTheme } from "@/composables/useTheme";
 import { copyToClipboard } from "@/utils/clipboard";
 import { getProfileDisplayName } from "@/utils/hermes/profile-display";
 import FolderPicker from "./FolderPicker.vue";
 import ChatInput from "./ChatInput.vue";
-import RealtimeVoiceStage from "./RealtimeVoiceStage.vue";
 import OmniRealtimeStage from "./OmniRealtimeStage.vue";
 import SpeechPracticeStage from "./SpeechPracticeStage.vue";
 import type { PracticeDifficulty, PracticeLanguage, PracticeSessionConfig } from "@/utils/practice-mode";
@@ -90,6 +90,10 @@ const sessionBrowserPrefsStore = useSessionBrowserPrefsStore();
 const router = useRouter();
 const message = useMessage();
 const { t } = useI18n();
+// Naive UI 在运行时切主题时，个别已挂载的 NSelect 实例偶发不重算 CSS
+// 变量（观察到 sidebar 配置过滤器保持暗色 --n-color）。按主题 re-key
+// 强制重建实例，保证变量与主题一致。
+const { isDark: isDarkTheme } = useTheme();
 
 // switchSession 失败（resume timeout / socket error）时 store 会写到
 // chatStore.lastSwitchError；这里 surface 成一条非阻断 toast，避免用户只看到空白页。
@@ -106,7 +110,6 @@ watch(
 const isSuperAdmin = computed(() => isStoredSuperAdmin());
 
 const showOutline = ref(false);
-const showRealtimeVoice = ref(false);
 const showOmniRealtime = ref(false);
 const showSpeechPractice = ref(false);
 /** 新建对话抽屉确认「口语对练」后携带的练习配置（语言 / 方向 / 难度）。 */
@@ -176,17 +179,8 @@ const toolPanelStyle = computed(() => ({
   width: isMobile.value ? "100%" : `min(${toolPanelWidth.value}px, 100%)`,
 }));
 
-function openRealtimeVoice() {
-  if (!chatStore.activeSessionId) return;
-  showRealtimeVoice.value = true;
-}
-
-function closeRealtimeVoice() {
-  showRealtimeVoice.value = false;
-}
-
 async function openOmniRealtime(options: { createFresh?: boolean; persistRemote?: boolean } = {}) {
-  // Two entry points reach this handler:
+  // Three entry points reach this handler:
   //   1. The 「新建对话 → realtime」 drawer flow passes `{ createFresh: true,
   //      persistRemote: true }`. We must always mint a brand-new session
   //      (the user explicitly chose 新建) AND persist it server-side so it
@@ -198,6 +192,22 @@ async function openOmniRealtime(options: { createFresh?: boolean; persistRemote?
   //      the existing session — OmniRealtimeStage serializes the session's
   //      recent messages into the instructions (buildHistoryContext) so the
   //      voice dialog continues from what was already discussed in text.
+  //   3. The ChatInput toolbar 设置 → 「语音模式」 item (voiceClick) — same
+  //      reuse path as #2. It used to open the legacy RealtimeVoiceStage
+  //      (browser STT/TTS), which was superseded by the Omni realtime
+  //      dialog; the leftover wiring opened the deprecated page.
+  //
+  //  会话类型分流：若当前活动会话是口语对练会话（openSpeechPractice 在
+  //  localStorage 里按 sessionId 落了练习配置），不带 createFresh 的进入
+  //  一律改开口语对练舞台——用户从聊天页对练习会话点 🎙️ /「语音模式」
+  //  期望回到的是对练，而不是普通实时对话。
+  if (!options.createFresh) {
+    const practiceConfig = readPracticeConfigFor(chatStore.activeSessionId);
+    if (practiceConfig) {
+      await openSpeechPractice({ config: practiceConfig });
+      return;
+    }
+  }
   if (options.createFresh) {
     if (options.persistRemote) {
       try {
@@ -237,6 +247,43 @@ const practiceLanguageLabelKeys: Record<PracticeLanguage, string> = {
   ko: "speechPractice.lang.ko",
 };
 
+// 口语对练会话标记：练习配置按 sessionId 落 localStorage（会话本身没有
+// 结构化元数据字段，标题前缀又会随 UI 语言变）。读取方：
+//  1. openSpeechPractice 重开时恢复 speechPracticeConfig（刷新后历史里的
+//     对练会话也能再次进入）；
+//  2. openOmniRealtime 的会话类型分流（对练会话进对练舞台）。
+const PRACTICE_CONFIG_STORAGE_PREFIX = "hermes_practice_config_v1:";
+const PRACTICE_LANGUAGES: ReadonlySet<string> = new Set(["zh", "en", "ja", "ko"]);
+const PRACTICE_DIFFICULTIES: ReadonlySet<string> = new Set(["beginner", "intermediate", "advanced"]);
+
+function readPracticeConfigFor(sessionId: string | null | undefined): PracticeSessionConfig | null {
+  if (!sessionId || typeof localStorage === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(PRACTICE_CONFIG_STORAGE_PREFIX + sessionId);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const language = typeof parsed.language === "string" ? parsed.language : "";
+    const difficulty = typeof parsed.difficulty === "string" ? parsed.difficulty : "";
+    if (!PRACTICE_LANGUAGES.has(language) || !PRACTICE_DIFFICULTIES.has(difficulty)) return null;
+    return {
+      language: language as PracticeSessionConfig["language"],
+      direction: typeof parsed.direction === "string" ? parsed.direction : "",
+      difficulty: difficulty as PracticeSessionConfig["difficulty"],
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writePracticeConfigFor(sessionId: string | null | undefined, config: PracticeSessionConfig) {
+  if (!sessionId || typeof localStorage === "undefined") return;
+  try {
+    localStorage.setItem(PRACTICE_CONFIG_STORAGE_PREFIX + sessionId, JSON.stringify(config));
+  } catch {
+    // 配额满 / 隐私模式：标记丢失只影响「再次进入时回到对练」，可接受。
+  }
+}
+
 async function openSpeechPractice(options: {
   createFresh?: boolean;
   persistRemote?: boolean;
@@ -265,6 +312,7 @@ async function openSpeechPractice(options: {
     chatStore.newChat();
   }
   speechPracticeConfig.value = { ...options.config };
+  writePracticeConfigFor(chatStore.activeSessionId, options.config);
   showSpeechPractice.value = true;
 }
 
@@ -847,10 +895,9 @@ const newChatRealtimeModel = ref<NewChatRealtimeModel>("qwen3.5-omni-flash-realt
  *     模型可通过 function calling 调用记忆/技能/会话/任务与 query_hermes_agent
  *     的真实 Agent 工作台能力；
  *   - practice（口语对练）：教练逐轮点评打分 + Markdown 分析报告。
- *
  * 扩展新模式：在 realtimeSubModeOptions 加一项（value + i18n labelKey）、
  * 在抽屉加对应配置区、在 confirmNewChat 的 realtime 分支加一个子分支即可；
- * 教练类模式（面试 / 销售话术等）复用 practice 的语言/方向/难度配置，
+ * 教练类模式（面试 / 销售话术等）复用 practice 的语言/方向/难度/时长配置，
  * 无需改动 SpeechPracticeStage。
  */
 type NewChatRealtimeSubMode = "agent" | "practice";
@@ -860,10 +907,12 @@ const realtimeSubModeOptions: Array<{ value: NewChatRealtimeSubMode; labelKey: s
   { value: "practice", labelKey: "speechPractice.entry" },
 ];
 
-// 口语对练（practice 子模式）的配置：练习语言 / 练习方向（手动输入）/ 难度。
+// 口语对练模式的配置：练习语言 / 练习方向（手动输入）/ 难度 / 时长。
 const newChatPracticeLanguage = ref<PracticeLanguage>("en");
 const newChatPracticeDirection = ref("");
 const newChatPracticeDifficulty = ref<PracticeDifficulty>("intermediate");
+/** 练习时长（分钟）；0 = 不限时，倒计时到点自动结束并生成报告。 */
+const newChatPracticeMinutes = ref(0);
 const practiceLanguageOptions = [
   { labelKey: "speechPractice.lang.zh", value: "zh" },
   { labelKey: "speechPractice.lang.en", value: "en" },
@@ -1262,11 +1311,12 @@ async function openNewChatModal() {
   // opens so a previous pick doesn't leak into a new session. The user can
   // override again before confirming.
   newChatRealtimeModel.value = "qwen3.5-omni-flash-realtime";
-  // Realtime 子模式默认回到 Agent 模式；对练配置（语言/方向/难度）也复位。
+  // Realtime 子模式默认回到 Agent 模式；对练配置（语言/方向/难度/时长）复位。
   newChatRealtimeSubMode.value = "agent";
   newChatPracticeLanguage.value = "en";
   newChatPracticeDirection.value = "";
   newChatPracticeDifficulty.value = "intermediate";
+  newChatPracticeMinutes.value = 0;
   try {
     await loadSessionCategories();
     if (profilesStore.profiles.length === 0) await profilesStore.fetchProfiles();
@@ -1311,20 +1361,16 @@ function handleNewChatProviderChange(value: string) {
 async function confirmNewChat() {
   if (newChatMode.value === "realtime") {
     showNewChatModal.value = false;
+    // 无论哪种 realtime 子模式，都先把用户选择的模型持久化到 realtime store：
+    // OmniRealtimeStage / SpeechPracticeStage 连接时读取同一份配置。
+    realtimeModelStore.updateConfig({ model: newChatRealtimeModel.value });
     if (newChatRealtimeSubMode.value === "agent") {
-      // Agent 模式（默认）：语音实时对话 + Hermes Agent 工具能力。
-      // Persist the user-picked Qwen-Omni-Realtime model into the realtime
-      // store BEFORE we hand off to the dialog so OmniRealtimeStage reads
-      // the right config on connect. Without this the user is silently
-      // routed to whatever was last saved in localStorage, which is
-      // surprising when they explicitly picked the other variant.
-      realtimeModelStore.updateConfig({ model: newChatRealtimeModel.value });
-      // Always open realtime in a fresh session (the drawer is named
-      // "新建对话") and persist it server-side immediately so the dialog is
-      // visible in the sidebar / survives a page reload. Without the
-      // remote-create call the new session stayed `isLocalOnly=true`, the
-      // sidebar never showed it, and any subsequent refresh dropped the
-      // realtime transcript.
+      // Agent 模式（默认）：语音实时对话 + Hermes Agent 工具能力。Always open
+      // realtime in a fresh session (the drawer is named "新建对话") and persist
+      // it server-side immediately so the dialog is visible in the sidebar /
+      // survives a page reload. Without the remote-create call the new session
+      // stayed `isLocalOnly=true`, the sidebar never showed it, and any
+      // subsequent refresh dropped the realtime transcript.
       await openOmniRealtime({ createFresh: true, persistRemote: true });
     } else {
       // 口语对练子模式：远端新建会话（标题带练习方向），再把练习配置交给舞台。
@@ -1335,6 +1381,7 @@ async function confirmNewChat() {
           language: newChatPracticeLanguage.value,
           direction: newChatPracticeDirection.value.trim().slice(0, 200),
           difficulty: newChatPracticeDifficulty.value,
+          durationMinutes: newChatPracticeMinutes.value,
         },
       });
     }
@@ -2134,6 +2181,7 @@ async function handleSessionModelCustomSubmit() {
         />
         <div class="session-list-toolbar">
           <NSelect
+            :key="isDarkTheme ? 'theme-dark' : 'theme-light'"
             class="session-profile-filter"
             :value="sessionProfileFilter || '__all__'"
             :options="profileFilterOptions"
@@ -2734,8 +2782,8 @@ async function handleSessionModelCustomSubmit() {
                 </NRadioButton>
               </NRadioGroup>
             </label>
+            <!-- 模型对所有 realtime 子模式共享（agent 与口语/未来的教练模式一致） -->
             <label
-              v-if="newChatRealtimeSubMode === 'agent'"
               class="new-chat-field new-chat-realtime-model-field"
               data-testid="new-chat-realtime-model-field"
             >
@@ -2775,6 +2823,11 @@ async function handleSessionModelCustomSubmit() {
                   <NRadioButton value="intermediate">{{ t("speechPractice.diffIntermediate") }}</NRadioButton>
                   <NRadioButton value="advanced">{{ t("speechPractice.diffAdvanced") }}</NRadioButton>
                 </NRadioGroup>
+              </label>
+              <label class="new-chat-field" data-testid="new-chat-practice-duration-field">
+                <span class="new-chat-label">{{ t("speechPractice.duration") }}</span>
+                <NInputNumber v-model:value="newChatPracticeMinutes" :min="0" :max="180" :precision="0" style="width: 100%" />
+                <span class="new-chat-field-hint">{{ t("speechPractice.durationHint") }}</span>
               </label>
             </template>
           </template>
@@ -3155,7 +3208,7 @@ async function handleSessionModelCustomSubmit() {
             <MessageList
               ref="messageListRef"
               scroll-scope="chat"
-              :approval-portal-to-body="showRealtimeVoice"
+              :approval-portal-to-body="showOmniRealtime"
             >
               <template #empty-actions>
                 <div class="chat-workbench-minimal">
@@ -3168,7 +3221,7 @@ async function handleSessionModelCustomSubmit() {
               :model-label="activeSessionModelLabel"
               :model-disabled="activeSessionUsesGlobalCodingAgentConfig"
               @model-click="handleHeaderModelClick"
-              @voice-click="openRealtimeVoice"
+              @voice-click="openOmniRealtime()"
             />
           </div>
           <div v-if="isChatDropActive" class="chat-drop-overlay" aria-hidden="true">
@@ -3307,10 +3360,6 @@ async function handleSessionModelCustomSubmit() {
       />
     </div>
     <Teleport to="body">
-      <RealtimeVoiceStage
-        v-if="showRealtimeVoice"
-        @close="closeRealtimeVoice"
-      />
       <OmniRealtimeStage
         v-if="showOmniRealtime"
         :has-dashscope-key="hasDashscopeKey"

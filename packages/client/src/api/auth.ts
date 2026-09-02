@@ -158,10 +158,12 @@ export async function exportManagedUser(id: number): Promise<ManagedUserExport> 
   return request<ManagedUserExport>(`/api/auth/users/${id}/export`)
 }
 
-export async function changeUsername(currentPassword: string, newUsername: string): Promise<void> {
+export async function changeUsername(currentPassword: string | null, newUsername: string): Promise<void> {
+  const body: Record<string, string> = { newUsername }
+  if (currentPassword) body.currentPassword = currentPassword
   return request('/api/auth/change-username', {
     method: 'POST',
-    body: JSON.stringify({ currentPassword, newUsername }),
+    body: JSON.stringify(body),
   })
 }
 

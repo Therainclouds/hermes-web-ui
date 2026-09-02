@@ -193,6 +193,8 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
   const inputLevel = ref(0)
   /** Timestamp of the last locally-triggered barge-in (used for debounce). */
   let lastLocalBargeInAt = 0
+  /** When the last tool_result was sent upstream (tool-turn audio diagnostics). */
+  let lastToolResultAt = 0
   /** Consecutive frames the mic peak has stayed above the barge-in threshold. */
   let bargeInStreak = 0
   /**
@@ -496,6 +498,8 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return
     try {
       ws.send(JSON.stringify({ type: 'tool_result', call_id: callId, output }))
+      lastToolResultAt = Date.now()
+      console.debug(`[omni-realtime] tool_result sent call_id=${callId} name=${name}`)
     } catch { /* ignore — the socket is closing */ }
   }
 
@@ -512,7 +516,14 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
         // back to ready — server VAD has closed the user's turn
         phase.value = phase.value === 'speaking' ? 'speaking' : 'ready'
         break
-      case 'response_started':
+      case 'response_started': {
+        // Diagnostics for the "no audio after a tool call" symptom: log how
+        // long after sending tool_result the follow-up response began, so we
+        // can tell "model never answered" from "audio got dropped downstream".
+        if (lastToolResultAt > 0) {
+          console.debug(`[omni-realtime] response_started after tool_result (+${Date.now() - lastToolResultAt}ms)`)
+          lastToolResultAt = 0
+        }
         phase.value = 'speaking'
         // A new response is beginning upstream — any audio still playing or
         // queued belongs to the previous (already-finished) response. Cut it
@@ -528,6 +539,7 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
         // we need an explicit reset here.
         liveAssistantText.value = ''
         break
+      }
       case 'response_done':
         flushPendingToSlot()
         phase.value = 'ready'
@@ -565,6 +577,18 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
   }
 
   // --- capture -----------------------------------------------------------
+
+  /**
+   * Pre-arm the playback AudioContext inside the user gesture that started the
+   * session. Browsers' autoplay policy only lets an AudioContext created
+   * *within* a user activation run (or be resumed); `ws.onopen` fires well
+   * after the click (the meeting backend may still be starting up), so arming
+   * the context only there leaves AI audio silent until some later interaction
+   * unlocks the page. Call this synchronously from the stage's start handler.
+   */
+  async function prearmPlayback(): Promise<void> {
+    await ensurePlaybackContext()
+  }
 
   async function ensureCaptureContext(): Promise<AudioContext> {
     if (audioContext) return audioContext
@@ -729,6 +753,7 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
     lastLocalBargeInAt = 0
     rmsSmoothed = 0
     droppingAssistantAudio = false
+    lastToolResultAt = 0
 
     const apiKey = getApiKey()
     // Browsers can't set Authorization on a WS handshake directly, so we let
@@ -775,6 +800,12 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
         // one (the freshly-flushed source starts immediately rather than
         // waiting behind the now-stopped-but-still-decoding tail).
         if (droppingAssistantAudio) return
+        // Tool-turn audio diagnostics: confirm audio really arrived after a
+        // tool_result (helps tell "model never answered" from "audio dropped").
+        if (lastToolResultAt > 0) {
+          console.debug(`[omni-realtime] audio frame after tool_result (+${Date.now() - lastToolResultAt}ms)`)
+          lastToolResultAt = 0
+        }
         const view = new Int16Array(event.data)
         appendPcmChunk(view)
         // Flush every chunk so the user hears the model as it streams rather
@@ -932,6 +963,7 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
     isPushing,
     isReady,
     isOutputPlaying,
+    prearmPlayback,
     connect,
     disconnect,
     pushStart,

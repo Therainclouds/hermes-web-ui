@@ -1,4 +1,5 @@
 import { logger } from './logger'
+import { reverseDoubleUtf8Fields } from '../utils/double-utf8'
 
 /**
  * Minimal client for the Token Platform (api.quantclaw.vip) device login APIs.
@@ -11,6 +12,22 @@ import { logger } from './logger'
  */
 
 const DEFAULT_TIMEOUT_MS = 10_000
+
+/**
+ * Decode an HTTP response body robustly: the Token Platform server has
+ * historically emitted Chinese nicknames in two incompatible ways on the
+ * wire — UTF-8 (modern) and GBK (legacy OneAPI/Go). `Response.text()` follows
+ * the Content-Type header, which is often missing or wrong, so we read the
+ * raw bytes and pick the decoder that actually parses. Exported for tests so
+ * the GBK fallback can be exercised byte-for-byte without going through fetch.
+ */
+export function decodeResponseBody(buffer: Uint8Array): string {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(buffer)
+  } catch {
+    return new TextDecoder('gbk', { fatal: false }).decode(buffer)
+  }
+}
 
 export interface TokenPlatformDeviceLoginRequest {
   login_id: string
@@ -58,7 +75,9 @@ async function requestJson(
   const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS)
   try {
     const res = await fetch(url, { ...init, signal: controller.signal })
-    const text = await res.text()
+    // Decode the body robustly: see decodeResponseBody for the strategy.
+    const buffer = new Uint8Array(await res.arrayBuffer())
+    const text = decodeResponseBody(buffer)
     let json: unknown = null
     try {
       json = text ? JSON.parse(text) : null
@@ -125,6 +144,12 @@ export async function pollDeviceLoginStatus(
 
 /**
  * Fetch the bound user profile using the device's dedicated API key.
+ *
+ * The Token Platform has a known encoding bug on its side: Chinese
+ * nicknames are sent over the wire as "double-UTF-8" mojibake (UTF-8 bytes
+ * were read as Latin1 characters and re-encoded as UTF-8 by the upstream
+ * backend). We detect this on every call and recover the real nickname
+ * transparently so callers never see mojibake.
  */
 export async function fetchDeviceSelf(
   apiBase: string,
@@ -137,7 +162,9 @@ export async function fetchDeviceSelf(
   if (!res.success || !res.data) {
     throw new Error(res.message || 'Failed to fetch device profile')
   }
-  return res.data as TokenPlatformUserProfile
+  // Fix the upstream double-UTF-8 mojibake for every string field
+  // (display_name, username, email, …). Non-mojibake values pass through.
+  return reverseDoubleUtf8Fields(res.data as TokenPlatformUserProfile)
 }
 
 /**

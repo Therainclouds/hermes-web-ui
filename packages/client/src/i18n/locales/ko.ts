@@ -754,6 +754,8 @@ export default {
     toolRunningInline: '{tool} 호출 중 …',
     toolFailedInline: '{tool} 실패',
     toolCompletedInline: '{tool} 완료',
+    modeLabel: '모드',
+    agentMode: 'Agent 모드',
   },
 
   realtimeVoice: {
@@ -769,6 +771,7 @@ export default {
   speechPractice: {
     entry: '말하기 연습',
     entryHint: 'AI 코치와 지정한 주제로 음성 대화 연습: 매 턴 코멘트와 채점 후, 종료하면 분석 내용을 Markdown으로 저장할 수 있습니다',
+    cameraHint: '카메라를 켜면 코치가 바디랭귀지/태도도 함께 평가합니다',
     language: '연습 언어',
     lang: { zh: '중국어', en: '영어', ja: '일본어', ko: '한국어' },
     direction: '연습 주제',
@@ -805,6 +808,7 @@ export default {
       grammar: '문법',
       vocabulary: '어휘 표현',
       content: '내용·논리',
+      bodyLanguage: '바디랭귀지',
     },
     strengths: '잘한 점',
     improvements: '개선할 점',
@@ -823,6 +827,11 @@ export default {
     reportSaved: '분석 보고서가 저장되었습니다',
     download: '보고서 다운로드',
     saveFailed: '보고서 저장에 실패했습니다. 다시 시도해 주세요',
+    duration: '연습 시간(분)',
+    durationHint: '분. 0 = 무제한. 카운트다운이 끝나면 자동 종료 후 분석 보고서가 생성됩니다.',
+    timedMinutes: '{minutes}분 타이머',
+    timeRemaining: '남은 시간',
+    timeUpNotice: '연습 시간이 끝났습니다. 자동 종료 후 분석 보고서를 생성했습니다.',
   },
 
   // 채팅
@@ -1835,6 +1844,7 @@ export default {
     saveFailed: '저장 실패',
     setAccountPassword: 'Set Account Password',
     setAccountPasswordHint: 'Once set, you can sign in with your username and password. Forgot it? Re-scan with WeChat and set a new one.',
+    nicknameMojibakeHint: 'WeChat 닉네임이 손상된 것처럼 보입니다(mojibake). 로그인 페이지에서 WeChat을 한 번 다시 스캔하세요 — 시스템이 캐시된 닉네임을 올바른 값으로 덮어씁니다.',
     passwordSet: 'Account password set',
     unbindWechat: 'WeChat 연결 해제',
     unbindWechatConfirm: 'WeChat 계정 "{account}"의 연결을 해제하시겠습니까? 로컬 계정, 전용 에이전트 및 대화 기록, 로그인 정보가 모두 삭제됩니다. 다시 연결하면 새로운 빈 계정으로 시작합니다.',

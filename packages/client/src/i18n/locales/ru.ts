@@ -581,6 +581,8 @@ export default {
     toolRunningInline: 'Вызов {tool} …',
     toolFailedInline: '{tool} не выполнено',
     toolCompletedInline: '{tool} готово',
+    modeLabel: 'Режим',
+    agentMode: 'Режим агента',
   },
 
   realtimeVoice: {
@@ -596,6 +598,7 @@ export default {
   speechPractice: {
     entry: 'Разговорная практика',
     entryHint: 'Голосовая практика с ИИ-тренером по выбранной теме: каждый раунд комментируется и оценивается, а по завершении анализ можно сохранить в Markdown',
+    cameraHint: 'При включённой камере тренер также оценивает язык тела и осанку',
     language: 'Язык практики',
     lang: { zh: 'Китайский', en: 'Английский', ja: 'Японский', ko: 'Корейский' },
     direction: 'Тема практики',
@@ -632,6 +635,7 @@ export default {
       grammar: 'Грамматика',
       vocabulary: 'Лексика',
       content: 'Содержание',
+      bodyLanguage: 'Язык тела',
     },
     strengths: 'Сильные стороны',
     improvements: 'Что улучшить',
@@ -650,6 +654,11 @@ export default {
     reportSaved: 'Отчёт с анализом сохранён',
     download: 'Скачать отчёт',
     saveFailed: 'Не удалось сохранить отчёт. Попробуйте ещё раз',
+    duration: 'Длительность (мин)',
+    durationHint: 'Минут; 0 = без ограничения. По истечении отсчёта сеанс завершается, отчёт создаётся автоматически.',
+    timedMinutes: 'Таймер · {minutes} мин',
+    timeRemaining: 'Осталось времени',
+    timeUpNotice: 'Время вышло: сеанс завершён, отчёт создан автоматически.',
   },
 
   chat: {
@@ -1999,6 +2008,7 @@ export default {
     saveFailed: 'Ошибка сохранения',
     setAccountPassword: 'Set Account Password',
     setAccountPasswordHint: 'Once set, you can sign in with your username and password. Forgot it? Re-scan with WeChat and set a new one.',
+    nicknameMojibakeHint: 'Ваш ник WeChat выглядит повреждённым (mojibake). Перейдите на страницу входа и отсканируйте WeChat ещё раз — система перезапишет кэшированный ник правильным значением.',
     passwordSet: 'Account password set',
     unbindWechat: 'Отвязать WeChat',
     unbindWechatConfirm: 'Отвязать WeChat-аккаунт «{account}»? Все его данные будут удалены: локальная учётная запись, личный агент с сессиями и учётные данные. При повторной привязке аккаунт начнётся с чистого листа.',

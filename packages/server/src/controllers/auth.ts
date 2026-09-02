@@ -830,6 +830,30 @@ export async function restoreDeviceLogin(ctx: Context) {
     }
   }
 
+  // Refresh the binding's display_name from the remote profile so corrupted
+  // rows (typically GBK bytes that were mojibake-encoded before the
+  // token-platform-client's UTF-8/GBK fallback was added) get overwritten the
+  // next time the user signs in. The remote value is the source of truth.
+  if (profile.display_name && profile.display_name !== binding.display_name) {
+    upsertBindingByPlatformId({
+      userId: binding.user_id,
+      platformProfileId: binding.platform_profile_id,
+      platformUsername: profile.username || binding.platform_username,
+      apiBase: binding.api_base,
+      apiKey: binding.api_key,
+      deviceId: binding.device_id,
+      models: (() => {
+        try {
+          const parsed = JSON.parse(binding.models_json)
+          return Array.isArray(parsed) ? parsed.map(String) : []
+        } catch {
+          return []
+        }
+      })(),
+      displayName: profile.display_name,
+    })
+  }
+
   const token = await issueUserJwt(user)
   touchUserLogin(user.id)
   ctx.body = { token, user: { id: user.id, username: user.username, role: user.role } }
@@ -1098,12 +1122,18 @@ export async function setPassword(ctx: Context) {
 /**
  * POST /api/auth/change-username
  * Change username (protected).
+ *
+ * WeChat device users (tp_* prefix) are allowed to change their username
+ * without providing the current password, because their initial password is
+ * a random UUID they never see. Their JWT is already authenticated via
+ * WeChat device binding scan, so requiring current password would lock them
+ * out of ever changing their username unless they first set a password.
  */
 export async function changeUsername(ctx: Context) {
   const { currentPassword, newUsername } = ctx.request.body as { currentPassword?: string; newUsername?: string }
-  if (!currentPassword || !newUsername) {
+  if (!newUsername) {
     ctx.status = 400
-    ctx.body = { error: 'Current password and new username are required' }
+    ctx.body = { error: 'New username is required' }
     return
   }
   if (newUsername.length < 2) {
@@ -1114,10 +1144,26 @@ export async function changeUsername(ctx: Context) {
 
   const userId = ctx.state.user?.id
   const user = userId ? findUserById(userId) : null
-  if (!user || !verifyPassword(currentPassword, user.password_hash)) {
-    ctx.status = 400
-    ctx.body = { error: 'Current password is incorrect' }
+  if (!user) {
+    ctx.status = 401
+    ctx.body = { error: 'Unauthorized' }
     return
+  }
+
+  // WeChat device users (tp_*) can skip current password verification
+  // because their JWT is authenticated via WeChat device binding scan.
+  const isWeChatDeviceUser = user.username.startsWith('tp_')
+  if (!isWeChatDeviceUser) {
+    if (!currentPassword) {
+      ctx.status = 400
+      ctx.body = { error: 'Current password is required' }
+      return
+    }
+    if (!verifyPassword(currentPassword, user.password_hash)) {
+      ctx.status = 400
+      ctx.body = { error: 'Current password is incorrect' }
+      return
+    }
   }
 
   const existing = findUserByUsername(newUsername)

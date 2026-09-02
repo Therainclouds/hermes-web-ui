@@ -144,6 +144,9 @@ const backendError = ref('')
 
 async function startSession() {
   if (!props.hasDashscopeKey) return
+  // 用户手势内预建播放 AudioContext，避免 ws.onopen（后端启动后）已脱离
+  // 浏览器自动播放策略的激活窗口导致 AI 无声。见 useOmniRealtime.prearmPlayback。
+  void omni.prearmPlayback()
   preparing.value = true
   backendError.value = ''
   try {

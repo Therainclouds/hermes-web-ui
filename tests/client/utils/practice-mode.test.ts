@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildPracticeInstructionBlock,
   buildPracticeReportMarkdown,
+  formatPracticeCountdown,
   practiceReportFileStem,
   PRACTICE_DIFFICULTY_LABELS,
   PRACTICE_LANGUAGE_LABELS,
@@ -36,6 +37,7 @@ function feedback(round: number, overall: number, extra: Partial<PracticeFeedbac
     grammar: overall,
     vocabulary: overall,
     content: overall,
+    bodyLanguage: null,
     comment: `comment-${round}`,
     strengths: `strength-${round}`,
     improvements: `improve-${round}`,
@@ -71,6 +73,38 @@ describe('buildPracticeInstructionBlock', () => {
     const advanced = buildPracticeInstructionBlock(sampleConfig({ difficulty: 'advanced' }))
     expect(advanced).toContain('高级')
   })
+
+  it('mentions the timed duration when durationMinutes is set', () => {
+    const timed = buildPracticeInstructionBlock(sampleConfig({ durationMinutes: 10 }))
+    expect(timed).toContain('定时 10 分钟')
+    expect(timed).toContain('submit_practice_feedback')
+    const untimed = buildPracticeInstructionBlock(sampleConfig({ durationMinutes: 0 }))
+    expect(untimed).not.toContain('定时')
+  })
+
+  it('adds camera-driven body-language rules only when the camera is on', () => {
+    const withCamera = buildPracticeInstructionBlock(sampleConfig(), { cameraOn: true })
+    expect(withCamera).toContain('摄像头已开启')
+    expect(withCamera).toContain('bodyLanguage')
+    const withoutCamera = buildPracticeInstructionBlock(sampleConfig(), { cameraOn: false })
+    expect(withoutCamera).toContain('摄像头未开启')
+    expect(withoutCamera).not.toContain('摄像头已开启')
+    // 默认（未传 cameraOn）等同关摄像头：不要求肢体语言维度
+    const defaultBlock = buildPracticeInstructionBlock(sampleConfig())
+    expect(defaultBlock).toContain('摄像头未开启')
+  })
+
+  it('enforces target-language discipline instead of mirroring the user language', () => {
+    const block = buildPracticeInstructionBlock(sampleConfig())
+    expect(block).toContain('语言纪律')
+    expect(block).toContain('只能用英语输出')
+    expect(block).toContain('请用英语再说一遍')
+    expect(block).toContain('不要顺着用户的母语整段聊天')
+    // 中文练习不应出现英文专用句子
+    const zhBlock = buildPracticeInstructionBlock(sampleConfig({ language: 'zh' }))
+    expect(zhBlock).toContain('只能用中文输出')
+    expect(zhBlock).not.toContain('只能用英语输出')
+  })
 })
 
 describe('buildPracticeReportMarkdown', () => {
@@ -96,6 +130,41 @@ describe('buildPracticeReportMarkdown', () => {
     expect(md).toContain('## 一、综合评分')
     expect(md).toContain('## 二、逐轮点评')
     expect(md).toContain('## 三、对话记录')
+  })
+
+  it('records a timed duration in the report metadata', () => {
+    const md = buildPracticeReportMarkdown({
+      ...baseInput,
+      config: sampleConfig({ durationMinutes: 15 }),
+    })
+    expect(md).toContain('定时：15 分钟')
+    const untimed = buildPracticeReportMarkdown({
+      ...baseInput,
+      config: sampleConfig({ durationMinutes: 0 }),
+    })
+    expect(untimed).not.toContain('定时：')
+  })
+
+  it('adds a body-language row only when a score was actually recorded', () => {
+    const withBody = buildPracticeReportMarkdown({
+      ...baseInput,
+      feedback: [
+        feedback(1, 8, { bodyLanguage: 7 }),
+        feedback(2, 6),
+      ],
+    })
+    expect(withBody).toContain('| 肢体语言 | 7/10 | 7 | 7 |')
+    // 只出现在有该分数的轮次行里
+    const round1 = withBody.indexOf('### 第 1 轮')
+    const round2 = withBody.indexOf('### 第 2 轮')
+    expect(withBody.slice(round1, round2)).toContain('肢体语言 7/10')
+    expect(withBody.slice(round2)).not.toContain('肢体语言 7/10')
+
+    const withoutBody = buildPracticeReportMarkdown({
+      ...baseInput,
+      feedback: [feedback(1, 8), feedback(2, 6)],
+    })
+    expect(withoutBody).not.toContain('肢体语言')
   })
 
   it('puts the config in the header blockquote', () => {
@@ -184,6 +253,20 @@ describe('practiceReportFileStem', () => {
     expect(stem).not.toContain('/')
     expect(stem).not.toContain('\\')
     expect(stem).toContain('-a-b-c-')
+  })
+})
+
+describe('formatPracticeCountdown', () => {
+  it('formats minutes and seconds with zero padding', () => {
+    expect(formatPracticeCountdown(10 * 60_000)).toBe('10:00')
+    expect(formatPracticeCountdown(65_000)).toBe('01:05')
+    expect(formatPracticeCountdown(0)).toBe('00:00')
+    expect(formatPracticeCountdown(-5_000)).toBe('00:00')
+  })
+
+  it('switches to h:mm:ss beyond one hour', () => {
+    expect(formatPracticeCountdown(3_661_000)).toBe('1:01:01')
+    expect(formatPracticeCountdown(90 * 60_000)).toBe('1:30:00')
   })
 })
 

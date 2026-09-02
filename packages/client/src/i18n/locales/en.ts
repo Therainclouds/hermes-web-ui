@@ -721,6 +721,8 @@ export default {
     contextNearLimit: 'The conversation is close to the model context cap ({used}/{total} turns); earlier turns will soon be dropped. Consider ending this session and starting a new one.',
     resumeVoiceChat: 'Resume conversation',
     voiceChat: 'Voice chat',
+    modeLabel: 'Mode',
+    agentMode: 'Agent mode',
   },
 
   realtimeVoice: {
@@ -762,6 +764,7 @@ export default {
   speechPractice: {
     entry: 'Practice',
     entryHint: 'Voice practice with an AI coach for the direction you pick: per-turn scores, analysis saved as Markdown',
+    cameraHint: 'With the camera on, the coach also scores your body language and posture',
     language: 'Practice language',
     lang: { zh: 'Chinese', en: 'English', ja: 'Japanese', ko: 'Korean' },
     direction: 'Practice direction',
@@ -798,6 +801,7 @@ export default {
       grammar: 'Grammar',
       vocabulary: 'Vocabulary',
       content: 'Content',
+      bodyLanguage: 'Body language',
     },
     strengths: 'Strengths',
     improvements: 'To improve',
@@ -816,6 +820,11 @@ export default {
     reportSaved: 'Analysis report saved',
     download: 'Download report',
     saveFailed: 'Failed to save the report, please retry',
+    duration: 'Duration (minutes)',
+    durationHint: 'Minutes; 0 = no time limit. The session ends and the report is generated automatically when the countdown hits zero.',
+    timedMinutes: 'Timed · {minutes} min',
+    timeRemaining: 'Time remaining',
+    timeUpNotice: 'Time is up — the session ended and the analysis report was generated automatically.',
   },
 
   // Chat
@@ -2266,6 +2275,7 @@ export default {
     saveFailed: 'Save failed',
     setAccountPassword: 'Set Account Password',
     setAccountPasswordHint: 'Once set, you can sign in with your username and password. Forgot it? Re-scan with WeChat and set a new one.',
+    nicknameMojibakeHint: 'Your WeChat nickname looks corrupted (mojibake). Go to the login page and re-scan once with WeChat — the system will overwrite the cached nickname with the correct one.',
     passwordSet: 'Account password set',
     unbindWechat: 'Unbind WeChat',
     unbindWechatConfirm: 'Unbind the WeChat account "{account}"? This permanently deletes the account data: the local account, its personal agent with its sessions, and its login credentials. If this WeChat account binds again it starts from a clean slate.',

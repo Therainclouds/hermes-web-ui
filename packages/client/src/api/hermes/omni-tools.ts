@@ -162,6 +162,12 @@ export const SUBMIT_PRACTICE_FEEDBACK_TOOL: OmniRealtimeToolDefinition = {
       grammar: { type: 'number', description: '语法准确度评分，1-10 整数。', minimum: 1, maximum: 10 },
       vocabulary: { type: 'number', description: '词汇与表达丰富度评分，1-10 整数。', minimum: 1, maximum: 10 },
       content: { type: 'number', description: '内容与逻辑评分，1-10 整数。', minimum: 1, maximum: 10 },
+      bodyLanguage: {
+        type: 'number',
+        description: '肢体语言/仪态/眼神交流评分，1-10 整数。只在摄像头开启、你能看到用户画面时填写；看不到画面一律不填。',
+        minimum: 1,
+        maximum: 10,
+      },
       comment: {
         type: 'string',
         description: '对本轮表现的一句话点评（用练习目标语言书写）。',

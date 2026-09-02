@@ -614,6 +614,8 @@ export default {
     toolRunningInline: 'استدعاء {tool} …',
     toolFailedInline: 'فشل {tool}',
     toolCompletedInline: 'اكتمل {tool}',
+    modeLabel: 'الوضع',
+    agentMode: 'وضع الوكيل',
   },
 
   realtimeVoice: {
@@ -655,6 +657,7 @@ export default {
   speechPractice: {
     entry: 'ممارسة المحادثة',
     entryHint: 'تدرّب على التحدّث مع مدرب ذكاء اصطناعي في الموضوع الذي تختاره: تعليق وتقييم بعد كل دور، ويمكنك حفظ التحليل كملف Markdown في النهاية',
+    cameraHint: 'عند تفعيل الكاميرا، يقيّم المدرب أيضًا لغة الجسد والوقفة',
     language: 'لغة الممارسة',
     lang: { zh: 'الصينية', en: 'الإنجليزية', ja: 'اليابانية', ko: 'الكورية' },
     direction: 'موضوع الممارسة',
@@ -691,6 +694,7 @@ export default {
       grammar: 'القواعد',
       vocabulary: 'المفردات',
       content: 'المحتوى والمنطق',
+      bodyLanguage: 'لغة الجسد',
     },
     strengths: 'نقاط القوة',
     improvements: 'نقاط التحسين',
@@ -709,6 +713,11 @@ export default {
     reportSaved: 'تم حفظ تقرير التحليل',
     download: 'تنزيل التقرير',
     saveFailed: 'فشل حفظ التقرير، حاول مرة أخرى',
+    duration: 'المدة (دقيقة)',
+    durationHint: 'دقيقة؛ 0 = بدون حد. عند انتهاء العد التنازلي تنتهي الجلسة ويُنشأ التقرير تلقائيًا.',
+    timedMinutes: 'مؤقّت · {minutes} دقيقة',
+    timeRemaining: 'الوقت المتبقي',
+    timeUpNotice: 'انتهى الوقت: انتهت الجلسة وتم إنشاء التقرير تلقائيًا.',
   },
 
   // Chat
@@ -2195,6 +2204,7 @@ export default {
     title: 'الإعدادات',
     saved: 'تم الحفظ',
     saveFailed: 'فشل الحفظ',
+    nicknameMojibakeHint: 'Your WeChat nickname looks corrupted (mojibake). Go to the login page and re-scan once with WeChat — the system will overwrite the cached nickname with the correct one.',
     unbindWechat: 'إلغاء ربط WeChat',
     unbindWechatConfirm: 'هل تريد إلغاء ربط حساب WeChat «{account}»؟ سيتم حذف جميع بياناته: الحساب المحلي والوكيل الشخصي وجلساته وبيانات الدخول. عند الربط مرة أخرى سيبدأ الحساب من الصفر.',
     unbindWechatSuccess: 'تم إلغاء ربط WeChat',

@@ -754,6 +754,8 @@ export default {
     toolRunningInline: 'Llamando a {tool} …',
     toolFailedInline: '{tool} falló',
     toolCompletedInline: '{tool} listo',
+    modeLabel: 'Modo',
+    agentMode: 'Modo Agente',
   },
 
   realtimeVoice: {
@@ -769,6 +771,7 @@ export default {
   speechPractice: {
     entry: 'Práctica oral',
     entryHint: 'Practica en voz alta con un coach de IA sobre el tema que elijas: cada turno se comenta y puntúa, y al final puedes guardar el análisis como Markdown',
+    cameraHint: 'Con la cámara activada, el coach también valora el lenguaje corporal y la postura',
     language: 'Idioma de práctica',
     lang: { zh: 'Chino', en: 'Inglés', ja: 'Japonés', ko: 'Coreano' },
     direction: 'Tema de práctica',
@@ -805,6 +808,7 @@ export default {
       grammar: 'Gramática',
       vocabulary: 'Vocabulario',
       content: 'Contenido',
+      bodyLanguage: 'Lenguaje corporal',
     },
     strengths: 'Puntos fuertes',
     improvements: 'Puntos a mejorar',
@@ -823,6 +827,11 @@ export default {
     reportSaved: 'Informe de análisis guardado',
     download: 'Descargar informe',
     saveFailed: 'No se pudo guardar el informe. Inténtalo de nuevo',
+    duration: 'Duración (min)',
+    durationHint: 'Minutos; 0 = sin límite. Al terminar la cuenta atrás, la sesión finaliza y el informe de análisis se genera automáticamente.',
+    timedMinutes: 'Con tiempo · {minutes} min',
+    timeRemaining: 'Tiempo restante',
+    timeUpNotice: 'Se acabó el tiempo: la sesión finalizó y el informe de análisis se generó automáticamente.',
   },
 
   // Chat
@@ -1835,6 +1844,7 @@ jobTriggered: 'Job ejecutado',
     saveFailed: 'Error al guardar',
     setAccountPassword: 'Set Account Password',
     setAccountPasswordHint: 'Once set, you can sign in with your username and password. Forgot it? Re-scan with WeChat and set a new one.',
+    nicknameMojibakeHint: 'Tu apodo de WeChat parece corrupto (mojibake). Vuelve a la página de inicio de sesión y escanea una vez con WeChat — el sistema sobrescribirá el apodo en caché con el correcto.',
     passwordSet: 'Account password set',
     unbindWechat: 'Desvincular WeChat',
     unbindWechatConfirm: '¿Desvincular la cuenta de WeChat "{account}"? Se eliminarán todos sus datos: la cuenta local, su agente personal y sus sesiones, y las credenciales. Si se vuelve a vincular, empezará desde cero.',

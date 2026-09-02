@@ -721,6 +721,8 @@ export default {
     contextNearLimit: '对话已接近模型上下文上限（{used}/{total} 轮），较早的轮次即将被丢弃，建议结束后新建对话继续。',
     resumeVoiceChat: '继续对话',
     voiceChat: '语音对话',
+    modeLabel: '模式',
+    agentMode: 'Agent 模式',
   },
 
   realtimeVoice: {
@@ -762,6 +764,7 @@ export default {
   speechPractice: {
     entry: '口语对练',
     entryHint: '与 AI 教练语音对练指定方向：每轮点评打分，结束后分析内容可保存为 Markdown',
+    cameraHint: '开启摄像头后，教练会额外对肢体语言 / 仪态评分并给出建议',
     language: '练习语言',
     lang: { zh: '中文', en: '英语', ja: '日语', ko: '韩语' },
     direction: '练习方向',
@@ -798,6 +801,7 @@ export default {
       grammar: '语法准确',
       vocabulary: '词汇表达',
       content: '内容逻辑',
+      bodyLanguage: '肢体语言',
     },
     strengths: '亮点',
     improvements: '可提升点',
@@ -816,6 +820,11 @@ export default {
     reportSaved: '分析报告已保存',
     download: '下载报告',
     saveFailed: '报告保存失败，请重试',
+    duration: '练习时长',
+    durationHint: '分钟；0 表示不限时，倒计时到点自动结束并生成分析报告',
+    timedMinutes: '定时 {minutes} 分钟',
+    timeRemaining: '剩余时间',
+    timeUpNotice: '练习时长已到，已自动结束并生成分析报告',
   },
 
   // 对话
@@ -2305,6 +2314,7 @@ export default {
     setAccountPassword: '设置账号密码',
     setAccountPasswordHint: '设置后可在此账号页面用用户名和密码登录；忘记密码时可重新微信扫码登录后再设置。',
     passwordSet: '账号密码已设置',
+    nicknameMojibakeHint: '检测到当前账号的微信昵称被错误解码（看上去像乱码）。请到登录页重新扫码登录一次，系统会自动用正确昵称覆盖本地缓存。',
     unbindWechat: '解绑微信',
     unbindWechatConfirm: '确定要解绑微信账号「{account}」吗？解绑将删除该账号的全部数据：本地账号、专属 Agent 及其会话记录和登录凭据。该微信再次扫码绑定后将得到全新的空白账号。',
     unbindWechatSuccess: '已解绑微信',
