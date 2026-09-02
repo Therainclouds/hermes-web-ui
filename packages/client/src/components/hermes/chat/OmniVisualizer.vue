@@ -72,11 +72,19 @@ const PALETTES: Record<string, { coreIn: string; coreOut: string; particle: stri
 
 let smoothInput = 0
 let smoothOutput = 0
+// 综合能量的"呼吸"平滑：attack 慢到听不出逐音节跳变，release 更慢，
+// 让 AI 说完后光效自然回落而不是抽搐。这是唯一驱动半径/速度的信号。
+let energySmooth = 0
 // 调色板混色进度：0 → 上一帧 palette，1 → 当前 phase palette。
 // 直接切换色板会硬跳，EMA 过渡让色相流动。
 let paletteMix = 1
 let prevPaletteKey = 'idle'
 let time = 0
+
+/** 平滑一帧电平：起音快（0.3）、收音慢（0.08），避免逐帧抖动。 */
+function smoothLevel(current: number, target: number): number {
+  return current + (target - current) * (target > current ? 0.3 : 0.08)
+}
 
 function lerpPalette(currentKey: string): { a: typeof PALETTES.idle, b: typeof PALETTES.idle, t: number } {
   const b = PALETTES[currentKey] ?? PALETTES.idle!
@@ -116,10 +124,15 @@ function draw(): void {
 
   time += 1 / 60
 
-  // 音频电平 EMA 平滑（不同方向不同系数：起音快、收音慢，更像呼吸）。
-  smoothInput += (props.inputLevel - smoothInput) * (props.inputLevel > smoothInput ? 0.5 : 0.12)
-  smoothOutput += (props.outputLevel - smoothOutput) * (props.outputLevel > smoothOutput ? 0.4 : 0.1)
-  const energy = Math.min(1, smoothInput + smoothOutput)
+  // 音频电平平滑（起音 0.3 / 收音 0.08），再汇入慢速呼吸能量。三者解耦：
+  // 原始电平只影响闪烁相位，能量平滑量才是半径/速度/光晕的唯一驱动——
+  // TTS 每个音节的 RMS 起伏由此被滤成一次平滑的"呼吸"。
+  smoothInput = smoothLevel(smoothInput, props.inputLevel)
+  smoothOutput = smoothLevel(smoothOutput, props.outputLevel)
+  const rawEnergy = Math.min(1, smoothInput * 0.55 + smoothOutput * 0.75)
+  energySmooth += (rawEnergy - energySmooth) * (rawEnergy > energySmooth ? 0.12 : 0.045)
+  // 感知曲线：低电平也有可见反馈，高电平不至于过冲。
+  const energy = Math.pow(energySmooth, 0.8)
 
   // 调色板过渡。
   if (props.phase !== prevPaletteKey) {
@@ -139,9 +152,9 @@ function draw(): void {
   const unit = Math.min(cssWidth, cssHeight) / 2
 
   // --- 外圈光晕 -------------------------------------------------------
-  const haloRadius = unit * (0.72 + energy * 0.22)
+  const haloRadius = unit * (0.74 + energy * 0.14)
   const halo = ctx.createRadialGradient(cx, cy, unit * 0.2, cx, cy, haloRadius)
-  halo.addColorStop(0, withAlpha(b.halo, mix(alphaOf(a.halo), alphaOf(b.halo), mixT) * (0.7 + energy * 0.6)))
+  halo.addColorStop(0, withAlpha(b.halo, mix(alphaOf(a.halo), alphaOf(b.halo), mixT) * (0.7 + energy * 0.35)))
   halo.addColorStop(1, 'rgba(0,0,0,0)')
   ctx.fillStyle = halo
   ctx.beginPath()
@@ -149,7 +162,7 @@ function draw(): void {
   ctx.fill()
 
   // --- 中心核心 -------------------------------------------------------
-  const coreRadius = unit * (0.30 + energy * 0.08) * (1 + Math.sin(time * 1.8) * 0.02)
+  const coreRadius = unit * (0.30 + energy * 0.06)
   const core = ctx.createRadialGradient(
     cx - coreRadius * 0.25, cy - coreRadius * 0.3, coreRadius * 0.05,
     cx, cy, coreRadius,
@@ -175,20 +188,21 @@ function draw(): void {
   ctx.fill()
 
   // --- 粒子星环 -------------------------------------------------------
-  // AI 说话：粒子沿径向向外爆发；用户说话：向内收缩、闪烁加速。
-  const radialPush = smoothOutput * 0.42 - smoothInput * 0.14
+  // AI 说话：粒子沿径向向外缓推；用户说话：轻微内收。全部走慢速能量，
+  // 拒绝逐帧爆发——呼吸感来自平滑，不是抖动。
+  const radialPush = smoothOutput * 0.3 - smoothInput * 0.1
   for (const p of particles) {
     const ringDef = RINGS[p.ringIndex]!
-    const angle = p.baseAngle + time * p.angularSpeed * (1 + energy * 1.6)
+    const angle = p.baseAngle + time * p.angularSpeed * (1 + energy * 0.5)
     const orbit = unit * ringDef.radius * p.radiusJitter
     // 椭圆轨道（tilt 压扁 Y 轴，制造透视深度）。
     const px = cx + Math.cos(angle) * (orbit * (1 + radialPush))
     const py = cy + Math.sin(angle) * (orbit * (1 + radialPush) * ringDef.tilt)
     // 深度感：下半弧（sin>0）离观众更近 → 更大更亮。
     const depth = 0.55 + ((Math.sin(angle) + 1) / 2) * 0.65
-    const twinkle = 0.55 + 0.45 * Math.sin(time * p.twinkleSpeed * (1 + smoothInput * 2.5) + p.twinklePhase)
-    const alpha = Math.min(1, (0.16 + energy * 0.75) * depth * twinkle + 0.05)
-    const size = p.size * depth * (1 + energy * 0.7)
+    const twinkle = 0.55 + 0.45 * Math.sin(time * p.twinkleSpeed * (1 + smoothInput * 1.2) + p.twinklePhase)
+    const alpha = Math.min(1, (0.22 + energy * 0.55) * depth * twinkle + 0.05)
+    const size = p.size * depth * (1 + energy * 0.4)
     ctx.fillStyle = `rgba(${particleColor}, ${alpha.toFixed(3)})`
     ctx.beginPath()
     ctx.arc(px, py, size, 0, Math.PI * 2)
@@ -248,7 +262,8 @@ watch(() => props.phase, () => { /* palette 过渡在 draw 内处理 */ })
 <style scoped>
 .omni-visualizer {
   position: relative;
-  width: min(560px, 62vw);
+  /* 52vh 上限：气泡区吃掉 34vh 后，矮视口下星环仍能完整放进弹性区。 */
+  width: min(560px, 62vw, 52vh);
   aspect-ratio: 1;
   display: flex;
   align-items: center;

@@ -200,9 +200,21 @@ interface StageBubble {
  * 拼在气泡内实时增长）。第 4 条入列时最旧的自然被挤出，TransitionGroup 的
  * leave 动画负责上移淡出。完整历史已增量持久化到聊天会话，舞台只保留
  * 沉浸所需的最近几条。
+ *
+ * 重影守卫：commitAssistantTurn 刻意保留 liveAssistantText 直到音频播完
+ * （字幕跟随播放），这会让「刚提交的 assistant 轮次」和「live 气泡」同屏
+ * 显示同一段文字——两者文本一致时只保留 live 气泡。
  */
 const bubbles = computed<StageBubble[]>(() => {
-  const list: StageBubble[] = omni.turns.value.slice(-3).map(t => ({
+  const turns = [...omni.turns.value]
+  const liveAssistant = omni.liveAssistantText.value.trim()
+  if (liveAssistant) {
+    const last = turns[turns.length - 1]
+    if (last && last.role === 'assistant' && last.text.trim() === liveAssistant) {
+      turns.pop()
+    }
+  }
+  const list: StageBubble[] = turns.slice(-3).map(t => ({
     key: `${t.role}:${t.timestamp}`,
     role: t.role,
     text: t.text,
@@ -211,7 +223,7 @@ const bubbles = computed<StageBubble[]>(() => {
   if (omni.liveUserText.value) {
     list.push({ key: 'live-user', role: 'user', text: omni.liveUserText.value, live: true })
   }
-  if (omni.liveAssistantText.value) {
+  if (liveAssistant) {
     list.push({ key: 'live-assistant', role: 'assistant', text: omni.liveAssistantText.value, live: true })
   }
   return list.slice(-4)
@@ -692,12 +704,14 @@ onBeforeUnmount(() => {
           {{ t('omniRealtime.contextNearLimit', { used: usedUserTurns, total: contextLimitTotal }) }}
         </NAlert>
 
-        <OmniVisualizer
-          :phase="orbPhase"
-          :input-level="omni.inputLevel.value"
-          :output-level="omni.outputLevel.value"
-          class="omni-stage__visualizer"
-        />
+        <div class="omni-stage__visualizer-zone">
+          <OmniVisualizer
+            :phase="orbPhase"
+            :input-level="omni.inputLevel.value"
+            :output-level="omni.outputLevel.value"
+            class="omni-stage__visualizer"
+          />
+        </div>
 
         <TransitionGroup name="omni-bubble" tag="div" class="omni-stage__bubbles" aria-live="polite">
           <div
@@ -828,21 +842,21 @@ onBeforeUnmount(() => {
   isolation: isolate;
   overflow: hidden;
   color: #f4fbff;
-  background:
-    radial-gradient(circle at 50% 42%, rgba(88, 101, 242, 0.16), transparent 34%),
-    linear-gradient(150deg, #05070d 0%, #0a0f1e 50%, #04060c 100%);
+  /* 单层干净的深空底色：中心光晕全部交给 canvas 星环绘制，CSS 层不再
+   * 叠第二团径向光斑——之前三层光效互相压出色块，观感浑浊。 */
+  background: linear-gradient(168deg, #060911 0%, #0a1020 48%, #050810 100%);
 }
 
 .omni-stage__wash {
   position: absolute;
   inset-inline: 0;
-  height: 30vh;
+  height: 26vh;
   z-index: -1;
   pointer-events: none;
 }
 
-.omni-stage__wash--top { top: 0; background: linear-gradient(rgba(112, 244, 255, 0.06), transparent); }
-.omni-stage__wash--bottom { bottom: 0; background: linear-gradient(transparent, rgba(128, 109, 255, 0.08)); }
+.omni-stage__wash--top { top: 0; background: linear-gradient(rgba(112, 244, 255, 0.045), transparent); }
+.omni-stage__wash--bottom { bottom: 0; background: linear-gradient(transparent, rgba(128, 109, 255, 0.055)); }
 
 .omni-stage__header {
   z-index: 3;
@@ -974,15 +988,25 @@ onBeforeUnmount(() => {
 .omni-stage__field :deep(.n-select) { width: 100%; max-width: 320px; }
 
 .omni-stage__live {
-  /* Centered vertical stack: orb, caption, inline tool indicator, controls.
-   * The previous two-column layout (live + side panel) was removed in
-   * favour of the inline tool pill; going back to a clean centered stack
-   * matches the rest of the dialog's calm aesthetic. */
+  /* Centered vertical stack: visualizer zone (flexible), bubble layer
+   * (capped), inline tool indicator, controls. The visualizer zone absorbs
+   * all spare space so longer bubbles can never push it around — they only
+   * eat into their own capped region. */
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: clamp(22px, 4vh, 40px);
+  gap: clamp(10px, 1.8vh, 18px);
   width: 100%;
+  flex: 1;
+  min-height: 0;
+}
+
+.omni-stage__visualizer-zone {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  display: grid;
+  place-items: center;
 }
 
 .omni-stage__visualizer {
@@ -994,19 +1018,25 @@ onBeforeUnmount(() => {
  * + 上浮），离开时上移淡出。用户消息靠右（蓝紫渐变胶囊），AI 消息靠左
  * （玻璃拟态），live 气泡带呼吸描边。 */
 .omni-stage__bubbles {
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   gap: 10px;
   width: min(620px, calc(100% - 40px));
-  min-height: 96px;
+  /* 高度硬上限：超出的旧气泡被顶部渐隐 mask 吃掉，绝不挤压上方布局。 */
+  max-height: min(34vh, 320px);
+  overflow: hidden;
   justify-content: flex-end;
+  padding-top: 30px;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 30px);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 30px);
 }
 
 .omni-stage__bubble {
-  max-width: 82%;
-  padding: 10px 16px;
+  max-width: 78%;
+  padding: 9px 15px;
   border-radius: 18px;
-  font-size: 14px;
+  font-size: 13.5px;
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;

@@ -311,7 +311,10 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
         const v = ((outputLevelBuf[i] ?? 128) - 128) / 128
         sumSquares += v * v
       }
-      outputLevel.value = Math.min(1, Math.sqrt(sumSquares / outputLevelBuf.length) * 2.5)
+      // EMA（起音 0.35 / 收音 0.1）：TTS 逐音节的 RMS 起伏直接透传会让
+      // 可视化逐帧抽搐，消费端拿到的是平滑后的呼吸电平。
+      const raw = Math.min(1, Math.sqrt(sumSquares / outputLevelBuf.length) * 2.5)
+      outputLevel.value += (raw - outputLevel.value) * (raw > outputLevel.value ? 0.35 : 0.1)
       outputLevelRaf = requestAnimationFrame(tick)
     }
     outputLevelRaf = requestAnimationFrame(tick)
