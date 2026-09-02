@@ -3632,6 +3632,12 @@ export default {
 
   // Changelog
   changelog: {
+    new_0_8_0_1: 'Realtime dialog visual overhaul: the celestial body is now moon/sun SVG artwork that follows the theme, the voiceprint is redrawn as 64 radial equalizer bars, controls anchor to the bottom, and bubbles no longer overlap',
+    new_0_8_0_2: 'Dedicated light-mode stage design: dawn-gradient backdrop with high-contrast controls; the whole palette is unified into monochrome ink with a purple-blue accent',
+    new_0_8_0_3: 'Oral coach mode lands: strict target-language discipline, camera-based body-language scoring, and timed practice with pacing control',
+    new_0_8_0_4: 'Oral coach unified with the design system: the stage is reskinned with theme tokens plus a dedicated coach persona (no more conflicts with the Agent SOUL), and voice entries route by session type automatically',
+    new_0_8_0_5: 'Legacy realtime voice page retired: every voice entry now opens the new Omni realtime dialog, which continues from your text-chat context',
+    new_0_8_0_6: 'Fixes: WeChat scan nickname mojibake, password-free username change for tp_* users, and the sidebar dropdown not refreshing on theme switch',
     new_0_7_21_1: 'Fix meeting-storage 404: MeetingStorageService now uses getWebUiHome() for path resolution, preventing data written to the wrong directory when systemd WorkingDirectory differs',
     new_0_7_21_2: 'Fix systemd 203/EXEC restart loop: build now guarantees +x on scripts in tarballs (cross-platform onWriteEntry + CI assertion + install-time fixup), eliminating non-executable scripts from Windows checkouts',
     new_0_7_21_3: 'Dev servers bind to 0.0.0.0 for LAN access; frontend and backend ports unified to 6060',

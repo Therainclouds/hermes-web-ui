@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { NAlert, NButton, NSelect, NSwitch, type SelectOption } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useOmniRealtime, type OmniDialogToolCall } from '@/composables/useOmniRealtime'
@@ -115,10 +115,22 @@ async function startCamera(): Promise<void> {
       video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
       audio: false,
     })
+    // 流建立后 <video> 可能刚挂载（预览在 <main> 顶层，v-if 随流出现），
+    // 等 DOM 渲染完再绑一次 srcObject，作为 watch(cameraStream) 的兜底。
+    await bindCameraPreview()
   } catch {
     cameraNotice.value = t('omniRealtime.cameraFailed')
     cameraEnabled.value = false
     setTimeout(() => { cameraNotice.value = '' }, 4000)
+  }
+}
+
+/** 把当前摄像头流绑到预览 <video>（若已绑定则跳过）。 */
+async function bindCameraPreview(): Promise<void> {
+  await nextTick()
+  const el = videoRef.value
+  if (el && cameraStream.value && el.srcObject !== cameraStream.value) {
+    el.srcObject = cameraStream.value
   }
 }
 
@@ -524,10 +536,15 @@ function toggleMute(): void {
 }
 const isMuted = computed(() => !omni.isPushing.value && isActive.value)
 
-// 摄像头预览流绑定到 <video>（flush post：等 v-if 挂载完成）
-watch(cameraStream, (stream) => {
-  const el = videoRef.value
-  if (el) el.srcObject = stream ?? null
+// 摄像头预览流绑定到 <video>（flush post：等 v-if 挂载完成）。
+// bindCameraPreview 会再兜底一次，覆盖「流先到、元素后挂载」的时序。
+watch(cameraStream, async (stream) => {
+  if (stream) {
+    await bindCameraPreview()
+  } else {
+    const el = videoRef.value
+    if (el) el.srcObject = null
+  }
 }, { flush: 'post' })
 
 function handleKeydown(event: KeyboardEvent): void {
@@ -825,6 +842,17 @@ async function handleCopyMarkdown(): Promise<void> {
     </header>
 
     <main class="practice-stage__main">
+      <!-- 摄像头预览：放在 <main> 顶层（设置卡 / 进行中两个视图都存在）。
+           此前放在 live 区块内，getUserMedia 成功时 video 尚未挂载，
+           watch(cameraStream) 拿不到 videoRef → srcObject 丢失 → 黑屏、
+           取帧读到空画面、AI 收不到帧。 -->
+      <div
+        v-if="cameraStream"
+        class="practice-stage__camera"
+        data-testid="speech-practice-camera-preview"
+      >
+        <video ref="videoRef" autoplay playsinline muted />
+      </div>
       <!-- 设置卡 -->
       <section v-if="!isActive && !ended" class="practice-stage__setup" data-testid="speech-practice-setup">
         <NAlert v-if="!hasDashscopeKey" type="warning" :show-icon="false" class="practice-stage__alert">
@@ -973,13 +1001,6 @@ async function handleCopyMarkdown(): Promise<void> {
       <section v-else class="practice-stage__live" data-testid="speech-practice-live">
         <div class="practice-stage__body">
           <div class="practice-stage__stage">
-            <div
-              v-if="cameraStream"
-              class="practice-stage__camera"
-              data-testid="speech-practice-camera-preview"
-            >
-              <video ref="videoRef" autoplay playsinline muted />
-            </div>
             <NAlert
               v-if="nearContextLimit && contextLimitTotal"
               type="warning"
@@ -1270,10 +1291,10 @@ async function handleCopyMarkdown(): Promise<void> {
 
 .practice-stage__timer {
   padding: 5px 12px;
-  border: 1px solid rgba(124, 231, 169, 0.3);
+  border: 1px solid rgba(var(--accent-primary-rgb), 0.34);
   border-radius: 999px;
-  color: rgba(150, 245, 195, 0.95);
-  background: rgba(16, 46, 33, 0.55);
+  color: var(--text-primary);
+  background: rgba(var(--accent-primary-rgb), 0.14);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.03em;
@@ -1281,9 +1302,9 @@ async function handleCopyMarkdown(): Promise<void> {
 }
 
 .practice-stage__timer--warning {
-  border-color: rgba(255, 190, 120, 0.55);
-  color: #ffd9a0;
-  background: rgba(70, 42, 12, 0.6);
+  border-color: rgba(var(--warning-rgb), 0.55);
+  color: rgb(var(--warning-rgb));
+  background: rgba(var(--warning-rgb), 0.12);
   animation: practice-pulse 1.1s ease-in-out infinite;
 }
 
@@ -1293,8 +1314,8 @@ async function handleCopyMarkdown(): Promise<void> {
 }
 
 .practice-stage__chip--duration {
-  background: rgba(124, 231, 169, 0.1);
-  border-color: rgba(124, 231, 169, 0.3);
+  background: rgba(var(--accent-primary-rgb), 0.2);
+  border-color: rgba(var(--accent-primary-rgb), 0.4);
 }
 
 .practice-stage__alert--timeup { width: 100%; }
@@ -1371,7 +1392,7 @@ async function handleCopyMarkdown(): Promise<void> {
 .practice-stage__field--row { flex-direction: row; align-items: center; justify-content: center; gap: 12px; }
 .practice-stage__field label { color: rgba(var(--text-primary-rgb), 0.72); font-size: 12px; }
 .practice-stage__field :deep(.n-select) { width: 100%; max-width: 320px; }
-.practice-stage__card-hint--error { color: rgba(255, 157, 157, 0.9); }
+.practice-stage__card-hint--error { color: rgba(var(--error-rgb), 0.9); }
 
 .practice-stage__live { flex: 1; min-height: 0; display: flex; }
 .practice-stage__body {
@@ -1401,10 +1422,10 @@ async function handleCopyMarkdown(): Promise<void> {
   right: 14px;
   width: min(210px, 28vw);
   aspect-ratio: 16 / 10;
-  border: 1px solid rgba(201, 175, 255, 0.24);
+  border: 1px solid var(--glass-realtime-border-strong);
   border-radius: 14px;
   overflow: hidden;
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--glass-realtime-shadow);
   z-index: 4;
 }
 
