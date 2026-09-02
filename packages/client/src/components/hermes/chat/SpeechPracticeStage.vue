@@ -1270,10 +1270,10 @@ async function handleCopyMarkdown(): Promise<void> {
 
 .practice-stage__timer {
   padding: 5px 12px;
-  border: 1px solid rgba(124, 231, 169, 0.3);
+  border: 1px solid rgba(var(--accent-primary-rgb), 0.34);
   border-radius: 999px;
-  color: rgba(150, 245, 195, 0.95);
-  background: rgba(16, 46, 33, 0.55);
+  color: var(--text-primary);
+  background: rgba(var(--accent-primary-rgb), 0.14);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.03em;
@@ -1281,9 +1281,9 @@ async function handleCopyMarkdown(): Promise<void> {
 }
 
 .practice-stage__timer--warning {
-  border-color: rgba(255, 190, 120, 0.55);
-  color: #ffd9a0;
-  background: rgba(70, 42, 12, 0.6);
+  border-color: rgba(var(--warning-rgb), 0.55);
+  color: rgb(var(--warning-rgb));
+  background: rgba(var(--warning-rgb), 0.12);
   animation: practice-pulse 1.1s ease-in-out infinite;
 }
 
@@ -1293,8 +1293,8 @@ async function handleCopyMarkdown(): Promise<void> {
 }
 
 .practice-stage__chip--duration {
-  background: rgba(124, 231, 169, 0.1);
-  border-color: rgba(124, 231, 169, 0.3);
+  background: rgba(var(--accent-primary-rgb), 0.2);
+  border-color: rgba(var(--accent-primary-rgb), 0.4);
 }
 
 .practice-stage__alert--timeup { width: 100%; }
@@ -1371,7 +1371,7 @@ async function handleCopyMarkdown(): Promise<void> {
 .practice-stage__field--row { flex-direction: row; align-items: center; justify-content: center; gap: 12px; }
 .practice-stage__field label { color: rgba(var(--text-primary-rgb), 0.72); font-size: 12px; }
 .practice-stage__field :deep(.n-select) { width: 100%; max-width: 320px; }
-.practice-stage__card-hint--error { color: rgba(255, 157, 157, 0.9); }
+.practice-stage__card-hint--error { color: rgba(var(--error-rgb), 0.9); }
 
 .practice-stage__live { flex: 1; min-height: 0; display: flex; }
 .practice-stage__body {
@@ -1401,10 +1401,10 @@ async function handleCopyMarkdown(): Promise<void> {
   right: 14px;
   width: min(210px, 28vw);
   aspect-ratio: 16 / 10;
-  border: 1px solid rgba(201, 175, 255, 0.24);
+  border: 1px solid var(--glass-realtime-border-strong);
   border-radius: 14px;
   overflow: hidden;
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--glass-realtime-shadow);
   z-index: 4;
 }
 
