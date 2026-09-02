@@ -25,6 +25,7 @@ import { meetingASRApi } from '@/utils/meeting-asr-api'
 import { getApiKey } from '@/api/client'
 import { useMessage } from '@/composables/useAppMessage'
 import { meetingStorageApi } from '@/utils/meeting-storage-api'
+import { extractMeetingTitleFromReport, requestAiMeetingTitle, formatTranscriptForTitle, canAutoRenameMeeting } from '@/utils/meeting-title'
 import { getProfileDisplayName } from '@/utils/hermes/profile-display'
 import { useMeetingAudio } from '@/composables/useMeetingAudio'
 import { useDraggableWidth } from '@/composables/useDraggableWidth'
@@ -291,10 +292,56 @@ watch(() => activeSession.value?.id, (id) => {
   if (id) resetSpeechTimer()
 })
 
+// --- AI 自动命名会议标题 ---
+// 触发两次：1) 录音中首个实时分析轮次到达（先用当前转写取个初步标题）；
+// 2) 最终 AI 分析/报告生成完成（用报告开头 AI 输出的一级标题定稿）。
+// 只覆盖“会议 + 时间”这类占位标题；用户手动命名的会议一律不被覆盖。
+const aiAutoNamedSessions = new Set<string>()
+
+function persistAiMeetingTitle(sessionId: string, title: string) {
+  const session = meetingStore.sessions.find(s => s.id === sessionId)
+  if (!session || !title) return
+  meetingStore.updateSession(sessionId, { title, titleAutoNamed: true })
+  // 同步到服务端（仅当该会议已在服务端落库，避免为纯本地会议创建空壳）
+  meetingStorageApi.updateMeetingTitle(sessionId, title).catch(() => {})
+}
+
+async function autoNameOnFirstAnalysis(sessionId: string) {
+  const session = meetingStore.sessions.find(s => s.id === sessionId)
+  if (!session) return
+  if (!canAutoRenameMeeting(session)) return
+  if (!session.sentences.length) return
+  const title = await requestAiMeetingTitle(formatTranscriptForTitle(session.sentences))
+  if (!title) return
+  // 等待网络期间用户可能切走/删除了该会议，回来时再校验一次
+  const cur = meetingStore.sessions.find(s => s.id === sessionId)
+  if (!cur || !canAutoRenameMeeting(cur)) return
+  persistAiMeetingTitle(sessionId, title)
+}
+
+// 首个实时分析轮次（analysisRounds 0 → >0）到达即触发初步命名；每个会议至多触发一次。
+// 用数组作为 watch 源，只在 sessionId 或轮次数变化时回调，避免对每句转写都触发。
+watch(
+  () => [meetingStore.activeSessionId, meetingStore.activeSession?.analysisRounds?.length ?? 0] as [string | null, number],
+  ([id, rounds], [prevId, prevRounds]) => {
+    if (!id || prevId !== id) return // 会话切换/首次挂载：只建立基线，不触发
+    if (rounds > 0 && (prevRounds ?? 0) === 0 && !aiAutoNamedSessions.has(id)) {
+      aiAutoNamedSessions.add(id)
+      void autoNameOnFirstAnalysis(id)
+    }
+  },
+)
+
 // 报告生成完成回调
 function onReportGenerated(markdown: string) {
-  if (meetingStore.activeSessionId) {
-    meetingStore.updateSession(meetingStore.activeSessionId, { htmlContent: markdown })
+  const sessionId = meetingStore.activeSessionId
+  if (!sessionId) return
+  meetingStore.updateSession(sessionId, { htmlContent: markdown })
+  // 最终 AI 分析完成：若标题仍是占位/此前由 AI 命名，则用报告标题定稿
+  const session = meetingStore.sessions.find(s => s.id === sessionId)
+  if (session && canAutoRenameMeeting(session)) {
+    const title = extractMeetingTitleFromReport(markdown)
+    if (title) persistAiMeetingTitle(sessionId, title)
   }
 }
 

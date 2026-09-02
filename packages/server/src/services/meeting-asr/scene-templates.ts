@@ -239,6 +239,20 @@ export const SCENE_TEMPLATES: SceneTemplate[] = [
   },
 ]
 
+/**
+ * 报告提示词统一追加的“先拟标题”指令。
+ *
+ * agent-bridge（Hermes Agent 主路径）与 direct-llm（直调 fallback）两条报告路径
+ * 都以此为单份配置源（见 streamAgentReport / streamDirectLLMReport），保证无论走
+ * 哪条路径生成的报告开头都有一行 `# 标题`，前端在 AI 分析/报告完成后据此提取标题
+ * 并自动命名会议（替换默认的“会议 + 时间”占位标题）。
+ */
+export const REPORT_TITLE_INSTRUCTION = `【标题要求】
+在报告第一行，用 Markdown 一级标题输出一个简短、贴切、能概括本次内容主题的标题
+（形如：# 季度产品规划会；中文，约 5~20 字；不要加引号、书名号、括号、冒号，
+也不要以“标题：”开头，更不要用“会议纪要/摘要/报告”这类词当标题本身）。
+一级标题之后空一行，再从报告正文结构开始输出正文。`
+
 export function getSceneTemplate(id: string): SceneTemplate | undefined {
   return SCENE_TEMPLATES.find(t => t.id === id)
 }

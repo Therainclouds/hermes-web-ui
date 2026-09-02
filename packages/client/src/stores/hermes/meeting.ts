@@ -6,6 +6,8 @@ import { meetingStorageApi } from '@/utils/meeting-storage-api'
 export interface MeetingSession {
   id: string
   title: string
+  /** 是否由 AI 自动命名（首次分析/最终报告时置 true）。用户手动命名的会议保持 false，AI 永不覆盖。 */
+  titleAutoNamed?: boolean
   createdAt: number
   updatedAt: number
   useDiarize: boolean

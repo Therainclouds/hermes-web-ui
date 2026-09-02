@@ -134,6 +134,66 @@ export const OMNI_REALTIME_TOOLS: OmniRealtimeToolDefinition[] = [
   },
 ]
 
+/**
+ * 口语对练专用评分工具。
+ *
+ * 口语对练模式下，模型在每一轮用户发言结束后调用本工具提交结构化打分
+ * （随 `function_call` 事件回传）。执行器在客户端完成：
+ *   - 实时刷新右侧评分卡（本轮各维度分数 / 亮点 / 可提升点）；
+ *   - 把每条评分累积进练习数据，供结束后的 Markdown 分析报告使用；
+ *   - 向模型回传简短确认文本（如「已记录第 N 轮评分」），让对话继续。
+ *
+ * 分数统一 1–10 整数。不要用散装文字代替结构化打分——本工具正是为了让
+ * 打分「可见、可累积、可入报告」，而不是混在朗读文本里。
+ */
+export const SUBMIT_PRACTICE_FEEDBACK_TOOL: OmniRealtimeToolDefinition = {
+  type: 'function',
+  name: 'submit_practice_feedback',
+  description:
+    '口语对练专用：每轮用户发言结束后，把对本轮表现的结构化打分与点评通过本工具提交'
+    + '（客户端会实时显示在评分卡上，并进入最终的分析报告）。'
+    + '评分后再用目标语言口头简短总结一句，然后继续引导下一轮练习。',
+  parameters: {
+    type: 'object',
+    properties: {
+      overall: { type: 'number', description: '本轮总分，1-10 整数。', minimum: 1, maximum: 10 },
+      fluency: { type: 'number', description: '流利度评分，1-10 整数。', minimum: 1, maximum: 10 },
+      pronunciation: { type: 'number', description: '发音/语调评分，1-10 整数。', minimum: 1, maximum: 10 },
+      grammar: { type: 'number', description: '语法准确度评分，1-10 整数。', minimum: 1, maximum: 10 },
+      vocabulary: { type: 'number', description: '词汇与表达丰富度评分，1-10 整数。', minimum: 1, maximum: 10 },
+      content: { type: 'number', description: '内容与逻辑评分，1-10 整数。', minimum: 1, maximum: 10 },
+      comment: {
+        type: 'string',
+        description: '对本轮表现的一句话点评（用练习目标语言书写）。',
+      },
+      strengths: {
+        type: 'string',
+        description: '亮点，一两句（用练习目标语言书写）。',
+      },
+      improvements: {
+        type: 'string',
+        description: '本轮最重要的 1 个可提升点（用练习目标语言书写）。',
+      },
+      example: {
+        type: 'string',
+        description: '更自然/更地道的表达示范或纠错示范，一两句（用练习目标语言书写）。',
+      },
+    },
+    required: [
+      'overall', 'fluency', 'pronunciation', 'grammar', 'vocabulary', 'content', 'comment',
+    ],
+  },
+}
+
+/**
+ * 口语对练模式完整工具集：既有工作台工具（记忆 / 技能 / 会话 / 任务 /
+ * `query_hermes_agent` 的 Agent 能力全部保留）＋ 对练评分工具。
+ */
+export const PRACTICE_REALTIME_TOOLS: OmniRealtimeToolDefinition[] = [
+  ...OMNI_REALTIME_TOOLS,
+  SUBMIT_PRACTICE_FEEDBACK_TOOL,
+]
+
 function clip(value: string, limit = TOOL_OUTPUT_LIMIT): string {
   if (value.length <= limit) return value
   return `${value.slice(0, limit)}…(truncated)`

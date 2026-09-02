@@ -2,6 +2,7 @@ import fs from 'fs/promises'
 import path from 'path'
 import { logger } from '../logger'
 import type { SceneTemplate } from './scene-templates'
+import { REPORT_TITLE_INSTRUCTION } from './scene-templates'
 import { prepareAnalysisSkillSection } from './skill-resolver'
 import { parseAnalysisRound, type AnalysisRound, type SpeechContext } from './report-parser'
 
@@ -224,8 +225,8 @@ export async function* streamDirectLLMReport(
   // 通用技能的会议纪要式结构会稀释该风格（见 analyzeViaDirectLLM 同款注释）。
   const skillSection = template.id === 'speech' ? '' : await prepareAnalysisSkillSection(profile, template.id)
   const reportPrompt = skillSection
-    ? `${template.reportPrompt}\n\n${skillSection}`
-    : template.reportPrompt
+    ? `${template.reportPrompt}\n\n${skillSection}\n\n${REPORT_TITLE_INSTRUCTION}`
+    : `${template.reportPrompt}\n\n${REPORT_TITLE_INSTRUCTION}`
 
   const body = {
     model: config.model,
@@ -348,5 +349,83 @@ export async function* streamDirectLLMReport(
     const data = await fallbackRes.json() as any
     const content = data?.choices?.[0]?.message?.content
     if (content) yield content
+  }
+}
+
+/**
+ * 清洗 LLM 返回的标题候选：只取第一行，去掉误带的 markdown 标记、"标题："前缀与
+ * 各类包裹/结尾标点；空或过长（>40 字）视为不可用。
+ */
+export function cleanMeetingTitle(raw: unknown): string | null {
+  const text = String(raw ?? '').split(/\r?\n/)[0].trim()
+  if (!text) return null
+  const cleaned = text
+    .replace(/^[#*>\s]+/, '') // 去掉可能误带的 markdown 标记
+    .replace(/^标题[:：]?/, '') // 去掉"标题："
+    .replace(/^[「『“‘"《〈(（]+/, '') // 去掉前导包裹符
+    .replace(/[」』”’"》〉)）]+$/, '') // 去掉尾部包裹符
+    .replace(/[。．.!！?？]+$/, '') // 去掉结尾标点
+    .trim()
+  if (!cleaned) return null
+  return cleaned.length > 40 ? cleaned.slice(0, 40) : cleaned
+}
+
+/**
+ * 为一场会议生成一个简短标题（首次 AI 分析完成时，基于当前已有转写轻量取名）。
+ * 直调 OpenAI 兼容端点（与分析/报告同款配置：meeting-asr 数据目录 config.json）。
+ * 任一步失败都静默返回 null（不影响主流程），由后续最终报告标题兜底。
+ */
+export async function generateMeetingTitle(
+  transcript: string,
+  deps?: DirectLLMDeps,
+): Promise<string | null> {
+  const text = (transcript || '').trim()
+  if (!text) return null
+  const config = await resolveConfig(deps)
+  if (!config) return null
+
+  // 控制请求体大小：转写过长时只取开头与结尾，中间省略。
+  const MAX = 6000
+  const excerpt = text.length > MAX
+    ? `${text.slice(0, Math.floor(MAX / 2))}\n…（中间内容省略）…\n${text.slice(-Math.floor(MAX / 2))}`
+    : text
+
+  const system = [
+    '你是会议命名助手。请根据会议转写内容，为这场会议拟定一个简短、贴切、能概括主题的中文标题。',
+    '要求：',
+    '1. 只输出标题本身，长度 5~20 字，不要任何解释或多余文字。',
+    '2. 不要输出引号、书名号、括号、冒号、“标题：”前缀、句号等标点。',
+    '3. 标题应具体（如“Q3 供应商合同条款评审”），不要用“会议纪要/会议记录/会议总结/会议分析”这类泛化词。',
+  ].join('\n')
+
+  const doFetch = deps?.fetchImpl ?? fetch
+  try {
+    const response = await doFetch(`${config.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: config.model,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: `会议转写内容：\n\n${excerpt}` },
+        ],
+        temperature: 0.3,
+        max_tokens: 64,
+      }),
+    })
+    if (!response.ok) {
+      const body = await response.text().catch(() => '')
+      logger.warn('[meeting-assist] title LLM request failed: %s %s', response.status, body.slice(0, 200))
+      return null
+    }
+    const data = await response.json() as any
+    const content = data?.choices?.[0]?.message?.content
+    return cleanMeetingTitle(content)
+  } catch (err) {
+    logger.warn('[meeting-assist] title generation failed: %s', err instanceof Error ? err.message : String(err))
+    return null
   }
 }
