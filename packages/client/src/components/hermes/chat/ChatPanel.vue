@@ -46,7 +46,6 @@ import { copyToClipboard } from "@/utils/clipboard";
 import { getProfileDisplayName } from "@/utils/hermes/profile-display";
 import FolderPicker from "./FolderPicker.vue";
 import ChatInput from "./ChatInput.vue";
-import RealtimeVoiceStage from "./RealtimeVoiceStage.vue";
 import OmniRealtimeStage from "./OmniRealtimeStage.vue";
 import ConversationMonitorPane from "./ConversationMonitorPane.vue";
 import MessageList from "./MessageList.vue";
@@ -109,7 +108,6 @@ watch(
 const isSuperAdmin = computed(() => isStoredSuperAdmin());
 
 const showOutline = ref(false);
-const showRealtimeVoice = ref(false);
 const showOmniRealtime = ref(false);
 const meetingStore = useMeetingStore();
 const realtimeModelStore = useRealtimeModelStore();
@@ -176,17 +174,8 @@ const toolPanelStyle = computed(() => ({
   width: isMobile.value ? "100%" : `min(${toolPanelWidth.value}px, 100%)`,
 }));
 
-function openRealtimeVoice() {
-  if (!chatStore.activeSessionId) return;
-  showRealtimeVoice.value = true;
-}
-
-function closeRealtimeVoice() {
-  showRealtimeVoice.value = false;
-}
-
 async function openOmniRealtime(options: { createFresh?: boolean; persistRemote?: boolean } = {}) {
-  // Two entry points reach this handler:
+  // Three entry points reach this handler:
   //   1. The 「新建对话 → realtime」 drawer flow passes `{ createFresh: true,
   //      persistRemote: true }`. We must always mint a brand-new session
   //      (the user explicitly chose 新建) AND persist it server-side so it
@@ -198,6 +187,10 @@ async function openOmniRealtime(options: { createFresh?: boolean; persistRemote?
   //      the existing session — OmniRealtimeStage serializes the session's
   //      recent messages into the instructions (buildHistoryContext) so the
   //      voice dialog continues from what was already discussed in text.
+  //   3. The ChatInput toolbar 设置 → 「语音模式」 item (voiceClick) — same
+  //      reuse path as #2. It used to open the legacy RealtimeVoiceStage
+  //      (browser STT/TTS), which was superseded by the Omni realtime
+  //      dialog; the leftover wiring opened the deprecated page.
   if (options.createFresh) {
     if (options.persistRemote) {
       try {
@@ -3008,7 +3001,7 @@ async function handleSessionModelCustomSubmit() {
             <MessageList
               ref="messageListRef"
               scroll-scope="chat"
-              :approval-portal-to-body="showRealtimeVoice"
+              :approval-portal-to-body="showOmniRealtime"
             >
               <template #empty-actions>
                 <div class="chat-workbench-minimal">
@@ -3021,7 +3014,7 @@ async function handleSessionModelCustomSubmit() {
               :model-label="activeSessionModelLabel"
               :model-disabled="activeSessionUsesGlobalCodingAgentConfig"
               @model-click="handleHeaderModelClick"
-              @voice-click="openRealtimeVoice"
+              @voice-click="openOmniRealtime()"
             />
           </div>
           <div v-if="isChatDropActive" class="chat-drop-overlay" aria-hidden="true">
@@ -3160,10 +3153,6 @@ async function handleSessionModelCustomSubmit() {
       />
     </div>
     <Teleport to="body">
-      <RealtimeVoiceStage
-        v-if="showRealtimeVoice"
-        @close="closeRealtimeVoice"
-      />
       <OmniRealtimeStage
         v-if="showOmniRealtime"
         :has-dashscope-key="hasDashscopeKey"

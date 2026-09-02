@@ -2,7 +2,7 @@
 date: 2026-09-02
 pr: local
 feature: Omni-Realtime 月亮/太阳双主题天体 + 径向柱状声纹 + 主题分设计
-impact: 暗主题天体为手绘 SVG 月亮（celestial-moon.svg：左上受光、月海、五座环形山、terminator 渐暗），亮主题为 SVG 太阳（celestial-sun.svg：暖金核心、双层日冕、光斑 mottling），OmniVisualizer 按主题经 MutationObserver 跟随 html.dark 切换素材并保留 64 根径向柱状声纹（月亮柱顶光为紫蓝 accent、太阳为暖琥珀）；素材加载失败回退 canvas 矢量球。亮主题舞台单独设计：星云隐藏、改为太阳暖光 + 天光蓝反光晨光渐变背层，控件实底白 + 深描边 + 投影，气泡玻璃对比度增强。修复 sidebar 配置过滤 NSelect 运行时切主题偶发不刷新 CSS 变量的问题（按 isDark re-key 强制重建实例）。
+impact: 暗主题天体为手绘 SVG 月亮（celestial-moon.svg：左上受光、月海、五座环形山、terminator 渐暗），亮主题为 SVG 太阳（celestial-sun.svg：暖金核心、双层日冕、光斑 mottling），OmniVisualizer 按主题经 MutationObserver 跟随 html.dark 切换素材并保留 64 根径向柱状声纹（月亮柱顶光为紫蓝 accent、太阳为暖琥珀）；素材加载失败回退 canvas 矢量球。亮主题舞台单独设计：星云隐藏、改为太阳暖光 + 天光蓝反光晨光渐变背层，控件实底白 + 深描边 + 投影，气泡玻璃对比度增强。修复 sidebar 配置过滤 NSelect 运行时切主题偶发不刷新 CSS 变量的问题（按 isDark re-key 强制重建实例）。清理实时对话入口残留：ChatInput 工具栏「语音模式」（voiceClick）原指向旧版 RealtimeVoiceStage（浏览器 STT/TTS），已改指现行 OmniRealtimeStage 并拆除旧舞台在 ChatPanel 的全部挂载（showRealtimeVoice/openRealtimeVoice/RealtimeVoiceStage 导入），组件文件与其测试保留。
 ---
 
 # Omni-Realtime: 实心圆 + 圆周声纹 + 单色水墨 + 气泡居中 + query_hermes_agent 回退
