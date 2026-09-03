@@ -1094,9 +1094,11 @@ export async function clearDeviceBindingController(ctx: Context) {
     const user = (binding.user_id ? findUserById(binding.user_id) : null)
       || (localUsername ? findUserByUsername(localUsername) : null)
     if (user) {
-      // Phone-number guard: if the user has no phone number, refuse to unbind
-      // because the account would become identity-less (no way to re-bind).
-      if (!user.phone_number) {
+      // Phone-number guard: if the user has no phone number and no password,
+      // refuse to unbind because the account would become identity-less.
+      // super_admin and any user with a password can re-authenticate, so
+      // they are exempt from this guard.
+      if (!user.phone_number && user.role !== 'super_admin' && !user.password_hash) {
         ctx.status = 400
         ctx.body = {
           error: 'Cannot unbind WeChat: please bind a phone number first as identity fallback',
@@ -1115,7 +1117,7 @@ export async function clearDeviceBindingController(ctx: Context) {
     // Legacy user without an imported binding row
     const user = findUserByUsername(actor.username)
     if (user) {
-      if (!user.phone_number) {
+      if (!user.phone_number && user.role !== 'super_admin' && !user.password_hash) {
         ctx.status = 400
         ctx.body = {
           error: 'Cannot unbind WeChat: please bind a phone number first as identity fallback',
