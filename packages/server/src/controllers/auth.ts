@@ -772,9 +772,16 @@ export async function bindSuperAdminDeviceLogin(ctx: Context) {
     return
   }
 
-  // 5. Bind
-  if (phone && !user.phone_number) {
-    updateUserPhoneNumber(user.id, normalizedPhone!)
+  // 5. Bind — transfer phone from tp_<id> user if needed
+  if (normalizedPhone) {
+    const phoneOwner = findUserByPhoneNumber(normalizedPhone)
+    if (phoneOwner && phoneOwner.id !== user.id) {
+      // Phone is on another user (likely tp_<id> from WeChat login) — clear it
+      updateUserPhoneNumber(phoneOwner.id, null)
+    }
+    if (!user.phone_number || normalizePhoneNumber(user.phone_number) !== normalizedPhone) {
+      updateUserPhoneNumber(user.id, normalizedPhone)
+    }
   }
   if (!user.wechat_bound) {
     setUserWeChatBound(user.id, true)
