@@ -340,6 +340,9 @@ Real-time voice dialogue with AI-powered oral practice and coaching.
 | Session Type Routing | Voice entries automatically route by session type (coach vs. realtime) |
 | Dual Theme | Moon/sun celestial artwork that follows light/dark theme |
 | Voice Visualizer | 64-bar radial equalizer for audio visualization |
+| **Realtime Model Persistence** | Save and restore realtime model settings across sessions |
+| **Omni Tool-Call Guard** | Prevents tool calls during voice dialogue for safety |
+| **Omni Controller** | Centralized controller for managing Omni realtime connections |
 
 **Visual Design (v0.8.0):**
 

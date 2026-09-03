@@ -131,3 +131,59 @@ impact: (1) 口语对练/实时对话里 AI 语音不再被「跨工具调用的
   在设置里选 Plus / 自定义，可扩展 realtime-model store。
 - AI 报告看板当前只出文本（省 token）；如用户要“AI 朗读报告”，需要请求
   `modalities:["text","audio"]` 并处理音频播放，属于后续可选增强。
+
+---
+
+## 追加（skill 化 v2：跨场景练习技能 + 同会话收尾总评 + 素材证据）
+
+改动动因：把「实时口语对练」升级为跨场景模块（语言学习 / 销售培训 / 面试陪练 /
+知识点掌握测评…），评分、评价标准、打分逻辑、前置提示词全部技能化。
+
+### 练习技能（hermes_practice 契约，schema 1）
+- SKILL.md frontmatter 带 `hermes_practice` 即练习技能（复用现有技能页下载/导入/编辑）：
+  - `scene` / `targetLanguages`（限定语言，新建对话语言下拉收敛并自动切换、单语言锁定）/
+    `directions`（方向占位）/ `entry.{label,hint,voice}`（下拉展示 + 建议音色）；
+  - `coach.{soul,role,userRole,interaction,plannedTurns,extraRules,tools}`（前置提示词与
+    角色结构；tools 支持工作台工具子集，借鉴 agent 模式）；
+  - `evaluation.{scale{min,max,step}, dimensions[{id,label,description,rubric,weight}],
+    overallMode(model|weighted|average), resultBands}`——评分维度/量表/打分逻辑可配，
+    报告给「结论档位」（如知识点掌握度）；
+  - `reviewOnEnd` / `report.{conclusion, omni{enabled,requireAudio,requireFrames,instructions}}`。
+- 默认「通用口语教练」与语言类技能沿用六维兼容路径，行为与旧版逐字节一致；
+  维度集合本身开放自定义（此前决策已放开，经用户确认）。
+- 内置示例技能包 4 个（`packages/skills/practice-*`）：雅思 Part2 考官、新品销售角色扮演、
+  知识点掌握测评、行为面试陪练；服务端 `ensurePracticeSampleSkills` 缺失时自动安装到
+  profile `skills/practice/`（先例：meeting-asr skill-resolver；测试环境跳过）。
+
+### 服务端
+- `GET /api/hermes/skills/practice`（本地 + 外部目录）：解析 frontmatter（js-yaml
+  DEFAULT_SCHEMA）、校验 schema=1、白名单字段，返回
+  `{category,name,description,enabled,source,manifest}`；路由注册在 `{*path}` 之前。
+- 深度分析提示词 v2：`config.skill{displayName,criteria,instructions,background}` 注入
+  「练习技能（评分标准）」段与「技能专属评审要求」；逐轮评分改按维度 id 通用打印
+  （不再绑定语言五维）；SSE 首帧新增 `{type:"meta",audioSegments,frames,model}`。
+
+### 客户端
+- 新 `utils/practice-skill.ts`（纯函数）：契约类型/归一化/默认技能/语言绑定/
+  维度读取/综合分聚合/结论档位/评分工具 schema 生成（`submit_practice_feedback`
+  按技能动态生成，overall+维度必填、量表进 min/max）/收尾总评指令/收尾语识别。
+- `ChatPanel`：新建对话 ▸ realtime ▸ 口语对练新增「练习技能」下拉（默认=通用口语教练 +
+  已下载练习技能）；语言下拉随技能 `targetLanguages` 收敛/锁定/自动切换；方向占位用技能
+  directions；`config.skillRef{category,name}` 随会话持久化（localStorage v2 兼容 v1）。
+- `SpeechPracticeStage`：按 skillRef 拉取并归一化技能 → connect 用技能 coach soul/
+  守则/工具集（工作台子集 + 动态评分工具，`useOmniRealtime.setTools`）；评分卡维度/
+  量表随技能渲染；反馈记录顶层写入技能维度分；报告头部带技能名与素材证据行、
+  附录带「技能与评价标准」、综合分/结论档位按技能算法。
+- `useOmniRealtime`：新增 `drainOutput()`、`askText()`（同会话文本注入，闭麦排空后
+  收集教练语音转写）与 `setTools()`；connect 可传本次工具集。
+- python 代理：客户端控制帧 `{"type":"text","text":...}` → `conversation.item.create`
+  （input_text）+ `response.create`（同会话复用已看/已听上下文，不另开离线窗口）。
+
+### 收尾总评（复用 WS 上下文）
+- 倒计时到点/手动结束且连接存活、技能 `reviewOnEnd`、用户末句非口头收尾语时，
+  先 `drainOutput` → `askText(收尾总评指令)` → 教练口头总评（转写进会话与报告）→ 断开。
+- 失败/超时静默，离线全模态深度分析照常兜底（书面、可下载）。
+
+### 素材证据（media manifest）
+- 结束面板 AI 状态显示「正在听 N 段录音 · 看 M 帧画面」；SSE meta 双保险。
+- md 报告头部与聊天下载消息固定带证据行（用了哪些素材 / 无素材的明确说明）。
