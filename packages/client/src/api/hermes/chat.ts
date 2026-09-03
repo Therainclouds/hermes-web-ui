@@ -754,10 +754,28 @@ export function getChatRunSocket(transport?: ChatRunTransport): Socket | null {
 
 export function connectChatRun(requestedProfile?: string | null, transport: ChatRunTransport = 'chat-run'): Socket {
   const normalizedRequestedProfile = requestedProfile?.trim() || null
+
+  // Resolve the effective profile BEFORE deciding whether to reuse the
+  // existing socket. The profiles store loads asynchronously, so a socket
+  // created at page load may be bound to 'default'; once the store (or
+  // localStorage) knows the real active profile we must NOT keep reusing
+  // that stale socket — reconnect with the correct profile instead.
+  let profile = normalizedRequestedProfile || 'default'
+  try {
+    if (!normalizedRequestedProfile) {
+      const { useProfilesStore } = require('@/stores/hermes/profiles')
+      const profilesStore = useProfilesStore()
+      profile = profilesStore.activeProfileName || 'default'
+    }
+  } catch {
+    // Fallback to localStorage during early initialization
+    profile = normalizedRequestedProfile || localStorage.getItem('hermes_active_profile_name') || 'default'
+  }
+
   if (
     chatRunSocket?.connected &&
     chatRunSocketTransport === transport &&
-    (!normalizedRequestedProfile || chatRunSocketProfile === normalizedRequestedProfile)
+    chatRunSocketProfile === profile
   ) {
     return chatRunSocket
   }
@@ -773,18 +791,6 @@ export function connectChatRun(requestedProfile?: string | null, transport: Chat
   const baseUrl = getBaseUrlValue()
   const token = getApiKey()
 
-  // Get active profile from store (authoritative source)
-  let profile = normalizedRequestedProfile || 'default'
-  try {
-    if (!normalizedRequestedProfile) {
-      const { useProfilesStore } = require('@/stores/hermes/profiles')
-      const profilesStore = useProfilesStore()
-      profile = profilesStore.activeProfileName || 'default'
-    }
-  } catch {
-    // Fallback to localStorage during early initialization
-    profile = normalizedRequestedProfile || localStorage.getItem('hermes_active_profile_name') || 'default'
-  }
   chatRunSocketProfile = profile
   chatRunSocketTransport = transport
 
