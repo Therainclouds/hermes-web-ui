@@ -54,6 +54,7 @@ export default {
     tokenPlatformConfigureFailed: 'Failed to enable the bound API automatically. Please try again.',
     wechatRestorePick: 'Several WeChat accounts are bound to this device; pick one to restore',
     wechatRestore: 'Restore bound account ({account})',
+    wechatRestoreToggle: 'Sign in with a previously bound account',
     accessDenied: 'You do not have permission to access this resource.',
     bindSuperAdminTitle: 'Bind to Super Administrator',
     bindSuperAdminPrompt: 'Your WeChat account is logged in as a regular user. Would you like to bind it to the super administrator?',

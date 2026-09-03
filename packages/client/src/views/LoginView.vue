@@ -45,6 +45,11 @@ const wechatMode = ref(false);
 const wechatSyncing = ref(false);
 const wechatError = ref("");
 
+// "Restore a previously bound WeChat account" lives behind an explicit
+// disclosure control — the default login surface should only show
+// password login and the WeChat QR code, not auto-suggest a saved account.
+const showRestoreSection = ref(false);
+
 // Recovery modal state
 type RecoveryModalState = { open: false } | { open: true; action: RecoveryAction };
 const recoveryModal = ref<RecoveryModalState>({ open: false });
@@ -240,7 +245,15 @@ async function handleRecoverySubmit(recoveryPassword: string) {
           {{ t("login.passwordLogin") }}
         </button>
 
-        <template v-if="hasBinding && !bindingChecking">
+        <button
+          v-if="hasBinding && !bindingChecking && !showRestoreSection"
+          type="button"
+          class="login-restore-toggle"
+          @click="showRestoreSection = true"
+        >
+          {{ t("login.wechatRestoreToggle") }}
+        </button>
+        <template v-if="showRestoreSection && hasBinding && !bindingChecking">
           <button
             v-if="bindingAccounts.length <= 1"
             type="button"
@@ -501,6 +514,24 @@ async function handleRecoverySubmit(recoveryPassword: string) {
   &:hover:not(:disabled) {
     background: rgba(var(--accent-rgb, 79, 158, 139), 0.08);
     border-color: $accent-primary;
+  }
+}
+
+.login-restore-toggle {
+  width: 100%;
+  margin-top: 8px;
+  padding: 6px 8px;
+  background: transparent;
+  border: none;
+  color: $text-muted;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: center;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+
+  &:hover {
+    color: $accent-primary;
   }
 }
 

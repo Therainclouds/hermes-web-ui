@@ -54,6 +54,7 @@ export default {
     tokenPlatformConfigureFailed: '自动接入绑定的 API 失败，请重试。',
     wechatRestorePick: '本机已绑定多个微信账号，选择要恢复的账号',
     wechatRestore: '恢复已绑定账号（{account}）',
+    wechatRestoreToggle: '使用已绑定账号登录',
     accessDenied: '你没有权限访问该资源',
     bindSuperAdminTitle: '绑定超级管理员',
     bindSuperAdminPrompt: '你的微信账号当前以普通用户登录。是否将此微信绑定为超级管理员？',
