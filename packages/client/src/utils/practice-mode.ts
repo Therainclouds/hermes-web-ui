@@ -138,9 +138,7 @@ export function buildPracticeInstructionBlock(
     '- 当用户说「结束 / 今天先到这里 / 再见」等收尾语时：先用目标语言说一两句整场总结'
     + '（总体表现 + 最值得继续练的一点），再调用 submit_practice_feedback 提交收尾评分'
     + '（此时 overall 视为整场评分，其余维度给整场平均观感），之后不必再提问。',
-    '- 上面通用约束里「不要调用 query_hermes_agent」的限制在本模式解除：'
-    + '用户的问题若涉及真实工作台 / MCP / 文件系统等操作，先调用工具查证再回答；'
-    + '纯口语练习内容不需要调用工具。',
+    '- 本模式允许调用 query_hermes_agent：用户的问题若涉及真实工作台 / MCP / 文件系统等操作，先把具体问题放进 question 参数调用工具查证再回答（禁止空参数调用）；纯口语练习内容不需要调用工具。',
     '- 你的回复会被语音朗读：口语化、可读，不要使用 Markdown 标记；口头点评本身不要逐字重复评分数字。',
   ].join('\n')
 }
@@ -361,4 +359,109 @@ export function formatPracticeCountdown(ms: number): string {
   const pad = (n: number) => String(n).padStart(2, '0')
   if (hours > 0) return `${hours}:${pad(minutes)}:${pad(seconds)}`
   return `${pad(minutes)}:${pad(seconds)}`
+}
+
+// --- AI 全模态分析素材（用户每轮语音录音 + 摄像头帧） ----------------------
+
+/** 录音单段上限（秒）：评分只需前段代表性语音，防止超长段撑爆请求体。 */
+export const PRACTICE_AUDIO_SEGMENT_MAX_SECONDS = 20
+/** 录音段数上限：只保留最近 N 段用户发言（超出丢最早的）。 */
+export const PRACTICE_AUDIO_SEGMENT_MAX_COUNT = 12
+/** 送给 Omni 模型分析的帧数上限（会从收集到的帧里均匀抽样）。 */
+export const PRACTICE_OMNI_MAX_FRAMES = 6
+
+/**
+ * 把 16-bit PCM mono 采样编码成 WAV base64（无 data: 前缀）。
+ *
+ * @param pcm16 采样数据（例如 useOmniRealtime 回调里 16 kHz 的 PCM16）。
+ * @param sampleRate 采样率，默认 16000（与 Omni-Realtime 上行一致）。
+ */
+export function encodePcm16ToWavBase64(pcm16: Int16Array, sampleRate = 16_000): string {
+  const dataLength = pcm16.length * 2
+  const buffer = new ArrayBuffer(44 + dataLength)
+  const view = new DataView(buffer)
+  const writeAscii = (offset: number, text: string): void => {
+    for (let i = 0; i < text.length; i += 1) {
+      view.setUint8(offset + i, text.charCodeAt(i))
+    }
+  }
+  writeAscii(0, 'RIFF')
+  view.setUint32(4, 36 + dataLength, true)
+  writeAscii(8, 'WAVE')
+  writeAscii(12, 'fmt ')
+  view.setUint32(16, 16, true)          // fmt chunk size
+  view.setUint16(20, 1, true)           // PCM
+  view.setUint16(22, 1, true)           // mono
+  view.setUint32(24, sampleRate, true)
+  view.setUint32(28, sampleRate * 2, true) // byte rate
+  view.setUint16(32, 2, true)           // block align
+  view.setUint16(34, 16, true)          // bits per sample
+  writeAscii(36, 'data')
+  view.setUint32(40, dataLength, true)
+  const bytes = new Int16Array(buffer, 44, pcm16.length)
+  bytes.set(pcm16)
+  let binary = ''
+  const chunk = 0x8000
+  for (let i = 0; i < buffer.byteLength; i += chunk) {
+    binary += String.fromCharCode(...new Uint8Array(buffer, i, Math.min(chunk, buffer.byteLength - i)))
+  }
+  return btoa(binary)
+}
+
+/**
+ * 裁掉 PCM16 首尾的静音段（两侧各保留一点 padding），并截断到
+ * maxSeconds。返回新的 Int16Array；全程无语音时返回空数组。
+ */
+export function trimPcm16Silence(
+  pcm16: Int16Array,
+  options: { sampleRate?: number; threshold?: number; maxSeconds?: number; padMs?: number } = {},
+): Int16Array {
+  const sampleRate = options.sampleRate || 16_000
+  const threshold = options.threshold ?? 180 // |sample| 低于该值视为静音（32768 满幅）
+  const padMs = options.padMs ?? 140
+  const maxSeconds = options.maxSeconds ?? PRACTICE_AUDIO_SEGMENT_MAX_SECONDS
+
+  const pad = Math.min(pcm16.length, Math.round((sampleRate * padMs) / 1000))
+  const maxLen = Math.min(pcm16.length, Math.round(sampleRate * maxSeconds))
+
+  let first = -1
+  let last = -1
+  for (let i = 0; i < maxLen; i += 1) {
+    if (Math.abs(pcm16[i]!) >= threshold) {
+      if (first === -1) first = i
+      last = i
+    }
+  }
+  if (first === -1 || last === -1) return new Int16Array(0)
+
+  const start = Math.max(0, first - pad)
+  const end = Math.min(maxLen, last + 1 + pad)
+  return pcm16.slice(start, end)
+}
+
+/**
+ * 从收集到的摄像头帧里均匀抽样至多 max 帧（始终保留第一帧与最后一帧），
+ * 供 AI 全模态分析使用——避免把 1 fps × 整场练习的帧全塞进请求。
+ */
+export function pickPracticeReportFrames(frames: string[], max = PRACTICE_OMNI_MAX_FRAMES): string[] {
+  const list = frames.filter(Boolean)
+  if (list.length === 0) return []
+  if (list.length <= max) return list
+  const picked: string[] = []
+  const step = (list.length - 1) / (max - 1)
+  for (let i = 0; i < max; i += 1) {
+    picked.push(list[Math.min(list.length - 1, Math.round(i * step))]!)
+  }
+  return picked
+}
+
+/**
+ * 把 Omni 全模态分析返回的 Markdown 段拼到确定性报告末尾。
+ * AI 段为空 / 失败时原样返回基础报告。
+ */
+export function composePracticeReportWithOmniAnalysis(baseReport: string, omniSection: string): string {
+  const section = (omniSection || '').trim()
+  if (!section) return baseReport
+  const base = (baseReport || '').trimEnd()
+  return `${base}\n\n${section}`
 }

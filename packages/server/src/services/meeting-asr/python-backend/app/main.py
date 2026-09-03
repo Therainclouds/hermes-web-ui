@@ -18,7 +18,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from .asr_proxy import ParaformerProxy
 from .config import settings
-from .omni_realtime_proxy import OmniRealtimeProxy, translate_event as translate_omni_event
+from .omni_realtime_proxy import FunctionCallGate, OmniRealtimeProxy, translate_event as translate_omni_event
 from ._log_helper import log_skip
 from .html_generator import generate_html_report
 from .llm_service import llm_service
@@ -433,9 +433,19 @@ async def ws_omni_realtime(ws: WebSocket) -> None:
     await ws.accept()
     proxy: OmniRealtimeProxy | None = None
     upstream_task: asyncio.Task | None = None
-    # Function-call events can arrive twice (response.*_arguments.done plus
-    # conversation.item.created) — dedupe by call_id before forwarding.
-    seen_call_ids: set[str] = set()
+    # DashScope announces one model tool call up to twice
+    # (`conversation.item.created` + `response.function_call_arguments.done`) and
+    # the bookkeeping copy can arrive FIRST with EMPTY `arguments` while the
+    # model is still filling them in. A naive first-wins dedupe by call_id would
+    # forward the empty copy and throw the real one away — the client then
+    # executes the tool with `{}` and, for tools with required arguments
+    # (`query_hermes_agent.question`), the error feeds an endless retry loop of
+    # identical empty calls (the `query_hermes_agent {}` storm). `call_gate`
+    # parks empty-arguments announcements until the arguments-bearing copy
+    # arrives (forwarded immediately) or the response boundary forces a flush
+    # (legitimately argument-less tools such as `list_jobs` still execute).
+    call_gate = FunctionCallGate()
+    gate_boundary_types = ("response_done", "error")
 
     async def pump_upstream() -> None:
         if proxy is None:
@@ -450,12 +460,33 @@ async def ws_omni_realtime(ws: WebSocket) -> None:
                         evt = json.loads(translated)
                     except json.JSONDecodeError:
                         evt = None
-                    if isinstance(evt, dict) and evt.get("type") == "function_call":
-                        call_id = str(evt.get("call_id") or "")
-                        if call_id:
-                            if call_id in seen_call_ids:
+                    if isinstance(evt, dict):
+                        evt_type = evt.get("type")
+                        if evt_type == "function_call":
+                            decided = call_gate.on_function_call(
+                                str(evt.get("call_id") or ""),
+                                str(evt.get("arguments") or "{}"),
+                                translated,
+                            )
+                            if decided is None:
                                 continue
-                            seen_call_ids.add(call_id)
+                            translated = decided
+                        elif evt_type in gate_boundary_types:
+                            # The response finished (or errored): no richer
+                            # arguments copy is coming for parked announcements —
+                            # release them before the boundary frame so the client
+                            # sees function_call → response_done in natural order.
+                            for parked in call_gate.flush():
+                                try:
+                                    await ws.send_text(parked)
+                                except (WebSocketDisconnect, RuntimeError):
+                                    return
+                                except Exception as exc:
+                                    log.warning(
+                                        "omni-realtime: downstream send failed: %s",
+                                        exc,
+                                    )
+                                    return
                 try:
                     if isinstance(translated, (bytes, bytearray)):
                         await ws.send_bytes(bytes(translated))

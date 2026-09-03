@@ -42,6 +42,7 @@ import { kanbanRoutes } from './hermes/kanban'
 import { workflowRoutes } from './hermes/workflows'
 import { ttsRoutes, ttsProtectedRoutes } from './hermes/tts'
 import { sttProtectedRoutes } from './hermes/stt'
+import { realtimeModelRoutes } from './hermes/realtime-model'
 import { mcuFirmwareRoutes } from './hermes/mcu-firmware'
 import { mediaRoutes } from './hermes/media'
 import { groupChatPublicRoutes, groupChatRoutes, setGroupChatServer } from './hermes/group-chat'
@@ -117,6 +118,7 @@ export function registerRoutes(app: any, authMiddleware: Array<(ctx: Context, ne
   app.use(workflowRoutes.routes())
   app.use(ttsProtectedRoutes.routes())
   app.use(sttProtectedRoutes.routes())
+  app.use(realtimeModelRoutes.routes())      // Realtime (Qwen) model profile settings
   app.use(mcuFirmwareRoutes.routes())
   app.use(mediaRoutes.routes())
   app.use(performanceMonitorRoutes.routes())

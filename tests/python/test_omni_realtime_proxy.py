@@ -125,6 +125,126 @@ class TranslateEventTest(unittest.TestCase):
         decoded = json.loads(self.omni.translate_event(json.dumps(msg)))
         self.assertEqual(decoded, {"type": "error", "message": "boom"})
 
+    # --- function-call argument fidelity -----------------------------------
+    #
+    # Regression guards for the realtime "query_hermes_agent {} 风暴": DashScope
+    # sometimes hands tool-call `arguments` out as an already-parsed JSON object
+    # instead of the OpenAI-Realtime JSON string shape. When the object leaks
+    # through, the browser client coerces it to `{}` and executes the tool with
+    # empty arguments → `{"error": "question 必填"}` → the model retries the
+    # identical call forever. The translator must therefore always emit
+    # `arguments` as a JSON string.
+
+    def test_function_call_done_arguments_string_is_preserved(self) -> None:
+        msg = {
+            "type": "response.function_call_arguments.done",
+            "call_id": "call_1",
+            "name": "query_hermes_agent",
+            "arguments": '{"question": "查看这台电脑的内存"}',
+        }
+        decoded = json.loads(self.omni.translate_event(json.dumps(msg)))
+        self.assertEqual(decoded, {
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "query_hermes_agent",
+            "arguments": '{"question": "查看这台电脑的内存"}',
+        })
+
+    def test_function_call_done_object_arguments_are_stringified(self) -> None:
+        # DashScope object-shaped arguments must reach the client as a JSON
+        # string; otherwise the browser treats them as `{}` and errors on the
+        # required `question` parameter.
+        msg = {
+            "type": "response.function_call_arguments.done",
+            "call_id": "call_2",
+            "name": "query_hermes_agent",
+            "arguments": {"question": "查一下内存"},
+        }
+        decoded = json.loads(self.omni.translate_event(json.dumps(msg)))
+        self.assertEqual(
+            decoded["arguments"],
+            '{"question": "查一下内存"}',
+        )
+
+    def test_function_call_item_object_arguments_are_stringified(self) -> None:
+        msg = {
+            "type": "conversation.item.created",
+            "item": {
+                "type": "function_call",
+                "call_id": "call_3",
+                "name": "read_skill_detail",
+                "arguments": {"category": "dev", "skill": "debug"},
+            },
+        }
+        decoded = json.loads(self.omni.translate_event(json.dumps(msg)))
+        self.assertEqual(
+            decoded["arguments"],
+            '{"category": "dev", "skill": "debug"}',
+        )
+
+    def test_function_call_missing_arguments_default_to_empty_object(self) -> None:
+        # The bookkeeping copy (conversation.item.created) legitimately arrives
+        # with no `arguments` field while the model is still generating them —
+        # it must translate to `{}` (parked by FunctionCallGate, not executed).
+        for msg in (
+            {"type": "response.function_call_arguments.done", "call_id": "c", "name": "n"},
+            {"type": "conversation.item.created", "item": {"type": "function_call", "call_id": "c", "name": "n"}},
+        ):
+            with self.subTest(msg=msg):
+                decoded = json.loads(self.omni.translate_event(json.dumps(msg)))
+                self.assertEqual(decoded["arguments"], "{}")
+
+    # --- FunctionCallGate ---------------------------------------------------
+
+    def test_gate_forwards_arguments_bearing_call_immediately(self) -> None:
+        gate = self.omni.FunctionCallGate()
+        frame = json.dumps({"type": "function_call", "call_id": "c1", "name": "n", "arguments": '{"q":"x"}'})
+        self.assertEqual(gate.on_function_call("c1", '{"q":"x"}', frame), frame)
+        self.assertEqual(gate.flush(), [])
+
+    def test_gate_parks_empty_announcement_then_forward_richer_copy(self) -> None:
+        # The exact race that produced the empty-args storm: item.created with
+        # empty arguments arrives first; the canonical .done with the real
+        # question arrives after. The client must see only the real copy.
+        gate = self.omni.FunctionCallGate()
+        empty_frame = json.dumps({"type": "function_call", "call_id": "c2", "name": "query_hermes_agent", "arguments": "{}"})
+        full_frame = json.dumps({"type": "function_call", "call_id": "c2", "name": "query_hermes_agent", "arguments": '{"question": "查内存"}'})
+        # 1st announcement (empty) is parked, nothing forwarded.
+        self.assertIsNone(gate.on_function_call("c2", "{}", empty_frame))
+        # 2nd announcement (with arguments) supersedes and is forwarded.
+        self.assertEqual(gate.on_function_call("c2", '{"question": "查内存"}', full_frame), full_frame)
+        # Nothing left parked at the boundary.
+        self.assertEqual(gate.flush(), [])
+
+    def test_gate_parks_empty_then_forward_at_response_boundary(self) -> None:
+        # Legitimately argument-less tools (list_jobs, required: []) stay parked
+        # until the response boundary flush releases them.
+        gate = self.omni.FunctionCallGate()
+        frame = json.dumps({"type": "function_call", "call_id": "c3", "name": "list_jobs", "arguments": "{}"})
+        self.assertIsNone(gate.on_function_call("c3", "{}", frame))
+        self.assertEqual(gate.flush(), [frame])
+        # A second flush must not repeat the same call.
+        self.assertEqual(gate.flush(), [])
+
+    def test_gate_drops_late_duplicates_after_sent(self) -> None:
+        # Reverse order: canonical .done (full args) forwards immediately; the
+        # later item.created bookkeeping copy must not double-fire the tool.
+        gate = self.omni.FunctionCallGate()
+        full_frame = json.dumps({"type": "function_call", "call_id": "c4", "name": "n", "arguments": '{"q":"x"}'})
+        empty_frame = json.dumps({"type": "function_call", "call_id": "c4", "name": "n", "arguments": "{}"})
+        self.assertEqual(gate.on_function_call("c4", '{"q":"x"}', full_frame), full_frame)
+        self.assertIsNone(gate.on_function_call("c4", "{}", empty_frame))
+        self.assertIsNone(gate.on_function_call("c4", '{"q":"x"}', full_frame))
+        self.assertEqual(gate.flush(), [])
+
+    def test_gate_parks_per_call_id_and_flushes_each(self) -> None:
+        gate = self.omni.FunctionCallGate()
+        a = json.dumps({"type": "function_call", "call_id": "a", "name": "n1", "arguments": "{}"})
+        b = json.dumps({"type": "function_call", "call_id": "b", "name": "n2", "arguments": "{}"})
+        self.assertIsNone(gate.on_function_call("a", "{}", a))
+        self.assertIsNone(gate.on_function_call("b", "{}", b))
+        self.assertEqual(set(gate.flush()), {a, b})
+
     def test_unknown_events_are_dropped(self) -> None:
         # response.audio.done and bookkeeping events should not leak to client
         for event_type in (

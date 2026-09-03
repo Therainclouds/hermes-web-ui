@@ -1362,8 +1362,9 @@ async function confirmNewChat() {
   if (newChatMode.value === "realtime") {
     showNewChatModal.value = false;
     // 无论哪种 realtime 子模式，都先把用户选择的模型持久化到 realtime store：
-    // OmniRealtimeStage / SpeechPracticeStage 连接时读取同一份配置。
-    realtimeModelStore.updateConfig({ model: newChatRealtimeModel.value });
+    // OmniRealtimeStage / SpeechPracticeStage 连接时读取同一份配置。store 会
+    // 同步写回当前用户 Profile（服务端）；这里不等待结果，失败时模型自动回退。
+    void realtimeModelStore.updateConfig({ model: newChatRealtimeModel.value });
     if (newChatRealtimeSubMode.value === "agent") {
       // Agent 模式（默认）：语音实时对话 + Hermes Agent 工具能力。Always open
       // realtime in a fresh session (the drawer is named "新建对话") and persist

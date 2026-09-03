@@ -150,6 +150,9 @@ describe('speech-practice i18n presence', () => {
     'timeUpNotice',
     'saveReport',
     'scoreBoard',
+    'reportAnalyzing',
+    'reportAnalyzed',
+    'aiAnalysisFailed',
   ]
 
   for (const locale of locales) {

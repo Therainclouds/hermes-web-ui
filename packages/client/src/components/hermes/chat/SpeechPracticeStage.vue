@@ -2,11 +2,16 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { NAlert, NButton, NSelect, NSwitch, type SelectOption } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import { useOmniRealtime, type OmniDialogToolCall } from '@/composables/useOmniRealtime'
+import { useOmniRealtime, type OmniDialogToolCall, type OmniUserTurnAudio } from '@/composables/useOmniRealtime'
 import OmniVisualizer from '@/components/hermes/chat/OmniVisualizer.vue'
+import MarkdownRenderer from '@/components/hermes/chat/MarkdownRenderer.vue'
 import { meetingASRApi } from '@/utils/meeting-asr-api'
 import { executeOmniTool, PRACTICE_REALTIME_TOOLS } from '@/api/hermes/omni-tools'
-import { savePracticeReport } from '@/api/hermes/practice-report'
+import {
+  savePracticeReport,
+  streamOmniPracticeAnalysis,
+  type OmniAnalysisPayload,
+} from '@/api/hermes/practice-report'
 import { getDownloadUrl } from '@/api/hermes/download'
 import { uid, useChatStore, type Message } from '@/stores/hermes/chat'
 import { useMeetingStore } from '@/stores/hermes/meeting'
@@ -20,8 +25,13 @@ import {
 import {
   buildPracticeInstructionBlock,
   buildPracticeReportMarkdown,
+  composePracticeReportWithOmniAnalysis,
+  encodePcm16ToWavBase64,
   formatPracticeCountdown,
+  pickPracticeReportFrames,
   practiceReportFileStem,
+  trimPcm16Silence,
+  PRACTICE_AUDIO_SEGMENT_MAX_COUNT,
   PRACTICE_COACH_SOUL,
   PRACTICE_DIFFICULTY_LABELS,
   PRACTICE_LANGUAGE_LABELS,
@@ -88,6 +98,7 @@ const omni = useOmniRealtime({
   tools: PRACTICE_REALTIME_TOOLS,
   onToolCall: handlePracticeTool,
   onError: () => undefined,
+  onUserTurnAudio: handleUserTurnAudio,
 })
 
 const phase = omni.phase
@@ -159,7 +170,14 @@ function captureAndSendFrame(): void {
     if (framesCaptured === 1) {
       console.log(`[speech-practice] camera capture started (${width}x${height})`)
     }
-    omni.sendImage(canvas.toDataURL('image/jpeg', 0.6))
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.6)
+    omni.sendImage(dataUrl)
+    // 保留画面帧供结束后的 AI 全模态分析（抽样收集，最多保留 24 张；
+    // 发送时每 5 秒取一帧，避免把 1fps 全量帧都攒下来）。
+    if (framesCaptured % 5 === 1 || reportFrames.value.length === 0) {
+      const kept = [...reportFrames.value, dataUrl]
+      reportFrames.value = kept.length > MAX_REPORT_FRAMES_KEPT ? kept.slice(-MAX_REPORT_FRAMES_KEPT) : kept
+    }
   } catch {
     // canvas tainted or toDataURL unavailable — keep the voice session going
   }
@@ -177,8 +195,45 @@ function stopFrameCapture(): void {
   }
 }
 
+// --- 素材收集：用户每轮语音录音 + 摄像头帧（供结束后的 AI 全模态分析） -----
+// 录音来自 useOmniRealtime 的 onUserTurnAudio（服务端 VAD 打开用户轮次时
+// 采集的 16 kHz PCM16）。只存在内存里、随舞台关闭丢弃；报告保存时才随请求
+// 上传。帧在 captureAndSendFrame 里抽样收集（同上）。
+
+interface PracticeAudioSegment {
+  index: number
+  text: string
+  wavBase64: string
+}
+
+const audioSegments = ref<PracticeAudioSegment[]>([])
+/** 保留的原始帧上限（发送给 Omni 前会再均匀抽到 6 张）。 */
+const MAX_REPORT_FRAMES_KEPT = 24
+const reportFrames = ref<string[]>([])
+
+/** 每轮用户发言结束后：裁静音 → WAV base64 → 缓存（保留最近 N 段）。 */
+function handleUserTurnAudio(segment: OmniUserTurnAudio): void {
+  const trimmed = trimPcm16Silence(segment.pcm16, { sampleRate: 16000 })
+  if (trimmed.length === 0) return
+  const wavBase64 = encodePcm16ToWavBase64(trimmed, 16000)
+  const next = [
+    ...audioSegments.value,
+    { index: segment.index, text: segment.text.slice(0, 600), wavBase64 },
+  ]
+  audioSegments.value = next.length > PRACTICE_AUDIO_SEGMENT_MAX_COUNT
+    ? next.slice(-PRACTICE_AUDIO_SEGMENT_MAX_COUNT)
+    : next
+}
+
+function resetCollectedMedia(): void {
+  audioSegments.value = []
+  reportFrames.value = []
+}
+
 /** 会话已结束（disconnect 完成），展示总结 / 报告面板。 */
 const ended = ref(false)
+/** 倒计时到点后的优雅收尾进行中：先等当前音频播完再断开，避免句子被掐断。 */
+const ending = ref(false)
 const sessionStartedAt = ref(0)
 const sessionEndedAt = ref(0)
 
@@ -193,7 +248,7 @@ const durationTotalMs = computed(() => {
 const timeLeftMs = ref(0)
 /** 本次会话是被倒计时自动结束的（结束时自动保存报告）。 */
 const autoFinished = ref(false)
-const countdownActive = computed(() => durationTotalMs.value > 0 && isActive.value && !ended.value)
+const countdownActive = computed(() => durationTotalMs.value > 0 && isActive.value && !ended.value && !ending.value)
 const countdownText = computed(() => formatPracticeCountdown(timeLeftMs.value))
 const countdownWarning = computed(() => countdownActive.value && timeLeftMs.value <= 60_000)
 
@@ -225,14 +280,6 @@ function startCountdown(): void {
     countdownHandle = window.setTimeout(tick, 250)
   }
   tick()
-}
-
-/** 倒计时到点：结束会话并自动生成 / 保存分析报告。 */
-function autoFinishByTimer(): void {
-  if (ended.value) return
-  autoFinished.value = true
-  endSession()
-  void handleSaveReport()
 }
 
 /** 模型经 submit_practice_feedback 提交的逐轮评分（过程数据，报告来源）。 */
@@ -319,6 +366,40 @@ const displayError = computed(() => {
   if (/realtime session error/i.test(raw)) return t('omniRealtime.sessionError')
   return raw
 })
+
+// --- 对话气泡滚动（对练舞台）：内容超高时可滚动，且新内容到来时贴底 ------
+// 舞台左栏（.practice-stage__stage）在窄高 / 小屏 Linux 显示上会装不下
+// 「视觉球 + 气泡 + 提示 + 控件」，此前整栏 overflow:hidden，最新气泡被裁在
+// 视口外且无法滚动。现在左栏纵向可滚；用户停在底部时新气泡自动把它推到
+// 最底（最新可见），用户上翻历史时则保持不动。
+
+const stageScrollRef = ref<HTMLElement | null>(null)
+const bubbleListRef = ref<HTMLElement | null>(null)
+let stickStageBottom = true
+
+function handleStageScroll(): void {
+  const el = stageScrollRef.value
+  if (!el) return
+  stickStageBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 28
+}
+
+/** 新气泡 / live 文本更新后把滚动容器钉到最底（仅当用户本来就在底部）。 */
+function scrollLiveToLatest(): void {
+  void nextTick(() => {
+    if (bubbleListRef.value) {
+      bubbleListRef.value.scrollTop = bubbleListRef.value.scrollHeight
+    }
+    const el = stageScrollRef.value
+    if (el && stickStageBottom) {
+      el.scrollTop = el.scrollHeight
+    }
+  })
+}
+
+watch(
+  () => bubbles.value.map(b => `${b.key}:${b.text}`).join('|'),
+  () => scrollLiveToLatest(),
+)
 
 // --- 工具执行：对练评分工具本地处理，其余工具保留原 Agent 能力 ----------
 
@@ -478,6 +559,9 @@ async function startSession(): Promise<void> {
   ended.value = false
   autoFinished.value = false
   feedbacks.value = []
+  resetCollectedMedia()
+  aiSection.value = ''
+  analysisState.value = 'idle'
   preparing.value = true
   try {
     const ok = await connectWithCoachPersona()
@@ -502,7 +586,39 @@ async function resumeSession(): Promise<void> {
   }
 }
 
+/** 倒计时到点：先优雅收尾（等当前音频播完），finalizeSession 会自动生成报告。 */
+function autoFinishByTimer(): void {
+  if (ended.value || ending.value) return
+  autoFinished.value = true
+  void endSessionGracefully()
+}
+
+/**
+ * 优雅收尾：停止推流、保持 socket 等待模型正在说的句子放完，再断开。
+ * 解决定时练习到点时教练话说到一半被 disconnect() 掐断的问题。
+ */
+async function endSessionGracefully(): Promise<void> {
+  if (ended.value || ending.value) return
+  ending.value = true
+  stopCountdown()
+  timeLeftMs.value = 0
+  try {
+    await omni.stopGracefully(6000)
+  } finally {
+    ending.value = false
+  }
+  finalizeSession()
+}
+
+/** 立即结束（手动点结束 / 返回）：用户手势即意图，不等当前音频放完。 */
 function endSession(): void {
+  if (ended.value || ending.value) return
+  finalizeSession()
+}
+
+/** 结束会话的公共收尾：标记 ended、停计时/取帧/摄像头、断开并持久化，
+ *  然后自动进入「生成报告 → 渲染 md 看板 → 落盘 → 聊天会话出现下载按钮」。 */
+function finalizeSession(): void {
   if (ended.value) return
   ended.value = true
   sessionEndedAt.value = Date.now()
@@ -512,11 +628,13 @@ function endSession(): void {
   stopCamera()
   omni.disconnect()
   flushPendingPersistence()
+  void runEndReportFlow()
 }
 
 function handleClose(): void {
-  if (isActive.value) {
-    endSession()
+  if (isActive.value || ending.value) {
+    // 返回键在会话中 = 结束对练（优雅收尾进行中时直接截断离开）。
+    finalizeSession()
     return
   }
   stopEverything()
@@ -668,19 +786,10 @@ function flushPendingPersistence(): void {
   }
 }
 
-// --- 评分汇总（结束面板 / 报告共用） --------------------------------------
-
-const SCORE_DIMENSION_KEYS = [
-  'overall', 'fluency', 'pronunciation', 'grammar', 'vocabulary', 'content',
-] as const
+// --- 评分维度（live 评分卡 / 报告共用） ------------------------------------
 
 /** 最新反馈卡里逐条展示的五个细分维度（不含 overall）。 */
 const detailDimKeys = ['fluency', 'pronunciation', 'grammar', 'vocabulary', 'content'] as const
-
-/** 是否有任意一轮填了肢体语言分（摄像头开启时才会有）。 */
-const hasBodyLanguageScores = computed(() =>
-  feedbacks.value.some(f => f.bodyLanguage != null),
-)
 
 function dimensionLabel(key: string): string {
   const map: Record<string, string> = {
@@ -694,46 +803,6 @@ function dimensionLabel(key: string): string {
   }
   return map[key] || key
 }
-
-interface ScoreSummaryRow {
-  key: string
-  label: string
-  avg: number | null
-  max: string
-  min: string
-}
-
-function averageOf(values: Array<number | null | undefined>): number | null {
-  const nums = values.filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
-  if (nums.length === 0) return null
-  return Math.round((nums.reduce((acc, n) => acc + n, 0) / nums.length) * 10) / 10
-}
-
-type PracticeScoreKey = 'overall' | 'fluency' | 'pronunciation' | 'grammar' | 'vocabulary' | 'content' | 'bodyLanguage'
-
-function summaryRow(key: PracticeScoreKey): ScoreSummaryRow {
-  const samples = feedbacks.value.map(f => f[key])
-  const nums = samples.filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
-  return {
-    key,
-    label: dimensionLabel(key),
-    avg: averageOf(samples),
-    max: nums.length ? String(Math.max(...nums)) : '—',
-    min: nums.length ? String(Math.min(...nums)) : '—',
-  }
-}
-
-const scoreSummary = computed<ScoreSummaryRow[]>(() => {
-  const rows = [...SCORE_DIMENSION_KEYS].map(key => summaryRow(key))
-  // 肢体语言只有在「至少一轮填了分」（摄像头开启）时才进入汇总表
-  if (hasBodyLanguageScores.value) rows.push(summaryRow('bodyLanguage'))
-  return rows
-})
-
-const avgOverall = computed(() => {
-  const samples = feedbacks.value.filter(f => f.overall > 0).map(f => f.overall)
-  return samples.length ? Math.round((samples.reduce((a, b) => a + b, 0) / samples.length) * 10) / 10 : null
-})
 
 function scoreTone(score: number | null | undefined): string {
   if (score == null || score <= 0) return 'none'
@@ -755,6 +824,7 @@ const dialogueTurns = computed(() => {
 
 // --- 报告：生成 / 保存 / 复制 ----------------------------------------------
 
+/** 确定性基础报告（逐轮评分 + 转写）。 */
 const reportMarkdown = computed(() =>
   buildPracticeReportMarkdown({
     config: props.config,
@@ -765,39 +835,176 @@ const reportMarkdown = computed(() =>
   }),
 )
 
-const savingReport = ref(false)
+// AI 全模态深度分析：结束后先用 Qwen3.5-Omni 听录音 / 看画面流式生成一段
+// Markdown，实时渲染到结束面板的 “md 看板”；素材缺失或调用失败时回落纯
+// 基础报告。文本-only（不申请音频、省 token）。
+type AnalysisState = 'idle' | 'running' | 'ok' | 'failed' | 'skipped'
+const analysisState = ref<AnalysisState>('idle')
+/** 流式累积中的 AI 段（增量逐段追加，看板实时重渲染）。 */
+const aiSection = ref('')
+
+const analysisStatusText = computed(() => {
+  switch (analysisState.value) {
+    case 'running': return t('speechPractice.reportAnalyzing')
+    case 'ok': return t('speechPractice.reportAnalyzed')
+    case 'failed': return t('speechPractice.aiAnalysisFailed')
+    default: return ''
+  }
+})
+
+/** 最终报告 = 基础报告 +（流式累积中的）AI 全模态分析段。 */
+const finalReportMarkdown = computed(() =>
+  composePracticeReportWithOmniAnalysis(reportMarkdown.value, aiSection.value),
+)
+
+// --- 结束面板「md 看板」滚动：AI 流式生成时自动贴底，用户上翻则跟随 ------
+
+const reportBoardRef = ref<HTMLElement | null>(null)
+let stickReportBottom = true
+
+function handleReportBoardScroll(): void {
+  const el = reportBoardRef.value
+  if (!el) return
+  stickReportBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24
+}
+
+watch(
+  () => finalReportMarkdown.value.length,
+  () => {
+    if (!reportBoardRef.value) return
+    if (!stickReportBottom && analysisState.value !== 'running') return
+    void nextTick(() => {
+      const el = reportBoardRef.value
+      if (el) el.scrollTop = el.scrollHeight
+    })
+  },
+)
+
+function practiceApiKey(): string {
+  return realtimeModelStore.config.apiKey || meetingStore.asrConfig.dashscopeApiKey || ''
+}
+
+/** 组装 Omni 分析请求；没有素材（录音与画面都为空）时返回 null。 */
+function buildOmniAnalysisPayload(): OmniAnalysisPayload | null {
+  const frames = pickPracticeReportFrames(reportFrames.value)
+  const segments = audioSegments.value
+  if (frames.length === 0 && segments.length === 0) return null
+  // 总音频预算（base64 字符数）：超出丢最旧的段，给服务端上限留余量。
+  const TOTAL_AUDIO_BUDGET_CHARS = 10_000_000
+  const kept: typeof segments = []
+  let totalChars = 0
+  for (let i = segments.length - 1; i >= 0; i -= 1) {
+    const seg = segments[i]!
+    if (totalChars + seg.wavBase64.length > TOTAL_AUDIO_BUDGET_CHARS) break
+    totalChars += seg.wavBase64.length
+    kept.unshift(seg)
+  }
+  return {
+    config: {
+      language: props.config.language,
+      direction: props.config.direction || '',
+      difficulty: props.config.difficulty,
+      durationMinutes: props.config.durationMinutes,
+    },
+    turns: omni.turns.value.map(t => ({ role: t.role, text: t.text })),
+    feedback: feedbacks.value as unknown as Array<Record<string, unknown>>,
+    audioSegments: kept.map(seg => ({
+      index: seg.index,
+      text: seg.text,
+      wavBase64: seg.wavBase64,
+    })),
+    frames,
+  }
+}
+
+/**
+ * 结束后的完整报告流程（finalizeSession 触发；保存失败时按钮可重试）：
+ *  1. 有素材 → 流式调用 Qwen3.5-Omni，增量实时刷进 aiSection（md 看板）；
+ *  2. 拼最终 Markdown 落盘（复用 /report）；
+ *  3. 成功后往该对练会话插入一条带「下载」附件的消息（聊天页可下载）。
+ */
+const reportRunning = ref(false)
 const saveError = ref('')
 const savedReport = ref<{ fileName: string; path: string; url: string } | null>(null)
 const copied = ref(false)
+/** 本次会话是否已把报告下载入口写进聊天会话（防重复）。 */
+let reportChatInserted = false
 
-async function handleSaveReport(): Promise<void> {
-  if (savingReport.value) return
-  savingReport.value = true
+async function runEndReportFlow(): Promise<void> {
+  if (reportRunning.value || !ended.value) return
+  reportRunning.value = true
   saveError.value = ''
   savedReport.value = null
+  analysisState.value = 'idle'
+  aiSection.value = ''
+  reportChatInserted = false
   try {
+    // 1) AI 全模态深度分析（流式；无素材或失败自动回落基础报告）
+    let aiOk = true
+    const payload = buildOmniAnalysisPayload()
+    if (payload) {
+      analysisState.value = 'running'
+      const aiResult = await streamOmniPracticeAnalysis(payload, practiceApiKey() || undefined, {
+        onDelta: (text) => { aiSection.value += text },
+      })
+      aiOk = !!(aiResult.ok && aiResult.markdown)
+      analysisState.value = aiOk ? 'ok' : 'failed'
+    } else {
+      analysisState.value = 'skipped'
+    }
+    // 2) 落盘最终报告：AI 成功/跳过 → 基础 + AI 段；AI 失败 → 只存基础报告
+    //   （看板仍展示流式生成到的部分，文件保持完整可读）。
+    const finalMarkdown = aiOk ? finalReportMarkdown.value : reportMarkdown.value
     const suggestedName = practiceReportFileStem(props.config, Date.now())
-    const result = await savePracticeReport(reportMarkdown.value, suggestedName)
+    const result = await savePracticeReport(finalMarkdown, suggestedName)
     if (!result.ok || !result.path || !result.fileName) {
       saveError.value = result.error || t('speechPractice.saveFailed')
       return
     }
-    savedReport.value = {
-      fileName: result.fileName,
-      path: result.path,
-      url: getDownloadUrl(result.path, result.fileName),
-    }
+    const url = getDownloadUrl(result.path, result.fileName)
+    savedReport.value = { fileName: result.fileName, path: result.path, url }
+    // 3) 聊天会话里出现可下载的报告入口
+    persistReportChatMessage(result.fileName, url, finalMarkdown.length)
   } catch (cause) {
     saveError.value = cause instanceof Error ? cause.message : String(cause)
+    if (analysisState.value === 'running') analysisState.value = 'failed'
   } finally {
-    savingReport.value = false
+    reportRunning.value = false
   }
+}
+
+function persistReportChatMessage(fileName: string, url: string, contentLength: number): void {
+  const sessionId = chatStore.activeSessionId
+  if (!sessionId || reportChatInserted) return
+  const session = chatStore.sessions.find(s => s.id === sessionId)
+  if (!session) return
+  reportChatInserted = true
+  const message: Message = {
+    id: uid(),
+    role: 'assistant',
+    content: `本次口语对练的评价报告已生成，点击下方文件即可下载。`,
+    timestamp: Date.now(),
+    attachments: [{
+      id: uid(),
+      name: fileName,
+      type: 'text/markdown',
+      size: Math.max(1, Math.round(contentLength * 2)),
+      url,
+    }],
+  }
+  chatStore.addMessage(sessionId, message)
+  session.updatedAt = Date.now()
+}
+
+function handleSaveReport(): Promise<void> {
+  // 保存失败 / 想重新生成时的重试入口（自动流程已在结束时跑过一次）。
+  return runEndReportFlow()
 }
 
 async function handleCopyMarkdown(): Promise<void> {
   copied.value = false
   try {
-    await navigator.clipboard.writeText(reportMarkdown.value)
+    await navigator.clipboard.writeText(finalReportMarkdown.value)
     copied.value = true
     window.setTimeout(() => { copied.value = false }, 2000)
   } catch {
@@ -915,10 +1122,27 @@ async function handleCopyMarkdown(): Promise<void> {
         </div>
       </section>
 
-      <!-- 结束面板：总结 + 保存报告 -->
+      <!-- 结束面板：完整报告 md 看板（评分汇总 + 逐轮点评 + AI 全模态分析） -->
       <section v-else-if="ended" class="practice-stage__ended" data-testid="speech-practice-ended">
-        <div class="practice-stage__ended-card">
-          <h2>{{ t('speechPractice.endedTitle') }}</h2>
+        <div class="practice-stage__ended-card practice-stage__ended-card--report">
+          <header class="practice-stage__ended-head">
+            <div class="practice-stage__ended-title">
+              <h2>{{ t('speechPractice.endedTitle') }}</h2>
+              <p class="practice-stage__card-sub" data-testid="speech-practice-ended-summary">
+                {{ languageLabel }} · {{ difficultyLabel }}
+                <template v-if="(config.direction || '').trim()"> · {{ config.direction.trim() }}</template>
+                · {{ t('speechPractice.endedSummary', { user: dialogueTurns.userCount, assistant: dialogueTurns.assistantCount, scored: feedbacks.length }) }}
+              </p>
+            </div>
+            <span
+              v-if="analysisStatusText"
+              class="practice-stage__ai-pill"
+              :class="`practice-stage__ai-pill--${analysisState}`"
+              data-testid="speech-practice-ai-status"
+              aria-live="polite"
+            >{{ analysisStatusText }}</span>
+          </header>
+
           <NAlert
             v-if="autoFinished"
             type="info"
@@ -928,43 +1152,19 @@ async function handleCopyMarkdown(): Promise<void> {
           >
             {{ t('speechPractice.timeUpNotice') }}
           </NAlert>
-          <p class="practice-stage__card-sub">
-            {{ t('speechPractice.endedSummary', { user: dialogueTurns.userCount, assistant: dialogueTurns.assistantCount, scored: feedbacks.length }) }}
-          </p>
-
-          <div class="practice-stage__avg">
-            <span class="practice-stage__avg-score" :data-tone="scoreTone(avgOverall)">
-              {{ avgOverall != null ? `${avgOverall}/10` : '—' }}
-            </span>
-            <span class="practice-stage__avg-label">{{ t('speechPractice.avgOverall') }}</span>
-          </div>
-
-          <table class="practice-stage__table">
-            <thead>
-              <tr>
-                <th>{{ t('speechPractice.tableDimension') }}</th>
-                <th>{{ t('speechPractice.tableAvg') }}</th>
-                <th>{{ t('speechPractice.tableMax') }}</th>
-                <th>{{ t('speechPractice.tableMin') }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="row in scoreSummary" :key="row.key">
-                <td>{{ row.label }}</td>
-                <td :data-tone="scoreTone(row.avg)">{{ row.avg != null ? `${row.avg}/10` : '—' }}</td>
-                <td>{{ row.max }}</td>
-                <td>{{ row.min }}</td>
-              </tr>
-            </tbody>
-          </table>
-
-          <div v-if="feedbacks.length === 0" class="practice-stage__no-data">
-            {{ t('speechPractice.noFeedback') }}
-          </div>
-
           <NAlert v-if="saveError" type="error" :show-icon="false" class="practice-stage__alert">
             {{ saveError }}
           </NAlert>
+
+          <!-- 报告看板：确定性部分 + AI 深度分析实时渲染 -->
+          <div
+            ref="reportBoardRef"
+            class="practice-stage__report-board"
+            data-testid="speech-practice-report-board"
+            @scroll.passive="handleReportBoardScroll"
+          >
+            <MarkdownRenderer :content="finalReportMarkdown" heading-id-prefix="sp-report" />
+          </div>
 
           <div v-if="savedReport" class="practice-stage__saved" data-testid="speech-practice-saved">
             <strong>{{ t('speechPractice.reportSaved') }}</strong>
@@ -979,15 +1179,16 @@ async function handleCopyMarkdown(): Promise<void> {
 
           <div class="practice-stage__actions">
             <NButton
+              v-if="saveError || !savedReport"
               type="primary"
-              :loading="savingReport"
-              :disabled="dialogueTurns.userCount === 0 && feedbacks.length === 0"
+              :loading="reportRunning"
+              :disabled="reportRunning"
               data-testid="speech-practice-save-report"
               @click="handleSaveReport"
             >
-              {{ t('speechPractice.saveReport') }}
+              {{ reportRunning && analysisState === 'running' ? t('speechPractice.reportAnalyzing') : t('speechPractice.saveReport') }}
             </NButton>
-            <NButton :disabled="reportMarkdown.length === 0" @click="handleCopyMarkdown">
+            <NButton :disabled="finalReportMarkdown.length === 0 || reportRunning" @click="handleCopyMarkdown">
               {{ copied ? t('speechPractice.copied') : t('speechPractice.copyMarkdown') }}
             </NButton>
             <NButton quaternary @click="emit('close')">
@@ -1000,7 +1201,12 @@ async function handleCopyMarkdown(): Promise<void> {
       <!-- 进行中：舞台 + 右侧评分卡 -->
       <section v-else class="practice-stage__live" data-testid="speech-practice-live">
         <div class="practice-stage__body">
-          <div class="practice-stage__stage">
+          <div
+            ref="stageScrollRef"
+            class="practice-stage__stage"
+            data-testid="speech-practice-stage-scroll"
+            @scroll.passive="handleStageScroll"
+          >
             <NAlert
               v-if="nearContextLimit && contextLimitTotal"
               type="warning"
@@ -1019,14 +1225,21 @@ async function handleCopyMarkdown(): Promise<void> {
               />
             </div>
 
-            <TransitionGroup name="practice-bubble" tag="div" class="practice-stage__bubbles" aria-live="polite">
+            <div
+              ref="bubbleListRef"
+              class="practice-stage__bubbles"
+              aria-live="polite"
+              data-testid="speech-practice-bubbles"
+            >
+              <TransitionGroup name="practice-bubble" tag="div" class="practice-stage__bubbles-inner">
               <div
                 v-for="b in bubbles"
                 :key="b.key"
                 class="practice-stage__bubble"
                 :class="[`practice-stage__bubble--${b.role}`, { 'practice-stage__bubble--live': b.live }]"
               >{{ b.text }}</div>
-            </TransitionGroup>
+              </TransitionGroup>
+            </div>
 
             <p
               class="practice-stage__caption"
@@ -1400,20 +1613,38 @@ async function handleCopyMarkdown(): Promise<void> {
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+  /* 单行高度固定为容器可用高度：左栏内容超高时由左栏自己滚动，
+     而不是把 grid 撑高把下方内容顶出可滚动范围。 */
+  grid-template-rows: minmax(0, 1fr);
   gap: 18px;
   align-items: stretch;
 }
 
+/* 左栏舞台：内容超高时纵向可滚（Linux 小屏/矮窗下气泡 + 控件不再被裁）。
+ * justify-content 先给 center，再被支持 safe 的浏览器用 safe center 覆盖：
+ * 空间不足时回落 flex-start，保证滚动时顶部/底部内容都能滚到。 */
 .practice-stage__stage {
   min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  justify-content: safe center;
   position: relative;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
 
-.practice-stage__visualizer-zone { position: relative; width: min(46vw, 420px); aspect-ratio: 1; margin: 6px 0 0; }
+.practice-stage__visualizer-zone {
+  position: relative;
+  /* 方形容器：用 min() 同时限制宽高（vw 管宽度、vh 管矮屏高度），
+     矮屏下给气泡/控件让出空间，避免整栏溢出。 */
+  width: min(46vw, 420px, 42vh);
+  aspect-ratio: 1;
+  margin: 6px 0 0;
+  flex-shrink: 1;
+}
 .practice-stage__visualizer { position: absolute; inset: 0; }
 
 .practice-stage__camera {
@@ -1436,15 +1667,26 @@ async function handleCopyMarkdown(): Promise<void> {
   transform: scaleX(-1);
 }
 
+/* 气泡滚动层：内容（长文本 / 很多轮）超高时可上下滚动；新内容贴底见
+ * scrollLiveToLatest。inner 才是真正的 flex 列（TransitionGroup 的渲染体）。 */
 .practice-stage__bubbles {
+  width: min(560px, 92%);
+  margin-top: 6px;
+  min-height: 0;
+  max-height: min(36vh, 320px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.practice-stage__bubbles-inner {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 10px;
-  width: min(560px, 92%);
-  margin-top: 6px;
-  min-height: 0;
-  overflow: hidden;
+  width: 100%;
+  min-height: 100%;
+  justify-content: flex-end;
 }
 
 .practice-stage__bubble {
@@ -1693,9 +1935,9 @@ async function handleCopyMarkdown(): Promise<void> {
   color: rgba(var(--text-primary-rgb), 0.8);
 }
 
-/* 结束面板 */
+/* 结束面板：完整报告 md 看板 */
 .practice-stage__ended {
-  width: min(560px, calc(100% - 32px));
+  width: min(880px, calc(100% - 32px));
   margin: 0 auto;
   overflow-y: auto;
 }
@@ -1703,51 +1945,90 @@ async function handleCopyMarkdown(): Promise<void> {
 .practice-stage__ended-card {
   display: flex;
   flex-direction: column;
-  align-items: center;
   gap: 12px;
-  padding: 28px 26px;
+  padding: 22px 24px 24px;
   border: 1px solid var(--glass-realtime-border);
   border-radius: 20px;
   background: var(--glass-realtime-bg-strong);
   -webkit-backdrop-filter: var(--glass-realtime-blur-strong);
   backdrop-filter: var(--glass-realtime-blur-strong);
   box-shadow: var(--glass-realtime-shadow);
-  text-align: center;
 }
 
-.practice-stage__ended-card h2 { margin: 0; font-size: 18px; font-weight: 620; }
+.practice-stage__ended-card--report { text-align: left; }
 
-.practice-stage__avg {
+.practice-stage__ended-head {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  margin: 4px 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
 }
 
-.practice-stage__avg-score { font-size: 42px; font-weight: 750; line-height: 1; }
-.practice-stage__avg-label { font-size: 12px; color: rgba(var(--text-primary-rgb), 0.62); }
-
-.practice-stage__table {
-  width: 100%;
-  max-width: 440px;
-  border-collapse: collapse;
-  font-size: 13px;
+.practice-stage__ended-title { min-width: 0; }
+.practice-stage__ended-title h2 { margin: 0; font-size: 18px; font-weight: 620; }
+.practice-stage__ended-title .practice-stage__card-sub {
+  margin: 4px 0 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.practice-stage__table th, .practice-stage__table td {
-  padding: 7px 10px;
-  border-bottom: 1px solid var(--glass-realtime-border);
-}
-
-.practice-stage__table th { color: rgba(var(--text-primary-rgb), 0.6); font-weight: 500; font-size: 12px; }
-.practice-stage__table td { color: var(--text-primary); }
-
-.practice-stage__no-data {
-  padding: 10px 0;
-  color: rgba(var(--text-primary-rgb), 0.55);
+/* AI 分析状态胶囊 */
+.practice-stage__ai-pill {
+  flex-shrink: 0;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-realtime-border);
+  background: var(--glass-realtime-bg-subtle);
   font-size: 12px;
+  color: rgba(var(--text-primary-rgb), 0.75);
+  white-space: nowrap;
 }
+.practice-stage__ai-pill--running {
+  color: rgb(var(--accent-primary-rgb));
+  border-color: rgba(var(--accent-primary-rgb), 0.4);
+  animation: practice-pulse 1.3s ease-in-out infinite;
+}
+.practice-stage__ai-pill--failed { color: rgba(var(--warning-rgb), 0.95); }
+.practice-stage__ai-pill--ok { color: rgba(var(--success-rgb), 0.9); }
+
+/* 报告看板：渲染后的 Markdown，超高内部滚动（矮屏也能看到全文） */
+.practice-stage__report-board {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  max-height: min(58vh, 560px);
+  padding: 14px 16px;
+  border: 1px solid var(--glass-realtime-border);
+  border-radius: 14px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 13.5px;
+  line-height: 1.7;
+  text-align: left;
+}
+.practice-stage__report-board :deep(h1) { font-size: 20px; }
+.practice-stage__report-board :deep(h2) { font-size: 16px; margin-top: 18px; }
+.practice-stage__report-board :deep(h3) { font-size: 14.5px; margin-top: 14px; }
+.practice-stage__report-board :deep(p), .practice-stage__report-board :deep(ul), .practice-stage__report-board :deep(ol) { margin: 6px 0; }
+.practice-stage__report-board :deep(table) { border-collapse: collapse; margin: 8px 0; width: 100%; }
+.practice-stage__report-board :deep(th), .practice-stage__report-board :deep(td) {
+  padding: 5px 9px;
+  border: 1px solid var(--glass-realtime-border);
+}
+.practice-stage__report-board :deep(blockquote) {
+  margin: 6px 0;
+  padding: 4px 10px;
+  border-inline-start: 3px solid rgba(var(--accent-primary-rgb), 0.5);
+  color: rgba(var(--text-primary-rgb), 0.75);
+}
+.practice-stage__report-board :deep(code) {
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: rgba(var(--text-primary-rgb), 0.07);
+  font-size: 0.92em;
+}
+.practice-stage__report-board :deep(a) { color: rgb(var(--accent-primary-rgb)); }
 
 .practice-stage__saved {
   display: flex;

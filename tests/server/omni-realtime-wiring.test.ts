@@ -918,3 +918,119 @@ describe('omni-realtime particle visualizer + Quanta soul seeding', () => {
   })
 })
 
+/**
+ * Mute (闭麦) wiring: mute must be a real input mute, not just a stop of the
+ * upstream WS feed. Regression guard for the user report "点击闭麦按钮没有正确
+ * 关闭麦克风输入，还是会被打断" — before this fix a muted user's voice still drove
+ * the local barge-in analyser (interrupting the assistant) and the input level
+ * kept moving, because only `isPushing` was flipped and the capture graph
+ * stayed live.
+ */
+describe('omni-realtime mute wiring', () => {
+  it('setMicStreaming silences the capture source (track.enabled), not only the WS feed', () => {
+    const source = readFileSync(`${CLIENT_SRC}/composables/useOmniRealtime.ts`, 'utf8')
+    // The mute state must be a dedicated flag (session-scoped), separate from
+    // the transient push gate used by push-to-talk.
+    expect(source).toMatch(/let\s+micMuted\s*=/)
+
+    // A helper must exist that reflects the mute state onto the live mic
+    // source tracks — disabling the tracks is what actually cuts the input.
+    expect(source).toMatch(/function\s+applyMicMuteState/)
+    expect(source).toMatch(/track\.enabled\s*=\s*!micMuted/)
+
+    // setMicStreaming must drive BOTH the WS gate and the track mute.
+    const setBody = source.match(/function\s+setMicStreaming[\s\S]*?\n\s\s\}/)?.[0] ?? ''
+    expect(setBody, 'setMicStreaming not found').not.toBe('')
+    expect(setBody).toMatch(/micMuted\s*=\s*!active/)
+    expect(setBody).toMatch(/isPushing\.value\s*=\s*active/)
+    expect(setBody).toMatch(/applyMicMuteState\(\)/)
+
+    // Capture startup must honour a mute requested while getUserMedia was
+    // still resolving (tracks would otherwise come up live).
+    const startCaptureBody = source.match(/async\s+function\s+startCapture[\s\S]*?inputLevelRaf\s*=\s*requestAnimationFrame\(tick\)/)?.[0] ?? ''
+    expect(startCaptureBody, 'startCapture not found').not.toBe('')
+    expect(startCaptureBody).toMatch(/applyMicMuteState\(\)/)
+  })
+
+  it('muted users cannot interrupt the assistant (barge-in gated on the push state)', () => {
+    const source = readFileSync(`${CLIENT_SRC}/composables/useOmniRealtime.ts`, 'utf8')
+    // maybeBargeIn stops playback and cancels the upstream response; it must
+    // early-return while the mic is muted / not streaming, otherwise a muted
+    // user's ambient speech still cuts the AI ("还是会被打断").
+    const maybeBargeInBody = source.match(/function\s+maybeBargeIn[\s\S]*?\n\s\s\}/)?.[0] ?? ''
+    expect(maybeBargeInBody, 'maybeBargeIn not found').not.toBe('')
+    expect(
+      maybeBargeInBody,
+      'maybeBargeIn must skip while the mic is not streaming (muted / PTT released)',
+    ).toMatch(/if\s*\(\s*!isPushing\.value\s*\)\s*return/)
+
+    // Hands-free auto-push must not fight an early mute (mute during the
+    // connecting window should survive ws.onopen).
+    const connectBody = source.match(/ws\.onopen\s*=\s*\(\)\s*=>\s*\{[\s\S]*?ws\?\.send\(JSON\.stringify\(\{[\s\S]*?type:\s*['"]start['"]/)?.[0] ?? ''
+    expect(connectBody, 'ws.onopen not found').not.toBe('')
+    expect(connectBody).toMatch(/isPushing\.value\s*=\s*!micMuted/)
+
+    // A fresh session begins unmuted.
+    expect(source).toMatch(/micMuted\s*=\s*false/)
+  })
+})
+
+describe('omni-realtime function-call guardrails (query_hermes_agent {} storm)', () => {
+  // Regression net for the realtime agent-mode bug: DashScope announced tool
+  // calls whose real arguments never reached the client (object-shaped
+  // `arguments`, or an empty-arguments `conversation.item.created` beating the
+  // arguments-bearing `.done` through the first-wins dedupe). The client then
+  // executed `query_hermes_agent` with `{}` → `question 必填` error → the model
+  // retried the identical call in a loop, and each retry cycle chopped the TTS
+  // audio of the previous one ("发声一直在被打断").
+
+  it('proxy normalizes tool-call arguments to a JSON string', () => {
+    const source = readFileSync(`${PY_APP}/omni_realtime_proxy.py`, 'utf8')
+    expect(source).toContain('_as_arguments_json')
+    // Both announcement shapes (canonical .done + item.created bookkeeping)
+    // must run the arguments through the same normalizer.
+    expect(source).toMatch(/response\.function_call_arguments\.done[\s\S]{0,300}_as_arguments_json/)
+    expect(source).toMatch(/conversation\.item\.created[\s\S]{0,400}_as_arguments_json/)
+  })
+
+  it('main.py arbitrates duplicate function_call announcements through FunctionCallGate', () => {
+    const source = readFileSync(`${PY_APP}/main.py`, 'utf8')
+    expect(source).toContain('FunctionCallGate')
+    expect(source).toMatch(/call_gate\s*=\s*FunctionCallGate\(\)/)
+    expect(source).toMatch(/call_gate\.on_function_call\(/)
+    expect(source).toMatch(/call_gate\.flush\(\)/)
+    // The old first-wins dedupe (which dropped the arguments-bearing .done
+    // when the empty item.created won the race) must be gone.
+    expect(source).not.toContain('seen_call_ids')
+  })
+
+  it('useOmniRealtime never coerces non-string arguments to {} and validates required params', () => {
+    const source = readFileSync(`${CLIENT_SRC}/composables/useOmniRealtime.ts`, 'utf8')
+    expect(source).toContain("import {")
+    expect(source).toContain('MAX_MALFORMED_CALL_STREAK')
+    expect(source).toContain('missingRequiredArgs')
+    expect(source).toContain('normalizeToolArguments')
+    expect(source).toContain('parseToolArgsJson')
+    // The malformed-call loop breaker must refuse to execute after the
+    // configured number of consecutive identical bad-argument calls.
+    const breaker = source.match(/malformedCallStreak\s*>=\s*MAX_MALFORMED_CALL_STREAK[\s\S]{0,400}判定为无效重试循环/)?.[0] ?? ''
+    expect(breaker, 'malformed-call loop breaker not found').not.toBe('')
+    // The breaker state must be session-scoped and cleared on new user turns.
+    expect(source).toMatch(/malformedCallSig\s*=\s*''/)
+    expect(source).toMatch(/let\s+malformedCallStreak\s*=\s*0/)
+  })
+
+  it('shared realtime instructions no longer contradict the registered query_hermes_agent tool', () => {
+    const instructions = readFileSync(`${CLIENT_SRC}/utils/realtime-instructions.ts`, 'utf8')
+    // Blanket ban is gone; guidance now demands a complete `question`.
+    expect(instructions).not.toContain('不要调用 query_hermes_agent')
+    expect(instructions).toContain('禁止传空参数')
+    // The tool reference still lists the tool as available.
+    expect(instructions).toContain('query_hermes_agent：把一个具体问题丢给后端 Hermes Agent')
+    // And practice mode no longer references a removed ban.
+    const practice = readFileSync(`${CLIENT_SRC}/utils/practice-mode.ts`, 'utf8')
+    expect(practice).not.toContain('「不要调用 query_hermes_agent」的限制在本模式解除')
+    expect(practice).toContain('禁止空参数调用')
+  })
+})
+

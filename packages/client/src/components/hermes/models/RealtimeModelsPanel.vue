@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { NAlert, NButton, NInput, NSelect, type SelectOption } from 'naive-ui'
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRealtimeModelStore } from '@/stores/hermes/realtime-model'
 import { useMessage } from '@/composables/useAppMessage'
@@ -10,6 +10,9 @@ import { useMessage } from '@/composables/useAppMessage'
  *
  * 这里统一管理千问（DashScope）API Key：会议模式的 ASR 与 Realtime 对话
  * 在未单独填写 DashScope Key 时会默认回落此处的 Key，方便千问 API 统一管理。
+ *
+ * 配置持久化在当前用户 Profile（服务端），与 STT/TTS 模型设置一致——打开
+ * 面板时先从服务端拉取当前 Profile 的配置，保存时写回服务端。
  */
 
 const { t } = useI18n()
@@ -32,15 +35,28 @@ const model = ref(store.config.model)
 const voice = ref(store.config.voice)
 const saving = ref(false)
 
-function handleSave() {
+onMounted(async () => {
+  // Refresh from the active profile's server row so the form always shows
+  // profile-persisted values (e.g. after switching profiles / browsers).
+  await store.loadFromServer(null, { force: true })
+  apiKey.value = store.config.apiKey
+  model.value = store.config.model
+  voice.value = store.config.voice
+})
+
+async function handleSave() {
   saving.value = true
   try {
-    store.updateConfig({
+    const result = await store.updateConfig({
       apiKey: apiKey.value.trim(),
       model: model.value.trim() || 'qwen3.5-omni-flash-realtime',
       voice: voice.value || 'Tina',
     })
-    message.success(t('models.realtimeSaved'))
+    if (result.ok) {
+      message.success(t('models.realtimeSaved'))
+    } else {
+      message.error(result.error || t('models.realtimeSaveFailed'))
+    }
   } catch (err) {
     message.error(err instanceof Error ? err.message : t('models.realtimeSaveFailed'))
   } finally {

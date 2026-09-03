@@ -663,6 +663,24 @@ export const TTS_PROFILE_SETTINGS_SCHEMA: Record<string, string> = {
 }
 
 // ============================================================================
+// Realtime (Qwen / DashScope) model settings
+// ============================================================================
+
+// One row per Hermes profile holding the shared Qwen (DashScope) realtime
+// model configuration (model + voice) and its API key, so the "设置 → 模型 →
+// Realtime 模型" panel is persisted server-side per profile — the same way STT
+// and TTS provider settings are — instead of only in browser localStorage.
+export const REALTIME_PROFILE_SETTINGS_TABLE = 'realtime_profile_settings'
+
+export const REALTIME_PROFILE_SETTINGS_SCHEMA: Record<string, string> = {
+  profile: "TEXT PRIMARY KEY DEFAULT 'default'",
+  settings_json: `TEXT NOT NULL DEFAULT '{}'`,
+  secrets_json: `TEXT NOT NULL DEFAULT '{}'`,
+  created_at: `INTEGER NOT NULL DEFAULT (strftime('%s','now'))`,
+  updated_at: `INTEGER NOT NULL DEFAULT (strftime('%s','now'))`,
+}
+
+// ============================================================================
 // Group Chat (services/hermes/group-chat/index.ts)
 // ============================================================================
 
@@ -1729,6 +1747,7 @@ export function initAllHermesTables(): void {
     )
     copyLegacyProviderSettingsToDefaultProfile(db, TTS_PROVIDER_SETTINGS_TABLE, TTS_PROFILE_PROVIDER_SETTINGS_TABLE)
     copyLegacyActiveSettingsToDefaultProfile(db, TTS_USER_SETTINGS_TABLE, TTS_PROFILE_SETTINGS_TABLE)
+    syncTable(REALTIME_PROFILE_SETTINGS_TABLE, REALTIME_PROFILE_SETTINGS_SCHEMA)
 
     // Group chat - basic tables
     syncTable(GC_ROOMS_TABLE, GC_ROOMS_SCHEMA)

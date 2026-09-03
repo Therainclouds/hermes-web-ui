@@ -33,6 +33,22 @@ describe('buildRealtimeInstructions', () => {
     expect(result).toContain('工具使用守则')
   })
 
+  it('guides query_hermes_agent usage instead of banning it (agent mode)', () => {
+    // Regression guard for the realtime agent-mode `query_hermes_agent {}`
+    // storm: instructions used to say BOTH "不要调用 query_hermes_agent" and
+    // "涉及工具操作时必须调用 query_hermes_agent", and the tool was still
+    // registered upstream — the model wobbled between the two and fired the
+    // tool with empty `question` arguments in a retry loop. The blanket ban is
+    // gone; short factual/tool queries are encouraged with a complete question.
+    const result = buildRealtimeInstructions('人格A')
+    expect(result).not.toContain('不要调用 query_hermes_agent')
+    expect(result).toContain('可以调用 query_hermes_agent')
+    // The tool reference block must still describe the tool for the model.
+    expect(result).toContain('query_hermes_agent：把一个具体问题丢给后端 Hermes Agent')
+    // File-producing / long-task deliverables still get steered to the text page.
+    expect(result).toContain('请回文字对话页或到工作区继续')
+  })
+
   it('truncates an over-long soul to SOUL_LIMIT with a marker', () => {
     const soul = '长'.repeat(SOUL_LIMIT + 500)
     const result = buildRealtimeInstructions(soul)
