@@ -721,8 +721,6 @@ export default {
     contextNearLimit: 'The conversation is close to the model context cap ({used}/{total} turns); earlier turns will soon be dropped. Consider ending this session and starting a new one.',
     resumeVoiceChat: 'Resume conversation',
     voiceChat: 'Voice chat',
-    modeLabel: 'Mode',
-    agentMode: 'Agent mode',
   },
 
   realtimeVoice: {

@@ -754,8 +754,6 @@ export default {
     toolRunningInline: '{tool} 호출 중 …',
     toolFailedInline: '{tool} 실패',
     toolCompletedInline: '{tool} 완료',
-    modeLabel: '모드',
-    agentMode: 'Agent 모드',
   },
 
   realtimeVoice: {

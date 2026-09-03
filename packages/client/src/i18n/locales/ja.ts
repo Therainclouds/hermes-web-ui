@@ -754,8 +754,6 @@ export default {
     toolRunningInline: '{tool} を呼び出し中 …',
     toolFailedInline: '{tool} 失敗',
     toolCompletedInline: '{tool} 完了',
-    modeLabel: 'モード',
-    agentMode: 'Agent モード',
   },
 
   realtimeVoice: {

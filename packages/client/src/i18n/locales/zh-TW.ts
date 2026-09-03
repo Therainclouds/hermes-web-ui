@@ -664,8 +664,6 @@ export default {
     contextNearLimit: '對話已接近模型內容上限（{used}/{total} 輪），較早的輪次即將被捨棄，建議結束後新建對話繼續。',
     resumeVoiceChat: '繼續對話',
     voiceChat: '語音對話',
-    modeLabel: '模式',
-    agentMode: 'Agent 模式',
   },
 
   realtimeVoice: {

@@ -581,8 +581,6 @@ export default {
     toolRunningInline: 'Вызов {tool} …',
     toolFailedInline: '{tool} не выполнено',
     toolCompletedInline: '{tool} готово',
-    modeLabel: 'Режим',
-    agentMode: 'Режим агента',
   },
 
   realtimeVoice: {

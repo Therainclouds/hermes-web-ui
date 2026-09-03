@@ -754,8 +754,6 @@ export default {
     toolRunningInline: 'Chamando {tool} …',
     toolFailedInline: '{tool} falhou',
     toolCompletedInline: '{tool} concluído',
-    modeLabel: 'Modo',
-    agentMode: 'Modo Agente',
   },
 
   realtimeVoice: {

@@ -614,8 +614,6 @@ export default {
     toolRunningInline: 'استدعاء {tool} …',
     toolFailedInline: 'فشل {tool}',
     toolCompletedInline: 'اكتمل {tool}',
-    modeLabel: 'الوضع',
-    agentMode: 'وضع الوكيل',
   },
 
   realtimeVoice: {
