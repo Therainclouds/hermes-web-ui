@@ -323,7 +323,13 @@ export class ChatRunSocket {
       const sessionProfile = String(session.profile || 'default').trim() || 'default'
       const authorizedProfile = currentProfile()
       if (sessionProfile !== authorizedProfile) {
-        throw new Error(`Profile "${sessionProfile}" is not available on this connection`)
+        // The connection profile is a UI hint, not a security boundary — the
+        // profileExists / canAccessProfile checks below gate actual access.
+        // A socket opened before the profiles store finished loading (or
+        // before a profile switch propagates) binds to 'default'; rejecting
+        // resumes on it surfaces a confusing "not available on this
+        // connection" error. Log and proceed with the session's own profile.
+        logger.warn({ sessionId, sessionProfile, authorizedProfile }, '[run-chat] session profile differs from connection profile; using session profile')
       }
       if (!profileExists(sessionProfile)) {
         throw new Error(`Profile "${sessionProfile}" does not exist`)
