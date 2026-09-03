@@ -28,6 +28,27 @@ class WorkerStartupError(RuntimeError):
         super().__init__(message)
         self.error_type = error_type
 
+
+def _safe_cwd() -> str:
+    """Return a usable working directory for spawning worker processes.
+
+    A long-lived broker can outlive its original working directory (for
+    example when the project directory is deleted and re-created while the
+    Web UI server keeps running). ``os.getcwd()`` then raises
+    ``OSError: [Errno 2] No such file or directory`` (no filename in the
+    message), and every attempt to spawn a profile worker fails with the
+    bare error ``[Errno 2] No such file or directory``. Fall back to the
+    directory containing this bridge script, which is always present.
+    """
+    try:
+        cwd = os.getcwd()
+        if os.path.isdir(cwd):
+            return cwd
+    except OSError:
+        pass
+    return str(Path(__file__).resolve().parent)
+
+
 class WorkerProcess:
     STARTUP_TIMEOUT_SECONDS = 120
     REQUEST_TIMEOUT_SECONDS = 120
@@ -83,7 +104,7 @@ class WorkerProcess:
             self.process = subprocess.Popen(
                 args,
                 env=env,
-                cwd=os.getcwd(),
+                cwd=_safe_cwd(),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
