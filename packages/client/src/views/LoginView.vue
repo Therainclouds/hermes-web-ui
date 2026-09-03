@@ -11,7 +11,12 @@ import RecoveryConfirmModal, {
 import WeChatQrPanel from "@/components/auth/WeChatQrPanel.vue";
 import {
   completeHermesDeviceLogin,
+  bindSuperAdminDeviceLogin,
+  createWeChatUser,
+  bindExistingUserDeviceLogin,
   type TokenPlatformDeviceLoginStatus,
+  type DeviceLoginChoice,
+  type HermesDeviceLoginResult,
 } from "@/api/device-login";
 import { isDesktopShell } from "@/utils/desktop-bridge";
 import { resolveLoginRedirect } from "@/utils/login-redirect";
@@ -33,6 +38,22 @@ const desktopShell = isDesktopShell();
 const wechatMode = ref(false);
 const wechatSyncing = ref(false);
 const wechatError = ref("");
+
+// WeChat choice modal state
+const showChoiceModal = ref(false);
+const choiceModalStep = ref<"options" | "super_admin" | "create_user" | "pick_existing">("options");
+const choiceData = ref<DeviceLoginChoice | null>(null);
+const choiceResult = ref<{ api_base: string; api_key: string; device_id: number | string; models: string[] } | null>(null)
+const choiceSubmitting = ref(false)
+const choiceError = ref("")
+// Form fields for sub-steps
+const saUsername = ref("")
+const saPassword = ref("")
+const saPhone = ref("")
+const newUsername = ref("")
+const newPassword = ref("")
+const newPhone = ref("")
+const pickedCandidateId = ref<number | null>(null)
 
 // Recovery modal state
 type RecoveryModalState = { open: false } | { open: true; action: RecoveryAction };
@@ -93,7 +114,7 @@ async function handleWeChatApproved(
   wechatSyncing.value = true;
   wechatError.value = "";
   try {
-    const hermesResult = await completeHermesDeviceLogin({
+    const response = await completeHermesDeviceLogin({
       api_base: result.api.api_base,
       api_key: result.api.api_key,
       device_id: result.device.device_id,
@@ -101,15 +122,119 @@ async function handleWeChatApproved(
       models: result.api.models,
     });
 
-    // The server provisions the personal agent profile and writes this
-    // account's Token Platform api_key into that profile's provider config,
-    // so no client-side provider onboarding is needed here.
-    setApiKey(hermesResult.token);
-    router.replace("/hermes/chat");
+    // If server returns a token directly (already bound), log in immediately.
+    if ("token" in response && response.token) {
+      const hermesResult = response as HermesDeviceLoginResult;
+      setApiKey(hermesResult.token);
+      router.replace("/hermes/chat");
+      return;
+    }
+
+    // Otherwise server returns needs_choice: show the choice modal.
+    const choice = response as DeviceLoginChoice;
+    if (choice.status === "needs_choice") {
+      choiceData.value = choice;
+      choiceResult.value = {
+        api_base: result.api.api_base,
+        api_key: result.api.api_key,
+        device_id: result.device.device_id,
+        models: result.api.models,
+      };
+      choiceModalStep.value = "options";
+      choiceError.value = "";
+      showChoiceModal.value = true;
+    }
   } catch (err: any) {
     wechatError.value = err?.message || t("login.deviceLoginFailed");
   } finally {
     wechatSyncing.value = false;
+  }
+}
+
+// ── Choice modal handlers ──
+
+function closeChoiceModal() {
+  showChoiceModal.value = false;
+  choiceData.value = null;
+  choiceResult.value = null;
+  choiceError.value = "";
+  saUsername.value = "";
+  saPassword.value = "";
+  saPhone.value = "";
+  newUsername.value = "";
+  newPassword.value = "";
+  newPhone.value = "";
+  pickedCandidateId.value = null;
+}
+
+async function pickOption(option: string) {
+  choiceModalStep.value = option as "super_admin" | "create_user" | "pick_existing";
+  choiceError.value = "";
+}
+
+async function submitBindSuperAdmin() {
+  if (!saUsername.value.trim() || !saPassword.value || !saPhone.value.trim()) {
+    choiceError.value = t("login.choiceFieldsRequired");
+    return;
+  }
+  if (!choiceResult.value || !choiceData.value) return;
+  choiceSubmitting.value = true;
+  choiceError.value = "";
+  try {
+    const result = await bindSuperAdminDeviceLogin({
+      ...choiceResult.value,
+      username: saUsername.value.trim(),
+      password: saPassword.value,
+      phone: saPhone.value.trim(),
+    });
+    setApiKey(result.token);
+    router.replace("/hermes/chat");
+  } catch (err: any) {
+    choiceError.value = err.message || t("login.bindSuperAdminFailed");
+  } finally {
+    choiceSubmitting.value = false;
+  }
+}
+
+async function submitCreateUser() {
+  if (!newUsername.value.trim() || !newPassword.value) {
+    choiceError.value = t("login.choiceFieldsRequired");
+    return;
+  }
+  if (!choiceResult.value) return;
+  choiceSubmitting.value = true;
+  choiceError.value = "";
+  try {
+    const result = await createWeChatUser({
+      ...choiceResult.value,
+      username: newUsername.value.trim(),
+      password: newPassword.value,
+      phone: newPhone.value.trim() || undefined,
+    });
+    setApiKey(result.token);
+    router.replace("/hermes/chat");
+  } catch (err: any) {
+    choiceError.value = err.message || t("login.createUserFailed");
+  } finally {
+    choiceSubmitting.value = false;
+  }
+}
+
+async function submitBindExisting() {
+  if (!pickedCandidateId.value || !choiceResult.value) return;
+  choiceSubmitting.value = true;
+  choiceError.value = "";
+  try {
+    const result = await bindExistingUserDeviceLogin({
+      ...choiceResult.value,
+      user_id: pickedCandidateId.value,
+    });
+    setApiKey(result.token);
+    router.replace("/hermes/chat");
+  } catch (err: any) {
+    choiceError.value = err.message || t("login.bindExistingFailed");
+  } finally {
+    choiceSubmitting.value = false;
   }
 }
 
@@ -251,6 +376,138 @@ async function handleRecoverySubmit(recoveryPassword: string) {
       @close="closeRecoveryModal"
       @submit="handleRecoverySubmit"
     />
+
+    <!-- WeChat bind choice modal -->
+    <div v-if="showChoiceModal" class="choice-overlay" @click.self="closeChoiceModal">
+      <div class="choice-card">
+        <h2 class="choice-title">{{ t("login.choiceTitle") }}</h2>
+        <p class="choice-desc">{{ t("login.choiceDesc") }}</p>
+
+        <!-- Option selection -->
+        <template v-if="choiceModalStep === 'options'">
+          <button
+            v-if="choiceData?.options?.includes('bind_super_admin')"
+            type="button"
+            class="choice-option-btn"
+            @click="pickOption('super_admin')"
+          >
+            {{ t("login.choiceBindSuperAdmin") }}
+          </button>
+          <button
+            type="button"
+            class="choice-option-btn"
+            @click="pickOption('create_user')"
+          >
+            {{ t("login.choiceCreateUser") }}
+          </button>
+          <button
+            v-if="choiceData?.candidates?.length && choiceData.options?.includes('login_existing')"
+            type="button"
+            class="choice-option-btn"
+            @click="pickOption('pick_existing')"
+          >
+            {{ t("login.choicePickExisting") }}
+          </button>
+          <div v-if="choiceData?.candidates?.length === 0" class="choice-hint">
+            {{ t("login.choiceNoCandidates") }}
+          </div>
+        </template>
+
+        <!-- Bind super admin form -->
+        <template v-else-if="choiceModalStep === 'super_admin'">
+          <button type="button" class="choice-back-btn" @click="choiceModalStep = 'options'">
+            ← {{ t("login.back") }}
+          </button>
+          <input
+            v-model="saUsername"
+            type="text"
+            class="login-input"
+            :placeholder="t('login.superAdminUsername')"
+          />
+          <input
+            v-model="saPassword"
+            type="password"
+            class="login-input"
+            :placeholder="t('login.passwordPlaceholder')"
+          />
+          <input
+            v-model="saPhone"
+            type="text"
+            class="login-input"
+            :placeholder="t('login.superAdminPhone')"
+          />
+          <div v-if="choiceError" class="login-error">{{ choiceError }}</div>
+          <button
+            type="button"
+            class="login-btn"
+            :disabled="choiceSubmitting"
+            @click="submitBindSuperAdmin"
+          >
+            {{ choiceSubmitting ? "..." : t("login.choiceBindSuperAdmin") }}
+          </button>
+        </template>
+
+        <!-- Create new user form -->
+        <template v-else-if="choiceModalStep === 'create_user'">
+          <button type="button" class="choice-back-btn" @click="choiceModalStep = 'options'">
+            ← {{ t("login.back") }}
+          </button>
+          <input
+            v-model="newUsername"
+            type="text"
+            class="login-input"
+            :placeholder="t('login.usernamePlaceholder')"
+          />
+          <input
+            v-model="newPassword"
+            type="password"
+            class="login-input"
+            :placeholder="t('login.newPassword')"
+          />
+          <input
+            v-model="newPhone"
+            type="text"
+            class="login-input"
+            :placeholder="t('login.newPhone')"
+          />
+          <div v-if="choiceError" class="login-error">{{ choiceError }}</div>
+          <button
+            type="button"
+            class="login-btn"
+            :disabled="choiceSubmitting"
+            @click="submitCreateUser"
+          >
+            {{ choiceSubmitting ? "..." : t("login.choiceCreateUser") }}
+          </button>
+        </template>
+
+        <!-- Pick existing user -->
+        <template v-else-if="choiceModalStep === 'pick_existing'">
+          <button type="button" class="choice-back-btn" @click="choiceModalStep = 'options'">
+            ← {{ t("login.back") }}
+          </button>
+          <div
+            v-for="c in choiceData?.candidates"
+            :key="c.id"
+            class="choice-candidate"
+            :class="{ 'choice-candidate--selected': pickedCandidateId === c.id }"
+            @click="pickedCandidateId = c.id"
+          >
+            <span class="choice-candidate__name">{{ c.username }}</span>
+            <span class="choice-candidate__phone">{{ c.phone_number || t("login.noPhone") }}</span>
+          </div>
+          <div v-if="choiceError" class="login-error">{{ choiceError }}</div>
+          <button
+            type="button"
+            class="login-btn"
+            :disabled="choiceSubmitting || !pickedCandidateId"
+            @click="submitBindExisting"
+          >
+            {{ choiceSubmitting ? "..." : t("login.choiceConfirmBind") }}
+          </button>
+        </template>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -490,6 +747,115 @@ async function handleRecoverySubmit(recoveryPassword: string) {
 
   &:hover {
     color: $text-primary;
+  }
+}
+
+/* ── WeChat choice modal ── */
+.choice-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.choice-card {
+  width: 420px;
+  max-width: calc(100vw - 32px);
+  padding: 40px 32px;
+  border: 1px solid $border-color;
+  border-radius: $radius-lg;
+  background: $bg-card;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+
+  @media (max-width: $breakpoint-mobile) {
+    padding: 24px 16px;
+  }
+}
+
+.choice-title {
+  font-size: 20px;
+  font-weight: 600;
+  color: $text-primary;
+  margin: 0 0 4px;
+}
+
+.choice-desc {
+  font-size: 13px;
+  color: $text-muted;
+  margin: 0 0 8px;
+  line-height: 1.5;
+}
+
+.choice-option-btn {
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid $border-color;
+  border-radius: $radius-sm;
+  background: transparent;
+  color: $text-primary;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background $transition-fast, border-color $transition-fast;
+  font-family: $font-code;
+
+  &:hover {
+    background: rgba(var(--accent-rgb, 79, 158, 139), 0.08);
+    border-color: $accent-primary;
+  }
+}
+
+.choice-back-btn {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  color: $text-muted;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px 0;
+
+  &:hover {
+    color: $text-primary;
+  }
+}
+
+.choice-hint {
+  font-size: 12px;
+  color: $text-muted;
+  padding: 8px 0;
+}
+
+.choice-candidate {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border: 1px solid $border-color;
+  border-radius: $radius-sm;
+  cursor: pointer;
+  transition: border-color $transition-fast, background $transition-fast;
+
+  &:hover,
+  &--selected {
+    border-color: $accent-primary;
+    background: rgba(var(--accent-rgb, 79, 158, 139), 0.06);
+  }
+
+  &__name {
+    font-size: 14px;
+    color: $text-primary;
+    font-family: $font-code;
+  }
+
+  &__phone {
+    font-size: 12px;
+    color: $text-muted;
   }
 }
 </style>

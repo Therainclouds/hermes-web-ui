@@ -675,7 +675,17 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "platform_profile_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ]
       }
     },
     "/api/auth/device-login": {
@@ -686,6 +696,130 @@
         "summary": "Create device-login",
         "description": "POST /api/auth/device-login",
         "operationId": "deviceLogin",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "api_base": {
+                    "type": "string"
+                  },
+                  "api_key": {
+                    "type": "string"
+                  },
+                  "device_id": {
+                    "type": "number"
+                  },
+                  "device_name": {
+                    "type": "string"
+                  },
+                  "models": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "api_base",
+                  "api_key"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/device-login/bind-existing": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Create bind-existing",
+        "description": "POST /api/auth/device-login/bind-existing",
+        "operationId": "bindExistingUserDeviceLogin",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "api_base": {
+                    "type": "string"
+                  },
+                  "api_key": {
+                    "type": "string"
+                  },
+                  "device_id": {
+                    "type": "number"
+                  },
+                  "device_name": {
+                    "type": "string"
+                  },
+                  "models": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "user_id": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "api_base",
+                  "api_key",
+                  "user_id"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/device-login/bind-super-admin": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Create bind-super-admin",
+        "description": "POST /api/auth/device-login/bind-super-admin",
+        "operationId": "bindSuperAdminDeviceLogin",
         "security": [
           {
             "BearerAuth": []
@@ -736,11 +870,98 @@
                     "items": {
                       "type": "string"
                     }
+                  },
+                  "password": {
+                    "type": "string"
+                  },
+                  "phone": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "number"
+                  },
+                  "username": {
+                    "type": "string"
                   }
                 },
                 "required": [
                   "api_base",
-                  "api_key"
+                  "api_key",
+                  "password",
+                  "phone",
+                  "user_id",
+                  "username"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/device-login/create-user": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Create create-user",
+        "description": "POST /api/auth/device-login/create-user",
+        "operationId": "createWeChatUser",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "api_base": {
+                    "type": "string"
+                  },
+                  "api_key": {
+                    "type": "string"
+                  },
+                  "device_id": {
+                    "type": "number"
+                  },
+                  "device_name": {
+                    "type": "string"
+                  },
+                  "models": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "password": {
+                    "type": "string"
+                  },
+                  "phone": {
+                    "type": "string"
+                  },
+                  "username": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "api_base",
+                  "api_key",
+                  "password",
+                  "username"
                 ]
               }
             }
@@ -770,32 +991,6 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
-          }
-        },
-        "parameters": [
-          {
-            "name": "platform_profile_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "platform_profile_id": {
-                    "type": "object",
-                    "additionalProperties": true
-                  }
-                }
-              }
-            }
           }
         }
       }
@@ -14617,6 +14812,32 @@
                 ]
               }
             }
+          }
+        }
+      }
+    },
+    "/api/hermes/skills/practice": {
+      "get": {
+        "tags": [
+          "Skills"
+        ],
+        "summary": "Get practice",
+        "description": "GET /api/hermes/skills/practice",
+        "operationId": "listPracticeSkills",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
           }
         }
       }

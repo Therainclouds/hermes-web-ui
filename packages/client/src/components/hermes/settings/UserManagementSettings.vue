@@ -43,7 +43,13 @@ const statusOptions = computed(() => [
   { label: t('users.status.disabled'), value: 'disabled' },
 ])
 
-const profileOptions = computed(() => profiles.value.map(profile => ({ label: profile, value: profile })))
+// Hide per-WeChat personal profiles (u_<id>) from the UI — they exist on
+// disk only as agent workspaces, not as user-facing "可访问配置".
+const profileOptions = computed(() =>
+  profiles.value
+    .filter(p => !/^u_\d+$/.test(p))
+    .map(profile => ({ label: profile, value: profile })),
+)
 
 function resetForm() {
   editingUser.value = null

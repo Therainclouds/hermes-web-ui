@@ -544,114 +544,106 @@ export async function deviceLogin(ctx: Context) {
     ? models
     : verifiedModels
 
-  // ── Phone-based 1:1 WeChat binding ──
-  // The Token Platform profile carries the user's phone number (when the
-  // WeChat service account has getPhoneNumber capability). We use it as the
-  // identity bridge: match to an existing local user by phone, or
-  // auto-create one. Strict 1:1 — a WeChat account already bound to
-  // another user is rejected.
+  // ── Two-phase device login ──
+  // Phase 1: resolve the WeChat profile, then either:
+  //   (a) if already bound → return a short "bound" token immediately
+  //   (b) otherwise → return "needs_choice" with candidate options so the
+  //       client can ask the user to pick (bind super admin / create new /
+  //       pick existing unbound user). The second phase is handled by the
+  //       bind-super-admin / create-user / bind-existing endpoints.
   const phoneFromProfile = normalizePhoneNumber(profile.phone)
-  const localUsername = `tp_${profile.id}`
 
-  let user: UserRecord | null = null
-
-  // 1. Check if this WeChat platform_profile_id is already bound
+  // 1. If this platform_profile_id is already bound, skip the choice screen.
   const existingBinding = findBindingByPlatformId(profile.id)
   if (existingBinding?.user_id) {
-    // Already bound: use the existing user
-    user = findUserById(existingBinding.user_id)
+    const user = findUserById(existingBinding.user_id)
+    if (user && user.status === 'active') {
+      const displayName = profile.display_name || profile.username || user.username
+      const token = await issueUserJwt(user)
+      touchUserLogin(user.id)
+      ctx.body = {
+        token,
+        user: {
+          id: user.id,
+          username: user.username,
+          role: user.role,
+          display_name: displayName,
+          bound_models: modelList,
+        },
+        binding: {
+          device_id: existingBinding.device_id,
+          display_name: displayName,
+          platform_profile_id: profile.id,
+        },
+      }
+      return
+    }
+    // Stale binding: user was deleted. Fall through to needs_choice.
   }
 
-  if (!user && phoneFromProfile) {
-    // 2. Try to find an unbound user with this phone number
-    const matchedUserId = findUnboundUserByPhone(phoneFromProfile)
-    if (matchedUserId) {
-      user = findUserById(matchedUserId)
-    } else {
-      // 3. Check if a user with this phone exists but is already WeChat-bound
-      const phoneUser = findUserByPhoneNumber(phoneFromProfile)
-      if (phoneUser && phoneUser.wechat_bound) {
-        ctx.status = 409
-        ctx.body = {
-          error: 'This phone number is already bound to another WeChat account',
-          code: 'PHONE_ALREADY_BOUND',
-        }
-        return
+  // 2. Build candidate list: unbound local users whose phone matches.
+  const candidates: Array<{ id: number; username: string; role: string; phone_number: string | null }> = []
+  if (phoneFromProfile) {
+    const allUsers = listUsers()
+    for (const u of allUsers) {
+      if (u.status === 'active' && normalizePhoneNumber(u.phone_number) === phoneFromProfile && !u.wechat_bound) {
+        candidates.push({ id: u.id, username: u.username, role: u.role, phone_number: u.phone_number })
       }
     }
   }
 
-  if (!user) {
-    // 4. Fallback: check for an existing tp_<id> user (backward compat when
-    // the Token Platform profile has no phone number or the user was created
-    // before the phone-based identity refactor).
-    const tpUser = findUserByUsername(localUsername)
-    if (tpUser && !tpUser.wechat_bound) {
-      user = tpUser
-    }
+  // 3. Return the choice screen.
+  ctx.body = {
+    status: 'needs_choice',
+    profile: {
+      id: profile.id,
+      display_name: profile.display_name || profile.username || '',
+      phone: phoneFromProfile,
+      avatar_url: profile.avatar_url || null,
+    },
+    options: [
+      'bind_super_admin',
+      'create_local_user',
+      ...(candidates.length > 0 ? ['login_existing'] : []),
+    ],
+    candidates,
   }
+}
 
-  if (!user) {
-    // 5. No match: auto-create a new user with the phone number
-    const autoUsername = phoneFromProfile || localUsername
-    const finalUsername = findUserByUsername(autoUsername)
-      ? `${autoUsername}_${profile.id}`
-      : autoUsername
-    user = createUser({
-      username: finalUsername,
-      password: randomUUID(),
-      role: 'admin',
-      status: 'active',
-      phone: phoneFromProfile || null,
-      wechatBound: true,
-    })
-  }
-  if (!user) {
-    ctx.status = 500
-    ctx.body = { error: 'Failed to provision local user' }
-    return
-  }
-
-  // Mark user as WeChat-bound and ensure phone is set
-  if (phoneFromProfile && !user.phone_number) {
-    updateUserPhoneNumber(user.id, phoneFromProfile)
-  }
-  if (!user.wechat_bound) {
-    setUserWeChatBound(user.id, true)
-  }
-
-  const displayName = profile.display_name || profile.username || localUsername
-
+/**
+ * Shared helper: after a choice endpoint has picked a user, finalize binding
+ * (wechat_bound, avatar, personal workspace on disk, binding row, JWT).
+ * The personal workspace is created on disk but NOT written to user_profiles —
+ * we hide per-WeChat "u_<id>" profiles from the UI.
+ */
+async function finalizeWeChatBinding(
+  user: UserRecord,
+  profile: TokenPlatformUserProfile,
+  apiBase: string,
+  apiKey: string,
+  deviceId: string | number | undefined,
+  modelList: string[],
+): Promise<{ token: string; user: unknown; binding: unknown }> {
+  const displayName = profile.display_name || profile.username || user.username
   if (profile.display_name || profile.avatar_url) {
-    // Sync the WeChat avatar/name onto the local user: use the real avatar URL
-    // when present (rendered as an <img>), otherwise fall back to a seeded
-    // multiavatar derived from the display name.
     setUserAvatar(user.id, profile.avatar_url
       ? JSON.stringify({ type: 'image', dataUrl: profile.avatar_url, seed: profile.display_name || '' })
       : JSON.stringify({ type: 'default', seed: profile.display_name || '' }))
   }
 
-  // Provision (or refresh) the user's personal agent profile: create it when
-  // missing, bind it, write the WeChat identity onto it, and point its
-  // token_platform provider at this user's own api_key. Login must not fail
-  // when provisioning does — the user can still sign in and create an agent.
-  const personalProfile = await ensurePersonalWorkspace({
+  await ensurePersonalWorkspace({
     userId: user.id,
     platformProfileId: profile.id,
     displayName,
     avatarUrl: profile.avatar_url || null,
     apiBase,
-    apiKey: key,
+    apiKey,
     models: modelList,
   })
-  if (personalProfile) {
-    const bound = listUserProfiles(user.id).map(p => p.profile_name)
-    if (!bound.includes(personalProfile)) {
-      replaceUserProfiles(user.id, [...bound, personalProfile], bound[0] || personalProfile)
-    }
-  } else {
-    logger.warn({ platformProfileId: profile.id }, '[device-login] personal profile provisioning failed')
-  }
+  // NOTE: we intentionally do NOT write the u_<id> personal profile to
+  // user_profiles. Chinese users expect a single unified workspace; the
+  // on-disk u_<id> profile exists only as an agent workspace, not as a
+  // visible "可访问配置" in the UI.
 
   const token = await issueUserJwt(user)
   touchUserLogin(user.id)
@@ -661,13 +653,13 @@ export async function deviceLogin(ctx: Context) {
     platformProfileId: profile.id,
     platformUsername: profile.username || '',
     apiBase,
-    apiKey: key,
+    apiKey,
     deviceId: String(deviceId ?? ''),
     models: modelList,
     displayName,
   })
 
-  ctx.body = {
+  return {
     token,
     user: {
       id: user.id,
@@ -682,6 +674,306 @@ export async function deviceLogin(ctx: Context) {
       platform_profile_id: profile.id,
     },
   }
+}
+
+/**
+ * POST /api/auth/device-login/bind-super-admin
+ * Bind the WeChat scan to a super_admin account. Caller must supply the
+ * super_admin's username, password, and phone number; all three are verified
+ * before binding.
+ */
+export async function bindSuperAdminDeviceLogin(ctx: Context) {
+  const {
+    api_base: apiBaseRaw,
+    api_key: apiKey,
+    device_id: deviceId,
+    device_name: deviceName,
+    models,
+    username,
+    password,
+    phone,
+  } = ctx.request.body as {
+    api_base?: string
+    api_key?: string
+    device_id?: number | string
+    device_name?: string
+    models?: string[]
+    username?: string
+    password?: string
+    phone?: string
+  }
+
+  const apiBase = String(apiBaseRaw || '').trim()
+  const key = String(apiKey || '').trim()
+  if (!apiBase || !key) {
+    ctx.status = 400
+    ctx.body = { error: 'api_base and api_key are required' }
+    return
+  }
+
+  let profile: TokenPlatformUserProfile
+  try {
+    profile = await fetchDeviceSelf(apiBase, key)
+  } catch (err: any) {
+    ctx.status = 502
+    ctx.body = { error: err?.message || 'Token Platform profile verification failed' }
+    return
+  }
+  if (!profile?.id) {
+    ctx.status = 401
+    ctx.body = { error: 'Invalid Token Platform device key' }
+    return
+  }
+
+  let verifiedModels: string[]
+  try {
+    verifiedModels = await verifyDeviceApiKey(apiBase, key)
+  } catch (err: any) {
+    ctx.status = 502
+    ctx.body = { error: err?.message || 'Token Platform model verification failed' }
+    return
+  }
+  const modelList = Array.isArray(models) && models.length > 0 ? models : verifiedModels
+
+  if (!username || !password || !phone) {
+    ctx.status = 400
+    ctx.body = { error: 'username, password and phone are required' }
+    return
+  }
+
+  // 1. Find the super_admin user
+  const user = findUserByUsername(username.trim())
+  if (!user || user.role !== 'super_admin' || user.status !== 'active') {
+    ctx.status = 404
+    ctx.body = { error: 'Super admin account not found', code: 'SUPER_ADMIN_NOT_FOUND' }
+    return
+  }
+
+  // 2. Verify password
+  if (!verifyPassword(password, user.password_hash)) {
+    ctx.status = 401
+    ctx.body = { error: 'Invalid credentials', code: 'INVALID_CREDENTIALS' }
+    return
+  }
+
+  // 3. Verify phone matches the super_admin's stored phone_number
+  const normalizedPhone = normalizePhoneNumber(phone)
+  if (normalizedPhone && user.phone_number && normalizePhoneNumber(user.phone_number) !== normalizedPhone) {
+    ctx.status = 400
+    ctx.body = { error: 'Phone number does not match the super admin account', code: 'PHONE_MISMATCH' }
+    return
+  }
+
+  // 4. If the super_admin already has a WeChat binding, reject
+  const existingBinding = findBindingByPlatformId(profile.id)
+  if (existingBinding && existingBinding.user_id && existingBinding.user_id !== user.id) {
+    ctx.status = 409
+    ctx.body = { error: 'This WeChat account is already bound to another user', code: 'PHONE_ALREADY_BOUND' }
+    return
+  }
+
+  // 5. Bind
+  if (phone && !user.phone_number) {
+    updateUserPhoneNumber(user.id, normalizedPhone!)
+  }
+  if (!user.wechat_bound) {
+    setUserWeChatBound(user.id, true)
+  }
+
+  const result = await finalizeWeChatBinding(user, profile, apiBase, key, deviceId, modelList)
+  ctx.body = result
+}
+
+/**
+ * POST /api/auth/device-login/create-user
+ * Create a new local admin user and bind it to this WeChat scan. No role
+ * selection: defaults to `admin` per product spec.
+ */
+export async function createWeChatUser(ctx: Context) {
+  const {
+    api_base: apiBaseRaw,
+    api_key: apiKey,
+    device_id: deviceId,
+    device_name: deviceName,
+    models,
+    username,
+    password,
+    phone,
+  } = ctx.request.body as {
+    api_base?: string
+    api_key?: string
+    device_id?: number | string
+    device_name?: string
+    models?: string[]
+    username?: string
+    password?: string
+    phone?: string
+  }
+
+  const apiBase = String(apiBaseRaw || '').trim()
+  const key = String(apiKey || '').trim()
+  if (!apiBase || !key) {
+    ctx.status = 400
+    ctx.body = { error: 'api_base and api_key are required' }
+    return
+  }
+
+  let profile: TokenPlatformUserProfile
+  try {
+    profile = await fetchDeviceSelf(apiBase, key)
+  } catch (err: any) {
+    ctx.status = 502
+    ctx.body = { error: err?.message || 'Token Platform profile verification failed' }
+    return
+  }
+  if (!profile?.id) {
+    ctx.status = 401
+    ctx.body = { error: 'Invalid Token Platform device key' }
+    return
+  }
+
+  let verifiedModels: string[]
+  try {
+    verifiedModels = await verifyDeviceApiKey(apiBase, key)
+  } catch (err: any) {
+    ctx.status = 502
+    ctx.body = { error: err?.message || 'Token Platform model verification failed' }
+    return
+  }
+  const modelList = Array.isArray(models) && models.length > 0 ? models : verifiedModels
+
+  if (!username || !password) {
+    ctx.status = 400
+    ctx.body = { error: 'username and password are required' }
+    return
+  }
+  if (username.trim().length < 2) {
+    ctx.status = 400
+    ctx.body = { error: 'Username must be at least 2 characters' }
+    return
+  }
+  if (password.length < 6) {
+    ctx.status = 400
+    ctx.body = { error: 'Password must be at least 6 characters' }
+    return
+  }
+  if (findUserByUsername(username.trim())) {
+    ctx.status = 409
+    ctx.body = { error: 'Username already exists', code: 'USERNAME_TAKEN' }
+    return
+  }
+
+  const normalizedPhone = phone ? normalizePhoneNumber(phone) : null
+  if (normalizedPhone && findUserByPhoneNumber(normalizedPhone)) {
+    ctx.status = 409
+    ctx.body = { error: 'Phone number already in use', code: 'PHONE_ALREADY_BOUND' }
+    return
+  }
+
+  const user = createUser({
+    username: username.trim(),
+    password,
+    role: 'admin',
+    status: 'active',
+    phone: normalizedPhone,
+    wechatBound: true,
+  })
+  if (!user) {
+    ctx.status = 500
+    ctx.body = { error: 'Failed to create user' }
+    return
+  }
+
+  const result = await finalizeWeChatBinding(user, profile, apiBase, key, deviceId, modelList)
+  ctx.body = result
+}
+
+/**
+ * POST /api/auth/device-login/bind-existing
+ * Bind the WeChat scan to an existing unbound local user picked from the
+ * candidate list returned by the initial device-login call.
+ */
+export async function bindExistingUserDeviceLogin(ctx: Context) {
+  const {
+    api_base: apiBaseRaw,
+    api_key: apiKey,
+    device_id: deviceId,
+    device_name: deviceName,
+    models,
+    user_id,
+  } = ctx.request.body as {
+    api_base?: string
+    api_key?: string
+    device_id?: number | string
+    device_name?: string
+    models?: string[]
+    user_id?: number
+  }
+
+  const apiBase = String(apiBaseRaw || '').trim()
+  const key = String(apiKey || '').trim()
+  if (!apiBase || !key) {
+    ctx.status = 400
+    ctx.body = { error: 'api_base and api_key are required' }
+    return
+  }
+
+  let profile: TokenPlatformUserProfile
+  try {
+    profile = await fetchDeviceSelf(apiBase, key)
+  } catch (err: any) {
+    ctx.status = 502
+    ctx.body = { error: err?.message || 'Token Platform profile verification failed' }
+    return
+  }
+  if (!profile?.id) {
+    ctx.status = 401
+    ctx.body = { error: 'Invalid Token Platform device key' }
+    return
+  }
+
+  let verifiedModels: string[]
+  try {
+    verifiedModels = await verifyDeviceApiKey(apiBase, key)
+  } catch (err: any) {
+    ctx.status = 502
+    ctx.body = { error: err?.message || 'Token Platform model verification failed' }
+    return
+  }
+  const modelList = Array.isArray(models) && models.length > 0 ? models : verifiedModels
+
+  if (!user_id) {
+    ctx.status = 400
+    ctx.body = { error: 'user_id is required' }
+    return
+  }
+
+  const user = findUserById(user_id)
+  if (!user || user.status !== 'active') {
+    ctx.status = 404
+    ctx.body = { error: 'User not found or inactive' }
+    return
+  }
+  if (user.wechat_bound) {
+    ctx.status = 409
+    ctx.body = { error: 'User is already bound to a WeChat account', code: 'USER_ALREADY_BOUND' }
+    return
+  }
+
+  const phoneFromProfile = normalizePhoneNumber(profile.phone)
+  if (phoneFromProfile && user.phone_number && normalizePhoneNumber(user.phone_number) !== phoneFromProfile) {
+    ctx.status = 400
+    ctx.body = { error: 'Phone number does not match the selected user', code: 'PHONE_MISMATCH' }
+    return
+  }
+
+  setUserWeChatBound(user.id, true)
+  if (phoneFromProfile && !user.phone_number) {
+    updateUserPhoneNumber(user.id, phoneFromProfile)
+  }
+
+  const result = await finalizeWeChatBinding(user, profile, apiBase, key, deviceId, modelList)
+  ctx.body = result
 }
 
 /**
@@ -717,10 +1009,18 @@ export async function getDeviceBinding(ctx: Context) {
  */
 async function deleteWeChatUserData(user: UserRecord): Promise<string[]> {
   const deletedProfiles: string[] = []
-  const personalMatch = /^tp_(\d+)$/.exec(user.username)
-  if (personalMatch) {
-    const personalProfile = personalProfileNameFor(Number(personalMatch[1]))
-    if (listUserProfiles(user.id).some(p => p.profile_name === personalProfile)) {
+  // Find the WeChat binding to determine the platform_profile_id for cleanup.
+  const binding = findBindingByUserId(user.id)
+  if (binding) {
+    const personalProfile = personalProfileNameFor(binding.platform_profile_id)
+    if (await deleteProfileFromDisk(personalProfile)) {
+      deletedProfiles.push(personalProfile)
+    }
+  } else {
+    // Legacy fallback: try tp_<id> username pattern.
+    const personalMatch = /^tp_(\d+)$/.exec(user.username)
+    if (personalMatch) {
+      const personalProfile = personalProfileNameFor(Number(personalMatch[1]))
       if (await deleteProfileFromDisk(personalProfile)) {
         deletedProfiles.push(personalProfile)
       }
@@ -891,7 +1191,10 @@ export async function restoreDeviceLogin(ctx: Context) {
   }
 
   const displayName = profile.display_name || binding.display_name || localUsername
-  const personalProfile = await ensurePersonalWorkspace({
+  // Ensure the personal workspace on disk (u_<id>) for agent workspace isolation.
+  // We do NOT write it to user_profiles — per-WeChat profiles should not appear
+  // in the UI's "可访问配置" list.
+  await ensurePersonalWorkspace({
     userId: user.id,
     platformProfileId: binding.platform_profile_id,
     displayName,
@@ -907,12 +1210,6 @@ export async function restoreDeviceLogin(ctx: Context) {
       }
     })(),
   })
-  if (personalProfile) {
-    const bound = listUserProfiles(user.id).map(p => p.profile_name)
-    if (!bound.includes(personalProfile)) {
-      replaceUserProfiles(user.id, [...bound, personalProfile], bound[0] || personalProfile)
-    }
-  }
 
   // Refresh the binding's display_name from the remote profile so corrupted
   // rows (typically GBK bytes that were mojibake-encoded before the

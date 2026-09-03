@@ -116,12 +116,15 @@ export function buildWeChatQrConnectUrl(params: TokenPlatformDeviceLoginRequest)
 
 /**
  * Complete the Hermes-side device login: validates the Token Platform device
- * key, provisions the local Hermes user, and returns a Hermes session token.
+ * key. If the WeChat profile is already bound to a local user, returns a
+ * session token directly. Otherwise returns a `needs_choice` object so the
+ * client can ask the user to pick an identity (bind super admin / create new
+ * / pick existing).
  */
 export async function completeHermesDeviceLogin(
   payload: HermesDeviceLoginPayload,
-): Promise<HermesDeviceLoginResult> {
-  return request<HermesDeviceLoginResult>('/api/auth/device-login', {
+): Promise<HermesDeviceLoginResult | DeviceLoginChoice> {
+  return request<HermesDeviceLoginResult | DeviceLoginChoice>('/api/auth/device-login', {
     method: 'POST',
     body: JSON.stringify(payload),
   })
@@ -140,4 +143,79 @@ export async function unbindHermesDevice(
     '/api/auth/device-binding' + (platformProfileId ? `?platform_profile_id=${platformProfileId}` : ''),
     { method: 'DELETE' },
   )
+}
+
+// ── Two-phase device login: choice endpoints ──
+
+export interface DeviceLoginChoice {
+  status: 'needs_choice'
+  profile: {
+    id: number
+    display_name: string
+    phone: string | null
+    avatar_url: string | null
+  }
+  options: string[]
+  candidates: Array<{
+    id: number
+    username: string
+    role: string
+    phone_number: string | null
+  }>
+}
+
+export interface BindSuperAdminPayload {
+  api_base: string
+  api_key: string
+  device_id: number | string
+  device_name?: string
+  models?: string[]
+  username: string
+  password: string
+  phone: string
+}
+
+export interface CreateWeChatUserPayload {
+  api_base: string
+  api_key: string
+  device_id: number | string
+  device_name?: string
+  models?: string[]
+  username: string
+  password: string
+  phone?: string
+}
+
+export interface BindExistingPayload {
+  api_base: string
+  api_key: string
+  device_id: number | string
+  device_name?: string
+  models?: string[]
+  user_id: number
+}
+
+export async function bindSuperAdminDeviceLogin(
+  payload: BindSuperAdminPayload,
+): Promise<HermesDeviceLoginResult> {
+  return request<HermesDeviceLoginResult>('/api/auth/device-login/bind-super-admin', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function createWeChatUser(payload: CreateWeChatUserPayload): Promise<HermesDeviceLoginResult> {
+  return request<HermesDeviceLoginResult>('/api/auth/device-login/create-user', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function bindExistingUserDeviceLogin(
+  payload: BindExistingPayload,
+): Promise<HermesDeviceLoginResult> {
+  return request<HermesDeviceLoginResult>('/api/auth/device-login/bind-existing', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
 }
