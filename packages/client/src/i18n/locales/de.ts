@@ -727,6 +727,8 @@ export default {
   omniRealtime: {
     entry: 'Echtzeit',
     entryHint: 'Freihändige Sprachkonversation mit der KI — jederzeit unterbrechbar',
+    modeLabel: 'Modus',
+    agentMode: 'Agent-Modus',
     backendUnavailable: 'Der Echtzeitdienst ist nicht bereit. Konfigurieren und starten Sie zuerst den Sprachdienst im Meeting-Modus und versuchen Sie es erneut.',
     sessionError: 'Echtzeitverbindung fehlgeschlagen. Bitte erneut versuchen; falls es weiterhin fehlschlägt, prüfen Sie, ob der Meeting-Sprachdienst läuft.',
     toolRunning: 'Abfrage läuft: {tool} …',
@@ -750,8 +752,6 @@ export default {
     toolRunningInline: 'Rufe {tool} auf …',
     toolFailedInline: '{tool} fehlgeschlagen',
     toolCompletedInline: '{tool} fertig',
-    modeLabel: 'Modus',
-    agentMode: 'Agent-Modus',
   },
 
   realtimeVoice: {
@@ -765,6 +765,13 @@ export default {
 
   // Sprechübungsmodus (dritter Gesprächsmodus im neuen Chat)
   speechPractice: {
+    skill: "Trainings-Skill",
+    skillPlaceholder: "Skill wählen (Standard: allgemeiner Coach)",
+    skillDefault: "Allgemeiner Konversations-Coach",
+    skillLanguageFixed: "Dieses Skill verwendet {language}",
+    reportAnalyzingMedia: "Höre {audio} Aufnahmen · prüfe {frames} Bilder — generiere multimodale KI-Analyse…",
+    reportSkippedNoMedia: "Keine Aufnahmen/Bilder in dieser Sitzung — multimodale Analyse übersprungen; Bericht basiert auf Transkript und Bewertungen",
+    reviewingEnd: "Coach fasst zum Abschluss zusammen (nutzt den Audio/Video-Kontext dieser Sitzung)…",
     entry: 'Sprechübung',
     entryHint: 'Sprich mit einem KI-Coach zu einem Thema deiner Wahl: Jede Runde wird kommentiert und bewertet; die Analyse kannst du am Ende als Markdown speichern',
     cameraHint: 'Bei aktiver Kamera bewertet der Coach auch Körpersprache und Haltung',
@@ -823,6 +830,9 @@ export default {
     reportSaved: 'Analysebericht gespeichert',
     download: 'Bericht herunterladen',
     saveFailed: 'Bericht konnte nicht gespeichert werden. Bitte erneut versuchen',
+    reportAnalyzing: 'KI-Vollmodalanalyse wird erstellt (Audio & Bilder)…',
+    reportAnalyzed: 'KI-Vollmodalanalyse erstellt',
+    aiAnalysisFailed: 'KI-Vollmodalanalyse fehlgeschlagen — Basisbericht ohne Audio-/Videoanalyse gespeichert',
     duration: 'Dauer (Min.)',
     durationHint: 'Minuten; 0 = ohne Begrenzung. Nach Ablauf des Countdowns endet die Übung und der Analysebericht wird automatisch erstellt.',
     timedMinutes: 'Zeitlimit · {minutes} Min.',
@@ -1527,7 +1537,7 @@ jobTriggered: 'Job ausgelost',
     realtimeSharedHint: 'Der ASR des Besprechungsmodus und Realtime-Gespräche verwenden standardmäßig den hier gespeicherten Qwen-API-Schlüssel, sodass Sie nur einen Qwen-API-Schlüssel verwalten müssen.',
     realtimeApiKey: 'Qwen-API-Schlüssel',
     realtimeApiKeyPlaceholder: 'sk-…',
-    realtimeApiKeyHint: 'Wird nur in diesem Browser gespeichert. Dient als Standardschlüssel für den ASR des Besprechungsmodus und Echtzeit-Sprachgespräche.',
+    realtimeApiKeyHint: 'Wird im aktuellen Benutzerprofil auf dem Server gespeichert (wie die STT-/TTS-Modelleinstellungen) und folgt Ihnen über Browser und Geräte hinweg. Dient als Standardschlüssel für den ASR des Besprechungsmodus und Echtzeit-Sprachgespräche.',
     realtimeModelLabel: 'Realtime-Modell',
     realtimeModelPlaceholder: 'qwen3.5-omni-flash-realtime',
     realtimeVoiceLabel: 'Standardstimme',

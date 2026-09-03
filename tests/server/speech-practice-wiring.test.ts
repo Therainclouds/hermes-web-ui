@@ -97,9 +97,9 @@ describe('speech-practice timer & instructions & report', () => {
     expect(practiceModeSource).toContain('submit_practice_feedback')
   })
 
-  it('supports camera + a body-language score dimension', () => {
+  it('supports camera + a body-language score dimension (skill-aware instruction block)', () => {
     expect(practiceModeSource).toContain('bodyLanguage: number | null')
-    expect(practiceModeSource).toContain('options: { cameraOn?: boolean }')
+    expect(practiceModeSource).toContain('options: { cameraOn?: boolean; skill?: PracticeSkill } = {}')
     expect(stageSource).toContain('speech-practice-camera')
     expect(stageSource).toContain('captureAndSendFrame')
     expect(stageSource).toContain('bodyLanguage: cameraEnabled.value ? toScore(args.bodyLanguage) : null')
@@ -150,6 +150,9 @@ describe('speech-practice i18n presence', () => {
     'timeUpNotice',
     'saveReport',
     'scoreBoard',
+    'reportAnalyzing',
+    'reportAnalyzed',
+    'aiAnalysisFailed',
   ]
 
   for (const locale of locales) {

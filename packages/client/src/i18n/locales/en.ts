@@ -691,6 +691,8 @@ export default {
   omniRealtime: {
     entry: 'Realtime',
     entryHint: 'Hands-free voice conversation with the AI — interrupt anytime',
+    modeLabel: 'Mode',
+    agentMode: 'Agent mode',
     backendUnavailable: 'The realtime service is not ready. Configure and start the voice service in Meeting mode first, then try again.',
     sessionError: 'Realtime connection failed. Please try again; if it keeps failing, check that the meeting voice service is running.',
     toolRunning: 'Looking up: {tool} …',
@@ -718,8 +720,6 @@ export default {
     contextNearLimit: 'The conversation is close to the model context cap ({used}/{total} turns); earlier turns will soon be dropped. Consider ending this session and starting a new one.',
     resumeVoiceChat: 'Resume conversation',
     voiceChat: 'Voice chat',
-    modeLabel: 'Mode',
-    agentMode: 'Agent mode',
   },
 
   realtimeVoice: {
@@ -759,6 +759,13 @@ export default {
 
   // Speech practice mode (third conversation mode in New Chat)
   speechPractice: {
+    skill: "Practice skill",
+    skillPlaceholder: "Select a practice skill (default: generic coach)",
+    skillDefault: "Generic Speaking Coach",
+    skillLanguageFixed: "This skill uses {language}",
+    reportAnalyzingMedia: "Listening to {audio} recordings · reviewing {frames} frames — generating the full-modal AI analysis…",
+    reportSkippedNoMedia: "No recordings/frames captured this session — full-modal analysis skipped; the report is based on the transcript and round scores",
+    reviewingEnd: "The coach is giving the closing review (reusing this session’s audio/video context)…",
     entry: 'Practice',
     entryHint: 'Voice practice with an AI coach for the direction you pick: per-turn scores, analysis saved as Markdown',
     cameraHint: 'With the camera on, the coach also scores your body language and posture',
@@ -817,6 +824,9 @@ export default {
     reportSaved: 'Analysis report saved',
     download: 'Download report',
     saveFailed: 'Failed to save the report, please retry',
+    reportAnalyzing: 'Generating AI full-modal analysis from the audio & camera frames…',
+    reportAnalyzed: 'AI full-modal analysis generated',
+    aiAnalysisFailed: 'AI full-modal analysis failed — the base report was saved without the audio/video review',
     duration: 'Duration (minutes)',
     durationHint: 'Minutes; 0 = no time limit. The session ends and the report is generated automatically when the countdown hits zero.',
     timedMinutes: 'Timed · {minutes} min',
@@ -2014,7 +2024,7 @@ export default {
     realtimeSharedHint: 'Meeting-mode ASR and Realtime conversations default to the Qwen API key saved here, so you only manage one Qwen API key.',
     realtimeApiKey: 'Qwen API Key',
     realtimeApiKeyPlaceholder: 'sk-…',
-    realtimeApiKeyHint: 'Stored only in this browser. Used as the default key for meeting-mode ASR and realtime voice conversations.',
+    realtimeApiKeyHint: 'Saved to the current user profile on the server (like the STT/TTS model settings), so it follows you across browsers and devices. Used as the default key for meeting-mode ASR and realtime voice conversations.',
     realtimeModelLabel: 'Realtime model',
     realtimeModelPlaceholder: 'qwen3.5-omni-flash-realtime',
     realtimeVoiceLabel: 'Default voice',

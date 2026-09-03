@@ -72,6 +72,17 @@ Frontend protocol (binary in, JSON events out):
                              in a post-commit window are dropped locally
                              instead of surfacing the upstream "append image
                              before append audio" error.
+      {"type": "text", "text": "<prompt>"}
+                           — inject a text-only user message (conversation
+                             item) and ask the model to reply *within the same
+                             session* (reuses the multimodal context it already
+                             saw/heard). Forwarded upstream as
+                             `conversation.item.create` (role=user,
+                             content=input_text) followed by `response.create`.
+                             Used by 口语对练's same-session closing review:
+                             the coach answers by voice, and its ASR transcript
+                             is relayed back as the usual transcript frames —
+                             no separate offline window or re-upload needed.
       {"type": "stop"}     — flush audio buffer and close the session
                              (we send `session.finish` upstream before
                              tearing the WS down).
@@ -128,6 +139,90 @@ OUTPUT_SAMPLE_RATE = 24000
 INPUT_SAMPLE_RATE = 16000
 BITS_PER_SAMPLE = 16
 CHANNELS = 1
+
+# JSON object `arguments` == "no arguments were supplied".
+EMPTY_ARGUMENTS = ("", "{}")
+
+
+def _as_arguments_json(value: object) -> str:
+    """Normalize an upstream tool-call ``arguments`` payload to a JSON string.
+
+    The OpenAI-Realtime wire shape carries ``arguments`` as a JSON *string*,
+    but DashScope's Omni-Realtime implementation has been observed to hand it
+    out as an already-parsed JSON object instead. The frontend contract
+    (``omni_realtime_proxy`` client in ``useOmniRealtime.ts``) treats any
+    non-string ``arguments`` as ``{}`` and would therefore execute a
+    perfectly-formed tool call with *empty* arguments — the model then sees
+    ``{"error": "question 必填"}`` for a call it believes carried the question
+    and retries the same call forever (the ``query_hermes_agent {}`` storm).
+
+    Normalize here so downstream never has to guess:
+      * str            → trimmed, ``"{}"`` when blank
+      * dict / list    → ``json.dumps`` (ensure_ascii=False keeps CJK intact)
+      * anything else  → ``"{}"``
+    """
+    if isinstance(value, str):
+        return value.strip() or "{}"
+    if isinstance(value, (dict, list)):
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return "{}"
+    return "{}"
+
+
+def _has_arguments(arguments: str) -> bool:
+    """True when a normalized arguments string actually carries parameters."""
+    return arguments.strip() not in EMPTY_ARGUMENTS
+
+
+class FunctionCallGate:
+    """Arbitrate which ``function_call`` announcements reach the client.
+
+    DashScope announces one model tool call up to twice — once via
+    ``conversation.item.created`` (protocol bookkeeping) and once via
+    ``response.function_call_arguments.done`` (the canonical, arguments-bearing
+    copy). The bookkeeping copy can arrive FIRST with empty ``arguments``
+    (the model is still filling them in). Forwarding that empty copy and then
+    discarding the ``.done`` copy as a "duplicate" makes the client execute the
+    tool with ``{}`` — and when the tool requires an argument (``question``),
+    the client errors and the model retries the exact same call in a loop.
+
+    Strategy (per call_id):
+      * announcement WITH arguments  → forward immediately, remember it sent;
+      * announcement WITHOUT args    → park it; a later richer copy for the
+        same call_id supersedes and is forwarded; otherwise the response
+        boundary (``flush()``) releases it so legitimately argument-less tools
+        (e.g. ``list_jobs``, whose schema has no required params) still run.
+    """
+
+    def __init__(self) -> None:
+        # call_id → raw translated frame (JSON str) waiting for its arguments.
+        self._parked: dict[str, str] = {}
+        # call_ids whose announcement was already forwarded — later repeats
+        # (whichever event order DashScope picks) must not double-fire.
+        self._sent: set[str] = set()
+
+    def on_function_call(self, call_id: str, arguments: str, raw_frame: str) -> str | None:
+        """Decide whether ``raw_frame`` (a translated ``function_call``) should
+        be forwarded now. Returns the frame to send, or ``None`` to hold/drop it.
+        """
+        if not call_id or call_id in self._sent:
+            return None
+        if _has_arguments(arguments):
+            self._sent.add(call_id)
+            self._parked.pop(call_id, None)
+            return raw_frame
+        self._parked[call_id] = raw_frame
+        return None
+
+    def flush(self) -> list[str]:
+        """Release every still-parked announcement (response boundary reached
+        and no arguments-bearing copy ever arrived). Returns frames to send.
+        """
+        frames = list(self._parked.values())
+        self._parked = {}
+        return frames
 
 DEFAULT_INSTRUCTIONS = (
     '你是 Quanta，用户友好的中文语音助手。请用简洁、自然、口语化的中文回答，'
@@ -477,6 +572,37 @@ class OmniRealtimeProxy:
         except ConnectionClosed:
             pass
 
+    async def send_text(self, text: str) -> None:
+        """Inject a text-only user message and ask for a reply (same session).
+
+        Used by the practice stage's closing review: instead of ending the
+        session and opening a fresh full-modal request, the client sends the
+        review prompt as plain text so the model answers *within the same
+        realtime session*, reusing the audio/video context it already heard
+        and saw. The answer comes back as the model's spoken response whose
+        ASR transcript is relayed to the client as usual.
+        """
+        if self.upstream is None:
+            raise RuntimeError("omni-realtime: upstream not connected")
+        prompt = str(text or "").strip()
+        if not prompt:
+            return
+        await self._await_response_done("send_text")
+        item = {
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": prompt}],
+            },
+        }
+        try:
+            async with self._send_lock:
+                await self.upstream.send(json.dumps(item))
+                await self.upstream.send(json.dumps({"type": "response.create"}))
+        except ConnectionClosed:
+            pass
+
     async def _await_response_done(self, action: str, timeout: float = 30.0) -> None:
         """Block until no response is in flight, with a safety timeout.
 
@@ -643,13 +769,16 @@ def translate_event(raw: str | bytes) -> str | bytes | None:
 
     # Function calling: the canonical payload lives in the `.done` event.
     # `conversation.item.created` repeats the same call for protocol
-    # bookkeeping — the caller dedupes by call_id.
+    # bookkeeping — and may arrive FIRST with empty `arguments` while the
+    # model is still filling them in. The caller feeds both copies through a
+    # `FunctionCallGate` (keyed by call_id) so the client never executes an
+    # announcement whose real arguments are still on the wire.
     if event == "response.function_call_arguments.done":
         return json.dumps({
             "type": "function_call",
             "call_id": msg.get("call_id") or "",
             "name": msg.get("name") or "",
-            "arguments": msg.get("arguments") or "{}",
+            "arguments": _as_arguments_json(msg.get("arguments")),
         }, ensure_ascii=False)
 
     item = msg.get("item")
@@ -658,7 +787,7 @@ def translate_event(raw: str | bytes) -> str | bytes | None:
             "type": "function_call",
             "call_id": item.get("call_id") or "",
             "name": item.get("name") or "",
-            "arguments": item.get("arguments") or "{}",
+            "arguments": _as_arguments_json(item.get("arguments")),
         }, ensure_ascii=False)
 
     if event == "error":

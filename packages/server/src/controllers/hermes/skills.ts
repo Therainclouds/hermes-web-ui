@@ -1,8 +1,9 @@
 import { mkdir, readdir, readFile, realpath, rm, stat, writeFile, cp } from 'fs/promises'
 import { homedir, tmpdir } from 'os'
-import { dirname, join, resolve } from 'path'
+import { dirname, join, relative, resolve } from 'path'
 import { createHash, randomBytes } from 'crypto'
 import AdmZip from 'adm-zip'
+import yaml from 'js-yaml'
 import {
   readConfigYamlForProfile, updateConfigYamlForProfile,
   safeReadFile, extractDescription, listFilesRecursive,
@@ -10,7 +11,9 @@ import {
 import type { SkillSource } from '../../services/config-helpers'
 import { isPathWithin } from '../../services/hermes/hermes-path'
 import { getActiveProfileName, getProfileDir } from '../../services/hermes/hermes-profile'
+import { HermesSkillInjector } from '../../services/hermes/skill-injector'
 import { getSkillUsageStatsFromDb } from '../../db/hermes/sessions-db'
+import { logger } from '../../services/logger'
 
 function requestedProfile(ctx: any): string {
   return ctx.state?.profile?.name || getActiveProfileName() || 'default'
@@ -583,6 +586,229 @@ export async function list(ctx: any) {
   } catch (err: any) {
     ctx.status = 500
     ctx.body = { error: `Failed to read skills directory: ${err.message}` }
+  }
+}
+
+/**
+ * 口语对练练习技能：SKILL.md frontmatter 里带 `hermes_practice` 契约
+ * （schema 1，见 docs/design/speech-practice-skill-architecture.md）。
+ * 契约由服务端解析成 JSON（客户端不解析 YAML）。
+ */
+export interface PracticeSkillDto {
+  category: string
+  name: string
+  description: string
+  enabled: boolean
+  source: string
+  manifest: Record<string, unknown>
+}
+
+/** 解析 SKILL.md 的 YAML frontmatter（DEFAULT_SCHEMA：仅 map/list/标量）。 */
+function parseSkillMdFrontmatter(content: string | null): Record<string, any> {
+  if (!content) return {}
+  const lines = content.split('\n')
+  if (lines[0]?.trim() !== '---') return {}
+  let end = -1
+  for (let i = 1; i < lines.length; i += 1) {
+    if (lines[i].trim() === '---') {
+      end = i
+      break
+    }
+  }
+  if (end === -1) return {}
+  const frontmatter = lines.slice(1, end).join('\n')
+  try {
+    const parsed = yaml.load(frontmatter, { schema: yaml.DEFAULT_SCHEMA })
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, any>
+      : {}
+  } catch {
+    return {}
+  }
+}
+
+/** 提取并校验 hermes_practice 契约；非法（缺 schema/非 1/非对象）返回 null。 */
+function extractPracticeManifest(attributes: Record<string, any>): Record<string, unknown> | null {
+  const hp = attributes?.hermes_practice
+  if (!hp || typeof hp !== 'object' || Array.isArray(hp)) return null
+  const manifest = hp as Record<string, unknown>
+  if (manifest.schema !== 1 && manifest.schema !== '1') return null
+  // 仅返回白名单字段（防 YAML 注入任意字段/超长文本进 UI）
+  const allowed = new Set([
+    'schema', 'scene', 'targetLanguages', 'directions', 'entry', 'coach', 'evaluation',
+    'scoring', 'reviewOnEnd', 'report',
+  ])
+  const out: Record<string, unknown> = {}
+  for (const key of Object.keys(manifest)) {
+    if (allowed.has(key)) out[key] = manifest[key]
+  }
+  return out
+}
+
+/** 递归收集含 SKILL.md 的技能目录（两级/三级结构；防符号链接环）。 */
+async function walkSkillDirs(rootDir: string): Promise<Array<{ dir: string; rel: string[] }>> {
+  const results: Array<{ dir: string; rel: string[] }> = []
+  const visited = new Set<string>()
+  try {
+    visited.add(await realpath(rootDir))
+  } catch { /* root missing */ }
+  const stack: Array<{ dir: string; depth: number }> = [{ dir: rootDir, depth: 0 }]
+  while (stack.length > 0) {
+    const current = stack.pop()!
+    let entries
+    try {
+      entries = await readdir(current.dir, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      if (entry.name.startsWith('.')) continue
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
+      const entryPath = join(current.dir, entry.name)
+      try {
+        const real = await realpath(entryPath)
+        if (visited.has(real)) continue
+        visited.add(real)
+      } catch {
+        continue
+      }
+      const skillMd = await safeReadFile(join(entryPath, 'SKILL.md'))
+      if (skillMd) {
+        results.push({ dir: entryPath, rel: relative(rootDir, entryPath).split(/[\\/]/) })
+      } else if (current.depth < 4) {
+        stack.push({ dir: entryPath, depth: current.depth + 1 })
+      }
+    }
+  }
+  return results
+}
+
+async function collectPracticeSkills(
+  rootDir: string,
+  options: {
+    source: string
+    disabledList: string[]
+    bundledManifest: Map<string, string>
+    hubNames: Set<string>
+    /** 本地目录才按 .bundled_manifest/.hub 判定 provenance（builtin/hub/local）。 */
+    useProvenance?: boolean
+  },
+): Promise<PracticeSkillDto[]> {
+  const found = await walkSkillDirs(rootDir)
+  const out: PracticeSkillDto[] = []
+  for (const item of found) {
+    const name = item.rel[item.rel.length - 1] || ''
+    if (!name) continue
+    const content = await safeReadFile(join(item.dir, 'SKILL.md'))
+    const attributes = parseSkillMdFrontmatter(content)
+    const manifest = extractPracticeManifest(attributes)
+    if (!manifest) continue
+    const category = item.rel.length >= 2 ? item.rel[0]! : 'misc'
+    out.push({
+      category,
+      name,
+      description: extractDescription(content || ''),
+      enabled: !options.disabledList.includes(name),
+      source: options.useProvenance
+        ? getSkillSource(name, options.bundledManifest, options.hubNames) || options.source
+        : options.source,
+      manifest,
+    })
+  }
+  out.sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name))
+  return out
+}
+
+/**
+ * 内置示例练习技能（随版本分发，缺失时自动安装到 profile 的
+ * skills/practice/ 下，开箱即用——先例：meeting-asr skill-resolver）。
+ */
+export const BUNDLED_PRACTICE_SKILLS = [
+  'practice-ielts-part2',
+  'practice-sales-pitch',
+  'practice-knowledge-quiz',
+  'practice-behavioral-interview',
+] as const
+
+/**
+ * 确保内置练习技能已安装（按名缺失才复制，不改写用户改过的内容）。
+ * @param sourceRoot 内置技能源目录（默认取 HermesSkillInjector 的源目录）。
+ */
+export async function ensurePracticeSampleSkills(
+  skillsDir: string,
+  sourceRoot = HermesSkillInjector.resolveSourceDir(),
+): Promise<string[]> {
+  const installed: string[] = []
+  for (const skillName of BUNDLED_PRACTICE_SKILLS) {
+    const source = join(sourceRoot, skillName)
+    if (!(await safeReadFile(join(source, 'SKILL.md')))) continue
+    const targetDir = join(skillsDir, 'practice', skillName)
+    if (await safeReadFile(join(targetDir, 'SKILL.md'))) continue
+    try {
+      await mkdir(targetDir, { recursive: true })
+      await cp(source, targetDir, { recursive: true })
+      installed.push(skillName)
+    } catch (err: any) {
+      // 安装失败不影响主流程（用户可自行导入）
+      logger.warn('[practice-skills] auto-install failed for %s: %s', skillName, err.message)
+    }
+  }
+  return installed
+}
+
+/**
+ * GET /api/hermes/skills/practice —— 列出所有「已下载/已安装」的口语对练技能
+ * （本地 skills 目录 + 配置的外部目录），返回解析好的契约。仅 hermes target。
+ */
+export async function listPracticeSkills(ctx: any) {
+  const target = requestSkillTarget(ctx)
+  if (target !== 'hermes') {
+    ctx.body = { skills: [] }
+    return
+  }
+  const profile = requestedProfile(ctx)
+  const skillsDir = join(getProfileDir(profile), 'skills')
+  try {
+    // 开箱即用的内置示例技能（测试环境跳过自动安装，避免污染临时目录断言）
+    if (process.env.NODE_ENV !== 'test') {
+      await ensurePracticeSampleSkills(skillsDir)
+    }
+    const config = await readConfigYamlForProfile(profile)
+    const disabledList: string[] = config.skills?.disabled || []
+    const bundledManifest = readBundledManifest(await safeReadFile(join(skillsDir, '.bundled_manifest')))
+    const hubNames = readHubInstalledNames(await safeReadFile(join(skillsDir, '.hub', 'lock.json')))
+
+    const merged = new Map<string, PracticeSkillDto>()
+    const seen = new Set<string>()
+    const add = (dto: PracticeSkillDto): void => {
+      const key = `${dto.category}/${dto.name}`
+      if (seen.has(key)) return
+      seen.add(key)
+      merged.set(key, dto)
+    }
+    for (const dto of await collectPracticeSkills(skillsDir, {
+      source: 'local',
+      disabledList,
+      bundledManifest,
+      hubNames,
+      useProvenance: true,
+    })) {
+      add(dto)
+    }
+    for (const externalDir of await resolveExternalSkillsDirs(config, skillsDir)) {
+      for (const dto of await collectPracticeSkills(externalDir, {
+        source: 'external',
+        disabledList,
+        bundledManifest: new Map(),
+        hubNames: new Set(),
+      })) {
+        add(dto)
+      }
+    }
+    ctx.body = { skills: [...merged.values()] }
+  } catch (err: any) {
+    ctx.status = 500
+    ctx.body = { error: `Failed to read practice skills: ${err.message}` }
   }
 }
 

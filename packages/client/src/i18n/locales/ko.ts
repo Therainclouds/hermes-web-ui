@@ -727,6 +727,8 @@ export default {
   omniRealtime: {
     entry: '실시간 대화',
     entryHint: '말만 하면 되는 핸즈프리 실시간 음성 대화, 언제든 끼어들기 가능',
+    modeLabel: '모드',
+    agentMode: 'Agent 모드',
     backendUnavailable: '실시간 서비스가 준비되지 않았습니다. 먼저 회의 모드에서 음성 서비스를 설정하고 시작한 후 다시 시도하세요',
     sessionError: '실시간 연결에 오류가 발생했습니다. 다시 시도하세요. 계속 실패하면 회의 음성 서비스가 실행 중인지 확인하세요',
     toolRunning: '조회 중: {tool} …',
@@ -750,8 +752,6 @@ export default {
     toolRunningInline: '{tool} 호출 중 …',
     toolFailedInline: '{tool} 실패',
     toolCompletedInline: '{tool} 완료',
-    modeLabel: '모드',
-    agentMode: 'Agent 모드',
   },
 
   realtimeVoice: {
@@ -765,6 +765,13 @@ export default {
 
   // 말하기 연습 모드 (새 채팅의 세 번째 대화 모드)
   speechPractice: {
+    skill: "연습 스킬",
+    skillPlaceholder: "연습 스킬 선택(미선택=일반 코치)",
+    skillDefault: "일반 회화 코치",
+    skillLanguageFixed: "이 스킬은 {language}를 사용합니다",
+    reportAnalyzingMedia: "녹음 {audio}개 청취 · 화면 {frames}장 분석 중 — AI 전체 모달 분석 생성 중…",
+    reportSkippedNoMedia: "이번 녹음/화면이 없어 전체 모달 분석을 건너뛰고 대화 텍스트와 라운드 평가로 리포트를 생성했습니다",
+    reviewingEnd: "코치가 이번 세션의 마무리 총평을 진행 중(음성/화면 맥락 재사용)…",
     entry: '말하기 연습',
     entryHint: 'AI 코치와 지정한 주제로 음성 대화 연습: 매 턴 코멘트와 채점 후, 종료하면 분석 내용을 Markdown으로 저장할 수 있습니다',
     cameraHint: '카메라를 켜면 코치가 바디랭귀지/태도도 함께 평가합니다',
@@ -823,6 +830,9 @@ export default {
     reportSaved: '분석 보고서가 저장되었습니다',
     download: '보고서 다운로드',
     saveFailed: '보고서 저장에 실패했습니다. 다시 시도해 주세요',
+    reportAnalyzing: 'AI 전모달 심층 분석 생성 중(음성·영상 확인)…',
+    reportAnalyzed: 'AI 전모달 심층 분석 완료',
+    aiAnalysisFailed: 'AI 전모달 심층 분석 실패 — 기본 보고서만 저장되었습니다(음성·영상 미분석)',
     duration: '연습 시간(분)',
     durationHint: '분. 0 = 무제한. 카운트다운이 끝나면 자동 종료 후 분석 보고서가 생성됩니다.',
     timedMinutes: '{minutes}분 타이머',
@@ -1527,7 +1537,7 @@ export default {
     realtimeSharedHint: '회의 모드 ASR과 Realtime 대화는 여기에 저장한 Qwen API 키를 기본으로 사용하므로 Qwen API를 한 곳에서 관리할 수 있습니다.',
     realtimeApiKey: 'Qwen API 키',
     realtimeApiKeyPlaceholder: 'sk-…',
-    realtimeApiKeyHint: '이 브라우저에만 저장됩니다. 회의 모드 ASR 및 실시간 음성 대화의 기본 키로 사용됩니다.',
+    realtimeApiKeyHint: '현재 사용자 프로필(서버 측, STT/TTS 등 모델 설정과 동일)에 저장되므로 브라우저나 기기를 바꿔도 유지됩니다. 회의 모드 ASR 및 실시간 음성 대화의 기본 키로 사용됩니다.',
     realtimeModelLabel: '실시간 모델',
     realtimeModelPlaceholder: 'qwen3.5-omni-flash-realtime',
     realtimeVoiceLabel: '기본 음성',

@@ -120,6 +120,8 @@ export const OMNI_REALTIME_TOOLS: OmniRealtimeToolDefinition[] = [
       + '当用户问的问题需要真实工具操作或工作区读取时调用（例如「读一下 ~/projects/xxx 下的 README」、'
       + '「运行某个脚本查一下端口占用」、「查 MCP 数据库里 X 表的内容」）。'
       + '不要把语音对话中整段最近的转写塞进来——一次只问一件具体的事。'
+      + 'question 是必填参数：禁止传空参数，也不要只靠上下文猜；如果用户说得不够具体，'
+      + '先用口语向用户确认要查的内容，再带着完整 question 调用。'
       + '回答时不要逐字复述工具返回的文本，用口语简短总结关键结论。',
     parameters: {
       type: 'object',

@@ -49,6 +49,18 @@ import ChatInput from "./ChatInput.vue";
 import OmniRealtimeStage from "./OmniRealtimeStage.vue";
 import SpeechPracticeStage from "./SpeechPracticeStage.vue";
 import type { PracticeDifficulty, PracticeLanguage, PracticeSessionConfig } from "@/utils/practice-mode";
+import { fetchPracticeSkills, type PracticeSkillListItem } from "@/api/hermes/skills";
+import {
+  PRACTICE_DEFAULT_SKILL_KEY,
+  normalizePracticeSkill,
+  resolveSkillLanguage,
+  skillLanguageCodes,
+  skillSupportsLanguage,
+  toPracticeSkillOptions,
+  type PracticeSkill,
+  type PracticeSkillEntry,
+  type PracticeSkillManifest,
+} from "@/utils/practice-skill";
 import ConversationMonitorPane from "./ConversationMonitorPane.vue";
 import MessageList from "./MessageList.vue";
 import SessionListItem from "./SessionListItem.vue";
@@ -265,10 +277,17 @@ function readPracticeConfigFor(sessionId: string | null | undefined): PracticeSe
     const language = typeof parsed.language === "string" ? parsed.language : "";
     const difficulty = typeof parsed.difficulty === "string" ? parsed.difficulty : "";
     if (!PRACTICE_LANGUAGES.has(language) || !PRACTICE_DIFFICULTIES.has(difficulty)) return null;
+    // v2：练习技能引用（category/name），随会话持久化，重开时按它还原技能。
+    const rawRef = parsed.skillRef && typeof parsed.skillRef === "object"
+      ? parsed.skillRef as Record<string, unknown>
+      : null;
+    const refCategory = typeof rawRef?.category === "string" ? rawRef.category.trim().slice(0, 120) : "";
+    const refName = typeof rawRef?.name === "string" ? rawRef.name.trim().slice(0, 120) : "";
     return {
       language: language as PracticeSessionConfig["language"],
       direction: typeof parsed.direction === "string" ? parsed.direction : "",
       difficulty: difficulty as PracticeSessionConfig["difficulty"],
+      skillRef: refCategory && refName ? { category: refCategory, name: refName } : undefined,
     };
   } catch {
     return null;
@@ -919,6 +938,82 @@ const practiceLanguageOptions = [
   { labelKey: "speechPractice.lang.ja", value: "ja" },
   { labelKey: "speechPractice.lang.ko", value: "ko" },
 ] as const;
+
+// --- 练习技能（跨场景：语言学习/销售培训/面试/知识点掌握…）-------------------
+// 'default' = 内置通用口语教练（不依赖任何下载技能）；其余 = 已安装的练习技能
+// （SKILL.md frontmatter 带 hermes_practice 契约，服务端 /skills/practice 解析）。
+const newChatPracticeSkillKey = ref<string>(PRACTICE_DEFAULT_SKILL_KEY);
+const practiceSkillItems = ref<PracticeSkillListItem[]>([]);
+let practiceSkillsRequested = false;
+function ensurePracticeSkillsLoaded(): Promise<void> {
+  if (practiceSkillsRequested) return Promise.resolve();
+  practiceSkillsRequested = true;
+  return fetchPracticeSkills()
+    .then(items => { practiceSkillItems.value = items; })
+    .catch(() => { /* 拉取失败 → 只有默认技能可选，不阻塞新建对话 */ });
+}
+const practiceSkillEntries = computed<PracticeSkillEntry[]>(() =>
+  practiceSkillItems.value.map((item) => ({
+    category: item.category,
+    name: item.name,
+    description: item.description,
+    enabled: item.enabled,
+    source: item.source,
+    manifest: item.manifest ? (item.manifest as unknown as PracticeSkillManifest) : null,
+  })),
+);
+const practiceSkillOptions = computed(() =>
+  toPracticeSkillOptions(practiceSkillEntries.value).filter(option => {
+    if (option.key === PRACTICE_DEFAULT_SKILL_KEY) return true;
+    const entry = practiceSkillEntries.value.find(e => e.name === option.name && e.category === option.category);
+    return entry?.enabled !== false;
+  }),
+);
+const practiceSkillSelectOptions = computed(() =>
+  practiceSkillOptions.value.map(option => ({
+    label: option.key === PRACTICE_DEFAULT_SKILL_KEY ? t("speechPractice.skillDefault") : option.label,
+    value: option.key,
+  })),
+);
+const selectedPracticeSkill = computed<PracticeSkill | null>(() => {
+  const option = practiceSkillOptions.value.find(opt => opt.key === newChatPracticeSkillKey.value);
+  if (!option || option.key === PRACTICE_DEFAULT_SKILL_KEY) return null;
+  return normalizePracticeSkill(
+    { kind: "skill", category: option.category, name: option.name, description: option.hint },
+    option.manifest,
+    "",
+  );
+});
+// 技能限定语言：语言下拉收敛并自动切换（未限定时维持原四语言自由选择）
+const practiceLanguageBoundCodes = computed(() => {
+  const skill = selectedPracticeSkill.value;
+  return skill ? skillLanguageCodes(skill) : null;
+});
+const practiceLanguageOptionsForSelect = computed(() => {
+  const codes = practiceLanguageBoundCodes.value;
+  const all = practiceLanguageOptions.map(option => ({ label: t(option.labelKey), value: option.value }));
+  if (!codes) return all;
+  return all.filter(option => codes.includes(option.value));
+});
+const practiceLanguageLocked = computed(() => {
+  const codes = practiceLanguageBoundCodes.value;
+  return codes != null && codes.length === 1;
+});
+watch([newChatPracticeSkillKey, () => practiceSkillItems.value], () => {
+  const skill = selectedPracticeSkill.value;
+  if (!skill) return;
+  const resolved = resolveSkillLanguage(skill, newChatPracticeLanguage.value);
+  if (resolved && !skillSupportsLanguage(skill, newChatPracticeLanguage.value)) {
+    newChatPracticeLanguage.value = resolved as PracticeLanguage;
+  }
+});
+watch(() => newChatMode.value === "realtime" && newChatRealtimeSubMode.value === "practice", (active) => {
+  if (active) void ensurePracticeSkillsLoaded();
+});
+const practiceDirectionPlaceholder = computed(() => {
+  const first = selectedPracticeSkill.value?.directions?.[0];
+  return first || t("speechPractice.directionPlaceholder");
+});
 const newChatAgent = ref<"hermes" | ChatCodingAgentId>("hermes");
 const newChatAgentMode = ref<"global" | "scoped">("scoped");
 const newChatProfile = ref<string>("default");
@@ -1362,8 +1457,9 @@ async function confirmNewChat() {
   if (newChatMode.value === "realtime") {
     showNewChatModal.value = false;
     // 无论哪种 realtime 子模式，都先把用户选择的模型持久化到 realtime store：
-    // OmniRealtimeStage / SpeechPracticeStage 连接时读取同一份配置。
-    realtimeModelStore.updateConfig({ model: newChatRealtimeModel.value });
+    // OmniRealtimeStage / SpeechPracticeStage 连接时读取同一份配置。store 会
+    // 同步写回当前用户 Profile（服务端）；这里不等待结果，失败时模型自动回退。
+    void realtimeModelStore.updateConfig({ model: newChatRealtimeModel.value });
     if (newChatRealtimeSubMode.value === "agent") {
       // Agent 模式（默认）：语音实时对话 + Hermes Agent 工具能力。Always open
       // realtime in a fresh session (the drawer is named "新建对话") and persist
@@ -1374,6 +1470,18 @@ async function confirmNewChat() {
       await openOmniRealtime({ createFresh: true, persistRemote: true });
     } else {
       // 口语对练子模式：远端新建会话（标题带练习方向），再把练习配置交给舞台。
+      // 先确保练习技能列表就绪（下拉里选中的技能可能来自异步拉取）。
+      await ensurePracticeSkillsLoaded();
+      const skillKey = newChatPracticeSkillKey.value;
+      const skillStillAvailable = skillKey === PRACTICE_DEFAULT_SKILL_KEY
+        || practiceSkillOptions.value.some(option => option.key === skillKey);
+      if (!skillStillAvailable) newChatPracticeSkillKey.value = PRACTICE_DEFAULT_SKILL_KEY;
+      const skillRef = skillStillAvailable && skillKey !== PRACTICE_DEFAULT_SKILL_KEY
+        ? (() => {
+          const [category, name] = skillKey.split("/");
+          return category && name ? { category, name } : undefined;
+        })()
+        : undefined;
       await openSpeechPractice({
         createFresh: true,
         persistRemote: true,
@@ -1382,6 +1490,7 @@ async function confirmNewChat() {
           direction: newChatPracticeDirection.value.trim().slice(0, 200),
           difficulty: newChatPracticeDifficulty.value,
           durationMinutes: newChatPracticeMinutes.value,
+          skillRef,
         },
       });
     }
@@ -2798,12 +2907,28 @@ async function handleSessionModelCustomSubmit() {
               </NRadioGroup>
             </label>
             <template v-if="newChatRealtimeSubMode === 'practice'">
+              <label class="new-chat-field" data-testid="new-chat-practice-skill-field">
+                <span class="new-chat-label">{{ t("speechPractice.skill") }}</span>
+                <NSelect
+                  v-model:value="newChatPracticeSkillKey"
+                  :options="practiceSkillSelectOptions"
+                  :placeholder="t('speechPractice.skillPlaceholder')"
+                  filterable
+                />
+                <span v-if="selectedPracticeSkill" class="new-chat-field-hint">
+                  {{ selectedPracticeSkill.description }}
+                </span>
+              </label>
               <label class="new-chat-field" data-testid="new-chat-practice-language-field">
                 <span class="new-chat-label">{{ t("speechPractice.language") }}</span>
                 <NSelect
                   v-model:value="newChatPracticeLanguage"
-                  :options="practiceLanguageOptions.map((option) => ({ label: t(option.labelKey), value: option.value }))"
+                  :options="practiceLanguageOptionsForSelect"
+                  :disabled="practiceLanguageLocked"
                 />
+                <span v-if="practiceLanguageLocked" class="new-chat-field-hint">
+                  {{ t("speechPractice.skillLanguageFixed", { language: t(`speechPractice.lang.${newChatPracticeLanguage}`) }) }}
+                </span>
               </label>
               <label class="new-chat-field" data-testid="new-chat-practice-direction-field">
                 <span class="new-chat-label">{{ t("speechPractice.direction") }}</span>
@@ -2813,7 +2938,7 @@ async function handleSessionModelCustomSubmit() {
                   :rows="3"
                   :maxlength="200"
                   show-count
-                  :placeholder="t('speechPractice.directionPlaceholder')"
+                  :placeholder="practiceDirectionPlaceholder"
                 />
               </label>
               <label class="new-chat-field" data-testid="new-chat-practice-difficulty-field">

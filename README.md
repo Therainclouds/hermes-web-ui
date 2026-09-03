@@ -325,6 +325,54 @@ Real-time speech transcription with AI-powered meeting analysis, speaker diariza
 - **Smarter report prompt.** `useMeetingAgent.generateReport` now passes a pinned `instructions` payload to Hermes, includes the session title, and folds in any prior `analysisResult` plus the previous assistant/system messages as `### Previous analysis result` / `### Previous conversation` blocks. This keeps a re-run of "Generate Report" idempotent instead of re-analyzing from scratch, and the strict instructions enforce the `write_file + ```html code block` contract that `extractHtml` looks for.
 - **Looser HTML detection.** `looksLikeHtmlDocument` now also accepts `<!DOCTYPE html>` prefixes and drops the minimum-length threshold from 200 to 100 characters, so shorter ECharts-free reports are still recognized as full HTML documents.
 
+### Speech Practice / Oral Coach (v0.8.0)
+
+Real-time voice dialogue with AI-powered oral practice and coaching.
+
+**Core Features:**
+
+| Feature | Description |
+|---|---|
+| Realtime Voice Dialogue | WebSocket-based Omni realtime conversation with streaming responses |
+| Oral Coach Mode | Strict target-language discipline with dedicated coach persona |
+| Body Language Scoring | Camera-based gesture and posture analysis during practice |
+| Timed Practice | Configurable practice duration with pacing control |
+| Session Type Routing | Voice entries automatically route by session type (coach vs. realtime) |
+| Dual Theme | Moon/sun celestial artwork that follows light/dark theme |
+| Voice Visualizer | 64-bar radial equalizer for audio visualization |
+| **Realtime Model Persistence** | Save and restore realtime model settings across sessions |
+| **Omni Tool-Call Guard** | Prevents tool calls during voice dialogue for safety |
+| **Omni Controller** | Centralized controller for managing Omni realtime connections |
+
+**Visual Design (v0.8.0):**
+
+- Celestial body now rendered as moon/sun SVG artwork that switches with theme
+- Voiceprint displayed as 64 radial equalizer bars
+- Controls anchor to bottom; speech bubbles no longer overlap text
+- Light-mode stage features dawn-gradient backdrop with high-contrast controls
+- Unified monochrome ink palette with purple-blue accent throughout
+
+**Coach Persona:**
+
+- Dedicated oral coach persona independent of Agent SOUL — no more personality conflicts
+- Strict target-language enforcement: coach responds only in the practice language
+- Session entry routes automatically based on session type
+
+**Audio & Report Enhancements (v0.8.0):**
+
+- **Graceful audio shutdown:** Timed practice now drains the current sentence before disconnecting — AI speech is no longer cut off mid-word when the timer expires
+- **Cross-tool call fix:** AI responses spanning multiple tool calls no longer get truncated when a new response arrives while audio is still playing
+- **Echo interrupt protection:** Improved barge-in threshold on Linux/speakers with weak AEC — AI no longer cuts itself off
+- **Qwen3.5-Omni multimodal report:** After each session, audio recordings and camera frames are submitted to DashScope Qwen3.5-Omni for AI-powered full-modal depth analysis, appended to the deterministic report
+- **Streaming AI report:** AI analysis streams in real-time as markdown while generating — no waiting for the full result
+- **Report download:** After saving, the report file appears as a downloadable attachment in the chat page — accessible even after closing the practice stage
+
+**Legacy Voice Retirement (v0.8.0):**
+
+- The legacy realtime voice page has been retired
+- All voice entries now open the unified Omni realtime dialog
+- Voice sessions can continue from text-chat context seamlessly
+
 ### Web Terminal
 
 - Integrated terminal powered by node-pty and @xterm/xterm

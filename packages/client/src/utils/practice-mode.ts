@@ -12,6 +12,16 @@
  * `api/hermes/omni-tools.ts`（PRACTICE_REALTIME_TOOLS）。
  */
 
+import {
+  aggregateOverallScore,
+  buildRubricSummaryLine,
+  buildSkillCriteriaMarkdown,
+  defaultPracticeSkill,
+  resultBandOf,
+  type PracticeSkill,
+  type PracticeSkillRef,
+} from './practice-skill'
+
 export type PracticeLanguage = 'zh' | 'en' | 'ja' | 'ko'
 export type PracticeDifficulty = 'beginner' | 'intermediate' | 'advanced'
 
@@ -24,7 +34,15 @@ export interface PracticeSessionConfig {
   difficulty: PracticeDifficulty
   /** 练习时长（分钟）；0 / undefined = 不限时。设置后倒计时到点自动结束并生成报告。 */
   durationMinutes?: number
+  /** 选中的练习技能引用（category/name）；缺省 = 内置通用口语教练。 */
+  skillRef?: PracticeSkillRef
 }
+
+/**
+ * 通用教练人格——保留历史导出名（= practice-skill 里默认技能的 coach soul，
+ * 保证"不选技能 = 现状行为"完全一致）。
+ */
+export { PRACTICE_DEFAULT_COACH_SOUL as PRACTICE_COACH_SOUL } from './practice-skill'
 
 /** 语言 → 供模型指令/报告使用的中文名（模型指令本身固定为中文，见下方说明）。 */
 export const PRACTICE_LANGUAGE_LABELS: Record<PracticeLanguage, string> = {
@@ -43,20 +61,9 @@ export const PRACTICE_DIFFICULTY_LABELS: Record<PracticeDifficulty, string> = {
 /** 用户输入方向注入指令前的截断长度。 */
 const DIRECTION_LIMIT = 120
 
-/**
- * 口语对练专属教练人格——替代用户 Agent 的 SOUL.md 注入。
- *
- * 用户 SOUL 是「工作台助理」人格（中文回复、记忆/技能/任务行为准则等），
- * 与「目标语言口语教练」直接冲突：人格声明打架会导致教练角色不稳定、
- * 混入助理式行为（主动报工作台状态、用中文长篇解释等）。因此对练场景
- * 不读取 SOUL.md，用这段固定教练人格作为 buildRealtimeInstructions 的
- * soul 位输入；工具守则与历史摘要仍正常叠加。
- */
-export const PRACTICE_COACH_SOUL = [
-  '你是一名专业、耐心的口语陪练教练，任务是陪用户练习目标语言的口语表达。',
-  '你不扮演任何工作台助理人格；除按守则用中文简短解释语法/词汇外，全程使用目标语言交流。',
-  '点评具体、诚实、有区分度，善于用提问引导用户持续开口。',
-].join('\n')
+// 通用教练人格（PRACTICE_COACH_SOUL）已迁移到 practice-skill.ts，由该模块
+// 顶部以 `export { PRACTICE_DEFAULT_COACH_SOUL as PRACTICE_COACH_SOUL }`
+// 原样再导出，保证「不选技能 = 现状行为」与历史调用方完全兼容。
 
 /**
  * 拼接口语对练场景块（追加在 buildRealtimeInstructions 的 scenario 参数里）。
@@ -74,8 +81,9 @@ export const PRACTICE_COACH_SOUL = [
  */
 export function buildPracticeInstructionBlock(
   config: PracticeSessionConfig,
-  options: { cameraOn?: boolean } = {},
+  options: { cameraOn?: boolean; skill?: PracticeSkill } = {},
 ): string {
+  const skill = options.skill ?? defaultPracticeSkill()
   const languageName = PRACTICE_LANGUAGE_LABELS[config.language] || '目标语言'
   const difficultyName = PRACTICE_DIFFICULTY_LABELS[config.difficulty] || '适中'
   const direction = (config.direction || '').trim().slice(0, DIRECTION_LIMIT)
@@ -121,6 +129,27 @@ export function buildPracticeInstructionBlock(
     '- 用户表示理解不了题目时：用目标语言降速、换更简单的说法示范，而不是放弃目标语言。',
   ].join('\n')
 
+  // 技能驱动的内容：角色/守则/评分维度与 rubric（见 practice-skill.ts）。
+  const skillTips: string[] = []
+  if (skill.kind === 'skill') {
+    const roleText = [
+      skill.role ? `你扮演${skill.role}` : '',
+      skill.userRole ? `用户扮演${skill.userRole}` : '',
+    ].filter(Boolean).join('，')
+    skillTips.push(`- 本场使用练习技能「${skill.displayName}」${roleText ? `（${roleText}）` : ''}：${skill.description || '按该技能的要求出题、引导与点评。'}`)
+    const dimsText = skill.evaluation.dims.map(dim => dim.label).join('、')
+    if (dimsText) {
+      const scale = skill.evaluation.scale
+      skillTips.push(`- 本场评分维度：总分 + ${dimsText}（${scale.min}-${scale.max} 分制）`
+        + (skill.evaluation.overallMode === 'weighted' ? '，整场综合分按技能权重加权合成。' : '。'))
+    }
+  }
+  for (const rule of skill.extraRules) {
+    skillTips.push(rule.startsWith('-') ? rule : `- ${rule}`)
+  }
+  const rubricLine = buildRubricSummaryLine(skill)
+  if (rubricLine) skillTips.push(rubricLine)
+
   return [
     '【口语对练模式 · 行为守则（优先级最高，覆盖以上通用约束中与本段冲突的部分，尤其是「默认用中文回答」那条——口语对练必须使用目标语言）】',
     `- 你现在是用户的${languageName}口语陪练教练。${directionLine}`,
@@ -129,6 +158,7 @@ export function buildPracticeInstructionBlock(
     ...difficultyTips.map(tip => `  - ${tip}`),
     ...cameraTips,
     ...pacingTips,
+    ...skillTips,
     '- 每轮用户发言结束后：先用目标语言给出一句话的简短口头点评，然后立刻调用 submit_practice_feedback 提交本轮结构化打分'
     + '（overall 及 fluency / pronunciation / grammar / vocabulary / content，1-10 整数，另附 comment / strengths / improvements / example）。'
     + '打分必须诚实、具体、有区分度——不要每轮都打高分或雷同分数。',
@@ -138,9 +168,7 @@ export function buildPracticeInstructionBlock(
     '- 当用户说「结束 / 今天先到这里 / 再见」等收尾语时：先用目标语言说一两句整场总结'
     + '（总体表现 + 最值得继续练的一点），再调用 submit_practice_feedback 提交收尾评分'
     + '（此时 overall 视为整场评分，其余维度给整场平均观感），之后不必再提问。',
-    '- 上面通用约束里「不要调用 query_hermes_agent」的限制在本模式解除：'
-    + '用户的问题若涉及真实工作台 / MCP / 文件系统等操作，先调用工具查证再回答；'
-    + '纯口语练习内容不需要调用工具。',
+    '- 本模式允许调用 query_hermes_agent：用户的问题若涉及真实工作台 / MCP / 文件系统等操作，先把具体问题放进 question 参数调用工具查证再回答（禁止空参数调用）；纯口语练习内容不需要调用工具。',
     '- 你的回复会被语音朗读：口语化、可读，不要使用 Markdown 标记；口头点评本身不要逐字重复评分数字。',
   ].join('\n')
 }
@@ -178,6 +206,14 @@ export interface PracticeReportInput {
   endedAt: number
   turns: PracticeTurnRecord[]
   feedback: PracticeFeedbackRecord[]
+  /** 选中的练习技能（null/缺省 = 通用教练；default 技能不改变报告输出）。 */
+  skill?: PracticeSkill | null
+  /** 素材清单证据（录音段数 / 画面帧数 / 是否开启摄像头），写入报告头部。 */
+  media?: {
+    audioSegments: number
+    frames: number
+    cameraOn: boolean
+  } | null
 }
 
 function fmtDateTime(ts: number): string {
@@ -219,6 +255,7 @@ export function buildPracticeReportMarkdown(input: PracticeReportInput): string 
   const languageName = PRACTICE_LANGUAGE_LABELS[cfg.language] || cfg.language
   const difficultyName = PRACTICE_DIFFICULTY_LABELS[cfg.difficulty] || cfg.difficulty
   const direction = (cfg.direction || '').trim()
+  const skill = input.skill && input.skill.kind === 'skill' ? input.skill : null
 
   const userTurns = input.turns.filter(t => t.role === 'user')
   const feedbackByRound = new Map<number, PracticeFeedbackRecord>()
@@ -244,27 +281,75 @@ export function buildPracticeReportMarkdown(input: PracticeReportInput): string 
   out.push('', '> 练习语言：' + languageName
     + (direction ? ` ｜ 练习方向：${direction}` : ' ｜ 练习方向：自由对话')
     + ` ｜ 难度：${difficultyName}`
-    + (durationMinutes > 0 ? ` ｜ 定时：${durationMinutes} 分钟` : ''))
+    + (durationMinutes > 0 ? ` ｜ 定时：${durationMinutes} 分钟` : '')
+    + (skill ? ` ｜ 练习技能：${skill.displayName}` : ''))
   out.push('', `> 开始：${fmtDateTime(input.startedAt)} ｜ 结束：${fmtDateTime(input.endedAt)}`
     + ` ｜ 用户发言 ${userTurns.length} 轮 ｜ 已评分 ${feedbackByRound.size + unattached.length} 轮`)
+  // 素材清单证据（录音/画面采集情况；"AI 是否真的用了这些素材"由四章是否存在佐证）
+  const media = input.media || null
+  if (media) {
+    if (media.audioSegments > 0 || media.frames > 0) {
+      const parts = [
+        media.audioSegments > 0 ? `录音 ${media.audioSegments} 段` : '',
+        media.frames > 0 ? `画面 ${media.frames} 帧` : '',
+      ].filter(Boolean).join(' + ')
+      out.push('', `> 练习素材：${parts}（${media.cameraOn ? '已开启摄像头' : '未开启摄像头'}，仅存于本机内存）`)
+    } else {
+      out.push('', '> 练习素材：本次未采集到录音/画面，报告基于对话文字与逐轮评分生成')
+    }
+  }
 
   const validFeedback = [...feedbackByRound.values(), ...unattached]
   const scoredRounds = validFeedback.length
   if (scoredRounds > 0) {
     const withOverall = validFeedback.filter(f => typeof f.overall === 'number')
-    const avgOverall = withOverall.length
-      ? Math.round((withOverall.reduce((acc, f) => acc + f.overall, 0) / withOverall.length) * 10) / 10
+    // 打分逻辑（skill 化）：技能声明 weighted 时按权重合成整场综合分，否则维持
+    // 各轮 overall 平均。skill 为 null 时输出与历史版本逐字节一致。
+    const aggregate = skill
+      ? aggregateOverallScore(validFeedback as unknown as Array<Record<string, unknown>>, skill)
       : null
-    out.push('', `## 一、综合评分${avgOverall != null ? `（整场平均 ${avgOverall}/10）` : ''}`, '')
+    const avgOverall = aggregate
+      ? aggregate.value
+      : withOverall.length
+        ? Math.round((withOverall.reduce((acc, f) => acc + f.overall, 0) / withOverall.length) * 10) / 10
+        : null
+    const scaleMax = skill ? skill.evaluation.scale.max : 10
+    const overallCaption = avgOverall != null
+      ? (aggregate
+        ? aggregate.mode === 'weighted'
+          ? `（整场加权 ${avgOverall}/${scaleMax}）`
+          : `（整场平均 ${avgOverall}/${scaleMax}）`
+        : `（整场平均 ${avgOverall}/${scaleMax}）`)
+      : ''
+    out.push('', `## 一、综合评分${overallCaption}`, '')
     out.push('| 维度 | 平均 | 最高 | 最低 |', '| --- | --- | --- | --- |')
-    const rows: Array<(typeof scoreKeys)[number] | 'bodyLanguage'> = [...scoreKeys]
+    // 行序：overall → 技能维度（默认六维同序）→ bodyLanguage（如有）
+    const rows: string[] = ['overall']
+    if (skill && skill.evaluation.dims.length > 0) {
+      rows.push(...skill.evaluation.dims.map(dim => dim.id))
+    } else {
+      rows.push(...scoreKeys.filter(key => key !== 'overall'))
+    }
     // 肢体语言维度只在「至少有一轮填了该分」（摄像头开启时模型才会填）才入表
     if (validFeedback.some(f => f.bodyLanguage != null)) rows.push('bodyLanguage')
-    for (const key of rows) {
-      const samples = validFeedback.map(f => f[key])
+    const rowLabel = (id: string): string => {
+      if (id === 'overall') return '总分'
+      if (id === 'bodyLanguage') return '肢体语言'
+      if (skill) return skill.labels[id] || id
+      return dimensionNames[id] || id
+    }
+    for (const id of rows) {
+      const samples = validFeedback
+        .map(f => (f as unknown as Record<string, unknown>)[id])
+        .filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
       const avg = average(samples)
       const { min, max } = minMax(samples)
-      out.push(`| ${dimensionNames[key]} | ${avg != null ? `${avg}/10` : '—'} | ${max} | ${min} |`)
+      out.push(`| ${rowLabel(id)} | ${avg != null ? `${avg}/${scaleMax}` : '—'} | ${max} | ${min} |`)
+    }
+    // 结论档位（resultBands，如知识点掌握度）：综合分落到哪一档
+    if (skill && skill.evaluation.resultBands.length > 0 && avgOverall != null) {
+      const band = resultBandOf(skill, avgOverall)
+      if (band) out.push('', `**结论：${band.label}**${band.description ? ` — ${band.description}` : ''}`)
     }
   }
 
@@ -282,6 +367,27 @@ export function buildPracticeReportMarkdown(input: PracticeReportInput): string 
       }
     }
     let appendedAny = false
+    const scaleMax = skill ? skill.evaluation.scale.max : 10
+    const feedbackScoreLine = (fb: PracticeFeedbackRecord): string => {
+      const rec = fb as unknown as Record<string, unknown>
+      const parts: string[] = [`总分 ${fmtScore(fb.overall)}/${scaleMax}`]
+      if (skill && skill.evaluation.dims.length > 0) {
+        for (const dim of skill.evaluation.dims) {
+          const value = rec[dim.id]
+          parts.push(`${dim.label} ${typeof value === 'number' ? value : '—'}/${scaleMax}`)
+        }
+      } else {
+        parts.push(
+          `流利度 ${fmtScore(fb.fluency)}/${scaleMax}`,
+          `发音语调 ${fmtScore(fb.pronunciation)}/${scaleMax}`,
+          `语法 ${fmtScore(fb.grammar)}/${scaleMax}`,
+          `词汇 ${fmtScore(fb.vocabulary)}/${scaleMax}`,
+          `内容 ${fmtScore(fb.content)}/${scaleMax}`,
+        )
+      }
+      if (fb.bodyLanguage != null) parts.push(`肢体语言 ${fmtScore(fb.bodyLanguage)}/${scaleMax}`)
+      return parts.join(' ｜ ')
+    }
     rounds.forEach((entry, index) => {
       if (!entry.user) return
       const roundNo = index + 1
@@ -290,10 +396,7 @@ export function buildPracticeReportMarkdown(input: PracticeReportInput): string 
       appendedAny = true
       out.push('', `### 第 ${roundNo} 轮`, '', `**用户：** ${userText}`)
       if (feedback) {
-        out.push('', `**评分：** 总分 ${fmtScore(feedback.overall)}/10 ｜ 流利度 ${fmtScore(feedback.fluency)}/10`
-          + ` ｜ 发音语调 ${fmtScore(feedback.pronunciation)}/10 ｜ 语法 ${fmtScore(feedback.grammar)}/10`
-          + ` ｜ 词汇 ${fmtScore(feedback.vocabulary)}/10 ｜ 内容 ${fmtScore(feedback.content)}/10`
-          + (feedback.bodyLanguage != null ? ` ｜ 肢体语言 ${fmtScore(feedback.bodyLanguage)}/10` : ''))
+        out.push('', `**评分：** ${feedbackScoreLine(feedback)}`)
         const comment = cleanText(feedback.comment)
         const strengths = cleanText(feedback.strengths)
         const improvements = cleanText(feedback.improvements)
@@ -336,6 +439,12 @@ export function buildPracticeReportMarkdown(input: PracticeReportInput): string 
     out.push('', '## 备注', '', '本次练习没有产生评分（可能过早结束或模型未调用评分工具）。对话记录仍保留在上方。')
   }
 
+  // 下载技能时附上「技能与评价标准」参考（default 技能不追加，输出与历史一致）
+  if (skill) {
+    const criteria = buildSkillCriteriaMarkdown(skill)
+    if (criteria) out.push(criteria)
+  }
+
   return out.join('\n')
 }
 
@@ -361,4 +470,109 @@ export function formatPracticeCountdown(ms: number): string {
   const pad = (n: number) => String(n).padStart(2, '0')
   if (hours > 0) return `${hours}:${pad(minutes)}:${pad(seconds)}`
   return `${pad(minutes)}:${pad(seconds)}`
+}
+
+// --- AI 全模态分析素材（用户每轮语音录音 + 摄像头帧） ----------------------
+
+/** 录音单段上限（秒）：评分只需前段代表性语音，防止超长段撑爆请求体。 */
+export const PRACTICE_AUDIO_SEGMENT_MAX_SECONDS = 20
+/** 录音段数上限：只保留最近 N 段用户发言（超出丢最早的）。 */
+export const PRACTICE_AUDIO_SEGMENT_MAX_COUNT = 12
+/** 送给 Omni 模型分析的帧数上限（会从收集到的帧里均匀抽样）。 */
+export const PRACTICE_OMNI_MAX_FRAMES = 6
+
+/**
+ * 把 16-bit PCM mono 采样编码成 WAV base64（无 data: 前缀）。
+ *
+ * @param pcm16 采样数据（例如 useOmniRealtime 回调里 16 kHz 的 PCM16）。
+ * @param sampleRate 采样率，默认 16000（与 Omni-Realtime 上行一致）。
+ */
+export function encodePcm16ToWavBase64(pcm16: Int16Array, sampleRate = 16_000): string {
+  const dataLength = pcm16.length * 2
+  const buffer = new ArrayBuffer(44 + dataLength)
+  const view = new DataView(buffer)
+  const writeAscii = (offset: number, text: string): void => {
+    for (let i = 0; i < text.length; i += 1) {
+      view.setUint8(offset + i, text.charCodeAt(i))
+    }
+  }
+  writeAscii(0, 'RIFF')
+  view.setUint32(4, 36 + dataLength, true)
+  writeAscii(8, 'WAVE')
+  writeAscii(12, 'fmt ')
+  view.setUint32(16, 16, true)          // fmt chunk size
+  view.setUint16(20, 1, true)           // PCM
+  view.setUint16(22, 1, true)           // mono
+  view.setUint32(24, sampleRate, true)
+  view.setUint32(28, sampleRate * 2, true) // byte rate
+  view.setUint16(32, 2, true)           // block align
+  view.setUint16(34, 16, true)          // bits per sample
+  writeAscii(36, 'data')
+  view.setUint32(40, dataLength, true)
+  const bytes = new Int16Array(buffer, 44, pcm16.length)
+  bytes.set(pcm16)
+  let binary = ''
+  const chunk = 0x8000
+  for (let i = 0; i < buffer.byteLength; i += chunk) {
+    binary += String.fromCharCode(...new Uint8Array(buffer, i, Math.min(chunk, buffer.byteLength - i)))
+  }
+  return btoa(binary)
+}
+
+/**
+ * 裁掉 PCM16 首尾的静音段（两侧各保留一点 padding），并截断到
+ * maxSeconds。返回新的 Int16Array；全程无语音时返回空数组。
+ */
+export function trimPcm16Silence(
+  pcm16: Int16Array,
+  options: { sampleRate?: number; threshold?: number; maxSeconds?: number; padMs?: number } = {},
+): Int16Array {
+  const sampleRate = options.sampleRate || 16_000
+  const threshold = options.threshold ?? 180 // |sample| 低于该值视为静音（32768 满幅）
+  const padMs = options.padMs ?? 140
+  const maxSeconds = options.maxSeconds ?? PRACTICE_AUDIO_SEGMENT_MAX_SECONDS
+
+  const pad = Math.min(pcm16.length, Math.round((sampleRate * padMs) / 1000))
+  const maxLen = Math.min(pcm16.length, Math.round(sampleRate * maxSeconds))
+
+  let first = -1
+  let last = -1
+  for (let i = 0; i < maxLen; i += 1) {
+    if (Math.abs(pcm16[i]!) >= threshold) {
+      if (first === -1) first = i
+      last = i
+    }
+  }
+  if (first === -1 || last === -1) return new Int16Array(0)
+
+  const start = Math.max(0, first - pad)
+  const end = Math.min(maxLen, last + 1 + pad)
+  return pcm16.slice(start, end)
+}
+
+/**
+ * 从收集到的摄像头帧里均匀抽样至多 max 帧（始终保留第一帧与最后一帧），
+ * 供 AI 全模态分析使用——避免把 1 fps × 整场练习的帧全塞进请求。
+ */
+export function pickPracticeReportFrames(frames: string[], max = PRACTICE_OMNI_MAX_FRAMES): string[] {
+  const list = frames.filter(Boolean)
+  if (list.length === 0) return []
+  if (list.length <= max) return list
+  const picked: string[] = []
+  const step = (list.length - 1) / (max - 1)
+  for (let i = 0; i < max; i += 1) {
+    picked.push(list[Math.min(list.length - 1, Math.round(i * step))]!)
+  }
+  return picked
+}
+
+/**
+ * 把 Omni 全模态分析返回的 Markdown 段拼到确定性报告末尾。
+ * AI 段为空 / 失败时原样返回基础报告。
+ */
+export function composePracticeReportWithOmniAnalysis(baseReport: string, omniSection: string): string {
+  const section = (omniSection || '').trim()
+  if (!section) return baseReport
+  const base = (baseReport || '').trimEnd()
+  return `${base}\n\n${section}`
 }

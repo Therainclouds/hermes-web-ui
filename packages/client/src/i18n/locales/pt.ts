@@ -727,6 +727,8 @@ export default {
   omniRealtime: {
     entry: 'Tempo real',
     entryHint: 'Conversa por voz mãos livres com a IA — interrompa a qualquer momento',
+    modeLabel: 'Modo',
+    agentMode: 'Modo Agente',
     backendUnavailable: 'O serviço em tempo real não está pronto. Configure e inicie o serviço de voz no modo Reunião e tente novamente.',
     sessionError: 'Falha na conexão em tempo real. Tente novamente; se persistir, verifique se o serviço de voz de reuniões está em execução.',
     toolRunning: 'Consultando: {tool} …',
@@ -750,8 +752,6 @@ export default {
     toolRunningInline: 'Chamando {tool} …',
     toolFailedInline: '{tool} falhou',
     toolCompletedInline: '{tool} concluído',
-    modeLabel: 'Modo',
-    agentMode: 'Modo Agente',
   },
 
   realtimeVoice: {
@@ -765,6 +765,13 @@ export default {
 
   // Modo de prática oral (terceiro modo de conversa em «Novo chat»)
   speechPractice: {
+    skill: "Skill de prática",
+    skillPlaceholder: "Escolha skill (padrão: coach genérico)",
+    skillDefault: "Coach conversacional genérico",
+    skillLanguageFixed: "Este skill usa {language}",
+    reportAnalyzingMedia: "Ouvindo {audio} gravações · revisando {frames} imagens — gerando análise de IA multimodal…",
+    reportSkippedNoMedia: "Sem gravações/imagens nesta sessão — análise multimodal ignorada; relatório baseado na transcrição e nas notas",
+    reviewingEnd: "O coach está fazendo a avaliação final (reutilizando o contexto de áudio/vídeo)…",
     entry: 'Prática oral',
     entryHint: 'Pratique em voz alta com um coach de IA sobre o tema que escolher: cada turno é comentado e pontuado, e no final o conteúdo da análise pode ser salvo como Markdown',
     cameraHint: 'Com a câmera ativa, o coach também avalia linguagem corporal e postura',
@@ -823,6 +830,9 @@ export default {
     reportSaved: 'Relatório de análise salvo',
     download: 'Baixar relatório',
     saveFailed: 'Falha ao salvar o relatório. Tente novamente',
+    reportAnalyzing: 'Gerando análise multimodal por IA (áudio e imagens)…',
+    reportAnalyzed: 'Análise multimodal por IA gerada',
+    aiAnalysisFailed: 'Falha na análise multimodal por IA — relatório base salvo sem revisão de áudio/vídeo',
     duration: 'Duração (min)',
     durationHint: 'Minutos; 0 = sem limite. Ao final da contagem regressiva, a sessão termina e o relatório de análise é gerado automaticamente.',
     timedMinutes: 'Com tempo · {minutes} min',
@@ -1527,7 +1537,7 @@ jobTriggered: 'Job acionado',
     realtimeSharedHint: 'O ASR do modo reunião e as conversas Realtime usam por padrão a chave de API Qwen salva aqui, então você gerencia apenas uma chave de API Qwen.',
     realtimeApiKey: 'Chave de API Qwen',
     realtimeApiKeyPlaceholder: 'sk-…',
-    realtimeApiKeyHint: 'Salva apenas neste navegador. Usada como chave padrão para o ASR do modo reunião e conversas de voz em tempo real.',
+    realtimeApiKeyHint: 'Salva no perfil do usuário atual no servidor (como as configurações de modelos STT/TTS), então ela acompanha você entre navegadores e dispositivos. Usada como chave padrão para o ASR do modo reunião e conversas de voz em tempo real.',
     realtimeModelLabel: 'Modelo em tempo real',
     realtimeModelPlaceholder: 'qwen3.5-omni-flash-realtime',
     realtimeVoiceLabel: 'Voz padrão',

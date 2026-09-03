@@ -633,6 +633,8 @@ export default {
   omniRealtime: {
     entry: '即時對話',
     entryHint: '免持與 AI 即時語音對話，可隨時打斷',
+    modeLabel: '模式',
+    agentMode: 'Agent 模式',
     backendUnavailable: '即時對話服務未就緒，請先在會議模式中設定並啟動語音服務後再試',
     sessionError: '即時連線出錯，請重試；若反覆失敗請檢查會議語音服務是否已啟動',
     toolRunning: '正在查詢：{tool} …',
@@ -660,8 +662,6 @@ export default {
     contextNearLimit: '對話已接近模型內容上限（{used}/{total} 輪），較早的輪次即將被捨棄，建議結束後新建對話繼續。',
     resumeVoiceChat: '繼續對話',
     voiceChat: '語音對話',
-    modeLabel: '模式',
-    agentMode: 'Agent 模式',
   },
 
   realtimeVoice: {
@@ -701,6 +701,13 @@ export default {
 
   // 口語對練模式（新對話中的第三種對話模式）
   speechPractice: {
+    skill: "練習技能",
+    skillPlaceholder: "選擇練習技能（不選=通用教練）",
+    skillDefault: "通用口語教練",
+    skillLanguageFixed: "此技能固定使用 {language}",
+    reportAnalyzingMedia: "正在聽 {audio} 段錄音 · 看 {frames} 幀畫面，產生 AI 全模態深度分析…",
+    reportSkippedNoMedia: "本次未採集到錄音/畫面，未執行全模態分析；報告基於對話文字與逐輪評分",
+    reviewingEnd: "教練正在進行本場收尾總評（重用本場語音/畫面上下文）…",
     entry: '口語對練',
     entryHint: '與 AI 教練針對指定方向進行語音對練：每輪講評與評分，結束後可將分析內容儲存為 Markdown',
     cameraHint: '開啟攝影機後，教練會額外對肢體語言／儀態評分並給予建議',
@@ -759,6 +766,9 @@ export default {
     reportSaved: '分析報告已儲存',
     download: '下載報告',
     saveFailed: '報告儲存失敗，請重試',
+    reportAnalyzing: '正在生成 AI 全模態深度分析（聽錄音、看畫面）…',
+    reportAnalyzed: 'AI 全模態深度分析已生成',
+    aiAnalysisFailed: 'AI 全模態深度分析失敗，已保存基礎報告（錄音與畫面未參與分析）',
     duration: '練習時長',
     durationHint: '分鐘；0 表示不限時，倒計時到點自動結束並生成分析報告',
     timedMinutes: '定時 {minutes} 分鐘',
@@ -1962,7 +1972,7 @@ export default {
     realtimeSharedHint: '會議模式的 ASR 與 Realtime 對話預設使用此處儲存的千問 API Key，千問 API 只需在一處管理。',
     realtimeApiKey: '千問 API Key',
     realtimeApiKeyPlaceholder: 'sk-…',
-    realtimeApiKeyHint: '僅儲存在目前瀏覽器。作為會議模式 ASR 與即時語音對話的預設 Key。',
+    realtimeApiKeyHint: '保存在目前使用者 Profile（伺服端，與 STT/TTS 等模型設定一致），換瀏覽器／裝置也不遺失；作為會議模式 ASR 與即時語音對話的預設 Key。',
     realtimeModelLabel: '即時對話模型',
     realtimeModelPlaceholder: 'qwen3.5-omni-flash-realtime',
     realtimeVoiceLabel: '預設語音',

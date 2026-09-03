@@ -587,6 +587,8 @@ export default {
   omniRealtime: {
     entry: 'محادثة فورية',
     entryHint: 'محادثة صوتية حرة مع الذكاء الاصطناعي — يمكن المقاطعة في أي وقت',
+    modeLabel: 'الوضع',
+    agentMode: 'وضع الوكيل',
     backendUnavailable: 'خدمة المحادثة الفورية غير جاهزة. يرجى إعداد خدمة الصوت وتشغيلها من وضع الاجتماعات أولاً ثم إعادة المحاولة',
     sessionError: 'فشل الاتصال الفوري. حاول مرة أخرى؛ وإذا تكرر الأمر، تحقق من تشغيل خدمة صوت الاجتماعات',
     toolRunning: 'جارٍ البحث: {tool} …',
@@ -610,8 +612,6 @@ export default {
     toolRunningInline: 'استدعاء {tool} …',
     toolFailedInline: 'فشل {tool}',
     toolCompletedInline: 'اكتمل {tool}',
-    modeLabel: 'الوضع',
-    agentMode: 'وضع الوكيل',
   },
 
   realtimeVoice: {
@@ -651,6 +651,13 @@ export default {
 
   // وضع ممارسة المحادثة (الوضع الثالث للمحادثة في «محادثة جديدة»)
   speechPractice: {
+    skill: "مهارة التدريب",
+    skillPlaceholder: "اختر المهارة (الافتراضي: مدرب عام)",
+    skillDefault: "مدرب محادثة عام",
+    skillLanguageFixed: "تستخدم هذه المهارة {language}",
+    reportAnalyzingMedia: "أستمع إلى {audio} تسجيلات · أراجع {frames} لقطات — جارٍ إنشاء تحليل الذكاء الاصطناعي متعدد الوسائط…",
+    reportSkippedNoMedia: "لا توجد تسجيلات/لقطات في هذه الجلسة — تم تخطي التحليل متعدد الوسائط؛ التقرير بناءً على النص والتقييمات",
+    reviewingEnd: "يقدم المدرب تقييمه الختامي (بإعادة استخدام سياق الصوت/الفيديو)…",
     entry: 'ممارسة المحادثة',
     entryHint: 'تدرّب على التحدّث مع مدرب ذكاء اصطناعي في الموضوع الذي تختاره: تعليق وتقييم بعد كل دور، ويمكنك حفظ التحليل كملف Markdown في النهاية',
     cameraHint: 'عند تفعيل الكاميرا، يقيّم المدرب أيضًا لغة الجسد والوقفة',
@@ -709,6 +716,9 @@ export default {
     reportSaved: 'تم حفظ تقرير التحليل',
     download: 'تنزيل التقرير',
     saveFailed: 'فشل حفظ التقرير، حاول مرة أخرى',
+    reportAnalyzing: 'جارٍ إنشاء التحليل الذكي متعدد الوسائط (الصوت والصور)…',
+    reportAnalyzed: 'تم إنشاء التحليل الذكي متعدد الوسائط',
+    aiAnalysisFailed: 'فشل التحليل الذكي متعدد الوسائط — تم حفظ التقرير الأساسي بدون مراجعة الصوت/الفيديو',
     duration: 'المدة (دقيقة)',
     durationHint: 'دقيقة؛ 0 = بدون حد. عند انتهاء العد التنازلي تنتهي الجلسة ويُنشأ التقرير تلقائيًا.',
     timedMinutes: 'مؤقّت · {minutes} دقيقة',
@@ -1948,7 +1958,7 @@ export default {
     realtimeSharedHint: 'يستخدم ASR وضع الاجتماع ومحادثات Realtime افتراضيًا مفتاح API Qwen المحفوظ هنا، لذا تدير مفتاح Qwen واحدًا فقط.',
     realtimeApiKey: 'مفتاح API Qwen',
     realtimeApiKeyPlaceholder: 'sk-…',
-    realtimeApiKeyHint: 'يُحفظ فقط في هذا المتصفح. يُستخدم كمفتاح افتراضي لوضع الاجتماع ومحادثات الصوت في الوقت الفعلي.',
+    realtimeApiKeyHint: 'يُحفظ في ملف تعريف المستخدم الحالي على الخادم (مثل إعدادات نماذج STT/TTS)، لذلك يبقى معك عبر المتصفحات والأجهزة. يُستخدم كمفتاح افتراضي لوضع الاجتماع ومحادثات الصوت في الوقت الفعلي.',
     realtimeModelLabel: 'نموذج الوقت الفعلي',
     realtimeModelPlaceholder: 'qwen3.5-omni-flash-realtime',
     realtimeVoiceLabel: 'الصوت الافتراضي',

@@ -727,6 +727,8 @@ export default {
   omniRealtime: {
     entry: 'リアルタイム会話',
     entryHint: 'ハンズフリーで AI とリアルタイム音声会話、いつでも割り込み可能',
+    modeLabel: 'モード',
+    agentMode: 'Agent モード',
     backendUnavailable: 'リアルタイムサービスの準備ができていません。まず会議モードで音声サービスを設定・起動してから再試行してください',
     sessionError: 'リアルタイム接続でエラーが発生しました。再試行してください。繰り返す場合は会議音声サービスの起動を確認してください',
     toolRunning: '照会中：{tool} …',
@@ -750,8 +752,6 @@ export default {
     toolRunningInline: '{tool} を呼び出し中 …',
     toolFailedInline: '{tool} 失敗',
     toolCompletedInline: '{tool} 完了',
-    modeLabel: 'モード',
-    agentMode: 'Agent モード',
   },
 
   realtimeVoice: {
@@ -765,6 +765,13 @@ export default {
 
   // スピーキング練習モード（新規チャットの 3 つ目の会話モード）
   speechPractice: {
+    skill: "練習スキル",
+    skillPlaceholder: "練習スキルを選択（未選択=汎用コーチ）",
+    skillDefault: "汎用会話コーチ",
+    skillLanguageFixed: "このスキルは {language} を使用します",
+    reportAnalyzingMedia: "録音 {audio} 件を聴き、画面 {frames} 枚を見ながら AI 全モーダル分析を生成中…",
+    reportSkippedNoMedia: "今回、録音/画面がありませんでした。全モーダル分析をスキップし、文字と各ラウンドの評価に基づくレポートを生成しました",
+    reviewingEnd: "コーチが本場の総評をまとめています（音声・映像の文脈を再利用）…",
     entry: 'スピーキング練習',
     entryHint: 'AI コーチと指定したテーマで音声練習：毎ターン講評・採点し、終了後は分析内容を Markdown として保存できます',
     cameraHint: 'カメラをオンにすると、コーチがボディランゲージ／姿勢も評価します',
@@ -823,6 +830,9 @@ export default {
     reportSaved: '分析レポートを保存しました',
     download: 'レポートをダウンロード',
     saveFailed: 'レポートの保存に失敗しました。もう一度お試しください',
+    reportAnalyzing: 'AI全モーダル深度分析を生成中（音声・映像を確認）…',
+    reportAnalyzed: 'AI全モーダル深度分析を生成しました',
+    aiAnalysisFailed: 'AI全モーダル深度分析に失敗しました。基礎レポートのみ保存しました（音声・映像は未分析）',
     duration: '練習時間（分）',
     durationHint: '分。0 は制限なし。カウントダウン終了時に自動終了して分析レポートを生成します。',
     timedMinutes: '{minutes} 分タイマー',
@@ -1527,7 +1537,7 @@ export default {
     realtimeSharedHint: '会議モードの ASR と Realtime 会話は、ここで保存した Qwen API キーをデフォルトで使用します。Qwen API キーは 1 か所で管理できます。',
     realtimeApiKey: 'Qwen API キー',
     realtimeApiKeyPlaceholder: 'sk-…',
-    realtimeApiKeyHint: 'このブラウザにのみ保存されます。会議モード ASR とリアルタイム音声会話のデフォルトとして使われます。',
+    realtimeApiKeyHint: '現在のユーザープロファイル（サーバー側、STT/TTS 等のモデル設定と同じ）に保存されるため、ブラウザや端末を変えても引き継がれます。会議モードの ASR とリアルタイム音声会話のデフォルトキーとして使われます。',
     realtimeModelLabel: 'リアルタイムモデル',
     realtimeModelPlaceholder: 'qwen3.5-omni-flash-realtime',
     realtimeVoiceLabel: 'デフォルトの音声',

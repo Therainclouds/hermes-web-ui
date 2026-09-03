@@ -2,8 +2,13 @@ import { describe, expect, it } from 'vitest'
 import {
   buildPracticeInstructionBlock,
   buildPracticeReportMarkdown,
+  composePracticeReportWithOmniAnalysis,
+  encodePcm16ToWavBase64,
   formatPracticeCountdown,
+  pickPracticeReportFrames,
   practiceReportFileStem,
+  trimPcm16Silence,
+  PRACTICE_AUDIO_SEGMENT_MAX_SECONDS,
   PRACTICE_DIFFICULTY_LABELS,
   PRACTICE_LANGUAGE_LABELS,
   type PracticeFeedbackRecord,
@@ -278,5 +283,90 @@ describe('label maps', () => {
     expect(PRACTICE_DIFFICULTY_LABELS).toEqual({
       beginner: '入门', intermediate: '进阶', advanced: '高级',
     })
+  })
+})
+
+describe('encodePcm16ToWavBase64 / trimPcm16Silence', () => {
+  it('encodes PCM16 into a decodable mono WAV base64', () => {
+    const pcm = new Int16Array([0, 1000, -1000, 2000, 0])
+    const base64 = encodePcm16ToWavBase64(pcm, 16_000)
+    expect(base64.startsWith('RIFF')).toBe(false) // base64 — no plain header
+    const binary = atob(base64)
+    expect(binary.slice(0, 4)).toBe('RIFF')
+    expect(binary.slice(8, 12)).toBe('WAVE')
+    expect(binary.slice(12, 16)).toBe('fmt ')
+    const view = new DataView(new Uint8Array([...binary].map(c => c.charCodeAt(0))).buffer)
+    expect(view.getUint16(20, true)).toBe(1)   // PCM
+    expect(view.getUint16(22, true)).toBe(1)   // mono
+    expect(view.getUint32(24, true)).toBe(16_000)
+    expect(view.getUint16(34, true)).toBe(16)  // bits per sample
+    expect(view.getUint32(40, true)).toBe(pcm.length * 2)
+    // payload bytes round-trip
+    const payload = new Int16Array(view.buffer, 44, pcm.length)
+    expect(Array.from(payload)).toEqual(Array.from(pcm))
+  })
+
+  it('trims leading and trailing silence but keeps a little padding', () => {
+    const sampleRate = 16_000
+    const silence = new Int16Array(sampleRate) // 1s of silence
+    const speech = new Int16Array([...Array.from({ length: 400 }, () => 0), ...Array.from({ length: 2000 }, (_, i) => 3000 + (i % 100)), ...Array.from({ length: 400 }, () => 0)])
+    const pcm = new Int16Array(silence.length + speech.length + silence.length)
+    pcm.set(silence, 0)
+    pcm.set(speech, silence.length)
+    pcm.set(silence, silence.length + speech.length)
+
+    const trimmed = trimPcm16Silence(pcm, { sampleRate, padMs: 100 })
+    expect(trimmed.length).toBeGreaterThan(0)
+    expect(trimmed.length).toBeLessThan(pcm.length)
+    // padding at both ends keeps speech intact
+    const abs = Array.from(trimmed, v => Math.abs(v))
+    expect(abs.some(v => v >= 3000)).toBe(true)
+  })
+
+  it('returns an empty buffer for pure silence and caps at maxSeconds', () => {
+    const sampleRate = 16_000
+    const silent = new Int16Array(sampleRate)
+    expect(trimPcm16Silence(silent, { sampleRate }).length).toBe(0)
+
+    const long = new Int16Array(sampleRate * 10)
+    long.fill(500, sampleRate, sampleRate + 100)
+    const trimmed = trimPcm16Silence(long, { sampleRate, maxSeconds: 2 })
+    expect(trimmed.length).toBeLessThanOrEqual(sampleRate * 2)
+    expect(PRACTICE_AUDIO_SEGMENT_MAX_SECONDS).toBe(20)
+  })
+})
+
+describe('pickPracticeReportFrames', () => {
+  it('keeps all frames when under the cap', () => {
+    const frames = ['a', 'b', 'c']
+    expect(pickPracticeReportFrames(frames, 6)).toEqual(frames)
+  })
+
+  it('samples evenly and always keeps the first and last frame', () => {
+    const frames = Array.from({ length: 10 }, (_, i) => `frame-${i}`)
+    const picked = pickPracticeReportFrames(frames, 4)
+    expect(picked).toHaveLength(4)
+    expect(picked[0]).toBe('frame-0')
+    expect(picked[picked.length - 1]).toBe('frame-9')
+  })
+
+  it('ignores empties and returns [] when nothing is given', () => {
+    expect(pickPracticeReportFrames([])).toEqual([])
+    expect(pickPracticeReportFrames(['', null as unknown as string])).toEqual([])
+  })
+})
+
+describe('composePracticeReportWithOmniAnalysis', () => {
+  it('appends the AI section after the base report', () => {
+    const base = '# 🗣️ 口语对练分析报告\n\n正文'
+    const ai = '## 四、AI 全模态深度分析（基于录音与画面的评审）\n\n语音表现…'
+    const composed = composePracticeReportWithOmniAnalysis(base, ai)
+    expect(composed).toBe(`${base}\n\n${ai}`)
+    expect(composed.indexOf(ai)).toBeGreaterThan(composed.indexOf('正文'))
+  })
+
+  it('returns the base unchanged when the AI section is empty', () => {
+    expect(composePracticeReportWithOmniAnalysis('base', '')).toBe('base')
+    expect(composePracticeReportWithOmniAnalysis('base', '   \n ')).toBe('base')
   })
 })
