@@ -154,3 +154,54 @@ platform identity:
 ```bash
 HERMES_AGENT_BRIDGE_PLATFORM=agent-bridge python packages/server/src/services/hermes/agent-bridge/python/hermes_bridge.py
 ```
+
+## Troubleshooting
+
+### `[Errno 2] No such file or directory` from the bridge
+
+**Scope**: only relevant when this deployment talks to a **local Hermes Agent
+installation** (a local `hermes` binary / agent root on the same machine, via
+`HERMES_BIN` or an agent root under `~/.hermes`). Deployments that never run
+the local agent bridge do not use this code path and do not need any of the
+following.
+
+**Symptom**: the Web UI chat reports
+`Error: [Errno 2] No such file or directory` (note: *without* a filename in
+the message) and `bridge.log` shows repeated
+`[agent-bridge-client] request rejected` entries with the same error, while
+`ping`/`status_if_loaded` requests still succeed.
+
+**Root cause**: the bridge broker (`hermes_bridge.py`) is a long-lived process
+that keeps listening on the fixed endpoint `ipc:///tmp/hermes-agent-bridge.sock`.
+A newer Web UI server attaches to an already-running broker because it
+responds to pings. If that broker was started from a directory that has since
+been deleted (for example the project directory was wiped and re-cloned, or a
+deploy replaced the working tree), every worker spawn fails: `os.getcwd()`
+raises a bare `OSError: [Errno 2] No such file or directory` and
+`subprocess.Popen(cwd=os.getcwd())` in `WorkerProcess.start()` fails the same
+way. The Node side surfaces the raw errno string to the chat.
+
+**Fix shipped** (2026-09): `bridge_transport.py` now resolves the spawn cwd
+via `_safe_cwd()` — it validates the current working directory and falls back
+to the directory containing the bridge script, so a stale broker keeps
+working instead of failing every request.
+
+**Manual recovery** (when running an older build, or to clean up orphans):
+
+```bash
+# 1. Find the process holding the broker socket
+lsof /tmp/hermes-agent-bridge.sock
+
+# 2. Kill the stale broker (and its workers)
+kill -9 <PID>
+
+# 3. Remove the stale socket if it is left behind
+rm -f /tmp/hermes-agent-bridge.sock
+
+# 4. Restart the Web UI server; the manager spawns a fresh broker
+```
+
+**Prevention**: prefer restarting the Web UI server after deleting/re-creating
+its working directory (deploys, re-clones). If you manage the server under
+systemd/launchd, a plain restart also restarts the bridge children.
+
