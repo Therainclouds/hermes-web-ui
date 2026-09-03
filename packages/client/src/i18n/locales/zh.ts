@@ -62,7 +62,7 @@ export default {
     createUserFailed: '创建账户失败',
     bindExistingFailed: '绑定已有账户失败',
     superAdminUsername: '超级管理员用户名',
-    superAdminPhone: '超级管理员手机号',
+    superAdminPhone: '超级管理员手机号（可选）',
     newPhone: '手机号（可选）',
     noPhone: '未绑定手机号',
     tokenPlatformNoModel: '你的绑定账号没有授予任何可用模型，请联系中转站管理员。',

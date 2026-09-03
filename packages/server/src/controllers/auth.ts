@@ -735,9 +735,9 @@ export async function bindSuperAdminDeviceLogin(ctx: Context) {
   }
   const modelList = Array.isArray(models) && models.length > 0 ? models : verifiedModels
 
-  if (!username || !password || !phone) {
+  if (!username || !password) {
     ctx.status = 400
-    ctx.body = { error: 'username, password and phone are required' }
+    ctx.body = { error: 'username and password are required' }
     return
   }
 

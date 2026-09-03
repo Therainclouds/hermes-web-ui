@@ -172,7 +172,7 @@ export interface BindSuperAdminPayload {
   models?: string[]
   username: string
   password: string
-  phone: string
+  phone?: string
 }
 
 export interface CreateWeChatUserPayload {

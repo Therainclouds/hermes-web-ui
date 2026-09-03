@@ -173,7 +173,7 @@ async function pickOption(option: string) {
 }
 
 async function submitBindSuperAdmin() {
-  if (!saUsername.value.trim() || !saPassword.value || !saPhone.value.trim()) {
+  if (!saUsername.value.trim() || !saPassword.value) {
     choiceError.value = t("login.choiceFieldsRequired");
     return;
   }
@@ -185,7 +185,7 @@ async function submitBindSuperAdmin() {
       ...choiceResult.value,
       username: saUsername.value.trim(),
       password: saPassword.value,
-      phone: saPhone.value.trim(),
+      phone: saPhone.value.trim() || undefined,
     });
     setApiKey(result.token);
     router.replace("/hermes/chat");

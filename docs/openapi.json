@@ -888,7 +888,6 @@
                   "api_base",
                   "api_key",
                   "password",
-                  "phone",
                   "user_id",
                   "username"
                 ]

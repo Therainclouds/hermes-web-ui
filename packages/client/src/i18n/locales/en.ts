@@ -62,7 +62,7 @@ export default {
     createUserFailed: 'Failed to create account',
     bindExistingFailed: 'Failed to bind existing account',
     superAdminUsername: 'Super admin username',
-    superAdminPhone: 'Super admin phone number',
+    superAdminPhone: 'Super admin phone number (optional)',
     newPhone: 'Phone number (optional)',
     noPhone: 'No phone bound',
     tokenPlatformNoModel: 'Your bound account did not grant any available model. Please contact the token platform administrator.',
