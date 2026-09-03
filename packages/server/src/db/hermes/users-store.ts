@@ -18,6 +18,8 @@ export interface UserRecord {
   last_login_at: number | null
   avatar: string
   model_guide_status: ModelGuideStatus
+  phone_number: string | null
+  wechat_bound: number
 }
 
 export interface UserProfileRecord {
@@ -32,6 +34,8 @@ export interface UserSummary {
   username: string
   role: UserRole
   status: UserStatus
+  phone_number: string | null
+  wechat_bound: number
   profiles: string[]
   default_profile: string | null
   created_at: number
@@ -96,7 +100,7 @@ export function listUsers(): UserSummary[] {
   const db = getDb()
   if (!db) return []
   const users = db.prepare(
-    `SELECT id, username, role, status, created_at, updated_at, last_login_at FROM ${USERS_TABLE} ORDER BY id ASC`
+    `SELECT id, username, role, status, phone_number, wechat_bound, created_at, updated_at, last_login_at FROM ${USERS_TABLE} ORDER BY id ASC`
   ).all() as Array<Omit<UserSummary, 'profiles' | 'default_profile'>>
   return users.map(user => {
     const profiles = listUserProfiles(user.id)
@@ -200,6 +204,48 @@ export function updateUsername(userId: UserId, username: string): boolean {
   return result.changes > 0
 }
 
+/**
+ * Normalize a phone number for storage and comparison.
+ * Strips whitespace, dashes, and leading +/country code prefixes
+ * to produce a consistent 11-digit Chinese mobile format.
+ * Returns null if the input is empty or too short to be valid.
+ */
+export function normalizePhoneNumber(phone: string | null | undefined): string | null {
+  if (!phone) return null
+  const cleaned = phone.replace(/[\s\-()]/g, '').replace(/^\+?86/, '').trim()
+  return cleaned.length >= 5 ? cleaned : null
+}
+
+export function findUserByPhoneNumber(phone: string): UserRecord | null {
+  const db = getDb()
+  if (!db) return null
+  const normalized = normalizePhoneNumber(phone)
+  if (!normalized) return null
+  const row = db.prepare(`SELECT * FROM ${USERS_TABLE} WHERE phone_number = ?`).get(normalized) as UserRecord | undefined
+  return row || null
+}
+
+export function updateUserPhoneNumber(userId: UserId, phone: string | null): boolean {
+  const db = getDb()
+  if (!db) return false
+  const id = normalizeUserId(userId)
+  if (!id) return false
+  const normalized = normalizePhoneNumber(phone)
+  const result = db.prepare(`UPDATE ${USERS_TABLE} SET phone_number = ?, updated_at = ? WHERE id = ?`)
+    .run(normalized, Date.now(), id)
+  return result.changes > 0
+}
+
+export function setUserWeChatBound(userId: UserId, bound: boolean): boolean {
+  const db = getDb()
+  if (!db) return false
+  const id = normalizeUserId(userId)
+  if (!id) return false
+  const result = db.prepare(`UPDATE ${USERS_TABLE} SET wechat_bound = ?, updated_at = ? WHERE id = ?`)
+    .run(bound ? 1 : 0, Date.now(), id)
+  return result.changes > 0
+}
+
 export function getUserAvatar(userId: UserId): string {
   const db = getDb()
   if (!db) return ''
@@ -234,6 +280,8 @@ export function createUser(input: {
   password: string
   role?: UserRole
   status?: UserStatus
+  phone?: string | null
+  wechatBound?: boolean
   profiles?: string[]
   defaultProfile?: string | null
 }): UserRecord | null {
@@ -242,10 +290,12 @@ export function createUser(input: {
   const now = Date.now()
   const role = input.role || 'admin'
   const status = input.status || 'active'
+  const phone = normalizePhoneNumber(input.phone)
+  const wechatBound = input.wechatBound ? 1 : 0
   db.prepare(
-    `INSERT INTO ${USERS_TABLE} (username, password_hash, role, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(input.username, hashPassword(input.password), role, status, now, now)
+    `INSERT INTO ${USERS_TABLE} (username, password_hash, role, status, created_at, updated_at, phone_number, wechat_bound)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(input.username, hashPassword(input.password), role, status, now, now, phone, wechatBound)
 
   const user = findUserByUsername(input.username)
   if (user) replaceUserProfiles(user.id, input.profiles || [], input.defaultProfile)
@@ -258,6 +308,7 @@ export function updateUser(input: {
   role?: UserRole
   status?: UserStatus
   password?: string
+  phone?: string | null
   profiles?: string[]
   defaultProfile?: string | null
 }): UserRecord | null {
@@ -273,13 +324,14 @@ export function updateUser(input: {
   const nextRole = input.role ?? current.role
   const nextStatus = input.status ?? current.status
   const nextPasswordHash = input.password ? hashPassword(input.password) : current.password_hash
+  const nextPhone = input.phone !== undefined ? normalizePhoneNumber(input.phone) : current.phone_number
   const now = Date.now()
 
   db.prepare(
     `UPDATE ${USERS_TABLE}
-     SET username = ?, password_hash = ?, role = ?, status = ?, updated_at = ?
+     SET username = ?, password_hash = ?, role = ?, status = ?, phone_number = ?, updated_at = ?
      WHERE id = ?`
-  ).run(nextUsername, nextPasswordHash, nextRole, nextStatus, now, id)
+  ).run(nextUsername, nextPasswordHash, nextRole, nextStatus, nextPhone, now, id)
 
   if (input.profiles) replaceUserProfiles(id, input.profiles, input.defaultProfile)
   return findUserById(id)
@@ -294,6 +346,13 @@ export function deleteUser(userId: UserId): boolean {
   try {
     db.prepare(`DELETE FROM ${USER_PROFILES_TABLE} WHERE user_id = ?`).run(id)
     db.prepare(`DELETE FROM ${USER_THEMES_TABLE} WHERE user_id = ?`).run(id)
+    // Clean up WeChat bindings referencing this user
+    const wechatTable = 'wechat_bindings'
+    try {
+      db.prepare(`DELETE FROM ${wechatTable} WHERE user_id = ?`).run(id)
+    } catch {
+      // wechat_bindings table may not exist yet during early migration
+    }
     const result = db.prepare(`DELETE FROM ${USERS_TABLE} WHERE id = ?`).run(id)
     db.exec('COMMIT')
     return result.changes > 0

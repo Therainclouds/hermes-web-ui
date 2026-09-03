@@ -465,6 +465,50 @@
         }
       }
     },
+    "/api/auth/bind-phone": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Create bind-phone",
+        "description": "POST /api/auth/bind-phone",
+        "operationId": "bindPhone",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "phone": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "phone"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/auth/bind-super-admin": {
       "post": {
         "tags": [
@@ -658,6 +702,16 @@
             "$ref": "#/components/responses/Unauthorized"
           }
         },
+        "parameters": [
+          {
+            "name": "platform_profile_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -1010,6 +1064,29 @@
         }
       }
     },
+    "/api/auth/phone": {
+      "delete": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Delete phone",
+        "description": "DELETE /api/auth/phone",
+        "operationId": "unbindPhone",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
     "/api/auth/set-password": {
       "post": {
         "tags": [
@@ -1195,6 +1272,10 @@
                   "password": {
                     "type": "string"
                   },
+                  "phone": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
                   "profiles": {
                     "type": "object",
                     "additionalProperties": true
@@ -1263,6 +1344,10 @@
                     "type": "string"
                   },
                   "password": {
+                    "type": "string"
+                  },
+                  "phone": {
+                    "nullable": true,
                     "type": "string"
                   },
                   "profiles": {

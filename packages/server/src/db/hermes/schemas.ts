@@ -404,6 +404,12 @@ export const USERS_SCHEMA: Record<string, string> = {
   last_login_at: 'INTEGER',
   avatar: "TEXT NOT NULL DEFAULT ''",
   model_guide_status: "TEXT NOT NULL DEFAULT 'pending'",
+  phone_number: 'TEXT',
+  wechat_bound: "INTEGER NOT NULL DEFAULT 0",
+}
+
+export const USERS_INDEXES = {
+  uniq_users_phone_number: 'CREATE UNIQUE INDEX IF NOT EXISTS uniq_users_phone_number ON users(phone_number) WHERE phone_number IS NOT NULL AND phone_number <> \'\'',
 }
 
 export const USER_PROFILES_TABLE = 'user_profiles'
@@ -1152,6 +1158,18 @@ export const EXPERT_PROFILE_BINDINGS_SCHEMA: Record<string, string> = {
 }
 
 // ============================================================================
+// Schema Migrations
+// ============================================================================
+
+export const SCHEMA_MIGRATIONS_TABLE = 'schema_migrations'
+
+export const SCHEMA_MIGRATIONS_SCHEMA: Record<string, string> = {
+  version: 'INTEGER PRIMARY KEY',
+  name: "TEXT NOT NULL DEFAULT ''",
+  applied_at: 'INTEGER NOT NULL',
+}
+
+// ============================================================================
 // Schema Sync Utilities
 // ============================================================================
 
@@ -1591,6 +1609,107 @@ function cleanupHistoricalZeroLineWorkspaceDiffs(
 }
 
 // ============================================================================
+// Versioned Schema Migrations
+// ============================================================================
+
+interface SchemaMigration {
+  version: number
+  name: string
+  up: (db: NonNullable<ReturnType<typeof getDb>>) => void
+}
+
+/**
+ * All schema migrations in version order. Each migration is idempotent:
+ * it checks for the columns/tables it creates and skips if already present.
+ */
+const SCHEMA_MIGRATIONS: SchemaMigration[] = [
+  {
+    version: 1,
+    name: 'user_identity_refactor',
+    up(db) {
+      // 1. Add phone_number column if missing
+      if (!tableHasColumn(db, USERS_TABLE, 'phone_number')) {
+        db.exec(`ALTER TABLE ${quoteIdentifier(USERS_TABLE)} ADD COLUMN phone_number TEXT`)
+      }
+      // 2. Add wechat_bound column if missing
+      if (!tableHasColumn(db, USERS_TABLE, 'wechat_bound')) {
+        db.exec(`ALTER TABLE ${quoteIdentifier(USERS_TABLE)} ADD COLUMN wechat_bound INTEGER NOT NULL DEFAULT 0`)
+      }
+      // 3. Create unique index on phone_number
+      db.exec(USERS_INDEXES.uniq_users_phone_number)
+      // 4. Migrate existing WeChat binding data: copy phone numbers from
+      //    wechat_bindings into users.phone_number where available
+      if (tableExists(db, WECHAT_BINDINGS_TABLE)) {
+        db.exec(`
+          UPDATE ${quoteIdentifier(USERS_TABLE)}
+          SET phone_number = (
+            SELECT COALESCE(
+              NULLIF(TRIM(wb.platform_username), ''),
+              'tp_' || wb.platform_profile_id
+            )
+            FROM ${quoteIdentifier(WECHAT_BINDINGS_TABLE)} wb
+            WHERE wb.user_id = ${quoteIdentifier(USERS_TABLE)}.id
+            LIMIT 1
+          )
+          WHERE phone_number IS NULL
+            AND EXISTS (SELECT 1 FROM ${quoteIdentifier(WECHAT_BINDINGS_TABLE)} WHERE user_id = ${quoteIdentifier(USERS_TABLE)}.id)
+        `)
+        // Mark users with active WeChat bindings
+        db.exec(`
+          UPDATE ${quoteIdentifier(USERS_TABLE)}
+          SET wechat_bound = 1
+          WHERE wechat_bound = 0
+            AND EXISTS (SELECT 1 FROM ${quoteIdentifier(WECHAT_BINDINGS_TABLE)} WHERE user_id = ${quoteIdentifier(USERS_TABLE)}.id)
+        `)
+      }
+      // 5. Ensure at least one super_admin exists
+      const superAdminCount = db.prepare(
+        `SELECT COUNT(*) as cnt FROM ${quoteIdentifier(USERS_TABLE)} WHERE role = 'super_admin' AND status = 'active'`
+      ).get() as { cnt: number }
+      if (superAdminCount.cnt === 0) {
+        const firstUser = db.prepare(
+          `SELECT id FROM ${quoteIdentifier(USERS_TABLE)} ORDER BY id ASC LIMIT 1`
+        ).get() as { id: number } | undefined
+        if (firstUser) {
+          db.prepare(
+            `UPDATE ${quoteIdentifier(USERS_TABLE)} SET role = 'super_admin' WHERE id = ?`
+          ).run(firstUser.id)
+        }
+      }
+    },
+  },
+]
+
+function runPendingMigrations(db: NonNullable<ReturnType<typeof getDb>>): void {
+  // Ensure the migrations tracking table exists
+  syncTable(SCHEMA_MIGRATIONS_TABLE, SCHEMA_MIGRATIONS_SCHEMA)
+
+  const applied = new Set(
+    (db.prepare(`SELECT version FROM ${quoteIdentifier(SCHEMA_MIGRATIONS_TABLE)}`).all() as Array<{ version: number }>)
+      .map(row => row.version),
+  )
+
+  for (const migration of SCHEMA_MIGRATIONS) {
+    if (applied.has(migration.version)) continue
+
+    db.exec('BEGIN IMMEDIATE')
+    try {
+      migration.up(db)
+      db.prepare(
+        `INSERT INTO ${quoteIdentifier(SCHEMA_MIGRATIONS_TABLE)} (version, name, applied_at) VALUES (?, ?, ?)`
+      ).run(migration.version, migration.name, Date.now())
+      db.exec('COMMIT')
+      console.log(`[migrate] applied v${migration.version}: ${migration.name}`)
+    } catch (err) {
+      db.exec('ROLLBACK')
+      throw new Error(
+        `Schema migration v${migration.version} (${migration.name}) failed: ${(err as Error).message}`,
+      )
+    }
+  }
+}
+
+// ============================================================================
 // Unified Initializer
 // ============================================================================
 
@@ -1660,8 +1779,12 @@ export function initAllHermesTables(): void {
       indexes: PROVIDER_AUDIT_INDEXES,
     })
 
+    // Schema migrations tracking
+    syncTable(SCHEMA_MIGRATIONS_TABLE, SCHEMA_MIGRATIONS_SCHEMA)
+
     // Users and profile access
     syncTable(USERS_TABLE, USERS_SCHEMA)
+    createIndexes(db, USERS_INDEXES)
     syncTable(USER_PROFILES_TABLE, USER_PROFILES_SCHEMA, {
       primaryKey: 'user_id, profile_name',
       indexes: USER_PROFILES_INDEXES,
@@ -1836,6 +1959,13 @@ export function initAllHermesTables(): void {
       migrateWeChatDoubleUtf8()
     } catch (migrationErr: any) {
       console.warn('[migrate] wechat-double-utf8 migration failed:', migrationErr?.message || migrationErr)
+    }
+
+    // Versioned schema migrations (phone_number, wechat_bound, etc.)
+    try {
+      runPendingMigrations(db)
+    } catch (migrationErr: any) {
+      console.warn('[migrate] schema migration failed:', migrationErr?.message || migrationErr)
     }
   } catch (e) {
     console.error('Error initializing Hermes SQLite tables:', e)

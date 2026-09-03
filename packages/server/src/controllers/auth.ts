@@ -9,17 +9,21 @@ import {
   createUser,
   deleteUser,
   findUserById,
+  findUserByPhoneNumber,
   findUserByUsername,
   getUserAvatar,
   listUserProfiles,
   listUsers,
+  normalizePhoneNumber,
   replaceUserProfiles,
   setUserAvatar,
+  setUserWeChatBound,
   touchUserLogin,
   updateUserModelGuideStatus,
   updateUser,
   updateUsername,
   updateUserPassword,
+  updateUserPhoneNumber,
   verifyPassword,
   type ModelGuideStatus,
   type UserRole,
@@ -46,6 +50,7 @@ import {
   deleteBindingByUserId,
   findBindingByPlatformId,
   findBindingByUserId,
+  findUnboundUserByPhone,
   listWeChatBindings,
   upsertBindingByPlatformId,
 } from '../db/hermes/wechat-bindings-store'
@@ -86,6 +91,8 @@ export async function currentUser(ctx: Context) {
       username: user.username,
       role: user.role,
       status: user.status,
+      phone_number: user.phone_number || null,
+      wechat_bound: Boolean(user.wechat_bound),
       created_at: user.created_at,
       updated_at: user.updated_at,
       last_login_at: user.last_login_at,
@@ -537,23 +544,80 @@ export async function deviceLogin(ctx: Context) {
     ? models
     : verifiedModels
 
+  // ── Phone-based 1:1 WeChat binding ──
+  // The Token Platform profile carries the user's phone number (when the
+  // WeChat service account has getPhoneNumber capability). We use it as the
+  // identity bridge: match to an existing local user by phone, or
+  // auto-create one. Strict 1:1 — a WeChat account already bound to
+  // another user is rejected.
+  const phoneFromProfile = normalizePhoneNumber(profile.phone)
   const localUsername = `tp_${profile.id}`
-  let user = findUserByUsername(localUsername)
+
+  let user: UserRecord | null = null
+
+  // 1. Check if this WeChat platform_profile_id is already bound
+  const existingBinding = findBindingByPlatformId(profile.id)
+  if (existingBinding?.user_id) {
+    // Already bound: use the existing user
+    user = findUserById(existingBinding.user_id)
+  }
+
+  if (!user && phoneFromProfile) {
+    // 2. Try to find an unbound user with this phone number
+    const matchedUserId = findUnboundUserByPhone(phoneFromProfile)
+    if (matchedUserId) {
+      user = findUserById(matchedUserId)
+    } else {
+      // 3. Check if a user with this phone exists but is already WeChat-bound
+      const phoneUser = findUserByPhoneNumber(phoneFromProfile)
+      if (phoneUser && phoneUser.wechat_bound) {
+        ctx.status = 409
+        ctx.body = {
+          error: 'This phone number is already bound to another WeChat account',
+          code: 'PHONE_ALREADY_BOUND',
+        }
+        return
+      }
+    }
+  }
+
   if (!user) {
-    // Every WeChat account that scans gets its own regular user. Super admin
-    // is reserved for the built-in `quanthermes` account and is never granted
-    // through a WeChat scan.
+    // 4. Fallback: check for an existing tp_<id> user (backward compat when
+    // the Token Platform profile has no phone number or the user was created
+    // before the phone-based identity refactor).
+    const tpUser = findUserByUsername(localUsername)
+    if (tpUser && !tpUser.wechat_bound) {
+      user = tpUser
+    }
+  }
+
+  if (!user) {
+    // 5. No match: auto-create a new user with the phone number
+    const autoUsername = phoneFromProfile || localUsername
+    const finalUsername = findUserByUsername(autoUsername)
+      ? `${autoUsername}_${profile.id}`
+      : autoUsername
     user = createUser({
-      username: localUsername,
+      username: finalUsername,
       password: randomUUID(),
       role: 'admin',
       status: 'active',
+      phone: phoneFromProfile || null,
+      wechatBound: true,
     })
   }
   if (!user) {
     ctx.status = 500
     ctx.body = { error: 'Failed to provision local user' }
     return
+  }
+
+  // Mark user as WeChat-bound and ensure phone is set
+  if (phoneFromProfile && !user.phone_number) {
+    updateUserPhoneNumber(user.id, phoneFromProfile)
+  }
+  if (!user.wechat_bound) {
+    setUserWeChatBound(user.id, true)
   }
 
   const displayName = profile.display_name || profile.username || localUsername
@@ -723,17 +787,37 @@ export async function clearDeviceBindingController(ctx: Context) {
     const user = (binding.user_id ? findUserById(binding.user_id) : null)
       || (localUsername ? findUserByUsername(localUsername) : null)
     if (user) {
-      deletedProfiles = await deleteWeChatUserData(user)
+      // Phone-number guard: if the user has no phone number, refuse to unbind
+      // because the account would become identity-less (no way to re-bind).
+      if (!user.phone_number) {
+        ctx.status = 400
+        ctx.body = {
+          error: 'Cannot unbind WeChat: please bind a phone number first as identity fallback',
+          code: 'PHONE_REQUIRED_FOR_UNBIND',
+        }
+        return
+      }
+      // Unbind WeChat but keep the user account active
+      deleteBindingByPlatformId(binding.platform_profile_id)
+      setUserWeChatBound(user.id, false)
       deletedUser = user.username
     } else {
       deleteBindingByPlatformId(binding.platform_profile_id)
     }
   } else if (actor.username.startsWith('tp_')) {
-    // Legacy user without an imported binding row: still wipe their account
-    // data so "unbind" always means a clean slate.
+    // Legacy user without an imported binding row
     const user = findUserByUsername(actor.username)
     if (user) {
-      deletedProfiles = await deleteWeChatUserData(user)
+      if (!user.phone_number) {
+        ctx.status = 400
+        ctx.body = {
+          error: 'Cannot unbind WeChat: please bind a phone number first as identity fallback',
+          code: 'PHONE_REQUIRED_FOR_UNBIND',
+        }
+        return
+      }
+      deleteBindingByUserId(user.id)
+      setUserWeChatBound(user.id, false)
       deletedUser = user.username
     }
   }
@@ -742,7 +826,7 @@ export async function clearDeviceBindingController(ctx: Context) {
     actor: actor.username,
     deletedUser,
     deletedProfiles,
-  }, '[device-binding] wechat account unbound')
+  }, '[device-binding] wechat account unbound (user account preserved)')
   ctx.body = { success: true, hadBinding: Boolean(binding), deletedUser, deletedProfiles }
 }
 
@@ -1268,6 +1352,7 @@ export async function createManagedUser(ctx: Context) {
     password?: string
     role?: unknown
     status?: unknown
+    phone?: unknown
     profiles?: unknown
     defaultProfile?: string | null
   }
@@ -1275,6 +1360,7 @@ export async function createManagedUser(ctx: Context) {
   const password = String(body.password || '')
   const role = normalizeRole(body.role || 'admin')
   const status = normalizeStatus(body.status || 'active')
+  const phone = typeof body.phone === 'string' ? body.phone : null
   const profiles = normalizeProfiles(body.profiles)
 
   if (username.length < 2) {
@@ -1297,6 +1383,13 @@ export async function createManagedUser(ctx: Context) {
     ctx.body = { error: 'Username already exists' }
     return
   }
+  // Check phone uniqueness
+  const normalizedPhone = normalizePhoneNumber(phone)
+  if (normalizedPhone && findUserByPhoneNumber(normalizedPhone)) {
+    ctx.status = 409
+    ctx.body = { error: 'Phone number already in use' }
+    return
+  }
 
   const missingProfile = validateProfiles(profiles)
   if (missingProfile) {
@@ -1310,6 +1403,7 @@ export async function createManagedUser(ctx: Context) {
     password,
     role,
     status,
+    phone: normalizedPhone,
     profiles: role === 'super_admin' ? [] : profiles,
     defaultProfile: body.defaultProfile,
   })
@@ -1335,6 +1429,7 @@ export async function updateManagedUser(ctx: Context) {
     password?: string
     role?: unknown
     status?: unknown
+    phone?: string | null
     profiles?: unknown
     defaultProfile?: string | null
   }
@@ -1342,6 +1437,7 @@ export async function updateManagedUser(ctx: Context) {
   const password = body.password == null ? undefined : String(body.password)
   const role = body.role == null ? undefined : normalizeRole(body.role)
   const status = body.status == null ? undefined : normalizeStatus(body.status)
+  const phone = body.phone == null ? undefined : (body.phone === '' ? null : body.phone)
   const profiles = body.profiles == null ? undefined : normalizeProfiles(body.profiles)
 
   if (username !== undefined && username.length < 2) {
@@ -1365,6 +1461,18 @@ export async function updateManagedUser(ctx: Context) {
       ctx.status = 409
       ctx.body = { error: 'Username already exists' }
       return
+    }
+  }
+  // Check phone uniqueness
+  if (phone !== undefined) {
+    const normalizedPhone = normalizePhoneNumber(phone)
+    if (normalizedPhone) {
+      const phoneOwner = findUserByPhoneNumber(normalizedPhone)
+      if (phoneOwner && phoneOwner.id !== user.id) {
+        ctx.status = 409
+        ctx.body = { error: 'Phone number already in use' }
+        return
+      }
     }
   }
 
@@ -1397,6 +1505,7 @@ export async function updateManagedUser(ctx: Context) {
     password: password || undefined,
     role: role || undefined,
     status: status || undefined,
+    phone: phone !== undefined ? phone : undefined,
     profiles: nextRole === 'super_admin' ? [] : profiles,
     defaultProfile: body.defaultProfile,
   })
@@ -1430,6 +1539,91 @@ export async function deleteManagedUser(ctx: Context) {
 
   const deletedProfiles = await deleteWeChatUserData(user)
   ctx.body = { success: true, deletedProfiles, users: listUsers() }
+}
+
+/**
+ * POST /api/auth/bind-phone
+ * Bind a phone number to the current user. The phone number serves as the
+ * identity bridge between WeChat and the local account (1:1 binding).
+ *
+ * Body: { phone: string }
+ */
+export async function bindPhone(ctx: Context) {
+  const userId = ctx.state.user?.id
+  if (!userId) {
+    ctx.status = 401
+    ctx.body = { error: 'Unauthorized' }
+    return
+  }
+
+  const { phone } = ctx.request.body as { phone?: string }
+  const normalized = normalizePhoneNumber(phone)
+  if (!normalized) {
+    ctx.status = 400
+    ctx.body = { error: 'A valid phone number is required' }
+    return
+  }
+
+  // Check if the phone is already taken by another user
+  const existingUser = findUserByPhoneNumber(normalized)
+  if (existingUser && existingUser.id !== userId) {
+    ctx.status = 409
+    ctx.body = {
+      error: 'This phone number is already bound to another account',
+      code: 'PHONE_ALREADY_IN_USE',
+    }
+    return
+  }
+
+  if (!updateUserPhoneNumber(userId, normalized)) {
+    ctx.status = 500
+    ctx.body = { error: 'Failed to bind phone number' }
+    return
+  }
+
+  const user = findUserById(userId)
+  ctx.body = {
+    success: true,
+    phone_number: user?.phone_number || normalized,
+  }
+}
+
+/**
+ * DELETE /api/auth/phone
+ * Unbind the current user's phone number. Refused if the user is currently
+ * WeChat-bound (must unbind WeChat first).
+ */
+export async function unbindPhone(ctx: Context) {
+  const userId = ctx.state.user?.id
+  if (!userId) {
+    ctx.status = 401
+    ctx.body = { error: 'Unauthorized' }
+    return
+  }
+
+  const user = findUserById(userId)
+  if (!user) {
+    ctx.status = 404
+    ctx.body = { error: 'User not found' }
+    return
+  }
+
+  if (user.wechat_bound) {
+    ctx.status = 400
+    ctx.body = {
+      error: 'Cannot remove phone number: please unbind WeChat first',
+      code: 'WECHAT_BOUND',
+    }
+    return
+  }
+
+  if (!updateUserPhoneNumber(userId, null)) {
+    ctx.status = 500
+    ctx.body = { error: 'Failed to unbind phone number' }
+    return
+  }
+
+  ctx.body = { success: true }
 }
 
 /**

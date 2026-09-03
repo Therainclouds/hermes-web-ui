@@ -4,7 +4,7 @@ import { useRouter } from "vue-router";
 import { NButton, NInput, NModal, NForm, NFormItem, NPopconfirm } from "naive-ui";
 import { useMessage } from "@/composables/useAppMessage";
 import { useI18n } from "vue-i18n";
-import { changePassword, changeUsername, setPassword, fetchCurrentUser, fetchLockedIps, unlockSpecificIp, unlockAllIps, fetchMyAvatar, updateMyAvatar, resetMyAvatar } from "@/api/auth";
+import { changePassword, changeUsername, setPassword, fetchCurrentUser, fetchLockedIps, unlockSpecificIp, unlockAllIps, fetchMyAvatar, updateMyAvatar, resetMyAvatar, bindPhone, unbindPhone } from "@/api/auth";
 import type { LockedIp, UserAvatar } from "@/api/auth";
 import { clearApiKey } from "@/api/client";
 import { unbindHermesDevice } from "@/api/device-login";
@@ -138,11 +138,20 @@ const showChangeUsernameModal = ref(false);
 const currentPasswordForName = ref("");
 const newUsernameVal = ref("");
 
+// Phone binding
+const phoneNumber = ref<string | null>(null);
+const wechatBound = ref(false);
+const showBindPhoneModal = ref(false);
+const phoneInputVal = ref("");
+const bindingPhone = ref(false);
+
 onMounted(async () => {
   try {
     const user = await fetchCurrentUser();
     username.value = user.username;
     isWeChatDeviceUser.value = user.username.startsWith("tp_");
+    phoneNumber.value = user.phone_number || null;
+    wechatBound.value = user.wechat_bound || false;
   } catch { /* ignore */ }
   try {
     const av = await fetchMyAvatar();
@@ -237,6 +246,44 @@ function openChangeUsernameModal() {
   currentPasswordForName.value = "";
   newUsernameVal.value = "";
   showChangeUsernameModal.value = true;
+}
+
+// Phone binding handlers
+function openBindPhoneModal() {
+  phoneInputVal.value = phoneNumber.value || "";
+  showBindPhoneModal.value = true;
+}
+
+async function handleBindPhone() {
+  const phone = phoneInputVal.value.trim();
+  if (!phone) {
+    message.error(t("settings.phone.required"));
+    return;
+  }
+  bindingPhone.value = true;
+  try {
+    const result = await bindPhone(phone);
+    phoneNumber.value = result.phone_number;
+    showBindPhoneModal.value = false;
+    message.success(t("settings.phone.bindSuccess"));
+  } catch (err: any) {
+    message.error(err.message || t("common.saveFailed"));
+  } finally {
+    bindingPhone.value = false;
+  }
+}
+
+async function handleUnbindPhone() {
+  bindingPhone.value = true;
+  try {
+    await unbindPhone();
+    phoneNumber.value = null;
+    message.success(t("settings.phone.unbindSuccess"));
+  } catch (err: any) {
+    message.error(err.message || t("common.saveFailed"));
+  } finally {
+    bindingPhone.value = false;
+  }
 }
 
 // Unbind WeChat (WeChat device users only): clears the device binding,
@@ -357,6 +404,30 @@ onMounted(() => { loadLockedIps(); });
       </p>
     </div>
 
+    <!-- Phone Binding -->
+    <div class="phone-section">
+      <h3 class="section-title">{{ t('settings.phone.title') }}</h3>
+      <div class="action-row">
+        <span class="action-label">
+          <template v-if="phoneNumber">{{ t('settings.phone.bound', { phone: phoneNumber }) }}</template>
+          <template v-else>{{ t('settings.phone.notBound') }}</template>
+        </span>
+        <div class="action-buttons">
+          <NButton v-if="!phoneNumber" size="small" type="primary" @click="openBindPhoneModal">{{ t('settings.phone.bind') }}</NButton>
+          <template v-else>
+            <NButton size="small" @click="openBindPhoneModal">{{ t('settings.phone.change') }}</NButton>
+            <NPopconfirm v-if="!wechatBound" @positive-click="handleUnbindPhone">
+              <template #trigger>
+                <NButton size="small" type="warning" ghost :loading="bindingPhone">{{ t('settings.phone.unbind') }}</NButton>
+              </template>
+              {{ t('settings.phone.unbindConfirm') }}
+            </NPopconfirm>
+          </template>
+        </div>
+      </div>
+      <p class="phone-hint">{{ t('settings.phone.hint') }}</p>
+    </div>
+
     <!-- Locked IPs management -->
     <div class="locked-ips-section">
       <h3 class="section-title">{{ t("settings.lockedIps.title") }}</h3>
@@ -435,6 +506,19 @@ onMounted(() => { loadLockedIps(); });
         <NButton type="primary" :loading="loading" @click="handleChangeUsername">{{ t("common.save") }}</NButton>
       </template>
     </NModal>
+
+    <!-- Bind phone modal -->
+    <NModal v-model:show="showBindPhoneModal" preset="dialog" :title="t('settings.phone.title')">
+      <NForm label-placement="top">
+        <NFormItem :label="t('settings.phone.inputLabel')">
+          <NInput v-model:value="phoneInputVal" :placeholder="t('settings.phone.placeholder')" @keyup.enter="handleBindPhone" />
+        </NFormItem>
+      </NForm>
+      <template #action>
+        <NButton @click="showBindPhoneModal = false">{{ t("common.cancel") }}</NButton>
+        <NButton type="primary" :loading="bindingPhone" @click="handleBindPhone">{{ t("common.save") }}</NButton>
+      </template>
+    </NModal>
   </div>
 </template>
 
@@ -484,6 +568,19 @@ onMounted(() => { loadLockedIps(); });
   border-radius: $radius-sm;
   font-size: 12px;
   color: $warning;
+  line-height: 1.5;
+}
+
+.phone-section {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid $border-color;
+}
+
+.phone-hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: $text-muted;
   line-height: 1.5;
 }
 

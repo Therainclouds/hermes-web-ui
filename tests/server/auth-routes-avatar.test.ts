@@ -18,6 +18,8 @@ vi.mock('../../packages/server/src/controllers/auth', () => ({
   updateMyModelGuideStatus: vi.fn(async (ctx: any) => { ctx.body = { ok: true } }),
   changePassword: vi.fn(async (ctx: any) => { ctx.body = { ok: true } }),
   changeUsername: vi.fn(async (ctx: any) => { ctx.body = { ok: true } }),
+  bindPhone: vi.fn(async (ctx: any) => { ctx.body = { ok: true } }),
+  unbindPhone: vi.fn(async (ctx: any) => { ctx.body = { ok: true } }),
   getMyAvatar: vi.fn(async (ctx: any) => { ctx.body = { avatar: '' } }),
   updateMyAvatar: vi.fn(async (ctx: any) => { ctx.body = { success: true } }),
   removePassword: vi.fn(async (ctx: any) => { ctx.body = { ok: true } }),

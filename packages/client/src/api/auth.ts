@@ -39,6 +39,8 @@ export interface CurrentUser {
   username: string
   role: UserRole
   status: UserStatus
+  phone_number: string | null
+  wechat_bound: boolean
   created_at: number
   updated_at: number
   last_login_at: number | null
@@ -181,6 +183,8 @@ export interface ManagedUser {
   username: string
   role: UserRole
   status: UserStatus
+  phone_number: string | null
+  wechat_bound: number
   profiles: string[]
   default_profile: string | null
   created_at: number
@@ -197,11 +201,31 @@ export async function fetchManagedUsers(): Promise<ManagedUsersResponse> {
   return request<ManagedUsersResponse>('/api/auth/users')
 }
 
+/**
+ * Bind a phone number to the current user. The phone number is the identity
+ * bridge between WeChat and the local account.
+ */
+export async function bindPhone(phone: string): Promise<{ success: boolean; phone_number: string }> {
+  return request<{ success: boolean; phone_number: string }>('/api/auth/bind-phone', {
+    method: 'POST',
+    body: JSON.stringify({ phone }),
+  })
+}
+
+/**
+ * Unbind the current user's phone number. Refused if the user is currently
+ * WeChat-bound.
+ */
+export async function unbindPhone(): Promise<void> {
+  return request('/api/auth/phone', { method: 'DELETE' })
+}
+
 export async function createManagedUser(input: {
   username: string
   password: string
   role: UserRole
   status: UserStatus
+  phone?: string | null
   profiles: string[]
   defaultProfile?: string | null
 }): Promise<ManagedUsersResponse> {
@@ -218,6 +242,7 @@ export async function updateManagedUser(id: number, input: {
   password?: string
   role?: UserRole
   status?: UserStatus
+  phone?: string | null
   profiles?: string[]
   defaultProfile?: string | null
 }): Promise<ManagedUsersResponse> {

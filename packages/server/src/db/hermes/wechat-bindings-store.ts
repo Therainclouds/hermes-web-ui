@@ -1,5 +1,6 @@
 import { getDb } from '../index'
-import { WECHAT_BINDINGS_TABLE } from './schemas'
+import { USERS_TABLE, WECHAT_BINDINGS_TABLE } from './schemas'
+import { normalizePhoneNumber } from './users-store'
 
 /**
  * Per-WeChat-account device bindings.
@@ -125,4 +126,22 @@ export function countWeChatBindings(): number {
   if (!db) return 0
   const row = db.prepare(`SELECT COUNT(*) as count FROM ${WECHAT_BINDINGS_TABLE}`).get() as { count?: number } | undefined
   return Number(row?.count || 0)
+}
+
+/**
+ * Find a user by phone number who is eligible for WeChat binding:
+ * - user exists and is active
+ * - user's phone_number matches
+ * - user is NOT already bound to a WeChat account (wechat_bound = 0)
+ * Returns the user id or null.
+ */
+export function findUnboundUserByPhone(phone: string): number | null {
+  const db = getDb()
+  if (!db) return null
+  const normalized = normalizePhoneNumber(phone)
+  if (!normalized) return null
+  const row = db.prepare(
+    `SELECT id FROM ${USERS_TABLE} WHERE phone_number = ? AND wechat_bound = 0 AND status = 'active' LIMIT 1`
+  ).get(normalized) as { id: number } | undefined
+  return row?.id ?? null
 }

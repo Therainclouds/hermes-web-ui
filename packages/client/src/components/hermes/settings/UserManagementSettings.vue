@@ -27,6 +27,7 @@ const editingUser = ref<ManagedUser | null>(null)
 const form = reactive({
   username: '',
   password: '',
+  phone: '',
   role: 'admin' as UserRole,
   status: 'active' as UserStatus,
   profiles: [] as string[],
@@ -48,6 +49,7 @@ function resetForm() {
   editingUser.value = null
   form.username = ''
   form.password = ''
+  form.phone = ''
   form.role = 'admin'
   form.status = 'active'
   form.profiles = []
@@ -75,6 +77,7 @@ function openEdit(user: ManagedUser) {
   editingUser.value = user
   form.username = user.username
   form.password = ''
+  form.phone = user.phone_number || ''
   form.role = user.role
   form.status = user.status
   form.profiles = [...user.profiles]
@@ -100,6 +103,7 @@ async function submit() {
     const payload = {
       username: form.username.trim(),
       password: form.password || undefined,
+      phone: form.phone.trim() || null,
       role: form.role,
       status: form.status,
       profiles: form.role === 'super_admin' ? [] : form.profiles,
@@ -179,6 +183,14 @@ const columns = computed<DataTableColumns<ManagedUser>>(() => [
     title: t('users.username'),
     key: 'username',
     minWidth: 140,
+  },
+  {
+    title: t('users.phone'),
+    key: 'phone_number',
+    width: 130,
+    render: (row) => row.phone_number
+      ? h('span', row.phone_number)
+      : h('span', { class: 'muted' }, '-'),
   },
   {
     title: t('users.role'),
@@ -266,6 +278,9 @@ onMounted(loadUsers)
       <NForm label-placement="top">
         <NFormItem :label="t('users.username')">
           <NInput v-model:value="form.username" :placeholder="t('login.usernamePlaceholder')" />
+        </NFormItem>
+        <NFormItem :label="t('users.phone')">
+          <NInput v-model:value="form.phone" :placeholder="t('settings.phone.placeholder')" />
         </NFormItem>
         <NFormItem :label="editingUser ? t('users.newPasswordOptional') : t('login.newPassword')">
           <NInput v-model:value="form.password" type="password" show-password-on="click" :placeholder="t('login.passwordPlaceholder')" />

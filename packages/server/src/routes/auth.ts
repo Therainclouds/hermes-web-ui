@@ -23,6 +23,8 @@ authProtectedRoutes.delete('/api/auth/device-binding', ctrl.clearDeviceBindingCo
 authProtectedRoutes.post('/api/auth/model-guide', ctrl.updateMyModelGuideStatus)
 authProtectedRoutes.post('/api/auth/change-password', ctrl.changePassword)
 authProtectedRoutes.post('/api/auth/change-username', ctrl.changeUsername)
+authProtectedRoutes.post('/api/auth/bind-phone', ctrl.bindPhone)
+authProtectedRoutes.delete('/api/auth/phone', ctrl.unbindPhone)
 authProtectedRoutes.get('/api/auth/avatar', ctrl.getMyAvatar)
 authProtectedRoutes.put('/api/auth/avatar', ctrl.updateMyAvatar)
 authProtectedRoutes.delete('/api/auth/password', ctrl.removePassword)
