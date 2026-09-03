@@ -33,8 +33,6 @@ export default {
     unbindDevice: 'إلغاء ربط الجهاز',
     unbindDeviceConfirm: 'هل أنت متأكد من إلغاء ربط الجهاز المرتبط بـ {account}؟',
     unbindDeviceSuccess: 'تم إلغاء ربط الجهاز بنجاح',
-    wechatRestore: 'استعادة الحساب المرتبط ({account})',
-    wechatRestorePick: 'تم ربط عدة حسابات WeChat بهذا الجهاز؛ اختر حسابًا لاستعادته',
     unbindDeviceFailed: 'فشل إلغاء ربط الجهاز',
     passwordOption: 'أو تسجيل الدخول بكلمة المرور',
     accessDenied: 'لا تملك صلاحية الوصول إلى هذا المورد.',

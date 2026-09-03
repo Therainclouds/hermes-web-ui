@@ -52,8 +52,6 @@ export default {
     deviceLoginFailed: '裝置登入失敗',
     tokenPlatformNoModel: '你的綁定帳號沒有授予任何可用模型，請聯絡中轉站管理員。',
     tokenPlatformConfigureFailed: '自動接入綁定的 API 失敗，請重試。',
-    wechatRestorePick: '本機已綁定多個微信帳號，請選擇要恢復的帳號',
-    wechatRestore: '恢復已綁定帳號（{account}）',
     accessDenied: '你沒有權限存取此資源',
     bindSuperAdminTitle: '綁定超級管理員',
     bindSuperAdminPrompt: '你的微信帳號目前以一般使用者登入。是否將此微信綁定為超級管理員？',

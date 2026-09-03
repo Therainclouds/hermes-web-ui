@@ -50,8 +50,6 @@ export default {
     deviceLoginFailed: 'Сбой входа на устройстве',
     tokenPlatformNoModel: 'В вашей привязанной учетной записи нет доступных моделей. Обратитесь к администратору платформы.',
     tokenPlatformConfigureFailed: 'Не удалось автоматически подключить API. Попробуйте еще раз.',
-    wechatRestorePick: 'К этому устройству привязано несколько WeChat-аккаунтов; выберите один для восстановления',
-    wechatRestore: 'Восстановить привязанный аккаунт ({account})',
     accessDenied: 'У вас нет прав доступа к этому ресурсу',
     bindSuperAdminTitle: 'Bind to Super Administrator',
     bindSuperAdminPrompt: 'Your WeChat account is logged in as a regular user. Would you like to bind it to the super administrator?',

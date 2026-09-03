@@ -187,8 +187,6 @@ export default {
     deviceLoginFailed: 'Falha no login do dispositivo',
     tokenPlatformNoModel: 'Sua conta vinculada não concedeu nenhum modelo disponível. Entre em contato com o administrador da plataforma.',
     tokenPlatformConfigureFailed: 'Falha ao habilitar a API vinculada automaticamente. Tente novamente.',
-    wechatRestorePick: 'Várias contas WeChat estão vinculadas a este dispositivo; escolha uma para restaurar',
-    wechatRestore: 'Restaurar conta vinculada ({account})',
     bindSuperAdminTitle: 'Bind to Super Administrator',
     bindSuperAdminPrompt: 'Your WeChat account is logged in as a regular user. Would you like to bind it to the super administrator?',
     bindSuperAdminYes: 'Yes, bind',

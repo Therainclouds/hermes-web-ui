@@ -42,11 +42,6 @@ export interface HermesDeviceLoginResult {
   }
 }
 
-export interface HermesDeviceBindingStatus {
-  bound: boolean
-  accounts?: HermesDeviceBindingAccount[]
-}
-
 export interface HermesDeviceBindingAccount {
   platform_profile_id: number
   display_name?: string
@@ -130,30 +125,6 @@ export async function completeHermesDeviceLogin(
     method: 'POST',
     body: JSON.stringify(payload),
   })
-}
-
-/**
- * Restore a previous WeChat binding and re-issue a Hermes session token.
- * `platformProfileId` picks between multiple bound accounts; omitting it
- * restores the only bound account (the server answers 409 MULTIPLE_BINDINGS
- * with the account list when several are bound and no id is given).
- */
-export async function restoreHermesDeviceLogin(
-  platformProfileId?: number,
-): Promise<HermesDeviceLoginResult> {
-  return request<HermesDeviceLoginResult>('/api/auth/device-login/restore', {
-    method: 'POST',
-    ...(platformProfileId
-      ? { body: JSON.stringify({ platform_profile_id: platformProfileId }) }
-      : {}),
-  })
-}
-
-/**
- * Fetch whether this Hermes device has a persisted Token Platform binding.
- */
-export async function fetchHermesDeviceBinding(): Promise<HermesDeviceBindingStatus> {
-  return request<HermesDeviceBindingStatus>('/api/auth/device-binding')
 }
 
 /**

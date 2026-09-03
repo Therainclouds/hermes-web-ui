@@ -13,7 +13,6 @@ import {
   completeHermesDeviceLogin,
   type TokenPlatformDeviceLoginStatus,
 } from "@/api/device-login";
-import { useDeviceBinding } from "@/composables/useDeviceBinding";
 import { isDesktopShell } from "@/utils/desktop-bridge";
 import { resolveLoginRedirect } from "@/utils/login-redirect";
 import { useTheme } from "@/composables/useTheme";
@@ -30,25 +29,10 @@ const errorMsg = ref("");
 const showLockResetHint = ref(false);
 const desktopShell = isDesktopShell();
 
-// WeChat binding restore (previously scanned accounts on this device)
-const {
-  checking: bindingChecking,
-  hasBinding,
-  accounts: bindingAccounts,
-  restoring: bindingRestoring,
-  restoreError: bindingRestoreError,
-  restore,
-} = useDeviceBinding();
-
 // WeChat scan login state
 const wechatMode = ref(false);
 const wechatSyncing = ref(false);
 const wechatError = ref("");
-
-// "Restore a previously bound WeChat account" lives behind an explicit
-// disclosure control — the default login surface should only show
-// password login and the WeChat QR code, not auto-suggest a saved account.
-const showRestoreSection = ref(false);
 
 // Recovery modal state
 type RecoveryModalState = { open: false } | { open: true; action: RecoveryAction };
@@ -135,10 +119,6 @@ function openRecoveryModal(action: RecoveryAction) {
 
 function closeRecoveryModal() {
   recoveryModal.value = { open: false };
-}
-
-function restoreAccountLabel(account: { display_name?: string; username?: string }) {
-  return account.display_name || account.username || "";
 }
 
 async function handleRecoverySubmit(recoveryPassword: string) {
@@ -244,42 +224,6 @@ async function handleRecoverySubmit(recoveryPassword: string) {
         >
           {{ t("login.passwordLogin") }}
         </button>
-
-        <button
-          v-if="hasBinding && !bindingChecking && !showRestoreSection"
-          type="button"
-          class="login-restore-toggle"
-          @click="showRestoreSection = true"
-        >
-          {{ t("login.wechatRestoreToggle") }}
-        </button>
-        <template v-if="showRestoreSection && hasBinding && !bindingChecking">
-          <button
-            v-if="bindingAccounts.length <= 1"
-            type="button"
-            class="login-restore-btn"
-            :disabled="bindingRestoring"
-            @click="restore()"
-          >
-            {{ bindingRestoring ? "..." : t("login.wechatRestore", { account: restoreAccountLabel(bindingAccounts[0] || {}) }) }}
-          </button>
-          <template v-else>
-            <p class="login-restore-pick">{{ t("login.wechatRestorePick") }}</p>
-            <button
-              v-for="account in bindingAccounts"
-              :key="account.platform_profile_id"
-              type="button"
-              class="login-restore-btn"
-              :disabled="bindingRestoring"
-              @click="restore(account.platform_profile_id)"
-            >
-              {{ bindingRestoring ? "..." : t("login.wechatRestore", { account: restoreAccountLabel(account) }) }}
-            </button>
-          </template>
-        </template>
-        <div v-if="bindingRestoreError" class="login-error">
-          {{ bindingRestoreError }}
-        </div>
       </div>
 
       <div v-else class="login-wechat-mode">
@@ -515,54 +459,6 @@ async function handleRecoverySubmit(recoveryPassword: string) {
     background: rgba(var(--accent-rgb, 79, 158, 139), 0.08);
     border-color: $accent-primary;
   }
-}
-
-.login-restore-toggle {
-  width: 100%;
-  margin-top: 8px;
-  padding: 6px 8px;
-  background: transparent;
-  border: none;
-  color: $text-muted;
-  font-size: 12px;
-  cursor: pointer;
-  text-align: center;
-  text-decoration: underline dotted;
-  text-underline-offset: 3px;
-
-  &:hover {
-    color: $accent-primary;
-  }
-}
-
-.login-restore-btn {
-  width: 100%;
-  margin-top: 8px;
-  padding: 10px 16px;
-  border: 1px dashed $border-color;
-  border-radius: $radius-sm;
-  background: transparent;
-  color: $text-secondary;
-  font-size: 13px;
-  cursor: pointer;
-  transition: color $transition-fast, border-color $transition-fast;
-  font-family: $font-code;
-
-  &:hover:not(:disabled) {
-    color: $accent-primary;
-    border-color: $accent-primary;
-  }
-
-  &:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-}
-
-.login-restore-pick {
-  margin: 8px 0 0;
-  font-size: 12px;
-  color: $text-muted;
 }
 
 .login-wechat-mode {

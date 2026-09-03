@@ -152,8 +152,6 @@ export default {
     deviceLoginFailed: 'デバイスログインに失敗しました',
     tokenPlatformNoModel: '連携アカウントに利用可能なモデルがありません。トークンプラットフォーム管理者にお問い合わせください。',
     tokenPlatformConfigureFailed: '連携APIの自動設定に失敗しました。もう一度お試しください。',
-    wechatRestorePick: 'この端末には複数のWeChatアカウントが紐づいています。復元するアカウントを選択してください',
-    wechatRestore: '連携済みアカウントを復元（{account}）',
     accessDenied: 'このリソースにアクセスする権限がありません。',
     bindSuperAdminTitle: 'Bind to Super Administrator',
     bindSuperAdminPrompt: 'Your WeChat account is logged in as a regular user. Would you like to bind it to the super administrator?',

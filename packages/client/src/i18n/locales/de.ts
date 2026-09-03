@@ -152,8 +152,6 @@ export default {
     deviceLoginFailed: 'Gerateanmeldung fehlgeschlagen',
     tokenPlatformNoModel: 'Dein verknupftes Konto gewahrt kein verfugbares Modell. Wende dich an den Plattform-Administrator.',
     tokenPlatformConfigureFailed: 'Die Automatische Verbindung der API ist fehlgeschlagen. Bitte erneut versuchen.',
-    wechatRestorePick: 'Auf diesem Gerät sind mehrere WeChat-Konten gebunden - bitte eines zum Wiederherstellen wählen',
-    wechatRestore: 'Gebundenes Konto wiederherstellen ({account})',
     accessDenied: 'Sie haben keine Berechtigung fur diese Ressource.',
     bindSuperAdminTitle: 'Bind to Super Administrator',
     bindSuperAdminPrompt: 'Your WeChat account is logged in as a regular user. Would you like to bind it to the super administrator?',

@@ -152,8 +152,6 @@ export default {
     deviceLoginFailed: 'Echec de la connexion de l\'appareil',
     tokenPlatformNoModel: 'Votre compte lie ne fournit aucun modele disponible. Contactez l\'administrateur de la plateforme.',
     tokenPlatformConfigureFailed: 'Echec de l\'activation automatique de l\'API liee. Reessayez.',
-    wechatRestorePick: 'Plusieurs comptes WeChat sont liés à cet appareil ; choisissez celui à restaurer',
-    wechatRestore: 'Restaurer le compte lie ({account})',
     accessDenied: 'Vous n\'avez pas l\'autorisation d\'acceder a cette ressource.',
     bindSuperAdminTitle: 'Bind to Super Administrator',
     bindSuperAdminPrompt: 'Your WeChat account is logged in as a regular user. Would you like to bind it to the super administrator?',
