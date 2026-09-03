@@ -565,6 +565,10 @@ async def ws_omni_realtime(ws: WebSocket) -> None:
                         str(msg.get("call_id") or ""),
                         str(msg.get("output") or ""),
                     )
+                elif mtype == "text":
+                    # 同会话文本注入（口语对练收尾总评等）：模型基于本会话已
+                    # 看到/听到的上下文直接作答，无需另开离线全模态请求。
+                    await proxy.send_text(str(msg.get("text") or ""))
                 elif mtype == "ping":
                     try:
                         await ws.send_json({"type": "pong"})

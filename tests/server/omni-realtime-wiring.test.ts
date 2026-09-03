@@ -755,7 +755,11 @@ describe('omni-realtime Hermes Agent function-calling integration', () => {
       'utf8',
     )
     // The start frame must include the OpenAI-Realtime-flat `tools` array.
-    expect(source).toMatch(/tools:\s*options\.tools/)
+    // Tools default to the composable init options and can be overridden per
+    // session before connecting (口语对练按技能动态生成评分工具 → setTools /
+    // connect opts.tools).
+    expect(source).toMatch(/tools:\s*(opts\.tools \?\? sessionTools|sessionTools)/)
+    expect(source).toMatch(/function setTools\(/)
     // Function-call completion is wired to the user-provided executor and the
     // result is posted back via the OpenAI-Realtime shape (`tool_result` →
     // `function_call_output` + `response.create`, done in the Python proxy).

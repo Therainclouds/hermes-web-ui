@@ -4,6 +4,7 @@ import * as ctrl from '../../controllers/hermes/skills'
 export const skillRoutes = new Router()
 
 skillRoutes.get('/api/hermes/skills', ctrl.list)
+skillRoutes.get('/api/hermes/skills/practice', ctrl.listPracticeSkills)
 skillRoutes.get('/api/hermes/skills/usage/stats', ctrl.usageStats)
 skillRoutes.get('/api/hermes/skills/external-dirs', ctrl.listExternalDirs)
 skillRoutes.put('/api/hermes/skills/external-dirs', ctrl.updateExternalDirs)

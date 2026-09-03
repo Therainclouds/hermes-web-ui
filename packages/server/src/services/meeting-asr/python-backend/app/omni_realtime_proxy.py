@@ -72,6 +72,17 @@ Frontend protocol (binary in, JSON events out):
                              in a post-commit window are dropped locally
                              instead of surfacing the upstream "append image
                              before append audio" error.
+      {"type": "text", "text": "<prompt>"}
+                           — inject a text-only user message (conversation
+                             item) and ask the model to reply *within the same
+                             session* (reuses the multimodal context it already
+                             saw/heard). Forwarded upstream as
+                             `conversation.item.create` (role=user,
+                             content=input_text) followed by `response.create`.
+                             Used by 口语对练's same-session closing review:
+                             the coach answers by voice, and its ASR transcript
+                             is relayed back as the usual transcript frames —
+                             no separate offline window or re-upload needed.
       {"type": "stop"}     — flush audio buffer and close the session
                              (we send `session.finish` upstream before
                              tearing the WS down).
@@ -552,6 +563,37 @@ class OmniRealtimeProxy:
                 "type": "function_call_output",
                 "call_id": call_id,
                 "output": output,
+            },
+        }
+        try:
+            async with self._send_lock:
+                await self.upstream.send(json.dumps(item))
+                await self.upstream.send(json.dumps({"type": "response.create"}))
+        except ConnectionClosed:
+            pass
+
+    async def send_text(self, text: str) -> None:
+        """Inject a text-only user message and ask for a reply (same session).
+
+        Used by the practice stage's closing review: instead of ending the
+        session and opening a fresh full-modal request, the client sends the
+        review prompt as plain text so the model answers *within the same
+        realtime session*, reusing the audio/video context it already heard
+        and saw. The answer comes back as the model's spoken response whose
+        ASR transcript is relayed to the client as usual.
+        """
+        if self.upstream is None:
+            raise RuntimeError("omni-realtime: upstream not connected")
+        prompt = str(text or "").strip()
+        if not prompt:
+            return
+        await self._await_response_done("send_text")
+        item = {
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": prompt}],
             },
         }
         try:

@@ -608,6 +608,84 @@ class OmniProxySendImageTest(unittest.TestCase):
         self.assertIn("not connected", str(ctx.exception))
 
 
+class OmniProxySendTextTest(unittest.TestCase):
+    """Same-session text injection: client `{"type": "text", ...}` frames must
+    reach DashScope as `conversation.item.create` (user input_text) followed
+    by `response.create`, so the practice stage can ask for the closing review
+    inside the live session instead of opening a fresh full-modal request."""
+
+    def setUp(self) -> None:
+        _import_app()
+        self.omni = importlib.import_module("app.omni_realtime_proxy")
+        self.sent: list[dict] = []
+
+    def _make_proxy(self):
+        proxy = self.omni.OmniRealtimeProxy()
+        proxy.upstream = mock.MagicMock()
+
+        async def _send(payload):
+            self.sent.append(json.loads(payload))
+
+        proxy.upstream.send = mock.AsyncMock(side_effect=_send)
+        return proxy
+
+    def test_send_text_creates_input_text_item_then_response(self) -> None:
+        async def scenario():
+            proxy = self._make_proxy()
+            await proxy.send_text("请给出收尾总评")
+            self.assertEqual(
+                [s.get("type") for s in self.sent],
+                ["conversation.item.create", "response.create"],
+            )
+            item = self.sent[0]["item"]
+            self.assertEqual(item["type"], "message")
+            self.assertEqual(item["role"], "user")
+            self.assertEqual(
+                item["content"],
+                [{"type": "input_text", "text": "请给出收尾总评"}],
+            )
+
+        asyncio.get_event_loop().run_until_complete(scenario())
+
+    def test_send_text_empty_or_whitespace_is_dropped(self) -> None:
+        async def scenario():
+            proxy = self._make_proxy()
+            await proxy.send_text("")
+            await proxy.send_text("   ")
+            self.assertEqual(self.sent, [])
+
+        asyncio.get_event_loop().run_until_complete(scenario())
+
+    def test_send_text_waits_for_response_done(self) -> None:
+        async def scenario():
+            proxy = self._make_proxy()
+            proxy._response_active = True
+            proxy._response_done_event.clear()
+            self.sent.clear()
+
+            task = asyncio.get_event_loop().create_task(proxy.send_text("总评"))
+            await asyncio.sleep(0.05)
+            self.assertEqual(
+                self.sent, [],
+                "send_text fired upstream before in-flight response drained",
+            )
+
+            proxy._response_done_event.set()
+            await asyncio.wait_for(task, timeout=1.0)
+            self.assertEqual(
+                [s.get("type") for s in self.sent],
+                ["conversation.item.create", "response.create"],
+            )
+
+        asyncio.get_event_loop().run_until_complete(scenario())
+
+    def test_send_text_requires_connection(self) -> None:
+        proxy = self.omni.OmniRealtimeProxy()
+        with self.assertRaises(RuntimeError) as ctx:
+            asyncio.get_event_loop().run_until_complete(proxy.send_text("hi"))
+        self.assertIn("not connected", str(ctx.exception))
+
+
 class _AsyncFrames:
     """Single-pass async iterator over a list of pre-recorded upstream frames.
 

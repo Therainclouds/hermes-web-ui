@@ -767,6 +767,13 @@ export default {
 
   // Mode de pratique orale (troisième mode de conversation dans « Nouveau chat »)
   speechPractice: {
+    skill: "Compétence d’entraînement",
+    skillPlaceholder: "Choisir une compétence (défaut : coach générique)",
+    skillDefault: "Coach conversationnel générique",
+    skillLanguageFixed: "Cette compétence utilise {language}",
+    reportAnalyzingMedia: "Écoute de {audio} enregistrements · examen de {frames} images — génération de l’analyse IA multimodale…",
+    reportSkippedNoMedia: "Aucun enregistrement/image cette séance — analyse multimodale ignorée ; rapport basé sur la transcription et les scores",
+    reviewingEnd: "Le coach fait son bilan de fin (réutilise le contexte audio/vidéo de cette séance)…",
     entry: 'Pratique orale',
     entryHint: 'Entraînez-vous à l\'oral avec un coach IA sur le thème de votre choix : chaque tour est commenté et noté, et l\'analyse peut être enregistrée en Markdown à la fin',
     cameraHint: 'Caméra activée : le coach évalue aussi le langage corporel et la posture',

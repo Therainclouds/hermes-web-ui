@@ -215,3 +215,73 @@ describe('streamOmniPracticeAnalysis', () => {
     expect(collected.join('')).toContain('DashScope omni analysis failed (HTTP 429)')
   })
 })
+
+describe('practice skill context (v2 跨场景)', () => {
+  it('injects skill display name, criteria and instructions into the prompt', () => {
+    const input = {
+      ...sampleInput(),
+      config: {
+        ...sampleInput().config,
+        skill: {
+          name: 'sales-pitch',
+          displayName: '新品销售陪练',
+          description: '角色扮演：顾客/销售',
+          criteria: '- **需求挖掘**：1-3 不提问；4-7 会追问；8-10 系统挖掘',
+          instructions: '按门店话术规范点评',
+          background: '销售技巧说明',
+        },
+      },
+    }
+    const text = buildOmniAnalysisPrompt(input as any)
+    expect(text).toContain('练习技能：新品销售陪练')
+    expect(text).toContain('顾客/销售')
+    expect(text).toContain('需求挖掘')
+    expect(text).toContain('技能专属评审要求：按门店话术规范点评')
+    expect(text).toContain('销售技巧说明')
+  })
+
+  it('prints skill-defined feedback dimensions generically (not bound to language dims)', () => {
+    const input = {
+      ...sampleInput(),
+      feedback: [{ round: 1, overall: 8, probing: 7, objection: 6, comment: 'ok' }],
+    }
+    const text = buildOmniAnalysisPrompt(input as any)
+    expect(text).toContain('总分 8')
+    expect(text).toContain('probing 7')
+    expect(text).toContain('objection 6')
+    expect(text).not.toContain('流利 7')
+  })
+})
+
+describe('streamOmniPracticeAnalysis meta event', () => {
+  it('yields a meta event first with the server-validated media manifest', async () => {
+    const fetchImpl = vi.fn(async () => sseResponse([
+      'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
+      'data: [DONE]\n\n',
+    ]))
+    const events: any[] = []
+    for await (const event of streamOmniPracticeAnalysis(sampleInput(), { fetchImpl })) {
+      events.push(event)
+    }
+    expect(events[0]).toEqual({
+      type: 'meta',
+      audioSegments: 1,
+      frames: 1,
+      model: 'qwen3.5-omni-flash',
+    })
+    expect(events.some((event: any) => event.type === 'done')).toBe(true)
+  })
+
+  it('still refuses to run without any media (no meta event)', async () => {
+    const fetchImpl = vi.fn()
+    const collected: string[] = []
+    for await (const event of streamOmniPracticeAnalysis(
+      { ...sampleInput(), audioSegments: [], frames: [] },
+      { fetchImpl },
+    )) {
+      if (event.type === 'error') collected.push(event.message)
+    }
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(collected.join('')).toContain('no audio or frames to analyze')
+  })
+})

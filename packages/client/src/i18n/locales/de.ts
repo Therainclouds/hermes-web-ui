@@ -767,6 +767,13 @@ export default {
 
   // Sprechübungsmodus (dritter Gesprächsmodus im neuen Chat)
   speechPractice: {
+    skill: "Trainings-Skill",
+    skillPlaceholder: "Skill wählen (Standard: allgemeiner Coach)",
+    skillDefault: "Allgemeiner Konversations-Coach",
+    skillLanguageFixed: "Dieses Skill verwendet {language}",
+    reportAnalyzingMedia: "Höre {audio} Aufnahmen · prüfe {frames} Bilder — generiere multimodale KI-Analyse…",
+    reportSkippedNoMedia: "Keine Aufnahmen/Bilder in dieser Sitzung — multimodale Analyse übersprungen; Bericht basiert auf Transkript und Bewertungen",
+    reviewingEnd: "Coach fasst zum Abschluss zusammen (nutzt den Audio/Video-Kontext dieser Sitzung)…",
     entry: 'Sprechübung',
     entryHint: 'Sprich mit einem KI-Coach zu einem Thema deiner Wahl: Jede Runde wird kommentiert und bewertet; die Analyse kannst du am Ende als Markdown speichern',
     cameraHint: 'Bei aktiver Kamera bewertet der Coach auch Körpersprache und Haltung',

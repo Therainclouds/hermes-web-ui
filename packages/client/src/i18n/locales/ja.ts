@@ -767,6 +767,13 @@ export default {
 
   // スピーキング練習モード（新規チャットの 3 つ目の会話モード）
   speechPractice: {
+    skill: "練習スキル",
+    skillPlaceholder: "練習スキルを選択（未選択=汎用コーチ）",
+    skillDefault: "汎用会話コーチ",
+    skillLanguageFixed: "このスキルは {language} を使用します",
+    reportAnalyzingMedia: "録音 {audio} 件を聴き、画面 {frames} 枚を見ながら AI 全モーダル分析を生成中…",
+    reportSkippedNoMedia: "今回、録音/画面がありませんでした。全モーダル分析をスキップし、文字と各ラウンドの評価に基づくレポートを生成しました",
+    reviewingEnd: "コーチが本場の総評をまとめています（音声・映像の文脈を再利用）…",
     entry: 'スピーキング練習',
     entryHint: 'AI コーチと指定したテーマで音声練習：毎ターン講評・採点し、終了後は分析内容を Markdown として保存できます',
     cameraHint: 'カメラをオンにすると、コーチがボディランゲージ／姿勢も評価します',

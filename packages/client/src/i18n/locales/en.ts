@@ -760,6 +760,13 @@ export default {
 
   // Speech practice mode (third conversation mode in New Chat)
   speechPractice: {
+    skill: "Practice skill",
+    skillPlaceholder: "Select a practice skill (default: generic coach)",
+    skillDefault: "Generic Speaking Coach",
+    skillLanguageFixed: "This skill uses {language}",
+    reportAnalyzingMedia: "Listening to {audio} recordings · reviewing {frames} frames — generating the full-modal AI analysis…",
+    reportSkippedNoMedia: "No recordings/frames captured this session — full-modal analysis skipped; the report is based on the transcript and round scores",
+    reviewingEnd: "The coach is giving the closing review (reusing this session’s audio/video context)…",
     entry: 'Practice',
     entryHint: 'Voice practice with an AI coach for the direction you pick: per-turn scores, analysis saved as Markdown',
     cameraHint: 'With the camera on, the coach also scores your body language and posture',

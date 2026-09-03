@@ -12,6 +12,16 @@
  * `api/hermes/omni-tools.ts`（PRACTICE_REALTIME_TOOLS）。
  */
 
+import {
+  aggregateOverallScore,
+  buildRubricSummaryLine,
+  buildSkillCriteriaMarkdown,
+  defaultPracticeSkill,
+  resultBandOf,
+  type PracticeSkill,
+  type PracticeSkillRef,
+} from './practice-skill'
+
 export type PracticeLanguage = 'zh' | 'en' | 'ja' | 'ko'
 export type PracticeDifficulty = 'beginner' | 'intermediate' | 'advanced'
 
@@ -24,7 +34,15 @@ export interface PracticeSessionConfig {
   difficulty: PracticeDifficulty
   /** 练习时长（分钟）；0 / undefined = 不限时。设置后倒计时到点自动结束并生成报告。 */
   durationMinutes?: number
+  /** 选中的练习技能引用（category/name）；缺省 = 内置通用口语教练。 */
+  skillRef?: PracticeSkillRef
 }
+
+/**
+ * 通用教练人格——保留历史导出名（= practice-skill 里默认技能的 coach soul，
+ * 保证"不选技能 = 现状行为"完全一致）。
+ */
+export { PRACTICE_DEFAULT_COACH_SOUL as PRACTICE_COACH_SOUL } from './practice-skill'
 
 /** 语言 → 供模型指令/报告使用的中文名（模型指令本身固定为中文，见下方说明）。 */
 export const PRACTICE_LANGUAGE_LABELS: Record<PracticeLanguage, string> = {
@@ -43,20 +61,9 @@ export const PRACTICE_DIFFICULTY_LABELS: Record<PracticeDifficulty, string> = {
 /** 用户输入方向注入指令前的截断长度。 */
 const DIRECTION_LIMIT = 120
 
-/**
- * 口语对练专属教练人格——替代用户 Agent 的 SOUL.md 注入。
- *
- * 用户 SOUL 是「工作台助理」人格（中文回复、记忆/技能/任务行为准则等），
- * 与「目标语言口语教练」直接冲突：人格声明打架会导致教练角色不稳定、
- * 混入助理式行为（主动报工作台状态、用中文长篇解释等）。因此对练场景
- * 不读取 SOUL.md，用这段固定教练人格作为 buildRealtimeInstructions 的
- * soul 位输入；工具守则与历史摘要仍正常叠加。
- */
-export const PRACTICE_COACH_SOUL = [
-  '你是一名专业、耐心的口语陪练教练，任务是陪用户练习目标语言的口语表达。',
-  '你不扮演任何工作台助理人格；除按守则用中文简短解释语法/词汇外，全程使用目标语言交流。',
-  '点评具体、诚实、有区分度，善于用提问引导用户持续开口。',
-].join('\n')
+// 通用教练人格（PRACTICE_COACH_SOUL）已迁移到 practice-skill.ts，由该模块
+// 顶部以 `export { PRACTICE_DEFAULT_COACH_SOUL as PRACTICE_COACH_SOUL }`
+// 原样再导出，保证「不选技能 = 现状行为」与历史调用方完全兼容。
 
 /**
  * 拼接口语对练场景块（追加在 buildRealtimeInstructions 的 scenario 参数里）。
@@ -74,8 +81,9 @@ export const PRACTICE_COACH_SOUL = [
  */
 export function buildPracticeInstructionBlock(
   config: PracticeSessionConfig,
-  options: { cameraOn?: boolean } = {},
+  options: { cameraOn?: boolean; skill?: PracticeSkill } = {},
 ): string {
+  const skill = options.skill ?? defaultPracticeSkill()
   const languageName = PRACTICE_LANGUAGE_LABELS[config.language] || '目标语言'
   const difficultyName = PRACTICE_DIFFICULTY_LABELS[config.difficulty] || '适中'
   const direction = (config.direction || '').trim().slice(0, DIRECTION_LIMIT)
@@ -121,6 +129,27 @@ export function buildPracticeInstructionBlock(
     '- 用户表示理解不了题目时：用目标语言降速、换更简单的说法示范，而不是放弃目标语言。',
   ].join('\n')
 
+  // 技能驱动的内容：角色/守则/评分维度与 rubric（见 practice-skill.ts）。
+  const skillTips: string[] = []
+  if (skill.kind === 'skill') {
+    const roleText = [
+      skill.role ? `你扮演${skill.role}` : '',
+      skill.userRole ? `用户扮演${skill.userRole}` : '',
+    ].filter(Boolean).join('，')
+    skillTips.push(`- 本场使用练习技能「${skill.displayName}」${roleText ? `（${roleText}）` : ''}：${skill.description || '按该技能的要求出题、引导与点评。'}`)
+    const dimsText = skill.evaluation.dims.map(dim => dim.label).join('、')
+    if (dimsText) {
+      const scale = skill.evaluation.scale
+      skillTips.push(`- 本场评分维度：总分 + ${dimsText}（${scale.min}-${scale.max} 分制）`
+        + (skill.evaluation.overallMode === 'weighted' ? '，整场综合分按技能权重加权合成。' : '。'))
+    }
+  }
+  for (const rule of skill.extraRules) {
+    skillTips.push(rule.startsWith('-') ? rule : `- ${rule}`)
+  }
+  const rubricLine = buildRubricSummaryLine(skill)
+  if (rubricLine) skillTips.push(rubricLine)
+
   return [
     '【口语对练模式 · 行为守则（优先级最高，覆盖以上通用约束中与本段冲突的部分，尤其是「默认用中文回答」那条——口语对练必须使用目标语言）】',
     `- 你现在是用户的${languageName}口语陪练教练。${directionLine}`,
@@ -129,6 +158,7 @@ export function buildPracticeInstructionBlock(
     ...difficultyTips.map(tip => `  - ${tip}`),
     ...cameraTips,
     ...pacingTips,
+    ...skillTips,
     '- 每轮用户发言结束后：先用目标语言给出一句话的简短口头点评，然后立刻调用 submit_practice_feedback 提交本轮结构化打分'
     + '（overall 及 fluency / pronunciation / grammar / vocabulary / content，1-10 整数，另附 comment / strengths / improvements / example）。'
     + '打分必须诚实、具体、有区分度——不要每轮都打高分或雷同分数。',
@@ -176,6 +206,14 @@ export interface PracticeReportInput {
   endedAt: number
   turns: PracticeTurnRecord[]
   feedback: PracticeFeedbackRecord[]
+  /** 选中的练习技能（null/缺省 = 通用教练；default 技能不改变报告输出）。 */
+  skill?: PracticeSkill | null
+  /** 素材清单证据（录音段数 / 画面帧数 / 是否开启摄像头），写入报告头部。 */
+  media?: {
+    audioSegments: number
+    frames: number
+    cameraOn: boolean
+  } | null
 }
 
 function fmtDateTime(ts: number): string {
@@ -217,6 +255,7 @@ export function buildPracticeReportMarkdown(input: PracticeReportInput): string 
   const languageName = PRACTICE_LANGUAGE_LABELS[cfg.language] || cfg.language
   const difficultyName = PRACTICE_DIFFICULTY_LABELS[cfg.difficulty] || cfg.difficulty
   const direction = (cfg.direction || '').trim()
+  const skill = input.skill && input.skill.kind === 'skill' ? input.skill : null
 
   const userTurns = input.turns.filter(t => t.role === 'user')
   const feedbackByRound = new Map<number, PracticeFeedbackRecord>()
@@ -242,27 +281,75 @@ export function buildPracticeReportMarkdown(input: PracticeReportInput): string 
   out.push('', '> 练习语言：' + languageName
     + (direction ? ` ｜ 练习方向：${direction}` : ' ｜ 练习方向：自由对话')
     + ` ｜ 难度：${difficultyName}`
-    + (durationMinutes > 0 ? ` ｜ 定时：${durationMinutes} 分钟` : ''))
+    + (durationMinutes > 0 ? ` ｜ 定时：${durationMinutes} 分钟` : '')
+    + (skill ? ` ｜ 练习技能：${skill.displayName}` : ''))
   out.push('', `> 开始：${fmtDateTime(input.startedAt)} ｜ 结束：${fmtDateTime(input.endedAt)}`
     + ` ｜ 用户发言 ${userTurns.length} 轮 ｜ 已评分 ${feedbackByRound.size + unattached.length} 轮`)
+  // 素材清单证据（录音/画面采集情况；"AI 是否真的用了这些素材"由四章是否存在佐证）
+  const media = input.media || null
+  if (media) {
+    if (media.audioSegments > 0 || media.frames > 0) {
+      const parts = [
+        media.audioSegments > 0 ? `录音 ${media.audioSegments} 段` : '',
+        media.frames > 0 ? `画面 ${media.frames} 帧` : '',
+      ].filter(Boolean).join(' + ')
+      out.push('', `> 练习素材：${parts}（${media.cameraOn ? '已开启摄像头' : '未开启摄像头'}，仅存于本机内存）`)
+    } else {
+      out.push('', '> 练习素材：本次未采集到录音/画面，报告基于对话文字与逐轮评分生成')
+    }
+  }
 
   const validFeedback = [...feedbackByRound.values(), ...unattached]
   const scoredRounds = validFeedback.length
   if (scoredRounds > 0) {
     const withOverall = validFeedback.filter(f => typeof f.overall === 'number')
-    const avgOverall = withOverall.length
-      ? Math.round((withOverall.reduce((acc, f) => acc + f.overall, 0) / withOverall.length) * 10) / 10
+    // 打分逻辑（skill 化）：技能声明 weighted 时按权重合成整场综合分，否则维持
+    // 各轮 overall 平均。skill 为 null 时输出与历史版本逐字节一致。
+    const aggregate = skill
+      ? aggregateOverallScore(validFeedback as unknown as Array<Record<string, unknown>>, skill)
       : null
-    out.push('', `## 一、综合评分${avgOverall != null ? `（整场平均 ${avgOverall}/10）` : ''}`, '')
+    const avgOverall = aggregate
+      ? aggregate.value
+      : withOverall.length
+        ? Math.round((withOverall.reduce((acc, f) => acc + f.overall, 0) / withOverall.length) * 10) / 10
+        : null
+    const scaleMax = skill ? skill.evaluation.scale.max : 10
+    const overallCaption = avgOverall != null
+      ? (aggregate
+        ? aggregate.mode === 'weighted'
+          ? `（整场加权 ${avgOverall}/${scaleMax}）`
+          : `（整场平均 ${avgOverall}/${scaleMax}）`
+        : `（整场平均 ${avgOverall}/${scaleMax}）`)
+      : ''
+    out.push('', `## 一、综合评分${overallCaption}`, '')
     out.push('| 维度 | 平均 | 最高 | 最低 |', '| --- | --- | --- | --- |')
-    const rows: Array<(typeof scoreKeys)[number] | 'bodyLanguage'> = [...scoreKeys]
+    // 行序：overall → 技能维度（默认六维同序）→ bodyLanguage（如有）
+    const rows: string[] = ['overall']
+    if (skill && skill.evaluation.dims.length > 0) {
+      rows.push(...skill.evaluation.dims.map(dim => dim.id))
+    } else {
+      rows.push(...scoreKeys.filter(key => key !== 'overall'))
+    }
     // 肢体语言维度只在「至少有一轮填了该分」（摄像头开启时模型才会填）才入表
     if (validFeedback.some(f => f.bodyLanguage != null)) rows.push('bodyLanguage')
-    for (const key of rows) {
-      const samples = validFeedback.map(f => f[key])
+    const rowLabel = (id: string): string => {
+      if (id === 'overall') return '总分'
+      if (id === 'bodyLanguage') return '肢体语言'
+      if (skill) return skill.labels[id] || id
+      return dimensionNames[id] || id
+    }
+    for (const id of rows) {
+      const samples = validFeedback
+        .map(f => (f as unknown as Record<string, unknown>)[id])
+        .filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
       const avg = average(samples)
       const { min, max } = minMax(samples)
-      out.push(`| ${dimensionNames[key]} | ${avg != null ? `${avg}/10` : '—'} | ${max} | ${min} |`)
+      out.push(`| ${rowLabel(id)} | ${avg != null ? `${avg}/${scaleMax}` : '—'} | ${max} | ${min} |`)
+    }
+    // 结论档位（resultBands，如知识点掌握度）：综合分落到哪一档
+    if (skill && skill.evaluation.resultBands.length > 0 && avgOverall != null) {
+      const band = resultBandOf(skill, avgOverall)
+      if (band) out.push('', `**结论：${band.label}**${band.description ? ` — ${band.description}` : ''}`)
     }
   }
 
@@ -280,6 +367,27 @@ export function buildPracticeReportMarkdown(input: PracticeReportInput): string 
       }
     }
     let appendedAny = false
+    const scaleMax = skill ? skill.evaluation.scale.max : 10
+    const feedbackScoreLine = (fb: PracticeFeedbackRecord): string => {
+      const rec = fb as unknown as Record<string, unknown>
+      const parts: string[] = [`总分 ${fmtScore(fb.overall)}/${scaleMax}`]
+      if (skill && skill.evaluation.dims.length > 0) {
+        for (const dim of skill.evaluation.dims) {
+          const value = rec[dim.id]
+          parts.push(`${dim.label} ${typeof value === 'number' ? value : '—'}/${scaleMax}`)
+        }
+      } else {
+        parts.push(
+          `流利度 ${fmtScore(fb.fluency)}/${scaleMax}`,
+          `发音语调 ${fmtScore(fb.pronunciation)}/${scaleMax}`,
+          `语法 ${fmtScore(fb.grammar)}/${scaleMax}`,
+          `词汇 ${fmtScore(fb.vocabulary)}/${scaleMax}`,
+          `内容 ${fmtScore(fb.content)}/${scaleMax}`,
+        )
+      }
+      if (fb.bodyLanguage != null) parts.push(`肢体语言 ${fmtScore(fb.bodyLanguage)}/${scaleMax}`)
+      return parts.join(' ｜ ')
+    }
     rounds.forEach((entry, index) => {
       if (!entry.user) return
       const roundNo = index + 1
@@ -288,10 +396,7 @@ export function buildPracticeReportMarkdown(input: PracticeReportInput): string 
       appendedAny = true
       out.push('', `### 第 ${roundNo} 轮`, '', `**用户：** ${userText}`)
       if (feedback) {
-        out.push('', `**评分：** 总分 ${fmtScore(feedback.overall)}/10 ｜ 流利度 ${fmtScore(feedback.fluency)}/10`
-          + ` ｜ 发音语调 ${fmtScore(feedback.pronunciation)}/10 ｜ 语法 ${fmtScore(feedback.grammar)}/10`
-          + ` ｜ 词汇 ${fmtScore(feedback.vocabulary)}/10 ｜ 内容 ${fmtScore(feedback.content)}/10`
-          + (feedback.bodyLanguage != null ? ` ｜ 肢体语言 ${fmtScore(feedback.bodyLanguage)}/10` : ''))
+        out.push('', `**评分：** ${feedbackScoreLine(feedback)}`)
         const comment = cleanText(feedback.comment)
         const strengths = cleanText(feedback.strengths)
         const improvements = cleanText(feedback.improvements)
@@ -332,6 +437,12 @@ export function buildPracticeReportMarkdown(input: PracticeReportInput): string 
 
   if (scoredRounds === 0) {
     out.push('', '## 备注', '', '本次练习没有产生评分（可能过早结束或模型未调用评分工具）。对话记录仍保留在上方。')
+  }
+
+  // 下载技能时附上「技能与评价标准」参考（default 技能不追加，输出与历史一致）
+  if (skill) {
+    const criteria = buildSkillCriteriaMarkdown(skill)
+    if (criteria) out.push(criteria)
   }
 
   return out.join('\n')

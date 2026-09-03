@@ -236,6 +236,8 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
   // --- internals ---------------------------------------------------------
 
   let ws: WebSocket | null = null
+  /** 当前会话的工具集：默认取初始化 options.tools；连接前可按技能用 setTools 覆盖。 */
+  let sessionTools: NonNullable<UseOmniRealtimeOptions['tools']> = options.tools ?? []
   let audioContext: AudioContext | null = null
   let micStream: MediaStream | null = null
   let micSource: MediaStreamAudioSourceNode | null = null
@@ -274,6 +276,15 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
    * streamed upstream while the user is muted.
    */
   let micMuted = false
+
+  // --- 同会话文本提问（口语对练收尾总评等：复用本 WS 的已看/已听上下文）---
+  interface TextAskRequest {
+    resolve: (text: string) => void
+    reject: (err: Error) => void
+    collected: string
+    timer: number
+  }
+  let activeTextAsk: TextAskRequest | null = null
 
   // --- per-user-turn mic capture (optional recording for offline analysis) ---
   /** True while the server VAD holds the user's turn open (audio belongs to it). */
@@ -593,7 +604,7 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
     const argsJson = normalizeToolArguments(msg.arguments)
     const startedAt = Date.now()
     const parsedArgs = parseToolArgsJson(argsJson)
-    const missing = parsedArgs ? missingRequiredArgs(options.tools, name, parsedArgs) : []
+    const missing = parsedArgs ? missingRequiredArgs(sessionTools, name, parsedArgs) : []
     const malformed = missing.length > 0
     if (malformed) {
       // 记录“同一签名”的坏参数调用次数；换了参数或换了工具即重置。
@@ -737,9 +748,18 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
       }
       case 'transcript_delta':
         liveAssistantText.value = (liveAssistantText.value || '') + String(msg.text ?? '')
+        if (activeTextAsk) activeTextAsk.collected += String(msg.text ?? '')
         break
       case 'transcript':
         commitAssistantTurn(String(msg.text ?? ''))
+        // 收尾总评等文本提问：模型说完即结算（转写已入 turns，报告会引用）。
+        if (activeTextAsk) {
+          const ask = activeTextAsk
+          activeTextAsk = null
+          window.clearTimeout(ask.timer)
+          const finalText = (ask.collected + String(msg.text ?? '')).trim()
+          ask.resolve(finalText)
+        }
         break
       case 'function_call':
         void handleFunctionCall(msg)
@@ -748,6 +768,12 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
         const m = String(msg.message ?? 'unknown error')
         errorMessage.value = m
         phase.value = 'error'
+        if (activeTextAsk) {
+          const ask = activeTextAsk
+          activeTextAsk = null
+          window.clearTimeout(ask.timer)
+          ask.reject(new Error(m))
+        }
         options.onError?.(m)
         break
       }
@@ -942,7 +968,13 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
 
   // --- lifecycle ---------------------------------------------------------
 
-  async function connect(opts: { model?: string; voice?: string; instructions?: string } = {}): Promise<void> {
+  async function connect(opts: {
+    model?: string
+    voice?: string
+    instructions?: string
+    /** 本次会话的工具集；缺省用 useOmniRealtime 初始化时的 tools（按技能生成）。 */
+    tools?: NonNullable<UseOmniRealtimeOptions['tools']>
+  } = {}): Promise<void> {
     if (ws) return
     phase.value = 'connecting'
     errorMessage.value = ''
@@ -1000,7 +1032,7 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
         model: opts.model,
         voice: opts.voice,
         instructions: opts.instructions,
-        tools: options.tools,
+        tools: opts.tools ?? sessionTools,
       }))
     }
 
@@ -1042,6 +1074,12 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
     }
 
     ws.onclose = () => {
+      if (activeTextAsk) {
+        const ask = activeTextAsk
+        activeTextAsk = null
+        window.clearTimeout(ask.timer)
+        ask.reject(new Error('realtime session closed'))
+      }
       stopCapture()
       stopPlayback()
       stopOutputLevelLoop()
@@ -1106,6 +1144,62 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
     disconnect()
   }
 
+  /**
+   * 只排空不断开：停止推流并等当前 AI 句子放完（socket 保持打开）。
+   * 用于同会话收尾总评前，确保上一段语音不与被注入的回复重叠。
+   */
+  async function drainOutput(timeoutMs = 8000): Promise<void> {
+    if (!ws) return
+    isPushing.value = false
+    stopCapture()
+    flushPendingToSlot()
+    const deadline = Date.now() + timeoutMs
+    while ((isOutputPlaying.value || phase.value === 'speaking') && Date.now() < deadline) {
+      await new Promise<void>(resolve => setTimeout(resolve, 120))
+    }
+  }
+
+  /**
+   * 同会话文本提问（复用本 WS 的已看/已听上下文，不另开离线窗口）：
+   * 闭麦排空后注入 `{"type":"text","text":...}`，收集模型随后的语音转写
+   * （教练口头收尾总评），resolve 完整文本；超时/错误/断连 reject。
+   * 转写会照常进入 turns（会话与报告引用同源）。
+   */
+  async function askText(text: string, options: { timeoutMs?: number } = {}): Promise<string> {
+    const prompt = (text || '').trim()
+    if (!prompt) return ''
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      throw new Error('realtime session is not connected')
+    }
+    await drainOutput(8000)
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      throw new Error('realtime session closed while draining output')
+    }
+    isPushing.value = false
+    setMicStreaming(false)
+    const timeoutMs = options.timeoutMs ?? 90_000
+    return new Promise<string>((resolve, reject) => {
+      const request: TextAskRequest = {
+        resolve,
+        reject,
+        collected: '',
+        timer: 0,
+      }
+      request.timer = window.setTimeout(() => {
+        if (activeTextAsk === request) activeTextAsk = null
+        reject(new Error('closing review timed out'))
+      }, timeoutMs)
+      activeTextAsk = request
+      try {
+        ws?.send(JSON.stringify({ type: 'text', text: prompt }))
+      } catch (cause) {
+        if (activeTextAsk === request) activeTextAsk = null
+        window.clearTimeout(request.timer)
+        reject(cause instanceof Error ? cause : new Error(String(cause)))
+      }
+    })
+  }
+
   /** Begin streaming mic audio upstream. */
   function pushStart(): void {
     isPushing.value = true
@@ -1157,6 +1251,11 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
     for (const track of micStream.getAudioTracks()) {
       try { track.enabled = !micMuted } catch { /* ignore */ }
     }
+  }
+
+  /** 会话连接前按技能覆盖工具集（口语对练按技能动态生成评分工具与工作台子集）。 */
+  function setTools(tools: NonNullable<UseOmniRealtimeOptions['tools']>): void {
+    sessionTools = tools
   }
 
   /** Stop assistant playback and cancel the in-flight response (manual barge-in). */
@@ -1234,6 +1333,9 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
     connect,
     disconnect,
     stopGracefully,
+    drainOutput,
+    askText,
+    setTools,
     pushStart,
     pushStop,
     setMicStreaming,

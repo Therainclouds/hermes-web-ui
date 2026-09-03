@@ -760,6 +760,13 @@ export default {
 
   // 口语对练模式（新建对话里的第三档对话方式）
   speechPractice: {
+    skill: "练习技能",
+    skillPlaceholder: "选择练习技能（不选=通用口语教练）",
+    skillDefault: "通用口语教练",
+    skillLanguageFixed: "该技能固定使用 {language}",
+    reportAnalyzingMedia: "正在听 {audio} 段录音 · 看 {frames} 帧画面，生成 AI 全模态深度分析…",
+    reportSkippedNoMedia: "本次未采集到录音/画面，未运行全模态分析；报告基于对话文字与逐轮评分",
+    reviewingEnd: "教练正在做本场收尾总评（复用本场语音/画面上下文）…",
     entry: '口语对练',
     entryHint: '与 AI 教练语音对练指定方向：每轮点评打分，结束后分析内容可保存为 Markdown',
     cameraHint: '开启摄像头后，教练会额外对肢体语言 / 仪态评分并给出建议',

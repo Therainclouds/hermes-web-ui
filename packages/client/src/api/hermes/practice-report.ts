@@ -23,6 +23,15 @@ export interface OmniAnalysisPayload {
     direction: string
     difficulty: string
     durationMinutes?: number
+    /** 练习技能上下文（下载技能时），服务端注入深度分析提示词。 */
+    skill?: {
+      name?: string
+      displayName?: string
+      description?: string
+      criteria?: string
+      instructions?: string
+      background?: string
+    }
   }
   turns: Array<{ role: 'user' | 'assistant'; text: string }>
   feedback: Array<Record<string, unknown>>
@@ -102,9 +111,19 @@ export async function requestOmniPracticeAnalysis(
   }
 }
 
+export interface OmniAnalysisMediaMeta {
+  /** 服务端校验后实际进入请求的录音段数。 */
+  audioSegments: number
+  /** 实际进入请求的画面帧数。 */
+  frames: number
+  model: string
+}
+
 export interface OmniStreamHandlers {
   /** 每个生成增量（纯文本，实时追加到 md 看板）。 */
   onDelta?: (text: string) => void
+  /** SSE 首帧 meta（素材清单：实际入请求的录音段数/帧数/模型）。 */
+  onMeta?: (meta: OmniAnalysisMediaMeta) => void
 }
 
 /**
@@ -142,10 +161,16 @@ export async function streamOmniPracticeAnalysis(
     const handlePayload = (payloadText: string): void => {
       if (!payloadText || payloadText === '[DONE]') return
       try {
-        const evt = JSON.parse(payloadText) as { type?: string; text?: string; message?: string }
+        const evt = JSON.parse(payloadText) as { type?: string; text?: string; message?: string; audioSegments?: number; frames?: number; model?: string }
         if (evt.type === 'delta' && typeof evt.text === 'string') {
           markdown += evt.text
           handlers.onDelta?.(evt.text)
+        } else if (evt.type === 'meta') {
+          handlers.onMeta?.({
+            audioSegments: Number(evt.audioSegments) || 0,
+            frames: Number(evt.frames) || 0,
+            model: String(evt.model || ''),
+          })
         } else if (evt.type === 'error') {
           streamError = String(evt.message || 'omni analysis failed')
         }

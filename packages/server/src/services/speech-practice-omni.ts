@@ -71,6 +71,15 @@ export interface OmniPracticeAnalysisInput {
     direction?: string
     difficulty?: string
     durationMinutes?: number
+    /** 练习技能上下文（下载技能时携带），供模型按技能标准评审。 */
+    skill?: {
+      name?: string
+      displayName?: string
+      description?: string
+      criteria?: string
+      instructions?: string
+      background?: string
+    }
   }
   turns: OmniPracticeTurnInput[]
   feedback: OmniPracticeFeedbackInput[]
@@ -112,6 +121,18 @@ export function buildOmniAnalysisPrompt(input: OmniPracticeAnalysisInput): strin
   lines.push(`- 语言：${languageName}｜难度：${difficultyLabel(cfg.difficulty)}${durationMinutes > 0 ? `｜定时 ${durationMinutes} 分钟` : ''}`)
   lines.push(`- 方向：${direction || '自由对话'}`)
 
+  // 技能上下文（下载技能时）：显示名/简介 + 评分标准（criteria）+ 技能背景
+  const skillInfo = cfg.skill
+  if (skillInfo?.displayName || skillInfo?.name) {
+    lines.push(`- 练习技能：${skillInfo.displayName || skillInfo.name}${skillInfo.description ? `｜${cleanText(skillInfo.description, 200)}` : ''}`)
+  }
+  if (skillInfo?.criteria) {
+    lines.push('', '## 练习技能（评分标准）', '', cleanText(skillInfo.criteria, 4000))
+  }
+  if (skillInfo?.background) {
+    lines.push('', '## 技能背景', '', cleanText(skillInfo.background, 1500))
+  }
+
   const turns = (input.turns || []).slice(0, OMNI_TURNS_MAX)
   if (turns.length > 0) {
     lines.push('', '## 对话转写')
@@ -132,20 +153,20 @@ export function buildOmniAnalysisPrompt(input: OmniPracticeAnalysisInput): strin
   if (feedback.length > 0) {
     lines.push('', '## 会话中的逐轮评分（模型实时给出，供参考）')
     for (const f of feedback) {
-      const dims = [
-        f.fluency != null ? `流利 ${f.fluency}` : '',
-        f.pronunciation != null ? `发音 ${f.pronunciation}` : '',
-        f.grammar != null ? `语法 ${f.grammar}` : '',
-        f.vocabulary != null ? `词汇 ${f.vocabulary}` : '',
-        f.content != null ? `内容 ${f.content}` : '',
-        f.bodyLanguage != null ? `肢体 ${f.bodyLanguage}` : '',
-      ].filter(Boolean).join('｜')
+      // 技能可自定义维度：数值字段按「维度 id 数值」通用打印（评分标准段里有
+      // id↔显示名对照），不绑定语言学习的固定五维。
+      const dims: string[] = []
+      for (const [key, value] of Object.entries(f)) {
+        if (key === 'round' || key === 'overall' || key === 'comment'
+          || key === 'strengths' || key === 'improvements' || key === 'example') continue
+        if (typeof value === 'number' && Number.isFinite(value)) dims.push(`${key} ${value}`)
+      }
       const comment = cleanText(f.comment, 300)
       const strengths = cleanText(f.strengths, 200)
       const improvements = cleanText(f.improvements, 200)
       lines.push(
         `- 第 ${f.round > 0 ? f.round : '—'} 轮：总分 ${typeof f.overall === 'number' ? f.overall : '—'}`
-        + (dims ? `（${dims}）` : '')
+        + (dims.length > 0 ? `（${dims.join('｜')}）` : '')
         + (comment ? `｜点评：${comment}` : '')
         + (strengths ? `｜亮点：${strengths}` : '')
         + (improvements ? `｜可提升：${improvements}` : ''),
@@ -176,6 +197,9 @@ export function buildOmniAnalysisPrompt(input: OmniPracticeAnalysisInput): strin
     '4. **整场总结与下阶段建议**：2-3 条可执行建议，附一个推荐的下一次练习任务。',
     '',
     '硬性要求：不逐字复述转写；不编造录音或画面里不存在的信息；若某段录音过短 / 无法听清，如实说明并基于文本分析。',
+    ...(skillInfo?.instructions
+      ? [`- 技能专属评审要求：${cleanText(skillInfo.instructions, 1000)}`, '']
+      : []),
     '',
     ...lines,
   ].join('\n')
@@ -272,6 +296,7 @@ export interface OmniAnalysisDeps {
  * 最省 token）；若未来某天请求了音频输出，可扩展事件携带 audio 段。
  */
 export type OmniAnalysisStreamEvent =
+  | { type: 'meta'; audioSegments: number; frames: number; model: string }
   | { type: 'delta'; text: string }
   | { type: 'error'; message: string }
   | { type: 'done' }
@@ -294,6 +319,14 @@ export async function* streamOmniPracticeAnalysis(
   if (!apiKey) {
     yield { type: 'error', message: 'DASHSCOPE_API_KEY is not configured' }
     return
+  }
+
+  // 素材清单证据（meta 首帧）：以服务端校验后的实际入请求数为准，前端可实时展示
+  yield {
+    type: 'meta',
+    audioSegments: input.audioSegments.length,
+    frames: input.frames.length,
+    model: input.model || OMNI_ANALYSIS_DEFAULT_MODEL,
   }
 
   const baseUrl = (input.baseUrl || OMNI_ANALYSIS_BASE_URL).replace(/\/+$/, '')

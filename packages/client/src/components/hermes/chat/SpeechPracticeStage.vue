@@ -6,10 +6,12 @@ import { useOmniRealtime, type OmniDialogToolCall, type OmniUserTurnAudio } from
 import OmniVisualizer from '@/components/hermes/chat/OmniVisualizer.vue'
 import MarkdownRenderer from '@/components/hermes/chat/MarkdownRenderer.vue'
 import { meetingASRApi } from '@/utils/meeting-asr-api'
-import { executeOmniTool, PRACTICE_REALTIME_TOOLS } from '@/api/hermes/omni-tools'
+import { executeOmniTool, OMNI_REALTIME_TOOLS } from '@/api/hermes/omni-tools'
+import { fetchPracticeSkills } from '@/api/hermes/skills'
 import {
   savePracticeReport,
   streamOmniPracticeAnalysis,
+  type OmniAnalysisMediaMeta,
   type OmniAnalysisPayload,
 } from '@/api/hermes/practice-report'
 import { getDownloadUrl } from '@/api/hermes/download'
@@ -23,6 +25,17 @@ import {
   CONTEXT_WARNING_RATIO,
 } from '@/utils/realtime-instructions'
 import {
+  buildPracticeClosingReviewPrompt,
+  buildPracticeFeedbackToolFor,
+  buildSkillCriteriaMarkdown,
+  defaultPracticeSkill,
+  findPracticeSkillEntry,
+  normalizePracticeSkill,
+  isClosingUtteranceLike,
+  type PracticeSkill,
+  type PracticeSkillManifest,
+} from '@/utils/practice-skill'
+import {
   buildPracticeInstructionBlock,
   buildPracticeReportMarkdown,
   composePracticeReportWithOmniAnalysis,
@@ -32,7 +45,6 @@ import {
   practiceReportFileStem,
   trimPcm16Silence,
   PRACTICE_AUDIO_SEGMENT_MAX_COUNT,
-  PRACTICE_COACH_SOUL,
   PRACTICE_DIFFICULTY_LABELS,
   PRACTICE_LANGUAGE_LABELS,
   type PracticeFeedbackRecord,
@@ -84,6 +96,8 @@ const voiceOptions: SelectOption[] = [
 ]
 const selectedVoice = ref('Tina')
 selectedVoice.value = realtimeModelStore.config.voice || 'Tina'
+/** 用户是否在本场手动改过音色（true 后技能建议音色不再覆盖）。 */
+const userVoicePicked = ref(false)
 
 const languageLabel = computed(() =>
   PRACTICE_LANGUAGE_LABELS[props.config.language] || props.config.language,
@@ -92,10 +106,75 @@ const difficultyLabel = computed(() =>
   PRACTICE_DIFFICULTY_LABELS[props.config.difficulty] || props.config.difficulty,
 )
 
+// --- 练习技能（跨场景）：config.skillRef 指向已安装的 SKILL.md 技能 ----------
+// 解析结果驱动：connect 的教练人格/守则、submit_practice_feedback 工具 schema、
+// 收尾总评指令与报告「技能与评价标准」。解析失败/无引用 → 通用口语教练。
+
+/** 按技能生成工具集：工作台工具（可按技能收窄）+ 动态 submit_practice_feedback。 */
+type OmniToolEntry = Record<string, unknown> | {
+  type: 'function'
+  name: string
+  description: string
+  parameters: unknown
+}
+function buildSessionTools(skill: PracticeSkill, cameraOn: boolean): OmniToolEntry[] {
+  const workspace: OmniToolEntry[] = skill.workspaceTools && skill.workspaceTools.length > 0
+    ? OMNI_REALTIME_TOOLS.filter(tool => (skill.workspaceTools as readonly string[]).includes(tool.name))
+    : OMNI_REALTIME_TOOLS
+  return [
+    ...workspace,
+    buildPracticeFeedbackToolFor(skill, { camera: cameraOn }) as unknown as Record<string, unknown>,
+  ]
+}
+
+const activeSkill = ref<PracticeSkill>(defaultPracticeSkill())
+const skillNotice = computed(() => {
+  const skill = activeSkill.value
+  if (skill.kind !== 'skill') return ''
+  return skill.displayName
+})
+let practiceSkillResolvePromise: Promise<void> | null = null
+async function resolvePracticeSkill(): Promise<void> {
+  const skillRef = props.config.skillRef
+  if (!skillRef) return
+  try {
+    const items = await fetchPracticeSkills()
+    const entry = findPracticeSkillEntry(
+      items.map(item => ({
+        category: item.category,
+        name: item.name,
+        description: item.description,
+        enabled: item.enabled,
+        source: item.source,
+        manifest: item.manifest ? (item.manifest as unknown as PracticeSkillManifest) : null,
+      })),
+      skillRef,
+    )
+    if (!entry) return // 技能已被删除/停用 → 回退通用教练
+    activeSkill.value = normalizePracticeSkill(
+      { kind: 'skill', category: entry.category, name: entry.name, description: entry.description },
+      entry.manifest,
+      '',
+    )
+    // 技能建议音色：仅当用户本场尚未手动改过音色时应用
+    const suggested = activeSkill.value.voice
+    if (suggested && !userVoicePicked && voiceOptions.some(option => option.value === suggested)) {
+      selectedVoice.value = suggested
+    }
+  } catch {
+    // 拉取失败 → 默认技能（练习本身不阻塞）
+  }
+}
+function ensurePracticeSkill(): Promise<void> {
+  if (!props.config.skillRef) return Promise.resolve()
+  if (!practiceSkillResolvePromise) practiceSkillResolvePromise = resolvePracticeSkill()
+  return practiceSkillResolvePromise
+}
+
 const omni = useOmniRealtime({
   handsFree: true,
   autoBargeIn: true,
-  tools: PRACTICE_REALTIME_TOOLS,
+  tools: buildSessionTools(defaultPracticeSkill(), false),
   onToolCall: handlePracticeTool,
   onError: () => undefined,
   onUserTurnAudio: handleUserTurnAudio,
@@ -111,6 +190,8 @@ const backendError = ref('')
 // --- 摄像头（可选）：开启后模型「看得到」用户，评分维度会加入肢体语言 ---
 
 const cameraEnabled = ref(false)
+/** 本次会话是否开启过摄像头（素材证据行 / 报告来源说明用）。 */
+const cameraWasOn = ref(false)
 const cameraStream = ref<MediaStream | null>(null)
 const videoRef = ref<HTMLVideoElement | null>(null)
 const cameraNotice = ref('')
@@ -352,6 +433,7 @@ const bubbles = computed<StageBubble[]>(() => {
 })
 
 const caption = computed(() => {
+  if (reviewingEnd.value) return t('speechPractice.reviewingEnd')
   if (backendError.value) return backendError.value
   if (displayError.value) return displayError.value
   if (omni.isOutputPlaying.value) return ''
@@ -438,7 +520,14 @@ function recordPracticeFeedback(args: Record<string, unknown>): string {
     example: cleanText(args.example),
     at: Date.now(),
   }
-  feedbacks.value = [...feedbacks.value, record]
+  // 技能自定义维度：按技能 dimensions 把数值写入记录顶层（id 即键），
+  // 报告表格/聚合/评分卡统一按 id 读取；语言类技能与上方固定字段一致。
+  const recordWithDims = record as PracticeFeedbackRecord & Record<string, unknown>
+  const skill = activeSkill.value
+  for (const dim of skill.evaluation.dims) {
+    recordWithDims[dim.id] = toScore(args[dim.id])
+  }
+  feedbacks.value = [...feedbacks.value, recordWithDims]
 
   const scored = record.overall > 0
   const when = round > 0 ? t('speechPractice.scoredRound', { n: round }) : t('speechPractice.scoredUnattached')
@@ -526,20 +615,29 @@ function buildHistoryContext(): string {
 async function connectWithCoachPersona(): Promise<boolean> {
   // 不注入用户 Agent 的 SOUL.md——工作台助理人格与「目标语言口语教练」
   // 人格直接冲突（中文回复 vs 全程目标语言、助理行为 vs 陪练行为）。对练
-  // 用固定教练人格作为 soul 位输入，工具守则/历史摘要/对练守则照常叠加。
+  // 用练习技能（默认=通用教练人格）作为 soul 位输入，工具守则/历史摘要/
+  // 对练守则照常叠加。
   const ready = await ensureBackendAvailable()
   if (!ready) {
     backendError.value = t('omniRealtime.backendUnavailable')
     return false
   }
+  // 技能解析（异步拉取已安装技能契约；无引用时立即返回，用默认技能）。
+  await ensurePracticeSkill()
+  const skill = activeSkill.value
   // 摄像头在连接前打开，模型从第一轮起就能看到用户画面
   if (cameraEnabled.value) await startCamera()
+  // 按技能生成工具集（工作台子集 + 动态评分工具），连接前注入同一份。
+  omni.setTools(buildSessionTools(skill, cameraEnabled.value))
   await omni.connect({
     voice: selectedVoice.value,
     model: realtimeModelStore.config.model || undefined,
-    instructions: buildRealtimeInstructions(PRACTICE_COACH_SOUL, {
+    instructions: buildRealtimeInstructions(skill.coachSoul, {
       history: buildHistoryContext(),
-      scenario: buildPracticeInstructionBlock(props.config, { cameraOn: cameraEnabled.value }),
+      scenario: buildPracticeInstructionBlock(props.config, {
+        cameraOn: cameraEnabled.value,
+        skill,
+      }),
     }),
   })
   // 音频流已开始推流后（DashScope 要求先有音频再补图像），启动取帧
@@ -586,34 +684,65 @@ async function resumeSession(): Promise<void> {
   }
 }
 
-/** 倒计时到点：先优雅收尾（等当前音频播完），finalizeSession 会自动生成报告。 */
+/** 倒计时到点：先排空当前语音 → 同会话收尾总评 → 断开并自动生成报告。 */
 function autoFinishByTimer(): void {
   if (ended.value || ending.value) return
   autoFinished.value = true
-  void endSessionGracefully()
+  void endSessionWithReview()
+}
+
+/** 收尾总评进行中（结束面板/按钮给出状态文案）。 */
+const reviewingEnd = ref(false)
+
+/**
+ * 同会话收尾总评：不另开离线窗口，而是经 useOmniRealtime.askText() 把收尾
+ * 指令注入同一个实时 WebSocket——模型基于本场已听到的语音/看到的画面直接
+ * 口头总评（转写进入会话与报告），再提交整场评分。失败静默（离线报告兜底）。
+ * 触发条件：技能 reviewOnEnd、连接存活、用户说过话、末句不是口头收尾语。
+ */
+async function maybeClosingReview(): Promise<void> {
+  const skill = activeSkill.value
+  if (ended.value || !skill.reviewOnEnd) return
+  if (phase.value !== 'ready' && phase.value !== 'listening' && phase.value !== 'speaking') return
+  if (!omni.turns.value.some(turn => turn.role === 'user')) return
+  const lastUser = [...omni.turns.value].reverse().find(turn => turn.role === 'user')
+  if (lastUser && isClosingUtteranceLike(lastUser.text)) return
+  reviewingEnd.value = true
+  try {
+    await omni.askText(buildPracticeClosingReviewPrompt(skill), { timeoutMs: 90_000 })
+  } catch {
+    // 收尾总评失败/超时不阻塞离线报告生成
+  } finally {
+    reviewingEnd.value = false
+  }
 }
 
 /**
- * 优雅收尾：停止推流、保持 socket 等待模型正在说的句子放完，再断开。
- * 解决定时练习到点时教练话说到一半被 disconnect() 掐断的问题。
+ * 结束会话公共流程：停止推流并等当前句子放完 →（按技能）同会话收尾总评 →
+ * finalizeSession()（断开并自动生成报告）。
  */
-async function endSessionGracefully(): Promise<void> {
+async function endSessionWithReview(): Promise<void> {
   if (ended.value || ending.value) return
   ending.value = true
   stopCountdown()
   timeLeftMs.value = 0
   try {
-    await omni.stopGracefully(6000)
+    await omni.drainOutput(6000)
+    await maybeClosingReview()
   } finally {
     ending.value = false
   }
   finalizeSession()
 }
 
-/** 立即结束（手动点结束 / 返回）：用户手势即意图，不等当前音频放完。 */
+/** 立即结束（手动点「结束对练」）：连接存活时先做同会话收尾总评再断开。 */
 function endSession(): void {
   if (ended.value || ending.value) return
-  finalizeSession()
+  if (phase.value === 'idle' || phase.value === 'closed' || phase.value === 'error') {
+    finalizeSession()
+    return
+  }
+  void endSessionWithReview()
 }
 
 /** 结束会话的公共收尾：标记 ended、停计时/取帧/摄像头、断开并持久化，
@@ -658,6 +787,7 @@ const isMuted = computed(() => !omni.isPushing.value && isActive.value)
 // bindCameraPreview 会再兜底一次，覆盖「流先到、元素后挂载」的时序。
 watch(cameraStream, async (stream) => {
   if (stream) {
+    cameraWasOn.value = true
     await bindCameraPreview()
   } else {
     const el = videoRef.value
@@ -671,6 +801,8 @@ function handleKeydown(event: KeyboardEvent): void {
 
 onMounted(() => {
   window.addEventListener('keydown', handleKeydown)
+  // 恢复历史会话时按 skillRef 解析练习技能（失败自动回退通用教练）
+  void ensurePracticeSkill()
 })
 
 onBeforeUnmount(() => {
@@ -786,10 +918,25 @@ function flushPendingPersistence(): void {
   }
 }
 
-// --- 评分维度（live 评分卡 / 报告共用） ------------------------------------
+// --- 评分维度（live 评分卡 / 报告共用；技能可自定义维度与量表） ------------
 
-/** 最新反馈卡里逐条展示的五个细分维度（不含 overall）。 */
+/** 通用教练的五个细分维度（不含 overall）。 */
 const detailDimKeys = ['fluency', 'pronunciation', 'grammar', 'vocabulary', 'content'] as const
+
+/** 评分卡逐条展示的维度：默认五维；下载技能按技能 evaluation.dimensions。 */
+const displayDimKeys = computed<string[]>(() =>
+  activeSkill.value.kind === 'skill' && activeSkill.value.evaluation.dims.length > 0
+    ? activeSkill.value.evaluation.dims.map(dim => dim.id)
+    : [...detailDimKeys],
+)
+const scoreScaleMax = computed(() => activeSkill.value.evaluation.scale.max)
+
+/** 维度显示名：技能 labels 覆盖优先，否则 i18n 默认名。 */
+function dimLabel(key: string): string {
+  const skill = activeSkill.value
+  if (skill.kind === 'skill' && skill.labels[key]) return skill.labels[key]!
+  return dimensionLabel(key)
+}
 
 function dimensionLabel(key: string): string {
   const map: Record<string, string> = {
@@ -804,10 +951,18 @@ function dimensionLabel(key: string): string {
   return map[key] || key
 }
 
-function scoreTone(score: number | null | undefined): string {
+/** 从反馈记录里读取某维度分数（顶层按维度 id 存放，兼容技能自定义 id）。 */
+function feedbackDimValue(record: PracticeFeedbackRecord | null, key: string): number | null {
+  if (!record) return null
+  const value = (record as unknown as Record<string, unknown>)[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function scoreTone(score: number | null | undefined, scaleMax = 10): string {
   if (score == null || score <= 0) return 'none'
-  if (score >= 8) return 'good'
-  if (score >= 6) return 'ok'
+  const max = scaleMax > 0 ? scaleMax : 10
+  if (score >= max * 0.8) return 'good'
+  if (score >= max * 0.6) return 'ok'
   return 'weak'
 }
 
@@ -824,7 +979,7 @@ const dialogueTurns = computed(() => {
 
 // --- 报告：生成 / 保存 / 复制 ----------------------------------------------
 
-/** 确定性基础报告（逐轮评分 + 转写）。 */
+/** 确定性基础报告（逐轮评分 + 转写 + 技能/素材证据）。 */
 const reportMarkdown = computed(() =>
   buildPracticeReportMarkdown({
     config: props.config,
@@ -832,6 +987,12 @@ const reportMarkdown = computed(() =>
     endedAt: sessionEndedAt.value || Date.now(),
     turns: omni.turns.value as PracticeTurnRecord[],
     feedback: feedbacks.value,
+    skill: activeSkill.value,
+    media: {
+      audioSegments: audioSegments.value.length,
+      frames: pickPracticeReportFrames(reportFrames.value).length,
+      cameraOn: cameraWasOn.value,
+    },
   }),
 )
 
@@ -842,12 +1003,21 @@ type AnalysisState = 'idle' | 'running' | 'ok' | 'failed' | 'skipped'
 const analysisState = ref<AnalysisState>('idle')
 /** 流式累积中的 AI 段（增量逐段追加，看板实时重渲染）。 */
 const aiSection = ref('')
+/** SSE meta 首帧（服务端校验后实际入请求的素材清单）；未到达时回退本地统计。 */
+const analysisMediaMeta = ref<OmniAnalysisMediaMeta | null>(null)
 
 const analysisStatusText = computed(() => {
   switch (analysisState.value) {
-    case 'running': return t('speechPractice.reportAnalyzing')
+    case 'running': {
+      const meta = analysisMediaMeta.value
+      const local = collectedMediaInfo()
+      const audio = meta ? meta.audioSegments : local.audioSegments
+      const frames = meta ? meta.frames : local.frames
+      return t('speechPractice.reportAnalyzingMedia', { audio, frames })
+    }
     case 'ok': return t('speechPractice.reportAnalyzed')
     case 'failed': return t('speechPractice.aiAnalysisFailed')
+    case 'skipped': return t('speechPractice.reportSkippedNoMedia')
     default: return ''
   }
 })
@@ -884,6 +1054,28 @@ function practiceApiKey(): string {
   return realtimeModelStore.config.apiKey || meetingStore.asrConfig.dashscopeApiKey || ''
 }
 
+/** 素材清单（录音段数 / 画面帧数 / 是否开过摄像头）——报告与聊天消息的证据行。 */
+function collectedMediaInfo(): { audioSegments: number; frames: number; cameraOn: boolean } {
+  return {
+    audioSegments: audioSegments.value.length,
+    frames: pickPracticeReportFrames(reportFrames.value).length,
+    cameraOn: cameraWasOn.value,
+  }
+}
+
+/** 素材证据行文本（写入 md 报告头部 & 聊天下载消息）。 */
+function mediaEvidenceText(): string {
+  const media = collectedMediaInfo()
+  if (media.audioSegments > 0 || media.frames > 0) {
+    const parts = [
+      media.audioSegments > 0 ? `录音 ${media.audioSegments} 段` : '',
+      media.frames > 0 ? `画面 ${media.frames} 帧` : '',
+    ].filter(Boolean).join(' + ')
+    return `练习素材：${parts}（${media.cameraOn ? '已开启摄像头' : '未开启摄像头'}，仅存于本机内存）`
+  }
+  return '本次未采集到录音/画面，报告基于对话文字与逐轮评分生成'
+}
+
 /** 组装 Omni 分析请求；没有素材（录音与画面都为空）时返回 null。 */
 function buildOmniAnalysisPayload(): OmniAnalysisPayload | null {
   const frames = pickPracticeReportFrames(reportFrames.value)
@@ -899,12 +1091,22 @@ function buildOmniAnalysisPayload(): OmniAnalysisPayload | null {
     totalChars += seg.wavBase64.length
     kept.unshift(seg)
   }
+  const skill = activeSkill.value
   return {
     config: {
       language: props.config.language,
       direction: props.config.direction || '',
       difficulty: props.config.difficulty,
       durationMinutes: props.config.durationMinutes,
+      // 技能上下文：服务端把技能评分标准/专属指令注入深度分析提示词
+      skill: skill.kind === 'skill' ? {
+        name: skill.name,
+        displayName: skill.displayName,
+        description: skill.description,
+        criteria: buildSkillCriteriaMarkdown(skill) || undefined,
+        instructions: skill.omniInstructions || undefined,
+        background: skill.background || undefined,
+      } : undefined,
     },
     turns: omni.turns.value.map(t => ({ role: t.role, text: t.text })),
     feedback: feedbacks.value as unknown as Array<Record<string, unknown>>,
@@ -937,6 +1139,7 @@ async function runEndReportFlow(): Promise<void> {
   savedReport.value = null
   analysisState.value = 'idle'
   aiSection.value = ''
+  analysisMediaMeta.value = null
   reportChatInserted = false
   try {
     // 1) AI 全模态深度分析（流式；无素材或失败自动回落基础报告）
@@ -945,6 +1148,7 @@ async function runEndReportFlow(): Promise<void> {
     if (payload) {
       analysisState.value = 'running'
       const aiResult = await streamOmniPracticeAnalysis(payload, practiceApiKey() || undefined, {
+        onMeta: (meta) => { analysisMediaMeta.value = meta },
         onDelta: (text) => { aiSection.value += text },
       })
       aiOk = !!(aiResult.ok && aiResult.markdown)
@@ -979,10 +1183,16 @@ function persistReportChatMessage(fileName: string, url: string, contentLength: 
   const session = chatStore.sessions.find(s => s.id === sessionId)
   if (!session) return
   reportChatInserted = true
+  const skill = activeSkill.value
+  const skillLine = skill.kind === 'skill' ? `练习技能：${skill.displayName}` : ''
   const message: Message = {
     id: uid(),
     role: 'assistant',
-    content: `本次口语对练的评价报告已生成，点击下方文件即可下载。`,
+    content: [
+      `本次口语对练的评价报告已生成，点击下方文件即可下载。`,
+      skillLine,
+      mediaEvidenceText(),
+    ].filter(Boolean).join('\n'),
     timestamp: Date.now(),
     attachments: [{
       id: uid(),
@@ -1094,7 +1304,12 @@ async function handleCopyMarkdown(): Promise<void> {
           <p class="practice-stage__card-hint">{{ t('speechPractice.setupHint') }}</p>
           <div class="practice-stage__field">
             <label>{{ t('meeting.realtime.voice') }}</label>
-            <NSelect v-model:value="selectedVoice" :options="voiceOptions" size="small" />
+            <NSelect
+              v-model:value="selectedVoice"
+              :options="voiceOptions"
+              size="small"
+              @update:value="userVoicePicked = true"
+            />
           </div>
           <div class="practice-stage__field practice-stage__field--row">
             <label>{{ t('omniRealtime.camera') }}</label>
@@ -1131,6 +1346,7 @@ async function handleCopyMarkdown(): Promise<void> {
               <p class="practice-stage__card-sub" data-testid="speech-practice-ended-summary">
                 {{ languageLabel }} · {{ difficultyLabel }}
                 <template v-if="(config.direction || '').trim()"> · {{ config.direction.trim() }}</template>
+                <template v-if="skillNotice"> · {{ skillNotice }}</template>
                 · {{ t('speechPractice.endedSummary', { user: dialogueTurns.userCount, assistant: dialogueTurns.assistantCount, scored: feedbacks.length }) }}
               </p>
             </div>
@@ -1186,7 +1402,7 @@ async function handleCopyMarkdown(): Promise<void> {
               data-testid="speech-practice-save-report"
               @click="handleSaveReport"
             >
-              {{ reportRunning && analysisState === 'running' ? t('speechPractice.reportAnalyzing') : t('speechPractice.saveReport') }}
+              {{ reportRunning && analysisState === 'running' ? analysisStatusText : t('speechPractice.saveReport') }}
             </NButton>
             <NButton :disabled="finalReportMarkdown.length === 0 || reportRunning" @click="handleCopyMarkdown">
               {{ copied ? t('speechPractice.copied') : t('speechPractice.copyMarkdown') }}
@@ -1351,28 +1567,28 @@ async function handleCopyMarkdown(): Promise<void> {
                   {{ latestFeedback.round > 0 ? t('speechPractice.roundLabel', { n: latestFeedback.round }) : t('speechPractice.unattachedRound') }}
                 </div>
                 <div class="practice-stage__feedback-score-row">
-                  <span class="practice-stage__feedback-overall" :data-tone="scoreTone(latestFeedback.overall)">
-                    {{ fmtScore(latestFeedback.overall) }}/10
+                  <span class="practice-stage__feedback-overall" :data-tone="scoreTone(latestFeedback.overall, scoreScaleMax)">
+                    {{ fmtScore(latestFeedback.overall) }}/{{ scoreScaleMax }}
                   </span>
                   <span class="practice-stage__feedback-overall-label">{{ t('speechPractice.score.overall') }}</span>
                 </div>
                 <div class="practice-stage__feedback-dims">
                   <span
-                    v-for="key in detailDimKeys"
+                    v-for="key in displayDimKeys"
                     :key="key"
                     class="practice-stage__dim"
-                    :data-tone="scoreTone(latestFeedback[key])"
+                    :data-tone="scoreTone(feedbackDimValue(latestFeedback, key), scoreScaleMax)"
                   >
-                    <i>{{ dimensionLabel(key) }}</i>
-                    <b>{{ fmtScore(latestFeedback[key]) }}</b>
+                    <i>{{ dimLabel(key) }}</i>
+                    <b>{{ fmtScore(feedbackDimValue(latestFeedback, key)) }}</b>
                   </span>
                   <span
                     v-if="latestFeedback.bodyLanguage != null"
                     class="practice-stage__dim"
-                    :data-tone="scoreTone(latestFeedback.bodyLanguage)"
+                    :data-tone="scoreTone(latestFeedback.bodyLanguage, scoreScaleMax)"
                     data-testid="speech-practice-bodylanguage-chip"
                   >
-                    <i>{{ dimensionLabel('bodyLanguage') }}</i>
+                    <i>{{ dimLabel('bodyLanguage') }}</i>
                     <b>{{ fmtScore(latestFeedback.bodyLanguage) }}</b>
                   </span>
                 </div>
@@ -1394,8 +1610,8 @@ async function handleCopyMarkdown(): Promise<void> {
                     <span class="practice-stage__history-round">
                       {{ item.round > 0 ? t('speechPractice.roundLabel', { n: item.round }) : t('speechPractice.unattachedRound') }}
                     </span>
-                    <span class="practice-stage__history-score" :data-tone="scoreTone(item.overall)">
-                      {{ fmtScore(item.overall) }}/10
+                    <span class="practice-stage__history-score" :data-tone="scoreTone(item.overall, scoreScaleMax)">
+                      {{ fmtScore(item.overall) }}/{{ scoreScaleMax }}
                     </span>
                     <span class="practice-stage__history-comment">{{ item.comment || '—' }}</span>
                   </div>

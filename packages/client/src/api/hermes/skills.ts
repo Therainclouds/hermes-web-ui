@@ -112,6 +112,26 @@ export async function fetchSkills(profile?: string, target: SkillTarget = 'herme
   return { categories: res.categories, archived: res.archived ?? [], paths: res.paths }
 }
 
+/** GET /api/hermes/skills/practice —— 列出已安装的口语对练技能（含契约 JSON）。 */
+export interface PracticeSkillListItem {
+  category: string
+  name: string
+  description: string
+  enabled: boolean
+  source: string
+  /** 服务端解析的 hermes_practice 契约（客户端按需做结构归一化）。 */
+  manifest: Record<string, unknown>
+}
+
+export async function fetchPracticeSkills(): Promise<PracticeSkillListItem[]> {
+  try {
+    const res = await request<{ skills?: PracticeSkillListItem[] }>('/api/hermes/skills/practice')
+    return Array.isArray(res.skills) ? res.skills : []
+  } catch {
+    return []
+  }
+}
+
 export async function fetchSkillUsageStats(days = 7): Promise<SkillUsageStats> {
   const params = new URLSearchParams({ days: String(days) })
   return request<SkillUsageStats>(`/api/hermes/skills/usage/stats?${params}`)

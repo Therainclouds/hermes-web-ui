@@ -767,6 +767,13 @@ export default {
 
   // 말하기 연습 모드 (새 채팅의 세 번째 대화 모드)
   speechPractice: {
+    skill: "연습 스킬",
+    skillPlaceholder: "연습 스킬 선택(미선택=일반 코치)",
+    skillDefault: "일반 회화 코치",
+    skillLanguageFixed: "이 스킬은 {language}를 사용합니다",
+    reportAnalyzingMedia: "녹음 {audio}개 청취 · 화면 {frames}장 분석 중 — AI 전체 모달 분석 생성 중…",
+    reportSkippedNoMedia: "이번 녹음/화면이 없어 전체 모달 분석을 건너뛰고 대화 텍스트와 라운드 평가로 리포트를 생성했습니다",
+    reviewingEnd: "코치가 이번 세션의 마무리 총평을 진행 중(음성/화면 맥락 재사용)…",
     entry: '말하기 연습',
     entryHint: 'AI 코치와 지정한 주제로 음성 대화 연습: 매 턴 코멘트와 채점 후, 종료하면 분석 내용을 Markdown으로 저장할 수 있습니다',
     cameraHint: '카메라를 켜면 코치가 바디랭귀지/태도도 함께 평가합니다',
