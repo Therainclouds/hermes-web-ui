@@ -729,6 +729,8 @@ export default {
   omniRealtime: {
     entry: '실시간 대화',
     entryHint: '말만 하면 되는 핸즈프리 실시간 음성 대화, 언제든 끼어들기 가능',
+    modeLabel: '모드',
+    agentMode: 'Agent 모드',
     backendUnavailable: '실시간 서비스가 준비되지 않았습니다. 먼저 회의 모드에서 음성 서비스를 설정하고 시작한 후 다시 시도하세요',
     sessionError: '실시간 연결에 오류가 발생했습니다. 다시 시도하세요. 계속 실패하면 회의 음성 서비스가 실행 중인지 확인하세요',
     toolRunning: '조회 중: {tool} …',

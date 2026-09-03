@@ -729,6 +729,8 @@ export default {
   omniRealtime: {
     entry: 'リアルタイム会話',
     entryHint: 'ハンズフリーで AI とリアルタイム音声会話、いつでも割り込み可能',
+    modeLabel: 'モード',
+    agentMode: 'Agent モード',
     backendUnavailable: 'リアルタイムサービスの準備ができていません。まず会議モードで音声サービスを設定・起動してから再試行してください',
     sessionError: 'リアルタイム接続でエラーが発生しました。再試行してください。繰り返す場合は会議音声サービスの起動を確認してください',
     toolRunning: '照会中：{tool} …',

@@ -729,6 +729,8 @@ export default {
   omniRealtime: {
     entry: 'Tempo real',
     entryHint: 'Conversa por voz mãos livres com a IA — interrompa a qualquer momento',
+    modeLabel: 'Modo',
+    agentMode: 'Modo Agente',
     backendUnavailable: 'O serviço em tempo real não está pronto. Configure e inicie o serviço de voz no modo Reunião e tente novamente.',
     sessionError: 'Falha na conexão em tempo real. Tente novamente; se persistir, verifique se o serviço de voz de reuniões está em execução.',
     toolRunning: 'Consultando: {tool} …',

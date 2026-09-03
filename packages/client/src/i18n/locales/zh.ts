@@ -692,6 +692,8 @@ export default {
   omniRealtime: {
     entry: '实时对话',
     entryHint: '免提与 AI 实时语音对话，可随时打断',
+    modeLabel: '模式',
+    agentMode: 'Agent 模式',
     backendUnavailable: '实时对话服务未就绪，请先在会议模式中配置并启动语音服务后再试',
     sessionError: '实时连接出错，请重试；若反复失败请检查会议语音服务是否已启动',
     toolRunning: '正在查询：{tool} …',

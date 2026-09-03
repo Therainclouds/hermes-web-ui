@@ -692,6 +692,8 @@ export default {
   omniRealtime: {
     entry: 'Realtime',
     entryHint: 'Hands-free voice conversation with the AI — interrupt anytime',
+    modeLabel: 'Mode',
+    agentMode: 'Agent mode',
     backendUnavailable: 'The realtime service is not ready. Configure and start the voice service in Meeting mode first, then try again.',
     sessionError: 'Realtime connection failed. Please try again; if it keeps failing, check that the meeting voice service is running.',
     toolRunning: 'Looking up: {tool} …',
