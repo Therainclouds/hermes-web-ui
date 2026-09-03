@@ -152,6 +152,7 @@ onMounted(async () => {
     isWeChatDeviceUser.value = user.username.startsWith("tp_");
     phoneNumber.value = user.phone_number || null;
     wechatBound.value = user.wechat_bound || false;
+    isWeChatDeviceUser.value = wechatBound.value || isWeChatDeviceUser.value;
   } catch { /* ignore */ }
   try {
     const av = await fetchMyAvatar();
@@ -390,7 +391,7 @@ onMounted(() => { loadLockedIps(); });
           <NButton v-if="isWeChatDeviceUser" type="primary" @click="openSetPasswordModal">{{ t("settings.setAccountPassword") }}</NButton>
           <NButton @click="openChangePasswordModal">{{ t("login.changePassword") }}</NButton>
           <NButton @click="openChangeUsernameModal">{{ t("login.changeUsername") }}</NButton>
-          <NPopconfirm v-if="isWeChatDeviceUser" @positive-click="handleUnbindWechat">
+          <NPopconfirm v-if="isWeChatDeviceUser || wechatBound" @positive-click="handleUnbindWechat">
             <template #trigger>
               <NButton type="error" ghost :loading="unbindingWechat">{{ t("settings.unbindWechat") }}</NButton>
             </template>
