@@ -20,10 +20,10 @@ interface DetectResponse {
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope
 
-ctx.onmessage = (event: MessageEvent<DetectRequest>) => {
+ctx.onmessage = async (event: MessageEvent<DetectRequest>) => {
   const { id, imageData, opts } = event.data
   try {
-    const result = detectPaper(imageData, opts)
+    const result = await detectPaper(imageData, opts)
     const response: DetectResponse = { id, result }
     ctx.postMessage(response)
   } catch (error) {

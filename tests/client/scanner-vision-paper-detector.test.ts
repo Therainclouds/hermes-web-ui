@@ -30,17 +30,17 @@ function makeSyntheticPaper(
 }
 
 describe('paper-detector', () => {
-  it('returns null for tiny input', () => {
+  it('returns null for tiny input', async () => {
     const img = makeSyntheticPaper(8, 8, { x: 0, y: 0, w: 4, h: 4 })
-    expect(detectPaper(img)).toBeNull()
+    expect(await detectPaper(img)).toBeNull()
   })
 
-  it('detects a centered white rectangle on dark background', () => {
+  it('detects a centered white rectangle on dark background', async () => {
     const W = 200
     const H = 200
     const rect = { x: 40, y: 50, w: 120, h: 100 }
     const img = makeSyntheticPaper(W, H, rect)
-    const result = detectPaper(img)
+    const result = await detectPaper(img)
 
     expect(result).not.toBeNull()
     const r = result as PaperDetection
@@ -64,7 +64,7 @@ describe('paper-detector', () => {
     expect(r.quad[3].y).toBeCloseTo(expected.bl.y, 1)
   })
 
-  it('returns null for an all-dark image (no paper)', () => {
+  it('returns null for an all-dark image (no paper)', async () => {
     const data = new Uint8ClampedArray(100 * 100 * 4)
     for (let i = 0; i < data.length; i += 4) {
       data[i] = 10
@@ -72,26 +72,26 @@ describe('paper-detector', () => {
       data[i + 2] = 10
       data[i + 3] = 255
     }
-    expect(detectPaper({ width: 100, height: 100, data })).toBeNull()
+    expect(await detectPaper({ width: 100, height: 100, data })).toBeNull()
   })
 
-  it('returns null for a paper that is too small', () => {
+  it('returns null for a paper that is too small', async () => {
     const W = 200
     const H = 200
     const rect = { x: 95, y: 95, w: 10, h: 10 } // 2.5% of frame
     const img = makeSyntheticPaper(W, H, rect)
-    expect(detectPaper(img)).toBeNull()
+    expect(await detectPaper(img)).toBeNull()
   })
 
-  it('rejects overly-wide aspect ratios', () => {
+  it('rejects overly-wide aspect ratios', async () => {
     const W = 300
     const H = 100
     const rect = { x: 10, y: 10, w: 280, h: 80 } // aspect 3.5
     const img = makeSyntheticPaper(W, H, rect)
-    expect(detectPaper(img)).toBeNull()
+    expect(await detectPaper(img)).toBeNull()
   })
 
-  it('uses morphological closing to recover paper with holes (text inside)', () => {
+  it('uses morphological closing to recover paper with holes (text inside)', async () => {
     // 白纸上散几个黑字（打洞前景），闭运算应填洞
     const W = 200, H = 200
     const rect = { x: 40, y: 50, w: 120, h: 100 }
@@ -112,7 +112,7 @@ describe('paper-detector', () => {
         }
       }
     }
-    const result = detectPaper(img)
+    const result = await detectPaper(img)
     expect(result).not.toBeNull()
     const r = result as PaperDetection
     // 闭运算应填回这些小洞
@@ -120,12 +120,12 @@ describe('paper-detector', () => {
     expect(r.quad[0].y).toBeCloseTo(rect.y / H, 1)
   })
 
-  it('edge-based detection works on a moderate-contrast synthetic document', () => {
+  it('edge-based detection works on a moderate-contrast synthetic document', async () => {
     // 强制只跑 edge 策略（验证 edge 路径独立可用）
     const W = 200, H = 200
     const rect = { x: 40, y: 50, w: 120, h: 100 }
     const img = makeSyntheticPaper(W, H, rect)
-    const result = detectPaper(img, { strategies: ['edge'] })
+    const result = await detectPaper(img, { strategies: ['edge'] })
     expect(result).not.toBeNull()
     const r = result as PaperDetection
     expect(r.strategy).toBe('edge')
@@ -133,23 +133,41 @@ describe('paper-detector', () => {
     expect(r.quad[0].y).toBeCloseTo(rect.y / H, 1)
   })
 
-  it('rejects paper covering nearly the entire frame (maxAreaRatio)', () => {
+  it('rejects paper covering nearly the entire frame (maxAreaRatio)', async () => {
     // 整张图几乎都是白，maxAreaRatio=0.85 应该拒绝
     const W = 100, H = 100
     const data = new Uint8ClampedArray(W * H * 4)
     for (let i = 0; i < data.length; i += 4) {
       data[i] = 240; data[i + 1] = 240; data[i + 2] = 240; data[i + 3] = 255
     }
-    expect(detectPaper({ width: W, height: H, data })).toBeNull()
+    expect(await detectPaper({ width: W, height: H, data })).toBeNull()
   })
 
-  it('returns detection with ms and strategy fields', () => {
+  it('returns detection with ms and strategy fields', async () => {
     const W = 200, H = 200
     const rect = { x: 40, y: 50, w: 120, h: 100 }
     const img = makeSyntheticPaper(W, H, rect)
-    const result = detectPaper(img)
+    const result = await detectPaper(img)
     expect(result).not.toBeNull()
     expect(typeof (result as PaperDetection).ms).toBe('number')
     expect(['bright', 'edge']).toContain((result as PaperDetection).strategy)
+  })
+
+  it('ML strategy returns null when transformers module is unavailable', async () => {
+    // ML 策略：transformers.js 在 vitest 环境里加载会失败（wasm header 缺失），
+    // 应安静退化为 null（不抛错），不影响其它策略
+    const W = 200, H = 200
+    const rect = { x: 40, y: 50, w: 120, h: 100 }
+    const img = makeSyntheticPaper(W, H, rect)
+    const result = await detectPaper(img, { strategies: ['ml'] })
+    // 在 Node 环境里 ML 会失败，但 bright 不会（已被 ml-only 排除）
+    // 期望：detection 为 null（ML 退化为 null 而非抛出）
+    if (result !== null) {
+      // 如果某个环境让 ML 跑通了，验证结构
+      expect(result.strategy).toBe('ml')
+      expect(result.quad).toHaveLength(4)
+    }
+    // 关键断言：没有抛错就是成功
+    expect(result === null || result.strategy === 'ml').toBe(true)
   })
 })

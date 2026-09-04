@@ -21,7 +21,7 @@ export interface PaperDetection {
   /** 单帧耗时 ms（含全部策略）。 */
   ms: number
   /** 命中的策略，便于调试与 UI 提示。 */
-  strategy: 'bright' | 'edge'
+  strategy: 'ml' | 'bright' | 'edge'
 }
 
 export interface DetectOptions {
@@ -33,51 +33,59 @@ export interface DetectOptions {
   minAspect?: number
   /** 宽高比上界，默认 3.0。 */
   maxAspect?: number
-  /** 仅跑指定策略（调试用）。默认 ['bright', 'edge']。 */
-  strategies?: ReadonlyArray<'bright' | 'edge'>
+  /** 仅跑指定策略（调试用）。默认 ['ml', 'edge', 'bright']（ml 在线才走）。 */
+  strategies?: ReadonlyArray<'ml' | 'bright' | 'edge'>
+  /** ML 评分阈值，低于此丢弃。默认 0.35。 */
+  mlThreshold?: number
 }
 
-const DEFAULTS: Required<Omit<DetectOptions, 'strategies'>> & { strategies: ReadonlyArray<'bright' | 'edge'> } = {
+const DEFAULTS: Required<Omit<DetectOptions, 'strategies'>> & { strategies: ReadonlyArray<'ml' | 'bright' | 'edge'> } = {
   minAreaRatio: 0.05,
   maxAreaRatio: 0.85,
   minAspect: 0.3,
   maxAspect: 3.0,
-  strategies: ['bright', 'edge'],
+  mlThreshold: 0.35,
+  strategies: ['ml', 'edge', 'bright'],
 }
 
 /** 主入口：输入 RGBA ImageData，返回最佳检测结果或 null。 */
-export function detectPaper(
+export async function detectPaper(
   rgba: { width: number; height: number; data: Uint8ClampedArray | Uint8Array },
   opts: DetectOptions = {},
-): PaperDetection | null {
+): Promise<PaperDetection | null> {
   const merged = {
     minAreaRatio: opts.minAreaRatio ?? DEFAULTS.minAreaRatio,
     maxAreaRatio: opts.maxAreaRatio ?? DEFAULTS.maxAreaRatio,
     minAspect: opts.minAspect ?? DEFAULTS.minAspect,
     maxAspect: opts.maxAspect ?? DEFAULTS.maxAspect,
+    mlThreshold: opts.mlThreshold ?? DEFAULTS.mlThreshold,
     strategies: opts.strategies ?? DEFAULTS.strategies,
   }
   const { width: W, height: H } = rgba
   if (W < 16 || H < 16) return null
   const t0 = performanceNow()
 
-  // 0) 灰度 + 5x5 高斯模糊（多策略共用预处理）
+  // 0) 灰度 + 5x5 高斯模糊（亮 / 边缘策略共用）
   const gray = grayscale(rgba)
   const blurred = gaussianBlur5x5(gray, W, H)
 
-  // 1) 多策略并行投票
-  const candidates: PaperDetection[] = []
+  // 1) 多策略并行投票：经典策略同步、ML 异步
+  const tasks: Array<Promise<PaperDetection | null>> = []
   for (const strategy of merged.strategies) {
-    const grayForStrategy = blurred
-    const result = strategy === 'edge'
-      ? detectByEdges(grayForStrategy, W, H, merged, t0)
-      : detectByBrightness(grayForStrategy, W, H, merged, t0, strategy)
-    if (result) candidates.push(result)
+    if (strategy === 'edge') {
+      tasks.push(Promise.resolve(detectByEdges(blurred, W, H, merged, t0)))
+    } else if (strategy === 'bright') {
+      tasks.push(Promise.resolve(detectByBrightness(blurred, W, H, merged, t0, 'bright')))
+    } else {
+      tasks.push(detectByML(rgba, W, H, merged, t0).catch(() => null))
+    }
   }
 
+  const results = await Promise.all(tasks)
+  const candidates = results.filter((r): r is PaperDetection => r !== null)
   if (candidates.length === 0) return null
 
-  // 2) 按 (confidence) 选最优
+  // 2) 按 confidence 选最优
   candidates.sort((a, b) => b.confidence - a.confidence)
   const best = candidates[0]!
   return {
@@ -133,7 +141,61 @@ function gaussianBlur5x5(src: Uint8Array, W: number, H: number): Uint8Array {
 }
 
 /* ------------------------------------------------------------------ *
- * 策略 1：亮度二值化（白纸）
+ * 策略 0：YOLO 物体检测（@huggingface/transformers，WebGPU 优先）
+ * ------------------------------------------------------------------ */
+async function detectByML(
+  rgba: { width: number; height: number; data: Uint8ClampedArray | Uint8Array },
+  W: number,
+  H: number,
+  opts: { minAreaRatio: number; maxAreaRatio: number; minAspect: number; maxAspect: number; mlThreshold: number },
+  t0: number,
+): Promise<PaperDetection | null> {
+  // ML 推理需要 OffscreenCanvas（Transformers.js 不直接吃 ImageData）
+  let canvas: OffscreenCanvas | null = null
+  try {
+    canvas = new OffscreenCanvas(W, H)
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return null
+    const imageData = new ImageData(new Uint8ClampedArray(rgba.data), W, H)
+    ctx.putImageData(imageData, 0, 0)
+  } catch {
+    return null
+  }
+
+  let candidates
+  try {
+    const { detectRectangles, candidateToDetection } = await import('./detector-ml')
+    candidates = await detectRectangles(canvas, W, H, undefined, { threshold: opts.mlThreshold })
+    if (candidates.length === 0) return null
+
+    // 按业务约束（宽高比 + 面积）过滤，选最大的（最像"占据画面"的物体）
+    let best: PaperDetection | null = null
+    for (const c of candidates) {
+      if (c.aspect < opts.minAspect || c.aspect > opts.maxAspect) continue
+      if (c.areaRatio < opts.minAreaRatio || c.areaRatio > opts.maxAreaRatio) continue
+      const detection = candidateToDetection(c)
+      if (!best || detection.confidence > best.confidence) {
+        best = detection
+      }
+    }
+    if (!best) return null
+
+    return {
+      quad: best.quad,
+      confidence: best.confidence,
+      ms: performanceNow() - t0,
+      strategy: 'ml' as const,
+    }
+  } catch (error) {
+    // ML 加载失败（CDN 不通、模型下载超时、webgpu 不可用等）→ 安静退化
+    // eslint-disable-next-line no-console
+    console.warn('[paper-detector] ML strategy failed:', (error as Error)?.message ?? error)
+    return null
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * 策略 1：亮度 + Otsu
  * ------------------------------------------------------------------ */
 function detectByBrightness(
   gray: Uint8Array,
@@ -160,7 +222,7 @@ function detectByBrightness(
 }
 
 /* ------------------------------------------------------------------ *
- * 策略 3：Canny 边缘 + 膨胀 + 连通域
+ * 策略 2：Canny 边缘 + 膨胀 + 连通域
  * ------------------------------------------------------------------ */
 function detectByEdges(
   gray: Uint8Array,
@@ -552,7 +614,7 @@ function finalizeDetection(
   H: number,
   opts: { minAreaRatio: number; maxAreaRatio: number; minAspect: number; maxAspect: number },
   t0: number,
-  strategy: 'bright' | 'edge',
+  strategy: 'ml' | 'bright' | 'edge',
 ): PaperDetection | null {
   const totalPx = W * H
   const areaRatio = largest.pixelCount / totalPx
