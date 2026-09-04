@@ -22,27 +22,30 @@ import {
   NInput,
   NSelect,
   NSpin,
+  NSwitch,
   NTag,
   NTooltip,
 } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useScannerCamera } from './composables/useScannerCamera'
+import { useSmartCapture } from './composables/useSmartCapture'
+import ScannerQuadOverlay from './components/ScannerQuadOverlay.vue'
 import ScannerEnhanceControls from './components/ScannerEnhanceControls.vue'
 import {
   canvasFromImageSource,
   canvasToDataUrl,
   downscaleCanvas,
+  enhanceCanvas,
   enhanceDataUrl,
 } from './image-io'
-import {
-  detectQuadOnCanvas,
-  extractQuadCanvas,
-  loadScanEngine,
-} from './vision/engine'
-import { quadToCorners, scaleQuad } from './vision/quad'
+import { createDetector, type Detector } from './vision/detector'
+import { warpQuad } from './vision/perspective'
 import {
   ENHANCE_DEFAULTS,
   type EnhanceParams,
+  type EnhancePreset,
+  type Quad,
+  type WarpAspect,
 } from './vision/types'
 import {
   exportScannerPdf,
@@ -117,6 +120,129 @@ const dashscopeMissing = computed(() => keyChecked.value && !dashscopeReady.valu
 const cameraRunning = computed(() => cam.isRunning.value)
 const cameraStarting = computed(() => cam.isStarting.value)
 const cameraErrorCode = computed(() => cam.error.value)
+
+/* ------------------------------------------------------------------ *
+ * 智能捕捉（动态捕捉）
+ * ------------------------------------------------------------------ */
+const capturePreset = ref<EnhancePreset>('auto')
+const capturePresetOptions = [
+  { label: tt('scanner.enhance.presetNone'), value: 'none' },
+  { label: tt('scanner.enhance.presetAuto'), value: 'auto' },
+  { label: tt('scanner.enhance.presetGray'), value: 'gray' },
+  { label: tt('scanner.enhance.presetBw'), value: 'bw' },
+]
+const aspect = ref<WarpAspect>('auto')
+const aspectOptions = [
+  { label: tt('scanner.smart.aspectAuto'), value: 'auto' },
+  { label: tt('scanner.smart.aspectA4'), value: 'a4' },
+  { label: tt('scanner.smart.aspectA4Landscape'), value: 'a4-landscape' },
+]
+
+const smart = useSmartCapture({
+  video: () => videoEl.value,
+  cameraRunning: () => cameraRunning.value,
+  onAutoCapture: onSmartAutoCapture,
+  aspectRatio: null,
+})
+
+const smartEnabled = computed(() => smart.enabled.value)
+const smartQuad = computed(() => smart.quad.value)
+const smartManual = computed(() => smart.manual.value)
+const smartStatus = computed(() => smart.status.value)
+const autoCaptureOn = computed({
+  get: () => smart.autoCapture.value,
+  set: (v: boolean) => smart.setAutoCapture(v),
+})
+
+watch(aspect, (v) => {
+  smart.setAspectRatio(v === 'auto' ? null : aspectRatioValue(v))
+})
+
+function aspectRatioValue(v: Exclude<WarpAspect, 'auto'>): number {
+  if (v === 'a4') return 1 / Math.sqrt(2)
+  return Math.sqrt(2)
+}
+
+const smartStatusText = computed(() => {
+  switch (smartStatus.value) {
+    case 'off': return tt('scanner.smart.off')
+    case 'loading': return tt('scanner.smart.loading')
+    case 'unavailable': return tt('scanner.smart.unavailable')
+    case 'searching': return tt('scanner.smart.searching')
+    case 'detected': return tt('scanner.smart.detected')
+    case 'capturing': return tt('scanner.smart.capturing')
+    case 'cooling': return tt('scanner.smart.cooling')
+    default: return tt('scanner.smart.off')
+  }
+})
+const smartStatusTone = computed<'default' | 'info' | 'success' | 'error'>(() => {
+  switch (smartStatus.value) {
+    case 'unavailable': return 'error'
+    case 'detected':
+    case 'capturing': return 'success'
+    case 'loading':
+    case 'searching': return 'info'
+    default: return 'default'
+  }
+})
+
+const smartEngineError = computed(() => smart.engineError.value)
+
+watch(smartStatus, (next) => {
+  if (next === 'unavailable') {
+    // eslint-disable-next-line no-console
+    console.warn('[scanner] 检测器不可用：', smartEngineError.value || '(无详细原因)')
+  }
+})
+
+async function toggleSmart() {
+  if (smartEnabled.value) {
+    await smart.setEnabled(false)
+  } else {
+    await smart.setEnabled(true)
+  }
+}
+
+function onQuadEdit(next: Quad) {
+  smart.setQuadManually(next)
+}
+
+function pushCorrectedPage(canvas: HTMLCanvasElement) {
+  const original = canvasToDataUrl(canvas, 0.92)
+  const enhance = ENHANCE_DEFAULTS[capturePreset.value]
+  const image = enhance.preset === 'none'
+    ? original
+    : canvasToDataUrl(enhanceCanvas(canvas, enhance), 0.92)
+  pushPage(original, image, canvas.width, canvas.height, enhance)
+}
+
+async function onSmartAutoCapture(payload: { canvas: HTMLCanvasElement; quad: Quad; ms: number }) {
+  try {
+    pushCorrectedPage(payload.canvas)
+    smart.markCaptured(payload.quad)
+    message.success(tt('scanner.smart.captured', { n: smart.autoCount.value }))
+  } catch {
+    smart.markCaptured(payload.quad)
+    message.error(tt('scanner.smart.shootFailed'))
+  }
+}
+
+async function smartShoot() {
+  const shot = await smart.captureNow()
+  if (!shot) {
+    message.warning(tt('scanner.smart.noDoc'))
+    return
+  }
+  try {
+    const enhance = ENHANCE_DEFAULTS[capturePreset.value]
+    const image = enhance.preset === 'none'
+      ? shot.dataUrl
+      : (await enhanceDataUrl(shot.dataUrl, enhance)) || shot.dataUrl
+    pushPage(shot.dataUrl, image, shot.width, shot.height, enhance)
+  } catch {
+    message.error(tt('scanner.smart.shootFailed'))
+  }
+}
 
 /* ------------------------------------------------------------------ *
  * 摄像头基础操作
@@ -254,38 +380,64 @@ async function correctActivePage() {
   }
   if (correcting.value) return
   correcting.value = true
+  let detectorHandle: Detector | null = null
   try {
-    const engine = await loadScanEngine()
-    if (!engine) {
-      message.error(tt('scanner.smart.unavailable'))
-      return
-    }
-    const canvas = await canvasFromImageSource(page.originalImage, 2600)
-    if (!canvas) {
+    const fullCanvas = await canvasFromImageSource(page.originalImage, 2600)
+    if (!fullCanvas) {
       message.error(tt('scanner.enhance.correctFail'))
       return
     }
-    const detect = detectQuadOnCanvas(engine, downscaleCanvas(canvas, 900))
+    const detectCanvas = downscaleCanvas(fullCanvas, 900)
+    const ctx = detectCanvas.getContext('2d')
+    if (!ctx) {
+      message.error(tt('scanner.enhance.correctFail'))
+      return
+    }
+    const img = ctx.getImageData(0, 0, detectCanvas.width, detectCanvas.height)
+    const rgba = new Uint8ClampedArray(img.data)
+    detectorHandle = createDetector()
+    const detect = await detectorHandle.detect(
+      { width: detectCanvas.width, height: detectCanvas.height, data: rgba },
+      { minAreaRatio: 0.05 },
+    )
     if (!detect) {
       message.warning(tt('scanner.enhance.correctFail'))
       return
     }
-    const cornersPx = quadToCorners(scaleQuad(detect.quad, canvas.width, canvas.height))
-    const corrected = extractQuadCanvas(engine, canvas, cornersPx, {
-      maxEdge: 2200,
-      aspectRatio: null,
-    })
-    if (!corrected) {
+    const cornersPx: [import('./vision/types').Pt, import('./vision/types').Pt, import('./vision/types').Pt, import('./vision/types').Pt] = [
+      { x: detect.quad[0].x * fullCanvas.width, y: detect.quad[0].y * fullCanvas.height },
+      { x: detect.quad[1].x * fullCanvas.width, y: detect.quad[1].y * fullCanvas.height },
+      { x: detect.quad[2].x * fullCanvas.width, y: detect.quad[2].y * fullCanvas.height },
+      { x: detect.quad[3].x * fullCanvas.width, y: detect.quad[3].y * fullCanvas.height },
+    ]
+    const fullCtx = fullCanvas.getContext('2d')
+    if (!fullCtx) {
       message.error(tt('scanner.enhance.correctFail'))
       return
     }
-    page.originalImage = canvasToDataUrl(corrected, 0.92)
-    page.width = corrected.width
-    page.height = corrected.height
+    const fullImg = fullCtx.getImageData(0, 0, fullCanvas.width, fullCanvas.height)
+    const warped = warpQuad(
+      { width: fullCanvas.width, height: fullCanvas.height, data: new Uint8ClampedArray(fullImg.data) },
+      cornersPx,
+      { maxEdge: 2200 },
+    )
+    const out = document.createElement('canvas')
+    out.width = warped.width
+    out.height = warped.height
+    const outCtx = out.getContext('2d')
+    if (!outCtx) {
+      message.error(tt('scanner.enhance.correctFail'))
+      return
+    }
+    outCtx.putImageData(new ImageData(new Uint8ClampedArray(warped.data), warped.width, warped.height), 0, 0)
+    page.originalImage = canvasToDataUrl(out, 0.92)
+    page.width = out.width
+    page.height = out.height
     await recomputePageImage(page)
   } catch {
     message.error(tt('scanner.enhance.correctFail'))
   } finally {
+    detectorHandle?.terminate()
     correcting.value = false
   }
 }
@@ -468,7 +620,10 @@ const cameraHintTone = computed(() => {
           <NTag round size="small" :type="cameraHintTone">
             {{ cameraHint }}
           </NTag>
-          </div>
+          <NTag v-if="smartEnabled" round size="small" :type="smartStatusTone">
+            {{ smartStatusText }}
+          </NTag>
+        </div>
         <span class="header-subtitle">{{ tt('scanner.page.subtitle') }}</span>
       </div>
       <div class="header-actions">
@@ -513,6 +668,12 @@ const cameraHintTone = computed(() => {
               class="camera-video"
               @loadedmetadata="onVideoMetadata"
             />
+            <ScannerQuadOverlay
+              v-if="cameraRunning && smartEnabled && smartQuad"
+              :quad="smartQuad"
+              :manual="smartManual"
+              @update:quad="onQuadEdit"
+            />
             <div v-if="!cameraRunning" class="camera-empty">
               <NEmpty :description="tt('scanner.camera.idleHint')">
                 <template #extra>
@@ -548,16 +709,76 @@ const cameraHintTone = computed(() => {
             </NTooltip>
           </div>
 
-          <!-- 动态捕捉控制条（暂时禁用，等待下一阶段接入纯 JS + Worker 检测器） -->
-          <NAlert
-            v-if="cameraRunning"
-            type="warning"
-            size="small"
-            :show-icon="false"
-            class="smart-temp-disabled"
-          >
-            {{ tt('scanner.smart.unavailable') }}
-          </NAlert>
+          <!-- 动态捕捉控制条 -->
+          <div v-if="cameraRunning" class="smart-toolbar">
+            <NTooltip>
+              <template #trigger>
+                <NButton
+                  size="small"
+                  :type="smartEnabled ? 'warning' : 'default'"
+                  @click="toggleSmart"
+                >
+                  {{ tt('scanner.smart.mode') }}
+                </NButton>
+              </template>
+              {{ tt('scanner.smart.modeHint') }}
+            </NTooltip>
+
+            <template v-if="smartEnabled">
+              <label class="smart-option smart-auto">
+                <NSwitch v-model:value="autoCaptureOn" size="small" />
+                <span>{{ tt('scanner.smart.auto') }}</span>
+              </label>
+              <span class="smart-option smart-preset">
+                <span class="smart-option-label">{{ tt('scanner.smart.preset') }}</span>
+                <NSelect
+                  v-model:value="capturePreset"
+                  :options="capturePresetOptions"
+                  size="small"
+                  style="width: 108px;"
+                />
+              </span>
+              <span class="smart-option smart-aspect">
+                <span class="smart-option-label">{{ tt('scanner.smart.aspect') }}</span>
+                <NSelect
+                  v-model:value="aspect"
+                  :options="aspectOptions"
+                  size="small"
+                  style="width: 116px;"
+                />
+              </span>
+              <NTooltip>
+                <template #trigger>
+                  <NButton
+                    size="small"
+                    type="primary"
+                    :disabled="!smartQuad"
+                    @click="smartShoot"
+                  >
+                    {{ tt('scanner.smart.shoot') }}
+                  </NButton>
+                </template>
+                {{ tt('scanner.smart.shootHint') }}
+              </NTooltip>
+              <span
+                v-if="smartStatus === 'searching' || smartStatus === 'detected'"
+                class="smart-live"
+                :class="`tone-${smartStatusTone}`"
+              >
+                {{ smartStatusText }}
+              </span>
+            </template>
+
+            <NAlert
+              v-if="smartStatus === 'unavailable'"
+              type="error"
+              size="small"
+              :show-icon="false"
+              class="smart-unavailable"
+            >
+              {{ tt('scanner.smart.unavailable') }}
+            </NAlert>
+          </div>
         </section>
 
         <section class="page-strip">
@@ -825,7 +1046,43 @@ const cameraHintTone = computed(() => {
   color: $text-muted;
 }
 
-.smart-temp-disabled {
+/* 动态捕捉控制条 */
+.smart-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border: 1px dashed $border-light;
+  border-radius: $radius-sm;
+  background: var(--bg-elevated);
+}
+
+.smart-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: $text-muted;
+}
+
+.smart-option-label {
+  white-space: nowrap;
+}
+
+.smart-live {
+  font-size: 12px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--bg-secondary);
+
+  &.tone-success { color: var(--color-success, #18a058); }
+  &.tone-info { color: var(--color-info, #2080f0); }
+  &.tone-error { color: var(--color-error, #d03050); }
+}
+
+.smart-unavailable {
+  width: 100%;
   font-size: 12px;
 }
 
