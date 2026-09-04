@@ -1,4 +1,4 @@
-import { onUnmounted, ref, shallowRef } from 'vue'
+import { computed, onUnmounted, ref, shallowRef } from 'vue'
 import { canvasToDataUrl, drawVideoFrame } from '../image-io'
 import {
   accumulateStable,
@@ -379,6 +379,10 @@ export function useSmartCapture(options: SmartCaptureOptions) {
     loadElapsed,
     detectMs,
     autoCount,
+    /** ML pipeline 加载状态（由 worker 镜像回主线程）。 */
+    mlStatus: computed<{ state: 'off' | 'loading' | 'ready' | 'failed'; error?: string }>(() =>
+      detector.value?.mlStatus.value ?? { state: 'off' as const },
+    ),
     setEnabled,
     setAutoCapture: (v: boolean) => { autoCapture.value = v },
     setQuadManually,

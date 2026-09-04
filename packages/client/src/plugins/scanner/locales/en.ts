@@ -45,6 +45,9 @@ export default {
       captured: 'Auto-captured page {n}',
       noDoc: 'No clear document edges detected in the current frame.',
       resetBox: 'Reset box',
+      mlLoading: 'Loading AI model…',
+      mlReady: 'AI ready',
+      mlFailed: 'AI unavailable, using classic detection',
     },
     pages: {
       title: 'Pages',

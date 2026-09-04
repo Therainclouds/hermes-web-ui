@@ -52,47 +52,85 @@ interface PipelineLike {
 let pipelinePromise: Promise<PipelineLike> | null = null
 let pipelineKey = ''
 
+/**
+ * ML pipeline 加载状态。worker 内修改、主线程通过 worker postMessage 镜像。
+ *
+ * - off    ：未启用（默认）
+ * - 'loading'：正在加载 transformers.js / 下载模型 / 初始化 WebGPU/WASM
+ * - 'ready' ：pipeline 就绪，可以推理
+ * - 'failed'：加载失败（CDN 不通 / wasm 不可用 / 设备拒绝）。worker 已安静退化到经典策略
+ */
+export type MLStatusState = 'off' | 'loading' | 'ready' | 'failed'
+
+export interface MLStatus {
+  state: MLStatusState
+  /** 失败时附带的错误描述（UI 调试用）。 */
+  error?: string
+}
+
+let mlStatus: MLStatus = { state: 'off' }
+
+/** 取 worker 内的当前状态。main thread 通过 worker 消息镜像同步。 */
+export function getMLStatus(): MLStatus {
+  return mlStatus
+}
+
+function setMLStatus(state: MLStatusState, error?: string): void {
+  mlStatus = error ? { state, error } : { state }
+}
+
 function hasWebGPU(): boolean {
   return typeof navigator !== 'undefined' && 'gpu' in navigator
 }
 
 /** 获取（懒加载）Transformers.js + YOLO pipeline。WebGPU 优先，WASM 兜底。 */
 export async function getMLPipeline(modelId = DEFAULT_MODEL): Promise<PipelineLike> {
-  const envMod = await import('@huggingface/transformers')
-  const { pipeline, env } = envMod as unknown as {
-    pipeline: (task: string, model: string, opts?: Record<string, unknown>) => Promise<PipelineLike>
-    env: {
-      backends?: { onnx?: { wasm?: { numThreads?: number } } }
-      allowLocalModels?: boolean
-      useFs?: boolean
+  const key = `${modelId}@${hasWebGPU() ? 'webgpu' : 'wasm'}`
+  if (pipelinePromise && pipelineKey === key && mlStatus.state === 'ready') return pipelinePromise
+
+  setMLStatus('loading')
+  try {
+    const envMod = await import('@huggingface/transformers')
+    const { pipeline, env } = envMod as unknown as {
+      pipeline: (task: string, model: string, opts?: Record<string, unknown>) => Promise<PipelineLike>
+      env: {
+        backends?: { onnx?: { wasm?: { numThreads?: number } } }
+        allowLocalModels?: boolean
+        useFs?: boolean
+      }
     }
+
+    // WASM 线程数：尽量榨干多核
+    if (env.backends?.onnx?.wasm) {
+      const cores = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency ?? 2 : 2
+      env.backends.onnx.wasm.numThreads = Math.min(4, cores)
+    }
+    // 避免 worker 里访问 fs（Vite 静态服务没有 fs）
+    env.allowLocalModels = false
+    env.useFs = false
+
+    const device = hasWebGPU() ? 'webgpu' : 'wasm'
+
+    pipelineKey = `${modelId}@${device}`
+    pipelinePromise = pipeline('object-detection', modelId, {
+      device,
+      dtype: 'q8',
+    })
+    const pipe = await pipelinePromise
+    setMLStatus('ready')
+    return pipe
+  } catch (error) {
+    setMLStatus('failed', (error as Error)?.message ?? String(error))
+    pipelinePromise = null
+    throw error
   }
-
-  // WASM 线程数：尽量榨干多核
-  if (env.backends?.onnx?.wasm) {
-    const cores = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency ?? 2 : 2
-    env.backends.onnx.wasm.numThreads = Math.min(4, cores)
-  }
-  // 避免 worker 里访问 fs（Vite 静态服务没有 fs）
-  env.allowLocalModels = false
-  env.useFs = false
-
-  const device = hasWebGPU() ? 'webgpu' : 'wasm'
-  const key = `${modelId}@${device}`
-  if (pipelinePromise && pipelineKey === key) return pipelinePromise
-
-  pipelineKey = key
-  pipelinePromise = pipeline('object-detection', modelId, {
-    device,
-    dtype: 'q8',
-  })
-  return pipelinePromise
 }
 
 /** 取消加载中的 pipeline（用于 unmount）。 */
 export function disposeMLPipeline(): void {
   pipelinePromise = null
   pipelineKey = ''
+  setMLStatus('off')
 }
 
 /**

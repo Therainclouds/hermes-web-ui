@@ -203,6 +203,26 @@ async function toggleSmart() {
   }
 }
 
+/** ML pipeline 加载状态（worker 镜像回主线程）。 */
+const mlStatus = smart.mlStatus
+const mlStatusText = computed(() => {
+  switch (mlStatus.value.state) {
+    case 'off': return ''
+    case 'loading': return tt('scanner.smart.mlLoading')
+    case 'ready': return tt('scanner.smart.mlReady')
+    case 'failed': return tt('scanner.smart.mlFailed')
+    default: return ''
+  }
+})
+const mlStatusTone = computed<'default' | 'info' | 'success' | 'error'>(() => {
+  switch (mlStatus.value.state) {
+    case 'loading': return 'info'
+    case 'ready': return 'success'
+    case 'failed': return 'error'
+    default: return 'default'
+  }
+})
+
 function onQuadEdit(next: Quad) {
   smart.setQuadManually(next)
 }
@@ -723,6 +743,15 @@ const cameraHintTone = computed(() => {
               </template>
               {{ tt('scanner.smart.modeHint') }}
             </NTooltip>
+
+            <span
+              v-if="smartEnabled && mlStatus.state !== 'off' && mlStatus.state !== 'ready'"
+              class="smart-live"
+              :class="`tone-${mlStatusTone}`"
+              :title="mlStatus.error ?? ''"
+            >
+              {{ mlStatusText }}
+            </span>
 
             <template v-if="smartEnabled">
               <label class="smart-option smart-auto">
