@@ -171,3 +171,99 @@ describe('paper-detector', () => {
     expect(result === null || result.strategy === 'ml').toBe(true)
   })
 })
+describe('paper-detector classic enhancements', () => {
+  it('detects a dark sheet on a light background (dark polarity)', async () => {
+    const W = 200, H = 200
+    // 亮桌面背景 + 深色纸张
+    const data = new Uint8ClampedArray(W * H * 4)
+    for (let i = 0; i < data.length; i += 4) { data[i] = 225; data[i + 1] = 225; data[i + 2] = 225; data[i + 3] = 255 }
+    const rect = { x: 40, y: 50, w: 120, h: 100 }
+    for (let y = rect.y; y < rect.y + rect.h; y++) {
+      for (let x = rect.x; x < rect.x + rect.w; x++) {
+        const i = (y * W + x) * 4
+        data[i] = 40; data[i + 1] = 40; data[i + 2] = 40
+      }
+    }
+    const result = await detectPaper({ width: W, height: H, data }, { strategies: ['bright'] })
+    expect(result).not.toBeNull()
+    const r = result as PaperDetection
+    // 深色极性候选应框住深色纸张，而不是整幅亮背景
+    expect(r.quad[0].x).toBeCloseTo(rect.x / W, 1)
+    expect(r.quad[0].y).toBeCloseTo(rect.y / H, 1)
+    expect(r.quad[2].x).toBeCloseTo((rect.x + rect.w) / W, 1)
+    expect(r.quad[2].y).toBeCloseTo((rect.y + rect.h) / H, 1)
+  })
+
+  it('prefers the paper sheet over a frame-filling bright background', async () => {
+    const W = 200, H = 200
+    // 中间一张「更亮」的白纸，四周是较亮但仍偏灰的桌面 —— 单极性会选中整幅桌面
+    const data = new Uint8ClampedArray(W * H * 4)
+    for (let i = 0; i < data.length; i += 4) { data[i] = 150; data[i + 1] = 150; data[i + 2] = 150; data[i + 3] = 255 }
+    const rect = { x: 40, y: 50, w: 120, h: 100 }
+    for (let y = rect.y; y < rect.y + rect.h; y++) {
+      for (let x = rect.x; x < rect.x + rect.w; x++) {
+        const i = (y * W + x) * 4
+        data[i] = 240; data[i + 1] = 240; data[i + 2] = 240
+      }
+    }
+    const result = await detectPaper({ width: W, height: H, data })
+    expect(result).not.toBeNull()
+    const r = result as PaperDetection
+    expect(r.quad[0].x).toBeCloseTo(rect.x / W, 1)
+    expect(r.quad[0].y).toBeCloseTo(rect.y / H, 1)
+    expect(r.quad[2].x).toBeCloseTo((rect.x + rect.w) / W, 1)
+    expect(r.quad[2].y).toBeCloseTo((rect.y + rect.h) / H, 1)
+  })
+})
+
+describe('paper-detector ROI tracking (priorQuad)', () => {
+  const W = 400, H = 300
+  /** 暗背景上左右两张白纸：A 在左、B 在右 */
+  function twoSheets(): { width: number; height: number; data: Uint8ClampedArray } {
+    const data = new Uint8ClampedArray(W * H * 4)
+    for (let i = 0; i < data.length; i += 4) { data[i] = 20; data[i + 1] = 20; data[i + 2] = 20; data[i + 3] = 255 }
+    const paint = (rect: { x: number; y: number; w: number; h: number }) => {
+      for (let y = rect.y; y < rect.y + rect.h; y++)
+        for (let x = rect.x; x < rect.x + rect.w; x++) {
+          const i = (y * W + x) * 4
+          data[i] = 240; data[i + 1] = 240; data[i + 2] = 240
+        }
+    }
+    paint({ x: 30, y: 40, w: 140, h: 220 })   // A 中心 x=100
+    paint({ x: 230, y: 40, w: 140, h: 220 })  // B 中心 x=300
+    return { width: W, height: H, data }
+  }
+  const quadAt = (cx: number, cy: number, halfW: number, halfH: number): Quad => [
+    { x: cx - halfW, y: cy - halfH },
+    { x: cx + halfW, y: cy - halfH },
+    { x: cx + halfW, y: cy + halfH },
+    { x: cx - halfW, y: cy + halfH },
+  ]
+
+  it('without prior picks the largest sheet (A)', async () => {
+    const r = await detectPaper(twoSheets(), { strategies: ['bright'] })
+    expect(r).not.toBeNull()
+    const cx = (r!.quad[0].x + r!.quad[2].x) / 2
+    expect(cx).toBeCloseTo(100 / W, 1)
+  })
+
+  it('with prior near sheet B locks onto B instead of the larger/equal A', async () => {
+    const r = await detectPaper(twoSheets(), {
+      strategies: ['bright'],
+      priorQuad: quadAt(300 / W, 150 / H, 0.12, 0.3),
+    })
+    expect(r).not.toBeNull()
+    const cx = (r!.quad[0].x + r!.quad[2].x) / 2
+    expect(cx).toBeCloseTo(300 / W, 1)
+  })
+
+  it('falls back to full-frame search when prior points at an empty region', async () => {
+    const r = await detectPaper(twoSheets(), {
+      strategies: ['bright'],
+      priorQuad: quadAt(0.05, 0.05, 0.03, 0.03), // 左上角空白处
+    })
+    expect(r).not.toBeNull()
+    const cx = (r!.quad[0].x + r!.quad[2].x) / 2
+    expect(cx).toBeCloseTo(100 / W, 1) // 回退整帧 → 最大张 A
+  })
+})

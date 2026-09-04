@@ -153,6 +153,11 @@ const autoCaptureOn = computed({
   get: () => smart.autoCapture.value,
   set: (v: boolean) => smart.setAutoCapture(v),
 })
+/** AI 识别开关（默认关闭，仅用经典识别；点开才启用 AI 兜底）。 */
+const aiEnabled = computed({
+  get: () => smart.aiEnabled.value,
+  set: (v: boolean) => { smart.aiEnabled.value = v },
+})
 
 watch(aspect, (v) => {
   smart.setAspectRatio(v === 'auto' ? null : aspectRatioValue(v))
@@ -262,6 +267,11 @@ async function smartShoot() {
   } catch {
     message.error(tt('scanner.smart.shootFailed'))
   }
+}
+
+/** 清除当前选框/手动锁定并重新搜索（「重置选框」按钮）。 */
+function smartRescan() {
+  smart.rescan()
 }
 
 /* ------------------------------------------------------------------ *
@@ -745,7 +755,7 @@ const cameraHintTone = computed(() => {
             </NTooltip>
 
             <span
-              v-if="smartEnabled && mlStatus.state !== 'off' && mlStatus.state !== 'ready'"
+              v-if="aiEnabled && smartEnabled && mlStatus.state !== 'off' && mlStatus.state !== 'ready'"
               class="smart-live"
               :class="`tone-${mlStatusTone}`"
               :title="mlStatus.error ?? ''"
@@ -754,6 +764,10 @@ const cameraHintTone = computed(() => {
             </span>
 
             <template v-if="smartEnabled">
+              <label class="smart-option smart-ai" :title="tt('scanner.smart.aiHint')">
+                <NSwitch v-model:value="aiEnabled" size="small" />
+                <span>{{ tt('scanner.smart.aiLabel') }}</span>
+              </label>
               <label class="smart-option smart-auto">
                 <NSwitch v-model:value="autoCaptureOn" size="small" />
                 <span>{{ tt('scanner.smart.auto') }}</span>
@@ -789,6 +803,15 @@ const cameraHintTone = computed(() => {
                 </template>
                 {{ tt('scanner.smart.shootHint') }}
               </NTooltip>
+              <NButton
+                v-if="smartQuad"
+                size="small"
+                quaternary
+                type="error"
+                @click="smartRescan"
+              >
+                {{ tt('scanner.smart.resetBox') }}
+              </NButton>
               <span
                 v-if="smartStatus === 'searching' || smartStatus === 'detected'"
                 class="smart-live"

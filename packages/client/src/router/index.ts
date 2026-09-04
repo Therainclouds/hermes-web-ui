@@ -218,6 +218,11 @@ const router = createRouter({
       name: 'hermes.mcp',
       component: () => import('@/views/hermes/McpManagerView.vue'),
     },
+    {
+      path: '/hermes/client-plugins',
+      name: 'hermes.clientPlugins',
+      component: () => import('@/views/hermes/ClientPluginsView.vue'),
+    },
   ],
 })
 

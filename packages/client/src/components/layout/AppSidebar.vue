@@ -5,6 +5,7 @@ import { useI18n } from "vue-i18n";
 import { NButton, NModal, NTag } from "naive-ui";
 import { useAppStore } from "@/stores/hermes/app";
 import { usePersistentRecord } from '@/composables/usePersistentRecord'
+import { listSidebarItems, type PluginSidebarItem } from '@/plugins'
 import RouteLinkItem from '@/components/common/RouteLinkItem.vue'
 import ModelSelector from "@/components/layout/ModelSelector.vue";
 import ProfileSelector from "@/components/layout/ProfileSelector.vue";
@@ -47,6 +48,24 @@ type SidebarGroupKey = "Agent" | "Monitoring" | "Tools" | "System";
 function groupLabel(key: SidebarGroupKey) {
   return t(`sidebar.group${key}${appStore.sidebarCollapsed ? "Short" : ""}`);
 }
+
+/**
+ * 客户端插件注册的侧边栏条目（按 group 分组）。
+ * 渲染逻辑：每个内置分组结束后追加对应分组的插件项；
+ * 插件未加载 / 已卸载时 listSidebarItems() 返回空数组，对应 v-for 不渲染。
+ */
+const pluginItemsByGroup = computed<Record<SidebarGroupKey, PluginSidebarItem[]>>(() => {
+  const items = listSidebarItems()
+  const groups: Record<SidebarGroupKey, PluginSidebarItem[]> = {
+    Agent: [], Monitoring: [], Tools: [], System: [],
+  }
+  for (const item of items) {
+    if (!item.requiresSuperAdmin || isSuperAdmin.value) {
+      groups[item.group]?.push(item)
+    }
+  }
+  return groups
+})
 
 const provisioningUrl = computed(() => resolveDeviceUrls().provisioningUrl);
 
@@ -228,6 +247,19 @@ function handleUpdateClick() {
             </svg>
             <span>{{ t("sidebar.models") }}</span>
           </RouteLinkItem>
+          <RouteLinkItem
+            v-for="item in pluginItemsByGroup.Agent"
+            :key="item.routeName"
+            v-show="hasRoute(item.routeName)"
+            class="nav-item"
+            :to="{ name: item.routeName }"
+            :active="selectedKey === item.routeName"
+          >
+            <svg v-if="item.iconPath" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path :d="item.iconPath" />
+            </svg>
+            <span>{{ t(item.labelKey) }}</span>
+          </RouteLinkItem>
         </div>
       </div>
 
@@ -280,6 +312,19 @@ function handleUpdateClick() {
               <path d="M22 12A10 10 0 0 0 12 2v10z" />
             </svg>
             <span>{{ t("sidebar.skillsUsage") }}</span>
+          </RouteLinkItem>
+          <RouteLinkItem
+            v-for="item in pluginItemsByGroup.Monitoring"
+            :key="item.routeName"
+            v-show="hasRoute(item.routeName)"
+            class="nav-item"
+            :to="{ name: item.routeName }"
+            :active="selectedKey === item.routeName"
+          >
+            <svg v-if="item.iconPath" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path :d="item.iconPath" />
+            </svg>
+            <span>{{ t(item.labelKey) }}</span>
           </RouteLinkItem>
         </div>
       </div>
@@ -341,6 +386,19 @@ function handleUpdateClick() {
             </svg>
             <span>{{ t("sidebar.usb") }}</span>
           </RouteLinkItem>
+          <RouteLinkItem
+            v-for="item in pluginItemsByGroup.Tools"
+            :key="item.routeName"
+            v-show="hasRoute(item.routeName)"
+            class="nav-item"
+            :to="{ name: item.routeName }"
+            :active="selectedKey === item.routeName"
+          >
+            <svg v-if="item.iconPath" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path :d="item.iconPath" />
+            </svg>
+            <span>{{ t(item.labelKey) }}</span>
+          </RouteLinkItem>
         </div>
       </div>
 
@@ -388,6 +446,26 @@ function handleUpdateClick() {
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
             </svg>
             <span>{{ t("sidebar.settings") }}</span>
+          </RouteLinkItem>
+          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.clientPlugins' }" :active="selectedKey === 'hermes.clientPlugins'">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
+              <circle cx="12" cy="12" r="3" />
+            </svg>
+            <span>{{ t("sidebar.clientPlugins") }}</span>
+          </RouteLinkItem>
+          <RouteLinkItem
+            v-for="item in pluginItemsByGroup.System"
+            :key="item.routeName"
+            v-show="hasRoute(item.routeName)"
+            class="nav-item"
+            :to="{ name: item.routeName }"
+            :active="selectedKey === item.routeName"
+          >
+            <svg v-if="item.iconPath" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path :d="item.iconPath" />
+            </svg>
+            <span>{{ t(item.labelKey) }}</span>
           </RouteLinkItem>
         </div>
       </div>

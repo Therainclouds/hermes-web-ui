@@ -6,10 +6,12 @@ import {
   isQuadSufficient,
   isStableEnough,
   shouldRecapture,
+  smoothQuad,
   type StableAccumulator,
 } from '../vision/capture-logic'
 import { createDetector, type Detector } from '../vision/detector'
 import { warpQuad } from '../vision/perspective'
+import { quadCornerDelta } from '../vision/quad'
 import type { Pt, Quad } from '../vision/types'
 
 /**
@@ -72,8 +74,20 @@ export function useSmartCapture(options: SmartCaptureOptions) {
   const maxFrameEdge = options.maxFrameEdge ?? 2400
   const outputMaxEdge = options.outputMaxEdge ?? 2200
 
+  /** 连续命中帧数达到该值才亮起选框并上报「已检测到」（滤掉单帧误报拉框）。 */
+  const SHOW_MIN_HITS = 2
+  /** 连续丢失帧数达到该值才清除选框（滞回：边缘抖动 / 短暂遮挡不闪框）。 */
+  const HIDE_AFTER_MISSES = 3
+  /**
+   * 手动拖框后的接管距离：检测结果与该选框足够近（同一目标）时，系统自动接管，
+   * 让选框「拖到哪就持续追踪哪」——像扫描大师那样先框一下、之后自动跟随。
+   */
+  const MANUAL_TAKEOVER_DIST = 0.25
+
   const enabled = ref(false)
   const autoCapture = ref(false)
+  /** AI（ML 物体检测）开关：默认关闭，仅用经典识别（毫秒级实时跟随）。 */
+  const aiEnabled = ref(false)
   const quad = ref<Quad | null>(null)
   const manual = ref(false)
   const status = ref<SmartCaptureStatus>('off')
@@ -93,6 +107,10 @@ export function useSmartCapture(options: SmartCaptureOptions) {
   let lastCapturedAt = 0
   let analysisCanvas: HTMLCanvasElement | null = null
   let disposed = false
+  /** 连续命中帧计数（首次亮框门槛用；框已在显示时单帧命中即刷新）。 */
+  let hits = 0
+  /** 连续丢失帧计数（清框滞回用）。 */
+  let misses = 0
 
   function stopLoop() {
     if (rafId) {
@@ -131,14 +149,17 @@ export function useSmartCapture(options: SmartCaptureOptions) {
       analysisCanvas.width = w
       analysisCanvas.height = h
     }
-    const ctx = analysisCanvas.getContext('2d')
+    // 该 canvas 每帧被 drawImage 一次、随后 getImageData 读一次 ——
+    // willReadFrequently 提示浏览器走 CPU 快速读回路径（消除
+    // "Multiple readback operations using getImageData..." 告警）
+    const ctx = analysisCanvas.getContext('2d', { willReadFrequently: true })
     if (!ctx) return null
     ctx.drawImage(el, 0, 0, w, h)
     return analysisCanvas
   }
 
   function canvasToRgba(canvas: HTMLCanvasElement): { width: number; height: number; data: Uint8ClampedArray } | null {
-    const ctx = canvas.getContext('2d')
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })
     if (!ctx) return null
     const img = ctx.getImageData(0, 0, canvas.width, canvas.height)
     return { width: canvas.width, height: canvas.height, data: new Uint8ClampedArray(img.data) }
@@ -164,26 +185,53 @@ export function useSmartCapture(options: SmartCaptureOptions) {
       if (!canvas) return
       const rgba = canvasToRgba(canvas)
       if (!rgba) return
-      const outcome = await det.detect(rgba, { minAreaRatio: 0.05 })
+      // 默认只跑经典策略（bright/edge，毫秒级）；AI 开启时才加入 'ml' 兜底。
+      // priorQuad 传上一帧已显示选框：让检测结果黏住同一张纸、不跳变。
+      const outcome = await det.detect(rgba, {
+        minAreaRatio: 0.05,
+        strategies: aiEnabled.value ? ['ml', 'bright', 'edge'] : ['bright', 'edge'],
+        priorQuad: quad.value,
+      })
       if (disposed || !enabled.value) return
-      if (!outcome) {
-        stable = null
-        if (!manual.value) quad.value = null
-        if (status.value !== 'cooling') status.value = 'searching'
+
+      if (!outcome || !isQuadSufficient(outcome.quad, minAreaRatio)) {
+        onDetectionLoss()
         return
       }
+
+      // —— 本帧有合格候选 ——
+      hits += 1
+      misses = 0
       detectMs.value = Math.round(outcome.ms)
       const quadNorm = outcome.quad
-      if (!manual.value) quad.value = quadNorm
-      if (!isQuadSufficient(quadNorm, minAreaRatio)) {
-        stable = null
-        if (!manual.value) quad.value = null
+      stable = accumulateStable(stable, quadNorm, stabilityTolerance)
+
+      if (manual.value) {
+        // 手动拖框 = 指定目标：检测结果贴近用户选框时自动接管，之后持续自动跟随；
+        // 若目标还没进入选框，保留用户选框不动（直到点「重置选框」或拖到目标上）。
+        const d = quad.value ? quadCornerDelta(quad.value, quadNorm) : Infinity
+        if (quad.value && d <= MANUAL_TAKEOVER_DIST) {
+          manual.value = false
+          hits = 0
+          // 继续走下方常规路径：从用户选框平滑过渡到检测跟踪
+        } else {
+          status.value = 'detected'
+          return
+        }
+      }
+
+      // 亮框滞回：首次亮框需要连续 SHOW_MIN_HITS 帧（滤单帧误报）；
+      // 选框已在显示时，单帧命中就刷新（持续跟随，不闪断）。
+      const boxShown = quad.value !== null
+      if (!boxShown && hits < SHOW_MIN_HITS) {
         if (status.value !== 'cooling') status.value = 'searching'
         return
       }
-      stable = accumulateStable(stable, quadNorm, stabilityTolerance)
+      // 指数平滑：选框向新检测收敛而非逐帧硬跳（抑制角点抖动/跳框）。
+      // 拍摄/校正仍用原始 quadNorm（captureCorrected/fireAutoCapture 传 raw）。
+      quad.value = smoothQuad(quad.value, quadNorm, 0.6)
 
-      if (!autoCapture.value || manual.value) {
+      if (!autoCapture.value) {
         status.value = 'detected'
         return
       }
@@ -197,9 +245,37 @@ export function useSmartCapture(options: SmartCaptureOptions) {
         status.value = 'detected'
       }
     } catch {
-      stable = null
+      onDetectionLoss()
+    }
+  }
+
+  /** 本帧未检测到合格候选：累计丢失，达到阈值才清框（滞回，防闪烁）。 */
+  function onDetectionLoss(): void {
+    stable = null
+    hits = 0
+    misses += 1
+
+    if (manual.value) {
+      // 手动拖框期间丢失目标：保留用户选框（用户明确摆放的位置不被自动清掉），
+      // 由用户点「重置选框」或把框拖到目标上接管
+      misses = 0
+      return
+    }
+    if (misses >= HIDE_AFTER_MISSES) {
+      quad.value = null
       if (status.value !== 'cooling') status.value = 'searching'
     }
+    // misses < HIDE_AFTER_MISSES：短暂丢失，保留选框与状态（滞回）
+  }
+
+  /** 释放手动锁定并清空选框，回到搜索状态。 */
+  function releaseManual(): void {
+    manual.value = false
+    quad.value = null
+    stable = null
+    hits = 0
+    misses = 0
+    if (enabled.value) status.value = 'searching'
   }
 
   function fireAutoCapture(quadNorm: Quad) {
@@ -271,16 +347,25 @@ export function useSmartCapture(options: SmartCaptureOptions) {
 
   function setQuadManually(next: Quad | null) {
     if (!next) {
-      clearManual()
+      releaseManual()
       return
     }
     manual.value = true
     quad.value = [next[0], next[1], next[2], next[3]]
     stable = null
+    hits = 0
+    misses = 0
+    status.value = 'detected'
   }
 
-  function clearManual() {
-    manual.value = false
+  /**
+   * 清除当前选框 / 手动锁定，重新开始搜索（UI「重置选框」）。
+   * 同时重置自动拍摄记忆，使冷却 / 翻页判定立即失效，可对同一文档重新拍摄。
+   */
+  function rescan() {
+    lastCapturedQuad = null
+    lastCapturedAt = 0
+    releaseManual()
   }
 
   function setAspectRatio(aspect: number | null) {
@@ -308,6 +393,12 @@ export function useSmartCapture(options: SmartCaptureOptions) {
       stopLoop()
       clearLoadTimer()
       engineError.value = ''
+      // 关闭时清空选框/手动锁定与检测统计，重新开启即全新搜索
+      manual.value = false
+      quad.value = null
+      stable = null
+      hits = 0
+      misses = 0
       return
     }
     enabled.value = true
@@ -372,6 +463,7 @@ export function useSmartCapture(options: SmartCaptureOptions) {
   return {
     enabled,
     autoCapture,
+    aiEnabled,
     quad,
     manual,
     status,
@@ -386,7 +478,7 @@ export function useSmartCapture(options: SmartCaptureOptions) {
     setEnabled,
     setAutoCapture: (v: boolean) => { autoCapture.value = v },
     setQuadManually,
-    clearManual,
+    rescan,
     captureNow,
     markCaptured,
     setAspectRatio,

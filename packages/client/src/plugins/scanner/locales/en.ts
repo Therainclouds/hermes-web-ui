@@ -45,6 +45,8 @@ export default {
       captured: 'Auto-captured page {n}',
       noDoc: 'No clear document edges detected in the current frame.',
       resetBox: 'Reset box',
+      aiLabel: 'AI assist',
+      aiHint: 'Also run the AI detector as a fallback when classic edge detection misses or is uncertain (needs the AI model, slower).',
       mlLoading: 'Loading AI model…',
       mlReady: 'AI ready',
       mlFailed: 'AI unavailable, using classic detection',

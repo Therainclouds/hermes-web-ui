@@ -259,6 +259,7 @@ export default {
     noChangelog: 'لا يوجد سجل تغييرات',
     versionManagement: 'إدارة الإصدارات',
     updateAvailableLabel: '(إصدار جديد)',
+    clientPlugins: 'إضافات العميل',
     dockerUpdateTitle: 'تحديث Docker',
     dockerUpdateGuide: 'في بيئة Docker، الرجاء سحب أحدث صورة وإعادة إنشاء الحاوية للترقية:',
     dockerUpdateNote: 'ستبقى بياناتك محفوظة بعد إعادة إنشاء الحاوية.',

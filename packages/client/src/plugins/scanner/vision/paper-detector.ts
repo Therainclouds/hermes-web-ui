@@ -1,14 +1,19 @@
 import type { Pt, Quad } from './types'
+import { quadCornerDelta } from './quad'
+import { getMLStatus, getMLPipeline, isMLRetryCooldown } from './detector-ml'
 
 /**
- * 纯 JS 纸张边缘检测（多策略投票版）。
+ * 纯 JS 纸张边缘检测（经典优先 + ML 兜底版）。
  *
  * 输入：RGBA 像素。输出：归一化 4 角点 + 置信度 + 耗时。
  *
- * 三策略并行投票：
- *   1) bright：白纸 vs 暗背景  → 灰度 + 高斯 + Otsu + 形态学闭 + 连通域
- *   2) dark  ：暗纸 vs 亮背景  → bright 策略 + 像素反相
- *   3) edge  ：Canny 边缘 + 膨胀 + 连通域（弱对比、图案背景的兜底）
+ * 执行顺序：
+ *   1) bright / edge 经典策略（同步、单帧几十 ms，实时跟随的主路径）。
+ *      bright 同时评估白纸对暗背景 / 深色纸对亮桌面两种极性；
+ *      候选按「矩形度 + 边框接触」质量评分选优，并优先黏住上一帧的目标。
+ *   2) AI 物体检测（可选，worker 节流）：仅当经典候选缺失或置信度过低时兜底，
+ *      避免慢速推理拖慢实时跟随，也避免通用物体检测（书本/屏幕等）
+ *      抢走真正的纸张结果。
  *
  * 全部纯函数，对 ~512 长边单帧 25-55 ms（V8 / happy-dom）。
  */
@@ -33,25 +38,146 @@ export interface DetectOptions {
   minAspect?: number
   /** 宽高比上界，默认 3.0。 */
   maxAspect?: number
-  /** 仅跑指定策略（调试用）。默认 ['ml', 'edge', 'bright']（ml 在线才走）。 */
+  /**
+   * 要运行的策略。默认 ['bright', 'edge']（纯经典，毫秒级实时跟随）。
+   * 'ml'（AI）默认不参与；显式加入后也仅在经典置信度过低时作为兜底候选
+   * （受 worker 内节流限制，避免拖慢跟随）。
+   */
   strategies?: ReadonlyArray<'ml' | 'bright' | 'edge'>
   /** ML 评分阈值，低于此丢弃。默认 0.35。 */
   mlThreshold?: number
+  /**
+   * 上一帧已确认的选框（归一化）。用于候选选择：优先选与上一帧位置接近的
+   * 目标，避免选框在多物体/杂波间跳变，实现「时时追随同一张纸」。
+   */
+  priorQuad?: Quad | null
 }
 
-const DEFAULTS: Required<Omit<DetectOptions, 'strategies'>> & { strategies: ReadonlyArray<'ml' | 'bright' | 'edge'> } = {
+const DEFAULTS: Required<Omit<DetectOptions, 'strategies' | 'priorQuad'>> & {
+  strategies: ReadonlyArray<'ml' | 'bright' | 'edge'>
+  priorQuad: Quad | null
+} = {
   minAreaRatio: 0.05,
   maxAreaRatio: 0.85,
   minAspect: 0.3,
   maxAspect: 3.0,
   mlThreshold: 0.35,
-  strategies: ['ml', 'edge', 'bright'],
+  strategies: ['bright', 'edge'],
+  priorQuad: null,
 }
 
-/** 主入口：输入 RGBA ImageData，返回最佳检测结果或 null。 */
+/** 候选与上一帧选框的归一化角点位移 <= 该值时视为「同一目标」。 */
+const STICK_DIST = 0.22
+/** 黏性候选的置信度加成：> 0.1 的置信度差距才能把选框从上一帧目标上抢走。 */
+const STICK_BONUS = 0.1
+/** AI（ML）两次推理之间的最小间隔：正常帧不被慢速推理拖慢。 */
+const ML_MIN_INTERVAL_MS = 800
+/** 经典候选的最高置信度低于该值时，才触发 AI 兜底（经典误检时 AI 才有意义）。 */
+const ML_BOOST_CONFIDENCE = 0.16
+/** worker 内上一次 ML 推理完成时间（模块级，跨请求保持）。 */
+let lastMlRunAt = 0
+
+/**
+ * 主入口：输入 RGBA ImageData，返回最佳检测结果或 null。
+ *
+ * 追踪模式：给了上一帧选框（priorQuad）时，先在选框四周的局部 ROI 里检测——
+ * 目标身份稳定（不跳去同画面的其它物体/背景）、抗桌面杂波、角点更稳；
+ * ROI 内找不到（目标大幅移动/移出）再回退整帧搜索。
+ */
 export async function detectPaper(
   rgba: { width: number; height: number; data: Uint8ClampedArray | Uint8Array },
   opts: DetectOptions = {},
+): Promise<PaperDetection | null> {
+  const W = rgba.width
+  const H = rgba.height
+  if (W < 16 || H < 16) return null
+  const prior = opts.priorQuad ?? null
+
+  if (prior) {
+    const roi = priorToRoi(prior, W, H)
+    if (roi) {
+      const crop = cropRgba(rgba, roi)
+      if (crop) {
+        const local = await detectPaperCore(crop, { ...opts, priorQuad: null })
+        if (local) {
+          return {
+            quad: mapQuadBack(local.quad, roi, crop.width, crop.height, W, H),
+            confidence: local.confidence,
+            ms: local.ms,
+            strategy: local.strategy,
+          }
+        }
+      }
+    }
+  }
+  return detectPaperCore(rgba, { ...opts, priorQuad: null })
+}
+
+/**
+ * 把上一帧选框扩成局部搜索窗口（像素坐标）。扩边 40%（至少 8% 帧宽高），
+ * 让慢速移动的目标仍留在窗口内；窗口盖满全帧或目标异常小时返回 null（走整帧）。
+ */
+function priorToRoi(prior: Quad, W: number, H: number): { x: number; y: number; w: number; h: number } | null {
+  let minX = 1
+  let minY = 1
+  let maxX = 0
+  let maxY = 0
+  for (const p of prior) {
+    minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x)
+    minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y)
+  }
+  const pw = Math.max(1e-6, maxX - minX)
+  const ph = Math.max(1e-6, maxY - minY)
+  const mx = Math.max(pw * 0.4, 0.08)
+  const my = Math.max(ph * 0.4, 0.08)
+  const x0 = Math.max(0, minX - mx)
+  const y0 = Math.max(0, minY - my)
+  const x1 = Math.min(1, maxX + mx)
+  const y1 = Math.min(1, maxY + my)
+  if (x1 - x0 < 0.12 || y1 - y0 < 0.12) return null
+  if (x0 <= 0 && y0 <= 0 && x1 >= 1 && y1 >= 1) return null // 窗口=全帧，无意义
+  const x = Math.floor(x0 * W)
+  const y = Math.floor(y0 * H)
+  const w = Math.max(16, Math.min(W, Math.ceil(x1 * W)) - x)
+  const h = Math.max(16, Math.min(H, Math.ceil(y1 * H)) - y)
+  return { x, y, w, h }
+}
+
+/** 按 ROI 裁剪 RGBA。 */
+function cropRgba(
+  src: { width: number; height: number; data: Uint8ClampedArray | Uint8Array },
+  roi: { x: number; y: number; w: number; h: number },
+): { width: number; height: number; data: Uint8ClampedArray } | null {
+  const { x, y, w, h } = roi
+  const out = new Uint8ClampedArray(w * h * 4)
+  for (let j = 0; j < h; j++) {
+    const sOff = (y + j) * src.width * 4 + x * 4
+    out.set(src.data.subarray(sOff, sOff + w * 4), j * w * 4)
+  }
+  return { width: w, height: h, data: out }
+}
+
+/** ROI 内归一化 quad → 全帧归一化 quad。 */
+function mapQuadBack(
+  quad: Quad,
+  roi: { x: number; y: number; w: number; h: number },
+  cw: number,
+  ch: number,
+  W: number,
+  H: number,
+): Quad {
+  return [
+    { x: (roi.x + quad[0]!.x * cw) / W, y: (roi.y + quad[0]!.y * ch) / H },
+    { x: (roi.x + quad[1]!.x * cw) / W, y: (roi.y + quad[1]!.y * ch) / H },
+    { x: (roi.x + quad[2]!.x * cw) / W, y: (roi.y + quad[2]!.y * ch) / H },
+    { x: (roi.x + quad[3]!.x * cw) / W, y: (roi.y + quad[3]!.y * ch) / H },
+  ] as unknown as Quad
+}
+
+/** 单帧检测核心（无追踪上下文）：灰度/模糊 → 经典候选 →（可选）AI 兜底 → 择优。 */
+async function detectPaperCore(
+  rgba: { width: number; height: number; data: Uint8ClampedArray | Uint8Array },
+  opts: DetectOptions,
 ): Promise<PaperDetection | null> {
   const merged = {
     minAreaRatio: opts.minAreaRatio ?? DEFAULTS.minAreaRatio,
@@ -60,6 +186,7 @@ export async function detectPaper(
     maxAspect: opts.maxAspect ?? DEFAULTS.maxAspect,
     mlThreshold: opts.mlThreshold ?? DEFAULTS.mlThreshold,
     strategies: opts.strategies ?? DEFAULTS.strategies,
+    priorQuad: opts.priorQuad ?? DEFAULTS.priorQuad,
   }
   const { width: W, height: H } = rgba
   if (W < 16 || H < 16) return null
@@ -69,25 +196,55 @@ export async function detectPaper(
   const gray = grayscale(rgba)
   const blurred = gaussianBlur5x5(gray, W, H)
 
-  // 1) 多策略并行投票：经典策略同步、ML 异步
-  const tasks: Array<Promise<PaperDetection | null>> = []
+  // 1) 经典策略（同步、毫秒级）：实时跟随的主路径，收集全部命中
+  //    bright 同时评估「白纸对暗背景」与「深色纸张对亮背景」两种极性；
+  //    edge 输出最强的边缘闭合四边形。
+  const candidates: PaperDetection[] = []
   for (const strategy of merged.strategies) {
     if (strategy === 'edge') {
-      tasks.push(Promise.resolve(detectByEdges(blurred, W, H, merged, t0)))
+      const r = detectByEdges(blurred, W, H, merged, t0)
+      if (r) candidates.push(r)
     } else if (strategy === 'bright') {
-      tasks.push(Promise.resolve(detectByBrightness(blurred, W, H, merged, t0, 'bright')))
-    } else {
-      tasks.push(detectByML(rgba, W, H, merged, t0).catch(() => null))
+      for (const r of detectByBrightness(blurred, W, H, merged, t0)) {
+        if (r) candidates.push(r)
+      }
     }
   }
 
-  const results = await Promise.all(tasks)
-  const candidates = results.filter((r): r is PaperDetection => r !== null)
-  if (candidates.length === 0) return null
+  // 2) AI（ML）兜底：仅当开启了 'ml' 策略，且经典候选缺失或置信度过低时尝试。
+  //    - 正常帧（经典命中且置信度足够）完全不等 ML → 选框实时跟随；
+  //    - 经典误检 / 低对比场景（经典置信度低）才让 ML 参与竞争纠正。
+  const wantMl = merged.strategies.includes('ml')
+  let bestClassicConf = 0
+  for (const c of candidates) bestClassicConf = Math.max(bestClassicConf, c.confidence)
+  if (wantMl && (candidates.length === 0 || bestClassicConf < ML_BOOST_CONFIDENCE)) {
+    const r = await detectByML(rgba, W, H, merged, t0)
+    if (r) candidates.push(r)
+  }
 
-  // 2) 按 confidence 选最优
-  candidates.sort((a, b) => b.confidence - a.confidence)
-  const best = candidates[0]!
+  // 3) 目标黏性 + 置信度选优：
+  //    与上一帧选框接近的候选获得黏性加成（保持同一目标、抑制候选交替跳框）；
+  //    但远处候选若置信度显著更高（目标真的移动/换目标），加成挡不住它——
+  //    避免选框钉在上一帧位置的陈旧候选上、跟不上移动中的书本。
+  let best: PaperDetection | null = null
+  if (candidates.length > 0) {
+    const prior = merged.priorQuad
+    best = candidates[0]!
+    let bestScore = -Infinity
+    for (const c of candidates) {
+      let score = c.confidence
+      if (prior) {
+        const delta = quadCornerDelta(prior, c.quad)
+        if (delta <= STICK_DIST) score += STICK_BONUS
+      }
+      if (score > bestScore) {
+        bestScore = score
+        best = c
+      }
+    }
+  }
+  if (!best) return null
+
   return {
     quad: best.quad,
     confidence: best.confidence,
@@ -141,7 +298,8 @@ function gaussianBlur5x5(src: Uint8Array, W: number, H: number): Uint8Array {
 }
 
 /* ------------------------------------------------------------------ *
- * 策略 0：YOLO 物体检测（@huggingface/transformers，WebGPU 优先）
+ * 策略 0：AI 物体检测（transformers.js，YOLOS/DETR 系）——仅作兜底。
+ * detectByML 负责 worker 节流；真正推理在 detectByMLInner。
  * ------------------------------------------------------------------ */
 async function detectByML(
   rgba: { width: number; height: number; data: Uint8ClampedArray | Uint8Array },
@@ -150,6 +308,36 @@ async function detectByML(
   opts: { minAreaRatio: number; maxAreaRatio: number; minAspect: number; maxAspect: number; mlThreshold: number },
   t0: number,
 ): Promise<PaperDetection | null> {
+  const state = getMLStatus().state
+  // 模型未就绪：后台触发加载（fire-and-forget，不阻塞本帧），让经典识别继续实时跟随；
+  // 状态机 off→loading→ready/failed 由 detector-ml 自管，失败自带冷却。
+  if (state !== 'ready') {
+    // 无 OffscreenCanvas 的环境（Node 单测等）无法推理，跳过预热避免后台网络请求
+    if (state !== 'loading' && typeof OffscreenCanvas !== 'undefined') {
+      void getMLPipeline().catch(() => undefined)
+    }
+    return null
+  }
+  // 模型已就绪：按节流间隔执行真推理（慢帧仅出现在真正需要 AI 兜底时）
+  if (performanceNow() - lastMlRunAt < ML_MIN_INTERVAL_MS) return null
+  const result = await detectByMLInner(rgba, W, H, opts, t0)
+  lastMlRunAt = performanceNow()
+  return result
+}
+
+async function detectByMLInner(
+  rgba: { width: number; height: number; data: Uint8ClampedArray | Uint8Array },
+  W: number,
+  H: number,
+  opts: { minAreaRatio: number; maxAreaRatio: number; minAspect: number; maxAspect: number; mlThreshold: number },
+  t0: number,
+): Promise<PaperDetection | null> {
+  // 冷却期快速失败：pipeline 上次加载失败后 RETRY_COOLDOWN_MS 内不重试，
+  // 直接静默返回 null —— 否则 AI 开启期间会重复尝试下载模型并在控制台刷屏
+  // （getMLPipeline 内部同样带冷却，这里提前省掉像素拷贝开销）。
+  // 冷却结束后本函数照常放行，让 getMLPipeline 自动重试一次。
+  if (isMLRetryCooldown()) return null
+
   // ML 推理需要 OffscreenCanvas（Transformers.js 不直接吃 ImageData）
   let canvas: OffscreenCanvas | null = null
   try {
@@ -187,38 +375,54 @@ async function detectByML(
       strategy: 'ml' as const,
     }
   } catch (error) {
-    // ML 加载失败（CDN 不通、模型下载超时、webgpu 不可用等）→ 安静退化
+    // ML 加载失败（模型源不通、模型下载超时、webgpu 不可用等）→ 安静退化
     // eslint-disable-next-line no-console
-    console.warn('[paper-detector] ML strategy failed:', (error as Error)?.message ?? error)
+    console.warn('[paper-detector] ML strategy failed:', (error as Error)?.message ?? error, '\n', error)
     return null
   }
 }
 
 /* ------------------------------------------------------------------ *
- * 策略 1：亮度 + Otsu
+ * 策略 1：亮度 + Otsu（双极性）
  * ------------------------------------------------------------------ */
+type Polarity = 'white' | 'dark'
+
+/**
+ * 亮度分割策略：同一 Otsu 阈值把画面分成亮/暗两簇，各作为一次前景尝试——
+ * 既覆盖「白纸对暗背景」，也覆盖「深色笔记本对亮桌面」。
+ * 返回 0..2 个候选（各自经过面积/宽高比/亮度一致性过滤）。
+ */
 function detectByBrightness(
   gray: Uint8Array,
   W: number,
   H: number,
   opts: { minAreaRatio: number; maxAreaRatio: number; minAspect: number; maxAspect: number },
   t0: number,
-  strategy: 'bright',
-): PaperDetection | null {
+): PaperDetection[] {
   const totalPx = W * H
   const hist = new Uint32Array(256)
   for (let i = 0; i < gray.length; i++) hist[gray[i]!]!++
   const threshold = otsuThreshold(hist, totalPx)
 
-  // bright 策略：前景 = 高于阈值（白纸对暗背景）
-  const mask = new Uint8Array(totalPx)
+  const out: PaperDetection[] = []
+  const polarities: Array<{ polarity: Polarity; mask: Uint8Array }> = []
+  const whiteMask = new Uint8Array(totalPx)
+  const darkMask = new Uint8Array(totalPx)
   for (let i = 0; i < totalPx; i++) {
-    mask[i] = gray[i]! >= threshold ? 1 : 0
+    if (gray[i]! >= threshold) whiteMask[i] = 1
+    else darkMask[i] = 1
   }
-  morphologicalClose(mask, W, H, 3, 1)
-  const largest = largestComponent(mask, W, H)
-  if (!largest) return null
-  return finalizeDetection(largest, gray, W, H, opts, t0, strategy)
+  polarities.push({ polarity: 'white', mask: whiteMask })
+  polarities.push({ polarity: 'dark', mask: darkMask })
+
+  for (const { polarity, mask } of polarities) {
+    morphologicalClose(mask, W, H, 3, 1)
+    const largest = largestComponent(mask, W, H)
+    if (!largest) continue
+    const r = finalizeDetection(largest, gray, W, H, opts, t0, 'bright', polarity)
+    if (r) out.push(r)
+  }
+  return out
 }
 
 /* ------------------------------------------------------------------ *
@@ -254,7 +458,7 @@ function detectByEdges(
   // 6) 连通域
   const largest = largestComponent(edges, W, H)
   if (!largest) return null
-  return finalizeDetection(largest, gray, W, H, opts, t0, 'edge')
+  return finalizeDetection(largest, gray, W, H, opts, t0, 'edge', 'edge')
 }
 
 /* ------------------------------------------------------------------ *
@@ -605,8 +809,51 @@ function largestComponent(mask: Uint8Array, W: number, H: number): Component | n
 }
 
 /* ------------------------------------------------------------------ *
- * 最终化：凸包 + Douglas-Peucker + 排序 + 评分
+ * 最终化：凸包 + Douglas-Peucker + 排序 + 质量评分
  * ------------------------------------------------------------------ */
+
+/**
+ * 检测四边形与画面边框的贴合程度（0..1）。
+ * 背景/桌面等大块区域通常有大量边界像素贴在画面边框上，纸张通常不会——
+ * 用于压低「把整个背景当成纸」的候选。
+ */
+function frameContactRatio(comp: Component, W: number, H: number): number {
+  // 用连通域 bbox 是否贴着画面边框来度量（形态学闭会削掉边框上的像素环，
+  // 用 border 像素数会漏判整幅背景）。背景/桌面通常四边贴框，纸张通常留白。
+  let sides = 0
+  if (comp.bbox.minX <= 4) sides++
+  if (comp.bbox.minY <= 4) sides++
+  if (comp.bbox.maxX >= W - 5) sides++
+  if (comp.bbox.maxY >= H - 5) sides++
+  return sides / 4
+}
+
+/**
+ * 连通域边界像素贴合拟合四边形四条边的比例（0..1）。
+ * 干净矩形 ≈ 0.85+，杂散团块明显更低 —— 用于把「矩形度」编进置信度。
+ */
+function edgeSupportRatio(border: Pt[], quad: Pt[], tol: number): number {
+  if (border.length === 0) return 0
+  const n = quad.length
+  let matched = 0
+  for (const p of border) {
+    let minDist = Infinity
+    for (let i = 0; i < n; i++) {
+      const a = quad[i]!
+      const b = quad[(i + 1) % n]!
+      const d = perpDist(p, a, b)
+      if (d < minDist) minDist = d
+    }
+    if (minDist <= tol) matched++
+  }
+  return matched / border.length
+}
+
+/**
+ * 最终化一个候选：凸包 → DP 简化到 4 角 → 面积/宽高比/亮度极性过滤 →
+ * 以面积 × 紧凑度 × 矩形度（边缘贴合）× 反背景（边框接触）编出置信度。
+ * strategy 用于结果标记（'bright' / 'edge'）；polarity 只影响亮度一致性门槛。
+ */
 function finalizeDetection(
   largest: Component,
   gray: Uint8Array,
@@ -614,7 +861,8 @@ function finalizeDetection(
   H: number,
   opts: { minAreaRatio: number; maxAreaRatio: number; minAspect: number; maxAspect: number },
   t0: number,
-  strategy: 'ml' | 'bright' | 'edge',
+  strategy: 'bright' | 'edge',
+  polarity: Polarity | 'edge',
 ): PaperDetection | null {
   const totalPx = W * H
   const areaRatio = largest.pixelCount / totalPx
@@ -639,16 +887,23 @@ function finalizeDetection(
   const aspect = quadAspect(simplified as unknown as Quad)
   if (aspect < opts.minAspect || aspect > opts.maxAspect) return null
 
-  // 亮度一致性：bright 策略的检测区域应确实亮（防止噪点把暗区当纸）
+  // 亮度一致性：亮极性候选应确实亮、暗极性候选应确实暗（防噪点把背景当纸）
   const avgBrightness = avgRegionBrightness(gray, W, largest)
-  if (strategy === 'bright' && avgBrightness < 96) return null
+  if (polarity === 'white' && avgBrightness < 96) return null
+  if (polarity === 'dark' && avgBrightness > 255 - 96) return null
 
   const convexArea = polygonArea(simplified)
   const bboxArea = largest.bbox.w * largest.bbox.h
   const compactness = bboxArea > 0 ? convexArea / bboxArea : 0
-  // 评分：面积 × 紧凑度 × 策略权重（edge 在低对比场景更可靠）
+
+  // 质量分：矩形度 × 反背景（越贴边框越像背景，压低置信度）
+  const contact = frameContactRatio(largest, W, H)
+  const support = edgeSupportRatio(largest.border, simplified, Math.max(1.5, 0.008 * maxEdge))
+  const quality = clamp01((0.6 + 0.4 * support) * (1 - 0.85 * contact))
+
+  // 评分：面积 × 紧凑度 × 矩形质量 × 策略权重（edge 在低对比场景更可靠）
   const strategyWeight = strategy === 'edge' ? 1.05 : 1.0
-  const confidence = clamp01(areaRatio * compactness * 1.4 * strategyWeight)
+  const confidence = clamp01(areaRatio * compactness * 1.4 * strategyWeight * quality)
 
   return {
     quad: sorted,
