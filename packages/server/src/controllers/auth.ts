@@ -11,11 +11,13 @@ import {
   findUserById,
   findUserByPhoneNumber,
   findUserByUsername,
+  getUserActiveProfile,
   getUserAvatar,
   listUserProfiles,
   listUsers,
   normalizePhoneNumber,
   replaceUserProfiles,
+  setUserActiveProfile,
   setUserAvatar,
   setUserWeChatBound,
   touchUserLogin,
@@ -644,6 +646,12 @@ async function finalizeWeChatBinding(
   // user_profiles. Chinese users expect a single unified workspace; the
   // on-disk u_<id> profile exists only as an agent workspace, not as a
   // visible "可访问配置" in the UI.
+
+  // Default the WeChat user's agent to their personal workspace so their
+  // choice is per-user instead of the machine-global active_profile file.
+  if (!getUserActiveProfile(user.id)) {
+    setUserActiveProfile(user.id, personalProfileNameFor(profile.id))
+  }
 
   const token = await issueUserJwt(user)
   touchUserLogin(user.id)

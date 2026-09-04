@@ -24,7 +24,7 @@ import { detectHermesRootHome } from '../../services/hermes/hermes-path'
 import { getActiveProfileName } from '../../services/hermes/hermes-profile'
 import { HermesSkillInjector } from '../../services/hermes/skill-injector'
 import type { HermesProfile } from '../../services/hermes/hermes-cli'
-import { listUserProfiles, replaceUserProfiles, deleteProfileBindingsByName } from '../../db/hermes/users-store'
+import { listUserProfiles, replaceUserProfiles, deleteProfileBindingsByName, setUserActiveProfile } from '../../db/hermes/users-store'
 import { readAppProfileAvatar } from '../../services/hermes/app-profile-avatar'
 
 const bridgeCleanupClient = () => new AgentBridgeClient({ connectRetryMs: 0, timeoutMs: 5000 })
@@ -270,22 +270,6 @@ function renameProfileMetadata(oldName: string, newName: string): void {
   if (!existsSync(oldDir) || oldDir === newDir) return
   rmSync(newDir, { recursive: true, force: true })
   renameSync(oldDir, newDir)
-}
-
-async function useProfileWithFallback(name: string): Promise<string> {
-  if (isForbiddenProfileName(name)) {
-    throw new Error(`Profile name '${name}' is reserved and cannot be activated`)
-  }
-  try {
-    return await hermesCli.useProfile(name)
-  } catch (err: any) {
-    if (!profileExistsForManualSwitch(name)) throw err
-
-    const base = detectHermesRootHome()
-    writeFileSync(join(base, 'active_profile'), `${name}\n`, 'utf-8')
-    logger.warn(err, '[switchProfile] hermes profile use failed; wrote active_profile directly for existing profile "%s"', name)
-    return `Switched to profile ${name}`
-  }
 }
 
 async function readBridgeWorkers(): Promise<{ reachable: boolean; workers: Record<string, boolean>; error?: string }> {
@@ -855,25 +839,24 @@ export async function switchProfile(ctx: any) {
     ctx.body = { error: `Profile name '${name}' is reserved and cannot be activated` }
     return
   }
+  const userId = ctx.state.user?.id
+  if (!userId) {
+    ctx.status = 401
+    ctx.body = { error: 'Authentication required' }
+    return
+  }
   try {
     if (denyProfile(ctx, name)) return
 
-    const output = await useProfileWithFallback(name)
-
-    const actualActive = getActiveProfileName()
-    if (actualActive !== name) {
-      ctx.status = 500
-      ctx.body = { error: `Profile switch verification failed - active profile is ${actualActive}` }
+    if (!profileExistsForManualSwitch(name)) {
+      ctx.status = 404
+      ctx.body = { error: `Profile "${name}" not found` }
       return
     }
 
-    try {
-      const result = await bridgeCleanupClient().destroyProfile(name)
-      logger.info('[switchProfile] destroyed bridge sessions for Hermes profile "%s" destroyed=%s', name, result.destroyed)
-    } catch (err: any) {
-      logger.warn(err, '[switchProfile] failed to destroy bridge sessions for profile "%s"', name)
-    }
-
+    // Per-user active profile: persist the caller's preference instead of
+    // flipping the machine-global ~/.hermes/active_profile file. Runtime
+    // requests resolve the profile per request (header or user preference).
     try {
       const detail = await hermesCli.getProfile(name)
       logger.debug('Profile detail.path = %s', detail.path)
@@ -894,12 +877,23 @@ export async function switchProfile(ctx: any) {
     }
 
     await injectBundledSkillsForProfile(name)
-    SessionDeleter.getInstance().switchProfile(name)
-    logger.info('[switchProfile] switched session deleter to Hermes profile "%s"', name)
+
+    try {
+      const result = await bridgeCleanupClient().destroyProfile(name)
+      logger.info('[switchProfile] destroyed bridge sessions for Hermes profile "%s" destroyed=%s', name, result.destroyed)
+    } catch (err: any) {
+      logger.warn(err, '[switchProfile] failed to destroy bridge sessions for profile "%s"', name)
+    }
+
+    // Drain pending session deletes for the newly selected profile without
+    // hijacking the periodic GC timer (it is a process-wide singleton).
+    SessionDeleter.getInstance().drain(name).catch(() => {})
+
+    setUserActiveProfile(userId, name)
 
     ctx.body = {
       success: true,
-      message: output.trim(),
+      message: `Switched to profile ${name}`,
       active: name,
     }
   } catch (err: any) {

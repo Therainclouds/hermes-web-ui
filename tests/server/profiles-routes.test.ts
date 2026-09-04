@@ -17,6 +17,7 @@ const skillInjectorMocks = vi.hoisted(() => ({
 
 const sessionDeleterMocks = vi.hoisted(() => ({
   switchProfile: vi.fn(),
+  drain: vi.fn(async () => ({ deleted: [], skipped: [], failed: [] })),
 }))
 
 const gatewayAutostartMocks = vi.hoisted(() => ({
@@ -67,6 +68,14 @@ vi.mock('../../packages/server/src/services/hermes/gateway-autostart', () => ({
   getGatewayRuntimeStatusForProfile: gatewayAutostartMocks.getGatewayRuntimeStatusForProfile,
   prepareGatewayForProfileDelete: gatewayAutostartMocks.prepareGatewayForProfileDelete,
   restartGatewayForProfile: gatewayAutostartMocks.restartGatewayForProfile,
+}))
+
+// Per-user active profile persistence needs a users table; stub the setter and
+// keep every other users-store export real.
+vi.mock('../../packages/server/src/db/hermes/users-store', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  setUserActiveProfile: vi.fn(() => true),
+  getUserActiveProfile: vi.fn(() => null),
 }))
 
 import * as hermesCli from '../../packages/server/src/services/hermes/hermes-cli'
@@ -505,6 +514,7 @@ describe('Profile Routes', () => {
       const { switchProfile } = await import('../../packages/server/src/controllers/hermes/profiles')
       const ctx: any = {
         request: { body: { name: 'work' } },
+        state: { user: { id: 1, username: 'quanthermes', role: 'super_admin' } },
         status: 200,
         body: undefined,
       }
@@ -515,7 +525,7 @@ describe('Profile Routes', () => {
       expect(ctx.body).toMatchObject({ success: true, active: 'work' })
       expect(agentBridgeMocks.destroyProfile).toHaveBeenCalledWith('work')
       expect(agentBridgeMocks.destroyAll).not.toHaveBeenCalled()
-      expect(sessionDeleterMocks.switchProfile).toHaveBeenCalledWith('work')
+      expect(sessionDeleterMocks.drain).toHaveBeenCalledWith('work')
     })
   })
 

@@ -406,6 +406,7 @@ export const USERS_SCHEMA: Record<string, string> = {
   model_guide_status: "TEXT NOT NULL DEFAULT 'pending'",
   phone_number: 'TEXT',
   wechat_bound: "INTEGER NOT NULL DEFAULT 0",
+  active_profile: 'TEXT',
 }
 
 export const USERS_INDEXES = {
@@ -1693,6 +1694,17 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
             `UPDATE ${quoteIdentifier(USERS_TABLE)} SET role = 'super_admin' WHERE id = ?`
           ).run(firstUser.id)
         }
+      }
+    },
+  },
+  {
+    version: 2,
+    name: 'per_user_active_profile',
+    up(db) {
+      // Per-user active agent profile: each user switches agents independently
+      // instead of sharing the machine-global ~/.hermes/active_profile file.
+      if (!tableHasColumn(db, USERS_TABLE, 'active_profile')) {
+        db.exec(`ALTER TABLE ${quoteIdentifier(USERS_TABLE)} ADD COLUMN active_profile TEXT`)
       }
     },
   },

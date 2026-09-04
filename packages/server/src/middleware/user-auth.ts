@@ -3,6 +3,7 @@ import { createHmac, randomUUID, timingSafeEqual } from 'crypto'
 import { getToken } from '../services/auth'
 import {
   findUserById,
+  getUserActiveProfile,
   listUserProfiles,
   touchUserLogin,
   userCanAccessProfile,
@@ -398,10 +399,16 @@ export async function resolveUserProfile(ctx: Context, next: Next): Promise<void
     return
   }
 
-  const profileName = resolveRequestedProfile(ctx)
+  let profileName = resolveRequestedProfile(ctx)
   if (!profileName) {
-    await next()
-    return
+    // No explicit profile in the request: fall back to this user's persisted
+    // active profile so agent choice is isolated per user instead of sharing
+    // the machine-global ~/.hermes/active_profile file.
+    profileName = (getUserActiveProfile(user.id) || '').trim()
+    if (!profileName) {
+      await next()
+      return
+    }
   }
 
   if (user.role !== 'super_admin' && !userCanAccessProfile(user.id, profileName)) {

@@ -177,11 +177,22 @@ export async function renameProfile(name: string, newName: string): Promise<bool
   }
 }
 
+/** Persist the caller's active agent profile (per-user, server-side). */
 export async function switchProfile(name: string): Promise<boolean> {
-  return !!name
+  if (!name) return false
+  try {
+    await request('/api/hermes/profiles/active', {
+      method: 'PUT',
+      body: JSON.stringify({ name }),
+    })
+    return true
+  } catch {
+    return false
+  }
 }
 
 export async function switchHermesProfile(name: string): Promise<boolean> {
+  if (!name) return false
   try {
     await request('/api/hermes/profiles/active', {
       method: 'PUT',

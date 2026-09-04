@@ -20,6 +20,7 @@ export interface UserRecord {
   model_guide_status: ModelGuideStatus
   phone_number: string | null
   wechat_bound: number
+  active_profile?: string | null
 }
 
 export interface UserProfileRecord {
@@ -243,6 +244,29 @@ export function setUserWeChatBound(userId: UserId, bound: boolean): boolean {
   if (!id) return false
   const result = db.prepare(`UPDATE ${USERS_TABLE} SET wechat_bound = ?, updated_at = ? WHERE id = ?`)
     .run(bound ? 1 : 0, Date.now(), id)
+  return result.changes > 0
+}
+
+/**
+ * Per-user active agent profile. Persisted so a user's agent choice survives
+ * reloads and other devices; `null` resets to the system default profile.
+ */
+export function getUserActiveProfile(userId: UserId): string | null {
+  const db = getDb()
+  if (!db) return null
+  const id = normalizeUserId(userId)
+  if (!id) return null
+  const row = db.prepare(`SELECT active_profile FROM ${USERS_TABLE} WHERE id = ?`).get(id) as { active_profile?: string | null } | undefined
+  return row?.active_profile || null
+}
+
+export function setUserActiveProfile(userId: UserId, profile: string | null): boolean {
+  const db = getDb()
+  if (!db) return false
+  const id = normalizeUserId(userId)
+  if (!id) return false
+  const result = db.prepare(`UPDATE ${USERS_TABLE} SET active_profile = ?, updated_at = ? WHERE id = ?`)
+    .run(profile, Date.now(), id)
   return result.changes > 0
 }
 
