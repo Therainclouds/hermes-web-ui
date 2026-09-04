@@ -94,14 +94,16 @@ export async function getMLPipeline(modelId = DEFAULT_MODEL): Promise<PipelineLi
     const { pipeline, env } = envMod as unknown as {
       pipeline: (task: string, model: string, opts?: Record<string, unknown>) => Promise<PipelineLike>
       env: {
-        backends?: { onnx?: { wasm?: { numThreads?: number } } }
+        backends?: { onnx?: { wasm?: { numThreads?: number; wasmPaths?: string | string[] } } }
         allowLocalModels?: boolean
         useFs?: boolean
       }
     }
 
-    // WASM 线程数：尽量榨干多核
+    // WASM 路径：指向 public/transformers/ 本地副本（避免 CDN 失败 + 不依赖外网）
+    const wasmBase = `${(typeof self !== 'undefined' && (self as { location?: Location }).location?.origin) || ''}/transformers/`
     if (env.backends?.onnx?.wasm) {
+      env.backends.onnx.wasm.wasmPaths = wasmBase
       const cores = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency ?? 2 : 2
       env.backends.onnx.wasm.numThreads = Math.min(4, cores)
     }
