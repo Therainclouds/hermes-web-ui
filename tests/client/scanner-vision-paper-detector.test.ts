@@ -54,7 +54,6 @@ describe('paper-detector', () => {
       br: { x: (rect.x + rect.w) / W, y: (rect.y + rect.h) / H },
       bl: { x: rect.x / W, y: (rect.y + rect.h) / H },
     }
-    const eps = 0.03
     expect(r.quad[0].x).toBeCloseTo(expected.tl.x, 1)
     expect(r.quad[0].y).toBeCloseTo(expected.tl.y, 1)
     expect(r.quad[1].x).toBeCloseTo(expected.tr.x, 1)
@@ -63,7 +62,6 @@ describe('paper-detector', () => {
     expect(r.quad[2].y).toBeCloseTo(expected.br.y, 1)
     expect(r.quad[3].x).toBeCloseTo(expected.bl.x, 1)
     expect(r.quad[3].y).toBeCloseTo(expected.bl.y, 1)
-    expect(eps).toBeGreaterThan(0)
   })
 
   it('returns null for an all-dark image (no paper)', () => {
@@ -91,5 +89,67 @@ describe('paper-detector', () => {
     const rect = { x: 10, y: 10, w: 280, h: 80 } // aspect 3.5
     const img = makeSyntheticPaper(W, H, rect)
     expect(detectPaper(img)).toBeNull()
+  })
+
+  it('uses morphological closing to recover paper with holes (text inside)', () => {
+    // 白纸上散几个黑字（打洞前景），闭运算应填洞
+    const W = 200, H = 200
+    const rect = { x: 40, y: 50, w: 120, h: 100 }
+    const img = makeSyntheticPaper(W, H, rect)
+    // 在纸内挖 3 个 6x6 的黑点（模拟文字）
+    const holes = [
+      { x: 60, y: 70, w: 8, h: 6 },
+      { x: 100, y: 90, w: 8, h: 6 },
+      { x: 130, y: 120, w: 8, h: 6 },
+    ]
+    for (const h of holes) {
+      for (let y = h.y; y < h.y + h.h; y++) {
+        for (let x = h.x; x < h.x + h.w; x++) {
+          const i = (y * W + x) * 4
+          img.data[i] = 20
+          img.data[i + 1] = 20
+          img.data[i + 2] = 20
+        }
+      }
+    }
+    const result = detectPaper(img)
+    expect(result).not.toBeNull()
+    const r = result as PaperDetection
+    // 闭运算应填回这些小洞
+    expect(r.quad[0].x).toBeCloseTo(rect.x / W, 1)
+    expect(r.quad[0].y).toBeCloseTo(rect.y / H, 1)
+  })
+
+  it('edge-based detection works on a moderate-contrast synthetic document', () => {
+    // 强制只跑 edge 策略（验证 edge 路径独立可用）
+    const W = 200, H = 200
+    const rect = { x: 40, y: 50, w: 120, h: 100 }
+    const img = makeSyntheticPaper(W, H, rect)
+    const result = detectPaper(img, { strategies: ['edge'] })
+    expect(result).not.toBeNull()
+    const r = result as PaperDetection
+    expect(r.strategy).toBe('edge')
+    expect(r.quad[0].x).toBeCloseTo(rect.x / W, 1)
+    expect(r.quad[0].y).toBeCloseTo(rect.y / H, 1)
+  })
+
+  it('rejects paper covering nearly the entire frame (maxAreaRatio)', () => {
+    // 整张图几乎都是白，maxAreaRatio=0.85 应该拒绝
+    const W = 100, H = 100
+    const data = new Uint8ClampedArray(W * H * 4)
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = 240; data[i + 1] = 240; data[i + 2] = 240; data[i + 3] = 255
+    }
+    expect(detectPaper({ width: W, height: H, data })).toBeNull()
+  })
+
+  it('returns detection with ms and strategy fields', () => {
+    const W = 200, H = 200
+    const rect = { x: 40, y: 50, w: 120, h: 100 }
+    const img = makeSyntheticPaper(W, H, rect)
+    const result = detectPaper(img)
+    expect(result).not.toBeNull()
+    expect(typeof (result as PaperDetection).ms).toBe('number')
+    expect(['bright', 'edge']).toContain((result as PaperDetection).strategy)
   })
 })
