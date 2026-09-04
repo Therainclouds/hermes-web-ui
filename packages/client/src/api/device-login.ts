@@ -211,6 +211,30 @@ export async function createWeChatUser(payload: CreateWeChatUserPayload): Promis
   })
 }
 
+export interface BindByCredentialsPayload {
+  api_base: string
+  api_key: string
+  device_id: number | string
+  device_name?: string
+  models?: string[]
+  /** Username OR phone number of the local account to bind. */
+  identifier: string
+  password: string
+}
+
+/**
+ * Safety net for re-binding after an unbind: resolve the local account by
+ * username or phone number, verify the password, and bind this WeChat scan.
+ */
+export async function bindByCredentialsDeviceLogin(
+  payload: BindByCredentialsPayload,
+): Promise<HermesDeviceLoginResult> {
+  return request<HermesDeviceLoginResult>('/api/auth/device-login/bind-by-credentials', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
 export async function bindExistingUserDeviceLogin(
   payload: BindExistingPayload,
 ): Promise<HermesDeviceLoginResult> {

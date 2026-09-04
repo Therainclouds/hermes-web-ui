@@ -984,6 +984,123 @@ export async function bindExistingUserDeviceLogin(ctx: Context) {
 }
 
 /**
+ * POST /api/auth/device-login/bind-by-credentials
+ * Safety net for users who unbound their WeChat and want to re-bind: accept
+ * an identifier that may be either a username OR a phone number, plus the
+ * account password. Works for any role (super_admin / admin), as long as the
+ * target account is active and not already WeChat-bound.
+ */
+export async function bindByCredentialsDeviceLogin(ctx: Context) {
+  const {
+    api_base: apiBaseRaw,
+    api_key: apiKey,
+    device_id: deviceId,
+    device_name: deviceName,
+    models,
+    identifier,
+    password,
+  } = ctx.request.body as {
+    api_base?: string
+    api_key?: string
+    device_id?: number | string
+    device_name?: string
+    models?: string[]
+    identifier?: string
+    password?: string
+  }
+
+  const apiBase = String(apiBaseRaw || '').trim()
+  const key = String(apiKey || '').trim()
+  if (!apiBase || !key) {
+    ctx.status = 400
+    ctx.body = { error: 'api_base and api_key are required' }
+    return
+  }
+
+  let profile: TokenPlatformUserProfile
+  try {
+    profile = await fetchDeviceSelf(apiBase, key)
+  } catch (err: any) {
+    ctx.status = 502
+    ctx.body = { error: err?.message || 'Token Platform profile verification failed' }
+    return
+  }
+  if (!profile?.id) {
+    ctx.status = 401
+    ctx.body = { error: 'Invalid Token Platform device key' }
+    return
+  }
+
+  let verifiedModels: string[]
+  try {
+    verifiedModels = await verifyDeviceApiKey(apiBase, key)
+  } catch (err: any) {
+    ctx.status = 502
+    ctx.body = { error: err?.message || 'Token Platform model verification failed' }
+    return
+  }
+  const modelList = Array.isArray(models) && models.length > 0 ? models : verifiedModels
+
+  if (!identifier || !password) {
+    ctx.status = 400
+    ctx.body = { error: 'identifier (username or phone) and password are required' }
+    return
+  }
+
+  // 1. Resolve the account: username first, then phone number.
+  const idTrimmed = identifier.trim()
+  let user = findUserByUsername(idTrimmed)
+  if (!user) {
+    const normalizedId = normalizePhoneNumber(idTrimmed)
+    if (normalizedId) user = findUserByPhoneNumber(normalizedId)
+  }
+  if (!user || user.status !== 'active') {
+    ctx.status = 404
+    ctx.body = { error: 'Account not found', code: 'ACCOUNT_NOT_FOUND' }
+    return
+  }
+  if (user.wechat_bound) {
+    ctx.status = 409
+    ctx.body = { error: 'User is already bound to a WeChat account', code: 'USER_ALREADY_BOUND' }
+    return
+  }
+
+  // 2. Verify password.
+  if (!verifyPassword(password, user.password_hash)) {
+    ctx.status = 401
+    ctx.body = { error: 'Invalid credentials', code: 'INVALID_CREDENTIALS' }
+    return
+  }
+
+  // 3. Phone cross-check: if both the local account and the WeChat profile
+  // have phones, they must agree (identity bridge consistency).
+  const phoneFromProfile = normalizePhoneNumber(profile.phone)
+  if (phoneFromProfile && user.phone_number
+    && normalizePhoneNumber(user.phone_number) !== phoneFromProfile) {
+    ctx.status = 400
+    ctx.body = { error: 'Phone number does not match the account', code: 'PHONE_MISMATCH' }
+    return
+  }
+
+  // 4. Reject if this WeChat account is already bound to a different user.
+  const existingBinding = findBindingByPlatformId(profile.id)
+  if (existingBinding && existingBinding.user_id && existingBinding.user_id !== user.id) {
+    ctx.status = 409
+    ctx.body = { error: 'This WeChat account is already bound to another user', code: 'PHONE_ALREADY_BOUND' }
+    return
+  }
+
+  // 5. Bind: adopt the profile phone when the account has none.
+  setUserWeChatBound(user.id, true)
+  if (phoneFromProfile && !user.phone_number) {
+    updateUserPhoneNumber(user.id, phoneFromProfile)
+  }
+
+  const result = await finalizeWeChatBinding(user, profile, apiBase, key, deviceId, modelList)
+  ctx.body = result
+}
+
+/**
  * GET /api/auth/device-binding
  * Return the WeChat accounts bound to this device. Used by the login page to
  * offer "restore previous scan" without re-scanning, and to disambiguate when

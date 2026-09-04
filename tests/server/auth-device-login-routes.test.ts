@@ -9,6 +9,7 @@ vi.mock('../../packages/server/src/controllers/auth', () => ({
   bindSuperAdminDeviceLogin: vi.fn(async (ctx: any) => { ctx.body = { token: 'jwt' } }),
   createWeChatUser: vi.fn(async (ctx: any) => { ctx.body = { token: 'jwt' } }),
   bindExistingUserDeviceLogin: vi.fn(async (ctx: any) => { ctx.body = { token: 'jwt' } }),
+  bindByCredentialsDeviceLogin: vi.fn(async (ctx: any) => { ctx.body = { token: 'jwt' } }),
   restoreDeviceLogin: vi.fn(async (ctx: any) => { ctx.body = { token: 'jwt' } }),
   bindSuperAdmin: vi.fn(async (ctx: any) => { ctx.body = { token: 'jwt' } }),
   unbindSuperAdmin: vi.fn(async (ctx: any) => { ctx.body = { token: 'jwt' } }),

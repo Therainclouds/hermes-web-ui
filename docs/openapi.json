@@ -748,6 +748,74 @@
         }
       }
     },
+    "/api/auth/device-login/bind-by-credentials": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Create bind-by-credentials",
+        "description": "POST /api/auth/device-login/bind-by-credentials",
+        "operationId": "bindByCredentialsDeviceLogin",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "api_base": {
+                    "type": "string"
+                  },
+                  "api_key": {
+                    "type": "string"
+                  },
+                  "device_id": {
+                    "type": "number"
+                  },
+                  "device_name": {
+                    "type": "string"
+                  },
+                  "identifier": {
+                    "type": "string"
+                  },
+                  "models": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "password": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "api_base",
+                  "api_key",
+                  "identifier",
+                  "password"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/auth/device-login/bind-existing": {
       "post": {
         "tags": [
@@ -865,6 +933,9 @@
                   "device_name": {
                     "type": "string"
                   },
+                  "identifier": {
+                    "type": "string"
+                  },
                   "models": {
                     "type": "array",
                     "items": {
@@ -887,6 +958,7 @@
                 "required": [
                   "api_base",
                   "api_key",
+                  "identifier",
                   "password",
                   "user_id",
                   "username"

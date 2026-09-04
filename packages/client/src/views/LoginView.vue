@@ -14,6 +14,7 @@ import {
   bindSuperAdminDeviceLogin,
   createWeChatUser,
   bindExistingUserDeviceLogin,
+  bindByCredentialsDeviceLogin,
   type TokenPlatformDeviceLoginStatus,
   type DeviceLoginChoice,
   type HermesDeviceLoginResult,
@@ -41,7 +42,7 @@ const wechatError = ref("");
 
 // WeChat choice modal state
 const showChoiceModal = ref(false);
-const choiceModalStep = ref<"options" | "super_admin" | "create_user" | "pick_existing">("options");
+const choiceModalStep = ref<"options" | "super_admin" | "create_user" | "pick_existing" | "credentials">("options");
 const choiceData = ref<DeviceLoginChoice | null>(null);
 const choiceResult = ref<{ api_base: string; api_key: string; device_id: number | string; models: string[] } | null>(null)
 const choiceSubmitting = ref(false)
@@ -53,6 +54,8 @@ const saPhone = ref("")
 const newUsername = ref("")
 const newPassword = ref("")
 const newPhone = ref("")
+const credIdentifier = ref("")
+const credPassword = ref("")
 const pickedCandidateId = ref<number | null>(null)
 
 // Recovery modal state
@@ -164,11 +167,13 @@ function closeChoiceModal() {
   newUsername.value = "";
   newPassword.value = "";
   newPhone.value = "";
+  credIdentifier.value = "";
+  credPassword.value = "";
   pickedCandidateId.value = null;
 }
 
 async function pickOption(option: string) {
-  choiceModalStep.value = option as "super_admin" | "create_user" | "pick_existing";
+  choiceModalStep.value = option as "super_admin" | "create_user" | "pick_existing" | "credentials";
   choiceError.value = "";
 }
 
@@ -215,6 +220,29 @@ async function submitCreateUser() {
     router.replace("/hermes/chat");
   } catch (err: any) {
     choiceError.value = err.message || t("login.createUserFailed");
+  } finally {
+    choiceSubmitting.value = false;
+  }
+}
+
+async function submitBindByCredentials() {
+  if (!credIdentifier.value.trim() || !credPassword.value) {
+    choiceError.value = t("login.choiceFieldsRequired");
+    return;
+  }
+  if (!choiceResult.value) return;
+  choiceSubmitting.value = true;
+  choiceError.value = "";
+  try {
+    const result = await bindByCredentialsDeviceLogin({
+      ...choiceResult.value,
+      identifier: credIdentifier.value.trim(),
+      password: credPassword.value,
+    });
+    setApiKey(result.token);
+    router.replace("/hermes/chat");
+  } catch (err: any) {
+    choiceError.value = err.message || t("login.bindByCredentialsFailed");
   } finally {
     choiceSubmitting.value = false;
   }
@@ -401,6 +429,13 @@ async function handleRecoverySubmit(recoveryPassword: string) {
             {{ t("login.choiceCreateUser") }}
           </button>
           <button
+            type="button"
+            class="choice-option-btn"
+            @click="pickOption('credentials')"
+          >
+            {{ t("login.choiceBindByCredentials") }}
+          </button>
+          <button
             v-if="choiceData?.candidates?.length && choiceData.options?.includes('login_existing')"
             type="button"
             class="choice-option-btn"
@@ -478,6 +513,34 @@ async function handleRecoverySubmit(recoveryPassword: string) {
             @click="submitCreateUser"
           >
             {{ choiceSubmitting ? "..." : t("login.choiceCreateUser") }}
+          </button>
+        </template>
+
+        <!-- Bind by credentials (username or phone + password) -->
+        <template v-else-if="choiceModalStep === 'credentials'">
+          <button type="button" class="choice-back-btn" @click="choiceModalStep = 'options'">
+            ← {{ t("login.back") }}
+          </button>
+          <input
+            v-model="credIdentifier"
+            type="text"
+            class="login-input"
+            :placeholder="t('login.credentialIdentifier')"
+          />
+          <input
+            v-model="credPassword"
+            type="password"
+            class="login-input"
+            :placeholder="t('login.passwordPlaceholder')"
+          />
+          <div v-if="choiceError" class="login-error">{{ choiceError }}</div>
+          <button
+            type="button"
+            class="login-btn"
+            :disabled="choiceSubmitting"
+            @click="submitBindByCredentials"
+          >
+            {{ choiceSubmitting ? "..." : t("login.choiceBindByCredentials") }}
           </button>
         </template>
 

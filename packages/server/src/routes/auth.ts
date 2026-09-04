@@ -12,6 +12,7 @@ authPublicRoutes.post('/api/auth/device-login', ctrl.deviceLogin)
 authPublicRoutes.post('/api/auth/device-login/bind-super-admin', ctrl.bindSuperAdminDeviceLogin)
 authPublicRoutes.post('/api/auth/device-login/create-user', ctrl.createWeChatUser)
 authPublicRoutes.post('/api/auth/device-login/bind-existing', ctrl.bindExistingUserDeviceLogin)
+authPublicRoutes.post('/api/auth/device-login/bind-by-credentials', ctrl.bindByCredentialsDeviceLogin)
 authPublicRoutes.post('/api/auth/device-login/restore', ctrl.restoreDeviceLogin)
 authPublicRoutes.get('/api/auth/device-binding', ctrl.getDeviceBinding)
 
