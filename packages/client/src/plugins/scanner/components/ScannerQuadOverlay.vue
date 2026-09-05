@@ -109,6 +109,7 @@ function endDrag(event: PointerEvent) {
       @pointermove.prevent.stop="onHandlePointerMove"
       @pointerup.prevent.stop="endDrag"
       @pointercancel.prevent.stop="endDrag"
+      @lostpointercapture="endDrag"
     >
       <span class="quad-handle-core" />
     </button>
@@ -138,9 +139,9 @@ function endDrag(event: PointerEvent) {
 
 .quad-handle {
   position: absolute;
-  width: 22px;
-  height: 22px;
-  margin: -11px 0 0 -11px;
+  width: 44px;
+  height: 44px;
+  margin: -22px 0 0 -22px;
   padding: 0;
   border: 0;
   background: transparent;
@@ -151,8 +152,8 @@ function endDrag(event: PointerEvent) {
 
 .quad-handle-core {
   position: absolute;
-  left: 4px;
-  top: 4px;
+  left: 15px;
+  top: 15px;
   width: 14px;
   height: 14px;
   border-radius: 50%;

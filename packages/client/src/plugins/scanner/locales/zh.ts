@@ -31,6 +31,7 @@ export default {
       loading: '正在初始化检测器…',
       unavailable: '纸张检测器不可用。普通拍摄、增强与 OCR 仍可使用。',
       searching: '正在寻找纸张…',
+      held: '选框已保留，可拖动角点或重置',
       detected: '已检测到纸张',
       capturing: '正在拍摄…',
       cooling: '已拍摄，等待下一张',

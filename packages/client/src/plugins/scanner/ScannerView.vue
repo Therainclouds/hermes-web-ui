@@ -175,6 +175,7 @@ const smartStatusText = computed(() => {
     case 'unavailable': return tt('scanner.smart.unavailable')
     case 'searching': return tt('scanner.smart.searching')
     case 'detected': return tt('scanner.smart.detected')
+    case 'held': return tt('scanner.smart.held')
     case 'capturing': return tt('scanner.smart.capturing')
     case 'cooling': return tt('scanner.smart.cooling')
     default: return tt('scanner.smart.off')
@@ -186,6 +187,7 @@ const smartStatusTone = computed<'default' | 'info' | 'success' | 'error'>(() =>
     case 'detected':
     case 'capturing': return 'success'
     case 'loading':
+    case 'held':
     case 'searching': return 'info'
     default: return 'default'
   }
@@ -705,6 +707,8 @@ const cameraHintTone = computed(() => {
               :quad="smartQuad"
               :manual="smartManual"
               @update:quad="onQuadEdit"
+              @drag-start="smart.lockSelection()"
+              @drag-end="smart.resumeTracking()"
             />
             <div v-if="!cameraRunning" class="camera-empty">
               <NEmpty :description="tt('scanner.camera.idleHint')">

@@ -1,6 +1,7 @@
 import { ref, type Ref } from 'vue'
 import type { DetectOptions, PaperDetection } from './paper-detector'
 import type { MLStatus } from './detector-ml'
+import type { Quad } from './types'
 
 /**
  * 主线程 → Worker 通信层。
@@ -93,6 +94,12 @@ export function createDetector(): Detector {
   return {
     detect(imageData, opts) {
       if (terminated) return Promise.resolve(null)
+      // Vue refs expose proxy coordinates, which postMessage cannot clone.
+      // Copy both the tuple and its points before crossing the worker boundary.
+      const plainQuad = (quad?: Quad | null): Quad | null => quad
+        ? [{ x: quad[0].x, y: quad[0].y }, { x: quad[1].x, y: quad[1].y },
+          { x: quad[2].x, y: quad[2].y }, { x: quad[3].x, y: quad[3].y }] : null
+      opts = { ...opts, priorQuad: plainQuad(opts?.priorQuad), proposalQuad: plainQuad(opts?.proposalQuad) }
       const wantsML = opts?.strategies?.includes('ml') ?? false
       if (!wantsML && mlWorker) stopML()
       const now = performance.now()
@@ -136,6 +143,7 @@ export function createDetector(): Detector {
             ...opts, strategies: opts?.strategies?.filter(s => s !== 'ml').length
               ? opts.strategies.filter(s => s !== 'ml') : ['bright', 'edge'],
             priorQuad: opts?.priorQuad ?? hint,
+            proposalQuad: wantsML ? hint : null,
           } },
           [copy.buffer],
         )

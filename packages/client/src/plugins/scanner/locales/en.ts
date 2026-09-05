@@ -31,6 +31,7 @@ export default {
       loading: 'Initializing detector…',
       unavailable: 'Paper detector unavailable. Plain capture, enhancement and OCR still work.',
       searching: 'Looking for a document…',
+      held: 'Selection retained — adjust corners or reset',
       detected: 'Document detected',
       capturing: 'Capturing…',
       cooling: 'Captured — waiting for the next page',
