@@ -4058,6 +4058,7 @@ export default {
     errorConfigUpdateFailed: '設定推送失敗：服務可能正在重新啟動，請稍後再試',
     errorServiceNotReady: '語音辨識服務尚未就緒，請稍候',
     errorUploadAudioFailed: '上傳錄音失敗，請稍後重試或檢查網路',
+    errorSaveMeetingFailed: '會議資料儲存到伺服器失敗，本機仍有備份，請檢查網路後重試',
     feedback: '回饋',
     feedbackNegative: '負面回饋',
     feedbackPositive: '正面回饋',

@@ -124,6 +124,9 @@ export function useMeetingAudio(deps: UseMeetingAudioDeps) {
   // 'unload' 事件，浏览器只打违规日志并不会调用回调，所以 unload 监听是个无效冗余；
   // pagehide 在 SPA 切页 / 移动端 / 嵌入容器里都会触发，覆盖更全。
   let beforeUnloadHandlerAttached = false
+  // 注册与移除必须使用同一个函数引用；removeEventListener 对不同的引用（哪怕是
+  // 相同代码的另一个闭包）不生效，会导致监听器随每次录音残留累积。
+  let unloadBackupHandler: (() => void) | null = null
 
   function attachBeforeUnloadAudioBackup() {
     if (beforeUnloadHandlerAttached) return
@@ -140,16 +143,17 @@ export function useMeetingAudio(deps: UseMeetingAudioDeps) {
       }
     }
 
+    unloadBackupHandler = backup
     window.addEventListener('beforeunload', backup)
     window.addEventListener('pagehide', backup)
   }
 
   function detachBeforeUnloadAudioBackup() {
-    if (!beforeUnloadHandlerAttached) return
+    if (!beforeUnloadHandlerAttached || !unloadBackupHandler) return
     beforeUnloadHandlerAttached = false
-    const noop = () => {}
-    window.removeEventListener('beforeunload', noop)
-    window.removeEventListener('pagehide', noop)
+    window.removeEventListener('beforeunload', unloadBackupHandler)
+    window.removeEventListener('pagehide', unloadBackupHandler)
+    unloadBackupHandler = null
   }
 
   // --- 麦克风检测（仅做浏览器兼容性检查，不阻断 getUserMedia） ---
@@ -540,6 +544,28 @@ export function useMeetingAudio(deps: UseMeetingAudioDeps) {
     } catch (error: any) {
       console.error('[meeting] Failed to start recording:', error)
 
+      // 启动中途失败（如 worklet addModule 被 CSP 拦截、WS 建连异常）时，
+      // 已获取的麦克风流与 AudioContext 必须回收，否则麦克风指示灯常亮、
+      // 设备被占用，且重试会叠加分配新的流。
+      try {
+        mediaRecorder?.state !== 'inactive' && mediaRecorder?.stop()
+      } catch { /* best effort */ }
+      mediaRecorder = null
+      try {
+        mediaStream?.getTracks().forEach(track => track.stop())
+      } catch { /* best effort */ }
+      mediaStream = null
+      try {
+        audioContext?.close().catch(() => { /* best effort */ })
+      } catch { /* best effort */ }
+      audioContext = null
+      analyser.value = null
+      try { ws?.close() } catch { /* best effort */ }
+      ws = null
+      try { diarizeWs?.close() } catch { /* best effort */ }
+      diarizeWs = null
+      clearReconnectTimer()
+
       // 按 DOMException.name 区分错误类型
       switch (error.name) {
         case 'NotFoundError':
@@ -580,17 +606,22 @@ export function useMeetingAudio(deps: UseMeetingAudioDeps) {
     // 录音结束，移除关页/刷新兜底监听（正式落库由下方 saveAudioData 完成）
     detachBeforeUnloadAudioBackup()
 
+    // 先捕获 socket 引用再置空成员变量：下方 500ms 延迟关闭读的是捕获的引用，
+    // 若直接读 ws/diarizeWs，此时已被置空，close() 会变成 no-op，socket 半开残留。
+    const closingAsrWs = ws
+    const closingDiarizeWs = diarizeWs
+
     // 发送停止消息给 ASR（ASR 已在录音过程中流式返回结果，500ms 后安全关闭）
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'stop' }))
-      setTimeout(() => ws?.close(), 500)
+    if (closingAsrWs && closingAsrWs.readyState === WebSocket.OPEN) {
+      closingAsrWs.send(JSON.stringify({ type: 'stop' }))
+      setTimeout(() => closingAsrWs.close(), 500)
     }
     ws = null
 
     // 发送停止消息给 Diarize
-    if (diarizeWs && diarizeWs.readyState === WebSocket.OPEN) {
-      diarizeWs.send(JSON.stringify({ type: 'stop' }))
-      setTimeout(() => diarizeWs?.close(), 500)
+    if (closingDiarizeWs && closingDiarizeWs.readyState === WebSocket.OPEN) {
+      closingDiarizeWs.send(JSON.stringify({ type: 'stop' }))
+      setTimeout(() => closingDiarizeWs.close(), 500)
     }
     diarizeWs = null
 

@@ -219,6 +219,9 @@ function archiveOldSessions(sessions: MeetingSession[]) {
   const sorted = [...sessions].sort((a, b) => a.updatedAt - b.updatedAt)
   let changed = false
   for (const s of sorted) {
+    // 正在录音的会议不参与截断：其 sentences 是活跃的业务数据，
+    // 截断会直接改写 MeetingView 正在展示/累积的转写内容。
+    if (s.status === 'recording') continue
     if (s.sentences.length > 50) {
       s.sentences = s.sentences.slice(-50)
       changed = true

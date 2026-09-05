@@ -4305,6 +4305,7 @@ export default {
     // 错误提示
     errorSaveReportFailed: '保存分析结果失败，请检查网络或服务端日志',
     errorUploadAudioFailed: '上传录音失败，请稍后重试或检查网络',
+    errorSaveMeetingFailed: '会议数据保存到服务器失败，本机仍有备份，请检查网络后重试',
     errorDeleteAudioFailed: '清理旧录音数据失败，本地存储可能已满',
     errorConfigUpdateFailed: '配置推送失败：服务可能正在重启，请稍后再试',
     errorServiceNotReady: '语音识别服务尚未就绪，请稍候',

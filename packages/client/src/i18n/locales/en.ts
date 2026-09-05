@@ -4258,6 +4258,7 @@ export default {
     // Error toasts
     errorSaveReportFailed: 'Failed to save analysis result — check network or server logs',
     errorUploadAudioFailed: 'Failed to upload recording — please retry or check network',
+    errorSaveMeetingFailed: 'Failed to save meeting data to the server. A local backup exists — check your network and retry',
     errorDeleteAudioFailed: 'Failed to clean up old audio data; local storage may be full',
     errorConfigUpdateFailed: 'Failed to push config update: service may be restarting, please retry',
     errorServiceNotReady: 'Speech recognition service is not ready yet, please wait',
