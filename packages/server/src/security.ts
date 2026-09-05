@@ -140,7 +140,7 @@ export function securityHeaders(): Middleware {
       "base-uri 'self'",
       "object-src 'none'",
       "frame-ancestors 'none'",
-      "script-src 'self' 'unsafe-inline'",
+      "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'",
       "worker-src 'self' blob: data:",
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: blob: https:",

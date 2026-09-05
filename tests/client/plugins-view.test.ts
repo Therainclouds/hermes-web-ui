@@ -45,6 +45,7 @@ vi.mock('naive-ui', () => ({
     emits: ['click'],
     template: '<button class="n-button-stub" :disabled="loading" @click="$emit(\'click\')"><slot /></button>',
   }),
+  NCard: defineComponent({ template: '<div class="n-card-stub"><slot /></div>' }),
   NEmpty: defineComponent({ props: ['description'], template: '<div>{{ description }}</div>' }),
   NInput: defineComponent({
     props: ['value', 'placeholder'],
@@ -57,6 +58,11 @@ vi.mock('naive-ui', () => ({
     template: '<select><option v-for="option in options" :key="option.value" :value="option.value">{{ option.label }}</option></select>',
   }),
   NSpin: defineComponent({ template: '<div />' }),
+  NSwitch: defineComponent({
+    props: { value: Boolean },
+    emits: ['update:value'],
+    template: '<button class="n-switch-stub" @click="$emit(\'update:value\', !value)" />',
+  }),
   NTag: defineComponent({ template: '<span><slot /></span>' }),
   useMessage: () => messageMock,
 }))

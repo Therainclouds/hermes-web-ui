@@ -386,6 +386,7 @@ export default {
     noChangelog: 'Nenhum registro disponível',
     versionManagement: 'Gerenciamento de versões',
     updateAvailableLabel: '(Nova versão)',
+    clientPlugins: 'Plugins do cliente',
     dockerUpdateTitle: 'Atualização Docker',
     dockerUpdateGuide: 'No ambiente Docker, obtenha a imagem mais recente e recrie o contêiner:',
     dockerUpdateNote: 'Seus dados serão preservados após a recriação do contêiner.',

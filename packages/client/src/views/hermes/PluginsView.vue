@@ -1,14 +1,23 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import { NAlert, NButton, NEmpty, NInput, NSelect, NSpin, NTag } from 'naive-ui'
+import { computed, onMounted, ref, watch } from 'vue'
+import { NAlert, NButton, NCard, NEmpty, NInput, NSelect, NSpin, NSwitch, NTag } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { fetchPlugins, setPluginEnabled, type HermesPluginInfo, type HermesPluginsMetadata } from '@/api/hermes/plugins'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useMessage } from '@/composables/useAppMessage'
+import {
+  BUILTIN_PLUGINS,
+  isPluginEnabled,
+  listBuiltinPlugins,
+  readPluginEnabledMap,
+  writePluginEnabledMap,
+} from '@/plugins'
 
 const { t, te } = useI18n()
 const message = useMessage()
 const profilesStore = useProfilesStore()
+const router = useRouter()
 
 const plugins = ref<HermesPluginInfo[]>([])
 const warnings = ref<string[]>([])
@@ -16,6 +25,62 @@ const metadata = ref<HermesPluginsMetadata | null>(null)
 const loading = ref(false)
 const error = ref('')
 const actionLoading = ref<Record<string, boolean>>({})
+
+// 客户端插件（built-in Vue 插件，与 Hermes Agent 插件解耦）。
+interface ClientPluginRow {
+  id: string
+  name: string
+  version: string
+  description: string
+  author?: string
+  enabled: boolean
+  hasOverride: boolean
+}
+const clientPlugins = ref<ClientPluginRow[]>([])
+function loadClientPlugins() {
+  const persisted = readPluginEnabledMap()
+  clientPlugins.value = listBuiltinPlugins().map((m) => {
+    const registration = BUILTIN_PLUGINS.find(r => r.plugin.id === m.id)
+    return {
+      id: m.id,
+      name: m.name,
+      version: m.version,
+      description: m.description,
+      author: m.author,
+      enabled: isPluginEnabled(m.id, registration?.enabledByDefault ?? true),
+      hasOverride: Object.prototype.hasOwnProperty.call(persisted, m.id),
+    }
+  })
+}
+function persistClientPlugin(_row: ClientPluginRow) {
+  const map: Record<string, boolean> = {}
+  for (const r of clientPlugins.value) {
+    if (r.hasOverride) map[r.id] = r.enabled
+  }
+  writePluginEnabledMap(map)
+}
+function toggleClientPlugin(row: ClientPluginRow, value: boolean) {
+  row.enabled = value
+  row.hasOverride = true
+  persistClientPlugin(row)
+}
+function clientPluginLabel(row: ClientPluginRow) {
+  const key = `pluginsClient.${row.id}.name`
+  const translated = t(key)
+  return (translated && translated !== key) ? translated : row.name
+}
+function clientPluginDescription(row: ClientPluginRow) {
+  const key = `pluginsClient.${row.id}.description`
+  const translated = t(key)
+  return (translated && translated !== key) ? translated : row.description
+}
+function openClientPlugin(row: ClientPluginRow) {
+  const routeName = row.id === 'scanner' ? 'plugin-scanner.scanner' : null
+  if (routeName && router.hasRoute(routeName)) {
+    void router.push({ name: routeName })
+  }
+}
+onMounted(loadClientPlugins)
 
 const searchQuery = ref('')
 const sourceFilter = ref<string | null>(null)
@@ -157,6 +222,56 @@ watch(() => profilesStore.activeProfileName || 'default', () => {
           {{ warning }}
         </NAlert>
 
+        <!-- 客户端插件（浏览器侧 Vue 插件，与下面表格里的 Hermes Agent 插件是两套体系） -->
+        <section v-if="clientPlugins.length > 0" class="client-plugins">
+          <div class="client-plugins-header">
+            <h3 class="section-title">{{ t('plugins.clientSectionTitle') }}</h3>
+            <span class="section-hint">{{ t('plugins.clientSectionHint') }}</span>
+          </div>
+          <div class="client-plugins-grid">
+            <NCard
+              v-for="row in clientPlugins"
+              :key="row.id"
+              class="client-plugin-card"
+              :class="{ 'is-disabled': !row.enabled }"
+              hoverable
+              @click="openClientPlugin(row)"
+            >
+              <div class="client-plugin-card-head">
+                <div class="client-plugin-card-title-block">
+                  <div class="client-plugin-card-title">
+                    <span>{{ clientPluginLabel(row) }}</span>
+                    <NTag size="small" round>v{{ row.version }}</NTag>
+                  </div>
+                  <div class="client-plugin-card-id">{{ row.id }}</div>
+                </div>
+                <NSwitch
+                  :value="row.enabled"
+                  size="small"
+                  @click.stop="(e: MouseEvent) => e.stopPropagation()"
+                  @update:value="(value: boolean) => toggleClientPlugin(row, value)"
+                />
+              </div>
+              <p class="client-plugin-card-desc">{{ clientPluginDescription(row) }}</p>
+              <div class="client-plugin-card-meta">
+                <span v-if="row.author">{{ t('clientPlugins.author', { author: row.author }) }}</span>
+                <NTag v-if="row.hasOverride" size="tiny" type="warning">
+                  {{ t('clientPlugins.overridden') }}
+                </NTag>
+                <NTag v-else-if="row.enabled" size="tiny" type="success">
+                  {{ t('clientPlugins.enabledTag') }}
+                </NTag>
+                <NTag v-else size="tiny" type="default">
+                  {{ t('clientPlugins.disabledTag') }}
+                </NTag>
+              </div>
+            </NCard>
+          </div>
+          <NAlert type="info" :bordered="false" size="small" class="client-plugins-refresh-hint">
+            {{ t('plugins.clientSectionRefreshHint') }}
+          </NAlert>
+        </section>
+
         <div class="summary-grid">
           <div class="summary-card">
             <span class="summary-label">{{ t('plugins.summary.total') }}</span>
@@ -292,6 +407,94 @@ watch(() => profilesStore.activeProfileName || 'default', () => {
   grid-template-columns: repeat(5, minmax(120px, 1fr));
   gap: 12px;
   margin-bottom: 16px;
+}
+
+// ── 客户端插件 section ──────────────────────────────────────────────
+.client-plugins {
+  margin-bottom: 18px;
+  padding-bottom: 16px;
+  border-bottom: 1px dashed $border-color;
+}
+
+.client-plugins-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.section-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.section-hint {
+  font-size: 12px;
+  color: $text-muted;
+}
+
+.client-plugins-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.client-plugin-card {
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+
+  &.is-disabled {
+    opacity: 0.65;
+  }
+}
+
+.client-plugin-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.client-plugin-card-title-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.client-plugin-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.client-plugin-card-id {
+  font-size: 11px;
+  color: $text-muted;
+  font-family: var(--font-mono, monospace);
+}
+
+.client-plugin-card-desc {
+  font-size: 12.5px;
+  color: $text-secondary;
+  margin: 8px 0 4px;
+  line-height: 1.45;
+}
+
+.client-plugin-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: $text-muted;
+  flex-wrap: wrap;
+}
+
+.client-plugins-refresh-hint {
+  margin-top: 10px;
+  font-size: 11.5px;
 }
 
 .summary-card {

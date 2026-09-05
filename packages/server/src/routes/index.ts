@@ -15,6 +15,7 @@ import { apiDocsRoutes } from './api-docs'
 import { themeRoutes } from './theme'
 import { claudeCodeProxyRoutes } from './claude-code-proxy'
 import { codexProxyRoutes } from './codex-proxy'
+import { scannerRoutes } from './scanner'
 
 // Hermes route modules
 import { sessionRoutes } from './hermes/sessions'
@@ -84,6 +85,7 @@ export function registerRoutes(app: any, authMiddleware: Array<(ctx: Context, ne
   app.use(authProtectedRoutes.routes())
   app.use(deviceRoutes.routes())
   app.use(usbRoutes.routes())
+  app.use(scannerRoutes.routes())
   app.use(uploadRoutes.routes())
   app.use(appUploadRoutes.routes())
   app.use(updateRoutes.routes())           // Must be before proxy (proxy catch-all matches everything)

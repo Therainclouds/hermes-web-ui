@@ -316,6 +316,7 @@ export default {
     noChangelog: '暂无更新日志',
     versionManagement: '版本管理',
     updateAvailableLabel: '(有新版)',
+    clientPlugins: '客户端插件',
     dockerUpdateTitle: 'Docker 升级',
     dockerUpdateGuide: '当前运行在 Docker 环境中，请拉取最新镜像并重建容器来升级：',
     dockerUpdateNote: '数据会持续保留，重建容器不会丢失数据。',
@@ -1786,6 +1787,9 @@ export default {
     title: '插件',
     refresh: '刷新',
     notice: '展示可发现的 Hermes 插件 manifest。发现元数据读取不会加载插件代码。可在此启用或禁用 standalone 用户插件，新 Hermes 会话生效。',
+    clientSectionTitle: '客户端插件（浏览器）',
+    clientSectionHint: '随 Web UI 自带，点击卡片打开，开关切换启用/禁用。',
+    clientSectionRefreshHint: '开关切换后刷新页面生效。',
     loadFailed: '加载插件失败',
     updateFailed: '更新插件失败',
     enableSuccess: '已启用 {name}',
@@ -1850,6 +1854,20 @@ export default {
       scanCwd: '扫描 cwd',
       projectPlugins: '项目插件',
     },
+  },
+
+  clientPlugins: {
+    title: '客户端插件',
+    subtitle: '切换浏览器内置插件（如扫描）。更改后刷新页面生效。',
+    notice: '客户端内置插件随 Web UI 一同发布。禁用插件会移除其路由、侧边栏入口与文案。要彻底移除插件，请联系 Web UI 维护者从插件清单中删除。',
+    enableAll: '全部启用',
+    disableAll: '全部禁用',
+    reset: '重置',
+    empty: '尚未注册任何内置插件。',
+    author: '作者：{author}',
+    overridden: '已自定义',
+    enabledTag: '已启用',
+    disabledTag: '已禁用',
   },
 
   petdex: {
