@@ -1,3 +1,5 @@
+import { mkdtempSync, tmpdir } from 'os'
+import { join } from 'path'
 import { describe, expect, it, vi } from 'vitest'
 
 const realtimeStoreMock = vi.hoisted(() => ({
@@ -166,8 +168,12 @@ describe('scanner ocr key resolution', () => {
     const fetchImpl = vi.fn(async () => makeOcrResponse('OCR result') as any)
     realtimeStoreMock.getRealtimeModelSetting.mockReturnValue(null)
     const original = process.env.DASHSCOPE_API_KEY
+    const originalAsrDataDir = process.env.MEETING_ASR_DATA_DIR
     delete process.env.DASHSCOPE_API_KEY
-    delete process.env.MEETING_ASR_DATA_DIR
+    // 不只是删除 env：key 解析还会兜底到 MEETING_ASR_DATA_DIR（缺省时是
+    // cwd/data/meeting-asr），开发机上那里常有真实 config.json/config.env。
+    // 指向一个保证不存在的目录，三个来源全部为空，才能稳定走到 missing key 分支。
+    process.env.MEETING_ASR_DATA_DIR = join(tmpdir(), `scanner-ocr-no-key-${Date.now()}`)
     try {
       await expect(
         callScannerOcr(
@@ -179,6 +185,8 @@ describe('scanner ocr key resolution', () => {
       expect(fetchImpl).not.toHaveBeenCalled()
     } finally {
       if (original !== undefined) process.env.DASHSCOPE_API_KEY = original
+      if (originalAsrDataDir !== undefined) process.env.MEETING_ASR_DATA_DIR = originalAsrDataDir
+      else delete process.env.MEETING_ASR_DATA_DIR
       realtimeStoreMock.getRealtimeModelSetting.mockReset()
     }
   })

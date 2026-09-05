@@ -42,7 +42,8 @@ describe('scanner storage', () => {
       },
     )
     expect(result.directory.startsWith(workspaceDir)).toBe(true)
-    expect(result.directory).toContain('scans/')
+    // 路径分隔符平台相关（POSIX "/" vs Windows "\"），按路径段断言
+    expect(result.directory.split(/[\\/]/)).toContain('scans')
     const imageFiles = result.files.filter(f => f.kind === 'image')
     const textFiles = result.files.filter(f => f.kind === 'text')
     expect(imageFiles).toHaveLength(2)

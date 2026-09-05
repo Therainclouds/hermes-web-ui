@@ -258,6 +258,7 @@ export function useSmartCapture(options: SmartCaptureOptions) {
       if (locked && currentQuad && isOutlierWhileLocked({
         currentQuad,
         detected: quadNorm,
+        locked,
         jumpRejectDist: JUMP_REJECT_DIST,
       })) {
         if (candidate && quadCornerDelta(candidate.last, quadNorm) <= stabilityTolerance) {
