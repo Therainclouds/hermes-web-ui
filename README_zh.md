@@ -367,6 +367,82 @@ AI 驱动的实时语音对话与口语练习辅导。
 - 所有语音入口统一到全新 Omni 实时对话
 - 语音会话可无缝续接文字聊天上下文
 
+### 文档扫描（v0.8.0）
+
+摄像头驱动的文档扫描插件：连接 UVC USB 摄像头后，让「智能捕捉」完成
+整条流水线——边缘检测、ML 校验、透视校正、OCR、多页 PDF，并保存到当前
+Hermes profile 的工作区。
+
+**核心功能：**
+
+| 功能 | 描述 |
+|---|---|
+| UVC 摄像头预览 | 实时预览，支持设备选择，区分空闲/直播状态，针对授权拒绝、未检测到设备、浏览器拦截给出明确提示。 |
+| 智能捕捉 | 实时边缘检测 + 可拖拽选框；选框稳定后自动拍摄，也保留手动模式。 |
+| 多页会话 | 单次会话中可拍摄、重拍、删除、重新识别每一页。 |
+| 内置图像增强 | 详情视图自带自动色阶、对比度/亮度、黑白控制。 |
+| OCR | 通过 DashScope Qwen-VL-OCR 服务端接口（`POST /api/scanner/ocr`）做多页识别。 |
+| PDF 导出 | 把所选页面打包成 A4（或原比例）PDF，图片直嵌（服务端 `POST /api/scanner/pdf`）。 |
+| 工作区保存 | 把图像和 OCR 文本写入当前 Hermes profile 的工作区（服务端 `POST /api/scanner/save`）。 |
+| 插件架构 | 独立模块位于 `packages/client/src/plugins/scanner`，自带 Vue 视图、组合式 API、视觉模块与多语言包（en/zh + 其他 9 种）。 |
+
+**视觉流水线（纯 JS，运行于 Web Worker）：**
+
+- **多策略检测。** 主路径 `bright`（Otsu 双极性）+ Canny 风格 `edge` 兜底，
+  可选的 `ml` 走 Transformers.js + YOLOv8n（ONNX WASM 本地打包，CSP 开启
+  `wasm-unsafe-eval`）。各策略并行运行，结果按得分合并。
+- **AI 提案二次校验。** ML 边界框不直接采用。每个提案在*当前帧*上裁剪并用
+  经典 edge/brightness 流水线复核，再映射回全图坐标系，并按
+  `minAreaRatio` / `maxAreaRatio` 重新校验。脱离当前像素的纯先验提案会被
+  拒绝，避免污染裁剪结果。
+- **低对比度页面的 Otsu 二次分割。** 当打印文字主导暗簇时，对直方图上半段
+  再做一次 Otsu，把纸面从低对比度背景中分离——原先的单次 Otsu 在发票或
+  文字密集页面上经常崩溃。
+- **稳定的 Sobel 方向。** Sobel 梯度方向以 22.5°/67.5° 为扇区边界，让
+  Canny 风格滞回把较厚的页边缘保留在正确的角侧。
+- **稳定的凸包锚点。** 凸包始终保留起点；对于近垂直边，起点可能落在
+  边中段。算法现在把锚点游走到最左上点，让 Douglas–Peucker 从真正的角点
+  开始化简。
+- **容错的角点精修。** `refinePaperQuad` 拒绝过紧的 Douglas–Peucker
+  近似时，算法会跳到下一档容差，而不是整张丢弃。
+
+**智能捕捉 UX（v0.8.0）：**
+
+- **粘性选框。** 选框一旦亮起，连续 miss 几帧不会把它收掉——选框进入
+  `held` 状态（「选框已保留，可拖动角点或重置」），用户仍可拖动、重拍或
+  重置。
+- **拖动冻结追踪。** 在角点把手按下时调用 `lockSelection()`，检测结果
+  无法在拖动过程中移动选框；松手时调用 `resumeTracking()`，无需清空已编
+  辑角点即恢复跟随。
+- **远距目标重新捕获。** 当纸面真正移出选框时，新位置会被接受，即使位
+  移大于原先的稳定容差——旧容差要求接近拍摄级的静止。
+- **更大把手。** 角点把手从 22 px 增大到 44 px，在触控和高 DPI 摄像头下
+  更易抓握。
+- **指针捕获安全。** 拖动处理监听 `lostpointercapture`，被其他窗口抢走
+  焦点导致的指针事件丢失也能干净释放角点。
+- **响应式代理安全。** Vue 的 `reactive()` 代理坐标在 `postMessage` 进
+  Worker 前先用 `structuredClone` 转成普通对象，避免松手后第一帧被静默
+  丢弃。
+
+**服务端流水线：**
+
+- `POST /api/scanner/ocr` — DashScope Qwen-VL-OCR，接收 `data:image/...`；
+  校验 MIME、页数、单图大小；未传 key 时复用 Realtime store 中的 DashScope key。
+- `POST /api/scanner/pdf` — 把所选图像打包成 PDF（无外部 PDF 依赖，页面以
+  图片方式嵌入）。
+- `POST /api/scanner/save` — 把图像和 OCR 文本写入当前 Hermes profile 的
+  工作区（经 `getActiveProfileDir()`）；支持配置基础目录、文件命名规则和
+  覆盖策略。
+
+**覆盖：**
+
+- 单元测试覆盖 Worker 桥接（`scanner-detector-worker.test.ts`）、视觉精度
+  回归（`scanner-vision-precision.test.ts`）、图像增强滤镜、OCR 校验、PDF
+  打包，以及 Smart Capture 状态机（`scanner-smart-capture.test.ts`）。
+- 端到端测试（`scanner-precision.spec.ts`）覆盖实时预览：选框进入 `held`
+  后仍保留、拖动期间冻结、松手后跟随摄像头移动，以及 13" 笔记本与移动端
+  两种视口。
+
 ### Web 终端
 
 - 集成终端，基于 node-pty 和 @xterm/xterm

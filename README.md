@@ -373,6 +373,96 @@ Real-time voice dialogue with AI-powered oral practice and coaching.
 - All voice entries now open the unified Omni realtime dialog
 - Voice sessions can continue from text-chat context seamlessly
 
+### Document Scanner (v0.8.0)
+
+A camera-driven document scanner plugin. Connect a UVC USB camera, frame the
+paper, and let Smart Capture drive the whole pipeline — edge detection, ML
+verification, perspective correction, OCR, multi-page PDF, and saving into the
+active Hermes profile workspace.
+
+**Core Features:**
+
+| Feature | Description |
+|---|---|
+| UVC camera preview | Live preview with device picker, idle/live state, and clear error messages for permission / missing-device / browser blocks. |
+| Smart Capture | Live edge detection with a draggable selection box; auto-shoots when the box is stable. Manual mode is still available. |
+| Multi-page session | Capture, review, re-shoot, delete, and re-OCR each page in a single session. |
+| Built-in enhance | Auto levels, contrast/brightness, and black & white controls in the page detail view. |
+| OCR | Multi-page OCR via DashScope Qwen-VL-OCR (server route `POST /api/scanner/ocr`). |
+| PDF export | Bundle selected pages into an A4 (or original-ratio) PDF with embedded images (server route `POST /api/scanner/pdf`). |
+| Workspace save | Persist captured pages and OCR text into the active Hermes profile's workspace (server route `POST /api/scanner/save`). |
+| Plugin architecture | Lives under `packages/client/src/plugins/scanner` with its own Vue views, composables, vision modules, and locale bundles (en/zh + 9 others). |
+
+**Vision pipeline (pure JS, runs in a Web Worker):**
+
+- **Multi-strategy detection.** A primary `bright` (Otsu dual-polarity) pass,
+  a Canny-style `edge` fallback, and an optional `ml` pass via
+  Transformers.js + YOLOv8n (ONNX WASM bundled locally, CSP
+  `wasm-unsafe-eval` enabled). Strategies run in parallel; results are merged
+  by score.
+- **AI proposal revalidation.** ML bounding boxes are not accepted as-is. Each
+  proposal is cropped and re-validated against the *current* pixels with the
+  classic edge/brightness pipeline, scaled back to full-frame coordinates, and
+  re-checked against `minAreaRatio` / `maxAreaRatio`. A pure-prior proposal is
+  rejected before it can corrupt the crop.
+- **Otsu split for low-contrast pages.** When printed text dominates the dark
+  cluster, a second Otsu pass on the upper half of the histogram separates the
+  page from a low-contrast background — the previous single-pass Otsu often
+  collapsed on invoices or text-heavy pages.
+- **Stable Sobel directions.** Sobel gradient directions use 22.5°/67.5°
+  sector boundaries so Canny-style hysteresis keeps thicker page edges on the
+  correct side of the corner.
+- **Robust hull anchoring.** The convex hull always retains its starting
+  point; for near-vertical edges after blur, that start can land mid-edge. The
+  anchor now walks to the top-left-most point so Douglas–Peucker simplification
+  begins on a real corner.
+- **Tolerant corner refinement.** When `refinePaperQuad` rejects a tight
+  Douglas–Peucker approximation, the algorithm steps to the next tolerance
+  rather than dropping the detection entirely.
+
+**Smart Capture UX (v0.8.0):**
+
+- **Sticky selection.** Once the box is shown, a few miss frames no longer
+  unmount it — the selection transitions to the `held` state ("Selection
+  retained — adjust corners or reset") and the user can still drag, retake, or
+  reset.
+- **Drag freezes tracking.** A pointer-down on a corner handle calls
+  `lockSelection()` so detection results cannot move the crop mid-drag;
+  `resumeTracking()` on pointer-up re-enables following without clearing the
+  edited corners.
+- **Distant target reacquire.** When a moving paper genuinely leaves the box,
+  the new position is accepted even if it differs by more than the historical
+  stability tolerance — the previous tolerance required capture-level stillness.
+- **Bigger handles.** Corner handles grew from 22 px to 44 px so the box is
+  easier to grab on touch and high-DPI cameras.
+- **Pointer-capture safe.** The drag handler listens for `lostpointercapture`
+  so a dropped pointer event (e.g. another window stealing focus) still
+  releases the corner cleanly.
+- **Reactive proxy safety.** Vue's `reactive()` proxy coordinates are
+  `structuredClone`-cloned before `postMessage` to the worker, so the very
+  first frame after the user releases a corner is no longer silently dropped.
+
+**Server pipeline:**
+
+- `POST /api/scanner/ocr` — DashScope Qwen-VL-OCR over `data:image/...`
+  URLs; validates MIME, page count, and per-image size; reuses the Realtime
+  store's DashScope API key when the request omits one.
+- `POST /api/scanner/pdf` — packages selected images into a PDF (no external
+  PDF dependency; pages are image-embedded).
+- `POST /api/scanner/save` — writes images + OCR text into the active Hermes
+  profile workspace via `getActiveProfileDir()`; configurable base directory,
+  filename pattern, and overwrite policy.
+
+**Coverage:**
+
+- Unit tests for the worker bridge (`scanner-detector-worker.test.ts`),
+  vision precision regressions (`scanner-vision-precision.test.ts`),
+  enhancement filters, OCR validation, PDF building, and Smart Capture state
+  machine (`scanner-smart-capture.test.ts`).
+- E2E (`scanner-precision.spec.ts`) exercises the live preview: selection
+  retention through `held`, drag-time freeze, post-release camera tracking,
+  and 13" laptop vs. mobile viewports.
+
 ### Web Terminal
 
 - Integrated terminal powered by node-pty and @xterm/xterm
