@@ -21,6 +21,7 @@ agent can discover without chat history.
 - `docs/harness/pr-review.md` provides a PR self-review checklist.
 - `docs/harness/update-system-overview.md` maps the device update pipeline and lists real production incidents.
 - `docs/harness/update-reconciliation-plan.md` is the five-phase plan for environment reconciliation. Specs per phase live under `.zcode/plans/update-reconciliation-phase*.md`.
+- `docs/harness/source-deploy-refactor.md` is the phase (a) spec for trustworthy source-deploy updates (atomic swap, identity, recovery). Companion to the reconciliation plan.
 - `scripts/harness-check.mjs` enforces baseline repository invariants.
 
 ## Operating Model
