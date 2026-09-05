@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   accumulateStable,
+  hideAfterMisses,
   inCooldown,
   isOutlierWhileLocked,
   smoothQuad,
@@ -8,6 +9,7 @@ import {
   isStableEnough,
   quadAreaRatio,
   shouldRecapture,
+  shouldStayLocked,
 } from '@/plugins/scanner/vision/capture-logic'
 import type { Quad } from '@/plugins/scanner/vision/types'
 
@@ -161,6 +163,81 @@ describe('scanner capture logic', () => {
       expect(isOutlierWhileLocked({
         currentQuad: quadA, detected: medium, locked: true, jumpRejectDist: 0.15,
       })).toBe(true)
+    })
+  })
+
+  describe('shouldStayLocked (sticky 锁定升级)', () => {
+    // 回归：之前用 stable.count 触发，但 stabilityTolerance=0.012 在 Otsu / 相机抖动
+    // 下根本到不了 3，锁定态事实上从未激活 → HIDE_AFTER_MISSES=3 仍是真实行为。
+    // 改为 hits 触发且 sticky 后，hits 累计到阈值即进入锁定并保持。
+
+    it('未锁定 + 命中数 < 阈值 → 不锁定', () => {
+      expect(shouldStayLocked({
+        currentlyLocked: false, consecutiveHits: 0, lockHits: 3,
+      })).toBe(false)
+      expect(shouldStayLocked({
+        currentlyLocked: false, consecutiveHits: 2, lockHits: 3,
+      })).toBe(false)
+    })
+
+    it('未锁定 + 命中数 = 阈值 → 升级锁定', () => {
+      expect(shouldStayLocked({
+        currentlyLocked: false, consecutiveHits: 3, lockHits: 3,
+      })).toBe(true)
+    })
+
+    it('未锁定 + 命中数 > 阈值 → 升级锁定', () => {
+      expect(shouldStayLocked({
+        currentlyLocked: false, consecutiveHits: 5, lockHits: 3,
+      })).toBe(true)
+    })
+
+    it('已锁定 → 保持锁定（即使命中数降到 0，对应「中间出现几帧 miss」）', () => {
+      // 这是 sticky 的关键：选框锁定后，即使几帧检测失败导致 hits 在
+      // onDetectionLoss 里被清零，下一帧命中 hits=1 时也应继续保持锁定。
+      expect(shouldStayLocked({
+        currentlyLocked: true, consecutiveHits: 0, lockHits: 3,
+      })).toBe(true)
+      expect(shouldStayLocked({
+        currentlyLocked: true, consecutiveHits: 1, lockHits: 3,
+      })).toBe(true)
+    })
+
+    it('锁定升级后，hits 重置不影响 sticky 状态（这是 fix flicker 的核心）', () => {
+      let locked = false
+      // 连续 3 帧命中 → 锁定
+      locked = shouldStayLocked({ currentlyLocked: locked, consecutiveHits: 3, lockHits: 3 })
+      expect(locked).toBe(true)
+      // 中间 1 帧 miss（hits 在 onDetectionLoss 重置为 0）
+      locked = shouldStayLocked({ currentlyLocked: locked, consecutiveHits: 0, lockHits: 3 })
+      // 仍然锁定 ←─ 这一行就是用户修复「闪烁」的关键
+      expect(locked).toBe(true)
+      // 恢复 1 帧命中（hits=1）
+      locked = shouldStayLocked({ currentlyLocked: locked, consecutiveHits: 1, lockHits: 3 })
+      expect(locked).toBe(true)
+    })
+  })
+
+  describe('hideAfterMisses (miss 容忍阈值)', () => {
+    it('未锁定 → 用基础阈值（响应优先）', () => {
+      expect(hideAfterMisses({
+        locked: false, baseHideAfterMisses: 3, lockHideAfterMisses: 12,
+      })).toBe(3)
+    })
+
+    it('已锁定 → 用更长的容忍阈值（覆盖 Otsu 抖动 / ML 冷却）', () => {
+      expect(hideAfterMisses({
+        locked: true, baseHideAfterMisses: 3, lockHideAfterMisses: 12,
+      })).toBe(12)
+    })
+
+    it('自定义阈值也按 locked 分流', () => {
+      expect(hideAfterMisses({
+        locked: false, baseHideAfterMisses: 5, lockHideAfterMisses: 20,
+      })).toBe(5)
+      expect(hideAfterMisses({
+        locked: true, baseHideAfterMisses: 5, lockHideAfterMisses: 20,
+      })).toBe(20)
     })
   })
 })

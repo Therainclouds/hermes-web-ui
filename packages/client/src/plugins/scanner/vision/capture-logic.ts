@@ -100,3 +100,33 @@ export function isOutlierWhileLocked(opts: {
   if (!opts.locked) return false
   return quadCornerDelta(opts.currentQuad, opts.detected) > opts.jumpRejectDist
 }
+
+/**
+ * 锁定态 sticky 升级判定：一旦连续有效命中达到 lockHits 即进入锁定；
+ * 锁定后保持 sticky（即使中间出现几帧 miss / 抖动也不退出），
+ * 直到调用方在选框真正清掉时显式把 currentlyLocked 设回 false。
+ *
+ * 这是「连续识别到一个位置就保持锁定」的关键 —— 之前的实现用 stable.count
+ * 触发，但 stabilityTolerance 极严苛时根本到不了阈值，锁定态事实上从未激活。
+ */
+export function shouldStayLocked(opts: {
+  currentlyLocked: boolean
+  consecutiveHits: number
+  lockHits: number
+}): boolean {
+  if (opts.currentlyLocked) return true
+  return opts.consecutiveHits >= opts.lockHits
+}
+
+/**
+ * 计算清除选框所需的连续 miss 帧数：锁定态给更长的容忍窗口
+ * （覆盖 Otsu 闪烁 / 摄像头自动曝光 / ML 冷却等亚秒级瞬时丢失），
+ * 初次搜索阶段保持较短的阈值以尽快响应「目标真的走了」。
+ */
+export function hideAfterMisses(opts: {
+  locked: boolean
+  baseHideAfterMisses: number
+  lockHideAfterMisses: number
+}): number {
+  return opts.locked ? opts.lockHideAfterMisses : opts.baseHideAfterMisses
+}
