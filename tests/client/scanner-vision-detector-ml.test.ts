@@ -7,6 +7,8 @@ import {
   isOrganicLabel,
   labelBoost,
   labelThresholdScale,
+  normalizeMLBox,
+  pipelineThreshold,
   quadFrameSides,
   type MLCandidate,
 } from '@/plugins/scanner/vision/detector-ml'
@@ -62,6 +64,10 @@ describe('detector-ml organic/标签先验', () => {
     expect(labelThresholdScale('book')).toBe(0.7)
     expect(labelThresholdScale('laptop')).toBe(0.85)
     expect(labelThresholdScale('car')).toBe(1)
+  })
+
+  it('keeps the pipeline threshold low enough for document proxy labels', () => {
+    expect(pipelineThreshold(0.35)).toBeCloseTo(0.245)
   })
 })
 
@@ -134,5 +140,21 @@ describe('detector-ml candidateToDetection', () => {
     expect(d.strategy).toBe('ml')
     expect(d.quad).toBe(c.quad)
     expect(d.confidence).toBe(compositeScore(c.score, c.label, c.aspect, c.frameSides))
+  })
+})
+
+describe('detector-ml box normalization', () => {
+  it('clips model coordinates to the actual input canvas', () => {
+    expect(normalizeMLBox({ xmin: -8, ymin: 10, xmax: 120, ymax: 110 }, 100, 100)).toEqual({
+      xmin: 0,
+      ymin: 10,
+      xmax: 100,
+      ymax: 100,
+    })
+  })
+
+  it('rejects invalid or empty model boxes', () => {
+    expect(normalizeMLBox({ xmin: Number.NaN, ymin: 0, xmax: 10, ymax: 10 }, 100, 100)).toBeNull()
+    expect(normalizeMLBox({ xmin: 20, ymin: 20, xmax: 10, ymax: 30 }, 100, 100)).toBeNull()
   })
 })

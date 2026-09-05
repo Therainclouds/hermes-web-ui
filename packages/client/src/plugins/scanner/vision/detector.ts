@@ -16,6 +16,12 @@ export interface Detector {
     imageData: { width: number; height: number; data: Uint8ClampedArray },
     opts?: DetectOptions,
   ): Promise<PaperDetection | null>
+  /**
+   * 主动触发 ML pipeline 预热。worker 内 fire-and-forget 拉起模型加载，
+   * 状态变化通过 mlStatus ref 实时镜像到主线程。重复调用由 worker 内部
+   * promise 复用保证只下载一次。
+   */
+  preloadML(): void
   terminate(): void
   /** ML pipeline 加载状态（ref，UI 直接绑）。 */
   readonly mlStatus: Ref<MLStatus>
@@ -26,8 +32,8 @@ interface PendingEntry {
 }
 
 interface WorkerResponse {
-  id: number
-  result: PaperDetection | null
+  id?: number
+  result?: PaperDetection | null
   error?: string
   mlStatus?: MLStatus
 }
@@ -41,6 +47,7 @@ export function createDetector(): Detector {
   worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
     const { id, result, mlStatus } = event.data
     if (mlStatus) mlStatusRef.value = mlStatus
+    if (id === undefined) return
     const entry = pending.get(id)
     if (!entry) return
     pending.delete(id)
@@ -60,10 +67,13 @@ export function createDetector(): Detector {
         pending.set(id, { resolve })
         const copy = new Uint8ClampedArray(imageData.data)
         worker.postMessage(
-          { id, imageData: { width: imageData.width, height: imageData.height, data: copy }, opts },
+          { type: 'detect', id, imageData: { width: imageData.width, height: imageData.height, data: copy }, opts },
           [copy.buffer],
         )
       })
+    },
+    preloadML() {
+      worker.postMessage({ type: 'preload' })
     },
     terminate() {
       worker.terminate()

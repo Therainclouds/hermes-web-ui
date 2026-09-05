@@ -40,8 +40,7 @@ export interface DetectOptions {
   maxAspect?: number
   /**
    * 要运行的策略。默认 ['bright', 'edge']（纯经典，毫秒级实时跟随）。
-   * 'ml'（AI）默认不参与；显式加入后也仅在经典置信度过低时作为兜底候选
-   * （受 worker 内节流限制，避免拖慢跟随）。
+   * 'ml'（AI）默认不参与；显式加入后与经典并行跑，由复合分 + 黏性选优最终选一个。
    */
   strategies?: ReadonlyArray<'ml' | 'bright' | 'edge'>
   /** ML 评分阈值，低于此丢弃。默认 0.35。 */
@@ -66,14 +65,15 @@ const DEFAULTS: Required<Omit<DetectOptions, 'strategies' | 'priorQuad'>> & {
   priorQuad: null,
 }
 
+/** 连通域按面积取 Top-N 交给 finalizeDetection 评分（不只看最大的一个）。 */
+const BRIGHT_CANDIDATES = 5
+const EDGE_CANDIDATES = 4
 /** 候选与上一帧选框的归一化角点位移 <= 该值时视为「同一目标」。 */
 const STICK_DIST = 0.22
 /** 黏性候选的置信度加成：> 0.1 的置信度差距才能把选框从上一帧目标上抢走。 */
 const STICK_BONUS = 0.1
-/** AI（ML）两次推理之间的最小间隔：正常帧不被慢速推理拖慢。 */
-const ML_MIN_INTERVAL_MS = 800
-/** 经典候选的最高置信度低于该值时，才触发 AI 兜底（经典误检时 AI 才有意义）。 */
-const ML_BOOST_CONFIDENCE = 0.16
+/** AI（ML）两次推理之间的最小间隔：避免慢速推理拖慢实时跟随。 */
+const ML_MIN_INTERVAL_MS = 300
 /** worker 内上一次 ML 推理完成时间（模块级，跨请求保持）。 */
 let lastMlRunAt = 0
 
@@ -202,8 +202,9 @@ async function detectPaperCore(
   const candidates: PaperDetection[] = []
   for (const strategy of merged.strategies) {
     if (strategy === 'edge') {
-      const r = detectByEdges(blurred, W, H, merged, t0)
-      if (r) candidates.push(r)
+      for (const r of detectByEdges(blurred, W, H, merged, t0)) {
+        if (r) candidates.push(r)
+      }
     } else if (strategy === 'bright') {
       for (const r of detectByBrightness(blurred, W, H, merged, t0)) {
         if (r) candidates.push(r)
@@ -211,13 +212,13 @@ async function detectPaperCore(
     }
   }
 
-  // 2) AI（ML）兜底：仅当开启了 'ml' 策略，且经典候选缺失或置信度过低时尝试。
-  //    - 正常帧（经典命中且置信度足够）完全不等 ML → 选框实时跟随；
-  //    - 经典误检 / 低对比场景（经典置信度低）才让 ML 参与竞争纠正。
+  // 2) AI（ML）策略：用户显式开了 'ml' 开关后，ML 直接与经典并行参与竞争。
+  //    早期版本只在经典失败/低置信时才触发 ML，结果 Otsu 一找到 ≥0.16 的候选
+  //    ML 就被锁死，YOLO 几乎没真正跑过 —— AI 开关亮着、模型却一直在睡觉。
+  //    现在 ML 与经典并行跑、按 ML_MIN_INTERVAL_MS 节流；最终由「复合分 + 黏性」择优，
+  //    所以经典识得对时 ML 不会抢框，经典识错时 ML 也能纠正。
   const wantMl = merged.strategies.includes('ml')
-  let bestClassicConf = 0
-  for (const c of candidates) bestClassicConf = Math.max(bestClassicConf, c.confidence)
-  if (wantMl && (candidates.length === 0 || bestClassicConf < ML_BOOST_CONFIDENCE)) {
+  if (wantMl) {
     const r = await detectByML(rgba, W, H, merged, t0)
     if (r) candidates.push(r)
   }
@@ -417,10 +418,12 @@ function detectByBrightness(
 
   for (const { polarity, mask } of polarities) {
     morphologicalClose(mask, W, H, 3, 1)
-    const largest = largestComponent(mask, W, H)
-    if (!largest) continue
-    const r = finalizeDetection(largest, gray, W, H, opts, t0, 'bright', polarity)
-    if (r) out.push(r)
+    // 不只取最大连通域：把前几大都交给 finalizeDetection 评分，
+    // 让「矩形度 × 反背景」选出真正的纸张，而不是被最大的背景/桌面压过。
+    for (const largest of topComponents(mask, W, H, BRIGHT_CANDIDATES)) {
+      const r = finalizeDetection(largest, gray, W, H, opts, t0, 'bright', polarity)
+      if (r) out.push(r)
+    }
   }
   return out
 }
@@ -434,7 +437,7 @@ function detectByEdges(
   H: number,
   opts: { minAreaRatio: number; maxAreaRatio: number; minAspect: number; maxAspect: number },
   t0: number,
-): PaperDetection | null {
+): PaperDetection[] {
   const totalPx = W * H
 
   // 1) Sobel 梯度
@@ -455,10 +458,14 @@ function detectByEdges(
   // 5) 膨胀（闭合边缘缝隙）
   dilateMask(edges, W, H, 3)
 
-  // 6) 连通域
-  const largest = largestComponent(edges, W, H)
-  if (!largest) return null
-  return finalizeDetection(largest, gray, W, H, opts, t0, 'edge', 'edge')
+  // 6) 连通域：同样取 Top-N，让「墙/桌面边界」这类大背景与「纸张矩形」一起评分，
+  //    复合分（矩形度 × 反背景）再决定谁更像纸；只取最大边缘区域会框住整幅背景。
+  const out: PaperDetection[] = []
+  for (const largest of topComponents(edges, W, H, EDGE_CANDIDATES)) {
+    const r = finalizeDetection(largest, gray, W, H, opts, t0, 'edge', 'edge')
+    if (r) out.push(r)
+  }
+  return out
 }
 
 /* ------------------------------------------------------------------ *
@@ -700,7 +707,17 @@ interface Component {
   border: Pt[]
 }
 
-function largestComponent(mask: Uint8Array, W: number, H: number): Component | null {
+/**
+ * 提取面积最大的 `maxCount` 个连通域（按像素数降序）。
+ *
+ * 之所以「取 Top-N」而不是只取最大的一个：真实场景里最大的前景往往不是纸——
+ * 比如整幅亮桌面、拉开到画面边缘的床单、发亮的墙带。这些背景连通域面积巨大，
+ * 只在「最大连通域」策略下必然压过纸张；把前几大都拿来评分，让「矩形度 × 反背景
+ * （贴画框）× 面积」的复合分去决定谁更像纸，才能从大背景里把真正的文档捞出来。
+ *
+ * 只对返回的 Top-N 计算边界点（凸包 / DP 的输入），避免为大量小碎块做无谓开销。
+ */
+function topComponents(mask: Uint8Array, W: number, H: number, maxCount: number): Component[] {
   const n = W * H
   const labels = new Int32Array(n)
   const parent: number[] = [0]
@@ -767,10 +784,9 @@ function largestComponent(mask: Uint8Array, W: number, H: number): Component | n
     }
   }
 
-  let best: Component | null = null
+  const all: Component[] = []
   for (const [label, count] of pixelCount) {
-    if (best && count <= best.pixelCount) continue
-    best = {
+    all.push({
       label,
       pixelCount: count,
       bbox: {
@@ -782,19 +798,35 @@ function largestComponent(mask: Uint8Array, W: number, H: number): Component | n
         h: (bboxMaxY.get(label) ?? 0) - (bboxMinY.get(label) ?? 0) + 1,
       },
       border: [],
-    }
+    })
   }
-  if (!best) return null
+  all.sort((a, b) => b.pixelCount - a.pixelCount)
+  const top = all.slice(0, maxCount)
 
+  for (const comp of top) {
+    comp.border = buildComponentBorder(comp, labels, rootOf, mask, W)
+  }
+  return top
+}
+
+/** 收集单个连通域的边界像素（凸包 / Douglas-Peucker 的输入）。 */
+function buildComponentBorder(
+  comp: Component,
+  labels: Int32Array,
+  rootOf: Int32Array,
+  mask: Uint8Array,
+  W: number,
+): Pt[] {
+  const b = comp.bbox
   const border: Pt[] = []
-  for (let y = best.bbox.minY; y <= best.bbox.maxY; y++) {
-    for (let x = best.bbox.minX; x <= best.bbox.maxX; x++) {
-      if (rootOf[labels[y * W + x]!] !== best.label) continue
+  for (let y = b.minY; y <= b.maxY; y++) {
+    for (let x = b.minX; x <= b.maxX; x++) {
+      if (rootOf[labels[y * W + x]!] !== comp.label) continue
       if (
-        x === best.bbox.minX
-        || x === best.bbox.maxX
-        || y === best.bbox.minY
-        || y === best.bbox.maxY
+        x === b.minX
+        || x === b.maxX
+        || y === b.minY
+        || y === b.maxY
         || !mask[(y - 1) * W + x]
         || !mask[(y + 1) * W + x]
         || !mask[y * W + (x - 1)]
@@ -804,8 +836,7 @@ function largestComponent(mask: Uint8Array, W: number, H: number): Component | n
       }
     }
   }
-  best.border = border
-  return best
+  return border
 }
 
 /* ------------------------------------------------------------------ *
@@ -896,10 +927,15 @@ function finalizeDetection(
   const bboxArea = largest.bbox.w * largest.bbox.h
   const compactness = bboxArea > 0 ? convexArea / bboxArea : 0
 
-  // 质量分：矩形度 × 反背景（越贴边框越像背景，压低置信度）
+  // 质量分：矩形度 × 反背景（越贴边框越像背景，压低置信度）。
+  // 反背景用平方关系重罚：整幅背景/桌面通常贴画框 2~4 条边，面积虽大，
+  // 但被 (1-contact)² 抵消后会被真正的纸张（贴边少）压下去。
   const contact = frameContactRatio(largest, W, H)
+  // 大面积 + 贴画框多条边 → 几乎肯定是整幅背景/桌面，而非纸张，直接拒绝。
+  if (contact >= 0.5 && areaRatio > 0.6) return null
   const support = edgeSupportRatio(largest.border, simplified, Math.max(1.5, 0.008 * maxEdge))
-  const quality = clamp01((0.6 + 0.4 * support) * (1 - 0.85 * contact))
+  const backgroundFactor = Math.max(0.1, (1 - contact) * (1 - contact))
+  const quality = clamp01((0.6 + 0.4 * support) * backgroundFactor)
 
   // 评分：面积 × 紧凑度 × 矩形质量 × 策略权重（edge 在低对比场景更可靠）
   const strategyWeight = strategy === 'edge' ? 1.05 : 1.0

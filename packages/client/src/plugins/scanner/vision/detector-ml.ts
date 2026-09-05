@@ -152,6 +152,10 @@ export function labelThresholdScale(label: string): number {
   return 1
 }
 
+export function pipelineThreshold(threshold: number): number {
+  return Math.max(0, threshold * 0.7)
+}
+
 /** 宽高比先验：文档（含旋转视角）多为 0.5..2 的方正矩形；极端细长条更像杂波。 */
 export function aspectPrior(aspect: number): number {
   if (aspect >= 0.5 && aspect <= 2.0) return 1.05
@@ -289,7 +293,7 @@ interface PipelineBox {
 }
 
 interface PipelineLike {
-  (input: HTMLCanvasElement | OffscreenCanvas | HTMLImageElement, opts?: { threshold?: number }): Promise<PipelineBox[]>
+  (input: HTMLCanvasElement | OffscreenCanvas | HTMLImageElement, opts?: { threshold?: number; percentage?: boolean }): Promise<PipelineBox[]>
 }
 
 /** transformers.js env 中本项目用到的最小字段。 */
@@ -517,6 +521,17 @@ interface RawDet {
   areaRatio: number
 }
 
+export function normalizeMLBox(box: MLBox, W: number, H: number): MLBox | null {
+  if (!Number.isFinite(W) || !Number.isFinite(H) || W <= 0 || H <= 0) return null
+  if (![box.xmin, box.ymin, box.xmax, box.ymax].every(Number.isFinite)) return null
+  const xmin = Math.max(0, Math.min(W, box.xmin))
+  const ymin = Math.max(0, Math.min(H, box.ymin))
+  const xmax = Math.max(0, Math.min(W, box.xmax))
+  const ymax = Math.max(0, Math.min(H, box.ymax))
+  if (xmax <= xmin || ymax <= ymin) return null
+  return { xmin, ymin, xmax, ymax }
+}
+
 /** 把像素坐标系下的检测框（相对输入帧 W×H）转成归一化 Quad（0..1）。 */
 function boxToQuad(box: MLBox, W: number, H: number): Quad {
   return [
@@ -529,14 +544,14 @@ function boxToQuad(box: MLBox, W: number, H: number): Quad {
 
 /**
  * 合并同一物理目标的重复检测（YOLOS/DETR 偶发"同物多标签 / 近邻重复"）。
- * 按框面积降序贪心保留：与已保留框 IoU >= iouThreshold 的检测视为重复丢弃。
+ * 按模型评分降序贪心保留：与已保留框 IoU >= iouThreshold 的检测视为重复丢弃。
  */
 function mergeDuplicateBoxes(dets: RawDet[], iouThreshold = 0.55): RawDet[] {
-  const byArea = dets
+  const byScore = dets
     .slice()
-    .sort((a, b) => (b.box.xmax - b.box.xmin) * (b.box.ymax - b.box.ymin) - (a.box.xmax - a.box.xmin) * (a.box.ymax - a.box.ymin))
+    .sort((a, b) => b.score - a.score || b.areaRatio - a.areaRatio)
   const kept: RawDet[] = []
-  for (const det of byArea) {
+  for (const det of byScore) {
     const dup = kept.some((k) => boxesIoU(k.box, det.box) >= iouThreshold)
     if (!dup) kept.push(det)
   }
@@ -560,22 +575,23 @@ export async function detectRectangles(
   const topK = opts.topK ?? DEFAULT_TOP_K
 
   const pipe = await getMLPipeline(modelId)
-  const raw = await pipe(canvas, { threshold })
+  const raw = await pipe(canvas, { threshold: pipelineThreshold(threshold), percentage: false })
 
   // 1) 初筛：有机体直接排除；文档代理类放低进入门槛；几何（占帧面积）粗滤。
   const dets: RawDet[] = []
   for (const det of raw) {
-    const w = det.box.xmax - det.box.xmin
-    const h = det.box.ymax - det.box.ymin
-    if (w <= 0 || h <= 0) continue
+    const box = normalizeMLBox(det.box, W, H)
+    if (!box) continue
+    const w = box.xmax - box.xmin
+    const h = box.ymax - box.ymin
     if (isOrganicLabel(det.label)) continue
     if (det.score < threshold * labelThresholdScale(det.label)) continue
     const areaRatio = (w * h) / (W * H)
     if (areaRatio < 0.02 || areaRatio > 0.9) continue
-    dets.push({ box: det.box, score: det.score, label: det.label, areaRatio })
+    dets.push({ box, score: det.score, label: det.label, areaRatio })
   }
 
-  // 2) 合并同一物理目标的重复框（同物多标签 / 近邻重复），保留先出现的（更大）框。
+  // 2) 合并同一物理目标的重复框（同物多标签 / 近邻重复），优先保留模型评分更高的框。
   const merged = mergeDuplicateBoxes(dets)
 
   // 3) 排序 + topK：按复合分（原始分 × 标签先验 × 几何先验）降序。

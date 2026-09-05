@@ -1,4 +1,4 @@
-import { computed, onUnmounted, ref, shallowRef } from 'vue'
+import { computed, onUnmounted, ref, shallowRef, watch } from 'vue'
 import { canvasToDataUrl, drawVideoFrame } from '../image-io'
 import {
   accumulateStable,
@@ -424,6 +424,8 @@ export function useSmartCapture(options: SmartCaptureOptions) {
         detector.value = null
         return
       }
+      // AI 开关若已点亮，detector 一创建就立刻预热模型（不等下一帧 analyze）
+      if (aiEnabled.value) det.preloadML()
       ensureRunning()
     } catch (error) {
       clearLoadTimer()
@@ -450,6 +452,22 @@ export function useSmartCapture(options: SmartCaptureOptions) {
       ensureRunning()
     }
   }, 500)
+
+  /**
+   * 用户点亮 AI 开关 → 立刻 worker 端预热模型，UI 立刻显示「AI 模型加载中…」。
+   * 之前的实现是「下一帧 analyzeOnce 才会触发 getMLPipeline」，UI 反馈延迟一拍；
+   * 而且 strategies=ml 的情况下 ML 也只在经典失败时才跑（前几帧模型还没下载完
+   * 又被节流跳过），造成「开关亮着但模型一直没启动」的体感。
+   *
+   * 关闭 AI 不立刻 dispose：模型保持 loaded，下次点亮是瞬时；
+   * 整个组件 unmount 时 detector.terminate() 会顺带 dispose。
+   */
+  watch(aiEnabled, (on) => {
+    if (!on) return
+    const det = detector.value
+    if (!det) return
+    det.preloadML()
+  })
 
   onUnmounted(() => {
     disposed = true

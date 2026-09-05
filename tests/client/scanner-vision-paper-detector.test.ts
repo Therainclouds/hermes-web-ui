@@ -214,6 +214,35 @@ describe('paper-detector classic enhancements', () => {
     expect(r.quad[2].x).toBeCloseTo((rect.x + rect.w) / W, 1)
     expect(r.quad[2].y).toBeCloseTo((rect.y + rect.h) / H, 1)
   })
+
+  it('picks a smaller clean sheet over a larger bright region that hugs the frame', async () => {
+    // 回归：最大连通域不是纸 —— 画面底部有一条贴画面左/右/下三边的亮带（面积更大），
+    // 上方是一张不贴边的白纸。旧代码只取最大连通域 → 框住底部的背景亮带；
+    // 现在取 Top-N 一起评分，用「矩形度 × 反背景（贴画框）」把纸张捞出来。
+    const W = 200, H = 200
+    const data = new Uint8ClampedArray(W * H * 4)
+    for (let i = 0; i < data.length; i += 4) { data[i] = 20; data[i + 1] = 20; data[i + 2] = 20; data[i + 3] = 255 }
+    const paint = (rect: { x: number; y: number; w: number; h: number }) => {
+      for (let y = rect.y; y < rect.y + rect.h; y++)
+        for (let x = rect.x; x < rect.x + rect.w; x++) {
+          const i = (y * W + x) * 4
+          data[i] = 240; data[i + 1] = 240; data[i + 2] = 240
+        }
+    }
+    const sheet = { x: 60, y: 40, w: 90, h: 70 }        // 0.16 面积，不贴边
+    const bottom = { x: 0, y: 130, w: 200, h: 70 }      // 0.35 面积，贴左/右/下三边
+    paint(sheet)
+    paint(bottom)
+
+    const result = await detectPaper({ width: W, height: H, data }, { strategies: ['bright'] })
+    expect(result).not.toBeNull()
+    const r = result as PaperDetection
+    const cx = (r.quad[0].x + r.quad[2].x) / 2
+    const cy = (r.quad[0].y + r.quad[2].y) / 2
+    // 选框中心应落在上方纸张（sheet），而不是底部背景亮带
+    expect(cx).toBeCloseTo((sheet.x + sheet.w / 2) / W, 1)
+    expect(cy).toBeCloseTo((sheet.y + sheet.h / 2) / H, 1)
+  })
 })
 
 describe('paper-detector ROI tracking (priorQuad)', () => {
