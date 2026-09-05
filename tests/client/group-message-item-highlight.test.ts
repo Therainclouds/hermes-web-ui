@@ -106,6 +106,10 @@ describe('GroupMessageItem tool details', () => {
       global: { stubs: { MarkdownRenderer: true, ProfileAvatar: true } },
     })
 
+    expect(wrapper.get('.reference-bubble-btn svg').findAll('path').map(path => path.attributes('d'))).toEqual([
+      'M9 17l-5-5 5-5',
+      'M20 18v-2a4 4 0 0 0-4-4H4',
+    ])
     await wrapper.get('.reference-bubble-btn').trigger('click')
 
     expect(store.activeMessageReference).toMatchObject({
