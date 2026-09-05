@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   accumulateStable,
   inCooldown,
+  isOutlierWhileLocked,
   smoothQuad,
   isQuadSufficient,
   isStableEnough,
@@ -87,5 +88,79 @@ describe('scanner capture logic', () => {
     const mid = smoothQuad(quadA, quadB, 0.6)
     const later = smoothQuad(mid, quadB, 0.6)
     expect(Math.abs(later[0]!.x - quadB[0]!.x)).toBeLessThan(Math.abs(mid[0]!.x - quadB[0]!.x))
+  })
+
+  describe('isOutlierWhileLocked', () => {
+    // 归一化位移：跳到 (x+0.35) 使四角平均位移 0.35
+    const far = quadA.map(p => ({ x: p.x + 0.35, y: p.y })) as Quad
+
+    it('未锁定时永远不判为离群（初次搜索响应优先）', () => {
+      expect(isOutlierWhileLocked({
+        currentQuad: quadA,
+        detected: far,
+        locked: false,
+        jumpRejectDist: 0.30,
+      })).toBe(false)
+    })
+
+    it('锁定 + 贴近（jitter）→ 不判离群，走正常平滑', () => {
+      const jitter = quadA.map(p => ({ x: p.x + 0.02, y: p.y + 0.01 })) as Quad
+      expect(isOutlierWhileLocked({
+        currentQuad: quadA,
+        detected: jitter,
+        locked: true,
+        jumpRejectDist: 0.30,
+      })).toBe(false)
+    })
+
+    it('锁定 + 中等位移（< 阈值）→ 不判离群（慢速移动）', () => {
+      const slow = quadA.map(p => ({ x: p.x + 0.10, y: p.y })) as Quad
+      expect(isOutlierWhileLocked({
+        currentQuad: quadA,
+        detected: slow,
+        locked: true,
+        jumpRejectDist: 0.30,
+      })).toBe(false)
+    })
+
+    it('锁定 + 远超阈值（> 阈值）→ 判离群（噪声候选 / 错选框）', () => {
+      expect(isOutlierWhileLocked({
+        currentQuad: quadA,
+        detected: far,
+        locked: true,
+        jumpRejectDist: 0.30,
+      })).toBe(true)
+    })
+
+    it('位移正好等于阈值 → 不判离群（边界含等）', () => {
+      // 平均位移 = 0.30，刚好等于阈值，应走常规路径
+      const exactly = quadA.map(p => ({ x: p.x + 0.30, y: p.y })) as Quad
+      expect(isOutlierWhileLocked({
+        currentQuad: quadA,
+        detected: exactly,
+        locked: true,
+        jumpRejectDist: 0.30,
+      })).toBe(false)
+    })
+
+    it('位移刚超过阈值 → 判离群', () => {
+      const justOver = quadA.map(p => ({ x: p.x + 0.31, y: p.y })) as Quad
+      expect(isOutlierWhileLocked({
+        currentQuad: quadA,
+        detected: justOver,
+        locked: true,
+        jumpRejectDist: 0.30,
+      })).toBe(true)
+    })
+
+    it('阈值收紧后，同一远距离检测会从「可接受」变「离群」', () => {
+      const medium = quadA.map(p => ({ x: p.x + 0.20, y: p.y })) as Quad
+      expect(isOutlierWhileLocked({
+        currentQuad: quadA, detected: medium, locked: true, jumpRejectDist: 0.30,
+      })).toBe(false)
+      expect(isOutlierWhileLocked({
+        currentQuad: quadA, detected: medium, locked: true, jumpRejectDist: 0.15,
+      })).toBe(true)
+    })
   })
 })

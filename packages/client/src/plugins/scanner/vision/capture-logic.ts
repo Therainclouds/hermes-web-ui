@@ -77,3 +77,26 @@ export function shouldRecapture(
 export function inCooldown(lastCapturedAt: number, cooldownMs: number, now: number): boolean {
   return now - lastCapturedAt < cooldownMs
 }
+
+/**
+ * 锁定态离群点判定：连续稳定识别后，某一帧检测突然远离当前选框时，
+ * 该次检测视为噪声候选（杂波 / 错识别 / AI 抖动），调用方应保持当前选框
+ * 不动、不计入稳定累计。
+ *
+ * 仅在「locked=true」且已知当前选框时生效；非锁定态（初次搜索）保持原行为
+ * （即使新检测离当前较远也应正常跟随，由后续稳定累计把关）。
+ *
+ * jumpRejectDist 用归一化平均角点位移度量（与 quadCornerDelta 同尺度）：
+ *   - 相机抖动：< 0.05，正常
+ *   - 目标慢速移动：0.05~0.15，正常
+ *   - 临时错选框 / 离群候选：> 0.30，判定为离群
+ */
+export function isOutlierWhileLocked(opts: {
+  currentQuad: Quad
+  detected: Quad
+  locked: boolean
+  jumpRejectDist: number
+}): boolean {
+  if (!opts.locked) return false
+  return quadCornerDelta(opts.currentQuad, opts.detected) > opts.jumpRejectDist
+}

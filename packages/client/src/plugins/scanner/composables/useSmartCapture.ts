@@ -3,6 +3,7 @@ import { canvasToDataUrl, drawVideoFrame } from '../image-io'
 import {
   accumulateStable,
   inCooldown,
+  isOutlierWhileLocked,
   isQuadSufficient,
   isStableEnough,
   shouldRecapture,
@@ -76,8 +77,27 @@ export function useSmartCapture(options: SmartCaptureOptions) {
 
   /** 连续命中帧数达到该值才亮起选框并上报「已检测到」（滤掉单帧误报拉框）。 */
   const SHOW_MIN_HITS = 2
-  /** 连续丢失帧数达到该值才清除选框（滞回：边缘抖动 / 短暂遮挡不闪框）。 */
+  /** 连续丢失帧数达到该值才清除选框（初次搜索阶段：响应优先）。 */
   const HIDE_AFTER_MISSES = 3
+  /**
+   * 连续稳定命中达到该值后进入「锁定态」——一旦锁定：
+   *  - 离群点过滤（单帧跳变视为噪声候选，保持选框不动）；
+   *  - 清除选框所需的连续 miss 帧数从 HIDE_AFTER_MISSES 提到 LOCK_HIDE_AFTER_MISSES。
+   * 核心目的：「连续识别到一个位置就保持这个识别」——避免 Otsu 闪烁 / 自动曝光
+   * 抖动 / ML 冷却造成「识别到又突然重置选框」的体感。
+   */
+  const LOCK_HITS = 3
+  /**
+   * 锁定后清除选框所需的连续 miss 帧数。intervalMs=140 时 ≈ 1.1s，
+   * 远长于 Otsu 阈值偶发抖动 / 摄像头自动曝光过渡 / ML 节流间隔；
+   * 用户只要没有真的把纸移走，选框就不会消失。
+   */
+  const LOCK_HIDE_AFTER_MISSES = 8
+  /**
+   * 锁定态离群点阈值：新检测与当前选框平均角点位移超过该值视为噪声候选，
+   * 保持选框不动。若新位置持续稳定 LOCK_HITS 帧，则认为目标真的换了，硬切换过去。
+   */
+  const JUMP_REJECT_DIST = 0.30
   /**
    * 手动拖框后的接管距离：检测结果与该选框足够近（同一目标）时，系统自动接管，
    * 让选框「拖到哪就持续追踪哪」——像扫描大师那样先框一下、之后自动跟随。
@@ -112,6 +132,12 @@ export function useSmartCapture(options: SmartCaptureOptions) {
   let hits = 0
   /** 连续丢失帧计数（清框滞回用）。 */
   let misses = 0
+  /**
+   * 锁定态离群点候选：当前锁定目标之外、检测持续出现的新位置。
+   * 计数到 LOCK_HITS 时硬切换到该位置（用户确实把纸挪到了别处）；
+   * 任何贴近当前锁定的帧都把候选归零，避免错误累积。
+   */
+  let candidate: { count: number; last: Quad } | null = null
 
   function stopLoop() {
     if (rafId) {
@@ -206,6 +232,49 @@ export function useSmartCapture(options: SmartCaptureOptions) {
       misses = 0
       detectMs.value = Math.round(outcome.ms)
       const quadNorm = outcome.quad
+      const currentQuad = quad.value
+      const isLocked = currentQuad !== null && (stable?.count ?? 0) >= LOCK_HITS
+
+      // 锁定态离群点过滤：
+      //   - 单帧跳变（噪声候选）→ 忽略，保持当前选框不动；
+      //   - 持续新位置 → 累加 candidate.count，达到 LOCK_HITS 硬切换（用户挪纸）；
+      //   - 慢速移动（单帧位移 < JUMP_REJECT_DIST）→ 走正常平滑跟随。
+      // 非锁定态（初次搜索）跳过该过滤：响应优先，由后续稳定累计把关。
+      if (isLocked && isOutlierWhileLocked({
+        currentQuad: currentQuad as Quad,
+        detected: quadNorm,
+        jumpRejectDist: JUMP_REJECT_DIST,
+      })) {
+        if (candidate && quadCornerDelta(candidate.last, quadNorm) <= stabilityTolerance) {
+          candidate = { count: candidate.count + 1, last: quadNorm }
+        } else {
+          candidate = { count: 1, last: quadNorm }
+        }
+        if (candidate.count >= LOCK_HITS) {
+          // 候选位置已稳定 LOCK_HITS 帧 → 硬切换到新位置（不与旧框插值，避免可见拖拽）
+          stable = { count: LOCK_HITS, last: quadNorm }
+          candidate = null
+          hits = SHOW_MIN_HITS
+          quad.value = quadNorm
+          if (status.value !== 'cooling') status.value = 'detected'
+          // 走自动拍摄分支（如果开启）
+          if (!autoCapture.value) return
+          if (inCooldown(lastCapturedAt, cooldownMs, performance.now())) {
+            status.value = 'cooling'
+            return
+          }
+          if (isStableEnough(stable, minStableFrames) && shouldRecapture(lastCapturedQuad, quadNorm, changeThreshold)) {
+            fireAutoCapture(quadNorm)
+          }
+          return
+        }
+        // 候选位置还没稳定：保持当前选框，丢掉 stable 计数，等下一帧再判定
+        stable = null
+        if (status.value !== 'cooling') status.value = 'detected'
+        return
+      }
+      // 正常帧：候选归零、累加稳定计数
+      candidate = null
       stable = accumulateStable(stable, quadNorm, stabilityTolerance)
 
       if (manual.value) {
@@ -253,7 +322,10 @@ export function useSmartCapture(options: SmartCaptureOptions) {
 
   /** 本帧未检测到合格候选：累计丢失，达到阈值才清框（滞回，防闪烁）。 */
   function onDetectionLoss(): void {
+    // 在重置 stable 之前先记录锁定态（否则 stable.count 已是 0）
+    const wasLocked = quad.value !== null && (stable?.count ?? 0) >= LOCK_HITS
     stable = null
+    candidate = null
     hits = 0
     misses += 1
 
@@ -263,11 +335,15 @@ export function useSmartCapture(options: SmartCaptureOptions) {
       misses = 0
       return
     }
-    if (misses >= HIDE_AFTER_MISSES) {
+    // 锁定态给更长的容忍窗口：Otsu 阈值偶发抖动 / 摄像头自动曝光过渡 /
+    // ML 节流间隔都是亚秒级瞬时丢失，初次搜索的 HIDE_AFTER_MISSES=3 (≈420ms)
+    // 太苛刻，会让用户看到「识别到就突然重置选框」。
+    const hideAfter = wasLocked ? LOCK_HIDE_AFTER_MISSES : HIDE_AFTER_MISSES
+    if (misses >= hideAfter) {
       quad.value = null
       if (status.value !== 'cooling') status.value = 'searching'
     }
-    // misses < HIDE_AFTER_MISSES：短暂丢失，保留选框与状态（滞回）
+    // misses < hideAfter：短暂丢失，保留选框与状态（滞回）
   }
 
   /** 释放手动锁定并清空选框，回到搜索状态。 */
@@ -276,6 +352,7 @@ export function useSmartCapture(options: SmartCaptureOptions) {
     manual.value = false
     quad.value = null
     stable = null
+    candidate = null
     hits = 0
     misses = 0
     if (enabled.value) status.value = 'searching'
@@ -357,6 +434,7 @@ export function useSmartCapture(options: SmartCaptureOptions) {
     manual.value = true
     quad.value = [next[0], next[1], next[2], next[3]]
     stable = null
+    candidate = null
     hits = 0
     misses = 0
     status.value = 'detected'
@@ -402,6 +480,7 @@ export function useSmartCapture(options: SmartCaptureOptions) {
       manual.value = false
       quad.value = null
       stable = null
+      candidate = null
       hits = 0
       misses = 0
       return
