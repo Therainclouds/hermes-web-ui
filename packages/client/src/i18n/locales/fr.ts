@@ -386,6 +386,7 @@ export default {
     noChangelog: 'Aucun journal disponible',
     versionManagement: 'Gestion des versions',
     updateAvailableLabel: '(Nouvelle version)',
+    clientPlugins: 'Extensions client',
     dockerUpdateTitle: 'Mise à jour Docker',
     dockerUpdateGuide: 'Dans l\'environnement Docker, veuillez tirer la dernière image et recréer le conteneur :',
     dockerUpdateNote: 'Vos données seront conservées après la recréation du conteneur.',

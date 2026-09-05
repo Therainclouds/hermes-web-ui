@@ -386,6 +386,7 @@ export default {
     noChangelog: '변경 이력이 없습니다',
     versionManagement: '버전 관리',
     updateAvailableLabel: '(새 버전 있음)',
+    clientPlugins: '클라이언트 플러그인',
     dockerUpdateTitle: 'Docker 업데이트',
     dockerUpdateGuide: 'Docker 환경에서 실행 중입니다. 최신 이미지를 가져와 컨테이너를 다시 생성하세요:',
     dockerUpdateNote: '데이터는 유지되며 컨테이너 재생성 후에도 손실되지 않습니다.',

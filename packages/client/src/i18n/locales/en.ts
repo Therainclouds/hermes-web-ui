@@ -316,6 +316,7 @@ export default {
     noChangelog: 'No changelog available',
     versionManagement: 'Version Management',
     updateAvailableLabel: '(New version)',
+    clientPlugins: 'Client Plugins',
     dockerUpdateTitle: 'Docker Update',
     dockerUpdateGuide: 'In Docker environment, please pull the latest image and recreate the container to upgrade:',
     dockerUpdateNote: 'Your data will persist after the container is recreated.',
@@ -1740,6 +1741,9 @@ export default {
     title: 'Plugins',
     refresh: 'Refresh',
     notice: 'Inventory of discoverable Hermes plugin manifests. Discovery metadata is read without loading plugin code. Standalone user plugins can be enabled or disabled here; changes take effect in new Hermes sessions.',
+    clientSectionTitle: 'Client Plugins (Browser)',
+    clientSectionHint: 'Built into the Web UI itself. Click a card to open, toggle the switch to enable/disable.',
+    clientSectionRefreshHint: 'Toggle changes take effect after a page refresh.',
     loadFailed: 'Failed to load plugins',
     updateFailed: 'Failed to update plugin',
     enableSuccess: 'Enabled {name}',
@@ -1804,6 +1808,20 @@ export default {
       scanCwd: 'Scan cwd',
       projectPlugins: 'Project plugins',
     },
+  },
+
+  clientPlugins: {
+    title: 'Client Plugins',
+    subtitle: 'Toggle built-in browser plugins (e.g. Scanner). Changes apply after refresh.',
+    notice: 'Built-in client plugins are bundled with the Web UI. Disabling them removes their routes, sidebar entries, and locale strings. To remove a plugin permanently, ask the Web UI maintainer to drop it from the plugin registry.',
+    enableAll: 'Enable all',
+    disableAll: 'Disable all',
+    reset: 'Reset',
+    empty: 'No built-in plugins are registered.',
+    author: 'by {author}',
+    overridden: 'overridden',
+    enabledTag: 'enabled',
+    disabledTag: 'disabled',
   },
 
   petdex: {

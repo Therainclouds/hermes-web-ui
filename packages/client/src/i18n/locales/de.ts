@@ -386,6 +386,7 @@ export default {
     noChangelog: 'Kein Anderungsprotokoll verfugbar',
     versionManagement: 'Versionsverwaltung',
     updateAvailableLabel: '(Neue Version)',
+    clientPlugins: 'Client-Plugins',
     dockerUpdateTitle: 'Docker-Update',
     dockerUpdateGuide: 'In der Docker-Umgebung bitte das neueste Image pullen und den Container neu erstellen:',
     dockerUpdateNote: 'Ihre Daten bleiben nach dem Neuerstellen des Containers erhalten.',
