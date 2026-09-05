@@ -607,12 +607,13 @@ watch(videoEl, (el) => {
 const videoMetaTick = ref(0)
 
 const frameStyle = computed(() => {
+  // Track metadata even on the initial zero-dimension render.
+  void videoMetaTick.value
   const v = videoEl.value
   const vw = cameraRunning.value ? v?.videoWidth || 0 : 0
   const vh = cameraRunning.value ? v?.videoHeight || 0 : 0
   if (vw > 0 && vh > 0) {
     // 依赖 videoMetaTick：元数据/流变化后重新计算比例
-    void videoMetaTick.value
     return { aspectRatio: `${vw} / ${vh}` }
   }
   return undefined
@@ -697,6 +698,7 @@ const cameraHintTone = computed(() => {
               muted
               class="camera-video"
               @loadedmetadata="onVideoMetadata"
+              @resize="onVideoMetadata"
             />
             <ScannerQuadOverlay
               v-if="cameraRunning && smartEnabled && smartQuad"
@@ -1067,7 +1069,6 @@ const cameraHintTone = computed(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: aspect-ratio 160ms ease;
 }
 
 .camera-video {

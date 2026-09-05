@@ -19,7 +19,7 @@ import type { Pt, Quad } from '../vision/types'
  *
  * 检测：纯 JS 边缘检测 + Web Worker（vision/detector.ts）；
  * 矫正：纯 JS 双三角形仿射（vision/perspective.ts）。
- * 全部不依赖 OpenCV.js / WebAssembly。
+ * 经典路径不依赖 OpenCV.js；可选 AI 路径使用独立 Worker / ONNX。
  *
  * 开启「智能模式」后周期分析摄像头画面：
  *  1. 检测到纸张 -> 暴露归一化选框 quad（供 UI 覆盖层绘制 / 角点拖动）；
@@ -107,6 +107,7 @@ export function useSmartCapture(options: SmartCaptureOptions) {
   let lastCapturedAt = 0
   let analysisCanvas: HTMLCanvasElement | null = null
   let disposed = false
+  let detectionRevision = 0
   /** 连续命中帧计数（首次亮框门槛用；框已在显示时单帧命中即刷新）。 */
   let hits = 0
   /** 连续丢失帧计数（清框滞回用）。 */
@@ -177,6 +178,7 @@ export function useSmartCapture(options: SmartCaptureOptions) {
   }
 
   async function analyzeOnce(): Promise<void> {
+    const revision = detectionRevision
     const det = detector.value
     if (!det) return
     let canvas: HTMLCanvasElement | null = null
@@ -188,11 +190,11 @@ export function useSmartCapture(options: SmartCaptureOptions) {
       // 默认只跑经典策略（bright/edge，毫秒级）；AI 开启时才加入 'ml' 兜底。
       // priorQuad 传上一帧已显示选框：让检测结果黏住同一张纸、不跳变。
       const outcome = await det.detect(rgba, {
-        minAreaRatio: 0.05,
+        minAreaRatio,
         strategies: aiEnabled.value ? ['ml', 'bright', 'edge'] : ['bright', 'edge'],
         priorQuad: quad.value,
       })
-      if (disposed || !enabled.value) return
+      if (disposed || !enabled.value || !cameraRunning() || revision !== detectionRevision) return
 
       if (!outcome || !isQuadSufficient(outcome.quad, minAreaRatio)) {
         onDetectionLoss()
@@ -270,6 +272,7 @@ export function useSmartCapture(options: SmartCaptureOptions) {
 
   /** 释放手动锁定并清空选框，回到搜索状态。 */
   function releaseManual(): void {
+    detectionRevision++
     manual.value = false
     quad.value = null
     stable = null
@@ -346,6 +349,7 @@ export function useSmartCapture(options: SmartCaptureOptions) {
   }
 
   function setQuadManually(next: Quad | null) {
+    detectionRevision++
     if (!next) {
       releaseManual()
       return
@@ -387,6 +391,7 @@ export function useSmartCapture(options: SmartCaptureOptions) {
   }
 
   async function setEnabled(value: boolean) {
+    detectionRevision++
     if (!value) {
       enabled.value = false
       status.value = 'off'
@@ -459,8 +464,7 @@ export function useSmartCapture(options: SmartCaptureOptions) {
    * 而且 strategies=ml 的情况下 ML 也只在经典失败时才跑（前几帧模型还没下载完
    * 又被节流跳过），造成「开关亮着但模型一直没启动」的体感。
    *
-   * 关闭 AI 不立刻 dispose：模型保持 loaded，下次点亮是瞬时；
-   * 整个组件 unmount 时 detector.terminate() 会顺带 dispose。
+   * 关闭 AI 后下一帧释放 AI Worker；组件 unmount 时释放所有 Worker。
    */
   watch(aiEnabled, (on) => {
     if (!on) return

@@ -1,5 +1,6 @@
 import type { Pt, Quad } from './types'
 import { quadCornerDelta } from './quad'
+import { refinePaperQuad } from './refine-quad'
 import { getMLStatus, getMLPipeline, isMLRetryCooldown } from './detector-ml'
 
 /**
@@ -11,9 +12,8 @@ import { getMLStatus, getMLPipeline, isMLRetryCooldown } from './detector-ml'
  *   1) bright / edge 经典策略（同步、单帧几十 ms，实时跟随的主路径）。
  *      bright 同时评估白纸对暗背景 / 深色纸对亮桌面两种极性；
  *      候选按「矩形度 + 边框接触」质量评分选优，并优先黏住上一帧的目标。
- *   2) AI 物体检测（可选，worker 节流）：仅当经典候选缺失或置信度过低时兜底，
- *      避免慢速推理拖慢实时跟随，也避免通用物体检测（书本/屏幕等）
- *      抢走真正的纸张结果。
+ *   2) AI 提供候选区域，再通过同帧经典轮廓验证四角。
+ *      实时通信层使用独立 AI Worker，不让推理阻塞经典检测。
  *
  * 全部纯函数，对 ~512 长边单帧 25-55 ms（V8 / happy-dom）。
  */
@@ -80,9 +80,7 @@ let lastMlRunAt = 0
 /**
  * 主入口：输入 RGBA ImageData，返回最佳检测结果或 null。
  *
- * 追踪模式：给了上一帧选框（priorQuad）时，先在选框四周的局部 ROI 里检测——
- * 目标身份稳定（不跳去同画面的其它物体/背景）、抗桌面杂波、角点更稳；
- * ROI 内找不到（目标大幅移动/移出）再回退整帧搜索。
+ * 追踪保留全帧面积和评分尺度，priorQuad 参与候选择优，不提前返回 ROI。
  */
 export async function detectPaper(
   rgba: { width: number; height: number; data: Uint8ClampedArray | Uint8Array },
@@ -91,26 +89,9 @@ export async function detectPaper(
   const W = rgba.width
   const H = rgba.height
   if (W < 16 || H < 16) return null
-  const prior = opts.priorQuad ?? null
-
-  if (prior) {
-    const roi = priorToRoi(prior, W, H)
-    if (roi) {
-      const crop = cropRgba(rgba, roi)
-      if (crop) {
-        const local = await detectPaperCore(crop, { ...opts, priorQuad: null })
-        if (local) {
-          return {
-            quad: mapQuadBack(local.quad, roi, crop.width, crop.height, W, H),
-            confidence: local.confidence,
-            ms: local.ms,
-            strategy: local.strategy,
-          }
-        }
-      }
-    }
-  }
-  return detectPaperCore(rgba, { ...opts, priorQuad: null })
+  // Keep geometry/area scores in full-frame coordinates. An early ROI return can
+  // lock onto a text block and changes the meaning of min/maxAreaRatio each frame.
+  return detectPaperCore(rgba, opts)
 }
 
 /**
@@ -212,11 +193,8 @@ async function detectPaperCore(
     }
   }
 
-  // 2) AI（ML）策略：用户显式开了 'ml' 开关后，ML 直接与经典并行参与竞争。
-  //    早期版本只在经典失败/低置信时才触发 ML，结果 Otsu 一找到 ≥0.16 的候选
-  //    ML 就被锁死，YOLO 几乎没真正跑过 —— AI 开关亮着、模型却一直在睡觉。
-  //    现在 ML 与经典并行跑、按 ML_MIN_INTERVAL_MS 节流；最终由「复合分 + 黏性」择优，
-  //    所以经典识得对时 ML 不会抢框，经典识错时 ML 也能纠正。
+  // Direct callers await ML here. The live detector isolates this path in a
+  // second worker; its result can only guide a new current-frame contour search.
   const wantMl = merged.strategies.includes('ml')
   if (wantMl) {
     const r = await detectByML(rgba, W, H, merged, t0)
@@ -362,7 +340,20 @@ async function detectByMLInner(
     for (const c of candidates) {
       if (c.aspect < opts.minAspect || c.aspect > opts.maxAspect) continue
       if (c.areaRatio < opts.minAreaRatio || c.areaRatio > opts.maxAreaRatio) continue
-      const detection = candidateToDetection(c)
+      // A COCO bounding box is a proposal, never a document quadrilateral.
+      // Recover a contour in the same frame before allowing it to become a crop.
+      const roi = priorToRoi(c.quad, W, H)
+      const crop = roi ? cropRgba(rgba, roi) : null
+      const local = await detectPaperCore(crop ?? rgba, {
+        ...opts, strategies: ['bright', 'edge'],
+        minAreaRatio: crop ? Math.min(0.95, opts.minAreaRatio * W * H / (crop.width * crop.height)) : opts.minAreaRatio,
+        maxAreaRatio: 0.95,
+      })
+      if (!local) continue
+      const quad = crop && roi ? mapQuadBack(local.quad, roi, crop.width, crop.height, W, H) : local.quad
+      const area = polygonArea(quad)
+      if (area < opts.minAreaRatio || area > opts.maxAreaRatio || quadCornerDelta(quad, c.quad) > 0.15) continue
+      const detection = { ...candidateToDetection(c), quad, confidence: local.confidence }
       if (!best || detection.confidence > best.confidence) {
         best = detection
       }
@@ -896,9 +887,8 @@ function finalizeDetection(
   polarity: Polarity | 'edge',
 ): PaperDetection | null {
   const totalPx = W * H
-  const areaRatio = largest.pixelCount / totalPx
-  if (areaRatio < opts.minAreaRatio) return null
-  if (areaRatio > opts.maxAreaRatio) return null
+  // Edge components contain only a thin outline, not the enclosed paper pixels.
+  if (largest.bbox.w * largest.bbox.h / totalPx < opts.minAreaRatio) return null
 
   const hull = convexHull(largest.border)
   if (hull.length < 4) return null
@@ -912,6 +902,11 @@ function finalizeDetection(
   }
   if (simplified.length !== 4) return null
 
+  // Undo dilation/threshold offsets by fitting four lines to the image gradient.
+  const refined = refinePaperQuad(gray, W, H, [simplified[0]!, simplified[1]!, simplified[2]!, simplified[3]!])
+  if (refined) simplified = [...refined]
+  const areaRatio = polygonArea(simplified) / totalPx
+  if (areaRatio < opts.minAreaRatio || areaRatio > opts.maxAreaRatio) return null
   const normalized = simplified.map(p => ({ x: p.x / W, y: p.y / H }))
   const sorted = sortQuad(normalized as unknown as Quad)
 
@@ -1068,7 +1063,7 @@ function quadAspect(quad: Quad): number {
 /* ------------------------------------------------------------------ *
  * 工具
  * ------------------------------------------------------------------ */
-function polygonArea(pts: Pt[]): number {
+function polygonArea(pts: readonly Pt[]): number {
   let s = 0
   for (let i = 0; i < pts.length; i++) {
     const a = pts[i]!
