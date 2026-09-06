@@ -31,6 +31,7 @@ import { useScannerCamera } from './composables/useScannerCamera'
 import { useSmartCapture } from './composables/useSmartCapture'
 import ScannerQuadOverlay from './components/ScannerQuadOverlay.vue'
 import ScannerEnhanceControls from './components/ScannerEnhanceControls.vue'
+import { isMobileDevice } from '@/utils/device'
 import {
   canvasFromImageSource,
   canvasToDataUrl,
@@ -94,6 +95,20 @@ const videoEl = ref<HTMLVideoElement | null>(null)
 
 const devices = ref<MediaDeviceInfo[]>([])
 const selectedDeviceId = ref<string | null>(null)
+
+/**
+ * 移动端判定：iOS/Android 上的 Safari / Chrome / 微信内置浏览器都会
+ * 命中 `isMobileDevice()`（UA + 触控 + 屏幕宽度综合判定，
+ * 避免「请求桌面版网站」时漏判）。同时监听 viewport resize：
+ * 用户横竖屏切换、平板分屏时动态重排。
+ */
+const isMobile = ref(false)
+let mobileQuery: MediaQueryList | null = null
+let mobileListener: ((e: MediaQueryListEvent) => void) | null = null
+let removeDeviceChange: (() => void) | null = null
+function syncMobile() {
+  isMobile.value = isMobileDevice() || (mobileQuery?.matches ?? false)
+}
 
 const language = ref<string>('auto')
 const languageOptions = [
@@ -303,12 +318,33 @@ async function refreshVideoInputs() {
 }
 
 async function startCamera() {
-  await cam.start({ deviceId: selectedDeviceId.value || undefined })
+  await cam.start({
+    deviceId: selectedDeviceId.value || undefined,
+    facingMode: selectedDeviceId.value ? 'auto' : undefined,
+  })
   if (cam.error.value) {
     message.error(tt(`scanner.camera.${cameraErrorCode.value}` as any))
   } else {
     await refreshVideoInputs()
   }
+}
+
+/** 移动端翻转前后摄像头；不可用时（无 stream 或单镜头）静默忽略。 */
+async function flipCamera() {
+  await cam.flipCamera()
+  if (cam.error.value) {
+    message.error(tt(`scanner.camera.${cameraErrorCode.value}` as any))
+  }
+}
+
+/** 移动端：点页码 → 全屏查看 / 编辑 OCR 文本。 */
+const mobileDetailOpen = ref(false)
+function openMobileDetail(pageId: string) {
+  activePageId.value = pageId
+  mobileDetailOpen.value = true
+}
+function closeMobileDetail() {
+  mobileDetailOpen.value = false
 }
 
 function stopCamera() {
@@ -594,29 +630,52 @@ onMounted(async () => {
   await nextTick()
   if (videoEl.value) cam.bindVideo(videoEl.value)
   await refreshVideoInputs()
+  // 移动端：先按后置摄像头走默认；桌面无 facingMode，由浏览器忽略。
+  // 不在 mount 时直接 start，避免未授权时弹权限框 + 占位画面打架。
+  mobileQuery = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    ? window.matchMedia('(max-width: 768px)')
+    : null
+  syncMobile()
+  if (mobileQuery) {
+    mobileListener = () => syncMobile()
+    if (mobileQuery.addEventListener) mobileQuery.addEventListener('change', mobileListener)
+    else mobileQuery.addListener(mobileListener) // Safari < 14
+  }
+  // 热插拔：USB 摄像头接入 / 蓝牙断开时自动刷新设备列表。
+  removeDeviceChange = cam.onDeviceChange(() => {
+    void refreshVideoInputs()
+  })
   void ensureKeyLoaded()
 })
 
 onBeforeUnmount(() => {
   stopCamera()
+  if (mobileQuery && mobileListener) {
+    if (mobileQuery.removeEventListener) mobileQuery.removeEventListener('change', mobileListener)
+    else mobileQuery.removeListener(mobileListener)
+  }
+  removeDeviceChange?.()
 })
 
 watch(videoEl, (el) => {
   cam.bindVideo(el)
 })
 
-/** 摄像头开启后把预览框比例切换为视频比例，保证选框与画面一一对应。 */
+/** 摄像头开启后把预览框比例切换为视频比例，保证选框与画面一一对应。
+ *  移动端：摄像头还没拿到真实分辨率前先按 3:4 竖版占位（文档/发票多数竖向），
+ *  拿到 videoWidth/Height 后再切回真实比例，避免一开始是 16:9 把竖向画面压扁。 */
 const videoMetaTick = ref(0)
 
 const frameStyle = computed(() => {
-  // Track metadata even on the initial zero-dimension render.
   void videoMetaTick.value
   const v = videoEl.value
   const vw = cameraRunning.value ? v?.videoWidth || 0 : 0
   const vh = cameraRunning.value ? v?.videoHeight || 0 : 0
   if (vw > 0 && vh > 0) {
-    // 依赖 videoMetaTick：元数据/流变化后重新计算比例
     return { aspectRatio: `${vw} / ${vh}` }
+  }
+  if (isMobile.value) {
+    return { aspectRatio: '3 / 4' }
   }
   return undefined
 })
@@ -645,7 +704,7 @@ const cameraHintTone = computed(() => {
 </script>
 
 <template>
-  <div class="scanner-view">
+  <div class="scanner-view" :class="{ 'is-mobile': isMobile }">
     <header class="page-header">
       <div class="header-title-block">
         <div class="title-row">
@@ -657,17 +716,17 @@ const cameraHintTone = computed(() => {
             {{ smartStatusText }}
           </NTag>
         </div>
-        <span class="header-subtitle">{{ tt('scanner.page.subtitle') }}</span>
+        <span v-if="!isMobile" class="header-subtitle">{{ tt('scanner.page.subtitle') }}</span>
       </div>
       <div class="header-actions">
         <NSelect
-          v-if="deviceOptions.length > 0"
+          v-if="!isMobile && deviceOptions.length > 0"
           v-model:value="selectedDeviceId"
           :options="deviceOptions"
           size="small"
           :disabled="cameraStarting"
           :placeholder="tt('scanner.camera.selectDevice')"
-          style="width: 200px;"
+          class="header-device-select"
           @update:value="switchCamera"
         />
         <NButton
@@ -679,6 +738,7 @@ const cameraHintTone = computed(() => {
           {{ cameraRunning ? tt('scanner.camera.stop') : tt('scanner.camera.start') }}
         </NButton>
         <NButton
+          v-if="!isMobile"
           size="small"
           type="primary"
           :disabled="!cameraRunning"
@@ -719,15 +779,43 @@ const cameraHintTone = computed(() => {
                 </template>
               </NEmpty>
             </div>
+
+            <!-- 移动端悬浮控件：翻转 + 拍摄 FAB。一拇指可达，不挡选框。 -->
+            <template v-if="isMobile && cameraRunning">
+              <button
+                type="button"
+                class="camera-flip-btn"
+                :title="tt('scanner.camera.flip')"
+                :aria-label="tt('scanner.camera.flip')"
+                @click="flipCamera"
+              >
+                <span class="camera-flip-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M3 7h11l-3-3" />
+                    <path d="M21 17H10l3 3" />
+                  </svg>
+                </span>
+              </button>
+              <button
+                type="button"
+                class="camera-fab"
+                :title="tt('scanner.capture.snapshot')"
+                :aria-label="tt('scanner.capture.snapshot')"
+                @click="capture"
+              >
+                <span class="camera-fab-ring" aria-hidden="true" />
+                <span class="camera-fab-core" aria-hidden="true" />
+              </button>
+            </template>
           </div>
 
-          <div class="camera-toolbar">
+          <div v-if="!isMobile" class="camera-toolbar">
             <span class="camera-toolbar-label">{{ tt('scanner.camera.languageLabel') }}</span>
             <NSelect
               v-model:value="language"
               :options="languageOptions"
               size="small"
-              style="width: 160px;"
+              class="toolbar-lang-select"
             />
             <NTooltip>
               <template #trigger>
@@ -745,9 +833,29 @@ const cameraHintTone = computed(() => {
             </NTooltip>
           </div>
 
+          <!-- 移动端：把语言选择 + 一键识别压成一行紧凑的工具条（隐藏在 FAB 旁） -->
+          <div v-else class="mobile-toolbar">
+            <NSelect
+              v-model:value="language"
+              :options="languageOptions"
+              size="small"
+              class="mobile-lang-select"
+            />
+            <NButton
+              size="small"
+              type="primary"
+              :loading="ocrAllLoading"
+              :disabled="pages.length === 0"
+              block
+              @click="recognizeAll"
+            >
+              {{ tt('scanner.ocr.recognizeAll') }}
+            </NButton>
+          </div>
+
           <!-- 动态捕捉控制条 -->
           <div v-if="cameraRunning" class="smart-toolbar">
-            <NTooltip>
+            <NTooltip :disabled="isMobile">
               <template #trigger>
                 <NButton
                   size="small"
@@ -772,31 +880,31 @@ const cameraHintTone = computed(() => {
             <template v-if="smartEnabled">
               <label class="smart-option smart-ai" :title="tt('scanner.smart.aiHint')">
                 <NSwitch v-model:value="aiEnabled" size="small" />
-                <span>{{ tt('scanner.smart.aiLabel') }}</span>
+                <span v-if="!isMobile">{{ tt('scanner.smart.aiLabel') }}</span>
               </label>
               <label class="smart-option smart-auto">
                 <NSwitch v-model:value="autoCaptureOn" size="small" />
-                <span>{{ tt('scanner.smart.auto') }}</span>
+                <span v-if="!isMobile">{{ tt('scanner.smart.auto') }}</span>
               </label>
-              <span class="smart-option smart-preset">
+              <span v-if="!isMobile" class="smart-option smart-preset">
                 <span class="smart-option-label">{{ tt('scanner.smart.preset') }}</span>
                 <NSelect
                   v-model:value="capturePreset"
                   :options="capturePresetOptions"
                   size="small"
-                  style="width: 108px;"
+                  class="smart-preset-select"
                 />
               </span>
-              <span class="smart-option smart-aspect">
+              <span v-if="!isMobile" class="smart-option smart-aspect">
                 <span class="smart-option-label">{{ tt('scanner.smart.aspect') }}</span>
                 <NSelect
                   v-model:value="aspect"
                   :options="aspectOptions"
                   size="small"
-                  style="width: 116px;"
+                  class="smart-aspect-select"
                 />
               </span>
-              <NTooltip>
+              <NTooltip :disabled="isMobile">
                 <template #trigger>
                   <NButton
                     size="small"
@@ -839,7 +947,8 @@ const cameraHintTone = computed(() => {
           </div>
         </section>
 
-        <section class="page-strip">
+        <!-- 桌面：保留原 page-strip（侧栏列表） -->
+        <section v-if="!isMobile" class="page-strip">
           <div class="page-strip-header">
             <span class="page-strip-title">{{ tt('scanner.pages.title') }}</span>
             <span class="page-strip-count">{{ pages.length }}</span>
@@ -907,9 +1016,39 @@ const cameraHintTone = computed(() => {
             </button>
           </div>
         </section>
+
+        <!-- 移动端：横向滚动的页码条，覆盖在底部。thumb = 当前选中态。 -->
+        <section v-if="isMobile" class="mobile-thumbs">
+          <div v-if="pages.length === 0" class="mobile-thumbs-empty">
+            {{ tt('scanner.pages.emptyHint') }}
+          </div>
+          <div v-else class="mobile-thumbs-row">
+            <button
+              v-for="(page, idx) in pages"
+              :key="page.id"
+              type="button"
+              class="mobile-thumb"
+              :class="{ 'is-active': page.id === activePageId }"
+              @click="openMobileDetail(page.id)"
+            >
+              <img :src="page.image" :alt="`page-${idx + 1}`" />
+              <span class="mobile-thumb-index">{{ idx + 1 }}</span>
+            </button>
+            <NButton
+              v-if="pages.length > 0"
+              size="tiny"
+              quaternary
+              type="error"
+              class="mobile-thumbs-clear"
+              @click="clearAll"
+            >
+              {{ tt('scanner.pages.clearAll') }}
+            </NButton>
+          </div>
+        </section>
       </div>
 
-      <div class="scanner-right">
+      <div v-if="!isMobile" class="scanner-right">
         <NSpin :show="ocrOneLoading || correcting">
           <div v-if="!activePage" class="scanner-right-empty">
             <NEmpty :description="tt('scanner.detail.emptyHint')" />
@@ -983,6 +1122,87 @@ const cameraHintTone = computed(() => {
         </NAlert>
       </div>
     </div>
+
+    <!-- 移动端：底部 sheet 显示当前页大图 / 增强控件 / OCR 文本。 -->
+    <div v-if="isMobile" class="mobile-detail-sheet" :class="{ 'is-open': mobileDetailOpen }">
+      <div class="mobile-detail-backdrop" @click="closeMobileDetail" />
+      <div class="mobile-detail-panel" role="dialog" :aria-label="tt('scanner.detail.textTitle')">
+        <div class="mobile-detail-header">
+          <span class="mobile-detail-title">{{ tt('scanner.detail.textTitle') }}</span>
+          <NButton size="small" quaternary @click="closeMobileDetail">
+            {{ tt('scanner.mobile.close') }}
+          </NButton>
+        </div>
+        <NSpin :show="ocrOneLoading || correcting" class="mobile-detail-spin">
+          <div v-if="!activePage" class="mobile-detail-empty">
+            <NEmpty :description="tt('scanner.detail.emptyHint')" />
+          </div>
+          <div v-else class="mobile-detail-body">
+            <div class="mobile-detail-image">
+              <img :src="activePage.image" :alt="activePage.id" />
+            </div>
+            <ScannerEnhanceControls
+              :params="activePage.enhance"
+              :correcting="correcting"
+              @update:params="onEnhanceParams"
+              @correct="correctActivePage"
+              @reset="resetEnhance"
+            />
+            <div class="mobile-detail-text">
+              <div class="mobile-detail-text-toolbar">
+                <NButton
+                  size="small"
+                  type="primary"
+                  :loading="ocrOneLoading"
+                  @click="recognizeActivePage"
+                >
+                  {{ activePage.text ? tt('scanner.detail.recognizeAgain') : tt('scanner.detail.recognize') }}
+                </NButton>
+                <NButton
+                  size="small"
+                  quaternary
+                  type="error"
+                  :title="tt('scanner.pages.delete')"
+                  @click="activePage && deletePage(activePage.id)"
+                >
+                  {{ tt('scanner.pages.delete') }}
+                </NButton>
+              </div>
+              <NAlert
+                v-if="activePage.status === 'error' && activePage.error"
+                type="error"
+                size="small"
+                :show-icon="false"
+                class="mobile-detail-error"
+              >
+                {{ activePage.error }}
+              </NAlert>
+              <NInput
+                v-model:value="activePage.text"
+                type="textarea"
+                :autosize="{ minRows: 6, maxRows: 14 }"
+                :placeholder="tt('scanner.detail.placeholder')"
+              />
+              <div class="mobile-detail-meta">
+                {{ tt('scanner.detail.size', {
+                  width: activePage.width,
+                  height: activePage.height,
+                  chars: activePage.text.length,
+                }) }}
+              </div>
+            </div>
+          </div>
+        </NSpin>
+        <footer v-if="pages.length > 0" class="mobile-detail-actions">
+          <NButton :loading="saveLoading" block @click="saveToWorkspace">
+            {{ tt('scanner.save.action') }}
+          </NButton>
+          <NButton :loading="pdfLoading" type="primary" block @click="exportPdf">
+            {{ tt('scanner.pdf.action') }}
+          </NButton>
+        </footer>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -1033,6 +1253,10 @@ const cameraHintTone = computed(() => {
   align-items: center;
   gap: 10px;
   flex-shrink: 0;
+}
+
+.header-device-select {
+  width: 200px;
 }
 
 .scanner-content {
@@ -1091,6 +1315,76 @@ const cameraHintTone = computed(() => {
   justify-content: center;
 }
 
+/* 移动端 FAB / 翻转按钮：绝对定位覆盖在 camera-frame 之上。
+ * 不挡选框：FAB 居中底部（避开四角拖柄），翻转按钮放右上角。
+ * safe-area-inset 让 iPhone 刘海/底部小白条不遮按钮。 */
+.camera-fab {
+  position: absolute;
+  left: 50%;
+  bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  z-index: 4;
+  touch-action: manipulation;
+}
+
+.camera-fab-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 3px solid #fff;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.45);
+}
+
+.camera-fab-core {
+  position: absolute;
+  inset: 8px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 120ms ease;
+}
+
+.camera-fab:active .camera-fab-core {
+  transform: scale(0.92);
+}
+
+.camera-flip-btn {
+  position: absolute;
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  right: 12px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 0;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 4;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  backdrop-filter: blur(4px);
+}
+
+.camera-flip-btn:active {
+  background: rgba(0, 0, 0, 0.7);
+}
+
+.camera-flip-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .camera-toolbar {
   display: flex;
   align-items: center;
@@ -1098,9 +1392,24 @@ const cameraHintTone = computed(() => {
   flex-wrap: wrap;
 }
 
+.toolbar-lang-select {
+  width: 160px;
+}
+
 .camera-toolbar-label {
   font-size: 12.5px;
   color: $text-muted;
+}
+
+/* 移动端：把「语言」+「一键识别」压成两行紧凑工具条，避免挤掉 FAB 区域。 */
+.mobile-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+  gap: 8px;
+}
+
+.mobile-lang-select {
+  min-width: 0;
 }
 
 /* 动态捕捉控制条 */
@@ -1113,6 +1422,14 @@ const cameraHintTone = computed(() => {
   border: 1px dashed $border-light;
   border-radius: $radius-sm;
   background: var(--bg-elevated);
+}
+
+.smart-preset-select {
+  width: 108px;
+}
+
+.smart-aspect-select {
+  width: 116px;
 }
 
 .smart-option {
@@ -1258,6 +1575,80 @@ const cameraHintTone = computed(() => {
   display: block;
 }
 
+/* 移动端：横向滚动条覆盖在 camera-stage 下方，hover/active 区分选中。
+ * 与 FAB 不冲突：thumbs 高度 76px，FAB 直径 68px，左右各留 12px padding。 */
+.mobile-thumbs {
+  flex-shrink: 0;
+  border: 1px solid $border-light;
+  border-radius: $radius-md;
+  background: var(--bg-secondary);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mobile-thumbs-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  padding-bottom: 2px;
+}
+
+.mobile-thumbs-clear {
+  flex-shrink: 0;
+  align-self: center;
+}
+
+.mobile-thumbs-empty {
+  font-size: 12.5px;
+  color: $text-muted;
+  padding: 8px 4px;
+  text-align: center;
+}
+
+.mobile-thumb {
+  position: relative;
+  flex-shrink: 0;
+  width: 56px;
+  height: 76px;
+  border: 1px solid $border-light;
+  border-radius: $radius-sm;
+  background: var(--bg-elevated);
+  padding: 0;
+  cursor: pointer;
+  overflow: hidden;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+
+  img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  &.is-active {
+    border-color: var(--accent-info);
+    box-shadow: 0 0 0 2px rgba(var(--accent-info-rgb), 0.25);
+  }
+}
+
+.mobile-thumb-index {
+  position: absolute;
+  left: 2px;
+  bottom: 2px;
+  padding: 0 5px;
+  font-size: 10px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  line-height: 14px;
+}
+
 .scanner-detail {
   flex: 1;
   display: flex;
@@ -1337,9 +1728,181 @@ const cameraHintTone = computed(() => {
   border-radius: $radius-md;
 }
 
+/* 移动端：底部 sheet（不是 modal，避免遮住摄像头本身）。 */
+.mobile-detail-sheet {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 50;
+}
+
+.mobile-detail-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  transition: opacity 180ms ease;
+  pointer-events: none;
+}
+
+.mobile-detail-sheet.is-open .mobile-detail-backdrop {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.mobile-detail-panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: 88vh;
+  background: var(--bg-primary);
+  border-top-left-radius: 14px;
+  border-top-right-radius: 14px;
+  box-shadow: 0 -10px 32px rgba(0, 0, 0, 0.28);
+  display: flex;
+  flex-direction: column;
+  transform: translateY(100%);
+  transition: transform 220ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  pointer-events: auto;
+}
+
+.mobile-detail-sheet.is-open .mobile-detail-panel {
+  transform: translateY(0);
+}
+
+.mobile-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid $border-light;
+  flex-shrink: 0;
+}
+
+.mobile-detail-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.mobile-detail-spin {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.mobile-detail-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.mobile-detail-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 0;
+}
+
+.mobile-detail-image {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-elevated);
+  border-radius: $radius-sm;
+  overflow: hidden;
+  min-height: 140px;
+  max-height: 38vh;
+
+  img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+  }
+}
+
+.mobile-detail-text {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mobile-detail-text-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mobile-detail-error {
+  font-size: 12px;
+}
+
+.mobile-detail-meta {
+  font-size: 11.5px;
+  color: $text-muted;
+}
+
+.mobile-detail-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px 14px;
+  border-top: 1px solid $border-light;
+  flex-shrink: 0;
+}
+
 @media (max-width: $breakpoint-mobile) {
+  .scanner-view {
+    /* 移动端：去掉桌面外边距，给摄像头满屏；保留安全区内边距。 */
+    height: 100dvh;
+  }
+
+  .page-header {
+    padding: 10px 14px 8px;
+    gap: 8px;
+  }
+
+  .header-title {
+    font-size: 16px;
+  }
+
+  .header-actions {
+    gap: 6px;
+  }
+
   .scanner-content {
     grid-template-columns: 1fr;
+    padding: 10px 12px 12px;
+    gap: 10px;
+  }
+
+  .camera-stage {
+    padding: 8px;
+    gap: 8px;
+  }
+
+  .smart-toolbar {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding: 6px 8px;
+
+    &::-webkit-scrollbar {
+      display: none;
+    }
+  }
+
+  .smart-unavailable {
+    flex-basis: 100%;
   }
 }
 </style>

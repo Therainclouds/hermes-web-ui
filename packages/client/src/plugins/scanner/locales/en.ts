@@ -14,9 +14,11 @@ export default {
       deviceFallback: 'Camera',
       languageLabel: 'Language hint',
       liveTag: 'LIVE',
+      flip: 'Flip camera',
       cameraUnavailable: 'Camera is unavailable in this browser. Use HTTPS or localhost.',
       cameraDenied: 'Camera permission denied. Allow access in browser settings.',
       cameraNotFound: 'No UVC camera detected. Check the USB connection.',
+      cameraInUse: 'Camera is busy in another app. Close it and try again.',
       cameraError: 'Failed to start camera.',
     },
     capture: {
@@ -107,6 +109,9 @@ export default {
     },
     apiKey: {
       warn: 'No DashScope API key is configured. Open Settings → Models → Realtime Model and paste your Qwen (DashScope) API key — Scanner reuses the same key.',
+    },
+    mobile: {
+      close: 'Close',
     },
   },
   pluginsScanner: {
