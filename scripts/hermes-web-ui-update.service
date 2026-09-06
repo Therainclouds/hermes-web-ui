@@ -13,6 +13,11 @@ Group=root
 # updates are stuck at "starting" forever). See scripts/update-source-deploy.sh
 # and scripts/install-device-package.sh for the actual execution paths.
 EnvironmentFile=-{{SERVICE_ENV_FILE}}
+# Phase (a) pre-flight: quarantine corrupt journals, then resolve any
+# interrupted update (half-swap / stale lock / identity drift) before a
+# new task starts. See docs/harness/source-deploy-refactor.md.
+ExecStartPre={{DEPLOY_DIR}}/scripts/journal-validator.sh
+ExecStartPre={{DEPLOY_DIR}}/scripts/recover-interrupted-update.sh
 ExecStart={{UPDATE_RUNNER_BIN}}
 StandardOutput=journal
 StandardError=journal
