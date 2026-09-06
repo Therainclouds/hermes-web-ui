@@ -1,5 +1,84 @@
 # Work Log
 
+## 2026-09-05/06 · org/main 同步（Scanner 插件）+ 上线前 BUG 审计与修复
+
+### 一、上线前 BUG 审计（docs/research/pre-launch-bug-audit.md）
+
+- 以产品经理 + 用户 + on-call 视角审计全项目，产出 75+ 条分级发现（P0/P1/P2/P3），
+  覆盖 auth、chat、meeting、group-chat、USB、update、i18n、Socket 生命周期等子系统
+- 读取 AGENTS.md 硬规则、meeting-asr-safety-audit.md（v0.7.7 事故复盘）、设备错误日志等一手资料
+
+### 二、org/main 第一轮同步（Scanner 插件，11 个提交）
+
+- 同步 tangledup-ai/hermes-web-ui 的 Scanner 插件：Transformers.js + YOLOv8n 物体检测、
+  纯 JS 视觉管道（纸张检测/透视校正）、服务端 OCR/PDF 存储、客户端插件框架（82 文件 +10778 行）
+- 与受保护特性（专家中心/USB/更新通道）零重叠；按 upstream-sync-runbook 走 merge 分支
+- **修复 org 代码的 3 个问题**（合并验证中暴露）：
+  - `useSmartCapture.ts`：`isOutlierWhileLocked` 调用缺 `locked` 参数，TS 编译失败（org HEAD 上 build 即挂）
+  - `scanner-storage.test.ts`：路径断言用了 POSIX 分隔符，Windows 失败 → 改为路径段比较
+  - `scanner-ocr.test.ts`：missing-key 用例未隔离 `MEETING_ASR_DATA_DIR` 兜底，
+    开发机 `data/meeting-asr` 真实 key 泄漏进测试 → 指向空目录
+
+### 三、BUG 修复（先逐条复核，拒绝误报）
+
+**证伪未修的 5 项初版发现**（防止为修复而修复）：
+
+| 初版发现 | 证伪原因 |
+|---|---|
+| roomId 路径穿越 | room ID 全部服务端生成 + `getRoom` 必须命中 DB，`../` 永远 404 在拼接前，不可达 |
+| meeting-asr dataDir 绕过 getWebUiHome | 设备由部署脚本显式设 env，cwd 兜底是文档化 dev-only 行为 |
+| 5 处裸 JSON.parse | 引用了 v0.7.7 修复前旧清单，现状全部已有 try/catch |
+| quota 竞态误删 | 单线程无竞态，删最旧是注释声明的最后手段 |
+| auto-restart 误判 SIGTERM | close 事件对 SIGTERM 报 code=null，`(code ?? 0) !== 0` 不成立 |
+
+**实际修复 5 项**（提交 `891b33a7`）：
+
+1. `useMeetingAudio` 监听器泄漏：`detachBeforeUnloadAudioBackup` 此前移除的是未注册的
+   `noop` 引用，监听器随每次进会议页累积泄漏 → 保存注册时的同一函数引用
+2. `useMeetingAudio` ws 关闭时序：`ws = null` 先于 500ms 延迟 close 执行，close 永远
+   no-op → 先捕获引用再置空（ASR + Diarize 两条 socket）
+3. `useMeetingAudio` 启动失败资源回收：worklet 被 CSP 拦截等场景下麦克风流/AudioContext
+   不回收、麦克风常亮 → catch 中统一回收（早期失败路径全部 no-op，不改变原行为）
+4. `saveCurrentMeeting` 服务端保存失败仅 console.error → 补 toast
+   （新增 `meeting.errorSaveMeetingFailed`，zh/en/zh-TW，与 `errorUploadAudioFailed` 同模式）
+5. quota 兜底截断保护当前活跃会话
+
+**一次自我纠错**（提交 `4e7e8614`）：第 5 项初版用 `status === 'recording'` 判断是死代码——
+`updateStatus` 零调用者，录音期间没有任何代码写入该状态。改为把 `activeSessionId`
+贯穿 `saveSessions → archiveOldSessions` 全部 13 个调用点。真实故障路径：
+quota 截断 store 副本 + 录音中重命名说话人（`onTranscriptRename` 用 store 副本覆盖
+视图副本）→ 屏幕上正在显示的转写缩到 50 句。
+
+**回归测试**（提交 `67a22166`）：`tests/client/meeting-store-quota-protect.test.ts`
+运行时证明保护有效。踩到两个测试基建陷阱并记录在案：
+- jsdom 的 localStorage 无法用 `spyOn(Storage.prototype)` 拦截（探针测试证实），
+  须 `vi.stubGlobal` 注入后动态导入 store
+- `createSession` 内部也调 saveSessions，quota 异常提前武装会被空会话保存消耗掉
+
+### 四、推送历史核查（应用户要求）
+
+- 本会话 4 次推送全部为正常快进（reflog 均为 `update by push`，无 forced 标记），无覆盖
+- origin/main 引用历史中 7 个非祖先哈希全部是 8/25～9/1 用户本人旧推送，
+  在本会话开始前已被替换，与本会话无关
+- org 侧无丢失
+
+### 五、org/main 第二轮同步（5 个新提交，`05dda54e..a2c41a52`）
+
+- Scanner 移动端优化、WebGPU 探测修复、YOLOS-tiny 模型限制文档、粘滞选框修复
+- 自动合并陷阱：双方各自独立给 `isOutlierWhileLocked` 补了 `locked` 参数，
+  git 把两个重复键都保留了 → 手工去重
+- 验证：build ✅、17 个测试文件 131 个测试全过（含 scanner 全套 + meeting quota 回归 +
+  CSP 安全策略）、harness:check ✅
+
+### 验证汇总
+
+- `npm run build` ✅　`npm run harness:check` ✅
+- 客户端全量：1779 通过 / 7 失败（与修复前基线完全一致的既有 Windows 环境问题，
+  经 pre-merge worktree 复跑确认非本次引入）
+- 已推送 origin/main（正常快进），本地 == origin == org 全部同步
+
+---
+
 ## 2026-09-02 · 微信扫码用户名乱码修复 + WeChat 用户修改用户名免密码
 
 ### 问题 1: 微信扫码登录的用户名显示乱码
