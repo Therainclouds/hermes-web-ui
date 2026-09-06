@@ -266,7 +266,7 @@ extract_staging() {
   local inner="${CACHE_DIR}/inner-${TASK_ID}"
   rm -rf "${staging}" "${inner}"
   mkdir -p "${staging}" "${inner}"
-  if ! tar -xzf "${PACKAGE_ARCHIVE}" -C "${inner}"; then
+  if ! tar --force-local -xzf "${PACKAGE_ARCHIVE}" -C "${inner}"; then
     warn "archive extraction failed: ${PACKAGE_ARCHIVE}"
     rm -rf "${inner}" "${staging}"
     return 4

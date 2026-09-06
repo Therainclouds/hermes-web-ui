@@ -41,6 +41,9 @@ const PACKAGE_ALLOWLIST = [
   'scripts/hermes-web-ui.service',
   'scripts/install-device-package.sh',
   'scripts/update-source-deploy.sh',
+  'scripts/update-orchestrator.sh',
+  'scripts/recover-interrupted-update.sh',
+  'scripts/journal-validator.sh',
 ]
 
 function createTempDir(prefix: string): string {
@@ -85,6 +88,14 @@ function seedRepo(prefix: string, options: FixtureOptions = {}) {
   chmodSync(resolvePath(repoRoot, 'scripts', 'install-device-package.sh'), 0o755)
   writeFileSync(resolvePath(repoRoot, 'scripts', 'update-source-deploy.sh'), '#!/usr/bin/env bash\n', 'utf-8')
   chmodSync(resolvePath(repoRoot, 'scripts', 'update-source-deploy.sh'), 0o755)
+  // Phase (a) scripts: the orchestrator is the update-path installer whose
+  // SHA the manifest pins; the others ship with the packageAllowlist.
+  writeFileSync(resolvePath(repoRoot, 'scripts', 'update-orchestrator.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+  chmodSync(resolvePath(repoRoot, 'scripts', 'update-orchestrator.sh'), 0o755)
+  writeFileSync(resolvePath(repoRoot, 'scripts', 'recover-interrupted-update.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+  chmodSync(resolvePath(repoRoot, 'scripts', 'recover-interrupted-update.sh'), 0o755)
+  writeFileSync(resolvePath(repoRoot, 'scripts', 'journal-validator.sh'), '#!/usr/bin/env bash\n', 'utf-8')
+  chmodSync(resolvePath(repoRoot, 'scripts', 'journal-validator.sh'), 0o755)
   writeFileSync(resolvePath(repoRoot, 'hermes_data', 'bots', 'usb', 'config.py'), 'WEBUI_HOME = "/tmp/hermes"\n', 'utf-8')
   writeFileSync(resolvePath(repoRoot, 'hermes_data', 'bots', 'usb', 'usb_monitor.py'), 'print("usb monitor")\n', 'utf-8')
   writeFileSync(resolvePath(repoRoot, 'release', 'device-host-dependencies.json'), JSON.stringify({
@@ -169,10 +180,43 @@ describe('device-package manifest contract', () => {
     expect(manifest.sourceUrls.length).toBeGreaterThanOrEqual(1)
   })
 
-  it('source-deploy manifest does NOT emit device-package-only installerSha256 field', async () => {
+  it('source-deploy manifest pins the phase (a) orchestrator as installer', async () => {
     const { manifest } = await buildAndReadManifest({})
-    expect(manifest.installerScriptPath).toBe('scripts/update-source-deploy.sh')
+    expect(manifest.installerScriptPath).toBe('scripts/update-orchestrator.sh')
     expect(manifest.installerScriptSha256).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('source-deploy manifest emits the identity block (distSha256 + versionString)', async () => {
+    const { manifest } = await buildAndReadManifest({})
+    expect(manifest.identity).toBeDefined()
+    expect(manifest.identity.versionString).toBe('1.2.3')
+    expect(manifest.identity.distSha256).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('build fails when staged package.json version does not match the release version (v0.7.0-customer class)', async () => {
+    const { buildDevicePackageRelease } = await import('../../scripts/build-device-package.mjs')
+    const { repoRoot, outputDir } = seedRepo('manifest-mismatch-')
+    // Align the release config with the requested version so the config
+    // consistency check passes and the dist-identity self-check is the gate
+    // that fires (v0.7.0-customer class).
+    const configPath = resolvePath(repoRoot, '.github', 'device-package-release.json')
+    writeFileSync(configPath, JSON.stringify({ ...JSON.parse(readFileSync(configPath, 'utf-8')), version: '9.9.9' }), 'utf-8')
+    let message = ''
+    try {
+      await buildDevicePackageRelease({
+        repoRoot,
+        outputDir,
+        channel: 'stable',
+        releaseRepo: 'example/hermes-web-ui',
+        tag: 'v1.2.3',
+        version: '9.9.9', // manifest would claim 9.9.9 over a 1.2.3 dist
+        packageType: 'source-deploy',
+      })
+    } catch (err) {
+      message = (err as Error).message
+    }
+    expect(message).toContain('manifest self-check')
+    expect(message).toContain('does not match release version 9.9.9')
   })
 
   it('source archive is wrapped in a single top-level dir (update-source-deploy.sh contract)', async () => {
