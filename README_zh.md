@@ -389,12 +389,19 @@ Hermes profile 的工作区。
 **视觉流水线（纯 JS，运行于 Web Worker）：**
 
 - **多策略检测。** 主路径 `bright`（Otsu 双极性）+ Canny 风格 `edge` 兜底，
-  可选的 `ml` 走 Transformers.js + YOLOv8n（ONNX WASM 本地打包，CSP 开启
-  `wasm-unsafe-eval`）。各策略并行运行，结果按得分合并。
+  可选的 `ml` 走 Transformers.js + YOLOS-tiny（DETR 变体，ONNX WASM 本地
+  打包，CSP 开启 `wasm-unsafe-eval`）。各策略并行运行，结果按得分合并。
+- **AI 是 COCO 物体检测器，不是纸张检测器。** YOLOS-tiny 是在 COCO 上预
+  训练的通用物体检测模型，COCO 里没有 `paper` / `document` / `page` 类。
+  插件把 `book` 当作最接近的代理，再用加权得分（`labelBoost` ×
+  `aspectPrior` × 贴边惩罚）挑出"最像纸"的边界框。白纸、作业纸、单页便
+  签可能完全没有候选——这种情况下 AI 静默让位，由经典流水线兜底。请勿
+  把"AI 没有 hint"误读为"扫描坏了"。
 - **AI 提案二次校验。** ML 边界框不直接采用。每个提案在*当前帧*上裁剪并用
   经典 edge/brightness 流水线复核，再映射回全图坐标系，并按
   `minAreaRatio` / `maxAreaRatio` 重新校验。脱离当前像素的纯先验提案会被
-  拒绝，避免污染裁剪结果。
+  拒绝，避免污染裁剪结果。AI 只输出轴对齐矩形，角点细化仍依赖经典寻边，
+  所以 AI 不能独立解决经典识别失败的场景。
 - **低对比度页面的 Otsu 二次分割。** 当打印文字主导暗簇时，对直方图上半段
   再做一次 Otsu，把纸面从低对比度背景中分离——原先的单次 Otsu 在发票或
   文字密集页面上经常崩溃。
@@ -423,6 +430,24 @@ Hermes profile 的工作区。
 - **响应式代理安全。** Vue 的 `reactive()` 代理坐标在 `postMessage` 进
   Worker 前先用 `structuredClone` 转成普通对象，避免松手后第一帧被静默
   丢弃。
+
+**AI 检测修复（v0.8.0）：**
+
+- **WebGPU 探测不再抛 `Illegal invocation`。** 旧版 `hasUsableWebGPU()`
+  把 `gpu.requestAdapter` 解构成局部变量再裸调，丢失了 Chrome 要求的宿
+  主实例 `this`。抛出的 `TypeError` 被 try/catch 吞掉，于是所有 Chrome
+  ——包括真正带 WebGPU adapter 的——都被静默降级到 WASM（慢 4–5 倍）。
+  改用 `gpu.requestAdapter.bind(gpu)` 绑定 `this`。
+- **慢设备推理结果不再被丢弃。** 旧版对 AI 回包做了 1.5 秒的硬性 wall-
+  clock 截止，推理耗时超过这个值的成功结果直接当废——结合上面的 WASM
+  降级，慢设备会出现"模型已就绪但 hint 一直用不上"。硬性截止已去掉：
+  唯一的过期判定改为 worker 代际（`stopML()` 自增代际，旧代际的 AI 回
+  包在接收时被丢），hint 读取侧窗口放宽到 5 秒，2–3 秒的 WASM 推理仍
+  能喂给下一帧。
+- **测试覆盖两项回归。** 新增 4 个 `hasUsableWebGPU` 用例，分别覆盖
+  adapter 存在 / adapter 为 null / `navigator.gpu` 缺失 / `requestAdapter`
+  抛错四种情形；`scanner-detector-worker.test.ts` 新增一个用例推进 fake
+  timer 2 秒后再回包，验证慢 hint 仍被采纳。
 
 **服务端流水线：**
 

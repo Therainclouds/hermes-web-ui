@@ -397,14 +397,25 @@ active Hermes profile workspace.
 
 - **Multi-strategy detection.** A primary `bright` (Otsu dual-polarity) pass,
   a Canny-style `edge` fallback, and an optional `ml` pass via
-  Transformers.js + YOLOv8n (ONNX WASM bundled locally, CSP
+  Transformers.js + YOLOS-tiny (DETR variant, ONNX WASM bundled locally, CSP
   `wasm-unsafe-eval` enabled). Strategies run in parallel; results are merged
   by score.
+- **AI is a COCO object detector, not a paper detector.** YOLOS-tiny was
+  pretrained on COCO, which has no `paper` / `document` / `page` class. The
+  plugin treats `book` as the closest proxy and uses a weighted score
+  (`labelBoost` × `aspectPrior` × frame-edge penalty) to pick the most
+  paper-like bounding box. White paper, homework sheets, and single-page
+  sticky notes may produce no candidate at all — when no COCO label fires,
+  the AI pass silently yields and the classic pipeline takes over. Don't
+  interpret "AI hint missing" as "scanner broken".
 - **AI proposal revalidation.** ML bounding boxes are not accepted as-is. Each
   proposal is cropped and re-validated against the *current* pixels with the
   classic edge/brightness pipeline, scaled back to full-frame coordinates, and
   re-checked against `minAreaRatio` / `maxAreaRatio`. A pure-prior proposal is
-  rejected before it can corrupt the crop.
+  rejected before it can corrupt the crop. The AI only emits axis-aligned
+  bounding boxes — corner refinement still depends on the classic contour
+  pass, so the AI cannot independently solve cases where classic detection
+  fails.
 - **Otsu split for low-contrast pages.** When printed text dominates the dark
   cluster, a second Otsu pass on the upper half of the histogram separates the
   page from a low-contrast background — the previous single-pass Otsu often
@@ -441,6 +452,29 @@ active Hermes profile workspace.
 - **Reactive proxy safety.** Vue's `reactive()` proxy coordinates are
   `structuredClone`-cloned before `postMessage` to the worker, so the very
   first frame after the user releases a corner is no longer silently dropped.
+
+**AI detection fixes (v0.8.0):**
+
+- **WebGPU probe no longer throws `Illegal invocation`.** The earlier
+  `hasUsableWebGPU()` destructured `gpu.requestAdapter` into a local and
+  called it bare, dropping the host-instance `this` that Chrome requires. The
+  thrown `TypeError` was swallowed by the try/catch, so every Chrome build —
+  including ones with a working WebGPU adapter — silently fell back to WASM
+  (4–5× slower). Now bound via `gpu.requestAdapter.bind(gpu)` so `this` stays
+  on the GPU instance.
+- **Slow WASM replies are no longer discarded.** A previous hard 1.5 s wall-
+  clock cap dropped every successful inference that took longer than 1.5 s to
+  come back, which combined with the WASM fallback to leave slow devices
+  stuck on "model ready but hint never updates". The hard cap is gone — the
+  only freshness gate is now worker generation (`stopML()` bumps the
+  generation and any in-flight reply from the previous worker is dropped on
+  receive). The hint read-site window is widened to 5 s so a 2–3 s WASM
+  inference still feeds the next frame.
+- **Tests cover both regressions.** Four new `hasUsableWebGPU` cases stub
+  `navigator.gpu` for the adapter-present / adapter-null / gpu-missing /
+  requestAdapter-throws branches, and a new `scanner-detector-worker.test.ts`
+  case advances the fake timer by 2 s before replying to confirm the slow
+  hint is still applied.
 
 **Server pipeline:**
 
