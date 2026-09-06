@@ -284,7 +284,16 @@ function gaussianBlur5x5(src: Uint8Array, W: number, H: number): Uint8Array {
 }
 
 /* ------------------------------------------------------------------ *
- * 策略 0：AI 物体检测（transformers.js，YOLOS/DETR 系）——仅作兜底。
+ * 策略 0：AI 物体检测（transformers.js，YOLOS-tiny / DETR 变体）——仅作 proposal。
+ *
+ * ⚠️ AI 不是"文档检测器"，只是通用 COCO 物体检测器：模型只输出矩形候选框
+ *   （book / laptop / tv / ...），不输出纸张四角，AI 自身不能独立完成识别。
+ *   白纸 / 作业纸 / 单页便签在 COCO 里没有对应类别，几乎不会被检出——
+ *   书本最接近代理，其他扁平矩形是次优代理。详见 detector-ml.ts 顶部注释。
+ *
+ * 因此每个 AI 候选都必须通过 detectProposal 在同帧 ROI 内重跑经典寻边做
+ * 四角细化；经典在 ROI 内找不到轮廓或四角位移 > 0.15 时，AI 候选照丢。
+ *
  * detectByML 负责 worker 节流；真正推理在 detectByMLInner。
  * ------------------------------------------------------------------ */
 async function detectByML(

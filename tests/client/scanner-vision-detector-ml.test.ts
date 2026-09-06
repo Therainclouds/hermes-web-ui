@@ -1,15 +1,17 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   aspectPrior,
   boxesIoU,
   candidateToDetection,
   compositeScore,
+  hasUsableWebGPU,
   isOrganicLabel,
   labelBoost,
   labelThresholdScale,
   normalizeMLBox,
   pipelineThreshold,
   quadFrameSides,
+  __resetWebGPUProbeForTests,
   type MLCandidate,
 } from '@/plugins/scanner/vision/detector-ml'
 import type { Quad } from '@/plugins/scanner/vision/types'
@@ -156,5 +158,79 @@ describe('detector-ml box normalization', () => {
   it('rejects invalid or empty model boxes', () => {
     expect(normalizeMLBox({ xmin: Number.NaN, ymin: 0, xmax: 10, ymax: 10 }, 100, 100)).toBeNull()
     expect(normalizeMLBox({ xmin: 20, ymin: 20, xmax: 10, ymax: 30 }, 100, 100)).toBeNull()
+  })
+})
+
+/**
+ * WebGPU 探测的反模式回归。
+ *
+ * 历史 bug：早期实现把 `gpu.requestAdapter` 解构成 `const fn = gpu.requestAdapter;
+ * fn()` 裸调，丢失 `this`，Chrome 抛 "TypeError: Illegal invocation"，
+ * try/catch 把它吞掉后 hasUsableWebGPU 一律返回 false → 永远走 wasm。
+ *
+ * 修复：必须用成员访问 `gpu.requestAdapter()`，让 `this` 保留在 GPU 实例上。
+ * 下述测试通过 stub navigator.gpu 验证修复后：
+ *   1) 能识别 "有 adapter" 的环境 → 返回 true；
+ *   2) 能识别 "无 adapter" 的环境 → 返回 false；
+ *   3) navigator.gpu 缺失时直接返回 false；
+ *   4) requestAdapter 抛错时优雅返回 false。
+ *
+ * 测试用 Object.defineProperty 覆盖 navigator.gpu，并在 afterEach 恢复，
+ * 避免污染其他测试用例。
+ */
+describe('detector-ml WebGPU 探测（Illegal invocation 回归）', () => {
+  const originalGpu = Object.getOwnPropertyDescriptor(
+    (typeof navigator !== 'undefined' ? navigator : ({} as Navigator)),
+    'gpu',
+  )
+
+  beforeEach(() => {
+    __resetWebGPUProbeForTests()
+  })
+
+  afterEach(() => {
+    if (originalGpu) {
+      Object.defineProperty(navigator, 'gpu', originalGpu)
+    } else {
+      // Some jsdom versions disallow delete via `delete navigator.gpu`; the
+      // descriptor on the prototype still wins for lookups, so just reset.
+      Object.defineProperty(navigator, 'gpu', { value: undefined, configurable: true, writable: true })
+    }
+  })
+
+  it('reports true when requestAdapter resolves a non-null adapter', async () => {
+    const adapter = { name: 'mock-adapter' }
+    Object.defineProperty(navigator, 'gpu', {
+      value: { requestAdapter: vi.fn().mockResolvedValue(adapter) },
+      configurable: true,
+      writable: true,
+    })
+    expect(await hasUsableWebGPU()).toBe(true)
+    // Must be invoked as a member (preserving `this`) — not destructured.
+    const fn = (navigator as unknown as { gpu: { requestAdapter: unknown } }).gpu.requestAdapter
+    expect(fn).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports false when requestAdapter resolves null (software renderer / no GPU)', async () => {
+    Object.defineProperty(navigator, 'gpu', {
+      value: { requestAdapter: vi.fn().mockResolvedValue(null) },
+      configurable: true,
+      writable: true,
+    })
+    expect(await hasUsableWebGPU()).toBe(false)
+  })
+
+  it('reports false when navigator.gpu is missing', async () => {
+    Object.defineProperty(navigator, 'gpu', { value: undefined, configurable: true, writable: true })
+    expect(await hasUsableWebGPU()).toBe(false)
+  })
+
+  it('reports false when requestAdapter throws (caught as false, not propagated)', async () => {
+    Object.defineProperty(navigator, 'gpu', {
+      value: { requestAdapter: vi.fn().mockRejectedValue(new Error('boom')) },
+      configurable: true,
+      writable: true,
+    })
+    expect(await hasUsableWebGPU()).toBe(false)
   })
 })

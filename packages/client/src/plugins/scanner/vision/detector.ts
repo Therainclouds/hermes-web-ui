@@ -103,7 +103,13 @@ export function createDetector(): Detector {
       const wantsML = opts?.strategies?.includes('ml') ?? false
       if (!wantsML && mlWorker) stopML()
       const now = performance.now()
-      const hint = mlHint && now - mlHint.at < 1500 && mlHint.width === imageData.width && mlHint.height === imageData.height
+      // Soft freshness gate for the AI hint. We intentionally use a generous
+      // window (5s, not the old 1.5s): a slow WASM device may legitimately
+      // take 2-3 s per inference, and a tighter window would drop the only
+      // hint the camera loop has before the next AI frame comes back. The hard
+      // cap is now the worker generation (stopML() bumps mlGeneration and the
+      // in-flight reply is dropped on receive), not wall-clock latency.
+      const hint = mlHint && now - mlHint.at < 5000 && mlHint.width === imageData.width && mlHint.height === imageData.height
         ? mlHint.result.quad : null
       if (wantsML && !mlBusy && now - mlStartedAt >= 300) {
         // A separate worker isolates slow WASM inference from the real-time loop.
@@ -116,11 +122,16 @@ export function createDetector(): Detector {
           if (event.data.id === undefined) return
           instance.removeEventListener('message', onMessage)
           clearTimeout(timer)
+          // Stale generation (worker restarted / strategy toggled) → drop.
+          // We intentionally do NOT cap wall-clock inference latency here: a
+          // slow WASM device may legitimately need several seconds for the
+          // first frame after model load, and discarding a successful result
+          // there left users stuck on "model ready but hint never updates".
+          // The hint freshness window at the read site is the only remaining
+          // freshness gate (worker generation is the hard expiry).
           if (generation !== mlGeneration) return
           mlBusy = false
-          // Never display an old AI frame. Only use a fresh proposal as a prior
-          // for contour detection on the NEXT current camera frame.
-          if (event.data.result && performance.now() - started < 1500) {
+          if (event.data.result) {
             mlHint = { result: event.data.result, at: started, width: imageData.width, height: imageData.height }
           } else mlHint = null
         }
