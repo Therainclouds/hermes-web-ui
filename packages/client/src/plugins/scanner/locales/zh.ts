@@ -14,9 +14,11 @@ export default {
       deviceFallback: '摄像头',
       languageLabel: '语言提示',
       liveTag: '实时',
+      flip: '翻转摄像头',
       cameraUnavailable: '当前浏览器无法访问摄像头，请使用 HTTPS 或 localhost。',
       cameraDenied: '摄像头权限被拒绝，请在浏览器设置中允许访问。',
       cameraNotFound: '未检测到 UVC 摄像头，请检查 USB 连接。',
+      cameraInUse: '摄像头正被其他应用占用，请关闭后重试。',
       cameraError: '开启摄像头失败。',
     },
     capture: {
@@ -31,6 +33,7 @@ export default {
       loading: '正在初始化检测器…',
       unavailable: '纸张检测器不可用。普通拍摄、增强与 OCR 仍可使用。',
       searching: '正在寻找纸张…',
+      held: '选框已保留，可拖动角点或重置',
       detected: '已检测到纸张',
       capturing: '正在拍摄…',
       cooling: '已拍摄，等待下一张',
@@ -106,6 +109,9 @@ shootFailed: '智能拍摄失败',
     },
     apiKey: {
       warn: '尚未配置 DashScope API Key。打开 设置 → 模型 → Realtime 模型，粘贴千问（DashScope）API Key 后再使用扫描 OCR——Scanner 复用同一个 Key。',
+    },
+    mobile: {
+      close: '关闭',
     },
   },
   pluginsScanner: {

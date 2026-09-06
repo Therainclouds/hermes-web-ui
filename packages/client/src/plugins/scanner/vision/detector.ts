@@ -1,6 +1,7 @@
 import { ref, type Ref } from 'vue'
 import type { DetectOptions, PaperDetection } from './paper-detector'
 import type { MLStatus } from './detector-ml'
+import type { Quad } from './types'
 
 /**
  * 主线程 → Worker 通信层。
@@ -93,10 +94,22 @@ export function createDetector(): Detector {
   return {
     detect(imageData, opts) {
       if (terminated) return Promise.resolve(null)
+      // Vue refs expose proxy coordinates, which postMessage cannot clone.
+      // Copy both the tuple and its points before crossing the worker boundary.
+      const plainQuad = (quad?: Quad | null): Quad | null => quad
+        ? [{ x: quad[0].x, y: quad[0].y }, { x: quad[1].x, y: quad[1].y },
+          { x: quad[2].x, y: quad[2].y }, { x: quad[3].x, y: quad[3].y }] : null
+      opts = { ...opts, priorQuad: plainQuad(opts?.priorQuad), proposalQuad: plainQuad(opts?.proposalQuad) }
       const wantsML = opts?.strategies?.includes('ml') ?? false
       if (!wantsML && mlWorker) stopML()
       const now = performance.now()
-      const hint = mlHint && now - mlHint.at < 1500 && mlHint.width === imageData.width && mlHint.height === imageData.height
+      // Soft freshness gate for the AI hint. We intentionally use a generous
+      // window (5s, not the old 1.5s): a slow WASM device may legitimately
+      // take 2-3 s per inference, and a tighter window would drop the only
+      // hint the camera loop has before the next AI frame comes back. The hard
+      // cap is now the worker generation (stopML() bumps mlGeneration and the
+      // in-flight reply is dropped on receive), not wall-clock latency.
+      const hint = mlHint && now - mlHint.at < 5000 && mlHint.width === imageData.width && mlHint.height === imageData.height
         ? mlHint.result.quad : null
       if (wantsML && !mlBusy && now - mlStartedAt >= 300) {
         // A separate worker isolates slow WASM inference from the real-time loop.
@@ -109,11 +122,16 @@ export function createDetector(): Detector {
           if (event.data.id === undefined) return
           instance.removeEventListener('message', onMessage)
           clearTimeout(timer)
+          // Stale generation (worker restarted / strategy toggled) → drop.
+          // We intentionally do NOT cap wall-clock inference latency here: a
+          // slow WASM device may legitimately need several seconds for the
+          // first frame after model load, and discarding a successful result
+          // there left users stuck on "model ready but hint never updates".
+          // The hint freshness window at the read site is the only remaining
+          // freshness gate (worker generation is the hard expiry).
           if (generation !== mlGeneration) return
           mlBusy = false
-          // Never display an old AI frame. Only use a fresh proposal as a prior
-          // for contour detection on the NEXT current camera frame.
-          if (event.data.result && performance.now() - started < 1500) {
+          if (event.data.result) {
             mlHint = { result: event.data.result, at: started, width: imageData.width, height: imageData.height }
           } else mlHint = null
         }
@@ -136,6 +154,7 @@ export function createDetector(): Detector {
             ...opts, strategies: opts?.strategies?.filter(s => s !== 'ml').length
               ? opts.strategies.filter(s => s !== 'ml') : ['bright', 'edge'],
             priorQuad: opts?.priorQuad ?? hint,
+            proposalQuad: wantsML ? hint : null,
           } },
           [copy.buffer],
         )

@@ -373,6 +373,130 @@ Real-time voice dialogue with AI-powered oral practice and coaching.
 - All voice entries now open the unified Omni realtime dialog
 - Voice sessions can continue from text-chat context seamlessly
 
+### Document Scanner (v0.8.0)
+
+A camera-driven document scanner plugin. Connect a UVC USB camera, frame the
+paper, and let Smart Capture drive the whole pipeline — edge detection, ML
+verification, perspective correction, OCR, multi-page PDF, and saving into the
+active Hermes profile workspace.
+
+**Core Features:**
+
+| Feature | Description |
+|---|---|
+| UVC camera preview | Live preview with device picker, idle/live state, and clear error messages for permission / missing-device / browser blocks. |
+| Smart Capture | Live edge detection with a draggable selection box; auto-shoots when the box is stable. Manual mode is still available. |
+| Multi-page session | Capture, review, re-shoot, delete, and re-OCR each page in a single session. |
+| Built-in enhance | Auto levels, contrast/brightness, and black & white controls in the page detail view. |
+| OCR | Multi-page OCR via DashScope Qwen-VL-OCR (server route `POST /api/scanner/ocr`). |
+| PDF export | Bundle selected pages into an A4 (or original-ratio) PDF with embedded images (server route `POST /api/scanner/pdf`). |
+| Workspace save | Persist captured pages and OCR text into the active Hermes profile's workspace (server route `POST /api/scanner/save`). |
+| Plugin architecture | Lives under `packages/client/src/plugins/scanner` with its own Vue views, composables, vision modules, and locale bundles (en/zh + 9 others). |
+
+**Vision pipeline (pure JS, runs in a Web Worker):**
+
+- **Multi-strategy detection.** A primary `bright` (Otsu dual-polarity) pass,
+  a Canny-style `edge` fallback, and an optional `ml` pass via
+  Transformers.js + YOLOS-tiny (DETR variant, ONNX WASM bundled locally, CSP
+  `wasm-unsafe-eval` enabled). Strategies run in parallel; results are merged
+  by score.
+- **AI is a COCO object detector, not a paper detector.** YOLOS-tiny was
+  pretrained on COCO, which has no `paper` / `document` / `page` class. The
+  plugin treats `book` as the closest proxy and uses a weighted score
+  (`labelBoost` × `aspectPrior` × frame-edge penalty) to pick the most
+  paper-like bounding box. White paper, homework sheets, and single-page
+  sticky notes may produce no candidate at all — when no COCO label fires,
+  the AI pass silently yields and the classic pipeline takes over. Don't
+  interpret "AI hint missing" as "scanner broken".
+- **AI proposal revalidation.** ML bounding boxes are not accepted as-is. Each
+  proposal is cropped and re-validated against the *current* pixels with the
+  classic edge/brightness pipeline, scaled back to full-frame coordinates, and
+  re-checked against `minAreaRatio` / `maxAreaRatio`. A pure-prior proposal is
+  rejected before it can corrupt the crop. The AI only emits axis-aligned
+  bounding boxes — corner refinement still depends on the classic contour
+  pass, so the AI cannot independently solve cases where classic detection
+  fails.
+- **Otsu split for low-contrast pages.** When printed text dominates the dark
+  cluster, a second Otsu pass on the upper half of the histogram separates the
+  page from a low-contrast background — the previous single-pass Otsu often
+  collapsed on invoices or text-heavy pages.
+- **Stable Sobel directions.** Sobel gradient directions use 22.5°/67.5°
+  sector boundaries so Canny-style hysteresis keeps thicker page edges on the
+  correct side of the corner.
+- **Robust hull anchoring.** The convex hull always retains its starting
+  point; for near-vertical edges after blur, that start can land mid-edge. The
+  anchor now walks to the top-left-most point so Douglas–Peucker simplification
+  begins on a real corner.
+- **Tolerant corner refinement.** When `refinePaperQuad` rejects a tight
+  Douglas–Peucker approximation, the algorithm steps to the next tolerance
+  rather than dropping the detection entirely.
+
+**Smart Capture UX (v0.8.0):**
+
+- **Sticky selection.** Once the box is shown, a few miss frames no longer
+  unmount it — the selection transitions to the `held` state ("Selection
+  retained — adjust corners or reset") and the user can still drag, retake, or
+  reset.
+- **Drag freezes tracking.** A pointer-down on a corner handle calls
+  `lockSelection()` so detection results cannot move the crop mid-drag;
+  `resumeTracking()` on pointer-up re-enables following without clearing the
+  edited corners.
+- **Distant target reacquire.** When a moving paper genuinely leaves the box,
+  the new position is accepted even if it differs by more than the historical
+  stability tolerance — the previous tolerance required capture-level stillness.
+- **Bigger handles.** Corner handles grew from 22 px to 44 px so the box is
+  easier to grab on touch and high-DPI cameras.
+- **Pointer-capture safe.** The drag handler listens for `lostpointercapture`
+  so a dropped pointer event (e.g. another window stealing focus) still
+  releases the corner cleanly.
+- **Reactive proxy safety.** Vue's `reactive()` proxy coordinates are
+  `structuredClone`-cloned before `postMessage` to the worker, so the very
+  first frame after the user releases a corner is no longer silently dropped.
+
+**AI detection fixes (v0.8.0):**
+
+- **WebGPU probe no longer throws `Illegal invocation`.** The earlier
+  `hasUsableWebGPU()` destructured `gpu.requestAdapter` into a local and
+  called it bare, dropping the host-instance `this` that Chrome requires. The
+  thrown `TypeError` was swallowed by the try/catch, so every Chrome build —
+  including ones with a working WebGPU adapter — silently fell back to WASM
+  (4–5× slower). Now bound via `gpu.requestAdapter.bind(gpu)` so `this` stays
+  on the GPU instance.
+- **Slow WASM replies are no longer discarded.** A previous hard 1.5 s wall-
+  clock cap dropped every successful inference that took longer than 1.5 s to
+  come back, which combined with the WASM fallback to leave slow devices
+  stuck on "model ready but hint never updates". The hard cap is gone — the
+  only freshness gate is now worker generation (`stopML()` bumps the
+  generation and any in-flight reply from the previous worker is dropped on
+  receive). The hint read-site window is widened to 5 s so a 2–3 s WASM
+  inference still feeds the next frame.
+- **Tests cover both regressions.** Four new `hasUsableWebGPU` cases stub
+  `navigator.gpu` for the adapter-present / adapter-null / gpu-missing /
+  requestAdapter-throws branches, and a new `scanner-detector-worker.test.ts`
+  case advances the fake timer by 2 s before replying to confirm the slow
+  hint is still applied.
+
+**Server pipeline:**
+
+- `POST /api/scanner/ocr` — DashScope Qwen-VL-OCR over `data:image/...`
+  URLs; validates MIME, page count, and per-image size; reuses the Realtime
+  store's DashScope API key when the request omits one.
+- `POST /api/scanner/pdf` — packages selected images into a PDF (no external
+  PDF dependency; pages are image-embedded).
+- `POST /api/scanner/save` — writes images + OCR text into the active Hermes
+  profile workspace via `getActiveProfileDir()`; configurable base directory,
+  filename pattern, and overwrite policy.
+
+**Coverage:**
+
+- Unit tests for the worker bridge (`scanner-detector-worker.test.ts`),
+  vision precision regressions (`scanner-vision-precision.test.ts`),
+  enhancement filters, OCR validation, PDF building, and Smart Capture state
+  machine (`scanner-smart-capture.test.ts`).
+- E2E (`scanner-precision.spec.ts`) exercises the live preview: selection
+  retention through `held`, drag-time freeze, post-release camera tracking,
+  and 13" laptop vs. mobile viewports.
+
 ### Web Terminal
 
 - Integrated terminal powered by node-pty and @xterm/xterm

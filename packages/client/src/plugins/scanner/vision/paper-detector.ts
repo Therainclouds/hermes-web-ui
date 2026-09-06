@@ -50,9 +50,11 @@ export interface DetectOptions {
    * 目标，避免选框在多物体/杂波间跳变，实现「时时追随同一张纸」。
    */
   priorQuad?: Quad | null
+  /** Fresh AI proposal, revalidated against the current frame before use. */
+  proposalQuad?: Quad | null
 }
 
-const DEFAULTS: Required<Omit<DetectOptions, 'strategies' | 'priorQuad'>> & {
+const DEFAULTS: Required<Omit<DetectOptions, 'strategies' | 'priorQuad' | 'proposalQuad'>> & {
   strategies: ReadonlyArray<'ml' | 'bright' | 'edge'>
   priorQuad: Quad | null
 } = {
@@ -201,6 +203,11 @@ async function detectPaperCore(
     if (r) candidates.push(r)
   }
 
+  if (opts.proposalQuad) {
+    const proposed = await detectProposal(rgba, opts.proposalQuad, merged)
+    if (proposed) candidates.push(proposed)
+  }
+
   // 3) 目标黏性 + 置信度选优：
   //    与上一帧选框接近的候选获得黏性加成（保持同一目标、抑制候选交替跳框）；
   //    但远处候选若置信度显著更高（目标真的移动/换目标），加成挡不住它——
@@ -277,7 +284,16 @@ function gaussianBlur5x5(src: Uint8Array, W: number, H: number): Uint8Array {
 }
 
 /* ------------------------------------------------------------------ *
- * 策略 0：AI 物体检测（transformers.js，YOLOS/DETR 系）——仅作兜底。
+ * 策略 0：AI 物体检测（transformers.js，YOLOS-tiny / DETR 变体）——仅作 proposal。
+ *
+ * ⚠️ AI 不是"文档检测器"，只是通用 COCO 物体检测器：模型只输出矩形候选框
+ *   （book / laptop / tv / ...），不输出纸张四角，AI 自身不能独立完成识别。
+ *   白纸 / 作业纸 / 单页便签在 COCO 里没有对应类别，几乎不会被检出——
+ *   书本最接近代理，其他扁平矩形是次优代理。详见 detector-ml.ts 顶部注释。
+ *
+ * 因此每个 AI 候选都必须通过 detectProposal 在同帧 ROI 内重跑经典寻边做
+ * 四角细化；经典在 ROI 内找不到轮廓或四角位移 > 0.15 时，AI 候选照丢。
+ *
  * detectByML 负责 worker 节流；真正推理在 detectByMLInner。
  * ------------------------------------------------------------------ */
 async function detectByML(
@@ -342,18 +358,9 @@ async function detectByMLInner(
       if (c.areaRatio < opts.minAreaRatio || c.areaRatio > opts.maxAreaRatio) continue
       // A COCO bounding box is a proposal, never a document quadrilateral.
       // Recover a contour in the same frame before allowing it to become a crop.
-      const roi = priorToRoi(c.quad, W, H)
-      const crop = roi ? cropRgba(rgba, roi) : null
-      const local = await detectPaperCore(crop ?? rgba, {
-        ...opts, strategies: ['bright', 'edge'],
-        minAreaRatio: crop ? Math.min(0.95, opts.minAreaRatio * W * H / (crop.width * crop.height)) : opts.minAreaRatio,
-        maxAreaRatio: 0.95,
-      })
+      const local = await detectProposal(rgba, c.quad, opts)
       if (!local) continue
-      const quad = crop && roi ? mapQuadBack(local.quad, roi, crop.width, crop.height, W, H) : local.quad
-      const area = polygonArea(quad)
-      if (area < opts.minAreaRatio || area > opts.maxAreaRatio || quadCornerDelta(quad, c.quad) > 0.15) continue
-      const detection = { ...candidateToDetection(c), quad, confidence: local.confidence }
+      const detection = { ...candidateToDetection(c), quad: local.quad, confidence: local.confidence }
       if (!best || detection.confidence > best.confidence) {
         best = detection
       }
@@ -372,6 +379,32 @@ async function detectByMLInner(
     console.warn('[paper-detector] ML strategy failed:', (error as Error)?.message ?? error, '\n', error)
     return null
   }
+}
+
+/** Validate a proposal using current pixels, retaining full-frame area/score units. */
+async function detectProposal(
+  rgba: { width: number; height: number; data: Uint8ClampedArray | Uint8Array },
+  proposal: Quad,
+  opts: DetectOptions,
+): Promise<PaperDetection | null> {
+  const { width: W, height: H } = rgba
+  const roi = priorToRoi(proposal, W, H)
+  if (!roi) return null
+  const crop = cropRgba(rgba, roi)
+  if (!crop) return null
+  const fraction = crop.width * crop.height / (W * H)
+  const local = await detectPaperCore(crop, {
+    ...opts, strategies: ['bright', 'edge'], priorQuad: null, proposalQuad: null,
+    minAreaRatio: (opts.minAreaRatio ?? DEFAULTS.minAreaRatio) / fraction,
+    maxAreaRatio: 0.95,
+  })
+  if (!local) return null
+  const quad = mapQuadBack(local.quad, roi, crop.width, crop.height, W, H)
+  const area = polygonArea(quad)
+  if (area < (opts.minAreaRatio ?? DEFAULTS.minAreaRatio)
+    || area > (opts.maxAreaRatio ?? DEFAULTS.maxAreaRatio)
+    || quadCornerDelta(quad, proposal) > 0.15) return null
+  return { ...local, quad, confidence: local.confidence * fraction, strategy: 'ml' }
 }
 
 /* ------------------------------------------------------------------ *
@@ -398,14 +431,25 @@ function detectByBrightness(
 
   const out: PaperDetection[] = []
   const polarities: Array<{ polarity: Polarity; mask: Uint8Array }> = []
-  const whiteMask = new Uint8Array(totalPx)
-  const darkMask = new Uint8Array(totalPx)
-  for (let i = 0; i < totalPx; i++) {
-    if (gray[i]! >= threshold) whiteMask[i] = 1
-    else darkMask[i] = 1
+  // Printed text can dominate Otsu's dark cluster. Split the remaining bright
+  // cluster once more to separate a low-contrast page from its background.
+  const upperHist = hist.slice()
+  let upperCount = totalPx
+  for (let i = 0; i < Math.ceil(threshold); i++) {
+    upperCount -= upperHist[i]!
+    upperHist[i] = 0
   }
-  polarities.push({ polarity: 'white', mask: whiteMask })
-  polarities.push({ polarity: 'dark', mask: darkMask })
+  const upperThreshold = upperCount > 0 ? otsuThreshold(upperHist, upperCount) : threshold
+  for (const cut of new Set([threshold, ...(upperThreshold > threshold ? [upperThreshold] : [])])) {
+    const whiteMask = new Uint8Array(totalPx)
+    const darkMask = new Uint8Array(totalPx)
+    for (let i = 0; i < totalPx; i++) {
+      if (gray[i]! >= cut) whiteMask[i] = 1
+      else darkMask[i] = 1
+    }
+    polarities.push({ polarity: 'white', mask: whiteMask })
+    if (cut === threshold) polarities.push({ polarity: 'dark', mask: darkMask })
+  }
 
   for (const { polarity, mask } of polarities) {
     morphologicalClose(mask, W, H, 3, 1)
@@ -560,16 +604,12 @@ function sobel(gray: Uint8Array, W: number, H: number, mag: Float32Array, dir: U
       const gx = -tl - 2 * ml - bl + tr + 2 * mr + br
       const gy = -tl - 2 * tc - tr + bl + 2 * bc + br
       mag[i] = Math.abs(gx) + Math.abs(gy)
-      // 方向量化为 0/45/90/135°
-      if (gx === 0 && gy === 0) {
-        dir[i] = 0
-      } else if (Math.abs(gx) >= Math.abs(gy)) {
-        // 水平 / 135 度
-        dir[i] = gx * gy >= 0 ? 0 : 3
-      } else {
-        // 垂直 / 45 度
-        dir[i] = gx * gy >= 0 ? 1 : 2
-      }
+      // Compare along the gradient, with sector boundaries at 22.5° and 67.5°.
+      const ax = Math.abs(gx)
+      const ay = Math.abs(gy)
+      if (ay <= ax * Math.tan(Math.PI / 8)) dir[i] = 0
+      else if (ax <= ay * Math.tan(Math.PI / 8)) dir[i] = 2
+      else dir[i] = gx * gy >= 0 ? 1 : 3
     }
   }
 }
@@ -890,21 +930,33 @@ function finalizeDetection(
   // Edge components contain only a thin outline, not the enclosed paper pixels.
   if (largest.bbox.w * largest.bbox.h / totalPx < opts.minAreaRatio) return null
 
-  const hull = convexHull(largest.border)
-  if (hull.length < 4) return null
+  const rawHull = convexHull(largest.border)
+  if (rawHull.length < 4) return null
+  // Closed DP always retains its starting point. The leftmost pixel can lie
+  // halfway down a near-vertical edge after blur; anchor near a real corner.
+  let anchor = 0
+  for (let i = 1; i < rawHull.length; i++) {
+    if (rawHull[i]!.x + rawHull[i]!.y < rawHull[anchor]!.x + rawHull[anchor]!.y) anchor = i
+  }
+  const hull = [...rawHull.slice(anchor), ...rawHull.slice(0, anchor)]
 
   // DP 化简到 4 个角点：容差从 0.5% 起步、逐步放大到 3%，让厚边带也能合并到 4 角
   let simplified: Pt[] = []
   const maxEdge = Math.max(W, H)
   for (const tol of [0.005, 0.01, 0.02, 0.03].map(m => m * maxEdge)) {
-    simplified = douglasPeucker(hull, tol)
-    if (simplified.length === 4) break
+    const corners = douglasPeucker(hull, tol)
+    if (corners.length !== 4) continue
+    simplified = corners
+    // A tight simplification may retain a rounded morphology corner. Try the
+    // next tolerance if all four image edges cannot support that approximation.
+    const refined = refinePaperQuad(gray, W, H, [corners[0]!, corners[1]!, corners[2]!, corners[3]!])
+    if (refined) {
+      simplified = [...refined]
+      break
+    }
   }
   if (simplified.length !== 4) return null
 
-  // Undo dilation/threshold offsets by fitting four lines to the image gradient.
-  const refined = refinePaperQuad(gray, W, H, [simplified[0]!, simplified[1]!, simplified[2]!, simplified[3]!])
-  if (refined) simplified = [...refined]
   const areaRatio = polygonArea(simplified) / totalPx
   if (areaRatio < opts.minAreaRatio || areaRatio > opts.maxAreaRatio) return null
   const normalized = simplified.map(p => ({ x: p.x / W, y: p.y / H }))

@@ -16,16 +16,34 @@ import type { Quad } from './types'
  *
  * 优先尝试 WebGPU，回退 WASM（100% 浏览器支持，但慢 4-5 倍）。
  *
- * 返回的不是"纸张检测"，而是"画面里所有矩形物体的边界框"——
- * 检测器接收模型的所有高分检测，按「标签先验 × 几何先验」的复合分选最优：
- * - COCO 里没有"纸"，只有书/本/屏幕等矩形代理物体，所以"书"等标签加权，
- *   人物/动物/植物等不规则有机体直接排除（把整幅画面框成"纸"比漏检更糟）；
- * - 选框贴画面边框越多越像"整幅背景/桌面"，几何先验相应降权。
+ * ⚠️ 模型局限：本模块不是"文档/纸张检测器"。
+ *   - 默认模型 Xenova/yolos-tiny 是基于 COCO 预训练的通用物体检测器
+ *     （DETR 变体，与 YOLOv8 无关——前者 anchor-free + set prediction，
+ *     后者 anchor-based；本仓库用前者是因为 onnx-community/yolov8n
+ *     自 2026 年起对匿名下载返回 HTTP 401，需鉴权，浏览器端 transformers.js
+ *     不附带 Authorization 头，故换用公开可下载的 YOLOS-tiny 并内置本地副本）。
+ *   - COCO 90 类里**没有 "paper" / "document" / "page"**——白纸、作业纸、
+ *     单页便签几乎从来不会被检出，可能出框的只有书本（最佳代理）、笔记本 /
+ *     手机 / 屏幕 / 键盘 / 鼠标 / 钟等扁平矩形物体；
+ *   - 因此本模块返回的是"画面里所有矩形物体的边界框"，由调用方按
+ *     「标签先验 × 几何先验」的复合分选最优（详见 compositeScore）：
+ *       · book 等少数 COCO 类作为文档代理加权；
+ *       · 笔记本 / 屏幕等扁平矩形中等加权；
+ *       · 桌椅家电等大件家具略降权；
+ *       · 人物 / 动物 / 植物等不规则有机体直接排除（把它们框成"纸"比漏检更糟）；
+ *       · 选框贴画面边框越多越像整幅背景，几何先验相应降权；
+ *       · 面积 < 2% 一律丢弃（多为小杂物）。
+ *   - 没有任何 COCO 标签或全部命中被排除时，本模块不会凭空造一个矩形出来——
+ *     此时只能依赖经典识别继续兜底；不要把"AI 不可用"误读成"扫描不可用"。
+ *
+ * ⚠️ AI 只输出矩形候选框（COCO bbox），不输出纸张四角：
+ *   - bbox 是轴对齐矩形，真实纸张在画面里往往带透视畸变；
+ *   - 因此 paper-detector 拿到 bbox 后必须在同帧 ROI 内重跑经典寻边
+ *     （detectProposal，paper-detector.ts）做四角细化，再用面积 + 四角位移
+ *     校验失败才丢弃——也就是说 AI 候选**不能独立完成识别**，经典识别失败
+ *     的场景下 AI 也救不回来。
  *
  * 模型默认 Xenova/yolos-tiny：公开仓库（gated=false），transformers.js 可直接加载；
- * 曾默认 onnx-community/yolov8n，但该仓库（及其它 onnx-community/*）自 2026 年起
- * 对匿名下载返回 HTTP 401（需登录），而浏览器端 transformers.js 不会附带
- * Authorization 头，导致模型永远下载失败——故换用公开模型并本地内置。
  *
  * 本地模型文件布局（public/models/{model}/，与 transformers.js q8 → _quantized
  * 的文件命名一致，勿改名）：
@@ -378,16 +396,28 @@ let webgpuProbe: Promise<boolean> | null = null
  * Chrome（虚拟机、远程桌面等）也会暴露该 API，但 requestAdapter() 返回 null，
  * 硬选 webgpu 会在创建推理会话时报 "Failed to get GPU adapter" 而失败。
  * 结果缓存，worker 生命周期内只探测一次。
+ *
+ * 实现细节：GPU.requestAdapter 是绑定到 GPU 实例的宿主方法，必须用成员访问
+ * 形式 `gpu.requestAdapter()` 调用（保留 `this`），否则 Chrome 会抛
+ * "TypeError: Illegal invocation"。早期版本把方法解构成 `const fn = gpu.requestAdapter;
+ * fn()` 裸调，在支持 WebGPU 的浏览器里反被 try/catch 吞掉、一律返回 false，
+ * 导致 webgpu 后端永远走不到、推理静默降级 wasm（慢 4-5 倍）。
+ *
+ * Exported for tests; not part of the public API.
  */
-function hasUsableWebGPU(): Promise<boolean> {
+export function hasUsableWebGPU(): Promise<boolean> {
   if (typeof navigator === 'undefined') return Promise.resolve(false)
   const gpu = (navigator as unknown as { gpu?: { requestAdapter?: () => Promise<unknown> } }).gpu
-  const requestAdapter = gpu?.requestAdapter
-  if (!requestAdapter) return Promise.resolve(false)
+  if (!gpu || typeof gpu.requestAdapter !== 'function') return Promise.resolve(false)
+  // Bind through a non-null local: gpu.requestAdapter is typed as optional on
+  // our minimal GPU interface, but the typeof guard above proves it's a
+  // function on `gpu`. Capturing the bound form lets TS narrow away the
+  // optional, while keeping `this` = `gpu` (required by the host API).
+  const boundRequestAdapter = gpu.requestAdapter.bind(gpu)
   if (!webgpuProbe) {
     webgpuProbe = (async () => {
       try {
-        const adapter = await requestAdapter()
+        const adapter = await boundRequestAdapter()
         return adapter != null
       } catch {
         return false
@@ -395,6 +425,11 @@ function hasUsableWebGPU(): Promise<boolean> {
     })()
   }
   return webgpuProbe
+}
+
+/** Test-only: reset the cached WebGPU probe between cases. */
+export function __resetWebGPUProbeForTests(): void {
+  webgpuProbe = null
 }
 
 /** 解析首选推理后端：真能拿到 GPU adapter 才用 webgpu，否则 wasm。 */
