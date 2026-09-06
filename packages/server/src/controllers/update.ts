@@ -7,7 +7,8 @@ import { UpdateError } from '../services/update/errors'
 import { getLocalWebUiVersion, readPackageInfo } from '../services/update/package-info'
 import { assertDevicePackageCompatibility, assertDevicePackageExecution, assertInstallerScriptCompatible, buildDevicePackageInstallEnv, buildDevicePackageReconcileCommand, buildDevicePackageReconcileEnv, downloadAndVerifyDevicePackage, getDevicePackageExecutionMessage, resolveDevicePackageManifest } from '../services/update/strategies/device-package'
 import { assertEnvironmentMatches, getLastEnvironmentCheck, readDeviceEnvState, runEnvironmentCheck } from '../services/update/reconcile'
-import { fetchDevicePackageManifest, fetchSourcePackageManifest } from '../services/update/manifest-client'
+import { fetchDevicePackageManifest, fetchSourcePackageManifest, readManifestCache } from '../services/update/manifest-client'
+import { manifestCacheFreshness } from '../services/update/manifest-cache-freshness'
 import { assertSourcePackageCompatibility } from '../services/update/strategies/source-package'
 import { resolveManifestCheckResult } from '../services/update/manifest-client'
 import { runUpdatePreflight } from '../services/update/preflight'
@@ -2073,4 +2074,56 @@ export async function stopPreview(ctx: any) {
   appendPreviewActionLog('stop preview requested')
   await stopPreviewProcess()
   ctx.body = previewPayload({ success: true })
+}
+
+// ---------------------------------------------------------------------------
+// Identity (phase a): what this device actually runs vs what the manifest
+// claims. Master spec: docs/harness/source-deploy-refactor.md
+// (§ Identity Schema, § Manifest cache). state/identity.json is written by
+// update-orchestrator.sh after a successful swap; a missing or corrupt
+// file means "identity unknown" (installed: false), never a 500.
+// ---------------------------------------------------------------------------
+
+interface UpdateIdentityFile {
+  schema: number
+  capturedAt: string
+  version: string
+  distSha256: string
+  installerScriptSha256: string
+  agentManifestSha: string
+  commitSha?: string
+}
+
+export async function getUpdateIdentity(ctx: any) {
+  let identity: UpdateIdentityFile | null = null
+  const identityPath = join(getWebUiHome(), 'state', 'identity.json')
+  try {
+    if (existsSync(identityPath)) {
+      const parsed = JSON.parse(readFileSync(identityPath, 'utf8')) as UpdateIdentityFile
+      if (parsed && typeof parsed === 'object' && typeof parsed.version === 'string') {
+        identity = parsed
+      } else {
+        console.warn('[update] WARN update_identity_invalid: %s is missing required fields', identityPath)
+      }
+    }
+  } catch (err) {
+    console.warn('[update] WARN update_identity_invalid: failed to read %s: %s',
+      identityPath, err instanceof Error ? err.message : String(err))
+  }
+
+  const cached = readManifestCache(config.update.channel)
+  const cachedPayloadVersion = cached?.payload && typeof (cached.payload as any).version === 'string'
+    ? (cached.payload as any).version as string
+    : null
+
+  ctx.body = {
+    success: true,
+    installed: identity !== null,
+    identity,
+    manifestCache: {
+      freshness: manifestCacheFreshness(cached?.cachedAt ?? null),
+      cachedAt: cached?.cachedAt ?? null,
+      version: cachedPayloadVersion,
+    },
+  }
 }

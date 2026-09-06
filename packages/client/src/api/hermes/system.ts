@@ -339,6 +339,38 @@ export interface ProviderEditorResponse {
   changed?: string[]
 }
 
+
+// ---------------------------------------------------------------------------
+// Update identity (phase a): docs/harness/source-deploy-refactor.md
+// ---------------------------------------------------------------------------
+
+export type ManifestCacheFreshness = 'green' | 'yellow' | 'orange' | 'red'
+
+export interface UpdateIdentity {
+  schema: number
+  capturedAt: string
+  version: string
+  distSha256: string
+  installerScriptSha256: string
+  agentManifestSha: string
+  commitSha?: string
+}
+
+export interface UpdateIdentityResponse {
+  success: boolean
+  installed: boolean
+  identity: UpdateIdentity | null
+  manifestCache: {
+    freshness: ManifestCacheFreshness
+    cachedAt: string | null
+    version: string | null
+  }
+}
+
+export async function fetchUpdateIdentity(): Promise<UpdateIdentityResponse> {
+  return request<UpdateIdentityResponse>('/api/update/identity')
+}
+
 export async function checkHealth(): Promise<HealthResponse> {
   return request<HealthResponse>('/health')
 }
