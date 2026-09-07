@@ -364,7 +364,10 @@ restart_runtime() {
 }
 
 run_healthcheck() {
-  if [[ "${DRY_RUN}" == "1" || "${WEBUI_UPDATE_SKIP_HEALTHCHECK:-}" == "1" ]]; then
+  # Master spec § Testing Strategy: WEBUI_DRY_RUN skips ONLY the systemd
+  # restart — every other step (journal, swap, identity, healthcheck)
+  # really executes, so the skip flag is the sole opt-out here.
+  if [[ "${WEBUI_UPDATE_SKIP_HEALTHCHECK:-}" == "1" ]]; then
     info "healthcheck skipped"
     return 0
   fi
