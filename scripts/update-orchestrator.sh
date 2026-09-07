@@ -48,6 +48,8 @@ source "${SCRIPT_DIR}/_lib/atomic-swap.sh"
 source "${SCRIPT_DIR}/policy-parse.sh"
 # shellcheck source=_lib/identity-stamp.sh
 source "${SCRIPT_DIR}/_lib/identity-stamp.sh"
+# shellcheck source=_lib/chown-mount-safe.sh
+source "${SCRIPT_DIR}/_lib/chown-mount-safe.sh"
 
 STATE_HOME="$(journal_state_home)"
 SWAP_ROOT="${STATE_HOME}/state/swap"
@@ -353,6 +355,21 @@ swap_deploy() {
 
   if ! atomic_swap_dir "${STAGING_DIR}" "${DEPLOY_DIR}"; then
     return 5
+  fi
+
+  # The staging tree was downloaded and extracted by this root unit, so
+  # the swapped-in deploy is root-owned; the service runs as APP_USER and
+  # its ExecStartPre cannot even mkdir certs/ (6.6.6.73 v0.8.1). Repair
+  # ownership on the live target before restart.
+  local app_user="${HERMES_WEB_UI_UPDATE_APP_USER:-${APP_USER:-}}"
+  if [[ -n "${app_user}" ]] && id "${app_user}" >/dev/null 2>&1; then
+    if ! chown_r_mount_safe_root "${app_user}:$(id -gn "${app_user}")" "${DEPLOY_DIR%/}"; then
+      warn "deploy tree ownership repair failed for ${app_user}"
+      return 5
+    fi
+    info "deploy tree ownership repaired: ${app_user}"
+  else
+    warn "APP_USER unknown; skipping deploy ownership repair"
   fi
   return 0
 }
