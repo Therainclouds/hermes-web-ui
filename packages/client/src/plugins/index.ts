@@ -26,7 +26,9 @@ export const BUILTIN_PLUGINS: PluginRegistration[] = [
     /** 默认启用；用户可在 localStorage `hermes.plugins.enabled` 关闭。 */
     enabledByDefault: true,
   },
-  { plugin: gradingPlugin, enabledByDefault: false },
+  // Grading 依赖 Scanner，二者默认启用；这样启动后主页面即可见「批改模式」，
+  // 无需进入 Settings 的插件管理页手动开启。
+  { plugin: gradingPlugin, enabledByDefault: true },
 ]
 
 /**
