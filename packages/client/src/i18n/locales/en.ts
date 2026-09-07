@@ -3702,6 +3702,8 @@ export default {
 
   // Changelog
   changelog: {
+    new_0_8_3_1: 'Updates no longer require on-device builds: CI pre-builds dist/ and the orchestrator auto-detects it, skipping npm run build (~2 min vs ~10 min on ARM)',
+    new_0_8_3_2: 'node_modules are now preserved across upgrades when possible, avoiding redundant dependency installation on every update',
     new_0_8_2_1: 'Upgrade now preserves agent data (profiles, sessions, state.db) across source-deploy updates and runs npm ci + build on device so the new tree is fully operational after swap',
     new_0_8_2_2: 'Release manifest latest.json on OSS now only updates on promote (after 24h gate), fixing a race where every tag push immediately overrode the stable channel pointer',
     new_0_8_1_1: 'Update system rework (phase a): upgrades now apply through an atomic symlink swap with automatic rollback to the last known good version, and the device self-heals after a crash or power loss mid-update',

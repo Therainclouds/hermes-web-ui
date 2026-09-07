@@ -3749,6 +3749,8 @@ export default {
 
   // 更新日志
   changelog: {
+    new_0_8_3_1: '更新不再需要设备端构建：CI 预构建 dist/，编排器自动检测并跳过 npm run build（ARM 上从约 10 分钟缩短到约 2 分钟）',
+    new_0_8_3_2: '升级时尽可能保留 node_modules，避免每次更新重复安装依赖',
     new_0_8_2_1: '升级时自动保留 agent 数据（profiles、sessions、state.db），并在设备端执行 npm ci + build，确保源码部署后新版树完整可用',
     new_0_8_2_2: 'OSS 上的 latest.json 改为仅在 promote 时更新（24h 门控后），修复 tag 推送直接覆盖稳定通道指针的问题',
     new_0_8_1_1: '更新系统重构（phase a）：升级改为原子符号链接切换，失败自动回滚到上一可用版本，断电/中断后重启可自愈恢复',

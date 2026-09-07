@@ -3577,6 +3577,8 @@ export default {
 
   // 更新日誌
   changelog: {
+    new_0_8_3_1: '更新不再需要裝置端建構：CI 預建構 dist/，編排器自動偵測並跳過 npm run build（ARM 上從約 10 分鐘縮短到約 2 分鐘）',
+    new_0_8_3_2: '升級時盡可能保留 node_modules，避免每次更新重複安裝相依套件',
     new_0_8_2_1: '升級時自動保留 agent 資料（profiles、sessions、state.db），並在裝置端執行 npm ci + build，確保原始碼部署後新版樹完整可用',
     new_0_8_2_2: 'OSS 上的 latest.json 改為僅在 promote 時更新（24h 門控後），修復 tag 推送直接覆蓋穩定通道指標的問題',
     new_0_8_1_1: '更新系統重構（phase a）：升級改為原子符號連結切換，失敗自動回滾到上一可用版本，斷電/中斷後重啟可自癒恢復',
