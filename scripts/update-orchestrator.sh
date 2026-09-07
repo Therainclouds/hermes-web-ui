@@ -34,7 +34,10 @@
 #   4 = download or archive failure
 #   5 = swap failure (no lastgood available)
 
-set -uo pipefail
+# -E (errtrace): the ERR trap must fire inside functions — the whole
+# lifecycle runs under main(), and without -E in-function failures would
+# silently bypass on_task_error.
+set -Euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_lib/journal-write.sh
@@ -210,7 +213,7 @@ preflight_space() {
   local archive_bytes=0
   [[ -f "${PACKAGE_ARCHIVE:-}" ]] && archive_bytes="$(stat -c %s "${PACKAGE_ARCHIVE}" 2>/dev/null || echo 0)"
   required_bytes=$(( $(deploy_tree_size_bytes 2>/dev/null || echo 0) * 3 / 2 + archive_bytes + 104857600 ))
-  available_bytes="$(df -B1 "${STATE_HOME}" 2>/dev/null | awk 'NR==2 { print $4 }')"
+  available_bytes="$(df -B1 "${STATE_HOME}" 2>/dev/null | awk 'NR==2 { print $4 }' || true)"
   if [[ -z "${available_bytes}" ]]; then
     warn "cannot determine free space on ${STATE_HOME}; continuing"
     return 0

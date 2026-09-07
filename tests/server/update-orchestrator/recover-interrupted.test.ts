@@ -8,7 +8,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { afterAll, describe, expect, it } from 'vitest'
-import { runBash, symlinksSupported } from './helpers'
+import { readlinkSafe, runBash, symlinksSupported } from './helpers'
 
 const REPO_ROOT = join(__dirname, '..', '..', '..')
 const RECOVERY = join(REPO_ROOT, 'scripts', 'recover-interrupted-update.sh')
@@ -41,11 +41,6 @@ function runRecovery(env: Env): { status: number; stdout: string; stderr: string
     HERMES_WEB_UI_HOME: env.home,
     DEPLOY_DIR: env.deployDir,
   })
-}
-
-function readlinkSafe(path: string): string {
-  const { execFileSync } = require('child_process') as typeof import('child_process')
-  return execFileSync('bash', ['-c', `readlink '${path}'`]).toString().trim()
 }
 
 function recoveryJournalMessages(home: string): string[] {

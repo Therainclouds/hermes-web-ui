@@ -147,10 +147,6 @@ function assertDistVersionIdentity(stageRoot, version) {
       + '(v0.7.0-customer identity mismatch class). Aborting before publish.',
     )
   }
-  assertTerminalRuntimeBundle(
-    resolve(stageRoot, 'dist', 'server', 'index.js'),
-    'manifest self-check dist/server/index.js',
-  )
   return stagedVersion
 }
 

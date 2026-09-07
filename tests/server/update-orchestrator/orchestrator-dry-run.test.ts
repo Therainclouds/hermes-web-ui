@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
-import { runBash, symlinksSupported } from './helpers'
+import { readlinkSafe, runBash, symlinksSupported } from './helpers'
 
 const REPO_ROOT = join(__dirname, '..', '..', '..')
 const ORCHESTRATOR = join(REPO_ROOT, 'scripts', 'update-orchestrator.sh')
@@ -239,8 +239,3 @@ describe('update orchestrator (dry-run)', () => {
     expect(res.status).toBe(2)
   })
 })
-
-function readlinkSafe(path: string): string {
-  const { execFileSync } = require('child_process') as typeof import('child_process')
-  return execFileSync('bash', ['-c', `readlink '${path}'`]).toString().trim()
-}

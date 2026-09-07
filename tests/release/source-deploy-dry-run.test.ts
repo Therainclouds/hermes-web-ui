@@ -20,7 +20,7 @@ import { tmpdir } from 'os'
 import { join, resolve as resolvePath } from 'path'
 import { execFileSync } from 'child_process'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
-import { symlinksSupported } from '../server/update-orchestrator/helpers'
+import { readlinkSafe, symlinksSupported } from '../server/update-orchestrator/helpers'
 
 const tempDirs: string[] = []
 
@@ -135,11 +135,6 @@ function runBash(script: string, env: Record<string, string>): { status: number;
     const e = err as { status?: number; stdout?: string; stderr?: string }
     return { status: e.status ?? -1, stdout: e.stdout ?? '', stderr: e.stderr ?? '' }
   }
-}
-
-function readlinkSafe(path: string): string {
-  const bashPath = path.replace(/\\/g, '/')
-  return execFileSync('bash', ['-c', `readlink '${bashPath}'`]).toString().trim()
 }
 
 afterAll(() => {

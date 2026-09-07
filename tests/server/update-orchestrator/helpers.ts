@@ -74,6 +74,16 @@ export function runSnippet(snippet: string, env: Record<string, string> = {}): R
   }
 }
 
+/** readlink for tests; forward slashes so MSYS bash resolves Windows paths. */
+export function readlinkSafe(path: string): string {
+  const bashPath = path.split('\\').join('/')
+  const res = spawnSync('bash', ['-c', `readlink '${bashPath}'`], { encoding: 'utf8' })
+  if (res.status !== 0) {
+    throw new Error(`readlink failed for ${path}: ${res.stderr ?? ''}`)
+  }
+  return (res.stdout ?? '').trim()
+}
+
 /**
  * `ln -s` on Windows MSYS copies instead of symlinking unless native
  * symlinks are enabled. CI (ubuntu) always has real symlinks; local
