@@ -386,10 +386,10 @@ active Hermes profile workspace.
 |---|---|
 | UVC camera preview | Live preview with device picker, idle/live state, and clear error messages for permission / missing-device / browser blocks. |
 | Smart Capture | Live edge detection with a draggable selection box; auto-shoots when the box is stable. Manual mode is still available. |
-| Multi-page session | Capture, review, re-shoot, delete, and re-OCR each page in a single session. |
-| Built-in enhance | Auto levels, contrast/brightness, and black & white controls in the page detail view. |
-| OCR | Multi-page OCR via DashScope Qwen-VL-OCR (server route `POST /api/scanner/ocr`). |
-| PDF export | Bundle selected pages into an A4 (or original-ratio) PDF with embedded images (server route `POST /api/scanner/pdf`). |
+| Multi-page session | Capture, review, re-shoot, delete, re-order, and re-OCR each page in a single session. |
+| Built-in enhance | Auto levels, contrast/brightness/sharpen, plus an **Advanced** collapsible with de-shadow, binarize sensitivity, paper whiteness, and denoise; "Apply to all pages" broadcasts the current settings. |
+| OCR | Multi-page OCR via DashScope Qwen-VL-OCR (server route `POST /api/scanner/ocr`), with an optional "Auto OCR after capture" toggle. |
+| PDF export | Bundle selected pages into an A4 (or full-bleed image-fit) PDF; layout, output DPI, and a **searchable** mode that embeds the OCR text as an invisible layer (server route `POST /api/scanner/pdf`). |
 | Workspace save | Persist captured pages and OCR text into the active Hermes profile's workspace (server route `POST /api/scanner/save`). |
 | Plugin architecture | Lives under `packages/client/src/plugins/scanner` with its own Vue views, composables, vision modules, and locale bundles (en/zh + 9 others). |
 
@@ -476,13 +476,90 @@ active Hermes profile workspace.
   case advances the fake timer by 2 s before replying to confirm the slow
   hint is still applied.
 
+**PDF export options (v0.8.0):**
+
+- **Layout toggle.** The export footer now exposes `Layout`: `Fit image
+  (full-bleed)` keeps the page at the source image's aspect ratio; `A4 print`
+  centers the image on a fixed A4 canvas with margins. The A4 path uses the
+  existing A4 box math; the image-fit path uses the configured `Output DPI`
+  (72–600, default 200) to drive JPEG re-encoding size.
+- **Searchable PDF (hidden text layer).** A `Searchable` switch embeds each
+  page's OCR text as an invisible layer (`3 Tr` rendering mode) over the
+  image. The exported file is fully searchable / copyable in Acrobat, Chrome
+  (PDFium), Preview, and mobile readers; pages without OCR text are skipped
+  automatically. The toggle is badge-labeled with the actual page count so
+  reviewers can sanity-check coverage before exporting.
+- **Non-embedded CJK font.** The hidden layer uses `/Subtype /Type0` with
+  `/BaseFont /STSong-Light` and `/Encoding /UniGB-UCS2-H` — a CJK
+  `CIDFontType0` referenced but **not embedded**. Adobe / Chrome (PDFium) /
+  macOS Preview all substitute a system font on render, so a 50-page Chinese
+  scan adds roughly the size of one line of UTF-16 hex per page, not the
+  several-MB font payload a naive embedding would carry. Selection positions
+  are evenly distributed across the page height per OCR line — good enough
+  for search / copy, not pixel-accurate text reflow.
+- **UTF-16BE hex encoding.** `encodeUtf16BeHex()` emits the text stream as
+  a `<…>` PDF hex string in UTF-16BE, paired with `/Encoding /UniGB-UCS2-H`
+  so 2-byte UTF-16 code points map straight to CIDs over the GB1 character
+  set. Non-BMP characters go through the standard surrogate pair.
+
+**Enhancement pipeline (v0.8.0):**
+
+- **Advanced collapsible.** Beyond the existing contrast / brightness / sharpen
+  sliders, the page detail view now exposes an `Advanced` collapsible with:
+  - **De-shadow** (`shadowRemove`, 0–100) — removes the soft shading cast
+    by hands or desk lamps on the page. `100` is full flat-field
+    (background-light division), `0` skips it entirely; intermediate values
+    blend proportionally between the raw gray and the flattened result.
+    Active in the `scan` and `bw` presets.
+  - **Binarize level** (`binarizeSensitivity`, −50..+50) — maps to Sauvola's
+    `k = 0.2 - v*0.004`. Positive values keep more black (strokes thicker /
+    darker), negative values clean the background and may drop faint
+    strokes. Active in the `bw` preset.
+  - **Paper whiteness** (`whiteness`, 0–100) — knee-curve push toward pure
+    white. Pixels below luma 110 (strokes) are kept untouched; only
+    highlights above the knee are stretched, so dark text never lifts with
+    the paper. Active in `scan` and `bw`.
+  - **Denoise** (`denoise`, 0–100) — 3×3 RGB median via a 19-compare sorting
+    network for grayscale / color presets; on `bw` it switches to a binary
+    majority despeckle that flips isolated pixels without eating stroke
+    edges. Active in all presets.
+- **Per-preset visibility.** The advanced section is hidden when no slider
+  is active for the current preset; a small dot marks the toggle when any
+  advanced value differs from its default so users can see they've
+  customized something.
+- **Defaults = legacy behavior.** `ENHANCE_ADVANCED_DEFAULTS`
+  (`shadowRemove=100, denoise=0, binarizeSensitivity=0, whiteness=0`) lock
+  the pipeline to byte-identical output to the pre-slider version when the
+  user hasn't touched anything — `scanner-vision-enhance.test.ts` enforces
+  this. `normalizeEnhanceParams()` backfills the new fields when loading
+  pages persisted by an older build.
+- **Apply to all pages.** Inside the advanced section, a single button copies
+  the current page's full `EnhanceParams` (preset + every slider) to every
+  other page in the session, then re-renders them through the same
+  `enhanceDataUrl` pipeline. A toast confirms how many pages were updated.
+
+**Capture UX (v0.8.0):**
+
+- **Auto OCR after capture.** A toggle near the language picker runs OCR
+  automatically on each page immediately after capture (manual *or* Smart
+  Capture). Disabled by default — it still requires a configured DashScope
+  key. When the toggle is on, every newly captured page transitions
+  `pending → running → done` without an extra click, and the OCR progress
+  shows `Recognizing N/M` while the batch is in flight.
+- **Page reorder.** Each thumbnail now has ↑/↓ buttons on hover (also
+  reachable from the mobile detail view's overflow menu). Pages can be
+  reordered freely between capture and export, and the order is what the
+  server sees for both `save` and `pdf`.
+
 **Server pipeline:**
 
 - `POST /api/scanner/ocr` — DashScope Qwen-VL-OCR over `data:image/...`
   URLs; validates MIME, page count, and per-image size; reuses the Realtime
   store's DashScope API key when the request omits one.
 - `POST /api/scanner/pdf` — packages selected images into a PDF (no external
-  PDF dependency; pages are image-embedded).
+  PDF dependency; pages are image-embedded). Accepts optional `layout`
+  (`image`|`a4`), `dpi` (72–600), and `searchable`+`texts[]` to embed the OCR
+  text as an invisible layer for a searchable / copyable PDF.
 - `POST /api/scanner/save` — writes images + OCR text into the active Hermes
   profile workspace via `getActiveProfileDir()`; configurable base directory,
   filename pattern, and overwrite policy.
@@ -491,8 +568,12 @@ active Hermes profile workspace.
 
 - Unit tests for the worker bridge (`scanner-detector-worker.test.ts`),
   vision precision regressions (`scanner-vision-precision.test.ts`),
-  enhancement filters, OCR validation, PDF building, and Smart Capture state
-  machine (`scanner-smart-capture.test.ts`).
+  enhancement filters including the new advanced sliders
+  (`scanner-vision-enhance.test.ts` — locks
+  `ENHANCE_ADVANCED_DEFAULTS` to byte-identical legacy output), OCR
+  validation, PDF building (`scanner-pdf.test.ts` — also covers
+  layout/dpi/searchable), and Smart Capture state machine
+  (`scanner-smart-capture.test.ts`).
 - E2E (`scanner-precision.spec.ts`) exercises the live preview: selection
   retention through `held`, drag-time freeze, post-release camera tracking,
   and 13" laptop vs. mobile viewports.

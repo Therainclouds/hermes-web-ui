@@ -379,10 +379,10 @@ Hermes profile 的工作区。
 |---|---|
 | UVC 摄像头预览 | 实时预览，支持设备选择，区分空闲/直播状态，针对授权拒绝、未检测到设备、浏览器拦截给出明确提示。 |
 | 智能捕捉 | 实时边缘检测 + 可拖拽选框；选框稳定后自动拍摄，也保留手动模式。 |
-| 多页会话 | 单次会话中可拍摄、重拍、删除、重新识别每一页。 |
-| 内置图像增强 | 详情视图自带自动色阶、对比度/亮度、黑白控制。 |
-| OCR | 通过 DashScope Qwen-VL-OCR 服务端接口（`POST /api/scanner/ocr`）做多页识别。 |
-| PDF 导出 | 把所选页面打包成 A4（或原比例）PDF，图片直嵌（服务端 `POST /api/scanner/pdf`）。 |
+| 多页会话 | 单次会话中可拍摄、重拍、删除、排序、重新识别每一页。 |
+| 内置图像增强 | 详情视图自带自动色阶、对比度/亮度/锐化；折叠的「高级调节」暴露去阴影、二值化程度、底色增白、去噪，并提供「应用到所有页」一键广播当前参数。 |
+| OCR | 通过 DashScope Qwen-VL-OCR 服务端接口（`POST /api/scanner/ocr`）做多页识别，可选「拍后自动识别」。 |
+| PDF 导出 | 把所选页面打包成 A4 或跟随图片的 PDF，可选「可搜索」模式把 OCR 文本作为隐藏文字层嵌入（服务端 `POST /api/scanner/pdf`）。 |
 | 工作区保存 | 把图像和 OCR 文本写入当前 Hermes profile 的工作区（服务端 `POST /api/scanner/save`）。 |
 | 插件架构 | 独立模块位于 `packages/client/src/plugins/scanner`，自带 Vue 视图、组合式 API、视觉模块与多语言包（en/zh + 其他 9 种）。 |
 
@@ -449,12 +449,75 @@ Hermes profile 的工作区。
   抛错四种情形；`scanner-detector-worker.test.ts` 新增一个用例推进 fake
   timer 2 秒后再回包，验证慢 hint 仍被采纳。
 
+**PDF 导出选项（v0.8.0）：**
+
+- **布局切换。** 导出栏新增「页面布局」：「跟随图片（满版）」按源图比例
+  输出，「A4 打印版」则把图居中到固定 A4 画布并保留白边。A4 路径走
+  既有 A4 框算法；满版路径用「输出 DPI」（72–600，默认 200）驱动 JPEG
+  重编码尺寸。
+- **可搜索 PDF（隐藏文字层）。** 「可搜索 PDF」开关开启后，每页 OCR 文本
+  以渲染模式 `3 Tr`（不可见、可选 / 可搜索 / 可复制）叠在图像上。导出
+  文件在 Acrobat、Chrome（PDFium）、Preview、移动端阅读器里都能正常搜索
+  复制；未识别到文字的页自动跳过。开关旁用徽标标出实际带文字层的页数，
+  方便导出前一眼校对覆盖率。
+- **非嵌入 CJK 字体。** 隐藏文字层采用 `/Subtype /Type0` +
+  `/BaseFont /STSong-Light` + `/Encoding /UniGB-UCS2-H` 的 CIDFontType0
+  方案，**不嵌入字体**。Adobe / Chrome（PDFium）/ macOS Preview 都会用
+  系统字体替换渲染，一份 50 页中文扫描的隐藏层体积只来自每页一行 UTF-16
+  hex，不会拖上几 MB 的字体负载。选区是按 OCR 行数均分页面高度的近似
+  行位置——对搜索 / 复制完全够用，不追求逐字像素对齐。
+- **UTF-16BE hex 编码。** `encodeUtf16BeHex()` 把文本流序列化为 PDF 的
+  `<…>` hex string（UTF-16BE），配合 `/Encoding /UniGB-UCS2-H` 让 2 字节
+  UTF-16 码元直接映射到 GB1 的 CID，覆盖全部 GB1 CJK 字符。非 BMP 字符
+  走标准代理对。
+
+**图像增强流水线（v0.8.0）：**
+
+- **高级调节折叠区。** 在原有对比度 / 亮度 / 锐化之上，详情面板新增
+  「高级调节」折叠区，包含：
+  - **去阴影强度**（`shadowRemove`，0–100）——去掉手部 / 台灯投射的柔
+    光阴影。`100` 是完整 flat-field（用背景光做除法归一化），`0` 完全
+    关闭；中间值在原始灰度与 flat-field 结果之间按比例混合。在 `scan`
+    与 `bw` 预设下生效。
+  - **二值化程度**（`binarizeSensitivity`，−50..+50）——映射 Sauvola 的
+    `k = 0.2 - v*0.004`；正值保留更多黑（笔画更黑更粗），负值背景更
+    干净但可能丢失浅笔画。只在 `bw` 预设下生效。
+  - **底色增白**（`whiteness`，0–100）——带拐点（knee）的白点下压：亮度
+    低于 110 的笔画像素原样保留，只把高于拐点的亮部拉伸到纯白，避免
+    「黑点提升」把字拖灰。在 `scan` 与 `bw` 预设下生效。
+  - **去噪**（`denoise`，0–100）——灰度 / 彩色预设用 3×3 RGB 中值（19
+    次比较的最优排序网络，无分支抖动）；`bw` 预设改为二值图斑点清除
+    （3×3 多数滤波），只翻动孤立点而不伤笔画边缘。全部预设下都生效。
+- **按预设显示。** 当前预设下没有任何生效的高级滑杆时，整块折叠区隐
+  藏；任何高级参数偏离默认值时，开关旁会显示一个小圆点，提醒用户已
+  经做过调节。
+- **默认值 = 旧行为。** `ENHANCE_ADVANCED_DEFAULTS`
+  （`shadowRemove=100, denoise=0, binarizeSensitivity=0, whiteness=0`）锁
+  住滑杆未触动时的输出与旧版完全一致，`scanner-vision-enhance.test.ts`
+  专门守这一合约。`normalizeEnhanceParams()` 在反序列化旧数据 / localStorage
+  时自动补齐新增字段，避免历史会话升级后页面渲染异常。
+- **应用到所有页。** 折叠区内一个按钮即可把当前页的全套 `EnhanceParams`
+  （预设 + 全部滑杆）一次性广播到本会话其它所有页，沿用同一 `enhanceDataUrl`
+  流水线重渲染，toast 提示更新了多少页。
+
+**拍摄 UX（v0.8.0）：**
+
+- **拍后自动识别。** 语言选择旁新增「拍后自动识别」开关：开启后，拍摄
+  / 智能拍摄后立刻对本页做 OCR（默认关闭，仍需先配 DashScope Key）。开
+  关开启后，新拍页面会自动 `pending → running → done`，OCR 批次进行时
+  状态栏显示 `识别中 N/M`。
+- **页面排序。** 每张缩略图悬停时出现上下移动按钮（移动端详情面板的溢
+  出菜单内也可触达）。拍摄后到导出前可自由调整顺序，服务端 `save` /
+  `pdf` 都按调整后的顺序读取页面。
+
 **服务端流水线：**
 
 - `POST /api/scanner/ocr` — DashScope Qwen-VL-OCR，接收 `data:image/...`；
   校验 MIME、页数、单图大小；未传 key 时复用 Realtime store 中的 DashScope key。
 - `POST /api/scanner/pdf` — 把所选图像打包成 PDF（无外部 PDF 依赖，页面以
-  图片方式嵌入）。
+  图片方式嵌入）。可选 `layout`（`image`|`a4`）、`dpi`（72–600）以及
+  `searchable`+`texts[]`（开启后把 OCR 文本作为隐藏文字层嵌入，得到可
+  搜索 / 可复制的 PDF）。
 - `POST /api/scanner/save` — 把图像和 OCR 文本写入当前 Hermes profile 的
   工作区（经 `getActiveProfileDir()`）；支持配置基础目录、文件命名规则和
   覆盖策略。
@@ -462,8 +525,11 @@ Hermes profile 的工作区。
 **覆盖：**
 
 - 单元测试覆盖 Worker 桥接（`scanner-detector-worker.test.ts`）、视觉精度
-  回归（`scanner-vision-precision.test.ts`）、图像增强滤镜、OCR 校验、PDF
-  打包，以及 Smart Capture 状态机（`scanner-smart-capture.test.ts`）。
+  回归（`scanner-vision-precision.test.ts`）、图像增强滤镜（含新增高级滑杆
+  —— `scanner-vision-enhance.test.ts` 用例锁住
+  `ENHANCE_ADVANCED_DEFAULTS` 与旧版输出逐字节一致）、OCR 校验、PDF 打包
+  （`scanner-pdf.test.ts` 同时覆盖 layout / dpi / searchable），以及
+  Smart Capture 状态机（`scanner-smart-capture.test.ts`）。
 - 端到端测试（`scanner-precision.spec.ts`）覆盖实时预览：选框进入 `held`
   后仍保留、拖动期间冻结、松手后跟随摄像头移动，以及 13" 笔记本与移动端
   两种视口。

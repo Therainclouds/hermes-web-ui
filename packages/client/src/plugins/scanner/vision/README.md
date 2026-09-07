@@ -54,6 +54,26 @@ already shipped once.
   the old code produced corrupt PDFs for PNG input. Non-JPEG input is decoded
   with sharp, then either packed to 1bpp + deflate (bilevel) or re-encoded to
   JPEG.
+- **Searchable text layers are invisible (3 Tr) + non-embedded CID font.**
+  `buildInvisibleTextStream` writes per-page OCR text as UTF-16BE hex strings
+  under `/STSong-Light` + `/UniGB-UCS2-H`; viewers substitute a system CJK font,
+  so no font file ships with the app. Selection is per-line (evenly split page
+  height), never per-glyph — don't promise exact highlight alignment.
+- **Advanced enhance sliders default to the legacy pipeline.** `shadowRemove=100,
+  denoise=0, binarizeSensitivity=0, whiteness=0` must produce byte-identical
+  output to the old fixed pipeline (`ENHANCE_ADVANCED_DEFAULTS` +
+  `tests/client/scanner-vision-enhance.test.ts` lock this). `whitenPaper` is a
+  knee curve: pixels below luma 110 (strokes) are untouched, only highlights are
+  stretched — a plain black-point lift darkens text and is wrong.
+
+## Adjustable enhance parameters (UI: 高级调节)
+
+| param | range | effect |
+| --- | --- | --- |
+| `shadowRemove` | 0..100 | blend between raw illumination and flat-fielded gray (scan/bw) |
+| `denoise` | 0..100 | 3×3 median (RGBA presets) or binary despeckle (bw) |
+| `binarizeSensitivity` | -50..50 | maps Sauvola `k = 0.2 - v*0.004`; positive → thicker/darker strokes |
+| `whiteness` | 0..100 | knee white-point push (scan/bw), strokes below knee kept |
 
 ## Cost budget (2200×1600 page, main thread)
 

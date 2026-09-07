@@ -39,6 +39,20 @@ export interface ScannerSavePage extends ScannerPageInput {
   text?: string
 }
 
+export interface ScannerPdfPageInput extends ScannerPageInput {
+  /** 该页 OCR 文本；searchable PDF 的隐藏文字层数据源。 */
+  text?: string
+}
+
+export interface ScannerPdfOptions {
+  /** 页面布局：'image'（默认）满版跟随图片；'a4' 固定 A4 留白打印版。 */
+  layout?: 'image' | 'a4'
+  /** layout='image' 时的输出 DPI（72..600，默认 200）。 */
+  dpi?: number
+  /** 把 OCR 文本作为隐藏文字层嵌进 PDF（可搜索 / 可复制）。 */
+  searchable?: boolean
+}
+
 export interface ScannerSaveRequest {
   pages: ScannerSavePage[]
   title?: string
@@ -78,7 +92,10 @@ export function saveScannerDocument(input: ScannerSaveRequest): Promise<ScannerS
  * 把多张扫描图打包成 PDF。返回 Blob URL，调用方负责 `URL.revokeObjectURL` 释放。
  * 不能复用 `request()`：服务端返回 application/pdf 流而非 JSON。
  */
-export async function exportScannerPdf(pages: ScannerPageInput[]): Promise<{ blob: Blob; url: string; filename: string }> {
+export async function exportScannerPdf(
+  pages: ScannerPdfPageInput[],
+  options: ScannerPdfOptions = {},
+): Promise<{ blob: Blob; url: string; filename: string }> {
   const apiKey = (typeof localStorage !== 'undefined' ? localStorage.getItem('hermes_api_key') : '') || ''
   const profile = (typeof localStorage !== 'undefined' ? localStorage.getItem('hermes_active_profile_name') : '') || ''
   const baseUrl = (typeof localStorage !== 'undefined' ? (localStorage.getItem('hermes_server_url') || '') : '') || ''
@@ -90,7 +107,13 @@ export async function exportScannerPdf(pages: ScannerPageInput[]): Promise<{ blo
   const response = await fetch(`${baseUrl}/api/scanner/pdf`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ pages }),
+    body: JSON.stringify({
+      pages,
+      layout: options.layout,
+      dpi: options.dpi,
+      searchable: options.searchable,
+      texts: options.searchable ? pages.map(p => p.text || '') : undefined,
+    }),
   })
   if (!response.ok) {
     let message = `HTTP ${response.status}`

@@ -50,6 +50,7 @@ import {
   ENHANCE_DEFAULTS,
   ENHANCE_PRESET_LABEL_KEYS,
   ENHANCE_PRESET_ORDER,
+  sameEnhanceParams,
   type EnhanceParams,
   type EnhancePreset,
   type Quad,
@@ -332,6 +333,7 @@ function pushPage(original: string, image: string, width: number, height: number
   }
   pages.value.push(page)
   activePageId.value = page.id
+  maybeAutoRecognize(page)
 }
 async function refreshVideoInputs() {
   devices.value = await cam.listVideoInputs()
@@ -417,6 +419,43 @@ async function deletePage(id: string) {
   if (activePageId.value === id) activePageId.value = pages.value[0]?.id ?? null
 }
 
+/** 上移 / 下移排序（导出 PDF 与保存的顺序即页面列表顺序）。 */
+function movePage(id: string, direction: -1 | 1) {
+  const index = pages.value.findIndex(p => p.id === id)
+  const target = index + direction
+  if (index < 0 || target < 0 || target >= pages.value.length) return
+  const next = [...pages.value]
+  const [item] = next.splice(index, 1)
+  next.splice(target, 0, item!)
+  pages.value = next
+}
+
+const movePageUp = (id: string) => movePage(id, -1)
+const movePageDown = (id: string) => movePage(id, 1)
+
+/** 把当前页的增强参数批量套用到所有页，并逐页重算增强图。 */
+const applyAllLoading = ref(false)
+async function applyEnhanceToAll() {
+  const source = activePage.value
+  if (!source || applyAllLoading.value) return
+  applyAllLoading.value = true
+  try {
+    for (const page of pages.value) {
+      if (page.id === source.id) continue
+      page.enhance = { ...source.enhance }
+      const url = await enhanceDataUrl(page.originalImage, page.enhance)
+      if (url && pages.value.some(p => p.id === page.id)) {
+        page.image = url
+        page.applied = { ...page.enhance }
+      }
+    }
+    if (!sameEnhanceParams(source.applied, source.enhance)) scheduleEnhance()
+    message.success(tt('scanner.enhance.applyAllDone', { count: Math.max(0, pages.value.length - 1) }))
+  } finally {
+    applyAllLoading.value = false
+  }
+}
+
 function clearAll() {
   pages.value = []
   activePageId.value = null
@@ -442,18 +481,11 @@ const activePageAspectLabel = computed(() => {
  * ------------------------------------------------------------------ */
 let enhanceDebounce = 0
 
-function sameEnhance(a: EnhanceParams, b: EnhanceParams): boolean {
-  return a.preset === b.preset
-    && a.contrast === b.contrast
-    && a.brightness === b.brightness
-    && a.sharpen === b.sharpen
-}
-
 async function recomputePageImage(page: ScannerPage) {
   const params = { ...page.enhance }
   const url = await enhanceDataUrl(page.originalImage, params)
   if (!url || !pages.value.some(p => p.id === page.id)) return
-  if (!sameEnhance(page.enhance, params)) {
+  if (!sameEnhanceParams(page.enhance, params)) {
     // 计算期间参数又被改过：按最新参数再算一次
     scheduleEnhance()
     return
@@ -464,7 +496,7 @@ async function recomputePageImage(page: ScannerPage) {
 
 function scheduleEnhance() {
   const page = activePage.value
-  if (!page || sameEnhance(page.applied, page.enhance)) return
+  if (!page || sameEnhanceParams(page.applied, page.enhance)) return
   window.clearTimeout(enhanceDebounce)
   enhanceDebounce = window.setTimeout(() => {
     void recomputePageImage(page)
@@ -593,6 +625,23 @@ async function correctActivePage() {
 /* ------------------------------------------------------------------ *
  * OCR / 保存 / PDF
  * ------------------------------------------------------------------ */
+/** 调单页 OCR 并把结果写回页面（页面可能在请求期间被删除，写回前重新查找）。 */
+async function fetchOcrIntoPage(pageId: string) {
+  const requestPage = pages.value.find(p => p.id === pageId)
+  if (!requestPage) return null
+  const response: ScannerOcrResponse = await runScannerOcr({
+    pages: [{ image: requestPage.image }],
+    language: language.value,
+  })
+  const target = pages.value.find(p => p.id === pageId)
+  if (!target) return null
+  const first = response.pages[0]
+  target.text = first?.text || ''
+  target.status = 'done'
+  target.error = ''
+  return first
+}
+
 async function recognizeActivePage() {
   const page = activePage.value
   if (!page) return
@@ -600,12 +649,7 @@ async function recognizeActivePage() {
   page.status = 'running'
   page.error = ''
   try {
-    const response: ScannerOcrResponse = await runScannerOcr({
-      pages: [{ image: page.image }],
-      language: language.value,
-    })
-    const first = response.pages[0]
-    page.text = first?.text || ''
+    const first = await fetchOcrIntoPage(page.id)
     page.status = 'done'
     if (!first?.hasContent) {
       message.warning(tt('scanner.ocr.empty'))
@@ -619,40 +663,100 @@ async function recognizeActivePage() {
   }
 }
 
+/** 批量 OCR 每次请求的页数：服务端单请求上限 30 页，但少页一批更稳、
+ *  也能逐批反馈进度；单批失败只影响这一批，继续识别剩余页。 */
+const OCR_CHUNK_SIZE = 4
+const ocrProgress = ref<{ done: number; total: number } | null>(null)
+
 async function recognizeAll() {
   if (pages.value.length === 0) {
     message.warning(tt('scanner.pages.empty'))
     return
   }
+  const pending = pages.value.filter(p => p.status !== 'done')
+  if (pending.length === 0) {
+    message.info(tt('scanner.ocr.allDone'))
+    return
+  }
   ocrAllLoading.value = true
+  ocrProgress.value = { done: 0, total: pending.length }
   try {
-    const pending = pages.value.filter(p => p.status !== 'done')
-    if (pending.length === 0) {
-      message.info(tt('scanner.ocr.allDone'))
-      return
-    }
-    const response = await runScannerOcr({
-      pages: pending.map(p => ({ image: p.image })),
-      language: language.value,
-    })
-    for (const [index, page] of pending.entries()) {
-      const result = response.pages[index]
-      page.text = result?.text || ''
-      page.status = 'done'
-    }
-    message.success(tt('scanner.ocr.batchDone', { count: pending.length }))
-  } catch (err: any) {
-    const msg = err?.message || tt('scanner.ocr.failed')
-    for (const page of pages.value) {
-      if (page.status === 'running') {
-        page.status = 'error'
-        page.error = msg
+    let failed = 0
+    for (let i = 0; i < pending.length; i += OCR_CHUNK_SIZE) {
+      const chunk = pending.slice(i, i + OCR_CHUNK_SIZE)
+      for (const page of chunk) {
+        page.status = 'running'
+        page.error = ''
       }
+      try {
+        const response = await runScannerOcr({
+          pages: chunk.map(p => ({ image: p.image })),
+          language: language.value,
+        })
+        for (const [index, page] of chunk.entries()) {
+          const result = response.pages[index]
+          if (!pages.value.some(p => p.id === page.id)) continue
+          page.text = result?.text || ''
+          page.status = 'done'
+        }
+      } catch (err: any) {
+        failed += chunk.length
+        const msg = err?.message || tt('scanner.ocr.failed')
+        for (const page of chunk) {
+          if (!pages.value.some(p => p.id === page.id)) continue
+          page.status = 'error'
+          page.error = msg
+        }
+        message.error(msg)
+      }
+      ocrProgress.value = { done: Math.min(pending.length, i + OCR_CHUNK_SIZE), total: pending.length }
     }
-    message.error(msg)
+    if (failed === 0) {
+      message.success(tt('scanner.ocr.batchDone', { count: pending.length }))
+    }
   } finally {
     ocrAllLoading.value = false
+    ocrProgress.value = null
   }
+}
+
+/* ----------------------- 拍摄后自动识别 ----------------------- */
+const AUTO_OCR_STORAGE_KEY = 'hermes.scanner.autoOcr'
+
+function readAutoOcrPref(): boolean {
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem(AUTO_OCR_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+const autoOcr = ref(readAutoOcrPref())
+watch(autoOcr, (v) => {
+  try {
+    localStorage.setItem(AUTO_OCR_STORAGE_KEY, v ? '1' : '0')
+  } catch { /* ignore */ }
+})
+
+// 串行队列：连拍多页时逐页识别，不并发轰服务端
+let autoOcrQueue: Promise<void> = Promise.resolve()
+
+function enqueueAutoOcr(pageId: string) {
+  autoOcrQueue = autoOcrQueue
+    .then(async () => { await fetchOcrIntoPage(pageId) })
+    .catch((err: any) => {
+      const target = pages.value.find(p => p.id === pageId)
+      if (target) {
+        target.status = 'error'
+        target.error = err?.message || tt('scanner.ocr.failed')
+      }
+    })
+}
+
+function maybeAutoRecognize(page: ScannerPage) {
+  if (!autoOcr.value || !dashscopeReady.value) return
+  page.status = 'running'
+  enqueueAutoOcr(page.id)
 }
 
 async function saveToWorkspace() {
@@ -684,7 +788,14 @@ async function exportPdf() {
   pdfLoading.value = true
   let url: string | null = null
   try {
-    const result = await exportScannerPdf(pages.value.map(p => ({ image: p.image })))
+    const result = await exportScannerPdf(
+      pages.value.map(p => ({ image: p.image, text: p.text })),
+      {
+        layout: pdfLayout.value,
+        dpi: pdfLayout.value === 'image' ? pdfDpi.value : undefined,
+        searchable: pdfSearchable.value,
+      },
+    )
     url = result.url
     const link = document.createElement('a')
     link.href = result.url
@@ -702,6 +813,23 @@ async function exportPdf() {
     }
   }
 }
+
+/* ----------------------- PDF 导出选项 ----------------------- */
+const pdfLayout = ref<'image' | 'a4'>('image')
+const pdfDpi = ref<number>(200)
+/** 把 OCR 文本作为隐藏文字层嵌进 PDF（可搜索、可复制），默认开启。 */
+const pdfSearchable = ref(true)
+const pdfOptionsOpen = ref(false)
+const pdfLayoutOptions = [
+  { label: tt('scanner.pdf.layoutImage'), value: 'image' },
+  { label: tt('scanner.pdf.layoutA4'), value: 'a4' },
+]
+const pdfDpiOptions = [
+  { label: '150 DPI', value: 150 },
+  { label: '200 DPI', value: 200 },
+  { label: '300 DPI', value: 300 },
+]
+const pdfSearchableCount = computed(() => pages.value.filter(p => (p.text || '').trim().length > 0).length)
 
 async function ensureKeyLoaded() {
   await realtimeModelStore.loadFromServer().catch(() => undefined)
@@ -908,6 +1036,10 @@ const cameraHintTone = computed(() => {
               size="small"
               class="toolbar-lang-select"
             />
+            <label class="smart-option smart-auto" :title="tt('scanner.ocr.autoOcrHint')">
+              <NSwitch v-model:value="autoOcr" size="small" data-testid="scanner-auto-ocr" />
+              <span>{{ tt('scanner.ocr.autoOcr') }}</span>
+            </label>
             <NTooltip>
               <template #trigger>
                 <NButton
@@ -917,7 +1049,9 @@ const cameraHintTone = computed(() => {
                   :disabled="pages.length === 0"
                   @click="recognizeAll"
                 >
-                  {{ tt('scanner.ocr.recognizeAll') }}
+                  {{ ocrProgress
+                    ? tt('scanner.ocr.progress', ocrProgress)
+                    : tt('scanner.ocr.recognizeAll') }}
                 </NButton>
               </template>
               {{ tt('scanner.ocr.recognizeAllHint') }}
@@ -932,6 +1066,10 @@ const cameraHintTone = computed(() => {
               size="small"
               class="mobile-lang-select"
             />
+            <label class="smart-option smart-auto" :title="tt('scanner.ocr.autoOcrHint')">
+              <NSwitch v-model:value="autoOcr" size="small" />
+              <span>{{ tt('scanner.ocr.autoOcr') }}</span>
+            </label>
             <NButton
               size="small"
               type="primary"
@@ -940,7 +1078,9 @@ const cameraHintTone = computed(() => {
               block
               @click="recognizeAll"
             >
-              {{ tt('scanner.ocr.recognizeAll') }}
+              {{ ocrProgress
+                ? tt('scanner.ocr.progress', ocrProgress)
+                : tt('scanner.ocr.recognizeAll') }}
             </NButton>
           </div>
 
@@ -1104,6 +1244,32 @@ const cameraHintTone = computed(() => {
               >
                 ×
               </span>
+              <span class="page-thumb-reorder">
+                <span
+                  role="button"
+                  tabindex="0"
+                  class="page-thumb-move"
+                  :class="{ 'is-disabled': idx === 0 }"
+                  :title="tt('scanner.pages.moveUp')"
+                  :aria-label="tt('scanner.pages.moveUp')"
+                  :aria-disabled="idx === 0"
+                  :data-testid="`scanner-page-up-${idx}`"
+                  @click.stop="idx > 0 && movePageUp(page.id)"
+                  @keydown.enter.stop.prevent="idx > 0 && movePageUp(page.id)"
+                >↑</span>
+                <span
+                  role="button"
+                  tabindex="0"
+                  class="page-thumb-move"
+                  :class="{ 'is-disabled': idx === pages.length - 1 }"
+                  :title="tt('scanner.pages.moveDown')"
+                  :aria-label="tt('scanner.pages.moveDown')"
+                  :aria-disabled="idx === pages.length - 1"
+                  :data-testid="`scanner-page-down-${idx}`"
+                  @click.stop="idx < pages.length - 1 && movePageDown(page.id)"
+                  @keydown.enter.stop.prevent="idx < pages.length - 1 && movePageDown(page.id)"
+                >↓</span>
+              </span>
             </button>
           </div>
         </section>
@@ -1155,23 +1321,45 @@ const cameraHintTone = computed(() => {
               :params="activePage.enhance"
               :correcting="correcting"
               :rotating="rotating"
+              :apply-all-loading="applyAllLoading"
               @update:params="onEnhanceParams"
               @correct="correctActivePage"
               @rotate-left="rotateActivePage('left')"
               @rotate-right="rotateActivePage('right')"
               @reset="resetEnhance"
+              @apply-all="applyEnhanceToAll"
             />
             <div class="scanner-detail-text">
               <div class="scanner-detail-toolbar">
                 <span class="scanner-detail-title">{{ tt('scanner.detail.textTitle') }}</span>
-                <NButton
-                  size="tiny"
-                  type="primary"
-                  :loading="ocrOneLoading"
-                  @click="recognizeActivePage"
-                >
-                  {{ activePage.text ? tt('scanner.ocr.recognizeAgain') : tt('scanner.ocr.recognize') }}
-                </NButton>
+                <span class="scanner-detail-toolbar-actions">
+                  <NButton
+                    size="tiny"
+                    quaternary
+                    :disabled="activePageId === pages[0]?.id"
+                    :title="tt('scanner.pages.moveUp')"
+                    @click="activePageId && movePageUp(activePageId)"
+                  >
+                    ↑ {{ tt('scanner.pages.moveUp') }}
+                  </NButton>
+                  <NButton
+                    size="tiny"
+                    quaternary
+                    :disabled="activePageId === pages[pages.length - 1]?.id"
+                    :title="tt('scanner.pages.moveDown')"
+                    @click="activePageId && movePageDown(activePageId)"
+                  >
+                    ↓ {{ tt('scanner.pages.moveDown') }}
+                  </NButton>
+                  <NButton
+                    size="tiny"
+                    type="primary"
+                    :loading="ocrOneLoading"
+                    @click="recognizeActivePage"
+                  >
+                    {{ activePage.text ? tt('scanner.ocr.recognizeAgain') : tt('scanner.ocr.recognize') }}
+                  </NButton>
+                </span>
               </div>
               <NAlert
                 v-if="activePage.status === 'error' && activePage.error"
@@ -1200,12 +1388,52 @@ const cameraHintTone = computed(() => {
         </NSpin>
 
         <footer v-if="pages.length > 0" class="scanner-actions">
-          <NButton :loading="saveLoading" :disabled="rotating || correcting" @click="saveToWorkspace">
-            {{ tt('scanner.save.action') }}
-          </NButton>
-          <NButton :loading="pdfLoading" :disabled="rotating || correcting" type="primary" @click="exportPdf">
-            {{ tt('scanner.pdf.action') }}
-          </NButton>
+          <div class="pdf-options">
+            <button
+              type="button"
+              class="pdf-options-toggle"
+              data-testid="scanner-pdf-options-toggle"
+              @click="pdfOptionsOpen = !pdfOptionsOpen"
+            >
+              <span class="advanced-chevron" :class="{ open: pdfOptionsOpen }">▸</span>
+              {{ tt('scanner.pdf.options') }}
+              <span v-if="pdfSearchable" class="pdf-options-badge">
+                {{ tt('scanner.pdf.searchableBadge', { count: pdfSearchableCount }) }}
+              </span>
+            </button>
+            <div v-if="pdfOptionsOpen" class="pdf-options-body" data-testid="scanner-pdf-options">
+              <div class="pdf-options-row">
+                <span class="pdf-options-label">{{ tt('scanner.pdf.layout') }}</span>
+                <NSelect
+                  v-model:value="pdfLayout"
+                  :options="pdfLayoutOptions"
+                  size="tiny"
+                  class="pdf-options-select"
+                />
+              </div>
+              <div v-if="pdfLayout === 'image'" class="pdf-options-row">
+                <span class="pdf-options-label">{{ tt('scanner.pdf.dpi') }}</span>
+                <NSelect
+                  v-model:value="pdfDpi"
+                  :options="pdfDpiOptions"
+                  size="tiny"
+                  class="pdf-options-select"
+                />
+              </div>
+              <label class="pdf-options-row pdf-options-switch" :title="tt('scanner.pdf.searchableHint')">
+                <NSwitch v-model:value="pdfSearchable" size="small" data-testid="scanner-pdf-searchable" />
+                <span>{{ tt('scanner.pdf.searchable') }}</span>
+              </label>
+            </div>
+          </div>
+          <div class="scanner-actions-buttons">
+            <NButton :loading="saveLoading" :disabled="rotating || correcting" @click="saveToWorkspace">
+              {{ tt('scanner.save.action') }}
+            </NButton>
+            <NButton :loading="pdfLoading" :disabled="rotating || correcting" type="primary" @click="exportPdf">
+              {{ tt('scanner.pdf.action') }}
+            </NButton>
+          </div>
         </footer>
 
         <NAlert
@@ -1242,14 +1470,34 @@ const cameraHintTone = computed(() => {
               :params="activePage.enhance"
               :correcting="correcting"
               :rotating="rotating"
+              :apply-all-loading="applyAllLoading"
               @update:params="onEnhanceParams"
               @correct="correctActivePage"
               @rotate-left="rotateActivePage('left')"
               @rotate-right="rotateActivePage('right')"
               @reset="resetEnhance"
+              @apply-all="applyEnhanceToAll"
             />
             <div class="mobile-detail-text">
               <div class="mobile-detail-text-toolbar">
+                <NButton
+                  size="small"
+                  quaternary
+                  :disabled="activePageId === pages[0]?.id"
+                  :title="tt('scanner.pages.moveUp')"
+                  @click="activePageId && movePageUp(activePageId)"
+                >
+                  ↑
+                </NButton>
+                <NButton
+                  size="small"
+                  quaternary
+                  :disabled="activePageId === pages[pages.length - 1]?.id"
+                  :title="tt('scanner.pages.moveDown')"
+                  @click="activePageId && movePageDown(activePageId)"
+                >
+                  ↓
+                </NButton>
                 <NButton
                   size="small"
                   type="primary"
@@ -1294,12 +1542,51 @@ const cameraHintTone = computed(() => {
           </div>
         </NSpin>
         <footer v-if="pages.length > 0" class="mobile-detail-actions">
-          <NButton :loading="saveLoading" :disabled="rotating || correcting" block @click="saveToWorkspace">
-            {{ tt('scanner.save.action') }}
-          </NButton>
-          <NButton :loading="pdfLoading" :disabled="rotating || correcting" type="primary" block @click="exportPdf">
-            {{ tt('scanner.pdf.action') }}
-          </NButton>
+          <div class="pdf-options">
+            <button
+              type="button"
+              class="pdf-options-toggle"
+              @click="pdfOptionsOpen = !pdfOptionsOpen"
+            >
+              <span class="advanced-chevron" :class="{ open: pdfOptionsOpen }">▸</span>
+              {{ tt('scanner.pdf.options') }}
+              <span v-if="pdfSearchable" class="pdf-options-badge">
+                {{ tt('scanner.pdf.searchableBadge', { count: pdfSearchableCount }) }}
+              </span>
+            </button>
+            <div v-if="pdfOptionsOpen" class="pdf-options-body">
+              <div class="pdf-options-row">
+                <span class="pdf-options-label">{{ tt('scanner.pdf.layout') }}</span>
+                <NSelect
+                  v-model:value="pdfLayout"
+                  :options="pdfLayoutOptions"
+                  size="tiny"
+                  class="pdf-options-select"
+                />
+              </div>
+              <div v-if="pdfLayout === 'image'" class="pdf-options-row">
+                <span class="pdf-options-label">{{ tt('scanner.pdf.dpi') }}</span>
+                <NSelect
+                  v-model:value="pdfDpi"
+                  :options="pdfDpiOptions"
+                  size="tiny"
+                  class="pdf-options-select"
+                />
+              </div>
+              <label class="pdf-options-row pdf-options-switch" :title="tt('scanner.pdf.searchableHint')">
+                <NSwitch v-model:value="pdfSearchable" size="small" />
+                <span>{{ tt('scanner.pdf.searchable') }}</span>
+              </label>
+            </div>
+          </div>
+          <div class="mobile-detail-actions-buttons">
+            <NButton :loading="saveLoading" :disabled="rotating || correcting" block @click="saveToWorkspace">
+              {{ tt('scanner.save.action') }}
+            </NButton>
+            <NButton :loading="pdfLoading" :disabled="rotating || correcting" type="primary" block @click="exportPdf">
+              {{ tt('scanner.pdf.action') }}
+            </NButton>
+          </div>
         </footer>
       </div>
     </div>
@@ -1680,6 +1967,42 @@ const cameraHintTone = computed(() => {
   display: block;
 }
 
+.page-thumb-reorder {
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  display: none;
+  gap: 2px;
+}
+
+.page-thumb:hover .page-thumb-reorder {
+  display: flex;
+}
+
+.page-thumb-move {
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  border: 0;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 20px;
+  text-align: center;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.page-thumb-move:hover:not(.is-disabled) {
+  background: rgba(0, 0, 0, 0.8);
+}
+
+.page-thumb-move.is-disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
 /* 移动端：横向滚动条覆盖在 camera-stage 下方，hover/active 区分选中。
  * 与 FAB 不冲突：thumbs 高度 76px，FAB 直径 68px，左右各留 12px padding。 */
 .mobile-thumbs {
@@ -1835,9 +2158,92 @@ const cameraHintTone = computed(() => {
 
 .scanner-actions {
   display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.scanner-actions-buttons {
+  display: flex;
   gap: 10px;
   justify-content: flex-end;
-  flex-shrink: 0;
+}
+
+.scanner-detail-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* PDF 导出选项（布局 / DPI / 可搜索文字层） */
+.pdf-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid $border-light;
+  border-radius: $radius-sm;
+  padding: 6px 8px;
+}
+
+.pdf-options-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: none;
+  padding: 2px 0;
+  font-size: 12px;
+  color: $text-muted;
+  cursor: pointer;
+  text-align: left;
+}
+
+.pdf-options-toggle:hover {
+  color: inherit;
+}
+
+.advanced-chevron {
+  display: inline-block;
+  transition: transform 0.15s ease;
+}
+
+.advanced-chevron.open {
+  transform: rotate(90deg);
+}
+
+.pdf-options-badge {
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: $border-light;
+}
+
+.pdf-options-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 16px;
+}
+
+.pdf-options-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pdf-options-label {
+  font-size: 12px;
+  color: $text-muted;
+  min-width: 64px;
+}
+
+.pdf-options-select {
+  width: 140px;
+}
+
+.pdf-options-switch {
+  cursor: pointer;
+  font-size: 12px;
 }
 
 .scanner-warn {
@@ -1984,6 +2390,15 @@ const cameraHintTone = computed(() => {
   padding: 10px 14px 14px;
   border-top: 1px solid $border-light;
   flex-shrink: 0;
+}
+
+.mobile-detail-actions-buttons {
+  display: flex;
+  gap: 8px;
+
+  :deep(.n-button) {
+    flex: 1;
+  }
 }
 
 @media (max-width: $breakpoint-mobile) {

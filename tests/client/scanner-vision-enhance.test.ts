@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { applyEnhance, adjustContrastBrightness, autoLevels, toBlackAndWhite } from '@/plugins/scanner/vision/enhance'
-import { otsuThreshold, rgbaToGray, rotateRgba90, toGrayscaleRgba } from '@/plugins/scanner/vision/filters'
-import { ENHANCE_DEFAULTS, type RgbaImage } from '@/plugins/scanner/vision/types'
+import { applyEnhance, adjustContrastBrightness, autoLevels, toBlackAndWhite, whitenPaper } from '@/plugins/scanner/vision/enhance'
+import { despeckleBinary, medianRgba, otsuThreshold, rgbaToGray, rotateRgba90, toGrayscaleRgba } from '@/plugins/scanner/vision/filters'
+import { ENHANCE_ADVANCED_DEFAULTS, ENHANCE_DEFAULTS, type RgbaImage } from '@/plugins/scanner/vision/types'
 
 function solidImage(width: number, height: number, rgb: [number, number, number]): RgbaImage {
   const data = new Uint8ClampedArray(width * height * 4)
@@ -131,7 +131,7 @@ describe('scanner vision enhance', () => {
         src2.data[o + 2] = 200
       }
     }
-    const out = applyEnhance(src2, { preset: 'none', contrast: 100, brightness: 0, sharpen: 100 })
+    const out = applyEnhance(src2, { preset: 'none', contrast: 100, brightness: 0, sharpen: 100, ...ENHANCE_ADVANCED_DEFAULTS })
     for (let i = 0; i < out.data.length; i++) {
       expect(out.data[i]!).toBeGreaterThanOrEqual(0)
       expect(out.data[i]!).toBeLessThanOrEqual(255)
@@ -245,5 +245,138 @@ describe('scanner rotate', () => {
     expect(rotated.width).toBe(src.width)
     expect(rotated.height).toBe(src.height)
     expect(Array.from(rotated.data)).toEqual(Array.from(src.data))
+  })
+})
+
+describe('scanner enhance: advanced sliders (shadow strength / whiteness / denoise / binarize level)', () => {
+  it('defaults keep the legacy behaviour (full de-shadow, no denoise, neutral binarize)', () => {
+    expect(ENHANCE_ADVANCED_DEFAULTS).toEqual({
+      shadowRemove: 100,
+      denoise: 0,
+      binarizeSensitivity: 0,
+      whiteness: 0,
+    })
+    // 预设默认值输出必须与旧行为一致：暗侧纸面接近纯白
+    const out = applyEnhance(shadowedPage(240, 180), { ...ENHANCE_DEFAULTS.scan })
+    expect(lumaAt(out, 20, 12)).toBeGreaterThan(225)
+    expect(lumaAt(out, 220, 12)).toBeGreaterThan(225)
+  })
+
+  it('shadowRemove=0 skips flat-field so the shaded half stays dark', () => {
+    const src = shadowedPage(240, 180)
+    const withShadow = applyEnhance(src, { ...ENHANCE_DEFAULTS.scan, shadowRemove: 0 })
+    const withoutShadow = applyEnhance(src, { ...ENHANCE_DEFAULTS.scan, shadowRemove: 100 })
+    // 不去阴影时亮侧(x=20)远亮于暗侧(x=220)；去阴影后两侧趋近
+    const bright = lumaAt(withShadow, 20, 12)
+    const shaded = lumaAt(withShadow, 220, 12)
+    expect(bright - shaded).toBeGreaterThan(30)
+    const flatBright = lumaAt(withoutShadow, 20, 12)
+    const flatShaded = lumaAt(withoutShadow, 220, 12)
+    expect(Math.abs(flatBright - flatShaded)).toBeLessThan(bright - shaded)
+  })
+
+  it('shadowRemove blends proportionally between raw and flattened grey', () => {
+    const src = shadowedPage(240, 180)
+    const raw = applyEnhance(src, { ...ENHANCE_DEFAULTS.scan, shadowRemove: 0 })
+    const full = applyEnhance(src, { ...ENHANCE_DEFAULTS.scan, shadowRemove: 100 })
+    const half = applyEnhance(src, { ...ENHANCE_DEFAULTS.scan, shadowRemove: 50 })
+    const mid = (lumaAt(raw, 20, 12) + lumaAt(full, 20, 12)) / 2
+    expect(Math.abs(lumaAt(half, 20, 12) - mid)).toBeLessThanOrEqual(6)
+  })
+
+  it('whiteness pushes paper towards pure white while keeping text dark', () => {
+    // 底色 200 的纸面 + 深色文字（40）
+    const gray = { width: 4, height: 2, data: Uint8ClampedArray.from([200, 200, 200, 200, 40, 40, 40, 40]) }
+    const plain = whitenPaper(gray, 0)
+    expect(Array.from(plain.data)).toEqual(Array.from(gray.data))
+    const whitened = whitenPaper(gray, 50)
+    // 纸面（> knee 110）被拉伸到纯白；文字（< knee）原样保留
+    expect(whitened.data[0]).toBe(255)
+    expect(whitened.data[4]).toBe(40)
+  })
+
+  it('bw whiteness raises the black point so Sauvola keeps the background clean', () => {
+    const src = shadowedPage(240, 180)
+    const tuned = applyEnhance(src, { ...ENHANCE_DEFAULTS.bw, whiteness: 40 })
+    // 纸面行仍为纯白，文字行仍为纯黑（不因增白而糊掉）
+    expect(lumaAt(tuned, 20, 12)).toBe(255)
+    expect(lumaAt(tuned, 220, 16)).toBe(0)
+  })
+
+  it('denoise removes salt-and-pepper specks from gray output', () => {
+    const src = solidImage(16, 16, [180, 180, 180])
+    const noisy: RgbaImage = { ...src, data: new Uint8ClampedArray(src.data) }
+    // 撒 6 个孤立黑点
+    for (const [x, y] of [[3, 3], [8, 4], [12, 9], [5, 12], [10, 14], [1, 8]] as const) {
+      const o = (y * 16 + x) * 4
+      noisy.data[o] = 0
+      noisy.data[o + 1] = 0
+      noisy.data[o + 2] = 0
+    }
+    const cleaned = applyEnhance(noisy, { ...ENHANCE_DEFAULTS.gray, denoise: 100 })
+    for (const [x, y] of [[3, 3], [8, 4], [12, 9], [5, 12], [10, 14], [1, 8]] as const) {
+      expect(lumaAt(cleaned, x, y)).toBeGreaterThan(120)
+    }
+  })
+
+  it('medianRgba with strength 0 is a no-op and strength 100 replaces with the median', () => {
+    const src = solidImage(4, 4, [100, 100, 100])
+    const same = medianRgba(src, 0)
+    expect(Array.from(same.data)).toEqual(Array.from(src.data))
+    const noisy: RgbaImage = { ...src, data: new Uint8ClampedArray(src.data) }
+    noisy.data[(2 * 4 + 2) * 4] = 0
+    const cleaned = medianRgba(noisy, 100)
+    expect(cleaned.data[(2 * 4 + 2) * 4]).toBe(100)
+  })
+
+  it('despeckleBinary flips isolated pixels only in strict mode', () => {
+    // 3x3，中心一个孤立黑点
+    const binary = {
+      width: 3,
+      height: 3,
+      data: Uint8ClampedArray.from([255, 255, 255, 255, 0, 255, 255, 255, 255]),
+    }
+    const strict = despeckleBinary(binary, 40)
+    expect(strict.data[4]).toBe(255)
+    const full = despeckleBinary(binary, 100)
+    expect(full.data[4]).toBe(255)
+    // 中心黑十字：多数表决下中心仍为黑
+    const cross = {
+      width: 3,
+      height: 3,
+      data: Uint8ClampedArray.from([255, 0, 255, 0, 0, 0, 255, 0, 255]),
+    }
+    expect(despeckleBinary(cross, 100).data[4]).toBe(0)
+  })
+
+  it('binarizeSensitivity shifts Sauvola k monotonically (more positive -> more black)', () => {
+    // 带噪合成页：纸面 210，笔画 130..209 随机分布 —— k 变化只会翻转
+    // 处于阈值边缘的中灰笔画，黑像素数随 sensitivity 单调上升。
+    const width = 160
+    const height = 120
+    const data = new Uint8ClampedArray(width * height * 4)
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const isText = y % 12 >= 3 && y % 12 <= 6 && x > 6 && x < width - 6
+        const v = isText ? 130 + ((x * 7 + y * 13) % 80) : 210
+        const o = (y * width + x) * 4
+        data[o] = v
+        data[o + 1] = v
+        data[o + 2] = v
+        data[o + 3] = 255
+      }
+    }
+    const src: RgbaImage = { width, height, data }
+    const countBlack = (img: RgbaImage): number => {
+      let n = 0
+      for (let i = 0; i < img.data.length; i += 4) if (img.data[i] === 0) n++
+      return n
+    }
+    const cleaner = countBlack(applyEnhance(src, { ...ENHANCE_DEFAULTS.bw, binarizeSensitivity: -50 }))
+    const neutral = countBlack(applyEnhance(src, { ...ENHANCE_DEFAULTS.bw, binarizeSensitivity: 0 }))
+    const thicker = countBlack(applyEnhance(src, { ...ENHANCE_DEFAULTS.bw, binarizeSensitivity: 50 }))
+    expect(thicker).toBeGreaterThanOrEqual(neutral)
+    expect(neutral).toBeGreaterThanOrEqual(cleaner)
+    expect(thicker).toBeGreaterThan(cleaner)
   })
 })

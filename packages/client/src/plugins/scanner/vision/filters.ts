@@ -1,7 +1,7 @@
 import type { GrayImage, RgbaImage, RotateDirection } from './types'
 
 /**
- * 基础图像滤波器：灰度、模糊、Otsu 阈值、双线性缩放。
+ * 基础图像滤波器：灰度、模糊、Otsu 阈值、双线性缩放、中值去噪。
  * 供图像增强链路（enhance）使用；全部为纯函数，操作 typed array，无 DOM 依赖。
  */
 
@@ -238,6 +238,108 @@ export function sauvolaBinarize(
       const std = Math.sqrt(variance)
       const threshold = mean * (1 + k * (std / R - 1))
       out[y * width + x] = data[y * width + x]! > threshold ? 255 : 0
+    }
+  }
+  return { width, height, data: out }
+}
+
+/**
+ * 3×3 中值滤波（RGBA，逐通道）。文档拍摄件去「椒盐噪点/纸张斑点」的主力。
+ *
+ * 9 元素用排序网络求中值（固定 19 次比较，无分支预测抖动）。
+ * strength 0..100 为与原图的混合比例：低强度只软化噪点，100 = 完全替换。
+ */
+export function medianRgba(src: RgbaImage, strength: number): RgbaImage {
+  const s = Math.min(1, Math.max(0, strength / 100))
+  if (s <= 0 || src.width < 3 || src.height < 3) {
+    return { width: src.width, height: src.height, data: new Uint8ClampedArray(src.data) }
+  }
+  const { width, height, data } = src
+  const out = new Uint8ClampedArray(data.length)
+  const win = new Uint8Array(9)
+  for (let y = 0; y < height; y++) {
+    const y0 = y > 0 ? y - 1 : 0
+    const y2 = y < height - 1 ? y + 1 : height - 1
+    for (let x = 0; x < width; x++) {
+      const x0 = x > 0 ? x - 1 : 0
+      const x2 = x < width - 1 ? x + 1 : width - 1
+      const o = (y * width + x) * 4
+      for (let ch = 0; ch < 3; ch++) {
+        win[0] = data[(y0 * width + x0) * 4 + ch]!
+        win[1] = data[(y0 * width + x) * 4 + ch]!
+        win[2] = data[(y0 * width + x2) * 4 + ch]!
+        win[3] = data[(y * width + x0) * 4 + ch]!
+        win[4] = data[o + ch]!
+        win[5] = data[(y * width + x2) * 4 + ch]!
+        win[6] = data[(y2 * width + x0) * 4 + ch]!
+        win[7] = data[(y2 * width + x) * 4 + ch]!
+        win[8] = data[(y2 * width + x2) * 4 + ch]!
+        const median = median9(win)
+        out[o + ch] = data[o + ch]! + s * (median - data[o + ch]!)
+      }
+      out[o + 3] = 255
+    }
+  }
+  return { width, height, data: out }
+}
+
+/** 排序网络求 9 元素中值（最优 19 次比较交换）。 */
+function median9(w: Uint8Array): number {
+  let t: number
+  if (w[0]! > w[1]!) { t = w[0]!; w[0] = w[1]!; w[1] = t }
+  if (w[3]! > w[4]!) { t = w[3]!; w[3] = w[4]!; w[4] = t }
+  if (w[6]! > w[7]!) { t = w[6]!; w[6] = w[7]!; w[7] = t }
+  if (w[1]! > w[2]!) { t = w[1]!; w[1] = w[2]!; w[2] = t }
+  if (w[4]! > w[5]!) { t = w[4]!; w[4] = w[5]!; w[5] = t }
+  if (w[7]! > w[8]!) { t = w[7]!; w[7] = w[8]!; w[8] = t }
+  if (w[0]! > w[3]!) { t = w[0]!; w[0] = w[3]!; w[3] = t }
+  if (w[5]! > w[8]!) { t = w[5]!; w[5] = w[8]!; w[8] = t }
+  if (w[4]! > w[7]!) { t = w[4]!; w[4] = w[7]!; w[7] = t }
+  if (w[3]! > w[6]!) { t = w[3]!; w[3] = w[6]!; w[6] = t }
+  if (w[1]! > w[4]!) { t = w[1]!; w[1] = w[4]!; w[4] = t }
+  if (w[2]! > w[5]!) { t = w[2]!; w[2] = w[5]!; w[5] = t }
+  if (w[4]! > w[7]!) { t = w[4]!; w[4] = w[7]!; w[7] = t }
+  if (w[4]! > w[2]!) { t = w[4]!; w[4] = w[2]!; w[2] = t }
+  if (w[6]! > w[4]!) { t = w[6]!; w[6] = w[4]!; w[4] = t }
+  return w[4]!
+}
+
+/**
+ * 二值图斑点清除（3×3 多数滤波）：邻域内黑像素 ≥5 判黑，否则判白。
+ * 只在黑白预设输出后使用，能吃掉孤立黑点/白点而不伤笔画边缘。
+ * strength < 60 时只处理「与全部 8 个邻居都不同色」的孤立点（温和模式）。
+ */
+export function despeckleBinary(binary: GrayImage, strength: number): GrayImage {
+  const s = Math.min(100, Math.max(0, strength))
+  if (s <= 0 || binary.width < 3 || binary.height < 3) {
+    return { width: binary.width, height: binary.height, data: new Uint8ClampedArray(binary.data) }
+  }
+  const { width, height, data } = binary
+  const out = new Uint8ClampedArray(data.length)
+  const strict = s < 60
+  for (let y = 0; y < height; y++) {
+    const y0 = y > 0 ? y - 1 : 0
+    const y2 = y < height - 1 ? y + 1 : height - 1
+    for (let x = 0; x < width; x++) {
+      const x0 = x > 0 ? x - 1 : 0
+      const x2 = x < width - 1 ? x + 1 : width - 1
+      const p = y * width + x
+      const v = data[p]!
+      let black = 0
+      for (let sy = y0; sy <= y2; sy++) {
+        const row = sy * width
+        for (let sx = x0; sx <= x2; sx++) {
+          if (data[row + sx]! < 128) black++
+        }
+      }
+      const isBlack = v < 128
+      const blackNeighbors = isBlack ? black - 1 : black
+      if (strict) {
+        const flipped = isBlack ? blackNeighbors === 0 : blackNeighbors === 8
+        out[p] = flipped ? (isBlack ? 255 : 0) : v
+      } else {
+        out[p] = black >= 5 ? 0 : 255
+      }
     }
   }
   return { width, height, data: out }

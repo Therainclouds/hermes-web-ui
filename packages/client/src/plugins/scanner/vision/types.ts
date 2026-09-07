@@ -1,7 +1,7 @@
 /**
  * Scanner 插件视觉类型定义。
  *
- * 检测/透视矫正由插件内置的 OpenCV.js（vendor/opencv.js）引擎完成；
+ * 检测/透视矫正由插件内置的视觉引擎完成（纯 TS 实现）；
  * 本文件只保留纯 TypeScript 图像增强链路（filters / enhance）用到的类型，
  * 以及 UI 层共用的几何类型。全部为 typed-array 数据，无 DOM / 无第三方依赖。
  */
@@ -42,7 +42,15 @@ export type EnhancePreset = 'none' | 'auto' | 'gray' | 'scan' | 'bw'
 
 export type RotateDirection = 'left' | 'right'
 
-/** 图像增强参数。contrast 100 = 不变；brightness 0 = 不变；sharpen 0..100。 */
+/**
+ * 图像增强参数。contrast 100 = 不变；brightness 0 = 不变；sharpen 0..100。
+ *
+ * 高级调节（默认值全部等于旧行为，即不拉滑杆时输出与旧版完全一致）：
+ *   shadowRemove        去阴影强度 0..100（scan/bw 预设生效），100 = 完整 flat-field
+ *   denoise             去噪 0..100（0 关闭；scan/gray/auto 为中值滤波，bw 为二值后斑点清除）
+ *   binarizeSensitivity 二值化程度 -50..50（bw 预设生效），映射 Sauvola k，正向笔画更黑
+ *   whiteness           底色增白 0..100（scan/bw 预设生效），把纸面底噪推向纯白
+ */
 export interface EnhanceParams {
   preset: EnhancePreset
   /** 对比度 0..200，100 为不变。 */
@@ -51,16 +59,52 @@ export interface EnhanceParams {
   brightness: number
   /** 锐化强度 0..100，0 为关闭。 */
   sharpen: number
+  /** 去阴影强度 0..100，100 = 完整 flat-field（默认，旧行为）。 */
+  shadowRemove: number
+  /** 去噪强度 0..100，0 为关闭。 */
+  denoise: number
+  /** 二值化敏感度 -50..50，0 为论文默认 k=0.2；正值保留更多黑（笔画更粗）。 */
+  binarizeSensitivity: number
+  /** 底色增白 0..100，0 为关闭。 */
+  whiteness: number
 }
+
+/** 高级参数的默认值（= 旧行为）。 */
+export const ENHANCE_ADVANCED_DEFAULTS = {
+  shadowRemove: 100,
+  denoise: 0,
+  binarizeSensitivity: 0,
+  whiteness: 0,
+} as const
 
 /** 各预设对应的默认参数（对比度/亮度/锐化保持中性，只有预设动作生效）。 */
 export const ENHANCE_DEFAULTS: Record<EnhancePreset, EnhanceParams> = {
-  none: { preset: 'none', contrast: 100, brightness: 0, sharpen: 0 },
-  auto: { preset: 'auto', contrast: 100, brightness: 0, sharpen: 0 },
-  gray: { preset: 'gray', contrast: 100, brightness: 0, sharpen: 0 },
+  none: { preset: 'none', contrast: 100, brightness: 0, sharpen: 0, ...ENHANCE_ADVANCED_DEFAULTS },
+  auto: { preset: 'auto', contrast: 100, brightness: 0, sharpen: 0, ...ENHANCE_ADVANCED_DEFAULTS },
+  gray: { preset: 'gray', contrast: 100, brightness: 0, sharpen: 0, ...ENHANCE_ADVANCED_DEFAULTS },
   // 扫描件预设自带轻锐化：去阴影后笔画边缘会略软，补回来更像扫描仪输出
-  scan: { preset: 'scan', contrast: 100, brightness: 0, sharpen: 25 },
-  bw: { preset: 'bw', contrast: 100, brightness: 0, sharpen: 0 },
+  scan: { preset: 'scan', contrast: 100, brightness: 0, sharpen: 25, ...ENHANCE_ADVANCED_DEFAULTS },
+  bw: { preset: 'bw', contrast: 100, brightness: 0, sharpen: 0, ...ENHANCE_ADVANCED_DEFAULTS },
+}
+
+/** 补全旧数据（旧版本持久化的页面 / localStorage）里缺失的高级参数。 */
+export function normalizeEnhanceParams(params: Partial<EnhanceParams> | undefined): EnhanceParams {
+  const preset: EnhancePreset = params?.preset && params.preset in ENHANCE_DEFAULTS
+    ? params.preset
+    : 'none'
+  return { ...ENHANCE_DEFAULTS[preset], ...params, preset }
+}
+
+/** 判断两组增强参数是否完全一致（全部字段）。 */
+export function sameEnhanceParams(a: EnhanceParams, b: EnhanceParams): boolean {
+  return a.preset === b.preset
+    && a.contrast === b.contrast
+    && a.brightness === b.brightness
+    && a.sharpen === b.sharpen
+    && a.shadowRemove === b.shadowRemove
+    && a.denoise === b.denoise
+    && a.binarizeSensitivity === b.binarizeSensitivity
+    && a.whiteness === b.whiteness
 }
 
 /** 预设选项顺序（UI 下拉与拍摄增强共用，避免两处漂移）。 */
