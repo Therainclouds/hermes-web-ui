@@ -19,11 +19,17 @@ const props = withDefaults(defineProps<{
   rotating?: boolean
   /** 「应用到所有页」进行中。 */
   applyAllLoading?: boolean
+  /** 是否显示「矫正裁剪」按钮（单页应用场景保持 true；实时摄像头面板可关闭）。 */
+  showCorrect?: boolean
+  /** 是否显示「应用到所有页」按钮（多页扫描为 true；批改单张面板为 false）。 */
+  showApplyAll?: boolean
 }>(), {
   correcting: false,
   canCorrect: true,
   rotating: false,
   applyAllLoading: false,
+  showCorrect: true,
+  showApplyAll: true,
 })
 
 const emit = defineEmits<{
@@ -144,7 +150,7 @@ function reset() {
         </template>
         {{ tt('scanner.enhance.rotateRight') }}
       </NTooltip>
-      <NTooltip>
+      <NTooltip v-if="showCorrect">
         <template #trigger>
           <NButton
             size="small"
@@ -274,7 +280,7 @@ function reset() {
         />
         <span class="enhance-value">{{ params.denoise }}</span>
       </div>
-      <div class="enhance-row enhance-row-actions">
+      <div v-if="showApplyAll" class="enhance-row enhance-row-actions">
         <NButton
           size="tiny"
           quaternary

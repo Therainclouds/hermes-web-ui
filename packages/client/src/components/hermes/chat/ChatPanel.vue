@@ -13,7 +13,7 @@ import {
 } from "@/api/hermes/sessions";
 import type { AvailableModelGroup } from "@/api/hermes/system";
 import { fetchCodingAgentsStatus, inferCodingAgentApiMode, normalizeCodingAgentApiMode, type ChatCodingAgentId, type CodingAgentApiMode, type CodingAgentId } from "@/api/coding-agents";
-import { useChatStore, type Session } from "@/stores/hermes/chat";
+import { useChatStore, type Session, type Attachment } from "@/stores/hermes/chat";
 import { useAppStore } from "@/stores/hermes/app";
 import { useProfilesStore } from "@/stores/hermes/profiles";
 import { useFilesStore } from "@/stores/hermes/files";
@@ -534,6 +534,39 @@ async function submitBrowserAnnotations(payload: BrowserAnnotationSubmission): P
   const attachment = createBrowserAnnotationAttachment(payload);
   await chatStore.sendMessage("", [attachment]);
   return true;
+}
+
+/** 把 base64 data URL 转成可上传的 File（供批改面板「发给 Agent」使用）。 */
+function dataUrlToFile(dataUrl: string, name: string): File {
+  const comma = dataUrl.indexOf(",");
+  const meta = dataUrl.slice(0, comma);
+  const mime = /^data:([^;]+)/.exec(meta)?.[1] || "image/jpeg";
+  const b64 = dataUrl.slice(comma + 1);
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new File([bytes], name, { type: mime });
+}
+
+/** 批改面板「发给 Agent」：把扫描件图片 + OCR 文本（含 scanId 提示）发送给左侧对话。 */
+function handleGradingSendToAgent(payload: { image: string; ocrText: string; studentName?: string; scanId?: string }) {
+  if (!payload?.image) return;
+  const file = dataUrlToFile(payload.image, `${payload.studentName || "scan"}.jpg`);
+  const attachment: Attachment = {
+    id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
+    name: file.name,
+    type: file.type,
+    size: file.size,
+    url: URL.createObjectURL(file),
+    file,
+  };
+  const text = (payload.ocrText || "").trim();
+  const hint = payload.scanId
+    ? `\n\n（扫描件 scanId：${payload.scanId}。请用 paper-grading 技能/工具在此基础上批改，并把批改痕迹写回该扫描件。）`
+    : "";
+  const content = text ? text + hint : `请查看这张扫描件并批改。${hint}`;
+  void chatStore.sendMessage(content, [attachment]);
+  message.success(t("grading.sendToAgentDone"));
 }
 
 async function handleSessionClick(sessionId: string) {
@@ -3412,7 +3445,7 @@ async function handleSessionModelCustomSubmit() {
                     @mode-change="setChatMode"
                   />
                 </div>
-                <GradingScannerPanel class="chat-grading-scanner" />
+                <GradingScannerPanel class="chat-grading-scanner" :session-id="chatStore.activeSessionId" :send-to-agent="handleGradingSendToAgent" />
               </div>
             </div>
           </template>

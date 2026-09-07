@@ -652,6 +652,17 @@ function browserScreenshotContent(envelope) {
   }
 }
 
+function imageContent(payload) {
+  const match = /^data:([^;]+);base64,(.+)$/i.exec(payload?.image || '')
+  if (!match) throw new Error('Image unavailable')
+  return {
+    content: [
+      { type: 'text', text: JSON.stringify({ width: payload.width, height: payload.height, mimeType: match[1] }, null, 2) },
+      { type: 'image', data: match[2], mimeType: match[1] },
+    ],
+  }
+}
+
 function pickDefined(source, keys) {
   const picked = {}
   for (const key of keys) {
@@ -862,6 +873,9 @@ const gradingTools = {
   render: { description: 'Ask the open grading workspace to render and download annotated PNG/PDF.', fields: { style: { type: 'string', enum: ['rough', 'printed'] } }, required: ['scanId'] },
   summary: { description: 'Summarize submissions and question-level wrong-answer rates.', fields: { scanIds: { type: 'array', items: { type: 'string' } } }, required: ['scanIds'] },
   list: { description: 'List scanned papers in the profile grading folder (currently no class/exam grouping).', fields: {}, required: [] },
+  get: { description: 'Read a full cached scan without image bytes: OCR words, detected questions, score results and existing annotations.', fields: {}, required: ['scanId'] },
+  view_image: { description: 'Return the cached scan image as a vision image block so the model can visually read the paper.', fields: {}, required: ['scanId'] },
+  add_annotation: { description: 'Add, update or remove one annotation on a scan (badge/comment/circle/cross/underline/pen). Pass annotationId with remove:true to delete, or annotationId alone to update fields.', fields: { annotationId: { type: 'string' }, remove: { type: 'boolean' }, kind: { type: 'string', enum: ['badge', 'comment', 'circle', 'cross', 'underline', 'pen'] }, bbox: { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4, description: '[x, y, width, height] in original-image pixels.' }, content: { type: 'string', description: 'Annotation text (score label, comment, etc.).' }, color: { type: 'string' }, width: { type: 'number' }, points: { type: 'array', items: { type: 'number' }, description: 'Freehand pen point list [x1,y1,x2,y2,...].' } }, required: ['scanId'] },
 }
 
 const tools = [
@@ -1798,6 +1812,16 @@ async function callTool(name, args = {}) {
   const resolvedName = resolveToolName(name)
   const categoryToolset = categoryToolsetDefinition(ACTIVE_TOOLSET)
   if (resolvedName === categoryToolset?.name) return await callCategoryToolset(args)
+  if (resolvedName === 'grading_view_image') {
+    try {
+      return imageContent(await request('/api/scanner/grading/view_image', withAuthArgs(args, { method: 'POST', body: args })))
+    } catch (error) {
+      return errorText(error instanceof Error ? error.message : String(error))
+    }
+  }
+  if (resolvedName === 'grading_get') {
+    return jsonText(await request('/api/scanner/grading/get', withAuthArgs(args, { method: 'POST', body: { ...args, omitImage: true } })))
+  }
   if (resolvedName.startsWith('grading_') && gradingTools[resolvedName.slice(8)]) {
     return jsonText(await request(`/api/scanner/grading/${resolvedName.slice(8)}`, withAuthArgs(args, { method: 'POST', body: args })))
   }

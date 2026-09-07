@@ -1306,7 +1306,7 @@ const cameraHintTone = computed(() => {
       </div>
 
       <div v-if="!isMobile" class="scanner-right">
-        <NSpin :show="ocrOneLoading || correcting || rotating">
+        <NSpin :show="ocrOneLoading || correcting || rotating" class="detail-spin">
           <div v-if="!activePage" class="scanner-right-empty">
             <NEmpty :description="tt('scanner.detail.emptyHint')" />
           </div>
@@ -1655,6 +1655,9 @@ const cameraHintTone = computed(() => {
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+  /* 行高钉死在容器内：否则 auto 行会随内容撑高、被 overflow: hidden 裁掉，
+   * 左右两列各自的内部滚动（page-strip-list / scanner-detail）永远不触发。 */
+  grid-template-rows: minmax(0, 1fr);
   gap: 16px;
   padding: 16px 20px 20px;
   overflow: hidden;
@@ -2077,6 +2080,23 @@ const cameraHintTone = computed(() => {
   line-height: 14px;
 }
 
+/* 桌面右侧详情：NSpin 的 .n-spin-container/.n-spin-content 默认是普通块级盒，
+ * 会打断 flex 高度链，导致 .scanner-detail 的 flex:1 + overflow-y:auto 失效、
+ * 整列内容被裁切。参照 mobile-detail-spin 把两层都变成可收缩的 flex 列。 */
+.detail-spin {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+
+  :deep(.n-spin-content) {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+}
+
 .scanner-detail {
   flex: 1;
   display: flex;
@@ -2422,6 +2442,8 @@ const cameraHintTone = computed(() => {
 
   .scanner-content {
     grid-template-columns: 1fr;
+    /* 移动端单列沿用旧的 auto 行为，保持原布局不受桌面行约束影响。 */
+    grid-template-rows: auto;
     padding: 10px 12px 12px;
     gap: 10px;
   }

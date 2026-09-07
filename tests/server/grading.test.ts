@@ -63,4 +63,32 @@ describe('teacher grading', () => {
     await gradingRequest(ctx); expect(ctx.status).toBe(403)
     ctx.get = () => 'one'; await gradingRequest(ctx); expect(ctx.body.error).toContain('Enable')
   })
+  it('serves agent read-image and direct annotation tools (view_image / get omitImage / add_annotation)', async () => {
+    writeSettings('one', { enabled: true })
+    const png = await sharp({ create: { width: 640, height: 480, channels: 3, background: '#fff' } }).png().toBuffer()
+    const { scanId } = await capture('one', { image: `data:image/png;base64,${png.toString('base64')}`, studentName: 'Student' })
+    const base: any = { state: { user: { id: 1, role: 'admin', profiles: ['one'] } }, params: {}, query: {}, request: {}, get: () => 'one' }
+
+    // get without omitImage keeps the image; with omitImage strips it.
+    let ctx: any = { ...base, params: { action: 'get' }, request: { body: { scanId } } }
+    await gradingRequest(ctx); expect(ctx.body.image).toContain('data:image/')
+    ctx = { ...base, params: { action: 'get' }, request: { body: { scanId, omitImage: true } } }
+    await gradingRequest(ctx); expect(ctx.body.id).toBe(scanId); expect(ctx.body.image).toBeUndefined()
+
+    // view_image returns a downscaled JPEG (no upscaling).
+    ctx = { ...base, params: { action: 'view_image' }, request: { body: { scanId } } }
+    await gradingRequest(ctx)
+    expect(ctx.body.mimeType).toBe('image/jpeg')
+    expect(ctx.body.image).toMatch(/^data:image\/jpeg;base64,/)
+    expect(ctx.body.width).toBe(640); expect(ctx.body.height).toBe(480)
+
+    // add_annotation appends, then updates, then removes.
+    ctx = { ...base, params: { action: 'add_annotation' }, request: { body: { scanId, kind: 'circle', bbox: [10, 20, 30, 30], content: 'wrong' } } }
+    await gradingRequest(ctx); expect(ctx.body.annotations).toHaveLength(1)
+    const id = ctx.body.annotations[0].id; expect(ctx.body.revision).toBeGreaterThan(0)
+    ctx = { ...base, params: { action: 'add_annotation' }, request: { body: { scanId, annotationId: id, content: 'fixed' } } }
+    await gradingRequest(ctx); expect(ctx.body.annotations[0].content).toBe('fixed')
+    ctx = { ...base, params: { action: 'add_annotation' }, request: { body: { scanId, annotationId: id, remove: true } } }
+    await gradingRequest(ctx); expect(ctx.body.annotations).toHaveLength(0)
+  })
 })
