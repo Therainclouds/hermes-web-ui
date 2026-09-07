@@ -4,7 +4,8 @@
  *
  * - quad 为归一化坐标（0..1，相对容器）；
  * - 支持拖动 4 个角点微调选框（拖动时发射 update:quad）；
- * - 视觉上区分「自动检测」与「手动锁定」。
+ * - 视觉上区分「自动检测」与「手动锁定」；
+ * - 拖动后选框保持手动锁定（不再实时跟随），由上层「重置选框」恢复。
  */
 import { computed } from 'vue'
 import type { Quad } from '../vision/types'
@@ -24,7 +25,6 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   (e: 'update:quad', quad: Quad): void
   (e: 'drag-start'): void
-  (e: 'drag-end'): void
 }>()
 
 const POINTS = [0, 1, 2, 3] as const
@@ -75,7 +75,6 @@ function endDrag(event: PointerEvent) {
   dragging = false
   dragIndex = -1
   ;(event.currentTarget as HTMLElement).releasePointerCapture?.(event.pointerId)
-  emit('drag-end')
 }
 </script>
 

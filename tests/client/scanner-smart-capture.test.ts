@@ -25,7 +25,7 @@ beforeEach(async () => {
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frameCallback = callback; return 1 })
   vi.stubGlobal('cancelAnimationFrame', vi.fn())
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
-    drawImage() {}, getImageData: () => ({ data: new Uint8ClampedArray(64 * 64 * 4) }),
+    drawImage() {}, putImageData() {}, getImageData: () => ({ data: new Uint8ClampedArray(64 * 64 * 4) }),
   } as any)
   const video = { readyState: 2, videoWidth: 64, videoHeight: 64 } as HTMLVideoElement
   app = createApp({ setup() { smart = useSmartCapture({ video: () => video, cameraRunning: () => true }); return () => null } })
@@ -70,22 +70,39 @@ it('locks on pointer-down and ignores an already in-flight result before any poi
   expect(smart.manual.value).toBe(true)
 })
 
-it('resumes following moving paper after releasing a manually adjusted corner without clearing it', async () => {
+it('keeps a manually adjusted box frozen until an explicit reset', async () => {
   smart.lockSelection()
   const edited = quad.map(p => ({ x: p.x + 0.02, y: p.y })) as Quad
   smart.setQuadManually(edited)
-  smart.resumeTracking()
-  expect(smart.manual.value).toBe(false)
-  expect(smart.quad.value).toEqual(edited)
-  mocks.detect.mockResolvedValue(null)
-  await tick()
+  expect(smart.manual.value).toBe(true)
   expect(smart.quad.value).toEqual(edited)
   for (const shift of [0.04, 0.08, 0.12]) {
     mocks.detect.mockResolvedValue({ ...detected, quad: quad.map(p => ({ x: p.x + shift, y: p.y })) })
     await tick()
   }
-  expect(smart.quad.value![0].x).toBeGreaterThan(0.29)
-  expect(smart.status.value).toBe('detected')
+  expect(smart.quad.value).toEqual(edited)
+  expect(smart.manual.value).toBe(true)
+  smart.rescan()
+  expect(smart.manual.value).toBe(false)
+  expect(smart.quad.value).toBeNull()
+  await tick(); await tick()
+  expect(smart.quad.value).not.toBeNull()
+})
+
+it('still runs auto shoot against the frozen box after a manual adjustment', async () => {
+  vi.spyOn(performance, 'now').mockReturnValue(9_000)
+  const edited = quad.map(p => ({ x: p.x + 0.02, y: p.y })) as Quad
+  smart.setQuadManually(edited)
+  smart.setAutoCapture(true)
+  // jsdom cannot warp a real frame, so observe the attempt (status 'capturing').
+  let attempted = false
+  for (let i = 0; i < 8; i++) {
+    await tick()
+    if (smart.status.value === 'capturing') attempted = true
+  }
+  expect(attempted).toBe(true)
+  expect(smart.quad.value).toEqual(edited)
+  expect(smart.manual.value).toBe(true)
 })
 
 it('reacquires a distant target that is still moving instead of requiring capture-level stillness', async () => {

@@ -5,7 +5,7 @@
  */
 import { NButton, NSelect, NSlider, NTooltip } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import { ENHANCE_DEFAULTS, type EnhanceParams, type EnhancePreset } from '../vision/types'
+import { ENHANCE_DEFAULTS, ENHANCE_PRESET_LABEL_KEYS, ENHANCE_PRESET_ORDER, type EnhanceParams, type EnhancePreset } from '../vision/types'
 
 const props = withDefaults(defineProps<{
   params: EnhanceParams
@@ -30,12 +30,10 @@ const tt = ((key: string) => {
   return typeof value === 'string' ? value : String(key)
 }) as (key: string) => string
 
-const presetOptions = [
-  { label: tt('scanner.enhance.presetNone'), value: 'none' },
-  { label: tt('scanner.enhance.presetAuto'), value: 'auto' },
-  { label: tt('scanner.enhance.presetGray'), value: 'gray' },
-  { label: tt('scanner.enhance.presetBw'), value: 'bw' },
-]
+const presetOptions = ENHANCE_PRESET_ORDER.map(preset => ({
+  label: tt(ENHANCE_PRESET_LABEL_KEYS[preset]),
+  value: preset,
+}))
 
 function patch(patch: Partial<EnhanceParams>) {
   emit('update:params', { ...props.params, ...patch })
@@ -59,7 +57,7 @@ function reset() {
         :value="params.preset"
         :options="presetOptions"
         size="small"
-        style="width: 128px;"
+        style="width: 156px;"
         @update:value="setPreset($event as EnhancePreset)"
       />
       <NTooltip>

@@ -153,3 +153,59 @@ describe('scanner vision enhance', () => {
     expect(pixel(g, 1, 1)[0]).toBe(10)
   })
 })
+
+/**
+ * 合成「带阴影的拍摄件」：纸面亮度从左到右由 245 衰减到 70（手影/侧光），
+ * 文字是等间距的深色横条（比局部纸面暗 ~90）。
+ */
+function shadowedPage(width: number, height: number): RgbaImage {
+  const data = new Uint8ClampedArray(width * height * 4)
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const paper = 245 - Math.round((x / Math.max(1, width - 1)) * 175)
+      const isText = y % 12 >= 3 && y % 12 <= 6 && x > 6 && x < width - 6
+      const v = isText ? Math.max(4, Math.round(paper * 0.35)) : paper
+      const o = (y * width + x) * 4
+      data[o] = v
+      data[o + 1] = v
+      data[o + 2] = v
+      data[o + 3] = 255
+    }
+  }
+  return { width, height, data }
+}
+
+function lumaAt(img: RgbaImage, x: number, y: number): number {
+  return img.data[(y * img.width + x) * 4]!
+}
+
+describe('scanner enhance: shadow removal + adaptive binarization', () => {
+  it('scan preset flattens uneven lighting to a near-white page on both sides', () => {
+    const src = shadowedPage(240, 180)
+    const out = applyEnhance(src, { ...ENHANCE_DEFAULTS.scan })
+    // 纸面行（y % 12 === 0）左右两侧都应接近纯白
+    expect(lumaAt(out, 20, 12)).toBeGreaterThan(225)
+    expect(lumaAt(out, 220, 12)).toBeGreaterThan(225)
+    // 文字行仍明显更深
+    expect(lumaAt(out, 20, 16)).toBeLessThan(150)
+    expect(lumaAt(out, 220, 16)).toBeLessThan(150)
+  })
+
+  it('bw preset keeps text on the shadowed side instead of flooding it black', () => {
+    const src = shadowedPage(240, 180)
+    const out = applyEnhance(src, { ...ENHANCE_DEFAULTS.bw })
+    // 暗侧纸面必须是白（旧的全局 Otsu 会把这半页整块涂黑）
+    expect(lumaAt(out, 225, 12)).toBe(255)
+    expect(lumaAt(out, 20, 12)).toBe(255)
+    // 两侧文字都保留为黑
+    expect(lumaAt(out, 225, 16)).toBe(0)
+    expect(lumaAt(out, 20, 16)).toBe(0)
+  })
+
+  it('bw preset output is strictly bilevel so it can ship as 1bpp in a PDF', () => {
+    const out = applyEnhance(shadowedPage(120, 90), { ...ENHANCE_DEFAULTS.bw })
+    for (let i = 0; i < out.data.length; i += 4) {
+      expect([0, 255]).toContain(out.data[i]!)
+    }
+  })
+})
