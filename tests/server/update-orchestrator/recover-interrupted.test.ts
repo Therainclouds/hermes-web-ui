@@ -116,11 +116,11 @@ describe('recover-interrupted-update', () => {
 
   it.skipIf(!haveSymlinks)('reverts a deploy symlink pointing at a missing target', () => {
     const env = makeEnv()
-    const swapRoot = join(env.home, 'state', 'swap')
-    mkdirSync(swapRoot, { recursive: true })
     const { execFileSync } = require('child_process') as typeof import('child_process')
-    // lastgood -> the real old tree; deploy -> a deleted staging dir.
-    execFileSync('bash', ['-c', `ln -s '${env.deployDir}' '${swapRoot}/lastgood'`])
+    // lastgood lives NEXT TO the deploy link (atomic-swap.sh contract —
+    // revert_to_lastgood reads dirname(deploy)/lastgood, never state/swap);
+    // deploy -> a deleted staging dir.
+    execFileSync('bash', ['-c', `ln -s '${env.deployDir}' '${join(env.home, 'lastgood')}'`])
     const gone = join(env.home, 'cache', 'staging-gone')
     mkdirSync(gone, { recursive: true })
     execFileSync('bash', ['-c', `ln -s '${gone}' '${env.deployDir}'`])

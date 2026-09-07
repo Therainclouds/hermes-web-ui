@@ -209,7 +209,9 @@ describe('source-deploy dry-run (build → orchestrator → identity chain)', ()
     const target = readlinkSafe(deployDir)
     expect(target).toContain(join('updates', 'cache', 'staging-'))
     expect(JSON.parse(readFileSync(join(deployDir, 'package.json'), 'utf-8')).version).toBe('1.2.3')
-    const lastgood = readlinkSafe(join(home, 'state', 'swap', 'lastgood'))
+    // lastgood lives NEXT TO the deploy link (atomic-swap.sh contract —
+    // revert_to_lastgood reads dirname(deploy)/lastgood).
+    const lastgood = readlinkSafe(join(home, 'lastgood'))
     expect(JSON.parse(readFileSync(join(lastgood, 'package.json'), 'utf-8')).version).toBe('1.0.0')
   })
 

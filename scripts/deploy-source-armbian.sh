@@ -62,17 +62,22 @@ run() {
 # "Operation not permitted" (seen on 6.6.6.31 with a USB stick mounted at
 # ~/.hermes-web-ui/mnt/usb). Fall back to plain chown -R when mountpoint(1)
 # isn't available.
+#
+# Every chown carries -h (no-dereference): the tree may contain dangling
+# symlinks (e.g. historical update backups under updates/backups/), and a
+# bare chown fails on them ("cannot dereference"), which makes find -exec
+# exit non-zero and aborts the whole deploy under set -e. 6.6.6.73 v0.8.1.
 chown_r_mount_safe() {
   local owner="$1"
   local target="$2"
-  run chown "${owner}" "${target}"
+  run chown -h "${owner}" "${target}"
   if ! command -v mountpoint >/dev/null 2>&1; then
-    run find "${target}" -mindepth 1 -exec chown "${owner}" '{}' +
+    run find "${target}" -mindepth 1 -exec chown -h "${owner}" '{}' +
     return
   fi
   run find "${target}" -mindepth 1 -xdev \
     \( -type d -exec mountpoint -q '{}' \; \) -prune \
-    -o -exec chown "${owner}" '{}' +
+    -o -exec chown -h "${owner}" '{}' +
 }
 
 command_exists() {

@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createHash } from 'crypto'
 import { delimiter, dirname, join } from 'path'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
 import { Writable } from 'stream'
 
 const UPDATE_PACKAGE = '@quanthermes/hermes-web-ui'
@@ -188,8 +190,13 @@ describe('update controller', () => {
     process.env.WEBUI_UPDATE_CLI_BIN = UPDATE_CLI_BIN
     delete process.env.WEBUI_UPDATE_STRATEGY
     delete process.env.WEBUI_UPDATE_SCRIPT
-    delete process.env.HERMES_WEB_UI_HOME
-    delete process.env.HERMES_WEBUI_STATE_DIR
+    // Own writable state home per test: deleting the env vars makes config
+    // fall back to homedir(), which is NOT writable on CI runners — the
+    // Linux-only writable preflight then rejects every handleUpdate with
+    // update_dangerous_layout 409 (20-test cascade). See
+    // packages/server/src/services/update/preflight.ts.
+    process.env.HERMES_WEB_UI_HOME = mkdtempSync(join(tmpdir(), 'update-controller-home-'))
+    process.env.HERMES_WEBUI_STATE_DIR = process.env.HERMES_WEB_UI_HOME
     delete process.env.UPLOAD_DIR
     delete process.env.HERMES_HOME
     delete process.env.HERMES_HOME_DIR
@@ -216,6 +223,9 @@ describe('update controller', () => {
 
   afterEach(() => {
     vi.useRealTimers()
+    if (typeof process.env.HERMES_WEB_UI_HOME === 'string' && process.env.HERMES_WEB_UI_HOME.includes('update-controller-home-')) {
+      rmSync(process.env.HERMES_WEB_UI_HOME, { recursive: true, force: true })
+    }
     vi.doUnmock('child_process')
     vi.doUnmock('fs')
     vi.doUnmock('../../packages/server/src/services/runtime-environment')
@@ -422,6 +432,7 @@ describe('update controller', () => {
     expect(ctx.status).toBe(500)
     expect(ctx.body).toEqual({
       success: false,
+      code: 'update_execution_misconfigured',
       message: 'Update source is not fully configured. Set WEBUI_UPDATE_PACKAGE, WEBUI_UPDATE_REGISTRY, and WEBUI_UPDATE_CLI_BIN.',
     })
     expect(mocks.spawn).not.toHaveBeenCalled()

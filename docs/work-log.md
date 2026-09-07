@@ -109,6 +109,45 @@ controller 两条 manifest-client import 合一；`readlinkSafe` 三个测试文
   CI dry-run 通过后 promote → 逐台 unpin；7 天 + ≥30 次升级 +
   0 例 non-recoverable 后才开 phase (b)
 
+## 2026-09-07(晚) · v0.8.1 发布前 CI 复盘与修复 + junction 事故
+
+### 一、org CI 首跑暴露三类问题（拉取完整 Actions 日志逐条甄别）
+
+org 合并 fork main 后 Build run 共 67 个失败。用 credentials 拉全量日志
+逐条甄别，绝大多数为 org 侧既有（grading 插件缺 538 个 i18n key、
+scanner-vision-precision 一批、chat/ekko/rtl 等——org main 合并我们
+之前就红）。我们引入或挡 CI 的四个：
+
+1. **orchestrator 的 healthcheck 在 DRY_RUN 下被跳过**（产品 bug）：
+   `run_healthcheck` 的 skip 条件含 `DRY_RUN==1`，而 master spec 明确
+   "dry-run 只跳 systemctl restart，其余步骤全执行"——healthcheck 失败
+   → 回滚路径在 dry-run 下永远测不到（CI: 收到 succeeded 而非
+   rolled_back）。修：skip 条件只看 `WEBUI_UPDATE_SKIP_HEALTHCHECK`。
+2. **recover-interrupted 的 broken-deploy 用例 fixture 位置错**（测试 bug）：
+   lastgood 建在 `state/swap/`——位置契约修正前的老写法；该用例被
+   symlink 门禁挡住从未在本机跑过。修：lastgood 建在 deploy 链接旁边。
+3. **handleUpdate body 新增 code 字段**致旧测试精确 toEqual 失败
+   （本机复现）：期望补 `code: 'update_execution_misconfigured'`。
+4. **既有测试 delete env + Linux-only preflight 的相互作用**（20 测试
+   连锁 409，非我们引入但挡 CI）：update-controller.test.ts 的
+   beforeEach `delete process.env.HERMES_WEB_UI_HOME` → config 兜底
+   homedir()；CI runner 的 home 不可写 → Linux-only writable preflight
+   （state/staging/log-dir-not-writable）全数命中 →
+   update_dangerous_layout 409。开发机 win32 跳过 writable 检查 + home
+   可写，从未暴露。修：beforeEach 给本文件专属 mkdtemp state home，
+   afterEach 清理。修后本机 4 失败 → 3 失败（= baseline 既有水平）。
+
+**遗留**：3 个 baseline 既有失败（handoff 时序/timer 语义类，本机与
+CI 均挂）——单独工单，不混入发布窗口。
+
+### 二、worktree junction 事故（自伤，已完全恢复）
+
+为对照 baseline 跑测试，把 node_modules 用 NTFS junction 链入 git
+worktree；`git worktree remove --force` 的 rm -rf 穿透 junction 把真
+node_modules 清空。lockfile 完好，`npm ci` 完全恢复。教训：**Windows
+上不要把 node_modules junction 进 git worktree**——worktree 里单独
+`npm ci`，或用 pnpm 的 store 硬链接。
+
 ## 2026-09-05/06 · org/main 同步（Scanner 插件）+ 上线前 BUG 审计与修复
 
 ### 一、上线前 BUG 审计（docs/research/pre-launch-bug-audit.md）
