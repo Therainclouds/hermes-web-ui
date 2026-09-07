@@ -324,6 +324,60 @@ manifest_self_check() {
   return 0
 }
 
+# Copy the previous deploy's hermes_data into the freshly swapped
+# DEPLOY_DIR when the new tree is missing it (source-deploy archives
+# carry only a skeleton). Resolves the lastgood symlink set up by
+# capture_lastgood / the legacy .previous-* rename. Idempotent: a
+# no-op when the new tree already carries a full hermes_data.
+preserve_hermes_data_across_swap() {
+  local new_hermes="${DEPLOY_DIR%/}/hermes_data"
+  # lastgood is the canonical rollback symlink beside the deploy link.
+  local lastgood_link="$(dirname "${DEPLOY_DIR}")/lastgood"
+  local old_tree=""
+  if [[ -L "${lastgood_link}" ]]; then
+    old_tree="$(readlink "${lastgood_link}")"
+  fi
+  # For the legacy-first-run path the old tree was renamed aside;
+  # lastgood was just written as a symlink to it, so the readlink
+  # above already covers it. No extra branch needed.
+
+  if [[ -z "${old_tree}" || ! -d "${old_tree}" ]]; then
+    info "no previous deploy tree; skipping hermes_data preservation"
+    return 0
+  fi
+
+  local old_hermes="${old_tree%/}/hermes_data"
+  if [[ ! -d "${old_hermes}" ]]; then
+    info "previous deploy has no hermes_data; nothing to preserve"
+    return 0
+  fi
+
+  # If the new tree already has a populated hermes_data (e.g. the
+  # archive shipped one), leave it alone — the upgrade intentionally
+  # carries data.
+  if [[ -d "${new_hermes}" ]] && [[ "$(find "${new_hermes}" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l)" -gt 2 ]]; then
+    info "new deploy already carries hermes_data ($(find "${new_hermes}" -mindepth 1 -maxdepth 1 | wc -l) entries); preserving as-is"
+    return 0
+  fi
+
+  info "preserving hermes_data from ${old_hermes} into new deploy"
+  # Back up the skeleton so a merge failure is recoverable.
+  if [[ -e "${new_hermes}" ]]; then
+    mv -T "${new_hermes}" "${new_hermes}.skeleton-bak" 2>/dev/null || true
+  fi
+  if ! cp -a "${old_hermes}" "${new_hermes}"; then
+    warn "hermes_data copy failed; restoring skeleton"
+    if [[ -d "${new_hermes}.skeleton-bak" ]]; then
+      mv -T "${new_hermes}.skeleton-bak" "${new_hermes}" 2>/dev/null || true
+    fi
+    return 5
+  fi
+  # Drop the skeleton backup on success.
+  rm -rf "${new_hermes}.skeleton-bak" 2>/dev/null || true
+  info "hermes_data restored ($(du -sh "${new_hermes}" 2>/dev/null | cut -f1))"
+  return 0
+}
+
 swap_deploy() {
   journal_append "${TASK_ID}" "installing" "atomic swap into ${DEPLOY_DIR}"
   mkdir -p "${SWAP_ROOT}"
@@ -357,6 +411,19 @@ swap_deploy() {
     return 5
   fi
 
+  # Preserve hermes_data (agent profiles, state.db, session history,
+  # skills, caches…) across upgrades. The source archive carries only
+  # a bare skeleton (or nothing at all); the real user data lives in
+  # the previous deploy tree. Without this step the first phase-a
+  # upgrade on a populated device wipes every profile, session, and
+  # cached model — 6.6.6.73 v0.8.1 post-mortem.
+  #
+  # Strategy: if the old tree has hermes_data and the new tree does
+  # not (or has only a skeleton), copy the old tree's hermes_data
+  # into the new DEPLOY_DIR. The staging skeleton (if any) is kept
+  # as a backup so a truly new file in the skeleton is not lost.
+  preserve_hermes_data_across_swap
+
   # The staging tree was downloaded and extracted by this root unit, so
   # the swapped-in deploy is root-owned; the service runs as APP_USER and
   # its ExecStartPre cannot even mkdir certs/ (6.6.6.73 v0.8.1). Repair
@@ -371,6 +438,141 @@ swap_deploy() {
   else
     warn "APP_USER unknown; skipping deploy ownership repair"
   fi
+  return 0
+}
+
+# Run a single shell command as the app user with the correct PATH so
+# node/npm are reachable. The orchestrator itself runs as root (systemd
+# oneshot), but node_modules and dist/ must be owned by APP_USER because
+# the live service runs under that account.
+run_build_as_app_user() {
+  local command="${1:?usage: run_build_as_app_user <shell-command>}"
+  local app_user="${HERMES_WEB_UI_UPDATE_APP_USER:-${APP_USER:-}}"
+  if [[ -z "${app_user}" ]]; then
+    warn "APP_USER unknown; cannot run build command as app user"
+    return 1
+  fi
+  local app_home
+  app_home="$(getent passwd "${app_user}" 2>/dev/null | cut -d: -f6 || echo "/home/${app_user}")"
+  # Detect node binary so the PATH covers the device install location
+  # (e.g. /opt/node-v23/bin). Falls back to PATH lookup when node is
+  # already on the default search path.
+  local node_bin node_dir path_env
+  node_bin="$(command -v node 2>/dev/null || true)"
+  if [[ -n "${node_bin}" ]]; then
+    node_dir="$(dirname "${node_bin}")"
+  else
+    node_dir=""
+  fi
+  path_env="${node_dir:+${node_dir}:}${app_home}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  # Pass proxy env vars so devices behind a corporate proxy can reach
+  # the npm registry mirror.
+  local proxy_env=()
+  for v in http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY; do
+    if [[ -n "${!v:-}" ]]; then proxy_env+=("${v}=${!v}"); fi
+  done
+  # shellcheck disable=SC2029
+  su - "${app_user}" -s /bin/bash -c "HOME='${app_home}' PATH='${path_env}' ${proxy_env[*]} ${command}"
+}
+
+# Install dependencies and build the swapped-in deploy tree on device.
+#
+# Source-deploy archives ship only source code (no node_modules, no
+# prebuilt dist/). Without this step the service would start a tree that
+# cannot run — the root cause of the 6.6.6.73 v0.8.1 manual-surgery
+# incident. The function is idempotent: when node_modules and dist/ are
+# already present with the expected version the work is skipped so a
+# retry after a partial run does not waste ARM build time.
+#
+# Placement in the lifecycle (master spec § Architecture):
+#   swap_deploy -> preserve_hermes_data -> build_deploy -> restart_runtime
+#
+# Failure semantics: a build failure after a successful swap means the
+# new tree is unusable, so we revert to lastgood (same policy as a
+# healthcheck failure).
+build_deploy() {
+  local app_user="${HERMES_WEB_UI_UPDATE_APP_USER:-${APP_USER:-}}"
+  local dist_index="${DEPLOY_DIR%/}/dist/server/index.js"
+  local nm="${DEPLOY_DIR%/}/node_modules"
+
+  # Idempotency: skip when node_modules is populated AND dist/ already
+  # carries the expected version. A partial run (node_modules present
+  # but dist/ missing) falls through to the build-only path.
+  local nm_populated=0
+  if [[ -d "${nm}" ]] && [[ "$(find "${nm}" -mindepth 1 -maxdepth 1 2>/dev/null | head -1 | wc -l)" -gt 0 ]]; then
+    nm_populated=1
+  fi
+  local dist_ready=0
+  if [[ -f "${dist_index}" ]]; then
+    local dist_version
+    dist_version="$(node -e "try{console.log(require('${DEPLOY_DIR}/package.json').version)}catch(e){}" 2>/dev/null || true)"
+    if [[ "${dist_version}" == "${TARGET_VERSION}" ]]; then
+      dist_ready=1
+    fi
+  fi
+  if (( nm_populated && dist_ready )); then
+    info "deploy tree already built for ${TARGET_VERSION}; skipping npm ci + build"
+    return 0
+  fi
+
+  if [[ -z "${app_user}" ]]; then
+    warn "APP_USER unknown; cannot build deploy tree"
+    return 5
+  fi
+
+  # --- Install dependencies -------------------------------------------
+  if (( ! nm_populated )); then
+    journal_append "${TASK_ID}" "installing_dependencies" "npm ci --ignore-scripts as ${app_user}"
+    info "installing dependencies into ${DEPLOY_DIR}"
+    if ! run_build_as_app_user "cd '${DEPLOY_DIR}' && npm ci --ignore-scripts --registry=https://registry.npmmirror.com"; then
+      warn "npm ci failed"
+      (( ROLLBACK_READY )) && revert_to_lastgood "${DEPLOY_DIR}" || true
+      return 5
+    fi
+  else
+    info "node_modules present; skipping dependency install"
+  fi
+
+  # --- Rebuild optional native bindings --------------------------------
+  # node-pty is a native module (binding.gyp) that needs node-gyp +
+  # build-essential. --ignore-scripts above skipped it; rebuild here.
+  # Failure is non-fatal — terminal feature degrades gracefully.
+  info "rebuilding optional native bindings"
+  run_build_as_app_user "cd '${DEPLOY_DIR}' && npm rebuild node-pty 2>/dev/null" || \
+    warn "node-pty rebuild failed (terminal feature will be disabled)"
+
+  # --- Build -----------------------------------------------------------
+  journal_append "${TASK_ID}" "building" "rm -rf dist + npm run build"
+  info "cleaning dist/ and building ${TARGET_VERSION}"
+  if ! run_build_as_app_user "cd '${DEPLOY_DIR}' && rm -rf dist && npm run build"; then
+    warn "npm run build failed"
+    (( ROLLBACK_READY )) && revert_to_lastgood "${DEPLOY_DIR}" || true
+    return 5
+  fi
+
+  # --- Post-build ownership repair -------------------------------------
+  # npm ci + npm run build run as APP_USER, but some files (e.g. certs/
+  # generated by ExecStartPre) may still be root-owned after the swap.
+  # Re-run the tree-wide repair to cover any stragglers.
+  if id "${app_user}" >/dev/null 2>&1; then
+    chown_r_mount_safe_root "${app_user}:$(id -gn "${app_user}")" "${DEPLOY_DIR%/}" || \
+      warn "post-build ownership repair failed for ${app_user}"
+  fi
+
+  # --- Verify ----------------------------------------------------------
+  if [[ ! -f "${dist_index}" ]]; then
+    warn "build succeeded but dist/server/index.js is missing"
+    (( ROLLBACK_READY )) && revert_to_lastgood "${DEPLOY_DIR}" || true
+    return 5
+  fi
+  local actual_version
+  actual_version="$(node -e "console.log(require('${DEPLOY_DIR}/package.json').version)" 2>/dev/null || true)"
+  if [[ "${actual_version}" != "${TARGET_VERSION}" ]]; then
+    warn "post-build version mismatch: expected ${TARGET_VERSION}, got ${actual_version}"
+    (( ROLLBACK_READY )) && revert_to_lastgood "${DEPLOY_DIR}" || true
+    return 5
+  fi
+  info "deploy tree built and verified: ${actual_version}"
   return 0
 }
 
@@ -462,6 +664,12 @@ main() {
 
   if ! swap_deploy; then
     finish_task "failed" "atomic swap failed"
+    release_lock
+    exit 5
+  fi
+
+  if ! build_deploy; then
+    finish_task "failed" "dependency install or build failed"
     release_lock
     exit 5
   fi

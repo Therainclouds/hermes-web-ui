@@ -215,6 +215,67 @@ describe('source-deploy dry-run (build → orchestrator → identity chain)', ()
     expect(JSON.parse(readFileSync(join(lastgood, 'package.json'), 'utf-8')).version).toBe('1.0.0')
   })
 
+  // v0.8.1 post-mortem (6.6.6.73): the first phase-a upgrade on a populated
+  // device wiped hermes_data because the source archive carries only a bare
+  // skeleton. The orchestrator must copy the previous deploy's hermes_data
+  // into the new tree during swap_deploy.
+  it.skipIf(!symlinksSupported())('preserves hermes_data from the previous deploy across the atomic swap', async () => {
+    const { buildDevicePackageRelease } = await import('../../scripts/build-device-package.mjs')
+    const { repoRoot, outputDir } = seedRepo('dry-run-hermes-')
+    const result = await buildDevicePackageRelease({
+      repoRoot,
+      outputDir,
+      channel: 'stable',
+      releaseRepo: 'example/hermes-web-ui',
+      tag: 'v1.2.3',
+      packageType: 'source-deploy',
+    })
+    const manifest = JSON.parse(readFileSync(result.manifestPath, 'utf-8'))
+
+    // Legacy deploy tree with populated hermes_data (simulating a device
+    // that has been running for months: profiles, sessions, state.db…).
+    const home = createTempDir('dry-run-hermes-device-')
+    const deployDir = join(home, 'deploy')
+    mkdirSync(join(deployDir, 'dist', 'server'), { recursive: true })
+    writeFileSync(join(deployDir, 'package.json'), JSON.stringify({ name: '@quanthermes/hermes-web-ui', version: '1.0.0' }))
+    writeFileSync(join(deployDir, 'dist', 'server', 'index.js'), 'old-tree\n')
+    const hermesData = join(deployDir, 'hermes_data')
+    mkdirSync(join(hermesData, 'profiles', 'default'), { recursive: true })
+    mkdirSync(join(hermesData, 'profiles', 'guanzhong'), { recursive: true })
+    writeFileSync(join(hermesData, 'profiles', 'default', 'config.yaml'), 'agent: default\n', 'utf-8')
+    writeFileSync(join(hermesData, 'profiles', 'guanzhong', 'config.yaml'), 'agent: guanzhong\n', 'utf-8')
+    writeFileSync(join(hermesData, 'state.db'), Buffer.alloc(1024 * 1024), { flag: 'w' })
+    mkdirSync(join(hermesData, 'sessions'), { recursive: true })
+    writeFileSync(join(hermesData, 'sessions', 'session-001.json'), '{"messages":42}\n', 'utf-8')
+    mkdirSync(join(hermesData, 'skills', 'custom-skill'), { recursive: true })
+    writeFileSync(join(hermesData, 'skills', 'custom-skill', 'SKILL.md'), '# custom\n', 'utf-8')
+
+    const res = runBash(resolvePath(__dirname, '..', '..', 'scripts', 'update-orchestrator.sh'), {
+      HERMES_WEB_UI_HOME: home,
+      DEPLOY_DIR: deployDir,
+      HERMES_WEB_UI_UPDATE_VERSION: '1.2.3',
+      HERMES_WEB_UI_UPDATE_PACKAGE_ARCHIVE: result.artifactPath,
+      HERMES_WEB_UI_UPDATE_SOURCE_PACKAGE_SHA256: manifest.sha256,
+      HERMES_WEB_UI_UPDATE_INSTALLER_SCRIPT_SHA256: manifest.installerScriptSha256,
+      HERMES_WEB_UI_UPDATE_MANIFEST_SHA256: createHash('sha256').update(readFileSync(result.manifestPath)).digest('hex'),
+      WEBUI_DRY_RUN: '1',
+      WEBUI_UPDATE_SKIP_HEALTHCHECK: '1',
+    })
+    expect(res.status, `orchestrator failed: ${res.stderr}`).toBe(0)
+
+    // The new deploy must carry the old hermes_data intact.
+    const newHermes = join(deployDir, 'hermes_data')
+    expect(existsSync(newHermes), 'hermes_data must exist in the new deploy').toBe(true)
+    expect(existsSync(join(newHermes, 'profiles', 'default', 'config.yaml')), 'default profile preserved').toBe(true)
+    expect(existsSync(join(newHermes, 'profiles', 'guanzhong', 'config.yaml')), 'guanzhong profile preserved').toBe(true)
+    expect(existsSync(join(newHermes, 'state.db')), 'state.db preserved').toBe(true)
+    expect(existsSync(join(newHermes, 'sessions', 'session-001.json')), 'session history preserved').toBe(true)
+    expect(existsSync(join(newHermes, 'skills', 'custom-skill', 'SKILL.md')), 'custom skills preserved').toBe(true)
+    // state.db size should match the original (1MB, not the 4KB skeleton).
+    const { statSync } = await import('fs')
+    expect(statSync(join(newHermes, 'state.db')).size).toBe(1024 * 1024)
+  })
+
   it('build refuses a manifest whose staged dist version mismatches (self-check)', async () => {
     const { buildDevicePackageRelease } = await import('../../scripts/build-device-package.mjs')
     const { repoRoot, outputDir } = seedRepo('dry-run-mismatch-')

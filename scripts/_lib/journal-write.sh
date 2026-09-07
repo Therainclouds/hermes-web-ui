@@ -52,6 +52,7 @@ JOURNAL_STAGES=(
   starting
   installing_dependencies
   installing
+  building
   stopping_runtime
   restarting
   starting_runtime

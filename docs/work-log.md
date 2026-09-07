@@ -2733,3 +2733,70 @@ chat store 模块化拆分只动 `packages/client/src/stores/hermes/chat.ts` 及
 ### 浏览器交互细节
 
 split-button 设计（不是单按钮 + dropdown）的原因：单按钮 click 既要触发 docx 又要切换 dropdown 会冲突。naive-ui 没有官方 SplitButton 组件，所以手动拼两个 NButton，圆角各取一边、中间缝 1px 白线，保持视觉一体。dropdown 用 `trigger="manual"` + `@clickoutside` 关闭，避免与主按钮 hover 交互冲突。
+
+## 2026-09-07(深夜) · 6.6.6.73 真机升级实战 + hermes_data 数据丢失修复
+
+### 一、升级过程（0.7.20 → 0.8.1，5 次尝试）
+
+phase (a) 更新系统的**首次真机运行**。设备 6.6.6.73，source-deploy 策略。
+
+| 尝试 | 现象 | 根因 | 修复 |
+|---|---|---|---|
+| 0（用户手动触发） | runner code=1 拒绝请求 | 旧 runner 不认识新 controller 发的 `HERMES_WEB_UI_UPDATE_SOURCE_PACKAGE_URLS` key | 手术：scp 新 runner 上设备 |
+| 1 | 下载前失败 | URL 解析：controller 发 JSON 数组 `["u1","u2"]`，编排器 `${PACKAGE_URLS//,/ }` 留下引号 → curl malformed | `tr -d '[]()"'"'"''` 去 JSON 标点 |
+| 2 | 秒挂 | 同上残留（旧编排器在设备树上） | 手术：scp 修好的编排器上设备 |
+| 3 | restart 失败 → **回滚正确工作** | swap 后整棵树 root 属主，服务 ExecStartPre 建不了 certs/ | 新增 `_lib/chown-mount-safe.sh` + swap 后 `chown_r_mount_safe_root` |
+| 4/5 | swap + 回滚均发生，但回滚后也起不来 | 更深的坑：① legacy sync 早已把树变 root 属主 ② **编排器没有 npm ci + build 步骤**，0.8.1 树没有 dist | 手动在 staging 构建（ARM ~10min）→ swap → restart → 0.8.1 上线 |
+
+**最终结果**：`/health` 返回 `webui_version: 0.8.1`，journal `succeeded`，identity 手动烙印。
+
+### 二、升级后发现三张用户截图的根因：**hermes_data 数据丢失**
+
+升级后用户报告三个问题：
+
+1. **图1**：聊天界面 `错误：配置文件"u_27"在此连接上不可用`
+2. **图2**："尚未捕获设备环境状态。请先完成一次成功升级后再查看。"
+3. **图3**：`Session messages failed to load (network or server timeout)`
+
+**根因排查**：`/opt/hermes-web-ui/src`（deploy  symlink 目标）里的 `hermes_data/` 只有 **6.2MB**（1 个 profile `u_17`、4KB 空 state.db、15 个 bundled skills），而 `src.previous-*/hermes_data/` 有 **2.9GB**（5 个 profile: default/guanzhong/jiran/wenxin/zimo、112MB state.db、35 个 skills、模型缓存、session 历史）。
+
+**因果链**：
+- source-deploy 的 source tar 只含源码骨架，`hermes_data/` 是空目录或极小占位
+- orchestrator `swap_deploy` 做原子 symlink swap 后，新树取代旧树，**没有任何步骤保留 hermes_data**
+- 旧 `hermes_data/` 跟着 `src.previous-*` 被雪藏，服务指向空库
+- 所有 agent profile 消失 → u_27 等 profile 不可用
+- state.db 清空 → session 历史丢失 → 图3
+- update-task-state.json 卡在 `running`（编排器没走完完整生命周期）→ 图2
+
+**紧急修复**（SSH 手术）：
+```bash
+systemctl stop hermes-web-ui
+kill <bridge PIDs>
+mv src/hermes_data src/hermes_data.new-skeleton   # 保留新骨架作备份
+cp -a src.previous-*/hermes_data src/hermes_data   # 恢复 2.9GB
+chown -R hermesui:hermesui src/hermes_data
+systemctl start hermes-web-ui
+```
+
+恢复后验证：5 个 agent 全部重连（default/guanzhong/jiran/wenxin/zimo），GroupChat 恢复 2 个房间，state.db 回到 112MB。同时手动烙印 identity + 修复 task-state 为 `succeeded`。
+
+### 三、代码修复：orchestrator 增加 hermes_data 跨 swap 保留
+
+在 `scripts/update-orchestrator.sh` 的 `swap_deploy()` 中 `atomic_swap_dir` 之后新增 `preserve_hermes_data_across_swap()`：
+
+- 读取 `lastgood` symlink 定位旧树
+- 若旧树有 `hermes_data/` 且新树没有（或只有 ≤2 个条目的骨架），`cp -a` 复制过来
+- 新树的骨架先 `mv` 到 `.skeleton-bak` 作保险，成功后删除
+- 复制失败时回滚骨架
+- 已有丰满 `hermes_data/` 的新树不受影响（idempotent）
+
+**新增测试**：`tests/release/source-deploy-dry-run.test.ts` 增加 `preserves hermes_data from the previous deploy across the atomic swap`，验证 profiles / state.db / sessions / custom skills 在 swap 后完整保留。
+
+### 四、遗留问题
+
+| 编号 | 问题 | 优先级 | 状态 |
+|---|---|---|---|
+| R1 | orchestrator 缺 npm ci + build（source-deploy 必须在设备构建） | HIGH | 待修 |
+| R2 | workflow 第 245 行 latest.json 直推 OSS 绕过 two-stage | HIGH | 待修 |
+| R3 | 升级后 `/api/environment` 返回 401（auth token 机制待排查） | MEDIUM | 待查 |
+| R4 | `environment.status: "unavailable"` — reconcile 功能在此设备未启用 | LOW | 设计如此 |
