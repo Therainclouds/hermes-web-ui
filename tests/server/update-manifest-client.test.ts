@@ -233,23 +233,83 @@ describe('update manifest client', () => {
   })
 
   it('surfaces a structured manifest fetch failure when both transports fail', async () => {
+    // Isolate the manifest cache: phase (a) falls back to the last cached
+    // manifest when every URL fails, so a cache seeded by an earlier test
+    // in this worker would otherwise be served instead of the rejection.
+    const { mkdtempSync, rmSync } = await import('fs')
+    const { tmpdir } = await import('os')
+    const { join } = await import('path')
+    const isolatedHome = mkdtempSync(join(tmpdir(), 'manifest-client-'))
+    process.env.HERMES_WEB_UI_HOME = isolatedHome
+    process.env.HERMES_WEBUI_STATE_DIR = isolatedHome
+
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(Object.assign(new TypeError('fetch failed'), { code: 'ETIMEDOUT' })))
     const { fetchManifestUpdateInfo } = await import('../../packages/server/src/services/update/manifest-client')
 
-    await expect(fetchManifestUpdateInfo({
-      ...createUpdateConfig(),
+    try {
+      await expect(fetchManifestUpdateInfo({
+        ...createUpdateConfig(),
+        manifestUrl: 'http://127.0.0.1:1/stable/latest.json',
+      })).rejects.toMatchObject({
+        code: 'update_manifest_fetch_failed',
+        details: expect.objectContaining({
+          manifestUrls: ['http://127.0.0.1:1/stable/latest.json'],
+          failures: expect.arrayContaining([
+            expect.objectContaining({
+              manifestUrl: 'http://127.0.0.1:1/stable/latest.json',
+            }),
+          ]),
+        }),
+      })
+    } finally {
+      rmSync(isolatedHome, { recursive: true, force: true })
+    }
+  })
+
+  it('serves the persisted cache when every manifest URL fails (phase a offline fallback)', async () => {
+    const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = await import('fs')
+    const { tmpdir } = await import('os')
+    const { join } = await import('path')
+    const isolatedHome = mkdtempSync(join(tmpdir(), 'manifest-client-cache-'))
+    process.env.HERMES_WEB_UI_HOME = isolatedHome
+    process.env.HERMES_WEBUI_STATE_DIR = isolatedHome
+
+    const cacheDir = join(isolatedHome, 'updates', 'cache')
+    mkdirSync(cacheDir, { recursive: true })
+    writeFileSync(join(cacheDir, 'manifest-stable.json'), JSON.stringify({
+      schema: 1,
+      cachedAt: new Date().toISOString(),
+      channel: 'stable',
       manifestUrl: 'http://127.0.0.1:1/stable/latest.json',
-    })).rejects.toMatchObject({
-      code: 'update_manifest_fetch_failed',
-      details: expect.objectContaining({
-        manifestUrls: ['http://127.0.0.1:1/stable/latest.json'],
-        failures: expect.arrayContaining([
-          expect.objectContaining({
-            manifestUrl: 'http://127.0.0.1:1/stable/latest.json',
-          }),
-        ]),
-      }),
-    })
+      payload: {
+        version: '1.2.6',
+        channel: 'stable',
+        sourceLabel: 'Fallback Manifest',
+        packageType: 'device-package',
+        artifactFormat: 'tar.gz',
+      },
+    }))
+
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(Object.assign(new TypeError('fetch failed'), { code: 'ETIMEDOUT' })))
+    const { fetchManifestUpdateInfo } = await import('../../packages/server/src/services/update/manifest-client')
+
+    try {
+      const result = await fetchManifestUpdateInfo({
+        ...createUpdateConfig(),
+        manifestUrl: 'http://127.0.0.1:1/stable/latest.json',
+      })
+      // The cached manifest keeps the device visible while offline; the
+      // staleness itself is surfaced through /api/update/identity.
+      expect(result).toEqual({
+        version: '1.2.6',
+        channel: 'stable',
+        sourceLabel: 'Fallback Manifest',
+        packageType: 'device-package',
+        manifestUrl: 'http://127.0.0.1:1/stable/latest.json',
+      })
+    } finally {
+      rmSync(isolatedHome, { recursive: true, force: true })
+    }
   })
 
   it('rejects invalid manifest channels before building the latest.json URL', async () => {

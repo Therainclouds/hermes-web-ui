@@ -367,6 +367,16 @@ export interface UpdateIdentityResponse {
   }
 }
 
+export interface RepairIdentityResponse {
+  success: boolean
+  identity?: UpdateIdentity
+  code?: string
+  message?: string
+}
+
+export async function repairUpdateIdentity(): Promise<RepairIdentityResponse> {
+  return request<RepairIdentityResponse>('/api/update/identity/repair', { method: 'POST' })
+}
 export async function fetchUpdateIdentity(): Promise<UpdateIdentityResponse> {
   return request<UpdateIdentityResponse>('/api/update/identity')
 }

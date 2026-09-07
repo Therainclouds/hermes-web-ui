@@ -347,6 +347,16 @@ export default {
     },
   },
 
+  identityDrift: {
+    "title": "检测到版本身份漂移",
+    "summary": "设备记录的版本（{recorded}）与当前运行版本（{running}）不一致。",
+    "repair": "修复身份记录",
+    "repairing": "正在修复…",
+    "repaired": "身份记录已修复，与当前运行版本一致。",
+    "repairDeferred": "修复失败：设备状态未恢复，请稍后重试或重新升级。",
+    "dismiss": "本会话内隐藏"
+  },
+
   environmentDrift: {
     title: '检测到设备环境漂移',
     summary: '当前有 {count} 项环境门禁与最新 manifest 不一致。',

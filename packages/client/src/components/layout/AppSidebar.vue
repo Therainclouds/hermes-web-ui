@@ -11,6 +11,7 @@ import ModelSelector from "@/components/layout/ModelSelector.vue";
 import ProfileSelector from "@/components/layout/ProfileSelector.vue";
 import LanguageSwitch from "@/components/layout/LanguageSwitch.vue";
 import EnvironmentDriftBanner from "@/components/layout/EnvironmentDriftBanner.vue";
+import IdentityDriftBanner from "@/components/layout/IdentityDriftBanner.vue";
 import ThemeSwitch from "@/components/layout/ThemeSwitch.vue";
 import VersionManagementModal from "@/components/layout/VersionManagementModal.vue";
 import { changelog } from "@/data/changelog";
@@ -515,6 +516,7 @@ function handleUpdateClick() {
         <ThemeSwitch />
       </div>
       <EnvironmentDriftBanner />
+      <IdentityDriftBanner />
       <NButton
         v-if="isDesktopShell"
         type="primary"

@@ -347,6 +347,16 @@ export default {
     },
   },
 
+  identityDrift: {
+    "title": "Version identity drift detected",
+    "summary": "The device identity record ({recorded}) does not match the running version ({running}).",
+    "repair": "Repair identity record",
+    "repairing": "Repairing…",
+    "repaired": "Identity record repaired to match the running version.",
+    "repairDeferred": "Repair failed: device is not healthy yet. Retry later or rerun the upgrade.",
+    "dismiss": "Hide for this session"
+  },
+
   environmentDrift: {
     title: 'Device environment drift detected',
     summary: '{count} environment gate(s) do not match the latest manifest.',

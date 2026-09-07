@@ -1,9 +1,12 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { clampMessageForUi } from '@/utils/format-text'
 import {
   checkHealth,
   clearStaleUpdateStatus as clearStaleUpdateStatusRequest,
+  fetchUpdateIdentity,
+  repairUpdateIdentity as repairUpdateIdentityRequest,
+  type UpdateIdentityResponse,
   fetchAvailableModels,
   fetchUpdateCapabilities,
   fetchUpdateStatus,
@@ -58,6 +61,10 @@ export const useAppStore = defineStore('app', () => {
   const updatePackageType = ref('')
   const environmentCheck = ref<EnvironmentCheckResponse | null>(null)
   const environmentDismissed = ref(false)
+  // Phase (a) identity drift (docs/harness/source-deploy-refactor.md).
+  const updateIdentity = ref<UpdateIdentityResponse | null>(null)
+  const identityDismissed = ref(false)
+  const identityRepairing = ref(false)
   const clientOutdated = ref(false)
   const updating = ref(false)
   const updateTaskId = ref('')
@@ -165,6 +172,39 @@ export const useAppStore = defineStore('app', () => {
 
   function dismissEnvironmentDrift() {
     environmentDismissed.value = true
+  }
+
+  // Identity drift: identity.json claims a different version than the
+  // running server reports via /health. Health OK -> repairable (red
+  // banner with a Repair button that only re-stamps identity).
+  const identityDrift = computed(() => {
+    const identity = updateIdentity.value
+    if (!identity?.installed || !identity.identity) return false
+    return !!serverVersion.value && identity.identity.version !== serverVersion.value
+  })
+
+  const identityRepairAvailable = computed(() => identityDrift.value && connected.value)
+
+  async function refreshUpdateIdentity(): Promise<void> {
+    try {
+      updateIdentity.value = await fetchUpdateIdentity()
+    } catch {
+      updateIdentity.value = null
+    }
+  }
+
+  async function repairUpdateIdentity(): Promise<boolean> {
+    identityRepairing.value = true
+    try {
+      await repairUpdateIdentityRequest()
+      await refreshUpdateIdentity()
+      identityDismissed.value = false
+      return true
+    } catch {
+      return false
+    } finally {
+      identityRepairing.value = false
+    }
   }
 
   async function triggerEnvironmentReconcile(): Promise<boolean> {
@@ -308,6 +348,7 @@ export const useAppStore = defineStore('app', () => {
         if (res.environment.status === 'ok') environmentDismissed.value = false
       }
       await refreshUpdateCapabilities()
+      void refreshUpdateIdentity()
     } catch {
       connected.value = false
       clientOutdated.value = false
@@ -650,6 +691,13 @@ export const useAppStore = defineStore('app', () => {
     refreshUpdateCapabilities,
     environmentCheck,
     environmentDismissed,
+    updateIdentity,
+    identityDismissed,
+    identityDrift,
+    identityRepairAvailable,
+    identityRepairing,
+    refreshUpdateIdentity,
+    repairUpdateIdentity,
     refreshEnvironmentCheck,
     dismissEnvironmentDrift,
     triggerEnvironmentReconcile,
