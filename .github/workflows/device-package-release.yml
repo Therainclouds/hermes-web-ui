@@ -242,7 +242,9 @@ jobs:
           ossutil -c "${HOME}/.ossutilconfig" cp -f "${{ steps.metadata.outputs.artifact_path }}" "${{ steps.metadata.outputs.oss_artifact_path }}"
           ossutil -c "${HOME}/.ossutilconfig" cp -f "${{ steps.metadata.outputs.sha_path }}" "${{ steps.metadata.outputs.oss_sha_path }}"
           ossutil -c "${HOME}/.ossutilconfig" cp -f "${{ steps.metadata.outputs.manifest_path }}" "${{ steps.metadata.outputs.oss_manifest_path }}"
-          ossutil -c "${HOME}/.ossutilconfig" cp -f "${{ steps.metadata.outputs.latest_path }}" "${{ steps.metadata.outputs.oss_latest_path }}"
+          # NOTE: latest.json is NOT uploaded here — it is a per-channel
+          # pointer that must only change on promote (24h gate). The
+          # promote job uploads it to OSS after the manifest branch commit.
           if [ -n "${{ steps.metadata.outputs.source_artifact_path }}" ]; then
             ossutil -c "${HOME}/.ossutilconfig" cp -f "${{ steps.metadata.outputs.source_artifact_path }}" "${{ steps.metadata.outputs.oss_source_artifact_path }}"
             ossutil -c "${HOME}/.ossutilconfig" cp -f "${{ steps.metadata.outputs.source_sha_path }}" "${{ steps.metadata.outputs.oss_source_sha_path }}"
@@ -428,11 +430,9 @@ jobs:
             exit 1
           fi
 
-          if [ -n "${{ steps.metadata.outputs.oss_latest_url }}" ]; then
-            curl -fsSL "${{ steps.metadata.outputs.oss_latest_url }}" > /tmp/oss-latest.json
-            diff -u "${{ steps.metadata.outputs.latest_path }}" /tmp/oss-latest.json
-          fi
-
+          # NOTE: oss_latest_url is intentionally NOT verified here — the
+          # candidate stage must NOT update the per-channel latest.json on
+          # OSS (that happens on promote, after the 24h gate).
           if [ -n "${{ steps.metadata.outputs.oss_manifest_url }}" ]; then
             curl -fsSL "${{ steps.metadata.outputs.oss_manifest_url }}" > /tmp/oss-manifest.json
             diff -u "${{ steps.metadata.outputs.manifest_path }}" /tmp/oss-manifest.json
@@ -583,6 +583,63 @@ jobs:
             git commit -m "chore: promote ${RELEASE_TAG} to ${RELEASE_CHANNEL} (candidate age ${candidate_age_seconds}s)"
             git push origin "${MANIFEST_BRANCH}"
           )
+
+      - name: Upload promoted latest.json to OSS
+        if: env.ALIYUN_OSS_ENDPOINT != ''
+        shell: bash
+        env:
+          RELEASE_CONFIG: .github/device-package-release.json
+          ALIYUN_OSS_ENDPOINT: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
+          ALIYUN_OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
+          ALIYUN_OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
+        run: |
+          set -euo pipefail
+
+          : "${ALIYUN_OSS_ENDPOINT:?ALIYUN_OSS_ENDPOINT is required}"
+          : "${ALIYUN_OSS_ACCESS_KEY_ID:?ALIYUN_OSS_ACCESS_KEY_ID is required}"
+          : "${ALIYUN_OSS_ACCESS_KEY_SECRET:?ALIYUN_OSS_ACCESS_KEY_SECRET is required}"
+
+          RELEASE_CONFIG_PATH="${RELEASE_CONFIG}"
+          if [ ! -f "${RELEASE_CONFIG_PATH}" ]; then
+            echo "Release config not found: ${RELEASE_CONFIG_PATH}; skipping OSS upload" >&2
+            exit 0
+          fi
+
+          OSS_PATH="$(node -e "console.log(JSON.parse(require('node:fs').readFileSync('${RELEASE_CONFIG_PATH}','utf8')).ossPath || '')")"
+          OSS_PUBLIC_BASE_URL="$(node -e "console.log(JSON.parse(require('node:fs').readFileSync('${RELEASE_CONFIG_PATH}','utf8')).ossPublicBaseUrl || '')")"
+
+          if [ -z "${OSS_PATH}" ]; then
+            echo "ossPath not configured; skipping OSS upload" >&2
+            exit 0
+          fi
+
+          OSS_LATEST_PATH="${OSS_PATH}/releases/${RELEASE_CHANNEL}/latest.json"
+
+          mkdir -p "${HOME}"
+          cat > "${HOME}/.ossutilconfig" <<EOF
+          [Credentials]
+          language=EN
+          endpoint = ${ALIYUN_OSS_ENDPOINT}
+          accessKeyID = ${ALIYUN_OSS_ACCESS_KEY_ID}
+          accessKeySecret = ${ALIYUN_OSS_ACCESS_KEY_SECRET}
+          EOF
+          chmod 600 "${HOME}/.ossutilconfig"
+
+          LATEST_JSON=".manifest-branch/releases/${RELEASE_CHANNEL}/latest.json"
+          if [ ! -f "${LATEST_JSON}" ]; then
+            echo "Promoted latest.json not found: ${LATEST_JSON}" >&2
+            exit 1
+          fi
+
+          ossutil -c "${HOME}/.ossutilconfig" cp -f "${LATEST_JSON}" "${OSS_LATEST_PATH}"
+          echo "Uploaded latest.json to ${OSS_LATEST_PATH}"
+
+          if [ -n "${OSS_PUBLIC_BASE_URL}" ]; then
+            OSS_LATEST_URL="${OSS_PUBLIC_BASE_URL}/releases/${RELEASE_CHANNEL}/latest.json"
+            curl -fsSL "${OSS_LATEST_URL}" > /tmp/oss-promoted-latest.json
+            diff -u "${LATEST_JSON}" /tmp/oss-promoted-latest.json
+            echo "OSS latest.json verified against promoted manifest branch copy"
+          fi
 
       - name: Verify promoted pointer
         shell: bash
