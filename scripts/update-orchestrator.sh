@@ -515,6 +515,14 @@ build_deploy() {
     return 0
   fi
 
+  # Dry-run (CI / tests): no APP_USER exists, no npm registry reachable.
+  # Skip the build step — same rationale as restart_runtime() skipping
+  # systemctl. The production path always has APP_USER set by systemd.
+  if [[ "${DRY_RUN}" == "1" && -z "${app_user}" ]]; then
+    info "dry-run: APP_USER unknown; skipping npm ci + build"
+    return 0
+  fi
+
   if [[ -z "${app_user}" ]]; then
     warn "APP_USER unknown; cannot build deploy tree"
     return 5

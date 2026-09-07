@@ -3702,6 +3702,8 @@ export default {
 
   // Changelog
   changelog: {
+    new_0_8_2_1: 'Upgrade now preserves agent data (profiles, sessions, state.db) across source-deploy updates and runs npm ci + build on device so the new tree is fully operational after swap',
+    new_0_8_2_2: 'Release manifest latest.json on OSS now only updates on promote (after 24h gate), fixing a race where every tag push immediately overrode the stable channel pointer',
     new_0_8_1_1: 'Update system rework (phase a): upgrades now apply through an atomic symlink swap with automatic rollback to the last known good version, and the device self-heals after a crash or power loss mid-update',
     new_0_8_1_2: 'Every upgrade is journaled (JSONL) and the device records an identity fingerprint (version + dist checksum) that is cross-verified against the release manifest — no more wrong version after a successful upgrade',
     new_0_8_1_3: 'Downloads resume from the last byte across rotating mirrors; releases go through a two-stage candidate→promote gate so a broken build cannot reach the stable channel',
