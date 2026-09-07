@@ -24,7 +24,7 @@ import { clampChatInputHeight, isMobileChatInputViewport } from '@/utils/chat-in
 import { normalizeComposerVoiceTranscript, useComposerVoiceInput } from '@/composables/useComposerVoiceInput'
 
 const gradingRouter = useRouter()
-const gradingAvailable = computed(() => isPluginEnabled('scanner', true) && isPluginEnabled('paper-grading', false))
+const gradingAvailable = computed(() => isPluginEnabled('scanner', true) && isPluginEnabled('paper-grading', true))
 const chatStore = useChatStore()
 const appStore = useAppStore()
 const profilesStore = useProfilesStore()

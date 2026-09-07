@@ -9,7 +9,7 @@ const plugin: HermesClientPlugin = {
     for (const mode of ['grading', 'grading-batch']) ctx.addRoute({
       path: `/hermes/${mode}`, name: `plugin-paper-grading.${mode}`,
       component: () => import('./GradingView.vue'),
-      beforeEnter: () => isPluginEnabled('scanner', true) && isPluginEnabled('paper-grading', false) ? true : '/hermes/client-plugins',
+      beforeEnter: () => isPluginEnabled('scanner', true) && isPluginEnabled('paper-grading', true) ? true : '/hermes/client-plugins',
     })
     ctx.addSidebarItem({ routeName: 'plugin-paper-grading.grading-batch', group: 'Tools', labelKey: 'grading.title', iconPath: 'M9 12l2 2 4-4M5 3h14v18H5z' })
   },
