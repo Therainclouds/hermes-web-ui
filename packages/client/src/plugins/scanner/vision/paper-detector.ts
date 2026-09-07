@@ -256,6 +256,42 @@ function grayscale(rgba: { width: number; height: number; data: Uint8ClampedArra
   return out
 }
 
+/**
+ * 可分离 O(N) box blur，用于估计局部背景亮度（adaptive 阈值）。
+ * slide-window 求均值，边界 clamp-to-edge。纯 Float32 输出避免后续累加误差。
+ */
+function boxBlur(src: Uint8Array, W: number, H: number, radius: number): Float32Array {
+  if (radius < 1) {
+    const out = new Float32Array(src.length)
+    for (let i = 0; i < src.length; i++) out[i] = src[i]!
+    return out
+  }
+  const clamp = (v: number, max: number) => (v < 0 ? 0 : v > max ? max : v)
+  const tmp = new Float32Array(src.length)
+  const out = new Float32Array(src.length)
+  const win = 2 * radius + 1
+  // 水平方向
+  for (let y = 0; y < H; y++) {
+    const row = y * W
+    let acc = 0
+    for (let x = -radius; x <= radius; x++) acc += src[row + clamp(x, W - 1)]!
+    for (let x = 0; x < W; x++) {
+      tmp[row + x] = acc / win
+      acc += src[row + clamp(x + radius + 1, W - 1)]! - src[row + clamp(x - radius, W - 1)]!
+    }
+  }
+  // 垂直方向
+  for (let x = 0; x < W; x++) {
+    let acc = 0
+    for (let y = -radius; y <= radius; y++) acc += tmp[clamp(y, H - 1) * W + x]
+    for (let y = 0; y < H; y++) {
+      out[y * W + x] = acc / win
+      acc += tmp[clamp(y + radius + 1, H - 1) * W + x] - tmp[clamp(y - radius, H - 1) * W + x]
+    }
+  }
+  return out
+}
+
 /** 5x5 高斯（σ≈1.0），归一化卷积核 273。边界像素用 clamp-to-edge。 */
 function gaussianBlur5x5(src: Uint8Array, W: number, H: number): Uint8Array {
   const out = new Uint8Array(src.length)
@@ -408,9 +444,9 @@ async function detectProposal(
 }
 
 /* ------------------------------------------------------------------ *
- * 策略 1：亮度 + Otsu（双极性）
+ * 策略 1：亮度 + Otsu（双极性）+ 自适应局部阈值
  * ------------------------------------------------------------------ */
-type Polarity = 'white' | 'dark'
+type Polarity = 'white' | 'dark' | 'adaptive'
 
 /**
  * 亮度分割策略：同一 Otsu 阈值把画面分成亮/暗两簇，各作为一次前景尝试——
@@ -440,7 +476,14 @@ function detectByBrightness(
     upperHist[i] = 0
   }
   const upperThreshold = upperCount > 0 ? otsuThreshold(upperHist, upperCount) : threshold
-  for (const cut of new Set([threshold, ...(upperThreshold > threshold ? [upperThreshold] : [])])) {
+  // Use a slightly conservative cut as well. At the exact upper Otsu split,
+  // soft desk shadows can join a darker page to the image boundary. Moving the
+  // cut toward the first split preserves the page while breaking that bridge.
+  const darkPageThreshold = upperThreshold - Math.max(6, (upperThreshold - threshold) * 0.15)
+  for (const cut of new Set([
+    threshold,
+    ...(upperThreshold > threshold + 6 ? [darkPageThreshold, upperThreshold] : []),
+  ])) {
     const whiteMask = new Uint8Array(totalPx)
     const darkMask = new Uint8Array(totalPx)
     for (let i = 0; i < totalPx; i++) {
@@ -448,8 +491,30 @@ function detectByBrightness(
       else darkMask[i] = 1
     }
     polarities.push({ polarity: 'white', mask: whiteMask })
-    if (cut === threshold) polarities.push({ polarity: 'dark', mask: darkMask })
+    // The second (upper-cluster) threshold is the important one for a tan or
+    // grey document on a white desk. Its dark side contains the whole page,
+    // including dark printing; evaluating only the bright side makes that
+    // common scene impossible to detect.
+    polarities.push({ polarity: 'dark', mask: darkMask })
   }
+
+  // 自适应局部阈值：这是「亮桌上的低对比度页面」的关键补充。
+  // 全局 Otsu 台阶把「暗角/阴影」与「亮桌面」分开，但无法把一张
+  // 浅褐色/灰色的纸（~200）从更亮的白桌面（~240+）里切出来——两者都落在
+  // 同一个「亮簇」里，连成整幅画面。这里用局部背景均值（box blur）做比较：
+  //   像素亮度显著低于「它周围的局部背景」→ 视为纸张候选。
+  // 优点：不会像全局阈值那样把纸和桌面的暗部一起圈进来；纸周围是亮桌面，
+  // 局部平均亮度高，纸即便只有中等亮度也会被可靠标出；而画面边缘的暗角
+  // 渐变处，局部背景本身已经很暗，localBg - gray 很小，不会被误标。
+  const adaptRadius = Math.max(6, Math.round(Math.max(W, H) * 0.03))
+  const localMean = boxBlur(gray, W, H, adaptRadius)
+  const adaptiveMask = new Uint8Array(totalPx)
+  // 阈值自适应缩放：随帧边长放大，避免大图上噪声把整片高低起伏都标成纸张。
+  const adaptDelta = Math.max(9, Math.round(Math.max(W, H) * 0.018))
+  for (let i = 0; i < totalPx; i++) {
+    if (localMean[i]! - gray[i]! > adaptDelta) adaptiveMask[i] = 1
+  }
+  polarities.push({ polarity: 'adaptive', mask: adaptiveMask })
 
   for (const { polarity, mask } of polarities) {
     morphologicalClose(mask, W, H, 3, 1)
@@ -940,7 +1005,10 @@ function finalizeDetection(
   }
   const hull = [...rawHull.slice(anchor), ...rawHull.slice(0, anchor)]
 
-  // DP 化简到 4 个角点：容差从 0.5% 起步、逐步放大到 3%，让厚边带也能合并到 4 角
+  // DP 化简到 4 个角点：容差从 0.5% 起步、逐步放大到 3%，让厚边带也能合并到 4 角。
+  // 大而斜的纸张，其边缘像素受阴影/噪声影响会让凸包带出几十个顶点；DP 在
+  // 本场景实测给出 17,13,8,6，永远到不了恰好 4 点，真正的纸张因此被丢弃。
+  // 所以 DP 失败时用 maxAreaQuad 从凸包上稳健地取最大内接四边形作为回退。
   let simplified: Pt[] = []
   const maxEdge = Math.max(W, H)
   for (const tol of [0.005, 0.01, 0.02, 0.03].map(m => m * maxEdge)) {
@@ -955,6 +1023,14 @@ function finalizeDetection(
       break
     }
   }
+  // Fallback: Douglas-Peucker couldn't reach a clean 4-corner fit (jagged sheet
+  // edge / shadow spike). Take the max-area inscribed quad of the hull — this
+  // snaps to the real corners even when the hull has many noise vertices, and
+  // never collapses to a degenerate wedge.
+  if (simplified.length !== 4) {
+    const quad = maxAreaQuad(hull)
+    if (quad) simplified = quad.map(p => ({ x: p.x, y: p.y }))
+  }
   if (simplified.length !== 4) return null
 
   const areaRatio = polygonArea(simplified) / totalPx
@@ -965,7 +1041,9 @@ function finalizeDetection(
   const aspect = quadAspect(simplified as unknown as Quad)
   if (aspect < opts.minAspect || aspect > opts.maxAspect) return null
 
-  // 亮度一致性：亮极性候选应确实亮、暗极性候选应确实暗（防噪点把背景当纸）
+  // 亮度一致性：亮极性候选应确实亮、暗极性候选应确实暗（防噪点把背景当纸）。
+  // adaptive（局部对比度）候选的均值亮度是页面本来的亮度，可能落在任意区间
+  // （浅褐色纸张 ~200 也可能 > 159 上限），因此不适用这条绝对的亮/暗门槛。
   const avgBrightness = avgRegionBrightness(gray, W, largest)
   if (polarity === 'white' && avgBrightness < 96) return null
   if (polarity === 'dark' && avgBrightness > 255 - 96) return null
@@ -978,6 +1056,11 @@ function finalizeDetection(
   // 反背景用平方关系重罚：整幅背景/桌面通常贴画框 2~4 条边，面积虽大，
   // 但被 (1-contact)² 抵消后会被真正的纸张（贴边少）压下去。
   const contact = frameContactRatio(largest, W, H)
+  // A physical page cannot coincide with three sides of the camera frame
+  // unless it nearly fills the image. In practice this shape is a clipped
+  // illumination region: two frame edges plus a strong light/shadow boundary.
+  // Reject it regardless of area so it cannot become a sticky false lock.
+  if (contact >= 0.75) return null
   // 大面积 + 贴画框多条边 → 几乎肯定是整幅背景/桌面，而非纸张，直接拒绝。
   if (contact >= 0.5 && areaRatio > 0.6) return null
   const support = edgeSupportRatio(largest.border, simplified, Math.max(1.5, 0.008 * maxEdge))
@@ -1080,6 +1163,48 @@ function perpDist(p: Pt, a: Pt, b: Pt): number {
   const len = Math.hypot(dx, dy)
   if (len === 0) return Math.hypot(p.x - a.x, p.y - a.y)
   return Math.abs(dy * p.x - dx * p.y + b.x * a.y - b.y * a.x) / len
+}
+
+/**
+ * 凸包的最大内接四边形（max-area inscribed quadrilateral）。
+ *
+ * 用途：当 Douglas-Peucker 无法把一条带噪声/阴影尖刺的凸包化简到恰好 4 个角点时，
+ * 用它稳健地从凸包上取出 4 个真实角点——面积最大化会自然吸附到纸张四个角，
+ * 因而既不会把真正的纸张丢掉，也不会退化成「两角重合」的楔形。
+ *
+ * 实现：枚举对角线 (i,j)，其两侧各取与对角线构成最大面积的三角形顶点
+ * （k 在 i..j 之间，l 在 j..i 绕一圈之间），两个三角形之和即该对角线的
+ * 内接四边形面积；取全局最大。凸包顶点数 n 通常 ≤ 几十，O(n^3) 仅在几 ms 内。
+ * hull 需为按序排列的凸包顶点（像素坐标）。
+ */
+function maxAreaQuad(hull: Pt[]): Quad | null {
+  const n = hull.length
+  if (n < 4) return null
+  const area = (a: Pt, b: Pt, c: Pt) =>
+    Math.abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)) / 2
+  let bestArea = -1
+  let bi = 0, bj = 0, bk = 0, bl = 0
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      let bestK = -1, kIdx = -1
+      for (let k = i + 1; k < j; k++) {
+        const a = area(hull[i]!, hull[k]!, hull[j]!)
+        if (a > bestK) { bestK = a; kIdx = k }
+      }
+      let bestL = -1, lIdx = -1
+      for (let l = j + 1; l < j + n; l++) {
+        const ll = l % n
+        if (ll === i) break
+        const a = area(hull[j]!, hull[ll]!, hull[i]!)
+        if (a > bestL) { bestL = a; lIdx = ll }
+      }
+      if (kIdx < 0 || lIdx < 0 || bestK <= 0 || bestL <= 0) continue
+      const qArea = bestK + bestL
+      if (qArea > bestArea) { bestArea = qArea; bi = i; bj = j; bk = kIdx; bl = lIdx }
+    }
+  }
+  if (bestArea <= 0) return null
+  return [hull[bi]!, hull[bk]!, hull[bj]!, hull[bl]!]
 }
 
 /* ------------------------------------------------------------------ *

@@ -220,8 +220,28 @@ export function useSmartCapture(options: SmartCaptureOptions) {
         return
       }
 
-      // Only an active drag freezes the crop; pointer-up resumes tracking.
-      if (manual.value) return
+      // 手动调整过的选框是「粘性」的：只有「重置选框」(rescan) 才恢复实时跟随。
+      // 之前 pointer-up 就 resumeTracking，用户刚拖好的框过几帧又被检测结果覆盖。
+      // 冻结期间仍然评估自动拍摄：用锁定的选框 + 检测稳定度，避免手动微调后自动拍摄失效。
+      if (manual.value) {
+        detectMs.value = Math.round(outcome.ms)
+        stable = accumulateStable(stable, outcome.quad, stabilityTolerance)
+        const lockedQuad = quad.value
+        if (!autoCapture.value || !lockedQuad) {
+          status.value = 'detected'
+          return
+        }
+        if (inCooldown(lastCapturedAt, cooldownMs, performance.now())) {
+          status.value = 'cooling'
+          return
+        }
+        if (isStableEnough(stable, minStableFrames) && shouldRecapture(lastCapturedQuad, lockedQuad, changeThreshold)) {
+          fireAutoCapture(lockedQuad)
+        } else {
+          status.value = 'detected'
+        }
+        return
+      }
 
       // —— 本帧有合格候选 ——
       hits += 1
@@ -336,21 +356,25 @@ export function useSmartCapture(options: SmartCaptureOptions) {
 
   function fireAutoCapture(quadNorm: Quad) {
     if (status.value === 'capturing') return
+    // 用「屏幕上显示的选框」拍摄，而不是本帧的原始检测：
+    // 显示的 quad 是平滑后的结果，两者能差出几个百分点，用户会看到
+    // 右侧成品和左侧拉框不一致。所见即所得优先。
+    const shotQuad = quad.value ?? quadNorm
     status.value = 'capturing'
     const started = performance.now()
-    const canvas = captureCorrected(quadNorm)
+    const canvas = captureCorrected(shotQuad)
     if (!canvas) {
       status.value = 'detected'
       return
     }
     const payload: AutoCapturePayload = {
       canvas,
-      quad: quadNorm,
+      quad: shotQuad,
       ms: performance.now() - started,
     }
     void Promise.resolve(options.onAutoCapture?.(payload)).then(() => {
       if (status.value === 'capturing') {
-        markCaptured(quadNorm)
+        markCaptured(shotQuad)
       }
     })
   }
@@ -373,6 +397,9 @@ export function useSmartCapture(options: SmartCaptureOptions) {
     const warped = warpQuad(rgba, cornersPx, {
       maxEdge: outputMaxEdge,
       aspectRatio: options.aspectRatio ?? null,
+      // 提供源图尺寸 → warpQuad 用消隐点法反解纸张真实宽高比，
+      // 斜拍的页面不会被压扁（aspectRatio 显式指定时以用户选择为准）。
+      imageSize: { width: frame.width, height: frame.height },
     })
     return rgbaToCanvas(warped)
   }
@@ -417,6 +444,10 @@ export function useSmartCapture(options: SmartCaptureOptions) {
     status.value = 'detected'
   }
 
+  /**
+   * 恢复实时跟随（保留当前选框作为起点）。
+   * 手动拖动后**不**自动调用：拖过的框保持手动锁定，直到用户点「重置选框」。
+   */
   function resumeTracking() {
     if (!manual.value) return
     detectionRevision++

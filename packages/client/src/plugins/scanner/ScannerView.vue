@@ -27,7 +27,10 @@ import {
   NTooltip,
 } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import { useScannerCamera } from './composables/useScannerCamera'
+import {
+  SCANNER_RESOLUTION_PRESETS,
+  useScannerCamera,
+} from './composables/useScannerCamera'
 import { useSmartCapture } from './composables/useSmartCapture'
 import ScannerQuadOverlay from './components/ScannerQuadOverlay.vue'
 import ScannerEnhanceControls from './components/ScannerEnhanceControls.vue'
@@ -36,6 +39,7 @@ import {
   canvasFromImageSource,
   canvasToDataUrl,
   downscaleCanvas,
+  encodeEnhanced,
   enhanceCanvas,
   enhanceDataUrl,
 } from './image-io'
@@ -43,6 +47,8 @@ import { createDetector, type Detector } from './vision/detector'
 import { warpQuad } from './vision/perspective'
 import {
   ENHANCE_DEFAULTS,
+  ENHANCE_PRESET_LABEL_KEYS,
+  ENHANCE_PRESET_ORDER,
   type EnhanceParams,
   type EnhancePreset,
   type Quad,
@@ -97,6 +103,19 @@ const devices = ref<MediaDeviceInfo[]>([])
 const selectedDeviceId = ref<string | null>(null)
 
 /**
+ * 摄像头分辨率预设选择。默认 '2k'——16MP 的 UVC 摄像头大多数能
+ * 直接给到 2560×1440；不行则由 composable 内部沿预设降级到 1080p / 720p。
+ * 'auto' 则让浏览器/驱动挑默认档（多数 UVC 默认 1280×720）。
+ */
+const resolutionId = ref<string>('2k')
+const resolutionOptions = computed(() =>
+  SCANNER_RESOLUTION_PRESETS.map((p) => ({
+    label: tt(p.labelKey),
+    value: p.id,
+  })),
+)
+
+/**
  * 移动端判定：iOS/Android 上的 Safari / Chrome / 微信内置浏览器都会
  * 命中 `isMobileDevice()`（UA + 触控 + 屏幕宽度综合判定，
  * 避免「请求桌面版网站」时漏判）。同时监听 viewport resize：
@@ -139,13 +158,11 @@ const cameraErrorCode = computed(() => cam.error.value)
 /* ------------------------------------------------------------------ *
  * 智能捕捉（动态捕捉）
  * ------------------------------------------------------------------ */
-const capturePreset = ref<EnhancePreset>('auto')
-const capturePresetOptions = [
-  { label: tt('scanner.enhance.presetNone'), value: 'none' },
-  { label: tt('scanner.enhance.presetAuto'), value: 'auto' },
-  { label: tt('scanner.enhance.presetGray'), value: 'gray' },
-  { label: tt('scanner.enhance.presetBw'), value: 'bw' },
-]
+const capturePreset = ref<EnhancePreset>('scan')
+const capturePresetOptions = ENHANCE_PRESET_ORDER.map(preset => ({
+  label: tt(ENHANCE_PRESET_LABEL_KEYS[preset]),
+  value: preset,
+}))
 const aspect = ref<WarpAspect>('auto')
 const aspectOptions = [
   { label: tt('scanner.smart.aspectAuto'), value: 'auto' },
@@ -184,6 +201,10 @@ function aspectRatioValue(v: Exclude<WarpAspect, 'auto'>): number {
 }
 
 const smartStatusText = computed(() => {
+  // 手动调整过的选框已冻结，状态栏优先提示如何恢复实时跟随。
+  if (smartManual.value && smartStatus.value !== 'capturing' && smartStatus.value !== 'cooling') {
+    return tt('scanner.smart.manualLocked')
+  }
   switch (smartStatus.value) {
     case 'off': return tt('scanner.smart.off')
     case 'loading': return tt('scanner.smart.loading')
@@ -254,7 +275,7 @@ function pushCorrectedPage(canvas: HTMLCanvasElement) {
   const enhance = ENHANCE_DEFAULTS[capturePreset.value]
   const image = enhance.preset === 'none'
     ? original
-    : canvasToDataUrl(enhanceCanvas(canvas, enhance), 0.92)
+    : encodeEnhanced(enhanceCanvas(canvas, enhance), enhance)
   pushPage(original, image, canvas.width, canvas.height, enhance)
 }
 
@@ -321,6 +342,7 @@ async function startCamera() {
   await cam.start({
     deviceId: selectedDeviceId.value || undefined,
     facingMode: selectedDeviceId.value ? 'auto' : undefined,
+    resolutionId: resolutionId.value,
   })
   if (cam.error.value) {
     message.error(tt(`scanner.camera.${cameraErrorCode.value}` as any))
@@ -354,7 +376,21 @@ function stopCamera() {
 async function switchCamera(deviceId: string | null) {
   selectedDeviceId.value = deviceId
   if (cam.isRunning.value) {
-    await cam.start({ deviceId: deviceId || undefined })
+    await cam.start({ deviceId: deviceId || undefined, resolutionId: resolutionId.value })
+  }
+}
+
+/**
+ * 摄像头开着的时候切换分辨率 → 重新申请一次流（同一个 deviceId，
+ * 只是宽高约束不同）。未开时只更新 ref，等下次 startCamera() 用上。
+ */
+async function onResolutionChange(next: string) {
+  resolutionId.value = next
+  if (cam.isRunning.value) {
+    await cam.start({ deviceId: selectedDeviceId.value || undefined, resolutionId: next })
+    if (cam.error.value) {
+      message.error(tt(`scanner.camera.${cameraErrorCode.value}` as any))
+    }
   }
 }
 
@@ -384,6 +420,19 @@ function clearAll() {
 }
 
 const activePage = computed(() => pages.value.find(p => p.id === activePageId.value) || null)
+
+/** 预览容器按成品真实比例撑开，避免 object-fit 留下的黑边让人误以为裁剪不对。 */
+const activePageAspectStyle = computed(() => {
+  const page = activePage.value
+  if (!page || !page.width || !page.height) return undefined
+  return { aspectRatio: `${page.width} / ${page.height}` }
+})
+
+const activePageAspectLabel = computed(() => {
+  const page = activePage.value
+  if (!page || !page.height) return ''
+  return `${(page.width / page.height).toFixed(2)} : 1`
+})
 
 /* ------------------------------------------------------------------ *
  * 页面增强 / 矫正
@@ -729,6 +778,16 @@ const cameraHintTone = computed(() => {
           class="header-device-select"
           @update:value="switchCamera"
         />
+        <NSelect
+          v-if="!isMobile"
+          :value="resolutionId"
+          :options="resolutionOptions"
+          size="small"
+          :disabled="cameraStarting"
+          :placeholder="tt('scanner.camera.resolutionLabel')"
+          class="header-resolution-select"
+          @update:value="onResolutionChange"
+        />
         <NButton
           size="small"
           :type="cameraRunning ? 'default' : 'primary'"
@@ -768,7 +827,6 @@ const cameraHintTone = computed(() => {
               :manual="smartManual"
               @update:quad="onQuadEdit"
               @drag-start="smart.lockSelection()"
-              @drag-end="smart.resumeTracking()"
             />
             <div v-if="!cameraRunning" class="camera-empty">
               <NEmpty :description="tt('scanner.camera.idleHint')">
@@ -1054,9 +1112,12 @@ const cameraHintTone = computed(() => {
             <NEmpty :description="tt('scanner.detail.emptyHint')" />
           </div>
           <div v-else class="scanner-detail">
-            <div class="scanner-detail-image">
+            <figure class="scanner-detail-image" :style="activePageAspectStyle">
               <img :src="activePage.image" :alt="activePage.id" />
-            </div>
+              <figcaption class="scanner-detail-caption">
+                {{ activePage.width }} × {{ activePage.height }} px · {{ activePageAspectLabel }}
+              </figcaption>
+            </figure>
             <ScannerEnhanceControls
               :params="activePage.enhance"
               :correcting="correcting"
@@ -1073,7 +1134,7 @@ const cameraHintTone = computed(() => {
                   :loading="ocrOneLoading"
                   @click="recognizeActivePage"
                 >
-                  {{ activePage.text ? tt('scanner.detail.recognizeAgain') : tt('scanner.detail.recognize') }}
+                  {{ activePage.text ? tt('scanner.ocr.recognizeAgain') : tt('scanner.ocr.recognize') }}
                 </NButton>
               </div>
               <NAlert
@@ -1138,7 +1199,7 @@ const cameraHintTone = computed(() => {
             <NEmpty :description="tt('scanner.detail.emptyHint')" />
           </div>
           <div v-else class="mobile-detail-body">
-            <div class="mobile-detail-image">
+            <div class="mobile-detail-image" :style="activePageAspectStyle">
               <img :src="activePage.image" :alt="activePage.id" />
             </div>
             <ScannerEnhanceControls
@@ -1156,7 +1217,7 @@ const cameraHintTone = computed(() => {
                   :loading="ocrOneLoading"
                   @click="recognizeActivePage"
                 >
-                  {{ activePage.text ? tt('scanner.detail.recognizeAgain') : tt('scanner.detail.recognize') }}
+                  {{ activePage.text ? tt('scanner.ocr.recognizeAgain') : tt('scanner.ocr.recognize') }}
                 </NButton>
                 <NButton
                   size="small"
@@ -1257,6 +1318,10 @@ const cameraHintTone = computed(() => {
 
 .header-device-select {
   width: 200px;
+}
+
+.header-resolution-select {
+  width: 168px;
 }
 
 .scanner-content {
@@ -1425,7 +1490,8 @@ const cameraHintTone = computed(() => {
 }
 
 .smart-preset-select {
-  width: 108px;
+  /* 预设名带括号说明（如「扫描件（去阴影）」），窄了会被截断 */
+  width: 150px;
 }
 
 .smart-aspect-select {
@@ -1662,22 +1728,43 @@ const cameraHintTone = computed(() => {
   overflow-y: auto;
 }
 
+/* 成品预览：容器按页面真实比例撑开（aspectRatio 由行内 style 给出），
+ * 图片满铺，纸面用白底 + 投影模拟一张真实纸 —— 用户可以直接对比左侧选框，
+ * 一眼看出矫正后的形状是不是就是自己拉的框。 */
 .scanner-detail-image {
+  position: relative;
   flex-shrink: 0;
+  align-self: center;
+  margin: 0;
+  width: 100%;
+  max-height: 52vh;
   display: flex;
   align-items: center;
   justify-content: center;
   background: var(--bg-elevated);
   border-radius: $radius-sm;
   overflow: hidden;
-  min-height: 180px;
-  max-height: 46vh;
 
   img {
     max-width: 100%;
     max-height: 100%;
     object-fit: contain;
+    background: #fff;
+    box-shadow: 0 1px 8px rgba(0, 0, 0, 0.3);
   }
+}
+
+.scanner-detail-caption {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 16px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.45);
+  pointer-events: none;
 }
 
 .scanner-detail-text {
@@ -1819,13 +1906,14 @@ const cameraHintTone = computed(() => {
   background: var(--bg-elevated);
   border-radius: $radius-sm;
   overflow: hidden;
-  min-height: 140px;
-  max-height: 38vh;
+  flex-shrink: 0;
+  max-height: 44vh;
 
   img {
     max-width: 100%;
     max-height: 100%;
     object-fit: contain;
+    background: #fff;
   }
 }
 

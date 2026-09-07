@@ -86,6 +86,71 @@ describe('scanner precision regressions', () => {
     }
   })
 
+  it('finds a low-contrast tan page on a bright, vignetted desk (adaptive threshold)', async () => {
+    // Reported scene: a tan/beige document (darker than the desk) centered on a BRIGHT
+    // desk, with a mild vignette (dark corners) and dark "printed" ink inside. A global
+    // Otsu threshold splits the dark vignette from the bright desk and cannot separate
+    // the page (~208) from the desk (~245) — both fall into the same bright cluster, so
+    // the page merges with the giant illuminated-desk blob (or yields nothing). The
+    // adaptive local-contrast threshold must isolate the page.
+    const W = 512, H = 384, total = W * H
+    const doc: Quad = [{ x: 120, y: 70 }, { x: 398, y: 84 }, { x: 386, y: 316 }, { x: 118, y: 300 }]
+    const inside = (px: number, py: number) => doc.every((a, i) => {
+      const b = doc[(i + 1) % 4]!
+      return (b.x - a.x) * (py - a.y) - (b.y - a.y) * (px - a.x) >= 0
+    })
+    const data = new Uint8ClampedArray(total * 4)
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const cx = (x - W / 2) / (W / 2), cy = (y - H / 2) / (H / 2)
+      const vig = 1 - 0.38 * (Math.sqrt(cx * cx + cy * cy) / Math.SQRT2) // dark corners
+      let v = inside(x, y) ? 208 * vig : 245 * vig
+      if (inside(x, y) && y >= 128 && y <= 276 && x >= 148 && x <= 362 && (y % 28 < 6)) v = 45 * vig
+      const base = Math.round(v)
+      const i = (y * W + x) * 4
+      data[i] = data[i + 1] = data[i + 2] = base
+      data[i + 3] = 255
+    }
+    const result = await detectPaper({ width: W, height: H, data }, { strategies: ['bright', 'edge'], minAreaRatio: 0.03 })
+    expect(result).not.toBeNull()
+    const q = result!.quad
+    // Center must be on the document, not the frame-filling desk blob.
+    expect((q[0].x + q[2].x) / 2).toBeCloseTo((120 + 398 + 386 + 118) / 4 / W, 1)
+    expect((q[0].y + q[2].y) / 2).toBeCloseTo((70 + 84 + 316 + 300) / 4 / H, 1)
+    // Corners should hug the page (generous tolerance for the shaded page spine).
+    const corners: Array<[number, number]> = [[120, 70], [398, 84], [386, 316], [118, 300]]
+    q.forEach((p, i) => expect(Math.hypot(p.x * W - corners[i]![0], p.y * H - corners[i]![1])).toBeLessThan(70))
+  })
+
+  it('recovers the four dominant corners of a sheet with a convex bump (max-area quad fallback)', async () => {
+    // A sheet whose top edge has a small convex BUMP makes the bright component's convex
+    // hull a pentagon, so Douglas-Peucker reduces to 5 vertices and never exactly 4 —
+    // the earlier code rejected the sheet entirely (returned null) and let the wrong
+    // large region win. The max-area inscribed quadrilateral must snap to the 4 dominant
+    // corners and ignore the bump.
+    const W = 360, H = 300
+    const poly: [number, number][] = [[70, 40], [193, 22], [300, 60], [285, 250], [60, 230]]
+    const corners: [number, number][] = [[70, 40], [300, 60], [285, 250], [60, 230]]
+    const inPoly = (px: number, py: number) => {
+      let inside = false
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const [xi, yi] = poly[i]!, [xj, yj] = poly[j]!
+        if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside
+      }
+      return inside
+    }
+    const data = new Uint8ClampedArray(W * H * 4)
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const v = inPoly(x, y) ? 235 : 25
+      const i = (y * W + x) * 4
+      data[i] = data[i + 1] = data[i + 2] = v
+      data[i + 3] = 255
+    }
+    const result = await detectPaper({ width: W, height: H, data }, { strategies: ['bright'], minAreaRatio: 0.03 })
+    expect(result).not.toBeNull()
+    // Corners must hug the 4 dominant sheet corners (generous tolerance for the bump).
+    result!.quad.forEach((p, i) => expect(Math.hypot(p.x * W - corners[i]![0], p.y * H - corners[i]![1])).toBeLessThan(14))
+  })
+
   it('does not bypass full-frame minimum area when a stale prior triggers tracking', async () => {
     const small: Quad = [{ x: 100, y: 90 }, { x: 140, y: 90 }, { x: 140, y: 130 }, { x: 100, y: 130 }]
     const prior = small.map(p => ({ x: p.x / 512, y: p.y / 384 })) as Quad

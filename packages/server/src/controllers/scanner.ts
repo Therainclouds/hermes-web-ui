@@ -141,8 +141,12 @@ export async function buildPdf(ctx: Context): Promise<void> {
     }
     pages.push({ buffer: parsed.buffer, mime: parsed.mime })
   }
+  const rawLayout = typeof (body as any).layout === 'string' ? (body as any).layout : ''
+  const layout = rawLayout === 'a4' ? 'a4' : 'image'
+  const rawDpi = Number((body as any).dpi)
+  const dpi = Number.isFinite(rawDpi) && rawDpi >= 72 && rawDpi <= 600 ? rawDpi : undefined
   try {
-    const pdf = buildScannerImagePdf(pages)
+    const pdf = await buildScannerImagePdf(pages, { layout, dpi })
     const filename = `scanner-${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}.pdf`
     ctx.set('Content-Type', 'application/pdf')
     ctx.set('Content-Disposition', `attachment; filename="${filename}"`)

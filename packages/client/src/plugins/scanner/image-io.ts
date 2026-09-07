@@ -1,4 +1,4 @@
-import { applyEnhance } from './vision/enhance'
+import { applyEnhance, isBilevelPreset } from './vision/enhance'
 import type { EnhanceParams, RgbaImage } from './vision/types'
 
 /**
@@ -102,6 +102,19 @@ export function canvasToDataUrl(canvas: HTMLCanvasElement, quality = 0.92): stri
   return canvas.toDataURL('image/jpeg', quality)
 }
 
+/**
+ * 按增强预设选择编码格式：
+ *   - 二值预设（纯黑白）走 PNG 无损：JPEG 会在黑白边缘产生振铃，导出 PDF 后
+ *     文字发灰、边缘带脏点，完全不像电子版；PNG 还让服务端能识别为纯黑白，
+ *     用 1bpp 无损嵌进 PDF（体积更小、字更锐）。
+ *   - 其他预设（彩色/灰度）走 JPEG，体积可控。
+ */
+export function encodeEnhanced(canvas: HTMLCanvasElement, params: EnhanceParams): string {
+  return isBilevelPreset(params.preset)
+    ? canvas.toDataURL('image/png')
+    : canvasToDataUrl(canvas, 0.92)
+}
+
 /** 按增强参数处理 canvas，返回新 canvas（算法在 vision/enhance）。 */
 export function enhanceCanvas(canvas: HTMLCanvasElement, params: EnhanceParams): HTMLCanvasElement {
   const enhanced = applyEnhance(canvasToRgba(canvas), params)
@@ -117,7 +130,7 @@ export async function enhanceDataUrl(
   try {
     const canvas = await canvasFromImageSource(source, maxEdge)
     if (!canvas) return null
-    return canvasToDataUrl(enhanceCanvas(canvas, params))
+    return encodeEnhanced(enhanceCanvas(canvas, params), params)
   } catch {
     return null
   }

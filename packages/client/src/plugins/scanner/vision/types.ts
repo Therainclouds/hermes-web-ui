@@ -32,8 +32,13 @@ export interface GrayImage {
   data: Uint8ClampedArray
 }
 
-/** 图像增强预设。 */
-export type EnhancePreset = 'none' | 'auto' | 'gray' | 'bw'
+/**
+ * 图像增强预设。
+ *   none 原样 / auto 自动色阶 / gray 灰度
+ *   scan 扫描件（去阴影 + 白底灰度增强，默认推荐）
+ *   bw   纯黑白（去阴影 + Sauvola 自适应二值化）
+ */
+export type EnhancePreset = 'none' | 'auto' | 'gray' | 'scan' | 'bw'
 
 /** 图像增强参数。contrast 100 = 不变；brightness 0 = 不变；sharpen 0..100。 */
 export interface EnhanceParams {
@@ -51,7 +56,21 @@ export const ENHANCE_DEFAULTS: Record<EnhancePreset, EnhanceParams> = {
   none: { preset: 'none', contrast: 100, brightness: 0, sharpen: 0 },
   auto: { preset: 'auto', contrast: 100, brightness: 0, sharpen: 0 },
   gray: { preset: 'gray', contrast: 100, brightness: 0, sharpen: 0 },
+  // 扫描件预设自带轻锐化：去阴影后笔画边缘会略软，补回来更像扫描仪输出
+  scan: { preset: 'scan', contrast: 100, brightness: 0, sharpen: 25 },
   bw: { preset: 'bw', contrast: 100, brightness: 0, sharpen: 0 },
+}
+
+/** 预设选项顺序（UI 下拉与拍摄增强共用，避免两处漂移）。 */
+export const ENHANCE_PRESET_ORDER: readonly EnhancePreset[] = ['none', 'auto', 'gray', 'scan', 'bw']
+
+/** 预设对应的 i18n 标签 key。 */
+export const ENHANCE_PRESET_LABEL_KEYS: Record<EnhancePreset, string> = {
+  none: 'scanner.enhance.presetNone',
+  auto: 'scanner.enhance.presetAuto',
+  gray: 'scanner.enhance.presetGray',
+  scan: 'scanner.enhance.presetScan',
+  bw: 'scanner.enhance.presetBw',
 }
 
 /** 透视矫正输出比例（宽/高）。auto = 按检测四边形自然比例。 */

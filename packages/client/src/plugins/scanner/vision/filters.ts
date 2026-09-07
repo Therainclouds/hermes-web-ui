@@ -142,6 +142,170 @@ export function resizeRgba(src: RgbaImage, dstW: number, dstH: number): RgbaImag
   return { width: dstW, height: dstH, data: out }
 }
 
+/**
+ * 积分图（和 + 平方和），用于 O(1) 求任意矩形窗口的均值/方差。
+ * 尺寸为 (w+1) x (h+1)，第 0 行/列为 0，便于取窗口时不用判边界。
+ */
+export function integralImages(gray: GrayImage): {
+  width: number
+  height: number
+  sum: Float64Array
+  sumSq: Float64Array
+} {
+  const { width, height, data } = gray
+  const iw = width + 1
+  const ih = height + 1
+  const sum = new Float64Array(iw * ih)
+  const sumSq = new Float64Array(iw * ih)
+  for (let y = 0; y < height; y++) {
+    let rowSum = 0
+    let rowSumSq = 0
+    for (let x = 0; x < width; x++) {
+      const v = data[y * width + x]!
+      rowSum += v
+      rowSumSq += v * v
+      const i = (y + 1) * iw + (x + 1)
+      sum[i] = sum[i - iw]! + rowSum
+      sumSq[i] = sumSq[i - iw]! + rowSumSq
+    }
+  }
+  return { width: iw, height: ih, sum, sumSq }
+}
+
+/**
+ * Sauvola 局部自适应二值化（文档扫描的主流二值化算法）。
+ *
+ * threshold(x, y) = mean * (1 + k * (std / R - 1))
+ *
+ * 相比 Otsu 全局阈值，它对「一半亮一半暗」「有阴影」「纸张泛黄」的
+ * 拍摄件稳定得多：阈值跟随局部均值走，阴影区域不会整块糊成黑。
+ * 用积分图实现，复杂度与窗口大小无关。
+ *
+ * @param window 局部窗口边长（像素，自动取奇数）。默认按图像尺寸推导。
+ * @param k 阈值收紧系数，越大保留的黑越少。默认 0.2（论文推荐值）。
+ */
+export function sauvolaBinarize(
+  gray: GrayImage,
+  options: { window?: number; k?: number } = {},
+): GrayImage {
+  const { width, height, data } = gray
+  const out = new Uint8ClampedArray(width * height)
+  if (width < 1 || height < 1) return { width, height, data: out }
+  const autoWindow = Math.max(15, Math.round(Math.min(width, height) / 24))
+  const win = Math.max(3, (options.window ?? autoWindow) | 1)
+  const k = options.k ?? 0.2
+  const R = 128
+  const radius = (win - 1) / 2
+  const { width: iw, sum, sumSq } = integralImages(gray)
+
+  for (let y = 0; y < height; y++) {
+    const y0 = Math.max(0, y - radius)
+    const y1 = Math.min(height - 1, y + radius)
+    for (let x = 0; x < width; x++) {
+      const x0 = Math.max(0, x - radius)
+      const x1 = Math.min(width - 1, x + radius)
+      const area = (x1 - x0 + 1) * (y1 - y0 + 1)
+      const a = y0 * iw + x0
+      const b = y0 * iw + (x1 + 1)
+      const c = (y1 + 1) * iw + x0
+      const d = (y1 + 1) * iw + (x1 + 1)
+      const total = sum[d]! - sum[b]! - sum[c]! + sum[a]!
+      const totalSq = sumSq[d]! - sumSq[b]! - sumSq[c]! + sumSq[a]!
+      const mean = total / area
+      const variance = Math.max(0, totalSq / area - mean * mean)
+      const std = Math.sqrt(variance)
+      const threshold = mean * (1 + k * (std / R - 1))
+      out[y * width + x] = data[y * width + x]! > threshold ? 255 : 0
+    }
+  }
+  return { width, height, data: out }
+}
+
+/**
+ * 光照/阴影背景估计：在缩略图上做「局部最大值（膨胀）+ 均值模糊」，
+ * 再插值回原尺寸。
+ *
+ * - 先膨胀：把文字笔画填掉，否则模糊会把文字糊进背景，除法后字被一起提亮；
+ * - 在缩略图上算：背景层本身是超低频信号，缩到 ~256px 算完再插值回去，
+ *   视觉上完全等价，但把 O(w·h·r) 的膨胀从「秒级」压到「毫秒级」
+ *   （2200px 全尺寸直接膨胀会卡住主线程）。
+ */
+export function estimateBackground(gray: GrayImage, radius?: number): GrayImage {
+  const { width, height } = gray
+  if (width < 4 || height < 4) return { width, height, data: new Uint8ClampedArray(gray.data) }
+  const workEdge = 256
+  const scale = Math.min(1, workEdge / Math.max(width, height))
+  const sw = Math.max(2, Math.round(width * scale))
+  const sh = Math.max(2, Math.round(height * scale))
+  const small = resizeGray(gray, sw, sh)
+  // 缩略图上的等效半径：默认覆盖约 1/8 短边（比任何字号都大，比阴影梯度小）
+  const smallRadius = Math.max(2, Math.round((radius ?? Math.min(width, height) / 8) * scale))
+  const filled = dilateGray(small, Math.max(1, Math.round(smallRadius / 2)))
+  const blurred = boxBlur(filled, smallRadius)
+  return resizeGray(blurred, width, height)
+}
+
+/** 双线性缩放灰度图。 */
+export function resizeGray(src: GrayImage, dstW: number, dstH: number): GrayImage {
+  if (dstW === src.width && dstH === src.height) {
+    return { width: src.width, height: src.height, data: new Uint8ClampedArray(src.data) }
+  }
+  const { data, width: sw, height: sh } = src
+  const out = new Uint8ClampedArray(dstW * dstH)
+  const xRatio = sw / dstW
+  const yRatio = sh / dstH
+  for (let y = 0; y < dstH; y++) {
+    const srcY = (y + 0.5) * yRatio - 0.5
+    const y0 = Math.max(0, Math.floor(srcY))
+    const y1 = Math.min(sh - 1, y0 + 1)
+    const fy = srcY - y0
+    for (let x = 0; x < dstW; x++) {
+      const srcX = (x + 0.5) * xRatio - 0.5
+      const x0 = Math.max(0, Math.floor(srcX))
+      const x1 = Math.min(sw - 1, x0 + 1)
+      const fx = srcX - x0
+      const top = data[y0 * sw + x0]! * (1 - fx) + data[y0 * sw + x1]! * fx
+      const bottom = data[y1 * sw + x0]! * (1 - fx) + data[y1 * sw + x1]! * fx
+      out[y * dstW + x] = top * (1 - fy) + bottom * fy
+    }
+  }
+  return { width: dstW, height: dstH, data: out }
+}
+
+/** 灰度膨胀（取窗口最大值，可分离），用于填掉文字笔画。 */
+export function dilateGray(gray: GrayImage, radius: number): GrayImage {
+  const { width, height, data } = gray
+  if (radius <= 0) return { width, height, data: new Uint8ClampedArray(data) }
+  const tmp = new Uint8ClampedArray(width * height)
+  const out = new Uint8ClampedArray(width * height)
+  for (let y = 0; y < height; y++) {
+    const row = y * width
+    for (let x = 0; x < width; x++) {
+      let max = 0
+      const x0 = Math.max(0, x - radius)
+      const x1 = Math.min(width - 1, x + radius)
+      for (let sx = x0; sx <= x1; sx++) {
+        const v = data[row + sx]!
+        if (v > max) max = v
+      }
+      tmp[row + x] = max
+    }
+  }
+  for (let x = 0; x < width; x++) {
+    for (let y = 0; y < height; y++) {
+      let max = 0
+      const y0 = Math.max(0, y - radius)
+      const y1 = Math.min(height - 1, y + radius)
+      for (let sy = y0; sy <= y1; sy++) {
+        const v = tmp[sy * width + x]!
+        if (v > max) max = v
+      }
+      out[y * width + x] = max
+    }
+  }
+  return { width, height, data: out }
+}
+
 /** 按长边限制等比缩放 RGBA。 */
 export function resizeRgbaMaxEdge(src: RgbaImage, maxEdge: number): RgbaImage {
   const longEdge = Math.max(src.width, src.height)

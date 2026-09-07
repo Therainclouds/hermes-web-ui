@@ -23,12 +23,53 @@ import { onUnmounted, ref, shallowRef } from 'vue'
 
 export type ScannerFacingMode = 'environment' | 'user' | 'auto'
 
+/**
+ * 摄像头分辨率预设。`id` 给 UI 绑定用；`width`/`height` 通过
+ * `getUserMedia({ video: { width: { ideal }, height: { ideal } } })`
+ * 传给浏览器，浏览器会从设备支持的 UVC 帧格式里选最接近的一档。
+ * 预设按"画质优先 → 性能优先"排列，便于下拉里默认从高到低展示。
+ *
+ * `auto` 不传 width/height，让浏览器/驱动挑默认档（多数 UVC 摄像头
+ * 默认返回 640×480 或 1280×720）。
+ *
+ * `highest` 是 2592×1944——大多数 4:3 模式的 UVC 摄像头（包括 16MP
+ * 传感器以"视频模式"暴露时）的常见上限；用它作"尽量清晰"档，比
+ * 把 `width/height` 留空（→ 1280×720）清晰度高得多，又比强制 4K
+ * 失败率低。
+ */
+export interface ScannerResolutionPreset {
+  id: string
+  labelKey: string
+  width: number
+  height: number
+}
+
+export const SCANNER_RESOLUTION_PRESETS: ScannerResolutionPreset[] = [
+  { id: 'auto', labelKey: 'scanner.camera.resolutionAuto', width: 0, height: 0 },
+  { id: 'highest', labelKey: 'scanner.camera.resolutionHighest', width: 2592, height: 1944 },
+  { id: '4k', labelKey: 'scanner.camera.resolution4k', width: 3840, height: 2160 },
+  { id: '2k', labelKey: 'scanner.camera.resolution2k', width: 2560, height: 1440 },
+  { id: '1080p', labelKey: 'scanner.camera.resolution1080p', width: 1920, height: 1080 },
+  { id: '720p', labelKey: 'scanner.camera.resolution720p', width: 1280, height: 720 },
+]
+
+export function findScannerResolutionPreset(id: string | null | undefined): ScannerResolutionPreset | null {
+  if (!id) return null
+  return SCANNER_RESOLUTION_PRESETS.find(p => p.id === id) ?? null
+}
+
 export interface ScannerCameraOptions {
   /** 指定 videoinput 设备 id；缺省用浏览器默认。 */
   deviceId?: string
   /** 期望分辨率（用于 IDE-like 选择器）。 */
   width?: number
   height?: number
+  /**
+   * 预设分辨率 id（如 '2k' / '1080p' / 'auto'）。与显式
+   * `width`/`height` 同时传时，width/height 优先；找不到对应 id
+   * 时自动忽略。
+   */
+  resolutionId?: string
   /**
    * 移动端希望使用的镜头方向：
    *   - 'environment' = 后置（文档扫描推荐）
@@ -115,6 +156,75 @@ export function useScannerCamera() {
     await setFacingMode(next)
   }
 
+  /**
+   * 把当前 `lastOpts` + 临时覆写解析成 `width/height`。显式传入的
+   * `width/height` 优先；缺省时按 `resolutionId` 查预设；都没有就
+   * 退回 `1280×720`（与旧行为一致）。
+   */
+  function resolveTargetSize(override?: ScannerCameraOptions): { width: number; height: number } {
+    const src = override ?? lastOpts
+    if (src.width && src.height) return { width: src.width, height: src.height }
+    const preset = findScannerResolutionPreset(src.resolutionId)
+    if (preset && preset.width > 0 && preset.height > 0) {
+      return { width: preset.width, height: preset.height }
+    }
+    return { width: 1280, height: 720 }
+  }
+
+  /**
+   * 申请一个 MediaStream；若 `OverconstrainedError` 且请求源自某个
+   * 分辨率预设，按像素数从高到低逐档降级重试，确保低端摄像头不会因为
+   * 用户选了 `4K` 直接失败。降级成功后会更新 `lastOpts`，下次 start()
+   * 默认按这档走。
+   *
+   * 全失败时抛出原始错误，由 `start()` 的外层 catch 转成 `error.value`。
+   */
+  async function acquireStream(
+    constraints: MediaStreamConstraints,
+    opts: ScannerCameraOptions,
+  ): Promise<MediaStream> {
+    try {
+      return await navigator.mediaDevices.getUserMedia(constraints)
+    } catch (err: any) {
+      const isOverconstrained = err?.name === 'OverconstrainedError'
+        || err?.name === 'NotFoundError'
+      if (!isOverconstrained) throw err
+      const preset = opts.resolutionId ? findScannerResolutionPreset(opts.resolutionId) : null
+      const currentPixels = preset && preset.width > 0
+        ? preset.width * preset.height
+        : -1
+      // 按像素数从高到低排序，跳过 `auto`（width/height 都为 0）和当前预设。
+      const fallbacks = SCANNER_RESOLUTION_PRESETS
+        .filter(p => p.width > 0 && p.height > 0 && (currentPixels < 0 || p.width * p.height < currentPixels))
+        .sort((a, b) => b.width * b.height - a.width * a.height)
+      if (fallbacks.length === 0) throw err
+      for (const lower of fallbacks) {
+        try {
+          const fallbackConstraints: MediaStreamConstraints = {
+            audio: false,
+            video: {
+              ...(constraints.video as MediaTrackConstraints),
+              width: { ideal: lower.width },
+              height: { ideal: lower.height },
+            },
+          }
+          const stream = await navigator.mediaDevices.getUserMedia(fallbackConstraints)
+          // 同步回写：下次 devicechange / flipCamera 按这档走。
+          lastOpts = {
+            ...lastOpts,
+            resolutionId: lower.id,
+            width: lower.width,
+            height: lower.height,
+          }
+          return stream
+        } catch {
+          continue
+        }
+      }
+      throw err
+    }
+  }
+
   async function start(opts: ScannerCameraOptions = {}): Promise<void> {
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
       error.value = 'cameraUnavailable'
@@ -125,9 +235,10 @@ export function useScannerCamera() {
     isStarting.value = true
     error.value = ''
     try {
+      const { width, height } = resolveTargetSize(opts)
       const videoConstraint: MediaTrackConstraints = {
-        width: { ideal: opts.width || 1280 },
-        height: { ideal: opts.height || 720 },
+        width: { ideal: width },
+        height: { ideal: height },
       }
       if (opts.deviceId) {
         videoConstraint.deviceId = { exact: opts.deviceId }
@@ -139,7 +250,7 @@ export function useScannerCamera() {
         audio: false,
         video: videoConstraint,
       }
-      const next = await navigator.mediaDevices.getUserMedia(constraints)
+      const next = await acquireStream(constraints, opts)
       // 关闭旧流
       stream.value?.getTracks().forEach(track => track.stop())
       stream.value = next
