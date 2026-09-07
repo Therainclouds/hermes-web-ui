@@ -11,7 +11,13 @@ import { logger } from '../logger'
  *   - 彩色/灰度页 JPEG 直通 DCTDecode（不二次压缩）；
  *   - 其他格式（PNG 灰度照片 / WebP）用 sharp 转 JPEG 后嵌入。
  *
- * OCR 文本仍单独以 Markdown / TXT 保存（不内嵌隐藏文本层，避免捆绑中文字体）。
+ * 可搜索 PDF（searchable）：把每页 OCR 文本作为隐藏文字层（渲染模式 3 Tr，
+ * 不可见但可选中/搜索/复制）叠在图像上。CJK 用非嵌入 Type0 字体方案
+ * （/BaseFont /STSong-Light + /Encoding /UniGB-UCS2-H，Adobe/Chrome(PDFium)/
+ * macOS 预览都会用系统字体替换），不需要打包几 MB 的中文字体；选区按 OCR
+ * 行数均分页面高度，是近似行位置而非逐字对齐 —— 对搜索/复制完全够用。
+ *
+ * OCR 文本仍单独以 Markdown / TXT 保存。
  */
 
 const A4_WIDTH_PT = 595
@@ -20,6 +26,9 @@ const A4_MARGIN_PT = 36
 const DEFAULT_DPI = 200
 /** 单页最大边长（pt）：防止异常大图撑出离谱的页面尺寸。 */
 const MAX_PAGE_PT = 5000
+
+/** 隐藏文字层行边距（pt）。 */
+const TEXT_MARGIN_PT = 12
 
 export interface ScannerPdfImagePage {
   buffer: Buffer
@@ -35,6 +44,13 @@ export interface ScannerPdfOptions {
   layout?: 'image' | 'a4'
   /** layout='image' 时的输出 DPI，默认 200。 */
   dpi?: number
+  /**
+   * 可搜索 PDF：把 texts 里的 OCR 文本作为隐藏文字层叠在对应页上。
+   * 需要传 texts（与 images 平行）；无文本的页自动跳过。
+   */
+  searchable?: boolean
+  /** 每页 OCR 文本（与 images 平行，可含空串），searchable 时使用。 */
+  texts?: string[]
 }
 
 interface CompiledImage {
@@ -217,6 +233,70 @@ function buildContentStream(box: ReturnType<typeof computePageBox>, name: string
   ].join('\n')
 }
 
+/**
+ * 把字符串编码为 PDF hex string（UTF-16BE）。配合 /Encoding /UniGB-UCS2-H，
+ * 2 字节 UTF-16 码元即 CMap 的 CID，覆盖 GB1 全部中日韩字符；非 BMP 字符
+ * 走标准代理对。控制字符（除换行外）会被剥掉。
+ */
+export function encodeUtf16BeHex(input: string): string {
+  let out = ''
+  for (const ch of String(input || '')) {
+    const code = ch.codePointAt(0)!
+    if (code < 0x20 && code !== 0x09) continue
+    if (code > 0xffff) {
+      const hi = 0xd800 + ((code - 0x10000) >> 10)
+      const lo = 0xdc00 + ((code - 0x10000) & 0x3ff)
+      out += hi.toString(16).padStart(4, '0').toUpperCase()
+      out += lo.toString(16).padStart(4, '0').toUpperCase()
+    } else {
+      out += code.toString(16).padStart(4, '0').toUpperCase()
+    }
+  }
+  return out
+}
+
+/**
+ * 生成一页的隐藏文字层内容流（渲染模式 `3 Tr`：不可见、可选中/搜索）。
+ *
+ * 布局策略：OCR 文本按行拆分后均分页面可用高度（选区是近似行位置）；
+ * 空行跳过但占一行高度，保持行序与 OCR 输出一致。没有可用文本返回 null。
+ */
+export function buildInvisibleTextStream(
+  text: string,
+  box: { pageWidth: number; pageHeight: number },
+  fontResName = 'F0',
+): string | null {
+  const lines = String(text || '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map(line => line.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').trimEnd())
+    .filter(line => line.trim().length > 0)
+  if (lines.length === 0) return null
+  const availH = Math.max(12, box.pageHeight - TEXT_MARGIN_PT * 2)
+  const step = availH / lines.length
+  const fontSize = Math.min(14, Math.max(2, step * 0.72))
+  const ops: string[] = [
+    'BT',
+    '3 Tr',
+    `/${fontResName} ${fontSize.toFixed(2)} Tf`,
+    `${TEXT_MARGIN_PT} ${(box.pageHeight - TEXT_MARGIN_PT - fontSize).toFixed(2)} Td`,
+  ]
+  for (const [index, line] of lines.entries()) {
+    if (index > 0) ops.push(`0 ${(-step).toFixed(2)} Td`)
+    ops.push(`<${encodeUtf16BeHex(line)}> Tj`)
+  }
+  ops.push('ET')
+  return ops.join('\n')
+}
+
+/** 非嵌入 CJK Type0 字体三件套（Type0 / CIDFontType0 / FontDescriptor）。 */
+function fontObjects(): [string, string, string] {
+  const type0 = '<< /Type /Font /Subtype /Type0 /BaseFont /STSong-Light /Encoding /UniGB-UCS2-H /DescendantFonts [{{CID}} 0 R] >>'
+  const cid = '<< /Type /Font /Subtype /CIDFontType0 /BaseFont /STSong-Light /CIDSystemInfo << /Registry (Adobe) /Ordering (GB1) /Supplement 4 >> /FontDescriptor {{FD}} 0 R /DW 1000 >>'
+  const descriptor = '<< /Type /FontDescriptor /FontName /STSong-Light /Flags 4 /FontBBox [-25 -254 1000 880] /ItalicAngle 0 /Ascent 880 /Descent -254 /CapHeight 880 /StemV 93 >>'
+  return [type0, cid, descriptor]
+}
+
 export async function buildScannerImagePdf(
   images: ScannerPdfImagePage[],
   options: ScannerPdfOptions = {},
@@ -232,14 +312,22 @@ export async function buildScannerImagePdf(
     compiled.push(await compileImage(image))
   }
 
+  // 可搜索文字层：仅当开启且至少一页有文本时才注入字体对象
+  const pageTexts = options.searchable && Array.isArray(options.texts)
+    ? compiled.map((_, i) => String(options.texts![i] ?? ''))
+    : []
+  const useTextLayer = pageTexts.some(t => t.trim().length > 0)
+
   // Object index layout:
   //   1: Catalog
   //   2: Pages
   //   3..3+N-1: Image XObjects (one per page)
   //   3+N..3+2N-1: Page objects
   //   3+2N..3+3N-1: Content streams (one per page)
+  //   [useTextLayer] 3+3N..3+3N+2: Type0 / CIDFontType0 / FontDescriptor
   const N = compiled.length
-  const totalObjects = 3 + N * 3
+  const fontBase = 3 + N * 3
+  const totalObjects = fontBase + (useTextLayer ? 3 : 0)
 
   const offsets: number[] = new Array(totalObjects).fill(0)
   let body = Buffer.from('%PDF-1.4\n%\xE2\xE3\xCF\xD3\n', 'binary')
@@ -269,25 +357,42 @@ export async function buildScannerImagePdf(
 
   const boxes = compiled.map(img => computePageBox({ width: img.width, height: img.height }, options))
 
-  // Page objects
+  // Page objects（useTextLayer 时每页 Resources 都带 /Font 引用，无文本的页只是不写文字）
   for (let i = 0; i < N; i += 1) {
     const pageIndex = 3 + N + i
     const contentIndex = 3 + 2 * N + i
     const imgObjIndex = 3 + i
     const box = boxes[i]!
-    const pageDict = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${box.pageWidth.toFixed(2)} ${box.pageHeight.toFixed(2)}] /Resources << /XObject << /Im0 ${imgObjIndex} 0 R >> >> /Contents ${contentIndex} 0 R >>`
+    const fontRes = useTextLayer ? ` /Font << /F0 ${fontBase} 0 R >>` : ''
+    const pageDict = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${box.pageWidth.toFixed(2)} ${box.pageHeight.toFixed(2)}] /Resources << /XObject << /Im0 ${imgObjIndex} 0 R >>${fontRes} >> /Contents ${contentIndex} 0 R >>`
     recordObject(pageIndex, Buffer.from(pageDict, 'binary'))
   }
 
-  // Content streams
+  // Content streams（图像 + 可选隐藏文字层）
   for (let i = 0; i < N; i += 1) {
     const contentIndex = 3 + 2 * N + i
-    const stream = Buffer.from(`${buildContentStream(boxes[i]!, 'Im0')}\n`, 'binary')
+    const box = boxes[i]!
+    let content = buildContentStream(box, 'Im0')
+    if (useTextLayer) {
+      const textStream = buildInvisibleTextStream(pageTexts[i] ?? '', box)
+      if (textStream) content = `${content}\n${textStream}`
+    }
+    const stream = Buffer.from(`${content}\n`, 'binary')
     const dict = `<< /Length ${stream.length} >>`
     offsets[contentIndex] = body.length
     append(Buffer.from(`${contentIndex} 0 obj\n${dict}\nstream\n`, 'binary'))
     append(stream)
     append(Buffer.from('\nendstream\nendobj\n', 'binary'))
+  }
+
+  // 非嵌入 CJK 字体三件套（对象里的引用占位先替换成真实对象号）
+  if (useTextLayer) {
+    const [type0Tpl, cidTpl, fdTpl] = fontObjects()
+    const type0 = type0Tpl.replace('{{CID}}', String(fontBase + 1))
+    const cid = cidTpl.replace('{{FD}}', String(fontBase + 2))
+    recordObject(fontBase, Buffer.from(type0, 'binary'))
+    recordObject(fontBase + 1, Buffer.from(cid, 'binary'))
+    recordObject(fontBase + 2, Buffer.from(fdTpl, 'binary'))
   }
 
   // xref

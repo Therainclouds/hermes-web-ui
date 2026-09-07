@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildInvisibleTextStream,
   buildScannerImagePdf,
   computePageBox,
+  encodeUtf16BeHex,
   isBilevelGray,
   packBilevel,
 } from '../../packages/server/src/services/scanner/pdf'
@@ -94,5 +96,73 @@ describe('scanner pdf', () => {
     expect(packed.length).toBe(2)
     expect(packed[0]).toBe(0b00111000)
     expect(packed[1]).toBe(0b10000000)
+  })
+})
+
+describe('scanner pdf: searchable hidden text layer', () => {
+  it('encodes text as UTF-16BE hex (CJK + surrogate pairs)', () => {
+    expect(encodeUtf16BeHex('A')).toBe('0041')
+    expect(encodeUtf16BeHex('中')).toBe('4E2D')
+    expect(encodeUtf16BeHex('') ).toBe('')
+    // U+1F600 (emoji) -> surrogate pair D83D DE00
+    expect(encodeUtf16BeHex('\u{1F600}')).toBe('D83DDE00')
+    // 控制字符被剥掉
+    expect(encodeUtf16BeHex('a\u0000b\u0007c')).toBe('006100620063')
+  })
+
+  it('builds an invisible text stream split into even lines', () => {
+    const box = { pageWidth: 595, pageHeight: 842 }
+    expect(buildInvisibleTextStream('   \n \n', box)).toBeNull()
+    const stream = buildInvisibleTextStream('第一行\n\n第二行', box)
+    expect(stream).toBeTruthy()
+    expect(stream).toContain('BT')
+    expect(stream).toContain('3 Tr')
+    expect(stream).toContain('/F0 ')
+    // 第一行 = 第一行（UTF-16BE hex）
+    expect(stream).toContain('<7B2C4E00884C> Tj')
+    // 空行被过滤但行距保持一致：两条 Td（第一条之后相对移动 1 次）
+    expect(stream!.match(/ Td/g)?.length).toBe(2)
+    expect(stream).toContain('ET')
+  })
+
+  it('embeds font objects and text ops only when searchable with text', async () => {
+    const pages = [
+      { buffer: TINY_JPEG, mime: 'image/jpeg' },
+      { buffer: TINY_JPEG, mime: 'image/jpeg' },
+    ]
+    // 不开启：无字体对象
+    const plain = await buildScannerImagePdf(pages)
+    const plainText = plain.toString('binary')
+    expect(plainText).not.toContain('STSong-Light')
+    expect(plainText).not.toContain('3 Tr')
+
+    // 开启：字体三件套 + 隐藏文字 + /Font 资源引用
+    const searchable = await buildScannerImagePdf(pages, {
+      searchable: true,
+      texts: ['扫描件第一页', ''],
+    })
+    const text = searchable.toString('binary')
+    expect(text).toContain('/BaseFont /STSong-Light')
+    expect(text).toContain('/Encoding /UniGB-UCS2-H')
+    expect(text).toContain('/Ordering (GB1)')
+    expect(text).toContain('3 Tr')
+    // 第一页文字存在（"扫" = 626B），第二页空文本跳过但仍引用字体资源
+    expect(text).toContain('<626B')
+    expect(text).toContain('/Font << /F0 ')
+    // 对象数 = 3 (catalog/pages) + 3*2 (img/page/content) + 3 (fonts)
+    expect(text).toMatch(/^xref\n0 12$/m)
+    // 文件仍以 %%EOF 结尾且 xref 偏移有效
+    expect(text.trimEnd().endsWith('%%EOF')).toBe(true)
+  })
+
+  it('keeps a searchable PDF valid when texts are missing or shorter than pages', async () => {
+    const pages = [
+      { buffer: TINY_JPEG, mime: 'image/jpeg' },
+      { buffer: TINY_JPEG, mime: 'image/jpeg' },
+    ]
+    const pdf = await buildScannerImagePdf(pages, { searchable: true, texts: ['只有一页文本'] })
+    const text = pdf.toString('binary')
+    expect(text).toContain('/BaseFont /STSong-Light')
+    expect(text).toContain('<53EA') // "只"
   })
 })

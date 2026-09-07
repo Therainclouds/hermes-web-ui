@@ -111,7 +111,7 @@ export async function runOcr(ctx: Context): Promise<void> {
 
 /**
  * POST /api/scanner/pdf
- * body: { pages: [{ image: 'data:image/jpeg;base64,…', mime?: 'image/jpeg' }] }
+ * body: { pages: [{ image, mime? }], layout?: 'image'|'a4', dpi?, searchable?, texts?: string[] }
  * 返回 application/pdf 流。
  */
 export async function buildPdf(ctx: Context): Promise<void> {
@@ -145,8 +145,14 @@ export async function buildPdf(ctx: Context): Promise<void> {
   const layout = rawLayout === 'a4' ? 'a4' : 'image'
   const rawDpi = Number((body as any).dpi)
   const dpi = Number.isFinite(rawDpi) && rawDpi >= 72 && rawDpi <= 600 ? rawDpi : undefined
+  // 可搜索 PDF：texts 与 pages 平行；长度不符时按短的那份截断，缺的页视为无文本
+  const searchable = (body as any).searchable === true
+  const rawTexts = Array.isArray((body as any).texts) ? (body as any).texts : []
+  const texts = searchable
+    ? pages.map((_, i) => (typeof rawTexts[i] === 'string' ? rawTexts[i] : ''))
+    : undefined
   try {
-    const pdf = await buildScannerImagePdf(pages, { layout, dpi })
+    const pdf = await buildScannerImagePdf(pages, { layout, dpi, searchable, texts })
     const filename = `scanner-${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}.pdf`
     ctx.set('Content-Type', 'application/pdf')
     ctx.set('Content-Disposition', `attachment; filename="${filename}"`)
