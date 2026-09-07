@@ -230,8 +230,11 @@ download_package() {
   local partial="${CACHE_DIR}/partial-${TASK_ID}.part"
   mkdir -p "${CACHE_DIR}"
   local urls=()
+  # The controller passes HERMES_WEB_UI_UPDATE_SOURCE_PACKAGE_URLS as a
+  # JSON array string (["u1","u2"]) while legacy callers may pass a bare
+  # space/comma list — strip JSON punctuation, then split.
   # shellcheck disable=SC2206
-  urls=(${PACKAGE_URLS//,/ })
+  urls=($(printf '%s' "${PACKAGE_URLS}" | tr -d '[]()"'"'"'' | tr ',' ' '))
   if [[ ${#urls[@]} -eq 0 ]]; then
     warn "no package URL and no pre-downloaded archive"
     return 4
