@@ -103,6 +103,9 @@ export default {
       correct: 'Correct & crop',
       correctHint: 'Re-detect the paper edges of this page and flatten it (trapezoid correction).',
       correctFail: 'No clear document edges detected on this page.',
+      rotateLeft: 'Rotate left 90°',
+      rotateRight: 'Rotate right 90°',
+      rotateFail: 'Failed to rotate the image. Try again.',
       none: 'Capture a page first.',
     },
     save: {

@@ -226,6 +226,19 @@ describe('practice-skill 运行时', () => {
     expect(isClosingUtteranceLike('')).toBe(false)
   })
 
+  it('英文词条按词匹配：普通发言里的词内子串不算收尾语', () => {
+    // 'end' ⊂ "depends" / 'done' ⊂ "abandoned" / 'stop' ⊂ "stopwatch"：
+    // 子串匹配会把正常发言判成收尾语，从而跳过同会话收尾总评。
+    expect(isClosingUtteranceLike('It depends on the context.')).toBe(false)
+    expect(isClosingUtteranceLike('The project was abandoned last year.')).toBe(false)
+    expect(isClosingUtteranceLike('I bought a stopwatch on the weekend.')).toBe(false)
+    // 真正的收尾语仍然命中（前后是空格/标点/句首句尾）
+    expect(isClosingUtteranceLike('ok, I am done')).toBe(true)
+    expect(isClosingUtteranceLike('Stop.')).toBe(true)
+    expect(isClosingUtteranceLike("let's wrap up")).toBe(true)
+    expect(isClosingUtteranceLike('end')).toBe(true)
+  })
+
   it('buildPracticeFeedbackToolFor：动态维度 + 量表 + 摄像头开关', () => {
     const skill = normalizePracticeSkill(entry('sales'), {
       schema: 1,

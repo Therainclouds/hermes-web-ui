@@ -1,4 +1,4 @@
-import type { GrayImage, RgbaImage } from './types'
+import type { GrayImage, RgbaImage, RotateDirection } from './types'
 
 /**
  * 基础图像滤波器：灰度、模糊、Otsu 阈值、双线性缩放。
@@ -28,6 +28,28 @@ export function toGrayscaleRgba(src: RgbaImage): RgbaImage {
     out[o + 3] = 255
   }
   return { width: src.width, height: src.height, data: out }
+}
+
+export function rotateRgba90(src: RgbaImage, direction: RotateDirection): RgbaImage {
+  const width = src.height
+  const height = src.width
+  const data = new Uint8ClampedArray(width * height * 4)
+  const clockwise = direction === 'right'
+
+  for (let y = 0; y < src.height; y++) {
+    for (let x = 0; x < src.width; x++) {
+      const targetX = clockwise ? src.height - 1 - y : y
+      const targetY = clockwise ? x : src.width - 1 - x
+      const sourceOffset = (y * src.width + x) * 4
+      const targetOffset = (targetY * width + targetX) * 4
+      data[targetOffset] = src.data[sourceOffset]!
+      data[targetOffset + 1] = src.data[sourceOffset + 1]!
+      data[targetOffset + 2] = src.data[sourceOffset + 2]!
+      data[targetOffset + 3] = src.data[sourceOffset + 3]!
+    }
+  }
+
+  return { width, height, data }
 }
 
 /** 可分离 box blur（整型累加），radius >= 0。 */

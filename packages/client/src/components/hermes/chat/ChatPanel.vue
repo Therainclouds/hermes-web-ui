@@ -39,7 +39,7 @@ import {
   type DropdownOption,
 } from "naive-ui";
 import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { useTheme } from "@/composables/useTheme";
 import { copyToClipboard } from "@/utils/clipboard";
@@ -93,6 +93,10 @@ const FilePreview = defineAsyncComponent(async () => (await import('@/components
 const WorkspaceDiffPreview = defineAsyncComponent(async () => (await import('@/components/hermes/files/WorkspaceDiffPreview.vue')).default);
 const DesktopBrowserPanel = defineAsyncComponent(async () => (await import('./DesktopBrowserPanel.vue')).default);
 
+// 批改面板：作为 ChatPanel 的一种聊天模式内嵌在主界面，按需懒加载。
+// 左侧保留对话流，右侧为实时摄像头 + OCR 面板（复用扫描插件的动态捕捉）。
+const GradingScannerPanel = defineAsyncComponent(async () => (await import('@/plugins/grading/GradingScannerPanel.vue')).default);
+
 const chatStore = useChatStore();
 const appStore = useAppStore();
 const profilesStore = useProfilesStore();
@@ -100,6 +104,7 @@ const filesStore = useFilesStore();
 const toolPanelStore = useToolPanelStore();
 const sessionBrowserPrefsStore = useSessionBrowserPrefsStore();
 const router = useRouter();
+const route = useRoute();
 const message = useMessage();
 const { t } = useI18n();
 // Naive UI 在运行时切主题时，个别已挂载的 NSelect 实例偶发不重算 CSS
@@ -160,6 +165,30 @@ const toolPanelWidth = ref(loadToolPanelWidth());
 const toolResizeStart = ref<{ x: number; width: number; deltaSign: 1 | -1 } | null>(null);
 
 const currentMode = ref<"chat" | "live">("chat");
+
+// 批改作为主界面的一种聊天模式：'chat' | 'grading'（单张）| 'grading-batch'（批量）。
+// 初始值可由 URL query `?mode=` 决定（侧边栏「批改模式」跳到这里），切换时同步 query。
+type ChatMode = "chat" | "grading" | "grading-batch";
+const routeMode = route.query.mode;
+const chatMode = ref<ChatMode>(routeMode === "grading" || routeMode === "grading-batch" ? routeMode : "chat");
+
+function setChatMode(mode: ChatMode) {
+  chatMode.value = mode;
+  if (typeof window !== "undefined") {
+    void router.replace({ query: { ...route.query, mode: mode === "chat" ? undefined : mode } });
+  }
+}
+
+// 侧边栏「批改模式」用 `?mode=` 导航过来，而 ChatPanel 可能已挂载（query 变化不重挂载），
+// 因此监听 query 同步 chatMode，让批改面板在主界面里直接打开。
+watch(
+  () => route.query.mode,
+  (mode) => {
+    const next: ChatMode = mode === "grading" || mode === "grading-batch" ? mode : "chat";
+    if (next !== chatMode.value) chatMode.value = next;
+  },
+  { immediate: true },
+);
 
 // Batch selection mode
 const isBatchMode = ref(false);
@@ -3329,27 +3358,65 @@ async function handleSessionModelCustomSubmit() {
           @dragleave.capture="handleChatDragLeave"
           @drop.capture="handleChatDrop"
         >
-          <div ref="chatMainContentRef" class="chat-main-content">
-            <MessageList
-              ref="messageListRef"
-              scroll-scope="chat"
-              :approval-portal-to-body="showOmniRealtime"
-            >
-              <template #empty-actions>
-                <div class="chat-workbench-minimal">
-                  {{ t('chat.startTalking') }}
+          <template v-if="chatMode === 'chat'">
+            <div ref="chatMainContentRef" class="chat-main-content">
+              <MessageList
+                ref="messageListRef"
+                scroll-scope="chat"
+                :approval-portal-to-body="showOmniRealtime"
+              >
+                <template #empty-actions>
+                  <div class="chat-workbench-minimal">
+                    {{ t('chat.startTalking') }}
+                  </div>
+                </template>
+              </MessageList>
+              <ChatInput
+                ref="chatInputRef"
+                :model-label="activeSessionModelLabel"
+                :model-disabled="activeSessionUsesGlobalCodingAgentConfig"
+                @model-click="handleHeaderModelClick"
+                @voice-click="openOmniRealtime()"
+                @mode-change="setChatMode"
+              />
+            </div>
+          </template>
+          <template v-else>
+            <div class="chat-grading" role="region" :aria-label="t('grading.title')">
+              <div class="chat-grading-modes">
+                <NRadioGroup :value="chatMode" size="small" @update:value="setChatMode">
+                  <NRadioButton value="chat">{{ t('grading.chat') }}</NRadioButton>
+                  <NRadioButton value="grading">{{ t('grading.single') }}</NRadioButton>
+                  <NRadioButton value="grading-batch">{{ t('grading.batch') }}</NRadioButton>
+                </NRadioGroup>
+              </div>
+              <div class="chat-grading-body">
+                <div class="chat-grading-chat">
+                  <MessageList
+                    ref="messageListRef"
+                    scroll-scope="chat"
+                    :approval-portal-to-body="showOmniRealtime"
+                  >
+                    <template #empty-actions>
+                      <div class="chat-workbench-minimal">
+                        {{ t('grading.chatHint') }}
+                      </div>
+                    </template>
+                  </MessageList>
+                  <ChatInput
+                    ref="chatInputRef"
+                    :model-label="activeSessionModelLabel"
+                    :model-disabled="activeSessionUsesGlobalCodingAgentConfig"
+                    @model-click="handleHeaderModelClick"
+                    @voice-click="openOmniRealtime()"
+                    @mode-change="setChatMode"
+                  />
                 </div>
-              </template>
-            </MessageList>
-            <ChatInput
-              ref="chatInputRef"
-              :model-label="activeSessionModelLabel"
-              :model-disabled="activeSessionUsesGlobalCodingAgentConfig"
-              @model-click="handleHeaderModelClick"
-              @voice-click="openOmniRealtime()"
-            />
-          </div>
-          <div v-if="isChatDropActive" class="chat-drop-overlay" aria-hidden="true">
+                <GradingScannerPanel class="chat-grading-scanner" />
+              </div>
+            </div>
+          </template>
+          <div v-if="chatMode === 'chat' && isChatDropActive" class="chat-drop-overlay" aria-hidden="true">
             <div class="chat-drop-overlay__card">
               <div class="chat-drop-overlay__icon">
                 <svg
@@ -3372,7 +3439,7 @@ async function handleSessionModelCustomSubmit() {
             </div>
           </div>
           <OutlinePanel
-            v-if="showOutline"
+            v-if="chatMode === 'chat' && showOutline"
             :messages="chatStore.messages"
             @navigate="handleOutlineNavigate"
           />
@@ -3384,7 +3451,7 @@ async function handleSessionModelCustomSubmit() {
             @leave-cancelled="handleToolPanelLeaveCancelled"
           >
             <aside
-              v-if="showToolPanel"
+              v-if="chatMode === 'chat' && showToolPanel"
               class="chat-tool-panel"
               :style="toolPanelStyle"
             >
@@ -4245,6 +4312,58 @@ async function handleSessionModelCustomSubmit() {
   min-width: 0;
   background-color: $bg-main-surface;
   animation: chat-surface-fade-in 1.5s ease both;
+}
+
+/* 批改模式：作为聊天区的一个内嵌工作台 */
+.chat-grading {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background-color: $bg-main-surface;
+  animation: chat-surface-fade-in 1.5s ease both;
+}
+
+.chat-grading-modes {
+  flex-shrink: 0;
+  padding: 10px 16px;
+  border-bottom: 1px solid $border-light;
+  display: flex;
+  align-items: center;
+}
+
+.chat-grading-panel {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 批改模式：左侧对话流 + 右侧摄像头/OCR */
+.chat-grading-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+}
+
+.chat-grading-chat {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-grading-scanner {
+  width: 420px;
+  max-width: 46%;
+  flex-shrink: 0;
+  min-height: 0;
+  border-left: 1px solid $border-light;
+  background: $bg-main-surface;
 }
 
 .chat-workbench {

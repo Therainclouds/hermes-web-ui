@@ -1,4 +1,5 @@
 export default {
+  pluginsClient: { "paper-grading": { name: "시험 채점", description: "스캐너가 필요합니다. 시험 채점, 주석 편집 및 학급 보고서를 지원합니다." } },
   browser: {
     title: '브라우저', settings: '브라우저 설정', desktopOnly: '내장 브라우저는 Hermes Studio Desktop에서만 사용할 수 있습니다.', newTab: '새 탭',
     back: '뒤로', forward: '앞으로', reload: '새로고침', stop: '중지', addressPlaceholder: '검색 또는 주소 입력',
@@ -772,6 +773,7 @@ export default {
     skillLanguageFixed: "이 스킬은 {language}를 사용합니다",
     reportAnalyzingMedia: "녹음 {audio}개 청취 · 화면 {frames}장 분석 중 — AI 전체 모달 분석 생성 중…",
     reportSkippedNoMedia: "이번 녹음/화면이 없어 전체 모달 분석을 건너뛰고 대화 텍스트와 라운드 평가로 리포트를 생성했습니다",
+    reportInSessionReview: "코치가 세션 내에서 총평을 마쳤기 때문에 리포트는 이를 재사용하고 오프라인 분석을 다시 실행하지 않았습니다",
     reviewingEnd: "코치가 이번 세션의 마무리 총평을 진행 중(음성/화면 맥락 재사용)…",
     entry: '말하기 연습',
     entryHint: 'AI 코치와 지정한 주제로 음성 대화 연습: 매 턴 코멘트와 채점 후, 종료하면 분석 내용을 Markdown으로 저장할 수 있습니다',

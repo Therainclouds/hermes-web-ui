@@ -102,7 +102,7 @@ describe('speech-practice timer & instructions & report', () => {
     expect(practiceModeSource).toContain('options: { cameraOn?: boolean; skill?: PracticeSkill } = {}')
     expect(stageSource).toContain('speech-practice-camera')
     expect(stageSource).toContain('captureAndSendFrame')
-    expect(stageSource).toContain('bodyLanguage: cameraEnabled.value ? toScore(args.bodyLanguage) : null')
+    expect(stageSource).toContain('bodyLanguage: framesCaptured > 0 ? toScore(args.bodyLanguage) : null')
     expect(stageSource).toContain('speechPractice.score.bodyLanguage')
   })
 })

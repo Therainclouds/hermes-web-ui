@@ -87,6 +87,7 @@ export async function installClientPlugins(
     const plugin: HermesClientPlugin = registration.plugin
     if (!plugin || typeof plugin.install !== 'function') continue
     if (!isPluginEnabled(plugin.id, registration.enabledByDefault)) continue
+    if (plugin.dependencies?.some(id => !installedPlugins.has(id))) continue
     if (installedPlugins.has(plugin.id)) continue
     try {
       await plugin.install(ctx)

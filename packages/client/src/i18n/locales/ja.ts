@@ -1,4 +1,5 @@
 export default {
+  pluginsClient: { "paper-grading": { name: "答案採点", description: "スキャナーが必要です。答案の採点、注釈の編集、クラスのレポートを出力します。" } },
   browser: {
     title: 'ブラウザー', settings: 'ブラウザー設定', desktopOnly: '内蔵ブラウザーは Hermes Studio Desktop でのみ利用できます。', newTab: '新しいタブ',
     back: '戻る', forward: '進む', reload: '再読み込み', stop: '停止', addressPlaceholder: '検索またはアドレスを入力',
@@ -772,6 +773,7 @@ export default {
     skillLanguageFixed: "このスキルは {language} を使用します",
     reportAnalyzingMedia: "録音 {audio} 件を聴き、画面 {frames} 枚を見ながら AI 全モーダル分析を生成中…",
     reportSkippedNoMedia: "今回、録音/画面がありませんでした。全モーダル分析をスキップし、文字と各ラウンドの評価に基づくレポートを生成しました",
+    reportInSessionReview: "コーチがセッション内で総評を完了したため、レポートはそれを再利用し、オフライン分析は再実行していません",
     reviewingEnd: "コーチが本場の総評をまとめています（音声・映像の文脈を再利用）…",
     entry: 'スピーキング練習',
     entryHint: 'AI コーチと指定したテーマで音声練習：毎ターン講評・採点し、終了後は分析内容を Markdown として保存できます',

@@ -1,4 +1,5 @@
 export default {
+  pluginsClient: { "paper-grading": { name: "Prüfungskorrektur", description: "Benötigt Scanner. Arbeiten korrigieren, Anmerkungen bearbeiten und Berichte exportieren." } },
   browser: {
     title: 'Browser', settings: 'Browser-Einstellungen', desktopOnly: 'Der integrierte Browser ist nur in Hermes Studio Desktop verfügbar.', newTab: 'Neuer Tab',
     back: 'Zurück', forward: 'Vor', reload: 'Neu laden', stop: 'Stopp', addressPlaceholder: 'Suchen oder Adresse eingeben',
@@ -772,6 +773,7 @@ export default {
     skillLanguageFixed: "Dieses Skill verwendet {language}",
     reportAnalyzingMedia: "Höre {audio} Aufnahmen · prüfe {frames} Bilder — generiere multimodale KI-Analyse…",
     reportSkippedNoMedia: "Keine Aufnahmen/Bilder in dieser Sitzung — multimodale Analyse übersprungen; Bericht basiert auf Transkript und Bewertungen",
+    reportInSessionReview: "Der Coach hat das Abschlussfeedback bereits in der Sitzung gegeben; der Bericht übernimmt es, ohne die Offline-Analyse erneut zu starten",
     reviewingEnd: "Coach fasst zum Abschluss zusammen (nutzt den Audio/Video-Kontext dieser Sitzung)…",
     entry: 'Sprechübung',
     entryHint: 'Sprich mit einem KI-Coach zu einem Thema deiner Wahl: Jede Runde wird kommentiert und bewertet; die Analyse kannst du am Ende als Markdown speichern',

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { applyEnhance, adjustContrastBrightness, autoLevels, toBlackAndWhite } from '@/plugins/scanner/vision/enhance'
-import { otsuThreshold, rgbaToGray, toGrayscaleRgba } from '@/plugins/scanner/vision/filters'
+import { otsuThreshold, rgbaToGray, rotateRgba90, toGrayscaleRgba } from '@/plugins/scanner/vision/filters'
 import { ENHANCE_DEFAULTS, type RgbaImage } from '@/plugins/scanner/vision/types'
 
 function solidImage(width: number, height: number, rgb: [number, number, number]): RgbaImage {
@@ -207,5 +207,43 @@ describe('scanner enhance: shadow removal + adaptive binarization', () => {
     for (let i = 0; i < out.data.length; i += 4) {
       expect([0, 255]).toContain(out.data[i]!)
     }
+  })
+})
+
+describe('scanner rotate', () => {
+  it('rotates a page clockwise and counter-clockwise with swapped dimensions', () => {
+    const src: RgbaImage = {
+      width: 3,
+      height: 2,
+      data: Uint8ClampedArray.from([
+        1, 1, 1, 255, 2, 2, 2, 255, 3, 3, 3, 255,
+        4, 4, 4, 255, 5, 5, 5, 255, 6, 6, 6, 255,
+      ]),
+    }
+
+    const right = rotateRgba90(src, 'right')
+    expect([right.width, right.height]).toEqual([2, 3])
+    expect(Array.from(right.data)).toEqual([
+      4, 4, 4, 255, 1, 1, 1, 255,
+      5, 5, 5, 255, 2, 2, 2, 255,
+      6, 6, 6, 255, 3, 3, 3, 255,
+    ])
+
+    const left = rotateRgba90(src, 'left')
+    expect([left.width, left.height]).toEqual([2, 3])
+    expect(Array.from(left.data)).toEqual([
+      3, 3, 3, 255, 6, 6, 6, 255,
+      2, 2, 2, 255, 5, 5, 5, 255,
+      1, 1, 1, 255, 4, 4, 4, 255,
+    ])
+  })
+
+  it('returns the source pixels after four quarter turns', () => {
+    const src = rampImage(7, 5)
+    let rotated = src
+    for (let i = 0; i < 4; i++) rotated = rotateRgba90(rotated, 'right')
+    expect(rotated.width).toBe(src.width)
+    expect(rotated.height).toBe(src.height)
+    expect(Array.from(rotated.data)).toEqual(Array.from(src.data))
   })
 })

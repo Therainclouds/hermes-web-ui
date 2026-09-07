@@ -120,7 +120,7 @@ export function scannerRealtimeApiKey(profile?: string | null): string | null {
   }
 }
 
-async function resolveScannerDashScopeKey(provided?: string, profile?: string | null): Promise<string | null> {
+export async function resolveScannerDashScopeKey(provided?: string, profile?: string | null): Promise<string | null> {
   if (provided && provided.trim()) return provided.trim()
   // 1) Realtime 模型（统一入口，用户在 设置 → 模型 → Realtime 模型 填的就是这里）
   const realtimeKey = scannerRealtimeApiKey(profile)

@@ -852,7 +852,20 @@ function compactAvailableModelsPayload(payload, args = {}) {
   }
 }
 
+
+const gradingTools = {
+  capture_scan: { description: 'Ask the teacher to capture a paper in the open grading workspace. Returns scanId, never image data.', fields: { pageNumber: { type: 'integer' }, examId: { type: 'string' } }, required: [] },
+  ocr: { description: 'Recognize a cached scan once, returning text lines and coordinates.', fields: {}, required: ['scanId'] },
+  detect_questions: { description: 'Group cached OCR text into questions.', fields: { rubric: { type: 'string' } }, required: ['scanId', 'rubric'] },
+  grade: { description: 'Grade questions using only cached text and the teacher rubric.', fields: { rubric: { type: 'string' }, subject: { type: 'string' } }, required: ['scanId','rubric'] },
+  apply_edits: { description: 'Convert validated grade operations into deterministic annotations.', fields: {}, required: ['scanId'] },
+  render: { description: 'Ask the open grading workspace to render and download annotated PNG/PDF.', fields: { style: { type: 'string', enum: ['rough', 'printed'] } }, required: ['scanId'] },
+  summary: { description: 'Summarize submissions and question-level wrong-answer rates.', fields: { scanIds: { type: 'array', items: { type: 'string' } } }, required: ['scanIds'] },
+  list: { description: 'List scanned papers in the profile grading folder (currently no class/exam grouping).', fields: {}, required: [] },
+}
+
 const tools = [
+  ...Object.entries(gradingTools).map(([action, spec]) => ({ name: `grading_${action}`, toolset: 'api', description: spec.description, inputSchema: { type: 'object', properties: { scanId: { type: 'string' }, profile: { type: 'string' }, ...spec.fields }, required: spec.required, additionalProperties: false } })),
   {
     name: 'hermes_studio_browser_tabs',
     toolset: 'browser',
@@ -1785,6 +1798,9 @@ async function callTool(name, args = {}) {
   const resolvedName = resolveToolName(name)
   const categoryToolset = categoryToolsetDefinition(ACTIVE_TOOLSET)
   if (resolvedName === categoryToolset?.name) return await callCategoryToolset(args)
+  if (resolvedName.startsWith('grading_') && gradingTools[resolvedName.slice(8)]) {
+    return jsonText(await request(`/api/scanner/grading/${resolvedName.slice(8)}`, withAuthArgs(args, { method: 'POST', body: args })))
+  }
   switch (resolvedName) {
     case 'hermes_studio_browser_tabs': {
       if (args.action === 'list') return jsonText(await browserRequest('tabs.list'))

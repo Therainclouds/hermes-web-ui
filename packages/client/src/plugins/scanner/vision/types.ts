@@ -40,6 +40,8 @@ export interface GrayImage {
  */
 export type EnhancePreset = 'none' | 'auto' | 'gray' | 'scan' | 'bw'
 
+export type RotateDirection = 'left' | 'right'
+
 /** 图像增强参数。contrast 100 = 不变；brightness 0 = 不变；sharpen 0..100。 */
 export interface EnhanceParams {
   preset: EnhancePreset

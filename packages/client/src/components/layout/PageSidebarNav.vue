@@ -4,6 +4,7 @@ import { NTooltip } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useSessionSearch } from '@/composables/useSessionSearch'
+import { isPluginEnabled } from '@/plugins/types'
 
 type ActiveSection = 'chat' | 'history' | 'group' | 'global' | 'workflow' | 'meeting'
 
@@ -20,6 +21,18 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const router = useRouter()
 const { openSessionSearch } = useSessionSearch()
+
+// 批改模式：依赖扫描插件与批改插件都已启用（二者默认启用），启动后在主页面
+// 的「新建对话」旁直接显示，无需进入 Settings 的插件管理页。点击进入左右
+// 分屏的批改工作台（/hermes/grading-batch）。
+const gradingAvailable = computed(
+  () => isPluginEnabled('paper-grading', true) && isPluginEnabled('scanner', true),
+)
+
+function openGrading() {
+  // 直接在 Web UI 主界面（ChatPanel）打开批改模式，而不是跳到独立页面。
+  void router.push({ name: 'hermes.chat', query: { mode: 'grading-batch' } })
+}
 
 const primaryText = computed(() => props.primaryLabel || t('chat.newChat'))
 const showModeSwitch = computed(() => !props.hideModeSwitch)
@@ -105,6 +118,28 @@ function openExperts() {
           <line x1="5" y1="12" x2="19" y2="12" />
         </svg>
         <span>{{ primaryText }}</span>
+      </button>
+      <button
+        v-if="gradingAvailable"
+        class="page-sidebar-tab"
+        type="button"
+        @click="openGrading"
+      >
+        <svg
+          width="15"
+          height="15"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+          <path d="M14 2v6h6" />
+          <path d="m9 15 2 2 4-4" />
+        </svg>
+        <span>{{ t('grading.mode') }}</span>
       </button>
       <button class="page-sidebar-tab" type="button" @click="openSessionSearch">
         <svg

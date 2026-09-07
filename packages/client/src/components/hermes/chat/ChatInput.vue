@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { isPluginEnabled } from '@/plugins/types'
 import type { Attachment } from '@/stores/hermes/chat'
 import { useChatStore } from '@/stores/hermes/chat'
 import { useAppStore } from '@/stores/hermes/app'
@@ -21,6 +22,7 @@ import { BRIDGE_SESSION_COMMAND_DEFINITIONS } from '@/utils/hermes/bridge-sessio
 import { clampChatInputHeight, isMobileChatInputViewport } from '@/utils/chat-input-height'
 import { normalizeComposerVoiceTranscript, useComposerVoiceInput } from '@/composables/useComposerVoiceInput'
 
+const gradingAvailable = computed(() => isPluginEnabled('scanner', true) && isPluginEnabled('paper-grading', true))
 const chatStore = useChatStore()
 const appStore = useAppStore()
 const profilesStore = useProfilesStore()
@@ -41,6 +43,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   modelClick: []
   voiceClick: []
+  modeChange: [mode: 'chat' | 'grading' | 'grading-batch']
 }>()
 
 const reasoningEffortOptions = computed(() => [
@@ -1068,6 +1071,11 @@ function isImage(type: string): boolean {
 
 <template>
   <div class="chat-input-area">
+    <div v-if="gradingAvailable" class="grading-modes">
+      <NButton size="small" type="primary" @click="emit('modeChange', 'chat')">{{ t('grading.chat') }}</NButton>
+      <NButton size="small" @click="emit('modeChange', 'grading')">{{ t('grading.single') }}</NButton>
+      <NButton size="small" @click="emit('modeChange', 'grading-batch')">{{ t('grading.batch') }}</NButton>
+    </div>
     <!-- Attachment previews -->
     <div v-if="attachments.length > 0" class="attachment-previews">
       <div

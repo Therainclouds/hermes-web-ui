@@ -59,6 +59,7 @@ export interface HermesClientPlugin {
   description: string
   /** 插件作者（可选）。 */
   author?: string
+  dependencies?: string[]
   /** install 入口；只有当插件被启用时才会被调用。 */
   install(ctx: PluginContext): void | Promise<void>
   /** 可选：用户主动禁用时调用，用于清理全局副作用（默认 noop）。 */

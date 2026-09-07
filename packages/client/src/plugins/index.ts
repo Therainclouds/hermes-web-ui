@@ -18,6 +18,7 @@ import type { PluginRegistration } from './types'
 
 // 内置插件 import 区（按字母序排列）
 import scannerPlugin from './scanner'
+import gradingPlugin from './grading'
 
 export const BUILTIN_PLUGINS: PluginRegistration[] = [
   {
@@ -25,6 +26,9 @@ export const BUILTIN_PLUGINS: PluginRegistration[] = [
     /** 默认启用；用户可在 localStorage `hermes.plugins.enabled` 关闭。 */
     enabledByDefault: true,
   },
+  // Grading 依赖 Scanner，二者默认启用；这样启动后主页面即可见「批改模式」，
+  // 无需进入 Settings 的插件管理页手动开启。
+  { plugin: gradingPlugin, enabledByDefault: true },
 ]
 
 /**

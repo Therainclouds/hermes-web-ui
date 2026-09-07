@@ -8,6 +8,7 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { NAlert, NButton, NCard, NEmpty, NSpin, NSwitch, NTag } from 'naive-ui'
+import { request } from '@/api/client'
 import { useI18n } from 'vue-i18n'
 import {
   BUILTIN_PLUGINS,
@@ -31,6 +32,7 @@ interface RowState {
 
 const rows = ref<RowState[]>([])
 const loading = ref(true)
+const syncError = ref('')
 
 const allEnabled = computed(() => rows.value.every(row => row.enabled))
 const noneEnabled = computed(() => rows.value.every(row => !row.enabled))
@@ -54,15 +56,29 @@ function loadState() {
   loading.value = false
 }
 
-function persist() {
+async function persist() {
   const map: Record<string, boolean> = {}
   for (const row of rows.value) {
     if (row.hasOverride) map[row.id] = row.enabled
   }
-  writePluginEnabledMap(map)
+  try {
+    await request('/api/scanner/grading/settings', { method: 'POST', body: JSON.stringify({ enabled: map['paper-grading'] === true && map.scanner !== false }) })
+    writePluginEnabledMap(map)
+    syncError.value = ''
+  } catch (error) { syncError.value = (error as Error).message; loadState() }
 }
 
 function toggle(row: RowState, value: boolean) {
+  const registration = BUILTIN_PLUGINS.find(r => r.plugin.id === row.id)
+  if (value && registration?.plugin.dependencies?.some(id => !rows.value.find(r => r.id === id)?.enabled)) return
+  if (!value) {
+    for (const dependent of rows.value) {
+      if (BUILTIN_PLUGINS.find(r => r.plugin.id === dependent.id)?.plugin.dependencies?.includes(row.id)) {
+        dependent.enabled = false
+        dependent.hasOverride = true
+      }
+    }
+  }
   row.enabled = value
   row.hasOverride = true
   persist()
@@ -85,12 +101,13 @@ function disableAll() {
 }
 
 function resetOverrides() {
+  writePluginEnabledMap({})
   for (const row of rows.value) {
     row.hasOverride = false
     const registration = BUILTIN_PLUGINS.find(r => r.plugin.id === row.id)
     row.enabled = isPluginEnabled(row.id, registration?.enabledByDefault ?? true)
   }
-  writePluginEnabledMap({})
+  void persist()
 }
 
 onMounted(loadState)
@@ -136,6 +153,7 @@ function nameFor(row: RowState) {
         {{ t('clientPlugins.notice') }}
       </NAlert>
 
+      <NAlert v-if="syncError" type="error">{{ syncError }}</NAlert>
       <NSpin :show="loading">
         <NEmpty v-if="!loading && rows.length === 0" :description="t('clientPlugins.empty')" />
         <div v-else class="client-plugins-grid">
@@ -155,6 +173,7 @@ function nameFor(row: RowState) {
               </div>
               <NSwitch
                 :value="row.enabled"
+                :disabled="BUILTIN_PLUGINS.find(r => r.plugin.id === row.id)?.plugin.dependencies?.some(id => !rows.find(r => r.id === id)?.enabled)"
                 size="small"
                 @update:value="(value) => toggle(row, value)"
               />
