@@ -9,8 +9,9 @@
 #   flock -> journal queued -> preflight (policy / space / node) ->
 #   download (curl -C - Range resume) -> extract to staging ->
 #   manifest self-check (ship block on version mismatch) ->
-#   atomic swap (lastgood capture) -> restart -> healthcheck ->
-#   identity stamp -> journal succeeded
+#   atomic swap (lastgood capture + preserve hermes_data/node_modules) ->
+#   build_deploy (pre-built: npm ci + rebuild | source: full build) ->
+#   restart -> healthcheck -> identity stamp -> journal succeeded
 #
 # Inputs (env, exported by the update runner from the controller request):
 #   HERMES_WEB_UI_UPDATE_VERSION            target version (required)
@@ -424,6 +425,12 @@ swap_deploy() {
   # as a backup so a truly new file in the skeleton is not lost.
   preserve_hermes_data_across_swap
 
+  # Preserve node_modules from the old tree (optimization). Pre-built
+  # archives ship dist/ but not node_modules/; copying from the old
+  # tree avoids a redundant `npm ci` (~30s on ARM). If the copy fails,
+  # build_deploy() falls through to a fresh npm ci.
+  preserve_node_modules_across_swap
+
   # The staging tree was downloaded and extracted by this root unit, so
   # the swapped-in deploy is root-owned; the service runs as APP_USER and
   # its ExecStartPre cannot even mkdir certs/ (6.6.6.73 v0.8.1). Repair
@@ -475,17 +482,66 @@ run_build_as_app_user() {
   su - "${app_user}" -s /bin/bash -c "HOME='${app_home}' PATH='${path_env}' ${proxy_env[*]} ${command}"
 }
 
+# Copy the previous deploy's node_modules/ into the freshly swapped
+# DEPLOY_DIR when the new tree is missing it. This is an optimization:
+# when the archive is pre-built (has dist/ but no node_modules), copying
+# the old tree's node_modules avoids a redundant `npm ci` that would
+# otherwise take 30+ seconds on ARM. Same pattern as preserve_hermes_data.
+preserve_node_modules_across_swap() {
+  local new_nm="${DEPLOY_DIR%/}/node_modules"
+  # Skip if already populated (the archive shipped one, or a prior run)
+  if [[ -d "${new_nm}" ]] && [[ "$(find "${new_nm}" -mindepth 1 -maxdepth 1 2>/dev/null | head -1 | wc -l)" -gt 0 ]]; then
+    info "node_modules already present; skipping preservation"
+    return 0
+  fi
+
+  local lastgood_link="$(dirname "${DEPLOY_DIR}")/lastgood"
+  local old_tree=""
+  if [[ -L "${lastgood_link}" ]]; then
+    old_tree="$(readlink "${lastgood_link}")"
+  fi
+
+  if [[ -z "${old_tree}" || ! -d "${old_tree}" ]]; then
+    info "no previous deploy tree; skipping node_modules preservation"
+    return 0
+  fi
+
+  local old_nm="${old_tree%/}/node_modules"
+  if [[ ! -d "${old_nm}" ]]; then
+    info "previous deploy has no node_modules; nothing to preserve"
+    return 0
+  fi
+
+  info "preserving node_modules from ${old_nm} into new deploy"
+  if cp -a "${old_nm}" "${new_nm}"; then
+    info "node_modules restored ($(du -sh "${new_nm}" 2>/dev/null | cut -f1))"
+    return 0
+  else
+    warn "node_modules copy failed (will run npm ci as fallback)"
+    rm -rf "${new_nm}" 2>/dev/null || true
+    return 0
+  fi
+}
+
 # Install dependencies and build the swapped-in deploy tree on device.
 #
-# Source-deploy archives ship only source code (no node_modules, no
-# prebuilt dist/). Without this step the service would start a tree that
-# cannot run — the root cause of the 6.6.6.73 v0.8.1 manual-surgery
-# incident. The function is idempotent: when node_modules and dist/ are
-# already present with the expected version the work is skipped so a
-# retry after a partial run does not waste ARM build time.
+# Two paths, auto-detected from the archive contents:
+#
+# PRE-BUILT (archive ships dist/server/index.js):
+#   CI built dist/ ahead of time. Only `npm ci --ignore-scripts` (fast)
+#   + `npm rebuild node-pty` (native bindings) are needed. No vue-tsc,
+#   no full build toolchain required. ~2 minutes on ARM vs ~10 minutes.
+#
+# SOURCE (archive ships only source code):
+#   Legacy path: full `npm ci + npm run build`. Requires complete
+#   build toolchain (vue-tsc, build-essential, etc.) on device.
+#
+# The function is idempotent: when node_modules and dist/ are already
+# present with the expected version the work is skipped so a retry
+# after a partial run does not waste ARM build time.
 #
 # Placement in the lifecycle (master spec § Architecture):
-#   swap_deploy -> preserve_hermes_data -> build_deploy -> restart_runtime
+#   swap_deploy -> preserve_hermes_data -> preserve_node_modules -> build_deploy -> restart_runtime
 #
 # Failure semantics: a build failure after a successful swap means the
 # new tree is unusable, so we revert to lastgood (same policy as a
@@ -528,6 +584,14 @@ build_deploy() {
     return 5
   fi
 
+  # Detect pre-built archive: dist/server/index.js exists in the deployed tree.
+  # When present, skip the full build and only reconcile dependencies.
+  local prebuilt=0
+  if [[ -f "${dist_index}" ]]; then
+    prebuilt=1
+    info "pre-built archive detected (dist/server/index.js present); skipping full build"
+  fi
+
   # --- Install dependencies -------------------------------------------
   if (( ! nm_populated )); then
     journal_append "${TASK_ID}" "installing_dependencies" "npm ci --ignore-scripts as ${app_user}"
@@ -549,13 +613,17 @@ build_deploy() {
   run_build_as_app_user "cd '${DEPLOY_DIR}' && npm rebuild node-pty 2>/dev/null" || \
     warn "node-pty rebuild failed (terminal feature will be disabled)"
 
-  # --- Build -----------------------------------------------------------
-  journal_append "${TASK_ID}" "building" "rm -rf dist + npm run build"
-  info "cleaning dist/ and building ${TARGET_VERSION}"
-  if ! run_build_as_app_user "cd '${DEPLOY_DIR}' && rm -rf dist && npm run build"; then
-    warn "npm run build failed"
-    (( ROLLBACK_READY )) && revert_to_lastgood "${DEPLOY_DIR}" || true
-    return 5
+  # --- Build (only for source archives) --------------------------------
+  if (( ! prebuilt )); then
+    journal_append "${TASK_ID}" "building" "rm -rf dist + npm run build"
+    info "cleaning dist/ and building ${TARGET_VERSION}"
+    if ! run_build_as_app_user "cd '${DEPLOY_DIR}' && rm -rf dist && npm run build"; then
+      warn "npm run build failed"
+      (( ROLLBACK_READY )) && revert_to_lastgood "${DEPLOY_DIR}" || true
+      return 5
+    fi
+  else
+    info "pre-built dist/ already present; skipping npm run build"
   fi
 
   # --- Post-build ownership repair -------------------------------------

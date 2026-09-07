@@ -55,7 +55,7 @@ function makeArchive(root: string, version: string, opts: { wrap?: boolean } = {
   return { archive, sha }
 }
 
-function makeFixture(targetVersion: string, opts: { wrap?: boolean } = {}): Fixture {
+function makeFixture(targetVersion: string, opts: { wrap?: boolean; withNodeModules?: boolean } = {}): Fixture {
   const home = mkdtempSync(join(tmpdir(), 'orchestrator-'))
   tempDirs.push(home)
   const deployDir = join(home, 'deploy')
@@ -65,6 +65,12 @@ function makeFixture(targetVersion: string, opts: { wrap?: boolean } = {}): Fixt
   writeFileSync(join(deployDir, 'package.json'), JSON.stringify({ name: 'hermes-web-ui', version: '0.8.0' }))
   mkdirSync(join(deployDir, 'dist', 'server'), { recursive: true })
   writeFileSync(join(deployDir, 'dist', 'server', 'index.js'), 'old')
+  // Optionally seed node_modules in the old deploy tree so that
+  // preserve_node_modules_across_swap can be exercised.
+  if (opts.withNodeModules) {
+    mkdirSync(join(deployDir, 'node_modules', '.package-lock.json'), { recursive: true })
+    writeFileSync(join(deployDir, 'node_modules', '.package-lock.json'), '{}')
+  }
   rmSync(old, { recursive: true, force: true })
   const { archive, sha } = makeArchive(home, targetVersion, opts)
   return { home, deployDir, archive, archiveSha: sha }
@@ -237,5 +243,35 @@ describe('update orchestrator (dry-run)', () => {
       WEBUI_DRY_RUN: '1',
     })
     expect(res.status).toBe(2)
+  })
+
+  it.skipIf(!haveSymlinks)('pre-built archive: skips full build when dist/ is present in archive', () => {
+    // Archive has dist/server/index.js (pre-built by CI). The orchestrator
+    // should detect this and skip `npm run build`. Verify via the log message
+    // and that the deploy tree contains dist/ without node_modules (since
+    // dry-run skips npm ci).
+    const fixture = makeFixture('0.9.0', { wrap: false })
+    const res = runOrchestrator(fixture)
+    expect(res.status, `orchestrator failed: ${res.stderr}`).toBe(0)
+    // Pre-built detection log should appear (info writes to stdout).
+    const output = res.stdout + res.stderr
+    expect(output).toContain('pre-built archive detected')
+    expect(output).toContain('skipping npm run build')
+    // dist/ is present from the archive.
+    expect(existsSync(join(fixture.deployDir, 'dist', 'server', 'index.js'))).toBe(true)
+  })
+
+  it.skipIf(!haveSymlinks)('preserves node_modules from old deploy tree across swap', () => {
+    // Old deploy has node_modules/. After atomic swap, preserve_node_modules_across_swap
+    // should copy them into the new deploy tree.
+    const fixture = makeFixture('0.9.0', { wrap: false, withNodeModules: true })
+    const res = runOrchestrator(fixture)
+    expect(res.status, `orchestrator failed: ${res.stderr}`).toBe(0)
+    // node_modules should be preserved from the old tree.
+    expect(existsSync(join(fixture.deployDir, 'node_modules'))).toBe(true)
+    // The specific seed file we put in the old tree's node_modules.
+    expect(existsSync(join(fixture.deployDir, 'node_modules', '.package-lock.json'))).toBe(true)
+    const output = res.stdout + res.stderr
+    expect(output).toContain('preserving node_modules')
   })
 })
