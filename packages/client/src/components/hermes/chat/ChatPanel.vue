@@ -94,7 +94,8 @@ const WorkspaceDiffPreview = defineAsyncComponent(async () => (await import('@/c
 const DesktopBrowserPanel = defineAsyncComponent(async () => (await import('./DesktopBrowserPanel.vue')).default);
 
 // 批改面板：作为 ChatPanel 的一种聊天模式内嵌在主界面，按需懒加载。
-const GradingPanel = defineAsyncComponent(async () => (await import('@/plugins/grading/GradingView.vue')).default);
+// 左侧保留对话流，右侧为实时摄像头 + OCR 面板（复用扫描插件的动态捕捉）。
+const GradingScannerPanel = defineAsyncComponent(async () => (await import('@/plugins/grading/GradingScannerPanel.vue')).default);
 
 const chatStore = useChatStore();
 const appStore = useAppStore();
@@ -170,7 +171,6 @@ const currentMode = ref<"chat" | "live">("chat");
 type ChatMode = "chat" | "grading" | "grading-batch";
 const routeMode = route.query.mode;
 const chatMode = ref<ChatMode>(routeMode === "grading" || routeMode === "grading-batch" ? routeMode : "chat");
-const gradingPanelMode = computed<"single" | "batch">(() => chatMode.value === "grading-batch" ? "batch" : "single");
 
 function setChatMode(mode: ChatMode) {
   chatMode.value = mode;
@@ -3390,12 +3390,30 @@ async function handleSessionModelCustomSubmit() {
                   <NRadioButton value="grading-batch">{{ t('grading.batch') }}</NRadioButton>
                 </NRadioGroup>
               </div>
-              <GradingPanel
-                class="chat-grading-panel"
-                :embedded="true"
-                :mode="gradingPanelMode"
-                @close="setChatMode('chat')"
-              />
+              <div class="chat-grading-body">
+                <div class="chat-grading-chat">
+                  <MessageList
+                    ref="messageListRef"
+                    scroll-scope="chat"
+                    :approval-portal-to-body="showOmniRealtime"
+                  >
+                    <template #empty-actions>
+                      <div class="chat-workbench-minimal">
+                        {{ t('grading.chatHint') }}
+                      </div>
+                    </template>
+                  </MessageList>
+                  <ChatInput
+                    ref="chatInputRef"
+                    :model-label="activeSessionModelLabel"
+                    :model-disabled="activeSessionUsesGlobalCodingAgentConfig"
+                    @model-click="handleHeaderModelClick"
+                    @voice-click="openOmniRealtime()"
+                    @mode-change="setChatMode"
+                  />
+                </div>
+                <GradingScannerPanel class="chat-grading-scanner" />
+              </div>
             </div>
           </template>
           <div v-if="chatMode === 'chat' && isChatDropActive" class="chat-drop-overlay" aria-hidden="true">
@@ -4321,6 +4339,31 @@ async function handleSessionModelCustomSubmit() {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+/* 批改模式：左侧对话流 + 右侧摄像头/OCR */
+.chat-grading-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+}
+
+.chat-grading-chat {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-grading-scanner {
+  width: 420px;
+  max-width: 46%;
+  flex-shrink: 0;
+  min-height: 0;
+  border-left: 1px solid $border-light;
+  background: $bg-main-surface;
 }
 
 .chat-workbench {

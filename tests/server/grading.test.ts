@@ -31,7 +31,12 @@ describe('teacher grading', () => {
     const calls: any[] = []
     vi.stubGlobal('fetch', vi.fn(async (_url: string, options: any) => {
       const body = JSON.parse(options.body); calls.push(body)
-      if (body.input) return new Response(JSON.stringify({ output: { choices: [{ message: { content: [{ ocr_result: { words_info: [{ text: words[0]!.text, rotate_rect: [100,50,150,25,0] }] } }] } }] } }))
+      if (body.model === 'qwen3.5-ocr') {
+        // 专用 OCR（原生 qwen-vl-ocr 家族）：返回 words_info
+        const wordsInfo = [{ text: words[0]!.text, rotate_rect: [100,50,150,25,0] }]
+        const ocrContent = [{ ocr_result: { words_info: wordsInfo } }]
+        return new Response(JSON.stringify({ output: { choices: [{ message: { content: ocrContent } }] } }))
+      }
       return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(calls.length === 2 ? { questions } : { results }) } }] }))
     }))
     await step('one', scanId, 'ocr'); await step('one', scanId, 'ocr')

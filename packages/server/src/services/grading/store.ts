@@ -118,19 +118,20 @@ export function deleteSubmission(profile: string, id: string) {
 }
 
 export function readSettings(profile: string): Record<string, any> {
+  const defaults = { enabled: false, ocrModel: 'qwen3.5-ocr', visionModel: 'qwen3.7-flash', model: 'qwen3.7-plus', threshold: 0.7 }
   const file = join(gradingDirectory(profile), 'settings.json')
-  if (!existsSync(file)) return { enabled: false, ocrModel: 'qwen3.5-ocr', model: 'qwen3.8-plus', threshold: 0.7 }
+  if (!existsSync(file)) return defaults
   try {
-    return JSON.parse(readFileSync(file, 'utf8'))
+    return { ...defaults, ...JSON.parse(readFileSync(file, 'utf8')) }
   } catch {
-    return { enabled: false, ocrModel: 'qwen3.5-ocr', model: 'qwen3.8-plus', threshold: 0.7 }
+    return defaults
   }
 }
 
 export function writeSettings(profile: string, input: any) {
   const settings = { ...readSettings(profile) }
   if (typeof input.enabled === 'boolean') settings.enabled = input.enabled
-  for (const key of ['ocrModel', 'model']) if (input[key] !== undefined) settings[key] = requiredText(input[key])
+  for (const key of ['ocrModel', 'visionModel', 'model']) if (input[key] !== undefined) settings[key] = requiredText(input[key])
   if (input.threshold !== undefined) {
     if (typeof input.threshold !== 'number' || input.threshold < 0 || input.threshold > 1) fail('Invalid confidence threshold')
     settings.threshold = input.threshold

@@ -23,7 +23,7 @@ test('grading workspace lists folder scans and accepts image upload', async ({ p
     const action = new URL(route.request().url()).pathname.split('/').pop()
     const body = route.request().postDataJSON() || {}
     let result: any = {}
-    if (action === 'settings') result = { enabled:true, model:'qwen3.8-plus', ocrModel:'qwen3.5-ocr', threshold:.7 }
+    if (action === 'settings') result = { enabled:true, model:'qwen3.7-plus', ocrModel:'qwen3.5-ocr', visionModel:'qwen3.7-flash', threshold:.7 }
     if (action === 'list') result = submissions
     if (action === 'capture_scan') { submissions.push({ id:'scan1', studentName:body.studentName, status:'pending', results:[], annotations:[] }); result = { scanId:'scan1' } }
     if (action === 'summary') result = { total:0, average:0, max:0, min:0, passRate:0, wrongRank:[] }

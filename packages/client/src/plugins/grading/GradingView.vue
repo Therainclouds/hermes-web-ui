@@ -22,7 +22,7 @@ const emit = defineEmits<{ close: [] }>()
 const { t } = useI18n(); const router = useRouter(); const route = useRoute()
 const rubric = ref(''); const studentName = ref('')
 const rows = ref<Omit<Submission, 'image'>[]>([]); const active = ref<Submission>(); const annotations = ref<Annotation[]>([])
-const error = ref(''); const running = ref(false); const paused = ref(false); const busy = ref(false); const rough = ref(true); const settings = ref({ model: 'qwen3.8-plus', ocrModel: 'qwen3.5-ocr', threshold: .7 }); const summary = ref<any>()
+const error = ref(''); const running = ref(false); const paused = ref(false); const busy = ref(false); const rough = ref(true); const settings = ref({ model: 'qwen3.7-plus', ocrModel: 'qwen3.5-ocr', visionModel: 'qwen3.7-flash', threshold: .7 }); const summary = ref<any>()
 const filesInput = ref<HTMLInputElement>(); const folderInput = ref<HTMLInputElement>(); const video = ref<HTMLVideoElement>()
 const camera = useScannerCamera(); let disposed = false
 let socket: Socket | undefined
