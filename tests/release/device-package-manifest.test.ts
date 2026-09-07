@@ -180,6 +180,21 @@ describe('device-package manifest contract', () => {
     expect(manifest.sourceUrls.length).toBeGreaterThanOrEqual(1)
   })
 
+  it('source-deploy: sourceUrl points to device-package tar (pre-built dist/) not pure source', async () => {
+    // The orchestrator auto-detects pre-built dist/ to skip on-device
+    // builds. For this to work, sourceUrl must resolve to the device-package
+    // tar (which CI builds with dist/), not the pure-source tar.
+    const { manifest } = await buildAndReadManifest({})
+    expect(manifest.packageType).toBe('source-deploy')
+    // sourceUrl should reference the device-package artifact name
+    // (hermes-web-ui-device-<tag>.tar.gz), not the source artifact
+    // (hermes-web-ui-source-<tag>.tar.gz).
+    expect(manifest.sourceUrl).toMatch(/hermes-web-ui-device-/)
+    expect(manifest.sourceUrl).not.toMatch(/hermes-web-ui-source-/)
+    // sourceSha256 should match packageSha256 (same device-package tar)
+    expect(manifest.sourceSha256).toBe(manifest.sha256)
+  })
+
   it('source-deploy manifest pins the phase (a) orchestrator as installer', async () => {
     const { manifest } = await buildAndReadManifest({})
     expect(manifest.installerScriptPath).toBe('scripts/update-orchestrator.sh')

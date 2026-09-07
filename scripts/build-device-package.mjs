@@ -614,6 +614,27 @@ export async function buildDevicePackageRelease(options = {}) {
       if (sourceRepoUrl) manifest.sourceRepoUrl = sourceRepoUrl
     }
 
+    // For source-deploy packageType, the orchestrator downloads from
+    // sourceUrl. By default sourceUrl points to the pure-source tar
+    // (no dist/, device must run `npm run build`). To eliminate fragile
+    // on-device builds (vue-tsc missing, PATH issues, node-pty failures
+    // on ARM), override sourceUrl to point to the device-package tar
+    // (which CI already built and ships dist/server/index.js). The
+    // orchestrator auto-detects the presence of dist/ and skips the
+    // full build, running only `npm ci --ignore-scripts` + `npm rebuild
+    // node-pty` (~2 min vs ~10 min on ARM). The pure-source tar is
+    // still built and uploaded as a fallback.
+    if (packageType === 'source-deploy') {
+      const ossDevicePackageUrl = buildOssObjectUrl(ossPublicBaseUrl, 'releases', tag, artifactName)
+      const githubDevicePackageUrl = buildReleaseAssetUrl(releaseRepo, tag, artifactName)
+      const devicePackageUrls = dedupeNonEmpty(ossDevicePackageUrl ? [ossDevicePackageUrl] : [githubDevicePackageUrl])
+      manifest.sourceUrl = devicePackageUrls[0] || githubDevicePackageUrl
+      manifest.sourceUrls = devicePackageUrls
+      manifest.sourceSha256 = sha256
+      manifest.sourceSize = size
+      manifest.sourceArtifactFormat = DEVICE_PACKAGE_ARTIFACT_FORMAT
+    }
+
     writeFileSync(shaPath, `${sha256}  ${basename(artifactPath)}\n`, 'utf-8')
     if (sourceStageRoot && sourceShaPath) {
       writeFileSync(sourceShaPath, `${sourceSha256}  ${basename(sourceArtifactPath)}\n`, 'utf-8')
