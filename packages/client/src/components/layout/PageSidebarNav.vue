@@ -30,7 +30,8 @@ const gradingAvailable = computed(
 )
 
 function openGrading() {
-  void router.push({ name: 'plugin-paper-grading.grading-batch' })
+  // 直接在 Web UI 主界面（ChatPanel）打开批改模式，而不是跳到独立页面。
+  void router.push({ name: 'hermes.chat', query: { mode: 'grading-batch' } })
 }
 
 const primaryText = computed(() => props.primaryLabel || t('chat.newChat'))

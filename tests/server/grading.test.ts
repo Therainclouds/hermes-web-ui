@@ -4,28 +4,29 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import sharp from 'sharp'
 vi.mock('../../packages/server/src/services/scanner/ocr', async importOriginal => ({ ...await importOriginal<any>(), resolveScannerDashScopeKey: vi.fn(async () => 'test-key') }))
-import { createClass, createExam, readSubmission, readSettings, writeSettings, gradingDirectory } from '../../packages/server/src/services/grading/store'
+import { readSubmission, readSettings, writeSettings, gradingDirectory } from '../../packages/server/src/services/grading/store'
 import { capture, step, validateResults, validateWords } from '../../packages/server/src/services/grading/pipeline'
 import { applyEdits, summarize } from '../../packages/server/src/services/grading/annotation-engine'
 import { gradingRequest } from '../../packages/server/src/controllers/grading'
 let home: string
-beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'grading-test-')); vi.stubEnv('HERMES_WEB_UI_HOME', home) })
+beforeEach(() => {
+  home = mkdtempSync(join(tmpdir(), 'grading-test-'))
+  // 批改目录复用 Hermes profile 工作区（HERMES_HOME），因此 stub 它而不是 Web UI 状态目录。
+  vi.stubEnv('HERMES_HOME', home)
+})
 afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); rmSync(home, { recursive: true, force: true }) })
 const words = [{ text: '1. 2 + 2 = 5', cx: 100, cy: 50, w: 150, h: 25, angle: 0 }]
 const questions = [{ qid: 'q1', wordRange: [0,1] as [number,number], bbox: [25,37.5,150,25] as [number,number,number,number], text: words[0]!.text, fullMark: 5 }]
 const results = [{ qid: 'q1', score: 0, fullMark: 5, confidence: .6, feedback: '2 + 2 = 4', diffOps: [{ type: 'mark' as const, range: [0,1] as [number,number], mark: 'circle' as const }] }]
 describe('teacher grading', () => {
-  it('uses Web UI state fallback and keeps profiles isolated', async () => {
-    vi.stubEnv('HERMES_WEB_UI_HOME', ''); vi.stubEnv('HERMES_WEBUI_STATE_DIR', home)
-    expect(gradingDirectory('../profile')).toContain(home)
-    expect(gradingDirectory('../profile')).not.toBe(gradingDirectory('profile'))
+  it('stores scans in a per-profile Hermes workspace folder and keeps profiles isolated (no SQL)', async () => {
+    expect(gradingDirectory('one').startsWith(home)).toBe(true)
+    expect(gradingDirectory('one')).not.toBe(gradingDirectory('two'))
     writeSettings('one', { enabled: true }); expect(readSettings('two').enabled).toBe(false)
   })
   it('OCR is cached and later model requests contain text only', async () => {
-    const { classId } = createClass('one', 'Class 1')
-    const { examId } = createExam('one', { classId, name: 'Math' })
     const png = await sharp({ create: { width: 200, height: 100, channels: 3, background: '#fff' } }).png().toBuffer()
-    const { scanId } = await capture('one', { examId, image: `data:image/png;base64,${png.toString('base64')}`, studentName: 'Student' })
+    const { scanId } = await capture('one', { image: `data:image/png;base64,${png.toString('base64')}`, studentName: 'Student' })
     expect(() => readSubmission('two', scanId)).toThrow('not found')
     const calls: any[] = []
     vi.stubGlobal('fetch', vi.fn(async (_url: string, options: any) => {
@@ -53,7 +54,7 @@ describe('teacher grading', () => {
     expect(summarize([])).toMatchObject({ total: 0, average: 0, passRate: 0 })
   })
   it('denies disabled plugins and unauthorized profile access', async () => {
-    const ctx: any = { state: { user: { id: 1, role: 'admin', profiles: ['one'] } }, params: { action: 'catalog' }, query: {}, request: { body: {} }, get: () => 'two' }
+    const ctx: any = { state: { user: { id: 1, role: 'admin', profiles: ['one'] } }, params: { action: 'list' }, query: {}, request: { body: {} }, get: () => 'two' }
     await gradingRequest(ctx); expect(ctx.status).toBe(403)
     ctx.get = () => 'one'; await gradingRequest(ctx); expect(ctx.body.error).toContain('Enable')
   })

@@ -861,9 +861,7 @@ const gradingTools = {
   apply_edits: { description: 'Convert validated grade operations into deterministic annotations.', fields: {}, required: ['scanId'] },
   render: { description: 'Ask the open grading workspace to render and download annotated PNG/PDF.', fields: { style: { type: 'string', enum: ['rough', 'printed'] } }, required: ['scanId'] },
   summary: { description: 'Summarize submissions and question-level wrong-answer rates.', fields: { scanIds: { type: 'array', items: { type: 'string' } } }, required: ['scanIds'] },
-  create_class: { description: 'Create a teacher class.', fields: { name: { type: 'string' }, year: { type: 'integer' } }, required: ['name'] },
-  create_exam: { description: 'Create an exam in a class.', fields: { classId: { type: 'string' }, name: { type: 'string' }, date: { type: 'string' }, rubricRef: { type: 'string' } }, required: ['classId', 'name'] },
-  list_exams: { description: 'List classes and exams in the selected profile.', fields: {}, required: [] },
+  list: { description: 'List scanned papers in the profile grading folder (currently no class/exam grouping).', fields: {}, required: [] },
 }
 
 const tools = [

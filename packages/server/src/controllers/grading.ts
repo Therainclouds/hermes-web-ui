@@ -1,6 +1,6 @@
 import { requestClient, completeClientRequest } from '../services/grading/client-requests'
 import type { Context } from 'koa'
-import { catalog, createClass, createExam, fail, listSubmissions, readSettings, readSubmission, requiredText, saveSubmission, writeSettings } from '../services/grading/store'
+import { deleteSubmission, fail, listScans, readSettings, readSubmission, requiredText, saveSubmission, writeSettings } from '../services/grading/store'
 import { capture, step, validateResults } from '../services/grading/pipeline'
 import { summarize } from '../services/grading/annotation-engine'
 
@@ -11,6 +11,7 @@ function profileFor(ctx: Context) {
   if (!ctx.state.serverTokenAuth && user?.role !== 'super_admin' && !user?.profiles?.includes(profile)) fail('Profile access denied', 403)
   return profile
 }
+
 export async function gradingRequest(ctx: Context) {
   try {
     const profile = profileFor(ctx)
@@ -19,13 +20,13 @@ export async function gradingRequest(ctx: Context) {
     if (action === 'settings') { ctx.body = ctx.method === 'GET' ? readSettings(profile) : writeSettings(profile, args); return }
     if (!readSettings(profile).enabled) fail('Enable the scanner and paper-grading plugins first', 403)
     switch (action) {
-      case 'catalog': case 'list_exams': ctx.body = catalog(profile); break
-      case 'create_class': ctx.body = createClass(profile, args.name, args.year); break
-      case 'create_exam': ctx.body = createExam(profile, args); break
-      case 'list': ctx.body = listSubmissions(profile, requiredText(args.examId)); break
+      case 'list':
+        // 不分班级/考试：列出工作区 grading 文件夹里的全部扫描稿
+        ctx.body = listScans(profile); break
       case 'capture_scan': ctx.body = args.image ? await capture(profile, args) : await requestClient(profile, 'capture', { examId: args.examId, pageNumber: args.pageNumber }); break
       case 'client_complete': completeClientRequest(profile, requiredText(args.requestId), args.result); ctx.body = { ok: true }; break
       case 'get': ctx.body = readSubmission(profile, requiredText(args.scanId)); break
+      case 'delete': deleteSubmission(profile, requiredText(args.scanId)); ctx.body = { ok: true }; break
       case 'summary': {
         if (!Array.isArray(args.scanIds) || args.scanIds.length > 1000) fail('Invalid scan IDs')
         ctx.body = summarize([...new Set<string>(args.scanIds.map((id: unknown) => requiredText(id)))].map(id => readSubmission(profile, id))); break

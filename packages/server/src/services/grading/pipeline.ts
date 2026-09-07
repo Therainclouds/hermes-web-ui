@@ -29,7 +29,7 @@ export async function capture(profile: string, args: any) {
   const buffer = Buffer.from(image.split(',')[1]!, 'base64')
   const metadata = await sharp(buffer, { limitInputPixels: 30_000_000 }).metadata()
   if (!metadata.width || !metadata.height) fail('Invalid image')
-  const s: Submission = { id: randomUUID(), examId: requiredText(args.examId), studentName: requiredText(args.studentName || 'Scan'), image, width: metadata.width, height: metadata.height, words: [], questions: [], results: [], annotations: [], status: 'pending', error: '', revision: 0 }
+  const s: Submission = { id: randomUUID(), examId: typeof args.examId === 'string' ? args.examId : '', studentName: requiredText(args.studentName || 'Scan'), image, width: metadata.width, height: metadata.height, words: [], questions: [], results: [], annotations: [], status: 'pending', error: '', revision: 0 }
   saveSubmission(profile, s)
   return { scanId: s.id, width: s.width, height: s.height }
 }

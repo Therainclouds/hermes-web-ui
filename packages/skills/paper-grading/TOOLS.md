@@ -2,6 +2,8 @@
 
 The tools are served by the existing `hermes-studio-mcp api` transport. Each accepts an optional `profile`.
 
+Scans are stored as files in the Hermes profile workspace under `grading/` (an image plus a matching `.json` metadata file). There is currently no class/exam SQL model.
+
 | Tool | Required inputs | Result |
 | --- | --- | --- |
 | grading_capture_scan | optional examId, pageNumber | scanId, width, height after teacher capture |
@@ -11,8 +13,6 @@ The tools are served by the existing `hermes-studio-mcp api` transport. Each acc
 | grading_apply_edits | scanId | deterministic annotations |
 | grading_render | scanId; optional style rough/printed | client download confirmation |
 | grading_summary | scanIds | totals, question statistics, wrongRank |
-| grading_create_class | name; optional year | classId |
-| grading_create_exam | classId, name; optional date, rubricRef | examId |
-| grading_list_exams | none | classes and exams |
+| grading_list | none | scanned papers in the profile grading folder |
 
 Coordinate values refer to original image pixels. OCR words are text lines; diff ranges refer to absolute line indices, not characters. Never construct coordinates or overwrite OCR text to improve a score. Camera/export requests time out if the workspace is unavailable or the teacher does not respond.

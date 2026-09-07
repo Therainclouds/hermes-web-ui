@@ -207,7 +207,7 @@ describe('hermes-web-ui MCP server', () => {
     expectProviderSafeToolNames('hermes-studio-api', list.result.tools)
     // The api toolset exposes the Web UI requester/openapi tools plus the
     // native grading_* tools that drive the paper-grading plugin.
-    expect(list.result.tools).toHaveLength(12)
+    expect(list.result.tools).toHaveLength(10)
     expect(list.result.tools.some((tool: any) => tool.name === 'hermes_studio_api_request')).toBe(true)
     expect(list.result.tools.some((tool: any) => tool.name === 'grading_capture_scan')).toBe(true)
     expect(list.result.tools.some((tool: any) => tool.name === 'grading_apply_edits')).toBe(true)
