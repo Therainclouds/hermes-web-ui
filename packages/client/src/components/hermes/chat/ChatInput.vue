@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useRouter } from 'vue-router'
+import { isPluginEnabled } from '@/plugins/types'
 import type { Attachment } from '@/stores/hermes/chat'
 import { useChatStore } from '@/stores/hermes/chat'
 import { useAppStore } from '@/stores/hermes/app'
@@ -21,6 +23,8 @@ import { BRIDGE_SESSION_COMMAND_DEFINITIONS } from '@/utils/hermes/bridge-sessio
 import { clampChatInputHeight, isMobileChatInputViewport } from '@/utils/chat-input-height'
 import { normalizeComposerVoiceTranscript, useComposerVoiceInput } from '@/composables/useComposerVoiceInput'
 
+const gradingRouter = useRouter()
+const gradingAvailable = computed(() => isPluginEnabled('scanner', true) && isPluginEnabled('paper-grading', false))
 const chatStore = useChatStore()
 const appStore = useAppStore()
 const profilesStore = useProfilesStore()
@@ -1068,6 +1072,11 @@ function isImage(type: string): boolean {
 
 <template>
   <div class="chat-input-area">
+    <div v-if="gradingAvailable" class="grading-modes">
+      <NButton size="small" type="primary">{{ t('grading.chat') }}</NButton>
+      <NButton size="small" @click="gradingRouter.push('/hermes/grading')">{{ t('grading.single') }}</NButton>
+      <NButton size="small" @click="gradingRouter.push('/hermes/grading-batch')">{{ t('grading.batch') }}</NButton>
+    </div>
     <!-- Attachment previews -->
     <div v-if="attachments.length > 0" class="attachment-previews">
       <div

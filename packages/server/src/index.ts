@@ -42,6 +42,7 @@ import {
 } from './db/hermes/app-connections-store'
 import { ensureAppRelayHostClient } from './services/app-relay/connection'
 import { setupGlobalEkkoAgent } from './services/ekko-agent/manager'
+import { installGradingSocket } from './services/grading/client-requests'
 import { WorkflowSocketServer } from './services/workflow-socket'
 import { logger } from './services/logger'
 import { meetingASRService } from './services/meeting-asr'
@@ -503,6 +504,7 @@ export async function bootstrap() {
   getWorkflowScheduleService().start()
 
   workflowSocketServer = new WorkflowSocketServer(groupChatServer.getIO())
+  installGradingSocket(groupChatServer.getIO())
   workflowSocketServer.init()
 
   // USB socket bridge shares the same io instance and reports to /usb namespace

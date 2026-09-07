@@ -145,3 +145,15 @@ describe('plugin registry', () => {
     expect(readPluginEnabledMap()).toEqual({})
   })
 })
+
+it('does not install a dependent grading plugin when scanner is disabled or fails', async () => {
+  const scanner = makeStubPlugin('scanner')
+  const grading = makeStubPlugin('paper-grading', { dependencies: ['scanner'] })
+  writePluginEnabledMap({ scanner: false, 'paper-grading': true })
+  const registrations = [{ plugin: scanner, enabledByDefault: true }, { plugin: grading, enabledByDefault: false }]
+  await installClientPlugins({} as any, makeFakeRouter() as any, makeFakeI18n(), registrations)
+  expect(grading.install).not.toHaveBeenCalled()
+  writePluginEnabledMap({ scanner: true, 'paper-grading': true })
+  await installClientPlugins({} as any, makeFakeRouter() as any, makeFakeI18n(), registrations)
+  expect(grading.install).toHaveBeenCalledOnce()
+})

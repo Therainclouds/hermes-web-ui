@@ -1,4 +1,5 @@
 import Router from '@koa/router'
+import { gradingRequest } from '../controllers/grading'
 import * as ctrl from '../controllers/scanner'
 
 /**
@@ -16,3 +17,6 @@ export const scannerRoutes = new Router()
 scannerRoutes.post('/api/scanner/ocr', ctrl.runOcr)
 scannerRoutes.post('/api/scanner/pdf', ctrl.buildPdf)
 scannerRoutes.post('/api/scanner/save', ctrl.saveScan)
+
+scannerRoutes.get('/api/scanner/grading/:action', gradingRequest)
+scannerRoutes.post('/api/scanner/grading/:action', gradingRequest)

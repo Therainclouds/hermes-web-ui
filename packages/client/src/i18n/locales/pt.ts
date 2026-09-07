@@ -1,4 +1,5 @@
 export default {
+  pluginsClient: { "paper-grading": { name: "Correção de provas", description: "Requer Scanner. Corrija provas, edite anotações e exporte relatórios." } },
   browser: {
     title: 'Navegador', settings: 'Configurações do navegador', desktopOnly: 'O navegador integrado está disponível apenas no Hermes Studio Desktop.', newTab: 'Nova aba',
     back: 'Voltar', forward: 'Avançar', reload: 'Recarregar', stop: 'Parar', addressPlaceholder: 'Pesquisar ou inserir endereço',
@@ -772,6 +773,7 @@ export default {
     skillLanguageFixed: "Este skill usa {language}",
     reportAnalyzingMedia: "Ouvindo {audio} gravações · revisando {frames} imagens — gerando análise de IA multimodal…",
     reportSkippedNoMedia: "Sem gravações/imagens nesta sessão — análise multimodal ignorada; relatório baseado na transcrição e nas notas",
+    reportInSessionReview: "O coach já fez a avaliação final na sessão; o relatório a reutiliza sem executar novamente a análise offline",
     reviewingEnd: "O coach está fazendo a avaliação final (reutilizando o contexto de áudio/vídeo)…",
     entry: 'Prática oral',
     entryHint: 'Pratique em voz alta com um coach de IA sobre o tema que escolher: cada turno é comentado e pontuado, e no final o conteúdo da análise pode ser salvo como Markdown',

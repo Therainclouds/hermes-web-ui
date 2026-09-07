@@ -29,14 +29,7 @@ const REALTIME_SUPPLEMENT = [
   '- 你的回复将通过语音直接朗读：请用简洁、自然、口语化的中文回答（除非用户明确使用其他语言），不要使用 Markdown 标记（标题 / 列表 / 代码块）。',
   '- 回答控制在两三句话以内，除非用户明确要求详细说明。',
   '- 你可以调用的工具以下发给你的工具列表为准，不要引用人格描述中提到的其他工具或技能名称。',
-  // 用户反馈（realtime agent 模式）：此前这里笼统地禁用 query_hermes_agent，
-  // 与下方 TOOL_REFERENCE / TOOL_RULES 的「涉及工具操作必须调用 query_hermes_agent」
-  // 直接冲突——模型在「该不该调用」之间摇摆，结果是用空参数反复调用同一个工具
-  // （query_hermes_agent {} → question 必填 → 重试风暴），每次重试都是一轮新
-  // response，发声被反复打断。Agent 模式的本意就是语音驱动真实工作台能力，因此
-  // 改为「可以用，但只做一问一答式短查询」：调用必须带完整 question；只有
-  // 文件/写盘/长任务这类产物给不到语音里的操作才引导回文字对话页，而不是空转。
-  '- 用户要求真实操作（查内存/端口占用、读目录文件、跑命令、查工作台数据等）时，可以调用 query_hermes_agent：把用户的口语整理成一个具体、完整的问题放进 question 参数（例如「查看这台电脑的内存占用」），一次只问一件事，禁止传空参数；拿到结果后用一两句口语总结关键结论即可。',
+  '- 用户要求真实操作时，优先调用直接查询工具或 run_terminal_command；只有需要 MCP、技能编排或直接工具无法完成时才调用 query_hermes_agent，必须传完整 question，禁止传空参数。',
   '- 需要「生成文件 / 写工作区 / 跑长任务」这类产物给不到语音里的操作时，不要调用工具空转，直接告诉用户"我这边语音回不来文件，请回文字对话页或到工作区继续"。',
 ].join('\n')
 
@@ -47,7 +40,8 @@ const TOOL_REFERENCE = [
   '- list_agent_skills / read_skill_detail：查看当前 Agent 已配置的技能及其 SKILL.md。',
   '- list_recent_sessions：查看最近的对话会话列表。',
   '- list_jobs：查看当前的定时任务与自动化任务。',
-  '- query_hermes_agent：把一个具体问题丢给后端 Hermes Agent 跑一次，它会用上当前 profile 的 MCP 工具 / 技能 / 终端 / 文件系统等真实能力，再把最终回复文本返回给你。当用户问的问题需要真实工具操作或工作区读取时优先调用它。',
+  '- run_terminal_command：直接运行短时终端程序（command 与 args 分开），查询本机状态、目录和文件无需启动 Agent。',
+  '- query_hermes_agent：把一个具体问题丢给后端 Hermes Agent 跑一次，它会用上当前 profile 的 MCP 工具 / 技能 / 终端 / 文件系统等真实能力，再把最终回复文本返回给你。仅在直接工具无法完成、需要 MCP 或技能编排时调用它。',
 ].join('\n')
 
 const TOOL_RULES = [

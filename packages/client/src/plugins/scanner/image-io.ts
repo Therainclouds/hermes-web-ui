@@ -1,5 +1,6 @@
 import { applyEnhance, isBilevelPreset } from './vision/enhance'
-import type { EnhanceParams, RgbaImage } from './vision/types'
+import { rotateRgba90 } from './vision/filters'
+import type { EnhanceParams, RgbaImage, RotateDirection } from './vision/types'
 
 /**
  * Canvas <-> typed-array / dataURL 转换与增强辅助。
@@ -95,6 +96,24 @@ export function rgbaToCanvas(img: RgbaImage): HTMLCanvasElement {
     ctx.putImageData(imageData, 0, 0)
   }
   return canvas
+}
+
+export async function rotateDataUrl(
+  source: string,
+  direction: RotateDirection,
+): Promise<{ dataUrl: string; width: number; height: number } | null> {
+  try {
+    const canvas = await canvasFromImageSource(source)
+    if (!canvas) return null
+    const rotated = rotateRgba90(canvasToRgba(canvas), direction)
+    return {
+      dataUrl: canvasToDataUrl(rgbaToCanvas(rotated), 0.92),
+      width: rotated.width,
+      height: rotated.height,
+    }
+  } catch {
+    return null
+  }
 }
 
 /** canvas -> JPEG dataURL。 */

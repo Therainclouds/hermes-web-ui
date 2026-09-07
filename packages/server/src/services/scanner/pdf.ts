@@ -128,7 +128,7 @@ async function compileImage(page: ScannerPdfImagePage): Promise<CompiledImage> {
   }
 
   // 非 JPEG（客户端二值预设输出 PNG）或 JPEG 头损坏：走 sharp 解码
-  let sharp: typeof import('sharp')
+  let sharp: Awaited<ReturnType<typeof importSharp>>['default']
   try {
     sharp = (await loadSharp()).default
   } catch (error) {

@@ -757,7 +757,7 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
           const ask = activeTextAsk
           activeTextAsk = null
           window.clearTimeout(ask.timer)
-          const finalText = (ask.collected + String(msg.text ?? '')).trim()
+          const finalText = (String(msg.text ?? '') || ask.collected).trim()
           ask.resolve(finalText)
         }
         break
@@ -1285,15 +1285,14 @@ export function useOmniRealtime(options: UseOmniRealtimeOptions = {}) {
    * recommended, and audio must already be streaming (hands-free capture
    * starts on `ws.onopen`, so this holds for this app).
    */
-  function sendImage(image: string): void {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return
-    if (!image) return
+  function sendImage(image: string): boolean {
+    if (!ws || ws.readyState !== WebSocket.OPEN || !image) return false
     const payload = image.startsWith('data:') ? image.slice(image.indexOf(',') + 1) : image
-    if (!payload) return
-    // Debug aid for the camera pipeline: confirm frames leave the browser.
-    // Open DevTools → Console to see one line per frame while the camera is on.
-    console.debug(`[omni-realtime] camera frame sent (${payload.length} base64 chars)`)
-    try { ws.send(JSON.stringify({ type: 'image', image: payload })) } catch { /* ignore */ }
+    if (!payload || payload.length > 256 * 1024 || ws.bufferedAmount > 512 * 1024) return false
+    try {
+      ws.send(JSON.stringify({ type: 'image', image: payload }))
+      return true
+    } catch { return false }
   }
 
   function abortResponse(): void {

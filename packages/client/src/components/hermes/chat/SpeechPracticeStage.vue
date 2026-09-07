@@ -199,22 +199,53 @@ const FRAME_INTERVAL_MS = 1000
 const MAX_FRAME_DIM = 640
 let captureTimer: number | null = null
 let framesCaptured = 0
+/**
+ * 舞台已卸载（用户在授权弹窗还开着时就返回/关闭）。
+ * getUserMedia 的 await 可能在卸载之后才 resolve，那时 stopCamera() 早就跑完了，
+ * 流会挂在页面外继续亮着摄像头灯，而且后续还会去 connect 一个没人看的会话。
+ */
+let stageDisposed = false
+
+/** 摄像头约束档位：先要前置 720p，被驱动拒绝时退到「随便给个视频轨」。 */
+const CAMERA_CONSTRAINTS: MediaStreamConstraints[] = [
+  { video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
+  { video: true, audio: false },
+]
+
+/** 约束类错误（分辨率/朝向不支持）才值得降级重试；权限拒绝重试也没用。 */
+function isConstraintError(error: unknown): boolean {
+  const name = (error as { name?: string } | null)?.name || ''
+  return name === 'OverconstrainedError' || name === 'ConstraintNotSatisfiedError' || name === 'NotFoundError'
+}
 
 async function startCamera(): Promise<void> {
   if (cameraStream.value || typeof navigator.mediaDevices?.getUserMedia !== 'function') return
-  try {
-    cameraStream.value = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
-      audio: false,
-    })
-    // 流建立后 <video> 可能刚挂载（预览在 <main> 顶层，v-if 随流出现），
-    // 等 DOM 渲染完再绑一次 srcObject，作为 watch(cameraStream) 的兜底。
-    await bindCameraPreview()
-  } catch {
-    cameraNotice.value = t('omniRealtime.cameraFailed')
-    cameraEnabled.value = false
-    setTimeout(() => { cameraNotice.value = '' }, 4000)
+  let lastError: unknown = null
+  for (const [index, constraints] of CAMERA_CONSTRAINTS.entries()) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia(constraints)
+      if (stageDisposed) {
+        // 授权在卸载之后才回来：立刻关掉，别让摄像头灯留在亮着的状态
+        stream.getTracks().forEach(track => track.stop())
+        return
+      }
+      cameraStream.value = stream
+      // 流建立后 <video> 可能刚挂载（预览在 <main> 顶层，v-if 随流出现），
+      // 等 DOM 渲染完再绑一次 srcObject，作为 watch(cameraStream) 的兜底。
+      await bindCameraPreview()
+      return
+    } catch (error) {
+      lastError = error
+      const hasFallback = index < CAMERA_CONSTRAINTS.length - 1
+      if (!hasFallback || !isConstraintError(error)) break
+      // 约束不被支持：继续下一档，音频对练不受影响
+    }
   }
+  void lastError
+  if (stageDisposed) return
+  cameraNotice.value = t('omniRealtime.cameraFailed')
+  cameraEnabled.value = false
+  setTimeout(() => { cameraNotice.value = '' }, 4000)
 }
 
 /** 把当前摄像头流绑到预览 <video>（若已绑定则跳过）。 */
@@ -497,11 +528,20 @@ function cleanText(value: unknown): string {
   return typeof value === 'string' ? value.trim().slice(0, 600) : ''
 }
 
+/** 收尾总评的 Markdown（整段报告级文本，长度上限比逐轮点评宽得多）。 */
+function cleanMarkdown(value: unknown): string {
+  return typeof value === 'string' ? value.trim().slice(0, 20_000) : ''
+}
+
 function recordPracticeFeedback(args: Record<string, unknown>): string {
   // 归属到「当前正在被点评」的用户轮次：工具调用通常紧随该轮 user 转写提交，
   // 以此刻已提交的 user 轮次数作为轮次号（从 1 起）；无 user 轮次时记 0（不归属）。
+  // 例外：收尾总评的指令要求模型显式传 round=0（整场评分），此时尊重模型的
+  // 声明，否则整场总评会被算到最后一轮头上、把那轮的逐轮点评顶掉。
+  const explicitRound = Number(args.round)
+  const isSessionReview = Number.isFinite(explicitRound) && explicitRound === 0
   const userTurnCount = omni.turns.value.filter(turn => turn.role === 'user').length
-  const round = userTurnCount
+  const round = isSessionReview ? 0 : userTurnCount
 
   const record: PracticeFeedbackRecord = {
     round,
@@ -511,9 +551,9 @@ function recordPracticeFeedback(args: Record<string, unknown>): string {
     grammar: toScore(args.grammar),
     vocabulary: toScore(args.vocabulary),
     content: toScore(args.content),
-    // 摄像头开启时模型才会提交 bodyLanguage；关摄像头时即便模型误填也忽略，
-    // 避免“看不见却打分”的编造。
-    bodyLanguage: cameraEnabled.value ? toScore(args.bodyLanguage) : null,
+    // 只有真的抓到过画面帧才接受 bodyLanguage：摄像头开关打开但授权失败、
+    // 或 <video> 一直没就绪时一帧都没发出去，模型「看不到却打分」属于编造。
+    bodyLanguage: framesCaptured > 0 ? toScore(args.bodyLanguage) : null,
     comment: cleanText(args.comment),
     strengths: cleanText(args.strengths),
     improvements: cleanText(args.improvements),
@@ -527,7 +567,21 @@ function recordPracticeFeedback(args: Record<string, unknown>): string {
   for (const dim of skill.evaluation.dims) {
     recordWithDims[dim.id] = toScore(args[dim.id])
   }
-  feedbacks.value = [...feedbacks.value, recordWithDims]
+  // 同一轮重复提交 = 模型自我修正（先给了草稿分又改口），覆盖而不是追加：
+  // 否则评分卡会出现两条同轮记录，报告里也会重复计分。
+  const sameRoundAt = feedbacks.value.findIndex(item => item.round === round)
+  if (sameRoundAt >= 0) {
+    const next = [...feedbacks.value]
+    next[sameRoundAt] = recordWithDims
+    feedbacks.value = next
+  } else {
+    feedbacks.value = [...feedbacks.value, recordWithDims]
+  }
+
+  // 收尾总评可以顺带把整场书面总评写进 reportMarkdown：拿到它就不用再花
+  // 一次离线 Omni 深度分析（同一份素材、同一个模型，已经在会话里评过了）。
+  const review = cleanMarkdown(args.reportMarkdown)
+  if (review) closingReviewMarkdown.value = review
 
   const scored = record.overall > 0
   const when = round > 0 ? t('speechPractice.scoredRound', { n: round }) : t('speechPractice.scoredUnattached')
@@ -612,6 +666,11 @@ function buildHistoryContext(): string {
   return serializeChatHistory(session.messages)
 }
 
+/**
+ * 摄像头授权是 startSession 里最慢的一步（慢设备上要好几秒）。用户可能在
+ * 弹窗还开着时就退出舞台，此时不能再往下 connect —— 会开一个没人看的实时
+ * 会话并持续计费。所有 await 之后都要过一次这个闸门。
+ */
 async function connectWithCoachPersona(): Promise<boolean> {
   // 不注入用户 Agent 的 SOUL.md——工作台助理人格与「目标语言口语教练」
   // 人格直接冲突（中文回复 vs 全程目标语言、助理行为 vs 陪练行为）。对练
@@ -622,11 +681,16 @@ async function connectWithCoachPersona(): Promise<boolean> {
     backendError.value = t('omniRealtime.backendUnavailable')
     return false
   }
+  if (stageDisposed) return false
   // 技能解析（异步拉取已安装技能契约；无引用时立即返回，用默认技能）。
   await ensurePracticeSkill()
   const skill = activeSkill.value
   // 摄像头在连接前打开，模型从第一轮起就能看到用户画面
   if (cameraEnabled.value) await startCamera()
+  if (stageDisposed) {
+    stopCamera()
+    return false
+  }
   // 按技能生成工具集（工作台子集 + 动态评分工具），连接前注入同一份。
   omni.setTools(buildSessionTools(skill, cameraEnabled.value))
   await omni.connect({
@@ -659,6 +723,7 @@ async function startSession(): Promise<void> {
   feedbacks.value = []
   resetCollectedMedia()
   aiSection.value = ''
+  closingReviewMarkdown.value = ''
   analysisState.value = 'idle'
   preparing.value = true
   try {
@@ -806,6 +871,8 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  // 先置位再停：还在 await 的 getUserMedia / connect 靠这个标志自行放弃
+  stageDisposed = true
   window.removeEventListener('keydown', handleKeydown)
   stopEverything()
 })
@@ -999,10 +1066,17 @@ const reportMarkdown = computed(() =>
 // AI 全模态深度分析：结束后先用 Qwen3.5-Omni 听录音 / 看画面流式生成一段
 // Markdown，实时渲染到结束面板的 “md 看板”；素材缺失或调用失败时回落纯
 // 基础报告。文本-only（不申请音频、省 token）。
-type AnalysisState = 'idle' | 'running' | 'ok' | 'failed' | 'skipped'
+type AnalysisState = 'idle' | 'running' | 'ok' | 'failed' | 'skipped' | 'inSession'
 const analysisState = ref<AnalysisState>('idle')
 /** 流式累积中的 AI 段（增量逐段追加，看板实时重渲染）。 */
 const aiSection = ref('')
+/**
+ * 同会话收尾总评产出的整场书面总评（submit_practice_feedback 的
+ * reportMarkdown 字段）。拿到它就不再跑离线 Omni 深度分析：同一个模型、
+ * 同一份录音/画面已经在会话里评过一次，再发一次纯属重复计费；而且保存
+ * 失败重试时也不该二次收费，所以这里独立于 aiSection 常驻，直到下一场开始。
+ */
+const closingReviewMarkdown = ref('')
 /** SSE meta 首帧（服务端校验后实际入请求的素材清单）；未到达时回退本地统计。 */
 const analysisMediaMeta = ref<OmniAnalysisMediaMeta | null>(null)
 
@@ -1018,13 +1092,20 @@ const analysisStatusText = computed(() => {
     case 'ok': return t('speechPractice.reportAnalyzed')
     case 'failed': return t('speechPractice.aiAnalysisFailed')
     case 'skipped': return t('speechPractice.reportSkippedNoMedia')
+    case 'inSession': return t('speechPractice.reportInSessionReview')
     default: return ''
   }
 })
 
-/** 最终报告 = 基础报告 +（流式累积中的）AI 全模态分析段。 */
+/**
+ * 最终报告 = 基础报告 + 深度分析段。
+ * 优先用同会话收尾总评（已在会话里基于真实语音/画面评过），没有才用离线段。
+ */
 const finalReportMarkdown = computed(() =>
-  composePracticeReportWithOmniAnalysis(reportMarkdown.value, aiSection.value),
+  composePracticeReportWithOmniAnalysis(
+    reportMarkdown.value,
+    closingReviewMarkdown.value || aiSection.value,
+  ),
 )
 
 // --- 结束面板「md 看板」滚动：AI 流式生成时自动贴底，用户上翻则跟随 ------
@@ -1121,7 +1202,8 @@ function buildOmniAnalysisPayload(): OmniAnalysisPayload | null {
 
 /**
  * 结束后的完整报告流程（finalizeSession 触发；保存失败时按钮可重试）：
- *  1. 有素材 → 流式调用 Qwen3.5-Omni，增量实时刷进 aiSection（md 看板）；
+ *  0. 同会话收尾总评已给出整场书面总评 → 直接用它，跳过离线分析（不重复计费）；
+ *  1. 否则有素材 → 流式调用 Qwen3.5-Omni，增量实时刷进 aiSection（md 看板）；
  *  2. 拼最终 Markdown 落盘（复用 /report）；
  *  3. 成功后往该对练会话插入一条带「下载」附件的消息（聊天页可下载）。
  */
@@ -1137,26 +1219,32 @@ async function runEndReportFlow(): Promise<void> {
   reportRunning.value = true
   saveError.value = ''
   savedReport.value = null
-  analysisState.value = 'idle'
-  aiSection.value = ''
-  analysisMediaMeta.value = null
   reportChatInserted = false
   try {
-    // 1) AI 全模态深度分析（流式；无素材或失败自动回落基础报告）
+    // 1) 深度分析段：同会话收尾总评优先；否则有素材才跑离线 Omni 分析
     let aiOk = true
-    const payload = buildOmniAnalysisPayload()
-    if (payload) {
-      analysisState.value = 'running'
-      const aiResult = await streamOmniPracticeAnalysis(payload, practiceApiKey() || undefined, {
-        onMeta: (meta) => { analysisMediaMeta.value = meta },
-        onDelta: (text) => { aiSection.value += text },
-      })
-      aiOk = !!(aiResult.ok && aiResult.markdown)
-      analysisState.value = aiOk ? 'ok' : 'failed'
+    if (closingReviewMarkdown.value) {
+      analysisState.value = 'inSession'
+      aiSection.value = ''
+      analysisMediaMeta.value = null
     } else {
-      analysisState.value = 'skipped'
+      analysisState.value = 'idle'
+      aiSection.value = ''
+      analysisMediaMeta.value = null
+      const payload = buildOmniAnalysisPayload()
+      if (payload) {
+        analysisState.value = 'running'
+        const aiResult = await streamOmniPracticeAnalysis(payload, practiceApiKey() || undefined, {
+          onMeta: (meta) => { analysisMediaMeta.value = meta },
+          onDelta: (text) => { aiSection.value += text },
+        })
+        aiOk = !!(aiResult.ok && aiResult.markdown)
+        analysisState.value = aiOk ? 'ok' : 'failed'
+      } else {
+        analysisState.value = 'skipped'
+      }
     }
-    // 2) 落盘最终报告：AI 成功/跳过 → 基础 + AI 段；AI 失败 → 只存基础报告
+    // 2) 落盘最终报告：AI 成功/跳过 → 基础 + 分析段；AI 失败 → 只存基础报告
     //   （看板仍展示流式生成到的部分，文件保持完整可读）。
     const finalMarkdown = aiOk ? finalReportMarkdown.value : reportMarkdown.value
     const suggestedName = practiceReportFileStem(props.config, Date.now())

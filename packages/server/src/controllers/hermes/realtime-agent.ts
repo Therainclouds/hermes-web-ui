@@ -161,3 +161,30 @@ export async function queryAgent(ctx: any) {
   ctx.status = result.ok ? 200 : 502
   ctx.body = result
 }
+
+/** Direct terminal calls preserve the terminal's super-admin boundary. */
+export async function terminalCommand(ctx: any) {
+  const { isAuthEnabled } = await import('../../middleware/user-auth')
+  if (await isAuthEnabled() && ctx.state.user?.role !== 'super_admin') {
+    ctx.status = 403
+    ctx.body = { error: 'Super administrator privileges are required' }
+    return
+  }
+  const { command, args = [] } = ctx.request.body || {}
+  if (typeof command !== 'string' || !command.trim() || command.length > 512 || command.includes('\0')
+    || !Array.isArray(args) || args.length > 64
+    || args.some((arg: unknown) => typeof arg !== 'string' || arg.length > 4000 || arg.includes('\0'))) {
+    ctx.status = 400
+    ctx.body = { error: 'Expected command and bounded string argument array' }
+    return
+  }
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  ctx.res.once('close', abort)
+  try {
+    const { runRealtimeCommand } = await import('../../services/terminal/realtime-command')
+    ctx.body = await runRealtimeCommand(command, args, controller.signal)
+  } finally {
+    ctx.res.removeListener('close', abort)
+  }
+}

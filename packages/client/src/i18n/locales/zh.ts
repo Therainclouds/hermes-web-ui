@@ -1,4 +1,5 @@
 export default {
+  pluginsClient: { "paper-grading": { name: "试卷批改", description: "依赖扫描插件。单张与批量批改、批注编辑及班级报表。" } },
   browser: {
     title: '浏览器', settings: '浏览器设置', desktopOnly: '内置浏览器仅在 Hermes Studio 桌面端可用。', newTab: '新标签页',
     back: '后退', forward: '前进', reload: '刷新', stop: '停止', addressPlaceholder: '搜索或输入网址',
@@ -784,6 +785,7 @@ export default {
     skillLanguageFixed: "该技能固定使用 {language}",
     reportAnalyzingMedia: "正在听 {audio} 段录音 · 看 {frames} 帧画面，生成 AI 全模态深度分析…",
     reportSkippedNoMedia: "本次未采集到录音/画面，未运行全模态分析；报告基于对话文字与逐轮评分",
+    reportInSessionReview: "教练已在会话内完成整场总评，报告直接采用该总评，未重复运行离线分析",
     reviewingEnd: "教练正在做本场收尾总评（复用本场语音/画面上下文）…",
     entry: '口语对练',
     entryHint: '与 AI 教练语音对练指定方向：每轮点评打分，结束后分析内容可保存为 Markdown',

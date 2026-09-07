@@ -42,6 +42,7 @@ import {
   encodeEnhanced,
   enhanceCanvas,
   enhanceDataUrl,
+  rotateDataUrl,
 } from './image-io'
 import { createDetector, type Detector } from './vision/detector'
 import { warpQuad } from './vision/perspective'
@@ -52,6 +53,7 @@ import {
   type EnhanceParams,
   type EnhancePreset,
   type Quad,
+  type RotateDirection,
   type WarpAspect,
 } from './vision/types'
 import {
@@ -145,6 +147,7 @@ const ocrOneLoading = ref(false)
 const saveLoading = ref(false)
 const pdfLoading = ref(false)
 const correcting = ref(false)
+const rotating = ref(false)
 
 /** Realtime 模型里配置的 DashScope key = Scanner 唯一入口。 */
 const keyChecked = ref(false)
@@ -488,6 +491,34 @@ function resetEnhance() {
   page.enhance = { ...ENHANCE_DEFAULTS.none }
 }
 
+async function rotateActivePage(direction: RotateDirection) {
+  const page = activePage.value
+  if (!page || rotating.value || correcting.value) return
+  rotating.value = true
+  try {
+    const rotated = await rotateDataUrl(page.originalImage, direction)
+    if (!rotated) {
+      message.error(tt('scanner.enhance.rotateFail'))
+      return
+    }
+    const params = { ...page.enhance }
+    const image = await enhanceDataUrl(rotated.dataUrl, params)
+    if (!image || !pages.value.some(p => p.id === page.id)) {
+      message.error(tt('scanner.enhance.rotateFail'))
+      return
+    }
+    page.originalImage = rotated.dataUrl
+    page.image = image
+    page.width = rotated.width
+    page.height = rotated.height
+    page.applied = params
+  } catch {
+    message.error(tt('scanner.enhance.rotateFail'))
+  } finally {
+    rotating.value = false
+  }
+}
+
 /** 对当前页原图做「自动矫正裁剪」（重新检测纸张边缘 + 透视拉伸）。 */
 async function correctActivePage() {
   const page = activePage.value
@@ -495,7 +526,7 @@ async function correctActivePage() {
     message.warning(tt('scanner.enhance.none'))
     return
   }
-  if (correcting.value) return
+  if (correcting.value || rotating.value) return
   correcting.value = true
   let detectorHandle: Detector | null = null
   try {
@@ -625,6 +656,7 @@ async function recognizeAll() {
 }
 
 async function saveToWorkspace() {
+  if (rotating.value || correcting.value) return
   if (pages.value.length === 0) {
     message.warning(tt('scanner.pages.empty'))
     return
@@ -644,6 +676,7 @@ async function saveToWorkspace() {
 }
 
 async function exportPdf() {
+  if (rotating.value || correcting.value) return
   if (pages.value.length === 0) {
     message.warning(tt('scanner.pages.empty'))
     return
@@ -1107,7 +1140,7 @@ const cameraHintTone = computed(() => {
       </div>
 
       <div v-if="!isMobile" class="scanner-right">
-        <NSpin :show="ocrOneLoading || correcting">
+        <NSpin :show="ocrOneLoading || correcting || rotating">
           <div v-if="!activePage" class="scanner-right-empty">
             <NEmpty :description="tt('scanner.detail.emptyHint')" />
           </div>
@@ -1121,8 +1154,11 @@ const cameraHintTone = computed(() => {
             <ScannerEnhanceControls
               :params="activePage.enhance"
               :correcting="correcting"
+              :rotating="rotating"
               @update:params="onEnhanceParams"
               @correct="correctActivePage"
+              @rotate-left="rotateActivePage('left')"
+              @rotate-right="rotateActivePage('right')"
               @reset="resetEnhance"
             />
             <div class="scanner-detail-text">
@@ -1164,10 +1200,10 @@ const cameraHintTone = computed(() => {
         </NSpin>
 
         <footer v-if="pages.length > 0" class="scanner-actions">
-          <NButton :loading="saveLoading" @click="saveToWorkspace">
+          <NButton :loading="saveLoading" :disabled="rotating || correcting" @click="saveToWorkspace">
             {{ tt('scanner.save.action') }}
           </NButton>
-          <NButton :loading="pdfLoading" type="primary" @click="exportPdf">
+          <NButton :loading="pdfLoading" :disabled="rotating || correcting" type="primary" @click="exportPdf">
             {{ tt('scanner.pdf.action') }}
           </NButton>
         </footer>
@@ -1194,7 +1230,7 @@ const cameraHintTone = computed(() => {
             {{ tt('scanner.mobile.close') }}
           </NButton>
         </div>
-        <NSpin :show="ocrOneLoading || correcting" class="mobile-detail-spin">
+        <NSpin :show="ocrOneLoading || correcting || rotating" class="mobile-detail-spin">
           <div v-if="!activePage" class="mobile-detail-empty">
             <NEmpty :description="tt('scanner.detail.emptyHint')" />
           </div>
@@ -1205,8 +1241,11 @@ const cameraHintTone = computed(() => {
             <ScannerEnhanceControls
               :params="activePage.enhance"
               :correcting="correcting"
+              :rotating="rotating"
               @update:params="onEnhanceParams"
               @correct="correctActivePage"
+              @rotate-left="rotateActivePage('left')"
+              @rotate-right="rotateActivePage('right')"
               @reset="resetEnhance"
             />
             <div class="mobile-detail-text">
@@ -1255,10 +1294,10 @@ const cameraHintTone = computed(() => {
           </div>
         </NSpin>
         <footer v-if="pages.length > 0" class="mobile-detail-actions">
-          <NButton :loading="saveLoading" block @click="saveToWorkspace">
+          <NButton :loading="saveLoading" :disabled="rotating || correcting" block @click="saveToWorkspace">
             {{ tt('scanner.save.action') }}
           </NButton>
-          <NButton :loading="pdfLoading" type="primary" block @click="exportPdf">
+          <NButton :loading="pdfLoading" :disabled="rotating || correcting" type="primary" block @click="exportPdf">
             {{ tt('scanner.pdf.action') }}
           </NButton>
         </footer>

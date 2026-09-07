@@ -620,11 +620,28 @@ const CLOSING_UTTERANCE_PATTERNS = [
   'finish', 'done', 'end',
 ].map(word => word.toLowerCase())
 
-/** 判断一句话是否是「结束对练」类口头收尾语（大小写不敏感、按词包含匹配）。 */
+/** 纯 ASCII 词条（英文）：必须按词匹配，不能子串匹配。 */
+const ASCII_PATTERN_RE = /^[\x20-\x7e]+$/
+
+function escapeForRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * 判断一句话是否是「结束对练」类口头收尾语。
+ *
+ * 中文词条按子串匹配（中文没有词边界）；英文词条必须按词匹配 ——
+ * 否则 'end' 会命中 "it dep-end-s on the context"、'done' 命中
+ * "abandoned"、'stop' 命中 "stopwatch"，正常发言被误判成收尾语，
+ * 结果是结束时直接跳过同会话收尾总评（用户看到的现象：报告里没有总评）。
+ */
 export function isClosingUtteranceLike(text: string): boolean {
   const lower = (text || '').trim().toLowerCase()
   if (!lower) return false
-  return CLOSING_UTTERANCE_PATTERNS.some(pattern => lower.includes(pattern))
+  return CLOSING_UTTERANCE_PATTERNS.some((pattern) => {
+    if (!ASCII_PATTERN_RE.test(pattern)) return lower.includes(pattern)
+    return new RegExp(`(^|[^a-z0-9])${escapeForRegExp(pattern)}([^a-z0-9]|$)`).test(lower)
+  })
 }
 
 /**
@@ -643,7 +660,9 @@ export function buildPracticeClosingReviewPrompt(skill: PracticeSkill): string {
     '1. 用一两句话总结用户整场的总体表现（可以结合你本场看到/听到的画面与语音，不要凭空编造）；',
     `2. 按本场维度逐项简短点评（${dims}），每项 1-2 句、给出具体建议；`,
     '3. 给出 2 条下阶段最值得练习的建议；',
-    '4. 说完后立刻调用 submit_practice_feedback 提交整场评分：round 填 0，overall 视为整场分数，其余维度填整场观感分。',
+    '4. 说完后立刻调用 submit_practice_feedback 提交整场评分：round 填 0，overall 视为整场分数，其余维度填整场观感分；'
+      + '并把这段总评同时以 Markdown 写进 reportMarkdown 参数（整体表现 + 逐维度点评 + 下阶段建议），'
+      + '内容必须来自本场真实听到/看到的表现，不要编造。',
     '整段总评请控制在 30-45 秒内说完，语气自然、像真人教练，不要逐字念数字。',
     roleLine,
   ].filter(Boolean).join('\n')
@@ -687,6 +706,21 @@ export function buildPracticeFeedbackToolFor(
     strengths: { type: 'string', description: '亮点，一两句（用练习目标语言书写）。' },
     improvements: { type: 'string', description: '本轮最重要的 1 个可提升点（用练习目标语言书写）。' },
     example: { type: 'string', description: '更自然/更地道的表达示范或纠错示范，一两句（用练习目标语言书写）。' },
+    // 轮次归属：逐轮点评省略即可（客户端按已提交的 user 轮次自动归属）；
+    // 只有收尾总评必须显式填 0，否则整场评分会被算到最后一轮头上。
+    round: {
+      type: 'number',
+      description: '逐轮点评不填；收尾总评（整场评分）必须填 0。',
+      minimum: 0,
+    },
+    // 收尾总评顺带产出整场书面总评：客户端拿到它就直接写进报告，
+    // 不再另发一次离线全模态分析请求（同一份素材不重复计费）。
+    reportMarkdown: {
+      type: 'string',
+      description: '仅收尾总评（round=0）时填写：整场书面总评的 Markdown，'
+        + '基于你本场真实听到的语音与看到的画面写，包含整体表现、逐维度点评与下阶段建议；'
+        + '不要编造没有发生过的内容。逐轮点评不要填这个字段。',
+    },
   }
   const required = ['overall', 'comment']
   for (const dim of skill.evaluation.dims) {

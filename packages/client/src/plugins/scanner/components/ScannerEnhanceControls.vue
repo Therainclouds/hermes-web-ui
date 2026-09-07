@@ -3,7 +3,7 @@
  * ScannerEnhanceControls - 单页增强控件：预设 + 对比度/亮度/锐化滑杆，
  * 以及「矫正裁剪 / 重置」动作。纯展示组件，状态由父级持有。
  */
-import { NButton, NSelect, NSlider, NTooltip } from 'naive-ui'
+import { NButton, NIcon, NSelect, NSlider, NTooltip } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { ENHANCE_DEFAULTS, ENHANCE_PRESET_LABEL_KEYS, ENHANCE_PRESET_ORDER, type EnhanceParams, type EnhancePreset } from '../vision/types'
 
@@ -13,15 +13,19 @@ const props = withDefaults(defineProps<{
   correcting?: boolean
   /** 是否可执行矫正（引擎可用且页面上有原图）。 */
   canCorrect?: boolean
+  rotating?: boolean
 }>(), {
   correcting: false,
   canCorrect: true,
+  rotating: false,
 })
 
 const emit = defineEmits<{
   (e: 'update:params', params: EnhanceParams): void
   (e: 'correct'): void
   (e: 'reset'): void
+  (e: 'rotate-left'): void
+  (e: 'rotate-right'): void
 }>()
 
 const { t } = useI18n()
@@ -58,6 +62,7 @@ function reset() {
         :options="presetOptions"
         size="small"
         style="width: 156px;"
+        :disabled="rotating || correcting"
         @update:value="setPreset($event as EnhancePreset)"
       />
       <NTooltip>
@@ -65,9 +70,59 @@ function reset() {
           <NButton
             size="small"
             quaternary
+            circle
+            class="enhance-rotate-button"
+            data-testid="scanner-rotate-left"
+            :aria-label="tt('scanner.enhance.rotateLeft')"
+            :title="tt('scanner.enhance.rotateLeft')"
+            :disabled="rotating || correcting"
+            @click="emit('rotate-left')"
+          >
+            <template #icon>
+              <NIcon>
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M3 12a9 9 0 1 0 3-6.7" />
+                  <polyline points="3 3 3 9 9 9" />
+                </svg>
+              </NIcon>
+            </template>
+          </NButton>
+        </template>
+        {{ tt('scanner.enhance.rotateLeft') }}
+      </NTooltip>
+      <NTooltip>
+        <template #trigger>
+          <NButton
+            size="small"
+            quaternary
+            circle
+            class="enhance-rotate-button"
+            data-testid="scanner-rotate-right"
+            :aria-label="tt('scanner.enhance.rotateRight')"
+            :title="tt('scanner.enhance.rotateRight')"
+            :disabled="rotating || correcting"
+            @click="emit('rotate-right')"
+          >
+            <template #icon>
+              <NIcon>
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M21 12a9 9 0 1 1-3-6.7" />
+                  <polyline points="21 3 21 9 15 9" />
+                </svg>
+              </NIcon>
+            </template>
+          </NButton>
+        </template>
+        {{ tt('scanner.enhance.rotateRight') }}
+      </NTooltip>
+      <NTooltip>
+        <template #trigger>
+          <NButton
+            size="small"
+            quaternary
             type="primary"
             :loading="correcting"
-            :disabled="!canCorrect || correcting"
+            :disabled="!canCorrect || correcting || rotating"
             @click="emit('correct')"
           >
             {{ tt('scanner.enhance.correct') }}
@@ -75,7 +130,7 @@ function reset() {
         </template>
         {{ tt('scanner.enhance.correctHint') }}
       </NTooltip>
-      <NButton size="small" quaternary type="error" @click="reset">
+      <NButton size="small" quaternary type="error" :disabled="rotating || correcting" @click="reset">
         {{ tt('scanner.enhance.reset') }}
       </NButton>
     </div>
@@ -87,6 +142,7 @@ function reset() {
         :min="0"
         :max="200"
         size="small"
+        :disabled="rotating || correcting"
         class="enhance-slider"
         @update:value="patch({ contrast: $event as number })"
       />
@@ -99,6 +155,7 @@ function reset() {
         :min="-100"
         :max="100"
         size="small"
+        :disabled="rotating || correcting"
         class="enhance-slider"
         @update:value="patch({ brightness: $event as number })"
       />
@@ -111,6 +168,7 @@ function reset() {
         :min="0"
         :max="100"
         size="small"
+        :disabled="rotating || correcting"
         class="enhance-slider"
         @update:value="patch({ sharpen: $event as number })"
       />

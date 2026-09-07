@@ -42,7 +42,8 @@ describe('buildRealtimeInstructions', () => {
     // gone; short factual/tool queries are encouraged with a complete question.
     const result = buildRealtimeInstructions('人格A')
     expect(result).not.toContain('不要调用 query_hermes_agent')
-    expect(result).toContain('可以调用 query_hermes_agent')
+    expect(result).toContain('优先调用直接查询工具或 run_terminal_command')
+    expect(result).toContain('才调用 query_hermes_agent')
     // The tool reference block must still describe the tool for the model.
     expect(result).toContain('query_hermes_agent：把一个具体问题丢给后端 Hermes Agent')
     // File-producing / long-task deliverables still get steered to the text page.

@@ -1,4 +1,5 @@
 export default {
+  pluginsClient: { "paper-grading": { name: "Paper grading", description: "Requires Scanner. Grade papers, edit annotations and export class reports." } },
   browser: {
     title: 'Browser', settings: 'Browser Settings', desktopOnly: 'The embedded browser is available only in Hermes Studio Desktop.', newTab: 'New Tab',
     back: 'Back', forward: 'Forward', reload: 'Reload', stop: 'Stop', addressPlaceholder: 'Search or enter an address',
@@ -784,6 +785,7 @@ export default {
     skillLanguageFixed: "This skill uses {language}",
     reportAnalyzingMedia: "Listening to {audio} recordings · reviewing {frames} frames — generating the full-modal AI analysis…",
     reportSkippedNoMedia: "No recordings/frames captured this session — full-modal analysis skipped; the report is based on the transcript and round scores",
+    reportInSessionReview: "The coach already delivered the closing review in-session; the report reuses it instead of re-running offline analysis",
     reviewingEnd: "The coach is giving the closing review (reusing this session’s audio/video context)…",
     entry: 'Practice',
     entryHint: 'Voice practice with an AI coach for the direction you pick: per-turn scores, analysis saved as Markdown',
