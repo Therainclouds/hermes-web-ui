@@ -376,6 +376,12 @@ async function recognize() {
   await runOcr(active.value.id)
 }
 
+/** 复制当前扫描件 scanId，便于把「批改这一张」的信息交到 agent 手里。 */
+async function copyScanId() {
+  if (!active.value) return
+  try { await navigator.clipboard.writeText(active.value.id) } catch { /* clipboard unavailable */ }
+}
+
 /** 把「扫描件预览图 + 可编辑 OCR 文本」发给左侧 Agent。 */
 function sendToAgent() {
   if (!active.value || !previewImage.value) return
@@ -622,6 +628,10 @@ watch(() => props.sessionId, () => { void loadSessionScans() })
         <textarea v-model="ocrText" class="gs-ocr-text" :placeholder="t('grading.empty')" />
 
         <div class="gs-send">
+          <div v-if="active" class="gs-scanid">
+            <code class="gs-scanid-code">{{ active.id }}</code>
+            <NButton size="tiny" quaternary @click="attempt(copyScanId)">{{ t('grading.copyScanId') }}</NButton>
+          </div>
           <NButton type="primary" block :disabled="!active" @click="sendToAgent">{{ t('grading.sendToAgent') }}</NButton>
         </div>
       </div>
@@ -679,7 +689,9 @@ watch(() => props.sessionId, () => { void loadSessionScans() })
 .gs-preview img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
 .gs-rotate { position: absolute; top: 6px; right: 6px; display: flex; gap: 4px; background: rgba(0,0,0,0.35); border-radius: 999px; padding: 2px; }
 .gs-ocr-text { width: 100%; min-height: 110px; resize: vertical; border-radius: 8px; border: 1px solid #5555; background: transparent; color: inherit; padding: 10px; font: inherit; }
-.gs-send { margin-top: 4px; }
+.gs-send { margin-top: 4px; display: flex; flex-direction: column; gap: 6px; }
+.gs-scanid { display: flex; align-items: center; gap: 8px; }
+.gs-scanid-code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-color-2); }
 .gs-pdf { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .gs-reset { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 .gs-no-scan { font-size: 12.5px; color: var(--text-color-2); padding: 12px; border: 1px dashed #5555; border-radius: 8px; text-align: center; margin: 8px 0; }

@@ -2,7 +2,8 @@ import { requestClient, completeClientRequest } from '../services/grading/client
 import type { Context } from 'koa'
 import { deleteSubmission, fail, listScans, readSettings, readSubmission, requiredText, saveSubmission, writeSettings } from '../services/grading/store'
 import { capture, step, validateResults } from '../services/grading/pipeline'
-import { summarize } from '../services/grading/annotation-engine'
+import { groupLines, summarize } from '../services/grading/annotation-engine'
+import { renderPreviewPng } from '../services/grading/render-preview'
 import type { Annotation, Box } from '../services/grading/types'
 import sharp from 'sharp'
 import { randomUUID } from 'node:crypto'
@@ -20,6 +21,8 @@ function validateAnnotation(spec: any): Annotation {
   const annotation: Annotation = { id, kind, bbox: bbox as Box, content }
   if (typeof spec.color === 'string' && spec.color.length <= 32) annotation.color = spec.color
   if (Number.isFinite(spec.width)) annotation.width = spec.width as number
+  if (typeof spec.fontFamily === 'string' && spec.fontFamily.length <= 80) annotation.fontFamily = spec.fontFamily
+  if (spec.solid === true) annotation.solid = true
   if (spec.points != null) {
     if (!Array.isArray(spec.points) || spec.points.length > 20000 || spec.points.some((n: unknown) => typeof n !== 'number' || !Number.isFinite(n))) fail('Invalid annotation points')
     annotation.points = spec.points.slice() as number[]
@@ -103,7 +106,11 @@ export async function gradingRequest(ctx: Context) {
     const action = ctx.params.action
     const args = (ctx.request as any).body || {}
     if (action === 'settings') { ctx.body = ctx.method === 'GET' ? readSettings(profile) : writeSettings(profile, args); return }
-    if (!readSettings(profile).enabled) fail('Enable the scanner and paper-grading plugins first', 403)
+    // 批改工具不再用 settings.enabled 硬闸门：profile 已鉴权，且需要客户端会话的动作
+    // （capture_scan / render 在不带图时）由 requestClient 在无面板时自行失败。
+    // 这样 agent 走 paper-grading 的 grading_* 工具时不会因"插件未启用"被 403，
+    // 从而避免 agent 退化为 execute_code / PIL 自行画框。
+    // readSettings 仅用于显式开关配置（GET）。
     switch (action) {
       case 'list':
         // 不分班级/考试：列出工作区 grading 文件夹里的全部扫描稿
@@ -116,7 +123,20 @@ export async function gradingRequest(ctx: Context) {
         ctx.body = args.omitImage ? (({ image: _image, ...rest }) => rest)(s) : s
         break
       }
+      case 'lines': {
+        // 给 agent 提供「按行归并的像素 bbox」，让批改标记锚定到具体文本行。
+        const s = readSubmission(profile, requiredText(args.scanId))
+        if (!s.words.length) fail('Run OCR first (grading_ocr) before reading line boxes', 409)
+        ctx.body = { scanId: s.id, width: s.width, height: s.height, lines: groupLines(s.words) }
+        break
+      }
       case 'view_image': ctx.body = await renderViewImage(profile, requiredText(args.scanId)); break
+      case 'preview': {
+        // 返回「原图 + 当前批改痕迹」的合成 PNG，供 agent loop 用视觉模型检查位置/遮挡。
+        const s = readSubmission(profile, requiredText(args.scanId))
+        ctx.body = await renderPreviewPng(s.image, s.annotations || [], args.style !== 'printed')
+        break
+      }
       case 'add_annotation': ctx.body = annotate(profile, args); break
       case 'delete': deleteSubmission(profile, requiredText(args.scanId)); ctx.body = { ok: true }; break
       case 'summary': {

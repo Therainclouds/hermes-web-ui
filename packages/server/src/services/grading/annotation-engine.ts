@@ -1,5 +1,42 @@
 import type { Annotation, Box, GradeResult, Question, Word } from './types'
 
+export interface LineBoxWord { index: number; text: string; cx: number; cy: number; w: number; h: number }
+export interface LineBox { index: number; text: string; bbox: Box; words: LineBoxWord[] }
+
+/**
+ * 把 OCR 词按 y 坐标聚类成一行行，并给出每行的合并像素 bbox。
+ * agent 用这个把批改标记（圈选/划线/评语/分数）**锚定到具体文本行**，
+ * 而不是凭视觉/猜测估算坐标——这是位置不准的主要根源。
+ * 行合并阈值用词高的一半级，容忍手写行内交错。
+ */
+export function groupLines(words: Word[]): LineBox[] {
+  if (!words.length) return []
+  const items = words.map((w, index) => ({ w, index })).sort((a, b) => a.w.cy - b.w.cy)
+  const lines: { top: number; bottom: number; items: { w: Word; index: number }[] }[] = []
+  for (const { w, index } of items) {
+    const top = w.cy - w.h / 2
+    const bottom = w.cy + w.h / 2
+    const line = lines.find(l => !(top > l.bottom + 6 || bottom < l.top - 6))
+    if (line) {
+      line.top = Math.min(line.top, top)
+      line.bottom = Math.max(line.bottom, bottom)
+      line.items.push({ w, index })
+    } else {
+      lines.push({ top, bottom, items: [{ w, index }] })
+    }
+  }
+  return lines
+    .map(line => line.items.sort((a, b) => a.w.cx - b.w.cx))
+    .map((items, index) => {
+      const wordsOut = items.map(({ w, index: i }) => ({ index: i, text: w.text, cx: w.cx, cy: w.cy, w: w.w, h: w.h }))
+      const left = Math.min(...items.map(x => x.w.cx - x.w.w / 2))
+      const top = Math.min(...items.map(x => x.w.cy - x.w.h / 2))
+      const right = Math.max(...items.map(x => x.w.cx + x.w.w / 2))
+      const bottom = Math.max(...items.map(x => x.w.cy + x.w.h / 2))
+      return { index, text: wordsOut.map(x => x.text).join(' '), bbox: [left, top, right - left, bottom - top] as Box, words: wordsOut }
+    })
+}
+
 export function wordBox(words: Word[]): Box {
   if (!words.length) throw new Error('Empty annotation word range')
   const left = Math.min(...words.map(w => w.cx - w.w / 2)); const top = Math.min(...words.map(w => w.cy - w.h / 2))

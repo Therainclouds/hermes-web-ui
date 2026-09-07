@@ -873,8 +873,10 @@ const gradingTools = {
   render: { description: 'Ask the open grading workspace to render and download annotated PNG/PDF.', fields: { style: { type: 'string', enum: ['rough', 'printed'] } }, required: ['scanId'] },
   summary: { description: 'Summarize submissions and question-level wrong-answer rates.', fields: { scanIds: { type: 'array', items: { type: 'string' } } }, required: ['scanIds'] },
   list: { description: 'List scanned papers in the profile grading folder (currently no class/exam grouping).', fields: {}, required: [] },
+  lines: { description: 'Return OCR text lines grouped into rows, each with a merged pixel bbox and its word list. Use these boxes to anchor marks (circle/underline/comment/badge) to exact text instead of estimating coordinates.', fields: {}, required: ['scanId'] },
   get: { description: 'Read a full cached scan without image bytes: OCR words, detected questions, score results and existing annotations.', fields: {}, required: ['scanId'] },
   view_image: { description: 'Return the cached scan image as a vision image block so the model can visually read the paper.', fields: {}, required: ['scanId'] },
+  preview: { description: 'Return the scan composited with its CURRENT annotations as a vision image block. Use this to verify mark positions/overlaps after writing annotations, then fix them one-by-one.', fields: { style: { type: 'string', enum: ['rough', 'printed'] } }, required: ['scanId'] },
   add_annotation: { description: 'Add, update or remove one annotation on a scan (badge/comment/circle/cross/underline/pen). Pass annotationId with remove:true to delete, or annotationId alone to update fields.', fields: { annotationId: { type: 'string' }, remove: { type: 'boolean' }, kind: { type: 'string', enum: ['badge', 'comment', 'circle', 'cross', 'underline', 'pen'] }, bbox: { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4, description: '[x, y, width, height] in original-image pixels.' }, content: { type: 'string', description: 'Annotation text (score label, comment, etc.).' }, color: { type: 'string' }, width: { type: 'number' }, points: { type: 'array', items: { type: 'number' }, description: 'Freehand pen point list [x1,y1,x2,y2,...].' } }, required: ['scanId'] },
 }
 
@@ -1772,6 +1774,8 @@ function isToolCallable(name) {
   const resolved = resolveToolName(name)
   const categoryToolset = categoryToolsetDefinition(ACTIVE_TOOLSET)
   if (categoryToolset?.name === resolved) return true
+  // grading_* 是 REST 代理，任何 toolset 都可用。
+  if (resolved.startsWith('grading_')) return true
   return activeToolsetTools().some(tool => tool.name === resolved)
 }
 
@@ -1815,6 +1819,13 @@ async function callTool(name, args = {}) {
   if (resolvedName === 'grading_view_image') {
     try {
       return imageContent(await request('/api/scanner/grading/view_image', withAuthArgs(args, { method: 'POST', body: args })))
+    } catch (error) {
+      return errorText(error instanceof Error ? error.message : String(error))
+    }
+  }
+  if (resolvedName === 'grading_preview') {
+    try {
+      return imageContent(await request('/api/scanner/grading/preview', withAuthArgs(args, { method: 'POST', body: args })))
     } catch (error) {
       return errorText(error instanceof Error ? error.message : String(error))
     }

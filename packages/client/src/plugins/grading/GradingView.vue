@@ -154,7 +154,352 @@ onBeforeUnmount(() => { disposed = true; paused.value = true; camera.stop(); soc
   </main>
 </template>
 <style scoped lang="scss">
-.grading-view { padding: 24px; height: 100%; overflow: auto; display: flex; flex-direction: column; gap: 18px; }
-.grading-view.is-embedded { padding: 16px; gap: 14px; }
-header, .actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; } header { justify-content:space-between; } h2 { margin:0; } .selectors { display:flex; gap:10px; flex-wrap:wrap; > * { max-width:220px; } } .drop { border:2px dashed var(--border-color,#8885); padding:16px; border-radius:12px; } video { display:block; max-width:480px; width:100%; } .workspace { display:grid; grid-template-columns:260px minmax(0,1fr); gap:18px; } .queue article { padding:14px; border-bottom:1px solid #8884; display:flex; gap:10px; flex-wrap:wrap; } .selected { background:#8882; } .paper { min-width:0; } .report span { margin-inline-end:20px; } @media(max-width:800px) { .workspace { grid-template-columns:1fr; } }
+/* ─── Terminal Hacker Theme ────────────────────────────────────────────── */
+.grading-view {
+  /* 主题色 */
+  --hacker-bg: #0a0e0d;
+  --hacker-bg-soft: #0f1413;
+  --hacker-card: #11171680;
+  --hacker-border: #00ff8833;
+  --hacker-border-strong: #00ff88aa;
+  --hacker-grid: #00ff881a;
+  --hacker-text: #00ff88;
+  --hacker-text-dim: #00ff8888;
+  --hacker-text-mute: #00ff8844;
+  --hacker-accent: #00e5ff;
+  --hacker-warn: #facc15;
+  --hacker-err: #ff4d4d;
+  --hacker-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', ui-monospace, monospace;
+
+  padding: 24px;
+  height: 100%;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  position: relative;
+  isolation: isolate;
+
+  /* 双向网格背景：模拟 CRT 终端扫描线 + 矩阵方格 */
+  background-color: var(--hacker-bg);
+  background-image:
+    /* 水平扫描线 */
+    repeating-linear-gradient(0deg, transparent 0 3px, #00ff8808 3px 4px),
+    /* 细网格 */
+    linear-gradient(transparent calc(100% - 1px), var(--hacker-grid) 100%),
+    linear-gradient(90deg, transparent calc(100% - 1px), var(--hacker-grid) 100%),
+    /* 大网格 */
+    linear-gradient(transparent calc(100% - 1px), #00ff8825 100%),
+    linear-gradient(90deg, transparent calc(100% - 1px), #00ff8825 100%);
+  background-size: 100% 100%, 32px 32px, 32px 32px, 128px 128px, 128px 128px;
+  background-position: 0 0, 0 0, 0 0, 0 0, 0 0;
+  color: var(--hacker-text);
+  font-family: var(--hacker-mono);
+  font-size: 13px;
+  letter-spacing: 0.02em;
+
+  /* 全局滚动条黑客化 */
+  &::-webkit-scrollbar { width: 10px; height: 10px; }
+  &::-webkit-scrollbar-track { background: var(--hacker-bg); }
+  &::-webkit-scrollbar-thumb { background: var(--hacker-border); }
+  &::-webkit-scrollbar-thumb:hover { background: var(--hacker-border-strong); }
+
+  /* 顶部 CRT 辉光 */
+  &::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse at top, #00ff8810, transparent 60%);
+    pointer-events: none;
+    z-index: -1;
+  }
+}
+
+.grading-view.is-embedded { padding: 16px; gap: 12px; }
+
+/* ─── Header 终端状态栏 ─────────────────────────────────────────────── */
+header {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: linear-gradient(180deg, #0f1413, #0a0e0d);
+  border: 1px solid var(--hacker-border);
+  border-radius: 6px;
+  position: relative;
+  box-shadow: 0 0 18px #00ff8810, inset 0 0 18px #00ff8808;
+
+  &::before {
+    content: '● grading.terminal [OK]';
+    position: absolute;
+    top: -10px;
+    left: 14px;
+    background: var(--hacker-bg);
+    color: var(--hacker-text);
+    padding: 0 8px;
+    font-size: 11px;
+    font-family: var(--hacker-mono);
+    text-shadow: 0 0 8px var(--hacker-text);
+  }
+
+  h2 {
+    margin: 0;
+    font-family: var(--hacker-mono);
+    font-weight: 600;
+    font-size: 16px;
+    color: var(--hacker-text);
+    text-shadow: 0 0 8px var(--hacker-text-dim);
+    &::before { content: '> '; color: var(--hacker-text-dim); }
+  }
+}
+
+/* ─── Actions 按钮组 ─────────────────────────────────────────────────── */
+.actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* 覆盖 naive-ui 按钮的浅色默认 */
+.grading-view :deep(.n-button) {
+  font-family: var(--hacker-mono);
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  background: #0f1413 !important;
+  border: 1px solid var(--hacker-border) !important;
+  color: var(--hacker-text) !important;
+  box-shadow: 0 0 6px transparent;
+  transition: all 0.18s ease;
+
+  &:hover {
+    border-color: var(--hacker-border-strong) !important;
+    color: var(--hacker-text) !important;
+    background: #111916 !important;
+    box-shadow: 0 0 12px var(--hacker-border);
+    text-shadow: 0 0 6px var(--hacker-text);
+  }
+
+  &.n-button--primary-type {
+    background: linear-gradient(180deg, #00ff8822, #00ff8811) !important;
+    border-color: var(--hacker-text) !important;
+    color: var(--hacker-text) !important;
+    text-shadow: 0 0 6px var(--hacker-text);
+    &:hover { box-shadow: 0 0 18px var(--hacker-border-strong); }
+  }
+}
+
+/* ─── Alert ──────────────────────────────────────────────────────────── */
+.grading-view :deep(.n-alert) {
+  font-family: var(--hacker-mono);
+  border-radius: 4px;
+  border: 1px solid currentColor;
+  background: #0f1413 !important;
+}
+
+/* ─── Rubric Input ──────────────────────────────────────────────────── */
+.grading-view :deep(.n-input) {
+  font-family: var(--hacker-mono);
+
+  .n-input__input-el,
+  .n-input__textarea-el {
+    background: #0a0e0d !important;
+    color: var(--hacker-text) !important;
+    caret-color: var(--hacker-text);
+    font-family: var(--hacker-mono);
+  }
+  .n-input__border,
+  .n-input__state-border {
+    border-color: var(--hacker-border) !important;
+  }
+  &:hover .n-input__border { border-color: var(--hacker-border-strong) !important; }
+}
+
+/* ─── Drop Zone ─────────────────────────────────────────────────────── */
+.drop {
+  border: 2px dashed var(--hacker-border);
+  padding: 20px;
+  border-radius: 6px;
+  background:
+    repeating-linear-gradient(45deg, transparent 0 8px, #00ff8805 8px 9px),
+    #0a0e0d;
+  position: relative;
+  transition: all 0.2s ease;
+
+  p { margin: 0 0 8px; color: var(--hacker-text); }
+  p:first-child::before { content: '> '; color: var(--hacker-text-dim); }
+  p:first-child::after {
+    content: '_';
+    color: var(--hacker-text);
+    animation: blink 1s steps(1) infinite;
+    margin-left: 4px;
+  }
+
+  &:hover {
+    border-color: var(--hacker-border-strong);
+    box-shadow: 0 0 18px var(--hacker-border);
+  }
+
+  video {
+    display: block;
+    max-width: 480px;
+    width: 100%;
+    margin-top: 10px;
+    border: 1px solid var(--hacker-border);
+    border-radius: 4px;
+  }
+}
+
+@keyframes blink {
+  50% { opacity: 0; }
+}
+
+/* ─── Workspace (Queue + Paper) ────────────────────────────────────── */
+.workspace {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 16px;
+}
+
+/* Queue 侧栏 */
+.queue {
+  background: var(--hacker-card);
+  border: 1px solid var(--hacker-border);
+  border-radius: 6px;
+  padding: 12px;
+  min-height: 120px;
+  max-height: 480px;
+  overflow: auto;
+
+  & > p {
+    margin: 0;
+    color: var(--hacker-text-mute);
+    font-style: italic;
+    &::before { content: '// '; }
+  }
+
+  article {
+    padding: 10px 8px;
+    border-bottom: 1px dashed var(--hacker-border);
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+    cursor: pointer;
+    transition: background 0.15s ease, box-shadow 0.15s ease;
+    border-radius: 4px;
+    position: relative;
+
+    &:hover { background: #00ff8815; box-shadow: inset 2px 0 0 var(--hacker-text); }
+
+    &.selected {
+      background: linear-gradient(90deg, #00ff8820, transparent);
+      box-shadow: inset 2px 0 0 var(--hacker-text), 0 0 12px #00ff8820;
+      &::before {
+        content: '▸';
+        position: absolute;
+        left: -4px;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--hacker-text);
+        text-shadow: 0 0 8px var(--hacker-text);
+      }
+    }
+
+    /* 状态 chip */
+    span {
+      font-size: 11px;
+      padding: 1px 6px;
+      border: 1px solid var(--hacker-border);
+      border-radius: 3px;
+      color: var(--hacker-text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+
+    strong {
+      margin-inline-start: auto;
+      color: var(--hacker-accent);
+      text-shadow: 0 0 6px var(--hacker-accent);
+      font-family: var(--hacker-mono);
+    }
+
+    p { margin: 0; flex-basis: 100%; color: var(--hacker-err); font-size: 11px; }
+  }
+}
+
+/* Paper 主区 */
+.paper {
+  min-width: 0;
+  background: var(--hacker-card);
+  border: 1px solid var(--hacker-border);
+  border-radius: 6px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  position: relative;
+
+  &::before {
+    content: '// scan.7cea8cf3.png  ·  cols 1|2|3';
+    display: block;
+    font-family: var(--hacker-mono);
+    font-size: 11px;
+    color: var(--hacker-text-mute);
+    margin-bottom: 4px;
+    letter-spacing: 0.1em;
+  }
+}
+
+/* 题目反馈行 */
+.paper .actions:has(.n-input-number),
+.paper .actions:has(.n-input) {
+  background: #0a0e0d;
+  border: 1px dashed var(--hacker-border);
+  border-radius: 4px;
+  padding: 8px;
+}
+
+/* ─── 报告面板 ─────────────────────────────────────────────────────── */
+.report {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  background: #0f1413;
+  border: 1px solid var(--hacker-border);
+  border-radius: 6px;
+  font-family: var(--hacker-mono);
+
+  span {
+    color: var(--hacker-text-dim);
+    &::before { content: '['; color: var(--hacker-text-mute); }
+    &::after { content: ']'; color: var(--hacker-text-mute); }
+  }
+
+  p {
+    flex-basis: 100%;
+    margin: 4px 0 0;
+    color: var(--hacker-text-dim);
+    &::before { content: '// '; color: var(--hacker-text-mute); }
+  }
+}
+
+/* ─── 22 条 badge 的 hover/分组渐变提示 ─────────────────────────────── */
+/* 由于 badge 在 Konva 画布里以 annotation.color 渲染，CSS 不可直接作用。
+   这里在画布外层覆一层 hover 高亮投影：当队列 active 时 paper 整块微亮 */
+.paper {
+  transition: box-shadow 0.2s ease;
+}
+.paper:has(article.selected),
+.workspace:has(.selected) .paper {
+  box-shadow: 0 0 24px #00ff8820, inset 0 0 24px #00ff8810;
+}
+
+/* ─── 响应式 ───────────────────────────────────────────────────────── */
+@media (max-width: 800px) {
+  .workspace { grid-template-columns: 1fr; }
+}
 </style>

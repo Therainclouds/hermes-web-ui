@@ -6,7 +6,7 @@ import sharp from 'sharp'
 vi.mock('../../packages/server/src/services/scanner/ocr', async importOriginal => ({ ...await importOriginal<any>(), resolveScannerDashScopeKey: vi.fn(async () => 'test-key') }))
 import { readSubmission, readSettings, writeSettings, gradingDirectory } from '../../packages/server/src/services/grading/store'
 import { capture, step, validateResults, validateWords } from '../../packages/server/src/services/grading/pipeline'
-import { applyEdits, summarize } from '../../packages/server/src/services/grading/annotation-engine'
+import { applyEdits, groupLines, summarize } from '../../packages/server/src/services/grading/annotation-engine'
 import { gradingRequest } from '../../packages/server/src/controllers/grading'
 let home: string
 beforeEach(() => {
@@ -51,6 +51,19 @@ describe('teacher grading', () => {
     expect(annotated.annotations.some(a => a.kind === 'circle')).toBe(true)
     expect(summarize([annotated]).wrongRank[0]?.wrongCount).toBe(1)
   })
+  it('groupLines merges OCR words into rows with pixel bboxes', () => {
+    const words = [
+      { text: 'A', cx: 100, cy: 50, w: 40, h: 20, angle: 0 },
+      { text: 'B', cx: 160, cy: 52, w: 40, h: 20, angle: 0 },
+      { text: 'C', cx: 100, cy: 120, w: 40, h: 20, angle: 0 },
+    ]
+    const lines = groupLines(words)
+    expect(lines).toHaveLength(2)
+    expect(lines[0]!.text).toBe('A B')
+    expect(lines[0]!.bbox[0]).toBeCloseTo(80) // 左边界
+    expect(lines[0]!.bbox[2]).toBeCloseTo(100) // 宽 = (160+20) - 80
+    expect(lines[1]!.text).toBe('C')
+  })
   it('rejects incomplete scores, non-finite OCR and out-of-question edits', () => {
     expect(() => validateResults([], questions)).toThrow()
     expect(() => validateResults([{ ...results[0], score: 100 }], questions)).toThrow()
@@ -58,10 +71,13 @@ describe('teacher grading', () => {
     expect(() => applyEdits(words, questions, [{ ...results[0]!, diffOps: [{ type: 'delete', range: [0,2] }] }])).toThrow('range')
     expect(summarize([])).toMatchObject({ total: 0, average: 0, passRate: 0 })
   })
-  it('denies disabled plugins and unauthorized profile access', async () => {
-    const ctx: any = { state: { user: { id: 1, role: 'admin', profiles: ['one'] } }, params: { action: 'list' }, query: {}, request: { body: {} }, get: () => 'two' }
-    await gradingRequest(ctx); expect(ctx.status).toBe(403)
-    ctx.get = () => 'one'; await gradingRequest(ctx); expect(ctx.body.error).toContain('Enable')
+  it('denies unauthorized profile access but lets an authorized profile list scans', async () => {
+    // 未授权 profile → 403
+    const denied: any = { state: { user: { id: 1, role: 'admin', profiles: ['one'] } }, params: { action: 'list' }, query: {}, request: { body: {} }, get: () => 'two' }
+    await gradingRequest(denied); expect(denied.status).toBe(403)
+    // 已授权 profile → 不再因 settings.enabled 403，直接列出工作区扫描件（空）。
+    const ok: any = { state: { user: { id: 1, role: 'admin', profiles: ['one'] } }, params: { action: 'list' }, query: {}, request: { body: {} }, get: () => 'one' }
+    await gradingRequest(ok); expect(ok.status).toBeUndefined(); expect(ok.body).toEqual([])
   })
   it('serves agent read-image and direct annotation tools (view_image / get omitImage / add_annotation)', async () => {
     writeSettings('one', { enabled: true })
@@ -90,5 +106,13 @@ describe('teacher grading', () => {
     await gradingRequest(ctx); expect(ctx.body.annotations[0].content).toBe('fixed')
     ctx = { ...base, params: { action: 'add_annotation' }, request: { body: { scanId, annotationId: id, remove: true } } }
     await gradingRequest(ctx); expect(ctx.body.annotations).toHaveLength(0)
+
+    // preview composites image + annotations into a PNG (agent-loop verification).
+    ctx = { ...base, params: { action: 'add_annotation' }, request: { body: { scanId, kind: 'badge', bbox: [10, 20, 40, 26], content: '3/5' } } }
+    await gradingRequest(ctx); expect(ctx.body.annotations).toHaveLength(1)
+    ctx = { ...base, params: { action: 'preview' }, request: { body: { scanId } } }
+    await gradingRequest(ctx)
+    expect(ctx.body.image).toMatch(/^data:image\/png;base64,/)
+    expect(ctx.body.width).toBe(640); expect(ctx.body.height).toBe(480)
   })
 })

@@ -10,6 +10,10 @@ export async function imageElement(data: string) {
 
 /** 手写批改字体栈（中英文文书手写风），canvas 直接可用。 */
 const HAND_FONT = `"Kaiti SC","KaiTi","STKaiti","FZKai-Z03","Kaiti","cursive"`
+/** 单条批注的字体：优先 agent 指定的 fontFamily。 */
+function annotFont(a: Annotation): string {
+  return a.fontFamily ? `"${a.fontFamily.includes('"') ? '' : a.fontFamily}",${HAND_FONT}` : HAND_FONT
+}
 function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
   const radius = Math.min(r, w / 2, h / 2)
   ctx.beginPath()
@@ -52,8 +56,8 @@ export function drawAnnotation(ctx: CanvasRenderingContext2D, a: Annotation, han
   const lineWidth = a.width || 3
   ctx.save()
   ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = lineWidth
-  // 虚线框：模拟手画批改临摹线的脆感
-  ctx.setLineDash(handDrawn ? [8, 6] : [5, 4])
+  // 虚线框：模拟手画批改临摹线的脆感；a.solid=true 时用实线。
+  ctx.setLineDash(a.solid ? [] : (handDrawn ? [8, 6] : [5, 4]))
   ctx.lineCap = 'round'; ctx.lineJoin = 'round'
 
   if (a.kind === 'circle') {
@@ -70,7 +74,7 @@ export function drawAnnotation(ctx: CanvasRenderingContext2D, a: Annotation, han
     // 分数标签：虚线圆角芯片 + 手写字体分数，按对错着色
     const text = a.content || ''
     const chip = badgeColor(text, color)
-    ctx.font = `600 16px ${HAND_FONT}`
+    ctx.font = `600 16px ${annotFont(a)}`
     const tw = ctx.measureText(text).width
     const chipW = Math.max(tw + 16, 32); const chipH = 24
     ctx.globalAlpha = 0.18; ctx.fillStyle = chip; roundRect(ctx, x, y, chipW, chipH, 6); ctx.fill(); ctx.globalAlpha = 1
@@ -79,15 +83,18 @@ export function drawAnnotation(ctx: CanvasRenderingContext2D, a: Annotation, han
     ctx.fillText(text, x + chipW / 2, y + chipH / 2 + 1)
     ctx.textAlign = 'left'
   } else {
-    // comment 评语：虚线圆角框 + 手写字体白字
+    // comment 评语：紧凑的「手写便签」标签（按文本宽度自适应，避免把整块区域涂成一大片）。
     const text = a.content || ''
     const chip = a.color || '#0f172a'
-    ctx.font = `400 15px ${HAND_FONT}`
-    const maxW = Math.max(w, 110)
-    const lines = wrapText(ctx, text, maxW)
+    ctx.font = `400 15px ${annotFont(a)}`
+    const cap = 200 // 标签最大宽度
+    const lines = wrapText(ctx, text, cap).slice(0, 6)
+    const widest = Math.max(...lines.map(l => ctx.measureText(l).width), 40)
+    const boxW = Math.min(widest + 18, cap)
     const boxH = 12 + lines.length * 22
-    ctx.globalAlpha = 0.85; ctx.fillStyle = chip; roundRect(ctx, x, y, maxW, boxH, 8); ctx.fill(); ctx.globalAlpha = 1
-    ctx.setLineDash([4, 3]); ctx.strokeStyle = chip; roundRect(ctx, x, y, maxW, boxH, 8); ctx.stroke()
+    // 深色便签 + 手写白字；半透明不遮挡原文
+    ctx.globalAlpha = 0.82; ctx.fillStyle = chip; roundRect(ctx, x, y, boxW, boxH, 7); ctx.fill(); ctx.globalAlpha = 1
+    ctx.setLineDash([4, 3]); ctx.strokeStyle = chip; roundRect(ctx, x, y, boxW, boxH, 7); ctx.stroke()
     ctx.fillStyle = '#fff'; ctx.textBaseline = 'top'
     lines.forEach((ln, i) => ctx.fillText(ln, x + 9, y + 7 + i * 22))
   }

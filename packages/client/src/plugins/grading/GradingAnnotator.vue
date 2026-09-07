@@ -75,5 +75,126 @@ onBeforeUnmount(() => { generation++; observer?.disconnect(); stage?.destroy() }
   </div>
 </template>
 <style scoped lang="scss">
-.annotator { min-width: 0; } .toolbar { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 0; } .canvas { width: 100%; background: white; }
+.annotator {
+  min-width: 0;
+
+  /* 工具栏 = 终端 prompt */
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 12px;
+    margin: 0 0 8px;
+    background: linear-gradient(180deg, #0f1413, #0a0e0d);
+    border: 1px solid #00ff8833;
+    border-radius: 6px;
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+    color: #00ff88;
+    box-shadow: 0 0 12px #00ff8810, inset 0 0 12px #00ff8808;
+    position: relative;
+    align-items: center;
+
+    /* 终端 prompt 前缀 */
+    &::before {
+      content: '$ ';
+      color: #00ff88;
+      text-shadow: 0 0 6px #00ff88;
+      margin-right: 4px;
+      align-self: center;
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    /* 工具栏整体悬停描边 */
+    &:hover { border-color: #00ff88aa; box-shadow: 0 0 18px #00ff8820, inset 0 0 18px #00ff8810; }
+
+    /* 覆盖 naive-ui 控件 */
+    :deep(.n-button) {
+      background: #0a0e0d !important;
+      border: 1px solid #00ff8844 !important;
+      color: #00ff88 !important;
+      font-family: inherit;
+      letter-spacing: 0.03em;
+      transition: all 0.15s ease;
+      &:hover {
+        border-color: #00ff88 !important;
+        color: #00ff88 !important;
+        background: #111916 !important;
+        text-shadow: 0 0 6px #00ff88;
+      }
+      &:disabled { opacity: 0.4; }
+    }
+
+    :deep(.n-select) {
+      .n-base-selection { background: #0a0e0d !important; border-color: #00ff8844 !important; }
+      .n-base-selection__content { color: #00ff88 !important; font-family: inherit; }
+    }
+
+    :deep(.n-input) {
+      .n-input__input-el { background: #0a0e0d !important; color: #00ff88 !important; font-family: inherit; }
+      .n-input__border { border-color: #00ff8844 !important; }
+    }
+
+    /* 颜色选择器 */
+    input[type='color'] {
+      width: 32px;
+      height: 28px;
+      border: 1px solid #00ff8844;
+      border-radius: 4px;
+      background: #0a0e0d;
+      padding: 0;
+      cursor: pointer;
+      &::-webkit-color-swatch-wrapper { padding: 2px; }
+      &::-webkit-color-swatch { border: none; border-radius: 2px; }
+    }
+
+    /* 笔宽滑块 */
+    input[type='range'] {
+      width: 120px;
+      accent-color: #00ff88;
+      filter: drop-shadow(0 0 4px #00ff88aa);
+    }
+  }
+
+  /* 画布 = 终端 CRT 屏 */
+  .canvas {
+    width: 100%;
+    /* 黑色 CRT + 极淡绿色扫描线 + 网格底 */
+    background-color: #050908;
+    background-image:
+      repeating-linear-gradient(0deg, transparent 0 2px, #00ff8808 2px 3px),
+      linear-gradient(transparent calc(100% - 1px), #00ff8815 100%),
+      linear-gradient(90deg, transparent calc(100% - 1px), #00ff8815 100%);
+    background-size: 100% 100%, 24px 24px, 24px 24px;
+    border: 1px solid #00ff8833;
+    border-radius: 6px;
+    overflow: hidden;
+    position: relative;
+    box-shadow: 0 0 24px #00ff8815, inset 0 0 24px #00ff8810;
+
+    /* 画布四角的扫描装饰 */
+    &::before, &::after {
+      content: '';
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      border: 1px solid #00ff88;
+      pointer-events: none;
+      z-index: 1;
+    }
+    &::before {
+      top: 4px; left: 4px;
+      border-right: none; border-bottom: none;
+    }
+    &::after {
+      bottom: 4px; right: 4px;
+      border-left: none; border-top: none;
+    }
+  }
+
+  &:focus { outline: none; }
+}
+
+@keyframes pulse {
+  50% { opacity: 0.5; }
+}
 </style>
