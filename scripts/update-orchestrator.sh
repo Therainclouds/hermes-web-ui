@@ -233,6 +233,19 @@ download_package() {
     warn "no package URL and no pre-downloaded archive"
     return 4
   fi
+  # A crash between "download finished" and "extract" leaves a complete
+  # partial behind. Re-running curl -C - would get HTTP 416 on every
+  # mirror (range beyond EOF) and deadlock the task, so reuse the
+  # partial directly when its checksum already matches.
+  if [[ -f "${partial}" && -n "${PACKAGE_SHA}" ]]; then
+    local existing
+    existing="$(sha256sum "${partial}" 2>/dev/null | cut -d' ' -f1 || true)"
+    if [[ "${existing}" == "${PACKAGE_SHA}" ]]; then
+      info "partial download already complete and verified; skipping download"
+      PACKAGE_ARCHIVE="${partial}"
+      return 0
+    fi
+  fi
   local attempt url
   for url in "${urls[@]}"; do
     info "downloading from ${url} (resume supported)"
@@ -310,16 +323,18 @@ swap_deploy() {
   # First phase-a run on a legacy layout: DEPLOY_DIR is still a real
   # directory. Record it as the rollback point, then make it the
   # symlink target chain (rename the old tree aside atomically).
+  # lastgood lives NEXT TO the deploy link (atomic-swap.sh contract:
+  # revert_to_lastgood reads dirname(deploy)/lastgood) — not in SWAP_ROOT.
   if [[ -e "${DEPLOY_DIR}" && ! -L "${DEPLOY_DIR}" ]]; then
     local previous="${DEPLOY_DIR}.previous-$(date +%s)"
     if ! mv -T "${DEPLOY_DIR}" "${previous}"; then
       warn "cannot move legacy deploy aside to ${previous}"
       return 5
     fi
-    if ! ln -sfn "${previous}" "${SWAP_ROOT}/lastgood"; then
+    if ! ln -sfn "${previous}" "$(dirname "${DEPLOY_DIR}")/lastgood"; then
       # Undo the rename: never leave the live tree unreachable.
       mv -T "${previous}" "${DEPLOY_DIR}" || true
-      warn "cannot record lastgood at ${SWAP_ROOT}/lastgood"
+      warn "cannot record lastgood beside ${DEPLOY_DIR}"
       return 5
     fi
     ROLLBACK_READY=1

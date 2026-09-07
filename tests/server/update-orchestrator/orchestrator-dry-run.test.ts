@@ -123,11 +123,12 @@ describe('update orchestrator (dry-run)', () => {
     expect(JSON.parse(readFileSync(join(fixture.deployDir, 'package.json'), 'utf8')).version).toBe('0.9.0')
   })
 
-  it.skipIf(!haveSymlinks)('captures the legacy deploy as lastgood on first phase-a swap', () => {
+  it.skipIf(!haveSymlinks)('captures the legacy deploy as lastgood beside the deploy link', () => {
     const fixture = makeFixture('0.9.0', { wrap: false })
     runOrchestrator(fixture)
-    const swapRoot = join(fixture.home, 'state', 'swap')
-    const lastgood = readlinkSafe(join(swapRoot, 'lastgood'))
+    // atomic-swap.sh contract: lastgood lives NEXT TO the deploy link so
+    // revert_to_lastgood can find it (not in state/swap).
+    const lastgood = readlinkSafe(join(fixture.home, 'lastgood'))
     expect(lastgood).toContain('.previous-')
     expect(JSON.parse(readFileSync(join(lastgood, 'package.json'), 'utf8')).version).toBe('0.8.0')
   })
@@ -180,6 +181,25 @@ describe('update orchestrator (dry-run)', () => {
     const target = readlinkSafe(fixture.deployDir)
     expect(target).toContain('.previous-')
     expect(JSON.parse(readFileSync(join(target, 'package.json'), 'utf8')).version).toBe('0.8.0')
+  })
+
+  it.skipIf(!haveSymlinks)('reuses a completed partial download instead of deadlocking on 416', () => {
+    const fixture = makeFixture('0.9.0', { wrap: false })
+    // Crash window: download finished (partial == archive, sha verified)
+    // but extract never ran. The retry must reuse the partial, not send
+    // curl -C - past EOF (416 on every mirror → exit 4 loop).
+    const cacheDir = join(fixture.home, 'updates', 'cache')
+    mkdirSync(cacheDir, { recursive: true })
+    const { copyFileSync } = require('fs') as typeof import('fs')
+    copyFileSync(fixture.archive, join(cacheDir, 'partial-test-task.part'))
+    const res = runOrchestrator(fixture, {
+      HERMES_WEB_UI_UPDATE_TASK_ID: 'test-task',
+      // Dummy URL that would fail if curl actually ran.
+      HERMES_WEB_UI_UPDATE_PACKAGE_ARCHIVE: '',
+      HERMES_WEB_UI_UPDATE_SOURCE_PACKAGE_URLS: 'http://127.0.0.1:9/artifact.tar.gz',
+    })
+    expect(res.status, `orchestrator failed: ${res.stderr}`).toBe(0)
+    expect(JSON.parse(readFileSync(join(fixture.deployDir, 'package.json'), 'utf8')).version).toBe('0.9.0')
   })
 
   it('policy pin refuses a non-pinned target version (exit 3, no swap)', () => {

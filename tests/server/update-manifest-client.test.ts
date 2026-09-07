@@ -239,6 +239,7 @@ describe('update manifest client', () => {
     const { mkdtempSync, rmSync } = await import('fs')
     const { tmpdir } = await import('os')
     const { join } = await import('path')
+    const savedHome = { HERMES_WEB_UI_HOME: process.env.HERMES_WEB_UI_HOME, HERMES_WEBUI_STATE_DIR: process.env.HERMES_WEBUI_STATE_DIR }
     const isolatedHome = mkdtempSync(join(tmpdir(), 'manifest-client-'))
     process.env.HERMES_WEB_UI_HOME = isolatedHome
     process.env.HERMES_WEBUI_STATE_DIR = isolatedHome
@@ -263,6 +264,8 @@ describe('update manifest client', () => {
       })
     } finally {
       rmSync(isolatedHome, { recursive: true, force: true })
+      process.env.HERMES_WEB_UI_HOME = savedHome.HERMES_WEB_UI_HOME
+      process.env.HERMES_WEBUI_STATE_DIR = savedHome.HERMES_WEBUI_STATE_DIR
     }
   })
 
@@ -270,6 +273,7 @@ describe('update manifest client', () => {
     const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = await import('fs')
     const { tmpdir } = await import('os')
     const { join } = await import('path')
+    const savedHome = { HERMES_WEB_UI_HOME: process.env.HERMES_WEB_UI_HOME, HERMES_WEBUI_STATE_DIR: process.env.HERMES_WEBUI_STATE_DIR }
     const isolatedHome = mkdtempSync(join(tmpdir(), 'manifest-client-cache-'))
     process.env.HERMES_WEB_UI_HOME = isolatedHome
     process.env.HERMES_WEBUI_STATE_DIR = isolatedHome
@@ -309,6 +313,8 @@ describe('update manifest client', () => {
       })
     } finally {
       rmSync(isolatedHome, { recursive: true, force: true })
+      delete process.env.HERMES_WEB_UI_HOME
+      delete process.env.HERMES_WEBUI_STATE_DIR
     }
   })
 
