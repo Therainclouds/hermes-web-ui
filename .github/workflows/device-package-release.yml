@@ -16,6 +16,11 @@ on:
         description: Minimum current version allowed to upgrade from
         required: false
         type: string
+      promote:
+        description: Promote an existing candidate to releases/<channel>/latest.json (skips build; requires candidate age >= 24h)
+        required: false
+        default: false
+        type: boolean
   push:
     tags:
       - 'v*'
@@ -29,6 +34,10 @@ concurrency:
 
 jobs:
   release:
+    # Phase (a) two-stage release (docs/harness/source-deploy-refactor.md
+    # § Candidate → promote): tag pushes and backfills only publish a
+    # candidate; `promote` is a separate explicit human gate.
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.promote != true)
     runs-on: ubuntu-latest
     env:
       RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
@@ -76,6 +85,12 @@ jobs:
             args+=(--min-current-version "${MIN_CURRENT_VERSION}")
           fi
           npm run build:device-package -- "${args[@]}"
+
+      - name: Orchestrator dry-run (phase a required check)
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx vitest run tests/release/source-deploy-dry-run.test.ts
 
       - name: Read release metadata
         id: metadata
@@ -325,7 +340,7 @@ jobs:
 
           ossutil -c "${HOME}/.ossutilconfig" cp -f "${OUTPUT_PATH}" "${OSS_PATH}/versions.json"
 
-      - name: Publish latest.json on manifest branch
+      - name: Publish candidate manifest on manifest branch
         shell: bash
         env:
           RELEASE_CHANNEL: ${{ steps.metadata.outputs.channel }}
@@ -336,6 +351,10 @@ jobs:
           RELEASE_TAG: ${{ steps.metadata.outputs.tag }}
         run: |
           set -euo pipefail
+          # Phase (a) two-stage release: tag pushes publish a CANDIDATE only.
+          # Devices keep reading releases/<channel>/latest.json, which only
+          # changes when the separate `promote` job runs (manual, >= 24h).
+          release_version="${RELEASE_TAG#v}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if git ls-remote --exit-code --heads origin "${MANIFEST_BRANCH}" >/dev/null 2>&1; then
@@ -350,8 +369,8 @@ jobs:
             )
           fi
 
-          mkdir -p ".manifest-branch/releases/${RELEASE_CHANNEL}" ".manifest-branch/releases/${RELEASE_TAG}"
-          cp "${LATEST_PATH}" ".manifest-branch/releases/${RELEASE_CHANNEL}/latest.json"
+          mkdir -p ".manifest-branch/candidates/${RELEASE_CHANNEL}" ".manifest-branch/releases/${RELEASE_TAG}"
+          cp "${LATEST_PATH}" ".manifest-branch/candidates/${RELEASE_CHANNEL}/${release_version}.json"
           cp "${MANIFEST_PATH}" ".manifest-branch/releases/${RELEASE_TAG}/manifest.json"
           cp "${SHA_PATH}" ".manifest-branch/releases/${RELEASE_TAG}/$(basename "${SHA_PATH}")"
           # Keep a cumulative versions.json backup on the manifest branch. It only
@@ -362,9 +381,9 @@ jobs:
 
           (
             cd .manifest-branch
-            git add releases
+            git add candidates releases
             if [ -f versions.json ]; then git add versions.json; fi
-            git commit -m "chore: publish ${RELEASE_TAG} device package metadata" || true
+            git commit -m "chore: publish ${RELEASE_TAG} candidate (channel ${RELEASE_CHANNEL})" || true
             git push origin "${MANIFEST_BRANCH}"
           )
 
@@ -375,8 +394,19 @@ jobs:
         run: |
           set -euo pipefail
           git fetch origin "${{ steps.metadata.outputs.manifest_branch }}"
-          git show "origin/${{ steps.metadata.outputs.manifest_branch }}:releases/${{ steps.metadata.outputs.channel }}/latest.json" > /tmp/latest.json
-          diff -u "${{ steps.metadata.outputs.latest_path }}" /tmp/latest.json
+          # Two-stage release: the channel pointer must be untouched by a
+          # tag push; only the candidate appears.
+          release_version="${RELEASE_TAG#v}"
+          git show "origin/${{ steps.metadata.outputs.manifest_branch }}:candidates/${{ steps.metadata.outputs.channel }}/${release_version}.json" > /tmp/candidate.json
+          diff -u "${{ steps.metadata.outputs.latest_path }}" /tmp/candidate.json
+          if git cat-file -e "origin/${{ steps.metadata.outputs.manifest_branch }}:releases/${{ steps.metadata.outputs.channel }}/latest.json" 2>/dev/null; then
+            git show "origin/${{ steps.metadata.outputs.manifest_branch }}:releases/${{ steps.metadata.outputs.channel }}/latest.json" > /tmp/live-latest.json
+            live_version="$(node -e "console.log(JSON.parse(require('node:fs').readFileSync('/tmp/live-latest.json','utf8')).version)")"
+            if [ "${live_version}" = "${release_version}" ]; then
+              echo "releases/${{ steps.metadata.outputs.channel }}/latest.json already points at ${release_version}; promotion required to change it" >&2
+              exit 1
+            fi
+          fi
 
           manifest_asset_url="$(gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[] | select(.name == "manifest.json") | .apiUrl')"
           if [ -z "${manifest_asset_url}" ]; then
@@ -481,3 +511,90 @@ jobs:
             echo "- Hermes Agent stable: \`${{ steps.hermes_agent.outputs.version }}\`"
             echo "- Hermes Agent channel: \`${{ steps.hermes_agent.outputs.channel }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  promote:
+    # Phase (a) explicit promotion gate (master spec § Candidate → promote):
+    # moves candidates/<channel>/<version>.json to
+    # releases/<channel>/latest.json. Manual only, minimum 24h after the
+    # candidate was published, and appends a promotions record.
+    if: github.event_name == 'workflow_dispatch' && inputs.promote == true
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      RELEASE_CHANNEL: ${{ inputs.channel || 'stable' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Promote candidate to channel latest.json
+        shell: bash
+        env:
+          RELEASE_CONFIG: .github/device-package-release.json
+        run: |
+          set -euo pipefail
+          MANIFEST_BRANCH="$(node -e "console.log(JSON.parse(require('node:fs').readFileSync(process.env.RELEASE_CONFIG,'utf8')).manifestBranch || 'release-manifests')")"
+          release_version="${RELEASE_TAG#v}"
+          candidate_path="candidates/${RELEASE_CHANNEL}/${release_version}.json"
+          promotions_dir="promotions/${RELEASE_CHANNEL}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git ls-remote --exit-code --heads origin "${MANIFEST_BRANCH}" >/dev/null 2>&1; then
+            echo "Manifest branch ${MANIFEST_BRANCH} does not exist; nothing to promote" >&2
+            exit 1
+          fi
+          git fetch origin "${MANIFEST_BRANCH}:${MANIFEST_BRANCH}"
+          git worktree add .manifest-branch "${MANIFEST_BRANCH}"
+
+          if ! git cat-file -e "${MANIFEST_BRANCH}:${candidate_path}" 2>/dev/null; then
+            echo "Candidate not found on ${MANIFEST_BRANCH}: ${candidate_path}" >&2
+            echo "Run the release job (tag push or workflow_dispatch without promote) first." >&2
+            exit 1
+          fi
+
+          # 24h gate: refuse to promote a candidate published less than a
+          # day ago (master spec: a minimum, not a delay to automate around).
+          candidate_commit="$(git log -1 --format=%ct "${MANIFEST_BRANCH}" -- "${candidate_path}")"
+          candidate_age_seconds=$(( $(date +%s) - candidate_commit ))
+          if [ "${candidate_age_seconds}" -lt 86400 ]; then
+            echo "Candidate ${candidate_path} is only ${candidate_age_seconds}s old; the 24h promotion gate has not elapsed." >&2
+            exit 1
+          fi
+
+          mkdir -p ".manifest-branch/releases/${RELEASE_CHANNEL}" ".manifest-branch/${promotions_dir}"
+          git show "${MANIFEST_BRANCH}:${candidate_path}" > ".manifest-branch/releases/${RELEASE_CHANNEL}/latest.json"
+          printf '%s\n' "$(cat <<JSON
+          {
+            "promotedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "tag": "${RELEASE_TAG}",
+            "version": "${release_version}",
+            "channel": "${RELEASE_CHANNEL}",
+            "candidatePath": "${candidate_path}",
+            "promotedBy": "github-actions[bot] via workflow_dispatch"
+          }
+          JSON
+          )" > ".manifest-branch/${promotions_dir}/$(date -u +%Y%m%dT%H%M%SZ)-${release_version}.json"
+
+          (
+            cd .manifest-branch
+            git add "releases/${RELEASE_CHANNEL}/latest.json" "${promotions_dir}"
+            git commit -m "chore: promote ${RELEASE_TAG} to ${RELEASE_CHANNEL} (candidate age ${candidate_age_seconds}s)"
+            git push origin "${MANIFEST_BRANCH}"
+          )
+
+      - name: Verify promoted pointer
+        shell: bash
+        env:
+          RELEASE_CONFIG: .github/device-package-release.json
+        run: |
+          set -euo pipefail
+          MANIFEST_BRANCH="$(node -e "console.log(JSON.parse(require('node:fs').readFileSync(process.env.RELEASE_CONFIG,'utf8')).manifestBranch || 'release-manifests')")"
+          git fetch origin "${MANIFEST_BRANCH}"
+          git show "origin/${MANIFEST_BRANCH}:releases/${RELEASE_CHANNEL}/latest.json" > /tmp/promoted-latest.json
+          promoted_version="$(node -e "console.log(JSON.parse(require('node:fs').readFileSync('/tmp/promoted-latest.json','utf8')).version)")"
+          echo "Promoted ${RELEASE_CHANNEL} now points at ${promoted_version}"
+          echo "### Promotion complete" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Channel: \`${RELEASE_CHANNEL}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Version: \`${promoted_version}\`" >> "$GITHUB_STEP_SUMMARY"

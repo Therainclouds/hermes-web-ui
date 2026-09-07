@@ -178,13 +178,22 @@ rm -f "${request_file}"
 strategy="${HERMES_WEB_UI_UPDATE_REQUEST_STRATEGY}"
 case "${strategy}" in
   source-deploy)
-    script="${WEBUI_UPDATE_SCRIPT:-${DEPLOY_DIR}/scripts/update-source-deploy.sh}"
     if [[ -z "${HERMES_WEB_UI_UPDATE_VERSION:-}" ]]; then
       err "Missing HERMES_WEB_UI_UPDATE_VERSION for source deployment."
       exit 1
     fi
-    info "Running source deployment update ${HERMES_WEB_UI_UPDATE_VERSION}"
-    /bin/bash "${script}" --version "${HERMES_WEB_UI_UPDATE_VERSION}"
+    # Phase (a): the orchestrator owns the upgrade lifecycle (atomic swap,
+    # journal, identity). Legacy deploys without it fall back to the old
+    # deploy script so a self-upgrade from an old tree still works.
+    orchestrator="${WEBUI_UPDATE_ORCHESTRATOR:-${DEPLOY_DIR}/scripts/update-orchestrator.sh}"
+    if [[ -f "${orchestrator}" ]]; then
+      info "Running update orchestrator for ${HERMES_WEB_UI_UPDATE_VERSION}"
+      /bin/bash "${orchestrator}"
+    else
+      script="${WEBUI_UPDATE_SCRIPT:-${DEPLOY_DIR}/scripts/update-source-deploy.sh}"
+      info "Running legacy source deployment update ${HERMES_WEB_UI_UPDATE_VERSION}"
+      /bin/bash "${script}" --version "${HERMES_WEB_UI_UPDATE_VERSION}"
+    fi
     ;;
   device-package)
     script="${WEBUI_UPDATE_INSTALLER_SCRIPT:-${DEPLOY_DIR}/scripts/install-device-package.sh}"

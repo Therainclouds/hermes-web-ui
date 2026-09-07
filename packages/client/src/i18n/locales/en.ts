@@ -348,6 +348,16 @@ export default {
     },
   },
 
+  identityDrift: {
+    "title": "Version identity drift detected",
+    "summary": "The device identity record ({recorded}) does not match the running version ({running}).",
+    "repair": "Repair identity record",
+    "repairing": "Repairing…",
+    "repaired": "Identity record repaired to match the running version.",
+    "repairDeferred": "Repair failed: device is not healthy yet. Retry later or rerun the upgrade.",
+    "dismiss": "Hide for this session"
+  },
+
   environmentDrift: {
     title: 'Device environment drift detected',
     summary: '{count} environment gate(s) do not match the latest manifest.',
@@ -3692,6 +3702,12 @@ export default {
 
   // Changelog
   changelog: {
+    new_0_8_1_1: 'Update system rework (phase a): upgrades now apply through an atomic symlink swap with automatic rollback to the last known good version, and the device self-heals after a crash or power loss mid-update',
+    new_0_8_1_2: 'Every upgrade is journaled (JSONL) and the device records an identity fingerprint (version + dist checksum) that is cross-verified against the release manifest — no more wrong version after a successful upgrade',
+    new_0_8_1_3: 'Downloads resume from the last byte across rotating mirrors; releases go through a two-stage candidate→promote gate so a broken build cannot reach the stable channel',
+    new_0_8_1_4: 'New local operator policy file (version pinning, update pause, version blocklist) and graded upgrade failures (retryable vs needs-attention)',
+    new_0_8_1_5: 'New paper grading plugin: camera + OCR side panel, chat-style grading interaction, true homography de-shadowed scan pipeline and full-bleed PDF export',
+    new_0_8_1_6: 'Terminal realtime command channel; grading mode surfaced on the main page; scanner vision precision and mobile polish',
     new_0_8_0_1: 'Realtime dialog visual overhaul: the celestial body is now moon/sun SVG artwork that follows the theme, the voiceprint is redrawn as 64 radial equalizer bars, controls anchor to the bottom, and bubbles no longer overlap',
     new_0_8_0_2: 'Dedicated light-mode stage design: dawn-gradient backdrop with high-contrast controls; the whole palette is unified into monochrome ink with a purple-blue accent',
     new_0_8_0_3: 'Oral coach mode lands: strict target-language discipline, camera-based body-language scoring, and timed practice with pacing control',
@@ -4260,6 +4276,7 @@ export default {
     // Error toasts
     errorSaveReportFailed: 'Failed to save analysis result — check network or server logs',
     errorUploadAudioFailed: 'Failed to upload recording — please retry or check network',
+    errorSaveMeetingFailed: 'Failed to save meeting data to the server. A local backup exists — check your network and retry',
     errorDeleteAudioFailed: 'Failed to clean up old audio data; local storage may be full',
     errorConfigUpdateFailed: 'Failed to push config update: service may be restarting, please retry',
     errorServiceNotReady: 'Speech recognition service is not ready yet, please wait',

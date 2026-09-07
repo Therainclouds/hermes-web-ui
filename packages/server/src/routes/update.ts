@@ -12,6 +12,10 @@ updateRoutes.post('/api/hermes/update/reconcile', ctrl.reconcileUpdate)
 updateRoutes.get('/api/hermes/update/environment', ctrl.getUpdateEnvironment)
 updateRoutes.get('/api/hermes/update/status', ctrl.updateStatus)
 updateRoutes.get('/api/hermes/update/capabilities', ctrl.updateCapabilities)
+// Identity endpoint (phase a) — registered with the other /api routes,
+// before the proxy catch-all (AGENTS.md rule).
+updateRoutes.get('/api/update/identity', ctrl.getUpdateIdentity)
+updateRoutes.post('/api/update/identity/repair', ctrl.repairUpdateIdentity)
 updateRoutes.post('/api/hermes/update/status/clear-stale', ctrl.clearStaleUpdateStatus)
 updateRoutes.get('/api/hermes/update/preview', ctrl.previewStatus)
 updateRoutes.get('/api/hermes/update/preview/tags', ctrl.previewTags)

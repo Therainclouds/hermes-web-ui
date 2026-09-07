@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, dirname, relative, resolve } from 'node:path'
+import { basename, dirname, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { create as createTar, list as listTar } from 'tar'
 import { assertTerminalRuntimeBundle } from './verify-terminal-runtime.mjs'
@@ -100,6 +100,54 @@ function computeSha256(filePath) {
   const hash = createHash('sha256')
   hash.update(readFileSync(filePath))
   return hash.digest('hex')
+}
+
+// Deterministic hash over a dist tree: sha256 of the sorted
+// "sha256  relative-path" lines of every file. Must match
+// scripts/_lib/identity-stamp.sh `identity_dist_sha256` so the device
+// can re-derive the same value after the swap (master spec § Identity).
+function computeTreeSha256(treeRoot) {
+  const distDir = resolve(treeRoot, 'dist')
+  const lines = []
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir).sort()) {
+      const full = resolve(dir, entry)
+      const stat = statSync(full)
+      if (stat.isDirectory()) {
+        walk(full)
+        continue
+      }
+      if (!stat.isFile()) continue
+      const sha = computeSha256(full)
+      lines.push(`${sha}  ${relative(treeRoot, full).split(sep).join('/')}`)
+    }
+  }
+  if (!existsSync(distDir)) {
+    throw new Error(`computeTreeSha256: dist/ directory is missing under ${treeRoot}`)
+  }
+  walk(distDir)
+  const hash = createHash('sha256')
+  hash.update(`${lines.join('\n')}\n`)
+  return hash.digest('hex')
+}
+
+// Phase (a) manifest self-check (master spec § Build Side): the v0.7.0
+// customer incident shipped a manifest claiming 0.7.19 on a dist built
+// from a 0.7.0 tree. The staged package.json is the version the runtime
+// reports, so the manifest version must equal it exactly.
+function assertDistVersionIdentity(stageRoot, version) {
+  const packageJsonPath = resolve(stageRoot, 'package.json')
+  if (!existsSync(packageJsonPath)) {
+    throw new Error('manifest self-check: staged package.json is missing')
+  }
+  const stagedVersion = JSON.parse(readFileSync(packageJsonPath, 'utf8')).version
+  if (stagedVersion !== version) {
+    throw new Error(
+      `manifest self-check: staged package.json version ${stagedVersion} does not match release version ${version} `
+      + '(v0.7.0-customer identity mismatch class). Aborting before publish.',
+    )
+  }
+  return stagedVersion
 }
 
 function buildReleaseAssetUrl(repo, tag, assetName) {
@@ -536,6 +584,9 @@ export async function buildDevicePackageRelease(options = {}) {
           { path: 'scripts/deploy-source-armbian.sh', kind: 'executable' },
           { path: 'scripts/generate-server-cert.sh', kind: 'executable' },
           { path: 'scripts/hermes-web-ui-update-runner.sh', kind: 'executable' },
+          { path: 'scripts/update-orchestrator.sh', kind: 'executable' },
+          { path: 'scripts/recover-interrupted-update.sh', kind: 'executable' },
+          { path: 'scripts/journal-validator.sh', kind: 'executable' },
         ],
       },
     }
@@ -543,8 +594,16 @@ export async function buildDevicePackageRelease(options = {}) {
       manifest.installerScriptPath = 'scripts/install-device-package.sh'
       manifest.installerScriptSha256 = computeSha256(resolve(stageRoot, 'scripts/install-device-package.sh'))
     } else if (packageType === 'source-deploy') {
-      manifest.installerScriptPath = 'scripts/update-source-deploy.sh'
-      manifest.installerScriptSha256 = computeSha256(resolve(stageRoot, 'scripts/update-source-deploy.sh'))
+      // Phase (a): the orchestrator owns the upgrade lifecycle (master spec
+      // § Build Side). The old update-source-deploy.sh stays shipped for
+      // bootstrap but is no longer the update-path installer.
+      assertDistVersionIdentity(stageRoot, version)
+      manifest.installerScriptPath = 'scripts/update-orchestrator.sh'
+      manifest.installerScriptSha256 = computeSha256(resolve(stageRoot, 'scripts/update-orchestrator.sh'))
+      manifest.identity = {
+        distSha256: computeTreeSha256(stageRoot),
+        versionString: version,
+      }
     }
     if (sourceStageRoot) {
       manifest.sourceArtifactFormat = sourceArtifactFormat

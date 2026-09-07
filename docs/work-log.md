@@ -1,5 +1,193 @@
 # Work Log
 
+## 2026-09-07 · 更新系统 phase (a) 重构——"可信任的更新"落地（7 提交）
+
+设计来源：grilling 会话 25 项决议（25 问逐轮收敛），spec 落在
+`docs/harness/source-deploy-refactor.md`，工单拆分在
+`.zcode/plans/source-deploy-refactor-wp1..5-*.md`。目标：终结 v0.7.x
+以来"每次版本升级都要修更新系统"的循环——更新系统本身从此可信任。
+
+### 一、前置检查与规格（动工前）
+
+- 代码审计确认 spec 落库后合入的 90 文件（org/main Scanner 同步 + 会议
+  修复）对 update 系统零触碰，spec 前提未被动摇
+- spec 拆为 5 个有依赖的工单：WP1 壳层原语 / WP2 服务端 / WP3 编排器
+  （关键路径）/ WP4 构建与 CI / WP5 控制器与 UI；WP1∥WP2 → WP3 → WP4∥WP5
+
+### 二、五个工单的实现（bb68b13e → 038772bf）
+
+**WP1 壳层原语**（`bb68b13e`）：
+- `_lib/journal-write.sh`：按 taskId 的 JSONL journal，22 个 stage 词表
+  （原有 20 + `manifest_self_check` + `identity_stamped`），未知 stage 硬错误
+- `journal-validator.sh`：node 做 JSON 解析（设备必有 node，不依赖 jq/python），
+  损坏 journal 移入 quarantine 永不阻断下一个任务
+- `policy-parse.sh`：本地运维覆盖 `updates/policy.json`（schema 1：
+  pinned/channel_overrides/pause_until/blocklist），优先级 file > env > 默认
+- `_lib/atomic-swap.sh`：rename(2) 原子 symlink swap，拒绝覆盖非 symlink
+  的 deploy（exit 4，防止破坏 legacy 布局）
+
+**WP2 服务端**（`1c9ff5e2`）：
+- `downloadWithRangeResume`：Range 断点续传，.meta sidecar 记 durable
+  offset，重启前截断 torn tail；服务端忽略 Range（200）回退 byte 0；
+  mirror 轮转 + 指数退避（封顶 60s，替换原线性退避）
+- manifest 24h 持久缓存：全部 URL 失败时 serve 缓存（离线设备不丢更新
+  可见性），staleness 经 identity 端点透出、不冒充 fresh
+- `GET /api/update/identity`：缺失/损坏一律 `installed:false`，绝不 500
+
+**WP3 编排器**（`3eb933dc`，核心）：
+- `update-orchestrator.sh` 成为升级生命周期唯一所有者；升级路径不再调用
+  `deploy-source-armbian.sh`（降级为 bootstrap-only，runner 对旧部署树
+  保留 legacy 回退以自举）
+- ship block：manifest 版本与 dist 实际不符 → 回滚 lastgood + quarantine
+  manifest + journal rolled_back + 退出 0（设备自动免于坏发布）
+- `recover-interrupted-update.sh` 五路确定性恢复（ExecStartPre）；
+  identity 漂移优先 re-stamp 而非重 swap（settled 决议）
+- `_lib/identity-stamp.sh`：distSha256 用排序文件清单哈希，build 侧可复算
+
+**WP4 构建与 CI**（`4f5ec556`）：
+- manifest self-check：staged package.json 版本必须等于发布版本——
+  **v0.7.0 customer 事故（manifest 声称 0.7.19 / dist 实为 0.7.0）的
+  构建侧根治**，不符直接 fail build
+- 发布改二阶段：tag push 只写 `candidates/<channel>/<version>.json`，
+  channel 指针只能由人工 `promote` workflow（≥24h 候选期 + promotions
+  审计记录）改写；verify 步骤断言 tag push 改不动 latest.json
+- orchestrator dry-run 成为发布前 required check
+
+**WP5 控制器与 UI**（`038772bf`）：
+- preflight 失败分级：可恢复（space/manifest fetch）503 + 
+  `retry_after_seconds`；结构性（permissions/node/manifest invalid/
+  ship block/policy）409 不可重试——UI 不再假重试
+- identity 漂移红横幅 + 修复按钮：修复永远是"从当前部署树重打
+  identity"（`POST /api/update/identity/repair`），树不可读 409 拒绝，
+  绝不触发重装
+- AGENTS.md 新增 phase (a) 五条硬规则
+
+### 三、复查修复（aadde760 + 905d6c73，推送前自查）
+
+**两个真实 bug**（都是靠复查抓到的，测试当初全绿）：
+
+1. **lastgood 位置不一致（会破坏首次升级的回滚）**：legacy 首升分支把
+   lastgood 写到 `state/swap/lastgood`，但 `revert_to_lastgood` 按
+   atomic-swap.sh 契约找 `dirname(deploy)/lastgood`——首次升级失败时
+   回滚会报 no usable lastgood。统一为永远写在 deploy 链接旁边。
+2. **完整 partial + curl 416 死锁**：崩溃窗口（下载完成→解包之前）留下的
+   完整 partial 会让重跑的 `curl -C -` 在所有 mirror 收到 416（range
+   越界），任务永久 exit 4。下载前先校验已有 partial 的 sha256，匹配
+   直接复用。
+
+**一个系统性缺陷**（严谨性重审发现）：ERR trap 不加 `set -E` 时对函数内
+失败从不触发——编排器整个生命周期跑在 `main()` 里，意味着 `on_task_error`
+此前形同虚设，`journal_init` 失败会静默继续。启用 `set -Euo pipefail`，
+并实验核实了两个语义才敢改：`if !` 条件上下文依旧抑制 trap（与显式检查
+互不重复，不会双重 catch）；trap 处理器内部不会递归重入。df 管线补
+`|| true` 防 set -E 误中断。
+
+**三处重复消除**：`assertTerminalRuntimeBundle` 同一构建内调两次（删）；
+controller 两条 manifest-client import 合一；`readlinkSafe` 三个测试文件
+各一份收敛到 helpers.ts。
+
+### 四、测试与验证状态
+
+- phase (a) 测试面：96 通过 / 16 跳过（symlink 用例依赖真 symlink，
+  本机 MSYS 无特权自动跳过，CI ubuntu 全量执行）——**推送后第一件事
+  是确认 CI 上这 16 个用例全绿**
+- `npm run test:device-package-release` 62/62；build 零 TS 错误；
+  harness:check 通过
+- 全量 `npm run test` 的 ~169 个失败为本机 Windows 既有问题
+  （chat/ekko/desktop/bridge 区域，已在基线提交复现），与本次无关
+- 踩坑记录：bash heredoc 里的 `\\` 经 node heredoc 二次转义会写成错误
+  正则（两次中招），改用 `split('\\').join('/')` 或 Edit 工具直写
+
+### 五、已知边界（如实）
+
+- `downloadWithRangeResume`（Node 版）暂无生产调用方：orchestrator 走
+  curl（设备 shell 原生 `-C -`），Node 版为 WP2 spec 要求的原语，
+  phase (b) 接线时启用
+- identity-stamp 算法存在 shell/TS 两份实现——跨语言约束使然
+  （设备跑不了 TS、controller 修不了 shell），两份文件头互相注明
+- 验收 gate（AGENTS.md settle）：内部 pilot 设备 pin 旧版 → 发布 →
+  CI dry-run 通过后 promote → 逐台 unpin；7 天 + ≥30 次升级 +
+  0 例 non-recoverable 后才开 phase (b)
+
+## 2026-09-05/06 · org/main 同步（Scanner 插件）+ 上线前 BUG 审计与修复
+
+### 一、上线前 BUG 审计（docs/research/pre-launch-bug-audit.md）
+
+- 以产品经理 + 用户 + on-call 视角审计全项目，产出 75+ 条分级发现（P0/P1/P2/P3），
+  覆盖 auth、chat、meeting、group-chat、USB、update、i18n、Socket 生命周期等子系统
+- 读取 AGENTS.md 硬规则、meeting-asr-safety-audit.md（v0.7.7 事故复盘）、设备错误日志等一手资料
+
+### 二、org/main 第一轮同步（Scanner 插件，11 个提交）
+
+- 同步 tangledup-ai/hermes-web-ui 的 Scanner 插件：Transformers.js + YOLOv8n 物体检测、
+  纯 JS 视觉管道（纸张检测/透视校正）、服务端 OCR/PDF 存储、客户端插件框架（82 文件 +10778 行）
+- 与受保护特性（专家中心/USB/更新通道）零重叠；按 upstream-sync-runbook 走 merge 分支
+- **修复 org 代码的 3 个问题**（合并验证中暴露）：
+  - `useSmartCapture.ts`：`isOutlierWhileLocked` 调用缺 `locked` 参数，TS 编译失败（org HEAD 上 build 即挂）
+  - `scanner-storage.test.ts`：路径断言用了 POSIX 分隔符，Windows 失败 → 改为路径段比较
+  - `scanner-ocr.test.ts`：missing-key 用例未隔离 `MEETING_ASR_DATA_DIR` 兜底，
+    开发机 `data/meeting-asr` 真实 key 泄漏进测试 → 指向空目录
+
+### 三、BUG 修复（先逐条复核，拒绝误报）
+
+**证伪未修的 5 项初版发现**（防止为修复而修复）：
+
+| 初版发现 | 证伪原因 |
+|---|---|
+| roomId 路径穿越 | room ID 全部服务端生成 + `getRoom` 必须命中 DB，`../` 永远 404 在拼接前，不可达 |
+| meeting-asr dataDir 绕过 getWebUiHome | 设备由部署脚本显式设 env，cwd 兜底是文档化 dev-only 行为 |
+| 5 处裸 JSON.parse | 引用了 v0.7.7 修复前旧清单，现状全部已有 try/catch |
+| quota 竞态误删 | 单线程无竞态，删最旧是注释声明的最后手段 |
+| auto-restart 误判 SIGTERM | close 事件对 SIGTERM 报 code=null，`(code ?? 0) !== 0` 不成立 |
+
+**实际修复 5 项**（提交 `891b33a7`）：
+
+1. `useMeetingAudio` 监听器泄漏：`detachBeforeUnloadAudioBackup` 此前移除的是未注册的
+   `noop` 引用，监听器随每次进会议页累积泄漏 → 保存注册时的同一函数引用
+2. `useMeetingAudio` ws 关闭时序：`ws = null` 先于 500ms 延迟 close 执行，close 永远
+   no-op → 先捕获引用再置空（ASR + Diarize 两条 socket）
+3. `useMeetingAudio` 启动失败资源回收：worklet 被 CSP 拦截等场景下麦克风流/AudioContext
+   不回收、麦克风常亮 → catch 中统一回收（早期失败路径全部 no-op，不改变原行为）
+4. `saveCurrentMeeting` 服务端保存失败仅 console.error → 补 toast
+   （新增 `meeting.errorSaveMeetingFailed`，zh/en/zh-TW，与 `errorUploadAudioFailed` 同模式）
+5. quota 兜底截断保护当前活跃会话
+
+**一次自我纠错**（提交 `4e7e8614`）：第 5 项初版用 `status === 'recording'` 判断是死代码——
+`updateStatus` 零调用者，录音期间没有任何代码写入该状态。改为把 `activeSessionId`
+贯穿 `saveSessions → archiveOldSessions` 全部 13 个调用点。真实故障路径：
+quota 截断 store 副本 + 录音中重命名说话人（`onTranscriptRename` 用 store 副本覆盖
+视图副本）→ 屏幕上正在显示的转写缩到 50 句。
+
+**回归测试**（提交 `67a22166`）：`tests/client/meeting-store-quota-protect.test.ts`
+运行时证明保护有效。踩到两个测试基建陷阱并记录在案：
+- jsdom 的 localStorage 无法用 `spyOn(Storage.prototype)` 拦截（探针测试证实），
+  须 `vi.stubGlobal` 注入后动态导入 store
+- `createSession` 内部也调 saveSessions，quota 异常提前武装会被空会话保存消耗掉
+
+### 四、推送历史核查（应用户要求）
+
+- 本会话 4 次推送全部为正常快进（reflog 均为 `update by push`，无 forced 标记），无覆盖
+- origin/main 引用历史中 7 个非祖先哈希全部是 8/25～9/1 用户本人旧推送，
+  在本会话开始前已被替换，与本会话无关
+- org 侧无丢失
+
+### 五、org/main 第二轮同步（5 个新提交，`05dda54e..a2c41a52`）
+
+- Scanner 移动端优化、WebGPU 探测修复、YOLOS-tiny 模型限制文档、粘滞选框修复
+- 自动合并陷阱：双方各自独立给 `isOutlierWhileLocked` 补了 `locked` 参数，
+  git 把两个重复键都保留了 → 手工去重
+- 验证：build ✅、17 个测试文件 131 个测试全过（含 scanner 全套 + meeting quota 回归 +
+  CSP 安全策略）、harness:check ✅
+
+### 验证汇总
+
+- `npm run build` ✅　`npm run harness:check` ✅
+- 客户端全量：1779 通过 / 7 失败（与修复前基线完全一致的既有 Windows 环境问题，
+  经 pre-merge worktree 复跑确认非本次引入）
+- 已推送 origin/main（正常快进），本地 == origin == org 全部同步
+
+---
+
 ## 2026-09-02 · 微信扫码用户名乱码修复 + WeChat 用户修改用户名免密码
 
 ### 问题 1: 微信扫码登录的用户名显示乱码

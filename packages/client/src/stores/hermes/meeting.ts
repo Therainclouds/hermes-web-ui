@@ -192,7 +192,7 @@ function loadSessions(): MeetingSession[] {
   return []
 }
 
-function saveSessions(sessions: MeetingSession[]) {
+function saveSessions(sessions: MeetingSession[], protectId?: string | null) {
   try {
     // 不保存 audioChunks（已移除）和 speakers 到 localStorage
     const toSave = sessions.map(({ ...rest }) => rest)
@@ -203,7 +203,7 @@ function saveSessions(sessions: MeetingSession[]) {
     // masking new sessions never being persisted.
     if (e?.name === 'QuotaExceededError' || /quota/i.test(String(e?.message))) {
       console.warn('[meeting] localStorage quota exceeded; archiving oldest sessions')
-      archiveOldSessions(sessions)
+      archiveOldSessions(sessions, protectId)
     } else {
       console.warn('[meeting] Failed to save sessions to localStorage:', e)
     }
@@ -214,11 +214,17 @@ function saveSessions(sessions: MeetingSession[]) {
  * Trim oldest sessions' transcript sentences (keep metadata + latest N
  * sentences) so the JSON fits in localStorage. Audio + sentences are still
  * recoverable from IndexedDB / server if user wants them back.
+ *
+ * protectId（当前活跃会话）不参与截断：录音期间活跃会话的 sentences 是
+ * 正在累积/展示的业务数据，截断会直接丢掉现场转写。注意不能用 session.status
+ * 判断——录音期间没有任何代码把 status 置为 'recording'（只有停止时的
+ * saveCurrentMeeting 会写入，且那时 isRecording 已复位）。
  */
-function archiveOldSessions(sessions: MeetingSession[]) {
+function archiveOldSessions(sessions: MeetingSession[], protectId?: string | null) {
   const sorted = [...sessions].sort((a, b) => a.updatedAt - b.updatedAt)
   let changed = false
   for (const s of sorted) {
+    if (protectId && s.id === protectId) continue
     if (s.sentences.length > 50) {
       s.sentences = s.sentences.slice(-50)
       changed = true
@@ -344,7 +350,7 @@ export const useMeetingStore = defineStore('meeting', () => {
     }
     sessions.value.unshift(session)
     activeSessionId.value = session.id
-    saveSessions(sessions.value)
+    saveSessions(sessions.value, activeSessionId.value)
     return session
   }
 
@@ -356,7 +362,7 @@ export const useMeetingStore = defineStore('meeting', () => {
       ...updates,
       updatedAt: Date.now(),
     }
-    saveSessions(sessions.value)
+    saveSessions(sessions.value, activeSessionId.value)
   }
 
   function deleteSession(id: string) {
@@ -364,7 +370,7 @@ export const useMeetingStore = defineStore('meeting', () => {
     if (activeSessionId.value === id) {
       activeSessionId.value = sessions.value[0]?.id || null
     }
-    saveSessions(sessions.value)
+    saveSessions(sessions.value, activeSessionId.value)
     // 清理 IndexedDB 音频数据
     deleteAudioChunks(id).catch(err => console.warn('[meeting] deleteAudioChunks failed:', err))
   }
@@ -381,7 +387,7 @@ export const useMeetingStore = defineStore('meeting', () => {
       : sentence
     session.sentences.push(newSentence)
     session.updatedAt = Date.now()
-    saveSessions(sessions.value)
+    saveSessions(sessions.value, activeSessionId.value)
   }
 
   function updateSentence(sessionId: string, sentence: TranscriptSentence) {
@@ -395,7 +401,7 @@ export const useMeetingStore = defineStore('meeting', () => {
     if (index !== -1) {
       session.sentences[index] = { ...session.sentences[index], ...sentence }
       session.updatedAt = Date.now()
-      saveSessions(sessions.value)
+      saveSessions(sessions.value, activeSessionId.value)
     }
   }
 
@@ -404,7 +410,7 @@ export const useMeetingStore = defineStore('meeting', () => {
     if (!session) return
     session.analysisResult = result
     session.updatedAt = Date.now()
-    saveSessions(sessions.value)
+    saveSessions(sessions.value, activeSessionId.value)
   }
 
   function updateHtmlContent(sessionId: string, html: string) {
@@ -412,7 +418,7 @@ export const useMeetingStore = defineStore('meeting', () => {
     if (!session) return
     session.htmlContent = html
     session.updatedAt = Date.now()
-    saveSessions(sessions.value)
+    saveSessions(sessions.value, activeSessionId.value)
   }
 
   function updateSpeakerMap(sessionId: string, speakerMap: Record<string, string>) {
@@ -420,7 +426,7 @@ export const useMeetingStore = defineStore('meeting', () => {
     if (!session) return
     session.speakerMap = speakerMap
     session.updatedAt = Date.now()
-    saveSessions(sessions.value)
+    saveSessions(sessions.value, activeSessionId.value)
   }
 
   function updateStatus(sessionId: string, status: MeetingSession['status']) {
@@ -428,7 +434,7 @@ export const useMeetingStore = defineStore('meeting', () => {
     if (!session) return
     session.status = status
     session.updatedAt = Date.now()
-    saveSessions(sessions.value)
+    saveSessions(sessions.value, activeSessionId.value)
   }
 
   function clearSession(sessionId: string) {
@@ -442,7 +448,7 @@ export const useMeetingStore = defineStore('meeting', () => {
     session.status = 'idle'
     session.audioDuration = 0
     session.updatedAt = Date.now()
-    saveSessions(sessions.value)
+    saveSessions(sessions.value, activeSessionId.value)
     // 清理 IndexedDB 音频数据
     deleteAudioChunks(sessionId).catch(err => console.warn('[meeting] deleteAudioChunks failed:', err))
   }
@@ -461,7 +467,7 @@ export const useMeetingStore = defineStore('meeting', () => {
     await saveAudioChunks(sessionId, [
       { blob, timestamp: Date.now(), duration: session.audioDuration },
     ])
-    saveSessions(sessions.value)
+    saveSessions(sessions.value, activeSessionId.value)
   }
 
   async function getAudioBlob(sessionId: string): Promise<Blob | null> {
@@ -499,7 +505,7 @@ export const useMeetingStore = defineStore('meeting', () => {
     }
 
     session.updatedAt = Date.now()
-    saveSessions(sessions.value)
+    saveSessions(sessions.value, activeSessionId.value)
   }
 
   function getSpeakerDisplayName(session: MeetingSession, speakerId: string): string {
@@ -565,7 +571,7 @@ export const useMeetingStore = defineStore('meeting', () => {
         added += 1
       }
       if (added > 0) {
-        saveSessions(sessions.value)
+        saveSessions(sessions.value, activeSessionId.value)
         console.log(`[meeting] 已从服务端同步 ${added} 个会议`)
       }
     } catch (err) {

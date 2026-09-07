@@ -1,7 +1,8 @@
 import http from 'http'
 import https from 'https'
 import { createHash } from 'crypto'
-import { rmSync, createWriteStream } from 'fs'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, rmSync, createWriteStream, createReadStream, truncateSync, writeFileSync, renameSync, statSync, fstatSync } from 'fs'
+import { dirname } from 'path'
 import { Readable, Transform } from 'stream'
 import { pipeline } from 'stream/promises'
 import type { ReadableStream as NodeReadableStream } from 'stream/web'
@@ -629,7 +630,348 @@ export async function downloadUpdateBinaryToFile(
   throw lastError ?? new Error(`request failed for ${url}`)
 }
 
+export interface RangeResumeDownloadOptions extends UpdateNetworkRequestOptions {
+  /** Mirror list; round-robined across attempts so one CDN is not punished. */
+  urls: string[]
+  expectedSize?: number
+  expectedSha256: string
+  /** Partial download path, per task: partial-<taskId>.part */
+  partialFile: string
+  /** Sidecar recording expected sha/size and the last durable byte. */
+  metaFile: string
+  /** Where the verified artifact lands on success (atomic rename). */
+  finalFile?: string
+}
+
+export interface RangeResumeDownloadResult {
+  ok: boolean
+  url: string
+  bytesWritten: number
+  resumedFromByte: number
+  attempts: number
+  sha256: string
+}
+
+interface PartialMeta {
+  expectedSha256: string
+  expectedSize?: number
+  lastByte: number
+}
+
+const RANGE_META_FLUSH_BYTES = 1024 * 1024
+
+function readPartialMeta(metaFile: string, expectedSha256: string): PartialMeta | null {
+  try {
+    if (!existsSync(metaFile)) return null
+    const parsed = JSON.parse(readFileSync(metaFile, 'utf8')) as PartialMeta
+    if (parsed?.expectedSha256 !== expectedSha256) return null
+    if (!Number.isInteger(parsed.lastByte) || parsed.lastByte < 0) return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function writePartialMeta(metaFile: string, meta: PartialMeta): void {
+  const tmp = `${metaFile}.tmp`
+  writeFileSync(tmp, JSON.stringify(meta))
+  renameSync(tmp, metaFile)
+}
+
+/** Hash the durable prefix so resumed bytes continue the same digest. */
+function hashFilePrefix(file: string, bytes: number): { hash: ReturnType<typeof createHash>; size: number } {
+  const hash = createHash('sha256')
+  const fd = openSync(file, 'r')
+  try {
+    const stat = fstatSync(fd)
+    const size = Math.min(stat.size, bytes)
+    const buffer = Buffer.allocUnsafe(64 * 1024)
+    let remaining = size
+    while (remaining > 0) {
+      const read = readSync(fd, buffer, 0, Math.min(buffer.length, remaining), size - remaining)
+      if (read <= 0) break
+      hash.update(buffer.subarray(0, read))
+      remaining -= read
+    }
+    return { hash, size }
+  } finally {
+    closeSync(fd)
+  }
+}
+
+async function appendRangeToFile(
+  source: NodeJS.ReadableStream,
+  partialFile: string,
+  metaFile: string,
+  meta: PartialMeta,
+  startHash: ReturnType<typeof createHash>,
+  expectedBytes: number | undefined,
+): Promise<{ bytesWritten: number; sha256: string }> {
+  let bytesSinceFlush = 0
+  let lastByte = meta.lastByte
+  let flushedLastByte = meta.lastByte
+  const hash = startHash
+  const flushMeta = () => {
+    writePartialMeta(metaFile, { ...meta, lastByte })
+    flushedLastByte = lastByte
+    bytesSinceFlush = 0
+  }
+  const tracker = new Transform({
+    transform(chunk, _encoding, callback) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      lastByte += buffer.length
+      hash.update(buffer)
+      bytesSinceFlush += buffer.length
+      if (bytesSinceFlush >= RANGE_META_FLUSH_BYTES) {
+        flushMeta()
+      }
+      callback(null, buffer)
+    },
+    flush(callback) {
+      flushMeta()
+      callback(null)
+    },
+  })
+
+  try {
+    await pipeline(source, tracker, createWriteStream(partialFile, { flags: 'a' }))
+    if (expectedBytes != null && lastByte !== expectedBytes) {
+      throw new UpdateBinaryValidationError(
+        partialFile,
+        'size_mismatch',
+        `Resumed download size mismatch for ${partialFile}: expected ${expectedBytes} bytes but received ${lastByte}.`,
+        { expectedBytes, actualBytes: lastByte },
+      )
+    }
+    const sha256 = hash.digest('hex')
+    if (sha256 !== meta.expectedSha256) {
+      throw new UpdateBinaryValidationError(
+        partialFile,
+        'sha256_mismatch',
+        `Downloaded artifact checksum mismatch for ${partialFile}.`,
+        { expectedSha256: meta.expectedSha256, actualSha256: sha256, actualBytes: lastByte },
+      )
+    }
+    return { bytesWritten: lastByte, sha256 }
+  } catch (error) {
+    // Persist the durable offset so a later attempt can resume; the
+    // partial file itself is kept (forensics + resume), unlike the
+    // single-shot downloader which deletes its target on failure.
+    try {
+      writePartialMeta(metaFile, { ...meta, lastByte: Math.min(flushedLastByte, statSyncSafe(partialFile)) })
+    } catch {
+      /* meta persistence is best-effort on the failure path */
+    }
+    throw error
+  }
+}
+
+function statSyncSafe(file: string): number {
+  try {
+    return statSync(file).size
+  } catch {
+    return 0
+  }
+}
+
+async function fetchRangeResponse(
+  url: string,
+  rangeStart: number,
+  timeoutMs: number,
+): Promise<{ ok: boolean; status: number; finalUrl: string; body: NodeJS.ReadableStream | null; serverSize?: number }> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const headers: Record<string, string> = {
+      Accept: buildAcceptHeader('binary'),
+      'User-Agent': 'hermes-web-ui-update-client',
+    }
+    if (rangeStart > 0) {
+      headers.Range = `bytes=${rangeStart}-`
+    }
+    const response = await fetch(url, {
+      method: 'GET',
+      headers,
+      redirect: 'follow',
+      signal: controller.signal,
+    })
+    const contentLength = parseContentLength(response.headers?.get?.('content-length'))
+    if (!response.ok || !response.body) {
+      response.body?.cancel?.().catch(() => {})
+      return { ok: false, status: response.status, finalUrl: response.url || url, body: null }
+    }
+    return {
+      ok: true,
+      status: response.status,
+      finalUrl: response.url || url,
+      body: Readable.fromWeb(response.body as unknown as NodeReadableStream),
+      serverSize: contentLength != null && contentLength > 0 ? contentLength + rangeStart : undefined,
+    }
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+function exponentialDelayForRetry(baseDelayMs: number, attempt: number): Promise<void> {
+  const delayMs = Math.min(Math.pow(2, Math.max(attempt, 1)), 60) * Math.max(baseDelayMs, 1) / 2
+  return new Promise(resolve => setTimeout(resolve, delayMs))
+}
+
+/**
+ * Streaming download with HTTP Range resume for the phase (a) update
+ * system (master spec § Download & Resume).
+ *
+ * - Resumes from the durable offset recorded in the `.meta` sidecar;
+ *   the partial file is truncated to that offset first so a crash
+ *   between file append and meta flush can never poison the artifact.
+ * - A server that ignores `Range:` (200 instead of 206) restarts the
+ *   download from byte 0.
+ * - Retries use exponential backoff (capped at 60s); after exhausting
+ *   retries per URL the next mirror is tried, round-robined so the
+ *   same CDN is not punished repeatedly.
+ * - A completed download whose sha256 does not match is reported per
+ *   mirror and moves to the next mirror; after all mirrors fail the
+ *   mismatch is raised as UpdateBinaryValidationError.
+ */
+export async function downloadWithRangeResume(
+  options: RangeResumeDownloadOptions,
+): Promise<RangeResumeDownloadResult> {
+  const urls = options.urls.map(u => (u || '').trim()).filter(Boolean)
+  if (urls.length === 0) {
+    throw new Error('downloadWithRangeResume requires at least one url')
+  }
+  const timeoutMs = Math.max(options.timeoutMs ?? 300_000, 1)
+  const retries = Math.max(options.retries ?? 3, 0)
+  const baseDelayMs = Math.max(options.retryDelayMs ?? 2_000, 0)
+
+  mkdirSync(dirname(options.partialFile), { recursive: true })
+  const expectedBytes = options.expectedSize != null && options.expectedSize > 0
+    ? options.expectedSize
+    : undefined
+
+  const mismatchByMirror: Array<{ url: string; actualSha256?: string }> = []
+  let lastNetworkError: unknown = null
+  let totalAttempts = 0
+  // Round-robin: rotate the starting mirror across callers/attempts so
+  // a flaky primary CDN does not absorb every retry.
+  const startOffset = Math.floor(Math.random() * urls.length)
+
+  for (let mirrorIdx = 0; mirrorIdx < urls.length; mirrorIdx += 1) {
+    const url = urls[(startOffset + mirrorIdx) % urls.length]
+
+    // Establish (or validate) the resume offset for this mirror cycle.
+    let meta = readPartialMeta(options.metaFile, options.expectedSha256)
+    let resumedFromByte = 0
+    let startHash = createHash('sha256')
+    if (meta && existsSync(options.partialFile)) {
+      // Truncate to the durable offset: bytes beyond it were written
+      // after the last meta flush and may be torn.
+      const currentSize = statSyncSafe(options.partialFile)
+      if (currentSize > meta.lastByte) {
+        truncateSync(options.partialFile, meta.lastByte)
+      }
+      if (meta.lastByte > 0) {
+        const prefix = hashFilePrefix(options.partialFile, meta.lastByte)
+        startHash = prefix.hash
+        resumedFromByte = prefix.size
+      }
+    } else {
+      meta = { expectedSha256: options.expectedSha256, expectedSize: expectedBytes, lastByte: 0 }
+      rmSync(options.partialFile, { force: true })
+      writePartialMeta(options.metaFile, meta)
+    }
+    if (expectedBytes != null && resumedFromByte >= expectedBytes && expectedBytes > 0) {
+      // Already complete on disk from a previous run: verify and finish.
+      const prefix = hashFilePrefix(options.partialFile, expectedBytes)
+      const sha256 = prefix.hash.digest('hex')
+      if (sha256 === options.expectedSha256 && prefix.size === expectedBytes) {
+        finishDownload(options)
+        return { ok: true, url, bytesWritten: expectedBytes, resumedFromByte, attempts: totalAttempts, sha256 }
+      }
+      meta = { expectedSha256: options.expectedSha256, expectedSize: expectedBytes, lastByte: 0 }
+      rmSync(options.partialFile, { force: true })
+      writePartialMeta(options.metaFile, meta)
+      startHash = createHash('sha256')
+      resumedFromByte = 0
+    }
+
+    for (let attempt = 1; attempt <= retries + 1; attempt += 1) {
+      totalAttempts += 1
+      let response: Awaited<ReturnType<typeof fetchRangeResponse>>
+      try {
+        response = await fetchRangeResponse(url, resumedFromByte, timeoutMs)
+      } catch (err) {
+        lastNetworkError = err
+        if (attempt > retries) break
+        await exponentialDelayForRetry(baseDelayMs, attempt)
+        continue
+      }
+
+      if (!response.ok) {
+        lastNetworkError = new Error(`HTTP ${response.status} for ${response.finalUrl}`)
+        if (shouldRetryResponse(response.status) && attempt <= retries) {
+          await exponentialDelayForRetry(baseDelayMs, attempt)
+          continue
+        }
+        break
+      }
+
+      if (response.status === 200 && resumedFromByte > 0) {
+        // Server ignored Range: restart from byte 0.
+        rmSync(options.partialFile, { force: true })
+        writePartialMeta(options.metaFile, { expectedSha256: options.expectedSha256, expectedSize: expectedBytes, lastByte: 0 })
+        startHash = createHash('sha256')
+        resumedFromByte = 0
+      }
+
+      try {
+        const result = await appendRangeToFile(
+          response.body as NodeJS.ReadableStream,
+          options.partialFile,
+          options.metaFile,
+          { expectedSha256: options.expectedSha256, expectedSize: expectedBytes, lastByte: resumedFromByte },
+          startHash,
+          expectedBytes,
+        )
+        finishDownload(options)
+        return { ok: true, url: response.finalUrl, bytesWritten: result.bytesWritten, resumedFromByte, attempts: totalAttempts, sha256: result.sha256 }
+      } catch (err) {
+        if (err instanceof UpdateBinaryValidationError && err.reason === 'sha256_mismatch') {
+          mismatchByMirror.push({ url: response.finalUrl, actualSha256: err.actualSha256 })
+          break
+        }
+        if (err instanceof UpdateBinaryValidationError && err.reason === 'size_mismatch') {
+          throw err
+        }
+        lastNetworkError = err
+        if (attempt > retries) break
+        await exponentialDelayForRetry(baseDelayMs, attempt)
+      }
+    }
+  }
+
+  if (mismatchByMirror.length > 0) {
+    const detail = mismatchByMirror.map(m => m.url).join(', ')
+    throw new UpdateBinaryValidationError(
+      urls[0],
+      'sha256_mismatch',
+      `Downloaded artifact checksum mismatch on every mirror (${detail}).`,
+      { expectedSha256: options.expectedSha256, actualSha256: mismatchByMirror[0].actualSha256 },
+    )
+  }
+  throw lastNetworkError ?? new Error(`download failed for ${urls[0]}`)
+}
+
+function finishDownload(options: RangeResumeDownloadOptions): void {
+  if (options.finalFile) {
+    mkdirSync(dirname(options.finalFile), { recursive: true })
+    renameSync(options.partialFile, options.finalFile)
+  }
+  rmSync(options.metaFile, { force: true })
+}
+
 export function describeUpdateNetworkError(err: unknown): Record<string, unknown> | null {
+
   if (err instanceof UpdateNetworkError) {
     return {
       message: err.message,

@@ -3,7 +3,7 @@
   "info": {
     "title": "Hermes Studio API",
     "description": "Hermes Studio API — chat sessions, scheduled jobs, platform channels, model management, skills, memory, logs, file browser, group chat, and terminal.",
-    "version": "0.8.0"
+    "version": "0.8.1"
   },
   "servers": [
     {
@@ -17415,6 +17415,58 @@
                 ]
               }
             }
+          }
+        }
+      }
+    },
+    "/api/update/identity": {
+      "get": {
+        "tags": [
+          "Update"
+        ],
+        "summary": "Get identity",
+        "description": "GET /api/update/identity",
+        "operationId": "getUpdateIdentity",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      }
+    },
+    "/api/update/identity/repair": {
+      "post": {
+        "tags": [
+          "Update"
+        ],
+        "summary": "Create repair",
+        "description": "POST /api/update/identity/repair",
+        "operationId": "repairUpdateIdentity",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
           }
         }
       }

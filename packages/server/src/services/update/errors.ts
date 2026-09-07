@@ -17,6 +17,9 @@ export type UpdateErrorCode =
   | 'update_source_package_checksum_mismatch'
   | 'update_installer_script_missing'
   | 'update_installer_script_stale'
+  | 'update_ship_block'
+  | 'update_policy_invalid'
+  | 'update_journal_corrupt'
 
 export class UpdateError extends Error {
   code: UpdateErrorCode

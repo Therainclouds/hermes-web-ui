@@ -1,4 +1,6 @@
-import { config } from '../../config'
+import { config, getWebUiHome } from '../../config'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
+import { dirname, join } from 'path'
 import {
   DEFAULT_UPDATE_CHANNEL,
   DEVICE_PACKAGE_ARTIFACT_FORMAT,
@@ -45,6 +47,64 @@ interface RawManifestPayload {
   environment?: unknown
 }
 
+// ---------------------------------------------------------------------------
+// Manifest cache (phase a): the last successfully fetched channel manifest
+// is persisted so an offline device keeps serving a (stale) manifest
+// instead of losing update visibility entirely.
+// Master spec: docs/harness/source-deploy-refactor.md (§ Manifest cache).
+// ---------------------------------------------------------------------------
+
+interface ManifestCacheEnvelope {
+  schema: 1
+  cachedAt: string
+  channel: string
+  payload: RawManifestPayload
+  manifestUrl: string
+}
+
+export interface ResolvedManifest {
+  manifestUrl: string
+  payload: RawManifestPayload
+  fromCache: boolean
+  cachedAt: string | null
+}
+
+export function manifestCachePath(channel: string, env: Record<string, string | undefined> = process.env): string {
+  return join(getWebUiHome(env), 'updates', 'cache', `manifest-${normalizeChannelSegment(channel)}.json`)
+}
+
+function writeManifestCache(channel: string, manifestUrl: string, payload: RawManifestPayload): void {
+  try {
+    const path = manifestCachePath(channel)
+    mkdirSync(dirname(path), { recursive: true })
+    const envelope: ManifestCacheEnvelope = {
+      schema: 1,
+      cachedAt: new Date().toISOString(),
+      channel,
+      payload,
+      manifestUrl,
+    }
+    const tmp = `${path}.tmp`
+    writeFileSync(tmp, JSON.stringify(envelope))
+    renameSync(tmp, path)
+  } catch {
+    // Cache persistence is best-effort; a full disk must not fail the
+    // manifest fetch itself.
+  }
+}
+
+export function readManifestCache(channel: string, env: Record<string, string | undefined> = process.env): ManifestCacheEnvelope | null {
+  try {
+    const path = manifestCachePath(channel, env)
+    if (!existsSync(path)) return null
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as ManifestCacheEnvelope
+    if (parsed?.schema !== 1 || !parsed.payload || typeof parsed.cachedAt !== 'string') return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
 function toPackageType(value: unknown, fallback: UpdatePackageType): UpdatePackageType {
   const normalized = typeof value === 'string' ? value.trim().toLowerCase() : ''
   if (normalized === 'npm-package') return 'npm-package'
@@ -76,7 +136,7 @@ export function resolveConfiguredManifestUrls(update: UpdateConfig = config.upda
   return [...configured]
 }
 
-async function fetchRawManifest(update: UpdateConfig = config.update): Promise<{ manifestUrl: string; payload: RawManifestPayload }> {
+async function fetchRawManifest(update: UpdateConfig = config.update): Promise<ResolvedManifest> {
   const manifestUrls = resolveConfiguredManifestUrls(update)
   if (manifestUrls.length === 0) {
     throw new UpdateError('update_execution_misconfigured', 'Manifest update source is not configured')
@@ -117,7 +177,21 @@ async function fetchRawManifest(update: UpdateConfig = config.update): Promise<{
     }
 
     const payload = response.data as RawManifestPayload
-    return { manifestUrl, payload }
+    writeManifestCache(update.channel, manifestUrl, payload)
+    return { manifestUrl, payload, fromCache: false, cachedAt: null }
+  }
+
+  // All URLs failed: fall back to the persisted cache so an offline
+  // device keeps its last known manifest (staleness is surfaced through
+  // /api/update/identity, not by silently treating it as fresh).
+  const cached = readManifestCache(update.channel)
+  if (cached?.payload) {
+    return {
+      manifestUrl: cached.manifestUrl || manifestUrls[0],
+      payload: cached.payload,
+      fromCache: true,
+      cachedAt: cached.cachedAt,
+    }
   }
 
   throw new UpdateError(

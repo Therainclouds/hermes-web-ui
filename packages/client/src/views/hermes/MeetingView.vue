@@ -634,6 +634,9 @@ async function saveCurrentMeeting() {
     }
   } catch (err) {
     console.error('Failed to save meeting to server:', err)
+    // 本地 store 与 IndexedDB 音频备份仍然有效，但服务端没有这份数据——
+    // 用户换设备 / 清浏览器数据后会丢，必须让用户知道而不是静默失败。
+    message.error(t('meeting.errorSaveMeetingFailed'))
   }
 }
 
