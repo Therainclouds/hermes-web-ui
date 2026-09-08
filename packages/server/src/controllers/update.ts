@@ -56,6 +56,21 @@ function syncUpdateTaskState() {
     updateTaskStore.completeCurrentTask('succeeded', `Updated Hermes Web UI to ${currentTask.targetVersion}.`)
     currentTask = updateTaskStore.getCurrentTask()
   }
+  // Source-deploy and device-package orchestrators run as detached child
+  // processes that hand off to 'runtime' ownership. When the orchestrator
+  // exits successfully and the server restarts, the new process sees the
+  // task still at 'starting' stage. Complete it if we're now running the
+  // target version — the orchestrator's exit code 0 already verified the
+  // deploy tree built and identity stamped correctly.
+  if (
+    currentTask
+    && currentTask.owner === 'runtime'
+    && currentTask.targetVersion
+    && getLocalWebUiVersion() === currentTask.targetVersion
+  ) {
+    updateTaskStore.completeCurrentTask('succeeded', `Updated Hermes Web UI to ${currentTask.targetVersion}.`)
+    currentTask = updateTaskStore.getCurrentTask()
+  }
   const recoveredTask = currentTask && currentTask.id !== managedUpdateTaskId
     ? updateTaskStore.recoverInterruptedTaskIfStale()
     : null
