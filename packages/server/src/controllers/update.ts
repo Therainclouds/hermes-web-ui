@@ -36,6 +36,16 @@ function syncUpdateTaskState() {
   const hadInMemoryLock = updateInProgress
   updateTaskStore.syncFromDisk()
   let currentTask = updateTaskStore.getCurrentTask()
+  // A currentTask persisted with a terminal status (e.g. hand-written by a
+  // manual recovery on 6.6.6.73) keeps `updateInProgress` true forever and
+  // 409s every future start. Archive terminal records into lastTask.
+  if (currentTask && (currentTask.status === 'succeeded' || currentTask.status === 'failed')) {
+    updateTaskStore.completeCurrentTask(
+      currentTask.status === 'succeeded' ? 'succeeded' : 'failed',
+      currentTask.message || 'Archived terminal task loaded from state file.',
+    )
+    currentTask = updateTaskStore.getCurrentTask()
+  }
   if (
     currentTask
     && currentTask.owner === 'controller'
