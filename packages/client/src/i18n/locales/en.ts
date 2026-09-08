@@ -3702,6 +3702,8 @@ export default {
 
   // Changelog
   changelog: {
+    new_0_8_5_1: 'Real-device canary hardening: data preservation is verified byte-for-byte before and after every swap, and seven update-path defects found on the 6.6.6.73 canary are fixed (permissions, PATH resolution, package allowlist)',
+    new_0_8_5_2: 'Space preflight and ownership repair now work correctly on symlinked deploy layouts, so dependency installation can no longer fail silently or fill the disk',
     new_0_8_4_1: 'Agent data safety preflight gate blocks updates when the deployed updater cannot preserve data',
     new_0_8_4_2: 'Swap data verification automatically reverts when preservation silently fails',
     new_0_8_4_3: 'Data recovery tool for incident rollback scenarios',
