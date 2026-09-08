@@ -52,7 +52,14 @@ source "${SCRIPT_DIR}/_lib/identity-stamp.sh"
 # shellcheck source=_lib/chown-mount-safe.sh
 source "${SCRIPT_DIR}/_lib/chown-mount-safe.sh"
 # shellcheck source=_lib/data-inventory.sh
-source "${SCRIPT_DIR}/_lib/data-inventory.sh"
+# Fatal on missing lib: with the functions undefined the pre-swap inventory
+# silently reports empty and verify "fails" after a 2G preserve copy, a
+# confusing mid-swap revert (6.6.6.73 web-click 2026-09-08). Refuse before
+# any swap instead.
+if ! source "${SCRIPT_DIR}/_lib/data-inventory.sh"; then
+  warn "data-inventory library missing at ${SCRIPT_DIR}/_lib/; the deployed package is broken — refusing to update"
+  exit 4
+fi
 
 STATE_HOME="$(journal_state_home)"
 SWAP_ROOT="${STATE_HOME}/state/swap"
