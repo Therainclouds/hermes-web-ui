@@ -207,7 +207,7 @@ describe('hermes-web-ui MCP server', () => {
     expectProviderSafeToolNames('hermes-studio-api', list.result.tools)
     // The api toolset exposes the Web UI requester/openapi tools plus the
     // native grading_* tools that drive the paper-grading plugin.
-    expect(list.result.tools).toHaveLength(15)
+    expect(list.result.tools).toHaveLength(17)
     expect(list.result.tools.some((tool: any) => tool.name === 'hermes_studio_api_request')).toBe(true)
     expect(list.result.tools.some((tool: any) => tool.name === 'grading_capture_scan')).toBe(true)
     expect(list.result.tools.some((tool: any) => tool.name === 'grading_apply_edits')).toBe(true)
@@ -216,6 +216,8 @@ describe('hermes-web-ui MCP server', () => {
     expect(list.result.tools.some((tool: any) => tool.name === 'grading_view_image')).toBe(true)
     expect(list.result.tools.some((tool: any) => tool.name === 'grading_preview')).toBe(true)
     expect(list.result.tools.some((tool: any) => tool.name === 'grading_add_annotation')).toBe(true)
+    expect(list.result.tools.some((tool: any) => tool.name === 'grading_add_annotations')).toBe(true)
+    expect(list.result.tools.some((tool: any) => tool.name === 'grading_rotate')).toBe(true)
     expect(list.result.tools.some((tool: any) => tool.name === 'hermes_studio_lan_devices_list')).toBe(false)
 
     const response = await waitForRpc(responses, 3)

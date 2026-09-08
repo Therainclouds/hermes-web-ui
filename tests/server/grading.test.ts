@@ -115,4 +115,35 @@ describe('teacher grading', () => {
     expect(ctx.body.image).toMatch(/^data:image\/png;base64,/)
     expect(ctx.body.width).toBe(640); expect(ctx.body.height).toBe(480)
   })
+  it('accepts bbox passed as numeric strings or a nested array (agent tool serialization)', async () => {
+    writeSettings('one', { enabled: true })
+    const png = await sharp({ create: { width: 100, height: 100, channels: 3, background: '#fff' } }).png().toBuffer()
+    const { scanId } = await capture('one', { image: `data:image/png;base64,${png.toString('base64')}`, studentName: 'S' })
+    const base: any = { state: { user: { id: 1, role: 'admin', profiles: ['one'] } }, params: {}, query: {}, request: {}, get: () => 'one' }
+    // 数字字符串数组
+    let ctx: any = { ...base, params: { action: 'add_annotation' }, request: { body: { scanId, kind: 'circle', bbox: ['10', '20', '30', '30'], content: 'a' } } }
+    await gradingRequest(ctx); expect(ctx.body.annotations).toHaveLength(1)
+    // 框架再包一层 [[x,y,w,h]]
+    ctx = { ...base, params: { action: 'add_annotation' }, request: { body: { scanId, kind: 'badge', bbox: [[40, 40, 80, 30]], content: '3/5' } } }
+    await gradingRequest(ctx); expect(ctx.body.annotations).toHaveLength(2)
+  })
+  it('batch-adds annotations and rotates a scan to front-facing', async () => {
+    writeSettings('one', { enabled: true })
+    const png = await sharp({ create: { width: 200, height: 120, channels: 3, background: '#fff' } }).png().toBuffer()
+    const { scanId } = await capture('one', { image: `data:image/png;base64,${png.toString('base64')}`, studentName: 'S' })
+    const base: any = { state: { user: { id: 1, role: 'admin', profiles: ['one'] } }, params: {}, query: {}, request: {}, get: () => 'one' }
+    // 一次批量加 3 条（混合数字/字符串 bbox）
+    let ctx: any = { ...base, params: { action: 'add_annotations' }, request: { body: { scanId, annotations: [
+      { kind: 'circle', bbox: [10, 10, 40, 40], content: '' },
+      { kind: 'badge', bbox: [20, 20, 50, 26], content: '3/5' },
+      { kind: 'comment', bbox: ['30', '30', '60', '30'], content: '赞' },
+    ] } } }
+    await gradingRequest(ctx); expect(ctx.body.annotations).toHaveLength(3)
+    // 旋转到正向：宽高互换、清空识别与批注
+    ctx = { ...base, params: { action: 'rotate' }, request: { body: { scanId, direction: 'right' } } }
+    await gradingRequest(ctx); expect(ctx.body.width).toBe(120); expect(ctx.body.height).toBe(200)
+    const rotated = readSubmission('one', scanId)
+    expect(rotated.annotations).toHaveLength(0)
+    expect(rotated.words).toHaveLength(0)
+  })
 })

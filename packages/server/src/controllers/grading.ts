@@ -10,22 +10,44 @@ import { randomUUID } from 'node:crypto'
 
 const ALLOWED_ANNOTATION_KINDS = ['badge', 'comment', 'circle', 'cross', 'underline', 'pen'] as const
 
+/**
+ * 容错地把 bbox 转成 4 元数字框。agent 经 MCP 工具传参时，bbox 可能是：
+ *   [540,580,220,130]        —— 数字数组
+ *   ["540","580","220","130"] —— 数字字符串数组
+ *   [[540,580,220,130]]      —— 框架再包一层（嵌套）
+ * 这里统一展平/转数字，避免 "Invalid annotation bbox" 导致批注写不回去、预览不更新。
+ */
+function toBox(value: any): Box | null {
+  if (!Array.isArray(value)) return null
+  let arr = value
+  if (arr.length === 1 && Array.isArray(arr[0])) arr = arr[0]
+  if (arr.length !== 4) return null
+  const nums = arr.map((n: any) => (typeof n === 'number' ? n : Number(n)))
+  if (nums.some(n => !Number.isFinite(n))) return null
+  return nums as Box
+}
+
 /** 校验并归一化一条批注（供 agent 以工具方式添加/修改批注）。 */
 function validateAnnotation(spec: any): Annotation {
   if (!spec || typeof spec !== 'object') fail('Invalid annotation')
-  const { id, kind, bbox, content } = spec
+  const { id, kind, content } = spec
   if (typeof id !== 'string' || !id) fail('Invalid annotation id')
   if (!ALLOWED_ANNOTATION_KINDS.includes(kind)) fail('Invalid annotation kind')
   if (typeof content !== 'string' || content.length > 5000) fail('Invalid annotation content')
-  if (!Array.isArray(bbox) || bbox.length !== 4 || bbox.some((n: unknown) => typeof n !== 'number' || !Number.isFinite(n))) fail('Invalid annotation bbox')
-  const annotation: Annotation = { id, kind, bbox: bbox as Box, content }
+  const bbox = toBox(spec.bbox)
+  if (!bbox) fail('Invalid annotation bbox')
+  const annotation: Annotation = { id, kind, bbox, content }
   if (typeof spec.color === 'string' && spec.color.length <= 32) annotation.color = spec.color
   if (Number.isFinite(spec.width)) annotation.width = spec.width as number
   if (typeof spec.fontFamily === 'string' && spec.fontFamily.length <= 80) annotation.fontFamily = spec.fontFamily
   if (spec.solid === true) annotation.solid = true
   if (spec.points != null) {
-    if (!Array.isArray(spec.points) || spec.points.length > 20000 || spec.points.some((n: unknown) => typeof n !== 'number' || !Number.isFinite(n))) fail('Invalid annotation points')
-    annotation.points = spec.points.slice() as number[]
+    let pts = spec.points
+    if (Array.isArray(pts) && pts.length > 1 && Array.isArray(pts[0])) pts = pts[0]
+    if (!Array.isArray(pts) || pts.length > 20000) fail('Invalid annotation points')
+    const nums = pts.map((n: any) => (typeof n === 'number' ? n : Number(n)))
+    if (nums.some(n => !Number.isFinite(n))) fail('Invalid annotation points')
+    annotation.points = nums as number[]
   }
   return annotation
 }
@@ -92,6 +114,51 @@ function annotate(profile: string, args: any) {
   return { revision: s.revision, annotations }
 }
 
+/** 批量添加多条批注（agent loop 用：一次成批 + 用 preview 校验后逐个调）。 */
+function addAnnotations(profile: string, args: any) {
+  const s = readSubmission(profile, requiredText(args.scanId))
+  if (!Array.isArray(args.annotations) || args.annotations.length > 200) fail('Invalid annotations')
+  let annotations = Array.isArray(s.annotations) ? s.annotations.map(a => ({ ...a })) : []
+  for (const spec of args.annotations) {
+    const next = validateAnnotation({
+      id: randomUUID(),
+      kind: spec?.kind,
+      bbox: spec?.bbox,
+      content: typeof spec?.content === 'string' ? spec.content : '',
+      color: spec?.color,
+      width: spec?.width,
+      points: spec?.points,
+      fontFamily: spec?.fontFamily,
+      solid: spec?.solid,
+    })
+    annotations.push(next)
+  }
+  s.annotations = annotations
+  s.revision++
+  saveSubmission(profile, s)
+  return { revision: s.revision, annotations }
+}
+
+/** 把存储的扫描图旋转 90°（改成正向），并清空 OCR/题目/结果/批注，需重新 OCR。 */
+async function rotateSubmission(profile: string, args: any) {
+  const s = readSubmission(profile, requiredText(args.scanId))
+  const dir = args.direction === 'left' ? 'left' : 'right'
+  const match = /^data:([^;]+);base64,(.+)$/i.exec(s.image || '')
+  if (!match) fail('Submission image missing', 404)
+  const buffer = Buffer.from(match[2]!, 'base64')
+  const out = await sharp(buffer, { limitInputPixels: 30_000_000 })
+    .rotate(dir === 'left' ? -90 : 90)
+    .jpeg({ quality: 90 })
+    .toBuffer({ resolveWithObject: true })
+  s.image = `data:image/jpeg;base64,${out.data.toString('base64')}`
+  s.width = out.info.width
+  s.height = out.info.height
+  s.words = []; s.questions = []; s.results = []; s.annotations = []
+  s.status = 'pending'; s.error = ''; s.revision++
+  saveSubmission(profile, s)
+  return { scanId: s.id, width: s.width, height: s.height, status: 'pending' }
+}
+
 function profileFor(ctx: Context) {
   if (!ctx.state.user && !ctx.state.serverTokenAuth) fail('Unauthorized', 401)
   const profile = String(ctx.state.profile?.name || ctx.get('x-hermes-profile') || ctx.query.profile || 'default')
@@ -138,6 +205,8 @@ export async function gradingRequest(ctx: Context) {
         break
       }
       case 'add_annotation': ctx.body = annotate(profile, args); break
+      case 'add_annotations': ctx.body = addAnnotations(profile, args); break
+      case 'rotate': ctx.body = await rotateSubmission(profile, args); break
       case 'delete': deleteSubmission(profile, requiredText(args.scanId)); ctx.body = { ok: true }; break
       case 'summary': {
         if (!Array.isArray(args.scanIds) || args.scanIds.length > 1000) fail('Invalid scan IDs')
@@ -153,10 +222,17 @@ export async function gradingRequest(ctx: Context) {
         const s = readSubmission(profile, requiredText(args.scanId))
         if (args.revision !== s.revision) fail('Submission changed; reload before saving', 409)
         if (!Array.isArray(args.annotations) || args.annotations.length > 2000) fail('Invalid annotations')
+        const cleaned: Annotation[] = []
         for (const a of args.annotations) {
-          if (!a || typeof a.id !== 'string' || typeof a.content !== 'string' || a.content.length > 5000 || !['badge', 'comment', 'circle', 'cross', 'underline', 'pen'].includes(a.kind) || !Array.isArray(a.bbox) || a.bbox.length !== 4 || a.bbox.some((n: unknown) => typeof n !== 'number' || !Number.isFinite(n)) || (a.points && (!Array.isArray(a.points) || a.points.length > 20000 || a.points.some((n: unknown) => typeof n !== 'number' || !Number.isFinite(n))))) fail('Invalid annotation')
+          if (!a || typeof a.id !== 'string' || !ALLOWED_ANNOTATION_KINDS.includes(a.kind)) fail('Invalid annotation')
+          const bbox = toBox(a.bbox)
+          if (!bbox) fail('Invalid annotation bbox')
+          if (typeof a.content !== 'string' || a.content.length > 5000) fail('Invalid annotation content')
+          const boxed: Annotation = { ...a, id: a.id, bbox }
+          if (a.points != null && (!Array.isArray(a.points) || a.points.length > 20000 || a.points.some((n: unknown) => typeof n !== 'number' || !Number.isFinite(n)))) fail('Invalid annotation points')
+          cleaned.push(boxed)
         }
-        s.annotations = args.annotations; s.revision++; saveSubmission(profile, s); ctx.body = { revision: s.revision }; break
+        s.annotations = cleaned; s.revision++; saveSubmission(profile, s); ctx.body = { revision: s.revision }; break
       }
       case 'render': { const scanId = requiredText(args.scanId); readSubmission(profile, scanId); ctx.body = await requestClient(profile, 'render', { scanId, style: args.style === 'printed' ? 'printed' : 'rough' }); break }
       case 'ocr': case 'detect_questions': case 'grade': case 'apply_edits': ctx.body = await step(profile, requiredText(args.scanId), action, args); break

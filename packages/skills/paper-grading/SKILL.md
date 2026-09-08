@@ -17,9 +17,10 @@ To read a scan, use `grading_get` for cached OCR words, detected questions, resu
 
 **Position every mark from `grading_lines`**: it returns rows of OCR text with a merged pixel `bbox`. Match the text you are marking to a row and use that row's `bbox` for the annotation — never estimate coordinates from a screenshot. This is the main fix for misplaced marks. There is **no Python script** in this skill; all grading is via the `grading_*` tools (do not `skill_view` a `.py` file or run PIL to draw marks).
 
-**Read the original FIRST — never grade blind (mandatory).** Before writing any mark, do BOTH of these, in this order:
+**Read the original FIRST — never grade blind (mandatory).** Before writing any mark, do ALL of these, in this order:
 1. `grading_view_image` — actually LOOK at the handwritten scan (vision) to read what is really written; do not skip this.
-2. `grading_get` / `grading_lines` — read the OCR text and each row's exact pixel box, and match what you saw in the image to the OCR rows.
+2. **Make it face forward.** If the handwriting/layout is sideways, call `grading_rotate` (right/left) to make the scan upright, then `grading_ocr` again. Grade on the forward-facing image, not a rotated one.
+3. `grading_get` / `grading_lines` — read the OCR text and each row's exact pixel box, and match what you saw in the image to the OCR rows.
 
 Only after you have genuinely read the content may you write marks. **Every mark must be traceable to a row you actually read** — your `comment`/`badge` content must quote or reference the real text on that row.
 
@@ -29,7 +30,7 @@ If a row is unreadable (illegible handwriting, no OCR), flag it and ask the teac
 
 **Agent loop (verify-and-fix):** after the read-first step, grading edits the **right preview** directly — you never produce a separate annotated image. Work in this loop:
 1. (already read above) — keep the image and OCR rows in mind.
-2. Write marks one-by-one with `grading_add_annotation` (or `grading_grade` → `grading_apply_edits`). Each call becomes a mark; `grading_add_annotation` with an `annotationId` + fields edits that mark, or `remove:true` deletes it. Anchor each `bbox` to the matching `grading_lines` row.
+2. Write marks, in bulk or one-by-one. Use `grading_add_annotations` with an array of marks for a first pass; refine with `grading_add_annotation` (per annotation: `annotationId` + fields edits, or `remove:true` deletes). Each entry's `bbox` must be a flat 4-number array and should anchor to the matching `grading_lines` row. (For rubric/score marks you can also use `grading_grade` → `grading_apply_edits`.)
 3. Call `grading_preview` to get the scan with its CURRENT marks and **check with vision** whether each mark sits on the right text and overlaps nothing. If it's wrong, update the specific `annotationId` (or remove it) and re-check — iterate until correct.
 4. Keep marks small and targeted (a `circle`/`underline` on the line, a `badge` for score, a short `comment`). You have style freedom: set `color`, `width`, `fontFamily` (e.g. an available handwriting font) and `solid:true` (solid instead of dashed) per annotation.
 5. The teacher sees the preview update ~4s after you write (or on "刷新批改痕迹"); the marks export with `grading_render`. Do not ask the teacher to read a chat image for the marks.

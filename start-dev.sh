@@ -20,6 +20,20 @@ cd "${ROOT_DIR}"
 # 默认监听 0.0.0.0，允许局域网设备访问（可用 BIND_HOST 覆盖）
 export BIND_HOST="${BIND_HOST:-0.0.0.0}"
 
+# 检测局域网 IP（用于终端提示，不影响绑定地址）
+detect_lan_ip() {
+  local ip
+  ip="$(ip -4 route get 1 2>/dev/null | grep -oP 'src\s+\K[^ ]+' | head -n 1)"
+  if [[ -z "${ip}" ]]; then
+    ip="$(ip -4 addr show scope global 2>/dev/null | grep -oP 'inet\s+\K[^/]+' | head -n 1)"
+  fi
+  if [[ -z "${ip}" ]]; then
+    ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  fi
+  echo "${ip:-127.0.0.1}"
+}
+LAN_IP="$(detect_lan_ip)"
+
 has_module() {
   node -e "require.resolve('$1')" >/dev/null 2>&1
 }
@@ -49,28 +63,26 @@ ensure_cert() {
   echo "[start-dev] generating self-signed TLS cert..."
   mkdir -p "${CERTS_DIR}"
 
-  CURRENT_IP="$(ip -4 route get 1 2>/dev/null | grep -oP 'src\s+\K[^ ]+' | head -n 1)"
-  if [[ -z "${CURRENT_IP}" ]]; then
-    CURRENT_IP="$(ip -4 addr show scope global 2>/dev/null \
-      | grep -oP 'inet\s+\K[^/]+' \
-      | head -n 1)"
-  fi
-  if [[ -z "${CURRENT_IP}" ]]; then
-    echo "[start-dev] WARNING: cannot detect LAN IPv4, using 127.0.0.1 only"
-    CURRENT_IP="127.0.0.1"
-  fi
-
   openssl req -x509 -newkey rsa:4096 -keyout "${KEY_FILE}" -out "${CERT_FILE}" \
     -days 3650 -nodes \
-    -subj "/CN=${CURRENT_IP}" \
-    -addext "subjectAltName=IP:${CURRENT_IP},IP:127.0.0.1,DNS:localhost"
+    -subj "/CN=${LAN_IP}" \
+    -addext "subjectAltName=IP:${LAN_IP},IP:127.0.0.1,DNS:localhost"
 
   chmod 600 "${KEY_FILE}"
   chmod 644 "${CERT_FILE}"
-  echo "[start-dev] TLS cert generated for IP ${CURRENT_IP}"
+  echo "[start-dev] TLS cert generated for IP ${LAN_IP}"
 }
 ensure_cert
 
 # 4. Start
+echo
+echo "============================================================"
+echo " Hermes Web UI (dev) — LAN access"
+echo "   本机访问:    https://localhost:6060"
+echo "   局域网访问:  https://${LAN_IP}:6060"
+echo "   API 地址:    https://${LAN_IP}:8647"
+echo "   BIND_HOST:   ${BIND_HOST}"
+echo "============================================================"
+echo
 echo "[start-dev] starting dev servers bound to ${BIND_HOST} (client :6060, API :8647)..."
 npm run dev
