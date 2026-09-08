@@ -51,6 +51,8 @@ source "${SCRIPT_DIR}/policy-parse.sh"
 source "${SCRIPT_DIR}/_lib/identity-stamp.sh"
 # shellcheck source=_lib/chown-mount-safe.sh
 source "${SCRIPT_DIR}/_lib/chown-mount-safe.sh"
+# shellcheck source=_lib/data-inventory.sh
+source "${SCRIPT_DIR}/_lib/data-inventory.sh"
 
 STATE_HOME="$(journal_state_home)"
 SWAP_ROOT="${STATE_HOME}/state/swap"
@@ -430,6 +432,14 @@ swap_deploy() {
   journal_append "${TASK_ID}" "installing" "atomic swap into ${DEPLOY_DIR}"
   mkdir -p "${SWAP_ROOT}"
 
+  # Pre-swap data inventory: capture the old tree's hermes_data metrics
+  # BEFORE any rename so we can compare after preservation. This closes
+  # the "green succeeded but data is gone" gap (6.6.6.73).
+  local pre_inventory=""
+  pre_inventory="$(inventory_hermes_data "${DEPLOY_DIR}")"
+  journal_append "${TASK_ID}" "data_inventory" "pre-swap: ${pre_inventory}"
+  info "pre-swap hermes_data inventory: ${pre_inventory}"
+
   # First phase-a run on a legacy layout: DEPLOY_DIR is still a real
   # directory. Record it as the rollback point, then make it the
   # symlink target chain (rename the old tree aside atomically).
@@ -471,6 +481,26 @@ swap_deploy() {
   # into the new DEPLOY_DIR. The staging skeleton (if any) is kept
   # as a backup so a truly new file in the skeleton is not lost.
   preserve_hermes_data_across_swap
+
+  # Post-preservation verification: inventory the new tree's hermes_data
+  # and compare against the pre-swap snapshot. If state.db shrank or
+  # entry count halved, the preservation silently failed — rollback
+  # immediately. Data integrity trumps update availability.
+  local post_inventory=""
+  post_inventory="$(inventory_hermes_data "${DEPLOY_DIR}")"
+  local verify_msg=""
+  if verify_msg="$(verify_hermes_data_preserved "${pre_inventory}" "${post_inventory}")"; then
+    journal_append "${TASK_ID}" "data_verified" "${verify_msg}"
+    info "hermes_data preservation verified: ${verify_msg}"
+  else
+    warn "hermes_data preservation FAILED: ${verify_msg}"
+    journal_append "${TASK_ID}" "failed" "hermes_data_preservation_mismatch: ${verify_msg}"
+    if (( ROLLBACK_READY )); then
+      revert_to_lastgood "${DEPLOY_DIR}" || true
+      info "reverted to lastgood after preservation mismatch"
+    fi
+    return 5
+  fi
 
   # Preserve node_modules from the old tree (optimization). Pre-built
   # archives ship dist/ but not node_modules/; copying from the old

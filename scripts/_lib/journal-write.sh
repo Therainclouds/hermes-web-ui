@@ -50,9 +50,11 @@ JOURNAL_STAGES=(
   backing_up
   reconciling_env
   starting
+  data_inventory
   installing_dependencies
   installing
   building
+  data_verified
   stopping_runtime
   restarting
   starting_runtime
