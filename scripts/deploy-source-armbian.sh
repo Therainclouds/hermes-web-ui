@@ -71,6 +71,14 @@ chown_r_mount_safe() {
   local owner="$1"
   local target="$2"
   run chown -h "${owner}" "${target}"
+  # find(1) in default -P mode does not traverse into an argument symlink;
+  # when target is a symlink (e.g. the deploy link) resolve the real tree
+  # first or the recursion only touches the link itself (6.6.6.73 canary).
+  local real_target
+  real_target="$(readlink -f "${target}" 2>/dev/null || true)"
+  if [[ -n "${real_target}" && -d "${real_target}" ]]; then
+    target="${real_target}"
+  fi
   if ! command -v mountpoint >/dev/null 2>&1; then
     run find "${target}" -mindepth 1 -exec chown -h "${owner}" '{}' +
     return
