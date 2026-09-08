@@ -37,6 +37,7 @@ const STRUCTURAL: Partial<Record<UpdateErrorCode, { status: number }>> = {
   update_installer_script_stale: { status: 409 },
   update_ship_block: { status: 409 },
   update_policy_invalid: { status: 409 },
+  update_data_preservation_unavailable: { status: 409 },
 }
 
 export function preflightFailureShape(err: unknown): PreflightFailureShape | null {

@@ -1,6 +1,45 @@
-import { accessSync, constants, existsSync, statfsSync } from 'fs'
+import { accessSync, constants, existsSync, readdirSync, readFileSync, statfsSync } from 'fs'
 import { dirname, isAbsolute, join, relative, resolve } from 'path'
 import type { UpdatePreflightIssue, UpdatePreflightOptions, UpdatePreflightResult, UpdateRiskLevel, UpdateRuntimePaths, UpdateStrategy } from './types'
+
+// ---------------------------------------------------------------------------
+// Agent-data-safety helpers
+//
+// The "compatibility layout" (HERMES_HOME = <deployDir>/hermes_data) is the
+// one layout where agent data lives inside the deploy tree and gets swapped.
+// Old orchestrators (≤0.8.2) cannot preserve this data safely. We read the
+// deployed orchestrator's ORCHESTRATOR_CAPABILITIES fingerprint to decide
+// whether the current tree can preserve agent data during an update.
+// ---------------------------------------------------------------------------
+
+const REQUIRED_CAPABILITIES = ['hermes_data_preservation', 'prebuilt_dist'] as const
+const HERMES_DATA_ENTRY_THRESHOLD = 2
+
+function readOrchestratorCapabilities(deployDir: string): string[] | null {
+  const orchestratorPath = join(deployDir, 'scripts', 'update-orchestrator.sh')
+  try {
+    const content = readFileSync(orchestratorPath, 'utf8')
+    const match = content.match(/^ORCHESTRATOR_CAPABILITIES="([^"]*)"/m)
+    if (!match) return []
+    return match[1].split(/\s+/).filter(Boolean)
+  } catch {
+    return null
+  }
+}
+
+function hermesDataTopLevelEntryCount(deployDir: string): number {
+  const hermesDataDir = join(deployDir, 'hermes_data')
+  try {
+    return readdirSync(hermesDataDir).length
+  } catch {
+    return 0
+  }
+}
+
+function hasSubstantialHermesData(deployDir: string): boolean {
+  if (!existsSync(join(deployDir, 'hermes_data'))) return false
+  return hermesDataTopLevelEntryCount(deployDir) > HERMES_DATA_ENTRY_THRESHOLD
+}
 
 function normalizePath(value: string): string {
   const normalized = value
@@ -150,6 +189,24 @@ export function runUpdatePreflight(
         paths.hermesHome,
         `Hermes data directory is inside the deploy directory. Updates will preserve it, but the layout should be reviewed: ${paths.hermesHome}`,
       ))
+    } else if (strategy !== 'npm-package' && hasSubstantialHermesData(paths.deployDir)) {
+      // Compatibility layout + substantial data: the deployed orchestrator
+      // MUST carry the required capabilities to preserve data safely.
+      // Old orchestrators (≤0.8.2) lack these → block with bootstrap guidance.
+      const capabilities = readOrchestratorCapabilities(paths.deployDir)
+      const missingRequired = REQUIRED_CAPABILITIES.filter(cap => !capabilities?.includes(cap))
+      if (capabilities === null || missingRequired.length > 0) {
+        const missingLabel = capabilities === null
+          ? 'no orchestrator found'
+          : `missing capabilities: ${missingRequired.join(', ')}`
+        issues.push(buildIssue(
+          'high',
+          'agent-data-safety',
+          paths.hermesHome,
+          `Update blocked: agent data (${paths.hermesHome}) is inside the deploy tree and the deployed updater cannot preserve it safely (${missingLabel}). ` +
+          `Please bootstrap the device with scripts/bootstrap-device-*.sh to perform a clean deployment that preserves agent data.`,
+        ))
+      }
     }
   }
 

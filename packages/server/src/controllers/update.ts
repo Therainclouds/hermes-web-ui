@@ -1630,10 +1630,11 @@ export async function handleUpdate(ctx: any) {
   const runtimePaths = resolveUpdateRuntimePaths()
   const preflight = buildPreflight(runtimePaths)
   if (preflight.shouldBlock) {
+    const agentDataSafetyIssue = preflight.issues.find(issue => issue.code === 'agent-data-safety')
     ctx.status = 409
     ctx.body = {
       success: false,
-      code: 'update_dangerous_layout',
+      code: agentDataSafetyIssue ? 'update_data_preservation_unavailable' : 'update_dangerous_layout',
       message: preflight.blockingText || 'Update blocked because protected data would be at risk.',
       issues: preflight.issues,
     }
@@ -1678,7 +1679,9 @@ export async function handleUpdate(ctx: any) {
         throw new UpdateError(
           manifestPreflight.issues.some(issue => issue.code === 'insufficient-disk-space')
             ? 'update_preflight_space'
-            : 'update_preflight_permissions',
+            : manifestPreflight.issues.some(issue => issue.code === 'agent-data-safety')
+              ? 'update_data_preservation_unavailable'
+              : 'update_preflight_permissions',
           manifestPreflight.blockingText || 'Update blocked by device package preflight checks.',
           409,
           {
