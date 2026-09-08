@@ -22,10 +22,38 @@ identity_state_file() {
   printf '%s/state/identity.json' "$(journal_state_home)"
 }
 
+# Resolve the node binary. Callers may pre-set NODE_BIN (update-orchestrator
+# does at source time); otherwise fall back to PATH and the known device
+# install locations. Root's PATH frequently lacks node on ARM devices
+# (6.6.6.73 canary: /opt/node-v23/bin only), which silently disabled the
+# manifest self-check version probe before this resolver existed.
+identity_node_bin() {
+  if [[ -n "${NODE_BIN:-}" && -x "${NODE_BIN}" ]]; then
+    printf '%s' "${NODE_BIN}"
+    return 0
+  fi
+  local bin
+  bin="$(command -v node 2>/dev/null || true)"
+  if [[ -n "${bin}" && -x "${bin}" ]]; then
+    printf '%s' "${bin}"
+    return 0
+  fi
+  local candidate
+  for candidate in /opt/node-v23/bin/node /opt/node/bin/node /usr/local/bin/node /usr/bin/node; do
+    if [[ -x "${candidate}" ]]; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # Read the installed version from a deploy tree's package.json.
 identity_tree_version() {
   local tree_root="${1:?usage: identity_tree_version <deploy-tree>}"
-  node -e '
+  local node_bin
+  node_bin="$(identity_node_bin)" || return 1
+  "${node_bin}" -e '
     try {
       const pkg = require(String(process.argv[1]));
       if (pkg && typeof pkg.version === "string") { console.log(pkg.version); process.exit(0); }
@@ -39,7 +67,9 @@ identity_tree_version() {
 # so the build pipeline can compute the same value (WP4).
 identity_dist_sha256() {
   local tree_root="${1:?usage: identity_dist_sha256 <deploy-tree>}"
-  node -e '
+  local node_bin
+  node_bin="$(identity_node_bin)" || return 1
+  "${node_bin}" -e '
     const fs = require("fs");
     const path = require("path");
     const crypto = require("crypto");

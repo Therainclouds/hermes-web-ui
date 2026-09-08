@@ -57,15 +57,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ---------------------------------------------------------------------------
-# Resolve DEPLOY_DIR: follow the symlink to get the parent directory.
+# Resolve DEPLOY_DIR's parent. Convention match with update-orchestrator.sh:
+# lastgood lives NEXT TO the deploy LINK (dirname of the link itself), not
+# beside its target. Using dirname(readlink(deploy)) resolves into the
+# staging cache dir and never finds lastgood on phase-a layouts (6.6.6.73).
 # ---------------------------------------------------------------------------
 resolve_deploy_parent() {
-  local deploy="${1:?}"
-  if [[ -L "${deploy}" ]]; then
-    dirname "$(readlink "${deploy}")"
-  else
-    dirname "${deploy}"
-  fi
+  dirname "${1:?}"
 }
 
 if [[ -z "${DEPLOY_DIR}" ]]; then

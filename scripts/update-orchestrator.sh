@@ -256,7 +256,19 @@ preflight_policy() {
 }
 
 deploy_tree_size_bytes() {
-  du -sk "${DEPLOY_DIR}" 2>/dev/null | cut -f1 | awk '{ print $1 * 1024 }'
+  # DEPLOY_DIR is normally a symlink into the staging cache; plain du
+  # measures the link itself (~0) and the space gate passes while the disk
+  # fills up (6.6.6.73 canary, ENOSPC mid npm ci). Resolve the argument
+  # symlink ONLY — du -L would also follow symlinks INSIDE hermes_data
+  # (double counting, and dangling links make du exit non-zero, which
+  # under pipefail appends `|| echo 0` output and breaks the arithmetic).
+  local tree
+  tree="$(readlink -f "${DEPLOY_DIR%/}" 2>/dev/null || true)"
+  [[ -n "${tree}" && -d "${tree}" ]] || tree="${DEPLOY_DIR%/}"
+  local kb
+  kb="$(du -sk "${tree}" 2>/dev/null | cut -f1)" || true
+  [[ -n "${kb}" ]] || kb=0
+  awk -v k="${kb}" 'BEGIN { print k * 1024 }'
 }
 
 preflight_space() {
@@ -539,11 +551,12 @@ run_build_as_app_user() {
   local app_home
   app_home="$(getent passwd "${app_user}" 2>/dev/null | cut -d: -f6 || echo "/home/${app_user}")"
   # Detect node binary so the PATH covers the device install location
-  # (e.g. /opt/node-v23/bin). Falls back to PATH lookup when node is
-  # already on the default search path.
+  # (e.g. /opt/node-v23/bin). Reuse the NODE_BIN resolved at source time —
+  # root's PATH often lacks node entirely (6.6.6.73 canary), and a bare
+  # `command -v node` here left npm unreachable inside the su shell.
   local node_bin node_dir path_env
-  node_bin="$(command -v node 2>/dev/null || true)"
-  if [[ -n "${node_bin}" ]]; then
+  node_bin="${NODE_BIN:-$(command -v node 2>/dev/null || true)}"
+  if [[ -n "${node_bin}" && -x "${node_bin}" ]]; then
     node_dir="$(dirname "${node_bin}")"
   else
     node_dir=""
@@ -551,12 +564,17 @@ run_build_as_app_user() {
   path_env="${node_dir:+${node_dir}:}${app_home}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
   # Pass proxy env vars so devices behind a corporate proxy can reach
   # the npm registry mirror.
-  local proxy_env=()
+  local env_exports="export HOME='${app_home}' PATH='${path_env}'"
+  local v
   for v in http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY; do
-    if [[ -n "${!v:-}" ]]; then proxy_env+=("${v}=${!v}"); fi
+    if [[ -n "${!v:-}" ]]; then env_exports+=" ${v}='${!v}'"; fi
   done
+  # Export up-front: `VAR=x cd dir && npm` scopes the assignments to `cd`
+  # only — the `&&`-chained npm would run with the su login PATH, where
+  # node/npm are frequently absent (6.6.6.73 canary, "npm: command not
+  # found" despite a correct path_env).
   # shellcheck disable=SC2029
-  su - "${app_user}" -s /bin/bash -c "HOME='${app_home}' PATH='${path_env}' ${proxy_env[*]} ${command}"
+  su - "${app_user}" -s /bin/bash -c "${env_exports}; ${command}"
 }
 
 # Copy the previous deploy's node_modules/ into the freshly swapped
