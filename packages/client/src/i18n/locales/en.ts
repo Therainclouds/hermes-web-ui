@@ -3702,6 +3702,9 @@ export default {
 
   // Changelog
   changelog: {
+    new_0_8_6_1: 'Fix web-click update task state stuck issue: update task is now automatically completed after orchestrator exits successfully',
+    new_0_8_6_2: 'Fix root cause of APP_USER env var being filtered out: web-click updates on source-deploy devices can now correctly install dependencies',
+    new_0_8_6_3: 'Environment drift banner now only shows for device-package deployments; source-deploy mode no longer shows misleading prompts',
     new_0_8_5_1: 'Real-device canary hardening: data preservation is verified byte-for-byte before and after every swap, and seven update-path defects found on the 6.6.6.73 canary are fixed (permissions, PATH resolution, package allowlist)',
     new_0_8_5_2: 'Space preflight and ownership repair now work correctly on symlinked deploy layouts, so dependency installation can no longer fail silently or fill the disk',
     new_0_8_4_1: 'Agent data safety preflight gate blocks updates when the deployed updater cannot preserve data',
