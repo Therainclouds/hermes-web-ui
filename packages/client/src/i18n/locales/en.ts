@@ -3702,6 +3702,9 @@ export default {
 
   // Changelog
   changelog: {
+    new_0_8_4_1: 'Agent data safety preflight gate blocks updates when the deployed updater cannot preserve data',
+    new_0_8_4_2: 'Swap data verification automatically reverts when preservation silently fails',
+    new_0_8_4_3: 'Data recovery tool for incident rollback scenarios',
     new_0_8_3_1: 'Updates no longer require on-device builds: CI pre-builds dist/ and the orchestrator auto-detects it, skipping npm run build (~2 min vs ~10 min on ARM)',
     new_0_8_3_2: 'node_modules are now preserved across upgrades when possible, avoiding redundant dependency installation on every update',
     new_0_8_2_1: 'Upgrade now preserves agent data (profiles, sessions, state.db) across source-deploy updates and runs npm ci + build on device so the new tree is fully operational after swap',
