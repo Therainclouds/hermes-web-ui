@@ -122,6 +122,8 @@ function seedRepo(prefix: string, options: FixtureOptions = {}) {
     minCurrentVersion: '1.0.0',
     manifestBranch: 'release-manifests',
     hostDependenciesPath: 'release/device-host-dependencies.json',
+    ossPublicBaseUrl: 'https://example-bucket.oss-cn-shanghai.aliyuncs.com',
+    ossPath: 'hermes-web-ui',
     packageAllowlist: PACKAGE_ALLOWLIST,
     sourceRepoUrl: 'https://github.com/tangledup-ai/hermes-web-ui',
     sourcePathAllowlist: [
@@ -198,6 +200,23 @@ describe('device-package manifest contract', () => {
     const { manifest } = await buildAndReadManifest({})
     expect(manifest.installerScriptPath).toBe('scripts/update-orchestrator.sh')
     expect(manifest.installerScriptSha256).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('source-deploy manifest lists OSS as primary sourceUrls, GitHub as fallback', async () => {
+    // Per update-fleet-spec § R2: domestic devices reach the artifact via
+    // OSS first; GitHub release assets follow as the mirror. Mirror order
+    // is a pure availability optimisation, sha256 verifies whichever
+    // succeeds.
+    const { manifest } = await buildAndReadManifest({})
+    expect(manifest.packageType).toBe('source-deploy')
+    const urls = manifest.sourceUrls
+    expect(urls.length).toBeGreaterThanOrEqual(2)
+    expect(urls[0]).toMatch(/oss-cn-shanghai\.aliyuncs\.com/)
+    // GitHub release asset must follow, not precede, the OSS URL.
+    const githubIdx = urls.findIndex(u => u.includes('github.com'))
+    expect(githubIdx).toBeGreaterThan(0)
+    // The first entry is what the orchestrator fetches first.
+    expect(manifest.sourceUrl).toBe(urls[0])
   })
 
   it('source-deploy manifest emits the identity block (distSha256 + versionString)', async () => {

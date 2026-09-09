@@ -39,6 +39,8 @@
   "sourcePathPrefix": "sources",
   "sourceArtifactFormat": "tar.gz",
   "sourceRepoUrl": "https://github.com/tangledup-ai/hermes-web-ui",
+  "ossPublicBaseUrl": "https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com",
+  "ossPath": "quanthermes_pj/quanthermes_web_ui",
   "sourcePathAllowlist": [
     "package.json",
     "package-lock.json",

@@ -154,6 +154,35 @@ function buildReleaseAssetUrl(repo, tag, assetName) {
   return `https://github.com/${repo}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(assetName)}`
 }
 
+// Build an OSS public URL of the form `${ossPublicBaseUrl}/${assetRelativePath}`.
+// `ossPublicBaseUrl` is the public bucket prefix (e.g.
+// `https://bucket.oss-cn-shanghai.aliyuncs.com/key-prefix`) and
+// `assetRelativePath` is the object key appended to it (e.g.
+// `releases/v1.2.3/artifact.tar.gz`). `ossPath` is ossutil-style
+// (`oss://bucket/key`) and is only used for ossutil `cp` operations, not
+// for public URL composition. Empty inputs produce empty output so
+// callers can compose URL arrays without conditionals.
+function buildOssObjectUrl(ossPublicBaseUrl, _ossPathUnused, assetRelativePath) {
+  const base = String(ossPublicBaseUrl || '').trim().replace(/\/+$/, '')
+  if (!base || !assetRelativePath) return ''
+  const tail = String(assetRelativePath).replace(/^\/+/, '')
+  return `${base}/${tail}`
+}
+
+// Build an OSS object path (no public base, just the bucket-relative key).
+// ossutil's `cp` consumes `oss://<bucket>/<key>` paths. Empty inputs produce
+// empty output so callers can compose path arrays without conditionals.
+function buildOssObjectPath(ossPath, ...segments) {
+  const root = String(ossPath || '').trim().replace(/^\/+|\/+$/g, '')
+  if (!root) return ''
+  const tail = segments
+    .filter(segment => segment !== undefined && segment !== null && String(segment).length > 0)
+    .map(segment => String(segment).replace(/^\/+|\/+$/g, ''))
+    .filter(Boolean)
+    .join('/')
+  return tail ? `${root}/${tail}` : root
+}
+
 function buildReleaseNotesUrl(repo, tag) {
   return `https://github.com/${repo}/releases/tag/${encodeURIComponent(tag)}`
 }
@@ -384,6 +413,8 @@ export async function buildDevicePackageRelease(options = {}) {
   const releaseRepo = (options.releaseRepo || parseGitHubRepo(packageJson)).trim()
   const sourceLabel = (options.sourceLabel || releaseConfig.sourceLabel || DEFAULT_SOURCE_LABEL).trim() || DEFAULT_SOURCE_LABEL
   const healthcheckUrl = (options.healthcheckUrl || releaseConfig.healthcheckUrl || DEFAULT_HEALTHCHECK_URL).trim() || DEFAULT_HEALTHCHECK_URL
+  const ossPath = (options.ossPath ?? releaseConfig.ossPath ?? '').toString().trim().replace(/^\/+|\/+$/g, '')
+  const ossPublicBaseUrl = (options.ossPublicBaseUrl ?? releaseConfig.ossPublicBaseUrl ?? '').toString().trim().replace(/\/+$/, '')
   const minCurrentVersion = (options.minCurrentVersion || releaseConfig.minCurrentVersion || '').trim()
   if (!minCurrentVersion) {
     throw new Error(
@@ -517,11 +548,19 @@ export async function buildDevicePackageRelease(options = {}) {
     }
 
     const githubPackageUrl = buildReleaseAssetUrl(releaseRepo, tag, artifactName)
-    const packageUrls = dedupeNonEmpty([githubPackageUrl])
+    const ossPackageUrl = buildOssObjectUrl(ossPublicBaseUrl, ossPath, `releases/${tag}/${artifactName}`)
+    // OSS-first per update-fleet-spec.md § R2: domestic devices must
+    // reach the artifact without depending on github.com. GitHub release
+    // assets follow as the authoritative mirror. The orchestrator's
+    // download loop tries each URL in order, sha256 verifies whichever
+    // succeeds (mirror order is a pure availability optimization, no
+    // trust implications).
+    const packageUrls = dedupeNonEmpty([ossPackageUrl, githubPackageUrl])
     const packageUrl = packageUrls[0] || githubPackageUrl
 
     const githubSourceUrl = buildReleaseAssetUrl(releaseRepo, tag, sourceArtifactName)
-    const sourceUrls = dedupeNonEmpty([githubSourceUrl])
+    const ossSourceUrl = buildOssObjectUrl(ossPublicBaseUrl, ossPath, `releases/${tag}/${sourceArtifactName}`)
+    const sourceUrls = dedupeNonEmpty([ossSourceUrl, githubSourceUrl])
     const sourceUrl = sourceUrls[0] || githubSourceUrl
 
     const manifest = {
@@ -599,7 +638,8 @@ export async function buildDevicePackageRelease(options = {}) {
     // still built and uploaded as a fallback.
     if (packageType === 'source-deploy') {
       const githubDevicePackageUrl = buildReleaseAssetUrl(releaseRepo, tag, artifactName)
-      const devicePackageUrls = dedupeNonEmpty([githubDevicePackageUrl])
+      const ossDevicePackageUrl = buildOssObjectUrl(ossPublicBaseUrl, ossPath, `releases/${tag}/${artifactName}`)
+      const devicePackageUrls = dedupeNonEmpty([ossDevicePackageUrl, githubDevicePackageUrl])
       manifest.sourceUrl = devicePackageUrls[0] || githubDevicePackageUrl
       manifest.sourceUrls = devicePackageUrls
       manifest.sourceSha256 = sha256
@@ -637,6 +677,30 @@ export async function buildDevicePackageRelease(options = {}) {
       githubSourceUrl,
       manifestBaseUrl: `https://raw.githubusercontent.com/${releaseRepo}/${manifestBranch}/releases`,
       latestUrl: `https://raw.githubusercontent.com/${releaseRepo}/${manifestBranch}/releases/${channel}/latest.json`,
+      ossPath: ossPath || undefined,
+      ossPublicBaseUrl: ossPublicBaseUrl || undefined,
+      // ossutil `cp` paths (`oss://<bucket>/<key>` form is rebuilt by CI from
+      // ossPath; the values here are bucket-relative keys).
+      ossArtifactPath: buildOssObjectPath(ossPath, 'releases', tag, artifactName),
+      ossShaPath: buildOssObjectPath(ossPath, 'releases', tag, `${artifactName}.sha256`),
+      ossSourceArtifactPath: sourceStageRoot
+        ? buildOssObjectPath(ossPath, sourcePathPrefix, tag, sourceArtifactName)
+        : undefined,
+      ossSourceShaPath: sourceStageRoot
+        ? buildOssObjectPath(ossPath, sourcePathPrefix, tag, `${sourceArtifactName}.sha256`)
+        : undefined,
+      ossManifestPath: buildOssObjectPath(ossPath, 'releases', tag, 'manifest.json'),
+      ossLatestPath: buildOssObjectPath(ossPath, 'releases', channel, 'latest.json'),
+      // Public URLs for the on-device orchestrator to download from.
+      ossArtifactUrl: ossPackageUrl || undefined,
+      ossSourceUrl: ossSourceUrl || undefined,
+      ossShaUrl: ossPackageUrl ? buildOssObjectUrl(ossPublicBaseUrl, ossPath, `releases/${tag}/${artifactName}.sha256`) : undefined,
+      ossSourceShaUrl: ossSourceUrl ? buildOssObjectUrl(ossPublicBaseUrl, ossPath, `releases/${tag}/${sourceArtifactName}.sha256`) : undefined,
+      ossManifestUrl: buildOssObjectUrl(ossPublicBaseUrl, ossPath, `releases/${tag}/manifest.json`),
+      ossLatestUrl: buildOssObjectUrl(ossPublicBaseUrl, ossPath, `releases/${channel}/latest.json`),
+      ossDevicePackageUrl: packageType === 'source-deploy'
+        ? buildOssObjectUrl(ossPublicBaseUrl, ossPath, `releases/${tag}/${artifactName}`)
+        : undefined,
     }, null, 2)}\n`, 'utf-8')
 
     return {
