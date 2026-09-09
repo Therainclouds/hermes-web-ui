@@ -3507,6 +3507,8 @@ export default {
   files: {
     title: 'الملفات',
     fileTree: 'شجرة الملفات',
+    collapseTree: 'طي شجرة الملفات',
+    expandTree: 'توسيع شجرة الملفات',
     tree: 'شجرة المجلدات',
     list: 'قائمة الملفات',
     breadcrumbRoot: 'الرئيسية',
