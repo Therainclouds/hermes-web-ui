@@ -346,6 +346,26 @@ function startGatewayRunManagedInternal(
       HERMES_HOME: profileDir,
     },
   })
+
+  // Catch spawn-time failures (most commonly ENOENT when `hermes` is not on
+  // PATH and HERMES_BIN is unset). Without this, the unhandled 'error' event
+  // becomes an uncaught exception that kills the whole server — taking the
+  // web UI down with it just because the gateway binary is missing. We also
+  // suppress respawn: retrying a missing binary can't succeed, and the user
+  // needs a clear signal to install it or set HERMES_WEB_UI_DISABLE_GATEWAY_AUTOSTART.
+  child.on('error', (err) => {
+    if (state.current?.child === child) {
+      state.current = null
+    }
+    state.suppressRespawn = true
+    logger.warn(
+      err,
+      '[gateway-runner] failed to spawn hermes gateway (profileDir=%s bin=%s). '
+        + 'Set HERMES_BIN to the Hermes Agent launcher, or set '
+        + 'HERMES_WEB_UI_DISABLE_GATEWAY_AUTOSTART=1 to skip gateway autostart.',
+      profileDir, hermesBin,
+    )
+  })
   child.unref()
 
   const pid = child.pid ?? null
