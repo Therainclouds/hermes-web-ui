@@ -103,4 +103,5 @@ export function symlinksSupported(): boolean {
   policyParse: join(REPO_ROOT, 'scripts', 'policy-parse.sh'),
   journalWriteLib: join(REPO_ROOT, 'scripts', '_lib', 'journal-write.sh'),
   atomicSwapLib: join(REPO_ROOT, 'scripts', '_lib', 'atomic-swap.sh'),
+  stagingGcLib: join(REPO_ROOT, 'scripts', '_lib', 'staging-gc.sh'),
 }

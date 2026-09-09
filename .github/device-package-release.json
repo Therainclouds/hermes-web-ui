@@ -20,6 +20,7 @@
     "scripts/_lib/fixup-script-modes.sh",
     "scripts/_lib/identity-stamp.sh",
     "scripts/_lib/journal-write.sh",
+    "scripts/_lib/staging-gc.sh",
     "scripts/deploy-source-armbian.sh",
     "scripts/generate-server-cert.sh",
     "scripts/hermes-web-ui-update-runner.sh",

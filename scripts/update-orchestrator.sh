@@ -60,6 +60,11 @@ if ! source "${SCRIPT_DIR}/_lib/data-inventory.sh"; then
   warn "data-inventory library missing at ${SCRIPT_DIR}/_lib/; the deployed package is broken — refusing to update"
   exit 4
 fi
+# shellcheck source=_lib/staging-gc.sh
+if ! source "${SCRIPT_DIR}/_lib/staging-gc.sh"; then
+  warn "staging-gc library missing at ${SCRIPT_DIR}/_lib/; the deployed package is broken — refusing to update"
+  exit 4
+fi
 
 STATE_HOME="$(journal_state_home)"
 SWAP_ROOT="${STATE_HOME}/state/swap"
@@ -177,7 +182,11 @@ release_lock() {
   release_lock_files
 }
 # Safety net: no exit path may leak the lock.
-trap 'release_lock_files 2>/dev/null || true' EXIT
+# Terminal-state staging GC (R4): on every exit path the current task's
+# staging/partial leftovers are reclaimed unless still referenced (live
+# tree / lastgood). Runs after the ERR trap's finish_task so the journal
+# already reflects the final status.
+trap 'gc_task_artifacts 2>/dev/null || true; release_lock_files 2>/dev/null || true' EXIT
 
 # ---------------------------------------------------------------------------
 # Error handling: swap/healthcheck failures roll back to lastgood.
@@ -874,15 +883,27 @@ main() {
     exit 3
   fi
 
+  # Startup sweep (R4): unreferenced staging leftovers from previous
+  # failed/cancelled updates accumulate forever otherwise (6.6.6.73
+  # disk exhaustion). Runs under the lock, so no concurrent orchestrator
+  # can own any staging dir in the cache.
+  gc_staging_cache "${HERMES_WEB_UI_UPDATE_GC_MIN_AGE_DAYS:-7}"
+
   if ! preflight_policy; then
     finish_task "failed" "preflight refused by policy"
     release_lock
     exit 3
   fi
   if ! preflight_space; then
-    finish_task "failed" "preflight refused: insufficient disk space"
-    release_lock
-    exit 3
+    # Space-pressure GC (R4): one aggressive sweep (age >= 1 day) before
+    # refusing the update — stale leftovers have priority over the 503.
+    gc_staging_cache 1
+    if ! preflight_space; then
+      finish_task "failed" "preflight refused: insufficient disk space"
+      release_lock
+      exit 3
+    fi
+    info "staging-gc freed enough space to pass the preflight gate"
   fi
 
   if [[ -z "${PACKAGE_ARCHIVE}" ]]; then
