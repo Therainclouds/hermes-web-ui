@@ -2,11 +2,17 @@ import { randomBytes } from 'crypto'
 import { appendFile, mkdir, rename, rm, stat, writeFile } from 'fs/promises'
 import { basename, extname, join } from 'path'
 import { getProfileUploadDir } from './upload-paths'
+import { PAGE_UPLOAD_MAX_BYTES } from './upload-limits'
 
-export const APP_UPLOAD_MAX_BYTES = 50 * 1024 * 1024
+export const APP_UPLOAD_MAX_BYTES = PAGE_UPLOAD_MAX_BYTES
 export const APP_UPLOAD_CHUNK_BYTES = 256 * 1024
 const APP_UPLOAD_SESSION_TTL_MS = 10 * 60 * 1000
 const UPLOAD_ID_PATTERN = /^[A-Za-z0-9_-]{8,128}$/
+
+function formatUploadLimit(maxBytes: number): string {
+  if (maxBytes % (1024 * 1024 * 1024) === 0) return `${maxBytes / (1024 * 1024 * 1024)}G`
+  return `${Math.round(maxBytes / 1024 / 1024)}MB`
+}
 
 interface AppUploadSession {
   id: string
@@ -54,7 +60,7 @@ export async function openAppUpload(input: {
   const size = Number(input.size)
   if (!Number.isSafeInteger(size) || size < 0) throw new AppUploadError('invalid_upload_size', 'Invalid upload size')
   if (size > APP_UPLOAD_MAX_BYTES) {
-    throw new AppUploadError('upload_too_large', 'File is too large (max 50MB)', 413)
+    throw new AppUploadError('upload_too_large', `File is too large (max ${formatUploadLimit(APP_UPLOAD_MAX_BYTES)})`, 413)
   }
 
   const uploadDir = getProfileUploadDir(input.profile)

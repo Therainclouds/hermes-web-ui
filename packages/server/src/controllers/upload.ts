@@ -5,8 +5,9 @@ import { getActiveProfileName } from '../services/hermes/hermes-profile'
 import { getProfileUploadDir } from '../services/hermes/upload-paths'
 import { MultipartParseError, parseMultipartBoundary, parseMultipartFilename, splitMultipart } from '../lib/multipart'
 import { drainRejectedRequest, nonDestroyingRequestBody } from '../lib/request-body'
+import { PAGE_UPLOAD_MAX_BYTES } from '../services/hermes/upload-limits'
 
-const DEFAULT_MAX_UPLOAD_SIZE = 50 * 1024 * 1024 // 50MB
+const DEFAULT_MAX_UPLOAD_SIZE = PAGE_UPLOAD_MAX_BYTES
 
 // Operators can raise the limit for large-file workflows (e.g. media uploads)
 // via HERMES_MAX_UPLOAD_SIZE (bytes) without patching the bundle. The value is
@@ -15,6 +16,11 @@ function getMaxUploadSize(): number {
   const override = Number(process.env.HERMES_MAX_UPLOAD_SIZE)
   if (Number.isFinite(override) && override > 0) return override
   return DEFAULT_MAX_UPLOAD_SIZE
+}
+
+function formatUploadLimit(maxBytes: number): string {
+  if (maxBytes % (1024 * 1024 * 1024) === 0) return `${maxBytes / (1024 * 1024 * 1024)}G`
+  return `${Math.round(maxBytes / 1024 / 1024)}MB`
 }
 
 function requestedProfile(ctx: any): string {
@@ -49,7 +55,7 @@ export async function handleUpload(ctx: any) {
     chunks = []
     await drainRejectedRequest(ctx.req)
     ctx.status = 413
-    ctx.body = { error: `File too large (max ${Math.round(maxUploadSize / 1024 / 1024)}MB)` }
+    ctx.body = { error: `File too large (max ${formatUploadLimit(maxUploadSize)})` }
     return
   }
   const raw = Buffer.concat(chunks)

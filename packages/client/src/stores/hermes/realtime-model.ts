@@ -11,8 +11,8 @@ import { useProfilesStore } from './profiles'
  * 未单独填写 DashScope Key 时会默认回落到这里，避免各场景重复粘贴 API Key。
  *
  * 配置持久化在当前用户 Profile（服务端，按 Hermes profile 一行保存），与
- * STT/TTS 等模型设置一致；浏览器 localStorage 只作为离线/首帧缓存，并负责
- * 把升级前旧的浏览器配置一次性迁移到服务端 Profile。
+ * STT/TTS 等模型设置一致。浏览器 localStorage 仅用于升级前旧配置的一次性迁移，
+ * 正常启动和切换 Profile 始终以设备端服务端存储为准。
  */
 export interface RealtimeModelConfig {
   /** 千问/DashScope API Key（sk-...），供会议 ASR 与 Realtime 共用。 */
@@ -83,49 +83,14 @@ function normalizeConfig(partial?: Partial<RealtimeModelConfig> | null): Realtim
   }
 }
 
-/**
- * Local cache entry. `profile === null` marks a pre-profile-era entry (v1,
- * whole-object config) that has not yet been attributed to a profile — it is
- * the source for the one-time migration into the active profile's server row.
- */
-interface CachedRealtimeModelConfig {
-  v: 2
-  profile: string | null
-  config: RealtimeModelConfig
-}
-
-function readCache(): CachedRealtimeModelConfig | null {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY)
-    if (!saved) return null
-    const parsed = JSON.parse(saved) as Record<string, unknown>
-    if (parsed && typeof parsed === 'object') {
-      if (parsed.v === 2 && parsed.config && typeof parsed.config === 'object') {
-        return {
-          v: 2,
-          profile: typeof parsed.profile === 'string' ? parsed.profile : null,
-          config: normalizeConfig(parsed.config as Partial<RealtimeModelConfig>),
-        }
-      }
-      // v1 legacy entry: the whole stored object is the config.
-      return { v: 2, profile: null, config: normalizeConfig(parsed as Partial<RealtimeModelConfig>) }
-    }
-  } catch {}
-  return null
-}
-
 function writeCache(config: RealtimeModelConfig, profile: string | null) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ v: 2, profile, config }))
   } catch {}
 }
 
-function configHasContent(config: RealtimeModelConfig): boolean {
-  return config.apiKey.trim() !== '' || config.model !== DEFAULT_MODEL || config.voice !== DEFAULT_VOICE
-}
-
 export const useRealtimeModelStore = defineStore('realtimeModel', () => {
-  const config = ref<RealtimeModelConfig>(normalizeConfig(readCache()?.config))
+  const config = ref<RealtimeModelConfig>(normalizeConfig())
   const loading = ref(false)
 
   const hasApiKey = computed(() => !!config.value.apiKey.trim())
@@ -139,7 +104,6 @@ export const useRealtimeModelStore = defineStore('realtimeModel', () => {
   let lastLoadOk = false
   let inFlight: Promise<void> | null = null
   let generation = 0
-  const migratedProfiles = new Set<string>()
   let saveSeq = 0
 
   function currentProfileName(): string | null {
@@ -165,25 +129,7 @@ export const useRealtimeModelStore = defineStore('realtimeModel', () => {
       return Promise.resolve()
     }
 
-    // No server row for this profile yet. Migrate a browser-only config into
-    // the profile once (legacy entries with `profile === null` or entries
-    // already attributed to this profile), so existing keys survive the move
-    // from localStorage to the profile.
-    const cache = readCache()
-    const legacy = cache && (cache.profile === null || cache.profile === profileName)
-    if (legacy && !migratedProfiles.has(profileName) && configHasContent(cache.config)) {
-      migratedProfiles.add(profileName)
-      const content = cache.config
-      return realtimeModelApi.saveRealtimeModelSetting({
-        settings: { model: content.model, voice: content.voice },
-        secrets: { apiKey: content.apiKey },
-      }).then(() => {
-        writeCache(content, profileName)
-      }).catch((err) => {
-        // Migration is best-effort; the browser cache keeps working meanwhile.
-        console.warn('[realtime-model] failed to migrate browser config into profile:', err)
-      })
-    }
+    // A profile without a server row starts from defaults. Device persistence is authoritative.
     return Promise.resolve()
   }
 

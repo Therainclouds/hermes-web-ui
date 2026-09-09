@@ -3702,6 +3702,9 @@ export default {
 
   // Changelog
   changelog: {
+    new_0_8_7_1: 'Fix the disk-exhaustion incident class (6.6.6.73): orchestrator now reclaims staging/, inner-*, partial-*.part and stale .previous-* trees around every update, default threshold 7 days',
+    new_0_8_7_2: 'When space preflight fails the orchestrator automatically switches to a 1-day aggressive sweep before failing closed, so staging no longer eats the last free bytes',
+    new_0_8_7_3: 'On success only the live tree and the lastgood target survive; on failure/cancel the intermediate artifacts are reclaimed as soon as the task exits terminal state, with the full trail preserved in journal',
     new_0_8_6_1: 'Fix web-click update task state stuck issue: update task is now automatically completed after orchestrator exits successfully',
     new_0_8_6_2: 'Fix root cause of APP_USER env var being filtered out: web-click updates on source-deploy devices can now correctly install dependencies',
     new_0_8_6_3: 'Environment drift banner now only shows for device-package deployments; source-deploy mode no longer shows misleading prompts',

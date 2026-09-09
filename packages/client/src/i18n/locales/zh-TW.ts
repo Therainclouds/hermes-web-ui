@@ -3577,6 +3577,9 @@ export default {
 
   // 更新日誌
   changelog: {
+    new_0_8_7_1: '修復更新殘留把磁碟撐爆的事故類（6.6.6.73）：編排器每次升級前後回收 staging/、inner-*、partial-*.part 與失效的 .previous-* 舊樹，預設閾值 7 天',
+    new_0_8_7_2: '空間預檢失敗時自動切換 1 天積極回收模式，再不行才 fail-closed 返回失敗，不再讓 staging 占住最後一點磁碟',
+    new_0_8_7_3: '更新成功後只保留 live tree 與 lastgood 目標；失敗/取消的中間產物在工作終止時立即收回，journal 保留全過程痕跡',
     new_0_8_6_1: '修復 web 點擊更新後任務狀態卡住問題：編排器成功退出後，新版本自動完成更新任務',
     new_0_8_6_2: '修復 APP_USER 環境變數被過濾器丟棄的根因：所有 source-deploy 裝置的 web 點擊更新現在可以正確安裝相依套件',
     new_0_8_6_3: '環境漂移提示僅對 device-package 部署顯示，source-deploy 模式下不再顯示誤導性提示',
