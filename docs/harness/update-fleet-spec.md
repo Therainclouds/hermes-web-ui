@@ -10,7 +10,7 @@
 - **R2 移除 OSS 更新机制**（CI/CD GitHub 全链路）
 - **R3 Hermes-Agent 升级跟进**（phase c 的 agent seam）
 
-执行顺序: R1-0 热修 → R1 门禁 → R2 → R3。R2 与 R3 有交叠（agent 资产从 OSS 迁到 GitHub release），R3 依赖 R2 完成。
+执行顺序: R1-0 热修 → R1 门禁 → R2（OSS 为主 + GitHub 镜像）→ R4（staging GC）→ R3。R2 与 R3 有交叠（agent 资产双镜像），R3 依赖 R2 完成；R4 无依赖可穿插，优先级高于 R3（磁盘耗尽为活跃事故类）。
 
 ---
 
@@ -142,53 +142,92 @@ ORCHESTRATOR_CAPABILITIES="hermes_data_preservation prebuilt_dist node_modules_p
 
 ---
 
-## R2 — 移除 OSS，GitHub 全链路
+## R2 — OSS 为主、GitHub 为镜像（方向已裁决反转）
 
-目标：manifest 与包分发全部走 GitHub（release assets + `release-manifests` 分支 raw URL），删除全部 ossutil/ALIYUN_OSS_* 面积。
+> 裁决（2026-09-09，用户）：**保留 OSS 作为主分发源**。理由：国内设备网络无法保证稳定访问 GitHub/npm，OSS 是国内可达性的根基。原"移除 OSS"方向作废；GitHub 改为**镜像/兜底**角色。R2-1 提交（53e2c246，GitHub-only 构建）需要按本节回摆。
 
-### 已知风险（接受并缓解）
+目标：所有下载 URL 数组呈 `packageUrls: [OSS, GitHub]` / `sourceUrls: [OSS, GitHub]` 形态——OSS 第一优先，GitHub release asset 兜底。OSS 故障或被封时设备仍可更新；GitHub 保持为权威记录（release-manifests 分支 + GitHub Releases 原子档案不变）。
 
-GitHub 在中国大陆可达性不稳定。缓解：manifest `sourceUrls`/`packageUrls` 天然支持多镜像有序轮转 + orchestrator `curl -C -` 断点续传 + server 下载重试 + manifest 缓存兜底（manifest-client.ts:184-195）。镜像列表后续可加自建反代（如 CF worker），机制已就位，本 spec 不引入新依赖。
+### 已有能力（无需新机制）
 
-### R2-1 构建侧（build-device-package.mjs）
+- orchestrator 下载循环（update-orchestrator.sh:327 `for url in urls`）天然支持多镜像有序轮转 + `curl -C -` 断点续传 + sha256 校验（镜像顺序纯可用性优化，无信任问题）。
+- server `WEBUI_UPDATE_MANIFEST_URLS` 复数形式支持多 manifest URL。
+- manifest `sourceUrls`/`packageUrls` 数组格式已就位。
 
-- `packageUrls`/`sourceUrls` 改为 GitHub-first：`[githubPackageUrl]`（release asset）。删除 `buildOssObjectUrl`/`buildOssObjectPath`（:169-186）与全部 oss* 变量读取（:427-428）。
-- `release-metadata.json` 删除 oss* 字段（:665-678），保留 `manifestBaseUrl`/`latestUrl`（:680-681，raw.githubusercontent 已是现成值）。
-- `.github/device-package-release.json` 删除 `ossPath`/`ossPublicBaseUrl`。
-- 测试：build-device-package-script.test.ts:128-145 断言改 GitHub URL；device-package-manifest.test.ts:125 fixture 删 OSS 字段。
+### R2-1 构建侧（build-device-package.mjs）——回摆 53e2c246
 
-### R2-2 server 默认值
+- `packageUrls`/`sourceUrls` 输出 `[ossUrl, githubUrl]`：OSS 第一（现有 `buildOssObjectUrl` 逻辑需从 53e2c246 恢复），GitHub release asset URL 第二（新增）。
+- `release-metadata.json` 恢复 oss* 字段，新增 `githubPackageUrl` 字段。
+- `.github/device-package-release.json` 保留 `ossPath`/`ossPublicBaseUrl`（53e2c246 删除了，需恢复）。
+- 测试：断言 URL 数组首位是 OSS、第二位是 GitHub。
 
-- config.ts:240 `DEFAULT_MANIFEST_BASE_URL` → `https://raw.githubusercontent.com/tangledup-ai/hermes-web-ui/release-manifests/releases`。
-- 检查 `getDefaultManifestSourceLabel`（config.ts:273-275）对 OSS 形状的特殊处理。
-- runtime-version-manager.ts:11-14：versions.json 权威源切到 release-manifests 分支 raw URL（该分支已随 CI 备份 versions.json，device-package-release.yml:378-382——R2-4 把备份变成权威）。
+### R2-2 server 默认值（维持现状 + 小改）
 
-### R2-3 设备脚本默认值 + 环境文件
+- config.ts:240 `DEFAULT_MANIFEST_BASE_URL` 维持 OSS（不改）。
+- manifest-client 已支持多 URL 轮转，确认 env 双 manifest URL 时 fallback 顺序正确即可。
+- runtime-version-manager.ts versions.json 权威源维持 OSS。
 
-- deploy-source-armbian.sh:1771 `OSS_PUBLIC_BASE_URL` 删除；:1798-1799 `WEBUI_UPDATE_MANIFEST_BASE_URL(S)` 默认 → raw.githubusercontent。
-- bootstrap-device-to-device-package.sh:9 `BASE_URL` → raw.githubusercontent（这是重写 `/etc/default/hermes-web-ui` 的写入器，是**存量设备脱 OSS 的唯一途径**，与 R1-5 bootstrap 合并执行）。
-- update-source-deploy.sh / install-device-package.sh 透传键不变（键名与源无关）。
-- **已部署设备的 env 文件钉着 OSS URL**：不 bootstrap 就永远看不到新 manifest。server 默认值只救"env 没写这些键"的设备。R1-5 文档必须写明这一点。
+### R2-3 设备脚本默认值（基本不动）
 
-### R2-4 CI 工作流
+- deploy-source-armbian.sh 的 OSS 默认值全部保留。
+- env 写入器增加可选键 `WEBUI_UPDATE_MANIFEST_URLS` 双 URL（OSS latest.json + raw.githubusercontent latest.json），OSS 拉不到 manifest 时自动落 GitHub。
+- 已部署设备 env 钉单 OSS URL 的存量问题依旧由 R1-5 bootstrap 路径解决。
 
-- device-package-release.yml：删除 :191-235（ossutil/凭证/校验）、:237-251（OSS 上传）、:587-642（promote 的 OSS latest.json 上传，git 分支 promote :515-585 保留不动）。
-- 校验步骤（:424-480）改为从 manifest 的 GitHub URL 下载验证。
-- versions.json：release job 直接把 versions.json 提交到 release-manifests 分支为权威（替换 :307-343 的 OSS 发布）。
-- hermes-agent-oss-mirror.yml / hermes-agent-custom-wheel.yml：OSS 上传步骤删除，资产改挂 GitHub release（与 R3-1 合并做）。
-- 删除 3 个 `ALIYUN_OSS_*` secrets 的全部引用。
+### R2-4 CI 工作流（保留 OSS 上传 + 补 GitHub 资产验证）
 
-### R2-5 desktop
+- OSS 上传步骤全部保留（osutil/凭证不动）。
+- 新增：GitHub release asset 上传后的验证步骤改为"两个 URL 都可下载且 sha256 一致"。
+- candidate manifest 的 `packageUrls`/`sourceUrls` 写入双 URL。
 
-- updater.ts:16 主源切 GitHub release latest feed（:31-46 的 GitHub 兜底升为主）；harness-check.mjs:524-530 契约同步反转。
-- runtime-manager.ts:47 `DEFAULT_RUNTIME_BASE_URL` → GitHub release 下载基址。
+### R2-5 desktop（维持 OSS 主源）
+
+- updater.ts:16 OSS 主源 + GitHub 兜底**现状保留**（本来就是目标形态）。
+- runtime-manager.ts:47 无兜底：补 GitHub release 兜底 URL（唯一实质改动）。
+- harness-check.mjs:524-530 契约改为断言"OSS-first + GitHub 兜底"。
 
 ### R2 验收标准
 
-- [ ] `grep -r "aliyuncs" scripts/ .github/ packages/server/src/ packages/desktop/src/` 仅剩 DashScope/ASR 等无关命中。
-- [ ] 全新 bootstrap 设备（env 由新脚本写入）从 raw.githubusercontent 拉到 latest.json 并完成一次端到端更新。
-- [ ] promote 后无需 OSS，设备在 5 分钟内可见新版本。
-- [ ] CI 两阶段（candidate→promote）在无 OSS secrets 的 runner 上全绿。
+- [ ] manifest 中 `packageUrls`/`sourceUrls` 首位为 OSS、末位为 GitHub。
+- [ ] 模拟 OSS 404 时，设备从 GitHub URL 完成下载且 sha256 校验通过（orchestrator 日志出现 "trying next mirror"）。
+- [ ] 模拟 GitHub 不可达时，国内网络画像设备从 OSS 完成端到端更新。
+- [ ] desktop runtime-manager 在 OSS 不可达时落 GitHub 兜底。
+
+---
+
+## R4 — 更新残留垃圾回收（staging GC）
+
+> 触发（2026-09-09，设备 6.6.6.73）：9 月 7–8 日连续 9 次失败更新各留下 3–4.5 GB staging，磁盘打到 91%（剩 5.4 GB）。手动清理约 30 GB：9 个 `staging-update-*` 目录、8 个 `partial-*.part`、/opt 旧备份与旧 db bak。**失败更新后 staging 从不回收是磁盘耗尽的根因。**
+
+目标：任何更新终态（成功、失败、取消）之后，staging 缓存占用有上界；`lastgood` 回滚代与在用链接永不被回收。
+
+### 必须豁免（不可回收）
+
+- `updates/cache/lastgood` 符号链接及其指向的 `staging-orchestrator-*.previous` 目录——回滚代（R1 安全网）。
+- `src` 符号链接当前指向的 staging 目录——运行中的部署树。
+- 正在进行的更新任务持有的 `staging-update-*`（按 journal 当前 task ID 判断）。
+
+### R4-1 orchestrator 侧（scripts/update-orchestrator.sh 或 scripts/_lib/staging-gc.sh）
+
+- 成功终态：swap 完成后删除本次 `staging-update-*` 中已不被 src/lastgood 引用的部分与对应 `partial-*.part`。
+- 失败/取消终态：退出前清理本次任务自己的 staging 与 partial（自己失败自己收，不连带他人）。
+- 周期兜底 GC：每次 orchestrator 启动时扫描 `updates/cache`，回收同时满足以下条件的 `staging-*` 目录：mtime 超过 N 天（建议 7 天）、不被 src/lastgood/journal 引用。
+- 空间压力加速：`preflight_space` 失败时，先触发一轮激进 GC（mtime > 1 天的无引用 staging）再重新测量，仍不足才报 503。
+
+### R4-2 server 侧（source-deploy 策略）
+
+- runner 请求前：若检测到上次任务终态失败，调度一次 GC（复用 R4-1 的 lib，经 runner request 透传或直接 exec）。
+- `update-task-state.json` 终态写入时附带 staging 占用字节数，让 UI/日志可见"更新垃圾"。
+
+### R4-3 测试
+
+- 单测：GC 豁免三条（lastgood、src 指向、活跃任务）；mtime 阈值边界；partial 清理。
+- dry-run 测试：失败注入后断言 staging 目录被清理且 lastgood 完好。
+
+### R4 验收标准
+
+- [ ] 连续 10 次注入失败更新后，`updates/cache` 占用增长 ≤ 1 次更新包大小（无累积）。
+- [ ] 成功更新后 `staging-update-*` 目录数量不随更新次数增长。
+- [ ] 手动删除 src/lastgood 指向的目录在 GC 下不可复现（豁免生效）。
 
 ---
 
@@ -243,16 +282,18 @@ GitHub 在中国大陆可达性不稳定。缓解：manifest `sourceUrls`/`packa
 | 3 | `feat(orchestrator): data inventory & verification` | R1-3 | 无硬前置，随 #2 |
 | 4 | `feat(scripts): recover-hermes-data.sh` | R1-4 | 无 |
 | 5 | `docs: legacy-fleet-rollout.md` | R1-5 | #1-#4 |
-| 6 | `feat(release): github-only artifact urls` | R2-1 | 无 |
-| 7 | `feat(server): github manifest defaults` | R2-2 | #6 |
-| 8 | `feat(device): github manifest env defaults` | R2-3 | #7 |
-| 9 | `ci: remove OSS from release workflows` | R2-4 | #6 |
-| 10 | `feat(desktop): github update feeds` | R2-5 | 无 |
-| 11 | `feat(release): agent wheel on github release` | R3-1 | #6, #9 |
-| 12 | `feat(orchestrator): agent upgrade stage` | R3-2 + R3-3 | #11 |
-| 13 | `test: agent update seam coverage` | R3-4 | #12 |
+| 6 | `revert/rework: oss-primary artifact urls with github mirror` | R2-1（回摆 53e2c246 为 OSS-first + GitHub 兜底） | 无 |
+| 7 | `feat(server): dual manifest urls` | R2-2 | #6 |
+| 8 | `feat(device): dual manifest env defaults` | R2-3 | #7 |
+| 9 | `ci: verify dual mirror assets` | R2-4 | #6 |
+| 10 | `feat(desktop): runtime-manager github fallback` | R2-5 | 无 |
+| 11 | `feat(orchestrator): staging gc` | R4-1 + R4-2 | 无（可与 R2 并行） |
+| 12 | `test: staging gc coverage` | R4-3 | #11 |
+| 13 | `feat(release): agent wheel dual-mirror` | R3-1 | #6, #9 |
+| 14 | `feat(orchestrator): agent upgrade stage` | R3-2 + R3-3 | #13 |
+| 15 | `test: agent update seam coverage` | R3-4 | #14 |
 
-每个提交独立可回滚；#2/#3 合入后打 0.8.4（R1-0+R1-1 必须同版本上线，门禁依赖新标记）；R2 各提交可分散在 0.8.4–0.9.0；R3 对应 0.9.0。
+每个提交独立可回滚；#2/#3 合入后打 0.8.4（R1-0+R1-1 必须同版本上线，门禁依赖新标记）；R2 各提交可分散在 0.8.4–0.9.0；R4 #11 建议尽早（0.8.7 即可，磁盘耗尽是活跃事故类）；R3 对应 0.9.0。
 
 ## 明确不做（本 spec 范围外）
 
