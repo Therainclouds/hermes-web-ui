@@ -338,7 +338,7 @@ async function openSpeechPractice(options: {
   config: PracticeSessionConfig;
 }) {
   const direction = (options.config.direction || "").trim();
-  const fallbackTitle = t(practiceLanguageLabelKeys[options.config.language]);
+  const fallbackTitle = t(practiceLanguageLabelKeys[options.config.language] || practiceLanguageLabelKeys.zh);
   const title = direction
     ? `${t("speechPractice.entry")} · ${direction}`.slice(0, 60)
     : `${t("speechPractice.entry")} · ${fallbackTitle}`;
@@ -1065,7 +1065,7 @@ watch([newChatPracticeSkillKey, () => practiceSkillItems.value], () => {
   const skill = selectedPracticeSkill.value;
   if (!skill) return;
   const resolved = resolveSkillLanguage(skill, newChatPracticeLanguage.value);
-  if (resolved && !skillSupportsLanguage(skill, newChatPracticeLanguage.value)) {
+  if (resolved && PRACTICE_LANGUAGES.has(resolved) && !skillSupportsLanguage(skill, newChatPracticeLanguage.value)) {
     newChatPracticeLanguage.value = resolved as PracticeLanguage;
   }
 });
