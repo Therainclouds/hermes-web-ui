@@ -52,6 +52,7 @@ export type UpdatePreflightIssueCode =
   | 'webui-home-in-deploy-dir'
   | 'upload-dir-in-deploy-dir'
   | 'hermes-home-in-deploy-dir'
+  | 'agent-data-safety'
   | 'update-state-dir-not-writable'
   | 'update-staging-dir-not-writable'
   | 'update-log-dir-not-writable'

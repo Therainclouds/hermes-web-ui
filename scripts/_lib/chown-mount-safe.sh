@@ -22,6 +22,20 @@ chown_r_mount_safe_root() {
     return 1
   fi
   chown -h "${owner}" "${target}"
+  # The orchestrator passes the deploy SYMLINK (e.g. /opt/hermes-web-ui/src).
+  # find(1) in default -P mode does not traverse into an argument symlink,
+  # so the recursion below only ever saw the link itself and the tree stayed
+  # root-owned (6.6.6.73 canary: npm ci EACCES as APP_USER). Resolve the
+  # real tree before traversal; -h keeps symlinks inside the tree safe.
+  local real_target
+  real_target="$(readlink -f "${target}" 2>/dev/null || true)"
+  if [[ -n "${real_target}" && -d "${real_target}" ]]; then
+    target="${real_target}"
+    # The tree root itself: find -mindepth 1 below skips it, and the -h
+    # chown above hit the deploy LINK, not the resolved dir. Without this,
+    # APP_USER cannot mkdir at the tree root (npm ci EACCES, canary run 6).
+    chown "${owner}" "${target}"
+  fi
   if ! command -v mountpoint >/dev/null 2>&1; then
     find "${target}" -mindepth 1 -exec chown -h "${owner}" '{}' +
     return

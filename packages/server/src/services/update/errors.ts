@@ -19,6 +19,7 @@ export type UpdateErrorCode =
   | 'update_installer_script_stale'
   | 'update_ship_block'
   | 'update_policy_invalid'
+  | 'update_data_preservation_unavailable'
   | 'update_journal_corrupt'
 
 export class UpdateError extends Error {

@@ -122,7 +122,6 @@ function seedRepo(prefix: string, options: FixtureOptions = {}) {
     minCurrentVersion: '1.0.0',
     manifestBranch: 'release-manifests',
     hostDependenciesPath: 'release/device-host-dependencies.json',
-    ossPublicBaseUrl: 'https://example-bucket.oss-cn-shanghai.aliyuncs.com/hermes-web-ui',
     packageAllowlist: PACKAGE_ALLOWLIST,
     sourceRepoUrl: 'https://github.com/tangledup-ai/hermes-web-ui',
     sourcePathAllowlist: [

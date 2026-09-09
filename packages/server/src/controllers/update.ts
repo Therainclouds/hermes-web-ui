@@ -36,10 +36,35 @@ function syncUpdateTaskState() {
   const hadInMemoryLock = updateInProgress
   updateTaskStore.syncFromDisk()
   let currentTask = updateTaskStore.getCurrentTask()
+  // A currentTask persisted with a terminal status (e.g. hand-written by a
+  // manual recovery on 6.6.6.73) keeps `updateInProgress` true forever and
+  // 409s every future start. Archive terminal records into lastTask.
+  if (currentTask && (currentTask.status === 'succeeded' || currentTask.status === 'failed')) {
+    updateTaskStore.completeCurrentTask(
+      currentTask.status === 'succeeded' ? 'succeeded' : 'failed',
+      currentTask.message || 'Archived terminal task loaded from state file.',
+    )
+    currentTask = updateTaskStore.getCurrentTask()
+  }
   if (
     currentTask
     && currentTask.owner === 'controller'
     && currentTask.stage === 'restarting'
+    && currentTask.targetVersion
+    && getLocalWebUiVersion() === currentTask.targetVersion
+  ) {
+    updateTaskStore.completeCurrentTask('succeeded', `Updated Hermes Web UI to ${currentTask.targetVersion}.`)
+    currentTask = updateTaskStore.getCurrentTask()
+  }
+  // Source-deploy and device-package orchestrators run as detached child
+  // processes that hand off to 'runtime' ownership. When the orchestrator
+  // exits successfully and the server restarts, the new process sees the
+  // task still at 'starting' stage. Complete it if we're now running the
+  // target version — the orchestrator's exit code 0 already verified the
+  // deploy tree built and identity stamped correctly.
+  if (
+    currentTask
+    && currentTask.owner === 'runtime'
     && currentTask.targetVersion
     && getLocalWebUiVersion() === currentTask.targetVersion
   ) {
@@ -87,6 +112,7 @@ const FATAL_DETACHED_CHILD_SIGNALS = new Set<NodeJS.Signals>([
 ])
 const UPDATE_RUNNER_ENV_KEYS = [
   'DEPLOY_DIR',
+  'APP_USER',
   'HERMES_HOME',
   'HERMES_HOME_DIR',
   'HERMES_WEB_UI_HOME',
@@ -1630,10 +1656,11 @@ export async function handleUpdate(ctx: any) {
   const runtimePaths = resolveUpdateRuntimePaths()
   const preflight = buildPreflight(runtimePaths)
   if (preflight.shouldBlock) {
+    const agentDataSafetyIssue = preflight.issues.find(issue => issue.code === 'agent-data-safety')
     ctx.status = 409
     ctx.body = {
       success: false,
-      code: 'update_dangerous_layout',
+      code: agentDataSafetyIssue ? 'update_data_preservation_unavailable' : 'update_dangerous_layout',
       message: preflight.blockingText || 'Update blocked because protected data would be at risk.',
       issues: preflight.issues,
     }
@@ -1678,7 +1705,9 @@ export async function handleUpdate(ctx: any) {
         throw new UpdateError(
           manifestPreflight.issues.some(issue => issue.code === 'insufficient-disk-space')
             ? 'update_preflight_space'
-            : 'update_preflight_permissions',
+            : manifestPreflight.issues.some(issue => issue.code === 'agent-data-safety')
+              ? 'update_data_preservation_unavailable'
+              : 'update_preflight_permissions',
           manifestPreflight.blockingText || 'Update blocked by device package preflight checks.',
           409,
           {

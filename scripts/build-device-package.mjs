@@ -166,25 +166,6 @@ function dedupeNonEmpty(values) {
   return [...new Set(values.map(value => String(value || '').trim()).filter(Boolean))]
 }
 
-function buildOssObjectUrl(baseUrl, ...segments) {
-  const normalizedBaseUrl = normalizeOptionalUrl(baseUrl)
-  if (!normalizedBaseUrl) return ''
-  const normalizedSegments = segments
-    .map(segment => String(segment || '').trim().replace(/^\/+/, '').replace(/\/+$/, ''))
-    .filter(Boolean)
-    .map(encodeURIComponent)
-  return [normalizedBaseUrl, ...normalizedSegments].join('/')
-}
-
-function buildOssObjectPath(ossPath, ...segments) {
-  const normalizedOssPath = normalizeOptionalUrl(ossPath)
-  if (!normalizedOssPath) return ''
-  const normalizedSegments = segments
-    .map(segment => String(segment || '').trim().replace(/^\/+/, '').replace(/\/+$/, ''))
-    .filter(Boolean)
-  return [normalizedOssPath, ...normalizedSegments].join('/')
-}
-
 function normalizeVersion(version) {
   const normalized = (version || '').trim()
   if (!normalized) {
@@ -424,8 +405,6 @@ export async function buildDevicePackageRelease(options = {}) {
     )
   }
   const packageEntries = buildPackageEntries(repoRoot, packageAllowlist)
-  const ossPath = normalizeOptionalUrl(options.ossPath || releaseConfig.ossPath)
-  const ossPublicBaseUrl = normalizeOptionalUrl(options.ossPublicBaseUrl || releaseConfig.ossPublicBaseUrl)
   const sourcePathPrefix = (options.sourcePathPrefix || releaseConfig.sourcePathPrefix || 'sources').trim() || 'sources'
   const sourceArtifactFormat = (options.sourceArtifactFormat || releaseConfig.sourceArtifactFormat || DEVICE_PACKAGE_ARTIFACT_FORMAT).trim() || DEVICE_PACKAGE_ARTIFACT_FORMAT
   if (sourceArtifactFormat !== DEVICE_PACKAGE_ARTIFACT_FORMAT) {
@@ -537,20 +516,14 @@ export async function buildDevicePackageRelease(options = {}) {
       sourceSize = statSync(sourceArtifactPath).size
     }
 
-    const ossPackageUrl = buildOssObjectUrl(ossPublicBaseUrl, 'releases', tag, artifactName)
     const githubPackageUrl = buildReleaseAssetUrl(releaseRepo, tag, artifactName)
-    const packageUrls = dedupeNonEmpty(ossPackageUrl ? [ossPackageUrl] : [githubPackageUrl])
+    const packageUrls = dedupeNonEmpty([githubPackageUrl])
     const packageUrl = packageUrls[0] || githubPackageUrl
 
-    const ossSourceUrl = buildOssObjectUrl(ossPublicBaseUrl, sourcePathPrefix, tag, sourceArtifactName)
     const githubSourceUrl = buildReleaseAssetUrl(releaseRepo, tag, sourceArtifactName)
-    const sourceUrls = dedupeNonEmpty(ossSourceUrl ? [ossSourceUrl, githubSourceUrl] : [githubSourceUrl])
+    const sourceUrls = dedupeNonEmpty([githubSourceUrl])
     const sourceUrl = sourceUrls[0] || githubSourceUrl
 
-    const ossManifestUrl = buildOssObjectUrl(ossPublicBaseUrl, 'releases', tag, 'manifest.json')
-    const ossLatestUrl = buildOssObjectUrl(ossPublicBaseUrl, 'releases', channel, 'latest.json')
-    const ossShaUrl = buildOssObjectUrl(ossPublicBaseUrl, 'releases', tag, `${artifactName}.sha256`)
-    const ossSourceShaUrl = buildOssObjectUrl(ossPublicBaseUrl, sourcePathPrefix, tag, `${sourceArtifactName}.sha256`)
     const manifest = {
       version,
       channel,
@@ -625,9 +598,8 @@ export async function buildDevicePackageRelease(options = {}) {
     // node-pty` (~2 min vs ~10 min on ARM). The pure-source tar is
     // still built and uploaded as a fallback.
     if (packageType === 'source-deploy') {
-      const ossDevicePackageUrl = buildOssObjectUrl(ossPublicBaseUrl, 'releases', tag, artifactName)
       const githubDevicePackageUrl = buildReleaseAssetUrl(releaseRepo, tag, artifactName)
-      const devicePackageUrls = dedupeNonEmpty(ossDevicePackageUrl ? [ossDevicePackageUrl] : [githubDevicePackageUrl])
+      const devicePackageUrls = dedupeNonEmpty([githubDevicePackageUrl])
       manifest.sourceUrl = devicePackageUrls[0] || githubDevicePackageUrl
       manifest.sourceUrls = devicePackageUrls
       manifest.sourceSha256 = sha256
@@ -662,20 +634,6 @@ export async function buildDevicePackageRelease(options = {}) {
       sourceShaPath,
       manifestPath,
       latestPath,
-      ossPath,
-      ossPublicBaseUrl,
-      ossArtifactPath: buildOssObjectPath(ossPath, 'releases', tag, artifactName),
-      ossShaPath: buildOssObjectPath(ossPath, 'releases', tag, `${artifactName}.sha256`),
-      ossSourceArtifactPath: buildOssObjectPath(ossPath, sourcePathPrefix, tag, sourceArtifactName),
-      ossSourceShaPath: buildOssObjectPath(ossPath, sourcePathPrefix, tag, `${sourceArtifactName}.sha256`),
-      ossManifestPath: buildOssObjectPath(ossPath, 'releases', tag, 'manifest.json'),
-      ossLatestPath: buildOssObjectPath(ossPath, 'releases', channel, 'latest.json'),
-      ossArtifactUrl: ossPackageUrl,
-      ossSourceUrl,
-      ossShaUrl,
-      ossSourceShaUrl: ossSourceShaUrl,
-      ossManifestUrl,
-      ossLatestUrl,
       githubSourceUrl,
       manifestBaseUrl: `https://raw.githubusercontent.com/${releaseRepo}/${manifestBranch}/releases`,
       latestUrl: `https://raw.githubusercontent.com/${releaseRepo}/${manifestBranch}/releases/${channel}/latest.json`,

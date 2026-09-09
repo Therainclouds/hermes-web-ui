@@ -274,4 +274,20 @@ describe('update orchestrator (dry-run)', () => {
     const output = res.stdout + res.stderr
     expect(output).toContain('preserving node_modules')
   })
+
+  it.skipIf(!haveSymlinks)('skips node_modules preservation when lockfile changed between versions', () => {
+    // Old deploy has node_modules/ but with a DIFFERENT package-lock.json sha
+    // than the new archive. preserve_node_modules must NOT copy (would be stale).
+    const fixture = makeFixture('0.9.0', { wrap: false, withNodeModules: true })
+    // Mutate the old tree's package-lock.json to have a different sha than the new archive.
+    const oldLock = join(fixture.deployDir, 'package-lock.json')
+    writeFileSync(oldLock, JSON.stringify({ name: 'hermes-web-ui', lockfileVersion: 3, lock_is_different: true }))
+    const res = runOrchestrator(fixture)
+    expect(res.status, `orchestrator failed: ${res.stderr}`).toBe(0)
+    // node_modules should NOT be preserved (lockfile mismatch).
+    expect(existsSync(join(fixture.deployDir, 'node_modules'))).toBe(false)
+    const output = res.stdout + res.stderr
+    expect(output).toContain('lockfile changed')
+    expect(output).toContain('skipping node_modules preservation')
+  })
 })

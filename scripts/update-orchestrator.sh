@@ -51,6 +51,20 @@ source "${SCRIPT_DIR}/policy-parse.sh"
 source "${SCRIPT_DIR}/_lib/identity-stamp.sh"
 # shellcheck source=_lib/chown-mount-safe.sh
 source "${SCRIPT_DIR}/_lib/chown-mount-safe.sh"
+# shellcheck source=_lib/data-inventory.sh
+# Fatal on missing lib: with the functions undefined the pre-swap inventory
+# silently reports empty and verify "fails" after a 2G preserve copy, a
+# confusing mid-swap revert (6.6.6.73 web-click 2026-09-08). Refuse before
+# any swap instead.
+if ! source "${SCRIPT_DIR}/_lib/data-inventory.sh"; then
+  warn "data-inventory library missing at ${SCRIPT_DIR}/_lib/; the deployed package is broken — refusing to update"
+  exit 4
+fi
+# shellcheck source=_lib/staging-gc.sh
+if ! source "${SCRIPT_DIR}/_lib/staging-gc.sh"; then
+  warn "staging-gc library missing at ${SCRIPT_DIR}/_lib/; the deployed package is broken — refusing to update"
+  exit 4
+fi
 
 STATE_HOME="$(journal_state_home)"
 SWAP_ROOT="${STATE_HOME}/state/swap"
@@ -70,6 +84,53 @@ DRY_RUN="${WEBUI_DRY_RUN:-${WEBUI_UPDATE_SKIP_RESTART:-}}"
 
 info() { printf '[update-orchestrator] %s\n' "$*"; }
 warn() { printf '[update-orchestrator] WARN: %s\n' "$*" >&2; }
+
+# ---------------------------------------------------------------------------
+# Capability fingerprint — the server preflight reads this line from the
+# deployed orchestrator to decide whether the current tree can safely
+# preserve data during an update. Grow the list as new capabilities land.
+# Required words:
+#   hermes_data_preservation — copy old tree's hermes_data across swap
+#   prebuilt_dist            — skip npm run build when dist/ ships prebuilt
+#   node_modules_preservation — copy old tree's node_modules when lock matches
+# ---------------------------------------------------------------------------
+ORCHESTRATOR_CAPABILITIES="hermes_data_preservation prebuilt_dist node_modules_preservation"
+
+# Resolve node binary once at startup. The orchestrator runs as root on
+# devices but node often lives in /opt/node-*/bin or /usr/local/bin. We
+# probe the device PATH, then the app user's home bin, then a few common
+# install roots. Falls back to empty if nothing is found; callers MUST
+# degrade gracefully (skip version checks, never fail a successful
+# update because of a missing node binary).
+resolve_node_bin() {
+  local bin=""
+  bin="$(command -v node 2>/dev/null || true)"
+  if [[ -n "${bin}" && -x "${bin}" ]]; then
+    NODE_BIN="${bin}"
+    return 0
+  fi
+  local app_user="${HERMES_WEB_UI_UPDATE_APP_USER:-${APP_USER:-}}"
+  local app_home=""
+  if [[ -n "${app_user}" ]]; then
+    app_home="$(getent passwd "${app_user}" 2>/dev/null | cut -d: -f6 || true)"
+  fi
+  local candidate
+  for candidate in \
+    "${app_home:+${app_home}/.local/bin/node}" \
+    "/opt/node-v23/bin/node" \
+    "/opt/node/bin/node" \
+    "/usr/local/bin/node" \
+    "/usr/bin/node"; do
+    if [[ -n "${candidate}" && -x "${candidate}" ]]; then
+      NODE_BIN="${candidate}"
+      return 0
+    fi
+  done
+  warn "node binary not found; version checks will be skipped"
+  NODE_BIN=""
+  return 0
+}
+NODE_BIN=""
 
 # ---------------------------------------------------------------------------
 # Locking: flock(1) when present (Linux device), otherwise an atomic
@@ -121,7 +182,11 @@ release_lock() {
   release_lock_files
 }
 # Safety net: no exit path may leak the lock.
-trap 'release_lock_files 2>/dev/null || true' EXIT
+# Terminal-state staging GC (R4): on every exit path the current task's
+# staging/partial leftovers are reclaimed unless still referenced (live
+# tree / lastgood). Runs after the ERR trap's finish_task so the journal
+# already reflects the final status.
+trap 'gc_task_artifacts 2>/dev/null || true; release_lock_files 2>/dev/null || true' EXIT
 
 # ---------------------------------------------------------------------------
 # Error handling: swap/healthcheck failures roll back to lastgood.
@@ -207,7 +272,19 @@ preflight_policy() {
 }
 
 deploy_tree_size_bytes() {
-  du -sk "${DEPLOY_DIR}" 2>/dev/null | cut -f1 | awk '{ print $1 * 1024 }'
+  # DEPLOY_DIR is normally a symlink into the staging cache; plain du
+  # measures the link itself (~0) and the space gate passes while the disk
+  # fills up (6.6.6.73 canary, ENOSPC mid npm ci). Resolve the argument
+  # symlink ONLY — du -L would also follow symlinks INSIDE hermes_data
+  # (double counting, and dangling links make du exit non-zero, which
+  # under pipefail appends `|| echo 0` output and breaks the arithmetic).
+  local tree
+  tree="$(readlink -f "${DEPLOY_DIR%/}" 2>/dev/null || true)"
+  [[ -n "${tree}" && -d "${tree}" ]] || tree="${DEPLOY_DIR%/}"
+  local kb
+  kb="$(du -sk "${tree}" 2>/dev/null | cut -f1)" || true
+  [[ -n "${kb}" ]] || kb=0
+  awk -v k="${kb}" 'BEGIN { print k * 1024 }'
 }
 
 preflight_space() {
@@ -383,6 +460,14 @@ swap_deploy() {
   journal_append "${TASK_ID}" "installing" "atomic swap into ${DEPLOY_DIR}"
   mkdir -p "${SWAP_ROOT}"
 
+  # Pre-swap data inventory: capture the old tree's hermes_data metrics
+  # BEFORE any rename so we can compare after preservation. This closes
+  # the "green succeeded but data is gone" gap (6.6.6.73).
+  local pre_inventory=""
+  pre_inventory="$(inventory_hermes_data "${DEPLOY_DIR}")"
+  journal_append "${TASK_ID}" "data_inventory" "pre-swap: ${pre_inventory}"
+  info "pre-swap hermes_data inventory: ${pre_inventory}"
+
   # First phase-a run on a legacy layout: DEPLOY_DIR is still a real
   # directory. Record it as the rollback point, then make it the
   # symlink target chain (rename the old tree aside atomically).
@@ -425,6 +510,26 @@ swap_deploy() {
   # as a backup so a truly new file in the skeleton is not lost.
   preserve_hermes_data_across_swap
 
+  # Post-preservation verification: inventory the new tree's hermes_data
+  # and compare against the pre-swap snapshot. If state.db shrank or
+  # entry count halved, the preservation silently failed — rollback
+  # immediately. Data integrity trumps update availability.
+  local post_inventory=""
+  post_inventory="$(inventory_hermes_data "${DEPLOY_DIR}")"
+  local verify_msg=""
+  if verify_msg="$(verify_hermes_data_preserved "${pre_inventory}" "${post_inventory}")"; then
+    journal_append "${TASK_ID}" "data_verified" "${verify_msg}"
+    info "hermes_data preservation verified: ${verify_msg}"
+  else
+    warn "hermes_data preservation FAILED: ${verify_msg}"
+    journal_append "${TASK_ID}" "failed" "hermes_data_preservation_mismatch: ${verify_msg}"
+    if (( ROLLBACK_READY )); then
+      revert_to_lastgood "${DEPLOY_DIR}" || true
+      info "reverted to lastgood after preservation mismatch"
+    fi
+    return 5
+  fi
+
   # Preserve node_modules from the old tree (optimization). Pre-built
   # archives ship dist/ but not node_modules/; copying from the old
   # tree avoids a redundant `npm ci` (~30s on ARM). If the copy fails,
@@ -462,11 +567,12 @@ run_build_as_app_user() {
   local app_home
   app_home="$(getent passwd "${app_user}" 2>/dev/null | cut -d: -f6 || echo "/home/${app_user}")"
   # Detect node binary so the PATH covers the device install location
-  # (e.g. /opt/node-v23/bin). Falls back to PATH lookup when node is
-  # already on the default search path.
+  # (e.g. /opt/node-v23/bin). Reuse the NODE_BIN resolved at source time —
+  # root's PATH often lacks node entirely (6.6.6.73 canary), and a bare
+  # `command -v node` here left npm unreachable inside the su shell.
   local node_bin node_dir path_env
-  node_bin="$(command -v node 2>/dev/null || true)"
-  if [[ -n "${node_bin}" ]]; then
+  node_bin="${NODE_BIN:-$(command -v node 2>/dev/null || true)}"
+  if [[ -n "${node_bin}" && -x "${node_bin}" ]]; then
     node_dir="$(dirname "${node_bin}")"
   else
     node_dir=""
@@ -474,12 +580,17 @@ run_build_as_app_user() {
   path_env="${node_dir:+${node_dir}:}${app_home}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
   # Pass proxy env vars so devices behind a corporate proxy can reach
   # the npm registry mirror.
-  local proxy_env=()
+  local env_exports="export HOME='${app_home}' PATH='${path_env}'"
+  local v
   for v in http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY; do
-    if [[ -n "${!v:-}" ]]; then proxy_env+=("${v}=${!v}"); fi
+    if [[ -n "${!v:-}" ]]; then env_exports+=" ${v}='${!v}'"; fi
   done
+  # Export up-front: `VAR=x cd dir && npm` scopes the assignments to `cd`
+  # only — the `&&`-chained npm would run with the su login PATH, where
+  # node/npm are frequently absent (6.6.6.73 canary, "npm: command not
+  # found" despite a correct path_env).
   # shellcheck disable=SC2029
-  su - "${app_user}" -s /bin/bash -c "HOME='${app_home}' PATH='${path_env}' ${proxy_env[*]} ${command}"
+  su - "${app_user}" -s /bin/bash -c "${env_exports}; ${command}"
 }
 
 # Copy the previous deploy's node_modules/ into the freshly swapped
@@ -512,6 +623,26 @@ preserve_node_modules_across_swap() {
     return 0
   fi
 
+  # Compare package-lock.json sha of old tree vs new tree. If they differ,
+  # preserved node_modules would be STALE (missing new deps or carrying
+  # changed versions) — the next build_deploy's idempotency check would
+  # skip npm ci entirely (nm_populated && dist_ready) and the service
+  # would crash on missing deps. Refusing to copy is the safe choice AND
+  # saves hundreds of MB of wasted I/O on ARM.
+  local new_lock="${DEPLOY_DIR%/}/package-lock.json"
+  local old_lock="${old_tree%/}/package-lock.json"
+  local new_lock_sha="" old_lock_sha=""
+  if [[ -f "${new_lock}" ]]; then
+    new_lock_sha="$(sha256sum "${new_lock}" 2>/dev/null | cut -d' ' -f1 || true)"
+  fi
+  if [[ -f "${old_lock}" ]]; then
+    old_lock_sha="$(sha256sum "${old_lock}" 2>/dev/null | cut -d' ' -f1 || true)"
+  fi
+  if [[ -n "${new_lock_sha}" && -n "${old_lock_sha}" && "${new_lock_sha}" != "${old_lock_sha}" ]]; then
+    info "lockfile changed (old=${old_lock_sha:0:12}, new=${new_lock_sha:0:12}); skipping node_modules preservation (npm ci needed)"
+    return 0
+  fi
+
   info "preserving node_modules from ${old_nm} into new deploy"
   if cp -a "${old_nm}" "${new_nm}"; then
     info "node_modules restored ($(du -sh "${new_nm}" 2>/dev/null | cut -f1))"
@@ -536,9 +667,13 @@ preserve_node_modules_across_swap() {
 #   Legacy path: full `npm ci + npm run build`. Requires complete
 #   build toolchain (vue-tsc, build-essential, etc.) on device.
 #
-# The function is idempotent: when node_modules and dist/ are already
-# present with the expected version the work is skipped so a retry
-# after a partial run does not waste ARM build time.
+# Idempotency: after a successful npm ci, we write a lockfile marker
+# `${nm}/.hermes-lock-sha256` containing sha256(package-lock.json). On
+# retry or next update, the idempotency check requires the marker to
+# match the CURRENT lockfile sha — if dependencies changed between
+# versions, the marker mismatches and a fresh npm ci runs. This closes
+# the stale-node_modules bug that could bite any release with dep
+# changes when preserve_node_modules copied an older tree's deps.
 #
 # Placement in the lifecycle (master spec § Architecture):
 #   swap_deploy -> preserve_hermes_data -> preserve_node_modules -> build_deploy -> restart_runtime
@@ -550,24 +685,42 @@ build_deploy() {
   local app_user="${HERMES_WEB_UI_UPDATE_APP_USER:-${APP_USER:-}}"
   local dist_index="${DEPLOY_DIR%/}/dist/server/index.js"
   local nm="${DEPLOY_DIR%/}/node_modules"
+  local lock="${DEPLOY_DIR%/}/package-lock.json"
+  local lock_marker="${nm}/.hermes-lock-sha256"
+  local current_lock_sha=""
+  if [[ -f "${lock}" ]]; then
+    current_lock_sha="$(sha256sum "${lock}" 2>/dev/null | cut -d' ' -f1 || true)"
+  fi
 
   # Idempotency: skip when node_modules is populated AND dist/ already
-  # carries the expected version. A partial run (node_modules present
-  # but dist/ missing) falls through to the build-only path.
+  # carries the expected version AND the lockfile marker matches the
+  # current lockfile sha. The marker prevents false positives when
+  # preserve_node_modules copied stale dependencies from an older tree
+  # whose package-lock.json no longer matches the new archive.
   local nm_populated=0
   if [[ -d "${nm}" ]] && [[ "$(find "${nm}" -mindepth 1 -maxdepth 1 2>/dev/null | head -1 | wc -l)" -gt 0 ]]; then
     nm_populated=1
   fi
+  local lock_marker_valid=0
+  if (( nm_populated )) && [[ -f "${lock_marker}" && -n "${current_lock_sha}" ]]; then
+    local marker_sha
+    marker_sha="$(cat "${lock_marker}" 2>/dev/null || true)"
+    if [[ "${marker_sha}" == "${current_lock_sha}" ]]; then
+      lock_marker_valid=1
+    fi
+  fi
   local dist_ready=0
   if [[ -f "${dist_index}" ]]; then
-    local dist_version
-    dist_version="$(node -e "try{console.log(require('${DEPLOY_DIR}/package.json').version)}catch(e){}" 2>/dev/null || true)"
+    local dist_version=""
+    if [[ -n "${NODE_BIN}" ]]; then
+      dist_version="$("${NODE_BIN}" -e "try{console.log(require('${DEPLOY_DIR}/package.json').version)}catch(e){}" 2>/dev/null || true)"
+    fi
     if [[ "${dist_version}" == "${TARGET_VERSION}" ]]; then
       dist_ready=1
     fi
   fi
-  if (( nm_populated && dist_ready )); then
-    info "deploy tree already built for ${TARGET_VERSION}; skipping npm ci + build"
+  if (( nm_populated && lock_marker_valid && dist_ready )); then
+    info "deploy tree already built for ${TARGET_VERSION} (lock marker matches); skipping npm ci + build"
     return 0
   fi
 
@@ -593,7 +746,7 @@ build_deploy() {
   fi
 
   # --- Install dependencies -------------------------------------------
-  if (( ! nm_populated )); then
+  if (( ! nm_populated || ! lock_marker_valid )); then
     journal_append "${TASK_ID}" "installing_dependencies" "npm ci --ignore-scripts as ${app_user}"
     info "installing dependencies into ${DEPLOY_DIR}"
     if ! run_build_as_app_user "cd '${DEPLOY_DIR}' && npm ci --ignore-scripts --registry=https://registry.npmmirror.com"; then
@@ -601,8 +754,13 @@ build_deploy() {
       (( ROLLBACK_READY )) && revert_to_lastgood "${DEPLOY_DIR}" || true
       return 5
     fi
+    # Write the lockfile marker so the next invocation knows node_modules
+    # matches the current package-lock.json.
+    if [[ -n "${current_lock_sha}" ]]; then
+      printf '%s\n' "${current_lock_sha}" > "${lock_marker}" 2>/dev/null || true
+    fi
   else
-    info "node_modules present; skipping dependency install"
+    info "node_modules valid (lock marker matches); skipping dependency install"
   fi
 
   # --- Rebuild optional native bindings --------------------------------
@@ -641,14 +799,24 @@ build_deploy() {
     (( ROLLBACK_READY )) && revert_to_lastgood "${DEPLOY_DIR}" || true
     return 5
   fi
-  local actual_version
-  actual_version="$(node -e "console.log(require('${DEPLOY_DIR}/package.json').version)" 2>/dev/null || true)"
-  if [[ "${actual_version}" != "${TARGET_VERSION}" ]]; then
-    warn "post-build version mismatch: expected ${TARGET_VERSION}, got ${actual_version}"
-    (( ROLLBACK_READY )) && revert_to_lastgood "${DEPLOY_DIR}" || true
-    return 5
+  # Version verification uses the resolved NODE_BIN (or bare `node` if
+  # resolve_node_bin succeeded). When node is entirely absent, we
+  # degrade gracefully: version consistency was already enforced by
+  # manifest_self_check (the dist/server/index.js file and the
+  # package.json version are the SAME archive contents), so a missing
+  # node binary is NOT a reason to revert a successful update.
+  if [[ -n "${NODE_BIN}" ]]; then
+    local actual_version
+    actual_version="$("${NODE_BIN}" -e "console.log(require('${DEPLOY_DIR}/package.json').version)" 2>/dev/null || true)"
+    if [[ -n "${actual_version}" && "${actual_version}" != "${TARGET_VERSION}" ]]; then
+      warn "post-build version mismatch: expected ${TARGET_VERSION}, got ${actual_version}"
+      (( ROLLBACK_READY )) && revert_to_lastgood "${DEPLOY_DIR}" || true
+      return 5
+    fi
+    info "deploy tree built and verified: ${actual_version:-unknown}"
+  else
+    info "deploy tree built (node missing; version check skipped, manifest_self_check covers consistency)"
   fi
-  info "deploy tree built and verified: ${actual_version}"
   return 0
 }
 
@@ -706,10 +874,20 @@ main() {
   journal_init "${TASK_ID}" "${TARGET_VERSION}" "${MANIFEST_SHA}"
   finish_task "queued" "orchestrator start (target ${TARGET_VERSION})"
 
+  # Resolve node binary once so version-check call sites use a stable path
+  # and degrade gracefully on devices without node on root's PATH.
+  resolve_node_bin
+
   if ! acquire_lock; then
     warn "another update holds the lock; refusing to start"
     exit 3
   fi
+
+  # Startup sweep (R4): unreferenced staging leftovers from previous
+  # failed/cancelled updates accumulate forever otherwise (6.6.6.73
+  # disk exhaustion). Runs under the lock, so no concurrent orchestrator
+  # can own any staging dir in the cache.
+  gc_staging_cache "${HERMES_WEB_UI_UPDATE_GC_MIN_AGE_DAYS:-7}"
 
   if ! preflight_policy; then
     finish_task "failed" "preflight refused by policy"
@@ -717,9 +895,15 @@ main() {
     exit 3
   fi
   if ! preflight_space; then
-    finish_task "failed" "preflight refused: insufficient disk space"
-    release_lock
-    exit 3
+    # Space-pressure GC (R4): one aggressive sweep (age >= 1 day) before
+    # refusing the update — stale leftovers have priority over the 503.
+    gc_staging_cache 1
+    if ! preflight_space; then
+      finish_task "failed" "preflight refused: insufficient disk space"
+      release_lock
+      exit 3
+    fi
+    info "staging-gc freed enough space to pass the preflight gate"
   fi
 
   if [[ -z "${PACKAGE_ARCHIVE}" ]]; then

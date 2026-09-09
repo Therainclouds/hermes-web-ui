@@ -71,6 +71,14 @@ chown_r_mount_safe() {
   local owner="$1"
   local target="$2"
   run chown -h "${owner}" "${target}"
+  # find(1) in default -P mode does not traverse into an argument symlink;
+  # when target is a symlink (e.g. the deploy link) resolve the real tree
+  # first or the recursion only touches the link itself (6.6.6.73 canary).
+  local real_target
+  real_target="$(readlink -f "${target}" 2>/dev/null || true)"
+  if [[ -n "${real_target}" && -d "${real_target}" ]]; then
+    target="${real_target}"
+  fi
   if ! command -v mountpoint >/dev/null 2>&1; then
     run find "${target}" -mindepth 1 -exec chown -h "${owner}" '{}' +
     return
@@ -1173,6 +1181,12 @@ BIND_HOST=${BIND_HOST}
 NODE_ENV=production
 HOME=${APP_USER_HOME}
 PATH=${NODE_INSTALL_DIR}/bin:${APP_USER_HOME}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# The update controller passes this to the orchestrator verbatim. It MUST
+# stay the deploy LINK (not a resolved physical path): systemd resolves
+# WorkingDirectory at start time, so a cwd fallback goes stale after the
+# first swap and drives every later update through the orchestrator's
+# legacy real-dir branch (6.6.6.73 web-click failure, 2026-09-08).
+DEPLOY_DIR=${DEPLOY_DIR}
 HERMES_HOME=${HERMES_HOME_DIR}
 HERMES_BIN=${hermes_bin}
 ${hermes_agent_root:+HERMES_AGENT_ROOT=${hermes_agent_root}}

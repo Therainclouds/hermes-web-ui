@@ -42,7 +42,7 @@
     </div>
   </div>
   <div
-    v-else-if="environmentCheck && environmentCheck.status === 'unavailable'"
+    v-else-if="strategySupportsDriftCheck && environmentCheck && environmentCheck.status === 'unavailable'"
     class="environment-drift-banner environment-drift-banner--info"
     role="status"
     data-testid="environment-drift-unavailable"
@@ -67,6 +67,14 @@ const reconciling = ref(false)
 
 const environmentCheck = computed(() => store.environmentCheck)
 const drift = computed<DriftEntry[]>(() => environmentCheck.value?.drift ?? [])
+
+// Environment drift detection only applies to device-package deployments.
+// source-deploy and npm-package strategies don't produce env-state.json,
+// so the "unavailable" status is expected and should not be shown to users.
+const strategySupportsDriftCheck = computed(() => {
+  const s = store.updateStrategy
+  return s === 'device-package'
+})
 
 const visible = computed(() => {
   if (store.environmentDismissed) return false
