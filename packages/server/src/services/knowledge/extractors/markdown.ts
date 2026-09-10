@@ -1,27 +1,19 @@
 /**
- * Markdown text extractor. Reads the file as UTF-8 and counts tokens
- * via the shared `cl100k_base` encoder.
+ * Markdown extractor — reads raw UTF-8 text.
+ *
+ * No transformation in v1; the chunker (Task 4) handles heading-aware
+ * splitting. Future: optionally strip front-matter, normalize headings.
  */
 
 import { readFile } from 'fs/promises'
 import { ExtractError, countTokens, type ExtractResult } from './index'
 
-export async function markdownExtractor(filePath: string): Promise<ExtractResult> {
-  let raw: string
+export async function extractMarkdown(path: string): Promise<ExtractResult> {
+  let text: string
   try {
-    raw = await readFile(filePath, 'utf-8')
+    text = await readFile(path, 'utf-8')
   } catch (err) {
-    throw new ExtractError(`Failed to read markdown file: ${filePath}`, {
-      kind: 'io',
-      cause: err,
-    })
+    throw new ExtractError('io', `Failed to read markdown file: ${path}`, err)
   }
-
-  // Strip front-matter (YAML between --- delimiters at the start).
-  const stripped = raw.replace(/^---\n[\s\S]*?\n---\n?/, '')
-
-  return {
-    text: stripped.trim(),
-    tokenCount: countTokens(stripped),
-  }
+  return { text, tokenCount: countTokens(text) }
 }

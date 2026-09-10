@@ -1,24 +1,19 @@
 /**
- * Plain text extractor. Reads the file as UTF-8 and counts tokens
- * via the shared `cl100k_base` encoder.
+ * Plain-text extractor — reads raw UTF-8 text.
+ *
+ * Same implementation as markdown in v1; the chunker decides how to
+ * split based on the caller's hint.
  */
 
 import { readFile } from 'fs/promises'
 import { ExtractError, countTokens, type ExtractResult } from './index'
 
-export async function textExtractor(filePath: string): Promise<ExtractResult> {
-  let raw: string
+export async function extractText(path: string): Promise<ExtractResult> {
+  let text: string
   try {
-    raw = await readFile(filePath, 'utf-8')
+    text = await readFile(path, 'utf-8')
   } catch (err) {
-    throw new ExtractError(`Failed to read text file: ${filePath}`, {
-      kind: 'io',
-      cause: err,
-    })
+    throw new ExtractError('io', `Failed to read text file: ${path}`, err)
   }
-
-  return {
-    text: raw.trim(),
-    tokenCount: countTokens(raw),
-  }
+  return { text, tokenCount: countTokens(text) }
 }

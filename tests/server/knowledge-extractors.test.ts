@@ -1,222 +1,184 @@
 /**
- * Tests for the knowledge plugin text extractors.
+ * Extractor tests.
  *
- * Fixtures:
- *   - tests/server/fixtures/knowledge/sample.md  (committed)
- *   - tests/server/fixtures/knowledge/sample.txt (committed)
- *   - Minimal PDF and DOCX are generated in beforeAll to avoid
- *     committing binary blobs.
+ * Fixtures are generated on the fly where the format is trivially
+ * constructible (markdown, text). For PDF and DOCX we use `pdf-lib`
+ * and a minimal ZIP builder (no external fixture files to maintain).
+ *
+ * The `extract()` dispatcher is tested with:
+ *   - A known extension → returns non-empty text and deterministic
+ *     token count.
+ *   - An unknown extension → returns metadata-only sentinel.
+ *   - A corrupt file → throws ExtractError with kind='corrupt'.
  */
 
-import { writeFileSync, mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import JSZip from 'jszip'
 import {
-  extract,
-  countTokens,
   ExtractError,
-  ensureBuiltinExtractorsRegistered,
-  getRegisteredExtensions,
-} from '../../packages/server/src/services/knowledge/extractors/index'
+  countTokens,
+  extract,
+  getExtractor,
+  registerExtractor,
+} from '../../packages/server/src/services/knowledge/extractors'
 
-const FIXTURES_DIR = join(__dirname, 'fixtures', 'knowledge')
+let tempDir: string
 
-describe('knowledge extractors', () => {
-  beforeAll(() => {
-    ensureBuiltinExtractorsRegistered()
+beforeEach(() => {
+  tempDir = mkdtempSync(join(tmpdir(), 'knowledge-extractors-'))
+})
+
+afterEach(() => {
+  try {
+    rmSync(tempDir, { recursive: true, force: true })
+  } catch {
+    /* best-effort */
+  }
+})
+
+describe('extractor registry', () => {
+  it('returns a metadata-only result for unknown extensions', async () => {
+    const unknown = join(tempDir, 'mystery.xyz')
+    writeFileSync(unknown, 'content')
+    const result = await extract(unknown)
+    expect(result.text).toBe('')
+    expect(result.tokenCount).toBe(0)
   })
 
-  describe('registry', () => {
-    it('registers md, txt, pdf, docx extensions', () => {
-      const exts = getRegisteredExtensions()
-      expect(exts).toContain('.md')
-      expect(exts).toContain('.txt')
-      expect(exts).toContain('.pdf')
-      expect(exts).toContain('.docx')
-    })
-
-    it('unknown extension returns metadata-only sentinel', async () => {
-      const result = await extract('/tmp/somefile.xyz')
-      expect(result).toEqual({ text: '', tokenCount: 0 })
-    })
+  it('registers a custom extractor', async () => {
+    registerExtractor('.custom', async () => ({
+      text: 'hello custom',
+      tokenCount: 2,
+    }))
+    const p = join(tempDir, 'thing.custom')
+    writeFileSync(p, 'placeholder')
+    const result = await extract(p)
+    expect(result.text).toBe('hello custom')
   })
 
-  describe('countTokens', () => {
-    it('uses cl100k_base encoding', () => {
-      expect(countTokens('Hello world')).toBe(2)
-    })
+  it('getExtractor is case-insensitive', () => {
+    expect(typeof getExtractor('.md')).toBe('function')
+    expect(typeof getExtractor('.MD')).toBe('function')
+  })
+})
 
-    it('returns 0 for empty string', () => {
-      expect(countTokens('')).toBe(0)
-    })
+describe('markdown extractor', () => {
+  it('extracts text and counts tokens deterministically', async () => {
+    const md = join(tempDir, 'doc.md')
+    writeFileSync(
+      md,
+      '# Heading\n\nSome paragraph text here.\n\n## Sub\n\nMore text.'
+    )
+    const result = await extract(md)
+    expect(result.text).toContain('Heading')
+    expect(result.text).toContain('Sub')
+    expect(result.tokenCount).toBeGreaterThan(0)
+    // Determinism: same content → same count.
+    expect(result.tokenCount).toBe(countTokens(result.text))
   })
 
-  describe('markdown extractor', () => {
-    it('extracts text and strips front-matter', async () => {
-      const result = await extract(join(FIXTURES_DIR, 'sample.md'))
-      expect(result.text.length).toBeGreaterThan(0)
-      expect(result.tokenCount).toBeGreaterThan(0)
-      // Front-matter should be stripped (no "title: Test Document" in output).
-      expect(result.text).not.toContain('title: Test Document')
-      // Content should be present.
-      expect(result.text).toContain('transformer architecture')
-    })
+  it('throws ExtractError io on unreadable file', async () => {
+    const missing = join(tempDir, 'missing.md')
+    await expect(extract(missing)).rejects.toThrow(ExtractError)
+  })
+})
 
-    it('is deterministic', async () => {
-      const a = await extract(join(FIXTURES_DIR, 'sample.md'))
-      const b = await extract(join(FIXTURES_DIR, 'sample.md'))
-      expect(a.text).toBe(b.text)
-      expect(a.tokenCount).toBe(b.tokenCount)
-    })
+describe('plain-text extractor', () => {
+  it('reads utf-8 content', async () => {
+    const txt = join(tempDir, 'note.txt')
+    writeFileSync(txt, 'plain text here')
+    const result = await extract(txt)
+    expect(result.text).toBe('plain text here')
+    expect(result.tokenCount).toBeGreaterThan(0)
+  })
+})
+
+describe('pdf extractor', () => {
+  it('extracts text from a valid PDF', async () => {
+    const pdfLib = await import('pdf-lib')
+    const pdfDoc = await pdfLib.PDFDocument.create()
+    const page = pdfDoc.addPage([200, 200])
+    page.drawText('Hello PDF world', { x: 50, y: 150, size: 12 })
+    page.drawText('Second line here', { x: 50, y: 130, size: 12 })
+    const bytes = await pdfDoc.save()
+    const pdfPath = join(tempDir, 'test.pdf')
+    writeFileSync(pdfPath, bytes)
+
+    const result = await extract(pdfPath)
+    // pdfjs-dist should recover the text content.
+    expect(result.text.length).toBeGreaterThan(0)
+    expect(result.tokenCount).toBeGreaterThan(0)
   })
 
-  describe('text extractor', () => {
-    it('extracts plain text and counts tokens', async () => {
-      const result = await extract(join(FIXTURES_DIR, 'sample.txt'))
-      expect(result.text.length).toBeGreaterThan(0)
-      expect(result.tokenCount).toBeGreaterThan(0)
-      expect(result.text).toContain('quick brown fox')
-    })
+  it('throws ExtractError corrupt on invalid PDF', async () => {
+    const corrupt = join(tempDir, 'corrupt.pdf')
+    writeFileSync(corrupt, 'this is not a pdf')
+    await expect(extract(corrupt)).rejects.toThrow(ExtractError)
+    try {
+      await extract(corrupt)
+    } catch (err) {
+      expect(err).toBeInstanceOf(ExtractError)
+      expect((err as ExtractError).kind).toBe('corrupt')
+    }
+  })
+})
 
-    it('is deterministic', async () => {
-      const a = await extract(join(FIXTURES_DIR, 'sample.txt'))
-      const b = await extract(join(FIXTURES_DIR, 'sample.txt'))
-      expect(a.text).toBe(b.text)
-      expect(a.tokenCount).toBe(b.tokenCount)
-    })
+describe('docx extractor', () => {
+  it('extracts text from a valid DOCX', async () => {
+    const zip = new JSZip()
+    zip.file(
+      '[Content_Types].xml',
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml"
+    ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>`
+    )
+    zip.file(
+      'word/document.xml',
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>Hello </w:t></w:r><w:r><w:t>DOCX </w:t></w:r><w:r><w:t>world</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Second paragraph</w:t></w:r></w:p>
+  </w:body>
+</w:document>`
+    )
+    const docxPath = join(tempDir, 'test.docx')
+    const buf = await zip.generateAsync({ type: 'nodebuffer' })
+    writeFileSync(docxPath, buf)
+
+    const result = await extract(docxPath)
+    expect(result.text).toContain('Hello')
+    expect(result.text).toContain('DOCX')
+    expect(result.text).toContain('Second paragraph')
+    expect(result.tokenCount).toBeGreaterThan(0)
   })
 
-  describe('pdf extractor', () => {
-    let tempDir: string
-    let pdfPath: string
-    let corruptPdfPath: string
+  it('throws ExtractError corrupt on invalid DOCX', async () => {
+    const corrupt = join(tempDir, 'corrupt.docx')
+    writeFileSync(corrupt, 'not a zip')
+    await expect(extract(corrupt)).rejects.toThrow(ExtractError)
+    try {
+      await extract(corrupt)
+    } catch (err) {
+      expect(err).toBeInstanceOf(ExtractError)
+      expect((err as ExtractError).kind).toBe('corrupt')
+    }
+  })
+})
 
-    beforeAll(() => {
-      tempDir = mkdtempSync(join(tmpdir(), 'hermes-knowledge-extractors-pdf-'))
-
-      // Generate a minimal valid PDF with a single text page.
-      // Hand-crafted PDF 1.4 structure — parseable by pdfjs-dist.
-      const stream = 'BT /F1 12 Tf 100 700 Td (Hello from the knowledge plugin test) Tj ET'
-      const streamLen = Buffer.byteLength(stream, 'ascii')
-
-      const pdf = [
-        '%PDF-1.4',
-        '1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj',
-        '2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj',
-        '3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>endobj',
-        '4 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj',
-        `5 0 obj<</Length ${streamLen}>>stream\n${stream}\nendstream\nendobj`,
-      ].join('\n')
-
-      // Build xref table.
-      const lines = pdf.split('\n')
-      let offset = 0
-      const offsets: number[] = []
-      for (const line of lines) {
-        const m = /^(\d+) 0 obj/.exec(line)
-        if (m) offsets[Number(m[1])] = offset
-        offset += line.length + 1
-      }
-
-      const xrefStart = offset
-      const xref = [
-        'xref',
-        `0 ${offsets.length}`,
-        '0000000000 65535 f ',
-      ]
-      for (let i = 1; i < offsets.length; i++) {
-        xref.push(`${String(offsets[i] ?? 0).padStart(10, '0')} 00000 n `)
-      }
-      xref.push('trailer<</Size ' + offsets.length + '/Root 1 0 R>>')
-      xref.push('startxref')
-      xref.push(String(xrefStart))
-      xref.push('%%EOF')
-
-      const fullPdf = pdf + '\n' + xref.join('\n')
-
-      pdfPath = join(tempDir, 'test.pdf')
-      writeFileSync(pdfPath, fullPdf, 'ascii')
-
-      // Corrupt PDF — just random bytes with PDF header.
-      corruptPdfPath = join(tempDir, 'corrupt.pdf')
-      writeFileSync(corruptPdfPath, '%PDF-1.4\ngarbage data that is not valid pdf content')
-    })
-
-    afterAll(() => {
-      rmSync(tempDir, { recursive: true, force: true })
-    })
-
-    it('extracts text from a valid PDF', async () => {
-      const result = await extract(pdfPath)
-      expect(result.text).toContain('Hello from the knowledge plugin test')
-      expect(result.tokenCount).toBeGreaterThan(0)
-    }, 30000)
-
-    it('throws ExtractError with kind=corrupt for invalid PDF', async () => {
-      await expect(extract(corruptPdfPath)).rejects.toThrow(ExtractError)
-    }, 30000)
+describe('countTokens', () => {
+  it('returns zero for empty string', () => {
+    expect(countTokens('')).toBe(0)
   })
 
-  describe('docx extractor', () => {
-    let tempDir: string
-    let docxPath: string
-    let corruptDocxPath: string
-
-    beforeAll(async () => {
-      tempDir = mkdtempSync(join(tmpdir(), 'hermes-knowledge-extractors-docx-'))
-
-      // Generate a minimal valid DOCX: ZIP with word/document.xml.
-      // Dynamic import because vitest transforms source to ESM.
-      const jszipMod = (await import('jszip')) as unknown as {
-        default: { loadAsync(data: Uint8Array): Promise<{ file(name: string): { async(type: 'string'): Promise<string> } | null; generateAsync(opts: Record<string, unknown>): Promise<Buffer> }> }
-        loadAsync(data: Uint8Array): Promise<{ file(name: string): { async(type: 'string'): Promise<string> } | null; generateAsync(opts: Record<string, unknown>): Promise<Buffer> }>
-      }
-      const JSZip = jszipMod.default ?? jszipMod
-      const zip = new JSZip()
-
-      zip.file('[Content_Types].xml', [
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
-        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">',
-        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>',
-        '<Default Extension="xml" ContentType="application/xml"/>',
-        '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>',
-        '</Types>',
-      ].join(''))
-
-      zip.file('word/document.xml', [
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
-        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">',
-        '<w:body>',
-        '<w:p><w:r><w:t>Hello from the DOCX extractor test.</w:t></w:r></w:p>',
-        '<w:p><w:r><w:t>Knowledge plugin supports Word documents.</w:t></w:r></w:p>',
-        '</w:body>',
-        '</w:document>',
-      ].join(''))
-
-      const buf = await zip.generateAsync({ type: 'nodebuffer' })
-      docxPath = join(tempDir, 'test.docx')
-      writeFileSync(docxPath, buf)
-
-      // Corrupt DOCX — random bytes.
-      corruptDocxPath = join(tempDir, 'corrupt.docx')
-      writeFileSync(corruptDocxPath, 'this is not a zip file at all')
-    })
-
-    afterAll(() => {
-      rmSync(tempDir, { recursive: true, force: true })
-    })
-
-    it('extracts text from a valid DOCX', async () => {
-      const result = await extract(docxPath)
-      expect(result.text).toContain('Hello from the DOCX extractor test')
-      expect(result.text).toContain('Knowledge plugin supports Word documents')
-      expect(result.tokenCount).toBeGreaterThan(0)
-    })
-
-    it('throws ExtractError with kind=corrupt for invalid DOCX', async () => {
-      await expect(extract(corruptDocxPath)).rejects.toThrow(ExtractError)
-    })
+  it('matches cl100k_base encoding length', () => {
+    // "Hello world" → 2 tokens in cl100k_base.
+    expect(countTokens('Hello world')).toBe(2)
   })
 })

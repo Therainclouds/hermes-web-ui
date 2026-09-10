@@ -1,53 +1,63 @@
 /**
- * Cloud embedding client for the knowledge plugin.
+ * Knowledge plugin — cloud embedding client.
  *
- * v1 ships with one provider (Tongyi `text-embedding-v3`, 1024-dim) behind
- * a pluggable `EmbedProvider` interface so alternative providers can be added
- * as single-file additions.
+ * v1 ships one provider: Tongyi `text-embedding-v3` (DashScope).
+ * The provider interface is pluggable so OpenAI / DeepSeek / local
+ * can be added as single-file additions.
  *
- * Hard rules (from spec task-05-embedder.md):
- *   - Tongyi batch size is 10 hard limit (DashScope docs).
- *   - Length mismatch between input chunks and output vectors is a throw,
- *     not a warning — silent mismatch corrupts the vec0 index irrecoverably.
- *   - API key must come from env or secrets file, never logged.
+ * Batching: Tongyi v3 has a hard limit of 10 texts per request.
+ * The embedder splits large inputs into batches and concatenates
+ * the results, asserting length parity before returning.
+ *
+ * Retries: 3 attempts with 1s / 2s / 4s exponential backoff on
+ * 5xx, 429, timeout, and network errors. After exhausting retries,
+ * throws KnowledgeEmbedError with the provider's status code.
+ *
+ * Hard invariant: the embedder never silently returns fewer vectors
+ * than input chunks. Length mismatch throws — silent mismatch
+ * corrupts the vec0 index irrecoverably.
  */
 
-// --- Error class ---
+// --- Public types --------------------------------------------------------
 
 export class KnowledgeEmbedError extends Error {
-  readonly statusCode?: number
-  readonly providerMessage?: string
-
-  constructor(message: string, options?: { statusCode?: number; providerMessage?: string; cause?: unknown }) {
+  constructor(
+    message: string,
+    public readonly statusCode?: number,
+    public readonly providerMessage?: string,
+  ) {
     super(message)
     this.name = 'KnowledgeEmbedError'
-    this.statusCode = options?.statusCode
-    this.providerMessage = options?.providerMessage
-    if (options?.cause) {
-      this.cause = options.cause
-    }
   }
 }
 
-// --- Provider interface ---
-
 export interface EmbedProvider {
-  /** Embed a single batch of texts. Must return one vector per input text. */
+  /** Embed a single batch of texts. Must return exactly texts.length vectors. */
   embedBatch(texts: string[]): Promise<Float32Array[]>
-  /** Maximum batch size for this provider. */
+  /** Maximum texts per request. */
   readonly batchSize: number
 }
 
-// --- Embedder config ---
+export interface Embedder {
+  embed(chunks: string[]): Promise<Float32Array[]>
+}
 
 export interface EmbedConfig {
+  /** Provider name — only 'tongyi' is implemented in v1. */
   provider: string
+  /** Model identifier. Default 'text-embedding-v3'. */
   model: string
+  /** Embedding dimension. Default 1024. */
   dim: number
+  /** API key — from env or secrets file. Never logged. */
   apiKey: string
+  /** API base URL. */
   apiBase: string
+  /** Max texts per request. Default 10 (Tongyi v3 hard limit). */
   batchSize: number
+  /** Per-request timeout in ms. Default 30000. */
   timeoutMs: number
+  /** Max retry attempts on transient errors. Default 3. */
   retries: number
 }
 
@@ -62,210 +72,245 @@ export const DEFAULT_EMBED_CONFIG: EmbedConfig = {
   retries: 3,
 }
 
-// --- Embedder interface ---
+// --- HTTP helper ----------------------------------------------------------
 
-export interface Embedder {
-  embed(chunks: string[]): Promise<Float32Array[]>
+interface HttpResponse {
+  status: number
+  body: unknown
+  headers: Record<string, string>
 }
 
-// --- Batch-and-retry wrapper ---
-
 /**
- * Wrap an EmbedProvider with batching and exponential-backoff retry.
- *
- * - Splits input into batches of provider.batchSize.
- * - Retries each batch up to config.retries times with 1s/2s/4s backoff.
- * - Asserts output length matches input length — throws otherwise.
+ * Minimal fetch wrapper with timeout. Uses the global `fetch`
+ * (Node 18+). Injectable for testing via the provider's fetch override.
  */
-export function createEmbedder(provider: EmbedProvider, config: Partial<EmbedConfig> = {}): Embedder {
-  const cfg = { ...DEFAULT_EMBED_CONFIG, ...config }
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<HttpResponse> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
 
+  // Merge caller signal with timeout signal.
+  const combinedSignal = signal
+    ? AbortSignal.any([signal, controller.signal])
+    : controller.signal
+
+  try {
+    const res = await fetch(url, { ...init, signal: combinedSignal })
+    const headers: Record<string, string> = {}
+    res.headers.forEach((v, k) => {
+      headers[k.toLowerCase()] = v
+    })
+    const body = await res.json().catch(() => null)
+    return { status: res.status, body, headers }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+// --- Tongyi provider ------------------------------------------------------
+
+export interface TongyiProviderDeps {
+  /** Override fetch for testing (default: fetchWithTimeout). */
+  fetch?: (url: string, init: RequestInit, timeoutMs: number, signal?: AbortSignal) => Promise<HttpResponse>
+  /** Override sleep for testing (default: real setTimeout). */
+  sleep?: (ms: number) => Promise<void>
+}
+
+export function createTongyiProvider(
+  config: EmbedConfig,
+  deps: TongyiProviderDeps = {},
+): EmbedProvider {
+  const doFetch = deps.fetch ?? fetchWithTimeout
+  const doSleep = deps.sleep ?? ((ms: number) => new Promise(r => setTimeout(r, ms)))
+
+  async function embedBatch(texts: string[]): Promise<Float32Array[]> {
+    if (texts.length === 0) return []
+    if (texts.length > config.batchSize) {
+      throw new KnowledgeEmbedError(
+        `Tongyi batch size ${texts.length} exceeds limit ${config.batchSize}`,
+      )
+    }
+
+    const url = `${config.apiBase}/services/embeddings`
+    const body = JSON.stringify({
+      model: config.model,
+      input: { texts },
+      parameters: { dimension: config.dim },
+    })
+
+    let lastError: KnowledgeEmbedError | null = null
+
+    for (let attempt = 0; attempt <= config.retries; attempt++) {
+      try {
+        const res = await doFetch(
+          url,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${config.apiKey}`,
+            },
+            body,
+          },
+          config.timeoutMs,
+        )
+
+        // 429 — rate limited. Respect Retry-After if present.
+        if (res.status === 429) {
+          const retryAfter = parseRetryAfter(res.headers['retry-after'])
+          const waitMs = retryAfter ?? backoffDelay(attempt)
+          if (attempt < config.retries) {
+            await doSleep(waitMs)
+            continue
+          }
+          throw new KnowledgeEmbedError(
+            `Tongyi rate limited after ${config.retries + 1} attempts`,
+            429,
+            extractProviderMessage(res.body),
+          )
+        }
+
+        // 5xx — server error, retry with backoff.
+        if (res.status >= 500) {
+          if (attempt < config.retries) {
+            await doSleep(backoffDelay(attempt))
+            continue
+          }
+          throw new KnowledgeEmbedError(
+            `Tongyi server error ${res.status} after ${config.retries + 1} attempts`,
+            res.status,
+            extractProviderMessage(res.body),
+          )
+        }
+
+        // 4xx (non-429) — client error, do not retry.
+        if (res.status >= 400) {
+          throw new KnowledgeEmbedError(
+            `Tongyi client error ${res.status}`,
+            res.status,
+            extractProviderMessage(res.body),
+          )
+        }
+
+        // Success — parse the response.
+        return parseTongyiResponse(res.body, config.dim)
+      } catch (err) {
+        if (err instanceof KnowledgeEmbedError) {
+          lastError = err
+          // Client errors (4xx non-429) are not retried — rethrow immediately.
+          if (err.statusCode !== undefined && err.statusCode >= 400 && err.statusCode < 500 && err.statusCode !== 429) {
+            throw err
+          }
+          // Response parsing errors (no statusCode) are not retried —
+          // they indicate a permanent format issue, not a transient failure.
+          if (err.statusCode === undefined) {
+            throw err
+          }
+          // If we've exhausted retries, throw.
+          if (attempt >= config.retries) throw err
+          // Otherwise wait and retry.
+          await doSleep(backoffDelay(attempt))
+        } else {
+          // Network / timeout / abort — treat as transient.
+          lastError = new KnowledgeEmbedError(
+            `Embedding request failed: ${(err as Error).message}`,
+          )
+          if (attempt >= config.retries) throw lastError
+          await doSleep(backoffDelay(attempt))
+        }
+      }
+    }
+
+    throw lastError ?? new KnowledgeEmbedError('Embedding request failed unexpectedly')
+  }
+
+  return { embedBatch, batchSize: config.batchSize }
+}
+
+function parseTongyiResponse(body: unknown, expectedDim: number): Float32Array[] {
+  const obj = body as {
+    output?: { embeddings?: Array<{ embedding?: unknown; text_index?: number }> }
+    message?: string
+  }
+  const embeddings = obj?.output?.embeddings
+  if (!Array.isArray(embeddings)) {
+    throw new KnowledgeEmbedError(
+      'Tongyi response missing output.embeddings',
+      undefined,
+      obj?.message,
+    )
+  }
+
+  return embeddings.map((entry, i) => {
+    const vec = entry.embedding
+    if (!Array.isArray(vec)) {
+      throw new KnowledgeEmbedError(
+        `Tongyi embedding at index ${i} is not an array`,
+      )
+    }
+    if (vec.length !== expectedDim) {
+      throw new KnowledgeEmbedError(
+        `Tongyi embedding dimension mismatch: expected ${expectedDim}, got ${vec.length}`,
+      )
+    }
+    return new Float32Array(vec)
+  })
+}
+
+function extractProviderMessage(body: unknown): string | undefined {
+  if (body && typeof body === 'object') {
+    const msg = (body as Record<string, unknown>).message
+    if (typeof msg === 'string') return msg
+  }
+  return undefined
+}
+
+function parseRetryAfter(header: string | undefined): number | null {
+  if (!header) return null
+  const n = parseInt(header, 10)
+  if (Number.isFinite(n) && n >= 0) return n * 1000
+  return null
+}
+
+function backoffDelay(attempt: number): number {
+  // attempt 0 → 1000, attempt 1 → 2000, attempt 2 → 4000
+  return 1000 * Math.pow(2, attempt)
+}
+
+// --- Embedder (batch-and-retry wrapper) -----------------------------------
+
+export function createEmbedder(
+  provider: EmbedProvider,
+): Embedder {
   return {
     async embed(chunks: string[]): Promise<Float32Array[]> {
       if (chunks.length === 0) return []
 
       const results: Float32Array[] = []
-      const batchSize = provider.batchSize
-
-      for (let i = 0; i < chunks.length; i += batchSize) {
-        const batch = chunks.slice(i, i + batchSize)
-        const vectors = await retryWithBackoff(
-          () => provider.embedBatch(batch),
-          cfg.retries,
-        )
-
+      for (let i = 0; i < chunks.length; i += provider.batchSize) {
+        const batch = chunks.slice(i, i + provider.batchSize)
+        const vectors = await provider.embedBatch(batch)
         if (vectors.length !== batch.length) {
           throw new KnowledgeEmbedError(
-            `Provider returned ${vectors.length} vectors for ${batch.length} chunks — length mismatch is fatal`,
-            { providerMessage: 'vector count mismatch' },
+            `Provider returned ${vectors.length} vectors for batch of ${batch.length} ` +
+            `(offset ${i}). This would corrupt the vec0 index.`,
           )
         }
-
         results.push(...vectors)
       }
 
-      // Final safety check: total output must match total input.
       if (results.length !== chunks.length) {
         throw new KnowledgeEmbedError(
-          `Embedding produced ${results.length} vectors for ${chunks.length} chunks`,
-          { providerMessage: 'total vector count mismatch' },
+          `Embedding length mismatch: ${chunks.length} input chunks, ` +
+          `${results.length} output vectors.`,
         )
       }
 
       return results
     },
   }
-}
-
-// --- Retry with exponential backoff ---
-
-const BACKOFF_BASE_MS = 1000
-
-async function retryWithBackoff<T>(
-  fn: () => Promise<T>,
-  maxRetries: number,
-): Promise<T> {
-  let lastError: unknown
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      return await fn()
-    } catch (err) {
-      lastError = err
-
-      // Don't retry after the last attempt.
-      if (attempt >= maxRetries) break
-
-      // Calculate backoff delay.
-      const delay = BACKOFF_BASE_MS * Math.pow(2, attempt)
-      await sleep(delay)
-    }
-  }
-
-  // All retries exhausted — re-throw the last error.
-  if (lastError instanceof KnowledgeEmbedError) throw lastError
-  throw new KnowledgeEmbedError(
-    `Embedding failed after ${maxRetries + 1} attempts`,
-    { cause: lastError },
-  )
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-// --- Tongyi provider ---
-
-export interface TongyiProviderOptions {
-  apiKey: string
-  model: string
-  dim: number
-  apiBase: string
-  timeoutMs: number
-  /** Optional fetch override for testing. */
-  fetchFn?: typeof fetch
-}
-
-/**
- * Tongyi (DashScope) text-embedding-v3 provider.
- *
- * Endpoint: POST ${apiBase}/services/embeddings
- * Body: { model, input: { texts }, parameters: { dimension, text_type } }
- * Response: output.embeddings[].embedding (array of numbers)
- */
-export class TongyiEmbedProvider implements EmbedProvider {
-  readonly batchSize = 10
-  private readonly opts: TongyiProviderOptions
-  private readonly fetchFn: typeof fetch
-
-  constructor(opts: TongyiProviderOptions) {
-    this.opts = opts
-    this.fetchFn = opts.fetchFn ?? fetch
-  }
-
-  async embedBatch(texts: string[]): Promise<Float32Array[]> {
-    const url = `${this.opts.apiBase}/services/embeddings`
-
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), this.opts.timeoutMs)
-
-    let response: Response
-    try {
-      response = await this.fetchFn(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.opts.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: this.opts.model,
-          input: { texts },
-          parameters: {
-            dimension: this.opts.dim,
-            text_type: 'document',
-          },
-        }),
-        signal: controller.signal,
-      })
-    } catch (err) {
-      clearTimeout(timer)
-      throw new KnowledgeEmbedError(`Tongyi request failed: ${(err as Error).message}`, {
-        cause: err,
-      })
-    }
-
-    clearTimeout(timer)
-
-    if (!response.ok) {
-      const body = await response.text().catch(() => '')
-      const isRetryable = response.status >= 500 || response.status === 429
-
-      if (isRetryable) {
-        throw new KnowledgeEmbedError(
-          `Tongyi returned ${response.status}: ${body.slice(0, 200)}`,
-          { statusCode: response.status, providerMessage: body.slice(0, 500) },
-        )
-      }
-
-      throw new KnowledgeEmbedError(
-        `Tongyi returned non-retryable ${response.status}: ${body.slice(0, 200)}`,
-        { statusCode: response.status, providerMessage: body.slice(0, 500) },
-      )
-    }
-
-    const json = (await response.json()) as {
-      output?: { embeddings?: Array<{ embedding: number[]; text_index: number }> }
-      message?: string
-    }
-
-    if (!json.output?.embeddings) {
-      throw new KnowledgeEmbedError('Tongyi response missing output.embeddings', {
-        providerMessage: JSON.stringify(json).slice(0, 500),
-      })
-    }
-
-    // Sort by text_index to maintain order (DashScope may return out of order).
-    const sorted = [...json.output.embeddings].sort(
-      (a, b) => a.text_index - b.text_index,
-    )
-
-    return sorted.map(
-      (e) => new Float32Array(e.embedding),
-    )
-  }
-}
-
-// --- Factory ---
-
-export function createTongyiEmbedder(config: Partial<EmbedConfig> & { apiKey: string; fetchFn?: typeof fetch }): Embedder {
-  const cfg = { ...DEFAULT_EMBED_CONFIG, ...config }
-  const provider = new TongyiEmbedProvider({
-    apiKey: cfg.apiKey,
-    model: cfg.model,
-    dim: cfg.dim,
-    apiBase: cfg.apiBase,
-    timeoutMs: cfg.timeoutMs,
-    fetchFn: config.fetchFn,
-  })
-  return createEmbedder(provider, cfg)
 }

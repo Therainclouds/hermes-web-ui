@@ -1,24 +1,24 @@
 /**
- * Content-aware text chunker for the knowledge plugin.
+ * Knowledge plugin — content-aware text chunker.
  *
  * Two modes:
- *   - 'markdown': splits at heading boundaries (## / ###); oversized sections
- *     fall back to paragraph breaks.
- *   - 'plaintext': sliding window of `chunkSize` tokens with `chunkOverlap`
- *     tokens of overlap.
+ *   - 'markdown': split at heading boundaries (##, ###). If a section
+ *     exceeds `chunkFallbackSize` tokens, re-split at paragraph breaks.
+ *   - 'plaintext': sliding window of `chunkSize` tokens with
+ *     `chunkOverlap` tokens of overlap between consecutive windows.
  *
- * Each chunk carries a stable `contentHash = sha256(content)` so re-indexing
- * can detect drift without comparing full text.
+ * Token counting uses `js-tiktoken` / `cl100k_base` (audit fix P2-8).
+ * Every chunk carries `contentHash = sha256(content)` so re-indexing
+ * can detect drift without re-embedding unchanged chunks.
  *
- * Token counts use `js-tiktoken` / `cl100k_base` exclusively (audit P2-8).
+ * Empty input produces an empty array (not an error) — the caller
+ * treats zero chunks as a metadata-only document (§10.2).
  */
 
 import { createHash } from 'crypto'
-import { getEncoding, type Encoding } from 'js-tiktoken'
+import { getEncoding, type Tiktoken } from 'js-tiktoken'
 
-// --- Types ---
-
-export type ChunkKind = 'markdown' | 'plaintext'
+// --- Public types --------------------------------------------------------
 
 export interface Chunk {
   content: string
@@ -26,12 +26,18 @@ export interface Chunk {
   contentHash: string
 }
 
+export type ChunkKind = 'markdown' | 'plaintext'
+
 export interface ChunkConfig {
-  /** Sliding window size in tokens (default 500). */
+  /** Plain-text window size in tokens. Default 500. */
   chunkSize: number
-  /** Overlap between windows in tokens (default 50). */
+  /** Tokens shared between consecutive plaintext windows. Default 50. */
   chunkOverlap: number
-  /** Markdown fallback: split section at paragraphs if section exceeds this (default 800). */
+  /**
+   * Markdown section overflow threshold. If a single heading section
+   * exceeds this, it is split at paragraph boundaries. Default 800.
+   * Must be >= chunkSize (enforced at construction).
+   */
   chunkFallbackSize: number
 }
 
@@ -41,20 +47,18 @@ export const DEFAULT_CHUNK_CONFIG: ChunkConfig = {
   chunkFallbackSize: 800,
 }
 
-// --- Internal helpers ---
+// --- Tokenizer singleton -------------------------------------------------
 
-let _encoding: Encoding | null = null
+let _encoder: Tiktoken | null = null
 
-function getCl100k(): Encoding {
-  if (!_encoding) {
-    _encoding = getEncoding('cl100k_base')
-  }
-  return _encoding
+function encoder(): Tiktoken {
+  if (!_encoder) _encoder = getEncoding('cl100k_base')
+  return _encoder
 }
 
 function countTokens(text: string): number {
   if (!text) return 0
-  return getCl100k().encode(text).length
+  return encoder().encode(text).length
 }
 
 function hashContent(content: string): string {
@@ -69,145 +73,148 @@ function makeChunk(content: string): Chunk {
   }
 }
 
-// --- Markdown chunking ---
+// --- Markdown ------------------------------------------------------------
+
+const HEADING_RE = /^(#{1,6})\s+(.*)$/m
 
 /**
- * Split markdown text at heading boundaries. A section that exceeds
- * `fallbackSize` tokens is further split at paragraph boundaries.
+ * Split Markdown at heading boundaries. A heading of level 1-6 opens
+ * a new section; the section body extends until the next heading or
+ * end-of-string.
+ *
+ * If a section exceeds `fallbackSize` tokens, split it at paragraph
+ * boundaries (`/\n\n+/`). Paragraphs are greedy: each paragraph that
+ * itself exceeds `fallbackSize` is emitted as-is (with a truncation
+ * marker added by the orchestrator, not here — the chunker only emits
+ * whole paragraphs).
  */
-function chunkMarkdown(text: string, config: ChunkConfig): Chunk[] {
-  const { chunkFallbackSize } = config
-
-  // Split on heading lines (## / ### / etc). We keep the heading text as
-  // part of the section content.
-  const headingRegex = /^(#{1,6})\s+.*$/gm
-
-  // Find all heading positions.
-  const headingPositions: number[] = []
-  let match: RegExpExecArray | null
-  while ((match = headingRegex.exec(text)) !== null) {
-    headingPositions.push(match.index)
-  }
-
-  // Build sections from heading boundaries.
-  const sections: string[] = []
-  if (headingPositions.length === 0) {
-    // No headings — treat the whole text as one section.
-    sections.push(text)
-  } else {
-    // Text before the first heading (preamble) is its own section.
-    if (headingPositions[0] > 0) {
-      sections.push(text.slice(0, headingPositions[0]))
-    }
-    for (let i = 0; i < headingPositions.length; i++) {
-      const start = headingPositions[i]
-      const end = i + 1 < headingPositions.length ? headingPositions[i + 1] : text.length
-      sections.push(text.slice(start, end))
-    }
-  }
-
+function chunkMarkdown(
+  text: string,
+  fallbackSize: number
+): Chunk[] {
+  const sections = splitByHeadings(text)
   const chunks: Chunk[] = []
 
   for (const section of sections) {
-    const trimmed = section.trim()
-    if (!trimmed) continue
-
-    const tokens = countTokens(trimmed)
-    if (tokens <= chunkFallbackSize) {
-      chunks.push(makeChunk(trimmed))
+    const tokens = countTokens(section)
+    if (tokens <= fallbackSize) {
+      if (section.trim()) chunks.push(makeChunk(section.trim()))
     } else {
-      // Oversized section — split at paragraph boundaries.
-      const paragraphs = trimmed.split(/\n\n+/)
+      // Oversized section → split at paragraph boundaries.
+      const paragraphs = splitByParagraphs(section)
       let buffer = ''
-
       for (const para of paragraphs) {
-        const candidate = buffer ? buffer + '\n\n' + para : para
-        const candidateTokens = countTokens(candidate)
-
-        if (candidateTokens <= chunkFallbackSize) {
-          buffer = candidate
-        } else {
-          // Flush buffer if non-empty.
-          if (buffer) {
-            chunks.push(makeChunk(buffer.trim()))
-          }
-          // If a single paragraph exceeds fallbackSize, emit it as its own
-          // chunk anyway (we don't want to lose content).
+        const candidate = buffer ? `${buffer}\n\n${para}` : para
+        if (countTokens(candidate) > fallbackSize && buffer) {
+          if (buffer.trim()) chunks.push(makeChunk(buffer.trim()))
           buffer = para
+        } else {
+          buffer = candidate
         }
       }
-
-      // Flush remaining.
-      if (buffer.trim()) {
-        chunks.push(makeChunk(buffer.trim()))
-      }
+      if (buffer.trim()) chunks.push(makeChunk(buffer.trim()))
     }
   }
 
   return chunks
 }
 
-// --- Plain text chunking (sliding window) ---
+function splitByHeadings(text: string): string[] {
+  const lines = text.split('\n')
+  const sections: string[] = []
+  let current: string[] = []
+
+  for (const line of lines) {
+    if (HEADING_RE.test(line) && current.length > 0) {
+      sections.push(current.join('\n'))
+      current = [line]
+    } else {
+      current.push(line)
+    }
+  }
+  if (current.length > 0) sections.push(current.join('\n'))
+
+  // If there were no headings, treat the entire text as one section.
+  return sections.length > 0 ? sections : [text]
+}
+
+function splitByParagraphs(text: string): string[] {
+  return text
+    .split(/\n\n+/)
+    .map(p => p.trim())
+    .filter(p => p.length > 0)
+}
+
+// --- Plain text ----------------------------------------------------------
 
 /**
- * Slide a window of `chunkSize` tokens across the text with `chunkOverlap`
- * tokens of overlap between consecutive windows.
+ * Sliding window of `chunkSize` tokens with `chunkOverlap` tokens of
+ * overlap. Window boundaries are computed in token-space so the
+ * result is deterministic regardless of character widths.
+ *
+ * Empty input returns an empty array.
  */
-function chunkPlaintext(text: string, config: ChunkConfig): Chunk[] {
-  const { chunkSize, chunkOverlap } = config
-
+function chunkPlainText(
+  text: string,
+  chunkSize: number,
+  chunkOverlap: number
+): Chunk[] {
   if (!text.trim()) return []
 
-  const encoding = getCl100k()
-  const allTokens = encoding.encode(text)
-
-  if (allTokens.length <= chunkSize) {
-    return [makeChunk(text.trim())]
-  }
+  const enc = encoder()
+  const tokens = enc.encode(text)
+  if (tokens.length === 0) return []
 
   const chunks: Chunk[] = []
-  const step = chunkSize - chunkOverlap
   let start = 0
-
-  while (start < allTokens.length) {
-    const end = Math.min(start + chunkSize, allTokens.length)
-    const windowTokens = allTokens.slice(start, end)
-    const content = encoding.decode(windowTokens).trim()
-
-    if (content) {
+  while (start < tokens.length) {
+    const end = Math.min(start + chunkSize, tokens.length)
+    const windowTokens = tokens.slice(start, end)
+    // Decode the token window back to text. js-tiktoken's decode()
+    // returns a string directly.
+    const content = enc.decode(windowTokens)
+    if (content.trim()) {
       chunks.push(makeChunk(content))
     }
-
-    if (end >= allTokens.length) break
+    if (end >= tokens.length) break
+    // Advance by (chunkSize - chunkOverlap); if overlap >= size, just
+    // advance by 1 to guarantee forward progress.
+    const step = Math.max(1, chunkSize - chunkOverlap)
     start += step
   }
 
   return chunks
 }
 
-// --- Public API ---
+// --- Entry point ---------------------------------------------------------
 
 /**
- * Chunk text according to the specified kind and configuration.
- * Pure function: same input + config → same output in the same order.
- *
- * Empty input produces zero chunks (caller treats as metadata-only per §10.2).
+ * Chunk the given text according to the declared kind and config.
+ * Returns chunks in document order.
  */
 export function chunkText(
   text: string,
-  kind: ChunkKind,
-  config: Partial<ChunkConfig> = {},
+  kind: ChunkKind = 'plaintext',
+  config: Partial<ChunkConfig> = {}
 ): Chunk[] {
-  const cfg: ChunkConfig = { ...DEFAULT_CHUNK_CONFIG, ...config }
-
-  if (!text || !text.trim()) return []
-
-  switch (kind) {
-    case 'markdown':
-      return chunkMarkdown(text, cfg)
-    case 'plaintext':
-      return chunkPlaintext(text, cfg)
-    default:
-      return chunkPlaintext(text, cfg)
+  const cfg = { ...DEFAULT_CHUNK_CONFIG, ...config }
+  if (cfg.chunkOverlap >= cfg.chunkSize / 2) {
+    throw new Error(
+      `chunkOverlap (${cfg.chunkOverlap}) must be less than ` +
+        `chunkSize/2 (${cfg.chunkSize / 2})`
+    )
   }
+  if (cfg.chunkFallbackSize < cfg.chunkSize) {
+    throw new Error(
+      `chunkFallbackSize (${cfg.chunkFallbackSize}) must be ` +
+        `>= chunkSize (${cfg.chunkSize})`
+    )
+  }
+
+  if (!text.trim()) return []
+
+  if (kind === 'markdown') {
+    return chunkMarkdown(text, cfg.chunkFallbackSize)
+  }
+  return chunkPlainText(text, cfg.chunkSize, cfg.chunkOverlap)
 }

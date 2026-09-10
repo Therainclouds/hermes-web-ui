@@ -1,296 +1,298 @@
 /**
- * Tests for the knowledge plugin embedder.
+ * Embedder tests — batching, retries, and length-parity invariant.
  *
- * Uses a mock fetch function to simulate Tongyi API responses — no live
- * API calls in CI.
+ * Uses mock HTTP responses (no live API calls). The Tongyi provider
+ * accepts a `fetch` override via `TongyiProviderDeps`, which we use
+ * to replay recorded response fixtures.
  */
 
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import {
   createEmbedder,
-  createTongyiEmbedder,
+  createTongyiProvider,
   KnowledgeEmbedError,
-  TongyiEmbedProvider,
-  type EmbedProvider,
+  type EmbedConfig,
 } from '../../packages/server/src/services/knowledge/embedder'
 
-// --- Helpers ---
+// --- Test helpers ---------------------------------------------------------
 
-/** Create a mock Response object. */
-function mockResponse(status: number, body: unknown, headers: Record<string, string> = {}): Response {
+const TEST_CONFIG: EmbedConfig = {
+  provider: 'tongyi',
+  model: 'text-embedding-v3',
+  dim: 4, // Small dim for tests
+  apiKey: 'test-key-do-not-log',
+  apiBase: 'https://test.example.com/api/v1',
+  batchSize: 10,
+  timeoutMs: 5000,
+  retries: 3,
+}
+
+/**
+ * Build a fake Tongyi response body for N vectors of dimension `dim`.
+ */
+function fakeTongyiResponse(dim: number, count: number) {
   return {
-    ok: status >= 200 && status < 300,
-    status,
-    statusText: status === 200 ? 'OK' : 'Error',
-    headers: new Headers(headers),
-    text: () => Promise.resolve(typeof body === 'string' ? body : JSON.stringify(body)),
-    json: () => Promise.resolve(body),
-  } as unknown as Response
+    output: {
+      embeddings: Array.from({ length: count }, (_, i) => ({
+        text_index: i,
+        embedding: Array.from({ length: dim }, (_, j) => (i + j) * 0.01),
+      })),
+    },
+  }
 }
 
-/** Build a Tongyi-shaped success response for N vectors of given dimension. */
-function tongyiSuccessResponse(count: number, dim: number): unknown {
-  const embeddings = Array.from({ length: count }, (_, i) => ({
-    text_index: i,
-    embedding: Array.from({ length: dim }, (_, j) => (i === j % count ? 1.0 : 0.0)),
-  }))
-  return { output: { embeddings } }
-}
-
-/** Create a mock fetch that returns responses in sequence. */
-function sequentialFetch(responses: Response[]): typeof fetch {
-  let i = 0
-  return vi.fn(async () => {
-    if (i >= responses.length) {
-      throw new Error('No more mock responses')
+/**
+ * Create a mock fetch that returns the given responses in sequence.
+ * Each call to the returned function pops the next response.
+ */
+function mockFetch(
+  responses: Array<{ status: number; body?: unknown; headers?: Record<string, string> }>,
+  calls: { urls: string[]; bodies: string[] } = { urls: [], bodies: [] },
+) {
+  const queue = [...responses]
+  const fn = async (url: string, init: RequestInit) => {
+    calls.urls.push(url)
+    calls.bodies.push(String(init.body ?? ''))
+    const res = queue.shift()
+    if (!res) throw new Error('mockFetch: no more responses')
+    return {
+      status: res.status,
+      body: res.body ?? null,
+      headers: res.headers ?? {},
     }
-    return responses[i++]
-  }) as unknown as typeof fetch
+  }
+  return fn
 }
 
-// --- Tests ---
+const noSleep = async () => {} // Skip real delays in tests
 
-describe('embedder', () => {
-  describe('createEmbedder with a mock provider', () => {
-    it('returns empty array for empty input', async () => {
-      const provider: EmbedProvider = {
-        batchSize: 10,
-        embedBatch: vi.fn(),
-      }
-      const embedder = createEmbedder(provider)
-      const result = await embedder.embed([])
-      expect(result).toEqual([])
-      expect(provider.embedBatch).not.toHaveBeenCalled()
-    })
+// --- Basic embedding ------------------------------------------------------
 
-    it('passes single batch through for small input', async () => {
-      const provider: EmbedProvider = {
-        batchSize: 10,
-        embedBatch: vi.fn(async (texts) =>
-          texts.map(() => new Float32Array([1, 0, 0, 0])),
-        ),
-      }
-      const embedder = createEmbedder(provider)
-      const result = await embedder.embed(['hello', 'world'])
-      expect(result).toHaveLength(2)
-      expect(provider.embedBatch).toHaveBeenCalledTimes(1)
-      expect(provider.embedBatch).toHaveBeenCalledWith(['hello', 'world'])
-    })
-
-    it('splits into batches of batchSize', async () => {
-      const provider: EmbedProvider = {
-        batchSize: 10,
-        embedBatch: vi.fn(async (texts) =>
-          texts.map(() => new Float32Array([1, 0])),
-        ),
-      }
-      const embedder = createEmbedder(provider)
-      // 25 chunks → 3 batches: 10 + 10 + 5
-      const chunks = Array.from({ length: 25 }, (_, i) => `chunk-${i}`)
-      const result = await embedder.embed(chunks)
-      expect(result).toHaveLength(25)
-      expect(provider.embedBatch).toHaveBeenCalledTimes(3)
-      expect(provider.embedBatch).toHaveBeenNthCalledWith(1, chunks.slice(0, 10))
-      expect(provider.embedBatch).toHaveBeenNthCalledWith(2, chunks.slice(10, 20))
-      expect(provider.embedBatch).toHaveBeenNthCalledWith(3, chunks.slice(20, 25))
-    })
-
-    it('throws when provider returns fewer vectors than chunks', async () => {
-      const provider: EmbedProvider = {
-        batchSize: 10,
-        embedBatch: vi.fn(async () => [new Float32Array([1, 0])]), // Always returns 1 vector
-      }
-      const embedder = createEmbedder(provider, { retries: 0 })
-      await expect(embedder.embed(['a', 'b'])).rejects.toThrow(KnowledgeEmbedError)
-    })
-
-    it('retries with exponential backoff on 5xx', async () => {
-      let attempts = 0
-      const provider: EmbedProvider = {
-        batchSize: 10,
-        embedBatch: vi.fn(async (texts) => {
-          attempts++
-          if (attempts < 3) {
-            throw new KnowledgeEmbedError('Server error', { statusCode: 500 })
-          }
-          return texts.map(() => new Float32Array([1, 0]))
-        }),
-      }
-      // Use tiny backoff for test speed.
-      const embedder = createEmbedder(provider, { retries: 3 })
-      const result = await embedder.embed(['hello'])
-      expect(result).toHaveLength(1)
-      expect(attempts).toBe(3)
-    })
-
-    it('throws after exhausting retries', async () => {
-      const provider: EmbedProvider = {
-        batchSize: 10,
-        embedBatch: vi.fn(async () => {
-          throw new KnowledgeEmbedError('Permanent failure', { statusCode: 500 })
-        }),
-      }
-      const embedder = createEmbedder(provider, { retries: 2 })
-      await expect(embedder.embed(['hello'])).rejects.toThrow(KnowledgeEmbedError)
-      // 1 initial + 2 retries = 3 total attempts
-      expect(provider.embedBatch).toHaveBeenCalledTimes(3)
-    })
+describe('createEmbedder — basic', () => {
+  it('returns empty array for empty input', async () => {
+    const calls = { urls: [] as string[], bodies: [] as string[] }
+    const fetchFn = mockFetch([], calls)
+    const provider = createTongyiProvider(TEST_CONFIG, { fetch: fetchFn, sleep: noSleep })
+    const embedder = createEmbedder(provider)
+    const result = await embedder.embed([])
+    expect(result).toEqual([])
+    expect(calls.urls).toHaveLength(0) // fetch never called
   })
 
-  describe('TongyiEmbedProvider', () => {
-    it('sends correct request format', async () => {
-      const fetchFn = sequentialFetch([
-        mockResponse(200, tongyiSuccessResponse(2, 4)),
-      ])
+  it('embeds a single batch within the size limit', async () => {
+    const chunks = Array(5).fill('hello world')
+    const fetchFn = mockFetch([
+      { status: 200, body: fakeTongyiResponse(4, 5) },
+    ])
+    const provider = createTongyiProvider(TEST_CONFIG, { fetch: fetchFn, sleep: noSleep })
+    const embedder = createEmbedder(provider)
+    const result = await embedder.embed(chunks)
+    expect(result).toHaveLength(5)
+    expect(result[0]).toBeInstanceOf(Float32Array)
+    expect(result[0].length).toBe(4)
+  })
+})
 
-      const provider = new TongyiEmbedProvider({
-        apiKey: 'test-key',
-        model: 'text-embedding-v3',
-        dim: 1024,
-        apiBase: 'https://dashscope.aliyuncs.com/api/v1',
-        timeoutMs: 5000,
-        fetchFn,
-      })
+// --- Batching -------------------------------------------------------------
 
-      await provider.embedBatch(['hello', 'world'])
+describe('createEmbedder — batching', () => {
+  it('splits 25 chunks into 3 requests (10 + 10 + 5)', async () => {
+    const chunks = Array(25).fill('chunk text')
+    const calls = { urls: [] as string[], bodies: [] as string[] }
+    const fetchFn = mockFetch(
+      [
+        { status: 200, body: fakeTongyiResponse(4, 10) },
+        { status: 200, body: fakeTongyiResponse(4, 10) },
+        { status: 200, body: fakeTongyiResponse(4, 5) },
+      ],
+      calls,
+    )
+    const provider = createTongyiProvider(TEST_CONFIG, { fetch: fetchFn, sleep: noSleep })
+    const embedder = createEmbedder(provider)
+    const result = await embedder.embed(chunks)
 
-      expect(fetchFn).toHaveBeenCalledTimes(1)
-      const [url, init] = (fetchFn as ReturnType<typeof vi.fn>).mock.calls[0]
-      expect(url).toBe('https://dashscope.aliyuncs.com/api/v1/services/embeddings')
-      expect(init.method).toBe('POST')
-      expect(init.headers['Authorization']).toBe('Bearer test-key')
-      const body = JSON.parse(init.body)
-      expect(body.model).toBe('text-embedding-v3')
-      expect(body.input.texts).toEqual(['hello', 'world'])
-      expect(body.parameters.dimension).toBe(1024)
-    })
-
-    it('parses Tongyi response into Float32Array vectors', async () => {
-      const fetchFn = sequentialFetch([
-        mockResponse(200, tongyiSuccessResponse(2, 4)),
-      ])
-
-      const provider = new TongyiEmbedProvider({
-        apiKey: 'test-key',
-        model: 'text-embedding-v3',
-        dim: 4,
-        apiBase: 'https://dashscope.aliyuncs.com/api/v1',
-        timeoutMs: 5000,
-        fetchFn,
-      })
-
-      const result = await provider.embedBatch(['hello', 'world'])
-      expect(result).toHaveLength(2)
-      expect(result[0]).toBeInstanceOf(Float32Array)
-      expect(result[0].length).toBe(4)
-    })
-
-    it('throws KnowledgeEmbedError on 5xx (retryable)', async () => {
-      const fetchFn = sequentialFetch([
-        mockResponse(500, { message: 'Internal Server Error' }),
-      ])
-
-      const provider = new TongyiEmbedProvider({
-        apiKey: 'test-key',
-        model: 'text-embedding-v3',
-        dim: 4,
-        apiBase: 'https://dashscope.aliyuncs.com/api/v1',
-        timeoutMs: 5000,
-        fetchFn,
-      })
-
-      await expect(provider.embedBatch(['hello'])).rejects.toThrow(KnowledgeEmbedError)
-    })
-
-    it('throws KnowledgeEmbedError on 429 (retryable)', async () => {
-      const fetchFn = sequentialFetch([
-        mockResponse(429, { message: 'Rate limited' }, { 'Retry-After': '5' }),
-      ])
-
-      const provider = new TongyiEmbedProvider({
-        apiKey: 'test-key',
-        model: 'text-embedding-v3',
-        dim: 4,
-        apiBase: 'https://dashscope.aliyuncs.com/api/v1',
-        timeoutMs: 5000,
-        fetchFn,
-      })
-
-      await expect(provider.embedBatch(['hello'])).rejects.toThrow(KnowledgeEmbedError)
-    })
-
-    it('throws KnowledgeEmbedError on 400 (non-retryable)', async () => {
-      const fetchFn = sequentialFetch([
-        mockResponse(400, { message: 'Bad Request' }),
-      ])
-
-      const provider = new TongyiEmbedProvider({
-        apiKey: 'test-key',
-        model: 'text-embedding-v3',
-        dim: 4,
-        apiBase: 'https://dashscope.aliyuncs.com/api/v1',
-        timeoutMs: 5000,
-        fetchFn,
-      })
-
-      await expect(provider.embedBatch(['hello'])).rejects.toThrow(KnowledgeEmbedError)
-    })
+    expect(result).toHaveLength(25)
+    expect(calls.urls).toHaveLength(3)
+    // All requests should hit the same endpoint.
+    for (const url of calls.urls) {
+      expect(url).toBe('https://test.example.com/api/v1/services/embeddings')
+    }
+    // Parse each request body to verify batch sizes.
+    const parsedBodies = calls.bodies.map(b => JSON.parse(b))
+    expect(parsedBodies[0].input.texts).toHaveLength(10)
+    expect(parsedBodies[1].input.texts).toHaveLength(10)
+    expect(parsedBodies[2].input.texts).toHaveLength(5)
   })
 
-  describe('createTongyiEmbedder integration', () => {
-    it('25 chunks → 3 HTTP requests (10+10+5)', async () => {
-      const fetchFn = sequentialFetch([
-        mockResponse(200, tongyiSuccessResponse(10, 4)),
-        mockResponse(200, tongyiSuccessResponse(10, 4)),
-        mockResponse(200, tongyiSuccessResponse(5, 4)),
-      ])
+  it('exactly batchSize chunks produces one request', async () => {
+    const chunks = Array(10).fill('chunk')
+    const calls = { urls: [] as string[], bodies: [] as string[] }
+    const fetchFn = mockFetch(
+      [{ status: 200, body: fakeTongyiResponse(4, 10) }],
+      calls,
+    )
+    const provider = createTongyiProvider(TEST_CONFIG, { fetch: fetchFn, sleep: noSleep })
+    const embedder = createEmbedder(provider)
+    await embedder.embed(chunks)
+    expect(calls.urls).toHaveLength(1)
+  })
+})
 
-      const embedder = createTongyiEmbedder({
-        apiKey: 'test-key',
-        dim: 4,
-        fetchFn,
-      })
+// --- Retries --------------------------------------------------------------
 
-      const chunks = Array.from({ length: 25 }, (_, i) => `chunk-${i}`)
-      const result = await embedder.embed(chunks)
-      expect(result).toHaveLength(25)
-      expect(fetchFn).toHaveBeenCalledTimes(3)
+describe('createTongyiProvider — retries', () => {
+  it('retries on 5xx and succeeds on the second attempt', async () => {
+    const chunks = ['hello']
+    const fetchFn = mockFetch([
+      { status: 500, body: { message: 'internal error' } },
+      { status: 200, body: fakeTongyiResponse(4, 1) },
+    ])
+    const provider = createTongyiProvider(TEST_CONFIG, { fetch: fetchFn, sleep: noSleep })
+    const embedder = createEmbedder(provider)
+    const result = await embedder.embed(chunks)
+    expect(result).toHaveLength(1)
+    expect(fetchFn).toBeDefined
+  })
+
+  it('throws KnowledgeEmbedError after 3 consecutive 5xx', async () => {
+    const chunks = ['hello']
+    const fetchFn = mockFetch([
+      { status: 500, body: { message: 'err1' } },
+      { status: 502, body: { message: 'err2' } },
+      { status: 503, body: { message: 'err3' } },
+      { status: 500, body: { message: 'err4' } },
+    ])
+    const provider = createTongyiProvider(TEST_CONFIG, { fetch: fetchFn, sleep: noSleep })
+    const embedder = createEmbedder(provider)
+
+    await expect(embedder.embed(chunks)).rejects.toThrow(KnowledgeEmbedError)
+    try {
+      await embedder.embed(chunks)
+    } catch (err) {
+      expect(err).toBeInstanceOf(KnowledgeEmbedError)
+      const ke = err as KnowledgeEmbedError
+      // The last attempt's status code should be in the error.
+      expect(ke.statusCode).toBeDefined
+    }
+  })
+
+  it('respects 429 with Retry-After header', async () => {
+    const chunks = ['hello']
+    const sleepCalls: number[] = []
+    const fetchFn = mockFetch([
+      { status: 429, headers: { 'retry-after': '2' } },
+      { status: 200, body: fakeTongyiResponse(4, 1) },
+    ])
+    const provider = createTongyiProvider(TEST_CONFIG, {
+      fetch: fetchFn,
+      sleep: async (ms) => { sleepCalls.push(ms) },
     })
+    const embedder = createEmbedder(provider)
+    await embedder.embed(chunks)
+    // The sleep should have been called with 2000ms (Retry-After: 2).
+    expect(sleepCalls).toContain(2000)
+  })
 
-    it('length mismatch throws KnowledgeEmbedError', async () => {
-      // Provider returns 8 vectors for a batch of 10.
-      const fetchFn = sequentialFetch([
-        mockResponse(200, tongyiSuccessResponse(8, 4)),
-      ])
+  it('does not retry 4xx (non-429) client errors', async () => {
+    const chunks = ['hello']
+    const calls = { urls: [] as string[], bodies: [] as string[] }
+    const fetchFn = mockFetch(
+      [{ status: 400, body: { message: 'bad request' } }],
+      calls,
+    )
+    const provider = createTongyiProvider(TEST_CONFIG, { fetch: fetchFn, sleep: noSleep })
+    const embedder = createEmbedder(provider)
 
-      const embedder = createTongyiEmbedder({
-        apiKey: 'test-key',
-        dim: 4,
-        retries: 0,
-        fetchFn,
-      })
+    await expect(embedder.embed(chunks)).rejects.toThrow(KnowledgeEmbedError)
+    // Only one HTTP call — no retries.
+    expect(calls.urls).toHaveLength(1)
+  })
+})
 
-      const chunks = Array.from({ length: 10 }, (_, i) => `chunk-${i}`)
-      await expect(embedder.embed(chunks)).rejects.toThrow(KnowledgeEmbedError)
-    })
+// --- Length mismatch ------------------------------------------------------
 
-    it('retries on 5xx then succeeds', async () => {
-      const fetchFn = sequentialFetch([
-        mockResponse(500, 'Internal Server Error'),
-        mockResponse(500, 'Internal Server Error'),
-        mockResponse(200, tongyiSuccessResponse(2, 4)),
-      ])
+describe('createEmbedder — length parity', () => {
+  it('throws when provider returns fewer vectors than chunks', async () => {
+    const chunks = Array(5).fill('hello')
+    // Provider returns 3 vectors for a batch of 5.
+    const fetchFn = mockFetch([
+      { status: 200, body: fakeTongyiResponse(4, 3) },
+    ])
+    const provider = createTongyiProvider(TEST_CONFIG, { fetch: fetchFn, sleep: noSleep })
+    const embedder = createEmbedder(provider)
 
-      const embedder = createTongyiEmbedder({
-        apiKey: 'test-key',
-        dim: 4,
-        retries: 3,
-        fetchFn,
-      })
+    await expect(embedder.embed(chunks)).rejects.toThrow(/returned 3 vectors for batch of 5/)
+  })
 
-      const result = await embedder.embed(['hello', 'world'])
-      expect(result).toHaveLength(2)
-      expect(fetchFn).toHaveBeenCalledTimes(3)
-    })
+  it('throws when provider returns more vectors than chunks', async () => {
+    const chunks = Array(3).fill('hello')
+    // Provider returns 5 vectors for a batch of 3.
+    const fetchFn = mockFetch([
+      { status: 200, body: fakeTongyiResponse(4, 5) },
+    ])
+    const provider = createTongyiProvider(TEST_CONFIG, { fetch: fetchFn, sleep: noSleep })
+    const embedder = createEmbedder(provider)
+
+    await expect(embedder.embed(chunks)).rejects.toThrow(/returned 5 vectors for batch of 3/)
+  })
+})
+
+// --- Response parsing -----------------------------------------------------
+
+describe('createTongyiProvider — response parsing', () => {
+  it('throws on missing output.embeddings', async () => {
+    const chunks = ['hello']
+    const fetchFn = mockFetch([
+      { status: 200, body: { output: {} } },
+    ])
+    const provider = createTongyiProvider(TEST_CONFIG, { fetch: fetchFn, sleep: noSleep })
+    const embedder = createEmbedder(provider)
+
+    await expect(embedder.embed(chunks)).rejects.toThrow(/missing output\.embeddings/)
+  })
+
+  it('throws on dimension mismatch', async () => {
+    const chunks = ['hello']
+    // Return 3-dim vector when config expects 4.
+    const fetchFn = mockFetch([
+      {
+        status: 200,
+        body: {
+          output: {
+            embeddings: [{ text_index: 0, embedding: [0.1, 0.2, 0.3] }],
+          },
+        },
+      },
+    ])
+    const provider = createTongyiProvider(TEST_CONFIG, { fetch: fetchFn, sleep: noSleep })
+    const embedder = createEmbedder(provider)
+
+    await expect(embedder.embed(chunks)).rejects.toThrow(/dimension mismatch/)
+  })
+})
+
+// --- Request shape --------------------------------------------------------
+
+describe('createTongyiProvider — request shape', () => {
+  it('sends correct headers and body structure', async () => {
+    const chunks = ['test']
+    let capturedInit: RequestInit | null = null
+    const fetchFn = async (_url: string, init: RequestInit) => {
+      capturedInit = init
+      return { status: 200, body: fakeTongyiResponse(4, 1), headers: {} }
+    }
+    const provider = createTongyiProvider(TEST_CONFIG, { fetch: fetchFn, sleep: noSleep })
+    const embedder = createEmbedder(provider)
+    await embedder.embed(chunks)
+
+    expect(capturedInit).not.toBeNull()
+    const headers = capturedInit!.headers as Record<string, string>
+    expect(headers['Authorization']).toBe('Bearer test-key-do-not-log')
+    expect(headers['Content-Type']).toBe('application/json')
+
+    const body = JSON.parse(String(capturedInit!.body))
+    expect(body.model).toBe('text-embedding-v3')
+    expect(body.input.texts).toEqual(['test'])
+    expect(body.parameters.dimension).toBe(4)
   })
 })

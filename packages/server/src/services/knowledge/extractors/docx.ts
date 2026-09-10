@@ -1,61 +1,96 @@
 /**
- * DOCX text extractor.
+ * DOCX extractor — parses the OOXML inside the DOCX ZIP.
  *
- * The `docx` npm package is for creating DOCX files, not reading them.
- * DOCX is a ZIP archive with `word/document.xml` inside; we use `jszip`
- * (already a transitive dep) to unzip and extract text from `<w:t>` runs.
+ * A .docx file is a ZIP archive containing XML. The main document
+ * text lives in `word/document.xml`. We unzip it with `jszip` and
+ * walk the XML to extract paragraph text runs.
  *
- * Corrupt DOCX files throw `ExtractError({ kind: 'corrupt' })`.
+ * This is a best-effort v1 extractor — no formatting, no tables, no
+ * footnotes. Good enough to produce a searchable corpus from most
+ * user-authored documents.
  */
 
 import { readFile } from 'fs/promises'
 import { ExtractError, countTokens, type ExtractResult } from './index'
 
-interface JSZipModule {
-  loadAsync(data: Uint8Array): Promise<{
-    file(name: string): { async(type: 'string'): Promise<string> } | null
-    files: Record<string, unknown>
-  }>
-  new (): unknown
-}
+// WordprocessingML namespace for the body paragraphs and runs.
+const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 
-interface JSZipStatic {
-  loadAsync(data: Uint8Array): Promise<{
-    file(name: string): { async(type: 'string'): Promise<string> } | null
-    files: Record<string, unknown>
-  }>
-}
+export async function extractDocx(path: string): Promise<ExtractResult> {
+  let buffer: Buffer
+  try {
+    buffer = await readFile(path)
+  } catch (err) {
+    throw new ExtractError('io', `Failed to read DOCX file: ${path}`, err)
+  }
 
-let _jszip: JSZipStatic | null = null
+  let JSZip: typeof import('jszip')
+  try {
+    JSZip = await import('jszip')
+  } catch (err) {
+    throw new ExtractError(
+      'unsupported',
+      'jszip is not installed. Run: npm install jszip',
+      err
+    )
+  }
 
-async function loadJszip(): Promise<JSZipStatic> {
-  if (_jszip) return _jszip
-  // Dynamic import because jszip is CJS and vitest transforms source to ESM.
-  const mod = (await import('jszip')) as unknown as { default: JSZipStatic } & JSZipStatic
-  // jszip exports itself as both default and named — handle both shapes.
-  _jszip = mod.default ?? mod
-  return _jszip
+  let zip: import('jszip')
+  try {
+    zip = await JSZip.loadAsync(buffer)
+  } catch (err) {
+    throw new ExtractError(
+      'corrupt',
+      `Failed to unzip DOCX: ${path}`,
+      err
+    )
+  }
+
+  const docXml = zip.file('word/document.xml')
+  if (!docXml) {
+    throw new ExtractError(
+      'corrupt',
+      `DOCX missing word/document.xml: ${path}`
+    )
+  }
+
+  let xmlString: string
+  try {
+    xmlString = await docXml.async('string')
+  } catch (err) {
+    throw new ExtractError(
+      'corrupt',
+      `Failed to read word/document.xml: ${path}`,
+      err
+    )
+  }
+
+  const text = extractTextFromXml(xmlString)
+  return { text: text.trim(), tokenCount: countTokens(text.trim()) }
 }
 
 /**
- * Extract text content from DOCX XML. The `<w:t>` tags inside `<w:r>` runs
- * hold the visible text. We join them with newlines between paragraphs
- * (each `<w:p>` becomes a paragraph break).
+ * Minimal XML walker that extracts text from <w:p>/<w:r>/<w:t> chains.
+ *
+ * Uses a regex-based scanner rather than a full XML parser because the
+ * document structure we care about is flat paragraphs of runs of text.
+ * This is safe because <w:t> content is always plain text (no nested
+ * markup) in valid OOXML.
  */
-function extractTextFromDocxXml(xml: string): string {
+function extractTextFromXml(xml: string): string {
   const paragraphs: string[] = []
 
-  // Match each paragraph element.
-  const paragraphRegex = /<w:p[\s>][\s\S]*?<\/w:p>/g
-  let pMatch: RegExpExecArray | null
-  while ((pMatch = paragraphRegex.exec(xml)) !== null) {
-    const paragraphXml = pMatch[0]
-    // Extract all <w:t ...>text</w:t> runs in this paragraph.
-    const textRegex = /<w:t[^>]*>([\s\S]*?)<\/w:t>/g
-    let tMatch: RegExpExecArray | null
+  // Match every <w:p ...>...</w:p> block.
+  const pRegex = new RegExp(`<w:p\\b[^>]*>([\\s\\S]*?)</w:p>`, 'g')
+  let pMatch
+  while ((pMatch = pRegex.exec(xml)) !== null) {
+    const pContent = pMatch[1]
+    // Collect all <w:t ...>text</w:t> runs inside this paragraph.
+    const tRegex = new RegExp(`<w:t\\b[^>]*>([\\s\\S]*?)</w:t>`, 'g')
     const runs: string[] = []
-    while ((tMatch = textRegex.exec(paragraphXml)) !== null) {
-      runs.push(tMatch[1])
+    let tMatch
+    while ((tMatch = tRegex.exec(pContent)) !== null) {
+      runs.push(decodeXmlEntities(tMatch[1]))
     }
     if (runs.length > 0) {
       paragraphs.push(runs.join(''))
@@ -65,50 +100,11 @@ function extractTextFromDocxXml(xml: string): string {
   return paragraphs.join('\n')
 }
 
-export async function docxExtractor(filePath: string): Promise<ExtractResult> {
-  const JSZip = await loadJszip()
-
-  let data: Uint8Array
-  try {
-    const buf = await readFile(filePath)
-    data = new Uint8Array(buf)
-  } catch (err) {
-    throw new ExtractError(`Failed to read DOCX file: ${filePath}`, {
-      kind: 'io',
-      cause: err,
-    })
-  }
-
-  let zip: Awaited<ReturnType<JSZipStatic['loadAsync']>>
-  try {
-    zip = await JSZip.loadAsync(data)
-  } catch (err) {
-    throw new ExtractError(`Failed to unzip DOCX: ${filePath}`, {
-      kind: 'corrupt',
-      cause: err,
-    })
-  }
-
-  const docXmlFile = zip.file('word/document.xml')
-  if (!docXmlFile) {
-    throw new ExtractError(`Invalid DOCX (missing word/document.xml): ${filePath}`, {
-      kind: 'corrupt',
-    })
-  }
-
-  let xml: string
-  try {
-    xml = await docXmlFile.async('string')
-  } catch (err) {
-    throw new ExtractError(`Failed to read DOCX XML: ${filePath}`, {
-      kind: 'corrupt',
-      cause: err,
-    })
-  }
-
-  const text = extractTextFromDocxXml(xml).trim()
-  return {
-    text,
-    tokenCount: countTokens(text),
-  }
+function decodeXmlEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
 }

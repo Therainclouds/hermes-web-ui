@@ -1,22 +1,29 @@
 /**
- * Knowledge plugin schema bootstrap.
+ * Knowledge plugin — DDL bootstrap for the shared SQLite connection.
  *
- * Defines the DDL for all knowledge-plugin tables and a single entry
- * point (`ensureKnowledgeSchema`) that the server calls once per boot.
- * Idempotent — safe to run on every startup.
+ * This file owns the schema definitions for the knowledge plugin. The
+ * plugin shares the `hermes-web-ui.db` connection exposed by `getDb()`;
+ * it never opens a second one (per AGENTS.md rule).
  *
- * Tables created:
- *   - knowledge_vaults       (one row per watched directory)
- *   - knowledge_documents    (one row per ingested file)
- *   - knowledge_chunks       (one row per text chunk)
- *   - knowledge_chunks_fts   (FTS5 virtual table, porter tokenizer)
- *   - knowledge_chunks_vec   (vec0 virtual table, cosine distance)
+ * `ensureKnowledgeSchema(db, dim)` is called once at service init.
+ * It is additive: every CREATE statement uses IF NOT EXISTS, so re-running
+ * it on an already-bootstrapped database is a no-op.
  *
- * Source of truth: docs/knowledge-architecture.md §3.
- * Implementation spec: docs/knowledge/specs/task-01-schema.md.
+ * Hard invariants (audit fixes, see architecture doc §11):
+ *   - Per-connection PRAGMAs (foreign_keys, busy_timeout) are enforced
+ *     on every boot (P0-2).
+ *   - Journal-mode != 'wal' emits a warning (P0-2 dev caveat).
+ *   - `knowledge_chunks_vec` is created with `distance=cosine` —
+ *     without it, vec0's default metric is L2, and hybrid / pure-vector
+ *     searches return incomparable scores (S1).
+ *   - `dim` is baked in at table creation. Re-running with a different
+ *     dim against an existing table throws KnowledgeSchemaError (P1-7).
+ *   - FTS5 and vec0 are virtual tables — they cannot participate in
+ *     FK cascades. Worker code must explicitly delete from both in
+ *     the same transaction as `knowledge_chunks` (P0-1).
  */
 
-import { DatabaseSync } from 'node:sqlite'
+import type { DatabaseSync } from 'node:sqlite'
 
 export class KnowledgeSchemaError extends Error {
   constructor(message: string) {
@@ -25,110 +32,51 @@ export class KnowledgeSchemaError extends Error {
   }
 }
 
-let cachedSqliteVecLoadablePath: string | null = null
-
-async function resolveSqliteVecLoadablePath(): Promise<string> {
-  if (cachedSqliteVecLoadablePath) return cachedSqliteVecLoadablePath
-  // sqlite-vec is a shim; the real DLL lives in sqlite-vec-<platform>-<arch>.
-  // `npm install` must have installed both the shim and the platform peer.
-  // Using dynamic import() so this file stays ESM-compatible under vitest
-  // (where require() is undefined after Vite's transform).
-  const shim = (await import('sqlite-vec')) as {
-    getLoadablePath: () => string
-  }
-  cachedSqliteVecLoadablePath = shim.getLoadablePath()
-  return cachedSqliteVecLoadablePath
-}
+/**
+ * Default embedding dimension for Tongyi text-embedding-v3.
+ * Must match the model in use; changing it after the vec0 table
+ * is created requires re-indexing the entire corpus (architecture
+ * doc §3.4, audit fix P1-7).
+ *
+ * v3 verified dims: 1024 / 768 / 512 / 256 / 128 / 64.
+ * 1536 is a v2-only dim — do NOT set it here.
+ */
+export const DEFAULT_KNOWLEDGE_EMBED_DIM = 1024
 
 /**
- * Read the embedding dim baked into an existing `knowledge_chunks_vec`
- * table, or null if the table does not exist. Used by the orchestrator
- * (Task 6) to reject a mismatched `KNOWLEDGE_EMBED_DIM` at boot.
- *
- * Parses the CREATE TABLE SQL stored in sqlite_master and extracts the
- * first `FLOAT[<N>]` column definition. vec0 does not expose its schema
- * via PRAGMA table_info in a useful way.
+ * Idempotently bootstrap every table the knowledge plugin needs on
+ * the shared connection. Returns silently on success; throws
+ * KnowledgeSchemaError on an unrecoverable inconsistency.
  */
-export function readExistingVecDim(db: DatabaseSync): number | null {
-  const rows = db
-    .prepare(
-      `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'knowledge_chunks_vec'`,
-    )
-    .all() as Array<{ sql: string | null }>
-  if (rows.length === 0 || !rows[0].sql) return null
-  const match = /FLOAT\[\s*(\d+)\s*\]/i.exec(rows[0].sql)
-  return match ? Number(match[1]) : null
-}
-
-/**
- * Ensure all knowledge-plugin tables exist on the shared connection.
- *
- * Side effects:
- *   - Loads the `sqlite-vec` extension on the shared connection. The
- *     extension is pinned by the `sqlite-vec` npm package; only this
- *     extension is ever loaded (§6.4 security note).
- *   - Enforces per-connection PRAGMAs (`foreign_keys=ON`,
- *     `busy_timeout=5000`) per §6.4 audit P0-2.
- *   - Logs a warning when `journal_mode != wal` (dev-mode caveat).
- *   - Creates tables idempotently via `CREATE … IF NOT EXISTS`.
- *
- * Throws `KnowledgeSchemaError` if:
- *   - `sqlite-vec` is not installed.
- *   - A pre-existing `knowledge_chunks_vec` table has a different dim
- *     than `embedDim` (audit P1-7 — switching dims requires explicit
- *     re-index, not a silent schema change).
- */
-export async function ensureKnowledgeSchema(
+export function ensureKnowledgeSchema(
   db: DatabaseSync,
-  embedDim: number,
-): Promise<void> {
-  if (!Number.isInteger(embedDim) || embedDim <= 0) {
-    throw new KnowledgeSchemaError(
-      `embedDim must be a positive integer, got ${embedDim}`,
-    )
+  dim: number = DEFAULT_KNOWLEDGE_EMBED_DIM
+): void {
+  if (!Number.isInteger(dim) || dim <= 0) {
+    throw new KnowledgeSchemaError(`Invalid embed dim: ${dim}`)
   }
 
-  // 1. Load the sqlite-vec extension on the shared connection.
-  let loadablePath: string
-  try {
-    loadablePath = await resolveSqliteVecLoadablePath()
-  } catch (err) {
-    throw new KnowledgeSchemaError(
-      `sqlite-vec is not installed: ${(err as Error).message}`,
-    )
-  }
-  try {
-    db.loadExtension(loadablePath)
-  } catch (err) {
-    // loadExtension is idempotent across repeated calls, but surfaces
-    // errors the first time if the DLL is missing. Fail loudly — a
-    // half-initialized schema is worse than none.
-    throw new KnowledgeSchemaError(
-      `failed to load sqlite-vec extension: ${(err as Error).message}`,
-    )
-  }
-
-  // 2. Per-connection PRAGMAs (architect doc §6.4, audit P0-2).
+  // --- Per-connection PRAGMAs (audit fix P0-2). ---
   db.exec('PRAGMA foreign_keys=ON')
   db.exec('PRAGMA busy_timeout=5000')
 
-  // 3. Warn when journal_mode is not WAL (dev-mode caveat).
-  const modeRows = db
-    .prepare('PRAGMA journal_mode')
-    .all() as Array<{ journal_mode: string }>
-  const journalMode = modeRows[0]?.journal_mode
-  if (journalMode !== 'wal') {
-    // console.warn is acceptable here: the operator wants to see this
-    // on dev boots, and the noise is the point.
+  // --- Journal-mode assertion (P0-2 dev caveat). ---
+  const jm = db.prepare('PRAGMA journal_mode').all() as Array<{
+    journal_mode: string
+  }>
+  const mode = jm[0]?.journal_mode
+  if (mode !== 'wal') {
     // eslint-disable-next-line no-console
     console.warn(
-      `knowledge: journal_mode=${journalMode ?? 'unknown'}; WAL is ` +
-        `recommended for concurrent reads. See §6.4 / §10.3.`,
+      `[knowledge] journal_mode=${mode}; WAL is required for concurrent reads. ` +
+        `Consider switching dev to WAL (audit fix P0-2).`
     )
   }
 
-  // 4. Create tables.
+  // --- sqlite-vec extension (lazy, only on first init). ---
+  loadSqliteVec(db)
 
+  // --- Idempotent DDL. ---
   db.exec(`
     CREATE TABLE IF NOT EXISTS knowledge_vaults (
       id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -155,12 +103,12 @@ export async function ensureKnowledgeSchema(
     )
   `)
   db.exec(
-    `CREATE INDEX IF NOT EXISTS knowledge_documents_source_hash
-       ON knowledge_documents(source_hash)`,
+    'CREATE INDEX IF NOT EXISTS knowledge_documents_source_hash ' +
+      'ON knowledge_documents(source_hash)'
   )
   db.exec(
-    `CREATE INDEX IF NOT EXISTS knowledge_documents_vault_status
-       ON knowledge_documents(vault_id, status)`,
+    'CREATE INDEX IF NOT EXISTS knowledge_documents_vault_status ' +
+      'ON knowledge_documents(vault_id, status)'
   )
 
   db.exec(`
@@ -170,40 +118,77 @@ export async function ensureKnowledgeSchema(
       position     INTEGER NOT NULL,
       content      TEXT NOT NULL,
       token_count  INTEGER NOT NULL,
-      FOREIGN KEY (document_id)
-        REFERENCES knowledge_documents(id) ON DELETE CASCADE
+      FOREIGN KEY (document_id) REFERENCES knowledge_documents(id) ON DELETE CASCADE
     )
   `)
   db.exec(
-    `CREATE INDEX IF NOT EXISTS knowledge_chunks_document
-       ON knowledge_chunks(document_id)`,
+    'CREATE INDEX IF NOT EXISTS knowledge_chunks_document ' +
+      'ON knowledge_chunks(document_id)'
   )
 
-  // FTS5 virtual table — porter tokenizer (English-stemmed; Chinese
-  // keyword match degrades to character-exact in v1 per §7.5).
-  db.exec(
-    `CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_fts
-       USING fts5(content, tokenize='porter')`,
-  )
+  // FTS5 virtual table — shadow of knowledge_chunks.content.
+  // The worker MUST insert with an explicit rowid equal to chunk.id
+  // so the join in hybrid search remains correct (audit fix P1-3).
+  // Virtual tables cannot participate in foreign keys (P0-1).
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_fts
+    USING fts5(content, tokenize='porter')
+  `)
 
-  // vec0 virtual table. Dimension is baked in at creation time; the
-  // distance metric MUST be cosine so the hybrid and pure-vector
-  // paths return comparable scores (§3.4, second-pass audit S1).
-  const existingDim = readExistingVecDim(db)
-  if (existingDim === null) {
-    db.exec(`
-      CREATE VIRTUAL TABLE knowledge_chunks_vec USING vec0(
-        chunk_id  INTEGER PRIMARY KEY,
-        embedding FLOAT[${embedDim}] distance=cosine
-      )
-    `)
-  } else if (existingDim !== embedDim) {
+  // vec0 virtual table with cosine distance. The dim is baked in at
+  // creation time; switching dims requires re-creating the table
+  // plus a full re-embed (P1-7). Without distance=cosine, the vec0
+  // default is L2 and the hybrid / pure-vector scores disagree (S1).
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_vec
+    USING vec0(chunk_id INTEGER PRIMARY KEY, embedding FLOAT[${dim}] distance=cosine)
+  `)
+
+  // --- Dim-mismatch check (P1-7). ---
+  assertVecDim(db, dim)
+}
+
+function loadSqliteVec(db: DatabaseSync): void {
+  let sqliteVec: { getLoadablePath: () => string }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    sqliteVec = require('sqlite-vec')
+  } catch (err) {
     throw new KnowledgeSchemaError(
-      `knowledge_chunks_vec was created with dim=${existingDim} but ` +
-        `KNOWLEDGE_EMBED_DIM=${embedDim}. Switching dims requires an ` +
-        `explicit re-index (create new vec table → full re-embed → ` +
-        `atomic swap → drop old). See §3.4 / §10.1.`,
+      `sqlite-vec is not installed. ` +
+        `Install: npm install sqlite-vec sqlite-vec-<platform>-<arch>. ` +
+        `Original error: ${(err as Error).message}`
     )
   }
-  // else: matching dim, no-op.
+  try {
+    db.loadExtension(sqliteVec.getLoadablePath())
+  } catch (err) {
+    throw new KnowledgeSchemaError(
+      `Failed to load sqlite-vec extension: ${(err as Error).message}`
+    )
+  }
+}
+
+function assertVecDim(db: DatabaseSync, expectedDim: number): void {
+  // vec0 virtual tables don't expose their columns via PRAGMA
+  // table_info, so we parse the CREATE VIRTUAL TABLE statement
+  // stored in sqlite_master. This is stable across sqlite-vec
+  // versions because FLOAT[<dim>] is part of the documented syntax.
+  const master = db
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='knowledge_chunks_vec'"
+    )
+    .all() as Array<{ sql: string | null }>
+  if (!master[0]?.sql) return // table doesn't exist yet (shouldn't happen here)
+  const match = master[0].sql.match(/FLOAT\[(\d+)\]/)
+  if (!match) return
+  const actualDim = Number(match[1])
+  if (actualDim !== expectedDim) {
+    throw new KnowledgeSchemaError(
+      `knowledge_chunks_vec already exists with dim=${actualDim}; ` +
+        `refusing to bootstrap with dim=${expectedDim}. ` +
+        `Switching dims requires re-indexing the entire corpus ` +
+        `(architecture doc §3.4, audit fix P1-7).`
+    )
+  }
 }

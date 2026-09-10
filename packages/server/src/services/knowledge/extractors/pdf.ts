@@ -1,86 +1,74 @@
 /**
- * PDF text extractor using pdfjs-dist (v5 legacy build via dynamic import).
+ * PDF extractor — uses pdfjs-dist legacy build for Node.js.
  *
- * The legacy build is required because pdfjs-dist v5 ships only ESM, and
- * the server compiles to CJS. The legacy build provides a CJS-compatible
- * entry via `pdfjs-dist/legacy/build/pdf.mjs` (loaded with dynamic import).
+ * Reads every page's text content and concatenates with page
+ * separators. Heading metadata is not preserved in v1 — the chunker
+ * treats it as plain text with page boundaries noted as `\n\n`.
  *
- * Corrupt or password-protected PDFs throw `ExtractError({ kind: 'corrupt' })`.
+ * pdfjs-dist v5 requires the `legacy` build in Node environments
+ * because the default build relies on browser globals (DOMMatrix).
  */
 
 import { readFile } from 'fs/promises'
 import { ExtractError, countTokens, type ExtractResult } from './index'
 
-// pdfjs-dist types (loaded dynamically).
-interface PdfjsModule {
-  getDocument: (data: Uint8Array) => {
-    promise: Promise<{
-      numPages: number
-      getPage(pageNum: number): Promise<{
-        getTextContent(): Promise<{ items: Array<{ str: string }> }>
-      }>
-    }>
-  }
-}
-
-let _pdfjs: PdfjsModule | null = null
-
-async function loadPdfjs(): Promise<PdfjsModule> {
-  if (_pdfjs) return _pdfjs
+export async function extractPdf(path: string): Promise<ExtractResult> {
+  let buffer: Buffer
   try {
-    // pdfjs-dist v5 is ESM-only; use the legacy build for Node/CJS.
-    _pdfjs = (await import('pdfjs-dist/legacy/build/pdf.mjs')) as unknown as PdfjsModule
-    return _pdfjs
+    buffer = await readFile(path)
   } catch (err) {
-    throw new ExtractError('Failed to load pdfjs-dist — is the dependency installed?', {
-      kind: 'io',
-      cause: err,
-    })
+    throw new ExtractError('io', `Failed to read PDF file: ${path}`, err)
   }
-}
 
-export async function pdfExtractor(filePath: string): Promise<ExtractResult> {
-  const pdfjs = await loadPdfjs()
-
-  let data: Uint8Array
+  let pdfjs: typeof import('pdfjs-dist/legacy/build/pdf.mjs')
   try {
-    const buf = await readFile(filePath)
-    data = new Uint8Array(buf)
+    pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
   } catch (err) {
-    throw new ExtractError(`Failed to read PDF file: ${filePath}`, {
-      kind: 'io',
-      cause: err,
-    })
+    throw new ExtractError(
+      'unsupported',
+      'pdfjs-dist is not installed. Run: npm install pdfjs-dist',
+      err
+    )
   }
 
-  let doc: { numPages: number; getPage(pageNum: number): Promise<{ getTextContent(): Promise<{ items: Array<{ str: string }> }> }> }
+  let pdfDocument
   try {
-    doc = await pdfjs.getDocument(data).promise
+    pdfDocument = await pdfjs.getDocument({
+      data: new Uint8Array(buffer),
+      useSystemFonts: true,
+      isEvalSupported: false,
+      useWorkerFetch: false,
+      stopAtErrors: true,
+    }).promise
   } catch (err) {
-    throw new ExtractError(`Failed to parse PDF: ${filePath}`, {
-      kind: 'corrupt',
-      cause: err,
-    })
+    throw new ExtractError(
+      'corrupt',
+      `Failed to parse PDF: ${path}`,
+      err
+    )
   }
 
-  const textParts: string[] = []
+  const pages: string[] = []
   try {
-    for (let i = 1; i <= doc.numPages; i++) {
-      const page = await doc.getPage(i)
+    for (let pageNum = 1; pageNum <= pdfDocument.numPages; pageNum++) {
+      const page = await pdfDocument.getPage(pageNum)
       const content = await page.getTextContent()
-      const pageText = content.items.map((item) => item.str).join(' ')
-      textParts.push(pageText)
+      const pageText = content.items
+        .map(item => ('str' in item ? item.str : ''))
+        .join(' ')
+      pages.push(pageText)
+      page.cleanup()
     }
   } catch (err) {
-    throw new ExtractError(`Failed to extract text from PDF pages: ${filePath}`, {
-      kind: 'corrupt',
-      cause: err,
-    })
+    throw new ExtractError(
+      'corrupt',
+      `Failed to extract text from PDF page: ${path}`,
+      err
+    )
+  } finally {
+    pdfDocument.destroy()
   }
 
-  const text = textParts.join('\n').trim()
-  return {
-    text,
-    tokenCount: countTokens(text),
-  }
+  const text = pages.join('\n\n').trim()
+  return { text, tokenCount: countTokens(text) }
 }

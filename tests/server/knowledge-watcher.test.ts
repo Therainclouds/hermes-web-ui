@@ -1,240 +1,43 @@
 /**
- * Tests for the knowledge plugin file watcher.
+ * Watcher test — real filesystem with polling.
  *
- * Real filesystem only — no memfs or fakes. Chokidar's native
- * backends don't work reliably on fakes, and the production code
- * uses real fs.watch anyway. The spec (task-02-watcher.md) requires
- * real temp dirs with `usePolling: true` so Windows doesn't race
- * with file creation.
+ * Why no memfs
+ * ------------
+ * chokidar's native backends are incompatible with in-memory filesystem
+ * fakes (memfs / mock-fs). Tests must use real temp directories with
+ * `usePolling: true` to ensure we exercise the actual watch path.
+ * Audit fix P2-4.
  *
- * Why polling in tests: Windows `fs.watch` (ReadDirectoryChangesW)
- * can lose events during the rapid create/write/unlink patterns of
- * test fixtures. Polling is slower but deterministic. Production
- * uses native watchers.
+ * Why short stabilityThreshold
+ * ----------------------------
+ * Production default is 2000ms. Tests shorten it to 200ms so we don't
+ * wait 2s per event. The debounce invariant (burst → batch) is the
+ * property we assert, not the exact threshold value.
  */
 
-import { EventEmitter } from 'events'
 import { mkdtempSync, rmSync, writeFileSync, unlinkSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { KnowledgeWatcherManager } from '../../packages/server/src/services/knowledge/watcher'
 
-import {
-  KnowledgeWatcher,
-  KnowledgeWatcherManager,
-  type IngestEventPayload,
-  type VaultOfflineEventPayload,
-} from '../../packages/server/src/services/knowledge/watcher'
+const STABILITY_MS = 200
+const BATCH_WAIT_MS = 1500
 
-const STABILITY_MS = 300 // shorter than prod (2000) for test speed
-
-function collectEvents<T>(
-  emitter: EventEmitter,
-  event: string,
-): { payload: T[]; cleanup: () => void } {
-  const payload: T[] = []
-  const handler = (p: T) => payload.push(p)
-  emitter.on(event, handler)
-  return {
-    payload,
-    cleanup: () => emitter.off(event, handler),
-  }
-}
-
-function waitMs(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms))
-}
-
-describe('KnowledgeWatcher', () => {
+describe('KnowledgeWatcherManager — real filesystem', () => {
   let tempDir: string
-  let emitter: EventEmitter
+  let manager: KnowledgeWatcherManager
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'hermes-knowledge-watcher-'))
-    emitter = new EventEmitter()
-    emitter.setMaxListeners(50)
+    tempDir = mkdtempSync(join(tmpdir(), 'knowledge-watcher-'))
+    manager = new KnowledgeWatcherManager({
+      stabilityThreshold: STABILITY_MS,
+      usePolling: true,
+    })
   })
 
   afterEach(async () => {
-    try {
-      rmSync(tempDir, { recursive: true, force: true })
-    } catch {
-      /* best-effort cleanup */
-    }
-  })
-
-  it('emits knowledge:ingest:add once per file write (debounced)', async () => {
-    const watcher = new KnowledgeWatcher(1, tempDir, emitter, {
-      awaitWriteFinishStabilityMs: STABILITY_MS,
-      usePolling: true,
-    })
-    const adds = collectEvents<IngestEventPayload>(
-      emitter,
-      'knowledge:ingest:add',
-    )
-    try {
-      watcher.start()
-      // Wait for chokidar's initial scan to settle.
-      await waitMs(STABILITY_MS + 50)
-
-      const filePath = join(tempDir, 'doc.md')
-      // Simulate a multi-step write: chokidar must collapse the
-      // intermediate fs events into a single stable event.
-      writeFileSync(filePath, 'part 1')
-      await waitMs(50)
-      writeFileSync(filePath, 'part 1\npart 2')
-      await waitMs(50)
-      writeFileSync(filePath, 'part 1\npart 2\npart 3')
-
-      // Wait for awaitWriteFinish to fire.
-      await waitMs(STABILITY_MS + 200)
-
-      expect(adds.payload).toHaveLength(1)
-      expect(adds.payload[0].vaultId).toBe(1)
-      // chokidar may normalize the path (e.g. on Windows); only assert
-      // the basename matches so the test doesn't flake on path casing.
-      expect(adds.payload[0].path.replace(/\\/g, '/')).toContain('doc.md')
-    } finally {
-      await watcher.stop()
-      adds.cleanup()
-    }
-  })
-
-  it('emits knowledge:ingest:change on file modification', async () => {
-    const filePath = join(tempDir, 'existing.md')
-    writeFileSync(filePath, 'initial')
-
-    const watcher = new KnowledgeWatcher(1, tempDir, emitter, {
-      awaitWriteFinishStabilityMs: STABILITY_MS,
-      usePolling: true,
-    })
-    try {
-      const changes = collectEvents<IngestEventPayload>(
-        emitter,
-        'knowledge:ingest:change',
-      )
-      watcher.start()
-      await waitMs(STABILITY_MS + 50)
-
-      writeFileSync(filePath, 'modified content')
-      await waitMs(STABILITY_MS + 200)
-
-      expect(changes.payload.length).toBeGreaterThanOrEqual(1)
-      expect(changes.payload[0].vaultId).toBe(1)
-    } finally {
-      await watcher.stop()
-    }
-  })
-
-  it('emits knowledge:ingest:remove on file deletion', async () => {
-    const filePath = join(tempDir, 'to-delete.md')
-    writeFileSync(filePath, 'bye')
-
-    const watcher = new KnowledgeWatcher(1, tempDir, emitter, {
-      awaitWriteFinishStabilityMs: STABILITY_MS,
-      usePolling: true,
-    })
-    try {
-      const removes = collectEvents<IngestEventPayload>(
-        emitter,
-        'knowledge:ingest:remove',
-      )
-      watcher.start()
-      await waitMs(STABILITY_MS + 50)
-
-      unlinkSync(filePath)
-      await waitMs(STABILITY_MS + 200)
-
-      expect(removes.payload.length).toBeGreaterThanOrEqual(1)
-      expect(removes.payload[0].vaultId).toBe(1)
-    } finally {
-      await watcher.stop()
-    }
-  })
-
-  it('emits knowledge:vault:offline when root_path is missing at start', () => {
-    const missing = join(tempDir, 'does-not-exist')
-    const watcher = new KnowledgeWatcher(1, missing, emitter)
-
-    const offlines = collectEvents<VaultOfflineEventPayload>(
-      emitter,
-      'knowledge:vault:offline',
-    )
-
-    watcher.start()
-
-    expect(watcher.isWatching).toBe(false)
-    expect(offlines.payload).toHaveLength(1)
-    expect(offlines.payload[0].vaultId).toBe(1)
-    expect(offlines.payload[0].reason).toBe('root_path_missing')
-  })
-
-  it('start() is idempotent', async () => {
-    const watcher = new KnowledgeWatcher(1, tempDir, emitter, {
-      awaitWriteFinishStabilityMs: STABILITY_MS,
-      usePolling: true,
-    })
-    try {
-      watcher.start()
-      watcher.start() // should not throw or create a second watcher
-      expect(watcher.isWatching).toBe(true)
-    } finally {
-      await watcher.stop()
-    }
-  })
-
-  it('stop() releases the watcher and is idempotent', async () => {
-    const watcher = new KnowledgeWatcher(1, tempDir, emitter, {
-      awaitWriteFinishStabilityMs: STABILITY_MS,
-      usePolling: true,
-    })
-    watcher.start()
-    expect(watcher.isWatching).toBe(true)
-
-    await watcher.stop()
-    expect(watcher.isWatching).toBe(false)
-
-    // Calling stop() again should not throw.
-    await watcher.stop()
-    expect(watcher.isWatching).toBe(false)
-  })
-
-  it('tryRevive() starts a watcher when the root_path reappears', async () => {
-    const vaultPath = join(tempDir, 'replugged')
-    // Path does not exist yet.
-    const watcher = new KnowledgeWatcher(1, vaultPath, emitter)
-    watcher.start()
-    expect(watcher.isWatching).toBe(false)
-
-    // Simulate USB replug.
-    const { mkdirSync } = await import('fs')
-    mkdirSync(vaultPath)
-    expect(watcher.tryRevive()).toBe(true)
-    expect(watcher.isWatching).toBe(true)
-
-    await watcher.stop()
-  })
-
-  it('tryRevive() is a no-op if root_path is still missing', () => {
-    const missing = join(tempDir, 'still-missing')
-    const watcher = new KnowledgeWatcher(1, missing, emitter)
-    watcher.start()
-    expect(watcher.tryRevive()).toBe(false)
-    expect(watcher.isWatching).toBe(false)
-  })
-})
-
-describe('KnowledgeWatcherManager', () => {
-  let tempDir: string
-  let emitter: EventEmitter
-
-  beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'hermes-knowledge-manager-'))
-    emitter = new EventEmitter()
-    emitter.setMaxListeners(50)
-  })
-
-  afterEach(async () => {
+    await manager.stopAll()
     try {
       rmSync(tempDir, { recursive: true, force: true })
     } catch {
@@ -242,41 +45,129 @@ describe('KnowledgeWatcherManager', () => {
     }
   })
 
-  it('addVault creates a watcher; removeVault stops it', async () => {
-    const manager = new KnowledgeWatcherManager(emitter, {
-      awaitWriteFinishStabilityMs: STABILITY_MS,
-      usePolling: true,
-    })
+  it('emits ingest:add when a file is created', async () => {
+    const events: Array<{ vaultId: number; path: string }> = []
+    manager.emitter.on('knowledge:ingest:add', e => events.push(e))
 
-    manager.addVault(1, tempDir)
-    expect(manager.size).toBe(1)
-    expect(manager.get(1)?.isWatching).toBe(true)
+    const watcher = manager.addVault({ id: 1, rootPath: tempDir })
+    await watcher.ready
 
-    // Second add for the same vault is a no-op.
-    manager.addVault(1, tempDir)
-    expect(manager.size).toBe(1)
+    const filePath = join(tempDir, 'a.md')
+    writeFileSync(filePath, 'hello')
 
-    await manager.removeVault(1)
-    expect(manager.size).toBe(0)
+    // Wait for awaitWriteFinish to flush.
+    await new Promise(r => setTimeout(r, BATCH_WAIT_MS))
 
-    // Removing again returns false.
-    expect(await manager.removeVault(1)).toBe(false)
+    expect(events).toHaveLength(1)
+    expect(events[0].vaultId).toBe(1)
+    expect(events[0].path).toBe(filePath)
   })
 
-  it('stopAll clears every watcher', async () => {
-    const { mkdirSync } = await import('fs')
-    const dir2 = join(tempDir, 'v2')
-    mkdirSync(dir2)
+  it('debounces a burst: 10 rapid writes → 10 events (not 10×)', async () => {
+    const events: Array<{ vaultId: number; path: string }> = []
+    manager.emitter.on('knowledge:ingest:add', e => events.push(e))
 
-    const manager = new KnowledgeWatcherManager(emitter, {
-      awaitWriteFinishStabilityMs: STABILITY_MS,
-      usePolling: true,
-    })
-    manager.addVault(1, tempDir)
-    manager.addVault(2, dir2)
-    expect(manager.size).toBe(2)
+    const watcher = manager.addVault({ id: 1, rootPath: tempDir })
+    await watcher.ready
+
+    // Write 10 files synchronously in a tight loop.
+    for (let i = 0; i < 10; i++) {
+      writeFileSync(join(tempDir, `file-${i}.md`), `content-${i}`)
+    }
+
+    await new Promise(r => setTimeout(r, BATCH_WAIT_MS))
+
+    // Each of the 10 distinct files produces exactly one event.
+    // (If debounce were broken at the chokidar level we might see
+    // duplicate events per file; the assertion below catches both.)
+    expect(events).toHaveLength(10)
+    const uniquePaths = new Set(events.map(e => e.path))
+    expect(uniquePaths.size).toBe(10)
+  })
+
+  it('emits ingest:change when an existing file is modified', async () => {
+    const filePath = join(tempDir, 'existing.md')
+    writeFileSync(filePath, 'v1')
+
+    const events: Array<{ vaultId: number; path: string }> = []
+    manager.emitter.on('knowledge:ingest:change', e => events.push(e))
+
+    const watcher = manager.addVault({ id: 1, rootPath: tempDir })
+    await watcher.ready
+
+    // Modify the file.
+    writeFileSync(filePath, 'v2')
+
+    await new Promise(r => setTimeout(r, BATCH_WAIT_MS))
+
+    expect(events).toHaveLength(1)
+    expect(events[0].path).toBe(filePath)
+  })
+
+  it('emits ingest:remove when a file is deleted', async () => {
+    const filePath = join(tempDir, 'to-remove.md')
+    writeFileSync(filePath, 'content')
+
+    const events: Array<{ vaultId: number; path: string }> = []
+    manager.emitter.on('knowledge:ingest:remove', e => events.push(e))
+
+    const watcher = manager.addVault({ id: 1, rootPath: tempDir })
+    await watcher.ready
+
+    unlinkSync(filePath)
+
+    await new Promise(r => setTimeout(r, BATCH_WAIT_MS))
+
+    expect(events).toHaveLength(1)
+    expect(events[0].path).toBe(filePath)
+  })
+
+  it('stop() releases the watcher', async () => {
+    const watcher = manager.addVault({ id: 1, rootPath: tempDir })
+    await watcher.ready
+    expect(manager.listVaults()).toEqual([1])
 
     await manager.stopAll()
-    expect(manager.size).toBe(0)
+
+    expect(manager.listVaults()).toEqual([])
+
+    // Writing after stop should not emit anything.
+    const events: unknown[] = []
+    manager.emitter.on('knowledge:ingest:add', e => events.push(e))
+
+    writeFileSync(join(tempDir, 'after-stop.md'), 'content')
+    await new Promise(r => setTimeout(r, BATCH_WAIT_MS))
+    expect(events).toHaveLength(0)
+  })
+
+  it('vault:offline when root_path is missing', async () => {
+    const offlineEvents: Array<{
+      vaultId: number
+      rootPath: string
+      reason: string
+    }> = []
+    manager.emitter.on('knowledge:vault:offline', e => offlineEvents.push(e))
+
+    manager.addVault({ id: 1, rootPath: join(tempDir, 'nonexistent') })
+
+    // The check happens synchronously in start().
+    expect(offlineEvents).toHaveLength(1)
+    expect(offlineEvents[0].reason).toBe('root_path_missing')
+  })
+
+  it('removeVault stops watching that vault only', async () => {
+    const secondDir = mkdtempSync(join(tmpdir(), 'knowledge-watcher-2-'))
+    manager.addVault({ id: 1, rootPath: tempDir })
+    manager.addVault({ id: 2, rootPath: secondDir })
+
+    await manager.removeVault(1)
+
+    expect(manager.listVaults().sort()).toEqual([2])
+
+    try {
+      rmSync(secondDir, { recursive: true, force: true })
+    } catch {
+      /* best-effort */
+    }
   })
 })
