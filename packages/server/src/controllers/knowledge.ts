@@ -22,16 +22,32 @@ function parseBooleanParam(value: string | undefined): boolean {
   return value?.trim().toLowerCase() === 'true' || value === '1'
 }
 
-// The service is injected at route registration time.
+// The service is injected at bootstrap time via setKnowledgeService().
+// When the plugin is disabled (KNOWLEDGE_ENABLED=0) or sqlite-vec is
+// missing, _service stays null and all endpoints reply 503.
+// (Root-cause fix 2026-09-10 — previously this threw a 500 from the
+// default error handler; now it's a friendly 503.)
 let _service: KnowledgeService | null = null
 
-export function setKnowledgeService(service: KnowledgeService): void {
+export function setKnowledgeService(service: KnowledgeService | null): void {
   _service = service
 }
 
-function getService(): KnowledgeService {
+/**
+ * Returns the active service, or writes a 503 response to ctx and
+ * returns null. Callers should early-return after a null result.
+ */
+function getServiceOr503(ctx: Context): KnowledgeService | null {
   if (!_service) {
-    throw new KnowledgeConfigError('Knowledge service not initialized')
+    ctx.status = 503
+    ctx.body = {
+      error: 'knowledge_disabled',
+      code: 'service_unavailable',
+      message:
+        'Knowledge plugin is not initialized. ' +
+        'Set KNOWLEDGE_ENABLED=1 and ensure sqlite-vec is installed.',
+    }
+    return null
   }
   return _service
 }
@@ -39,12 +55,14 @@ function getService(): KnowledgeService {
 // --- Vault endpoints ------------------------------------------------------
 
 export async function listVaults(ctx: Context): Promise<void> {
-  const service = getService()
+  const service = getServiceOr503(ctx)
+  if (!service) return
   ctx.body = { vaults: service.listVaults() }
 }
 
 export async function createVault(ctx: Context): Promise<void> {
-  const service = getService()
+  const service = getServiceOr503(ctx)
+  if (!service) return
   const { root_path, name } = ctx.request.body as { root_path?: string; name?: string }
 
   if (!root_path || !name) {
@@ -68,7 +86,8 @@ export async function createVault(ctx: Context): Promise<void> {
 }
 
 export async function deleteVault(ctx: Context): Promise<void> {
-  const service = getService()
+  const service = getServiceOr503(ctx)
+  if (!service) return
   const id = parsePositiveInt(ctx.params.id, 0)
   if (!id) {
     ctx.status = 400
@@ -84,7 +103,8 @@ export async function deleteVault(ctx: Context): Promise<void> {
 // --- Document endpoints ---------------------------------------------------
 
 export async function listDocuments(ctx: Context): Promise<void> {
-  const service = getService()
+  const service = getServiceOr503(ctx)
+  if (!service) return
   const vaultId = ctx.query.vault_id
     ? parsePositiveInt(ctx.query.vault_id as string, 0) || undefined
     : undefined
@@ -98,7 +118,8 @@ export async function listDocuments(ctx: Context): Promise<void> {
 }
 
 export async function getDocument(ctx: Context): Promise<void> {
-  const service = getService()
+  const service = getServiceOr503(ctx)
+  if (!service) return
   const id = parsePositiveInt(ctx.params.id, 0)
   if (!id) {
     ctx.status = 400
@@ -125,7 +146,8 @@ export async function deleteDocument(ctx: Context): Promise<void> {
 // --- Search ---------------------------------------------------------------
 
 export async function searchKnowledge(ctx: Context): Promise<void> {
-  const service = getService()
+  const service = getServiceOr503(ctx)
+  if (!service) return
   const body = ctx.request.body as {
     query?: string
     vault_id?: number
@@ -176,6 +198,17 @@ export async function reindex(ctx: Context): Promise<void> {
 // --- Health ---------------------------------------------------------------
 
 export async function health(ctx: Context): Promise<void> {
-  const service = getService()
+  const service = getServiceOr503(ctx)
+  if (!service) return
   ctx.body = service.health()
+}
+
+// Keep legacy name around (tests may still call getService()). The
+// old behavior (throwing KnowledgeConfigError) is preserved so
+// knowledge-service.test.ts expectations still hold.
+function getService(): KnowledgeService {
+  if (!_service) {
+    throw new KnowledgeConfigError('Knowledge service not initialized')
+  }
+  return _service
 }

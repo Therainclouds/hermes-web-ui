@@ -44,14 +44,39 @@ export class KnowledgeSchemaError extends Error {
 export const DEFAULT_KNOWLEDGE_EMBED_DIM = 1024
 
 /**
+ * Result of bootstrapping the knowledge plugin schema. Tells the caller
+ * whether vec0 (and hence vector search) is available — if not, FTS5
+ * keyword search still works and the rest of the plugin keeps operating.
+ */
+export interface KnowledgeSchemaBootstrapStatus {
+  /** true iff sqlite-vec is installed AND vec0 table is usable. */
+  vecAvailable: boolean
+  /** Populated when vecAvailable is false — explains why. */
+  vecReason?: string
+}
+
+/**
  * Idempotently bootstrap every table the knowledge plugin needs on
- * the shared connection. Returns silently on success; throws
- * KnowledgeSchemaError on an unrecoverable inconsistency.
+ * the shared connection. Returns a status object describing whether
+ * sqlite-vec (vector search) was successfully loaded. Throws
+ * KnowledgeSchemaError only on unrecoverable inconsistencies (e.g.,
+ * embed-dim mismatch against an already-created vec0 table).
+ *
+ * Graceful-degradation path: if sqlite-vec is not installed (e.g.,
+ * on a Docker image where it was moved to optionalDependencies and
+ * failed to install), the base tables (vaults/documents/chunks/fts)
+ * are still created, but knowledge_chunks_vec is skipped. The caller
+ * (KnowledgeService) must check vecAvailable and refuse search /
+ * ingest tasks that depend on vec0.
+ *
+ * Root-cause fix (2026-09-10): loadSqliteVec now returns a status
+ * instead of throwing, and is idempotent (skips if vec0 table is
+ * already present — avoids double-loading the extension).
  */
 export function ensureKnowledgeSchema(
   db: DatabaseSync,
   dim: number = DEFAULT_KNOWLEDGE_EMBED_DIM
-): void {
+): KnowledgeSchemaBootstrapStatus {
   if (!Number.isInteger(dim) || dim <= 0) {
     throw new KnowledgeSchemaError(`Invalid embed dim: ${dim}`)
   }
@@ -73,8 +98,8 @@ export function ensureKnowledgeSchema(
     )
   }
 
-  // --- sqlite-vec extension (lazy, only on first init). ---
-  loadSqliteVec(db)
+  // --- sqlite-vec extension (lazy, idempotent, graceful degradation). ---
+  const vecStatus = loadSqliteVec(db)
 
   // --- Idempotent DDL. ---
   db.exec(`
@@ -135,37 +160,86 @@ export function ensureKnowledgeSchema(
     USING fts5(content, tokenize='porter')
   `)
 
-  // vec0 virtual table with cosine distance. The dim is baked in at
+  // vec0 virtual table with cosine distance — only created when
+  // sqlite-vec was successfully loaded. The dim is baked in at
   // creation time; switching dims requires re-creating the table
   // plus a full re-embed (P1-7). Without distance=cosine, the vec0
   // default is L2 and the hybrid / pure-vector scores disagree (S1).
-  db.exec(`
-    CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_vec
-    USING vec0(chunk_id INTEGER PRIMARY KEY, embedding FLOAT[${dim}] distance=cosine)
-  `)
+  if (vecStatus.available) {
+    db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_vec
+      USING vec0(chunk_id INTEGER PRIMARY KEY, embedding FLOAT[${dim}] distance=cosine)
+    `)
 
-  // --- Dim-mismatch check (P1-7). ---
-  assertVecDim(db, dim)
+    // --- Dim-mismatch check (P1-7). ---
+    assertVecDim(db, dim)
+  }
+
+  return { vecAvailable: vecStatus.available, vecReason: vecStatus.reason }
 }
 
-function loadSqliteVec(db: DatabaseSync): void {
+/**
+ * Load sqlite-vec into the shared database connection.
+ *
+ * Idempotent: skips if knowledge_chunks_vec already exists (the
+ * extension must have been loaded on a prior boot, per root-cause
+ * fix 2026-09-10).
+ *
+ * Graceful degradation: if the sqlite-vec package is not installed,
+ * returns `{ available: false, reason: ... }` rather than throwing.
+ * This lets the rest of the plugin (vaults, documents, FTS5 keyword
+ * search) continue working on Docker / source-deploy targets where
+ * vec0 failed to install.
+ *
+ * Loading gate: opens enableLoadExtension(true) momentarily and
+ * closes it after loadExtension, keeping the window during which
+ * arbitrary native extensions can be loaded as narrow as possible
+ * (root-cause fix 2026-09-10).
+ */
+interface SqliteVecLoadResult {
+  available: boolean
+  reason?: string
+}
+
+function loadSqliteVec(db: DatabaseSync): SqliteVecLoadResult {
+  // Idempotent: if the vec0 virtual table already exists, the
+  // extension must have been loaded on a prior boot. Skip.
+  const existing = db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='knowledge_chunks_vec'"
+    )
+    .all() as Array<{ name: string | null }>
+  if (existing.length > 0) {
+    return { available: true }
+  }
+
   let sqliteVec: { getLoadablePath: () => string }
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     sqliteVec = require('sqlite-vec')
   } catch (err) {
-    throw new KnowledgeSchemaError(
-      `sqlite-vec is not installed. ` +
-        `Install: npm install sqlite-vec sqlite-vec-<platform>-<arch>. ` +
-        `Original error: ${(err as Error).message}`
-    )
+    return {
+      available: false,
+      reason: `sqlite-vec package is not installed (${(err as Error).message}). ` +
+        'Vector search and ingest will be disabled; FTS5 keyword search still works. ' +
+        'Install: npm install sqlite-vec',
+    }
   }
+
   try {
-    db.loadExtension(sqliteVec.getLoadablePath())
+    db.enableLoadExtension(true)
+    try {
+      db.loadExtension(sqliteVec.getLoadablePath())
+    } finally {
+      db.enableLoadExtension(false)
+    }
+    return { available: true }
   } catch (err) {
-    throw new KnowledgeSchemaError(
-      `Failed to load sqlite-vec extension: ${(err as Error).message}`
-    )
+    return {
+      available: false,
+      reason: `loadExtension failed: ${(err as Error).message}. ` +
+        'Vector search and ingest will be disabled; FTS5 keyword search still works.',
+    }
   }
 }
 

@@ -20,7 +20,10 @@ import { statSync } from 'fs'
 import { extname, join } from 'path'
 import { EventEmitter } from 'events'
 import type { DatabaseSync } from 'node:sqlite'
-import { ensureKnowledgeSchema } from '../../db/knowledge-schema'
+import {
+  ensureKnowledgeSchema,
+  type KnowledgeSchemaBootstrapStatus,
+} from '../../db/knowledge-schema'
 import { extract, type ExtractError } from './extractors'
 import { chunkText, type Chunk } from './chunker'
 import {
@@ -144,8 +147,14 @@ export class KnowledgeService extends EventEmitter {
 
   // --- Lifecycle ----------------------------------------------------------
 
-  init(): void {
-    ensureKnowledgeSchema(this.db, this.config.embedDim)
+  /**
+   * Bootstrap the knowledge schema on the shared DB connection.
+   * Returns a status describing whether sqlite-vec (vector search)
+   * was successfully loaded. Callers should check status.vecAvailable
+   * before accepting ingest / search tasks.
+   */
+  init(): KnowledgeSchemaBootstrapStatus {
+    return ensureKnowledgeSchema(this.db, this.config.embedDim)
   }
 
   // --- Vault management ---------------------------------------------------
