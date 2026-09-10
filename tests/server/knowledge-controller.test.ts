@@ -319,6 +319,100 @@ describe('knowledge controller', () => {
     })
   })
 
+  // --- Settings (embedding API key) ---
+
+  describe('getKeySettings', () => {
+    it('reports keyConfigured=false when no key is resolvable', async () => {
+      const prevHome = process.env.HERMES_WEB_UI_HOME
+      const prevKey = process.env.KNOWLEDGE_EMBED_API_KEY
+      const prevDash = process.env.DASHSCOPE_API_KEY
+      process.env.HERMES_WEB_UI_HOME = tempDir
+      delete process.env.KNOWLEDGE_EMBED_API_KEY
+      delete process.env.DASHSCOPE_API_KEY
+      try {
+        const ctx = mockCtx()
+        await ctrl.getKeySettings(ctx)
+        expect((ctx.body as any).keyConfigured).toBe(false)
+        expect((ctx.body as any).keyHint).toBeUndefined()
+        expect((ctx.body as any).initialized).toBe(false)
+      } finally {
+        if (prevHome !== undefined) process.env.HERMES_WEB_UI_HOME = prevHome; else delete process.env.HERMES_WEB_UI_HOME
+        if (prevKey !== undefined) process.env.KNOWLEDGE_EMBED_API_KEY = prevKey; else delete process.env.KNOWLEDGE_EMBED_API_KEY
+        if (prevDash !== undefined) process.env.DASHSCOPE_API_KEY = prevDash; else delete process.env.DASHSCOPE_API_KEY
+      }
+    })
+
+    it('reports keyConfigured=true with a masked hint when key is set', async () => {
+      const prevKey = process.env.KNOWLEDGE_EMBED_API_KEY
+      process.env.HERMES_WEB_UI_HOME = tempDir
+      process.env.KNOWLEDGE_EMBED_API_KEY = 'sk-test-1234567890'
+      try {
+        const ctx = mockCtx()
+        await ctrl.getKeySettings(ctx)
+        expect((ctx.body as any).keyConfigured).toBe(true)
+        expect((ctx.body as any).keyHint).toBe('7890')
+        expect(JSON.stringify(ctx.body)).not.toContain('sk-test-1234567890')
+      } finally {
+        if (prevKey !== undefined) process.env.KNOWLEDGE_EMBED_API_KEY = prevKey; else delete process.env.KNOWLEDGE_EMBED_API_KEY
+      }
+    })
+  })
+
+  describe('saveKeySettings', () => {
+    it('rejects keys shorter than 8 chars with 400', async () => {
+      const ctx = mockCtx({ request: { body: { api_key: 'short' } } })
+      await ctrl.saveKeySettings(ctx)
+      expect(ctx.status).toBe(400)
+      expect((ctx.body as any).error).toBe('invalid_api_key')
+    })
+
+    it('rejects keys containing whitespace with 400', async () => {
+      const ctx = mockCtx({ request: { body: { api_key: 'sk-test key with spaces' } } })
+      await ctrl.saveKeySettings(ctx)
+      expect(ctx.status).toBe(400)
+    })
+
+    it('writes the secrets file and triggers reinit', async () => {
+      const prevHome = process.env.HERMES_WEB_UI_HOME
+      process.env.HERMES_WEB_UI_HOME = tempDir
+      let reinitCalls = 0
+      ctrl.setKnowledgeReinit(() => {
+        reinitCalls++
+        ctrl.setKnowledgeService(createMockService())
+      })
+      try {
+        const ctx = mockCtx({ request: { body: { api_key: 'sk-ui-saved-key-9876' } } })
+        await ctrl.saveKeySettings(ctx)
+
+        expect(ctx.status).toBe(200)
+        expect((ctx.body as any).ok).toBe(true)
+        expect((ctx.body as any).initialized).toBe(true)
+        expect(reinitCalls).toBe(1)
+
+        const { readFileSync } = await import('fs')
+        const written = readFileSync(join(tempDir, 'secrets', 'knowledge-embed.env'), 'utf-8')
+        expect(written).toBe('DASHSCOPE_API_KEY=sk-ui-saved-key-9876\n')
+      } finally {
+        if (prevHome !== undefined) process.env.HERMES_WEB_UI_HOME = prevHome; else delete process.env.HERMES_WEB_UI_HOME
+        ctrl.setKnowledgeReinit(null)
+        ctrl.setKnowledgeService(null as unknown as KnowledgeService)
+      }
+    })
+
+    it('reports initialized=false when reinit callback is not registered', async () => {
+      const prevHome = process.env.HERMES_WEB_UI_HOME
+      process.env.HERMES_WEB_UI_HOME = tempDir
+      try {
+        const ctx = mockCtx({ request: { body: { api_key: 'sk-no-reinit-key-1' } } })
+        await ctrl.saveKeySettings(ctx)
+        expect((ctx.body as any).ok).toBe(true)
+        expect((ctx.body as any).initialized).toBe(false)
+      } finally {
+        if (prevHome !== undefined) process.env.HERMES_WEB_UI_HOME = prevHome; else delete process.env.HERMES_WEB_UI_HOME
+      }
+    })
+  })
+
   // --- Health ---
 
   describe('health', () => {

@@ -7,9 +7,11 @@
  */
 
 import type { Context } from 'koa'
-import { realpathSync, accessSync, constants } from 'fs'
-import { sep } from 'path'
+import { realpathSync, accessSync, constants, mkdirSync, writeFileSync } from 'fs'
+import { join, sep } from 'path'
 import { KnowledgeService, QueryTooLongError } from '../services/knowledge/knowledge.service'
+import { KnowledgeConfigError, loadKnowledgeConfig } from '../services/knowledge/config'
+import { getWebUiHome } from '../config'
 
 // --- Vault path validation (ARM protection) -------------------------------
 
@@ -79,6 +81,16 @@ let _service: KnowledgeService | null = null
 
 export function setKnowledgeService(service: KnowledgeService | null): void {
   _service = service
+}
+
+// Re-init hook: db/hermes/init.ts registers tryInitKnowledgeService here
+// at module load, so the settings endpoint can re-attempt bootstrap after
+// an operator saves an embedding API key via the UI. Callback injection
+// avoids a controller → db/hermes/init import cycle.
+let _reinit: (() => void) | null = null
+
+export function setKnowledgeReinit(fn: (() => void) | null): void {
+  _reinit = fn
 }
 
 /**
@@ -250,6 +262,84 @@ export async function reindex(ctx: Context): Promise<void> {
   // TODO: implement bulk reindex when watcher integration is complete.
   ctx.status = 501
   ctx.body = { error: 'not_implemented' }
+}
+
+// --- Settings (embedding API key) ------------------------------------------
+
+const SECRETS_FILE = 'knowledge-embed.env'
+
+/**
+ * GET /api/knowledge/settings — reports whether the embedding API key is
+ * configured. Never returns the key itself, only its last 4 characters.
+ * Reachable even when the service is not initialized (that is the whole
+ * point: this is how an operator recovers from a missing key at boot).
+ */
+export async function getKeySettings(ctx: Context): Promise<void> {
+  try {
+    const config = loadKnowledgeConfig()
+    ctx.body = {
+      enabled: config.enabled,
+      keyConfigured: Boolean(config.embedApiKey),
+      keyHint: config.embedApiKey ? config.embedApiKey.slice(-4) : undefined,
+      initialized: Boolean(_service),
+      model: config.embedModel,
+      dim: config.embedDim,
+    }
+  } catch (err) {
+    // loadKnowledgeConfig throws when the plugin is enabled but the key
+    // is missing — that is exactly the state this endpoint reports.
+    if (err instanceof KnowledgeConfigError) {
+      ctx.body = { enabled: true, keyConfigured: false, initialized: Boolean(_service) }
+      return
+    }
+    throw err
+  }
+}
+
+/**
+ * POST /api/knowledge/settings { api_key } — persists the embedding API
+ * key to $HERMES_WEB_UI_HOME/secrets/knowledge-embed.env, then re-runs
+ * plugin bootstrap so the key takes effect without a server restart.
+ * The key is never logged and never echoed back.
+ */
+export async function saveKeySettings(ctx: Context): Promise<void> {
+  const body = ctx.request.body as { api_key?: string }
+  const apiKey = (body.api_key ?? '').trim()
+
+  if (apiKey.length < 8 || apiKey.length > 256 || /\s/.test(apiKey)) {
+    ctx.status = 400
+    ctx.body = {
+      error: 'invalid_api_key',
+      message: 'API key must be 8-256 characters with no whitespace',
+    }
+    return
+  }
+
+  const secretsDir = join(getWebUiHome(process.env), 'secrets')
+  mkdirSync(secretsDir, { recursive: true })
+  // 0o600 where the OS honours it (no-op on Windows).
+  writeFileSync(join(secretsDir, SECRETS_FILE), `DASHSCOPE_API_KEY=${apiKey}\n`, { mode: 0o600 })
+
+  // Re-attempt bootstrap. Failure here (e.g. invalid dim config) is
+  // reported as initialized=false with the reason — the key itself is
+  // saved and will be picked up on next boot.
+  let reinitError: string | undefined
+  if (_reinit) {
+    try {
+      _reinit()
+    } catch (err) {
+      reinitError = (err as Error).message
+    }
+  }
+
+  let enabled = true
+  try {
+    enabled = loadKnowledgeConfig().enabled
+  } catch {
+    enabled = true // key is now present; enabled defaults to true path
+  }
+
+  ctx.body = { ok: true, initialized: Boolean(_service), enabled, reinitError }
 }
 
 // --- Health ---------------------------------------------------------------

@@ -62,6 +62,18 @@ export default {
     messages: {
       vaultCreated: '知识库已创建',
     },
+
+    settings: {
+      title: '设置',
+      apiKeyPlaceholder: 'sk-...',
+      keyConfigured: 'API Key 已配置（尾号 {hint}）',
+      notConfigured: '尚未配置 Embedding API Key，保存后才能索引文档。',
+      pluginDisabled: '知识库插件已禁用。请设置 KNOWLEDGE_ENABLED=1 并重启服务。',
+      save: '保存 Key',
+      saved: 'API Key 已保存，插件已激活',
+      savedButNotInitialized: 'API Key 已保存，但插件未启动，请查看服务端日志。',
+      saveFailed: '保存 API Key 失败',
+    },
   },
 
   pluginsKnowledge: {

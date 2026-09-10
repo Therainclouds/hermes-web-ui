@@ -25,6 +25,17 @@ export default {
     actions: { delete: '削除', refresh: '更新', cancel: 'キャンセル', confirm: '確認' },
     errors: { fetchFailed: 'データの読み込みに失敗しました', createFailed: 'ボールトの作成に失敗しました', deleteFailed: 'ボールトの削除に失敗しました' },
     messages: { vaultCreated: 'ボールトを作成しました' },
+    settings: {
+      title: '設定',
+      apiKeyPlaceholder: 'sk-...',
+      keyConfigured: 'API キー設定済み（末尾 {hint}）',
+      notConfigured: 'Embedding API キーが未設定です。保存するまでドキュメントをインデックスできません。',
+      pluginDisabled: 'ナレッジプラグインが無効です。KNOWLEDGE_ENABLED=1 を設定してサーバーを再起動してください。',
+      save: 'キーを保存',
+      saved: 'API キーを保存しました — プラグインが有効になりました',
+      savedButNotInitialized: 'API キーは保存されましたが、プラグインが起動していません。サーバーログを確認してください。',
+      saveFailed: 'API キーの保存に失敗しました',
+    },
   },
   pluginsKnowledge: { sidebarLabel: 'ナレッジ', description: 'RAG検索付きドキュメントナレッジベース。' },
 }

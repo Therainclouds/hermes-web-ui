@@ -25,6 +25,17 @@ export default {
     actions: { delete: 'حذف', refresh: 'تحديث', cancel: 'إلغاء', confirm: 'تأكيد' },
     errors: { fetchFailed: 'فشل تحميل البيانات', createFailed: 'فشل إنشاء الخزن', deleteFailed: 'فشل حذف الخزن' },
     messages: { vaultCreated: 'تم إنشاء الخزن' },
+    settings: {
+      title: 'الإعدادات',
+      apiKeyPlaceholder: 'sk-...',
+      keyConfigured: 'مفتاح API مُهيأ (ينتهي بـ {hint})',
+      notConfigured: 'لا يوجد مفتاح API لل embedding — لا يمكن فهرسة المستندات قبل حفظه.',
+      pluginDisabled: 'إضافة المعرفة معطلة. عيّن KNOWLEDGE_ENABLED=1 وأعد تشغيل الخادم.',
+      save: 'حفظ المفتاح',
+      saved: 'تم حفظ مفتاح API — الإضافة نشطة الآن',
+      savedButNotInitialized: 'تم حفظ المفتاح لكن الإضافة لم تبدأ. راجع سجلات الخادم.',
+      saveFailed: 'فشل حفظ مفتاح API',
+    },
   },
   pluginsKnowledge: { sidebarLabel: 'المعرفة', description: 'قاعدة معرفة مستندات مع بحث RAG.' },
 }

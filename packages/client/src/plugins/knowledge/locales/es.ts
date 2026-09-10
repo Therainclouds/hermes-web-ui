@@ -25,6 +25,17 @@ export default {
     actions: { delete: 'Eliminar', refresh: 'Actualizar', cancel: 'Cancelar', confirm: 'Confirmar' },
     errors: { fetchFailed: 'Error al cargar datos', createFailed: 'Error al crear bóveda', deleteFailed: 'Error al eliminar bóveda' },
     messages: { vaultCreated: 'Bóveda creada' },
+    settings: {
+      title: 'Ajustes',
+      apiKeyPlaceholder: 'sk-...',
+      keyConfigured: 'Clave API configurada (termina en {hint})',
+      notConfigured: 'No hay clave API de embedding configurada — no se pueden indexar documentos.',
+      pluginDisabled: 'El plugin de conocimientos está deshabilitado. Configure KNOWLEDGE_ENABLED=1 y reinicie el servidor.',
+      save: 'Guardar clave',
+      saved: 'Clave API guardada — plugin activo',
+      savedButNotInitialized: 'Clave API guardada, pero el plugin no arrancó. Revise los logs del servidor.',
+      saveFailed: 'Error al guardar la clave API',
+    },
   },
   pluginsKnowledge: { sidebarLabel: 'Conocimientos', description: 'Base de conocimientos documental con búsqueda RAG.' },
 }

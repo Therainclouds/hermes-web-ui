@@ -62,6 +62,18 @@ export default {
     messages: {
       vaultCreated: 'Vault created',
     },
+
+    settings: {
+      title: 'Settings',
+      apiKeyPlaceholder: 'sk-...',
+      keyConfigured: 'API key configured (ending {hint})',
+      notConfigured: 'No embedding API key configured — documents cannot be indexed until one is saved.',
+      pluginDisabled: 'Knowledge plugin is disabled. Set KNOWLEDGE_ENABLED=1 and restart the server.',
+      save: 'Save Key',
+      saved: 'API key saved — plugin is now active',
+      savedButNotInitialized: 'API key saved, but the plugin did not start. Check server logs.',
+      saveFailed: 'Failed to save API key',
+    },
   },
 
   pluginsKnowledge: {

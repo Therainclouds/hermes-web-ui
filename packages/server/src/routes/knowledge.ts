@@ -35,6 +35,11 @@ knowledgeRoutes.post('/api/knowledge/reindex', ctrl.reindex)
 
 knowledgeRoutes.post('/api/knowledge/search', ctrl.searchKnowledge)
 
+// --- Settings (reachable even when the service is uninitialized) ---
+
+knowledgeRoutes.get('/api/knowledge/settings', ctrl.getKeySettings)
+knowledgeRoutes.post('/api/knowledge/settings', ctrl.saveKeySettings)
+
 // --- Health ---
 
 knowledgeRoutes.get('/api/knowledge/health', ctrl.health)

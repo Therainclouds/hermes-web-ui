@@ -18,6 +18,7 @@ import { getDb } from '../index'
 import { loadKnowledgeConfig } from '../../services/knowledge/config'
 import { KnowledgeService } from '../../services/knowledge/knowledge.service'
 import { initKnowledgeRoutes } from '../../routes/knowledge'
+import { setKnowledgeReinit } from '../../controllers/knowledge'
 
 // Module-level handle for subsequent wiring (e.g., future Socket.IO
 // integration for ingest events). Null when the plugin is disabled
@@ -80,6 +81,11 @@ function tryInitKnowledgeService(): void {
     )
   }
 }
+
+// Register the re-init hook so the settings endpoint (POST
+// /api/knowledge/settings) can re-attempt bootstrap after an operator
+// saves an embedding API key via the UI — no server restart needed.
+setKnowledgeReinit(tryInitKnowledgeService)
 
 export function initAllStores(): void {
   // Initialize all tables with centralized schema definitions and migrations

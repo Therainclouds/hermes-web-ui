@@ -25,6 +25,17 @@ export default {
     actions: { delete: 'Удалить', refresh: 'Обновить', cancel: 'Отмена', confirm: 'Подтвердить' },
     errors: { fetchFailed: 'Не удалось загрузить данные', createFailed: 'Не удалось создать хранилище', deleteFailed: 'Не удалось удалить хранилище' },
     messages: { vaultCreated: 'Хранилище создано' },
+    settings: {
+      title: 'Настройки',
+      apiKeyPlaceholder: 'sk-...',
+      keyConfigured: 'API-ключ настроен (оканчивается на {hint})',
+      notConfigured: 'Embedding API-ключ не настроен — индексация документов невозможна.',
+      pluginDisabled: 'Плагин знаний отключён. Установите KNOWLEDGE_ENABLED=1 и перезапустите сервер.',
+      save: 'Сохранить ключ',
+      saved: 'API-ключ сохранён — плагин активен',
+      savedButNotInitialized: 'API-ключ сохранён, но плагин не запустился. Проверьте журналы сервера.',
+      saveFailed: 'Не удалось сохранить API-ключ',
+    },
   },
   pluginsKnowledge: { sidebarLabel: 'Знания', description: 'Документальная база знаний с RAG-поиском.' },
 }

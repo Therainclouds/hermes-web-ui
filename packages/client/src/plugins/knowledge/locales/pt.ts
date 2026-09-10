@@ -25,6 +25,17 @@ export default {
     actions: { delete: 'Excluir', refresh: 'Atualizar', cancel: 'Cancelar', confirm: 'Confirmar' },
     errors: { fetchFailed: 'Falha ao carregar dados', createFailed: 'Falha ao criar cofre', deleteFailed: 'Falha ao excluir cofre' },
     messages: { vaultCreated: 'Cofre criado' },
+    settings: {
+      title: 'Configurações',
+      apiKeyPlaceholder: 'sk-...',
+      keyConfigured: 'Chave de API configurada (termina em {hint})',
+      notConfigured: 'Nenhuma chave de API de embedding configurada — não é possível indexar documentos.',
+      pluginDisabled: 'O plugin de conhecimento está desativado. Defina KNOWLEDGE_ENABLED=1 e reinicie o servidor.',
+      save: 'Salvar chave',
+      saved: 'Chave de API salva — plugin ativo',
+      savedButNotInitialized: 'Chave de API salva, mas o plugin não iniciou. Verifique os logs do servidor.',
+      saveFailed: 'Falha ao salvar a chave de API',
+    },
   },
   pluginsKnowledge: { sidebarLabel: 'Conhecimento', description: 'Base de conhecimento documental com pesquisa RAG.' },
 }

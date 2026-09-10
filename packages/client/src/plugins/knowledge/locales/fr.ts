@@ -25,6 +25,17 @@ export default {
     actions: { delete: 'Supprimer', refresh: 'Actualiser', cancel: 'Annuler', confirm: 'Confirmer' },
     errors: { fetchFailed: 'Échec du chargement des données', createFailed: 'Échec de la création du coffre', deleteFailed: 'Échec de la suppression du coffre' },
     messages: { vaultCreated: 'Coffre créé' },
+    settings: {
+      title: 'Paramètres',
+      apiKeyPlaceholder: 'sk-...',
+      keyConfigured: 'Clé API configurée (finit par {hint})',
+      notConfigured: "Aucune clé API d'embedding configurée — les documents ne peuvent pas être indexés.",
+      pluginDisabled: 'Le plugin de connaissances est désactivé. Définissez KNOWLEDGE_ENABLED=1 et redémarrez le serveur.',
+      save: 'Enregistrer la clé',
+      saved: 'Clé API enregistrée — plugin actif',
+      savedButNotInitialized: 'Clé API enregistrée, mais le plugin n’a pas démarré. Consultez les logs du serveur.',
+      saveFailed: "Échec de l'enregistrement de la clé API",
+    },
   },
   pluginsKnowledge: { sidebarLabel: 'Connaissances', description: 'Base de connaissances documentaires avec recherche RAG.' },
 }

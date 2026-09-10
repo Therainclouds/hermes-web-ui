@@ -25,6 +25,17 @@ export default {
     actions: { delete: 'Löschen', refresh: 'Aktualisieren', cancel: 'Abbrechen', confirm: 'Bestätigen' },
     errors: { fetchFailed: 'Daten konnten nicht geladen werden', createFailed: 'Tresor konnte nicht erstellt werden', deleteFailed: 'Tresor konnte nicht gelöscht werden' },
     messages: { vaultCreated: 'Tresor erstellt' },
+    settings: {
+      title: 'Einstellungen',
+      apiKeyPlaceholder: 'sk-...',
+      keyConfigured: 'API-Key konfiguriert (endet auf {hint})',
+      notConfigured: 'Kein Embedding-API-Key konfiguriert — Dokumente können erst indexiert werden, wenn einer gespeichert ist.',
+      pluginDisabled: 'Wissens-Plugin ist deaktiviert. Setzen Sie KNOWLEDGE_ENABLED=1 und starten Sie den Server neu.',
+      save: 'Key speichern',
+      saved: 'API-Key gespeichert — Plugin ist aktiv',
+      savedButNotInitialized: 'API-Key gespeichert, aber das Plugin wurde nicht gestartet. Siehe Server-Logs.',
+      saveFailed: 'API-Key konnte nicht gespeichert werden',
+    },
   },
   pluginsKnowledge: { sidebarLabel: 'Wissen', description: 'Dokument-Wissensbasis mit RAG-Suche.' },
 }

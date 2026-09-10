@@ -102,6 +102,31 @@ export async function searchKnowledge(body: {
   })
 }
 
+export interface KnowledgeSettings {
+  /** Plugin master switch (KNOWLEDGE_ENABLED). */
+  enabled: boolean
+  /** Whether an embedding API key is resolvable. */
+  keyConfigured: boolean
+  /** Last 4 chars of the configured key — never the key itself. */
+  keyHint?: string
+  /** Whether the service is live (settings/vaults usable). */
+  initialized: boolean
+  model?: string
+  dim?: number
+}
+
+export async function getSettings(): Promise<KnowledgeSettings> {
+  return request('/api/knowledge/settings')
+}
+
+export async function saveApiKey(apiKey: string): Promise<{ ok: boolean; initialized: boolean; enabled: boolean; reinitError?: string }> {
+  return request('/api/knowledge/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ api_key: apiKey }),
+  })
+}
+
 export async function getHealth(): Promise<KnowledgeHealth> {
   return request('/api/knowledge/health')
 }

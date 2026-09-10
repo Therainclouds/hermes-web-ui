@@ -25,6 +25,17 @@ export default {
     actions: { delete: '삭제', refresh: '새로고침', cancel: '취소', confirm: '확인' },
     errors: { fetchFailed: '데이터를 불러오지 못했습니다', createFailed: '볼트를 생성하지 못했습니다', deleteFailed: '볼트를 삭제하지 못했습니다' },
     messages: { vaultCreated: '볼트가 생성되었습니다' },
+    settings: {
+      title: '설정',
+      apiKeyPlaceholder: 'sk-...',
+      keyConfigured: 'API 키 구성됨 (끝자리 {hint})',
+      notConfigured: 'Embedding API 키가 구성되지 않았습니다. 저장하기 전까지 문서를 인덱싱할 수 없습니다.',
+      pluginDisabled: '지식 플러그인이 비활성화되어 있습니다. KNOWLEDGE_ENABLED=1로 설정하고 서버를 재시작하세요.',
+      save: '키 저장',
+      saved: 'API 키가 저장되었습니다 — 플러그인이 활성화되었습니다',
+      savedButNotInitialized: 'API 키가 저장되었지만 플러그인이 시작되지 않았습니다. 서버 로그를 확인하세요.',
+      saveFailed: 'API 키 저장에 실패했습니다',
+    },
   },
   pluginsKnowledge: { sidebarLabel: '지식', description: 'RAG 검색이 포함된 문서 지식 베이스.' },
 }

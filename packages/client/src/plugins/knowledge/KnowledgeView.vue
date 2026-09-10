@@ -21,7 +21,7 @@ import {
   type DataTableColumns,
 } from 'naive-ui'
 import * as api from './api'
-import type { KnowledgeVault, KnowledgeDocument, KnowledgeHealth } from './api'
+import type { KnowledgeVault, KnowledgeDocument, KnowledgeHealth, KnowledgeSettings } from './api'
 
 const { t } = useI18n()
 const message = useMessage()
@@ -34,6 +34,11 @@ const documents = ref<KnowledgeDocument[]>([])
 const health = ref<KnowledgeHealth | null>(null)
 const statusFilter = ref<string>('')
 const selectedVaultId = ref<number | null>(null)
+
+// Settings (embedding API key)
+const settings = ref<KnowledgeSettings | null>(null)
+const apiKeyInput = ref('')
+const savingKey = ref(false)
 
 // Add vault modal
 const showAddModal = ref(false)
@@ -61,7 +66,40 @@ async function loadData() {
   }
 }
 
-onMounted(() => { loadData() })
+async function loadSettings() {
+  try {
+    settings.value = await api.getSettings()
+  } catch (err) {
+    settings.value = null
+  }
+}
+
+async function saveApiKey() {
+  const key = apiKeyInput.value.trim()
+  if (key.length < 8 || /\s/.test(key)) return
+  savingKey.value = true
+  try {
+    const res = await api.saveApiKey(key)
+    apiKeyInput.value = ''
+    if (res.reinitError) {
+      message.warning(res.reinitError)
+    } else if (!res.enabled) {
+      message.warning(t('knowledge.settings.pluginDisabled'))
+    } else if (res.initialized) {
+      message.success(t('knowledge.settings.saved'))
+    } else {
+      message.warning(t('knowledge.settings.savedButNotInitialized'))
+    }
+    await loadSettings()
+    await loadData()
+  } catch (err) {
+    message.error(t('knowledge.settings.saveFailed'))
+  } finally {
+    savingKey.value = false
+  }
+}
+
+onMounted(() => { loadSettings(); loadData() })
 
 // --- Vault actions --------------------------------------------------------
 
@@ -187,6 +225,41 @@ const vaultColumns = computed<DataTableColumns<KnowledgeVault>>(() => [
 
     <NSpin :show="loading">
       <div class="knowledge-content">
+        <!-- Settings: embedding API key -->
+        <NCard :title="t('knowledge.settings.title')" size="small" class="section-card">
+          <NAlert v-if="settings && !settings.enabled" type="warning" class="settings-alert">
+            {{ t('knowledge.settings.pluginDisabled') }}
+          </NAlert>
+          <template v-else>
+            <p class="settings-status">
+              <template v-if="settings?.keyConfigured">
+                {{ t('knowledge.settings.keyConfigured', { hint: settings.keyHint ?? '????' }) }}
+              </template>
+              <template v-else>
+                {{ t('knowledge.settings.notConfigured') }}
+              </template>
+            </p>
+            <NSpace>
+              <NInput
+                v-model:value="apiKeyInput"
+                type="password"
+                show-password-on="click"
+                :placeholder="t('knowledge.settings.apiKeyPlaceholder')"
+                style="width: 360px"
+              />
+              <NButton
+                type="primary"
+                size="small"
+                :loading="savingKey"
+                :disabled="apiKeyInput.trim().length < 8 || /\s/.test(apiKeyInput.trim())"
+                @click="saveApiKey"
+              >
+                {{ t('knowledge.settings.save') }}
+              </NButton>
+            </NSpace>
+          </template>
+        </NCard>
+
         <!-- Health summary -->
         <NCard v-if="health" size="small" class="health-card">
           <NGrid :cols="4" :x-gap="12">
@@ -305,6 +378,14 @@ const vaultColumns = computed<DataTableColumns<KnowledgeVault>>(() => [
 }
 .section-card {
   /* empty */
+}
+.settings-status {
+  margin: 0 0 8px;
+  opacity: 0.7;
+  font-size: 13px;
+}
+.settings-alert {
+  margin: 4px 0;
 }
 .empty-alert {
   margin: 8px 0;
