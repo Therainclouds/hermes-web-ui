@@ -1,0 +1,17 @@
+This is a plain text document for testing the knowledge extractor.
+It contains no special formatting — just paragraphs of text.
+
+The quick brown fox jumps over the lazy dog. This sentence contains
+every letter of the English alphabet and is commonly used for testing
+text processing pipelines.
+
+Natural language processing is a subfield of linguistics, computer
+science, and artificial intelligence concerned with the interactions
+between computers and human language. The goal is to enable computers
+to understand, interpret, and generate human language in a useful way.
+
+Retrieval-augmented generation, or RAG, is an approach that combines
+information retrieval with text generation. When a user asks a question,
+the system first searches a knowledge base for relevant documents, then
+uses those documents as context for generating a response. This approach
+allows language models to access up-to-date information without retraining.
