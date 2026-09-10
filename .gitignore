@@ -80,10 +80,14 @@ pip/cache/
 /e --abbrev-ref HEAD
 /tatus --short
 
-# Local error logs
+# Local error logs and scratch artifacts under docs/.
+# The catch-all `docs/` ignore was removed so source documents
+# (architecture, plans, user-guide, knowledge plugin, etc.) can be
+# tracked. Add explicit entries here for any generated or local-only
+# artifact under docs/.
 docs/erro.txt
-docs/update-distribution
-docs/
+docs/discussion-*.docx
+docs/hermes-web-ui-manual-update-guide.docx
 !hermes_data/
 
 # Local merge-analysis scratch files (never commit)
