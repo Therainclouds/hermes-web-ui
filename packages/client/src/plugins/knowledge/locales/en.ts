@@ -58,6 +58,10 @@ export default {
       createFailed: 'Failed to create vault',
       deleteFailed: 'Failed to delete vault',
     },
+
+    messages: {
+      vaultCreated: 'Vault created',
+    },
   },
 
   pluginsKnowledge: {

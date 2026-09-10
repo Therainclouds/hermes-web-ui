@@ -73,7 +73,7 @@ async function addVault() {
     newPath.value = ''
     newName.value = ''
     await loadData()
-    message.success('✓')
+    message.success(t('knowledge.messages.vaultCreated'))
   } catch (err) {
     message.error(t('knowledge.errors.createFailed'))
   }
@@ -127,6 +127,7 @@ const docColumns = computed<DataTableColumns<KnowledgeDocument>>(() => [
     key: 'indexed_at',
     width: 180,
     render(row) {
+      if (row.status !== 'indexed' || !row.indexed_at) return '—'
       return new Date(row.indexed_at).toLocaleString()
     },
   },
@@ -228,7 +229,7 @@ const vaultColumns = computed<DataTableColumns<KnowledgeVault>>(() => [
           <template #header-extra>
             <NSpace>
               <NButton
-                v-for="s in ['', 'indexed', 'pending', 'failed']"
+                v-for="s in ['', 'indexed', 'indexing', 'pending', 'failed']"
                 :key="s"
                 size="small"
                 :type="statusFilter === s ? 'primary' : 'default'"

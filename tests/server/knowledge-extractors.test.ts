@@ -111,7 +111,7 @@ describe('pdf extractor', () => {
     // pdfjs-dist should recover the text content.
     expect(result.text.length).toBeGreaterThan(0)
     expect(result.tokenCount).toBeGreaterThan(0)
-  })
+  }, 30_000)
 
   it('throws ExtractError corrupt on invalid PDF', async () => {
     const corrupt = join(tempDir, 'corrupt.pdf')

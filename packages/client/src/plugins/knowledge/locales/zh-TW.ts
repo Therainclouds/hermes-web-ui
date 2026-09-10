@@ -58,6 +58,10 @@ export default {
       createFailed: '建立知識庫失敗',
       deleteFailed: '刪除知識庫失敗',
     },
+
+    messages: {
+      vaultCreated: '知識庫已建立',
+    },
   },
 
   pluginsKnowledge: {
