@@ -115,23 +115,27 @@ export class KnowledgeWatcher {
       ignored: (filePath: string) => {
         // Skip dotfiles.
         if (/(^|[\/\\])\./.test(filePath)) return true
-        // Let directories pass through so chokidar can traverse them
-        // (a directory named "archive.tar" should not be excluded just
-        // because ".tar" isn't a supported extension).
-        let isDir = false
+        // Defer statSync: only stat when filtering would otherwise apply
+        // (unsupported extension or a size limit is configured). Avoids
+        // a synchronous syscall for every path chokidar evaluates.
+        const ext = extname(filePath).toLowerCase()
+        const mightBeFiltered = ext !== '' && supportedExts.size > 0 && !supportedExts.has(ext)
+        const needsSizeCheck = !!this.options.maxFileSizeBytes
+
+        if (!mightBeFiltered && !needsSizeCheck) return false
+
         try {
           const st = statSync(filePath)
-          isDir = st.isDirectory()
-          if (isDir) return false
-          // Skip files exceeding the size limit.
-          if (this.options.maxFileSizeBytes && st.size > this.options.maxFileSizeBytes) return true
+          // Directories always pass through so chokidar can traverse them
+          // (a directory named "archive.tar" must not be excluded just
+          // because ".tar" isn't a supported extension).
+          if (st.isDirectory()) return false
+          if (needsSizeCheck && st.size > this.options.maxFileSizeBytes!) return true
         } catch {
           // Stat failed — let it through; chokidar will handle the error.
         }
-        // Skip files with unsupported extensions.
-        const ext = extname(filePath).toLowerCase()
-        if (ext && supportedExts.size > 0 && !supportedExts.has(ext)) return true
-        return false
+
+        return mightBeFiltered
       },
       usePolling: this.options.usePolling,
       awaitWriteFinish: {

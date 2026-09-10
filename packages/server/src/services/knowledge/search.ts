@@ -172,7 +172,8 @@ function searchHybrid(
       // vec0 may be unavailable — return empty rather than crashing,
       // but log unexpected errors so they can be diagnosed.
       // eslint-disable-next-line no-console
-      console.warn('[knowledge] vector-only fallback failed:', (vecErr as Error).message)
+      console.warn('[knowledge] vector-only fallback failed:',
+        vecErr instanceof Error ? vecErr.message : String(vecErr))
       return { results: [], totalCandidatesBeforeFilter: 0, warning }
     }
   }

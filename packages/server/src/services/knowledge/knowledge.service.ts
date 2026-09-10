@@ -117,7 +117,7 @@ export class KnowledgeService extends EventEmitter {
   private queue: QueueItem[] = []
   private processing = false
   private activeWorkers = 0
-  private vecAvailable = true
+  private vecAvailable = false
 
   constructor(
     db: DatabaseSync,
@@ -273,7 +273,7 @@ export class KnowledgeService extends EventEmitter {
       this.db.prepare(
         "UPDATE knowledge_documents SET status = 'metadata_only', indexed_at = ? WHERE id = ?"
       ).run(Date.now(), docId)
-      return { documentId: docId, status: 'metadata_only' as IngestStatus, chunks: 0 }
+      return { documentId: docId, status: 'metadata_only', chunks: 0 }
     }
 
     // 1. Read file and compute source_hash.

@@ -25,11 +25,18 @@ export async function extractDocx(path: string): Promise<ExtractResult> {
   }
 
   // Dynamic import returns the module namespace; the constructor is on
-  // the `default` export for CJS→ESM interop.
-  let JSZip: { loadAsync(data: Buffer | Uint8Array): Promise<any> }
+  // the `default` export for CJS→ESM interop. Minimal structural types
+  // for the subset of the JSZip API this extractor uses.
+  interface JSZipEntry {
+    async(type: 'string'): Promise<string>
+  }
+  interface JSZipInstance {
+    file(name: string): JSZipEntry | null
+  }
+  let JSZip: { loadAsync(data: Buffer | Uint8Array): Promise<JSZipInstance> }
   try {
     const mod = await import('jszip')
-    JSZip = (mod.default ?? mod) as { loadAsync(data: Buffer | Uint8Array): Promise<any> }
+    JSZip = (mod.default ?? mod) as { loadAsync(data: Buffer | Uint8Array): Promise<JSZipInstance> }
   } catch (err) {
     throw new ExtractError(
       'unsupported',
@@ -38,7 +45,7 @@ export async function extractDocx(path: string): Promise<ExtractResult> {
     )
   }
 
-  let zip: Awaited<ReturnType<typeof JSZip.loadAsync>>
+  let zip: JSZipInstance
   try {
     zip = await JSZip.loadAsync(buffer)
   } catch (err) {

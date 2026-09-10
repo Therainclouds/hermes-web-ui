@@ -18,9 +18,6 @@ import { getDb } from '../index'
 import { loadKnowledgeConfig } from '../../services/knowledge/config'
 import { KnowledgeService } from '../../services/knowledge/knowledge.service'
 import { initKnowledgeRoutes } from '../../routes/knowledge'
-import {
-  setKnowledgeService,
-} from '../../controllers/knowledge'
 
 // Module-level handle for subsequent wiring (e.g., future Socket.IO
 // integration for ingest events). Null when the plugin is disabled

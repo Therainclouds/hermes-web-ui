@@ -70,8 +70,8 @@ export interface KnowledgeSchemaBootstrapStatus {
  * ingest tasks that depend on vec0.
  *
  * Root-cause fix (2026-09-10): loadSqliteVec now returns a status
- * instead of throwing, and is idempotent (skips if vec0 table is
- * already present — avoids double-loading the extension).
+ * instead of throwing. The extension is loaded on every boot because
+ * extension loading is per-connection, not per-database.
  */
 export function ensureKnowledgeSchema(
   db: DatabaseSync,
@@ -205,9 +205,10 @@ function vecTableExists(db: DatabaseSync): boolean {
 /**
  * Load sqlite-vec into the shared database connection.
  *
- * Idempotent: skips if knowledge_chunks_vec already exists (the
- * extension must have been loaded on a prior boot, per root-cause
- * fix 2026-09-10).
+ * The extension is loaded on EVERY call: extension loading is
+ * per-connection, not per-database. The vec0 table surviving in
+ * sqlite_master from a prior boot does NOT mean the native module
+ * is present in the current connection (root-cause fix 2026-09-10).
  *
  * Graceful degradation: if the sqlite-vec package is not installed,
  * returns `{ available: false, reason: ... }` rather than throwing.
@@ -329,8 +330,8 @@ function ensureEmbeddingsMeta(
         `knowledge_embeddings_meta records dim=${existing.dim} but config ` +
           `specifies dim=${dim}. Switching embedding dimensions requires ` +
           `re-indexing the entire corpus. ` +
-          `Fix: remove all vaults and re-add them after updating ` +
-          `KNOWLEDGE_EMBED_DIM, or use POST /api/knowledge/reindex.`
+          `Fix: remove all vaults, delete the knowledge database tables, ` +
+          `and re-add vaults after updating KNOWLEDGE_EMBED_DIM.`
       )
     }
     // Model mismatch is a warning (not a hard error) because the vec0
@@ -343,8 +344,8 @@ function ensureEmbeddingsMeta(
       console.warn(
         `[knowledge] embedding model changed: meta records '${existing.model}' ` +
           `but config specifies '${model}'. Search quality may be degraded. ` +
-          `Re-index the corpus via POST /api/knowledge/reindex or ` +
-          `remove all vaults and re-add them after updating the config.`
+          `Re-index by removing all vaults and re-adding them after ` +
+          `confirming the new model in the config.`
       )
     }
     return
