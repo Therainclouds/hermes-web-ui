@@ -75,7 +75,8 @@ export interface KnowledgeSchemaBootstrapStatus {
  */
 export function ensureKnowledgeSchema(
   db: DatabaseSync,
-  dim: number = DEFAULT_KNOWLEDGE_EMBED_DIM
+  dim: number = DEFAULT_KNOWLEDGE_EMBED_DIM,
+  model: string = 'text-embedding-v3',
 ): KnowledgeSchemaBootstrapStatus {
   if (!Number.isInteger(dim) || dim <= 0) {
     throw new KnowledgeSchemaError(`Invalid embed dim: ${dim}`)
@@ -99,6 +100,9 @@ export function ensureKnowledgeSchema(
   }
 
   // --- sqlite-vec extension (lazy, idempotent, graceful degradation). ---
+  // Track whether vec0 existed BEFORE this boot — used by ensureEmbeddingsMeta
+  // to distinguish soft migration (pre-existing vec0) from fresh install.
+  const vecPreExisted = vecTableExists(db)
   const vecStatus = loadSqliteVec(db)
 
   // --- Idempotent DDL. ---
@@ -175,7 +179,27 @@ export function ensureKnowledgeSchema(
     assertVecDim(db, dim)
   }
 
+  // --- Embedding metadata (model + dim persistence). ---
+  // Persists the embedding model and dimension so that a config change
+  // (e.g. switching models without re-indexing) is detected at boot
+  // rather than silently producing garbage search results.
+  ensureEmbeddingsMeta(db, dim, model, vecStatus.available, vecPreExisted)
+
   return { vecAvailable: vecStatus.available, vecReason: vecStatus.reason }
+}
+
+/**
+ * Check if the knowledge_chunks_vec virtual table exists in sqlite_master.
+ * Used to distinguish pre-existing vec0 (soft migration) from freshly
+ * created vec0 (fresh install) in ensureEmbeddingsMeta.
+ */
+function vecTableExists(db: DatabaseSync): boolean {
+  const rows = db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='knowledge_chunks_vec'"
+    )
+    .all() as Array<{ name: string | null }>
+  return rows.length > 0
 }
 
 /**
@@ -265,4 +289,94 @@ function assertVecDim(db: DatabaseSync, expectedDim: number): void {
         `(architecture doc §3.4, audit fix P1-7).`
     )
   }
+}
+
+/**
+ * Create or verify the `knowledge_embeddings_meta` table.
+ *
+ * This table persists the embedding model name and dimension that were
+ * used to create the vec0 index. On subsequent boots, it compares the
+ * stored values with the current config and throws if they diverge —
+ * switching embedding models without re-indexing silently corrupts
+ * search results because the stored vectors are in a different space.
+ *
+ * Soft migration for existing deployments: if `knowledge_chunks_vec`
+ * exists but `knowledge_embeddings_meta` doesn't (i.e. the deployment
+ * was created before this table existed), we parse the dim from the
+ * vec0 CREATE TABLE sql and insert a record with model='unverified'.
+ * The caller should surface this as a warning prompting re-index.
+ */
+function ensureEmbeddingsMeta(
+  db: DatabaseSync,
+  dim: number,
+  model: string,
+  vecAvailable: boolean,
+  vecPreExisted: boolean,
+): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS knowledge_embeddings_meta (
+      id         INTEGER PRIMARY KEY CHECK (id = 1),
+      model      TEXT NOT NULL,
+      dim        INTEGER NOT NULL,
+      vec_table  TEXT NOT NULL DEFAULT 'knowledge_chunks_vec',
+      created_at INTEGER NOT NULL
+    )
+  `)
+
+  const rows = db.prepare(
+    'SELECT model, dim FROM knowledge_embeddings_meta WHERE id = 1'
+  ).all() as Array<{ model: string; dim: number }>
+
+  if (rows.length > 0) {
+    // Existing record — compare with current config.
+    const existing = rows[0]
+    if (existing.dim !== dim) {
+      throw new KnowledgeSchemaError(
+        `knowledge_embeddings_meta records dim=${existing.dim} but config ` +
+          `specifies dim=${dim}. Switching embedding dimensions requires ` +
+          `re-indexing the entire corpus. ` +
+          `Fix: DELETE FROM knowledge_embeddings_meta; DROP the vec0 table; ` +
+          `re-start with the correct KNOWLEDGE_EMBED_DIM.`
+      )
+    }
+    // Model mismatch is a warning (not a hard error) because the vec0
+    // dim check above already guards against silently incompatible
+    // vectors. A model change with the same dim produces vectors in a
+    // different semantic space but the same shape — search will return
+    // results, just with degraded relevance. Prompt re-index.
+    if (existing.model !== model && existing.model !== 'unverified') {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[knowledge] embedding model changed: meta records '${existing.model}' ` +
+          `but config specifies '${model}'. Search quality may be degraded. ` +
+          `Re-index the corpus: DELETE FROM knowledge_embeddings_meta; ` +
+          `DELETE FROM knowledge_chunks_vec; then restart.`
+      )
+    }
+    return
+  }
+
+  // No existing record — insert one.
+  // For soft migration: if vec0 existed before this boot (pre-existing
+  // deployment without meta table), parse dim from vec0 sql and mark
+  // model as 'unverified'. For fresh installs, use config values directly.
+  let insertModel = model
+  let insertDim = dim
+  if (vecAvailable && vecPreExisted) {
+    // Soft migration: vec0 existed but meta didn't → infer from vec0.
+    const master = db.prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='knowledge_chunks_vec'"
+    ).all() as Array<{ sql: string | null }>
+    if (master[0]?.sql) {
+      const match = master[0].sql.match(/FLOAT\[(\d+)\]/)
+      if (match) {
+        insertDim = Number(match[1])
+        insertModel = 'unverified'
+      }
+    }
+  }
+
+  db.prepare(
+    'INSERT INTO knowledge_embeddings_meta (id, model, dim, vec_table, created_at) VALUES (1, ?, ?, ?, ?)'
+  ).run(insertModel, insertDim, 'knowledge_chunks_vec', Date.now())
 }

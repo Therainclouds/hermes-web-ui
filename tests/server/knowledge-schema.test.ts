@@ -204,6 +204,77 @@ describe.skipIf(!canRun)('knowledge schema bootstrap', () => {
       KnowledgeSchemaError
     )
   })
+
+  it('creates knowledge_embeddings_meta with model and dim', () => {
+    ensureKnowledgeSchema(db as never, 1024, 'text-embedding-v3')
+
+    const tables = db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='knowledge_embeddings_meta'"
+      )
+      .all() as Array<{ name: string }>
+    expect(tables).toHaveLength(1)
+
+    const rows = db
+      .prepare('SELECT model, dim, vec_table FROM knowledge_embeddings_meta WHERE id = 1')
+      .all() as Array<{ model: string; dim: number; vec_table: string }>
+    expect(rows).toHaveLength(1)
+    expect(rows[0].model).toBe('text-embedding-v3')
+    expect(rows[0].dim).toBe(1024)
+    expect(rows[0].vec_table).toBe('knowledge_chunks_vec')
+  })
+
+  it('soft migration: existing vec0 without meta → creates meta with unverified model', () => {
+    // Simulate a pre-existing deployment: create vec0 directly, no meta table.
+    db.enableLoadExtension(true)
+    const sqliteVec = require('sqlite-vec') as { getLoadablePath: () => string }
+    db.loadExtension(sqliteVec.getLoadablePath())
+    db.enableLoadExtension(false)
+
+    db.exec(`
+      CREATE VIRTUAL TABLE knowledge_chunks_vec
+      USING vec0(chunk_id INTEGER PRIMARY KEY, embedding FLOAT[512] distance=cosine)
+    `)
+    // Also create the other tables so ensureKnowledgeSchema doesn't error out.
+    db.exec(`CREATE TABLE IF NOT EXISTS knowledge_vaults (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, root_path TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL, watch INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL
+    )`)
+    db.exec(`CREATE TABLE IF NOT EXISTS knowledge_documents (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, source_path TEXT NOT NULL,
+      source_hash TEXT NOT NULL, vault_id INTEGER NOT NULL, mime_type TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL, mtime INTEGER NOT NULL, indexed_at INTEGER NOT NULL,
+      status TEXT NOT NULL, error TEXT,
+      FOREIGN KEY (vault_id) REFERENCES knowledge_vaults(id)
+    )`)
+    db.exec(`CREATE TABLE IF NOT EXISTS knowledge_chunks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, document_id INTEGER NOT NULL,
+      position INTEGER NOT NULL, content TEXT NOT NULL, token_count INTEGER NOT NULL,
+      FOREIGN KEY (document_id) REFERENCES knowledge_documents(id) ON DELETE CASCADE
+    )`)
+    db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_fts
+      USING fts5(content, tokenize='porter')`)
+
+    // Now call ensureKnowledgeSchema with dim=512 (matching the vec0 table).
+    ensureKnowledgeSchema(db as never, 512, 'text-embedding-v3')
+
+    const rows = db
+      .prepare('SELECT model, dim FROM knowledge_embeddings_meta WHERE id = 1')
+      .all() as Array<{ model: string; dim: number }>
+    expect(rows).toHaveLength(1)
+    // Soft migration marks model as 'unverified' since we're inferring from existing data.
+    expect(rows[0].model).toBe('unverified')
+    expect(rows[0].dim).toBe(512)
+  })
+
+  it('dim mismatch in meta throws KnowledgeSchemaError', () => {
+    ensureKnowledgeSchema(db as never, 1024, 'text-embedding-v3')
+
+    // Try to re-bootstrap with a different dim — should throw.
+    expect(() =>
+      ensureKnowledgeSchema(db as never, 512, 'text-embedding-v3')
+    ).toThrow(KnowledgeSchemaError)
+  })
 })
 
 describe.skipIf(canRun)('knowledge schema — sqlite-vec unavailable', () => {

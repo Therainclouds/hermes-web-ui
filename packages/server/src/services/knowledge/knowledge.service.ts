@@ -155,7 +155,7 @@ export class KnowledgeService extends EventEmitter {
    * before accepting ingest / search tasks.
    */
   init(): KnowledgeSchemaBootstrapStatus {
-    return ensureKnowledgeSchema(this.db, this.config.embedDim)
+    return ensureKnowledgeSchema(this.db, this.config.embedDim, this.config.embedModel)
   }
 
   // --- Vault management ---------------------------------------------------
