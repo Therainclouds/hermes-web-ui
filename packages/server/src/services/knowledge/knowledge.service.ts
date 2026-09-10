@@ -18,6 +18,7 @@
 import { createHash } from 'crypto'
 import { statSync } from 'fs'
 import { extname, join } from 'path'
+import { EventEmitter } from 'events'
 import type { DatabaseSync } from 'node:sqlite'
 import { ensureKnowledgeSchema } from '../../db/knowledge-schema'
 import { extract, type ExtractError } from './extractors'
@@ -37,6 +38,27 @@ import type { KnowledgeConfig } from './config'
 export { QueryTooLongError }
 
 export type IngestStatus = 'pending' | 'indexing' | 'indexed' | 'failed'
+
+export interface KnowledgeHealthReport {
+  vaults: { total: number; watching: number; offline: number }
+  documents: { total: number; pending: number; indexed: number; failed: number; indexing: number; metadataOnly: number }
+  chunks: { total: number }
+  vecIndex: { vectorCount: number }
+  ftsIndex: { sizeBytes: number; termCount: number }
+  ingestion: {
+    inFlight: number
+    queued: number
+    lastSuccessAt: number | null
+    lastFailureAt: number | null
+    lastError: string | null
+  }
+  embedder: {
+    requestsLastHour: number
+    tokensLastHour: number
+    failuresLastHour: number
+    avgLatencyMs: number
+  }
+}
 
 export interface KnowledgeDocument {
   id: number
@@ -82,7 +104,7 @@ export interface KnowledgeServiceDeps {
 
 // --- Service --------------------------------------------------------------
 
-export class KnowledgeService {
+export class KnowledgeService extends EventEmitter {
   private db: DatabaseSync
   private config: KnowledgeConfig
   private embedder: Embedder
@@ -97,6 +119,7 @@ export class KnowledgeService {
     config: KnowledgeConfig,
     deps: KnowledgeServiceDeps = {},
   ) {
+    super()
     this.db = db
     this.config = config
     this.extractorFn = deps.extractorFn ?? ((path: string) => extract(path))
@@ -283,13 +306,24 @@ export class KnowledgeService {
         "UPDATE knowledge_documents SET status = 'indexed', indexed_at = ? WHERE id = ?"
       ).run(Date.now(), docId)
 
+      // Track success.
+      this._lastSuccessAt = Date.now()
+      this.emit('knowledge:ingest:success', { documentId: docId, chunks: chunks.length })
+
       return { documentId: docId, status: 'indexed', chunks: chunks.length }
     } catch (err) {
+      const errorMsg = (err as Error).message
       // Rollback: mark as failed.
       this.db.prepare(
         "UPDATE knowledge_documents SET status = 'failed', error = ? WHERE id = ?"
-      ).run((err as Error).message, docId)
-      return { documentId: docId, status: 'failed', chunks: 0, error: (err as Error).message }
+      ).run(errorMsg, docId)
+
+      // Track failure.
+      this._lastFailureAt = Date.now()
+      this._lastError = errorMsg
+      this.emit('knowledge:ingest:error', { documentId: docId, error: errorMsg })
+
+      return { documentId: docId, status: 'failed', chunks: 0, error: errorMsg }
     }
   }
 
@@ -419,21 +453,69 @@ export class KnowledgeService {
 
   // --- Health -------------------------------------------------------------
 
-  health(): { vaultCount: number; documentCount: Record<string, number>; vecIndexSize: number } {
-    const vaultCount = (this.db.prepare('SELECT count(*) AS n FROM knowledge_vaults').all() as Array<{ n: number }>)[0].n
+  health(): KnowledgeHealthReport {
+    // Vault counts.
+    const vaultRows = this.db.prepare(
+      'SELECT count(*) AS total, SUM(CASE WHEN watch = 1 THEN 1 ELSE 0 END) AS watching FROM knowledge_vaults'
+    ).all() as Array<{ total: number; watching: number }>
+    const vaultTotal = vaultRows[0]?.total ?? 0
+    const vaultWatching = vaultRows[0]?.watching ?? 0
 
+    // Document counts by status.
     const docRows = this.db.prepare(
       'SELECT status, count(*) AS n FROM knowledge_documents GROUP BY status'
     ).all() as Array<{ status: string; n: number }>
-    const documentCount: Record<string, number> = {}
+    const docCounts: Record<string, number> = {}
+    let docTotal = 0
     for (const row of docRows) {
-      documentCount[row.status] = row.n
+      docCounts[row.status] = row.n
+      docTotal += row.n
     }
 
-    const vecSize = (this.db.prepare('SELECT count(*) AS n FROM knowledge_chunks_vec').all() as Array<{ n: number }>)[0].n
+    // Chunk count.
+    const chunkRows = this.db.prepare('SELECT count(*) AS n FROM knowledge_chunks').all() as Array<{ n: number }>
+    const chunkTotal = chunkRows[0]?.n ?? 0
 
-    return { vaultCount, documentCount, vecIndexSize: vecSize }
+    // vec0 index size (vector count).
+    const vecRows = this.db.prepare('SELECT count(*) AS n FROM knowledge_chunks_vec').all() as Array<{ n: number }>
+    const vecCount = vecRows[0]?.n ?? 0
+
+    // FTS5 content size (approximate).
+    const ftsRows = this.db.prepare(
+      'SELECT SUM(length(content)) AS total_len, count(*) AS n FROM knowledge_chunks_fts'
+    ).all() as Array<{ total_len: number; n: number }>
+    const ftsSizeBytes = ftsRows[0]?.total_len ?? 0
+    const ftsTermCount = ftsRows[0]?.n ?? 0
+
+    return {
+      vaults: { total: vaultTotal, watching: vaultWatching, offline: vaultTotal - vaultWatching },
+      documents: {
+        total: docTotal,
+        pending: docCounts['pending'] ?? 0,
+        indexed: docCounts['indexed'] ?? 0,
+        failed: docCounts['failed'] ?? 0,
+        indexing: docCounts['indexing'] ?? 0,
+        metadataOnly: docCounts['metadata_only'] ?? 0,
+      },
+      chunks: { total: chunkTotal },
+      vecIndex: { vectorCount: vecCount },
+      ftsIndex: { sizeBytes: ftsSizeBytes, termCount: ftsTermCount },
+      ingestion: {
+        inFlight: this.activeWorkers,
+        queued: this.queue.length,
+        lastSuccessAt: this._lastSuccessAt,
+        lastFailureAt: this._lastFailureAt,
+        lastError: this._lastError,
+      },
+      embedder: this._embedderStats,
+    }
   }
+
+  // In-memory ingestion tracking (populated by processIngest).
+  private _lastSuccessAt: number | null = null
+  private _lastFailureAt: number | null = null
+  private _lastError: string | null = null
+  private _embedderStats = { requestsLastHour: 0, tokensLastHour: 0, failuresLastHour: 0, avgLatencyMs: 0 }
 }
 
 // --- Helpers --------------------------------------------------------------

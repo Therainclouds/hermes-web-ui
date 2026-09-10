@@ -328,6 +328,53 @@ describe.skipIf(!canRun)('KnowledgeService', () => {
 
   // --- Vault management ---------------------------------------------------
 
+  // --- Socket events ------------------------------------------------------
+
+  describe('socket events', () => {
+    it('emits knowledge:ingest:success on successful ingest', async () => {
+      const filePath = join(tempDir, 'event-success.md')
+      writeFileSync(filePath, 'Event success content here for testing purposes.')
+
+      const events: unknown[] = []
+      service.on('knowledge:ingest:success', (data) => events.push(data))
+
+      const vault = service.addVault(tempDir, 'test-vault')
+      await service.ingest(filePath, vault.id)
+
+      expect(events).toHaveLength(1)
+      expect((events[0] as any).documentId).toBeDefined()
+      expect((events[0] as any).chunks).toBeGreaterThan(0)
+    })
+
+    it('emits knowledge:ingest:error on failed ingest', async () => {
+      const filePath = join(tempDir, 'event-fail.md')
+      writeFileSync(filePath, 'Event fail content.')
+
+      const failEmbedder: Embedder = {
+        async embed(): Promise<Float32Array[]> {
+          throw new Error('socket event error test')
+        },
+      }
+      const failService = new KnowledgeService(db, TEST_CONFIG, {
+        embedder: failEmbedder,
+        extractorFn: (path: string) => {
+          const { readFileSync } = require('fs') as typeof import('fs')
+          return { text: readFileSync(path, 'utf-8'), tokenCount: 10 }
+        },
+      })
+      failService.init()
+
+      const events: unknown[] = []
+      failService.on('knowledge:ingest:error', (data) => events.push(data))
+
+      const vault = failService.addVault(tempDir, 'fail-vault')
+      await failService.ingest(filePath, vault.id)
+
+      expect(events).toHaveLength(1)
+      expect((events[0] as any).error).toContain('socket event error test')
+    })
+  })
+
   describe('vault management', () => {
     it('addVault and listVaults', () => {
       const v = service.addVault('/tmp/test', 'Test Vault')
@@ -370,16 +417,66 @@ describe.skipIf(!canRun)('KnowledgeService', () => {
   // --- Health -------------------------------------------------------------
 
   describe('health', () => {
-    it('returns vault and document counts', async () => {
+    it('returns the full health report shape', async () => {
       const filePath = join(tempDir, 'health.md')
-      writeFileSync(filePath, 'Health check content.')
+      writeFileSync(filePath, 'Health check content with enough tokens to index.')
       const vault = service.addVault(tempDir, 'test-vault')
       await service.ingest(filePath, vault.id)
 
       const h = service.health()
-      expect(h.vaultCount).toBe(1)
-      expect(h.documentCount.indexed).toBe(1)
-      expect(h.vecIndexSize).toBeGreaterThan(0)
+
+      // Vault counts.
+      expect(h.vaults.total).toBe(1)
+      expect(h.vaults.watching).toBe(1)
+      expect(h.vaults.offline).toBe(0)
+
+      // Document counts.
+      expect(h.documents.total).toBe(1)
+      expect(h.documents.indexed).toBe(1)
+      expect(h.documents.failed).toBe(0)
+
+      // Chunks.
+      expect(h.chunks.total).toBeGreaterThan(0)
+
+      // vec0 index.
+      expect(h.vecIndex.vectorCount).toBeGreaterThan(0)
+
+      // FTS5 index.
+      expect(h.ftsIndex.termCount).toBeGreaterThan(0)
+
+      // Ingestion tracking.
+      expect(h.ingestion.lastSuccessAt).not.toBeNull()
+      expect(h.ingestion.inFlight).toBe(0)
+      expect(h.ingestion.queued).toBe(0)
+
+      // Embedder stats (initially zero).
+      expect(h.embedder.requestsLastHour).toBe(0)
+    })
+
+    it('tracks failures in health report', async () => {
+      const filePath = join(tempDir, 'fail.md')
+      writeFileSync(filePath, 'Content that will fail.')
+
+      const failEmbedder: Embedder = {
+        async embed(): Promise<Float32Array[]> {
+          throw new Error('embed fail for health test')
+        },
+      }
+      const failService = new KnowledgeService(db, TEST_CONFIG, {
+        embedder: failEmbedder,
+        extractorFn: (path: string) => {
+          const { readFileSync } = require('fs') as typeof import('fs')
+          return { text: readFileSync(path, 'utf-8'), tokenCount: 10 }
+        },
+      })
+      failService.init()
+
+      const vault = failService.addVault(tempDir, 'fail-vault')
+      await failService.ingest(filePath, vault.id)
+
+      const h = failService.health()
+      expect(h.ingestion.lastFailureAt).not.toBeNull()
+      expect(h.ingestion.lastError).toContain('embed fail')
     })
   })
 })
