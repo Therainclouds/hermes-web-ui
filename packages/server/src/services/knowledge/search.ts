@@ -20,6 +20,7 @@
  */
 
 import type { DatabaseSync } from 'node:sqlite'
+import { buildFtsQuery } from './fts-tokenizer'
 
 // --- Public types ---------------------------------------------------------
 
@@ -157,7 +158,20 @@ function searchHybrid(
   const totalCandidatesBeforeFilter = candidates.length
 
   if (candidates.length === 0) {
-    return { results: [], totalCandidatesBeforeFilter: 0, warning }
+    // FTS5 returned no keyword candidates. For CJK text or queries
+    // where the porter tokenizer missed, fall back to pure-vector
+    // search so the user still gets semantic results.
+    try {
+      const vecFallback = searchVector(
+        db, queryEmbedding, params, limit, maxDistance, _cfg,
+        (warning ? warning + '; ' : '') +
+          'FTS5 returned no candidates; fell back to vector-only search',
+      )
+      return vecFallback
+    } catch {
+      // vec0 may be unavailable — return empty rather than crashing.
+      return { results: [], totalCandidatesBeforeFilter: 0, warning }
+    }
   }
 
   // Stage 2: Re-rank candidates by cosine distance via vec0.
@@ -226,7 +240,7 @@ function searchVector(
   const totalCandidatesBeforeFilter = knnRows.length
 
   if (knnRows.length === 0) {
-    return { results: [], totalCandidatesBeforeFilter: 0, warning: undefined }
+    return { results: [], totalCandidatesBeforeFilter: 0, warning }
   }
 
   // Stage 2: Post-filter — look up chunk metadata and filter by status/vault.
@@ -263,23 +277,7 @@ function searchVector(
     })
   }
 
-  return { results, totalCandidatesBeforeFilter, warning: undefined }
+  return { results, totalCandidatesBeforeFilter, warning }
 }
 
-// --- FTS5 query builder ---------------------------------------------------
-
-/**
- * Build an FTS5 MATCH query from user input. Escapes special
- * characters and wraps each word in double-quotes for exact-token
- * matching. Uses OR between terms to maximize recall.
- */
-function buildFtsQuery(query: string): string {
-  // Split on whitespace, filter empties, quote each term, join with OR.
-  const terms = query
-    .split(/\s+/)
-    .map(t => t.replace(/["*()]/g, '').trim())
-    .filter(t => t.length > 0)
-
-  if (terms.length === 0) return '""'
-  return terms.map(t => `"${t}"`).join(' OR ')
-}
+// buildFtsQuery is imported from ./fts-tokenizer (handles CJK bigrams).

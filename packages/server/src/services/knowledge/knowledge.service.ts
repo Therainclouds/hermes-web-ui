@@ -34,6 +34,7 @@ import {
   type EmbedConfig,
 } from './embedder'
 import { search as searchFn, QueryTooLongError, type SearchParams, type SearchResponse } from './search'
+import { tokenizeForFts } from './fts-tokenizer'
 import type { KnowledgeConfig } from './config'
 
 // --- Public types ---------------------------------------------------------
@@ -406,7 +407,9 @@ export class KnowledgeService extends EventEmitter {
         const chunkId = Number(insertResult.lastInsertRowid)
 
         // FTS5 rowid coupling: explicit rowid = chunk.id (P1-3).
-        insertFts.run(chunkId, chunk.content)
+        // Write bigram-tokenized text so CJK queries can match via FTS5.
+        // The original content stays in knowledge_chunks for display.
+        insertFts.run(chunkId, tokenizeForFts(chunk.content).join(' '))
 
         // vec0 insert: chunk_id is the PRIMARY KEY.
         // vec0 requires embedding as a JSON string like '[1.0, 0.0, ...]'.
