@@ -117,7 +117,7 @@ function searchHybrid(
   const vaultFilter = params.vaultId != null
 
   let candidateSql: string
-  let candidateParams: unknown[]
+  let candidateParams: any[]
 
   if (vaultFilter) {
     candidateSql = `
@@ -173,7 +173,7 @@ function searchHybrid(
     LIMIT ?
   `
 
-  const rankParams: unknown[] = [queryEmbedding, ...chunkIds, limit]
+  const rankParams: any[] = [queryEmbedding, ...chunkIds, limit]
   const ranked = db.prepare(rankSql).all(...rankParams) as Array<{ chunk_id: number; distance: number }>
 
   // Apply maxDistance cutoff and build final results.

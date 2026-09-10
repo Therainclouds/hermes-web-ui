@@ -99,7 +99,7 @@ export interface KnowledgeServiceDeps {
   /** Override embedder for testing. */
   embedder?: Embedder
   /** Override extractor for testing. */
-  extractorFn?: (path: string) => { text: string; tokenCount: number }
+  extractorFn?: (path: string) => { text: string; tokenCount: number } | Promise<{ text: string; tokenCount: number }>
 }
 
 // --- Service --------------------------------------------------------------
@@ -108,7 +108,7 @@ export class KnowledgeService extends EventEmitter {
   private db: DatabaseSync
   private config: KnowledgeConfig
   private embedder: Embedder
-  private extractorFn: (path: string) => { text: string; tokenCount: number }
+  private extractorFn: (path: string) => { text: string; tokenCount: number } | Promise<{ text: string; tokenCount: number }>
 
   private queue: QueueItem[] = []
   private processing = false
@@ -158,7 +158,7 @@ export class KnowledgeService extends EventEmitter {
 
     const rows = this.db.prepare(
       'SELECT * FROM knowledge_vaults WHERE root_path = ?'
-    ).all(rootPath) as KnowledgeVault[]
+    ).all(rootPath) as unknown as KnowledgeVault[]
     return rows[0]
   }
 
@@ -181,7 +181,7 @@ export class KnowledgeService extends EventEmitter {
   }
 
   listVaults(): KnowledgeVault[] {
-    return this.db.prepare('SELECT * FROM knowledge_vaults ORDER BY id').all() as KnowledgeVault[]
+    return this.db.prepare('SELECT * FROM knowledge_vaults ORDER BY id').all() as unknown as KnowledgeVault[]
   }
 
   // --- Document listing ---------------------------------------------------
@@ -190,11 +190,11 @@ export class KnowledgeService extends EventEmitter {
     if (vaultId != null) {
       return this.db.prepare(
         'SELECT * FROM knowledge_documents WHERE vault_id = ? ORDER BY indexed_at DESC'
-      ).all(vaultId) as KnowledgeDocument[]
+      ).all(vaultId) as unknown as KnowledgeDocument[]
     }
     return this.db.prepare(
       'SELECT * FROM knowledge_documents ORDER BY indexed_at DESC'
-    ).all() as KnowledgeDocument[]
+    ).all() as unknown as KnowledgeDocument[]
   }
 
   // --- Ingest pipeline ----------------------------------------------------
@@ -237,13 +237,13 @@ export class KnowledgeService extends EventEmitter {
   private async processIngest(path: string, vaultId: number): Promise<IngestResult> {
     // 1. Read file and compute source_hash.
     let fileContent: { text: string; tokenCount: number }
-    let fileStat: { size: number; mtimeMs: number }
+    let fileStat: { size: number; mtimeMs: number } = { size: 0, mtimeMs: Date.now() }
     try {
       fileStat = statSync(path)
-      fileContent = this.extractorFn(path)
+      fileContent = await this.extractorFn(path)
     } catch (err) {
       // File unreadable — record failure.
-      const docId = this.upsertDocument(path, vaultId, '', fileStat ?? { size: 0, mtimeMs: Date.now() })
+      const docId = this.upsertDocument(path, vaultId, '', fileStat)
       this.db.prepare(
         "UPDATE knowledge_documents SET status = 'failed', error = ? WHERE id = ?"
       ).run((err as Error).message, docId)
