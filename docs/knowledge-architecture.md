@@ -101,10 +101,15 @@ default provider. Rationale:
   Agent already makes — same auth path, same retry semantics, one
   fewer cloud dependency to manage.
 
-**Consequence:** the schema must persist `embedding_model` and
-`embedding_dim` per embedding so that swapping models later does not
-corrupt retrieval. Mixing embeddings from two models in one index
-silently destroys ranking.
+**Consequence:** the schema persists `embedding_model` and
+`embedding_dim` via the `knowledge_embeddings_meta` singleton table
+(created by `ensureEmbeddingsMeta` in `knowledge-schema.ts`). The
+table has a `CHECK(id = 1)` constraint ensuring exactly one row.
+On startup, the meta row is compared against the current config;
+dim mismatch throws `KnowledgeSchemaError`, model mismatch emits a
+warning. Pre-existing deployments without meta get a soft migration
+(`model='unverified'`) — clear it by re-indexing. Mixing embeddings
+from two models in one index silently destroys ranking.
 
 ### 2.4 Why the Agent pulls from the plugin (not push)
 
