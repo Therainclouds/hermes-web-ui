@@ -41,7 +41,7 @@ import type { KnowledgeConfig } from './config'
 
 export { QueryTooLongError }
 
-export type IngestStatus = 'pending' | 'indexing' | 'indexed' | 'failed'
+export type IngestStatus = 'pending' | 'indexing' | 'indexed' | 'failed' | 'metadata_only'
 
 export interface KnowledgeHealthReport {
   vaults: { total: number; watching: number; offline: number }
@@ -117,6 +117,7 @@ export class KnowledgeService extends EventEmitter {
   private queue: QueueItem[] = []
   private processing = false
   private activeWorkers = 0
+  private vecAvailable = true
 
   constructor(
     db: DatabaseSync,
@@ -155,7 +156,9 @@ export class KnowledgeService extends EventEmitter {
    * before accepting ingest / search tasks.
    */
   init(): KnowledgeSchemaBootstrapStatus {
-    return ensureKnowledgeSchema(this.db, this.config.embedDim, this.config.embedModel)
+    const status = ensureKnowledgeSchema(this.db, this.config.embedDim, this.config.embedModel)
+    this.vecAvailable = status.vecAvailable
+    return status
   }
 
   // --- Vault management ---------------------------------------------------
@@ -258,14 +261,19 @@ export class KnowledgeService extends EventEmitter {
     const ext = extname(path).toLowerCase()
     if (ext && !this.config.supportedExtensions.includes(ext)) {
       // Metadata-only: record the document but don't extract.
-      const fileStat = statSync(path)
-      const docId = this.upsertDocument(path, vaultId, '', {
-        size: fileStat.size, mtimeMs: fileStat.mtimeMs,
-      })
+      let fileStat: { size: number; mtimeMs: number }
+      try {
+        const s = statSync(path)
+        fileStat = { size: s.size, mtimeMs: s.mtimeMs }
+      } catch {
+        // File was deleted between watcher event and processing — skip.
+        return { documentId: 0, status: 'failed', chunks: 0, error: 'File disappeared before processing' }
+      }
+      const docId = this.upsertDocument(path, vaultId, '', fileStat)
       this.db.prepare(
-        "UPDATE knowledge_documents SET status = 'indexed', indexed_at = ? WHERE id = ?"
+        "UPDATE knowledge_documents SET status = 'metadata_only', indexed_at = ? WHERE id = ?"
       ).run(Date.now(), docId)
-      return { documentId: docId, status: 'indexed', chunks: 0 }
+      return { documentId: docId, status: 'metadata_only' as IngestStatus, chunks: 0 }
     }
 
     // 1. Read file and compute source_hash.
@@ -409,7 +417,7 @@ export class KnowledgeService extends EventEmitter {
   }
 
   private insertChunks(documentId: number, chunks: Chunk[], vectors: Float32Array[]): void {
-    // Single transaction for chunks + FTS5 + vec0.
+    // Single transaction for chunks + FTS5 (+ vec0 if available).
     // virtual tables can't use FK cascades (P0-1), so we insert
     // into all three explicitly.
     this.db.exec('BEGIN')
@@ -421,10 +429,12 @@ export class KnowledgeService extends EventEmitter {
       const insertFts = this.db.prepare(`
         INSERT INTO knowledge_chunks_fts (rowid, content) VALUES (?, ?)
       `)
-      const insertVec = this.db.prepare(`
-        INSERT INTO knowledge_chunks_vec (chunk_id, embedding)
-        VALUES (CAST(? AS INTEGER), ?)
-      `)
+      const insertVec = this.vecAvailable
+        ? this.db.prepare(`
+            INSERT INTO knowledge_chunks_vec (chunk_id, embedding)
+            VALUES (CAST(? AS INTEGER), ?)
+          `)
+        : null
 
       for (let i = 0; i < chunks.length; i++) {
         const chunk = chunks[i]
@@ -439,12 +449,11 @@ export class KnowledgeService extends EventEmitter {
         // The original content stays in knowledge_chunks for display.
         insertFts.run(chunkId, tokenizeForFts(chunk.content).join(' '))
 
-        // vec0 insert: chunk_id is the PRIMARY KEY.
-        // vec0 requires embedding as a JSON string like '[1.0, 0.0, ...]'.
-        // CAST(? AS INTEGER) is needed because node:sqlite parameter binding
-        // doesn't produce the integer type vec0 expects for its PK.
-        const vecJson = '[' + Array.from(vector).join(',') + ']'
-        insertVec.run(chunkId, vecJson)
+        // vec0 insert: only when the extension is loaded.
+        if (insertVec) {
+          const vecJson = '[' + Array.from(vector).join(',') + ']'
+          insertVec.run(chunkId, vecJson)
+        }
       }
 
       this.db.exec('COMMIT')
@@ -469,12 +478,14 @@ export class KnowledgeService extends EventEmitter {
           SELECT id FROM knowledge_chunks WHERE document_id = ?
         )
       `).run(documentId)
-      // vec0: delete by chunk_id.
-      this.db.prepare(`
-        DELETE FROM knowledge_chunks_vec WHERE chunk_id IN (
-          SELECT id FROM knowledge_chunks WHERE document_id = ?
-        )
-      `).run(documentId)
+      // vec0: delete by chunk_id (only when vec0 is available).
+      if (this.vecAvailable) {
+        this.db.prepare(`
+          DELETE FROM knowledge_chunks_vec WHERE chunk_id IN (
+            SELECT id FROM knowledge_chunks WHERE document_id = ?
+          )
+        `).run(documentId)
+      }
       // Chunks: cascade from documents will handle this, but be explicit.
       this.db.prepare(
         'DELETE FROM knowledge_chunks WHERE document_id = ?'
@@ -520,9 +531,12 @@ export class KnowledgeService extends EventEmitter {
     const chunkRows = this.db.prepare('SELECT count(*) AS n FROM knowledge_chunks').all() as Array<{ n: number }>
     const chunkTotal = chunkRows[0]?.n ?? 0
 
-    // vec0 index size (vector count).
-    const vecRows = this.db.prepare('SELECT count(*) AS n FROM knowledge_chunks_vec').all() as Array<{ n: number }>
-    const vecCount = vecRows[0]?.n ?? 0
+    // vec0 index size (vector count) — only when vec0 is available.
+    let vecCount = 0
+    if (this.vecAvailable) {
+      const vecRows = this.db.prepare('SELECT count(*) AS n FROM knowledge_chunks_vec').all() as Array<{ n: number }>
+      vecCount = vecRows[0]?.n ?? 0
+    }
 
     // FTS5 content size (approximate).
     const ftsRows = this.db.prepare(

@@ -74,7 +74,7 @@ function tryInitKnowledgeService(): void {
     }
 
     initKnowledgeRoutes(service)
-    setKnowledgeService(service)
+    // Note: initKnowledgeRoutes already calls setKnowledgeService internally.
     _knowledgeService = service
   } catch (err) {
     warn(

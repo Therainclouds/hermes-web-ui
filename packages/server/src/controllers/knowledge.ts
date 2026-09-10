@@ -10,7 +10,6 @@ import type { Context } from 'koa'
 import { realpathSync, accessSync, constants } from 'fs'
 import { sep } from 'path'
 import { KnowledgeService, QueryTooLongError } from '../services/knowledge/knowledge.service'
-import { KnowledgeConfigError } from '../services/knowledge/config'
 
 // --- Vault path validation (ARM protection) -------------------------------
 
@@ -22,7 +21,7 @@ import { KnowledgeConfigError } from '../services/knowledge/config'
  * - Checks read access.
  * - Limits path depth to 16 (prevents inotify quota exhaustion on Linux).
  */
-function validateVaultPath(rootPath: string): { valid: boolean; error?: string } {
+function validateVaultPath(rootPath: string): { valid: boolean; error?: string; resolved?: string } {
   let resolved: string
   try {
     resolved = realpathSync(rootPath)
@@ -34,6 +33,8 @@ function validateVaultPath(rootPath: string): { valid: boolean; error?: string }
   const normalized = resolved.replace(/\\/g, '/').toLowerCase()
   const systemPrefixes = [
     '/etc', '/proc', '/sys', '/root', '/var', '/boot', '/dev',
+    '/usr', '/bin', '/sbin', '/lib', '/lib64', '/tmp', '/opt', '/snap',
+    '/system', '/library', '/private', '/applications',
     '/windows', '/program files', '/program files (x86)',
     '/programdata', '/$recycle.bin', '/system volume information',
   ]
@@ -54,7 +55,7 @@ function validateVaultPath(rootPath: string): { valid: boolean; error?: string }
     return { valid: false, error: `Path depth ${depth} exceeds limit 16` }
   }
 
-  return { valid: true }
+  return { valid: true, resolved }
 }
 
 // --- Helpers --------------------------------------------------------------
@@ -126,7 +127,9 @@ export async function createVault(ctx: Context): Promise<void> {
   }
 
   try {
-    const vault = service.addVault(root_path, name)
+    // Use the resolved (canonical) path so the watcher operates on
+    // the same path that was validated against the blocklist.
+    const vault = service.addVault(pathCheck.resolved!, name)
     ctx.status = 201
     ctx.body = { vault }
   } catch (err) {
@@ -257,12 +260,3 @@ export async function health(ctx: Context): Promise<void> {
   ctx.body = service.health()
 }
 
-// Keep legacy name around (tests may still call getService()). The
-// old behavior (throwing KnowledgeConfigError) is preserved so
-// knowledge-service.test.ts expectations still hold.
-function getService(): KnowledgeService {
-  if (!_service) {
-    throw new KnowledgeConfigError('Knowledge service not initialized')
-  }
-  return _service
-}

@@ -226,16 +226,10 @@ interface SqliteVecLoadResult {
 }
 
 function loadSqliteVec(db: DatabaseSync): SqliteVecLoadResult {
-  // Idempotent: if the vec0 virtual table already exists, the
-  // extension must have been loaded on a prior boot. Skip.
-  const existing = db
-    .prepare(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='knowledge_chunks_vec'"
-    )
-    .all() as Array<{ name: string | null }>
-  if (existing.length > 0) {
-    return { available: true }
-  }
+  // NOTE: Extension loading is per-connection, NOT per-database.
+  // The vec0 table may exist in sqlite_master from a prior boot,
+  // but the native extension must be loaded into THIS connection.
+  // Do NOT skip loadExtension based on table existence.
 
   let sqliteVec: { getLoadablePath: () => string }
   try {
@@ -335,8 +329,8 @@ function ensureEmbeddingsMeta(
         `knowledge_embeddings_meta records dim=${existing.dim} but config ` +
           `specifies dim=${dim}. Switching embedding dimensions requires ` +
           `re-indexing the entire corpus. ` +
-          `Fix: DELETE FROM knowledge_embeddings_meta; DROP the vec0 table; ` +
-          `re-start with the correct KNOWLEDGE_EMBED_DIM.`
+          `Fix: remove all vaults and re-add them after updating ` +
+          `KNOWLEDGE_EMBED_DIM, or use POST /api/knowledge/reindex.`
       )
     }
     // Model mismatch is a warning (not a hard error) because the vec0
@@ -349,8 +343,8 @@ function ensureEmbeddingsMeta(
       console.warn(
         `[knowledge] embedding model changed: meta records '${existing.model}' ` +
           `but config specifies '${model}'. Search quality may be degraded. ` +
-          `Re-index the corpus: DELETE FROM knowledge_embeddings_meta; ` +
-          `DELETE FROM knowledge_chunks_vec; then restart.`
+          `Re-index the corpus via POST /api/knowledge/reindex or ` +
+          `remove all vaults and re-add them after updating the config.`
       )
     }
     return
@@ -372,6 +366,12 @@ function ensureEmbeddingsMeta(
       if (match) {
         insertDim = Number(match[1])
         insertModel = 'unverified'
+      } else {
+        // eslint-disable-next-line no-console
+        console.warn(
+          '[knowledge] soft migration: could not parse dim from vec0 SQL. ' +
+            'Meta row will use config dim. Admin should verify and re-index.'
+        )
       }
     }
   }

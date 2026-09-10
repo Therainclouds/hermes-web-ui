@@ -168,8 +168,11 @@ function searchHybrid(
           'FTS5 returned no candidates; fell back to vector-only search',
       )
       return vecFallback
-    } catch {
-      // vec0 may be unavailable — return empty rather than crashing.
+    } catch (vecErr) {
+      // vec0 may be unavailable — return empty rather than crashing,
+      // but log unexpected errors so they can be diagnosed.
+      // eslint-disable-next-line no-console
+      console.warn('[knowledge] vector-only fallback failed:', (vecErr as Error).message)
       return { results: [], totalCandidatesBeforeFilter: 0, warning }
     }
   }

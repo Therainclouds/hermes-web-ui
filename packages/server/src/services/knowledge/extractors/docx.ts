@@ -38,7 +38,7 @@ export async function extractDocx(path: string): Promise<ExtractResult> {
     )
   }
 
-  let zip: any
+  let zip: Awaited<ReturnType<typeof JSZip.loadAsync>>
   try {
     zip = await JSZip.loadAsync(buffer)
   } catch (err) {

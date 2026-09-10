@@ -87,9 +87,11 @@ export function tokenizeForFts(text: string): string[] {
  * Each token is quoted and tokens are joined with OR for max recall.
  */
 export function buildFtsQuery(query: string): string {
+  const MAX_TOKENS = 64
   const tokens = tokenizeForFts(query)
     .map(t => t.replace(/["*()^~+\-\\]/g, '').trim())
     .filter(t => t.length > 0)
+    .slice(0, MAX_TOKENS)
 
   if (tokens.length === 0) return '""'
   return tokens.map(t => `"${t}"`).join(' OR ')

@@ -37,7 +37,9 @@ export async function extractPdf(path: string): Promise<ExtractResult> {
       data: new Uint8Array(buffer),
       useSystemFonts: true,
       stopAtErrors: true,
-    }).promise
+      isEvalSupported: false,
+      useWorkerFetch: false,
+    } as Parameters<typeof pdfjs.getDocument>[0]).promise
   } catch (err) {
     throw new ExtractError(
       'corrupt',
