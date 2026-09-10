@@ -57,6 +57,8 @@ export interface KnowledgeConfig {
   queueDepth: number
   /** Supported file extensions (lowercased). */
   supportedExtensions: string[]
+  /** Max file size in bytes for extraction (ARM protection). */
+  maxFileSizeBytes: number
 }
 
 // --- Validation constants -------------------------------------------------
@@ -207,6 +209,14 @@ export function loadKnowledgeConfig(
     ? extsRaw.split(',').map(e => e.trim().toLowerCase()).filter(Boolean)
     : DEFAULT_EXTENSIONS
 
+  const maxFileSizeMb = parseIntEnv(env.KNOWLEDGE_MAX_FILE_SIZE_MB, 20)
+  if (maxFileSizeMb < 1 || maxFileSizeMb > 500) {
+    throw new KnowledgeConfigError(
+      `KNOWLEDGE_MAX_FILE_SIZE_MB=${maxFileSizeMb} must be in 1..500.`
+    )
+  }
+  const maxFileSizeBytes = maxFileSizeMb * 1024 * 1024
+
   return {
     enabled,
     embedProvider,
@@ -222,5 +232,6 @@ export function loadKnowledgeConfig(
     chunkFallbackSize,
     queueDepth,
     supportedExtensions,
+    maxFileSizeBytes,
   }
 }

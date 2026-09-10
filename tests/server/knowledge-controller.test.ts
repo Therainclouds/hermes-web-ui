@@ -6,7 +6,10 @@
  * the HTTP shape: status codes, error codes, response fields.
  */
 
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as ctrl from '../../packages/server/src/controllers/knowledge'
 import { KnowledgeService } from '../../packages/server/src/services/knowledge/knowledge.service'
 
@@ -44,9 +47,16 @@ function mockCtx(overrides: Record<string, unknown> = {}): any {
 // --- Tests ----------------------------------------------------------------
 
 describe('knowledge controller', () => {
+  let tempDir: string
+
   beforeEach(() => {
     // Reset the service singleton.
     ctrl.setKnowledgeService(null as unknown as KnowledgeService)
+    tempDir = mkdtempSync(join(tmpdir(), 'knowledge-ctrl-'))
+  })
+
+  afterEach(() => {
+    try { rmSync(tempDir, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
   // --- Vault endpoints ---
@@ -74,7 +84,7 @@ describe('knowledge controller', () => {
       const service = createMockService()
       ctrl.setKnowledgeService(service)
       const ctx = mockCtx({
-        request: { body: { root_path: '/tmp/test', name: 'Test' } },
+        request: { body: { root_path: tempDir, name: 'Test' } },
       })
 
       await ctrl.createVault(ctx)
@@ -105,7 +115,7 @@ describe('knowledge controller', () => {
       })
       ctrl.setKnowledgeService(service)
       const ctx = mockCtx({
-        request: { body: { root_path: '/tmp/test', name: 'Test' } },
+        request: { body: { root_path: tempDir, name: 'Test' } },
       })
 
       await ctrl.createVault(ctx)

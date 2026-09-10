@@ -7,8 +7,55 @@
  */
 
 import type { Context } from 'koa'
+import { realpathSync, accessSync, constants } from 'fs'
+import { sep } from 'path'
 import { KnowledgeService, QueryTooLongError } from '../services/knowledge/knowledge.service'
 import { KnowledgeConfigError } from '../services/knowledge/config'
+
+// --- Vault path validation (ARM protection) -------------------------------
+
+/**
+ * Validate a vault root_path for safety before accepting it.
+ * - Resolves symlinks via realpathSync.
+ * - Rejects system directories (/etc, /proc, /sys, /root, /var, /boot, /dev
+ *   on Unix; common Windows system paths).
+ * - Checks read access.
+ * - Limits path depth to 16 (prevents inotify quota exhaustion on Linux).
+ */
+function validateVaultPath(rootPath: string): { valid: boolean; error?: string } {
+  let resolved: string
+  try {
+    resolved = realpathSync(rootPath)
+  } catch {
+    return { valid: false, error: 'Path does not exist or is not accessible' }
+  }
+
+  // System directory blocklist (cross-platform).
+  const normalized = resolved.replace(/\\/g, '/').toLowerCase()
+  const systemPrefixes = [
+    '/etc', '/proc', '/sys', '/root', '/var', '/boot', '/dev',
+    '/windows', '/program files', '/program files (x86)',
+    '/programdata', '/$recycle.bin', '/system volume information',
+  ]
+  for (const prefix of systemPrefixes) {
+    if (normalized === prefix || normalized.startsWith(prefix + '/')) {
+      return { valid: false, error: `Cannot index system directory: ${resolved}` }
+    }
+  }
+
+  try {
+    accessSync(resolved, constants.R_OK)
+  } catch {
+    return { valid: false, error: 'Path is not readable' }
+  }
+
+  const depth = resolved.split(sep).filter(Boolean).length
+  if (depth > 16) {
+    return { valid: false, error: `Path depth ${depth} exceeds limit 16` }
+  }
+
+  return { valid: true }
+}
 
 // --- Helpers --------------------------------------------------------------
 
@@ -68,6 +115,13 @@ export async function createVault(ctx: Context): Promise<void> {
   if (!root_path || !name) {
     ctx.status = 400
     ctx.body = { error: 'missing_fields', message: 'root_path and name are required' }
+    return
+  }
+
+  const pathCheck = validateVaultPath(root_path)
+  if (!pathCheck.valid) {
+    ctx.status = 400
+    ctx.body = { error: 'invalid_root_path', message: pathCheck.error }
     return
   }
 

@@ -29,7 +29,7 @@
 import { watch, type FSWatcher, type ChokidarOptions } from 'chokidar'
 import { EventEmitter } from 'events'
 import { statSync, existsSync } from 'fs'
-import { join } from 'path'
+import { join, extname } from 'path'
 
 // --- Event types ---------------------------------------------------------
 
@@ -63,6 +63,10 @@ export interface KnowledgeWatcherOptions {
   usePolling?: boolean
   /** Max retries before marking vault offline on chokidar errors. */
   errorRetries?: number
+  /** Allowed file extensions (lowercased, with dot). Files outside this set are skipped. */
+  supportedExtensions?: string[]
+  /** Max file size in bytes — files exceeding this are skipped. */
+  maxFileSizeBytes?: number
 }
 
 const DEFAULT_OPTIONS: KnowledgeWatcherOptions = {
@@ -103,10 +107,19 @@ export class KnowledgeWatcher {
       return
     }
 
+    const supportedExts = new Set(this.options.supportedExtensions ?? [])
+
     const chokidarOptions: ChokidarOptions = {
       persistent: true,
       ignoreInitial: true,
-      ignored: /(^|[\/\\])\../, // dotfiles
+      ignored: (filePath: string) => {
+        // Skip dotfiles.
+        if (/(^|[\/\\])\./.test(filePath)) return true
+        // Skip files with unsupported extensions (directories pass through).
+        const ext = extname(filePath).toLowerCase()
+        if (ext && supportedExts.size > 0 && !supportedExts.has(ext)) return true
+        return false
+      },
       usePolling: this.options.usePolling,
       awaitWriteFinish: {
         stabilityThreshold: this.options.stabilityThreshold,

@@ -149,6 +149,7 @@ const TEST_CONFIG: KnowledgeConfig = {
   chunkFallbackSize: 800,
   queueDepth: 20,
   supportedExtensions: ['.md', '.txt'],
+  maxFileSizeBytes: 20 * 1024 * 1024,
 }
 
 /**

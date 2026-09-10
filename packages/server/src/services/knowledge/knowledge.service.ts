@@ -174,15 +174,24 @@ export class KnowledgeService extends EventEmitter {
 
   removeVault(vaultId: number, cascade: boolean = false): void {
     if (cascade) {
-      // Delete all documents' chunks + FTS + vec first (virtual tables).
-      const docs = this.db.prepare(
-        'SELECT id FROM knowledge_documents WHERE vault_id = ?'
-      ).all(vaultId) as Array<{ id: number }>
-      for (const doc of docs) {
-        this.deleteDocumentIndexes(doc.id)
+      // Atomic cascade: virtual tables (FTS5, vec0) don't participate in
+      // FK cascades (P0-1), so we delete from all three manually inside
+      // one transaction. If any step fails, ROLLBACK restores everything.
+      this.db.exec('BEGIN')
+      try {
+        const docs = this.db.prepare(
+          'SELECT id FROM knowledge_documents WHERE vault_id = ?'
+        ).all(vaultId) as Array<{ id: number }>
+        for (const doc of docs) {
+          this.deleteDocumentIndexes(doc.id, true) // skipTransaction — outer txn covers us
+        }
+        this.db.prepare('DELETE FROM knowledge_documents WHERE vault_id = ?').run(vaultId)
+        this.db.prepare('DELETE FROM knowledge_vaults WHERE id = ?').run(vaultId)
+        this.db.exec('COMMIT')
+      } catch (err) {
+        this.db.exec('ROLLBACK')
+        throw err
       }
-      this.db.prepare('DELETE FROM knowledge_documents WHERE vault_id = ?').run(vaultId)
-      this.db.prepare('DELETE FROM knowledge_vaults WHERE id = ?').run(vaultId)
     } else {
       // Without cascade, just disable watching — documents remain
       // referencing the vault (FK constraint prevents row deletion).
@@ -245,11 +254,30 @@ export class KnowledgeService extends EventEmitter {
   }
 
   private async processIngest(path: string, vaultId: number): Promise<IngestResult> {
+    // 0. Extension whitelist — skip unsupported types before touching disk.
+    const ext = extname(path).toLowerCase()
+    if (ext && !this.config.supportedExtensions.includes(ext)) {
+      // Metadata-only: record the document but don't extract.
+      const fileStat = statSync(path)
+      const docId = this.upsertDocument(path, vaultId, '', {
+        size: fileStat.size, mtimeMs: fileStat.mtimeMs,
+      })
+      this.db.prepare(
+        "UPDATE knowledge_documents SET status = 'indexed', indexed_at = ? WHERE id = ?"
+      ).run(Date.now(), docId)
+      return { documentId: docId, status: 'indexed', chunks: 0 }
+    }
+
     // 1. Read file and compute source_hash.
     let fileContent: { text: string; tokenCount: number }
     let fileStat: { size: number; mtimeMs: number } = { size: 0, mtimeMs: Date.now() }
     try {
       fileStat = statSync(path)
+      // ARM protection: reject files exceeding the size limit.
+      if (fileStat.size > this.config.maxFileSizeBytes) {
+        const maxMb = Math.round(this.config.maxFileSizeBytes / (1024 * 1024))
+        throw new Error(`File too large (${Math.round(fileStat.size / (1024 * 1024))}MB > ${maxMb}MB limit)`)
+      }
       fileContent = await this.extractorFn(path)
     } catch (err) {
       // File unreadable — record failure.
@@ -426,30 +454,34 @@ export class KnowledgeService extends EventEmitter {
     }
   }
 
-  private deleteDocumentIndexes(documentId: number): void {
+  private deleteDocumentIndexes(documentId: number, skipTransaction = false): void {
     // Virtual tables don't cascade — delete from all three explicitly
     // in one transaction (P0-1).
-    this.db.exec('BEGIN')
+    // Uses prepared statements with parameterized documentId to prevent
+    // SQL injection (root-cause fix: was using string interpolation).
+    // When called from removeVault (which already holds a transaction),
+    // skipTransaction=true avoids nested BEGIN.
+    if (!skipTransaction) this.db.exec('BEGIN')
     try {
       // FTS5: delete by rowid = chunk.id.
-      this.db.exec(`
+      this.db.prepare(`
         DELETE FROM knowledge_chunks_fts WHERE rowid IN (
-          SELECT id FROM knowledge_chunks WHERE document_id = ${documentId}
+          SELECT id FROM knowledge_chunks WHERE document_id = ?
         )
-      `)
+      `).run(documentId)
       // vec0: delete by chunk_id.
-      this.db.exec(`
+      this.db.prepare(`
         DELETE FROM knowledge_chunks_vec WHERE chunk_id IN (
-          SELECT id FROM knowledge_chunks WHERE document_id = ${documentId}
+          SELECT id FROM knowledge_chunks WHERE document_id = ?
         )
-      `)
+      `).run(documentId)
       // Chunks: cascade from documents will handle this, but be explicit.
       this.db.prepare(
         'DELETE FROM knowledge_chunks WHERE document_id = ?'
       ).run(documentId)
-      this.db.exec('COMMIT')
+      if (!skipTransaction) this.db.exec('COMMIT')
     } catch (err) {
-      this.db.exec('ROLLBACK')
+      if (!skipTransaction) this.db.exec('ROLLBACK')
       throw err
     }
   }
