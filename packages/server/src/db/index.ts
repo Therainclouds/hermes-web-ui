@@ -38,15 +38,7 @@ export function getDb(): DatabaseSync | null {
   if (!SQLITE_AVAILABLE) return null
   if (!_db) {
     mkdirSync(DB_DIR, { recursive: true })
-    // allowExtension: true is required for sqlite-vec loadExtension().
-    // The only extension loaded is the pinned vec0 binary from the
-    // sqlite-vec package — do not widen this without reviewing the
-    // security trade-off in the PR.
-    _db = new DatabaseSync(DB_PATH, { allowExtension: true })
-    // enableLoadExtension opens the loading gate; actual load is done
-    // lazily by ensureKnowledgeSchema (Task 6) so sqlite-vec stays an
-    // optional peer until the knowledge plugin initializes.
-    _db.enableLoadExtension(true)
+    _db = new DatabaseSync(DB_PATH)
     // Use WAL mode for better concurrency and WSL compatibility
     if (isTest) {
       _db.exec('PRAGMA journal_mode=WAL')
