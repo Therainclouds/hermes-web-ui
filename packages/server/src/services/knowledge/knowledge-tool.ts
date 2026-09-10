@@ -13,7 +13,8 @@
  *   - Tool description explains totalCandidatesBeforeFilter.
  */
 
-import type { KnowledgeService, SearchResponse } from './knowledge.service'
+import type { KnowledgeService } from './knowledge.service'
+import type { SearchResponse } from './search'
 
 // --- Tool definition ------------------------------------------------------
 

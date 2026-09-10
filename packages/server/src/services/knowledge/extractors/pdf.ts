@@ -36,8 +36,6 @@ export async function extractPdf(path: string): Promise<ExtractResult> {
     pdfDocument = await pdfjs.getDocument({
       data: new Uint8Array(buffer),
       useSystemFonts: true,
-      isEvalSupported: false,
-      useWorkerFetch: false,
       stopAtErrors: true,
     }).promise
   } catch (err) {

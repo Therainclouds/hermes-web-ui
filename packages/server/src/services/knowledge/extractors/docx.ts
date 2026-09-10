@@ -24,9 +24,12 @@ export async function extractDocx(path: string): Promise<ExtractResult> {
     throw new ExtractError('io', `Failed to read DOCX file: ${path}`, err)
   }
 
-  let JSZip: typeof import('jszip')
+  // Dynamic import returns the module namespace; the constructor is on
+  // the `default` export for CJS→ESM interop.
+  let JSZip: { loadAsync(data: Buffer | Uint8Array): Promise<any> }
   try {
-    JSZip = await import('jszip')
+    const mod = await import('jszip')
+    JSZip = (mod.default ?? mod) as { loadAsync(data: Buffer | Uint8Array): Promise<any> }
   } catch (err) {
     throw new ExtractError(
       'unsupported',
@@ -35,7 +38,7 @@ export async function extractDocx(path: string): Promise<ExtractResult> {
     )
   }
 
-  let zip: import('jszip')
+  let zip: any
   try {
     zip = await JSZip.loadAsync(buffer)
   } catch (err) {

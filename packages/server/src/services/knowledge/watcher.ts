@@ -162,12 +162,13 @@ export class KnowledgeWatcher {
     } satisfies IngestRemoveEvent)
   }
 
-  private onError(err: Error): void {
+  private onError(err: unknown): void {
     this.errorsInRow += 1
+    const message = err instanceof Error ? err.message : String(err)
     // eslint-disable-next-line no-console
     console.warn(
       `[knowledge:watcher] vault=${this.vaultId} chokidar error ` +
-        `(${this.errorsInRow}/${this.options.errorRetries}): ${err.message}`
+        `(${this.errorsInRow}/${this.options.errorRetries}): ${message}`
     )
     if (this.errorsInRow >= (this.options.errorRetries ?? 3)) {
       this.emitOffline('chokidar_errors_exhausted')
@@ -202,7 +203,7 @@ export class KnowledgeWatcherManager {
   private readonly options: KnowledgeWatcherOptions
 
   constructor(options: Partial<KnowledgeWatcherOptions> = {}) {
-    this.options = options
+    this.options = { ...DEFAULT_OPTIONS, ...options }
     // Prevent unhandled error events from crashing the process — the
     // watcher already logs them and emits vault:offline.
     this.emitter.on('error', () => {

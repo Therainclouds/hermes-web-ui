@@ -114,7 +114,13 @@
     "sherpa-onnx-linux-arm64": "1.13.3",
     "sherpa-onnx-linux-x64": "1.13.3",
     "sherpa-onnx-win-ia32": "1.13.3",
-    "sherpa-onnx-win-x64": "1.13.3"
+    "sherpa-onnx-win-x64": "1.13.3",
+    "sqlite-vec": "^0.1.9",
+    "sqlite-vec-darwin-arm64": "^0.1.9",
+    "sqlite-vec-darwin-x64": "^0.1.9",
+    "sqlite-vec-linux-arm64": "^0.1.9",
+    "sqlite-vec-linux-x64": "^0.1.9",
+    "sqlite-vec-windows-x64": "^0.1.9"
   },
   "devDependencies": {
     "@aiden0z/pptx-renderer": "^1.2.4",
@@ -168,8 +174,6 @@
     "qrcode": "^1.5.4",
     "read-excel-file": "^7.0.3",
     "sass": "^1.99.0",
-    "sqlite-vec": "^0.1.9",
-    "sqlite-vec-windows-x64": "^0.1.9",
     "tar": "^7.5.16",
     "ts-node": "^10.9.2",
     "ts-node-dev": "^2.0.0",
