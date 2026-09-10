@@ -38,7 +38,11 @@ export function getDb(): DatabaseSync | null {
   if (!SQLITE_AVAILABLE) return null
   if (!_db) {
     mkdirSync(DB_DIR, { recursive: true })
-    _db = new DatabaseSync(DB_PATH)
+    // `allowExtension: true` is required so the knowledge plugin can load
+    // the `sqlite-vec` vec0 extension on the shared connection. Calling
+    // `enableLoadExtension(true)` after construction is too late (Node 24
+    // throws ERR_INVALID_STATE). See docs/knowledge-architecture.md §6.4.
+    _db = new DatabaseSync(DB_PATH, { allowExtension: true })
     // Use WAL mode for better concurrency and WSL compatibility
     if (isTest) {
       _db.exec('PRAGMA journal_mode=WAL')
