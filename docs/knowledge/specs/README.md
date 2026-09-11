@@ -15,6 +15,10 @@
                                                                      │
   T7: routes ────────────────────────────────────────────────────────┘
         (depends on T6; T8/T9/T10 can proceed once T7 is wired)
+
+  T11: metadata_only ──────────── T12: auto-vaults + quotas
+          (depends on T1, T6, T7; ships v0.8.8)
+                                        (depends on T11; ships v0.8.9)
 ```
 
 Parallel lanes (after T1 and T6 land):
@@ -38,6 +42,8 @@ Parallel lanes (after T1 and T6 land):
 | [task-08-client.md](./task-08-client.md) | Vue3 UI (vault list + doc list + sidebar) | T7 | ~800 LOC |
 | [task-09-agent-tool.md](./task-09-agent-tool.md) | Hermes Agent MCP tool binding | T6 + T7 | ~150 LOC |
 | [task-10-hardening.md](./task-10-hardening.md) | Health endpoint + socket events + CI gates | T7 | ~200 LOC |
+| [task-11-metadata-only.md](./task-11-metadata-only.md) | `metadata_only` status + `vault.kind` taxonomy + manual promote (v0.8.8) | T1, T6, T7 | ~250 LOC |
+| [task-12-auto-vaults-and-quotas.md](./task-12-auto-vaults-and-quotas.md) | Auto 4-vault bootstrap, upload checkbox, USB on-demand, quota monitor, semi-auto task archive (v0.8.9) | T11 | ~900 LOC |
 
 ## Source of truth
 
