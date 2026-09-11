@@ -1,6 +1,10 @@
+import { defineAsyncComponent } from 'vue'
 import type { HermesClientPlugin } from '../types'
-import KnowledgeView from './KnowledgeView.vue'
 import { loadPluginMessages, SUPPORTED_LOCALES } from './i18n-loader'
+
+// Lazy-load the whole plugin view so the knowledge UI stays out of the
+// first-screen bundle (device budget: gzip < 500KB initial load).
+const KnowledgeView = defineAsyncComponent(() => import('./KnowledgeView.vue'))
 
 /**
  * Knowledge 插件入口。

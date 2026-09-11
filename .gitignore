@@ -113,3 +113,9 @@ hermes_data/bots/*
 
 # Local agent workspace (ttyd deploy scripts, JWT derivations, logs)
 .zcode/
+
+# Local deploy staging (tarballs + extracted src — never commit)
+.deploy-staging/
+
+# Local ops notes (device IPs, SSH details — never commit)
+.ops/

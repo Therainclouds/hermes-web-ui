@@ -53,6 +53,52 @@ export default {
       close: '关闭',
     },
 
+    modes: {
+      tasks: { label: '任务', desc: '盯住索引状态、任务引用与进度' },
+      legal: { label: '法务', desc: '合同案卷归档，审查引用是否合规' },
+      learning: { label: '学习', desc: '用双链连接知识，强化复习' },
+      explorer: { label: '探索', desc: '图谱、向量索引与全部高级设置' },
+      batch: { label: '批量', desc: '批量导入文件，整理重复劳动' },
+    },
+
+    onboarding: {
+      title: '选择你的工作方式',
+      subtitle: '知识库会按你的主要用途调整界面。之后随时可在顶部切换，数据不会丢失。',
+      skip: '稍后设置',
+    },
+
+    statusBar: {
+      ready: '就绪',
+      needsKey: '未配置 API Key',
+      disabled: '插件未启用',
+      documents: '{n} 篇文档',
+      indexed: '已索引 {n}',
+      queue: '队列 {n}',
+      failed: '失败 {n}',
+      settings: '设置',
+      switchMode: '切换模式',
+    },
+
+    tasks: {
+      heroTitle: '索引进度',
+      progress: { done: '完成', todo: '待办', running: '进行中', errored: '出错' },
+      filesTitle: '归档文件',
+      goExplorer: '添加知识库',
+      columns: { references: '引用', lastCited: '最近引用' },
+      references: {
+        title: '引用记录',
+        empty: '暂无检索引用记录',
+        loadFailed: '引用记录加载失败',
+        sourceChat: '界面搜索',
+        sourceAgent: 'Agent 工具',
+        never: '未被引用',
+      },
+    },
+
+    modePlaceholder: {
+      comingSoon: '此模式将在下一轮更新中开放',
+    },
+
     vaults: {
       title: '知识库',
       add: '添加知识库',

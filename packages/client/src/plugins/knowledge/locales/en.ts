@@ -53,6 +53,52 @@ export default {
       close: 'Close',
     },
 
+    modes: {
+      tasks: { label: 'Tasks', desc: 'Watch index status, task citations and progress' },
+      legal: { label: 'Legal', desc: 'Archive contracts and case files, audit citation compliance' },
+      learning: { label: 'Learning', desc: 'Connect knowledge with backlinks, reinforce review' },
+      explorer: { label: 'Explorer', desc: 'Graph, vector index and all advanced settings' },
+      batch: { label: 'Batch', desc: 'Bulk-import files and clean up repetitive work' },
+    },
+
+    onboarding: {
+      title: 'Choose how you work',
+      subtitle: 'The knowledge base adapts its interface to your main use. Switch anytime from the top bar — no data is lost.',
+      skip: 'Set up later',
+    },
+
+    statusBar: {
+      ready: 'Ready',
+      needsKey: 'API key not configured',
+      disabled: 'Plugin disabled',
+      documents: '{n} documents',
+      indexed: '{n} indexed',
+      queue: 'queue {n}',
+      failed: '{n} failed',
+      settings: 'Settings',
+      switchMode: 'Switch mode',
+    },
+
+    tasks: {
+      heroTitle: 'Index progress',
+      progress: { done: 'Done', todo: 'Todo', running: 'Running', errored: 'Errored' },
+      filesTitle: 'Archived files',
+      goExplorer: 'Add a vault',
+      columns: { references: 'Citations', lastCited: 'Last cited' },
+      references: {
+        title: 'Citation log',
+        empty: 'No search citations yet',
+        loadFailed: 'Failed to load citation log',
+        sourceChat: 'UI search',
+        sourceAgent: 'Agent tool',
+        never: 'Never cited',
+      },
+    },
+
+    modePlaceholder: {
+      comingSoon: 'This mode arrives in the next round',
+    },
+
     vaults: {
       title: 'Vaults',
       add: 'Add Vault',

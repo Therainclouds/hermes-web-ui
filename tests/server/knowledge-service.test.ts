@@ -327,6 +327,54 @@ describe.skipIf(!canRun)('KnowledgeService', () => {
     })
   })
 
+  // --- Reference (citation) log --------------------------------------------
+
+  describe('reference log', () => {
+    it('records search hits with source and sessionId', async () => {
+      const filePath = join(tempDir, 'cited.md')
+      writeFileSync(filePath, 'contract clause liability indemnification')
+
+      const vault = service.addVault(tempDir, 'cite-vault')
+      await service.ingest(filePath, vault.id)
+
+      const results = await service.search({
+        query: 'contract clause',
+        vaultId: vault.id,
+        hybrid: false,
+        limit: 5,
+        reference: { source: 'chat', sessionId: 'sess-42' },
+      })
+      expect(results.results.length).toBeGreaterThan(0)
+
+      const docId = results.results[0].documentId
+      const refs = service.listDocumentReferences(docId)
+      expect(refs).toHaveLength(results.results.length)
+      expect(refs[0].source).toBe('chat')
+      expect(refs[0].session_id).toBe('sess-42')
+      // Newest-first ordering, rank preserved.
+      expect(refs[0].rank).toBe(0)
+    })
+
+    it('search without reference context records nothing', async () => {
+      const filePath = join(tempDir, 'uncited.md')
+      writeFileSync(filePath, 'ordinary text without citation tracking')
+
+      const vault = service.addVault(tempDir, 'no-cite-vault')
+      await service.ingest(filePath, vault.id)
+
+      const results = await service.search({
+        query: 'ordinary text',
+        vaultId: vault.id,
+        hybrid: false,
+        limit: 5,
+      })
+
+      for (const hit of results.results) {
+        expect(service.listDocumentReferences(hit.documentId)).toHaveLength(0)
+      }
+    })
+  })
+
   // --- Vault management ---------------------------------------------------
 
   // --- Socket events ------------------------------------------------------

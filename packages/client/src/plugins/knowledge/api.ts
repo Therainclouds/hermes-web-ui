@@ -25,7 +25,7 @@ export interface KnowledgeDocument {
   size_bytes: number
   mtime: number
   indexed_at: number
-  status: 'pending' | 'indexing' | 'indexed' | 'failed'
+  status: 'pending' | 'indexing' | 'indexed' | 'failed' | 'metadata_only'
   error: string | null
 }
 
@@ -59,6 +59,18 @@ export interface KnowledgeChunk {
   position: number
   content: string
   token_count: number
+}
+
+/** One search-hit record from the citation audit log. */
+export interface KnowledgeReference {
+  id: number
+  document_id: number
+  chunk_id: number
+  source: 'chat' | 'agent-tool' | string
+  session_id: string | null
+  distance: number | null
+  rank: number
+  created_at: number
 }
 
 // --- API calls ------------------------------------------------------------
@@ -102,6 +114,7 @@ export async function searchKnowledge(body: {
   limit?: number
   hybrid?: boolean
   maxDistance?: number
+  session_id?: string
 }): Promise<SearchResponse> {
   return request('/api/knowledge/search', {
     method: 'POST',
@@ -141,4 +154,8 @@ export async function getHealth(): Promise<KnowledgeHealth> {
 
 export async function fetchDocumentChunks(id: number): Promise<{ chunks: KnowledgeChunk[] }> {
   return request(`/api/knowledge/documents/${id}/chunks`)
+}
+
+export async function fetchDocumentReferences(id: number, limit = 200): Promise<{ references: KnowledgeReference[] }> {
+  return request(`/api/knowledge/documents/${id}/references?limit=${limit}`)
 }

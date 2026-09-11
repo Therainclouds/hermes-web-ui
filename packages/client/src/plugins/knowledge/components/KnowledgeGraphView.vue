@@ -4,13 +4,10 @@ import { useI18n } from 'vue-i18n'
 import {
   NCard,
   NEmpty,
-  NLegend,
   NSelect,
-  NTag,
 } from 'naive-ui'
 import type { KnowledgeVault, KnowledgeDocument } from '../api'
-import { useKnowledgeGraph, computeGraphLayout } from '../composables/useKnowledgeGraph'
-import { statusTagType } from '../utils/status'
+import { useKnowledgeGraph, computeGraphLayout, type PositionedNode } from '../composables/useKnowledgeGraph'
 
 const { t } = useI18n()
 
@@ -23,20 +20,20 @@ const emit = defineEmits<{
   (e: 'select-document', doc: KnowledgeDocument): void
 }>()
 
-const selectedVaultFilter = ref<number | null>(null)
+const selectedVaultFilter = ref<number | string | null>('__all__')
 
-const vaultOptions = computed(() => [
-  { label: t('knowledge.graph.allVaults'), value: null as number | null },
+const vaultOptions = computed<Array<{ label: string; value: number | string }>>(() => [
+  { label: t('knowledge.graph.allVaults'), value: '__all__' },
   ...props.vaults.map(v => ({ label: v.name, value: v.id })),
 ])
 
 const filteredVaults = computed(() => {
-  if (selectedVaultFilter.value === null) return props.vaults
+  if (selectedVaultFilter.value === '__all__') return props.vaults
   return props.vaults.filter(v => v.id === selectedVaultFilter.value)
 })
 
 const filteredDocuments = computed(() => {
-  if (selectedVaultFilter.value === null) return props.documents
+  if (selectedVaultFilter.value === '__all__') return props.documents
   return props.documents.filter(d => d.vault_id === selectedVaultFilter.value)
 })
 
@@ -58,13 +55,15 @@ const viewBox = computed(() => {
   return `${minX} ${minY} ${maxX - minX} ${maxY - minY}`
 })
 
-function docById(id: number): KnowledgeDocument | undefined {
-  return props.documents.find(d => `doc-${d.id}` === id)
+function docIdFromNodeId(nodeId: string): number | null {
+  const parts = nodeId.split('-')
+  const n = parseInt(parts[1] ?? '', 10)
+  return Number.isFinite(n) ? n : null
 }
 
-function nodeFill(node: ReturnType<typeof layout.value.positionedNodes[number]>): string {
+function nodeFill(node: PositionedNode): string {
   if (node.type === 'vault') return '#2080f0'
-  const status = (node as any).status || 'pending'
+  const status = (node as { status?: string }).status ?? 'pending'
   const colors: Record<string, string> = {
     indexed: '#18a058',
     indexing: '#2080f0',
@@ -72,11 +71,19 @@ function nodeFill(node: ReturnType<typeof layout.value.positionedNodes[number]>)
     failed: '#d03050',
     metadata_only: '#909399',
   }
-  return colors[status] || '#909399'
+  return colors[status] ?? '#909399'
 }
 
-function nodeStroke(node: ReturnType<typeof layout.value.positionedNodes[number]>): string {
+function nodeStroke(node: PositionedNode): string {
   return node.type === 'vault' ? '#1060c0' : '#00000020'
+}
+
+function onNodeClick(node: PositionedNode): void {
+  if (node.type !== 'document') return
+  const docId = docIdFromNodeId(node.id)
+  if (docId == null) return
+  const doc = props.documents.find(d => d.id === docId)
+  if (doc) emit('select-document', doc)
 }
 </script>
 
@@ -111,7 +118,7 @@ function nodeStroke(node: ReturnType<typeof layout.value.positionedNodes[number]
             :transform="`translate(${node.x}, ${node.y})`"
             class="graph-node"
             :class="{ 'is-vault': node.type === 'vault' }"
-            @click="node.type === 'document' && docById(parseInt(node.id.split('-')[1])) && emit('select-document', docById(parseInt(node.id.split('-')[1]))!)"
+            @click="onNodeClick(node)"
           >
             <circle
               :r="node.size"
@@ -133,10 +140,14 @@ function nodeStroke(node: ReturnType<typeof layout.value.positionedNodes[number]
     <NEmpty v-else :description="t('knowledge.graph.empty')" />
 
     <div class="graph-legend">
-      <NLegend>
-        <NLegend item :label="t('knowledge.graph.legend.vault')" color="#2080f0" />
-        <NLegend item :label="t('knowledge.graph.legend.document')" color="#18a058" />
-      </NLegend>
+      <span class="legend-item">
+        <span class="legend-dot" style="background:#2080f0"></span>
+        {{ t('knowledge.graph.legend.vault') }}
+      </span>
+      <span class="legend-item">
+        <span class="legend-dot" style="background:#18a058"></span>
+        {{ t('knowledge.graph.legend.document') }}
+      </span>
     </div>
   </NCard>
 </template>
@@ -180,5 +191,19 @@ function nodeStroke(node: ReturnType<typeof layout.value.positionedNodes[number]
   margin-top: 12px;
   display: flex;
   justify-content: center;
+  gap: 24px;
+  font-size: 12px;
+  opacity: 0.75;
+}
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.legend-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
 }
 </style>

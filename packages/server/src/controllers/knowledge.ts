@@ -225,6 +225,21 @@ export async function listDocumentChunks(ctx: Context): Promise<void> {
   ctx.body = { chunks }
 }
 
+export async function listDocumentReferences(ctx: Context): Promise<void> {
+  const service = getServiceOr503(ctx)
+  if (!service) return
+  const id = Number.parseInt(ctx.params.id, 10)
+  if (!Number.isInteger(id) || id <= 0) {
+    ctx.status = 400
+    ctx.body = { error: 'invalid_id' }
+    return
+  }
+  const limitRaw = Number.parseInt(ctx.query.limit as string, 10)
+  const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? limitRaw : 200
+  const references = service.listDocumentReferences(id, limit)
+  ctx.body = { references }
+}
+
 // --- Search ---------------------------------------------------------------
 
 export async function searchKnowledge(ctx: Context): Promise<void> {
@@ -236,6 +251,7 @@ export async function searchKnowledge(ctx: Context): Promise<void> {
     limit?: number
     hybrid?: boolean
     max_distance?: number
+    session_id?: string
   }
 
   const query = body.query?.trim() ?? ''
@@ -251,12 +267,14 @@ export async function searchKnowledge(ctx: Context): Promise<void> {
   }
 
   try {
+    const sessionId = typeof body.session_id === 'string' && body.session_id.trim() ? body.session_id.trim() : null
     const result = await service.search({
       query,
       vaultId: body.vault_id ?? null,
       limit: body.limit ?? 5,
       hybrid: body.hybrid ?? true,
       maxDistance: body.max_distance,
+      reference: { source: 'chat', sessionId },
     })
     ctx.body = result
   } catch (err) {

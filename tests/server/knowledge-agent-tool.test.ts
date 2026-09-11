@@ -99,6 +99,7 @@ describe('handleKnowledgeSearch', () => {
       limit: 10,
       hybrid: false,
       maxDistance: 0.5,
+      reference: { source: 'agent-tool', sessionId: null },
     })
   })
 
@@ -111,6 +112,7 @@ describe('handleKnowledgeSearch', () => {
       limit: 5,
       hybrid: true,
       maxDistance: undefined,
+      reference: { source: 'agent-tool', sessionId: null },
     })
   })
 

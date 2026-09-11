@@ -17,15 +17,32 @@ export interface GraphNode {
   size?: number
 }
 
+export interface PositionedNode extends GraphNode {
+  x: number
+  y: number
+}
+
 export interface GraphEdge {
   id: string
   source: string
   target: string
 }
 
+export interface PositionedEdge extends GraphEdge {
+  sourceX: number
+  sourceY: number
+  targetX: number
+  targetY: number
+}
+
 export interface GraphData {
   nodes: GraphNode[]
   edges: GraphEdge[]
+}
+
+export interface GraphLayout {
+  positionedNodes: PositionedNode[]
+  positionedEdges: PositionedEdge[]
 }
 
 export function useKnowledgeGraph(
@@ -38,12 +55,12 @@ export function useKnowledgeGraph(
     const vaultList = vaults()
     const docList = documents()
 
-    for (const vault of vaultList) {
+    for (const v of vaultList) {
       nodes.push({
-        id: `vault-${vault.id}`,
+        id: `vault-${v.id}`,
         type: 'vault',
-        label: vault.name,
-        vaultId: vault.id,
+        label: v.name,
+        vaultId: v.id,
         size: vaultList.length > 0 ? 80 : 60,
       })
     }
@@ -59,7 +76,7 @@ export function useKnowledgeGraph(
       }
       nodes.push(docNode)
       edges.push({
-        id: `edge-${vault.id}-${doc.id}`,
+        id: `edge-${doc.vault_id}-${doc.id}`,
         source: `vault-${doc.vault_id}`,
         target: `doc-${doc.id}`,
       })
@@ -70,10 +87,7 @@ export function useKnowledgeGraph(
 }
 
 /** Compute a simple grid-based layout: vaults in row 0, docs below. */
-export function computeGraphLayout(data: GraphData): {
-  positionedNodes: Array<GraphNode & { x: number; y: number }>
-  positionedEdges: Array<GraphEdge & { sourceX: number; sourceY: number; targetX: number; targetY: number }>
-} {
+export function computeGraphLayout(data: GraphData): GraphLayout {
   const vaultNodes = data.nodes.filter(n => n.type === 'vault')
   const docNodes = data.nodes.filter(n => n.type === 'document')
 
@@ -82,9 +96,8 @@ export function computeGraphLayout(data: GraphData): {
   const vaultY = 60
   const docYOffset = 180
   const docSpacing = 140
-  const docStartX = 80
 
-  const positionedNodes: Array<GraphNode & { x: number; y: number }> = []
+  const positionedNodes: PositionedNode[] = []
   const vaultPositions = new Map<number, number>()
 
   vaultNodes.forEach((vault, i) => {
@@ -109,17 +122,20 @@ export function computeGraphLayout(data: GraphData): {
   }
 
   const nodeById = new Map(positionedNodes.map(n => [n.id, n]))
-  const positionedEdges = data.edges.map(edge => {
-    const s = nodeById.get(edge.source)!
-    const t = nodeById.get(edge.target)!
-    return {
-      ...edge,
-      sourceX: s.x,
-      sourceY: s.y,
-      targetX: t.x,
-      targetY: t.y,
-    }
-  })
+  const positionedEdges: PositionedEdge[] = data.edges
+    .map(edge => {
+      const s = nodeById.get(edge.source)
+      const t = nodeById.get(edge.target)
+      if (!s || !t) return null
+      return {
+        ...edge,
+        sourceX: s.x,
+        sourceY: s.y,
+        targetX: t.x,
+        targetY: t.y,
+      }
+    })
+    .filter((e): e is PositionedEdge => e !== null)
 
   return { positionedNodes, positionedEdges }
 }

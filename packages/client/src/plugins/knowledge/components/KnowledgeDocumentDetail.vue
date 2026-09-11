@@ -4,15 +4,12 @@ import { useI18n } from 'vue-i18n'
 import {
   NButton,
   NCard,
-  NCollapse,
-  NCollapseItem,
   NDescriptions,
   NDescriptionsItem,
   NDrawer,
   NDrawerContent,
   NEmpty,
   NScrollbar,
-  NSkeleton,
   NSpace,
   NSpin,
   NTag,
@@ -38,7 +35,6 @@ const emit = defineEmits<{
 
 const chunks = shallowRef<KnowledgeChunk[]>([])
 const chunksLoading = ref(false)
-const chunksExpanded = ref<string[]>([])
 let generation = 0
 let disposed = false
 

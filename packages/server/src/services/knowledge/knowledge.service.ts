@@ -77,6 +77,25 @@ export interface KnowledgeDocument {
   error: string | null
 }
 
+/** Who/why performed a search — persisted as the citation audit trail. */
+export interface ReferenceContext {
+  /** 'chat' (web UI search box / chat citations), 'agent-tool' (MCP knowledge_search). */
+  source: 'chat' | 'agent-tool'
+  /** Optional conversation/session id tying citations to a task run. */
+  sessionId?: string | null
+}
+
+export interface ReferenceEntry {
+  id: number
+  document_id: number
+  chunk_id: number
+  source: string
+  session_id: string | null
+  distance: number | null
+  rank: number
+  created_at: number
+}
+
 export interface KnowledgeChunk {
   id: number
   document_id: number
@@ -513,11 +532,71 @@ export class KnowledgeService extends EventEmitter {
 
   // --- Search -------------------------------------------------------------
 
-  async search(params: SearchParams): Promise<SearchResponse> {
+  /** Max rows kept in knowledge_references (trimmed oldest-first on write). */
+  private static readonly REFERENCE_CAP = 20_000
+
+  async search(
+    params: SearchParams & { reference?: ReferenceContext },
+  ): Promise<SearchResponse> {
     // Embed the query, then delegate to search.ts.
     const queryVectors = await this.embedder.embed([params.query])
     const queryEmbedding = queryVectors[0]
-    return searchFn(this.db, queryEmbedding, params)
+    const response = searchFn(this.db, queryEmbedding, params)
+    if (params.reference) {
+      // Citation audit log is best-effort — never fail a search over it.
+      try {
+        this.recordReferences(response.results, params.reference)
+      } catch {
+        // Swallowed by design.
+      }
+    }
+    return response
+  }
+
+  private recordReferences(
+    results: SearchResponse['results'],
+    ref: ReferenceContext,
+  ): void {
+    if (results.length === 0) return
+    const now = Date.now()
+    const insert = this.db.prepare(
+      'INSERT INTO knowledge_references (document_id, chunk_id, source, session_id, distance, rank, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    )
+    this.db.exec('BEGIN')
+    try {
+      results.forEach((hit, i) => {
+        insert.run(
+          hit.documentId,
+          hit.chunkId,
+          ref.source,
+          ref.sessionId ?? null,
+          hit.distance,
+          i,
+          now
+        )
+      })
+      // Trim to the cap inside the same transaction so the table can never
+      // grow unbounded on the device's single-file SQLite.
+      this.db.exec(
+        'DELETE FROM knowledge_references WHERE id NOT IN (' +
+          `SELECT id FROM knowledge_references ORDER BY id DESC LIMIT ${KnowledgeService.REFERENCE_CAP})`
+      )
+      this.db.exec('COMMIT')
+    } catch (err) {
+      this.db.exec('ROLLBACK')
+      throw err
+    }
+  }
+
+  /** Citation log for one document, newest first. */
+  listDocumentReferences(documentId: number, limit = 200): ReferenceEntry[] {
+    const capped = Math.max(1, Math.min(limit, 1000))
+    return this.db.prepare(
+      `SELECT id, document_id, chunk_id, source, session_id, distance, rank, created_at
+       FROM knowledge_references
+       WHERE document_id = ?
+       ORDER BY id DESC LIMIT ?`
+    ).all(documentId, capped) as unknown as ReferenceEntry[]
   }
 
   // --- Health -------------------------------------------------------------

@@ -155,6 +155,28 @@ export function ensureKnowledgeSchema(
       'ON knowledge_chunks(document_id)'
   )
 
+  // Retrieval audit log — every search hit is recorded so the UI can answer
+  // "which documents did my tasks actually cite, and are those citations
+  // still valid?". Bounded at ~20k rows (trimmed on write) to protect the
+  // single-file SQLite budget on low-memory devices.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS knowledge_references (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      document_id INTEGER NOT NULL,
+      chunk_id    INTEGER NOT NULL,
+      source      TEXT NOT NULL,
+      session_id  TEXT,
+      distance    REAL,
+      rank        INTEGER NOT NULL,
+      created_at  INTEGER NOT NULL,
+      FOREIGN KEY (document_id) REFERENCES knowledge_documents(id) ON DELETE CASCADE
+    )
+  `)
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS knowledge_references_document ' +
+      'ON knowledge_references(document_id, created_at DESC)'
+  )
+
   // FTS5 virtual table — shadow of knowledge_chunks.content.
   // The worker MUST insert with an explicit rowid equal to chunk.id
   // so the join in hybrid search remains correct (audit fix P1-3).

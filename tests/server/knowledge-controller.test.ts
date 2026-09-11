@@ -297,6 +297,7 @@ describe('knowledge controller', () => {
         limit: 10,
         hybrid: false,
         maxDistance: 0.5,
+        reference: { source: 'chat', sessionId: null },
       })
     })
 
@@ -315,7 +316,24 @@ describe('knowledge controller', () => {
         limit: 5,
         hybrid: true,
         maxDistance: undefined,
+        reference: { source: 'chat', sessionId: null },
       })
+    })
+
+    it('passes session_id through as chat reference context', async () => {
+      const service = createMockService()
+      ctrl.setKnowledgeService(service)
+      const ctx = mockCtx({
+        request: { body: { query: 'test', session_id: '  sess-7  ' } },
+      })
+
+      await ctrl.searchKnowledge(ctx)
+
+      expect(service.search).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reference: { source: 'chat', sessionId: 'sess-7' },
+        }),
+      )
     })
   })
 

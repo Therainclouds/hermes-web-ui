@@ -88,6 +88,8 @@ export interface KnowledgeToolInput {
   limit?: number
   hybrid?: boolean
   maxDistance?: number
+  /** Optional conversation/session id — recorded in the citation audit log. */
+  sessionId?: string | null
 }
 
 export class KnowledgeToolError extends Error {
@@ -126,6 +128,7 @@ export async function handleKnowledgeSearch(
     limit: input.limit ?? 5,
     hybrid: input.hybrid ?? true,
     maxDistance: input.maxDistance,
+    reference: { source: 'agent-tool', sessionId: input.sessionId ?? null },
   })
 }
 

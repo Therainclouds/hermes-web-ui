@@ -27,6 +27,7 @@ knowledgeRoutes.delete('/api/knowledge/vaults/:id', ctrl.deleteVault)
 
 knowledgeRoutes.get('/api/knowledge/documents', ctrl.listDocuments)
 knowledgeRoutes.get('/api/knowledge/documents/:id/chunks', ctrl.listDocumentChunks)
+knowledgeRoutes.get('/api/knowledge/documents/:id/references', ctrl.listDocumentReferences)
 knowledgeRoutes.get('/api/knowledge/documents/:id', ctrl.getDocument)
 knowledgeRoutes.delete('/api/knowledge/documents/:id', ctrl.deleteDocument)
 
