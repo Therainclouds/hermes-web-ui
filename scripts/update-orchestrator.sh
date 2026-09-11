@@ -771,6 +771,23 @@ build_deploy() {
   run_build_as_app_user "cd '${DEPLOY_DIR}' && npm rebuild node-pty 2>/dev/null" || \
     warn "node-pty rebuild failed (terminal feature will be disabled)"
 
+  # --- sqlite-vec native binding sanity check --------------------------
+  # sqlite-vec-linux-arm64 ships a precompiled .so for a specific Node ABI.
+  # When the runtime Node major changes (e.g. 23 -> 24), preserve_node_modules
+  # may have copied a stale .so across versions and npm ci with
+  # --ignore-scripts won't replace it. We probe the loadable path and try a
+  # no-op loadExtension; on failure we force a single npm install of the
+  # platform package so the .so matches the current NODE_MODULE_VERSION.
+  # Failure is non-fatal — knowledge plugin will run without vec0.
+  if [[ -f "${DEPLOY_DIR%/}/package.json" ]] && \
+     grep -q '"sqlite-vec-linux-arm64"' "${DEPLOY_DIR%/}/package.json"; then
+    if ! run_build_as_app_user "cd '${DEPLOY_DIR}' && node -e \"const p=require('sqlite-vec'); require('node:sqlite').DatabaseSync(':memory:').loadExtension(p.getLoadablePath()); console.log('vec0 OK')\" 2>/dev/null"; then
+      warn "sqlite-vec .so incompatible with current Node ABI; reinstalling platform package"
+      run_build_as_app_user "cd '${DEPLOY_DIR}' && npm install --no-save --ignore-scripts sqlite-vec-linux-arm64 2>/dev/null" || \
+        warn "sqlite-vec reinstall failed; knowledge plugin will run without vec0 (FTS5 still works)"
+    fi
+  fi
+
   # --- Build (only for source archives) --------------------------------
   if (( ! prebuilt )); then
     journal_append "${TASK_ID}" "building" "rm -rf dist + npm run build"

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NAlert, NButton, NCard, NInput, NSpace } from 'naive-ui'
+import { NAlert, NButton, NInput, NSpace } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import type { KnowledgeSettings } from '../api'
 
@@ -24,7 +24,7 @@ function onInput(value: string): void {
 </script>
 
 <template>
-  <NCard :title="t('knowledge.settings.title')" size="small" class="knowledge-settings-card">
+  <div class="knowledge-settings-form">
     <NAlert v-if="props.settings && !props.settings.enabled" type="warning" class="settings-alert">
       {{ t('knowledge.settings.pluginDisabled') }}
     </NAlert>
@@ -37,13 +37,13 @@ function onInput(value: string): void {
           {{ t('knowledge.settings.notConfigured') }}
         </template>
       </p>
-      <NSpace align="center" :wrap="false">
+      <NSpace align="center" :wrap="false" class="settings-row">
         <NInput
           :value="props.apiKeyInput"
           type="password"
           show-password-on="click"
           :placeholder="t('knowledge.settings.apiKeyPlaceholder')"
-          style="width: 360px"
+          style="flex: 1; min-width: 0"
           @update:value="onInput"
         />
         <NButton
@@ -60,23 +60,31 @@ function onInput(value: string): void {
         {{ props.validationError }}
       </p>
     </template>
-  </NCard>
+  </div>
 </template>
 
 <style scoped>
-.knowledge-settings-card {
-  margin-bottom: 0;
+.knowledge-settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 0;
+  max-width: 100%;
 }
 .settings-alert {
   margin: 0;
 }
 .settings-status {
-  margin: 0 0 8px;
+  margin: 0;
   opacity: 0.7;
   font-size: 13px;
+  line-height: 1.5;
+}
+.settings-row {
+  width: 100%;
 }
 .settings-error {
-  margin: 6px 0 0;
+  margin: 4px 0 0;
   color: var(--error-color, #d03050);
   font-size: 12px;
 }
