@@ -4,6 +4,55 @@ export default {
     subtitle: 'ドキュメント検索のためのRAGボールト',
     sidebarLabel: 'ナレッジ',
     description: 'Hermes Agentによるセマンティック検索のためにローカルドキュメントをインデックスします。',
+
+    tabs: {
+      dashboard: '概要',
+      graph: 'グラフ',
+      list: 'ライブラリ',
+    },
+
+    sidebar: {
+      vaults: 'ボールト',
+      tags: 'タグ',
+      allVaults: 'すべてのボールト',
+      noVaults: 'ボールトがありません',
+      noTags: 'タグがありません',
+    },
+
+    dashboard: {
+      statusBreakdown: 'ステータス内訳',
+      recentActivity: '最近のアクティビティ',
+      noRecentActivity: '最近のアクティビティはありません',
+      quickActions: 'クイックアクション',
+      openGraph: 'グラフを開く',
+      openList: 'ライブラリを開く',
+    },
+
+    graph: {
+      title: 'ナレッジグラフ',
+      empty: '可視化するデータがありません',
+      allVaults: 'すべてのボールト',
+      legend: {
+        vault: 'ボールト',
+        document: 'ドキュメント',
+      },
+    },
+
+    detail: {
+      title: 'ドキュメントの詳細',
+      noDocument: 'ドキュメントが選択されていません',
+      metadata: 'メタデータ',
+      content: 'コンテンツ',
+      path: 'パス',
+      vault: 'ボールト',
+      mime: 'タイプ',
+      size: 'サイズ',
+      indexed: 'インデックス済み',
+      error: 'エラー',
+      noChunks: 'コンテンツチャンクがありません',
+      close: '閉じる',
+    },
+
     vaults: {
       title: 'ボールト', add: 'ボールト追加', name: '名前', path: 'ルートパス',
       status: 'ステータス', watching: '監視中', offline: 'オフライン',
@@ -12,10 +61,10 @@ export default {
       pathPlaceholder: '/path/to/documents', namePlaceholder: '私のドキュメント',
     },
     documents: {
-      title: 'ドキュメント', status: 'ステータス', path: 'ソースパス', size: 'サイズ',
+      title: 'ドキュメント', name: '名前', status: 'ステータス', path: 'ソースパス', size: 'サイズ',
       indexedAt: 'インデックス日時', pending: '保留中', indexing: 'インデックス中',
-      indexed: '完了', failed: '失敗', all: 'すべて',
-      noDocuments: 'ドキュメントがありません。', error: 'エラー',
+      indexed: '完了', failed: '失敗', metadata_only: 'メタデータのみ',
+      all: 'すべて', noDocuments: 'ドキュメントがありません。', error: 'エラー',
     },
     health: {
       title: 'ヘルス', vaults: 'ボールト', documents: 'ドキュメント',

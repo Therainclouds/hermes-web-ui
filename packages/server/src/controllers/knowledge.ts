@@ -212,6 +212,19 @@ export async function deleteDocument(ctx: Context): Promise<void> {
   ctx.body = { error: 'not_implemented' }
 }
 
+export async function listDocumentChunks(ctx: Context): Promise<void> {
+  const service = getServiceOr503(ctx)
+  if (!service) return
+  const id = Number.parseInt(ctx.params.id, 10)
+  if (!Number.isInteger(id) || id <= 0) {
+    ctx.status = 400
+    ctx.body = { error: 'invalid_id' }
+    return
+  }
+  const chunks = service.listDocumentChunks(id)
+  ctx.body = { chunks }
+}
+
 // --- Search ---------------------------------------------------------------
 
 export async function searchKnowledge(ctx: Context): Promise<void> {

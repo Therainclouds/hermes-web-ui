@@ -77,6 +77,14 @@ export interface KnowledgeDocument {
   error: string | null
 }
 
+export interface KnowledgeChunk {
+  id: number
+  document_id: number
+  position: number
+  content: string
+  token_count: number
+}
+
 export interface KnowledgeVault {
   id: number
   root_path: string
@@ -217,6 +225,12 @@ export class KnowledgeService extends EventEmitter {
     return this.db.prepare(
       'SELECT * FROM knowledge_documents ORDER BY indexed_at DESC'
     ).all() as unknown as KnowledgeDocument[]
+  }
+
+  listDocumentChunks(documentId: number): KnowledgeChunk[] {
+    return this.db.prepare(
+      'SELECT * FROM knowledge_chunks WHERE document_id = ? ORDER BY position ASC'
+    ).all(documentId) as unknown as KnowledgeChunk[]
   }
 
   // --- Ingest pipeline ----------------------------------------------------

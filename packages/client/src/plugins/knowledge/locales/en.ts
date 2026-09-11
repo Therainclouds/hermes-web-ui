@@ -5,6 +5,54 @@ export default {
     sidebarLabel: 'Knowledge',
     description: 'Index local documents for semantic search by the Hermes Agent.',
 
+    tabs: {
+      dashboard: 'Overview',
+      graph: 'Graph',
+      list: 'Library',
+    },
+
+    sidebar: {
+      vaults: 'Vaults',
+      tags: 'Tags',
+      allVaults: 'All vaults',
+      noVaults: 'No vaults yet',
+      noTags: 'No tags',
+    },
+
+    dashboard: {
+      statusBreakdown: 'Status Breakdown',
+      recentActivity: 'Recent Activity',
+      noRecentActivity: 'No recent activity',
+      quickActions: 'Quick Actions',
+      openGraph: 'Open Graph',
+      openList: 'Open Library',
+    },
+
+    graph: {
+      title: 'Knowledge Graph',
+      empty: 'No data to visualize',
+      allVaults: 'All vaults',
+      legend: {
+        vault: 'Vault',
+        document: 'Document',
+      },
+    },
+
+    detail: {
+      title: 'Document Detail',
+      noDocument: 'No document selected',
+      metadata: 'Metadata',
+      content: 'Content',
+      path: 'Path',
+      vault: 'Vault',
+      mime: 'Type',
+      size: 'Size',
+      indexed: 'Indexed',
+      error: 'Error',
+      noChunks: 'No content chunks',
+      close: 'Close',
+    },
+
     vaults: {
       title: 'Vaults',
       add: 'Add Vault',
@@ -22,6 +70,7 @@ export default {
 
     documents: {
       title: 'Documents',
+      name: 'Name',
       status: 'Status',
       path: 'Source Path',
       size: 'Size',
@@ -30,6 +79,7 @@ export default {
       indexing: 'Indexing',
       indexed: 'Indexed',
       failed: 'Failed',
+      metadata_only: 'Metadata only',
       all: 'All',
       noDocuments: 'No documents found.',
       error: 'Error',
@@ -56,7 +106,7 @@ export default {
     errors: {
       fetchFailed: 'Failed to load knowledge data',
       createFailed: 'Failed to create vault',
-      deleteFailed: 'Failed to delete vault',
+      deleteFailed: 'Failed to delete item',
     },
 
     messages: {

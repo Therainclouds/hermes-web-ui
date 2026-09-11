@@ -4,6 +4,55 @@ export default {
     subtitle: 'RAG-Tresore für die Dokumentensuche',
     sidebarLabel: 'Wissen',
     description: 'Lokale Dokumente für die semantische Suche durch Hermes Agent indizieren.',
+
+    tabs: {
+      dashboard: 'Übersicht',
+      graph: 'Graph',
+      list: 'Bibliothek',
+    },
+
+    sidebar: {
+      vaults: 'Tresore',
+      tags: 'Schlagwörter',
+      allVaults: 'Alle Tresore',
+      noVaults: 'Keine Tresore',
+      noTags: 'Keine Schlagwörter',
+    },
+
+    dashboard: {
+      statusBreakdown: 'Statusaufschlüsselung',
+      recentActivity: 'Letzte Aktivität',
+      noRecentActivity: 'Keine letzte Aktivität',
+      quickActions: 'Schnellaktionen',
+      openGraph: 'Graph öffnen',
+      openList: 'Bibliothek öffnen',
+    },
+
+    graph: {
+      title: 'Wissensgraph',
+      empty: 'Keine Daten zur Visualisierung',
+      allVaults: 'Alle Tresore',
+      legend: {
+        vault: 'Tresor',
+        document: 'Dokument',
+      },
+    },
+
+    detail: {
+      title: 'Dokumentdetails',
+      noDocument: 'Kein Dokument ausgewählt',
+      metadata: 'Metadaten',
+      content: 'Inhalt',
+      path: 'Pfad',
+      vault: 'Tresor',
+      mime: 'Typ',
+      size: 'Größe',
+      indexed: 'Indiziert',
+      error: 'Fehler',
+      noChunks: 'Keine Inhaltsblöcke',
+      close: 'Schließen',
+    },
+
     vaults: {
       title: 'Tresore', add: 'Tresor hinzufügen', name: 'Name', path: 'Wurzelpfad',
       status: 'Status', watching: 'Überwacht', offline: 'Offline',
@@ -12,10 +61,10 @@ export default {
       pathPlaceholder: '/pfad/zu/dokumenten', namePlaceholder: 'Meine Dokumente',
     },
     documents: {
-      title: 'Dokumente', status: 'Status', path: 'Quellpfad', size: 'Größe',
+      title: 'Dokumente', name: 'Name', status: 'Status', path: 'Quellpfad', size: 'Größe',
       indexedAt: 'Indiziert am', pending: 'Ausstehend', indexing: 'Indizierung',
-      indexed: 'Indiziert', failed: 'Fehlgeschlagen', all: 'Alle',
-      noDocuments: 'Keine Dokumente gefunden.', error: 'Fehler',
+      indexed: 'Indiziert', failed: 'Fehlgeschlagen', metadata_only: 'Nur Metadaten',
+      all: 'Alle', noDocuments: 'Keine Dokumente gefunden.', error: 'Fehler',
     },
     health: {
       title: 'Zustand', vaults: 'Tresore', documents: 'Dokumente',

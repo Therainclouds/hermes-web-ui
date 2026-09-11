@@ -53,6 +53,14 @@ export interface SearchResponse {
   warning?: string
 }
 
+export interface KnowledgeChunk {
+  id: number
+  document_id: number
+  position: number
+  content: string
+  token_count: number
+}
+
 // --- API calls ------------------------------------------------------------
 
 export async function listVaults(): Promise<{ vaults: KnowledgeVault[] }> {
@@ -129,4 +137,8 @@ export async function saveApiKey(apiKey: string): Promise<{ ok: boolean; initial
 
 export async function getHealth(): Promise<KnowledgeHealth> {
   return request('/api/knowledge/health')
+}
+
+export async function fetchDocumentChunks(id: number): Promise<{ chunks: KnowledgeChunk[] }> {
+  return request(`/api/knowledge/documents/${id}/chunks`)
 }

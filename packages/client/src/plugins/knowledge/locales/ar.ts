@@ -4,6 +4,55 @@ export default {
     subtitle: 'خزن RAG للبحث في المستندات',
     sidebarLabel: 'المعرفة',
     description: 'فهرسة المستندات المحلية للبحث الدلالي بواسطة Hermes Agent.',
+
+    tabs: {
+      dashboard: 'نظرة عامة',
+      graph: 'الرسم البياني',
+      list: 'المكتبة',
+    },
+
+    sidebar: {
+      vaults: 'الخزنات',
+      tags: 'الوسوم',
+      allVaults: 'كل الخزنات',
+      noVaults: 'لا توجد خزنات',
+      noTags: 'لا توجد وسوم',
+    },
+
+    dashboard: {
+      statusBreakdown: 'التوزيع حسب الحالة',
+      recentActivity: 'النشاط الأخير',
+      noRecentActivity: 'لا يوجد نشاط حديث',
+      quickActions: 'إجراءات سريعة',
+      openGraph: 'فتح الرسم البياني',
+      openList: 'فتح المكتبة',
+    },
+
+    graph: {
+      title: 'رسم المعرفة',
+      empty: 'لا توجد بيانات للتصور',
+      allVaults: 'كل الخزنات',
+      legend: {
+        vault: 'خزن',
+        document: 'مستند',
+      },
+    },
+
+    detail: {
+      title: 'تفاصيل المستند',
+      noDocument: 'لم يتم اختيار مستند',
+      metadata: 'البيانات الوصفية',
+      content: 'المحتوى',
+      path: 'المسار',
+      vault: 'الخزن',
+      mime: 'النوع',
+      size: 'الحجم',
+      indexed: 'مفهرس',
+      error: 'خطأ',
+      noChunks: 'لا توجد أجزاء محتوى',
+      close: 'إغلاق',
+    },
+
     vaults: {
       title: 'الخزنات', add: 'إضافة خزن', name: 'الاسم', path: 'المسار الجذري',
       status: 'الحالة', watching: 'مراقبة', offline: 'غير متصل',
@@ -12,10 +61,10 @@ export default {
       pathPlaceholder: '/path/to/documents', namePlaceholder: 'مستنداتي',
     },
     documents: {
-      title: 'المستندات', status: 'الحالة', path: 'مسار المصدر', size: 'الحجم',
+      title: 'المستندات', name: 'الاسم', status: 'الحالة', path: 'مسار المصدر', size: 'الحجم',
       indexedAt: 'فُهرس في', pending: 'قيد الانتظار', indexing: 'جارٍ الفهرسة',
-      indexed: 'مفهرس', failed: 'فشل', all: 'الكل',
-      noDocuments: 'لم يتم العثور على مستندات.', error: 'خطأ',
+      indexed: 'مفهرس', failed: 'فشل', metadata_only: 'البيانات الوصفية فقط',
+      all: 'الكل', noDocuments: 'لم يتم العثور على مستندات.', error: 'خطأ',
     },
     health: {
       title: 'الصحة', vaults: 'الخزنات', documents: 'المستندات',

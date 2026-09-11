@@ -4,6 +4,55 @@ export default {
     subtitle: 'RAG-хранилища для поиска документов',
     sidebarLabel: 'Знания',
     description: 'Индексируйте локальные документы для семантического поиска через Hermes Agent.',
+
+    tabs: {
+      dashboard: 'Обзор',
+      graph: 'Граф',
+      list: 'Библиотека',
+    },
+
+    sidebar: {
+      vaults: 'Хранилища',
+      tags: 'Метки',
+      allVaults: 'Все хранилища',
+      noVaults: 'Нет хранилищ',
+      noTags: 'Нет меток',
+    },
+
+    dashboard: {
+      statusBreakdown: 'Разбивка по статусам',
+      recentActivity: 'Недавняя активность',
+      noRecentActivity: 'Нет недавней активности',
+      quickActions: 'Быстрые действия',
+      openGraph: 'Открыть граф',
+      openList: 'Открыть библиотеку',
+    },
+
+    graph: {
+      title: 'Граф знаний',
+      empty: 'Нет данных для визуализации',
+      allVaults: 'Все хранилища',
+      legend: {
+        vault: 'Хранилище',
+        document: 'Документ',
+      },
+    },
+
+    detail: {
+      title: 'Детали документа',
+      noDocument: 'Документ не выбран',
+      metadata: 'Метаданные',
+      content: 'Содержимое',
+      path: 'Путь',
+      vault: 'Хранилище',
+      mime: 'Тип',
+      size: 'Размер',
+      indexed: 'Проиндексировано',
+      error: 'Ошибка',
+      noChunks: 'Нет блоков содержимого',
+      close: 'Закрыть',
+    },
+
     vaults: {
       title: 'Хранилища', add: 'Добавить хранилище', name: 'Имя', path: 'Корневой путь',
       status: 'Статус', watching: 'Отслеживание', offline: 'Офлайн',
@@ -12,10 +61,10 @@ export default {
       pathPlaceholder: '/путь/к/документам', namePlaceholder: 'Мои документы',
     },
     documents: {
-      title: 'Документы', status: 'Статус', path: 'Путь источника', size: 'Размер',
+      title: 'Документы', name: 'Имя', status: 'Статус', path: 'Путь источника', size: 'Размер',
       indexedAt: 'Индексировано', pending: 'Ожидание', indexing: 'Индексация',
-      indexed: 'Готово', failed: 'Ошибка', all: 'Все',
-      noDocuments: 'Документы не найдены.', error: 'Ошибка',
+      indexed: 'Готово', failed: 'Ошибка', metadata_only: 'Только метаданные',
+      all: 'Все', noDocuments: 'Документы не найдены.', error: 'Ошибка',
     },
     health: {
       title: 'Состояние', vaults: 'Хранилища', documents: 'Документы',

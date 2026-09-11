@@ -5,6 +5,54 @@ export default {
     sidebarLabel: '知识库',
     description: '索引本地文档，供 Hermes Agent 进行语义搜索。',
 
+    tabs: {
+      dashboard: '概览',
+      graph: '图谱',
+      list: '文档库',
+    },
+
+    sidebar: {
+      vaults: '知识库',
+      tags: '标签',
+      allVaults: '全部知识库',
+      noVaults: '暂无知识库',
+      noTags: '暂无标签',
+    },
+
+    dashboard: {
+      statusBreakdown: '状态分布',
+      recentActivity: '最近活动',
+      noRecentActivity: '暂无最近活动',
+      quickActions: '快捷操作',
+      openGraph: '打开图谱',
+      openList: '打开文档库',
+    },
+
+    graph: {
+      title: '知识图谱',
+      empty: '暂无可视化数据',
+      allVaults: '全部知识库',
+      legend: {
+        vault: '知识库',
+        document: '文档',
+      },
+    },
+
+    detail: {
+      title: '文档详情',
+      noDocument: '未选择文档',
+      metadata: '元数据',
+      content: '内容',
+      path: '路径',
+      vault: '所属知识库',
+      mime: '类型',
+      size: '大小',
+      indexed: '索引时间',
+      error: '错误信息',
+      noChunks: '暂无内容分块',
+      close: '关闭',
+    },
+
     vaults: {
       title: '知识库',
       add: '添加知识库',
@@ -22,6 +70,7 @@ export default {
 
     documents: {
       title: '文档',
+      name: '文件名',
       status: '状态',
       path: '源路径',
       size: '大小',
@@ -30,6 +79,7 @@ export default {
       indexing: '索引中',
       indexed: '已索引',
       failed: '失败',
+      metadata_only: '仅元数据',
       all: '全部',
       noDocuments: '未找到文档。',
       error: '错误',
@@ -56,7 +106,7 @@ export default {
     errors: {
       fetchFailed: '加载知识库数据失败',
       createFailed: '创建知识库失败',
-      deleteFailed: '删除知识库失败',
+      deleteFailed: '删除失败',
     },
 
     messages: {

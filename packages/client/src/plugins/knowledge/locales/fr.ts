@@ -4,6 +4,55 @@ export default {
     subtitle: 'Coffres RAG pour la recherche documentaire',
     sidebarLabel: 'Connaissances',
     description: 'Indexez des documents locaux pour la recherche sémantique par Hermes Agent.',
+
+    tabs: {
+      dashboard: 'Vue d’ensemble',
+      graph: 'Graphe',
+      list: 'Bibliothèque',
+    },
+
+    sidebar: {
+      vaults: 'Coffres',
+      tags: 'Étiquettes',
+      allVaults: 'Tous les coffres',
+      noVaults: 'Aucun coffre',
+      noTags: 'Aucune étiquette',
+    },
+
+    dashboard: {
+      statusBreakdown: 'Répartition par statut',
+      recentActivity: 'Activité récente',
+      noRecentActivity: 'Aucune activité récente',
+      quickActions: 'Actions rapides',
+      openGraph: 'Ouvrir le graphe',
+      openList: 'Ouvrir la bibliothèque',
+    },
+
+    graph: {
+      title: 'Graphe de connaissances',
+      empty: 'Aucune donnée à visualiser',
+      allVaults: 'Tous les coffres',
+      legend: {
+        vault: 'Coffre',
+        document: 'Document',
+      },
+    },
+
+    detail: {
+      title: 'Détail du document',
+      noDocument: 'Aucun document sélectionné',
+      metadata: 'Métadonnées',
+      content: 'Contenu',
+      path: 'Chemin',
+      vault: 'Coffre',
+      mime: 'Type',
+      size: 'Taille',
+      indexed: 'Indexé',
+      error: 'Erreur',
+      noChunks: 'Aucun bloc de contenu',
+      close: 'Fermer',
+    },
+
     vaults: {
       title: 'Coffres', add: 'Ajouter un coffre', name: 'Nom', path: 'Chemin racine',
       status: 'Statut', watching: 'Surveillé', offline: 'Hors ligne',
@@ -12,10 +61,10 @@ export default {
       pathPlaceholder: '/chemin/vers/documents', namePlaceholder: 'Mes documents',
     },
     documents: {
-      title: 'Documents', status: 'Statut', path: 'Chemin source', size: 'Taille',
+      title: 'Documents', name: 'Nom', status: 'Statut', path: 'Chemin source', size: 'Taille',
       indexedAt: 'Indexé le', pending: 'En attente', indexing: 'Indexation',
-      indexed: 'Indexé', failed: 'Échoué', all: 'Tous',
-      noDocuments: 'Aucun document trouvé.', error: 'Erreur',
+      indexed: 'Indexé', failed: 'Échoué', metadata_only: 'Métadonnées uniquement',
+      all: 'Tous', noDocuments: 'Aucun document trouvé.', error: 'Erreur',
     },
     health: {
       title: 'Santé', vaults: 'Coffres', documents: 'Documents',

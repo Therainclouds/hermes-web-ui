@@ -4,6 +4,55 @@ export default {
     subtitle: 'Cofres RAG para pesquisa de documentos',
     sidebarLabel: 'Conhecimento',
     description: 'Indexe documentos locais para pesquisa semântica pelo Hermes Agent.',
+
+    tabs: {
+      dashboard: 'Visão geral',
+      graph: 'Grafo',
+      list: 'Biblioteca',
+    },
+
+    sidebar: {
+      vaults: 'Cofres',
+      tags: 'Etiquetas',
+      allVaults: 'Todos os cofres',
+      noVaults: 'Sem cofres',
+      noTags: 'Sem etiquetas',
+    },
+
+    dashboard: {
+      statusBreakdown: 'Detalhamento por status',
+      recentActivity: 'Atividade recente',
+      noRecentActivity: 'Sem atividade recente',
+      quickActions: 'Ações rápidas',
+      openGraph: 'Abrir grafo',
+      openList: 'Abrir biblioteca',
+    },
+
+    graph: {
+      title: 'Grafo de conhecimento',
+      empty: 'Sem dados para visualizar',
+      allVaults: 'Todos os cofres',
+      legend: {
+        vault: 'Cofre',
+        document: 'Documento',
+      },
+    },
+
+    detail: {
+      title: 'Detalhe do documento',
+      noDocument: 'Nenhum documento selecionado',
+      metadata: 'Metadados',
+      content: 'Conteúdo',
+      path: 'Caminho',
+      vault: 'Cofre',
+      mime: 'Tipo',
+      size: 'Tamanho',
+      indexed: 'Indexado',
+      error: 'Erro',
+      noChunks: 'Sem blocos de conteúdo',
+      close: 'Fechar',
+    },
+
     vaults: {
       title: 'Cofres', add: 'Adicionar cofre', name: 'Nome', path: 'Caminho raiz',
       status: 'Status', watching: 'Monitorando', offline: 'Offline',
@@ -12,10 +61,10 @@ export default {
       pathPlaceholder: '/caminho/para/documentos', namePlaceholder: 'Meus documentos',
     },
     documents: {
-      title: 'Documentos', status: 'Status', path: 'Caminho fonte', size: 'Tamanho',
+      title: 'Documentos', name: 'Nome', status: 'Status', path: 'Caminho fonte', size: 'Tamanho',
       indexedAt: 'Indexado em', pending: 'Pendente', indexing: 'Indexando',
-      indexed: 'Indexado', failed: 'Falhou', all: 'Todos',
-      noDocuments: 'Nenhum documento encontrado.', error: 'Erro',
+      indexed: 'Indexado', failed: 'Falhou', metadata_only: 'Apenas metadados',
+      all: 'Todos', noDocuments: 'Nenhum documento encontrado.', error: 'Erro',
     },
     health: {
       title: 'Saúde', vaults: 'Cofres', documents: 'Documentos',
