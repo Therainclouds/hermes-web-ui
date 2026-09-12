@@ -130,8 +130,10 @@ export async function handleKnowledgeSearch(
     maxDistance: input.maxDistance,
     reference: {
       source: 'agent-tool',
-      // Same 256-char bound as the HTTP path — tool args are untrusted.
-      sessionId: input.sessionId ? String(input.sessionId).slice(0, 256) : null,
+      // Same 256-char bound and whitespace normalization as the HTTP path.
+      sessionId: typeof input.sessionId === 'string' && input.sessionId.trim()
+        ? input.sessionId.trim().slice(0, 256)
+        : null,
     },
   })
 }

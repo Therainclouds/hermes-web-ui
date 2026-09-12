@@ -4,7 +4,7 @@
  * Five user-facing modes share one route; the container (KnowledgeView)
  * swaps the active mode view through explicit typed v-if branches (type
  * safety beats a dynamic `<component :is>` map here, and each view is
- * an defineAsyncComponent import in the container so the first screen
+ * a typed defineAsyncComponent import in the container so the first screen
  * only ships the default (tasks) chunk — the device budget is gzip
  * < 500KB for the initial knowledge load).
  *
