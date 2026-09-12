@@ -86,7 +86,9 @@ function onDelete(): void {
 }
 
 async function requestIndex(): Promise<void> {
-  if (!props.document) return
+  // `indexing` also guards double-clicks — NButton's :loading shows a
+  // spinner but does not swallow click events.
+  if (!props.document || indexing.value) return
   indexing.value = true
   try {
     await api.indexDocument(props.document.id)

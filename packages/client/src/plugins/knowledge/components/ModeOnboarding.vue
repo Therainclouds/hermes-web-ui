@@ -3,7 +3,6 @@
  * First-run mode picker. Skippable — skipping persists the default
  * (tasks) mode and never shows this screen again.
  */
-import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NButton } from 'naive-ui'
 import { KNOWLEDGE_MODES, type KnowledgeMode } from '../modes'
@@ -14,7 +13,6 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const hovered = ref<KnowledgeMode | null>(null)
 </script>
 
 <template>
@@ -28,9 +26,6 @@ const hovered = ref<KnowledgeMode | null>(null)
         :key="m.id"
         type="button"
         class="mode-card"
-        :class="{ hovered: hovered === m.id }"
-        @mouseenter="hovered = m.id"
-        @mouseleave="hovered = null"
         @click="emit('select', m.id)"
       >
         <svg class="mode-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -90,8 +85,7 @@ const hovered = ref<KnowledgeMode | null>(null)
   text-align: left;
   transition: border-color 0.15s ease, transform 0.15s ease, background 0.15s ease;
 }
-.mode-card:hover,
-.mode-card.hovered {
+.mode-card:hover {
   border-color: var(--primary-color, #63e2b7);
   transform: translateY(-2px);
   background: var(--hover-color, rgba(255, 255, 255, 0.05));

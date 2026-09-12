@@ -1,15 +1,16 @@
 /**
  * Knowledge plugin — mode registry.
  *
- * Five user-facing modes share one route; the container swaps the active
- * mode view via `<component :is>`. Each view is an async component so the
- * first screen only ships the default (tasks) chunk — the device budget is
- * gzip < 500KB for the initial knowledge load.
+ * Five user-facing modes share one route; the container (KnowledgeView)
+ * swaps the active mode view through explicit typed v-if branches (type
+ * safety beats a dynamic `<component :is>` map here, and each view is
+ * an defineAsyncComponent import in the container so the first screen
+ * only ships the default (tasks) chunk — the device budget is gzip
+ * < 500KB for the initial knowledge load).
  *
- * i18n contract: every mode id must have `knowledge.modes.<id>.label` and
- * `knowledge.modes.<id>.desc` in each locale file.
+ * i18n contract: every mode id must have `knowledge.modes.<id>.label`
+ * and `knowledge.modes.<id>.desc` in each locale file.
  */
-import { defineAsyncComponent, type Component } from 'vue'
 
 export type KnowledgeMode = 'tasks' | 'legal' | 'learning' | 'explorer' | 'batch'
 
@@ -49,18 +50,6 @@ export const KNOWLEDGE_MODES: KnowledgeModeDefinition[] = [
   },
 ]
 
-const MODE_COMPONENTS: Record<KnowledgeMode, Component> = {
-  tasks: defineAsyncComponent(() => import('./components/modes/TasksModeView.vue')),
-  legal: defineAsyncComponent(() => import('./components/modes/LegalModeView.vue')),
-  learning: defineAsyncComponent(() => import('./components/modes/LearningModeView.vue')),
-  explorer: defineAsyncComponent(() => import('./components/modes/ExplorerModeView.vue')),
-  batch: defineAsyncComponent(() => import('./components/modes/BatchModeView.vue')),
-}
-
 export function isKnowledgeMode(value: unknown): value is KnowledgeMode {
   return typeof value === 'string' && KNOWLEDGE_MODES.some(m => m.id === value)
-}
-
-export function getModeComponent(mode: KnowledgeMode): Component {
-  return MODE_COMPONENTS[mode]
 }

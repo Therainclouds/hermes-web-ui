@@ -4,11 +4,11 @@
  * mode switcher and the settings entry point. Settings live behind the
  * gear after first configuration — the bar never grows into a card.
  */
-import { computed } from 'vue'
+import { computed, h } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NButton, NDropdown } from 'naive-ui'
 import type { KnowledgeHealth, KnowledgeSettings } from '../api'
-import { KNOWLEDGE_MODES, type KnowledgeMode } from '../modes'
+import { KNOWLEDGE_MODES, isKnowledgeMode, type KnowledgeMode } from '../modes'
 
 const props = defineProps<{
   health: KnowledgeHealth | null
@@ -34,7 +34,11 @@ const modeOptions = computed(() =>
   KNOWLEDGE_MODES.map(m => ({
     label: t(`knowledge.modes.${m.id}.label`),
     key: m.id,
-    checked: m.id === props.mode,
+    // naive-ui DropdownOption has no `checked` prop — mark the active
+    // mode with an icon render instead, or the menu shows no state.
+    icon: m.id === props.mode
+      ? () => h('span', { style: 'color: var(--primary-color, #63e2b7); font-weight: 700' }, '✓')
+      : undefined,
   })),
 )
 
@@ -73,7 +77,7 @@ const queueCount = computed(() => {
     <NDropdown
       :options="modeOptions"
       trigger="click"
-      @select="(key: string) => emit('set-mode', key as KnowledgeMode)"
+      @select="(key: string) => { if (isKnowledgeMode(key)) emit('set-mode', key) }"
     >
       <NButton quaternary size="tiny">
         <template #icon>

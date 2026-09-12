@@ -128,7 +128,11 @@ export async function handleKnowledgeSearch(
     limit: input.limit ?? 5,
     hybrid: input.hybrid ?? true,
     maxDistance: input.maxDistance,
-    reference: { source: 'agent-tool', sessionId: input.sessionId ?? null },
+    reference: {
+      source: 'agent-tool',
+      // Same 256-char bound as the HTTP path — tool args are untrusted.
+      sessionId: input.sessionId ? String(input.sessionId).slice(0, 256) : null,
+    },
   })
 }
 

@@ -205,6 +205,34 @@ describe.skipIf(!canRun)('metadata_only ingest mode', () => {
     expect(rowCount('knowledge_chunks_vec')).toBe(0)
   })
 
+  it('demoting a cited document drops its citation log entries too', async () => {
+    // OCR round-2 finding: deleteDocumentIndexes cleaned chunks/FTS5/vec0
+    // but left knowledge_references rows with dangling chunk_ids.
+    const filePath = join(tempDir, 'cited-churn.md')
+    writeFileSync(filePath, 'cited document that will be demoted')
+
+    const vault = service.addVault(tempDir, 'auto-vault', 'auto')
+    const meta = await service.ingest(filePath, vault.id)
+    const promoted = await service.promoteDocument(meta.documentId)
+    expect(promoted.status).toBe('indexed')
+
+    // Simulate a search citation recorded against this document.
+    const chunkId = (db.prepare(
+      'SELECT id FROM knowledge_chunks WHERE document_id = ? LIMIT 1'
+    ).all(meta.documentId) as Array<{ id: number }>)[0].id
+    db.prepare(
+      'INSERT INTO knowledge_references (document_id, chunk_id, source, session_id, distance, rank, created_at) VALUES (?, ?, ?, NULL, 0.1, 0, ?)'
+    ).run(meta.documentId, chunkId, 'chat', Date.now())
+    expect(rowCount('knowledge_references')).toBe(1)
+
+    // File changes again → demoted to metadata_only → citation rows go too.
+    writeFileSync(filePath, 'changed content after citation was recorded')
+    await service.ingest(filePath, vault.id)
+
+    expect(rowCount('knowledge_chunks')).toBe(0)
+    expect(rowCount('knowledge_references')).toBe(0)
+  })
+
   it('manual vaults keep full-ingest behavior (v0.8.7 regression)', async () => {
     const filePath = join(tempDir, 'manual.md')
     writeFileSync(filePath, 'manual vault documents index immediately')

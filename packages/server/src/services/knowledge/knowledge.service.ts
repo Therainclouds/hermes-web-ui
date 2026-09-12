@@ -302,28 +302,35 @@ export class KnowledgeService extends EventEmitter {
    * ingest pipeline: the metadata_only row carries an empty source_hash,
    * so the no-op check never fires and the full extract→chunk→embed path
    * runs. State validation happens synchronously (throws before enqueue)
-   * so HTTP callers can map document_not_found / not_metadata_only to
-   * 404 / 409; the pipeline itself runs on the single-writer queue.
+   * so HTTP callers can map document_not_found / not_metadata_only /
+   * unsupported_extension / ingest_queue_full to 404 / 409 / 422 / 503;
+   * the pipeline itself runs on the single-writer queue.
    */
   promoteDocument(documentId: number): Promise<IngestResult> {
-    const rows = this.db.prepare(
+    const row = this.db.prepare(
       'SELECT source_path, vault_id, status FROM knowledge_documents WHERE id = ?'
-    ).all(documentId) as Array<{ source_path: string; vault_id: number; status: string }>
+    ).get(documentId) as { source_path: string; vault_id: number; status: string } | undefined
 
-    if (rows.length === 0) {
+    if (!row) {
       throw new Error('document_not_found')
     }
-    if (rows[0].status !== 'metadata_only') {
+    if (row.status !== 'metadata_only') {
       throw new Error('not_metadata_only')
     }
     // Reject unsupported extensions up front — otherwise the ingest's
     // step-0 whitelist would silently re-record the file as metadata_only
     // and the user's "index this" click would be a no-op behind a 202.
-    const ext = extname(rows[0].source_path).toLowerCase()
+    const ext = extname(row.source_path).toLowerCase()
     if (ext && !this.config.supportedExtensions.includes(ext)) {
       throw new Error('unsupported_extension')
     }
-    return this.ingest(rows[0].source_path, rows[0].vault_id, { forceFull: true })
+    // Reject a full queue synchronously: the queue-full rejection inside
+    // ingest() fires before the pipeline, so nothing would update the
+    // document status or emit an event — the 202 would be the last word.
+    if (this.queue.length >= this.config.queueDepth) {
+      throw new Error('ingest_queue_full')
+    }
+    return this.ingest(row.source_path, row.vault_id, { forceFull: true })
   }
 
   private async drainQueue(): Promise<void> {
@@ -613,6 +620,12 @@ export class KnowledgeService extends EventEmitter {
       this.db.prepare(
         'DELETE FROM knowledge_chunks WHERE document_id = ?'
       ).run(documentId)
+      // Citation audit log: entries reference chunk ids that no longer
+      // exist after this delete — drop them with the same transaction
+      // so listDocumentReferences can't return dangling rows.
+      this.db.prepare(
+        'DELETE FROM knowledge_references WHERE document_id = ?'
+      ).run(documentId)
       if (!skipTransaction) this.db.exec('COMMIT')
     } catch (err) {
       if (!skipTransaction) this.db.exec('ROLLBACK')
@@ -624,6 +637,14 @@ export class KnowledgeService extends EventEmitter {
 
   /** Max rows kept in knowledge_references (trimmed oldest-first on write). */
   private static readonly REFERENCE_CAP = 20_000
+  /**
+   * Trim amortization: scanning/trimming 20k rows on EVERY search costs
+   * tens of ms on the Cortex-A53 device. Instead, trim only once every
+   * REFERENCE_TRIM_INTERVAL inserts — the table may overshoot the cap by
+   * at most one search batch (≤ 20 rows) between trims.
+   */
+  private static readonly REFERENCE_TRIM_INTERVAL = 500
+  private lastReferenceTrimId = 0
 
   async search(
     params: SearchParams & { reference?: ReferenceContext },
@@ -665,12 +686,23 @@ export class KnowledgeService extends EventEmitter {
           now
         )
       })
-      // Trim to the cap inside the same transaction so the table can never
-      // grow unbounded on the device's single-file SQLite.
-      this.db.exec(
-        'DELETE FROM knowledge_references WHERE id NOT IN (' +
-          `SELECT id FROM knowledge_references ORDER BY id DESC LIMIT ${KnowledgeService.REFERENCE_CAP})`
-      )
+      // Amortized trim: locate the cutoff by PK offset (index walk, no
+      // temp b-tree) instead of NOT IN over 20k materialized ids, and
+      // only every TRIM_INTERVAL inserts.
+      const maxRows = this.db.prepare(
+        'SELECT MAX(id) AS max_id FROM knowledge_references'
+      ).all() as Array<{ max_id: number | null }>
+      const maxId = Number(maxRows[0]?.max_id ?? 0)
+      if (
+        this.lastReferenceTrimId === 0 ||
+        maxId - this.lastReferenceTrimId >= KnowledgeService.REFERENCE_TRIM_INTERVAL
+      ) {
+        this.db.exec(
+          'DELETE FROM knowledge_references WHERE id <= ' +
+            `(SELECT id FROM knowledge_references ORDER BY id DESC LIMIT 1 OFFSET ${KnowledgeService.REFERENCE_CAP})`
+        )
+        this.lastReferenceTrimId = maxId
+      }
       this.db.exec('COMMIT')
     } catch (err) {
       this.db.exec('ROLLBACK')

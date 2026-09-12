@@ -781,7 +781,10 @@ build_deploy() {
   # Failure is non-fatal — knowledge plugin will run without vec0.
   if [[ -f "${DEPLOY_DIR%/}/package.json" ]] && \
      grep -q '"sqlite-vec-linux-arm64"' "${DEPLOY_DIR%/}/package.json"; then
-    if ! run_build_as_app_user "cd '${DEPLOY_DIR}' && node -e \"const p=require('sqlite-vec'); require('node:sqlite').DatabaseSync(':memory:').loadExtension(p.getLoadablePath()); console.log('vec0 OK')\" 2>/dev/null"; then
+    # node:sqlite refuses loadExtension() until enableLoadExtension(true)
+    # is called on THAT connection — omitting it makes the probe always
+    # fail and reinstalls the platform package on every deploy.
+    if ! run_build_as_app_user "cd '${DEPLOY_DIR}' && node -e \"const {DatabaseSync}=require('node:sqlite'); const d=new DatabaseSync(':memory:', {allowExtension:true}); const p=require('sqlite-vec'); d.enableLoadExtension(true); try { d.loadExtension(p.getLoadablePath()); console.log('vec0 OK') } finally { d.enableLoadExtension(false) }\" 2>/dev/null"; then
       warn "sqlite-vec .so incompatible with current Node ABI; reinstalling platform package"
       run_build_as_app_user "cd '${DEPLOY_DIR}' && npm install --no-save --ignore-scripts sqlite-vec-linux-arm64 2>/dev/null" || \
         warn "sqlite-vec reinstall failed; knowledge plugin will run without vec0 (FTS5 still works)"

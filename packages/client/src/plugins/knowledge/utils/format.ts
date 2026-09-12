@@ -10,22 +10,25 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }
 
-/** Format a unix timestamp (seconds) as a localized date string. */
-export function formatTimestamp(unixSeconds: number | null | undefined): string {
-  if (!unixSeconds) return '—'
-  return new Date(unixSeconds * 1000).toLocaleString()
+/**
+ * Format an epoch-milliseconds timestamp as a localized date string.
+ * The knowledge API returns ms everywhere (Date.now() on the server) —
+ * treating these as seconds displayed dates in the year ~55,000.
+ */
+export function formatTimestamp(epochMs: number | null | undefined): string {
+  if (!epochMs) return '—'
+  return new Date(epochMs).toLocaleString()
 }
 
-/** Format a unix timestamp as a relative time string ("2 hours ago"). */
-export function formatRelativeTime(unixSeconds: number | null | undefined): string {
-  if (!unixSeconds) return '—'
-  const now = Math.floor(Date.now() / 1000)
-  const diff = now - unixSeconds
-  if (diff < 60) return 'just now'
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
-  if (diff < 86400 * 30) return `${Math.floor(diff / 86400)}d ago`
-  return formatTimestamp(unixSeconds)
+/** Format an epoch-milliseconds timestamp as a relative time string ("2 hours ago"). */
+export function formatRelativeTime(epochMs: number | null | undefined): string {
+  if (!epochMs) return '—'
+  const diff = Date.now() - epochMs
+  if (diff < 60_000) return 'just now'
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`
+  if (diff < 86_400_000 * 30) return `${Math.floor(diff / 86_400_000)}d ago`
+  return formatTimestamp(epochMs)
 }
 
 /** Extract filename from a full path. */

@@ -11,14 +11,15 @@ const dbPath = join(homedir(), '.hermes-web-ui', 'hermes-web-ui.db')
 console.log(`Opening ${dbPath}`)
 const db = new DatabaseSync(dbPath)
 
-// Ensure schema exists.
+// Ensure schema exists (keep in sync with packages/server/src/db/knowledge-schema.ts).
 db.exec(`
   CREATE TABLE IF NOT EXISTS knowledge_vaults (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     root_path  TEXT NOT NULL UNIQUE,
     name       TEXT NOT NULL,
     watch      INTEGER NOT NULL DEFAULT 1,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    kind       TEXT NOT NULL DEFAULT 'manual'
   )
 `)
 db.exec(`
@@ -55,11 +56,13 @@ db.exec('DELETE FROM knowledge_vaults')
 const now = Math.floor(Date.now() / 1000)
 
 // --- Vaults ---------------------------------------------------------------
+// Explicit vault slot per document — no path-string matching, so adding
+// or reordering vaults can never silently re-route documents.
 const vaultStmt = db.prepare(
-  'INSERT INTO knowledge_vaults (root_path, name, watch, created_at) VALUES (?, ?, ?, ?)'
+  'INSERT INTO knowledge_vaults (root_path, name, kind, watch, created_at) VALUES (?, ?, ?, 1, ?)'
 )
-const r1 = vaultStmt.run('C:\\Users\\DELL\\Documents\\Notes', '工作笔记', 1, now - 86400 * 30)
-const r2 = vaultStmt.run('C:\\Users\\DELL\\Documents\\Wiki', '技术Wiki', 1, now - 86400 * 7)
+const r1 = vaultStmt.run('C:\\Users\\DELL\\Documents\\Notes', '工作笔记', 'manual', now - 86400 * 30)
+const r2 = vaultStmt.run('C:\\Users\\DELL\\Documents\\Wiki', '技术Wiki', 'manual', now - 86400 * 7)
 const V1 = r1.lastInsertRowid
 const V2 = r2.lastInsertRowid
 console.log(`✓ 2 vaults (ids: ${V1}, ${V2})`)
@@ -73,27 +76,31 @@ const docStmt = db.prepare(`
 
 function h(s) { return createHash('sha256').update(s).digest('hex').slice(0, 16) }
 
-// Use placeholders for vault_id — we'll fill after we know the actual IDs.
+// Use placeholders for vault slot — each entry declares its vault
+// explicitly ('V1' | 'V2') at index 9 so routing is declarative.
 const docsTemplate = [
-  // Vault 1
-  ['C:\\Users\\DELL\\Documents\\Notes\\会议记录-20260901.md', 'meeting-0901', null, 'text/markdown', 4200, now - 3600, now - 3000, 'indexed', null],
-  ['C:\\Users\\DELL\\Documents\\Notes\\项目计划Q3.md', 'plan-q3', null, 'text/markdown', 8900, now - 7200, now - 6000, 'indexed', null],
-  ['C:\\Users\\DELL\\Documents\\Notes\\周报-0910.pdf', 'weekly-0910', null, 'application/pdf', 125000, now - 86400, now - 86000, 'indexed', null],
-  ['C:\\Users\\DELL\\Documents\\Notes\\技术方案-v2.docx', 'tech-v2', null, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 67000, now - 1800, now - 1500, 'indexed', null],
-  ['C:\\Users\\DELL\\Documents\\Notes\\需求文档.docx', 'req-doc', null, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 34000, now - 300, 0, 'indexing', null],
-  ['C:\\Users\\DELL\\Documents\\Notes\\旧版本备份.txt', 'old-backup', null, 'text/plain', 2048, now - 100, 0, 'failed', 'Extraction failed: unsupported encoding'],
-  ['C:\\Users\\DELL\\Documents\\Notes\\README.txt', 'readme', null, 'text/plain', 512, now - 60, 0, 'metadata_only', null],
-  // Vault 2
-  ['C:\\Users\\DELL\\Documents\\Wiki\\SQLite性能优化.md', 'sqlite-perf', null, 'text/markdown', 12400, now - 43200, now - 42000, 'indexed', null],
-  ['C:\\Users\\DELL\\Documents\\Wiki\\Kubernetes部署指南.md', 'k8s-guide', null, 'text/markdown', 28600, now - 21600, now - 20000, 'indexed', null],
-  ['C:\\Users\\DELL\\Documents\\Wiki\\API设计规范.pdf', 'api-spec', null, 'application/pdf', 540000, now - 14400, now - 13000, 'indexed', null],
-  ['C:\\Users\\DELL\\Documents\\Wiki\\架构评审记录.md', 'arch-review', null, 'text/markdown', 6700, now - 5400, now - 5000, 'indexed', null],
-  ['C:\\Users\\DELL\\Documents\\Wiki\\数据库迁移计划.md', 'db-migrate', null, 'text/markdown', 3100, now - 1200, 0, 'pending', null],
+  // Vault 1 (工作笔记)
+  ['C:\\Users\\DELL\\Documents\\Notes\\会议记录-20260901.md', 'meeting-0901', null, 'text/markdown', 4200, now - 3600, now - 3000, 'indexed', null, 'V1'],
+  ['C:\\Users\\DELL\\Documents\\Notes\\项目计划Q3.md', 'plan-q3', null, 'text/markdown', 8900, now - 7200, now - 6000, 'indexed', null, 'V1'],
+  ['C:\\Users\\DELL\\Documents\\Notes\\周报-0910.pdf', 'weekly-0910', null, 'application/pdf', 125000, now - 86400, now - 86000, 'indexed', null, 'V1'],
+  ['C:\\Users\\DELL\\Documents\\Notes\\技术方案-v2.docx', 'tech-v2', null, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 67000, now - 1800, now - 1500, 'indexed', null, 'V1'],
+  ['C:\\Users\\DELL\\Documents\\Notes\\需求文档.docx', 'req-doc', null, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 34000, now - 300, 0, 'indexing', null, 'V1'],
+  ['C:\\Users\\DELL\\Documents\\Notes\\旧版本备份.txt', 'old-backup', null, 'text/plain', 2048, now - 100, 0, 'failed', 'Extraction failed: unsupported encoding', 'V1'],
+  ['C:\\Users\\DELL\\Documents\\Notes\\README.txt', 'readme', null, 'text/plain', 512, now - 60, 0, 'metadata_only', null, 'V1'],
+  // Vault 2 (技术Wiki)
+  ['C:\\Users\\DELL\\Documents\\Wiki\\SQLite性能优化.md', 'sqlite-perf', null, 'text/markdown', 12400, now - 43200, now - 42000, 'indexed', null, 'V2'],
+  ['C:\\Users\\DELL\\Documents\\Wiki\\Kubernetes部署指南.md', 'k8s-guide', null, 'text/markdown', 28600, now - 21600, now - 20000, 'indexed', null, 'V2'],
+  ['C:\\Users\\DELL\\Documents\\Wiki\\API设计规范.pdf', 'api-spec', null, 'application/pdf', 540000, now - 14400, now - 13000, 'indexed', null, 'V2'],
+  ['C:\\Users\\DELL\\Documents\\Wiki\\架构评审记录.md', 'arch-review', null, 'text/markdown', 6700, now - 5400, now - 5000, 'indexed', null, 'V2'],
+  ['C:\\Users\\DELL\\Documents\\Wiki\\数据库迁移计划.md', 'db-migrate', null, 'text/markdown', 3100, now - 1200, 0, 'pending', null, 'V2'],
 ]
+
+const VAULT_IDS = { V1, V2 }
 
 const docIds = []
 for (const d of docsTemplate) {
-  const vaultId = d[0].includes('Wiki') ? V2 : V1
+  const vaultId = VAULT_IDS[d[9]]
+  if (!vaultId) throw new Error(`unknown vault slot: ${d[9]}`)
   d[2] = vaultId
   const r = docStmt.run(d[0], h(d[1]), d[2], d[3], d[4], d[5], d[6], d[7], d[8])
   docIds.push(r.lastInsertRowid)

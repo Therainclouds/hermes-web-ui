@@ -399,6 +399,21 @@ describe('knowledge controller', () => {
       expect(ctx.body.error).toBe('unsupported_extension')
     })
 
+    it('returns 503 when the ingest queue is full', async () => {
+      const service = createMockService({
+        promoteDocument: vi.fn().mockImplementation(() => {
+          throw new Error('ingest_queue_full')
+        }),
+      })
+      ctrl.setKnowledgeService(service)
+      const ctx = mockCtx({ params: { id: '9' } })
+
+      await ctrl.indexDocument(ctx)
+
+      expect(ctx.status).toBe(503)
+      expect(ctx.body.error).toBe('ingest_queue_full')
+    })
+
     it('returns 400 on an invalid id', async () => {
       const service = createMockService()
       ctrl.setKnowledgeService(service)

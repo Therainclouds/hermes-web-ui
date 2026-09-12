@@ -373,6 +373,39 @@ describe.skipIf(!canRun)('KnowledgeService', () => {
         expect(service.listDocumentReferences(hit.documentId)).toHaveLength(0)
       }
     })
+
+    it('trims the reference log to the cap under amortized trimming', async () => {
+      // The trim only fires every 500 inserts (device perf); verify the
+      // 20k cap still holds exactly when it does fire.
+      const vault = service.addVault(tempDir, 'trim-vault')
+      const filePath = join(tempDir, 'trim.md')
+      writeFileSync(filePath, 'trim cap amortization')
+      await service.ingest(filePath, vault.id)
+
+      const insert = db.prepare(
+        'INSERT INTO knowledge_references (document_id, chunk_id, source, session_id, distance, rank, created_at) VALUES (?, 1, ?, NULL, 0.1, 0, ?)'
+      )
+      db.exec('BEGIN')
+      for (let i = 0; i < 20_010; i++) {
+        insert.run(1, 'chat', i)
+      }
+      db.exec('COMMIT')
+
+      const results = await service.search({
+        query: 'trim cap',
+        vaultId: vault.id,
+        hybrid: false,
+        limit: 5,
+        reference: { source: 'chat', sessionId: 'trim-test' },
+      })
+      expect(results.results.length).toBeGreaterThan(0)
+
+      const rows = db.prepare('SELECT count(*) AS n FROM knowledge_references').all() as Array<{ n: number }>
+      expect(rows[0].n).toBe(20_000)
+      // Newest rows (this search's batch) survive the trim.
+      const newest = service.listDocumentReferences(results.results[0].documentId, 1)
+      expect(newest.length).toBe(1)
+    })
   })
 
   // --- Vault management ---------------------------------------------------

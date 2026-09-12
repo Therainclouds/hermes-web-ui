@@ -255,6 +255,11 @@ export async function indexDocument(ctx: Context): Promise<void> {
       ctx.body = { error: 'unsupported_extension', message: 'File type is not supported for full-text indexing' }
       return
     }
+    if (code === 'ingest_queue_full') {
+      ctx.status = 503
+      ctx.body = { error: 'ingest_queue_full', message: 'Index queue is full; try again later' }
+      return
+    }
     throw err
   }
   ctx.status = 202
@@ -316,7 +321,9 @@ export async function searchKnowledge(ctx: Context): Promise<void> {
   }
 
   try {
-    const sessionId = typeof body.session_id === 'string' && body.session_id.trim() ? body.session_id.trim() : null
+    const sessionId = typeof body.session_id === 'string' && body.session_id.trim()
+      ? body.session_id.trim().slice(0, 256)
+      : null
     const result = await service.search({
       query,
       vaultId: body.vault_id ?? null,

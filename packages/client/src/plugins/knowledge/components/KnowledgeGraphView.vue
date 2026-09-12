@@ -63,7 +63,7 @@ function docIdFromNodeId(nodeId: string): number | null {
 
 function nodeFill(node: PositionedNode): string {
   if (node.type === 'vault') return '#2080f0'
-  const status = (node as { status?: string }).status ?? 'pending'
+  const status = node.status ?? 'pending'
   const colors: Record<string, string> = {
     indexed: '#18a058',
     indexing: '#2080f0',

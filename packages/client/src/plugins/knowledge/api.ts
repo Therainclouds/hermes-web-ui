@@ -66,7 +66,9 @@ export interface KnowledgeReference {
   id: number
   document_id: number
   chunk_id: number
-  source: 'chat' | 'agent-tool' | string
+  // `(string & {})` keeps literal autocomplete for 'chat' / 'agent-tool'
+  // without collapsing the union to plain string.
+  source: 'chat' | 'agent-tool' | (string & {})
   session_id: string | null
   distance: number | null
   rank: number

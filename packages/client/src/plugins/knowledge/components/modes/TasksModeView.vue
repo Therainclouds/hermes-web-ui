@@ -101,7 +101,8 @@ async function loadReferences(documentId: number): Promise<void> {
   try {
     const { references } = await api.fetchDocumentReferences(documentId, 100)
     refsByDoc.set(documentId, { loading: false, failed: false, refs: references })
-  } catch {
+  } catch (err) {
+    console.warn(`[knowledge] failed to load references for document ${documentId}`, err)
     refsByDoc.set(documentId, { loading: false, failed: true, refs: [] })
   }
 }
@@ -112,25 +113,25 @@ function renderReferencesPanel(row: KnowledgeDocument) {
     return h(NSpin, { size: 'small', show: true, style: 'padding: 12px' })
   }
   if (state.failed) {
-    return h('div', { class: 'refs-empty refs-failed' }, t('knowledge.tasks.references.loadFailed'))
+    return h('div', { class: 'knowledge-refs-empty knowledge-refs-failed' }, t('knowledge.tasks.references.loadFailed'))
   }
   if (state.refs.length === 0) {
-    return h('div', { class: 'refs-empty' }, t('knowledge.tasks.references.empty'))
+    return h('div', { class: 'knowledge-refs-empty' }, t('knowledge.tasks.references.empty'))
   }
   return h(
     'div',
-    { class: 'refs-panel' },
+    { class: 'knowledge-refs-panel' },
     state.refs.slice(0, 20).map(r =>
-      h('div', { class: 'refs-row', key: r.id }, [
-        h('span', { class: 'refs-time' }, new Date(r.created_at).toLocaleString()),
+      h('div', { class: 'knowledge-refs-row', key: r.id }, [
+        h('span', { class: 'knowledge-refs-time' }, new Date(r.created_at).toLocaleString()),
         h(
           NTag,
           { size: 'small', bordered: false, type: r.source === 'agent-tool' ? 'info' : 'default' },
           () => t(r.source === 'agent-tool' ? 'knowledge.tasks.references.sourceAgent' : 'knowledge.tasks.references.sourceChat'),
         ),
-        h('span', { class: 'refs-rank' }, `#${r.rank + 1}`),
-        r.distance != null ? h('span', { class: 'refs-dist' }, `d=${r.distance.toFixed(3)}`) : null,
-        r.session_id ? h('span', { class: 'refs-session' }, r.session_id) : null,
+        h('span', { class: 'knowledge-refs-rank' }, `#${r.rank + 1}`),
+        r.distance != null ? h('span', { class: 'knowledge-refs-dist' }, `d=${r.distance.toFixed(3)}`) : null,
+        r.session_id ? h('span', { class: 'knowledge-refs-session' }, r.session_id) : null,
       ]),
     ),
   )
@@ -338,30 +339,30 @@ const lastIngestError = computed(() => props.health?.ingestion?.lastError ?? nul
 
 <style>
 /* renderExpand output is rendered outside the scoped tree. */
-.refs-panel {
+.knowledge-refs-panel {
   display: flex;
   flex-direction: column;
   gap: 4px;
   padding: 8px 12px;
 }
-.refs-row {
+.knowledge-refs-row {
   display: flex;
   align-items: center;
   gap: 10px;
   font-size: 12px;
   opacity: 0.85;
 }
-.refs-time { font-variant-numeric: tabular-nums; }
-.refs-rank,
-.refs-dist,
-.refs-session {
+.knowledge-refs-time { font-variant-numeric: tabular-nums; }
+.knowledge-refs-rank,
+.knowledge-refs-dist,
+.knowledge-refs-session {
   opacity: 0.6;
   font-size: 11px;
 }
-.refs-empty {
+.knowledge-refs-empty {
   padding: 10px 12px;
   font-size: 12px;
   opacity: 0.55;
 }
-.refs-failed { color: #e88080; opacity: 0.9; }
+.knowledge-refs-failed { color: #e88080; opacity: 0.9; }
 </style>

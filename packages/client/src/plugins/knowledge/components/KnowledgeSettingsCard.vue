@@ -43,7 +43,7 @@ function onInput(value: string): void {
           type="password"
           show-password-on="click"
           :placeholder="t('knowledge.settings.apiKeyPlaceholder')"
-          style="flex: 1; min-width: 0"
+          class="settings-api-input"
           @update:value="onInput"
         />
         <NButton
@@ -82,6 +82,10 @@ function onInput(value: string): void {
 }
 .settings-row {
   width: 100%;
+}
+.settings-api-input {
+  flex: 1;
+  min-width: 0;
 }
 .settings-error {
   margin: 4px 0 0;

@@ -128,7 +128,7 @@ onMounted(() => {
               :validation-error="settings.validationError.value"
               v-model:status-filter="statusFilterModel"
               @add-vault="(p: string, n: string) => data.addVault(p, n)"
-              @delete-vault="(id: number) => data.removeVault(id, false)"
+              @delete-vault="(id: number, cascade: boolean) => data.removeVault(id, cascade)"
               @delete-document="onDeleteDocument"
               @select-document="onSelectDocument"
               @update:api-key-input="(v: string) => (settings.apiKeyInput.value = v)"
@@ -137,7 +137,7 @@ onMounted(() => {
 
             <LegalModeView v-else-if="mode === 'legal'" />
             <LearningModeView v-else-if="mode === 'learning'" />
-            <BatchModeView v-else />
+            <BatchModeView v-else-if="mode === 'batch'" />
           </main>
         </div>
       </NSpin>
