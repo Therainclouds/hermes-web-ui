@@ -51,6 +51,10 @@ export default {
       error: 'Error',
       noChunks: 'No content chunks',
       close: 'Close',
+      index: 'Full-text index',
+      indexQueued: 'Added to the index queue — searchable once complete',
+      indexFailed: 'Failed to queue indexing',
+      metadataOnlyHint: 'Metadata only — not searchable yet. Run full-text indexing to make it retrievable.',
     },
 
     modes: {

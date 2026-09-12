@@ -51,6 +51,10 @@ export default {
       error: '错误信息',
       noChunks: '暂无内容分块',
       close: '关闭',
+      index: '全文索引',
+      indexQueued: '已加入索引队列，完成后可被搜索',
+      indexFailed: '加入索引队列失败',
+      metadataOnlyHint: '仅记录元数据，暂不可被搜索。执行全文索引后才能参与检索。',
     },
 
     modes: {

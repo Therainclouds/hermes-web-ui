@@ -146,6 +146,7 @@ onMounted(() => {
         v-model:show="detailOpen"
         :document="selectedDocument"
         @delete="onDeleteDocument"
+        @indexed="() => void data.reloadDocuments()"
       />
 
       <NDrawer v-model:show="settingsOpen" :width="420" placement="right">

@@ -9,7 +9,7 @@
 import type { Context } from 'koa'
 import { realpathSync, accessSync, constants, mkdirSync, writeFileSync } from 'fs'
 import { join, sep } from 'path'
-import { KnowledgeService, QueryTooLongError } from '../services/knowledge/knowledge.service'
+import { KnowledgeService, QueryTooLongError, isVaultKind, ALLOWED_VAULT_KINDS } from '../services/knowledge/knowledge.service'
 import { KnowledgeConfigError, loadKnowledgeConfig } from '../services/knowledge/config'
 import { getWebUiHome } from '../config'
 
@@ -123,11 +123,17 @@ export async function listVaults(ctx: Context): Promise<void> {
 export async function createVault(ctx: Context): Promise<void> {
   const service = getServiceOr503(ctx)
   if (!service) return
-  const { root_path, name } = ctx.request.body as { root_path?: string; name?: string }
+  const { root_path, name, kind } = ctx.request.body as { root_path?: string; name?: string; kind?: string }
 
   if (!root_path || !name) {
     ctx.status = 400
     ctx.body = { error: 'missing_fields', message: 'root_path and name are required' }
+    return
+  }
+
+  if (kind !== undefined && !isVaultKind(kind)) {
+    ctx.status = 400
+    ctx.body = { error: 'invalid_kind', message: `kind must be one of: ${ALLOWED_VAULT_KINDS.join(', ')}` }
     return
   }
 
@@ -141,7 +147,7 @@ export async function createVault(ctx: Context): Promise<void> {
   try {
     // Use the resolved (canonical) path so the watcher operates on
     // the same path that was validated against the blocklist.
-    const vault = service.addVault(pathCheck.resolved!, name)
+    const vault = service.addVault(pathCheck.resolved!, name, kind ?? 'manual')
     ctx.status = 201
     ctx.body = { vault }
   } catch (err) {
@@ -210,6 +216,38 @@ export async function deleteDocument(ctx: Context): Promise<void> {
   // TODO: implement single-document delete when the service supports it.
   ctx.status = 501
   ctx.body = { error: 'not_implemented' }
+}
+
+export async function indexDocument(ctx: Context): Promise<void> {
+  const service = getServiceOr503(ctx)
+  if (!service) return
+  const id = Number.parseInt(ctx.params.id, 10)
+  if (!Number.isInteger(id) || id <= 0) {
+    ctx.status = 400
+    ctx.body = { error: 'invalid_id' }
+    return
+  }
+
+  // State validation is synchronous in the service (throws before
+  // enqueue); the pipeline itself runs async — 202 Accepted semantics.
+  try {
+    service.promoteDocument(id)
+  } catch (err) {
+    const code = (err as Error).message
+    if (code === 'document_not_found') {
+      ctx.status = 404
+      ctx.body = { error: 'not_found', message: 'Document not found' }
+      return
+    }
+    if (code === 'not_metadata_only') {
+      ctx.status = 409
+      ctx.body = { error: 'not_metadata_only', message: 'Document is not metadata_only; nothing to promote' }
+      return
+    }
+    throw err
+  }
+  ctx.status = 202
+  ctx.body = { documentId: id, status: 'queued' }
 }
 
 export async function listDocumentChunks(ctx: Context): Promise<void> {

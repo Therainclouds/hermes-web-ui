@@ -159,3 +159,8 @@ export async function fetchDocumentChunks(id: number): Promise<{ chunks: Knowled
 export async function fetchDocumentReferences(id: number, limit = 200): Promise<{ references: KnowledgeReference[] }> {
   return request(`/api/knowledge/documents/${id}/references?limit=${limit}`)
 }
+
+/** Promote a metadata_only document to full indexing (async on the server). */
+export async function indexDocument(id: number): Promise<{ documentId: number; status: string }> {
+  return request(`/api/knowledge/documents/${id}/index`, { method: 'POST' })
+}

@@ -116,6 +116,23 @@ export function ensureKnowledgeSchema(
     )
   `)
 
+  // --- Vault kind migration (task-11, v0.8.8) ---
+  // 'auto'   → bootstrap-created; ingest records metadata_only only.
+  // 'manual' → user-created; full extract→chunk→embed ingest.
+  // 'usb'    → on-demand mount vault (wired in task-12; FTS5-only).
+  // SQLite has no ADD COLUMN IF NOT EXISTS — a duplicate-column error is
+  // the expected no-op signal on already-migrated databases.
+  try {
+    db.exec(
+      "ALTER TABLE knowledge_vaults ADD COLUMN kind TEXT NOT NULL DEFAULT 'manual'"
+    )
+  } catch {
+    // Column already exists — migration already applied.
+  }
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS knowledge_vaults_kind ON knowledge_vaults(kind)'
+  )
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS knowledge_documents (
       id           INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -337,6 +337,96 @@ describe('knowledge controller', () => {
     })
   })
 
+  // --- Promote (metadata_only → full index) ---
+
+  describe('indexDocument', () => {
+    it('returns 202 queued on success', async () => {
+      const service = createMockService({
+        promoteDocument: vi.fn().mockResolvedValue({ documentId: 7, status: 'indexed', chunks: 2 }),
+      })
+      ctrl.setKnowledgeService(service)
+      const ctx = mockCtx({ params: { id: '7' } })
+
+      await ctrl.indexDocument(ctx)
+
+      expect(ctx.status).toBe(202)
+      expect(ctx.body).toEqual({ documentId: 7, status: 'queued' })
+      expect(service.promoteDocument).toHaveBeenCalledWith(7)
+    })
+
+    it('returns 404 when the document does not exist', async () => {
+      const service = createMockService({
+        promoteDocument: vi.fn().mockImplementation(() => {
+          throw new Error('document_not_found')
+        }),
+      })
+      ctrl.setKnowledgeService(service)
+      const ctx = mockCtx({ params: { id: '99' } })
+
+      await ctrl.indexDocument(ctx)
+
+      expect(ctx.status).toBe(404)
+      expect(ctx.body.error).toBe('not_found')
+    })
+
+    it('returns 409 when the document is not metadata_only', async () => {
+      const service = createMockService({
+        promoteDocument: vi.fn().mockImplementation(() => {
+          throw new Error('not_metadata_only')
+        }),
+      })
+      ctrl.setKnowledgeService(service)
+      const ctx = mockCtx({ params: { id: '3' } })
+
+      await ctrl.indexDocument(ctx)
+
+      expect(ctx.status).toBe(409)
+      expect(ctx.body.error).toBe('not_metadata_only')
+    })
+
+    it('returns 400 on an invalid id', async () => {
+      const service = createMockService()
+      ctrl.setKnowledgeService(service)
+      const ctx = mockCtx({ params: { id: 'abc' } })
+
+      await ctrl.indexDocument(ctx)
+
+      expect(ctx.status).toBe(400)
+      expect(ctx.body.error).toBe('invalid_id')
+    })
+  })
+
+  // --- Vault kind validation (task-11) ---
+
+  describe('createVault kind validation', () => {
+    it('rejects an unknown kind with 400', async () => {
+      const service = createMockService()
+      ctrl.setKnowledgeService(service)
+      const ctx = mockCtx({
+        request: { body: { root_path: tempDir, name: 'X', kind: 'weird' } },
+      })
+
+      await ctrl.createVault(ctx)
+
+      expect(ctx.status).toBe(400)
+      expect(ctx.body.error).toBe('invalid_kind')
+      expect(service.addVault).not.toHaveBeenCalled()
+    })
+
+    it('passes a valid kind through to the service', async () => {
+      const service = createMockService()
+      ctrl.setKnowledgeService(service)
+      const ctx = mockCtx({
+        request: { body: { root_path: tempDir, name: 'X', kind: 'auto' } },
+      })
+
+      await ctrl.createVault(ctx)
+
+      expect(ctx.status).toBe(201)
+      expect(service.addVault).toHaveBeenCalledWith(expect.any(String), 'X', 'auto')
+    })
+  })
+
   // --- Settings (embedding API key) ---
 
   describe('getKeySettings', () => {

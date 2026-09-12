@@ -104,10 +104,26 @@ export interface KnowledgeChunk {
   token_count: number
 }
 
+/**
+ * Vault kinds (task-11):
+ *   'auto'   — bootstrap-created (upload dir, agent workspace…); ingest
+ *              records metadata_only only, full index is user-triggered.
+ *   'manual' — user-created via POST /vaults; full ingest (v0.8.7 behavior).
+ *   'usb'    — on-demand mount vault (wired in task-12; FTS5-only).
+ */
+export type KnowledgeVaultKind = 'auto' | 'manual' | 'usb'
+
+export const ALLOWED_VAULT_KINDS: readonly KnowledgeVaultKind[] = ['auto', 'manual', 'usb']
+
+export function isVaultKind(value: unknown): value is KnowledgeVaultKind {
+  return typeof value === 'string' && (ALLOWED_VAULT_KINDS as readonly string[]).includes(value)
+}
+
 export interface KnowledgeVault {
   id: number
   root_path: string
   name: string
+  kind: KnowledgeVaultKind
   watch: number
   created_at: number
 }
@@ -115,6 +131,7 @@ export interface KnowledgeVault {
 interface QueueItem {
   path: string
   vaultId: number
+  forceFull: boolean
   resolve: (result: IngestResult) => void
   reject: (err: Error) => void
 }
@@ -190,11 +207,14 @@ export class KnowledgeService extends EventEmitter {
 
   // --- Vault management ---------------------------------------------------
 
-  addVault(rootPath: string, name: string): KnowledgeVault {
+  addVault(rootPath: string, name: string, kind: KnowledgeVaultKind = 'manual'): KnowledgeVault {
+    if (!isVaultKind(kind)) {
+      throw new Error(`invalid vault kind: ${String(kind)}`)
+    }
     const now = Date.now()
     this.db.prepare(
-      'INSERT INTO knowledge_vaults (root_path, name, watch, created_at) VALUES (?, ?, 1, ?)'
-    ).run(rootPath, name, now)
+      'INSERT INTO knowledge_vaults (root_path, name, kind, watch, created_at) VALUES (?, ?, ?, 1, ?)'
+    ).run(rootPath, name, kind, now)
 
     const rows = this.db.prepare(
       'SELECT * FROM knowledge_vaults WHERE root_path = ?'
@@ -257,16 +277,46 @@ export class KnowledgeService extends EventEmitter {
   /**
    * Queue a file for ingestion. Returns a promise that resolves when
    * the single-writer worker has processed the file.
+   *
+   * `forceFull` bypasses the auto-vault metadata_only short-circuit —
+   * used by promoteDocument() so the promote of an auto-vault row is
+   * not re-short-circuited by step 0.5.
    */
-  ingest(path: string, vaultId: number): Promise<IngestResult> {
+  ingest(
+    path: string,
+    vaultId: number,
+    opts: { forceFull?: boolean } = {},
+  ): Promise<IngestResult> {
     return new Promise<IngestResult>((resolve, reject) => {
       if (this.queue.length >= this.config.queueDepth) {
         reject(new Error(`Ingest queue full (${this.config.queueDepth}). Try later.`))
         return
       }
-      this.queue.push({ path, vaultId, resolve, reject })
+      this.queue.push({ path, vaultId, forceFull: opts.forceFull === true, resolve, reject })
       this.drainQueue()
     })
+  }
+
+  /**
+   * Promote a metadata_only document to a full index. Reuses the regular
+   * ingest pipeline: the metadata_only row carries an empty source_hash,
+   * so the no-op check never fires and the full extract→chunk→embed path
+   * runs. State validation happens synchronously (throws before enqueue)
+   * so HTTP callers can map document_not_found / not_metadata_only to
+   * 404 / 409; the pipeline itself runs on the single-writer queue.
+   */
+  promoteDocument(documentId: number): Promise<IngestResult> {
+    const rows = this.db.prepare(
+      'SELECT source_path, vault_id, status FROM knowledge_documents WHERE id = ?'
+    ).all(documentId) as Array<{ source_path: string; vault_id: number; status: string }>
+
+    if (rows.length === 0) {
+      throw new Error('document_not_found')
+    }
+    if (rows[0].status !== 'metadata_only') {
+      throw new Error('not_metadata_only')
+    }
+    return this.ingest(rows[0].source_path, rows[0].vault_id, { forceFull: true })
   }
 
   private async drainQueue(): Promise<void> {
@@ -277,7 +327,7 @@ export class KnowledgeService extends EventEmitter {
       const item = this.queue.shift()!
       this.activeWorkers++
       try {
-        const result = await this.processIngest(item.path, item.vaultId)
+        const result = await this.processIngest(item.path, item.vaultId, item.forceFull)
         item.resolve(result)
       } catch (err) {
         item.reject(err as Error)
@@ -289,24 +339,52 @@ export class KnowledgeService extends EventEmitter {
     this.processing = false
   }
 
-  private async processIngest(path: string, vaultId: number): Promise<IngestResult> {
+  /** Vault kind lookup; unknown/legacy rows behave as 'manual'. */
+  private getVaultKind(vaultId: number): KnowledgeVaultKind {
+    const rows = this.db.prepare(
+      'SELECT kind FROM knowledge_vaults WHERE id = ?'
+    ).all(vaultId) as Array<{ kind: string }>
+    return isVaultKind(rows[0]?.kind) ? rows[0].kind : 'manual'
+  }
+
+  /**
+   * Record a file without extract/chunk/embed — one documents row, no
+   * chunks / FTS5 / vec0, invisible to search until promoted.
+   */
+  private metadataOnlyIngest(path: string, vaultId: number): IngestResult {
+    let fileStat: { size: number; mtimeMs: number }
+    try {
+      const s = statSync(path)
+      fileStat = { size: s.size, mtimeMs: s.mtimeMs }
+    } catch {
+      // File was deleted between watcher event and processing — skip.
+      return { documentId: 0, status: 'failed', chunks: 0, error: 'File disappeared before processing' }
+    }
+    const docId = this.upsertDocument(path, vaultId, '', fileStat)
+    this.db.prepare(
+      "UPDATE knowledge_documents SET status = 'metadata_only', indexed_at = ? WHERE id = ?"
+    ).run(Date.now(), docId)
+    return { documentId: docId, status: 'metadata_only', chunks: 0 }
+  }
+
+  private async processIngest(
+    path: string,
+    vaultId: number,
+    forceFull = false,
+  ): Promise<IngestResult> {
     // 0. Extension whitelist — skip unsupported types before touching disk.
     const ext = extname(path).toLowerCase()
     if (ext && !this.config.supportedExtensions.includes(ext)) {
       // Metadata-only: record the document but don't extract.
-      let fileStat: { size: number; mtimeMs: number }
-      try {
-        const s = statSync(path)
-        fileStat = { size: s.size, mtimeMs: s.mtimeMs }
-      } catch {
-        // File was deleted between watcher event and processing — skip.
-        return { documentId: 0, status: 'failed', chunks: 0, error: 'File disappeared before processing' }
-      }
-      const docId = this.upsertDocument(path, vaultId, '', fileStat)
-      this.db.prepare(
-        "UPDATE knowledge_documents SET status = 'metadata_only', indexed_at = ? WHERE id = ?"
-      ).run(Date.now(), docId)
-      return { documentId: docId, status: 'metadata_only', chunks: 0 }
+      return this.metadataOnlyIngest(path, vaultId)
+    }
+
+    // 0.5 Auto vaults (task-11): record metadata only. A full index is
+    // user-triggered via promoteDocument({ forceFull }) — a drop of 50
+    // files into an auto vault must never silently occupy the embedding
+    // queue for minutes on the ARM device.
+    if (!forceFull && this.getVaultKind(vaultId) === 'auto') {
+      return this.metadataOnlyIngest(path, vaultId)
     }
 
     // 1. Read file and compute source_hash.

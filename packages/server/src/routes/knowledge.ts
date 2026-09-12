@@ -29,6 +29,7 @@ knowledgeRoutes.get('/api/knowledge/documents', ctrl.listDocuments)
 knowledgeRoutes.get('/api/knowledge/documents/:id/chunks', ctrl.listDocumentChunks)
 knowledgeRoutes.get('/api/knowledge/documents/:id/references', ctrl.listDocumentReferences)
 knowledgeRoutes.get('/api/knowledge/documents/:id', ctrl.getDocument)
+knowledgeRoutes.post('/api/knowledge/documents/:id/index', ctrl.indexDocument)
 knowledgeRoutes.delete('/api/knowledge/documents/:id', ctrl.deleteDocument)
 
 knowledgeRoutes.post('/api/knowledge/reindex', ctrl.reindex)

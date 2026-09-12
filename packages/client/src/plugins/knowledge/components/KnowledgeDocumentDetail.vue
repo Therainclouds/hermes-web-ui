@@ -19,9 +19,11 @@ import * as api from '../api'
 import type { KnowledgeChunk } from '../api'
 import { statusTagType, mimeTypeLabel } from '../utils/status'
 import { formatBytes, formatTimestamp, basename } from '../utils/format'
+import { useMessage } from '@/composables/useAppMessage'
 import MarkdownRenderer from '@/components/hermes/chat/MarkdownRenderer.vue'
 
 const { t } = useI18n()
+const message = useMessage()
 
 const props = defineProps<{
   show: boolean
@@ -31,10 +33,12 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'update:show', value: boolean): void
   (e: 'delete', id: number): void
+  (e: 'indexed', id: number): void
 }>()
 
 const chunks = shallowRef<KnowledgeChunk[]>([])
 const chunksLoading = ref(false)
+const indexing = ref(false)
 let generation = 0
 let disposed = false
 
@@ -80,6 +84,20 @@ function onDelete(): void {
   emit('delete', props.document.id)
   close()
 }
+
+async function requestIndex(): Promise<void> {
+  if (!props.document) return
+  indexing.value = true
+  try {
+    await api.indexDocument(props.document.id)
+    message.success(t('knowledge.detail.indexQueued'))
+    emit('indexed', props.document.id)
+  } catch {
+    message.error(t('knowledge.detail.indexFailed'))
+  } finally {
+    indexing.value = false
+  }
+}
 </script>
 
 <template>
@@ -104,6 +122,13 @@ function onDelete(): void {
       <NEmpty v-if="!props.document" :description="t('knowledge.detail.noDocument')" />
 
       <div v-else class="document-detail">
+        <div v-if="props.document.status === 'metadata_only'" class="metadata-only-box">
+          <p class="metadata-only-hint">{{ t('knowledge.detail.metadataOnlyHint') }}</p>
+          <NButton type="primary" size="small" :loading="indexing" @click="requestIndex">
+            {{ t('knowledge.detail.index') }}
+          </NButton>
+        </div>
+
         <NCard :title="t('knowledge.detail.metadata')" size="small">
           <NDescriptions :column="1" bordered size="small">
             <NDescriptionsItem :label="t('knowledge.detail.path')">
@@ -175,6 +200,21 @@ function onDelete(): void {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+.metadata-only-box {
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--card-color, rgba(255, 255, 255, 0.02));
+}
+.metadata-only-hint {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  opacity: 0.75;
 }
 .content-card {
   margin: 0;
