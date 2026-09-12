@@ -168,6 +168,43 @@ describe.skipIf(!canRun)('metadata_only ingest mode', () => {
     expect(() => service.promoteDocument(result.documentId)).toThrow('not_metadata_only')
   })
 
+  it('promoteDocument rejects unsupported extensions instead of silently re-recording', async () => {
+    // OCR finding 2: an unsupported extension hit the ingest step-0
+    // whitelist on promote, which re-recorded the doc as metadata_only
+    // behind a 202 — the user's index click was a silent no-op.
+    const filePath = join(tempDir, 'photo.jpg')
+    writeFileSync(filePath, 'fake image bytes')
+
+    const vault = service.addVault(tempDir, 'auto-vault', 'auto')
+    const meta = await service.ingest(filePath, vault.id)
+    expect(meta.status).toBe('metadata_only')
+
+    expect(() => service.promoteDocument(meta.documentId)).toThrow('unsupported_extension')
+    expect(docStatus(meta.documentId)).toBe('metadata_only')
+  })
+
+  it('re-recording a promoted file as metadata_only drops its stale index rows', async () => {
+    // OCR finding 4: promote → indexed → file changed again →
+    // metadataOnlyIngest left the old chunks/FTS5/vec0 rows as orphans.
+    const filePath = join(tempDir, 'churn.md')
+    writeFileSync(filePath, 'version one of the indexed content')
+
+    const vault = service.addVault(tempDir, 'auto-vault', 'auto')
+    const meta = await service.ingest(filePath, vault.id)
+    const promoted = await service.promoteDocument(meta.documentId)
+    expect(promoted.status).toBe('indexed')
+    expect(rowCount('knowledge_chunks')).toBeGreaterThan(0)
+
+    // File changes again; the auto vault records metadata only.
+    writeFileSync(filePath, 'version two with different content entirely')
+    const again = await service.ingest(filePath, vault.id)
+    expect(again.status).toBe('metadata_only')
+
+    expect(rowCount('knowledge_chunks')).toBe(0)
+    expect(rowCount('knowledge_chunks_fts')).toBe(0)
+    expect(rowCount('knowledge_chunks_vec')).toBe(0)
+  })
+
   it('manual vaults keep full-ingest behavior (v0.8.7 regression)', async () => {
     const filePath = join(tempDir, 'manual.md')
     writeFileSync(filePath, 'manual vault documents index immediately')

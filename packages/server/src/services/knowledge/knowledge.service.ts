@@ -316,6 +316,13 @@ export class KnowledgeService extends EventEmitter {
     if (rows[0].status !== 'metadata_only') {
       throw new Error('not_metadata_only')
     }
+    // Reject unsupported extensions up front — otherwise the ingest's
+    // step-0 whitelist would silently re-record the file as metadata_only
+    // and the user's "index this" click would be a no-op behind a 202.
+    const ext = extname(rows[0].source_path).toLowerCase()
+    if (ext && !this.config.supportedExtensions.includes(ext)) {
+      throw new Error('unsupported_extension')
+    }
     return this.ingest(rows[0].source_path, rows[0].vault_id, { forceFull: true })
   }
 
@@ -361,6 +368,11 @@ export class KnowledgeService extends EventEmitter {
       return { documentId: 0, status: 'failed', chunks: 0, error: 'File disappeared before processing' }
     }
     const docId = this.upsertDocument(path, vaultId, '', fileStat)
+    // If this document was fully indexed before (promoted, then the file
+    // changed again), drop its stale chunk/FTS5/vec0 rows — search filters
+    // by status so they'd be invisible, but they'd still sit on disk as
+    // orphans. For fresh metadata_only rows these DELETEs are no-ops.
+    this.deleteDocumentIndexes(docId)
     this.db.prepare(
       "UPDATE knowledge_documents SET status = 'metadata_only', indexed_at = ? WHERE id = ?"
     ).run(Date.now(), docId)

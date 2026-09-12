@@ -121,13 +121,16 @@ export function ensureKnowledgeSchema(
   // 'manual' → user-created; full extract→chunk→embed ingest.
   // 'usb'    → on-demand mount vault (wired in task-12; FTS5-only).
   // SQLite has no ADD COLUMN IF NOT EXISTS — a duplicate-column error is
-  // the expected no-op signal on already-migrated databases.
+  // the expected no-op signal on already-migrated databases. Any other
+  // failure (corruption, disk full) must surface, not vanish.
   try {
     db.exec(
       "ALTER TABLE knowledge_vaults ADD COLUMN kind TEXT NOT NULL DEFAULT 'manual'"
     )
-  } catch {
-    // Column already exists — migration already applied.
+  } catch (err) {
+    if (!(err instanceof Error) || !err.message.toLowerCase().includes('duplicate column')) {
+      throw err
+    }
   }
   db.exec(
     'CREATE INDEX IF NOT EXISTS knowledge_vaults_kind ON knowledge_vaults(kind)'

@@ -384,6 +384,21 @@ describe('knowledge controller', () => {
       expect(ctx.body.error).toBe('not_metadata_only')
     })
 
+    it('returns 422 when the file type is unsupported for indexing', async () => {
+      const service = createMockService({
+        promoteDocument: vi.fn().mockImplementation(() => {
+          throw new Error('unsupported_extension')
+        }),
+      })
+      ctrl.setKnowledgeService(service)
+      const ctx = mockCtx({ params: { id: '5' } })
+
+      await ctrl.indexDocument(ctx)
+
+      expect(ctx.status).toBe(422)
+      expect(ctx.body.error).toBe('unsupported_extension')
+    })
+
     it('returns 400 on an invalid id', async () => {
       const service = createMockService()
       ctrl.setKnowledgeService(service)

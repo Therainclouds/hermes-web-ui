@@ -231,7 +231,13 @@ export async function indexDocument(ctx: Context): Promise<void> {
   // State validation is synchronous in the service (throws before
   // enqueue); the pipeline itself runs async — 202 Accepted semantics.
   try {
-    service.promoteDocument(id)
+    service.promoteDocument(id).catch((err: Error) => {
+      // Pipeline failures mark the document 'failed' in the DB and emit
+      // knowledge:ingest:error. This catch covers the rejections that
+      // never reach the pipeline (e.g. ingest queue full) — without it
+      // the 202 the client already received would be the last word.
+      console.error(`[knowledge] promote pipeline failed for document ${id}:`, err.message)
+    })
   } catch (err) {
     const code = (err as Error).message
     if (code === 'document_not_found') {
@@ -242,6 +248,11 @@ export async function indexDocument(ctx: Context): Promise<void> {
     if (code === 'not_metadata_only') {
       ctx.status = 409
       ctx.body = { error: 'not_metadata_only', message: 'Document is not metadata_only; nothing to promote' }
+      return
+    }
+    if (code === 'unsupported_extension') {
+      ctx.status = 422
+      ctx.body = { error: 'unsupported_extension', message: 'File type is not supported for full-text indexing' }
       return
     }
     throw err
