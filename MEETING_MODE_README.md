@@ -51,6 +51,11 @@ APIs need for reliable speaker diarization:
   only accepts a publicly reachable audio URL. "Start" stays disabled until
   the selected engine is usable, so the backend error is never the first
   feedback the user sees.
+  Speaker labels are always rendered in the transcript (the realtime toolbar's
+  own diarization switch is a separate, still-hidden control): each sentence
+  shows a clickable speaker chip that opens a rename popover, and the new name
+  is applied to every sentence of that speaker and synced to the server so a
+  reload does not revert it.
 - **「直接音频转录」tab** in the create-meeting dialog: pick an audio file,
   choose the engine and whether to separate speakers, then create the meeting —
   transcription starts immediately and the file is stored with the meeting so

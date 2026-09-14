@@ -233,7 +233,7 @@ Real-time speech transcription with AI-powered meeting analysis, speaker diariza
 |---|---|
 | Real-time Speech Transcription | WebSocket connection to ASR service for live speech-to-text; ASR provider is selectable (DashScope Paraformer / Fun-ASR by default, MiniMax `asr-1.0` REST streaming as an opt-in alternative) |
 | Speaker Diarization | Alibaba Cloud DashScope Paraformer model for automatic speaker identification |
-| Speaker Renaming | Click speaker labels to customize names, auto-syncs to all related sentences |
+| Speaker Renaming | Speaker chips are always visible in the transcript; hover reveals an edit icon, click opens a rename popover, and the new name is mirrored to every sentence of that speaker and synced to the server (so a page reload does not revert it) |
 | Speaker Count Setting | Auto-detect or manually specify 2-8 speakers for improved accuracy |
 | Audio Recording & Playback | Record meeting audio with progress bar, drag seek, and click-to-jump on sentences |
 | AI Analysis | Hermes Agent or custom model analysis for summaries, key points, and action items |

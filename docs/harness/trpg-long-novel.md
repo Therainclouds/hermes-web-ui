@@ -376,3 +376,89 @@ The former 500-character per-scene minimum made a 143-scene / 10,000-character r
 The existing Hermes Agent Bridge continues to execute model stages. Extra uncontrolled agents would not remove sequential dependencies. Performance improvements here remove repeated draft/review work, preserve independent bounded chapter planning, compact recoverable duplicate evidence in both modes, and use concise paragraph references for audits. No claim of real-recording speedup is made without a complete model run.
 
 Workbench adds categorized artifact buttons, persistent light/dark themes, optional following of latest saved output, and a separate unverified live JSON preview. Only structured output streams or final responses are previewed; non-JSON reasoning preambles are excluded. In-memory preview payloads are bounded to four steps / 12,000 characters per step and remain under existing profile checks. When the backend only returns a final response the preview cannot appear earlier than that response.
+
+Legacy jobs without revision-state checkpoints may seed recovery from their existing write/review artifacts only when version and chapter epochs match. This preserves prior prose across the migration while requiring fresh audit against current context. Explicit chapter regeneration/changed direction advances the epoch and cannot reuse this seed. A regression reproduces a legacy review hash overwritten by repair and verifies that resume performs only the audit call.
+
+### September 14: patch coverage metadata and GM narration
+
+A live failure reported `missing dialogue evidence coverage` even though the persisted semantic report had passed. Paragraph patches listing only changed-row coverage were replacing the whole manuscript's coverage metadata. Patch application now unions supplied indices with existing indices; these remain metadata, not proof of coverage, and full event/manuscript audit remains mandatory after changes.
+
+GM attribution is retained in source, extraction, canon and audit evidence. Manuscript GM speaker labels trigger a targeted narrative-format issue: environmental narration and rulings become narrator prose, while identified NPC speech retains the NPC identity. Code-side narrative/length issues are now persisted in the report too, avoiding a misleading passed report while the worker is revising for length or narrative format.
+
+### September 14: bounded editor agent and whole-book length balancing (supersedes per-scene gates above)
+
+The 143-scene example exposed a contradictory acceptance contract: a 251-character scene
+was simultaneously asked to preserve more details and compress a 1,194-character draft.
+Scene allocations are now soft writing budgets. Only the assembled manuscript must meet
+the user's total ±10%; titles/whitespace do not contribute. Factual acceptance remains
+mandatory before publication. Optional literary suggestions have a separate nonblocking
+report field; ambiguous ASR is not grounds for inventing a definite interpretation, and
+GM roll suggestions must not become performed actions or successful outcomes.
+
+`novel-editor-agent.ts` implements an application-level JSON tool protocol over the
+existing model adapter, not unrestricted native Hermes tool access. The editor chooses
+`read_evidence`, `read_paragraphs`, `patch_paragraphs`, or `report_conflict`. The server
+executes bounded read-only retrieval against immutable supplied evidence and deterministic
+paragraph replacement. It returns tool errors as observations. Sufficient evidence permits
+an immediate patch without extra retrieval. Every patched manuscript requires a fresh
+independent semantic audit; untouched paragraphs are preserved. Tool actions are saved
+as inspectable artifacts. No private chain of thought is requested or displayed.
+
+Each editing decision has at most six tool turns; a scene has at most three committed
+repair rounds across resumes. Repeated identical unresolved issues or explicit constraint
+conflicts persist a blocked revision state. Unchanged resume spends no more model tokens
+on that scene; changing review model or chapter direction permits a new attempt. Invalid
+report references trigger report repair, not a new manuscript. Original extract/canon
+fingerprints are unchanged, retaining expensive source checkpoints for older jobs.
+
+Only an out-of-range whole manuscript triggers the final length pass (at most two rounds).
+Candidates must strictly improve distance to the total target, pass source/fact audit,
+and pass an audit of the unchanged successor against the revised predecessor. Nonpassing
+candidates are not committed. Accepted versions are archived, chapters reassembled, and
+changed chapters require renewed approval when chapter approval is enabled. Round progress
+and unresolved length conflicts are durable; unchanged resume does not restart two more
+rounds. An impossible total remains blocked with saved prose rather than published outside
+±10% or expanded with invented facts. This does not promise all model/source combinations
+will satisfy mutually incompatible facts, style and size constraints.
+
+Design references: [Building effective agents](https://www.anthropic.com/engineering/building-effective-agents)
+(clear evaluation criteria, bounded feedback loops, tool-directed actions),
+[Effective harnesses for long-running agents](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents)
+(durable progress and incremental verified work), and
+[Writing tools for agents](https://www.anthropic.com/engineering/writing-tools-for-agents)
+(purpose-built tool interfaces and informative observations). Domain constraints and
+sequential continuity commits remain server-owned. No uncontrolled parallel writer fleet
+or measured real-campaign speedup is claimed. Validation uses mocked models and temporary
+snapshots; the reported user's existing job is not rewritten by tests.
+
+### September 14: scene-scoped review and deletable paragraphs
+
+A live 98-scene job stalled at its second scene with `novel_revision_stalled` after three
+editor rounds. The audit was correct: the review step had expanded a ~270-character draft
+into a ~1,100-character scene containing a later scene's plot, taken from the chapter guide's
+beat list, had duplicated a paragraph, and had misattributed one observation. Two of those
+three issues required *removing* prose, but `patch_paragraphs` only documented replacement,
+so the editor described the deletion in `continuity` without submitting it and the same
+issues returned every round.
+
+- `patch_paragraphs` edits now accept `delete: true` (or `text: ""`) to remove a paragraph.
+  One call may delete several paragraphs by their original numbers; the whole patch is applied
+  before any renumbering. Deleting the entire scene body and malformed `delete` flags are
+  rejected.
+- Audits, editor reads and patches share one paragraph split (`paragraphsOf`): trimmed, with
+  whitespace-only paragraphs dropped. Previously the audit numbered a trimmed list while the
+  editor patched the raw list, so one whitespace-only paragraph shifted every later index.
+- The review instruction now states the scene boundary: only `scene.from..to` rows and
+  `canon.events`; `chapter.guide` and `book` are style and intent only, never material for
+  other scenes or later plot; out-of-scope and duplicate paragraphs are deleted, not expanded.
+- `revisionPolicy()` fingerprints the writing/review instructions, the audit contract and the
+  editor protocol into the revision and balance contexts. A harness fix therefore invalidates
+  a stored blocked revision once and the scene is retried, instead of replaying the old block
+  forever. Changing only the model still does not replace saved prose.
+- A resumed stall reports the stored round count and up to three concrete remaining issues, so
+  the workbench names what to change instead of only showing the generic stall sentence.
+
+Blocking semantics are unchanged: publication still requires a passing independent audit, and
+genuinely contradictory constraints still stop the job with the latest prose saved. Real
+six-hour annotated-campaign evaluation remains pending.
+
