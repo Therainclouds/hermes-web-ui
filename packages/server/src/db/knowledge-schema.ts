@@ -160,6 +160,39 @@ export function ensureKnowledgeSchema(
       'ON knowledge_documents(vault_id, status)'
   )
 
+  // --- Document provenance column (task-12, v0.8.9) ---
+  // 'agent-workspace' vs 'task-finalize' let the auto_tasks vault
+  // distinguish continuously-watched workspace files from semi-auto
+  // archives written at task finalize, sharing one root path. Default
+  // 'unknown' keeps every pre-existing row honest. Placed AFTER the
+  // documents table is created (an ALTER before CREATE has no target).
+  try {
+    db.exec(
+      "ALTER TABLE knowledge_documents ADD COLUMN source TEXT NOT NULL DEFAULT 'unknown'"
+    )
+  } catch (err) {
+    if (!(err instanceof Error) || !err.message.toLowerCase().includes('duplicate column')) {
+      throw err
+    }
+  }
+
+  // --- Status enum check as a trigger (task-12) ---
+  // A table-level CHECK cannot be ALTERed, so the enum guard lives in
+  // a trigger: extending the set ('fts_only', 'unmounted') without DDL
+  // drift is then a matter of replacing this trigger. Existing rows are
+  // untouched — the trigger only gates new INSERTs.
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS knowledge_documents_status_check
+    BEFORE INSERT ON knowledge_documents
+    FOR EACH ROW
+    WHEN NEW.status NOT IN (
+      'pending','indexing','indexed','failed','metadata_only','fts_only','unmounted'
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'invalid document status');
+    END
+  `)
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS knowledge_chunks (
       id           INTEGER PRIMARY KEY AUTOINCREMENT,

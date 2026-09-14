@@ -7,11 +7,13 @@
  */
 
 import type { Context } from 'koa'
-import { realpathSync, accessSync, constants, mkdirSync, writeFileSync } from 'fs'
+import { realpathSync, accessSync, constants, mkdirSync, writeFileSync, readdirSync, existsSync, statSync } from 'fs'
 import { join, sep } from 'path'
-import { KnowledgeService, QueryTooLongError, isVaultKind, ALLOWED_VAULT_KINDS } from '../services/knowledge/knowledge.service'
+import { KnowledgeService, QueryTooLongError, isVaultKind, ALLOWED_VAULT_KINDS, VaultLimitError, VaultPathInUseError } from '../services/knowledge/knowledge.service'
 import { KnowledgeConfigError, loadKnowledgeConfig } from '../services/knowledge/config'
 import { getWebUiHome } from '../config'
+import { listDirs as listDirsImpl, ForbiddenPathError, type UsbDrive } from '../services/knowledge/dir-browser'
+import { resolveDefaultRoots } from '../services/knowledge/bootstrap'
 
 // --- Vault path validation (ARM protection) -------------------------------
 
@@ -151,12 +153,83 @@ export async function createVault(ctx: Context): Promise<void> {
     ctx.status = 201
     ctx.body = { vault }
   } catch (err) {
-    if ((err as Error).message?.includes('UNIQUE constraint')) {
+    if (err instanceof VaultLimitError || err instanceof VaultPathInUseError) {
       ctx.status = 409
-      ctx.body = { error: 'vault_exists', message: 'A vault with this root_path already exists' }
+      ctx.body = { error: err.code, message: err.message }
+    } else if ((err as Error).message?.includes('UNIQUE constraint')) {
+      ctx.status = 409
+      ctx.body = { error: 'vault_path_in_use', message: 'A vault with this root_path already exists' }
     } else {
       throw err
     }
+  }
+}
+
+// --- Default-vault bootstrap, quota, directory browser (task-12, v0.8.9) ---
+
+/** Enumerate mounted USB drives under $HERMES_WEB_UI_HOME/mnt/usb/<uuid>. */
+function enumerateUsbDrives(): { usb: UsbDrive[] } {
+  const usbRoot = join(getWebUiHome(process.env), 'mnt', 'usb')
+  const usb: UsbDrive[] = []
+  if (!existsSync(usbRoot)) return { usb }
+  let names: string[]
+  try { names = readdirSync(usbRoot) } catch { return { usb } }
+  for (const uuid of names) {
+    const mountPath = join(usbRoot, uuid)
+    try {
+      if (!statSync(mountPath).isDirectory()) continue
+      usb.push({ uuid, label: uuid, mountPath, sizeBytes: null, freeBytes: null })
+    } catch { /* skip races */ }
+  }
+  return { usb }
+}
+
+function allowedBrowserRoots(): { homeRoot: string; usbRoots: UsbDrive[] } {
+  return { homeRoot: getWebUiHome(process.env), usbRoots: enumerateUsbDrives().usb }
+}
+
+export async function bootstrapDefaultVaults(ctx: Context): Promise<void> {
+  const service = getServiceOr503(ctx)
+  if (!service) return
+  try {
+    ctx.body = service.ensureDefaultVaults({ roots: resolveDefaultRoots() })
+  } catch (err) {
+    ctx.status = 500
+    ctx.body = { error: 'bootstrap_failed', message: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+export async function getQuota(ctx: Context): Promise<void> {
+  const service = getServiceOr503(ctx)
+  if (!service) return
+  ctx.body = service.getQuota()
+}
+
+export async function listDirs(ctx: Context): Promise<void> {
+  const service = getServiceOr503(ctx)
+  if (!service) return
+  const requested = typeof ctx.query.path === 'string' && ctx.query.path
+    ? ctx.query.path
+    : getWebUiHome(process.env)
+  try {
+    ctx.body = listDirsImpl(requested, { ...allowedBrowserRoots(), includeHidden: ctx.query.includeHidden === 'true' })
+  } catch (err) {
+    if (err instanceof ForbiddenPathError) {
+      ctx.status = 403
+      ctx.body = { error: err.code, message: err.message }
+    } else {
+      throw err
+    }
+  }
+}
+
+export async function listDrives(ctx: Context): Promise<void> {
+  const service = getServiceOr503(ctx)
+  if (!service) return
+  const home = getWebUiHome(process.env)
+  ctx.body = {
+    usb: enumerateUsbDrives().usb,
+    homeRoots: [{ name: 'home', path: home, exists: existsSync(home) }],
   }
 }
 

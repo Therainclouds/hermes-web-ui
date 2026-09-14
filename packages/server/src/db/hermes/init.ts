@@ -18,6 +18,7 @@ import { getDb } from '../index'
 import { loadKnowledgeConfig } from '../../services/knowledge/config'
 import { KnowledgeService } from '../../services/knowledge/knowledge.service'
 import { initKnowledgeRoutes } from '../../routes/knowledge'
+import { resolveDefaultRoots, resolveDefaultVaultsMode } from '../../services/knowledge/bootstrap'
 import { setKnowledgeReinit } from '../../controllers/knowledge'
 
 // Module-level handle for subsequent wiring (e.g., future Socket.IO
@@ -74,6 +75,24 @@ function tryInitKnowledgeService(): void {
     initKnowledgeRoutes(service)
     // Note: initKnowledgeRoutes already calls setKnowledgeService internally.
     _knowledgeService = service
+
+    // Task-12 (v0.8.9): ensure the four default auto vaults exist.
+    // Best-effort — a failure never aborts startup (bootstrapDefaultVaults
+    // catches per-vault errors internally). mode=off short-circuits.
+    try {
+      const mode = resolveDefaultVaultsMode(process.env)
+      if (mode === 'auto') {
+        const res = service.ensureDefaultVaults({ roots: resolveDefaultRoots(), mode })
+        if (res.created.length || res.failed.length) {
+          log(
+            `[knowledge] default vaults: created=${res.created.length} ` +
+              `skipped=${res.skipped.length} failed=${res.failed.length}`,
+          )
+        }
+      }
+    } catch (err) {
+      warn('knowledge default-vault bootstrap failed (non-fatal):', err instanceof Error ? err.message : err)
+    }
   } catch (err) {
     warn(
       'failed to initialize knowledge plugin:',

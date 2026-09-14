@@ -121,7 +121,8 @@ describe('knowledge controller', () => {
       await ctrl.createVault(ctx)
 
       expect(ctx.status).toBe(409)
-      expect((ctx.body as any).error).toBe('vault_exists')
+      // task-12 unified the duplicate-root error code to vault_path_in_use
+      expect((ctx.body as any).error).toBe('vault_path_in_use')
     })
   })
 

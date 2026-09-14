@@ -36,12 +36,46 @@ import {
 import { search as searchFn, QueryTooLongError, type SearchParams, type SearchResponse } from './search'
 import { tokenizeForFts } from './fts-tokenizer'
 import type { KnowledgeConfig } from './config'
+import { computeKnowledgeQuota, type KnowledgeQuota } from './quota'
+import {
+  bootstrapDefaultVaults,
+  type BootstrapResult,
+  type DefaultVaultsMode,
+} from './bootstrap'
 
 // --- Public types ---------------------------------------------------------
 
 export { QueryTooLongError }
 
-export type IngestStatus = 'pending' | 'indexing' | 'indexed' | 'failed' | 'metadata_only'
+export type IngestStatus =
+  | 'pending'
+  | 'indexing'
+  | 'indexed'
+  | 'failed'
+  | 'metadata_only'
+  | 'fts_only'
+  | 'unmounted'
+
+/** Flat ceiling across all vault kinds (task-12 § "Extending beyond the four defaults"). */
+export const MAX_KNOWLEDGE_VAULTS = 8
+
+/** Thrown when creating a vault would exceed `MAX_KNOWLEDGE_VAULTS`. Maps to 409. */
+export class VaultLimitError extends Error {
+  readonly code = 'vault_quota_exceeded'
+  constructor(message: string) {
+    super(message)
+    this.name = 'VaultLimitError'
+  }
+}
+
+/** Thrown when a vault's root_path already exists. Maps to 409. */
+export class VaultPathInUseError extends Error {
+  readonly code = 'vault_path_in_use'
+  constructor(message: string) {
+    super(message)
+    this.name = 'VaultPathInUseError'
+  }
+}
 
 export interface KnowledgeHealthReport {
   vaults: { total: number; watching: number; offline: number }
@@ -207,14 +241,40 @@ export class KnowledgeService extends EventEmitter {
 
   // --- Vault management ---------------------------------------------------
 
+  /**
+   * Create a vault. Enforces the two binding contracts from task-12
+   * (spec § "Extending beyond the four defaults"):
+   *   - flat total ceiling of `MAX_KNOWLEDGE_VAULTS` across all kinds
+   *   - unique `root_path` (the schema UNIQUE constraint is the backstop;
+   *     here we translate the raw SQLite error into a typed code the
+   *     controller maps to a stable HTTP status).
+   * Every path — the UI drawer, the CLI, the MCP tool, and auto-vault
+   * bootstrap — goes through here so the checks are uniform.
+   */
   addVault(rootPath: string, name: string, kind: KnowledgeVaultKind = 'manual'): KnowledgeVault {
     if (!isVaultKind(kind)) {
       throw new Error(`invalid vault kind: ${String(kind)}`)
     }
+    const count = (this.db.prepare(
+      'SELECT COUNT(*) AS n FROM knowledge_vaults'
+    ).get() as { n: number }).n
+    if (count >= MAX_KNOWLEDGE_VAULTS) {
+      throw new VaultLimitError(
+        `vault limit reached: ${count}/${MAX_KNOWLEDGE_VAULTS} vaults`,
+      )
+    }
+
     const now = Date.now()
-    this.db.prepare(
-      'INSERT INTO knowledge_vaults (root_path, name, kind, watch, created_at) VALUES (?, ?, ?, 1, ?)'
-    ).run(rootPath, name, kind, now)
+    try {
+      this.db.prepare(
+        'INSERT INTO knowledge_vaults (root_path, name, kind, watch, created_at) VALUES (?, ?, ?, 1, ?)'
+      ).run(rootPath, name, kind, now)
+    } catch (err) {
+      if (err instanceof Error && /UNIQUE constraint failed: knowledge_vaults\.root_path/.test(err.message)) {
+        throw new VaultPathInUseError(`vault root_path already in use: ${rootPath}`)
+      }
+      throw err
+    }
 
     const rows = this.db.prepare(
       'SELECT * FROM knowledge_vaults WHERE root_path = ?'
@@ -251,6 +311,24 @@ export class KnowledgeService extends EventEmitter {
 
   listVaults(): KnowledgeVault[] {
     return this.db.prepare('SELECT * FROM knowledge_vaults ORDER BY id').all() as unknown as KnowledgeVault[]
+  }
+
+  /** Disk quota snapshot (task-12). Pure read over the shared connection. */
+  getQuota(): KnowledgeQuota {
+    return computeKnowledgeQuota(this.db)
+  }
+
+  /**
+   * Ensure the four default auto vaults exist (task-12). Thin delegate
+   * to the bootstrap module so the endpoint and startup share one code
+   * path. `profile` selects the per-profile workspace/notes roots.
+   */
+  ensureDefaultVaults(opts: {
+    roots: { uploadDir: string; meetingsDir: string; hermesDataDir: string; profile: string }
+    mode?: DefaultVaultsMode
+    env?: NodeJS.ProcessEnv
+  }): BootstrapResult {
+    return bootstrapDefaultVaults(this, opts)
   }
 
   // --- Document listing ---------------------------------------------------

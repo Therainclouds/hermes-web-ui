@@ -25,6 +25,13 @@ knowledgeRoutes.get('/api/knowledge/vaults', ctrl.listVaults)
 knowledgeRoutes.post('/api/knowledge/vaults', ctrl.createVault)
 knowledgeRoutes.delete('/api/knowledge/vaults/:id', ctrl.deleteVault)
 
+// --- Default-vault bootstrap + quota + directory browser (task-12) ---
+
+knowledgeRoutes.post('/api/knowledge/vaults/bootstrap-defaults', ctrl.bootstrapDefaultVaults)
+knowledgeRoutes.get('/api/knowledge/quota', ctrl.getQuota)
+knowledgeRoutes.get('/api/knowledge/dirs', ctrl.listDirs)
+knowledgeRoutes.get('/api/knowledge/drives', ctrl.listDrives)
+
 knowledgeRoutes.get('/api/knowledge/documents', ctrl.listDocuments)
 knowledgeRoutes.get('/api/knowledge/documents/:id/chunks', ctrl.listDocumentChunks)
 knowledgeRoutes.get('/api/knowledge/documents/:id/references', ctrl.listDocumentReferences)
