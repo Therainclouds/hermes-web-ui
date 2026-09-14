@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -11,7 +12,7 @@ from contextlib import asynccontextmanager
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from sse_starlette.sse import EventSourceResponse
@@ -19,6 +20,7 @@ from sse_starlette.sse import EventSourceResponse
 from .asr_proxy import ParaformerProxy
 from .asr_minimax import MiniMaxProxy
 from .config import settings
+from .file_transcribe import get_job as get_transcribe_job, start_transcription
 from .omni_realtime_proxy import FunctionCallGate, OmniRealtimeProxy, translate_event as translate_omni_event
 from ._log_helper import log_skip
 from .html_generator import generate_html_report
@@ -34,6 +36,14 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 log = logging.getLogger("main")
+
+# Capability marker for the whole-file transcription endpoints. The Web UI
+# ships the same value and compares it against /healthz: a long-lived uvicorn
+# child keeps the Python modules it imported at spawn time, so after a code
+# update (rebuild dist + refresh the browser) it can still be running stale
+# logic. Detecting the mismatch lets the client restart the service instead of
+# failing mid-request. Bump this whenever the /api/transcribe contract changes.
+TRANSCRIBE_CAPABILITY = "2"
 
 _analysis_task: asyncio.Task | None = None
 _analysis_running = False
@@ -65,12 +75,16 @@ app.add_middleware(
 
 
 @app.get("/healthz")
-async def healthz() -> dict[str, str]:
+async def healthz() -> dict:
     config = storage.get_config()
     return {
         "status": "ok",
         "asr_model": config.asr.paraformer_model,
         "llm_model": config.llm.model,
+        # See TRANSCRIBE_CAPABILITY: the client uses these two fields to decide
+        # whether the running process is stale and needs a restart.
+        "transcribe": TRANSCRIBE_CAPABILITY,
+        "code_hash": os.environ.get("MEETING_ASR_CODE_HASH", ""),
     }
 
 
@@ -302,6 +316,54 @@ async def clear_transcript() -> dict:
     llm_service.clear_transcript()
     storage.clear_analysis()
     return {"status": "ok"}
+
+
+# ── Whole-file transcription (batch) ─────────────────────────────────────
+# Used by the "split speakers after recording" button and by the
+# "direct audio transcription" tab of the create-meeting dialog. The audio
+# body is the raw container bytes (webm/mp3/wav/...); ffmpeg decodes it in
+# the background job. Long transcriptions are polled through
+# /api/transcribe/status/{job_id} instead of holding the HTTP request open.
+
+
+def _truthy(raw: str | None) -> bool:
+    return str(raw or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+@app.post("/api/transcribe/file")
+async def start_file_transcription(
+    request: Request,
+    engine: str = "minimax",
+    diarize: str = "false",
+    speaker_count: str = "0",
+    language: str = "",
+    session_id: str = "",
+) -> dict:
+    body = await request.body()
+    try:
+        count = int(speaker_count or 0)
+    except (TypeError, ValueError):
+        count = 0
+    try:
+        job_id = start_transcription(
+            body,
+            engine=engine,
+            diarize=_truthy(diarize),
+            speaker_count=count,
+            language=language,
+            session_id=session_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"job_id": job_id, "status": "pending"}
+
+
+@app.get("/api/transcribe/status/{job_id}")
+async def get_file_transcription_status(job_id: str) -> dict:
+    job = get_transcribe_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="transcription job not found")
+    return job
 
 
 @app.websocket("/ws/asr")

@@ -1,5 +1,7 @@
 import type { Context } from 'koa'
 import { PassThrough } from 'node:stream'
+import http from 'node:http'
+import https from 'node:https'
 import { meetingASRService } from '../../services/meeting-asr'
 import { REPORT_FALLBACK_MARKER } from '../../services/meeting-asr/realtime-assist'
 import { logger } from '../../services/logger'
@@ -435,4 +437,126 @@ export async function meetingTitle(ctx: Context): Promise<void> {
     logger.warn('[meeting-asr-ctrl] meetingTitle failed: %s', err instanceof Error ? err.message : String(err))
     ctx.body = { title: null }
   }
+}
+
+// ── Whole-file transcription (batch) ─────────────────────────────────────
+// The raw audio body is streamed straight through to the Python backend,
+// which starts a background job and answers with a job id. The client polls
+// /transcribe/status/:jobId — long recordings can take minutes to transcribe
+// and must not hold a single request open.
+
+/** Mirrors the Python-side cap; keeps runaway uploads off the proxy. */
+const TRANSCRIBE_MAX_BYTES = Number(process.env.MEETING_TRANSCRIBE_MAX_BYTES) || 250 * 1024 * 1024
+
+/**
+ * Pipe the request body to the local ASR backend and resolve with its JSON
+ * response. Uses node:http instead of fetch so the stream body can be
+ * forwarded without buffering it in memory, and TLS (device images spawn
+ * uvicorn with a self-signed cert) can be handled explicitly.
+ */
+function requestBackendRaw(
+  asrPort: number,
+  useTls: boolean,
+  path: string,
+  source: NodeJS.ReadableStream,
+  contentType: string,
+  contentLength?: number,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const transport = useTls ? https : http
+    const headers: Record<string, string> = { 'Content-Type': contentType }
+    if (contentLength && Number.isFinite(contentLength)) {
+      headers['Content-Length'] = String(contentLength)
+    }
+    const req = transport.request(
+      {
+        host: '127.0.0.1',
+        port: asrPort,
+        path,
+        method: 'POST',
+        headers,
+        // 0 disables the socket timeout: transcription upload can be large.
+        timeout: 0,
+        ...(useTls ? { rejectUnauthorized: false } : {}),
+      },
+      (res) => {
+        const chunks: Buffer[] = []
+        res.on('data', (chunk: Buffer) => chunks.push(chunk))
+        res.on('end', () => {
+          resolve({
+            status: res.statusCode || 502,
+            body: Buffer.concat(chunks).toString('utf-8'),
+          })
+        })
+      },
+    )
+    req.on('error', reject)
+    source.on('error', (err: Error) => {
+      req.destroy(err)
+      reject(err)
+    })
+    source.pipe(req)
+  })
+}
+
+/** Map the client's camelCase query keys onto the Python snake_case ones. */
+function buildTranscribeQuery(ctx: Context): string {
+  const q = ctx.query || {}
+  const params = new URLSearchParams()
+  const engine = String(q.engine ?? 'minimax')
+  params.set('engine', engine === 'qwen' || engine === 'dashscope' ? 'qwen' : 'minimax')
+  const diarize = String(q.diarize ?? 'false')
+  params.set('diarize', diarize === 'true' || diarize === '1' ? 'true' : 'false')
+  const speakerCount = String(q.speakerCount ?? q.speaker_count ?? '0')
+  params.set('speaker_count', /^\d+$/.test(speakerCount) ? speakerCount : '0')
+  if (q.language) params.set('language', String(q.language))
+  if (q.sessionId) params.set('session_id', String(q.sessionId))
+  return params.toString()
+}
+
+export async function startFileTranscription(ctx: Context): Promise<void> {
+  const status = meetingASRService.status
+  if (!status.isRunning || !status.asrPort) {
+    ctx.status = 503
+    ctx.body = { error: 'ASR service is not running' }
+    return
+  }
+
+  const declared = Number(ctx.request.length ?? ctx.req.headers['content-length'] ?? 0)
+  if (declared && declared > TRANSCRIBE_MAX_BYTES) {
+    ctx.status = 413
+    ctx.body = { error: `Audio too large: ${declared} > ${TRANSCRIBE_MAX_BYTES} bytes` }
+    return
+  }
+
+  const query = buildTranscribeQuery(ctx)
+  try {
+    const result = await requestBackendRaw(
+      status.asrPort,
+      !!status.useTls,
+      `/api/transcribe/file?${query}`,
+      ctx.req,
+      ctx.request.type || 'application/octet-stream',
+      declared || undefined,
+    )
+    ctx.status = result.status
+    try {
+      ctx.body = result.body ? JSON.parse(result.body) : null
+    } catch {
+      ctx.body = result.body
+    }
+  } catch (err) {
+    ctx.status = 502
+    ctx.body = { error: `Failed to proxy audio to ASR backend: ${err}` }
+  }
+}
+
+export async function getFileTranscriptionStatus(ctx: Context): Promise<void> {
+  const { jobId } = ctx.params
+  if (!jobId || !/^[a-zA-Z0-9_-]+$/.test(jobId)) {
+    ctx.status = 400
+    ctx.body = { error: 'invalid jobId' }
+    return
+  }
+  await proxyToBackend(ctx, `/api/transcribe/status/${jobId}`)
 }

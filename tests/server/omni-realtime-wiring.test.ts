@@ -93,70 +93,30 @@ describe('omni-realtime client wiring', () => {
     expect(source).not.toContain('toggle-realtime-dialog')
   })
 
-  it('MeetingView keeps the realtime-dialog toggle reachable from the right-panel header', () => {
+  it('MeetingView no longer mounts the meeting-side realtime dialog', () => {
+    // Product decision (2026-02): the right-panel header headphone button was
+    // replaced by 下载音频 + 拆分人声, so the meeting page has no realtime
+    // dialog entry any more. The shared Omni-Realtime stack (useOmniRealtime /
+    // OmniRealtimeStage) is still used by the chat page — only this entry is gone.
     const source = readFileSync(`${CLIENT_SRC}/views/hermes/MeetingView.vue`, 'utf8')
-    // kebab-case attr binding in template + reactive ref in script
-    expect(source).toContain('show-realtime-dialog=')
-    expect(source).toContain('showRealtimeDialog')
-    // the toggle moved out of MeetingTopBar into MeetingRightPanel's header
-    expect(source).toContain('@toggle-realtime="showRealtimeDialog = !showRealtimeDialog"')
-    // InlineRealtimePanel (the meeting-side thin wrapper around the shared
-    // useOmniRealtime audio chain) is mounted into MeetingRightPanel's realtime slot
-    expect(source).toContain('<InlineRealtimePanel')
-    expect(source).toContain('has-dashscope-key')
+    expect(source).not.toContain('showRealtimeDialog')
+    expect(source).not.toContain('<InlineRealtimePanel')
+    expect(source).not.toContain('InlineRealtimePanel')
+    // the two replacement header actions must be wired to the panel
+    expect(source).toContain('@download-audio="downloadAudio"')
+    expect(source).toContain('@diarize="openDiarizeDialog"')
   })
 
-  it('MeetingView feeds the current meeting context (transcript + time) into the realtime dialog', () => {
-    const source = readFileSync(`${CLIENT_SRC}/views/hermes/MeetingView.vue`, 'utf8')
-    // context builder: title / start time / speakers / timestamped verbatim transcript
-    expect(source).toContain('realtimeMeetingContext')
-    expect(source).toContain('meetingStore.activeSession')
-    expect(source).toContain('会议标题')
-    expect(source).toContain('逐字稿')
-    // the panel receives it as a prop
-    expect(source).toMatch(/meeting-context="realtimeMeetingContext"/)
-  })
-
-  it('MeetingRightPanel accepts showRealtimeDialog, exposes the header toggle, and a realtime slot', () => {
+  it('MeetingRightPanel exposes download-audio + diarize header actions and no realtime toggle', () => {
     const source = readFileSync(
       `${CLIENT_SRC}/components/hermes/meeting/MeetingRightPanel.vue`,
       'utf8',
     )
-    expect(source).toContain('showRealtimeDialog')
-    expect(source).toContain("t('meeting.realtime.tabTooltip')")
-    expect(source).toContain("emit('toggle-realtime')")
-    // The four-way slot dispatch (speech > agent > realtime > analysis)
-    expect(source).toContain('<slot name="realtime"')
-  })
-
-  it('InlineRealtimePanel implements push-to-talk and soul-based instructions', () => {
-    const source = readFileSync(
-      `${CLIENT_SRC}/components/hermes/meeting/InlineRealtimePanel.vue`,
-      'utf8',
-    )
-    // receives the DashScope-key availability as a prop from MeetingView
-    expect(source).toContain('hasDashscopeKey')
-    // receives the current meeting context (transcript + time) as a prop
-    expect(source).toContain('meetingContext')
-    // meeting context + SOUL.md persona are combined through the shared
-    // buildRealtimeInstructions path (same injection seam as the Chat stage)
-    expect(source).toContain('buildRealtimeInstructions')
-    expect(source).toContain('meetingContext:')
-    // speak/release handlers
-    expect(source).toContain('togglePush')
-    expect(source).toContain('releasePush')
-    // delegates WS lifecycle to useOmniRealtime (covered in the next test)
-    expect(source).toContain('useOmniRealtime')
-    // passes the user-supplied voice through to the server; instructions are
-    // composed from soul + meeting context (optionally user extras)
-    expect(source).toMatch(/voice:\s*selectedVoice/)
-    expect(source).toContain('baseInstructions')
-  })
-
-  it('MeetingView forwards the DashScope key availability to RealtimeDialogPanel', () => {
-    const source = readFileSync(`${CLIENT_SRC}/views/hermes/MeetingView.vue`, 'utf8')
-    expect(source).toContain('meetingStore.asrConfig.dashscopeApiKey')
-    expect(source).toMatch(/has-dashscope-key=.*dashscopeApiKey/)
+    expect(source).toContain("emit('download-audio')")
+    expect(source).toContain("emit('diarize')")
+    expect(source).not.toContain('showRealtimeDialog')
+    expect(source).not.toContain("emit('toggle-realtime')")
+    expect(source).not.toContain('<slot name="realtime"')
   })
 
   it('useOmniRealtime composable wires binary PCM16 audio both directions', () => {
@@ -223,10 +183,11 @@ describe('omni-realtime client wiring', () => {
     // Regression guard: Cherry / Chelsie / Adam are not in the
     // `qwen3.5-omni-flash-realtime` voice catalogue — DashScope rejects
     // them with `1007 InvalidParameter: Voice 'X' is not supported.`
+    // (The meeting-side picker that used to be checked here was removed with
+    // the meeting realtime-dialog entry; the chat stage remains.)
     const disallowed = ['Cherry', 'Chelsie', 'Adam']
     const pickers = [
       `${CLIENT_SRC}/components/hermes/chat/OmniRealtimeStage.vue`,
-      `${CLIENT_SRC}/components/hermes/meeting/InlineRealtimePanel.vue`,
     ]
     for (const path of pickers) {
       const source = readFileSync(path, 'utf8')

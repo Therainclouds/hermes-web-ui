@@ -186,21 +186,26 @@ class MiniMaxProxy:
             content_type = f"audio/{container}"
 
         model = settings.minimax_asr_model or "asr-1.0"
-        data: dict[str, Any] = {
-            "model": (model,),
-            "file": (filename, payload, content_type),
-            "response_format": ("json",),
-            "stream": ("false",),
+        # Plain form fields must go through `data=`: httpx treats every
+        # `files=` entry as a file field requiring a 2/3/4-tuple, so a
+        # 1-tuple field raises "not enough values to unpack (expected 4,
+        # got 1)" before the request is even sent.
+        form: dict[str, Any] = {
+            "model": model,
+            "response_format": "json",
+            "stream": "false",
         }
         if settings.minimax_language:
-            data["language"] = (settings.minimax_language,)
+            form["language"] = settings.minimax_language
+        files = {"file": (filename, payload, content_type)}
         headers = self._auth_headers()
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
                 resp = await client.post(
                     self._endpoint,
                     headers=headers,
-                    files=data,
+                    data=form,
+                    files=files,
                 )
         except httpx.HTTPError as exc:
             log.warning("minimax post failed: %s", exc)

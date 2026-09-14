@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { NButton, NSpin, NTag, NTooltip, NInput, NPopconfirm, NModal, NSelect, NRadio, NRadioGroup } from 'naive-ui'
+import { NButton, NSpin, NTag, NTooltip, NInput, NPopconfirm, NModal, NSelect, NRadio, NRadioGroup, NTabs, NTabPane } from 'naive-ui'
 import MeetingAgentPanel from '@/components/hermes/meeting/MeetingAgentPanel.vue'
-import InlineRealtimePanel from '@/components/hermes/meeting/InlineRealtimePanel.vue'
 import SceneTemplatePicker from '@/components/hermes/meeting/SceneTemplatePicker.vue'
 import WaveformCanvas from '@/components/hermes/meeting/WaveformCanvas.vue'
 import MeetingSidebar, { type SidebarSession } from '@/components/hermes/meeting/MeetingSidebar.vue'
 import CreateMeetingDialog from '@/components/hermes/meeting/CreateMeetingDialog.vue'
 import AsrConfigWizardDialog from '@/components/hermes/meeting/AsrConfigWizardDialog.vue'
+import DirectTranscribeForm from '@/components/hermes/meeting/DirectTranscribeForm.vue'
+import DiarizeWholeFileDialog, { type DiarizeEngine, type DiarizeOssConfig } from '@/components/hermes/meeting/DiarizeWholeFileDialog.vue'
 import { SCENE_UI } from '@/components/hermes/meeting/scene-ui-registry'
 import { normalizeSceneId } from '@/components/hermes/meeting/scene-templates'
 import MeetingTopBar from '@/components/hermes/meeting/MeetingTopBar.vue'
@@ -30,6 +31,7 @@ import { useMeetingAudio } from '@/composables/useMeetingAudio'
 import { useDraggableWidth } from '@/composables/useDraggableWidth'
 import { useDiarizeMerge } from '@/composables/useDiarizeMerge'
 import { useMeetingDownloads } from '@/composables/useMeetingDownloads'
+import { useFileTranscription } from '@/composables/useFileTranscription'
 import { buildSegmentRanges, resolveActiveSegmentSpeaker } from '@/utils/speech-segments'
 
 const { t } = useI18n()
@@ -149,41 +151,16 @@ const showAnalysisConfig = ref(false)
 const showAgentPanel = ref(false)
 const assistPanelRef = ref<InstanceType<typeof MeetingAgentPanel> | null>(null)
 
-// --- 实时对话面板 (qwen3.5-omni-flash-realtime) ---
-const showRealtimeDialog = ref(false)
+// --- 新建会议：采集方式选项卡（实时语音 / 直接音频转录） ---
+// 「直接音频转录」不上麦克风，创建后把选中的整段音频交给 ASR 一次性识别。
+const newMeetingCaptureMode = ref<'realtime' | 'file'>('realtime')
+const directEngine = ref<'minimax' | 'qwen'>('minimax')
+const directDiarize = ref(true)
+const directSpeakerCount = ref(0)
+const directFile = ref<File | null>(null)
 
-// 实时对话的会议上下文：开启会话时把当前会议的标题 / 开始时间 / 发言人 /
-// 带时间戳的逐字稿注入 AI 的 system prompt，让 AI 能根据"现在正在开的会"
-// 来回答（而不是只凭用户当下的一句话）。
-const REALTIME_CONTEXT_MAX_SENTENCES = 60
-const realtimeMeetingContext = computed(() => {
-  const s = meetingStore.activeSession
-  if (!s) return ''
-  const lines: string[] = []
-  lines.push(`会议标题：${s.title}`)
-  lines.push(`开始时间：${new Date(s.createdAt).toLocaleString('zh-CN')}`)
-  const speakerNames = s.speakers.map((sp) => sp.displayName).filter(Boolean)
-  if (speakerNames.length) lines.push(`发言人：${speakerNames.join('、')}`)
-  lines.push('')
-  lines.push('【当前会议逐字稿（带时间戳）】')
-  const all = s.sentences
-  if (!all.length) {
-    lines.push('（暂无逐字稿，可先基于会议主题交流）')
-  } else {
-    const slice = all.length > REALTIME_CONTEXT_MAX_SENTENCES ? all.slice(-REALTIME_CONTEXT_MAX_SENTENCES) : all
-    if (all.length > REALTIME_CONTEXT_MAX_SENTENCES) {
-      lines.push(`（逐字稿共 ${all.length} 句，以下为最近 ${REALTIME_CONTEXT_MAX_SENTENCES} 句，更早内容已省略）`)
-    }
-    for (const sen of slice) {
-      const time = typeof sen.startTime === 'number'
-        ? formatDuration(sen.startTime / 1000)
-        : new Date(sen.timestamp).toLocaleTimeString('zh-CN')
-      const speaker = sen.speaker ? `[${sen.speaker}]` : ''
-      lines.push(`${time} ${speaker} ${sen.text}`.trim())
-    }
-  }
-  return lines.join('\n')
-})
+// 「拆分人声」对话框（选择识别模型 / 说话人数 / Qwen 所需 OSS）
+const showDiarizeDialog = ref(false)
 
 // --- 音频录制/播放（拆分至 useMeetingAudio，行为保持不变） ---
 const {
@@ -221,7 +198,7 @@ const {
 })
 
 // --- 说话人分离结果合并（拆分至 useDiarizeMerge，行为保持不变） ---
-const { addDiarizeResultDirectly, matchAndMergeDiarizeResult } = useDiarizeMerge({
+const { addDiarizeResultDirectly, matchAndMergeDiarizeResult, applyFileTranscriptionResult } = useDiarizeMerge({
   finalSentences,
   speakerMap,
   pushSentenceToAssist,
@@ -231,6 +208,194 @@ const { addDiarizeResultDirectly, matchAndMergeDiarizeResult } = useDiarizeMerge
 const { downloadAudio, downloadTranscript, downloadTranscriptMarkdown, downloadJson, downloadReport, formatDuration } = useMeetingDownloads({
   audioBlob,
   htmlContent,
+})
+
+// --- 整段音频转录（「拆分人声」按钮 / 直接音频转录 tab） ---
+// 两个入口共用一个上传 + 轮询 + 合并流程：录音完成后按发言人重新标注，
+// 或把上传的整段音频直接识别成会议转写。
+const lastTranscribeWasDiarize = ref(true)
+const { isTranscribing, progress: transcribeProgress, transcribe } = useFileTranscription({
+  onComplete: async (result, options) => {
+    const changed = applyFileTranscriptionResult(result.sentences, { diarize: !!options.diarize })
+    const sessionId = meetingStore.activeSessionId
+    if (sessionId) {
+      meetingStore.updateSession(sessionId, {
+        sentences: [...finalSentences.value],
+        speakerMap: { ...speakerMap.value },
+      })
+    }
+    await saveCurrentMeeting()
+    if (changed > 0) {
+      message.success(t(options.diarize ? 'meeting.diarizeDone' : 'meeting.directTranscribeDone'))
+    } else {
+      message.warning(t('meeting.diarizeNoNewSentences'))
+    }
+  },
+  onError: (msg) => {
+    const title = lastTranscribeWasDiarize.value
+      ? t('meeting.diarizeFailed')
+      : t('meeting.directTranscribeFailed')
+    message.error(`${title}：${msg}`)
+  },
+})
+
+/** 当前会议用哪个 ASR 引擎（会话优先，其次全局配置）。 */
+function activeTranscribeEngine(): 'minimax' | 'qwen' {
+  const provider = meetingStore.activeSession?.asrProvider
+    || meetingStore.asrConfig.asrProvider
+    || 'dashscope'
+  return provider === 'minimax' ? 'minimax' : 'qwen'
+}
+
+/**
+ * 整段转录的后端能力版本（与 python-backend/app/main.py 的
+ * `TRANSCRIBE_CAPABILITY` 保持一致）。改 `/api/transcribe` 契约时两边一起 +1。
+ */
+const TRANSCRIBE_CAPABILITY = '2'
+
+/**
+ * 确保整段转录的后端是「当前代码」。
+ *
+ * uvicorn 子进程在 spawn 时 import 一次模块，之后重建 dist / 刷新页面都不会
+ * 让它重新加载 python-backend —— 这正是「已修复的 bug 仍然复现」的原因。
+ * 这里探测 /healthz 的能力标记与代码 hash：
+ *  - 都能对上 → 直接用；
+ *  - 对不上（或探测失败）→ 主动 stop 一次，强制下次 start 重新 spawn。
+ */
+async function ensureTranscribeBackend(): Promise<boolean> {
+  const status = await checkASRServiceStatus()
+  if (!status?.isRunning) return startASRService()
+
+  let stale = false
+  try {
+    const health = await meetingASRApi.healthCheck()
+    if (String(health.transcribe || '') !== TRANSCRIBE_CAPABILITY) {
+      stale = true
+    } else if (status.codeHash && health.code_hash !== status.codeHash) {
+      stale = true
+    }
+  } catch (err) {
+    console.warn('[meeting] ASR capability probe failed; restarting service', err)
+    stale = true
+  }
+
+  if (stale) {
+    console.warn('[meeting] ASR backend is running stale code; restarting to reload python-backend')
+    message.info(t('meeting.asrRestarting'))
+    try {
+      await meetingASRApi.stop()
+      await checkASRServiceStatus()
+    } catch (err) {
+      console.warn('[meeting] failed to stop stale ASR service:', err)
+    }
+  }
+  return startASRService()
+}
+
+/**
+ * 把当前 ASR 凭据热推给已在运行的后端（不重启服务）。
+ *
+ * `startASRService()` 在「服务已运行且没有 OSS」时会直接返回、不下发配置；
+ * 而整段转录允许临时切换引擎（会话 provider 与实际使用的 engine 可以不同），
+ * 所以这里显式补一次凭据推送，避免后端缺少 MiniMax/DashScope key。
+ */
+async function pushTranscribeCredentials() {
+  try {
+    await meetingASRApi.updateConfig({
+      dashscopeApiKey: meetingStore.asrConfig.dashscopeApiKey
+        || asrApiKey.value
+        || realtimeModelStore.config.apiKey,
+      minimaxApiKey: meetingStore.asrConfig.minimaxApiKey
+        || realtimeModelStore.config.minimaxApiKey,
+      minimaxAsrModel: meetingStore.asrConfig.minimaxAsrModel
+        || realtimeModelStore.config.minimaxAsrModel,
+      minimaxBaseUrl: meetingStore.asrConfig.minimaxBaseUrl
+        || realtimeModelStore.config.minimaxBaseUrl,
+    })
+  } catch (err) {
+    console.warn('[meeting] failed to push transcribe credentials:', err)
+  }
+}
+
+/**
+ * 「拆分人声」：先让用户选识别模型（MiniMax / Qwen）与说话人数，
+ * 再执行整段人声分离。Qwen 需要在对话框里补齐 OSS（公网音频 URL）。
+ */
+function openDiarizeDialog() {
+  if (!audioBlob.value || !meetingStore.activeSessionId) {
+    message.warning(t('meeting.diarizeNoAudio'))
+    return
+  }
+  showDiarizeDialog.value = true
+}
+
+/** 对话框确认后：落库 OSS（若有改动）→ 确保 ASR 服务按新配置启动 → 开始整段分离。 */
+async function onDiarizeStart(payload: { engine: DiarizeEngine; speakerCount: number; oss: DiarizeOssConfig }) {
+  showDiarizeDialog.value = false
+  const sessionId = meetingStore.activeSessionId
+  if (!audioBlob.value || !sessionId) return
+
+  if (payload.engine === 'qwen') {
+    meetingStore.updateASRConfig({
+      ossBucket: payload.oss.bucket,
+      ossAccessKeyId: payload.oss.accessKeyId,
+      ossAccessKeySecret: payload.oss.accessKeySecret,
+      ossEndpoint: payload.oss.endpoint,
+      ossPathPrefix: payload.oss.pathPrefix,
+    })
+  }
+
+  // 文件转录走 Node → Python ASR 后端，服务必须先起来；带 OSS 配置启动会
+  // 触发后端重启以读取新的 OSS 凭据，代码版本不一致时也会自动重启。
+  if (!(await ensureTranscribeBackend())) return
+  await pushTranscribeCredentials()
+  lastTranscribeWasDiarize.value = true
+  await transcribe(audioBlob.value, {
+    engine: payload.engine,
+    diarize: true,
+    speakerCount: payload.speakerCount || 0,
+    sessionId,
+  })
+}
+
+/**
+ * 「直接音频转录」：新建会议时选中的整段音频立即开始识别，并把音频落库，
+ * 让后续的播放 / 下载音频按钮对这类会议同样可用。
+ */
+async function runDirectTranscription(sessionId: string, file: File) {
+  if (!(await ensureTranscribeBackend())) return
+  await pushTranscribeCredentials()
+  meetingStorageApi.uploadAudio(sessionId, file).catch((err) => {
+    console.warn('[meeting] failed to persist uploaded audio:', err)
+  })
+  audioBlob.value = file
+  audioUrl.value = URL.createObjectURL(file)
+  lastTranscribeWasDiarize.value = false
+  await transcribe(file, {
+    engine: directEngine.value,
+    diarize: directDiarize.value,
+    speakerCount: directSpeakerCount.value || 0,
+    sessionId,
+  })
+}
+
+/** 创建按钮禁用条件：实时语音看 ASR Key，直接音频转录看引擎 Key + 是否选了文件。 */
+const createMeetingDisabled = computed(() => {
+  if (!newMeetingTitle.value.trim()) return true
+  if (newMeetingCaptureMode.value === 'realtime') {
+    return newMeetingAsrProvider.value === 'dashscope'
+      ? (!asrApiKey.value.trim() && !meetingStore.hasASRConfig && !realtimeModelStore.hasApiKey)
+      : (!newMeetingMinimaxApiKey.value.trim() && !realtimeModelStore.config.minimaxApiKey)
+  }
+  if (!directFile.value) return true
+  if (directEngine.value === 'minimax') {
+    return !(
+      newMeetingMinimaxApiKey.value.trim()
+      || meetingStore.asrConfig.minimaxApiKey
+      || realtimeModelStore.config.minimaxApiKey
+    )
+  }
+  return !asrApiKey.value.trim() && !meetingStore.hasASRConfig && !realtimeModelStore.hasApiKey
 })
 
 /**
@@ -432,6 +597,13 @@ function openCreateModal() {
     || 'dashscope'
   newMeetingMinimaxApiKey.value = meetingStore.asrConfig.minimaxApiKey
     || realtimeModelStore.config.minimaxApiKey
+  // 采集方式回落到实时语音；直接音频转录的引擎默认跟随当前 ASR provider。
+  // Qwen 引擎不支持区分人声，因此开关只对 MiniMax 预置为开。
+  newMeetingCaptureMode.value = 'realtime'
+  directEngine.value = newMeetingAsrProvider.value === 'minimax' ? 'minimax' : 'qwen'
+  directDiarize.value = directEngine.value === 'minimax'
+  directSpeakerCount.value = 0
+  directFile.value = null
   // LLM/OSS/步骤的重播种已随向导拆入 AsrConfigWizardDialog
   asrWizardRef.value?.reset()
   showCreateModal.value = true
@@ -439,9 +611,15 @@ function openCreateModal() {
 
 function handleCreateMeeting() {
   if (!newMeetingTitle.value.trim()) return
+  const captureMode = newMeetingCaptureMode.value
   const wizard = asrWizardRef.value?.collectConfig()
-  const asrProvider = wizard?.asrProvider || 'dashscope'
-  const minimaxApiKey = (wizard?.minimaxApiKey ?? '').trim()
+  // 直接音频转录 tab 用自己选的引擎；实时语音 tab 沿用 ASR 向导的 provider。
+  const asrProvider: 'dashscope' | 'minimax' = captureMode === 'file'
+    ? (directEngine.value === 'minimax' ? 'minimax' : 'dashscope')
+    : (wizard?.asrProvider || 'dashscope')
+  const minimaxApiKey = (captureMode === 'file'
+    ? (newMeetingMinimaxApiKey.value || wizard?.minimaxApiKey || '')
+    : (wizard?.minimaxApiKey ?? '')).trim()
   // ASR 准入校验：DashScope 走 DashScope Key（store / realtime 面板回落），
   // MiniMax 走 MiniMax Key；两个 provider 不能混用同一个 key 字段。
   if (asrProvider === 'dashscope'
@@ -525,6 +703,13 @@ function handleCreateMeeting() {
 
   resetMeetingState()
   showCreateModal.value = false
+
+  // 直接音频转录：创建后立刻把选中的整段音频送去识别
+  const createdSessionId = meetingStore.activeSessionId
+  const pickedFile = captureMode === 'file' ? directFile.value : null
+  if (captureMode === 'file' && pickedFile && createdSessionId) {
+    void runDirectTranscription(createdSessionId, pickedFile)
+  }
 }
 
 // MeetingSidebar 只传 sessionId；这里把它查回 store 中的完整 session，再走原 loadMeeting。
@@ -737,17 +922,17 @@ async function startASRService() {
         || asrApiKey.value
         || realtimeModelStore.config.apiKey
     }
-    // MiniMax provider → 需要 MiniMax Key（store / wizard / realtime 面板回落）
-    if (asrProvider === 'minimax') {
-      const minimaxKey = meetingStore.asrConfig.minimaxApiKey
-        || newMeetingMinimaxApiKey.value.trim()
-        || realtimeModelStore.config.minimaxApiKey
-      if (minimaxKey) config.minimaxApiKey = minimaxKey
-      config.minimaxAsrModel = meetingStore.asrConfig.minimaxAsrModel
-        || realtimeModelStore.config.minimaxAsrModel
-      config.minimaxBaseUrl = meetingStore.asrConfig.minimaxBaseUrl
-        || realtimeModelStore.config.minimaxBaseUrl
-    }
+    // MiniMax 凭据与会话 provider 解耦：整段「拆分人声」对话框允许临时切到
+    // MiniMax（会话本身可能是 DashScope），所以只要手上有 key/模型就一并下发给
+    // 后端 —— 后端按每个请求的 engine 路由，多带一份凭据没有副作用。
+    const minimaxKey = meetingStore.asrConfig.minimaxApiKey
+      || newMeetingMinimaxApiKey.value.trim()
+      || realtimeModelStore.config.minimaxApiKey
+    if (minimaxKey) config.minimaxApiKey = minimaxKey
+    config.minimaxAsrModel = meetingStore.asrConfig.minimaxAsrModel
+      || realtimeModelStore.config.minimaxAsrModel
+    config.minimaxBaseUrl = meetingStore.asrConfig.minimaxBaseUrl
+      || realtimeModelStore.config.minimaxBaseUrl
     // Pass LLM config if user provided it, so backend has it from the start.
     if (meetingStore.asrConfig.llmApiKey || wizard?.llmApiKey) {
       config.llmApiKey = meetingStore.asrConfig.llmApiKey || wizard?.llmApiKey
@@ -1218,6 +1403,16 @@ async function clearTranscript() {
           </div>
         </div>
 
+        <!-- 整段音频转录进度（「拆分人声」/ 直接音频转录共用） -->
+        <div v-if="isTranscribing" class="transcribe-progress">
+          <div class="transcribe-progress-label">
+            {{ t('meeting.directTranscribing') }} · {{ Math.round(transcribeProgress * 100) }}%
+          </div>
+          <div class="transcribe-progress-track">
+            <div class="transcribe-progress-fill" :style="{ width: `${Math.round(transcribeProgress * 100)}%` }" />
+          </div>
+        </div>
+
         <!-- 转写内容（拆分自 MeetingView 主体） -->
         <TranscriptList
           :sentences="sentences"
@@ -1259,10 +1454,13 @@ async function clearTranscript() {
         :is-legal-scene="isLegalScene"
         :is-interview-scene="isInterviewScene"
         :show-agent-panel="showAgentPanel"
-        :show-realtime-dialog="showRealtimeDialog"
+        :can-download-audio="!isRecording && !!audioUrl"
+        :can-diarize="!isRecording && !!audioBlob"
+        :is-diarizing="isTranscribing"
         :resize-style="rightPanelStyle"
         @close="showRightPanel = false"
-        @toggle-realtime="showRealtimeDialog = !showRealtimeDialog"
+        @download-audio="downloadAudio"
+        @diarize="openDiarizeDialog"
         @resize-start="startRightPanelResize"
       >
         <template #toolbar>
@@ -1406,14 +1604,6 @@ async function clearTranscript() {
             @update:report-html="onAgentReportHtml"
             @completed="onAgentCompleted"
             @corrected="onAgentCorrected"
-          />
-        </template>
-
-        <template #realtime>
-          <InlineRealtimePanel
-            :has-dashscope-key="!!meetingStore.asrConfig.dashscopeApiKey || realtimeModelStore.hasApiKey"
-            :meeting-context="realtimeMeetingContext"
-            @close="showRealtimeDialog = false"
           />
         </template>
 
@@ -1668,11 +1858,7 @@ async function clearTranscript() {
 <!-- 创建会议对话框（外壳已拆出 CreateMeetingDialog） -->
     <CreateMeetingDialog
       v-model:visible="showCreateModal"
-      :create-disabled="!newMeetingTitle.trim() || (
-        newMeetingAsrProvider === 'dashscope'
-          ? (!asrApiKey.trim() && !meetingStore.hasASRConfig && !realtimeModelStore.hasApiKey)
-          : (!newMeetingMinimaxApiKey.trim() && !realtimeModelStore.config.minimaxApiKey)
-      )"
+      :create-disabled="createMeetingDisabled"
       @create="handleCreateMeeting"
     >
       <div class="create-meeting-form">
@@ -1691,14 +1877,27 @@ async function clearTranscript() {
           <div class="form-hint">{{ t('meeting.scene.hint') }}</div>
         </div>
 
-        <!-- ASR 配置向导（拆分至 AsrConfigWizardDialog，行为保持不变） -->
-        <AsrConfigWizardDialog
-          ref="asrWizardRef"
-          v-model:asr-api-key="asrApiKey"
-          v-model:analysis-mode="newMeetingAnalysisMode"
-          v-model:asr-provider="newMeetingAsrProvider"
-          v-model:minimax-api-key="newMeetingMinimaxApiKey"
-        />
+        <!-- 采集方式：实时语音（麦克风） / 直接音频转录（上传整段音频） -->
+        <NTabs v-model:value="newMeetingCaptureMode" type="line" animated>
+          <NTabPane name="realtime" :tab="t('meeting.createTabRealtime')" display-directive="show">
+            <!-- ASR 配置向导（拆分至 AsrConfigWizardDialog，行为保持不变） -->
+            <AsrConfigWizardDialog
+              ref="asrWizardRef"
+              v-model:asr-api-key="asrApiKey"
+              v-model:analysis-mode="newMeetingAnalysisMode"
+              v-model:asr-provider="newMeetingAsrProvider"
+              v-model:minimax-api-key="newMeetingMinimaxApiKey"
+            />
+          </NTabPane>
+          <NTabPane name="file" :tab="t('meeting.createTabFile')" display-directive="show">
+            <DirectTranscribeForm
+              v-model:engine="directEngine"
+              v-model:diarize="directDiarize"
+              v-model:speaker-count="directSpeakerCount"
+              v-model:file="directFile"
+            />
+          </NTabPane>
+        </NTabs>
 
         <div class="form-section">
           <div class="form-section-title">{{ t('meeting.agentConfig') }}</div>
@@ -1774,6 +1973,24 @@ async function clearTranscript() {
         </div>
       </div>
     </CreateMeetingDialog>
+
+    <!-- 拆分人声对话框（选择识别模型 + Qwen 所需 OSS） -->
+    <DiarizeWholeFileDialog
+      v-model:visible="showDiarizeDialog"
+      :default-engine="activeTranscribeEngine()"
+      :default-speaker-count="speakerCount || 0"
+      :minimax-key-available="!!(meetingStore.asrConfig.minimaxApiKey || realtimeModelStore.config.minimaxApiKey)"
+      :dashscope-key-available="!!(meetingStore.asrConfig.dashscopeApiKey || realtimeModelStore.hasApiKey)"
+      :oss="{
+        bucket: meetingStore.asrConfig.ossBucket,
+        accessKeyId: meetingStore.asrConfig.ossAccessKeyId,
+        accessKeySecret: meetingStore.asrConfig.ossAccessKeySecret,
+        endpoint: meetingStore.asrConfig.ossEndpoint,
+        pathPrefix: meetingStore.asrConfig.ossPathPrefix,
+      }"
+      :busy="isTranscribing"
+      @start="onDiarizeStart"
+    />
 
     <!-- 分析触发配置弹窗 -->
     <NModal
@@ -2104,6 +2321,31 @@ async function clearTranscript() {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.transcribe-progress {
+  padding: 8px 16px;
+  border-bottom: 1px solid $border-color;
+  background: rgba(var(--accent-primary-rgb), 0.06);
+}
+
+.transcribe-progress-label {
+  font-size: 12px;
+  color: $text-secondary;
+  margin-bottom: 6px;
+}
+
+.transcribe-progress-track {
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(var(--accent-primary-rgb), 0.15);
+  overflow: hidden;
+}
+
+.transcribe-progress-fill {
+  height: 100%;
+  background: var(--color-primary, #667eea);
+  transition: width 0.3s ease;
 }
 
 .panel-toggle-btn {

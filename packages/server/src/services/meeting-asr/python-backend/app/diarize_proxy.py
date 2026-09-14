@@ -9,8 +9,14 @@ import wave
 from dataclasses import dataclass, field
 from typing import Any
 
-import oss2
 import requests
+
+try:  # oss2 is part of the runtime requirements; keep the import optional so
+    # modules that only need parsing helpers (e.g. file_transcribe) stay
+    # importable in minimal test environments.
+    import oss2
+except ImportError:  # pragma: no cover - exercised only without requirements.txt
+    oss2 = None  # type: ignore[assignment]
 
 from .config import settings
 
@@ -45,7 +51,9 @@ class ChunkResult:
     raw: dict[str, Any] = field(default_factory=dict)
 
 
-def _build_oss_client() -> oss2.Bucket:
+def _build_oss_client() -> "oss2.Bucket":
+    if oss2 is None:
+        raise RuntimeError("oss2 is not installed (pip install -r requirements.txt)")
     auth = oss2.Auth(settings.oss_access_key_id, settings.oss_access_key_secret)
     endpoint = settings.oss_endpoint
     if not endpoint.startswith("http"):

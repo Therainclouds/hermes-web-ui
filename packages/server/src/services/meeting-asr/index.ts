@@ -1,5 +1,7 @@
 import { ChildProcess, spawn } from 'child_process'
 import { EventEmitter } from 'events'
+import { createHash } from 'crypto'
+import { readdirSync, readFileSync } from 'fs'
 import path from 'path'
 import fs from 'fs/promises'
 import os from 'os'
@@ -73,6 +75,12 @@ export interface MeetingASRStatus {
    * `net.connect` automatically — no deploy-time env coordination needed.
    */
   useTls: boolean
+  /**
+   * Content hash of the python-backend sources currently on disk. The client
+   * compares it with the hash the backend reports on `/healthz` to notice a
+   * stale uvicorn child after a rebuild.
+   */
+  codeHash?: string | null
 }
 
 /**
@@ -97,6 +105,8 @@ export class MeetingASRService extends EventEmitter {
   private _error: string | null = null
   private _asrPort: number | null = null
   private _diarizePort: number | null = null
+  /** Content hash of the python-backend sources the running child loaded. */
+  private _backendCodeHash: string | null = null
   // Auto-restart: when true, an unexpected main-process exit triggers a
   // bounded backoff restart loop. Disabled by stop() to avoid fighting
   // deliberate shutdowns.
@@ -152,7 +162,57 @@ export class MeetingASRService extends EventEmitter {
       startupPhase: this._startupPhase,
       isVenvReady: this._isVenvReady,
       useTls: this._useTls,
+      codeHash: this._backendCodeHash,
     }
+  }
+
+  /**
+   * Content hash of the bundled python-backend sources.
+   *
+   * The uvicorn child imports its modules once at spawn; a rebuild that
+   * replaces `python-backend/` on disk does not affect an already-running
+   * process. Hashing the sources lets us (a) detect that mismatch on the next
+   * start and respawn, and (b) expose the marker to the client via status so
+   * it can compare against the hash the backend reports on /healthz.
+   *
+   * Best-effort: any IO error just yields null and the staleness check is
+   * skipped rather than blocking startup.
+   */
+  private computeBackendCodeHash(): string | null {
+    try {
+      const root = this.getPythonBackendPath()
+      const files: string[] = []
+      const walk = (dir: string): void => {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          if (entry.name === '__pycache__' || entry.name.startsWith('.')) continue
+          const full = path.join(dir, entry.name)
+          if (entry.isDirectory()) walk(full)
+          else if (entry.name.endsWith('.py')) files.push(full)
+        }
+      }
+      walk(root)
+      files.sort()
+      const hash = createHash('sha256')
+      for (const file of files) {
+        hash.update(path.relative(root, file))
+        hash.update(readFileSync(file))
+      }
+      return hash.digest('hex').slice(0, 16)
+    } catch (err) {
+      logger.warn('[meeting-asr] failed to hash python-backend sources: %s', err)
+      return null
+    }
+  }
+
+  /**
+   * True when the sources on disk no longer match the ones the running child
+   * imported. False when nothing is running, when the hash is unknown, or
+   * when hashing failed — the caller then falls back to a hot config push.
+   */
+  private isBackendCodeStale(): boolean {
+    if (!this._backendCodeHash) return false
+    const current = this.computeBackendCodeHash()
+    return !!current && current !== this._backendCodeHash
   }
 
   /**
@@ -243,8 +303,21 @@ export class MeetingASRService extends EventEmitter {
       //   - All other fields (DashScope key, Paraformer, LLM) are pushed via
       //     updateConfig() → POST /api/config so we avoid interrupting the
       //     user's recording session.
+      //   - Changed python-backend sources also require a restart: the child
+      //     imported its modules at spawn and would otherwise keep running
+      //     stale logic after a rebuild (this is how an already-fixed bug can
+      //     keep reproducing until the service is manually restarted).
+      const currentHash = this.computeBackendCodeHash()
+      const codeChanged = this.isBackendCodeStale()
       if (config.ossBucket || config.ossAccessKeyId || config.ossAccessKeySecret) {
         logger.info('[meeting-asr] OSS config provided while running; restarting to pick up new credentials')
+        await this.stop()
+        // Fall through to the normal start path below.
+      } else if (codeChanged) {
+        logger.info(
+          '[meeting-asr] python-backend sources changed (%s → %s); restarting to load the new code',
+          this._backendCodeHash, currentHash,
+        )
         await this.stop()
         // Fall through to the normal start path below.
       } else {
@@ -302,6 +375,14 @@ export class MeetingASRService extends EventEmitter {
         BACKEND_PORT: String(this._asrPort),
         DIARIZE_PORT: String(this._diarizePort),
         CORS_ORIGIN: `http://localhost:${process.env.PORT || 6060}`,
+      }
+
+      // Stamp the sources this child is about to load. /healthz echoes it and
+      // the client compares it with `status.codeHash` to spot a stale process.
+      const codeHash = this.computeBackendCodeHash()
+      if (codeHash) {
+        env.MEETING_ASR_CODE_HASH = codeHash
+        this._backendCodeHash = codeHash
       }
 
       if (config.dashscopeApiKey) {
@@ -625,6 +706,7 @@ export class MeetingASRService extends EventEmitter {
     this.mainProcess = null
     this._isRunning = false
     this._startTime = null
+    this._backendCodeHash = null
     this._asrPort = null
     this._diarizePort = null
     this._startupPhase = 'idle'
@@ -776,6 +858,14 @@ export class MeetingASRService extends EventEmitter {
         paraformer_format: config.paraformerFormat,
         paraformer_language_hints: config.paraformerLanguageHints,
         paraformer_semantic_punctuation: config.paraformerSemanticPunctuation,
+        // MiniMax credentials are provider-independent: the whole-file
+        // transcription dialog lets the user pick either engine regardless of
+        // the session's provider, so any known key is pushed. The Python
+        // `Settings.sync_from()` only overwrites these when truthy, so an
+        // omitted field keeps the previous value.
+        minimax_api_key: config.minimaxApiKey,
+        minimax_asr_model: config.minimaxAsrModel,
+        minimax_base_url: config.minimaxBaseUrl,
       },
       llm: {
         api_key: config.llmApiKey,

@@ -11,6 +11,15 @@ export interface UseDiarizeMergeDeps {
   pushSentenceToAssist: (sessionId: string, sentence: TranscriptSentence) => void
 }
 
+/** 整段音频转录（batch）返回的句子形状（见 meeting-asr-api.ts）。 */
+export interface FileTranscriptionSentenceInput {
+  text: string
+  begin_ms?: number
+  end_ms?: number
+  /** 全局说话人序号；未开启说话人分离时为 -1 */
+  speaker_id?: number | null
+}
+
 /**
  * 说话人分离结果合并（拆分自 MeetingView.vue，行为保持一致）。
  *
@@ -162,5 +171,92 @@ export function useDiarizeMerge(deps: UseDiarizeMergeDeps) {
     })
   }
 
-  return { addDiarizeResultDirectly, matchAndMergeDiarizeResult }
+  /**
+   * 整段音频转录 / 事后「拆分人声」结果写入。
+   * 与上面两个实时 chunk 合并函数的区别：
+   *  - `diarize === false` 时完全不写 speaker 字段（避免把 `speaker_id: -1`
+   *    渲染成"说话人 1"）；
+   *  - 依据当前是否已有转写自动选择策略：已有实时转写 → 按时间戳回填说话人
+   *    （不覆盖用户已编辑的文本）；空转写（直接音频转录）→ 整体写入。
+   *
+   * @returns 新增（或回填）的句子数量
+   */
+  function applyFileTranscriptionResult(
+    sentences: FileTranscriptionSentenceInput[],
+    options: { diarize: boolean } = { diarize: true },
+  ): number {
+    const diarize = options.diarize
+    const merge = deps.finalSentences.value.length > 0
+    const timeThreshold = 2000
+    let changed = 0
+
+    for (const item of sentences) {
+      const text = (item.text || '').trim()
+      if (!text) continue
+      const startMs = item.begin_ms || 0
+      const endMs = item.end_ms || startMs
+
+      let speaker: string | undefined
+      let speakerId: string | undefined
+      if (diarize && typeof item.speaker_id === 'number' && item.speaker_id >= 0) {
+        speakerId = String(item.speaker_id)
+        if (!deps.speakerMap.value[speakerId]) {
+          deps.speakerMap.value[speakerId] = `说话人 ${Object.keys(deps.speakerMap.value).length + 1}`
+        }
+        const session = meetingStore.activeSession
+        const registeredName = session?.speakers.find(s => String(s.id) === speakerId)?.displayName
+        speaker = registeredName || deps.speakerMap.value[speakerId]
+      }
+
+      // 已有实时转写：只回填说话人，避免整段结果覆盖用户编辑过的文本。
+      if (merge && diarize && speaker) {
+        const target = deps.finalSentences.value.find(asrSent =>
+          !asrSent.speakerId
+          && Math.abs((asrSent.startTime || 0) - startMs) < timeThreshold
+          && Math.abs((asrSent.endTime || 0) - endMs) < timeThreshold,
+        )
+        if (target) {
+          target.speaker = speaker
+          target.speakerId = speakerId
+          if (meetingStore.activeSessionId) {
+            meetingStore.updateSentence(meetingStore.activeSessionId, target)
+          }
+          changed++
+          continue
+        }
+      }
+
+      // 不覆盖已有文本：同文本 + 时间接近视为重复（overlap / 重复触发）。
+      const isDuplicate = deps.finalSentences.value.some(s =>
+        s.text === text && Math.abs((s.startTime || 0) - startMs) < timeThreshold,
+      )
+      if (isDuplicate) continue
+
+      const sentenceObj: TranscriptSentence = {
+        text,
+        timestamp: Date.now(),
+        startTime: startMs,
+        endTime: endMs,
+        ...(speaker ? { speaker, speakerId } : {}),
+      }
+      deps.finalSentences.value.push(sentenceObj)
+      changed++
+
+      if (meetingStore.activeSessionId) {
+        meetingStore.addSentence(meetingStore.activeSessionId, sentenceObj)
+        deps.pushSentenceToAssist(meetingStore.activeSessionId, sentenceObj)
+      }
+    }
+
+    deps.finalSentences.value.sort((a, b) => (a.startTime || 0) - (b.startTime || 0))
+
+    nextTick(() => {
+      const container = document.getElementById('transcript-container')
+      if (container) container.scrollTop = container.scrollHeight
+    })
+
+    return changed
+  }
+
+  return { addDiarizeResultDirectly, matchAndMergeDiarizeResult, applyFileTranscriptionResult }
 }

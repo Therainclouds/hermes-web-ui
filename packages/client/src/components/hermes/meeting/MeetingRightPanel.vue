@@ -20,22 +20,23 @@ const pluginPanel = computed(() => {
 /**
  * Right panel shell for the meeting view. Owns the outer chrome (aside,
  * resize handle, header with title + close button, scrollable inner area)
- * and exposes four mutually-exclusive slots for the content modes:
+ * and exposes mutually-exclusive slots for the content modes:
  *
- *   #analysis  - rendered when !showAgentPanel && !isSpeechScene && !showRealtimeDialog
+ *   #analysis  - rendered when !showAgentPanel && !isSpeechScene
  *   #agent     - rendered when showAgentPanel (Agent realtime assist)
- *   #realtime  - rendered when showRealtimeDialog (Omni Realtime dialog)
  *   #speech    - rendered when isSpeechScene (SpeechEvaluationPanel)
+ *   (a registered plugin panel for the active sceneTemplate takes priority)
  *
- * The toolbar above the content (analysis trigger / report buttons /
+ * The header actions are always available: 下载音频 (post-recording export)
+ * and 拆分人声 (send the whole recording to the ASR again, with speaker
+ * labels). The toolbar above the content (analysis trigger / report buttons /
  * agent toggle) is exposed as its own slot so MeetingView keeps all the
  * Naive UI tooltip/loading wiring in one place. Resize handle is bound
  * here because it logically lives on the aside element itself; parent
  * passes a `resizeStyle` + pointerdown handler through props.
  *
  * Modes are derived in the parent and passed as booleans, not computed
- * here, so the dispatch order (speech > agent > realtime > analysis) stays
- * explicit and matches the original template.
+ * here, so the dispatch order (speech > agent > analysis) stays explicit.
  */
 
 const props = withDefaults(defineProps<{
@@ -44,16 +45,24 @@ const props = withDefaults(defineProps<{
   isLegalScene?: boolean
   isInterviewScene?: boolean
   showAgentPanel: boolean
-  showRealtimeDialog?: boolean
+  /** 录音已完成、存在可下载的音频。 */
+  canDownloadAudio?: boolean
+  /** 录音已完成、存在可重新做说话人分离的音频。 */
+  canDiarize?: boolean
+  /** 整段人声拆分进行中（按钮转 loading 态）。 */
+  isDiarizing?: boolean
   resizeStyle?: Record<string, string>
 }>(), {
-  showRealtimeDialog: false,
+  canDownloadAudio: false,
+  canDiarize: false,
+  isDiarizing: false,
   resizeStyle: () => ({}),
 })
 
 const emit = defineEmits<{
   (e: 'close'): void
-  (e: 'toggle-realtime'): void
+  (e: 'download-audio'): void
+  (e: 'diarize'): void
   (e: 'resize-start', event: PointerEvent): void
 }>()
 
@@ -64,7 +73,6 @@ const panelTitle = computed(() => {
   if (props.isLegalScene) return t('meeting.scene.legal')
   if (props.isInterviewScene) return t('meeting.scene.interview')
   if (props.showAgentPanel) return t('meeting.agentChat')
-  if (props.showRealtimeDialog) return t('meeting.realtime.title')
   return t('meeting.analysis')
 })
 </script>
@@ -83,18 +91,34 @@ const panelTitle = computed(() => {
       <div class="right-panel-header">
         <h2>{{ pluginPanel ? t(pluginPanel.labelKey) : panelTitle }}</h2>
         <div class="right-panel-actions">
-          <!-- 实时对话入口：原会议顶栏按钮迁至面板头部，所有场景面板均可使用 -->
+          <!-- 下载音频：录音完成后导出整段音频（原实时对话入口位置） -->
           <button
             class="panel-header-btn"
-            :class="{ active: props.showRealtimeDialog }"
-            :title="t('meeting.realtime.tabTooltip')"
-            :aria-label="t('meeting.realtime.tabLabel')"
-            @click="emit('toggle-realtime')"
+            :title="t('meeting.downloadAudio')"
+            :aria-label="t('meeting.downloadAudio')"
+            :disabled="!props.canDownloadAudio"
+            @click="emit('download-audio')"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
-              <path d="M21 19a2 2 0 0 1-2 2h-1v-6h1a2 2 0 0 1 2 2z" />
-              <path d="M3 19a2 2 0 0 0 2 2h1v-6H5a2 2 0 0 0-2 2z" />
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+          </button>
+          <!-- 拆分人声：把整段录音重新送 ASR，按发言人标注 -->
+          <button
+            class="panel-header-btn"
+            :class="{ active: props.isDiarizing }"
+            :title="t('meeting.diarizeActionHint')"
+            :aria-label="t('meeting.diarizeAction')"
+            :disabled="!props.canDiarize || props.isDiarizing"
+            @click="emit('diarize')"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+              <circle cx="9" cy="7" r="4" />
+              <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+              <path d="M16 3.13a4 4 0 0 1 0 7.75" />
             </svg>
           </button>
           <!-- 关闭按钮：始终位于最右，确保不被遮挡 -->
@@ -112,11 +136,11 @@ const panelTitle = computed(() => {
       </div>
 
       <!-- 分析工具栏：仅在 analysis 模式下显示（parent passes the wired buttons） -->
-      <div v-if="!pluginPanel && !props.showAgentPanel && !props.isSpeechScene && !props.showRealtimeDialog" class="right-panel-toolbar">
+      <div v-if="!pluginPanel && !props.showAgentPanel && !props.isSpeechScene" class="right-panel-toolbar">
         <slot name="toolbar" />
       </div>
 
-      <!-- 四类内容分发：speech > agent > realtime > analysis -->
+      <!-- 内容分发：plugin > speech > agent > analysis -->
       <component v-if="pluginPanel && meetingStore.activeSession" :is="pluginPanel.component"
         :key="pluginPanel.id + meetingStore.activeSession.id" :session-id="meetingStore.activeSession.id"
         :sentences="meetingStore.activeSession.sentences" />
@@ -131,9 +155,6 @@ const panelTitle = computed(() => {
       </template>
       <template v-else-if="props.showAgentPanel">
         <slot name="agent" />
-      </template>
-      <template v-else-if="props.showRealtimeDialog">
-        <slot name="realtime" />
       </template>
       <template v-else>
         <slot name="analysis" />
@@ -303,6 +324,16 @@ const panelTitle = computed(() => {
   &:hover {
     background: rgba($accent-primary, 0.12);
     color: $accent-primary;
+  }
+
+  &:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+
+    &:hover {
+      background: transparent;
+      color: $text-secondary;
+    }
   }
 
   &.active {

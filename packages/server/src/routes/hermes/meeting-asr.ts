@@ -41,6 +41,11 @@ meetingASRRoutes.post('/api/meeting-asr/report/stream', ctrl.streamReport)
 // Meeting auto-naming (single lightweight title request after first AI analysis)
 meetingASRRoutes.post('/api/meeting-asr/title', ctrl.meetingTitle)
 
+// Whole-file transcription (batch) — raw audio body in, job id out; the
+// client then polls the status endpoint until the transcript is ready.
+meetingASRRoutes.post('/api/meeting-asr/transcribe/file', ctrl.startFileTranscription)
+meetingASRRoutes.get('/api/meeting-asr/transcribe/status/:jobId', ctrl.getFileTranscriptionStatus)
+
 // Note: transcript and prompts endpoints were removed as dead code (v0.7.6 audit #17).
 // Frontend manages transcripts locally via meetingStore; prompts are configured
 // via /api/meeting-asr/config and used directly by the Python analysis service.

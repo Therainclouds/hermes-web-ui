@@ -161,6 +161,18 @@ class Settings:
     minimax_audio_format: str = os.environ.get("MINIMAX_AUDIO_FORMAT", "wav")
     minimax_sample_rate: int = int(os.environ.get("MINIMAX_SAMPLE_RATE", "16000"))
     minimax_chunk_seconds: float = float(os.environ.get("MINIMAX_CHUNK_SECONDS", "12.0"))
+    # ------------------------------------------------------------------
+    # Whole-file (batch) transcription — see `file_transcribe.py`.
+    # `qwen_file_model` is the DashScope model used by the synchronous
+    # base64 data-URL path (no OSS). The diarized Qwen path reuses
+    # `asr_model` (default paraformer-v2) through the async file API.
+    # ------------------------------------------------------------------
+    qwen_file_model: str = os.environ.get("QWEN_FILE_MODEL", "qwen-audio-3.0-asr-flash")
+    # MiniMax caps one request at 500 s; the batch path splits longer audio
+    # into windows of this size (with a safety margin).
+    minimax_file_chunk_seconds: float = float(
+        os.environ.get("MINIMAX_FILE_CHUNK_SECONDS", "480")
+    )
 
     def sync_from(self, asr: object) -> None:
         """Refresh the fields that a hot config push (Storage.update_config)
