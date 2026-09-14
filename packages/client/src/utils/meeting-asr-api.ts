@@ -31,14 +31,50 @@ export interface MeetingASRStatus {
 }
 
 export interface MeetingASRConfig {
+  /**
+   * ASR provider: 'dashscope' (default) routes through Paraformer / Fun-ASR
+   * WebSocket; 'minimax' routes through the MiniMax Speech-to-Text REST API
+   * (https://platform.minimax.cn/docs/api-reference/speech-to-text).
+   * Undefined is treated as 'dashscope' for backward compatibility.
+   */
+  asrProvider?: 'dashscope' | 'minimax'
   dashscopeApiKey?: string
-  asrModel?: string  // 'paraformer-v2' | 'fun-asr' | 'fun-asr-mtl'
+  asrModel?: string  // 'paraformer-v2' | 'fun-asr' | 'fun-asr-mtl' for DashScope
   paraformerWsUrl?: string
   paraformerModel?: string
   paraformerSampleRate?: number
   paraformerFormat?: string
   paraformerLanguageHints?: string
   paraformerSemanticPunctuation?: boolean
+  /**
+   * MiniMax Speech-to-Text API key (Bearer token for api.minimaxi.com /
+   * api.minimax.io). Required only when `asrProvider === 'minimax'`.
+   */
+  minimaxApiKey?: string
+  /** MiniMax ASR model id, e.g. 'asr-1.0'. Defaults to the API default. */
+  minimaxAsrModel?: string
+  /** MiniMax ASR HTTP base URL, defaults to https://api.minimaxi.com. */
+  minimaxBaseUrl?: string
+  /**
+   * BCP-47 language hint for MiniMax ASR (`zh`, `en`, `yue`, ...). Empty
+   * value enables the API's mixed-language auto-detection mode.
+   */
+  minimaxLanguage?: string
+  /**
+   * Audio format hint sent to the MiniMax ASR chunk-based flow. MiniMax
+   * rejects raw PCM, so the Python layer encodes PCM into WAV before
+   * posting. Kept here so operators can override the encoded container
+   * (`wav` / `mp3` / `opus` / `aac` / `ogg`) — default `wav`.
+   */
+  minimaxAudioFormat?: 'wav' | 'mp3' | 'opus' | 'aac' | 'ogg'
+  /** Sample rate used when encoding PCM to a container for MiniMax (Hz). */
+  minimaxSampleRate?: number
+  /**
+   * Maximum PCM chunk size fed to MiniMax per request, in seconds. The
+   * MiniMax ASR API rejects audio over 500s; the Python chunking layer
+   * splits longer recordings into rolling windows of this size.
+   */
+  minimaxChunkSeconds?: number
   llmApiKey?: string
   llmBaseUrl?: string
   llmModel?: string

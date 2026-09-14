@@ -12,10 +12,11 @@ interface DraftTraceEvent {
   message: string
   detail?: unknown
 }
-const props = defineProps<{ card: CharacterCard; disabled: boolean; portrait?: string; draftModel?: string }>()
+const props = defineProps<{ card: CharacterCard; disabled: boolean; portrait?: string }>()
 const emit = defineEmits<{ remove: []; portrait: [file: File]; clearPortrait: [] }>()
 const { t } = useI18n()
 const expanded = ref(!props.card.name)
+const sourceInput = ref<HTMLInputElement>()
 const source = ref(''), sourceFile = ref<File>(), sourcePreview = ref('')
 const draft = ref<Partial<CharacterCard> | null>(null), filling = ref(false), error = ref('')
 const trace = ref<DraftTraceEvent[]>([])
@@ -58,7 +59,6 @@ const diffStats = computed(() => {
 
 function choose(event: Event, avatar = false) {
   const input = event.target as HTMLInputElement, file = input.files?.[0]
-  input.value = ''
   if (!file) return
   if (avatar) {
     if (!IMAGE_MIMES.includes(file.type) || file.size > MAX_BYTES) { error.value = t('trpg.imageInvalid'); return }
@@ -74,6 +74,7 @@ function choose(event: Event, avatar = false) {
 function clearSource() {
   if (sourcePreview.value) URL.revokeObjectURL(sourcePreview.value)
   sourcePreview.value = ''; sourceFile.value = undefined
+  if (sourceInput.value) sourceInput.value.value = ''
 }
 async function fill() {
   if (filling.value || props.disabled) return
@@ -86,11 +87,7 @@ async function fill() {
     const result = await request<{ draft: Partial<CharacterCard>; trace?: DraftTraceEvent[] }>('/api/plugins/trpg/character-draft', {
       method: 'POST',
       signal: abort.signal,
-      body: JSON.stringify({
-        text: source.value,
-        image,
-        model: props.draftModel || undefined,
-      }),
+      body: JSON.stringify({ text: source.value, image }),
     })
     if (!disposed) {
       draft.value = { ...result.draft, sheet: cleanSheet(result.draft.sheet) }
@@ -157,14 +154,15 @@ onBeforeUnmount(() => { disposed = true; abort.abort(); clearSource() })
         </div>
         <details class="ai-workshop" :open="!!error || undefined">
           <summary>✧ {{ t('trpg.aiFill') }}</summary>
+          <p class="muted">{{ t('trpg.hermesDraftDefault') }}</p>
           <p class="muted">{{ t('trpg.aiHint') }}</p>
           <label>{{ t('trpg.sourceText') }}<textarea v-model="source" :aria-label="t('trpg.sourceText')" rows="3" maxlength="12000" /></label>
-          <label>{{ t('trpg.sourceFile') }}<input type="file" accept="image/png,image/jpeg,image/webp,application/pdf" :aria-label="t('trpg.sourceFile')" @change="choose($event)" /></label>
+          <label>{{ t('trpg.sourceFile') }}<input ref="sourceInput" type="file" accept="image/png,image/jpeg,image/webp,application/pdf" :aria-label="t('trpg.sourceFile')" @change="choose($event)" /></label>
           <img v-if="sourcePreview" :src="sourcePreview" :alt="t('trpg.sourceFile')" class="source-preview" />
           <p v-else-if="sourceFile && !sourceIsImage" class="source-file-hint">{{ sourceFile.name }} · PDF</p>
           <div class="actions">
             <button v-if="sourceIsImage" type="button" @click="emit('portrait', sourceFile!)">{{ t('trpg.usePortrait') }}</button>
-            <button v-if="sourceFile" type="button" @click="clearSource">{{ t('trpg.clearImage') }}</button>
+            <button v-if="sourceFile" type="button" @click="clearSource">{{ t('trpg.removeSource') }}</button>
             <button type="button" :disabled="!source.trim() && !sourceFile" @click="fill">{{ t('trpg.draft') }}</button>
           </div>
           <p v-if="filling" role="status" class="status-line">{{ t('trpg.filling') }}</p>

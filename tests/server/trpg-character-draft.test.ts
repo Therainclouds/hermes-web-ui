@@ -129,7 +129,7 @@ describe('TRPG character draft input', () => {
     const pdfPath = `${home}/trpg-uploads/__probe__.pdf`
     await fs.rm(`${home}/trpg-uploads/__probe__.pdf`, { force: true })
     const result = await draftCharacter(parseDraftInput({ text: 'DND 角色', image: validPdf }), 'default', {
-      loadConfig: async () => null, // 强制走 bridge 路径
+      // No config override: default UI path must use Hermes tools, not a guessed PDF endpoint.
       createBridge: () => fakeBridge,
     })
     expect(result.draft.name).toBe('甘棠')
@@ -262,42 +262,6 @@ describe('TRPG character draft generation', () => {
 
   it('reports llm_not_configured when no LLM config and no profile are provided', async () => {
     await expect(draftCharacter(parseDraftInput({ text: 'hi' }), undefined, { loadConfig: async () => null, fetchImpl: vi.fn() as unknown as typeof fetch })).rejects.toThrow('llm_not_configured')
-  })
-
-  it('uses the profile default model + provider credentials when loadLLMConfig is empty', async () => {
-    // Server has no meeting-asr LLM config, but the active profile's
-    // config.yaml carries a working OpenAI provider. The character-draft
-    // service should resolve the profile and use it as the direct path.
-    const home = await import('os').then(m => m.tmpdir())
-    const profileHome = await import('fs/promises').then(m => m.mkdtemp(`${home}/trpg-draft-profile-`))
-    const originalHome = process.env.HERMES_HOME
-    process.env.HERMES_HOME = profileHome
-    try {
-      const { mkdir, writeFile } = await import('fs/promises')
-      const profileDir = `${profileHome}/profiles/work`
-      await mkdir(profileDir, { recursive: true })
-      await writeFile(`${profileDir}/config.yaml`,
-        'model:\n  default: gpt-4o\n  provider: openai\ncustom_providers:\n  - name: openai\n    base_url: https://api.openai.com/v1\n    api_key: sk-profile\n',
-        'utf-8')
-      const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { content: '{"name":"银月","player":"","appearance":"","card":"","sheet":{}}' } }] }))) as unknown as typeof fetch
-      const result = await draftCharacter(parseDraftInput({ text: '银发女精灵' }), 'work', {
-        // No deps.loadConfig: simulates the user has not edited meeting-asr/config.json
-        // but has set the profile's default model via the UI.
-        fetchImpl,
-      })
-      expect(result.draft.name).toBe('银月')
-      const url = (fetchImpl.mock.calls[0] as any)[0]
-      expect(url).toBe('https://api.openai.com/v1/chat/completions')
-      const body = JSON.parse((fetchImpl.mock.calls[0] as any)[1].body)
-      expect(body.model).toBe('gpt-4o')
-      expect(body.messages[0].role).toBe('system')
-      expect(body.messages[0].content).toContain('D&D 5E')
-    } finally {
-      if (originalHome === undefined) delete process.env.HERMES_HOME
-      else process.env.HERMES_HOME = originalHome
-      const { rm } = await import('fs/promises')
-      await rm(profileHome, { recursive: true, force: true })
-    }
   })
 
   it('falls back to Hermes Agent bridge when LLM is unconfigured and profile is given', async () => {

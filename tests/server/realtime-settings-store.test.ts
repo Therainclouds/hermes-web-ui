@@ -169,4 +169,105 @@ describe('realtime profile settings schema', () => {
       secrets: { apiKey: 'sk-secret-value' },
     })
   })
+
+  // -------------------------------------------------------------------------
+  // MiniMax provider — settings + secrets are stored alongside the DashScope
+  // ones. Independent updates to one provider must not wipe the other.
+  // -------------------------------------------------------------------------
+  it('stores the MiniMax ASR provider fields alongside the DashScope key', async () => {
+    const { store } = await initStore()
+
+    store.saveRealtimeModelSetting('default', {
+      settings: {
+        model: 'qwen3.5-omni-flash-realtime',
+        voice: 'Tina',
+        asrProvider: 'minimax',
+        minimaxAsrModel: 'asr-1.0',
+        minimaxBaseUrl: 'https://api.minimaxi.com',
+      },
+      secrets: {
+        apiKey: 'sk-dashscope',
+        minimaxApiKey: 'minimax-secret',
+      },
+    })
+
+    const fetched = store.getRealtimeModelSetting('default', { includeSecrets: true })
+    expect(fetched).toMatchObject({
+      settings: {
+        model: 'qwen3.5-omni-flash-realtime',
+        voice: 'Tina',
+        asrProvider: 'minimax',
+        minimaxAsrModel: 'asr-1.0',
+        minimaxBaseUrl: 'https://api.minimaxi.com',
+      },
+      secrets: {
+        apiKey: 'sk-dashscope',
+        minimaxApiKey: 'minimax-secret',
+      },
+    })
+  })
+
+  it('masks MiniMax secrets on default read but exposes them on opt-in', async () => {
+    const { store } = await initStore()
+
+    store.saveRealtimeModelSetting('default', {
+      settings: { asrProvider: 'minimax' },
+      secrets: { apiKey: 'sk-dashscope', minimaxApiKey: 'minimax-secret' },
+    })
+
+    const masked = store.getRealtimeModelSetting('default')
+    expect(masked).toMatchObject({
+      secrets: { apiKey: '[stored]', minimaxApiKey: '[stored]' },
+    })
+    expect(JSON.stringify(masked)).not.toContain('minimax-secret')
+
+    const raw = store.getRealtimeModelSetting('default', { includeSecrets: true })
+    expect(raw).toMatchObject({
+      secrets: { apiKey: 'sk-dashscope', minimaxApiKey: 'minimax-secret' },
+    })
+  })
+
+  it('keeps the DashScope key when only the MiniMax key is updated', async () => {
+    const { store } = await initStore()
+
+    store.saveRealtimeModelSetting('default', {
+      settings: { asrProvider: 'minimax' },
+      secrets: { apiKey: 'sk-dashscope', minimaxApiKey: 'minimax-old' },
+    })
+
+    store.saveRealtimeModelSetting('default', {
+      settings: { asrProvider: 'minimax' },
+      secrets: { minimaxApiKey: 'minimax-new' },
+    })
+
+    expect(store.getRealtimeModelSetting('default', { includeSecrets: true })).toMatchObject({
+      secrets: { apiKey: 'sk-dashscope', minimaxApiKey: 'minimax-new' },
+    })
+  })
+
+  it('rejects http MiniMax base URLs (defence-in-depth)', async () => {
+    const { store } = await initStore()
+
+    store.saveRealtimeModelSetting('default', {
+      settings: { minimaxBaseUrl: 'http://api.minimaxi.com' },
+      secrets: {},
+    })
+
+    const fetched = store.getRealtimeModelSetting('default', { includeSecrets: true })
+    expect(fetched?.settings.minimaxBaseUrl).toBeUndefined()
+  })
+
+  it('rejects unknown ASR provider values', async () => {
+    const { store } = await initStore()
+
+    store.saveRealtimeModelSetting('default', {
+      settings: { asrProvider: 'unknown-provider' },
+      secrets: {},
+    })
+
+    const fetched = store.getRealtimeModelSetting('default', { includeSecrets: true })
+    // Unknown provider is dropped by the sanitizer; the asrProvider key is
+    // absent from the resulting settings object instead of carrying `undefined`.
+    expect(fetched?.settings).not.toHaveProperty('asrProvider')
+  })
 })

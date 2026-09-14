@@ -21,6 +21,17 @@ export interface RealtimeModelConfig {
   model: string
   /** 默认语音（qwen3.5-omni-flash-realtime 目录内有效）。 */
   voice: string
+  /**
+   * 会议 ASR provider：'dashscope'（默认 — DashScope Paraformer/Fun-ASR）或
+   * 'minimax'（MiniMax 语音识别 REST API）。未配置时按 dashscope 处理。
+   */
+  asrProvider: 'dashscope' | 'minimax'
+  /** MiniMax 语音识别模型 id，默认 'asr-1.0'。 */
+  minimaxAsrModel: string
+  /** MiniMax 语音识别 HTTP base URL，默认 https://api.minimaxi.com。 */
+  minimaxBaseUrl: string
+  /** MiniMax API Key（Bearer token），与 DashScope Key 分别保存。 */
+  minimaxApiKey: string
 }
 
 /**
@@ -47,6 +58,10 @@ const STORAGE_KEY = 'hermes.realtimeModel'
 
 const DEFAULT_MODEL = 'qwen3.5-omni-flash-realtime'
 const DEFAULT_VOICE = 'Tina'
+/** MiniMax speech-to-text API defaults (https://platform.minimax.cn/docs/api-reference/speech-to-text). */
+const DEFAULT_MINIMAX_ASR_MODEL = 'asr-1.0'
+const DEFAULT_MINIMAX_BASE_URL = 'https://api.minimaxi.com'
+const SUPPORTED_ASR_PROVIDERS = new Set(['dashscope', 'minimax'])
 
 /** Per-model limits from the Bailian docs (https://help.aliyun.com/zh/model-studio/qwen-omni-realtime). */
 const MODEL_LIMITS: Record<string, RealtimeModelLimits> = {
@@ -72,6 +87,10 @@ export function getRealtimeModelLimits(model: string): RealtimeModelLimits | nul
 }
 
 function normalizeConfig(partial?: Partial<RealtimeModelConfig> | null): RealtimeModelConfig {
+  const provider = typeof partial?.asrProvider === 'string'
+    && SUPPORTED_ASR_PROVIDERS.has(partial.asrProvider)
+    ? (partial.asrProvider as 'dashscope' | 'minimax')
+    : 'dashscope'
   return {
     apiKey: typeof partial?.apiKey === 'string' ? partial.apiKey : '',
     model: typeof partial?.model === 'string' && partial.model.trim()
@@ -80,6 +99,14 @@ function normalizeConfig(partial?: Partial<RealtimeModelConfig> | null): Realtim
     voice: typeof partial?.voice === 'string' && partial.voice.trim()
       ? partial.voice.trim()
       : DEFAULT_VOICE,
+    asrProvider: provider,
+    minimaxAsrModel: typeof partial?.minimaxAsrModel === 'string' && partial.minimaxAsrModel.trim()
+      ? partial.minimaxAsrModel.trim()
+      : DEFAULT_MINIMAX_ASR_MODEL,
+    minimaxBaseUrl: typeof partial?.minimaxBaseUrl === 'string' && partial.minimaxBaseUrl.trim()
+      ? partial.minimaxBaseUrl.trim()
+      : DEFAULT_MINIMAX_BASE_URL,
+    minimaxApiKey: typeof partial?.minimaxApiKey === 'string' ? partial.minimaxApiKey : '',
   }
 }
 
@@ -121,7 +148,13 @@ function writeCache(config: RealtimeModelConfig, profile: string | null) {
 }
 
 function configHasContent(config: RealtimeModelConfig): boolean {
-  return config.apiKey.trim() !== '' || config.model !== DEFAULT_MODEL || config.voice !== DEFAULT_VOICE
+  return config.apiKey.trim() !== ''
+    || config.model !== DEFAULT_MODEL
+    || config.voice !== DEFAULT_VOICE
+    || config.minimaxApiKey.trim() !== ''
+    || config.minimaxAsrModel !== DEFAULT_MINIMAX_ASR_MODEL
+    || config.minimaxBaseUrl !== DEFAULT_MINIMAX_BASE_URL
+    || config.asrProvider !== 'dashscope'
 }
 
 export const useRealtimeModelStore = defineStore('realtimeModel', () => {
@@ -160,6 +193,21 @@ export const useRealtimeModelStore = defineStore('realtimeModel', () => {
         voice: typeof setting.settings?.voice === 'string' && setting.settings.voice.trim()
           ? setting.settings.voice.trim()
           : DEFAULT_VOICE,
+        asrProvider: typeof setting.settings?.asrProvider === 'string'
+          && SUPPORTED_ASR_PROVIDERS.has(setting.settings.asrProvider)
+          ? (setting.settings.asrProvider as 'dashscope' | 'minimax')
+          : 'dashscope',
+        minimaxAsrModel: typeof setting.settings?.minimaxAsrModel === 'string'
+          && setting.settings.minimaxAsrModel.trim()
+          ? setting.settings.minimaxAsrModel.trim()
+          : DEFAULT_MINIMAX_ASR_MODEL,
+        minimaxBaseUrl: typeof setting.settings?.minimaxBaseUrl === 'string'
+          && setting.settings.minimaxBaseUrl.trim()
+          ? setting.settings.minimaxBaseUrl.trim()
+          : DEFAULT_MINIMAX_BASE_URL,
+        minimaxApiKey: typeof setting.secrets?.minimaxApiKey === 'string'
+          ? setting.secrets.minimaxApiKey
+          : '',
       }
       writeCache(config.value, profileName)
       return Promise.resolve()
@@ -175,8 +223,17 @@ export const useRealtimeModelStore = defineStore('realtimeModel', () => {
       migratedProfiles.add(profileName)
       const content = cache.config
       return realtimeModelApi.saveRealtimeModelSetting({
-        settings: { model: content.model, voice: content.voice },
-        secrets: { apiKey: content.apiKey },
+        settings: {
+          model: content.model,
+          voice: content.voice,
+          asrProvider: content.asrProvider,
+          minimaxAsrModel: content.minimaxAsrModel,
+          minimaxBaseUrl: content.minimaxBaseUrl,
+        },
+        secrets: {
+          apiKey: content.apiKey,
+          minimaxApiKey: content.minimaxApiKey,
+        },
       }).then(() => {
         writeCache(content, profileName)
       }).catch((err) => {
@@ -250,8 +307,17 @@ export const useRealtimeModelStore = defineStore('realtimeModel', () => {
     const token = ++saveSeq
     try {
       await realtimeModelApi.saveRealtimeModelSetting({
-        settings: { model: optimistic.model, voice: optimistic.voice },
-        secrets: { apiKey: optimistic.apiKey },
+        settings: {
+          model: optimistic.model,
+          voice: optimistic.voice,
+          asrProvider: optimistic.asrProvider,
+          minimaxAsrModel: optimistic.minimaxAsrModel,
+          minimaxBaseUrl: optimistic.minimaxBaseUrl,
+        },
+        secrets: {
+          apiKey: optimistic.apiKey,
+          minimaxApiKey: optimistic.minimaxApiKey,
+        },
       })
       writeCache(optimistic, profileName)
       loadedProfile = profileName
@@ -270,7 +336,13 @@ export const useRealtimeModelStore = defineStore('realtimeModel', () => {
   }
 
   function sameConfig(a: RealtimeModelConfig, b: RealtimeModelConfig): boolean {
-    return a.apiKey === b.apiKey && a.model === b.model && a.voice === b.voice
+    return a.apiKey === b.apiKey
+      && a.model === b.model
+      && a.voice === b.voice
+      && a.asrProvider === b.asrProvider
+      && a.minimaxAsrModel === b.minimaxAsrModel
+      && a.minimaxBaseUrl === b.minimaxBaseUrl
+      && a.minimaxApiKey === b.minimaxApiKey
   }
 
   // Keep `config` in sync with the active profile: reload whenever the active

@@ -81,10 +81,16 @@ const codingAgentModeOptions = computed(() => [
 
 // --- ASR 配置 ---
 // DashScope Key 由父级持有（"创建"按钮禁用条件需要响应式依赖它）；
-// 其余向导字段（LLM/OSS/步骤/ASR 模型）由 AsrConfigWizardDialog 自持，
-// 通过 collectConfig() 取值、reset() 重播种。
+// 其余向导字段（LLM/OSS/步骤/ASR 模型/ASR provider）由 AsrConfigWizardDialog
+// 自持，通过 collectConfig() 取值、reset() 重播种。
 // 未单独配置时默认回落 Realtime 模型面板里统一管理的千问 API Key。
 const asrApiKey = ref(meetingStore.asrConfig.dashscopeApiKey || realtimeModelStore.config.apiKey)
+const newMeetingAsrProvider = ref<'dashscope' | 'minimax'>(
+  realtimeModelStore.config.asrProvider || meetingStore.asrConfig.asrProvider || 'dashscope',
+)
+const newMeetingMinimaxApiKey = ref(
+  meetingStore.asrConfig.minimaxApiKey || realtimeModelStore.config.minimaxApiKey,
+)
 const asrWizardRef = ref<InstanceType<typeof AsrConfigWizardDialog> | null>(null)
 
 // --- 当前会议状态 ---
@@ -222,10 +228,20 @@ const { addDiarizeResultDirectly, matchAndMergeDiarizeResult } = useDiarizeMerge
 })
 
 // --- 产物下载（拆分至 useMeetingDownloads，行为保持不变） ---
-const { downloadAudio, downloadTranscript, downloadJson, downloadReport, formatDuration } = useMeetingDownloads({
+const { downloadAudio, downloadTranscript, downloadTranscriptMarkdown, downloadJson, downloadReport, formatDuration } = useMeetingDownloads({
   audioBlob,
   htmlContent,
 })
+
+/**
+ * 顶栏「导出会议文字」：把当前会议的 ASR 逐字稿导出为排版美观的 Markdown
+ * （会议信息 / 说话人 / 带时间戳逐字稿 / 全文 / AI 分析 / 实时分析记录）。
+ */
+function exportMeetingTranscript() {
+  if (!downloadTranscriptMarkdown()) {
+    message.warning(t('meeting.noTranscript'))
+  }
+}
 
 // 当前活动会议
 const activeSession = computed(() => meetingStore.activeSession)
@@ -411,6 +427,11 @@ function openCreateModal() {
   newMeetingCodingAgentMode.value = 'scoped'
   newMeetingSceneTemplate.value = 'general'
   asrApiKey.value = meetingStore.asrConfig.dashscopeApiKey || realtimeModelStore.config.apiKey
+  newMeetingAsrProvider.value = realtimeModelStore.config.asrProvider
+    || meetingStore.asrConfig.asrProvider
+    || 'dashscope'
+  newMeetingMinimaxApiKey.value = meetingStore.asrConfig.minimaxApiKey
+    || realtimeModelStore.config.minimaxApiKey
   // LLM/OSS/步骤的重播种已随向导拆入 AsrConfigWizardDialog
   asrWizardRef.value?.reset()
   showCreateModal.value = true
@@ -418,14 +439,29 @@ function openCreateModal() {
 
 function handleCreateMeeting() {
   if (!newMeetingTitle.value.trim()) return
-  if (!asrApiKey.value.trim() && !meetingStore.hasASRConfig && !realtimeModelStore.hasApiKey) return
-
   const wizard = asrWizardRef.value?.collectConfig()
+  const asrProvider = wizard?.asrProvider || 'dashscope'
+  const minimaxApiKey = (wizard?.minimaxApiKey ?? '').trim()
+  // ASR 准入校验：DashScope 走 DashScope Key（store / realtime 面板回落），
+  // MiniMax 走 MiniMax Key；两个 provider 不能混用同一个 key 字段。
+  if (asrProvider === 'dashscope'
+    && !asrApiKey.value.trim()
+    && !meetingStore.hasASRConfig
+    && !realtimeModelStore.hasApiKey) return
+  if (asrProvider === 'minimax'
+    && !minimaxApiKey
+    && !(meetingStore.asrConfig.asrProvider === 'minimax' && meetingStore.asrConfig.minimaxApiKey)
+    && !realtimeModelStore.config.minimaxApiKey) return
 
-  // 保存 ASR API Key（如果有更新）
-  if (asrApiKey.value.trim()) {
-    meetingStore.updateASRConfig({ dashscopeApiKey: asrApiKey.value.trim() })
-  }
+  // 保存 ASR provider 与 DashScope / MiniMax Key
+  meetingStore.updateASRConfig({
+    asrProvider,
+    dashscopeApiKey: asrApiKey.value.trim() || meetingStore.asrConfig.dashscopeApiKey,
+    minimaxApiKey: minimaxApiKey || meetingStore.asrConfig.minimaxApiKey,
+    minimaxAsrModel: realtimeModelStore.config.minimaxAsrModel,
+    minimaxBaseUrl: realtimeModelStore.config.minimaxBaseUrl,
+  })
+
   // 保存 LLM 配置（可选 — 没填也不阻塞创建）
   const wizardLlmApiKey = wizard?.llmApiKey ?? ''
   const wizardLlmBaseUrl = wizard?.llmBaseUrl ?? ''
@@ -450,20 +486,20 @@ function handleCreateMeeting() {
       ossPathPrefix: (wizard?.ossPathPrefix ?? '').trim() || 'meeting-asr-uploads/',
     })
   }
-  
+   
   // 分析模式：默认 Agent（hermes）直接调用 Hermes Agent 的 Agent 功能生成
   // 会议纪要、关键要点、待办事项，无需额外 LLM 配置；自定义模式（custom）
   // 走下方填写的 LLM API Key / Base URL / 模型
   const analysisMode = newMeetingAnalysisMode.value
   // 使用默认 Agent 时固定用 Hermes Agent（默认配置），不受 Agent 类型选择影响
   const effectiveAgentType = analysisMode === 'hermes' ? 'hermes' : newMeetingAgentType.value
-  
+   
   // 构建 Agent 配置
   const agentConfig: AgentConfig = {
     agentType: effectiveAgentType,
     codingAgentMode: newMeetingCodingAgentMode.value,
   }
-  
+   
   // 根据 Agent 类型设置配置
   if (effectiveAgentType === 'hermes') {
     agentConfig.profile = newMeetingHermesProfile.value || 'default'
@@ -474,10 +510,11 @@ function handleCreateMeeting() {
       agentConfig.model = newMeetingCustomModel.value
     }
   }
-  
+   
   meetingStore.createSession({
     title: newMeetingTitle.value.trim(),
     asrModel: asrWizardRef.value?.collectConfig()?.asrModel || 'paraformer-v2',
+    asrProvider,
     analysisMode,
     hermesProfile: effectiveAgentType === 'hermes' ? (newMeetingHermesProfile.value || 'default') : undefined,
     customProvider: effectiveAgentType !== 'hermes' && newMeetingCodingAgentMode.value === 'scoped' ? newMeetingCustomProvider.value : undefined,
@@ -687,9 +724,29 @@ async function startASRService() {
   try {
     // Get ASR config from meeting store and current session
     const activeSession = meetingStore.activeSession
+    const asrProvider = activeSession?.asrProvider
+      || meetingStore.asrConfig.asrProvider
+      || 'dashscope'
     const config: Record<string, unknown> = {
-      dashscopeApiKey: meetingStore.asrConfig.dashscopeApiKey || asrApiKey.value || realtimeModelStore.config.apiKey,
+      asrProvider,
       asrModel: activeSession?.asrModel || 'paraformer-v2',
+    }
+    // DashScope provider → 需要 DashScope Key（store / realtime 面板回落）
+    if (asrProvider === 'dashscope') {
+      config.dashscopeApiKey = meetingStore.asrConfig.dashscopeApiKey
+        || asrApiKey.value
+        || realtimeModelStore.config.apiKey
+    }
+    // MiniMax provider → 需要 MiniMax Key（store / wizard / realtime 面板回落）
+    if (asrProvider === 'minimax') {
+      const minimaxKey = meetingStore.asrConfig.minimaxApiKey
+        || newMeetingMinimaxApiKey.value.trim()
+        || realtimeModelStore.config.minimaxApiKey
+      if (minimaxKey) config.minimaxApiKey = minimaxKey
+      config.minimaxAsrModel = meetingStore.asrConfig.minimaxAsrModel
+        || realtimeModelStore.config.minimaxAsrModel
+      config.minimaxBaseUrl = meetingStore.asrConfig.minimaxBaseUrl
+        || realtimeModelStore.config.minimaxBaseUrl
     }
     // Pass LLM config if user provided it, so backend has it from the start.
     if (meetingStore.asrConfig.llmApiKey || wizard?.llmApiKey) {
@@ -713,7 +770,11 @@ async function startASRService() {
       config.ossPathPrefix = store.ossPathPrefix || (wizard?.ossPathPrefix ?? '').trim() || 'meeting-asr-uploads/'
     }
 
-    console.log('[meeting] Calling ASR start API with config:', { ...config, dashscopeApiKey: config.dashscopeApiKey ? '***' : 'not set' })
+    console.log('[meeting] Calling ASR start API with config:', {
+      ...config,
+      dashscopeApiKey: config.dashscopeApiKey ? '***' : 'not set',
+      minimaxApiKey: config.minimaxApiKey ? '***' : 'not set',
+    })
     const result = await meetingASRApi.start(config)
     console.log('[meeting] ASR start result:', result)
 
@@ -1101,7 +1162,6 @@ async function clearTranscript() {
       <MeetingTopBar
         :sidebar-expanded="showSidebar"
         :show-agent-panel="showAgentPanel"
-        :show-realtime-dialog="showRealtimeDialog"
         :use-diarize="useDiarize"
         :save-mode="saveMode"
         :speaker-count="speakerCount"
@@ -1111,7 +1171,7 @@ async function clearTranscript() {
         :hide-speaker-diarization="HIDE_SPEAKER_DIARIZATION"
         @toggle-sidebar="showSidebar = !showSidebar"
         @toggle-agent-panel="showAgentPanel = !showAgentPanel"
-        @toggle-realtime-dialog="showRealtimeDialog = !showRealtimeDialog"
+        @export-transcript="exportMeetingTranscript"
         @toggle-diarize="useDiarize = !useDiarize"
         @toggle-save-mode="saveMode = !saveMode"
         @update:speaker-count="speakerCount = $event"
@@ -1202,6 +1262,7 @@ async function clearTranscript() {
         :show-realtime-dialog="showRealtimeDialog"
         :resize-style="rightPanelStyle"
         @close="showRightPanel = false"
+        @toggle-realtime="showRealtimeDialog = !showRealtimeDialog"
         @resize-start="startRightPanelResize"
       >
         <template #toolbar>
@@ -1607,7 +1668,11 @@ async function clearTranscript() {
 <!-- 创建会议对话框（外壳已拆出 CreateMeetingDialog） -->
     <CreateMeetingDialog
       v-model:visible="showCreateModal"
-      :create-disabled="!newMeetingTitle.trim() || (!asrApiKey.trim() && !meetingStore.hasASRConfig && !realtimeModelStore.hasApiKey)"
+      :create-disabled="!newMeetingTitle.trim() || (
+        newMeetingAsrProvider === 'dashscope'
+          ? (!asrApiKey.trim() && !meetingStore.hasASRConfig && !realtimeModelStore.hasApiKey)
+          : (!newMeetingMinimaxApiKey.trim() && !realtimeModelStore.config.minimaxApiKey)
+      )"
       @create="handleCreateMeeting"
     >
       <div class="create-meeting-form">
@@ -1631,6 +1696,8 @@ async function clearTranscript() {
           ref="asrWizardRef"
           v-model:asr-api-key="asrApiKey"
           v-model:analysis-mode="newMeetingAnalysisMode"
+          v-model:asr-provider="newMeetingAsrProvider"
+          v-model:minimax-api-key="newMeetingMinimaxApiKey"
         />
 
         <div class="form-section">

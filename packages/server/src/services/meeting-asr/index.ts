@@ -8,6 +8,13 @@ import * as venvManager from './venv-manager'
 import * as dashscopeKeyStore from './dashscope-key-store'
 
 export interface MeetingASRConfig {
+  /**
+   * ASR provider selection: `'dashscope'` (default — Paraformer/Fun-ASR
+   * WebSocket flow) or `'minimax'` (MiniMax Speech-to-Text REST chunking
+   * flow, https://platform.minimax.cn/docs/api-reference/speech-to-text).
+   * Undefined is treated as `'dashscope'` for backward compatibility.
+   */
+  asrProvider?: 'dashscope' | 'minimax'
   dashscopeApiKey?: string
   asrModel?: string  // 'paraformer-v2' | 'fun-asr' | 'fun-asr-mtl'
   paraformerWsUrl?: string
@@ -16,6 +23,20 @@ export interface MeetingASRConfig {
   paraformerFormat?: string
   paraformerLanguageHints?: string
   paraformerSemanticPunctuation?: boolean
+  /** MiniMax Speech-to-Text API key (Bearer token). */
+  minimaxApiKey?: string
+  /** MiniMax ASR model id, e.g. 'asr-1.0'. */
+  minimaxAsrModel?: string
+  /** MiniMax ASR HTTP base URL. */
+  minimaxBaseUrl?: string
+  /** BCP-47 language hint for MiniMax (`zh`, `en`, ...). */
+  minimaxLanguage?: string
+  /** Container MiniMax accepts (MiniMax rejects raw PCM). */
+  minimaxAudioFormat?: 'wav' | 'mp3' | 'opus' | 'aac' | 'ogg'
+  /** PCM sample rate fed into the MiniMax encoder (Hz). */
+  minimaxSampleRate?: number
+  /** Maximum PCM chunk seconds per MiniMax request. */
+  minimaxChunkSeconds?: number
   llmApiKey?: string
   llmBaseUrl?: string
   llmModel?: string
@@ -302,6 +323,21 @@ export class MeetingASRService extends EventEmitter {
           if (key) env.DASHSCOPE_API_KEY = key
         } catch { /* best effort */ }
       }
+      // MiniMax provider config — passed through to Python via env so
+      // `config.py` can read it at import time. Only honoured when
+      // `asrProvider === 'minimax'`; for DashScope the Python ASR proxy
+      // continues to use DASHSCOPE_API_KEY untouched.
+      if (config.minimaxApiKey) env.MINIMAX_API_KEY = config.minimaxApiKey
+      if (config.minimaxAsrModel) env.MINIMAX_ASR_MODEL = config.minimaxAsrModel
+      if (config.minimaxBaseUrl) env.MINIMAX_BASE_URL = config.minimaxBaseUrl
+      if (config.minimaxLanguage) env.MINIMAX_LANGUAGE = config.minimaxLanguage
+      if (config.minimaxAudioFormat) env.MINIMAX_AUDIO_FORMAT = config.minimaxAudioFormat
+      if (config.minimaxSampleRate) env.MINIMAX_SAMPLE_RATE = String(config.minimaxSampleRate)
+      if (config.minimaxChunkSeconds) env.MINIMAX_CHUNK_SECONDS = String(config.minimaxChunkSeconds)
+      // `asrProvider` defaults to 'dashscope' on the Python side, so we
+      // only export it when explicitly non-default to keep env diffs
+      // narrow for ops that grep the spawned process env.
+      if (config.asrProvider === 'minimax') env.ASR_PROVIDER = 'minimax'
       if (config.asrModel) {
         env.ASR_MODEL = config.asrModel
       }

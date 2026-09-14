@@ -15,17 +15,21 @@ export async function highlight(ctx: Context) {
   const profile = resolveDraftProfile(ctx)
   try { ctx.body = await generateHighlight(input, profile) }
   catch (error) {
-    const known = ['llm_not_configured', 'agent_unreachable', 'no_highlight', 'invalid_output']
+    const known = ['llm_not_configured', 'llm_config_invalid', 'llm_unreachable', 'agent_unreachable', 'no_highlight', 'invalid_output']
     const code = error instanceof Error && known.includes(error.message) ? error.message : 'generation_failed'
     ctx.status = code === 'no_highlight' ? 422
-      : code === 'llm_not_configured' || code === 'agent_unreachable' ? 503
+      : code === 'llm_not_configured' || code === 'llm_unreachable' || code === 'agent_unreachable' ? 503
+      : code === 'llm_config_invalid' ? 400
       : 502
-    const raw = (error as { raw?: string }).raw
+    const detail = (error as { detail?: string }).detail
+    const upstreamStatus = (error as { upstreamStatus?: number }).upstreamStatus
     const body: Record<string, unknown> = { code }
-    if (raw) body.raw = raw
+    // detail is our own validation text (never the provider body); upstreamStatus is a number.
+    if (detail) body.detail = detail
+    if (upstreamStatus) body.upstreamStatus = upstreamStatus
     ctx.body = body
     // eslint-disable-next-line no-console
-    console.error(`[trpg.highlight] profile=${profile} code=${code} status=${ctx.status} message=${error instanceof Error ? error.message : String(error)}`)
+    console.error(`[trpg.highlight] profile=${profile} code=${code} status=${ctx.status} message=${error instanceof Error ? error.message : String(error)}${detail ? ` detail=${detail}` : ''}${upstreamStatus ? ` upstream=${upstreamStatus}` : ''}`)
   }
 }
 

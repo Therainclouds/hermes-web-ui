@@ -173,14 +173,16 @@ function responseErrorMessage(text: string, statusText: string): string {
   }
 }
 
-function responseErrorPayload(text: string): { code?: string; raw?: string } {
+function responseErrorPayload(text: string): { code?: string; raw?: string; detail?: string } {
   const trimmed = text.trim()
   if (!trimmed) return {}
   try {
-    const parsed = JSON.parse(trimmed) as { code?: unknown; raw?: unknown; message?: unknown }
-    const out: { code?: string; raw?: string } = {}
+    const parsed = JSON.parse(trimmed) as { code?: unknown; raw?: unknown; detail?: unknown; message?: unknown }
+    const out: { code?: string; raw?: string; detail?: string } = {}
     if (typeof parsed.code === 'string' && parsed.code) out.code = parsed.code
     if (typeof parsed.raw === 'string') out.raw = parsed.raw
+    // 服务端自有的校验原因（枚举短串），用于给出更具体的失败提示。
+    if (typeof parsed.detail === 'string' && parsed.detail) out.detail = parsed.detail
     return out
   } catch {
     return {}
@@ -241,7 +243,7 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
     const payload = responseErrorPayload(text)
     throw Object.assign(
       new Error(`API Error ${res.status}: ${responseErrorMessage(text, res.statusText)}`),
-      { status: res.status, code: payload.code, ...(payload.raw !== undefined ? { raw: payload.raw } : {}) },
+      { status: res.status, code: payload.code, ...(payload.raw !== undefined ? { raw: payload.raw } : {}), ...(payload.detail !== undefined ? { detail: payload.detail } : {}) },
     )
   }
 
@@ -250,4 +252,41 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
 
 export function getBaseUrlValue(): string {
   return getBaseUrl()
+}
+
+/**
+ * Fetch an endpoint that returns a non-JSON body (for example `text/markdown`).
+ * Mirrors `request()`'s auth, profile header and 401 handling so plugin pages
+ * cannot silently skip authentication by reaching for `fetch` directly.
+ */
+export async function requestText(path: string, options: RequestInit = {}): Promise<string> {
+  await ensureDesktopAuthReady()
+  const headers: Record<string, string> = { ...options.headers as Record<string, string> }
+  const apiKey = getApiKey()
+  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
+  const profileName = getActiveProfileName()
+  if (profileName && shouldAttachProfileHeader(path, options)) headers['X-Hermes-Profile'] = profileName
+
+  const res = await fetch(`${getBaseUrl()}${path}`, { ...options, headers })
+
+  const isLocalBff = !path.startsWith('/api/hermes/v1/') && !path.startsWith('/v1/')
+  if (res.status === 401 && isLocalBff) {
+    clearAuthSessionState()
+    emitAuthNotice('expired')
+    if (router.currentRoute.value.name !== 'login') {
+      router.replace({ name: 'login' })
+    }
+    throw new Error('Unauthorized')
+  }
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    const payload = responseErrorPayload(text)
+    throw Object.assign(
+      new Error(`API Error ${res.status}: ${responseErrorMessage(text, res.statusText)}`),
+      { status: res.status, code: payload.code, ...(payload.raw !== undefined ? { raw: payload.raw } : {}), ...(payload.detail !== undefined ? { detail: payload.detail } : {}) },
+    )
+  }
+
+  return res.text()
 }

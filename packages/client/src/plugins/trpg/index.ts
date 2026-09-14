@@ -22,6 +22,8 @@ const plugin: HermesClientPlugin = {
       descriptionKey: 'trpg.sceneDesc',
       iconSvg: TRPG_SCENE_ICON_SVG,
     })
+    // 编年史古籍阅读页是独立网页（recap-book.html + recap-book-main.ts），
+    // 不注册成 Hermes SPA 路由；面板用 recapBookUrl() 在新标签页打开它。
   },
 }
 export default plugin

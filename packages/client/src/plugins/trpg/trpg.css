@@ -30,6 +30,9 @@
 .trpg-workspace .rune { display: grid; place-items: center; width: 58px; height: 58px; flex-shrink: 0; border: 1px solid var(--rpg-line); font-size: 35px; color: var(--rpg-gold); transform: rotate(45deg); border-radius: 12px; }
 .trpg-workspace .scene-command { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
 .trpg-workspace .scene-command > div { font-size: 11px; color: var(--rpg-muted); }
+.trpg-workspace .scene-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.trpg-workspace .settings-open { display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px; color: #e7cb91; background: linear-gradient(180deg, #4d3316, #2f1e0b); border: 1px solid #d9ba7855; }
+.trpg-workspace .settings-open:hover:not(:disabled) { border-color: #d9ba78; background: #3b352b; }
 .trpg-workspace .live-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #91aa98; margin-right: 7px; }
 .trpg-workspace .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .trpg-workspace .count { font-size: 11px; color: var(--rpg-muted); }
@@ -93,5 +96,5 @@
 .trpg-lightbox { max-height: 92vh; overflow-y: auto; border: 1px solid #796846; }
 .trpg-workspace .full-image { display: block; width: 100%; max-height: 65vh; object-fit: contain; background: #0b1018; border-radius: 8px; }
 .trpg-workspace .lightbox-content { display: flex; flex-direction: column; gap: 12px; }
-@container (max-width: 360px) { .trpg-workspace .field-grid:not(.abilities) { grid-template-columns: 1fr; } .trpg-workspace .scene-command > button { width: 100%; } .trpg-workspace .campaign-banner { gap: 10px; } .trpg-workspace .rune { width: 38px; height: 38px; font-size: 26px; } }
+@container (max-width: 360px) { .trpg-workspace .field-grid:not(.abilities) { grid-template-columns: 1fr; } .trpg-workspace .scene-actions { width: 100%; } .trpg-workspace .scene-actions > button { flex: 1 1 auto; } .trpg-workspace .campaign-banner { gap: 10px; } .trpg-workspace .rune { width: 38px; height: 38px; font-size: 26px; } }
 @media (prefers-reduced-motion: reduce) { .trpg-workspace * { transition: none !important; } }

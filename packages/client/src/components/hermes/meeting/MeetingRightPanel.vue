@@ -53,6 +53,7 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   (e: 'close'): void
+  (e: 'toggle-realtime'): void
   (e: 'resize-start', event: PointerEvent): void
 }>()
 
@@ -82,6 +83,20 @@ const panelTitle = computed(() => {
       <div class="right-panel-header">
         <h2>{{ pluginPanel ? t(pluginPanel.labelKey) : panelTitle }}</h2>
         <div class="right-panel-actions">
+          <!-- 实时对话入口：原会议顶栏按钮迁至面板头部，所有场景面板均可使用 -->
+          <button
+            class="panel-header-btn"
+            :class="{ active: props.showRealtimeDialog }"
+            :title="t('meeting.realtime.tabTooltip')"
+            :aria-label="t('meeting.realtime.tabLabel')"
+            @click="emit('toggle-realtime')"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+              <path d="M21 19a2 2 0 0 1-2 2h-1v-6h1a2 2 0 0 1 2 2z" />
+              <path d="M3 19a2 2 0 0 0 2 2h1v-6H5a2 2 0 0 0-2 2z" />
+            </svg>
+          </button>
           <!-- 关闭按钮：始终位于最右，确保不被遮挡 -->
           <button
             class="panel-close-btn"
@@ -268,6 +283,31 @@ const panelTitle = computed(() => {
   &:hover {
     background: rgba(239, 68, 68, 0.1);
     color: #ef4444;
+  }
+}
+
+/* 面板头部工具按钮（实时对话入口）：与关闭按钮同尺寸，激活态跟随主题色 */
+.panel-header-btn {
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: $text-secondary;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+
+  &:hover {
+    background: rgba($accent-primary, 0.12);
+    color: $accent-primary;
+  }
+
+  &.active {
+    background: rgba($accent-primary, 0.16);
+    color: $accent-primary;
   }
 }
 

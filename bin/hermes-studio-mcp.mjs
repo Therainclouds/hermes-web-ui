@@ -149,7 +149,10 @@ async function request(path, options = {}) {
     if (envelope.status === 401) {
       throw new Error(`${envelope.body?.error || 'Unauthorized'}. ${authHint()}`)
     }
-    throw new Error(envelope.body?.error || envelope.bodyText || `HTTP ${envelope.status}`)
+    const body = envelope.body
+    const detail = isRecord(body) && typeof body.detail === 'string' ? body.detail : ''
+    const code = isRecord(body) && typeof body.code === 'string' ? body.code : ''
+    throw new Error(detail ? `${code || `HTTP ${envelope.status}`}: ${detail}` : body?.error || envelope.bodyText || `HTTP ${envelope.status}`)
   }
   return envelope.body
 }
@@ -885,8 +888,68 @@ const gradingTools = {
 const meetingTools = {
   list: { description: 'List available meeting IDs.', fields: {}, required: [] },
   get: { description: 'Read meeting metadata without transcript.', fields: { meetingId: { type: 'string' } }, required: ['meetingId'] },
-  transcript_get: { description: 'Read ASR sentences. For a recap, pass requestId to read its immutable snapshot. Continue with nextCursor until null.', fields: { meetingId: { type: 'string' }, requestId: { type: 'string' }, cursor: { type: 'integer', minimum: 0 } }, required: ['meetingId'] },
-  recap_save: { description: 'Save a recap against its prepared requestId. Each chapter needs title, verbatim startQuote/endQuote, body (max 1800 chars), highlights (characterId/action/evidence). Body needs title, chapters, timeline (time/text). Retries replace the same recap.', fields: { meetingId: { type: 'string' }, requestId: { type: 'string' }, title: { type: 'string' }, chapters: { type: 'array', items: { type: 'object' } }, timeline: { type: 'array', items: { type: 'object' } } }, required: ['meetingId', 'requestId', 'title', 'chapters', 'timeline'] },
+  transcript_get: { description: 'Read ASR sentences. For a recap, pass requestId to read its immutable snapshot. Each returned sentence carries its absolute `index`; continue with nextCursor until null.', fields: { meetingId: { type: 'string' }, requestId: { type: 'string' }, cursor: { type: 'integer', minimum: 0 } }, required: ['meetingId'] },
+  recap_save: {
+    description: 'For literary/documentary/journal only; long_novel is generated and saved by the background novel pipeline in the TRPG panel. Save a recap against its prepared requestId. Only meetingId, requestId, title and chapters are required. Anchor each chapter with from/to sentence indices (the `index` values from transcript_get); startQuote/endQuote are still accepted for compatibility. highlights and timeline default to []. The server also writes a portable Markdown chronicle file (`recaps/<recapId>.md`) rendered from the validated title, chapter bodies, highlight marginalia and timeline; retrying with the same requestId replaces it. On invalid_recap the error names the exact field and reason.',
+    fields: {
+      meetingId: { type: 'string' },
+      requestId: { type: 'string' },
+      title: { type: 'string', description: 'Recap title, max 200 characters.' },
+      chapters: {
+        type: 'array',
+        minItems: 1,
+        maxItems: 8,
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['title', 'body'],
+          properties: {
+            title: { type: 'string', description: 'Chapter title, max 200 characters.' },
+            body: { type: 'string', description: 'Chapter prose, max 1800 characters.' },
+            from: { type: 'integer', minimum: 0, description: 'First sentence index covered by this chapter.' },
+            to: { type: 'integer', minimum: 0, description: 'Last sentence index covered by this chapter. Defaults to from.' },
+            startQuote: { type: 'string', description: 'Alternative to from: a verbatim transcript quote.' },
+            endQuote: { type: 'string', description: 'Alternative to to: a verbatim transcript quote at or after startQuote.' },
+            highlights: {
+              type: 'array',
+              maxItems: 30,
+              description: 'Optional character actions with evidence. Defaults to [].',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['characterId', 'action'],
+                properties: {
+                  characterId: { type: 'string', description: 'Must match an id from the snapshot character roster.' },
+                  action: { type: 'string', description: 'What the character did, max 500 characters.' },
+                  evidence: { type: 'string', description: 'Optional verbatim transcript quote, max 2000 characters.' },
+                },
+              },
+            },
+          },
+        },
+      },
+      timeline: {
+        type: 'array',
+        maxItems: 300,
+        description: 'Optional timeline rows; defaults to [].',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['text'],
+          properties: {
+            time: { type: 'string', description: 'Optional timestamp, max 100 characters.' },
+            text: { type: 'string', description: 'Event text, max 1000 characters.' },
+          },
+        },
+      },
+    },
+    required: ['meetingId', 'requestId', 'title', 'chapters'],
+  },
+  recap_markdown: {
+    description: 'Read the saved Markdown chronicle file for a recap. Returns the document text, so you can quote or verify the .md that the reader page renders. Use the recapId returned by recap_save (it is the saved recap id, not the requestId).',
+    fields: { meetingId: { type: 'string' }, recapId: { type: 'string', description: 'Saved recap id from recap_save.' } },
+    required: ['meetingId', 'recapId'],
+  },
 }
 const tools = [
   ...Object.entries(meetingTools).map(([name, spec]) => ({ name: `hermes_studio_meetings_${name}`, toolset: 'meetings', description: spec.description, inputSchema: inputSchema(spec.fields, spec.required) })),
@@ -1688,8 +1751,8 @@ const TOOL_ALIASES = new Map([
 const CATEGORY_TOOLSETS = {
   meetings: {
     name: 'hermes_studio_meetings_toolset',
-    coverage: 'Meeting metadata, ASR transcript snapshots and TRPG recap saving.',
-    description: 'Access meetings and save adventure chronicles. Use action=list for operations, action=describe for schemas, action=call with the exact tool name and arguments. Read all transcript pages before writing; recap_save requires a requestId from the TRPG UI.',
+    coverage: 'Meeting metadata, ASR transcript snapshots, TRPG recap saving and Markdown chronicle export.',
+    description: 'Access meetings, save adventure chronicles and read their Markdown files. Use action=list for operations, action=describe for schemas, action=call with the exact tool name and arguments. Read all transcript pages before writing; recap_save requires a requestId from the TRPG UI and writes recaps/<recapId>.md, which recap_markdown reads back.',
   },
   browser: {
     name: 'hermes_studio_browser_toolset',
@@ -1910,6 +1973,10 @@ async function callTool(name, args = {}) {
       return jsonText(await request(appendQuery(`/api/meeting-storage/${encodeURIComponent(args.meetingId)}/transcript`, { requestId: args.requestId, cursor: args.cursor }), withAuthArgs(args)))
     case 'hermes_studio_meetings_recap_save':
       return jsonText(await request(`/api/meeting-storage/${encodeURIComponent(args.meetingId)}/recaps`, withAuthArgs(args, { method: 'PUT', body: pickDefined(args, ['requestId', 'title', 'chapters', 'timeline']) })))
+    case 'hermes_studio_meetings_recap_markdown': {
+      const markdown = await request(`/api/meeting-storage/${encodeURIComponent(args.meetingId)}/recaps/${encodeURIComponent(args.recapId)}/markdown`, withAuthArgs(args))
+      return { content: [{ type: 'text', text: typeof markdown === 'string' ? markdown : JSON.stringify(markdown, null, 2) }] }
+    }
     case 'hermes_studio_api_openapi_get':
       return jsonText(compactOpenApiDocument(await openApiDocument(withAuthArgs(args)), args))
     case 'hermes_studio_api_request': {

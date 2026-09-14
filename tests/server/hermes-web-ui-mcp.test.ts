@@ -77,9 +77,14 @@ describe('hermes-web-ui MCP server', () => {
       expect((await waitForRpc(responses, 2)).result.isError).not.toBe(true)
       writeRpc(child, 3, 'tools/call', { name: 'hermes_studio_meetings_toolset', arguments: { action: 'call', tool: 'hermes_studio_meetings_recap_save', arguments: { meetingId: 'm1', requestId: 'snapshot', title: '城门', chapters: [], timeline: [] } } })
       expect((await waitForRpc(responses, 3)).result.isError).not.toBe(true)
+      writeRpc(child, 4, 'tools/call', { name: 'hermes_studio_meetings_toolset', arguments: { action: 'call', tool: 'hermes_studio_meetings_recap_markdown', arguments: { meetingId: 'm1', recapId: 'recap-1' } } })
+      const markdownResult = await waitForRpc(responses, 4)
+      expect(markdownResult.result.isError).not.toBe(true)
+      expect(markdownResult.result.content[0].text).toContain('sentences')
       expect(calls).toEqual([
         { path: '/api/meeting-storage/m1/transcript?requestId=snapshot&cursor=9', method: 'GET', profile: 'table', body: null },
         { path: '/api/meeting-storage/m1/recaps', method: 'PUT', profile: 'table', body: { requestId: 'snapshot', title: '城门', chapters: [], timeline: [] } },
+        { path: '/api/meeting-storage/m1/recaps/recap-1/markdown', method: 'GET', profile: 'table', body: null },
       ])
     } finally { child.kill(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
   })

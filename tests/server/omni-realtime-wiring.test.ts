@@ -83,22 +83,23 @@ describe('omni-realtime endpoint wiring', () => {
 })
 
 describe('omni-realtime client wiring', () => {
-  it('MeetingTopBar exposes the realtime-dialog button', () => {
+  it('MeetingTopBar exposes the meeting-text export button in place of the realtime toggle', () => {
     const source = readFileSync(
       `${CLIENT_SRC}/components/hermes/meeting/MeetingTopBar.vue`,
       'utf8',
     )
-    expect(source).toContain("t('meeting.realtime.tabLabel')")
-    expect(source).toContain("t('meeting.realtime.tabTooltip')")
-    expect(source).toContain('toggle-realtime-dialog')
+    expect(source).toContain("t('meeting.exportTranscript')")
+    expect(source).toContain("emit('export-transcript')")
+    expect(source).not.toContain('toggle-realtime-dialog')
   })
 
-  it('MeetingView wires the realtime-dialog toggle from MeetingTopBar', () => {
+  it('MeetingView keeps the realtime-dialog toggle reachable from the right-panel header', () => {
     const source = readFileSync(`${CLIENT_SRC}/views/hermes/MeetingView.vue`, 'utf8')
     // kebab-case attr binding in template + reactive ref in script
     expect(source).toContain('show-realtime-dialog=')
     expect(source).toContain('showRealtimeDialog')
-    expect(source).toMatch(/@toggle-realtime-dialog="showRealtimeDialog/)
+    // the toggle moved out of MeetingTopBar into MeetingRightPanel's header
+    expect(source).toContain('@toggle-realtime="showRealtimeDialog = !showRealtimeDialog"')
     // InlineRealtimePanel (the meeting-side thin wrapper around the shared
     // useOmniRealtime audio chain) is mounted into MeetingRightPanel's realtime slot
     expect(source).toContain('<InlineRealtimePanel')
@@ -116,12 +117,14 @@ describe('omni-realtime client wiring', () => {
     expect(source).toMatch(/meeting-context="realtimeMeetingContext"/)
   })
 
-  it('MeetingRightPanel accepts showRealtimeDialog and a realtime slot', () => {
+  it('MeetingRightPanel accepts showRealtimeDialog, exposes the header toggle, and a realtime slot', () => {
     const source = readFileSync(
       `${CLIENT_SRC}/components/hermes/meeting/MeetingRightPanel.vue`,
       'utf8',
     )
     expect(source).toContain('showRealtimeDialog')
+    expect(source).toContain("t('meeting.realtime.tabTooltip')")
+    expect(source).toContain("emit('toggle-realtime')")
     // The four-way slot dispatch (speech > agent > realtime > analysis)
     expect(source).toContain('<slot name="realtime"')
   })

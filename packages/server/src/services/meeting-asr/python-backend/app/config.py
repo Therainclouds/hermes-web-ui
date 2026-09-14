@@ -145,6 +145,22 @@ class Settings:
     host: str = os.environ.get("BACKEND_HOST", "127.0.0.1")
     port: int = int(os.environ.get("BACKEND_PORT", "8000"))
     cors_origin: str = os.environ.get("CORS_ORIGIN", "http://localhost:5173")
+    # ------------------------------------------------------------------
+    # ASR provider selection. `'dashscope'` (default) keeps the existing
+    # Paraformer WebSocket flow; `'minimax'` switches the frontend WebSocket
+    # in `asr_proxy.py` to the MiniMax REST chunking flow (see
+    # `asr_minimax.py`).
+    # ------------------------------------------------------------------
+    asr_provider: str = os.environ.get("ASR_PROVIDER", "dashscope")
+    # MiniMax provider env defaults — only consumed when `asr_provider` is
+    # `'minimax'`. Mirrors the DashScope fields above.
+    minimax_api_key: str = os.environ.get("MINIMAX_API_KEY", "")
+    minimax_asr_model: str = os.environ.get("MINIMAX_ASR_MODEL", "asr-1.0")
+    minimax_base_url: str = os.environ.get("MINIMAX_BASE_URL", "https://api.minimaxi.com")
+    minimax_language: str = os.environ.get("MINIMAX_LANGUAGE", "")
+    minimax_audio_format: str = os.environ.get("MINIMAX_AUDIO_FORMAT", "wav")
+    minimax_sample_rate: int = int(os.environ.get("MINIMAX_SAMPLE_RATE", "16000"))
+    minimax_chunk_seconds: float = float(os.environ.get("MINIMAX_CHUNK_SECONDS", "12.0"))
 
     def sync_from(self, asr: object) -> None:
         """Refresh the fields that a hot config push (Storage.update_config)
@@ -173,9 +189,33 @@ class Settings:
         # in sync so callers that read either name see the same value.
         if getattr(asr, "paraformer_language_hints", None):
             self.asr_language_hints = asr.paraformer_language_hints
+        # MiniMax provider fields — only sync when the config explicitly
+        # provides them (older configs / hot-restart upgrades may not).
+        if getattr(asr, "minimax_api_key", None):
+            self.minimax_api_key = asr.minimax_api_key
+        if getattr(asr, "minimax_asr_model", None):
+            self.minimax_asr_model = asr.minimax_asr_model
+        if getattr(asr, "minimax_base_url", None):
+            self.minimax_base_url = asr.minimax_base_url
+        if getattr(asr, "minimax_language", None) is not None:
+            self.minimax_language = asr.minimax_language
+        if getattr(asr, "minimax_audio_format", None):
+            self.minimax_audio_format = asr.minimax_audio_format
+        if getattr(asr, "minimax_sample_rate", None):
+            self.minimax_sample_rate = int(asr.minimax_sample_rate)
+        if getattr(asr, "minimax_chunk_seconds", None):
+            self.minimax_chunk_seconds = float(asr.minimax_chunk_seconds)
 
     def language_hints_list(self) -> list[str]:
         return [s.strip() for s in self.asr_language_hints.split(",") if s.strip()]
+
+    @property
+    def is_minimax_provider(self) -> bool:
+        return (self.asr_provider or "dashscope").lower() == "minimax"
+
+    @property
+    def minimax_configured(self) -> bool:
+        return bool(self.minimax_api_key and self.minimax_base_url)
 
     @property
     def oss_configured(self) -> bool:

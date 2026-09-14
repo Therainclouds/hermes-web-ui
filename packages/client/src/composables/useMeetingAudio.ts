@@ -412,7 +412,12 @@ export function useMeetingAudio(deps: UseMeetingAudioDeps) {
           isConnecting.value = false
           isRecording.value = true
           statusText.value = t('meeting.recording')
-          ws?.send(JSON.stringify({ type: 'start' }))
+          // Per-session provider override: route audio to DashScope (default)
+          // or MiniMax based on the active session's asrProvider field.
+          const startPayload: Record<string, unknown> = { type: 'start' }
+          const provider = meetingStore.activeSession?.asrProvider
+          if (provider === 'minimax') startPayload.provider = 'minimax'
+          ws?.send(JSON.stringify(startPayload))
         }
 
         ws.onmessage = (event) => {
@@ -481,7 +486,10 @@ export function useMeetingAudio(deps: UseMeetingAudioDeps) {
           isConnecting.value = false
           isRecording.value = true
           statusText.value = t('meeting.recording')
-          ws?.send(JSON.stringify({ type: 'start' }))
+          const startPayload: Record<string, unknown> = { type: 'start' }
+          const provider = meetingStore.activeSession?.asrProvider
+          if (provider === 'minimax') startPayload.provider = 'minimax'
+          ws?.send(JSON.stringify(startPayload))
         }
 
         ws.onmessage = (event) => {
