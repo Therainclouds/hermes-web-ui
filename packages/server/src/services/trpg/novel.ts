@@ -539,6 +539,9 @@ async function run(job: StoredJob, source: Snapshot, model: NovelModel, signal: 
         report = await audit()
       }
       if (!report.passed) await block(`三轮编辑后仍有明确事实问题：${report.issues.slice(0, 3).map(i => i.detail).join('；').slice(0, 400)}。已保留最新稿件，请调整约束后继续，不自动重复相同修订。`)
+      // A resolved stall must not leave a stale failure banner: the review step is served from
+      // its resume seed, so the success path below never clears job.failure for this scene.
+      if (job.failure?.step === `review-${index}`) delete job.failure
       // Publish the latest accepted version for the existing reader/illustration links.
       const reviewPath = join(dir, `review-${index}.json`), oldReview = await read<Step<SceneDraft>>(reviewPath)
       if (oldReview && oldReview.value.body !== reviewed.body) {
@@ -625,6 +628,8 @@ async function run(job: StoredJob, source: Snapshot, model: NovelModel, signal: 
     await atomic(balancePath, { context: balanceContext, rounds: balanceRounds, blocked: job.failure.detail })
     throw new Error('novel_length_mismatch')
   }
+  // A later balance pass can satisfy a length that an earlier round reported as blocked.
+  if (job.failure?.step === 'book') delete job.failure
   if (controls.settings.pauseAfterChapter) {
     const pending = chapters.findIndex((_, i) => !controls.approvedChapters.includes(i))
     if (pending >= 0) { job.pauseReason = 'chapter'; job.waitingChapter = pending; throw new Error('novel_paused') }
