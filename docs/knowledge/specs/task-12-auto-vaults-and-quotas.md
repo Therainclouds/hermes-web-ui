@@ -459,8 +459,25 @@ indistinguishable from a healthy update source.** The device's
 highest-priority env pin pointed at a versioned manifest that
 never changes, every check succeeded, no surface ever complained,
 and the device missed the first channel release of its lifetime.
-The fix is not "remember to clean env files" — it is to make the
-system detect and surface the shape of the misconfiguration.
+It surfaced only because v0.8.8 was the first release to depend
+on the channel `latest.json`.
+
+Second lesson from the same incident: **the versioned
+`releases/vX.Y.Z/manifest.json` exists on three hosts**, and a
+given device's pin can point at any one of them:
+
+1. OSS object: `…/quanthermes_pj/quanthermes_web_ui/releases/vX.Y.Z/manifest.json`
+2. GitHub Release asset: `…/releases/download/vX.Y.Z/manifest.json`
+3. `release-manifests` branch archive:
+   `raw.githubusercontent.com/.../release-manifests/releases/vX.Y.Z/manifest.json`
+   (this is the one device 6.6.6.73 actually pinned; also note
+   raw.githubusercontent.com CDN serves up to ~5 min stale after
+   a commit, so verification must expect that lag)
+
+Any compat mirroring must cover all three hosts or it silently
+fixes nothing. This is also why the code-level detection below is
+preferred over host-by-host mirroring: the detection is
+host-agnostic.
 
 ### Detection rule
 
