@@ -235,6 +235,7 @@ Web UI BFF 端点：
 | 音频录制与回放 | 录制会议音频，支持进度条拖拽、点击句子跳转播放 |
 | AI 分析 | 支持 Hermes Agent 或自定义模型分析，生成摘要、要点、待办事项 |
 | 多格式导出 | 支持下载音频（WebM）、转写文本（TXT）、JSON 结构化数据、HTML 报告 |
+| 整文件转写 | 新建会议对话框的「直接音频转录」标签可直接上传录音开始转写；右栏的「拆分人声」按钮对同一段录音重跑一遍识别并补上说话人标签。引擎：MiniMax `asr-1.0`（支持说话人分离，超过 480s 自动切片）或 Qwen（≤5 分钟，说话人分离需 OSS） |
 
 **说话人分离模式：**
 
@@ -322,6 +323,19 @@ Web UI BFF 端点：
 - **Assistant 内容走 Markdown 渲染。** 把 `<div class="assistant-content">{{ msg.content }}</div>` 替换为异步加载的 `MarkdownRenderer`，分析结果会按 Markdown 渲染（标题、列表、表格、代码块），不再是被转义的纯文本。
 - **报告生成 prompt 加固。** `useMeetingAgent.generateReport` 现在通过 `sendMessage` 的第二个参数下发 pinned `instructions`，带上会议标题，并把已有 `analysisResult` 以及之前 assistant/system 消息以 `### Previous analysis result` / `### Previous conversation` 块的形式拼进 prompt。再点一次 "生成报告" 会基于之前的分析结果增量补全，而不是从头再来；严格的 instructions 同时强制 `write_file + ```html` 契约，与 `extractHtml` 的抽取规则对齐。
 - **HTML 检测放宽。** `looksLikeHtmlDocument` 现在同时接受 `<!DOCTYPE html>` 开头，最小长度阈值从 200 字符降到 100 字符，短的（不含 ECharts 图表的）报告也能被识别为完整 HTML 文档。
+
+**整文件转写与事后说话人分离（2026-02）：**
+
+- **两条批量转写入口**，与实时 WebSocket 路径并列：
+  - **「直接音频转录」** 标签：在创建会议对话框里直接上传音频文件、选引擎、按需开启说话人分离，创建会议后立刻开始转写；录音文件随会议保存，播放 / 下载照常工作。
+  - **「拆分人声」** 按钮：位于右栏头部，有录音时可点击。重传整段录音并回填说话人标签到转写。点击后弹出对话框，先选识别引擎（MiniMax / Qwen）和说话人数；Qwen 引擎还需要在对话框里就地填 OSS 凭据，因为 DashScope 说话人分离文件接口只接受公网可达的音频 URL。
+- **引擎支持。** MiniMax 走 `asr-1.0`，使用 `response_format=verbose_json` + `segments[].speaker`（单次请求 500 s / 50 MB 上限，超过 480 s 自动切片，全局时间戳连续）；Qwen 的说话人分离只能走异步文件接口（`diarization_enabled`），需要 OSS 作为公网音频托管，同步接口则只有 5 分钟时长上限且不支持说话人标签。
+- **后台任务 + 轮询。** 长转写不会一直占住 HTTP 请求。客户端调 `POST /api/meeting-asr/transcribe/file?engine=&diarize=&speakerCount=&language=&sessionId=`（请求体为原始音频），再轮询 `GET /api/meeting-asr/transcribe/status/:jobId` 拿到 `{ status, progress, result | error }`。任务错误会带上失败调用点（例如 `[file_transcribe.py:283]`），反馈直接指向代码位置。
+- **陈旧后端自愈。** uvicorn 子进程在 spawn 时一次性导入 Python 模块，所以重新打包 `dist/` 只更新了客户端，运行时后端仍停留在旧代码。`MeetingASRService` 现在在 spawn 时给 `python-backend/**/*.py` 算内容哈希，作为 `MEETING_ASR_CODE_HASH` 传给子进程；下次 `start()` 若磁盘上的哈希变了就 respawn。`/healthz` 会暴露 `transcribe` 能力标记（`MeetingView.vue` 里的 `TRANSCRIBE_CAPABILITY` 与之对应）；两条整文件入口都会调用 `ensureTranscribeBackend()`，发现报告的 `code_hash` 对不上就先把服务停掉，再强制 spawn 新进程。
+- **容器解码。** 上传的容器（webm/mp3/wav/m4a/…）先用 `ffmpeg`（设备 / Docker 依赖里已声明）解码为 16 kHz 单声道 Int16 PCM，再送进引擎。
+- **热配置同步。** `MeetingASRService.updateConfig()` 同时转发 DashScope *和* MiniMax 字段，所以一次会话里切换引擎不需要重启服务。运行中下发的设置落到 `config.yaml`，`asr_minimax.py` 在下一次请求时直接拿到新的 key / endpoint。
+
+完整契约（引擎选择、OSS 桶字段、错误结构、重试策略）见 [`MEETING_MODE_README.md`](./MEETING_MODE_README.md#7-整文件转写与事后说话人分离-2026-02)。
 
 ### 口语对练 / 口语教练（v0.8.0）
 

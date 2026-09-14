@@ -37,7 +37,69 @@ This update adds a comprehensive Meeting Mode to Hermes Web UI, enabling real-ti
 - ASR model selection (paraformer-realtime-v2, paraformer-v2)
 - Hermes Agent profile selection for analysis
 
-### 6. Speech Evaluation Mode (演讲评分)
+### 7. Whole-file transcription & post-recording speaker separation (2026-02)
+
+The realtime path streams audio to the ASR as it is captured. Two additional
+entry points send the **whole recording** instead, which is what the upstream
+APIs need for reliable speaker diarization:
+
+- **「拆分人声」button** (right-panel header, enabled once a recording exists)
+  re-sends the finished recording and backfills speaker labels onto the
+  transcript. Clicking it opens a small dialog where you pick the recognition
+  engine (MiniMax / Qwen) and the speaker count; for Qwen the dialog also
+  collects the OSS credentials inline, because DashScope's diarized file API
+  only accepts a publicly reachable audio URL. "Start" stays disabled until
+  the selected engine is usable, so the backend error is never the first
+  feedback the user sees.
+- **「直接音频转录」tab** in the create-meeting dialog: pick an audio file,
+  choose the engine and whether to separate speakers, then create the meeting —
+  transcription starts immediately and the file is stored with the meeting so
+  playback/download still work. The original microphone flow lives in the
+  **「实时语音」** tab.
+
+Engine support (see `python-backend/app/file_transcribe.py`):
+
+| Engine | Diarization | Limits | OSS required |
+|--------|-------------|--------|--------------|
+| MiniMax (`asr-1.0`) | ✅ `response_format=verbose_json` + `segments[].speaker` | 500 s / 50 MB per request — longer audio is chunked at 480 s with global timestamps | no |
+| Qwen (DashScope) | ✅ only via the async file API (`diarization_enabled`) | sync path: ≤5 min, no diarization | diarization only |
+
+The create-meeting UI disables 区分人声 for Qwen (the sync endpoint has no
+speaker labels). The 「拆分人声」 dialog, by contrast, exposes the OSS fields
+inline for Qwen and enables the action once a bucket + AccessKey pair is
+provided; the backend contract is the same API used by direct calls
+(`POST /api/meeting-asr/transcribe/file?engine=qwen&diarize=true`). Because the
+engine is chosen per action, both credentials are pushed to the backend —
+`MeetingASRService.updateConfig()` forwards the MiniMax fields too, so a
+DashScope session can still run a MiniMax pass without a restart.
+
+Uploaded containers (webm/mp3/wav/m4a/…) are decoded to 16 kHz mono Int16 PCM
+with `ffmpeg` (a declared device/Docker dependency). Transcription runs as a
+background job so a long poll cycle never holds an HTTP request open:
+
+- `POST /api/meeting-asr/transcribe/file?engine=&diarize=&speakerCount=&language=&sessionId=`
+  — raw audio body → `{ job_id }`
+- `GET /api/meeting-asr/transcribe/status/:jobId` — `{ status, progress, result | error }`
+
+**Stale-backend self-heal.** The uvicorn child imports its Python modules once
+at spawn, so rebuilding `dist/` and refreshing the browser updates the client
+but leaves the running backend on the old code — a fixed bug keeps reproducing
+until the service is restarted by hand. To prevent that:
+
+- `MeetingASRService` hashes `python-backend/**/*.py` at spawn, passes it to the
+  child as `MEETING_ASR_CODE_HASH`, and respawns on the next `start()` when the
+  hash on disk changed (`status.codeHash` exposes the current value);
+- `/healthz` advertises `transcribe` (a capability marker mirrored by
+  `TRANSCRIBE_CAPABILITY` in `MeetingView.vue`) plus `code_hash`;
+- both whole-file entry points call `ensureTranscribeBackend()`, which probes
+  those fields and stops the service when they do not match, forcing a fresh
+  spawn before transcribing.
+
+Job errors carry the failing call site, e.g.
+`not enough values to unpack (expected 4, got 1) [file_transcribe.py:283]`, so a
+field report points straight at the code.
+
+### 8. Speech Evaluation Mode (演讲评分)
 - **陪伴型成长教练 AI 点评**：实时点评与最终报告都以温暖、说人话的方式输出，先肯定再给方向，多鼓励（不输出正式文档/工作汇报风格）。
 - **3+1 反馈**：每轮最多 3 条亮点 + 1 个最重要、可落地执行的提升点。
 - **按发言人区分**：赘语、金句、语法问题尽量带 speaker 标注；设备/主持人串场词不作为演讲内容评价；报告按发言人呈现金句与用时。

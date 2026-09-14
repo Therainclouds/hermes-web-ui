@@ -238,6 +238,7 @@ Real-time speech transcription with AI-powered meeting analysis, speaker diariza
 | Audio Recording & Playback | Record meeting audio with progress bar, drag seek, and click-to-jump on sentences |
 | AI Analysis | Hermes Agent or custom model analysis for summaries, key points, and action items |
 | Multi-format Export | Download audio (WebM), transcript (TXT), structured JSON data, and HTML reports |
+| Whole-file transcription | New "Direct audio transcription" tab in the create-meeting dialog uploads a recording; "Separate speakers" button on the right panel re-runs the same audio for speaker labels. Engines: MiniMax `asr-1.0` (diarized, chunked above 480s) or Qwen (≤5 min, diarization requires OSS) |
 
 **Speaker Diarization Mode:**
 
@@ -325,6 +326,19 @@ Real-time speech transcription with AI-powered meeting analysis, speaker diariza
 - **Markdown rendering for assistant content.** The plain-text `<div class="assistant-content">{{ msg.content }}</div>` is replaced with an async-loaded `MarkdownRenderer` so analysis output is rendered as actual Markdown (headings, lists, tables, code blocks) instead of escaped text.
 - **Smarter report prompt.** `useMeetingAgent.generateReport` now passes a pinned `instructions` payload to Hermes, includes the session title, and folds in any prior `analysisResult` plus the previous assistant/system messages as `### Previous analysis result` / `### Previous conversation` blocks. This keeps a re-run of "Generate Report" idempotent instead of re-analyzing from scratch, and the strict instructions enforce the `write_file + ```html code block` contract that `extractHtml` looks for.
 - **Looser HTML detection.** `looksLikeHtmlDocument` now also accepts `<!DOCTYPE html>` prefixes and drops the minimum-length threshold from 200 to 100 characters, so shorter ECharts-free reports are still recognized as full HTML documents.
+
+**Whole-file transcription & post-recording speaker separation (2026-02):**
+
+- **Two entry points** for batch transcription in addition to the real-time WebSocket path:
+  - **「直接音频转录」** tab in the create-meeting dialog — pick an audio file, choose the engine, optionally enable speaker separation, then create the meeting. Transcription starts immediately and the file is stored with the meeting so playback / download still work.
+  - **「拆分人声」** button on the right-panel header (enabled once a recording exists) — re-sends the finished recording and backfills speaker labels onto the transcript. Opens a dialog where you pick the recognition engine (MiniMax / Qwen) and speaker count; for Qwen the dialog also collects OSS credentials inline because DashScope's diarized file API only accepts publicly reachable URLs.
+- **Engine support.** MiniMax uses `asr-1.0` with `response_format=verbose_json` + `segments[].speaker` (500 s / 50 MB per request; longer audio is chunked at 480 s with global timestamps). Qwen supports diarization only via the async file API (`diarization_enabled`) and requires OSS as the public audio host; the synchronous endpoint has a 5-minute cap and no speaker labels.
+- **Background job + polling.** Long transcriptions never hold an HTTP request open. The client calls `POST /api/meeting-asr/transcribe/file?engine=&diarize=&speakerCount=&language=&sessionId=` (raw audio body) and polls `GET /api/meeting-asr/transcribe/status/:jobId` for `{ status, progress, result | error }`. Errors carry the failing call site (e.g. `[file_transcribe.py:283]`) so reports point straight at the code.
+- **Stale-backend self-heal.** Because the uvicorn child imports Python modules once at spawn, rebuilding `dist/` updates the client but leaves the running backend on the old code. `MeetingASRService` now hashes `python-backend/**/*.py` at spawn, passes it as `MEETING_ASR_CODE_HASH`, and respawns on the next `start()` when the hash on disk changes. `/healthz` advertises a `transcribe` capability marker mirrored by `TRANSCRIBE_CAPABILITY` in `MeetingView.vue`; both whole-file entry points call `ensureTranscribeBackend()` and stop the service when its reported `code_hash` doesn't match, forcing a fresh spawn.
+- **Container decode.** Uploaded containers (webm/mp3/wav/m4a/…) are decoded to 16 kHz mono Int16 PCM with `ffmpeg` (declared device / Docker dependency) before being sent to the engine.
+- **Hot config sync.** `MeetingASRService.updateConfig()` forwards both DashScope *and* MiniMax fields, so a session can swap engines without restarting the service. Settings pushed mid-run land in `config.yaml` and `asr_minimax.py` picks up the new key/endpoint on the next request.
+
+Full contract (engine selection, OSS bucket fields, error shapes, retry policy) lives in [`MEETING_MODE_README.md`](./MEETING_MODE_README.md#7-whole-file-transcription--post-recording-speaker-separation-2026-02).
 
 ### Speech Practice / Oral Coach (v0.8.0)
 
