@@ -41,6 +41,7 @@ const PACKAGE_ALLOWLIST = [
   'scripts/hermes-web-ui.service',
   'scripts/install-device-package.sh',
   'scripts/update-source-deploy.sh',
+  'scripts/update-orchestrator.sh',
 ]
 
 function createTempDir(prefix: string): string {
@@ -79,6 +80,7 @@ function seedRepo(prefix: string, _options: FixtureOptions = {}) {
     'hermes-web-ui-update-runner.sh',
     'install-device-package.sh',
     'update-source-deploy.sh',
+    'update-orchestrator.sh',
   ]
   for (const name of scripts) {
     writeFileSync(resolvePath(repoRoot, 'scripts', name), '#!/usr/bin/env bash\necho hi\n', 'utf-8')

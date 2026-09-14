@@ -360,7 +360,7 @@ export function isScriptEntry(entryPath) {
   return entryPath.endsWith('.sh') || (entryPath.endsWith('.py') && entryPath.includes('/scripts/'))
 }
 
-async function assertArchiveScriptModes(archivePath) {
+export async function assertArchiveScriptModes(archivePath) {
   const broken = []
   await listTar({
     file: archivePath,
