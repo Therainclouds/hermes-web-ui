@@ -60,20 +60,21 @@ jobs:
           chmod 600 "${HOME}/.ossutilconfig"
 
           OSS_PATH="$(node -e "console.log(JSON.parse(require('node:fs').readFileSync('${RELEASE_CONFIG}','utf8')).ossPath || '')")"
+          # ossPath already carries the oss://bucket/prefix form.
           echo "ossPath=${OSS_PATH}"
 
           LATEST_KEY="${OSS_PATH}/releases/${CHANNEL}/latest.json"
-          ossutil -c "${HOME}/.ossutilconfig" cp -f "oss://${LATEST_KEY}" /tmp/latest.json
+          ossutil -c "${HOME}/.ossutilconfig" cp -f "${LATEST_KEY}" /tmp/latest.json
           cat /tmp/latest.json
 
           # Enumerate releases/vX.Y.Z/ prefixes and overwrite each
           # manifest.json with the channel tip.
-          ossutil -c "${HOME}/.ossutilconfig" ls "oss://${OSS_PATH}/releases/" | grep -oE "releases/v[0-9]+\.[0-9]+\.[0-9]+/manifest\.json" | sort -u > /tmp/pinned-keys.txt
+          ossutil -c "${HOME}/.ossutilconfig" ls "${OSS_PATH}/releases/" | grep -oE "releases/v[0-9]+\.[0-9]+\.[0-9]+/manifest\.json" | sort -u > /tmp/pinned-keys.txt
           echo "pinned manifests found:"; cat /tmp/pinned-keys.txt
 
           while IFS= read -r key; do
             echo "mirroring -> ${key}"
-            ossutil -c "${HOME}/.ossutilconfig" cp -f /tmp/latest.json "oss://${OSS_PATH}/${key}"
+            ossutil -c "${HOME}/.ossutilconfig" cp -f /tmp/latest.json "${OSS_PATH}/${key}"
           done < /tmp/pinned-keys.txt
 
           echo "done"
