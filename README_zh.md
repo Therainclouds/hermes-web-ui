@@ -21,6 +21,7 @@
 | 本地控制台 | 在一个仪表盘中管理 Profile、Provider、模型、凭证、记忆、技能、插件、日志和运行时设置。 |
 | 自动化 | 围绕同一套 Hermes Profile 配置平台渠道、Cron 任务、Kanban 任务、群聊房间和 MCP Server。 |
 | 工作区工具 | 提供文件浏览器、Web 终端、语音输入输出、Coding Agent、设备发现和性能视图。 |
+| 会议插件 | 内置跑团助手（角色卡、高光、编年史、长篇小说流水线、古籍阅读页）和摄像头文档扫描插件，均在会议模式中加载。 |
 | 分发形态 | 支持 Windows/macOS/Linux 桌面应用、npm CLI 包和 Docker 镜像。 |
 
 ## 功能特性
@@ -227,7 +228,7 @@ Web UI BFF 端点：
 
 | 功能 | 说明 |
 |---|---|
-| 实时语音转写 | 通过 WebSocket 连接 ASR 服务，实时将语音转为文字 |
+| 实时语音转写 | 通过 WebSocket 连接 ASR 服务，实时将语音转为文字；ASR 服务商可切换（默认 DashScope Paraformer / Fun-ASR，可选 MiniMax `asr-1.0` REST 流式识别） |
 | 说话人分离 | 基于阿里云 DashScope Paraformer 模型，自动识别不同说话人 |
 | 说话人重命名 | 点击说话人标签可自定义名称，重命名后自动同步到所有相关句子 |
 | 说话人数设置 | 支持自动识别或手动指定 2-8 人，提升分离精准度 |
@@ -533,6 +534,31 @@ Hermes profile 的工作区。
 - 端到端测试（`scanner-precision.spec.ts`）覆盖实时预览：选框进入 `held`
   后仍保留、拖动期间冻结、松手后跟随摄像头移动，以及 13" 笔记本与移动端
   两种视口。
+
+### 会议跑团插件（Meeting TRPG Plugin）
+
+桌游 / TRPG 跑团辅助，嵌入在会议模式里：创建会议时选择 **TRPG** 场景，
+右栏就会加载一个独立、懒加载的跑团工作台（角色卡、高光、编年史、长篇
+小说工作台、骰子、配图等），与文档扫描插件互不耦合。
+
+**能力一览：**
+
+| 能力 | 说明 |
+|---|---|
+| 角色卡 | 按 D&D 5E 的身份 / 六项属性 / 战斗 / 技能 / 背景 / 法术分组，可折叠。玩家（说话人）与角色名分开，输出名统一为【角色名】。 |
+| 角色草稿（PDF / 图片） | AI 抄写员先通过本地打包的 `pdfjs-dist` 提取 PDF 文本与坐标，再交给当前 Hermes profile 的模型填卡；扫描件仍需 OCR。草稿兼容 Markdown JSON、外围说明、嵌套 `character/data/sheet`、中文字段与属性缩写；Agent 最终答复优先于推理流。 |
+| 高光图库 | 点击时取最近 60 句确认转写（≤ 12000 字符），保留动作证据。**不再按 30 条丢弃**，更早的卡片可通过「展开更早的 N 条高光」和独立 `HighlightWorkbench` 页查看。支持手动上传 PNG/JPEG/WebP（≤ 5 MB）补图 / 换图。 |
+| 编年史 | 三种写作模式（小说化 / 记录体 / 日志体）+ **长篇小说**流水线（目标 1/2/4/6 万中文字符），后台任务、可断点续写、可取消；分章节规划、逐场景写作 + 审核；快照在点击时落盘，每段写作再读回原文。Agent 走新增的 `trpg-recap` skill 和 `hermes_studio_meetings_toolset` MCP，不另造聊天执行器。 |
+| 古籍阅读页 | 独立 Vite 入口（`/recap-book.html?meetingId=...&recapId=...`）渲染已保存的 Markdown：牛皮纸纹理、余烬漂浮、深色皮革封面 + 题签 + 红印、毛笔手写体字体（`Ma Shan Zheng`，OFL，本地 `public/fonts/`）、按真实排版分页、鼠标拖拽 + 键盘翻页、右侧插画栏对应 `images[]`。 |
+| 生成设置 | 一个对话框统一管理：高光转写范围（全部 / 最近 N 句 / 指定段落）、编年史转写范围（同上，默认全部）、编年史配图（已保存编年史 × 封面 / 内容 × 可选章节）。范围以**句子区间** `segments: {from,to}[]` 保存，不依赖段落 id，转写变化不会静默失效。 |
+| ChatGPT 网页生图 | 异步任务 + 轮询流程：`POST /api/hermes/media/chatgpt-web-image?async=true` 立即返回 202 + `job_id`，面板每 3s 轮询 `GET .../jobs/:jobId`，瞬时失败自动重试，任务在服务端保留 1 小时（每 profile 最多 30 个）。 |
+| 存储 | 角色 / 高光 / 图片 / 设置存于独立 IndexedDB，按 server + user + profile + meeting 隔离。编年史快照写入 `getWebUiHome()/meetings/<meetingId>/recaps.json`（原子写、会议级串行队列、同 `requestId` 重试覆盖），Markdown 渲染到同目录 `<recapId>.md`。 |
+
+插件保持「路由薄、服务厚」（控制器只委托到 `services/trpg/`），字段定义
+通过 `packages/shared/trpg-*.ts` 共享，复用现有聊天传输、profile 凭证和
+bridge 会话——不引入新的聊天执行器、不升级 Hermes Agent、不改动录音链路。
+完整契约（存储 key、MCP 工具集、范围语义、古籍阅读页分页模型、验证测试）
+见 [`packages/client/src/plugins/trpg/README.md`](./packages/client/src/plugins/trpg/README.md)。
 
 ### Web 终端
 
