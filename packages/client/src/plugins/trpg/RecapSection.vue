@@ -145,7 +145,7 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(poll) })
       <NovelTokenUsage :usage="job.tokenUsage" />
       <p>{{ t('trpg.recap.jobProgress', { processed: job.processedSentences, total: job.totalSentences, reviewed: job.reviewed, scenes: job.scenes, chars: job.outputChars }) }}</p>
       <progress :value="progress(job)" :max="100" :aria-label="t('trpg.recap.long_novel')" />
-      <p v-if="job.error" role="alert">{{ t('trpg.recap.jobError') }} ({{ job.error }})</p>
+      <p v-if="job.error" role="alert">{{ t(['novel_revision_stalled', 'novel_length_mismatch'].includes(job.error) ? 'trpg.harness.stalled' : 'trpg.recap.jobError') }} ({{ job.error }})</p>
       <details v-if="job.warnings.length"><summary>{{ t('trpg.recap.jobWarnings') }}</summary><p v-for="(warning, i) in job.warnings" :key="i">{{ warning === 'target_length_not_reached' ? t('trpg.recap.shortSource') : warning }}</p></details>
       <button v-if="job.status === 'running'" type="button" @click="controlJob(job, 'cancel')">{{ t('trpg.recap.cancelJob') }}</button>
       <button v-if="['failed', 'paused', 'cancelled'].includes(job.status)" type="button" @click="controlJob(job, 'resume')">{{ t('trpg.recap.resumeJob') }}</button>

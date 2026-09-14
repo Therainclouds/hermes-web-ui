@@ -37,7 +37,7 @@ export function parseDirection(raw: any): ChapterDirection {
   })
   return { ...(references ? { visualReferences: references } : {}), title: text('title', 160, true), guide: text('guide', 2500, true), pov: text('pov', 200), focus: text('focus', 1500), avoid: text('avoid', 1500), pacing, ...(raw.targetChars != null ? { targetChars: raw.targetChars } : {}) }
 }
-export const artifactName = (name: string) => /^(?:(?:read|memory|material|state|extract|canon|check|plan|write|review|chapter)-\d{1,6}|canon-\d{1,6}-gap-[a-f0-9]{12}|planpart-\d{1,6}-\d{1,2}-\d{1,6}|bookpart-\d{1,2}-\d{1,6}|revision-\d{1,6}-\d{1,6}|book)$/.test(name)
+export const artifactName = (name: string) => /^(?:(?:read|memory|material|state|extract|canon|check|plan|write|review|chapter)-\d{1,6}|canon-\d{1,6}-gap-[a-f0-9]{12}|planpart-\d{1,6}-\d{1,2}-\d{1,6}|bookpart-\d{1,2}-\d{1,6}|revision-\d{1,6}-\d{1,6}|editor-\d{1,6}-\d{1,6}-\d{1,2}|balance-\d-\d{1,6}-\d{1,2}|(?:balancecheck|balanceboundary)-\d-\d{1,6}|book)$/.test(name)
 export async function readArtifact(dir: string, name: string, version?: string): Promise<NovelArtifact> {
   if (!artifactName(name) || (version && !/^[a-f0-9]{64}$/.test(version))) throw Object.assign(new Error('invalid_artifact'), { status: 400 })
   const current = await readHarnessJson<any>(join(dir, `${name}.json`))

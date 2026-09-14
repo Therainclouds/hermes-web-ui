@@ -229,9 +229,12 @@ describe('novel writing harness', () => {
       if ((v as any).manuscript) return JSON.stringify({ coverage: [{ eventId: 's0-e0', quote: '井壁将声音送回耳畔。' }], issues: [{ detail: '重复灌水，应改为一次完整描写' }] })
       return good(p, v, sig, route)
     }); await waitForNovelJob(meetingId, requestId)
-    expect(await getNovelJob(meetingId, requestId, 'table')).toMatchObject({ status: 'failed', error: 'novel_consistency_failed', reviewed: 0 })
+    expect(await getNovelJob(meetingId, requestId, 'table')).toMatchObject({ status: 'failed', error: 'novel_revision_stalled', reviewed: 0 })
     expect((await getNovelArtifact(meetingId, requestId, 'table', 'check-0')).artifact.value).toMatchObject({ passed: false })
     expect(await listRecaps(meetingId, 'table')).toEqual([])
+    good.mockClear()
+    await resumeNovelJob(meetingId, requestId, 'table', good); await waitForNovelJob(meetingId, requestId)
+    expect(good).not.toHaveBeenCalled()
     const original = (await getNovelArtifact(meetingId, requestId, 'table', 'write-0')).artifact
     await updateNovelHarness(meetingId, requestId, 'table', { action: 'chapter', chapter: 0, revision: 0, direction: { title: '回声', guide: '压缩重复，保留一次对白', pacing: 'fast' } })
     good.mockClear()
@@ -401,4 +404,137 @@ it('repairs malformed audit identifiers without rewriting the manuscript', async
   expect(model.mock.calls.filter(([, v]) => (v as any).draft)).toHaveLength(1)
   expect(model.mock.calls.filter(([, v]) => (v as any).manuscript)).toHaveLength(2)
   expect(model.mock.calls.some(([, v]) => (v as any).auditFeedback)).toBe(false)
+})
+it('migrates a legacy failed job from its latest saved review without repeating prose calls', async () => {
+  const { requestId } = await prepareRecap(input, 'table')
+  const good = modelFixture()
+  await startNovelJob(meetingId, requestId, 'table', async (p, raw, signal, route) => {
+    if ((raw as any).manuscript) throw new Error('novel_model_failed')
+    return good(p, raw, signal, route)
+  }); await waitForNovelJob(meetingId, requestId)
+  const dir = join(home, 'meetings', meetingId, 'novel-jobs', requestId)
+  const review = JSON.parse(await readFile(join(dir, 'review-0.json'), 'utf8'))
+  review.value.body += '她握紧了手。'; review.inputHash = 'f'.repeat(64)
+  await writeFile(join(dir, 'review-0.json'), JSON.stringify(review))
+  await rm(join(dir, 'revision-state-0.json'))
+  good.mockClear()
+  await resumeNovelJob(meetingId, requestId, 'table', good); await waitForNovelJob(meetingId, requestId)
+  expect((await getNovelJob(meetingId, requestId, 'table')).status).toBe('completed')
+  expect(good.mock.calls).toHaveLength(1)
+  expect((good.mock.calls[0][1] as any).manuscript).toContain('她握紧了手。')
+})
+it('accepts unequal scene lengths when the complete book meets its target', async () => {
+  const { requestId } = await prepareRecap(input, 'table')
+  const good = modelFixture()
+  const model = vi.fn<NovelModel>(async (p, raw, signal, route) => {
+    const v = raw as any
+    if (v.owned) return JSON.stringify({ segments: [{ from: 0, to: 0, kind: 'story', title: '呼喊', facts: '呼喊', dialogueIndices: [0] }, { from: 1, to: 2, kind: 'story', title: '落井', facts: '落井', dialogueIndices: [1] }], corrections: [], memory: '在井底' })
+    if (v.scene && !v.manuscript && !v.auditFeedback) return JSON.stringify({ body: proseFor(v.scene.from === 0 ? 3500 : 1500), continuity: '银月在井底。', covered: [v.scene.from], warnings: [] })
+    return good(p, raw, signal, route)
+  })
+  await startNovelJob(meetingId, requestId, 'table', model); await waitForNovelJob(meetingId, requestId)
+  expect(await getNovelJob(meetingId, requestId, 'table')).toMatchObject({ status: 'completed', reviewed: 2, outputChars: 5000 })
+  expect(model.mock.calls.filter(([, v]) => (v as any).auditFeedback)).toHaveLength(0)
+})
+it('persists an impossible whole-book length conflict without spending tokens again on unchanged resume', async () => {
+  const { requestId } = await prepareRecap({ ...input, writing: { economy: true } }, 'table')
+  const good = modelFixture()
+  const model = vi.fn<NovelModel>(async (p, raw, signal, route) => {
+    const v = raw as any
+    if (v.auditFeedback) return JSON.stringify({ tool: 'report_conflict', reason: '素材不足，不应编造情节凑字数。' })
+    if (v.scene && !v.manuscript && !v.draft) return JSON.stringify({ body: proseFor(500), covered: [v.scene.from], continuity: '银月在井底', warnings: [] })
+    return good(p, raw, signal, route)
+  })
+  await startNovelJob(meetingId, requestId, 'table', model); await waitForNovelJob(meetingId, requestId)
+  expect(await getNovelJob(meetingId, requestId, 'table')).toMatchObject({ status: 'failed', error: 'novel_length_mismatch', outputChars: 500 })
+  expect(await listRecaps(meetingId, 'table')).toEqual([])
+  model.mockClear()
+  await resumeNovelJob(meetingId, requestId, 'table', model); await waitForNovelJob(meetingId, requestId)
+  expect(model).not.toHaveBeenCalled()
+  expect((await getNovelArtifact(meetingId, requestId, 'table', 'chapter-0')).artifact.value).toHaveProperty('body')
+})
+it('re-audits a blocked draft with a changed review model rather than reusing its rejected report', async () => {
+  const { requestId } = await prepareRecap(input, 'table')
+  const good = modelFixture()
+  await startNovelJob(meetingId, requestId, 'table', async (p, raw, signal, route) => {
+    const v = raw as any
+    if (v.manuscript) return JSON.stringify({ coverage: [], issues: [{ detail: '待核实角色归属' }] })
+    if (v.auditFeedback) return JSON.stringify({ tool: 'report_conflict', reason: '归属含糊，请更换审核模型核实。' })
+    return good(p, raw, signal, route)
+  }); await waitForNovelJob(meetingId, requestId)
+  expect((await getNovelJob(meetingId, requestId, 'table')).error).toBe('novel_revision_stalled')
+  await updateNovelHarness(meetingId, requestId, 'table', { action: 'settings', revision: 0, settings: { concurrency: 1, stages: { review: { provider: 'judge', model: 'second' } } } })
+  good.mockClear()
+  await resumeNovelJob(meetingId, requestId, 'table', good); await waitForNovelJob(meetingId, requestId)
+  expect((await getNovelJob(meetingId, requestId, 'table')).status).toBe('completed')
+  expect(good.mock.calls).toHaveLength(1)
+  expect(good.mock.calls[0][3]).toEqual({ provider: 'judge', model: 'second' })
+  expect(good.mock.calls[0][1]).toHaveProperty('manuscript')
+})
+it('rejects a length edit that passes its own facts but breaks the next scene continuity', async () => {
+  const { requestId } = await prepareRecap({ ...input, writing: { economy: true, concurrency: 1 } }, 'table')
+  const good = modelFixture()
+  let boundaries = 0
+  const model: NovelModel = async (p, raw, signal, route) => {
+    const v = raw as any
+    if (v.owned) return JSON.stringify({ segments: [{ from: 0, to: 0, kind: 'story', title: '呼喊', facts: '呼喊', dialogueIndices: [0] }, { from: 1, to: 2, kind: 'story', title: '落井', facts: '落井', dialogueIndices: [1] }], corrections: [], memory: '在井底' })
+    if (v.manuscript && v.scene.from === 1 && v.precedingProse.includes('候选尾部')) {
+      boundaries++
+      return JSON.stringify({ coverage: [], issues: [{ detail: '前后场景衔接矛盾' }] })
+    }
+    if (v.auditFeedback) {
+      if (v.scene.from) return JSON.stringify({ tool: 'report_conflict', reason: '不应强行扩写' })
+      return JSON.stringify({ tool: 'patch_paragraphs', edits: v.paragraphs.map((part: any, i: number) => ({ paragraph: part.paragraph, text: i ? '' : proseFor(2400) + '候选尾部' })) })
+    }
+    if (v.scene && !v.manuscript) return JSON.stringify({ body: proseFor(500), covered: [v.scene.from], continuity: '银月在井底', warnings: [] })
+    return good(p, raw, signal, route)
+  }
+  await startNovelJob(meetingId, requestId, 'table', model); await waitForNovelJob(meetingId, requestId)
+  expect(boundaries).toBe(1)
+  expect(await getNovelJob(meetingId, requestId, 'table')).toMatchObject({ error: 'novel_length_mismatch', outputChars: 1000 })
+  expect((await getNovelArtifact(meetingId, requestId, 'table', 'review-0')).artifact.value).toHaveProperty('body', proseFor(500).trim())
+  expect(await listRecaps(meetingId, 'table')).toEqual([])
+})
+it('requires renewed chapter approval after whole-book length edits', async () => {
+  const { requestId } = await prepareRecap({ ...input, writing: { economy: true, concurrency: 1, pauseAfterChapter: true } }, 'table')
+  const good = modelFixture()
+  const model: NovelModel = async (p, raw, signal, route) => {
+    const v = raw as any
+    if (v.auditFeedback) return JSON.stringify({ tool: 'patch_paragraphs', edits: v.paragraphs.map((part: any, i: number) => ({ paragraph: part.paragraph, text: i ? '' : proseFor(v.targetChars) })) })
+    if (v.scene && !v.manuscript && !v.draft) return JSON.stringify({ body: proseFor(500), covered: [v.scene.from], continuity: '银月在井底', warnings: [] })
+    return good(p, raw, signal, route)
+  }
+  await startNovelJob(meetingId, requestId, 'table', model); await waitForNovelJob(meetingId, requestId)
+  await updateNovelHarness(meetingId, requestId, 'table', { action: 'approve-chapter', chapter: 0, revision: 0 })
+  await resumeNovelJob(meetingId, requestId, 'table', model); await waitForNovelJob(meetingId, requestId)
+  const state = await getNovelWorkbench(meetingId, requestId, 'table')
+  expect(state.job).toMatchObject({ status: 'paused', pauseReason: 'chapter', outputChars: 5000 })
+  expect(state.controls.approvedChapters).toEqual([])
+  expect(await listRecaps(meetingId, 'table')).toEqual([])
+  await updateNovelHarness(meetingId, requestId, 'table', { action: 'approve-chapter', chapter: 0, revision: state.controls.revision })
+  await resumeNovelJob(meetingId, requestId, 'table', good); await waitForNovelJob(meetingId, requestId)
+  expect((await getNovelJob(meetingId, requestId, 'table')).status).toBe('completed')
+})
+it('deletes out-of-scene prose the audit flags instead of stalling three rounds with a no-op patch', async () => {
+  const { requestId } = await prepareRecap(input, 'table')
+  const good = modelFixture()
+  const reviewPrompts: string[] = []
+  const model = vi.fn<NovelModel>(async (p, raw, signal, route) => {
+    const v = raw as any
+    if (v.manuscript) {
+      // A reviewer that expanded the chapter guide into later scenes is exactly what the
+      // live stall reported: the audit is right and only a real deletion can resolve it.
+      if (v.manuscript.includes('奴隶商队')) return JSON.stringify({ coverage: [], issues: [{ detail: '正文包含本场景范围之外的后续剧情，应删除这些段落。' }] })
+      return good(p, raw, signal, route)
+    }
+    if (v.auditFeedback) return JSON.stringify({ tool: 'patch_paragraphs', edits: v.paragraphs.filter((part: any) => part.text.includes('奴隶商队')).map((part: any) => ({ paragraph: part.paragraph, delete: true })) })
+    if (v.draft && !v.manuscript) { reviewPrompts.push(p); return JSON.stringify({ body: v.draft.body, continuity: v.draft.continuity, warnings: [], covered: [v.scene.from] }) }
+    if (v.scene && !v.draft) return JSON.stringify({ body: `${proseFor(v.targetChars)}\n\n【卡洛其】“我是从奴隶商队里逃出来的。”`, continuity: '银月在井底', warnings: [], covered: [v.scene.from] })
+    return good(p, raw, signal, route)
+  })
+  await startNovelJob(meetingId, requestId, 'table', model); await waitForNovelJob(meetingId, requestId)
+  expect(await getNovelJob(meetingId, requestId, 'table')).toMatchObject({ status: 'completed', reviewed: 1 })
+  expect(model.mock.calls.filter(([, v]) => (v as any).auditFeedback)).toHaveLength(1)
+  expect(reviewPrompts[0]).toContain('本场景边界')
+  expect((await getNovelArtifact(meetingId, requestId, 'table', 'review-0')).artifact.value.body).not.toContain('奴隶商队')
 })

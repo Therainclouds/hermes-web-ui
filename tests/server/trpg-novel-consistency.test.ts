@@ -216,3 +216,13 @@ describe('soft-text length validation', () => {
     }
   })
 })
+
+it('keeps optional literary suggestions separate without waiving factual coverage or contradictions', () => {
+  const canon = validateCanon(data(), rows, [], 9)
+  const body = '她试图跳跃，却落在井底，失去三点生命。'
+  const coverage = canon.events.map(e => ({ eventId: e.id, paragraph: 0 }))
+  const report = { coverage, issues: [], suggestions: [{ detail: '可补光线过渡，但不是必需事实。' }] }
+  expect(validateConsistency(report, canon, body)).toMatchObject({ passed: true, suggestions: report.suggestions })
+  expect(validateConsistency({ ...report, coverage: [] }, canon, body).passed).toBe(false)
+  expect(validateConsistency({ ...report, issues: [{ detail: '把尝试写成了成功。' }] }, canon, body).passed).toBe(false)
+})

@@ -1,5 +1,6 @@
+import { runEditorAgent, validateEditorAction, EDITOR_PROMPT } from './novel-editor-agent'
 import { allocateNovelTargets, assessLength, countNovelChars } from './novel-length'
-import { applyParagraphEdits } from './novel-revision'
+import { applyParagraphEdits, narratorIssues, paragraphsOf } from './novel-revision'
 import { boundedPlan } from './novel-planning'
 import { compactNovelEvidence } from './novel-economy'
 import { setTimeout as retryDelay } from 'node:timers/promises'
@@ -25,6 +26,22 @@ const RULES = `你是跑团长篇小说编写流水线的一个步骤。仅输�
 角色明确原话应保留关键语义；允许把明确的场内间接表达改写为直接对白，不新增信息，不将改写对白冒充逐字证据。未知归属用中性叙述。
 正文使用中文散文段落与对白，人物用【角色名】。不机械罗列行动；展开动作、环境、外貌和节奏，但禁止为达到字数重复情节。
 输出必须完整闭合，不能截断。`
+
+const WRITE_INSTRUCTION = `写当前场景的小说正文，不概括整场，不重复前文，不提前写后续剧情。
+输出 {body,continuity,warnings:[],covered:[]}。body目标约targetChars中文字符，最多7000字符；对白、动作、公开外貌和环境自然交织。素材不足可以较短，但在warnings说明。
+只写scene.from..to的rows与canon.events覆盖的内容；chapter.guide与book只用于风格、语气和本章意图，不能据此写本场景范围之外的其他场景或后续剧情。
+GM 不是小说人物，正文里绝不出现"GM""主持人""旁白GM""GM说""【GM】"等任何把主持人写成角色的形式。GM 的所有话（场景描写、规则裁决、NPC 配音、跑团元描述）必须改写为：动作/环境类用主语为角色或环境的客观陈述句（"他脚下一空，坠入井中""井壁回声在耳畔低低作响"），GM 配音的 NPC 由该 NPC 的【角色名】说，玩家指令与骰子结果去除游戏语境融入叙事（"他咬牙纵身跃过缺口""可是脚跟打滑，他摔在井底"）。如果 GM 原话较长（>20字），可以提炼为一句动作/环境描写而不是逐字转写。
+covered列出已在正文体现的关键源句索引，至少包含给定dialogueIndices中的对白（更正否定的原话可按正确事实处理）。continuity最多4000字符记录本场景结束后的地点、人物伤势、物品、关系、知识与未解线索。不写章节标题。chapter.visualReferences若存在，是对应高光图片的视觉分析、提示词或人工描述，仅借鉴有原文依据的外貌、光线、环境和构图；不是跑团事实证据，不能据此新增事件、道具、人物或战果，冲突时以原文和canon为准。`
+const REVIEW_INSTRUCTION = `审核并直接修订这一个场景，禁止把正文压缩成摘要。逐项检查原文事件和对白是否遗漏、归属是否正确、尝试是否误作成功、后续更正、角色外貌和人物状态连续性。
+输出 {body,continuity,warnings:[],covered:[]}，与写作步骤相同。修复无依据剧情与台词，保留合规的文学展开。
+本场景边界：只依据scene.from..to的rows与canon.events修订；chapter.guide与book只用于风格、语气和本章意图，不能据此补写本场景之外的其他场景、后续剧情或rows中没有的事件。初稿若混入越界剧情、重复段落或重复对白，直接删除这些段落，不要改写扩写它们。
+covered包含实际体现的关键源句索引，必须包含scene.dialogueIndices；无法确定归属可用中性转述。目标篇幅见targetChars。无法解决的事实歧义写入warnings，不能编造填补。初稿可能并行生成，请依据已经验收的precedingProse和priorContinuity修正衔接、视角及重复情节。`
+/** Revision policy fingerprint. Any change to a writing/review/editor instruction or to the
+ *  audit contract invalidates a stored blocked revision, so a fixed harness retries the scene
+ *  once instead of replaying the old block forever. Model/route and chapter-direction changes
+ *  stay covered by the revision context too. */
+const REVISION_POLICY = 'trpg-novel-revision-2'
+const revisionPolicy = () => hash([REVISION_POLICY, WRITE_INSTRUCTION, REVIEW_INSTRUCTION, CHECK_PROMPT, EDITOR_PROMPT])
 
 interface StoredJob extends NovelJob { profile: string; sourceHash: string; version: string; ranges: Range[] }
 interface Step<T> { acceptance?: 'audit-first'; value: T; version: string; inputHash: string; createdAt: number; model?: WritingModel; epoch?: number }
@@ -232,7 +249,7 @@ function launch(job: StoredJob, source: Snapshot, model = novelModel(job.profile
   entry.promise = run(job, source, model, controller.signal).catch(async e => {
     job.status = e?.message === 'novel_paused' ? 'paused' : controller.signal.aborted ? 'cancelled' : 'failed'
     delete job.currentStep; delete job.activeSteps
-    const allowed = ['novel_context_budget', 'novel_invalid_output', 'novel_model_failed', 'novel_no_story', 'novel_source_changed', 'novel_consistency_failed', 'novel_length_mismatch', 'novel_length_budget_impossible']
+    const allowed = ['novel_context_budget', 'novel_invalid_output', 'novel_model_failed', 'novel_no_story', 'novel_source_changed', 'novel_consistency_failed', 'novel_length_mismatch', 'novel_length_budget_impossible', 'novel_revision_stalled']
     if (job.status === 'failed') job.error = allowed.includes(e?.message) ? e.message : 'novel_failed'
     else delete job.error
     job.updatedAt = Date.now()
@@ -246,11 +263,18 @@ async function run(job: StoredJob, source: Snapshot, model: NovelModel, signal: 
   const controls = await readControls(dir, source.options.writing)
   const { writing: _writing, ...options } = source.options
   // Writing commits must stay strictly sequential (priorContinuity/precedingProse
-  // depend on the accepted predecessor), but prepare calls (write + review +
-  // check) for the next N scenes run in parallel via orderedPipeline. The user's
+  // depend on the accepted predecessor), but initial draft preparation
+  // for the next N scenes runs in parallel via orderedPipeline. The user's
   // concurrency setting caps the in-flight prepares; default 2 for long jobs.
   const concurrency = Math.max(1, Math.min(4, controls.settings.concurrency ?? 2))
   job.targetChars = controls.settings.targetChars ?? source.options.targetChars ?? 20000
+  const balancePath = join(dir, 'balance-state.json')
+  const balanceContext = hash({ policy: revisionPolicy(), source: job.sourceHash, settings: controls.settings, chapters: controls.chapters, epochs: controls.epochs })
+  const balanceState = await read<{ context: string; rounds: number; blocked?: string }>(balancePath)
+  if (balanceState?.context === balanceContext && balanceState.blocked) {
+    job.failure = { step: 'book', detail: balanceState.blocked, attempt: balanceState.rounds }
+    throw new Error('novel_length_mismatch')
+  }
   job.tokenUsage ??= { inputTokens: 0, outputTokens: 0, reportedCalls: 0, estimatedCalls: 0, incompleteCalls: 0, untrackedCalls: job.calls }
   const inFlight = new Map<string, NonNullable<NovelJob['activeSteps']>[number]>()
   let saves: Promise<unknown> = Promise.resolve()
@@ -266,7 +290,9 @@ async function run(job: StoredJob, source: Snapshot, model: NovelModel, signal: 
   }
   async function step<T>(name: string, instruction: string, input: unknown, validate: (v: any) => T, epoch?: number, auditFirst?: T): Promise<T> {
     signal.throwIfAborted()
-    const inputHash = hash({ instruction: `${RULES}\n${instruction}`, input, version: VERSION, ...(epoch ? { epoch } : {}) })
+    const stage: WritingStage = (/^(extract|canon|read|memory|material|state)-/.test(name)) ? 'extract' : name.startsWith('write-') ? 'write' : (name.startsWith('review-') || name.startsWith('revision-') || name.startsWith('editor-') || name.startsWith('balance-') || name.startsWith('balancecheck-') || name.startsWith('balanceboundary-') || name.startsWith('check-')) ? 'review' : 'plan'
+    const route = selectWritingModel(controls.settings, stage)
+    const inputHash = hash({ instruction: `${RULES}\n${instruction}`, input, version: VERSION, ...(stage === 'review' ? { reviewModel: route ?? null } : {}), ...(epoch ? { epoch } : {}) })
     const path = join(dir, `${name}.json`), saved = await read<Step<T>>(path)
     if (saved?.inputHash === inputHash && saved.version === VERSION && (!saved.acceptance || controls.settings.economy)) {
       try { return validate(saved.value) } catch { /* Rebuild invalid checkpoints rather than failing forever. */ }
@@ -281,8 +307,6 @@ async function run(job: StoredJob, source: Snapshot, model: NovelModel, signal: 
         return value
       } catch (error) { if ((error as Error).message !== 'novel_invalid_output') throw error }
     }
-    const stage: WritingStage = (/^(extract|canon|read|memory|material|state)-/.test(name)) ? 'extract' : name.startsWith('write-') ? 'write' : (name.startsWith('review-') || name.startsWith('revision-') || name.startsWith('check-')) ? 'review' : 'plan'
-    const route = selectWritingModel(controls.settings, stage)
     let repair = '', previousOutput = ''
     const attempts = 4
     for (let attempt = 1; attempt <= attempts; attempt++) {
@@ -427,6 +451,7 @@ async function run(job: StoredJob, source: Snapshot, model: NovelModel, signal: 
   const weights = scenes.map(s => sourceRows(source, s).reduce((n, row) => n + row.text.length, 0))
   const sceneTargets = allocateNovelTargets(job.targetChars, groups.map((group, i) => ({ weights: group.map(scene => weights[scenes.indexOf(scene)]), targetChars: controls.chapters[String(i)]?.targetChars })))
   const chapters: { title: string; body: string; from: number; to: number }[] = []
+  const accepted: { scene: Scene; chapterIndex: number; input: Record<string, unknown>; draft: SceneDraft; revisionContext: string; revision: number }[] = []
   let previous: SceneDraft | null = null, index = 0
   job.written = 0; job.reviewed = 0; job.outputChars = 0; job.warnings = []
   for (const [chapterIndex, group] of groups.entries()) {
@@ -443,24 +468,34 @@ async function run(job: StoredJob, source: Snapshot, model: NovelModel, signal: 
         canon: canons[sceneIndex], stateBefore: relevantState(states[sceneIndex], sourceRows(source, scene), options.characters, canons[sceneIndex].updates.map(s => s.entity)), stateAfter: relevantState(states[sceneIndex + 1], sourceRows(source, scene), options.characters, canons[sceneIndex].updates.map(s => s.entity)),
         priorContinuity: concurrency === 1 ? previous?.continuity ?? '' : '', precedingProse: concurrency === 1 ? previous?.body.slice(-1000) ?? '' : '', targetChars }
       await checkpoint('writing')
-      const draft = await step(`write-${sceneIndex}`, `写当前场景的小说正文，不概括整场，不重复前文，不提前写后续剧情。
-输出 {body,continuity,warnings:[],covered:[]}。body目标约targetChars中文字符，最多7000字符；对白、动作、公开外貌和环境自然交织。素材不足可以较短，但在warnings说明。
-GM 不是小说人物，正文里绝不出现"GM""主持人""旁白GM""GM说""【GM】"等任何把主持人写成角色的形式。GM 的所有话（场景描写、规则裁决、NPC 配音、跑团元描述）必须改写为：动作/环境类用主语为角色或环境的客观陈述句（"他脚下一空，坠入井中""井壁回声在耳畔低低作响"），GM 配音的 NPC 由该 NPC 的【角色名】说，玩家指令与骰子结果去除游戏语境融入叙事（"他咬牙纵身跃过缺口""可是脚跟打滑，他摔在井底"）。如果 GM 原话较长（>20字），可以提炼为一句动作/环境描写而不是逐字转写。
-covered列出已在正文体现的关键源句索引，至少包含给定dialogueIndices中的对白（更正否定的原话可按正确事实处理）。continuity最多4000字符记录本场景结束后的地点、人物伤势、物品、关系、知识与未解线索。不写章节标题。chapter.visualReferences若存在，是对应高光图片的视觉分析、提示词或人工描述，仅借鉴有原文依据的外貌、光线、环境和构图；不是跑团事实证据，不能据此新增事件、道具、人物或战果，冲突时以原文和canon为准。`, input, v => validateDraft(v, scene), controls.epochs[String(chapterIndex)])
+      // Migrate pre-revision-state jobs without throwing away their last saved prose.
+      // Chapter epochs protect explicit direction/regeneration edits; every seed is audited again.
+      const [priorWrite, priorReview] = await Promise.all([read<Step<SceneDraft>>(join(dir, `write-${sceneIndex}.json`)), read<Step<SceneDraft>>(join(dir, `review-${sceneIndex}.json`))])
+      const epoch = controls.epochs[String(chapterIndex)] ?? 0
+      if (priorWrite?.version === VERSION && priorReview?.version === VERSION && (priorWrite.epoch ?? 0) === epoch && (priorReview.epoch ?? 0) === epoch) {
+        try {
+          const draft = validateDraft(priorWrite.value, scene), resumeSeed = validateDraft(priorReview.value, scene)
+          job.written++; await checkpoint('writing')
+          return { draft, input, resumeSeed }
+        } catch (error) { if ((error as Error).message !== 'novel_invalid_output') throw error }
+      }
+      const draft = await step(`write-${sceneIndex}`, WRITE_INSTRUCTION, input, v => validateDraft(v, scene), controls.epochs[String(chapterIndex)])
       job.written++; await checkpoint('writing')
       return { draft, input }
     }, async (prepared, scene) => {
       const { draft } = prepared
-      const input = { ...prepared.input, priorContinuity: previous?.continuity ?? '', precedingProse: previous?.body.slice(-1000) ?? '' }
+      const input: Record<string, unknown> = { ...prepared.input, priorContinuity: previous?.continuity ?? '', precedingProse: previous?.body.slice(-1000) ?? '' }
       await checkpoint('reviewing')
       const revisionPath = join(dir, `revision-state-${index}.json`)
-      const revisionContext = hash({ input, draft, epoch: controls.epochs[String(chapterIndex)] ?? 0 })
-      const savedRevision = await read<{ context: string; revision: number; draft: SceneDraft }>(revisionPath)
+      const revisionContext = hash({ policy: revisionPolicy(), input, draft, epoch: controls.epochs[String(chapterIndex)] ?? 0, editorModel: selectWritingModel(controls.settings, 'review') })
+      const savedRevision = await read<{ context: string; revision: number; draft: SceneDraft; blocked?: string }>(revisionPath)
+      if (savedRevision?.context === revisionContext && savedRevision.blocked) {
+        job.failure = { step: `review-${index}`, detail: savedRevision.blocked, attempt: savedRevision.revision }
+        throw new Error('novel_revision_stalled')
+      }
       let revision = savedRevision?.context === revisionContext ? savedRevision.revision : 0
-      const resumedDraft = savedRevision?.context === revisionContext ? validateDraft(savedRevision.draft, scene) : undefined
-      let reviewed: SceneDraft = resumedDraft ?? await step(`review-${index}`, `审核并直接修订这一个场景，禁止把正文压缩成摘要。逐项检查原文事件和对白是否遗漏、归属是否正确、尝试是否误作成功、后续更正、角色外貌和人物状态连续性。
-输出 {body,continuity,warnings:[],covered:[]}，与写作步骤相同。修复无依据剧情与台词，保留合规的文学展开。
-covered包含实际体现的关键源句索引，必须包含scene.dialogueIndices；无法确定归属可用中性转述。目标篇幅见targetChars。无法解决的事实歧义写入warnings，不能编造填补。初稿可能并行生成，请依据已经验收的precedingProse和priorContinuity修正衔接、视角及重复情节。`, { ...input, draft }, v => {
+      const resumedDraft = savedRevision?.context === revisionContext ? validateDraft(savedRevision.draft, scene) : prepared.resumeSeed
+      let reviewed: SceneDraft = resumedDraft ?? await step(`review-${index}`, REVIEW_INSTRUCTION, { ...input, draft }, v => {
         const result = validateDraft(v, scene)
         if (scene.dialogueIndices.some(i => !result.covered.includes(i))) invalid('missing dialogue evidence coverage')
         return result
@@ -468,31 +503,50 @@ covered包含实际体现的关键源句索引，必须包含scene.dialogueIndic
       const saveRevision = () => atomic(revisionPath, { context: revisionContext, revision, draft: reviewed })
       await saveRevision()
       const audit = async () => {
-        let report = await step(`check-${index}`, CHECK_PROMPT, { ...input, manuscript: reviewed.body, manuscriptParagraphs: reviewed.body.split(/\n\s*\n/).map((text, paragraph) => ({ paragraph, text })) }, v => validateConsistency(v, canons[index], reviewed.body), controls.epochs[String(chapterIndex)])
-        for (let retry = 0; report.repairReport && retry < 2; retry++) report = await step(`check-${index}`, CHECK_PROMPT, { ...input, manuscript: reviewed.body, manuscriptParagraphs: reviewed.body.split(/\n\s*\n/).map((text, paragraph) => ({ paragraph, text })), reportRepair: { retry, issues: report.issues, allowedEventIds: canons[index].events.map(e => e.id) } }, v => validateConsistency(v, canons[index], reviewed.body), controls.epochs[String(chapterIndex)])
+        const paragraphs = () => paragraphsOf(reviewed.body).map((text, paragraph) => ({ paragraph, text }))
+        let report = await step(`check-${index}`, CHECK_PROMPT, { ...input, manuscript: reviewed.body, manuscriptParagraphs: paragraphs() }, v => validateConsistency(v, canons[index], reviewed.body), controls.epochs[String(chapterIndex)])
+        for (let retry = 0; report.repairReport && retry < 2; retry++) report = await step(`check-${index}`, CHECK_PROMPT, { ...input, manuscript: reviewed.body, manuscriptParagraphs: paragraphs(), reportRepair: { retry, issues: report.issues, allowedEventIds: canons[index].events.map(e => e.id) } }, v => validateConsistency(v, canons[index], reviewed.body), controls.epochs[String(chapterIndex)])
         if (report.repairReport) throw new Error('novel_invalid_output')
-        const length = assessLength(countNovelChars(reviewed.body), Number(prepared.input.targetChars))
-        return length.status === 'within' ? report : { ...report, passed: false, issues: [...report.issues, { detail: length.detail }] }
+        const issues = [...new Map([...report.issues, ...narratorIssues(reviewed.body)].map(issue => [issue.detail, issue])).values()]
+        const result = { ...report, issues, passed: issues.length === 0 }
+        // Persist code-side requirements too, so the UI does not say passed while revision is blocked.
+        const checkPath = join(dir, `check-${index}.json`), storedCheck = await read<Step<unknown>>(checkPath)
+        if (storedCheck) await atomic(checkPath, { ...storedCheck, value: result })
+        return result
       }
       let report = await audit()
-      for (let attempt = 0; !report.passed && attempt < 4; attempt++) {
+      const seenIssues = new Set<string>()
+      const block = async (reason: string) => {
+        await atomic(revisionPath, { context: revisionContext, revision, draft: reviewed, blocked: reason })
+        job.failure = { step: `review-${index}`, detail: reason.slice(0, 600), attempt: revision }
+        throw new Error('novel_revision_stalled')
+      }
+      for (let attempt = revision; !report.passed && attempt < 3; attempt++) {
+        const issueKey = hash(report.issues.map(i => i.detail.trim()).sort())
+        if (seenIssues.has(issueKey)) await block('相同阻断问题未减少，编辑暂停以避免重复消耗。请核对报告证据或调整审核模型/章节方向。')
+        seenIssues.add(issueKey)
         await harnessEvent(dir, { type: 'consistency_repair', step: `review-${index}`, revision: controls.revision })
-        const patch = await step(`revision-${index}-${revision + 1}`, '依据auditFeedback只修订有问题的段落。输出{edits:[{paragraph,text}],continuity,warnings:[],covered:[]}，paragraph是paragraphs提供的0起始编号，text是该段完整替换文本（可含空行分成新段），未列出的段落原样保留。需要补充遗漏剧情时修改最合适的相邻段，不输出完整body。不得删除事实或编造人物动作来通过验收。保留文学风格和正确对白，全文篇幅参考targetChars。', { ...input, paragraphs: reviewed.body.split(/\n\s*\n/).map((text, paragraph) => ({ paragraph, text })), continuity: reviewed.continuity, auditFeedback: report.issues }, v => {
-          const result = applyParagraphEdits(v, reviewed, scene)
-          if (scene.dialogueIndices.some(i => !result.covered.includes(i))) invalid('missing dialogue evidence coverage')
-          if (result.body === reviewed.body) invalid('repair did not change any prose')
-          return v
-        }, controls.epochs[String(chapterIndex)])
-        reviewed = applyParagraphEdits(patch, reviewed, scene); revision++; await saveRevision()
+        const { rows: _rows, ...editorContext } = input as Record<string, unknown>
+        const result = await runEditorAgent({ draft: reviewed, issues: report.issues, facts: canons[index], targetChars: Number(input.targetChars), rows: sourceRows(source, scene),
+          call: (agentInput, turn) => step(turn ? `editor-${index}-${revision + 1}-${turn}` : `revision-${index}-${revision + 1}`, EDITOR_PROMPT, { ...editorContext, ...agentInput }, validateEditorAction, controls.epochs[String(chapterIndex)]),
+          apply: action => {
+            const next = applyParagraphEdits(action, reviewed, scene)
+            if (next.body === reviewed.body) invalid('repair did not change any prose')
+            return next
+          }, observe: tool => harnessEvent(dir, { type: 'editor_tool', step: tool, revision: controls.revision }) })
+        if (!result.draft) await block(result.conflict ?? '编辑无法解决相互冲突的要求。')
+        reviewed = result.draft!; revision++; await saveRevision()
         report = await audit()
       }
-      if (!report.passed) throw new Error('novel_consistency_failed')
+      if (!report.passed) await block(`三轮编辑后仍有明确事实问题：${report.issues.slice(0, 3).map(i => i.detail).join('；').slice(0, 400)}。已保留最新稿件，请调整约束后继续，不自动重复相同修订。`)
       // Publish the latest accepted version for the existing reader/illustration links.
       const reviewPath = join(dir, `review-${index}.json`), oldReview = await read<Step<SceneDraft>>(reviewPath)
       if (oldReview && oldReview.value.body !== reviewed.body) {
         await archiveArtifact(dir, `review-${index}`, oldReview, oldReview.inputHash)
         await atomic(reviewPath, { ...oldReview, value: reviewed, inputHash: hash({ revisionContext, revision, body: reviewed.body }), createdAt: Date.now() })
       }
+      accepted.push({ scene, chapterIndex, input, draft: reviewed, revisionContext, revision })
+      job.warnings.push(...(report.suggestions ?? []).map((s: { detail: string }) => s.detail))
       previous = reviewed; bodies.push(reviewed.body)
       job.outputChars += countNovelChars(reviewed.body); job.reviewed = ++index
       job.warnings.push(...reviewed.warnings.map(w => `${chapterIndex + 1}.${index}: ${w}`))
@@ -510,7 +564,71 @@ covered包含实际体现的关键源句索引，必须包含scene.dialogueIndic
     chapters.push(chapter)
     if (controls.settings.pauseAfterChapter && !controls.approvedChapters.includes(chapterIndex)) { job.pauseReason = 'chapter'; job.waitingChapter = chapterIndex; throw new Error('novel_paused') }
   }
-  if (assessLength(job.outputChars, job.targetChars).status !== 'within') throw new Error('novel_length_mismatch')
+  const balanceConflicts: string[] = []
+  let balanceRounds = balanceState?.context === balanceContext ? balanceState.rounds : 0
+  // Length is a whole-book editing pass, not 143 contradictory micro-scene gates.
+  for (let round = balanceRounds; assessLength(job.outputChars, job.targetChars).status !== 'within' && round < 2; round++) {
+    const ratio = job.targetChars / job.outputChars
+    const changedChapters = new Set<number>()
+    for (const [i, item] of accepted.entries()) {
+      const target = Math.max(1, Math.min(7000, Math.round(countNovelChars(item.draft.body) * ratio)))
+      const { rows: _rows, ...context } = item.input
+      const feedback = [{ detail: `[全稿篇幅平衡] 全书当前${job.outputChars}字，总目标${job.targetChars}字。当前场景参考调整至${target}字。${ratio < 1 ? '压缩重复说明和非关键润色' : '展开已有事实支持的动作过程、公开外貌和环境描写，不增加事件，不重复灌水'}，保留确定的事件因果；含糊ASR中性概括，不逐条复制游戏规则或骰子对话。可调整相邻段落的组织。` }]
+      const result = await runEditorAgent({ draft: item.draft, issues: feedback, facts: canons[i], targetChars: target, rows: sourceRows(source, item.scene),
+        call: (agentInput, turn) => step(`balance-${round}-${i}-${turn}`, EDITOR_PROMPT, { ...context, ...agentInput }, validateEditorAction, controls.epochs[String(item.chapterIndex)]),
+        apply: action => applyParagraphEdits(action, item.draft, item.scene) })
+      if (!result.draft || result.draft.body === item.draft.body) { if (result.conflict) balanceConflicts.push(result.conflict); continue }
+      const candidate = result.draft
+      const delta = countNovelChars(candidate.body) - countNovelChars(item.draft.body)
+      if (Math.abs(job.outputChars + delta - job.targetChars) >= Math.abs(job.outputChars - job.targetChars)) continue
+      const auditInput = { ...item.input, priorContinuity: i ? accepted[i - 1].draft.continuity : '', precedingProse: i ? accepted[i - 1].draft.body.slice(-1000) : '', manuscript: candidate.body, manuscriptParagraphs: candidate.body.split(/\n\s*\n/).map((text, paragraph) => ({ paragraph, text })) }
+      const checked = await step(`balancecheck-${round}-${i}`, CHECK_PROMPT, auditInput, v => validateConsistency(v, canons[i], candidate.body), controls.epochs[String(item.chapterIndex)])
+      if (!checked.passed || narratorIssues(candidate.body).length) continue
+      // Changing an accepted predecessor must not invalidate the next scene's transition.
+      const next = accepted[i + 1]
+      if (next) {
+        const boundary = await step(`balanceboundary-${round}-${i}`, CHECK_PROMPT,
+          { ...next.input, priorContinuity: candidate.continuity, precedingProse: candidate.body.slice(-1000), manuscript: next.draft.body, manuscriptParagraphs: next.draft.body.split(/\n\s*\n/).map((text, paragraph) => ({ paragraph, text })) },
+          v => validateConsistency(v, canons[i + 1], next.draft.body), controls.epochs[String(next.chapterIndex)])
+        if (!boundary.passed) continue
+      }
+      changedChapters.add(item.chapterIndex)
+      // Revoke approval before persisting a changed manuscript, including interrupted runs.
+      if (controls.settings.pauseAfterChapter && controls.approvedChapters.includes(item.chapterIndex)) {
+        controls.approvedChapters = controls.approvedChapters.filter(c => c !== item.chapterIndex)
+        controls.revision++
+        await writeHarnessJson(join(dir, 'controls.json'), controls)
+      }
+      const oldCount = countNovelChars(item.draft.body)
+      item.draft = candidate; job.outputChars += countNovelChars(candidate.body) - oldCount
+      const reviewPath = join(dir, `review-${i}.json`), old = await read<Step<SceneDraft>>(reviewPath)
+      if (old) { await archiveArtifact(dir, `review-${i}`, old, old.inputHash); await atomic(reviewPath, { ...old, value: candidate, inputHash: hash(auditInput), createdAt: Date.now() }) }
+      await atomic(join(dir, `revision-state-${i}.json`), { context: item.revisionContext, revision: item.revision, draft: candidate })
+      await checkpoint('reviewing')
+      if (assessLength(job.outputChars, job.targetChars).status === 'within') break
+    }
+    balanceRounds = round + 1
+    await atomic(balancePath, { context: balanceContext, rounds: balanceRounds })
+    if (!changedChapters.size) break
+  }
+  for (const [chapterIndex, chapter] of chapters.entries()) {
+    const body = accepted.filter(item => item.chapterIndex === chapterIndex).map(item => item.draft.body).join('\n\n')
+    if (body !== chapter.body) {
+      const path = join(dir, `chapter-${chapterIndex}.json`), old = await read<Step<unknown>>(path)
+      if (old) await archiveArtifact(dir, `chapter-${chapterIndex}`, old, old.inputHash)
+      chapter.body = body
+      await atomic(path, { value: chapter, inputHash: hash(chapter), version: VERSION, createdAt: Date.now(), epoch: controls.epochs[String(chapterIndex)] ?? 0 })
+    }
+  }
+  if (assessLength(job.outputChars, job.targetChars).status !== 'within') {
+    job.failure = { step: 'book', detail: '全稿已完成事实验收，但篇幅平衡未收敛，仍无法满足总字数±10%。请调整总目标或取舍；已保留全部成稿。' + balanceConflicts.slice(0, 2).join('；').slice(0, 300), attempt: balanceRounds }
+    await atomic(balancePath, { context: balanceContext, rounds: balanceRounds, blocked: job.failure.detail })
+    throw new Error('novel_length_mismatch')
+  }
+  if (controls.settings.pauseAfterChapter) {
+    const pending = chapters.findIndex((_, i) => !controls.approvedChapters.includes(i))
+    if (pending >= 0) { job.pauseReason = 'chapter'; job.waitingChapter = pending; throw new Error('novel_paused') }
+  }
   await checkpoint('assembling')
   const entry = await saveRecap(job.meetingId, { requestId: job.id, title: book.title, chapters }, job.profile, true)
   job.recapId = entry.id; job.status = 'completed'

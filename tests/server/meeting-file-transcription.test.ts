@@ -208,3 +208,35 @@ describe('stale ASR backend self-heal wiring', () => {
     expect(source).toContain('codeChanged')
   })
 })
+
+/**
+ * Diarization output must be visible and renameable in the transcript.
+ *
+ * `HIDE_SPEAKER_DIARIZATION` used to be wired straight into TranscriptList,
+ * which suppressed the speaker chips — so a successful 「拆分人声」 looked like
+ * it had produced no speakers at all. The realtime toolbar switch and the
+ * transcript display are separate concerns.
+ */
+describe('transcript speaker display + rename wiring', () => {
+  const source = readFileSync('packages/client/src/views/hermes/MeetingView.vue', 'utf8')
+
+  it('always renders speaker labels in the transcript', () => {
+    expect(source).toContain('const HIDE_TRANSCRIPT_SPEAKERS = false')
+    expect(source).toContain(':hide-speaker-diarization="HIDE_TRANSCRIPT_SPEAKERS"')
+    // the old wiring (transcript controlled by the realtime toolbar switch) is gone
+    expect(source).not.toMatch(/<TranscriptList[\s\S]{0,400}hide-speaker-diarization="HIDE_SPEAKER_DIARIZATION"/)
+  })
+
+  it('keeps the realtime toolbar switch separate from the transcript display', () => {
+    expect(source).toContain('const HIDE_SPEAKER_DIARIZATION = true')
+    // MeetingTopBar (realtime controls) still consumes it
+    expect(source).toMatch(/hide-speaker-diarization="HIDE_SPEAKER_DIARIZATION"/)
+  })
+
+  it('persists renames to the server so a reload does not revert them', () => {
+    // loadMeeting prefers server data, so a localStorage-only rename is lost
+    const renameBlock = source.match(/function onTranscriptRename[\s\S]*?\n\}/)?.[0] ?? ''
+    expect(renameBlock).toContain('renameSpeaker')
+    expect(renameBlock).toContain('saveCurrentMeeting()')
+  })
+})

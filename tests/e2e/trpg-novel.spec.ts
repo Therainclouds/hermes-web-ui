@@ -53,7 +53,7 @@ test('novel workbench protects edits while polling and exposes evidence, gates a
   const artifacts: Record<string, any> = {
     'plan-0': { title: '井底回声', guide: '保留失败裁决和对白' },
     'canon-0': { events: [{ id: 's0-e0', kind: 'confirmed', fact: '银月跳跃失败，落井', evidence: [{ index: 1, quote: '跳跃失败' }] }], updates: [{ entity: '银月', attribute: 'location', value: '井底' }], omitted: [{ index: 2, reason: '场外点餐' }] },
-    'check-0': { passed: false, coverage: [], issues: [{ detail: '正文遗漏了落井后的伤势' }] },
+    'check-0': { passed: false, coverage: [], issues: [{ detail: '正文遗漏了落井后的伤势' }], suggestions: [{ detail: '可补一笔井口光线，不影响事实验收' }] },
   }
   let latest: any, resumed = false
   await page.route('**/api/hermes/available-models*', route => route.fulfill({ json: { groups: [{ provider: 'custom', models: ['writer'] }] } }))
@@ -97,6 +97,8 @@ test('novel workbench protects edits while polling and exposes evidence, gates a
   await page.getByRole('button', { name: 'Content', exact: true }).click()
   await page.getByRole('button', { name: 'Consistency report 1', exact: true }).click()
   await expect(page.getByText('正文遗漏了落井后的伤势', { exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Optional editorial suggestions (not blocking)', exact: true })).toBeVisible()
+  await expect(page.getByText('可补一笔井口光线，不影响事实验收', { exact: true })).toBeVisible()
   artifacts['write-0'] = { body: '井壁冰冷，银月扶着石头缓缓站起。' }
   await page.waitForResponse(r => r.url().endsWith('/workbench'))
   await expect(page.getByRole('checkbox', { name: 'Follow latest output', exact: true })).not.toBeChecked()

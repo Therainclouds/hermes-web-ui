@@ -94,6 +94,11 @@ function confirmRename() {
               :title="t('meeting.renameSpeaker')"
             >
               {{ sentence.speaker }}
+              <!-- 可点击重命名的提示：仅 hover 时出现，不干扰阅读 -->
+              <svg class="speaker-edit-icon" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                <path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z" />
+              </svg>
             </span>
           </template>
           <div class="speaker-rename-popover">
@@ -209,6 +214,16 @@ function confirmRename() {
 
   &:hover {
     background: rgba($accent-primary, 0.2);
+  }
+
+  .speaker-edit-icon {
+    opacity: 0;
+    transition: opacity 0.2s ease;
+    flex-shrink: 0;
+  }
+
+  &:hover .speaker-edit-icon {
+    opacity: 0.7;
   }
 }
 

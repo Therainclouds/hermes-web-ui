@@ -104,6 +104,10 @@ const speakerMap = ref<Record<string, string>>({})
  *  置 true 时：工具栏不显示 diarize 开关/节省模式/说话人数选择，且强制关闭
  *  说话人分离（转写不再带说话人标签）。改回 false 可恢复。 */
 const HIDE_SPEAKER_DIARIZATION = true
+/** 转写列表里的说话人标签始终显示：「拆分人声」/「直接音频转录」得到的结果
+ *  必须可见、可点击重命名。实时工具栏的说话人分离控件仍由
+ *  HIDE_SPEAKER_DIARIZATION 关闭——两者是独立的关注点。 */
+const HIDE_TRANSCRIPT_SPEAKERS = false
 const useDiarize = ref(false)
 const saveMode = ref(true)  // 节省模式：只走说话人分离，不走实时ASR
 const speakerCount = ref(0) // 0 = auto
@@ -871,6 +875,9 @@ function onTranscriptRename(speakerId: string, name: string) {
     finalSentences.value = [...session.sentences]
     speakerMap.value = { ...session.speakerMap }
   }
+  // 必须同步到服务端：loadMeeting 优先读服务端数据，只改 localStorage 的话
+  // 刷新页面就会把重命名回滚掉。
+  void saveCurrentMeeting()
 }
 
 // --- ASR 服务管理 ---
@@ -1419,7 +1426,7 @@ async function clearTranscript() {
           :partial-text="partialText"
           :highlighted-index="highlightedSentenceIndex"
           :is-recording="isRecording"
-          :hide-speaker-diarization="HIDE_SPEAKER_DIARIZATION"
+          :hide-speaker-diarization="HIDE_TRANSCRIPT_SPEAKERS"
           @seek="seekToSentence"
           @rename="onTranscriptRename"
         />

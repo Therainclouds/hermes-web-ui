@@ -38,6 +38,37 @@ describe('useDiarizeMerge.applyFileTranscriptionResult', () => {
     expect(speakerMap.value).toEqual({ '1': '说话人 1', '2': '说话人 2' })
     // the store copy must be in sync so autosave persists the speakers
     expect(store.activeSession?.sentences).toHaveLength(2)
+    // ...and the canonical speaker list must be populated (rename UI + agent prompt)
+    expect(store.activeSession?.speakers).toEqual([
+      { id: '1', displayName: '说话人 1' },
+      { id: '2', displayName: '说话人 2' },
+    ])
+  })
+
+  it('renaming a speaker updates every sentence that shares the id', async () => {
+    const { store, applyFileTranscriptionResult } = setup()
+
+    applyFileTranscriptionResult([
+      { text: '大家好', begin_ms: 0, end_ms: 1000, speaker_id: 1 },
+      { text: '开始吧', begin_ms: 1200, end_ms: 2400, speaker_id: 1 },
+      { text: '收到', begin_ms: 2600, end_ms: 3000, speaker_id: 2 },
+    ], { diarize: true })
+    await nextTick()
+
+    const sessionId = store.activeSession!.id
+    store.renameSpeaker(sessionId, '1', '张三')
+
+    const session = store.activeSession!
+    expect(session.speakerMap['1']).toBe('张三')
+    expect(session.speakers.find(s => s.id === '1')?.displayName).toBe('张三')
+    expect(session.sentences.filter(s => s.speakerId === '1').map(s => s.speaker))
+      .toEqual(['张三', '张三'])
+    // the id that was not renamed stays untouched
+    expect(session.sentences[2].speaker).toBe('说话人 2')
+    // MeetingView.onTranscriptRename re-seeds its view-level refs from the
+    // session afterwards (finalSentences / speakerMap), so the store is the
+    // single source of truth here.
+    expect(session.speakerMap['1']).toBe('张三')
   })
 
   it('never invents a speaker when diarization is off', async () => {

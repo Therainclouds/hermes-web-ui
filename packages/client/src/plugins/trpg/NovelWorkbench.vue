@@ -33,13 +33,14 @@ const followLatest = ref(!query.has('artifact') && !query.has('panel'))
 function setTheme(value: string) { theme.value = value; localStorage.setItem('trpg.novel.theme', value) }
 const running = computed(() => state.value?.job.status === 'running')
 const chapterLayout = computed(() => state.value?.layout.find(c => c.index === chapter.value))
-const sceneIndex = computed(() => Number(/^(?:write|review|revision|canon|check)-(\d+)(?:-\d+|-gap-[a-f0-9]+)?$/.exec(artifactName.value)?.[1] ?? query.get('scene') ?? -1))
+function artifactScene(name: string) { return /^(?:balance|balancecheck|balanceboundary)-\d+-(\d+)/.exec(name)?.[1] ?? /^(?:editor)-(\d+)/.exec(name)?.[1] }
+const sceneIndex = computed(() => Number(artifactScene(artifactName.value) ?? /^(?:write|review|revision|canon|check)-(\d+)(?:-\d+|-gap-[a-f0-9]+)?$/.exec(artifactName.value)?.[1] ?? query.get('scene') ?? -1))
 const content = computed(() => artifact.value?.value as any)
 const comparisonBody = computed(() => (compare.value?.value as any)?.body || '')
-const chapterArtifacts = computed(() => state.value?.artifacts.filter(a => a.name === `plan-${chapter.value}` || a.name.startsWith(`planpart-${chapter.value}-`) || a.name === `chapter-${chapter.value}` || chapterLayout.value?.scenes.some(s => a.name === `canon-${s.index}` || a.name.startsWith(`canon-${s.index}-gap-`) || a.name === `check-${s.index}` || a.name === `write-${s.index}` || a.name === `review-${s.index}` || a.name.startsWith(`revision-${s.index}-`))) ?? [])
+const chapterArtifacts = computed(() => state.value?.artifacts.filter(a => a.name === `plan-${chapter.value}` || a.name.startsWith(`planpart-${chapter.value}-`) || a.name === `chapter-${chapter.value}` || chapterLayout.value?.scenes.some(s => a.name === `canon-${s.index}` || a.name.startsWith(`canon-${s.index}-gap-`) || a.name === `check-${s.index}` || a.name === `write-${s.index}` || a.name === `review-${s.index}` || a.name.startsWith(`revision-${s.index}-`) || a.name.startsWith(`editor-${s.index}-`) || artifactScene(a.name) === String(s.index))) ?? [])
 const artifactGroups = computed(() => {
   const available = [...chapterArtifacts.value, ...(state.value?.artifacts.filter(a => /^(book|bookpart|extract|read|memory|material|state)(-|$)/.test(a.name)) ?? [])]
-  const categories = { source: ['extract', 'read', 'memory', 'material', 'state', 'canon'], outline: ['book', 'bookpart', 'plan', 'planpart'], prose: ['write', 'review', 'revision', 'chapter'], checks: ['check'] }
+  const categories = { source: ['extract', 'read', 'memory', 'material', 'state', 'canon'], outline: ['book', 'bookpart', 'plan', 'planpart'], prose: ['write', 'review', 'revision', 'editor', 'balance', 'chapter'], checks: ['check', 'balancecheck', 'balanceboundary'] }
   return Object.entries(categories).map(([id, kinds]) => ({ id, items: available.filter(a => kinds.includes(a.name.split('-')[0])) })).filter(group => group.items.length)
 })
 async function followArtifact(next: NovelWorkbench) {
@@ -47,13 +48,14 @@ async function followArtifact(next: NovelWorkbench) {
   const latest = [...next.artifacts].sort((a, b) => b.createdAt - a.createdAt)[0]
   if (!latest || (latest.name === artifactName.value && latest.createdAt === artifact.value?.createdAt)) return
   const [kind, number] = latest.name.split('-')
-  const owner = ['book', 'bookpart', 'extract', 'read', 'memory'].includes(kind) ? undefined : ['plan', 'planpart', 'chapter'].includes(kind) ? next.layout.find(c => c.index === Number(number)) : next.layout.find(c => c.scenes.some(scene => scene.index === Number(number)))
+  const owner = ['book', 'bookpart', 'extract', 'read', 'memory'].includes(kind) ? undefined : ['plan', 'planpart', 'chapter'].includes(kind) ? next.layout.find(c => c.index === Number(number)) : next.layout.find(c => c.scenes.some(scene => scene.index === Number(artifactScene(latest.name) ?? number)))
   if (owner && !['extract', 'read', 'memory'].includes(kind)) { chapter.value = owner.index; direction.value = null; await loadDirection() }
   await selectArtifact(latest.name)
 }
 function setFollow(value: boolean) { followLatest.value = value; if (value) { tab.value = 'prose'; void refresh() } }
 function label(name: string) {
   const [kind, index, ...parts] = name.split('-')
+  if (/^(balance|balancecheck|balanceboundary)$/.test(kind)) return `${t(`trpg.harness.artifactKind.${kind}`)} ${Number(parts[0]) + 1} · ${Number(index) + 1}${parts[1] == null ? '' : `.${Number(parts[1]) + 1}`}`
   const suffix = parts[0] === 'gap' ? ` · ${t('trpg.harness.coverageRecovery')}` : parts.length ? ` · ${parts.join('.')}` : ''
   return `${t(`trpg.harness.artifactKind.${kind}`)}${index == null ? '' : ` ${Number(index) + 1}`}${suffix}`
 }
@@ -182,7 +184,7 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(timer); selection++; windo
       <span v-if="state.job.scenes">{{ t('trpg.harness.canonProgress', { done: state.job.canonized ?? 0, total: state.job.scenes }) }}</span>
       <span v-for="step in state.job.activeSteps" :key="step.name" class="step-chip">{{ label(step.name) }} · {{ t('trpg.harness.attempt', { n: step.attempt }) }}</span>
       <span v-if="state.job.failure" class="failure-detail">{{ label(state.job.failure.step) }} · {{ state.job.failure.detail }} · {{ t('trpg.harness.attempt', { n: state.job.failure.attempt }) }}</span>
-      <span v-if="state.job.error">{{ t('trpg.recap.jobError') }} ({{ state.job.error }})</span>
+      <span v-if="state.job.error">{{ t(['novel_revision_stalled', 'novel_length_mismatch'].includes(state.job.error) ? 'trpg.harness.stalled' : 'trpg.recap.jobError') }} ({{ state.job.error }})</span>
       <button v-if="!running && state.job.pauseReason === 'outline'" :disabled="busy || directionDirty || settingsDirty" @click="edit('approve-outline')">{{ t('trpg.harness.approveOutline') }}</button>
       <button v-if="!running && state.job.pauseReason === 'chapter'" :disabled="busy || directionDirty || settingsDirty" @click="edit('approve-chapter', { chapter: state.job.waitingChapter })">{{ t('trpg.harness.approveChapter') }}</button>
     </section>
@@ -229,6 +231,7 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(timer); selection++; windo
               <strong :class="{ feedback: !content.passed }">{{ t(content.passed ? 'trpg.harness.passed' : 'trpg.harness.blocked') }}</strong>
               <p class="hint">{{ t('trpg.harness.consistencyHint') }}</p>
               <ul><li v-for="(issue, i) in content.issues" :key="i">{{ issue.detail }}</li></ul>
+              <template v-if="content.suggestions?.length"><h4>{{ t('trpg.harness.suggestions') }}</h4><ul><li v-for="(suggestion, i) in content.suggestions" :key="i">{{ suggestion.detail }}</li></ul></template>
               <h4>{{ t('trpg.harness.coverage') }}</h4><blockquote v-for="item in content.coverage" :key="item.eventId">{{ item.eventId }} · {{ item.quote }}</blockquote>
             </div>
             <div v-else-if="content?.guide"><h3>{{ content.title }}</h3><p class="prose">{{ content.guide }}</p></div>

@@ -189,6 +189,9 @@ export function useDiarizeMerge(deps: UseDiarizeMergeDeps) {
     const merge = deps.finalSentences.value.length > 0
     const timeThreshold = 2000
     let changed = 0
+    // 整段转录首次出现的说话人要登记进 session.speakers（重命名/Agent 提示词
+    // 都读这份列表），每个说话人只写一次，避免逐句触发 localStorage 写入。
+    const registeredSpeakers = new Set<string>()
 
     for (const item of sentences) {
       const text = (item.text || '').trim()
@@ -206,6 +209,13 @@ export function useDiarizeMerge(deps: UseDiarizeMergeDeps) {
         const session = meetingStore.activeSession
         const registeredName = session?.speakers.find(s => String(s.id) === speakerId)?.displayName
         speaker = registeredName || deps.speakerMap.value[speakerId]
+        if (session && speaker && !registeredSpeakers.has(speakerId)) {
+          registeredSpeakers.add(speakerId)
+          if (!session.speakers.some(s => String(s.id) === speakerId)) {
+            // 复用现有 action：speakerId 尚无句子时它只登记说话人本身
+            meetingStore.renameSpeaker(session.id, speakerId, speaker)
+          }
+        }
       }
 
       // 已有实时转写：只回填说话人，避免整段结果覆盖用户编辑过的文本。
