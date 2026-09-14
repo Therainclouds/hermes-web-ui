@@ -462,22 +462,32 @@ and the device missed the first channel release of its lifetime.
 It surfaced only because v0.8.8 was the first release to depend
 on the channel `latest.json`.
 
-Second lesson from the same incident: **the versioned
-`releases/vX.Y.Z/manifest.json` exists on three hosts**, and a
-given device's pin can point at any one of them:
+Second lesson from the same incident: **a versioned manifest that a
+device can pin to exists on four hosts / in four shapes**, and a
+given device's env may point at any one of them:
 
 1. OSS object: `…/quanthermes_pj/quanthermes_web_ui/releases/vX.Y.Z/manifest.json`
 2. GitHub Release asset: `…/releases/download/vX.Y.Z/manifest.json`
 3. `release-manifests` branch archive:
    `raw.githubusercontent.com/.../release-manifests/releases/vX.Y.Z/manifest.json`
-   (this is the one device 6.6.6.73 actually pinned; also note
-   raw.githubusercontent.com CDN serves up to ~5 min stale after
-   a commit, so verification must expect that lag)
+4. **Candidate pin** (the one that actually bit device 6.6.6.73):
+   `WEBUI_UPDATE_MANIFEST_URLS=…/release-manifests/candidates/<channel>/<version>.json`
+   — a candidates file is a one-shot artifact that never changes,
+   and `manifestUrls` ranks explicit env URLs ahead of the
+   `BASE_URL + channel` fallback, so the device froze on that
+   candidate's version forever.
 
-Any compat mirroring must cover all three hosts or it silently
-fixes nothing. This is also why the code-level detection below is
-preferred over host-by-host mirroring: the detection is
-host-agnostic.
+Any compat mirroring must cover all shapes or it silently fixes
+nothing (this incident required three consecutive "final" fixes
+before the fourth, real one was found by reading
+`/etc/default/hermes-web-ui` on-device). Note also
+raw.githubusercontent.com CDN serves up to ~5 min stale after a
+commit, so verification must expect that lag. This is why the
+code-level detection below is preferred over host-by-host
+mirroring: the detection is shape-agnostic — and the deploy-side
+guard must reject BOTH `WEBUI_UPDATE_MANIFEST_URL` and
+`WEBUI_UPDATE_MANIFEST_URLS` values that contain version paths
+(`v[0-9]`, `/candidates/`).
 
 ### Detection rule
 
