@@ -228,6 +228,19 @@ export interface UpdateCheckResult {
   packageType: UpdatePackageType
   strategy: UpdateStrategy
   detectionSource: 'manifest' | 'npm-registry'
+  /**
+   * Non-fatal update-source warnings. Today one value:
+   * `manifest_pinned_stale` — an explicit pinned manifest URL (a
+   * versioned `releases/vX.Y.Z/manifest.json` or a
+   * `candidates/<channel>/<version>.json`) answered successfully but
+   * froze on a version ≤ what the channel tip already knows (task-12
+   * § Update-source hardening; the v0.8.6 candidate-pin incident).
+   */
+  warnings?: Array<'manifest_pinned_stale'>
+  /** URL of the pinned manifest when `manifest_pinned_stale` fired. */
+  pinnedManifestUrl?: string
+  /** URL that actually won the update check. */
+  effectiveManifestUrl?: string
 }
 
 export interface UpdateCapabilities {
@@ -240,6 +253,9 @@ export interface UpdateCapabilities {
   latestVersion: string
   updateAvailable: boolean
   detectionSource: UpdateCheckResult['detectionSource'] | 'none'
+  warnings: UpdateCheckResult['warnings']
+  pinnedManifestUrl: string
+  effectiveManifestUrl: string
   remoteError: string
   supports: {
     versionCheck: boolean

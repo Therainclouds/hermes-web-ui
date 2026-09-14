@@ -465,3 +465,99 @@ describe('update manifest client', () => {
     expect(result.environment).toBeUndefined()
   })
 })
+
+describe('manifest_pinned_stale guard (task-12 update hardening)', () => {
+  const cfg = {
+    enabled: true,
+    strategy: 'source-deploy' as const,
+    packageName: '',
+    registry: '',
+    sourceLabel: 'Channel',
+    distTag: 'latest',
+    cliBin: '',
+    script: '',
+    channel: 'stable',
+    manifestUrl: '',
+    manifestUrls: [] as string[],
+    manifestBaseUrl: '',
+    packageType: 'source-deploy' as const,
+    installerScript: '',
+    stagingDir: '/tmp/staging',
+    backupDir: '/tmp/backups',
+    healthcheckUrl: 'http://127.0.0.1:6060/health',
+    stateFile: '/tmp/u.json',
+    logDir: '/tmp/logs',
+    manifestTimeoutMs: 100,
+    packageTimeoutMs: 100,
+    downloadRetries: 0,
+    downloadRetryDelayMs: 1,
+    healthcheckTimeoutMs: 2000,
+    healthcheckIntervalMs: 2000,
+    healthcheckRetries: 1,
+    healthcheckInitialDelayMs: 0,
+    autoInstallDependencies: true,
+    minFreeSpaceBytes: 1024,
+  }
+
+  function urlKeyedFetch(map: Record<string, string | null>) {
+    return vi.fn(async (u: string) => {
+      const val = map[String(u)]
+      if (val === null) throw new Error('network down')
+      return { ok: true, status: 200, arrayBuffer: async () => Buffer.from(JSON.stringify({ version: val })) }
+    })
+  }
+
+  afterEach(() => { vi.unstubAllGlobals(); vi.resetModules() })
+
+  it('isPinnedManifestUrl classifies version/candidate paths', async () => {
+    const { isPinnedManifestUrl } = await import('../../packages/server/src/services/update/manifest-client')
+    expect(isPinnedManifestUrl('https://x/releases/v0.8.6/manifest.json')).toBe(true)
+    expect(isPinnedManifestUrl('https://x/candidates/stable/0.8.6.json')).toBe(true)
+    expect(isPinnedManifestUrl('https://x/releases/stable/latest.json')).toBe(false)
+  })
+
+  it('prefers the newer channel tip and records the warning when a candidate is pinned', async () => {
+    vi.stubGlobal('fetch', urlKeyedFetch({
+      'https://raw.example/candidates/stable/0.8.6.json': '0.8.6',
+      'https://raw.example/releases/stable/latest.json': '0.8.8',
+    }))
+    const { resolveManifestCheckResultGuarded } = await import('../../packages/server/src/services/update/manifest-client')
+    const result = await resolveManifestCheckResultGuarded({
+      ...cfg,
+      manifestUrls: ['https://raw.example/candidates/stable/0.8.6.json'],
+      manifestBaseUrl: 'https://raw.example/releases',
+    })
+    expect(result.latestVersion).toBe('0.8.8')
+    expect(result.warnings).toContain('manifest_pinned_stale')
+    expect(result.pinnedManifestUrl).toContain('candidates')
+    expect(result.effectiveManifestUrl).toContain('releases/stable/latest.json')
+  })
+
+  it('keeps the pinned result and emits no warning when the channel tip is unreachable', async () => {
+    vi.stubGlobal('fetch', urlKeyedFetch({
+      'https://raw.example/candidates/stable/0.8.6.json': '0.8.6',
+      'https://raw.example/releases/stable/latest.json': null,
+    }))
+    const { resolveManifestCheckResultGuarded } = await import('../../packages/server/src/services/update/manifest-client')
+    const result = await resolveManifestCheckResultGuarded({
+      ...cfg,
+      manifestUrls: ['https://raw.example/candidates/stable/0.8.6.json'],
+      manifestBaseUrl: 'https://raw.example/releases',
+    })
+    expect(result.latestVersion).toBe('0.8.6')
+    expect(result.warnings ?? []).toEqual([])
+  })
+
+  it('does not warn when the primary source already IS the channel tip', async () => {
+    vi.stubGlobal('fetch', urlKeyedFetch({
+      'https://raw.example/releases/stable/latest.json': '0.8.8',
+    }))
+    const { resolveManifestCheckResultGuarded } = await import('../../packages/server/src/services/update/manifest-client')
+    const result = await resolveManifestCheckResultGuarded({
+      ...cfg,
+      manifestBaseUrl: 'https://raw.example/releases',
+    })
+    expect(result.latestVersion).toBe('0.8.8')
+    expect(result.warnings ?? []).toEqual([])
+  })
+})

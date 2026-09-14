@@ -171,6 +171,10 @@ export async function healthCheck(ctx: any) {
     webui_update_available: updateCheckDisabled
       ? false
       : isRemoteVersionNewer(LOCAL_VERSION, cached.latestVersion),
+    // task-12 § Update-source hardening: surface the pinned-stale signal.
+    webui_update_warnings: updateCheckDisabled ? [] : (result?.warnings ?? []),
+    webui_update_pinned_manifest_url: updateCheckDisabled ? '' : (result?.pinnedManifestUrl ?? ''),
+    webui_update_effective_manifest_url: updateCheckDisabled ? '' : (result?.effectiveManifestUrl ?? ''),
     node_version: process.versions.node,
     agent_bridge: agentBridge,
     terminal,

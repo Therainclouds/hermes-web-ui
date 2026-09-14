@@ -1,5 +1,5 @@
 import { config, hasConfiguredManifestCheck } from '../../config'
-import { resolveManifestCheckResult } from './manifest-client'
+import { resolveManifestCheckResultGuarded } from './manifest-client'
 import type { UpdateCheckResult } from './types'
 
 /**
@@ -50,8 +50,15 @@ async function doRefresh(): Promise<UpdateCheckSnapshot> {
     return snapshot
   }
   try {
-    const result = await resolveManifestCheckResult(config.update)
+    const result = await resolveManifestCheckResultGuarded(config.update)
     snapshot = { result, remoteError: '' }
+    if (result.warnings?.includes('manifest_pinned_stale')) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[update] manifest pinned to ${result.pinnedManifestUrl}; ` +
+          `preferring channel tip ${result.latestVersion} (${result.effectiveManifestUrl})`,
+      )
+    }
   } catch (error) {
     snapshot = { result: null, remoteError: error instanceof Error ? error.message : String(error) }
   }
