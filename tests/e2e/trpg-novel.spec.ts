@@ -46,6 +46,46 @@ test('long novel starts in the recording panel and can resume a persisted job', 
   expect(resumed).toBe(true)
 })
 
+test('novel workbench deletes and regenerates a single artifact', async ({ page }) => {
+  await authenticate(page)
+  const controls = { revision: 0, settings: {} as Record<string, unknown>, chapters: {} as Record<string, unknown>, epochs: {}, approvedOutline: false, approvedChapters: [] }
+  const job: any = { id: 'job', meetingId: 'demo', status: 'paused', stage: 'reviewing', totalSentences: 3, processedSentences: 3, scenes: 1, reviewed: 0, outputChars: 0 }
+  let names = ['canon-0', 'write-0']
+  const posted: any[] = []
+  let resumed = false
+  await page.route('**/api/meeting-storage/demo/novel-jobs/job/**', async route => {
+    const url = new URL(route.request().url())
+    if (url.pathname.endsWith('/workbench')) return route.fulfill({ json: { job, controls, layout: [{ index: 0, scenes: [{ index: 0, from: 0, to: 2, title: '井底' }] }], artifacts: names.map((name, i) => ({ name, createdAt: i + 1 })), events: [] } })
+    const name = url.pathname.split('/').at(-1)!
+    if (url.pathname.includes('/artifacts/')) {
+      if (route.request().method() === 'POST') {
+        const body = route.request().postDataJSON()
+        expect(body.revision).toBe(controls.revision)
+        posted.push({ ...body, name }); names = names.filter(n => n !== name); controls.revision++
+        // The server deletes the artifact and, for regenerate, immediately resumes the worker.
+        if (body.action === 'regenerate') { resumed = true; job.status = 'running' }
+        return route.fulfill({ json: { job, controls, name } })
+      }
+      return route.fulfill({ json: { artifact: { name, createdAt: 1, inputHash: 'hash', value: { body: '井壁冰冷。' } }, versions: [] } })
+    }
+    if (url.pathname.endsWith('/resume')) { resumed = true; job.status = 'running'; return route.fulfill({ json: { job } }) }
+    return route.fulfill({ status: 404, json: {} })
+  })
+  await page.goto('/recap-book.html?workspace=novel&meetingId=demo&jobId=job&profile=table')
+  await expect(page.getByRole('heading', { name: 'Novel workbench', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Evidence ledger 1', exact: true }).click()
+  await page.getByRole('button', { name: 'Delete artifact', exact: true }).click()
+  await expect.poll(() => posted.length).toBe(1)
+  expect(posted[0]).toMatchObject({ action: 'delete', name: 'canon-0' })
+  await expect(page.getByRole('button', { name: 'Evidence ledger 1', exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Draft 1', exact: true }).click()
+  await page.getByRole('button', { name: 'Delete and regenerate', exact: true }).click()
+  await expect.poll(() => posted.length).toBe(2)
+  expect(posted[1]).toMatchObject({ action: 'regenerate', name: 'write-0' })
+  await expect.poll(() => resumed).toBe(true)
+  await expect(page.getByRole('alert')).toHaveCount(0)
+})
+
 test('novel workbench protects edits while polling and exposes evidence, gates and model overrides', async ({ page }) => {
   await authenticate(page)
   const controls = { revision: 0, settings: { pauseAfterOutline: true }, chapters: {} as Record<string, unknown>, epochs: {}, approvedOutline: false, approvedChapters: [] }

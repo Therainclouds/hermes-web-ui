@@ -4392,6 +4392,8 @@ export default {
     diarizeNoMinimaxKey: 'No MiniMax API key configured — the MiniMax engine is unavailable.',
     diarizeNoDashscopeKey: 'No DashScope API key configured — the Qwen engine is unavailable.',
     asrRestarting: 'The speech recognition service is still running an older build; restarting it to load the latest code…',
+    transcribeBackendUnavailable: 'The speech recognition service was restarted or is temporarily unavailable — please retry (check the service log for the reason)',
+    transcribeJobLost: 'The speech recognition service restarted mid-transcription and this job was interrupted — please start it again',
     diarizeNoAudio: 'No recording available — record audio first, or upload one via "Direct audio transcription"',
     diarizeDone: 'Speaker separation finished',
     diarizeFailed: 'Speaker separation failed',

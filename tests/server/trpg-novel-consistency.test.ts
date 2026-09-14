@@ -60,6 +60,26 @@ describe('evidence and narrative consistency contracts', () => {
     expect(validateConsistency({ coverage, issues: [{ detail: '后文伤势被无故清除' }] }, canon, body).passed).toBe(false)
     expect(validateConsistency({ coverage: [], issues: [{ detail: '两个事件都缺失' }] }, canon, body).passed).toBe(false)
   })
+  it('stops only on factual contradictions; omissions and presentation findings stay advisory', () => {
+    const canon = validateCanon(data(), rows, [], 0), body = '银月试着跳跃。她坠入井底，疼痛蔓延开来。'
+    const coverage = [{ eventId: 's0-e0', quote: '银月试着跳跃。' }, { eventId: 's0-e1', quote: '她坠入井底，疼痛蔓延开来。' }]
+    expect(validateConsistency({ coverage, issues: [{ detail: '把失败写成成功', kind: 'contradiction' }] }, canon, body)).toMatchObject({ passed: false, blocking: true })
+    expect(validateConsistency({ coverage, issues: [{ detail: '漏了落井后的一句对白', kind: 'omission' }] }, canon, body)).toMatchObject({ passed: false, blocking: false })
+    expect(validateConsistency({ coverage, issues: [{ detail: '连续两段完全重复', kind: 'format' }] }, canon, body)).toMatchObject({ passed: false, blocking: false })
+    // An unlabelled issue stays blocking, so an older or careless audit cannot pass silently.
+    expect(validateConsistency({ coverage, issues: [{ detail: '角色归属错误' }] }, canon, body).blocking).toBe(true)
+    // Code-side missing coverage is an omission, not a contradiction.
+    const gap = validateConsistency({ coverage: coverage.slice(0, 1), issues: [] }, canon, body)
+    expect(gap).toMatchObject({ passed: false, blocking: false })
+    expect(gap.issues.every(i => i.kind === 'omission')).toBe(true)
+  })
+  it('keeps malformed audit claims as report repairs rather than factual contradictions', () => {
+    const canon = validateCanon(data(), rows, [], 0), body = '银月试着跳跃。她坠入井底，疼痛蔓延开来。'
+    const report = validateConsistency({ coverage: [{ eventId: 's0-e9', quote: '银月试着跳跃。' }], issues: [] }, canon, body)
+    expect(report.repairReport).toBe(true)
+    expect(report.blocking).toBe(false)
+    expect(report.issues.some(i => i.kind === 'format')).toBe(true)
+  })
   it('retrieves a returning NPC and all party state without deleting offscreen facts', () => {
     const state = ['银月', '酒馆老板', '守门人'].map(entity => ({ entity, attribute: 'knowledge', value: '不知道密室位置', evidence: [] }))
     expect(relevantState(state, [{ index: 12000, text: '我们又见到了酒馆老板。' }], [{ name: '银月' }]).map(s => s.entity)).toEqual(['银月', '酒馆老板'])

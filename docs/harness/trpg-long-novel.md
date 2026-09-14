@@ -94,9 +94,13 @@ is reused without another model call. Changed inputs are rejected; create a new
 snapshot for a new edition. Jobs and APIs enforce the same profile access as recaps.
 
 The worker map/gates assume one backend process per Web UI state directory, as
-the existing recap store does. Do not share the directory across worker processes.
-Cancelled/failed job artifacts are retained for recovery; deleting a final recap
-does not remove its source or checkpoints. No automatic retention deletion occurs.
+the existing recap store does. A durable per-job lease (`lease.json`) plus
+startup reconcile make that assumption observable rather than implicit: a job
+whose owner died is persisted as `interrupted`, and a second process that shares
+the directory refuses to start, resume, edit or cancel a job with a live foreign
+lease. Cancelled/failed job artifacts are retained for recovery; deleting a final
+recap does not remove its source or checkpoints. No automatic retention deletion
+occurs.
 
 API base: `/api/meeting-storage/:meetingId/novel-jobs`:
 
@@ -337,7 +341,7 @@ no live provider or real user image was submitted during automated validation.
 
 ### September 13: consistency-first scheduling and historical citations
 
-Context-dependent reading, canon construction and scene writing run sequentially, regardless of the concurrency setting. Only independent chapter plans fan out. Earlier candidate read/material/state artifacts remain inspectable but are no longer execution dependencies. Valid extract/canon checkpoints retain their original prompt/input fingerprints.
+Context-dependent reading, canon construction, audits and commits run sequentially, regardless of the concurrency setting. Independent chapter plans and the initial drafts of upcoming scenes can run ahead; a draft that consumed changed facts is rebuilt (see the dependency fingerprints below). Earlier candidate read/material/state artifacts remain inspectable but are no longer execution dependencies. Valid extract/canon checkpoints retain their original prompt/input fingerprints.
 
 State updates may cite prior state evidence, resolved against the immutable transcript; current scene event coverage cannot use this historical-only evidence. Duplicate omissions and mixed event/filler classifications normalize with event evidence taking precedence. Index-only citations resolve through supplied immutable rows; unknown indices and fabricated quotations still fail. Repair feedback includes permitted indices and supports index-only output, avoiding quotation transcription errors. Retries remain bounded and persistent semantic failures still block publication.
 
@@ -404,7 +408,7 @@ an immediate patch without extra retrieval. Every patched manuscript requires a 
 independent semantic audit; untouched paragraphs are preserved. Tool actions are saved
 as inspectable artifacts. No private chain of thought is requested or displayed.
 
-Each editing decision has at most six tool turns; a scene has at most three committed
+Each editing decision has at most eight tool turns (raised from six on September 14); a scene has at most three committed
 repair rounds across resumes. Repeated identical unresolved issues or explicit constraint
 conflicts persist a blocked revision state. Unchanged resume spends no more model tokens
 on that scene; changing review model or chapter direction permits a new attempt. Invalid
@@ -439,7 +443,9 @@ into a ~1,100-character scene containing a later scene's plot, taken from the ch
 beat list, had duplicated a paragraph, and had misattributed one observation. Two of those
 three issues required *removing* prose, but `patch_paragraphs` only documented replacement,
 so the editor described the deletion in `continuity` without submitting it and the same
-issues returned every round.
+issues returned every round. Re-running the same scene then showed the second half of the
+bug: the repair editor received the whole-chapter beat list and kept rewriting the other
+scene's plot instead of deleting it, because the guide appeared to require it.
 
 - `patch_paragraphs` edits now accept `delete: true` (or `text: ""`) to remove a paragraph.
   One call may delete several paragraphs by their original numbers; the whole patch is applied
@@ -448,17 +454,278 @@ issues returned every round.
 - Audits, editor reads and patches share one paragraph split (`paragraphsOf`): trimmed, with
   whitespace-only paragraphs dropped. Previously the audit numbered a trimmed list while the
   editor patched the raw list, so one whitespace-only paragraph shifted every later index.
-- The review instruction now states the scene boundary: only `scene.from..to` rows and
-  `canon.events`; `chapter.guide` and `book` are style and intent only, never material for
-  other scenes or later plot; out-of-scope and duplicate paragraphs are deleted, not expanded.
-- `revisionPolicy()` fingerprints the writing/review instructions, the audit contract and the
-  editor protocol into the revision and balance contexts. A harness fix therefore invalidates
-  a stored blocked revision once and the scene is retried, instead of replaying the old block
+- The reviewer and the fact-repair editor are **scene-scoped**: `book` and `chapter.guide` are
+  removed from their request (the reviewer keeps the scene's own `rows`; the editor reads
+  evidence through its bounded tool protocol). The writer still receives the guide, so chapter
+  style and pacing are established, but the guide can no longer act as a scene content
+  contract. The review instruction and `EDITOR_PROMPT` both state the boundary explicitly:
+  guide-listed material that `rows`/`canon.events` do not support is deleted as whole
+  paragraphs, never rewritten or kept.
+- `RULES` is deliberately left unchanged. It is part of every step's input hash, so editing it
+  invalidates extraction/canon/plan checkpoints and forces an expensive full re-read on
+  resume. Scene-boundary text lives in the write/review/editor instructions instead.
+- `revisionPolicy()` fingerprints the writing/review/editor instructions and the audit
+  contract into the revision and balance contexts. A harness fix therefore invalidates a
+  stored blocked revision once and the scene is retried, instead of replaying the old block
   forever. Changing only the model still does not replace saved prose.
-- A resumed stall reports the stored round count and up to three concrete remaining issues, so
-  the workbench names what to change instead of only showing the generic stall sentence.
+- A resumed stall reports the stored round count and up to three concrete remaining issues
+  (and the success path clears a stale `job.failure`), so the workbench names what to change
+  instead of only showing the generic stall sentence.
 
-Blocking semantics are unchanged: publication still requires a passing independent audit, and
-genuinely contradictory constraints still stop the job with the latest prose saved. Real
-six-hour annotated-campaign evaluation remains pending.
+Verification used the reported job copied into an isolated temporary home, with a mocked
+auditor/editor: the stored block was no longer replayed, one deletion-based editor call
+accepted the previously blocked second scene, extraction/canon checkpoints were reused (no
+re-read), and the original job directory was never mutated. Blocking semantics are unchanged:
+publication still requires a passing independent audit, and genuinely contradictory
+constraints still stop the job with the latest prose saved. Real six-hour annotated-campaign
+evaluation remains pending.
+
+### September 14: sticky source checkpoints and per-artifact reset
+
+A resumed reported job re-read the transcript from block 0 (`已处理 0/2605`). `step()` keyed
+its cache on the full prompt hash, so editing any instruction invalidated every saved artifact
+— including the expensive extraction blocks and the fact ledger the user had already paid for.
+
+- Extraction blocks (`extract-*`), fact ledgers (`canon-*`) and scene drafts (`write-*`) are
+  now **sticky**: any valid saved artifact is reused regardless of the prompt/version hash, so
+  resume generates only what is missing. A draft additionally compares its chapter epoch, so
+  explicit chapter regeneration still rebuilds it. A checkpoint that fails its own validation
+  is still rebuilt, and a changed snapshot is still rejected as `novel_source_changed`.
+- Review, audit and repair steps stay hash-keyed. `revisionPolicy()` changes therefore still
+  unblock a stalled scene, and every committed manuscript still gets a fresh independent audit.
+- `POST …/novel-jobs/:jobId/artifacts/:artifact` with `{action:'delete'|'regenerate', revision}`
+  removes one generated artifact (archived to `history/` first) and bumps `controls.revision`.
+  `delete` leaves the job paused so the next resume rebuilds exactly that piece; `regenerate`
+  resumes immediately. A completed job becomes resumable without unpublishing the old book,
+  which stays readable until a successful replacement. Guards: 409 while a worker is active or
+  on a stale revision, 400 for an unknown action/name, 404 for a missing artifact.
+- The workbench artifact toolbar exposes **Delete artifact** and **Delete and regenerate**.
+  Deletion does not cascade by hand: an artifact that consumed the removed one is
+  rebuilt automatically when the replacement's content differs (see the
+  dependency-fingerprint section below), so the old "delete dependents too"
+  instruction no longer applies.
+
+Verification reused the reported job in an isolated copy with a mocked auditor/editor: resume
+made zero extraction, canon and planning calls, backfilled nothing, accepted the previously
+blocked scene with one deletion-based editor call and three audits, and left the original job
+directory untouched.
+
+### September 14: whole-scene rewrite tool (editor convergence)
+
+The next resumed run reached scene 3 and then failed with `编辑工具调用未收敛` after the editor
+used all six tool turns. Every turn was a `patch_paragraphs` call that deleted *all* paragraphs
+(`{paragraph:N, delete:true}` for the whole body) or rewrote paragraph 0 while deleting the rest
+— the model's way of asking for a full-scene rewrite, which per-paragraph editing can never
+apply: an all-delete patch produces an empty body and is refused, so the scene blocked at
+revision 0 instead of converging.
+
+- The editor protocol gained `replace_scene({body,covered?,continuity?,warnings?})` for audits
+  whose findings span most of the manuscript. The body is validated like any draft (≤7k chars,
+  prose paragraphs, no headings/HTML), `covered` must contain the scene's dialogue indices, and
+  a fresh independent audit still runs afterwards — this is a way to express the edit, not a
+  waiver. `patch_paragraphs` remains the tool for local changes.
+- Non-empty `text` now wins over a `delete` flag on the same edit. Models routinely echo the
+  replacement text together with `delete:true`; reading that as a deletion silently dropped
+  intended prose. An edit with neither text nor `delete:true` is still rejected.
+- `EDITOR_PROMPT` states both rules, including "never submit an all-delete patch to simulate a
+  rewrite". Because `revisionPolicy()` includes `EDITOR_PROMPT`, a stored
+  `novel_revision_stalled` block is invalidated once by this change and the scene is retried.
+- `EDITOR_PROMPT` and the whole-scene path are also covered by the workbench artifact reset:
+  deleting `revision-state-N` restarts the repair budget for that scene.
+
+Verification on the reported job copy: the previously blocked scene accepted after the editor's
+all-delete patch was refused once and a whole-scene rewrite applied, with zero extraction,
+canon or planning calls; the original job directory was untouched.
+
+### September 14: blocking contradictions vs advisory findings
+
+The next run stalled again on the same scene. Its final report contained three findings — GM
+labels, a duplicated paragraph, a missing source line — and none of them was a factual
+contradiction. Worse, the three audits of that scene had flagged *different* sets each round
+(the first rewrite's report did not mention GM labels at all; the last one did), so the editor
+was chasing a moving blocking target. With one scene able to stop 98, a job could never finish.
+
+The audit contract now separates what stops a job from what is merely reported:
+
+- Every audit issue carries `kind`. `contradiction` = prose contradicts source/canon, invents
+  unsupported plot, turns an attempt into a success, or misattributes a speaker — this is the
+  **only** blocking kind. `omission` = a source event or line is missing while the prose stays
+  faithful. `format` = GM/主持人 presentation, duplicated paragraphs, wording and pacing.
+- `validateConsistency` returns both `passed` (a clean report, unchanged meaning) and
+  `blocking` (at least one contradiction). Code-side missing coverage is an `omission`;
+  malformed report claims stay `format` plus `repairReport`, so they still trigger report-only
+  retries and can fail the step as `novel_invalid_output`.
+- Unlabelled model issues keep defaulting to `contradiction`, so an older or careless audit
+  cannot silently pass. The review/repair loop and the whole-book length pass gate on
+  `blocking`; a scene with only advisory findings is accepted immediately, with no repair round.
+- Accepted advisory findings are appended to `job.warnings` with their scene number, so the
+  workbench shows what was shipped imperfectly instead of dropping it. The length pass no
+  longer rejects a candidate for GM-label or omission warnings.
+- `narratorIssues` (the scripted GM-label detector) is `format`, never blocking.
+
+This is the deliberate answer to "is the consistency too strict": fabricated or contradictory
+facts still stop publication, while a faithful-but-incomplete scene no longer blocks the book.
+Real-campaign evaluation of how often each kind fires is still pending.
+
+Verification on the reported job copy: with an auditor that reports exactly the live findings
+(classified as two `format`, one `omission`), the previously blocked scene was accepted with
+zero repair rounds, zero extraction/canon/planning calls, and the findings listed as warnings.
+
+### September 14: the editor edits by quotation, not by paragraph arithmetic
+
+Live editor turns showed why the model kept failing to *apply* a fix: it was asked to address
+paragraph numbers it had to count itself. One turn sent 45 edits at a 34-paragraph body; others
+sent `{paragraph: N, delete: true}` for every paragraph to express "rewrite the scene"; a third
+echoed replacement text together with `delete: true`. Every one was refused, six turns were
+spent, and the scene blocked at revision 0.
+
+- `patch_paragraphs` now accepts **exact-excerpt edits**: `{find, replace}`. `find` must match
+  the current manuscript verbatim and occur exactly once (≥ 4 characters); `replace: ""`
+  deletes it; edits in one patch apply in order. Quoting text the model can see is its strong
+  suit, and a unique match makes stale numbering and accidental whole-body deletion impossible.
+- Paragraph edits stay available for numbered changes. Mixing the two shapes in one patch is
+  rejected, as are missing, ambiguous, too-short or non-changing excerpts, each with a specific
+  observation the editor can correct on its next turn.
+- The editor budget rose from six to eight tool turns. `replace_scene` remains the verb for
+  pervasive rewrites, so a full rewrite never has to be simulated with deletions.
+- `EDITOR_PROMPT` documents the excerpt form first and includes a worked example.
+
+The convergence limit is still the auditor: an LLM judge can re-describe the same defect
+differently each round. That is why only `contradiction` findings block, while omissions and
+presentation findings are advisory — the repair target stays finite and reachable.
+
+Verification: excerpt replacement, deletion, rejection feedback and a full pipeline run that
+fixes a contradiction with a single excerpt edit are covered by unit and integration tests.
+
+### September 14: durable repair memory and continue-on-unresolved
+
+The repair loop was memoryless across rounds: each round opened a fresh model session that saw
+only the current manuscript and the newest audit report. It could therefore repeat a fix that
+had already been rejected, or undo something an earlier round fixed, which is what produced the
+oscillation ("fix A, break B, fix B, break A").
+
+- `revision-state-N.json` now carries `repairLog`. Each round records the blocking findings, the
+  editor action (tool, kind and size), every rejected patch with its reason, and what the next
+  audit still reported. The next round's editor input receives a compact `history` built from
+  it, and `EDITOR_PROMPT` tells the editor not to repeat a proven-ineffective fix or undo a
+  successful one.
+- `runEditorAgent` returns `action` and `rejected` so the log is a truthful summary rather than
+  a restatement of the request. The log survives resume because it is written with the same
+  checkpoint as the draft.
+- `WritingSettings.consistency` (`warn` by default, `block` optional) controls what happens when
+  contradictions remain after the bounded repair rounds. `warn` records them as scene warnings
+  in `job.warnings` and keeps writing, so one scene can no longer stop a 98-scene book; the
+  workbench exposes it as **Stop on unresolved factual contradictions**. `block` keeps the old
+  hard stop, including its resume-blocking checkpoint.
+- The repair-loop no-progress guard compares only the blocking findings, so advisory rewordings
+  cannot trigger it.
+- `REVISION_POLICY` was bumped so any stored `novel_revision_stalled` block is invalidated once
+  and the scene is retried under the new rules.
+
+Honest limits: the audit is still an LLM. If it labels an omission as a contradiction, the
+editor will try to fix it and `warn` mode records it if it cannot; `block` mode stops there.
+The default is now the mode that lets a long book finish.
+
+Verification: 246 TRPG unit tests, the three workbench e2e flows, `harness:check`, server and
+client type checks. Memory contents, the warn-mode acceptance path and the strict block path
+are each covered by tests.
+
+### September 14: dependency-fingerprinted checkpoints, durable lease and context compaction
+
+Four changes close the failure classes that the earlier sections only mitigated. They also make
+the harness's loop explicit rather than implicit.
+
+**1. The live `missing dialogue evidence coverage` stall.** A 98-scene job stopped at scene 8 with
+`missing dialogue evidence coverage` after four attempts, and every resume repeated the four paid
+review calls (13.7M cumulative tokens, 27 failed outputs with unknown size). The step validated
+the review model's `covered` list against `scene.dialogueIndices`: a model had to restate a set of
+source indices, and dropping any one failed the step with no actionable feedback. `invalid()`
+received no detail, so the retry prompt could not name the missing indices. This is the same class
+of defect as the paragraph-arithmetic stall already fixed for the editor: code can enumerate the
+invariant, so asking the model to reproduce it is a design error.
+
+- `validateDraft` accepts numeric-string indices (matching `citations()`), so a provider that
+  serialises `["80","81"]` no longer has a correct list discarded.
+- `withDialogueCoverage` unions `scene.dialogueIndices` into `covered` in code and returns the
+  indices the model omitted. The review step, the editor `patch_paragraphs`/`replace_scene` path
+  and the length pass all use it, so no path can hard-fail on this bookkeeping. Omissions are
+  appended to `job.warnings`; they are metadata, **not** proof — the independent audit still runs
+  and remains the semantic gate, exactly as patch coverage metadata was already demoted in the
+  patch-union fix above.
+
+**2. Durable blocked-step memory.** A step that exhausts its four attempts on an unchanged request
+persists `blocked-<name>.json` keyed by the request, the model route and `revisionPolicy()`. The
+next resume throws `novel_step_blocked` with the stored detail and makes **zero** model calls.
+Changing the model route, chapter direction, harness policy or the artifact itself produces a
+different key and lets a fresh attempt through; deleting the artifact also removes its blocked
+record. Transient `novel_model_failed` is never blocked, so a provider outage still retries.
+
+**3. Dependency-fingerprinted sticky checkpoints (supersedes "sticky regardless of hash").**
+Sticky steps previously reused a valid artifact whenever its version and chapter epoch matched,
+ignoring what the artifact had consumed. Deleting and regenerating `canon-5` with different
+content therefore left `write-5` and later prose in place: a new ledger paired with old prose,
+and with the default `consistency: 'warn'` the resulting audit finding became a warning instead of
+a rebuild.
+
+Each sticky step now records a `dependencyHash` — the step input without the instruction. Reuse
+requires the epoch **and** that fingerprint to match, so:
+- editing a prompt or the harness still reuses every paid source checkpoint (the original sticky
+  promise, and why `RULES` remains untouched);
+- changing the canon, rows, prior state or chapter plan an artifact consumed rebuilds it, and its
+  own changed output rebuilds the artifacts downstream of it through their fingerprints;
+- a legacy artifact without a fingerprint falls back to the full prompt hash, so an untouched old
+  job still reuses everything and a changed one rebuilds once.
+
+The write/review migration seed follows the same rule. Deleting one artifact now rebuilds exactly
+what is missing or stale, which is why the workbench hint changed: dependents are no longer the
+user's manual responsibility.
+
+**4. Durable lease and startup reconcile.** Job lifecycle used to live in the in-process `active`
+map: `job.json` could say `running` forever, and `publicJob` translated "no worker in this
+process" into `paused`. A restart, a crashed worker and a second server on the same directory
+were indistinguishable, and the second server could run the same job.
+
+`novel-lease.ts` writes a separate `lease.json` (`ownerId`, `pid`, `startedAt`, `heartbeatAt`)
+before the first call, heartbeats every 30s, and releases it when the worker settles. Because the
+lease is its own file, a heartbeat can never clobber a concurrent checkpoint write. A lease is
+"live" only when it belongs to another process, is fresh (10-minute TTL, well above the 240s call
+cap) **and** its PID still exists. Every mutation (start, resume, pause, cancel, settings/direction
+edit, artifact reset) refuses a live foreign lease with 409 `novel_busy`.
+
+`reconcileNovelJobs()` runs at startup, persists `interrupted` plus `interruptedAt` for any
+`running` job whose owner is gone, clears the dead lease, and appends an `interrupted` event. A
+live foreign owner is left alone. Reconcile never auto-starts a job: recovering an interrupted job
+still spends money and stays an explicit user action. `interrupted` is a first-class status, so
+the UI reports what happened instead of guessing.
+
+**5. Context compaction and automatic memory compression.** `novel_context_budget` used to be a
+hard stop. `novel-context.ts` now assembles each request against a budget, in this order:
+recoverable-evidence removal (`compactNovelEvidence`), **model summarisation of the rolling
+memory** (cached by source text and target, so a resume reuses it), deterministic truncation of
+low-value context (`previousOutput`, `history`, `precedingProse`, `priorContinuity`, `memory`) and
+whole-field drops (`history`, `observations`, `reportRepair`, `suggestions`, `repairFeedback`).
+The audit request's `manuscriptParagraphs` keeps its paragraph numbers but drops the duplicated
+text, since code resolves quotes from the manuscript. Source rows, the manuscript, canon evidence
+and the scene are never dropped; if the protected evidence alone exceeds 28,000 tokens the call is
+refused with a specific detail and no ASR is lost. Compaction is accounted in
+`job.compactedCalls`/`compactedTokens`/`compactedReused` and emits a `context_compacted` event.
+
+**6. The loop is explicit.** `novel-loop.ts` is the single bounded act→observe→reflect loop:
+a hard turn cap, code-executed actions whose results are observations (never instructions),
+repeated-read detection, a bounded observation window, and termination only by a code-validated
+change, an explicit conflict, or the budget. The editor agent now describes only its tool surface
+and delegates the mechanics to it; the repair loop's history, `revisionPolicy()` invalidation and
+the whole-book length pass are unchanged. The step loop in `novel.ts` remains the durable
+attempt/repair engine and now feeds the concrete validation detail back on every retry.
+
+Validation: `trpg-novel`, `trpg-novel-lease`, `trpg-novel-context`, `trpg-novel-loop`,
+`trpg-novel-material`, `trpg-novel-editor-agent`, `trpg-novel-consistency`, `trpg-novel-revision`,
+plus `harness:check`, server `tsc` and client `vue-tsc`. Real six-hour annotated-campaign
+evaluation of the reviewer remains pending; these changes address the harness's own failure
+classes, not the semantic ceiling of an LLM judge.
+
+
+
+
+
 

@@ -235,10 +235,22 @@ const { isTranscribing, progress: transcribeProgress, transcribe } = useFileTran
       message.warning(t('meeting.diarizeNoNewSentences'))
     }
   },
-  onError: (msg) => {
+  onError: (msg, status) => {
     const title = lastTranscribeWasDiarize.value
       ? t('meeting.diarizeFailed')
       : t('meeting.directTranscribeFailed')
+    // 后端 502/503/任务丢失都来自「服务在识别过程中被重启」，给出可操作提示
+    // 而不是甩一个裸 HTTP 码；原始细节留在控制台便于排查（含服务端 error/phase）。
+    if (status === 503 || status === 502) {
+      console.error('[meeting] transcribe backend unavailable:', msg)
+      message.error(`${title}：${t('meeting.transcribeBackendUnavailable')}`)
+      return
+    }
+    if (status === 404) {
+      console.error('[meeting] transcribe job lost:', msg)
+      message.error(`${title}：${t('meeting.transcribeJobLost')}`)
+      return
+    }
     message.error(`${title}：${msg}`)
   },
 })

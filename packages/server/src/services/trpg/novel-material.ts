@@ -98,10 +98,30 @@ export function validateDraft(v: any, range: Range): SceneDraft {
   // Tolerate out-of-range indices silently: models sometimes confuse the scene
   // range with correction indices or the prior scene's range. Filtering is safe
   // because the dialogue-coverage guard (review step) enforces scene.dialogueIndices.
+  // Numeric strings are accepted for the same reason `citations()` accepts them: providers
+  // routinely serialise indices as strings, and rejecting them discards a correct list.
   const covered = [...new Set(
-    (v.covered as unknown[]).filter((i: unknown): i is number =>
-      Number.isInteger(i) && Number(i) >= range.from && Number(i) <= range.to
-    )
+    (v.covered as unknown[]).map(i => typeof i === 'string' && /^\d+$/.test(i) ? Number(i) : i)
+      .filter((i: unknown): i is number =>
+        Number.isInteger(i) && Number(i) >= range.from && Number(i) <= range.to
+      )
   )]
   return { body, continuity: boundedText(v.continuity, 4000, 'continuity', true, true), warnings: v.warnings.map((w: unknown) => boundedText(w, 500, 'warning', false, true)), covered }
+}
+
+/** Code owns the dialogue-coverage invariant.
+ *
+ *  `covered` is bookkeeping metadata, not proof: the independent audit is what proves the
+ *  manuscript reflects the source. Asking the model to restate a set of source indices was a
+ *  reproducible stall — when it dropped any index the step failed validation with no usable
+ *  feedback, retried four times, and repeated on every resume (one live job burned four full
+ *  review calls per resume). Code can enumerate the scene's dialogue indices, so it unions them
+ *  in and returns the ones the model omitted for the caller to record as an advisory warning.
+ *  A reviewer that genuinely deleted a line is still caught by the audit and by the omission
+ *  warnings; the harness never silently treats the union as evidence. */
+export function withDialogueCoverage(draft: SceneDraft, dialogueIndices: number[]): { draft: SceneDraft; missing: number[] } {
+  const present = new Set(draft.covered)
+  const missing = dialogueIndices.filter(index => !present.has(index))
+  if (!missing.length) return { draft, missing }
+  return { draft: { ...draft, covered: [...new Set([...draft.covered, ...dialogueIndices])] }, missing }
 }

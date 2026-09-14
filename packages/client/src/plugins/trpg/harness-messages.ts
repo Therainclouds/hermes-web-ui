@@ -1,10 +1,15 @@
 export const harnessEn = {
   liveOutput: 'AI output in progress', liveOutputHint: 'Unverified output preview; only results that pass validation are saved. This is generated content, not model reasoning.',
   stalled: 'The current manuscript is saved. Review the reported constraints and change the direction, target or review model before resuming. An unchanged retry will not repeat model calls.',
+  stepBlocked: 'This step already failed validation four times with unchanged inputs, so no further model calls were made. Change the review model or chapter direction, or delete the artifact and regenerate it.',
   suggestions: 'Optional editorial suggestions (not blocking)',
   coverageRecovery: 'Coverage repair',
   appearance: 'Appearance', light: 'Day', dark: 'Night', followLatest: 'Follow latest output', followHint: 'New saved output opens automatically. Selecting a result pauses following.', inspectHint: 'Inspection is pinned. Turn on following to view new output as it is saved.',
   artifactGroup: { source: 'Source and facts', outline: 'Chapter outlines', prose: 'Manuscript', checks: 'Consistency reports' },
+  artifactDelete: 'Delete artifact', artifactRegenerate: 'Delete and regenerate',
+  artifactResetHint: 'Deleting removes only the selected artifact; its previous version stays in history. Continuing rebuilds what is missing or stale: if the deleted artifact is regenerated with different content, everything downstream that consumed it is rebuilt automatically.',
+  strictConsistency: 'Stop on unresolved factual contradictions',
+  strictConsistencyHint: 'Off by default: unresolved contradictions are recorded as scene warnings and writing continues, so one scene cannot stop the whole book. Turn on to stop the job at that scene instead.',
   "totalTarget": "Whole novel target characters",
   "totalTargetHint": "5,000–60,000 characters. Changing this rebuilds prose from the first chapter while keeping ASR and evidence checkpoints. The completed book must be within ±10% of the total target. Chapter targets set relative allocations within this total.",
   "preparedProgress": "Prepared {chunks} transcript blocks · {scenes} scene ledgers",
@@ -21,7 +26,7 @@ export const harnessEn = {
   "visualChanged": "The picture or notes changed during analysis. Analyze again.",
 
   "concurrency": "Generation concurrency",
-  "concurrencyHint": "Only independent chapter plans run concurrently. Reading, factual state, writing and audits remain sequential. Default 2, maximum 4.",
+  "concurrencyHint": "Caps how many model calls run in parallel. Reading, fact ledgers, audits and commits stay strictly sequential; independent chapter plans and upcoming scene drafts may run ahead, and a draft whose consumed facts changed is rebuilt. Set 1 for the strongest continuity. Default 2, maximum 4.",
   "canonProgress": "Evidence ledgers {done}/{total}",
   "attempt": "Attempt {n}/4",
   "useVisual": "Use photo notes for writing",
@@ -80,6 +85,23 @@ export const harnessEn = {
   "passed": "Consistency checks passed",
   "blocked": "Factual issues require targeted revision or evidence review",
   "coverage": "Event coverage in prose",
+  "issues": "Blocking issues",
+  "coveredRows": "Covered rows",
+  "rawSource": "Raw JSON source",
+  "toolBadge": {
+    "review": "Review",
+    "revision": "Repair",
+    "write": "Write",
+    "check": "Consistency check",
+    "plan": "Plan",
+    "extract": "Extract",
+    "canon": "Evidence ledger",
+    "read": "Read",
+    "editor": "Editor tool",
+    "balance": "Length balance",
+    "chapter": "Chapter",
+    "book": "Book"
+  },
   "consistencyHint": "Evidence links and coverage are checked by code; meaning and attribution are assessed by the review model. Inspect uncertain ASR manually.",
   "modelStage": {
     "default": "Default for all modes",
@@ -95,7 +117,7 @@ export const harnessEn = {
     "fast": "Brisk"
   },
   "artifactKind": {
-    "read_evidence": "Read ASR evidence", "read_paragraphs": "Inspect paragraphs", "patch_paragraphs": "Apply paragraph edits", "report_conflict": "Report constraint conflict",
+    "read_evidence": "Read ASR evidence", "read_paragraphs": "Inspect paragraphs", "patch_paragraphs": "Apply paragraph edits", "replace_scene": "Rewrite whole scene", "report_conflict": "Report constraint conflict",
     "read": "Parallel transcript reading", "memory": "Memory consolidation", "material": "Scene evidence candidate", "state": "Ordered state merge",
     "extract": "Transcript block",
     "canon": "Evidence ledger",
@@ -120,16 +142,25 @@ export const harnessEn = {
     "chapter": "Chapter direction saved",
     "regenerate": "Regeneration scheduled",
     "approve-outline": "Outline approved",
-    "approve-chapter": "Chapter approved"
+    "approve-chapter": "Chapter approved",
+    "artifact_delete": "Artifact deleted",
+    "artifact_regenerate": "Artifact deleted and regenerating",
+    "context_compacted": "Context compacted to fit the model window",
+    "interrupted": "Interrupted by a server restart"
   }
 }
 export const harnessZh: typeof harnessEn = {
   stalled: '当前稿件已保存。请核对具体冲突并调整写作方向、总字数或审核模型后继续；原样重试不会重复调用模型。',
+  stepBlocked: '该步骤在输入未变的情况下已连续 4 次未通过校验，已停止重复调用模型。请更换审核模型或章节方向，或删除该产物后重新生成。',
   suggestions: '可选润色建议（不阻断生成）',
   liveOutput: 'AI 正在输出', liveOutputHint: '尚未校验的生成预览，通过校验后才会保存为产物。此处为生成内容，不包含模型内部推理。',
   coverageRecovery: '遗漏补全',
   appearance: '外观', light: '白天', dark: '夜晚', followLatest: '跟随最新输出', followHint: '自动展示新保存的产物；手动选择后暂停跟随，方便审阅。', inspectHint: '已固定当前审阅内容；开启跟随可自动查看新生成的产物。',
   artifactGroup: { source: '原素材与事实', outline: '章节骨架', prose: '小说正文', checks: '一致性报告' },
+  artifactDelete: '删除该产物', artifactRegenerate: '删除并重新生成',
+  artifactResetHint: '删除只移除选中的这个产物，旧版本仍保留在历史里。继续生成时只重建缺失或已过期的部分；若删掉的产物重新生成后内容变化，依赖它生成的下游产物会自动重算。',
+  strictConsistency: '事实矛盾未解决时停稿',
+  strictConsistencyHint: '默认关闭：未解决的事实矛盾会记录为该场景的提示并继续写作，单个场景不会卡住整本；开启后遇到未解决矛盾就停在该场景等待处理。',
   "totalTarget": "整篇目标字数",
   "totalTargetHint": "支持 5,000–60,000 字。修改后从首章重写正文，保留 ASR 与事实断点；整篇成稿须在总目标上下 10% 内；单章目标按比例分配，并受整篇目标约束。",
   "preparedProgress": "并行预读 {chunks} 个转写块 · 预提炼 {scenes} 个场景",
@@ -146,7 +177,7 @@ export const harnessZh: typeof harnessEn = {
   "visualChanged": "分析期间图片或文字已修改，请重新分析。",
 
   "concurrency": "生成并行上限",
-  "concurrencyHint": "仅独立章节规划使用并行；逐块阅读、事实账本、正文及验收按顺序执行，保留前序上下文。默认 2，最多 4。",
+  "concurrencyHint": "限制并行模型调用数。逐块阅读、事实账本、审核与提交严格串行；独立的章节规划与后续场景初稿可提前并行，依赖的事实变化时该初稿会自动重建。设为 1 可获得最强连贯性。默认 2，最多 4。",
   "canonProgress": "事实账本 {done}/{total}",
   "attempt": "第 {n}/4 次尝试",
   "useVisual": "将图片描述用于写作",
@@ -205,6 +236,23 @@ export const harnessZh: typeof harnessEn = {
   "passed": "一致性检查通过",
   "blocked": "发现需核对的事实问题，请查看局部修订或证据",
   "coverage": "正文事件覆盖",
+  "issues": "待修复问题",
+  "coveredRows": "已覆盖行",
+  "rawSource": "原始 JSON",
+  "toolBadge": {
+    "review": "全文修订",
+    "revision": "局部修订",
+    "write": "正文写作",
+    "check": "一致性检查",
+    "plan": "章节规划",
+    "extract": "素材提炼",
+    "canon": "事实账本",
+    "read": "转写预读",
+    "editor": "编辑工具",
+    "balance": "篇幅平衡",
+    "chapter": "章节成稿",
+    "book": "全书规划"
+  },
   "consistencyHint": "证据引用与覆盖由代码校验，语义与归属由审核模型判断；请人工核对含糊的 ASR。",
   "modelStage": {
     "default": "所有模式默认模型",
@@ -220,7 +268,7 @@ export const harnessZh: typeof harnessEn = {
     "fast": "紧凑推进"
   },
   "artifactKind": {
-    "read_evidence": "查阅ASR证据", "read_paragraphs": "审视正文段落", "patch_paragraphs": "提交段落补丁", "report_conflict": "报告约束冲突",
+    "read_evidence": "查阅ASR证据", "read_paragraphs": "审视正文段落", "patch_paragraphs": "提交段落补丁", "replace_scene": "重写整场正文", "report_conflict": "报告约束冲突",
     "read": "转写预读", "memory": "记忆归并", "material": "场景候选账本", "state": "顺序状态归并",
     "extract": "转写块",
     "canon": "事实账本",
@@ -245,6 +293,10 @@ export const harnessZh: typeof harnessEn = {
     "chapter": "章节方向已保存",
     "regenerate": "已安排重新生成",
     "approve-outline": "大纲已确认",
-    "approve-chapter": "章节已确认"
+    "approve-chapter": "章节已确认",
+    "artifact_delete": "产物已删除",
+    "artifact_regenerate": "产物已删除并重新生成",
+    "context_compacted": "输入超限，已自动压缩上下文",
+    "interrupted": "服务重启导致中断"
   }
 }

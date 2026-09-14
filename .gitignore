@@ -109,3 +109,6 @@ hermes_data/bots/*
 
 # Local agent workspace (ttyd deploy scripts, JWT derivations, logs)
 .zcode/
+
+# Local TTS / audio research notes and vendor README dumps (never commit)
+.tts-research/

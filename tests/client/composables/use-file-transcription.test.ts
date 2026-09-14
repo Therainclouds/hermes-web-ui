@@ -11,14 +11,20 @@ vi.mock('vue-i18n', () => ({
 const startFileTranscription = vi.fn()
 const getFileTranscriptionStatus = vi.fn()
 
-vi.mock('@/utils/meeting-asr-api', () => ({
-  meetingASRApi: {
-    startFileTranscription: (...args: unknown[]) => startFileTranscription(...args),
-    getFileTranscriptionStatus: (...args: unknown[]) => getFileTranscriptionStatus(...args),
-  },
-}))
+vi.mock('@/utils/meeting-asr-api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/utils/meeting-asr-api')>()
+  return {
+    // keep the real MeetingASRHttpError so `instanceof` status mapping works
+    MeetingASRHttpError: actual.MeetingASRHttpError,
+    meetingASRApi: {
+      startFileTranscription: (...args: unknown[]) => startFileTranscription(...args),
+      getFileTranscriptionStatus: (...args: unknown[]) => getFileTranscriptionStatus(...args),
+    },
+  }
+})
 
 import { useFileTranscription } from '@/composables/useFileTranscription'
+import { MeetingASRHttpError } from '@/utils/meeting-asr-api'
 
 const RESULT = {
   engine: 'minimax',
@@ -94,7 +100,7 @@ describe('useFileTranscription', () => {
     const ok = await result.transcribe(new File(['x'], 'a.wav'), { engine: 'qwen' })
 
     expect(ok).toBe(false)
-    expect(onError).toHaveBeenCalledWith('ffmpeg not found')
+    expect(onError).toHaveBeenCalledWith('ffmpeg not found', undefined)
     expect(result.errorMessage.value).toBe('ffmpeg not found')
     expect(result.isTranscribing.value).toBe(false)
   })
@@ -108,6 +114,53 @@ describe('useFileTranscription', () => {
 
     expect(ok).toBe(false)
     expect(getFileTranscriptionStatus).not.toHaveBeenCalled()
-    expect(onError).toHaveBeenCalledWith(expect.stringContaining('413'))
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining('413'), undefined)
+  })
+
+  it('rides out a transient 503 while the backend restarts, then completes', async () => {
+    startFileTranscription.mockResolvedValue({ job_id: 'job-r', status: 'pending' })
+    getFileTranscriptionStatus
+      .mockRejectedValueOnce(new MeetingASRHttpError('transcribe status failed: 503', 503, '{"error":"ASR service is not running"}'))
+      .mockResolvedValueOnce({
+        job_id: 'job-r', status: 'done', progress: 1, message: 'done',
+        engine: 'minimax', diarize: true, error: null, result: RESULT,
+      })
+    const onComplete = vi.fn()
+    const onError = vi.fn()
+    const { result } = withSetup(() => useFileTranscription({ onComplete, onError }))
+
+    const ok = await result.transcribe(new File(['x'], 'a.webm'), { engine: 'minimax' })
+
+    expect(ok).toBe(true)
+    expect(onComplete).toHaveBeenCalledTimes(1)
+    expect(onError).not.toHaveBeenCalled()
+    expect(getFileTranscriptionStatus).toHaveBeenCalledTimes(2)
+  })
+
+  it('reports a lost job with status 404 when the service restarted mid-transcription', async () => {
+    startFileTranscription.mockResolvedValue({ job_id: 'job-lost', status: 'pending' })
+    getFileTranscriptionStatus.mockRejectedValue(
+      new MeetingASRHttpError('transcribe status failed: 404', 404, '{"detail":"transcription job not found"}'),
+    )
+    const onError = vi.fn()
+    const { result } = withSetup(() => useFileTranscription({ onComplete: vi.fn(), onError }))
+
+    const ok = await result.transcribe(new File(['x'], 'a.webm'), { engine: 'minimax' })
+
+    expect(ok).toBe(false)
+    expect(onError).toHaveBeenCalledTimes(1)
+    const [message, status] = onError.mock.calls[0]
+    expect(status).toBe(404)
+    expect(message).toContain('job lost')
+  })
+
+  it('passes the HTTP status to onError so callers can show a targeted message', async () => {
+    startFileTranscription.mockRejectedValue(new MeetingASRHttpError('transcribe start failed: 502', 502, ''))
+    const onError = vi.fn()
+    const { result } = withSetup(() => useFileTranscription({ onComplete: vi.fn(), onError }))
+
+    await result.transcribe(new File(['x'], 'a.webm'), { engine: 'qwen' })
+
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining('502'), 502)
   })
 })

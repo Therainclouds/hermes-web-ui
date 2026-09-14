@@ -42,6 +42,7 @@ meetingStorageRoutes.post('/api/meeting-storage/:meetingId/novel-jobs/:jobId/can
 
 meetingStorageRoutes.get('/api/meeting-storage/:meetingId/novel-jobs/:jobId/workbench', recap.novelWorkbench)
 meetingStorageRoutes.get('/api/meeting-storage/:meetingId/novel-jobs/:jobId/artifacts/:artifact', recap.novelArtifact)
+meetingStorageRoutes.post('/api/meeting-storage/:meetingId/novel-jobs/:jobId/artifacts/:artifact', recap.novelArtifactUpdate)
 meetingStorageRoutes.get('/api/meeting-storage/:meetingId/novel-jobs/:jobId/evidence', recap.novelEvidence)
 meetingStorageRoutes.post('/api/meeting-storage/:meetingId/novel-jobs/:jobId/pause', recap.novelPause)
 meetingStorageRoutes.patch('/api/meeting-storage/:meetingId/novel-jobs/:jobId/controls', recap.novelConfigure)

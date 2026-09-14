@@ -104,6 +104,23 @@ Job errors carry the failing call site, e.g.
 `not enough values to unpack (expected 4, got 1) [file_transcribe.py:283]`, so a
 field report points straight at the code.
 
+**Backend transport + crash diagnostics.**
+
+- Every Node → Python call (health probe, hot config push, analysis proxy, the
+  file-transcription proxy and the SSE stream) uses `node:http(s)`. undici's
+  `dispatcher` option rejects a `node:https.Agent` with `agent.dispatch is not
+  a function`, which used to turn every proxied call into a 502 on device
+  images that spawn uvicorn with the self-signed cert
+  (`HERMES_WEB_UI_MEETING_ASR_TLS=true`).
+- `start()` picks the first **free** port at/after the configured one. A
+  `detached:false` uvicorn survives a Node restart and keeps 8000/8001; without
+  this, the new child failed to bind while `waitForReady` got healthy answers
+  from the orphan — which still ran the old code.
+- The child's stdout/stderr keeps a bounded 25-line tail; an unexpected exit
+  folds it into `status.error`, which the 503 body exposes as `detail`. The UI
+  logs that raw detail to the browser console and shows a targeted message
+  (service restarting vs. job lost) instead of a bare HTTP status.
+
 ### 8. Speech Evaluation Mode (演讲评分)
 - **陪伴型成长教练 AI 点评**：实时点评与最终报告都以温暖、说人话的方式输出，先肯定再给方向，多鼓励（不输出正式文档/工作汇报风格）。
 - **3+1 反馈**：每轮最多 3 条亮点 + 1 个最重要、可落地执行的提升点。

@@ -4109,6 +4109,8 @@ export default {
     diarizeNoMinimaxKey: '未設定 MiniMax API Key，無法使用 MiniMax 引擎。',
     diarizeNoDashscopeKey: '未設定 DashScope API Key，無法使用 Qwen 引擎。',
     asrRestarting: '偵測到語音辨識服務仍在執行舊版程式碼，正在重新啟動以載入最新版本…',
+    transcribeBackendUnavailable: '語音辨識服務在辨識過程中被重新啟動或暫時無法使用，請稍後重試（可查看服務日誌確認原因）',
+    transcribeJobLost: '語音辨識服務在辨識過程中重新啟動，本次任務已中斷，請重新點擊辨識',
     diarizeNoAudio: '目前沒有可用的錄音，請先錄音或使用「直接音訊轉錄」上傳音訊',
     diarizeDone: '人聲拆分完成',
     diarizeFailed: '人聲拆分失敗',

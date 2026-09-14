@@ -3,8 +3,9 @@ import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { prepareRecap, snapshot, listRecaps, saveRecap, readRecapMarkdown } from '../../packages/server/src/services/trpg/recap'
-import { startNovelJob, getNovelJob, resumeNovelJob, cancelNovelJob, listNovelJobs, waitForNovelJob, getNovelWorkbench, updateNovelHarness, getNovelArtifact, getNovelEvidence, pauseNovelJob } from '../../packages/server/src/services/trpg/novel'
+import { startNovelJob, getNovelJob, resumeNovelJob, cancelNovelJob, listNovelJobs, waitForNovelJob, getNovelWorkbench, updateNovelHarness, updateNovelArtifact, getNovelArtifact, getNovelEvidence, pauseNovelJob } from '../../packages/server/src/services/trpg/novel'
 import { splitTranscript, validateExtraction } from '../../packages/server/src/services/trpg/novel-material'
+import { reconcileNovelJobs } from '../../packages/server/src/services/trpg/novel-lease'
 import type { NovelModel } from '../../packages/server/src/services/trpg/novel-model'
 
 const meetingId = 'long-campaign'
@@ -115,14 +116,20 @@ describe('durable long novel pipeline', () => {
     expect((await getNovelJob(meetingId, requestId, 'table')).status).toBe('cancelled')
     expect(await listRecaps(meetingId, 'table')).toEqual([])
   })
-  it('reports an interrupted process as paused and detects a changed snapshot on resume', async () => {
+  it('reports a stale worker as interrupted on disk and rejects a changed snapshot on resume', async () => {
     const { requestId } = await prepareRecap(input, 'table')
     await startNovelJob(meetingId, requestId, 'table', async () => { throw new Error('novel_model_failed') })
     await waitForNovelJob(meetingId, requestId)
-    const path = join(home, 'meetings', meetingId, 'novel-jobs', requestId, 'job.json')
+    const dir = join(home, 'meetings', meetingId, 'novel-jobs', requestId)
+    const path = join(dir, 'job.json')
     const job = JSON.parse(await readFile(path, 'utf8'))
+    // A crashed/restarted server leaves `running` on disk. No live lease exists, so the durable
+    // state is `interrupted` — not an invented `paused` read from the in-memory worker map.
     await writeFile(path, JSON.stringify({ ...job, status: 'running' }))
-    expect((await getNovelJob(meetingId, requestId, 'table')).status).toBe('paused')
+    expect((await getNovelJob(meetingId, requestId, 'table')).status).toBe('interrupted')
+    const reconciled = await reconcileNovelJobs(home)
+    expect(reconciled.interrupted).toBe(1)
+    expect(JSON.parse(await readFile(path, 'utf8')).status).toBe('interrupted')
     const src = join(home, 'meetings', meetingId, 'recap-requests', `${requestId}.json`)
     const data = JSON.parse(await readFile(src, 'utf8')); data.sentences[0].text = '变更'
     await writeFile(src, JSON.stringify(data))
@@ -215,6 +222,7 @@ describe('novel writing harness', () => {
     const model = vi.fn<NovelModel>(async (p, v, signal, route) => { entered(); await waiting; return good(p, v, signal, route) })
     await startNovelJob(meetingId, requestId, 'table', model); await ready
     await expect(updateNovelHarness(meetingId, requestId, 'table', { action: 'settings', revision: 0, settings: {} })).rejects.toMatchObject({ status: 409 })
+    await expect(updateNovelArtifact(meetingId, requestId, 'table', { action: 'delete', name: 'extract-0', revision: 0 })).rejects.toMatchObject({ status: 409 })
     expect(await pauseNovelJob(meetingId, requestId, 'table')).toMatchObject({ pauseRequested: true })
     release(); await waitForNovelJob(meetingId, requestId)
     expect(await getNovelJob(meetingId, requestId, 'table')).toMatchObject({ status: 'paused', extracted: 1 })
@@ -223,7 +231,7 @@ describe('novel writing harness', () => {
     expect(good.mock.calls.filter(([, v]) => (v as any).owned)).toHaveLength(1)
   })
   it('blocks publication on semantic issues, then regenerates prose with retained source checkpoints and history', async () => {
-    const { requestId } = await prepareRecap(input, 'table')
+    const { requestId } = await prepareRecap({ ...input, writing: { concurrency: 1, consistency: 'block' } }, 'table')
     const good = modelFixture()
     await startNovelJob(meetingId, requestId, 'table', async (p, v, sig, route) => {
       if ((v as any).manuscript) return JSON.stringify({ coverage: [{ eventId: 's0-e0', quote: '井壁将声音送回耳畔。' }], issues: [{ detail: '重复灌水，应改为一次完整描写' }] })
@@ -454,7 +462,7 @@ it('persists an impossible whole-book length conflict without spending tokens ag
   expect((await getNovelArtifact(meetingId, requestId, 'table', 'chapter-0')).artifact.value).toHaveProperty('body')
 })
 it('re-audits a blocked draft with a changed review model rather than reusing its rejected report', async () => {
-  const { requestId } = await prepareRecap(input, 'table')
+  const { requestId } = await prepareRecap({ ...input, writing: { consistency: 'block' } }, 'table')
   const good = modelFixture()
   await startNovelJob(meetingId, requestId, 'table', async (p, raw, signal, route) => {
     const v = raw as any
@@ -517,10 +525,43 @@ it('requires renewed chapter approval after whole-book length edits', async () =
   await resumeNovelJob(meetingId, requestId, 'table', good); await waitForNovelJob(meetingId, requestId)
   expect((await getNovelJob(meetingId, requestId, 'table')).status).toBe('completed')
 })
+it('accepts a faithful scene with advisory omissions instead of stalling the whole book', async () => {
+  const { requestId } = await prepareRecap(input, 'table')
+  const good = modelFixture()
+  const model = vi.fn<NovelModel>(async (p, raw, signal, route) => {
+    const v = raw as any
+    if (v.manuscript) return JSON.stringify({
+      coverage: v.canon.events.map((e: any) => ({ eventId: e.id, quote: '井壁将声音送回耳畔。' })),
+      issues: [{ detail: '漏了原句里的一句调侃', kind: 'omission' }, { detail: '有两段措辞重复', kind: 'format' }],
+    })
+    return good(p, raw, signal, route)
+  })
+  await startNovelJob(meetingId, requestId, 'table', model); await waitForNovelJob(meetingId, requestId)
+  const job = await getNovelJob(meetingId, requestId, 'table')
+  expect(job).toMatchObject({ status: 'completed', reviewed: 1 })
+  // Advisory findings never start a repair round, and they are surfaced rather than dropped.
+  expect(model.mock.calls.some(([, v]) => (v as any).auditFeedback)).toBe(false)
+  expect(job.warnings.join(' ')).toContain('漏了原句里的一句调侃')
+  expect(job.warnings.join(' ')).toContain('有两段措辞重复')
+})
+it('blocks publication when the audit reports an unresolved factual contradiction', async () => {
+  const { requestId } = await prepareRecap({ ...input, writing: { consistency: 'block' } }, 'table')
+  const good = modelFixture()
+  await startNovelJob(meetingId, requestId, 'table', async (p, raw, signal, route) => {
+    const v = raw as any
+    if (v.manuscript) return JSON.stringify({ coverage: [], issues: [{ detail: '把跳跃失败写成了成功', kind: 'contradiction' }] })
+    if (v.auditFeedback) return JSON.stringify({ tool: 'report_conflict', reason: '事实冲突无法在不编造的前提下修正。' })
+    return good(p, raw, signal, route)
+  }); await waitForNovelJob(meetingId, requestId)
+  expect(await getNovelJob(meetingId, requestId, 'table')).toMatchObject({ status: 'failed', error: 'novel_revision_stalled', reviewed: 0 })
+  expect(await listRecaps(meetingId, 'table')).toEqual([])
+})
 it('deletes out-of-scene prose the audit flags instead of stalling three rounds with a no-op patch', async () => {
   const { requestId } = await prepareRecap(input, 'table')
   const good = modelFixture()
   const reviewPrompts: string[] = []
+  const reviewInputs: any[] = []
+  let writerGuide: string | undefined
   const model = vi.fn<NovelModel>(async (p, raw, signal, route) => {
     const v = raw as any
     if (v.manuscript) {
@@ -530,13 +571,227 @@ it('deletes out-of-scene prose the audit flags instead of stalling three rounds 
       return good(p, raw, signal, route)
     }
     if (v.auditFeedback) return JSON.stringify({ tool: 'patch_paragraphs', edits: v.paragraphs.filter((part: any) => part.text.includes('奴隶商队')).map((part: any) => ({ paragraph: part.paragraph, delete: true })) })
-    if (v.draft && !v.manuscript) { reviewPrompts.push(p); return JSON.stringify({ body: v.draft.body, continuity: v.draft.continuity, warnings: [], covered: [v.scene.from] }) }
-    if (v.scene && !v.draft) return JSON.stringify({ body: `${proseFor(v.targetChars)}\n\n【卡洛其】“我是从奴隶商队里逃出来的。”`, continuity: '银月在井底', warnings: [], covered: [v.scene.from] })
+    if (v.draft && !v.manuscript) { reviewPrompts.push(p); reviewInputs.push(v); return JSON.stringify({ body: v.draft.body, continuity: v.draft.continuity, warnings: [], covered: [v.scene.from] }) }
+    if (v.scene && !v.draft) { writerGuide = v.chapter?.guide; return JSON.stringify({ body: `${proseFor(v.targetChars)}\n\n【卡洛其】“我是从奴隶商队里逃出来的。”`, continuity: '银月在井底', warnings: [], covered: [v.scene.from] }) }
     return good(p, raw, signal, route)
   })
   await startNovelJob(meetingId, requestId, 'table', model); await waitForNovelJob(meetingId, requestId)
   expect(await getNovelJob(meetingId, requestId, 'table')).toMatchObject({ status: 'completed', reviewed: 1 })
   expect(model.mock.calls.filter(([, v]) => (v as any).auditFeedback)).toHaveLength(1)
-  expect(reviewPrompts[0]).toContain('本场景边界')
+  expect(reviewPrompts[0]).toContain('场景边界')
+  // The writer keeps the chapter guide for style; the reviewer and repair editor must not
+  // inherit its whole-chapter beat list or they write and keep other scenes' plot.
+  expect(writerGuide).toBe('保留对白与失败裁决。')
+  expect(reviewInputs[0].book).toBeUndefined()
+  expect(reviewInputs[0].chapter.guide).toBeUndefined()
   expect((await getNovelArtifact(meetingId, requestId, 'table', 'review-0')).artifact.value.body).not.toContain('奴隶商队')
+})
+it('recovers when the editor cannot express the audit fix as paragraph edits', async () => {
+  const { requestId } = await prepareRecap(input, 'table')
+  const good = modelFixture()
+  let editorTurns = 0
+  const model = vi.fn<NovelModel>(async (p, raw, signal, route) => {
+    const v = raw as any
+    if (v.auditFeedback) {
+      editorTurns++
+      // The first action is the all-delete patch a live run kept submitting: it can never apply.
+      if (editorTurns === 1) return JSON.stringify({ tool: 'patch_paragraphs', edits: v.paragraphs.map((part: any) => ({ paragraph: part.paragraph, delete: true })) })
+      return JSON.stringify({ tool: 'replace_scene', body: `${proseFor(v.targetChars)}重写后的正文。`, covered: [v.availableSourceIndices[0]], continuity: '银月在井底', warnings: [] })
+    }
+    if (v.manuscript) {
+      if (v.manuscript.includes('重写后的正文')) return good(p, raw, signal, route)
+      return JSON.stringify({ coverage: [], issues: [{ detail: '整场需要重写，逐段修改无法收敛' }] })
+    }
+    return good(p, raw, signal, route)
+  })
+  await startNovelJob(meetingId, requestId, 'table', model); await waitForNovelJob(meetingId, requestId)
+  expect(await getNovelJob(meetingId, requestId, 'table')).toMatchObject({ status: 'completed', reviewed: 1 })
+  expect(model.mock.calls.filter(([, v]) => (v as any).auditFeedback)).toHaveLength(2)
+  expect((await getNovelArtifact(meetingId, requestId, 'table', 'review-0')).artifact.value.body).toContain('重写后的正文')
+})
+it('fixes a factual contradiction with an exact-excerpt edit instead of paragraph numbers', async () => {
+  const { requestId } = await prepareRecap(input, 'table')
+  const good = modelFixture()
+  const marker = '【银月】把跳跃当成了成功。'
+  const model = vi.fn<NovelModel>(async (p, raw, signal, route) => {
+    const v = raw as any
+    if (v.auditFeedback) return JSON.stringify({ tool: 'patch_paragraphs', edits: [{ find: marker, replace: '【银月】没能跃过缺口，落在了井底。' }] })
+    if (v.manuscript) {
+      if (v.manuscript.includes(marker)) return JSON.stringify({ coverage: [], issues: [{ detail: '把尝试写成了成功', kind: 'contradiction' }] })
+      return good(p, raw, signal, route)
+    }
+    if (v.draft && !v.manuscript) return JSON.stringify({ body: `${proseFor(v.targetChars).slice(0, -1)}${marker}`, continuity: '银月在井底', warnings: [], covered: [v.scene.from] })
+    return good(p, raw, signal, route)
+  })
+  await startNovelJob(meetingId, requestId, 'table', model); await waitForNovelJob(meetingId, requestId)
+  expect(await getNovelJob(meetingId, requestId, 'table')).toMatchObject({ status: 'completed', reviewed: 1 })
+  expect(model.mock.calls.filter(([, v]) => (v as any).auditFeedback)).toHaveLength(1)
+  const body = (await getNovelArtifact(meetingId, requestId, 'table', 'review-0')).artifact.value.body
+  expect(body).not.toContain(marker)
+  expect(body).toContain('没能跃过缺口')
+})
+it('keeps writing with a recorded warning when a contradiction cannot be resolved', async () => {
+  const { requestId } = await prepareRecap(input, 'table')
+  const good = modelFixture()
+  let edits = 0
+  const model = vi.fn<NovelModel>(async (p, raw, signal, route) => {
+    const v = raw as any
+    if (v.auditFeedback) { edits++; return JSON.stringify({ tool: 'patch_paragraphs', edits: [{ paragraph: 0, text: `换个说法${edits}。` }] }) }
+    if (v.manuscript) return JSON.stringify({ coverage: [], issues: [{ detail: '把跳跃失败写成了成功', kind: 'contradiction' }] })
+    return good(p, raw, signal, route)
+  })
+  await startNovelJob(meetingId, requestId, 'table', model); await waitForNovelJob(meetingId, requestId)
+  const job = await getNovelJob(meetingId, requestId, 'table')
+  expect(job).toMatchObject({ status: 'completed', reviewed: 1 })
+  expect(job.error).toBeUndefined()
+  expect(job.warnings.join(' ')).toContain('已按当前设置继续写作')
+})
+it('remembers earlier repair rounds so the editor does not repeat a failed fix', async () => {
+  const { requestId } = await prepareRecap({ ...input, writing: { consistency: 'block' } }, 'table')
+  const good = modelFixture()
+  const editorInputs: any[] = []
+  const model = vi.fn<NovelModel>(async (p, raw, signal, route) => {
+    const v = raw as any
+    if (v.auditFeedback) {
+      editorInputs.push(v)
+      const advanced = editorInputs.length === 1 ? '第一处改好。' : '修好了。'
+      return JSON.stringify({ tool: 'replace_scene', body: `${proseFor(v.targetChars)}${advanced}`, covered: [v.availableSourceIndices[0]], continuity: '银月在井底', warnings: [] })
+    }
+    if (v.manuscript) {
+      if (v.manuscript.includes('修好了')) return good(p, raw, signal, route)
+      if (v.manuscript.includes('第一处改好')) return JSON.stringify({ coverage: [], issues: [{ detail: '第二处矛盾：伤势被抹去', kind: 'contradiction' }] })
+      return JSON.stringify({ coverage: [], issues: [{ detail: '第一处矛盾：把失败写成成功', kind: 'contradiction' }] })
+    }
+    return good(p, raw, signal, route)
+  })
+  await startNovelJob(meetingId, requestId, 'table', model); await waitForNovelJob(meetingId, requestId)
+  expect(await getNovelJob(meetingId, requestId, 'table')).toMatchObject({ status: 'completed', reviewed: 1 })
+  expect(editorInputs).toHaveLength(2)
+  expect(editorInputs[0].history).toBe('')
+  expect(editorInputs[1].history).toContain('第1轮')
+  expect(editorInputs[1].history).toContain('第一处矛盾')
+  expect(editorInputs[1].history).toContain('replace_scene')
+})
+it('reuses extraction blocks, fact ledgers and drafts after a harness change instead of re-reading the transcript', async () => {
+  const { requestId } = await prepareRecap(input, 'table')
+  const good = modelFixture()
+  const failing: NovelModel = async (prompt, v, signal) => {
+    if ((v as any).draft) throw new Error('novel_model_failed')
+    return good(prompt, v, signal)
+  }
+  await startNovelJob(meetingId, requestId, 'table', failing); await waitForNovelJob(meetingId, requestId)
+  expect((await getNovelJob(meetingId, requestId, 'table')).status).toBe('failed')
+  // A harness edit changes every instruction hash. Sticky source steps keep their paid work.
+  const dir = join(home, 'meetings', meetingId, 'novel-jobs', requestId)
+  for (const name of ['extract-0', 'canon-0', 'write-0']) {
+    const path = join(dir, `${name}.json`), step = JSON.parse(await readFile(path, 'utf8'))
+    await writeFile(path, JSON.stringify({ ...step, inputHash: 'f'.repeat(64) }))
+  }
+  good.mockClear()
+  await resumeNovelJob(meetingId, requestId, 'table', good); await waitForNovelJob(meetingId, requestId)
+  expect((await getNovelJob(meetingId, requestId, 'table')).status).toBe('completed')
+  expect(good.mock.calls.some(([, v]) => (v as any).owned)).toBe(false)
+  expect(good.mock.calls.some(([, v]) => (v as any).rows && !(v as any).scene)).toBe(false)
+  expect(good.mock.calls.some(([, v]) => (v as any).scene && !(v as any).draft && !(v as any).manuscript)).toBe(false)
+  expect(good.mock.calls.some(([, v]) => (v as any).draft)).toBe(true)
+})
+it('deletes one artifact and rebuilds only that artifact on resume', async () => {
+  const { requestId } = await prepareRecap(input, 'table')
+  const good = modelFixture()
+  await startNovelJob(meetingId, requestId, 'table', good); await waitForNovelJob(meetingId, requestId)
+  const dir = join(home, 'meetings', meetingId, 'novel-jobs', requestId)
+  const before = JSON.parse(await readFile(join(dir, 'canon-0.json'), 'utf8'))
+  const controls = (await getNovelWorkbench(meetingId, requestId, 'table')).controls
+  const result = await updateNovelArtifact(meetingId, requestId, 'table', { action: 'delete', name: 'canon-0', revision: controls.revision })
+  expect(result.controls.revision).toBe(controls.revision + 1)
+  await expect(getNovelArtifact(meetingId, requestId, 'table', 'canon-0')).rejects.toMatchObject({ status: 404 })
+  // The removed version stays inspectable from history.
+  expect((await getNovelArtifact(meetingId, requestId, 'table', 'canon-0', before.inputHash)).artifact.value).toEqual(before.value)
+  good.mockClear()
+  await resumeNovelJob(meetingId, requestId, 'table', good); await waitForNovelJob(meetingId, requestId)
+  expect((await getNovelJob(meetingId, requestId, 'table')).status).toBe('completed')
+  expect(good.mock.calls.filter(([, v]) => (v as any).rows && !(v as any).scene)).toHaveLength(1)
+  expect(good.mock.calls.some(([, v]) => (v as any).owned)).toBe(false)
+})
+it('regenerates one artifact through the explicit reset action and guards reset requests', async () => {
+  const { requestId } = await prepareRecap(input, 'table')
+  const good = modelFixture()
+  await startNovelJob(meetingId, requestId, 'table', good); await waitForNovelJob(meetingId, requestId)
+  const controls = (await getNovelWorkbench(meetingId, requestId, 'table')).controls
+  await expect(updateNovelArtifact(meetingId, requestId, 'table', { action: 'delete', name: 'nope', revision: controls.revision })).rejects.toMatchObject({ status: 400 })
+  await expect(updateNovelArtifact(meetingId, requestId, 'table', { action: 'burn', name: 'canon-0', revision: controls.revision })).rejects.toMatchObject({ status: 400 })
+  await expect(updateNovelArtifact(meetingId, requestId, 'table', { action: 'delete', name: 'canon-0', revision: controls.revision + 5 })).rejects.toMatchObject({ status: 409 })
+  await expect(updateNovelArtifact(meetingId, requestId, 'table', { action: 'delete', name: 'canon-9', revision: controls.revision })).rejects.toMatchObject({ status: 404 })
+  good.mockClear()
+  await updateNovelArtifact(meetingId, requestId, 'table', { action: 'regenerate', name: 'write-0', revision: controls.revision }, good)
+  await waitForNovelJob(meetingId, requestId)
+  expect((await getNovelJob(meetingId, requestId, 'table')).status).toBe('completed')
+  expect(good.mock.calls.some(([, v]) => (v as any).scene && !(v as any).draft && !(v as any).manuscript)).toBe(true)
+})
+
+describe('harness correctness fixes', () => {
+  it('rebuilds downstream prose when the fact ledger it consumed actually changed', async () => {
+    const { requestId } = await prepareRecap(input, 'table')
+    const good = modelFixture()
+    await startNovelJob(meetingId, requestId, 'table', good); await waitForNovelJob(meetingId, requestId)
+    const controls = (await getNovelWorkbench(meetingId, requestId, 'table')).controls
+    await updateNovelArtifact(meetingId, requestId, 'table', { action: 'delete', name: 'canon-0', revision: controls.revision })
+    // Same shape, different fact: the cached draft was written against the old ledger, so it must
+    // not be reused (the previous sticky behaviour paired a new ledger with old prose silently).
+    const changed = vi.fn<NovelModel>(async (instructions, raw) => {
+      const v = raw as any
+      if (v.rows && !v.scene && !v.owned) return JSON.stringify({
+        events: [{ kind: 'confirmed', fact: '跳跃失败，井底另有血迹。', evidence: v.rows.map((r: any) => ({ index: r.index, quote: r.text })) }],
+        omitted: [], updates: [{ entity: '银月', attribute: 'location', value: '井底', evidence: [{ index: v.rows[0].index, quote: v.rows[0].text }] }],
+      })
+      return good(instructions, raw)
+    })
+    await resumeNovelJob(meetingId, requestId, 'table', changed); await waitForNovelJob(meetingId, requestId)
+    expect((await getNovelJob(meetingId, requestId, 'table')).status).toBe('completed')
+    const write = changed.mock.calls.find(([, v]) => { const x = v as any; return x.scene && !x.draft && !x.manuscript && !x.auditFeedback })
+    expect(write).toBeTruthy()
+    expect((write![1] as any).canon.events[0].fact).toContain('血迹')
+    // Extraction is still never re-bought: only the changed ledger and what depends on it rebuild.
+    expect(changed.mock.calls.some(([, v]) => (v as any).owned)).toBe(false)
+  })
+
+  it('never stalls a scene because the review model omitted dialogue bookkeeping', async () => {
+    const { requestId } = await prepareRecap(input, 'table')
+    const good = modelFixture()
+    const model = vi.fn<NovelModel>(async (instructions, raw) => {
+      const v = raw as any
+      // Extraction claims two dialogue lines; the review reports none of them.
+      if (v.owned) return JSON.stringify({ segments: [{ ...v.owned, kind: 'story', title: '井底', facts: '跳跃失败，落井。', dialogueIndices: [v.owned.from, v.owned.to] }], corrections: [], memory: '' })
+      if (v.draft) return JSON.stringify({ body: proseFor(v.targetChars), continuity: '银月在井底', warnings: [], covered: [] })
+      if (v.manuscript) return JSON.stringify({ coverage: v.canon.events.map((e: any) => ({ eventId: e.id, quote: '井壁将声音送回耳畔。' })), issues: [] })
+      if (v.scenes || v.plans) return JSON.stringify({ title: '井底回声', guide: '保留对白与失败裁决。' })
+      return good(instructions, raw)
+    })
+    await startNovelJob(meetingId, requestId, 'table', model); await waitForNovelJob(meetingId, requestId)
+    const job = await getNovelJob(meetingId, requestId, 'table')
+    expect(job.status).toBe('completed')
+    // The omission is surfaced, not silently swallowed, and the audit still runs.
+    expect(job.warnings.join('\n')).toContain('对白索引')
+    expect(model.mock.calls.some(([, v]) => (v as any).manuscript)).toBe(true)
+  })
+
+  it('does not re-buy a step that exhausted its attempts with unchanged inputs', async () => {
+    const { requestId } = await prepareRecap(input, 'table')
+    const good = modelFixture()
+    const model = vi.fn<NovelModel>(async (instructions, raw) => {
+      const v = raw as any
+      if (v.draft) return '这不是 JSON'
+      return good(instructions, raw)
+    })
+    await startNovelJob(meetingId, requestId, 'table', model); await waitForNovelJob(meetingId, requestId)
+    const failed = await getNovelJob(meetingId, requestId, 'table')
+    expect(failed.status).toBe('failed')
+    expect(failed.error).toBe('novel_invalid_output')
+    expect(failed.blocked?.step).toBe('review-0')
+    expect(model.mock.calls.filter(([, v]) => (v as any).draft)).toHaveLength(4)
+    const total = model.mock.calls.length
+    await resumeNovelJob(meetingId, requestId, 'table', model); await waitForNovelJob(meetingId, requestId)
+    expect(model).toHaveBeenCalledTimes(total)
+    expect((await getNovelJob(meetingId, requestId, 'table')).error).toBe('novel_step_blocked')
+  })
 })

@@ -50,6 +50,8 @@ export const novelCancel = (ctx: Context) => handle(ctx, async p => ({ job: awai
 
 export const novelWorkbench = (ctx: Context) => handle(ctx, p => novel.getNovelWorkbench(ctx.params.meetingId, ctx.params.jobId, p))
 export const novelArtifact = (ctx: Context) => handle(ctx, p => novel.getNovelArtifact(ctx.params.meetingId, ctx.params.jobId, p, ctx.params.artifact, ctx.query.version ? String(ctx.query.version) : undefined))
+/** Destructive reset of one generated artifact; the removed version stays in history. */
+export const novelArtifactUpdate = (ctx: Context) => handle(ctx, p => novel.updateNovelArtifact(ctx.params.meetingId, ctx.params.jobId, p, { ...(ctx.request.body as object), name: ctx.params.artifact }))
 export const novelEvidence = (ctx: Context) => handle(ctx, p => novel.getNovelEvidence(ctx.params.meetingId, ctx.params.jobId, p, Number(ctx.query.from), Number(ctx.query.to)))
 export const novelPause = (ctx: Context) => handle(ctx, async p => ({ job: await novel.pauseNovelJob(ctx.params.meetingId, ctx.params.jobId, p) }))
 export const novelConfigure = (ctx: Context) => handle(ctx, p => novel.updateNovelHarness(ctx.params.meetingId, ctx.params.jobId, p, ctx.request.body))

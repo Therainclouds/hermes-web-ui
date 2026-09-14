@@ -4438,6 +4438,8 @@ export default {
     diarizeNoMinimaxKey: '未配置 MiniMax API Key，无法使用 MiniMax 引擎。',
     diarizeNoDashscopeKey: '未配置 DashScope API Key，无法使用 Qwen 引擎。',
     asrRestarting: '检测到语音识别服务仍在运行旧版本代码，正在重启以加载最新版本…',
+    transcribeBackendUnavailable: '语音识别服务在识别过程中被重启或暂时不可用，请稍后重试（可查看服务日志确认原因）',
+    transcribeJobLost: '语音识别服务在识别过程中重启，本次任务已中断，请重新点击识别',
     diarizeNoAudio: '当前没有可用的录音，请先录音或使用「直接音频转录」上传音频',
     diarizeDone: '人声拆分完成',
     diarizeFailed: '人声拆分失败',

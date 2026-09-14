@@ -8,6 +8,7 @@ import { writingRequest } from './bookApi'
 import { writingCatalog } from './writing-catalog'
 import WritingSettingsEditor from './WritingSettingsEditor.vue'
 import HighlightWorkbench from './HighlightWorkbench.vue'
+import LiveOutputStream from './LiveOutputStream.vue'
 import { recapBookUrl } from './bookUrl'
 
 const { t } = useI18n()
@@ -147,6 +148,17 @@ async function edit(action: string, data: Record<string, unknown> = {}, revision
   } catch (e) { error.value = t((e as { status?: number }).status === 409 ? 'trpg.harness.conflict' : 'trpg.harness.failed') }
   finally { busy.value = false }
 }
+async function resetArtifact(action: 'delete' | 'regenerate') {
+  if (!artifactName.value || running.value) return
+  if (directionDirty.value || settingsDirty.value) { error.value = t('trpg.harness.unsaved'); return }
+  busy.value = true; error.value = ''
+  try {
+    await writingRequest(`${base}/artifacts/${encodeURIComponent(artifactName.value)}`, profile, 'POST', { action, revision: state.value?.controls.revision })
+    if (action === 'delete') { artifact.value = null; artifactName.value = ''; followLatest.value = true }
+    await refresh()
+  } catch (e) { error.value = t((e as { status?: number }).status === 409 ? 'trpg.harness.conflict' : 'trpg.harness.failed') }
+  finally { busy.value = false }
+}
 async function loadModels() {
   try { catalog.value = writingCatalog(await writingRequest(`/api/hermes/available-models?${new URLSearchParams({ profile })}`, profile)) }
   catch { error.value = t('trpg.harness.modelLoadFailed') }
@@ -184,7 +196,7 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(timer); selection++; windo
       <span v-if="state.job.scenes">{{ t('trpg.harness.canonProgress', { done: state.job.canonized ?? 0, total: state.job.scenes }) }}</span>
       <span v-for="step in state.job.activeSteps" :key="step.name" class="step-chip">{{ label(step.name) }} · {{ t('trpg.harness.attempt', { n: step.attempt }) }}</span>
       <span v-if="state.job.failure" class="failure-detail">{{ label(state.job.failure.step) }} · {{ state.job.failure.detail }} · {{ t('trpg.harness.attempt', { n: state.job.failure.attempt }) }}</span>
-      <span v-if="state.job.error">{{ t(['novel_revision_stalled', 'novel_length_mismatch'].includes(state.job.error) ? 'trpg.harness.stalled' : 'trpg.recap.jobError') }} ({{ state.job.error }})</span>
+      <span v-if="state.job.error">{{ t(state.job.error === 'novel_step_blocked' ? 'trpg.harness.stepBlocked' : ['novel_revision_stalled', 'novel_length_mismatch'].includes(state.job.error) ? 'trpg.harness.stalled' : 'trpg.recap.jobError') }} ({{ state.job.error }})</span>
       <button v-if="!running && state.job.pauseReason === 'outline'" :disabled="busy || directionDirty || settingsDirty" @click="edit('approve-outline')">{{ t('trpg.harness.approveOutline') }}</button>
       <button v-if="!running && state.job.pauseReason === 'chapter'" :disabled="busy || directionDirty || settingsDirty" @click="edit('approve-chapter', { chapter: state.job.waitingChapter })">{{ t('trpg.harness.approveChapter') }}</button>
     </section>
@@ -202,7 +214,7 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(timer); selection++; windo
         <section v-if="state.liveOutputs?.length" class="live-output" aria-live="off">
           <div class="live-heading"><h2>{{ t('trpg.harness.liveOutput') }}</h2><span class="live-dot" :class="{ streaming: running }"></span></div>
           <p class="hint">{{ t('trpg.harness.liveOutputHint') }}</p>
-          <details v-for="output in state.liveOutputs" :key="output.step" open><summary>{{ label(output.step) }}</summary><pre>{{ output.text }}</pre></details>
+          <details v-for="output in state.liveOutputs" :key="output.step" open><summary>{{ label(output.step) }}</summary><LiveOutputStream :output="output" :label="label" :streaming="running" /></details>
         </section>
         <div class="artifact-heading"><h2>{{ t('trpg.harness.artifact') }}</h2><label class="follow-toggle"><input type="checkbox" :checked="followLatest" @change="setFollow(($event.target as HTMLInputElement).checked)" />{{ t('trpg.harness.followLatest') }}</label></div>
         <p class="hint">{{ t(followLatest ? 'trpg.harness.followHint' : 'trpg.harness.inspectHint') }}</p>
@@ -212,7 +224,11 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(timer); selection++; windo
             <div class="artifact-options"><button v-for="a in group.items" :key="a.name" :aria-pressed="artifactName === a.name" :class="{ selected: artifactName === a.name }" @click="safeSelect(a.name)">{{ label(a.name) }}</button></div>
           </section>
         </div>
-        <div class="artifact-toolbar"><label>{{ t('trpg.harness.version') }}<select :value="version" @change="safeSelect(artifactName, ($event.target as HTMLSelectElement).value)"><option value="">{{ t('trpg.harness.currentVersion') }}</option><option v-for="v in versions" :key="v.inputHash" :value="v.inputHash">{{ new Date(v.createdAt).toLocaleString() }}</option></select></label></div>
+        <div class="artifact-toolbar">
+          <label>{{ t('trpg.harness.version') }}<select :value="version" @change="safeSelect(artifactName, ($event.target as HTMLSelectElement).value)"><option value="">{{ t('trpg.harness.currentVersion') }}</option><option v-for="v in versions" :key="v.inputHash" :value="v.inputHash">{{ new Date(v.createdAt).toLocaleString() }}</option></select></label>
+          <button :disabled="busy || running || !artifactName || !artifact" :title="t('trpg.harness.artifactResetHint')" @click="resetArtifact('delete')">{{ t('trpg.harness.artifactDelete') }}</button>
+          <button :disabled="busy || running || !artifactName || !artifact" :title="t('trpg.harness.artifactResetHint')" @click="resetArtifact('regenerate')">{{ t('trpg.harness.artifactRegenerate') }}</button>
+        </div>
         <div class="tabs"><button @click="tab = 'prose'">{{ t('trpg.harness.manuscript') }}</button><button :disabled="sceneIndex < 0" @click="followLatest = false; showEvidence()">{{ t('trpg.recap.evidence') }}</button><button @click="followLatest = false; tab = 'highlights'">{{ t('trpg.highlights.title') }}</button></div>
         <p v-if="artifact?.model" class="byline">{{ artifact.model.provider }} / {{ artifact.model.model }}</p>
         <HighlightWorkbench v-if="tab === 'highlights'" :meeting-id="meetingId" :profile="profile" :job-id="jobId || undefined" :focus-id="focusHighlight" embedded @use-for-writing="useVisual" />

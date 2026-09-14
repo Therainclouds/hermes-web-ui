@@ -27,6 +27,7 @@ function toggle(key: 'pauseAfterOutline' | 'pauseAfterChapter' | 'economy', valu
   <fieldset class="writing-settings" :disabled="disabled">
     <legend>{{ t('trpg.harness.models') }}</legend>
     <label class="check"><input type="checkbox" :checked="modelValue.economy" @change="toggle('economy', ($event.target as HTMLInputElement).checked)" />{{ t('trpg.harness.economy') }}</label><p>{{ t('trpg.harness.economyHint') }}</p>
+    <label class="check"><input type="checkbox" :checked="modelValue.consistency === 'block'" @change="emit('update:modelValue', { ...modelValue, consistency: ($event.target as HTMLInputElement).checked ? 'block' : 'warn' })" />{{ t('trpg.harness.strictConsistency') }}</label><p>{{ t('trpg.harness.strictConsistencyHint') }}</p>
     <p>{{ t('trpg.harness.modelHint') }}</p>
     <button type="button" @click="emit('loadModels')">{{ t('trpg.harness.loadModels') }}</button>
     <label v-for="row in rows" :key="row">

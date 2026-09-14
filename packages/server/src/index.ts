@@ -47,6 +47,7 @@ import { WorkflowSocketServer } from './services/workflow-socket'
 import { logger } from './services/logger'
 import { meetingASRService } from './services/meeting-asr'
 import { realtimeAssistService } from './services/meeting-asr/realtime-assist'
+import { reconcileNovelJobs } from './services/trpg/novel-lease'
 import net from 'net'
 import { startUSBService } from './services/usb'
 import { USBSocketServer } from './services/usb/USBSocketServer'
@@ -316,6 +317,18 @@ function startRuntimeServicesAfterListen(): void {
       return
     }
   })()
+
+  // Long-novel jobs are durable on disk, but their worker lives in this process. Anything left
+  // `running` by a previous boot has no owner: mark it `interrupted` so the UI reports the real
+  // state instead of an invented `paused`, and never auto-start it (recovery spends money and
+  // stays an explicit user action).
+  void reconcileNovelJobs()
+    .then(result => {
+      if (result.interrupted || result.live) {
+        console.log(`[bootstrap] novel job reconcile: ${result.interrupted} interrupted, ${result.live} owned by a live process`)
+      }
+    })
+    .catch(err => logger.warn(err, '[bootstrap] novel job reconcile failed'))
 }
 
 function startLanDiscovery(): void {

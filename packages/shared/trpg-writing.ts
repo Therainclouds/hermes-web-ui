@@ -9,6 +9,9 @@ export interface WritingSettings {
   stages?: Partial<Record<WritingStage, WritingModel>>
   pauseAfterOutline?: boolean
   pauseAfterChapter?: boolean
+  /** `warn` (default) records unresolved factual contradictions and keeps writing; `block`
+   *  stops the job on the scene instead. */
+  consistency?: 'warn' | 'block'
 }
 export interface VisualReference { id: string; description: string; evidence: { index: number; quote: string }[] }
 export interface ChapterDirection {
@@ -57,6 +60,10 @@ export function parseWritingSettings(raw: unknown): WritingSettings {
   }
   for (const key of ['pauseAfterOutline', 'pauseAfterChapter', 'economy'] as const) {
     if (v[key] != null) { if (typeof v[key] !== 'boolean') throw new Error('invalid_writing_settings'); result[key] = v[key] }
+  }
+  if (v.consistency != null) {
+    if (!['warn', 'block'].includes(v.consistency)) throw new Error('invalid_writing_settings')
+    result.consistency = v.consistency
   }
   return result
 }

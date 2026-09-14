@@ -1,6 +1,10 @@
 import type { WritingModel, HarnessControls } from './trpg-writing'
 export type NovelStage = 'extracting' | 'planning' | 'writing' | 'reviewing' | 'assembling'
-export type NovelStatus = 'running' | 'paused' | 'failed' | 'cancelled' | 'completed'
+/** `interrupted` is a durable, disk-owned state: the worker that owned the job is gone
+ *  (server restart or crash). It is written by startup reconcile, never inferred from the
+ *  lifetime of the in-process worker map, so a second backend process cannot make a live
+ *  job look paused. */
+export type NovelStatus = 'running' | 'paused' | 'interrupted' | 'failed' | 'cancelled' | 'completed'
 export interface NovelJob {
   id: string
   meetingId: string
@@ -29,6 +33,18 @@ export interface NovelJob {
   preparedScenes?: number
   canonized?: number
   failure?: { step: string; detail: string; attempt: number }
+  /** Set by startup reconcile when the owning worker disappeared mid-run. */
+  interruptedAt?: number
+  /** Durable record of a step that exhausted its attempts with unchanged inputs. A later
+   *  resume does not call the model again until the model route, direction, harness policy
+   *  or the artifact itself changes. */
+  blocked?: { step: string; detail: string; attempts: number; at: number }
+  /** How many model calls had their input compacted to fit the context budget. */
+  compactedCalls?: number
+  /** Estimated tokens removed by context compaction (sum over calls). */
+  compactedTokens?: number
+  /** Compacted rolling-memory summaries reused from checkpoint (no model call). */
+  compactedReused?: number
   activeSteps?: { name: string; startedAt: number; model?: WritingModel; attempt: number }[]
   currentStep?: { name: string; startedAt: number; model?: WritingModel }
   pauseReason?: 'manual' | 'outline' | 'chapter'

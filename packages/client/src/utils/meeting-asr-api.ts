@@ -241,7 +241,11 @@ export const meetingASRApi = {
     })
     if (!response.ok) {
       const detail = await response.text().catch(() => '')
-      throw new Error(`transcribe start failed: ${response.status} ${detail.slice(0, 300)}`)
+      throw new MeetingASRHttpError(
+        `transcribe start failed: ${response.status}${detail ? ` ${detail.slice(0, 300)}` : ''}`,
+        response.status,
+        detail,
+      )
     }
     return response.json()
   },
@@ -251,13 +255,35 @@ export const meetingASRApi = {
       headers: getAuthHeaders(),
     })
     if (!response.ok) {
-      throw new Error(`transcribe status failed: ${response.status}`)
+      const detail = await response.text().catch(() => '')
+      throw new MeetingASRHttpError(
+        `transcribe status failed: ${response.status}${detail ? ` ${detail.slice(0, 200)}` : ''}`,
+        response.status,
+        detail,
+      )
     }
     return response.json()
   },
 }
 
 export type TranscribeEngine = 'minimax' | 'qwen'
+
+/**
+ * HTTP failure from a meeting-ASR endpoint. Carries the status so callers can
+ * distinguish a *transient* gateway/service failure (502/503 while the Python
+ * backend restarts) from a permanent one (404: the in-memory job is gone).
+ */
+export class MeetingASRHttpError extends Error {
+  readonly status: number
+  readonly body: string
+
+  constructor(message: string, status: number, body = '') {
+    super(message)
+    this.name = 'MeetingASRHttpError'
+    this.status = status
+    this.body = body
+  }
+}
 
 export interface FileTranscriptionOptions {
   engine: TranscribeEngine

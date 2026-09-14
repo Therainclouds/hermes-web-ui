@@ -2,6 +2,9 @@ import { ChildProcess, spawn } from 'child_process'
 import { EventEmitter } from 'events'
 import { createHash } from 'crypto'
 import { readdirSync, readFileSync } from 'fs'
+import http from 'node:http'
+import https from 'node:https'
+import { createServer as createNetServer } from 'node:net'
 import path from 'path'
 import fs from 'fs/promises'
 import os from 'os'
@@ -107,6 +110,14 @@ export class MeetingASRService extends EventEmitter {
   private _diarizePort: number | null = null
   /** Content hash of the python-backend sources the running child loaded. */
   private _backendCodeHash: string | null = null
+  /**
+   * Tail of the main child's stdout/stderr. uvicorn writes tracebacks and the
+   * kernel's OOM notice there, but the live stream is only logged at debug
+   * level (too noisy for access logs). Keeping the tail lets an unexpected
+   * exit report *why* it died, which is what the 503 `detail` field shows.
+   */
+  private _mainLogTail: string[] = []
+  private static readonly LOG_TAIL_LINES = 25
   // Auto-restart: when true, an unexpected main-process exit triggers a
   // bounded backoff restart loop. Disabled by stop() to avoid fighting
   // deliberate shutdowns.
@@ -213,6 +224,17 @@ export class MeetingASRService extends EventEmitter {
     if (!this._backendCodeHash) return false
     const current = this.computeBackendCodeHash()
     return !!current && current !== this._backendCodeHash
+  }
+
+  /** Append a child output chunk to the bounded diagnostic tail. */
+  private _recordMainLog(chunk: unknown): void {
+    const text = String(chunk ?? '')
+    for (const line of text.split(/\r?\n/)) {
+      const trimmed = line.trim()
+      if (trimmed) this._mainLogTail.push(trimmed)
+    }
+    const overflow = this._mainLogTail.length - MeetingASRService.LOG_TAIL_LINES
+    if (overflow > 0) this._mainLogTail.splice(0, overflow)
   }
 
   /**
@@ -363,9 +385,28 @@ export class MeetingASRService extends EventEmitter {
       const pythonPath = await this.ensureVirtualEnv()
       const backendPath = this.getPythonBackendPath()
 
-      // Set ports
-      this._asrPort = config.asrPort || 8000
-      this._diarizePort = config.diarizePort || 8001
+      // Set ports. If the configured port is already taken — typically by an
+      // orphaned uvicorn from a previous Node process (`detached:false`
+      // children survive a parent exit) — walk forward to a free one. Without
+      // this the new child fails to bind while `waitForReady` happily talks to
+      // the orphan, which still runs the OLD code: that is how an
+      // already-fixed bug keeps reproducing after a rebuild.
+      const requestedAsrPort = config.asrPort || 8000
+      const requestedDiarizePort = config.diarizePort || 8001
+      this._asrPort = await pickFreePort(requestedAsrPort)
+      this._diarizePort = await pickFreePort(requestedDiarizePort, new Set([this._asrPort]))
+      if (this._asrPort !== requestedAsrPort) {
+        logger.warn(
+          '[meeting-asr] port %d is in use (orphaned backend?); serving ASR on %d instead',
+          requestedAsrPort, this._asrPort,
+        )
+      }
+      if (this._diarizePort !== requestedDiarizePort) {
+        logger.warn(
+          '[meeting-asr] port %d is in use (orphaned backend?); serving diarize on %d instead',
+          requestedDiarizePort, this._diarizePort,
+        )
+      }
 
       // Build environment variables
       const env: Record<string, string> = {
@@ -469,6 +510,7 @@ export class MeetingASRService extends EventEmitter {
         '-m', 'uvicorn', 'app.main:app', '--host', '0.0.0.0', '--port', String(this._asrPort),
         ...this._uvicornTlsArgs(),
       ]
+      this._mainLogTail = []
       this.mainProcess = spawn(pythonPath, mainUvicornArgs, {
         cwd: backendPath,
         env,
@@ -477,10 +519,12 @@ export class MeetingASRService extends EventEmitter {
       })
 
       this.mainProcess.stdout?.on('data', (data) => {
+        this._recordMainLog(data)
         logger.debug('[meeting-asr:main] %s', data.toString().trim())
       })
 
       this.mainProcess.stderr?.on('data', (data) => {
+        this._recordMainLog(data)
         logger.debug('[meeting-asr:main] %s', data.toString().trim())
       })
 
@@ -497,7 +541,14 @@ export class MeetingASRService extends EventEmitter {
         this.emit('stopped', code ?? 0)
         // Auto-restart on unexpected crash, unless explicitly stopped.
         if (this._autoRestart && (code ?? 0) !== 0) {
-          this._scheduleRestart('main process exited unexpectedly')
+          // The tail is the only place the reason survives (Python traceback /
+          // OOM kill). It is surfaced through status.error → the 503 body the
+          // UI logs, so "Service Unavailable" becomes diagnosable.
+          const tail = this._mainLogTail.slice(-MeetingASRService.LOG_TAIL_LINES).join(' | ')
+          const reason = `main process exited unexpectedly (code ${code})${tail ? `: ${tail.slice(-800)}` : ''}`
+          this._error = reason
+          logger.error('[meeting-asr] %s', reason)
+          this._scheduleRestart(reason)
         }
       })
 
@@ -633,22 +684,52 @@ export class MeetingASRService extends EventEmitter {
     timeoutMs = 2000,
   ): Promise<{ ok: boolean; status?: number; err?: string }> {
     try {
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), timeoutMs)
-      const scheme = this._useTls ? 'https' : 'http'
-      const url = `${scheme}://127.0.0.1:${port}/healthz`
-      // Dynamic import avoids loading node:https on the cold path for dev runs.
-      const init: RequestInit = { signal: controller.signal }
-      if (this._useTls) {
-        const { Agent } = await import('node:https')
-        ;(init as any).dispatcher = new Agent({ rejectUnauthorized: false })
-      }
-      const response = await fetch(url, init)
-      clearTimeout(timer)
-      return { ok: response.ok, status: response.status }
+      const response = await this.backendRequest(port, '/healthz', 'GET', undefined, timeoutMs)
+      return { ok: response.status >= 200 && response.status < 300, status: response.status }
     } catch (err) {
       return { ok: false, err: err instanceof Error ? err.message : String(err) }
     }
+  }
+
+  /**
+   * Request against the local Python backend over the protocol it was spawned
+   * with. `node:http(s)` — not `fetch` — because undici's `dispatcher` option
+   * rejects a `node:https.Agent` with `agent.dispatch is not a function`, which
+   * silently broke every backend call on TLS device images.
+   */
+  private backendRequest(
+    port: number,
+    path: string,
+    method: 'GET' | 'POST' = 'GET',
+    body?: string,
+    timeoutMs = 30_000,
+  ): Promise<{ status: number; body: string }> {
+    return new Promise((resolve, reject) => {
+      const transport = this._useTls ? https : http
+      const req = transport.request(
+        {
+          host: '127.0.0.1',
+          port,
+          path,
+          method,
+          headers: body ? { 'Content-Type': 'application/json' } : {},
+          timeout: timeoutMs,
+          ...(this._useTls ? { rejectUnauthorized: false } : {}),
+        },
+        (res) => {
+          const chunks: Buffer[] = []
+          res.on('data', (chunk: Buffer) => chunks.push(chunk))
+          res.on('end', () => resolve({
+            status: res.statusCode || 502,
+            body: Buffer.concat(chunks).toString('utf-8'),
+          }))
+        },
+      )
+      req.on('timeout', () => req.destroy(new Error(`backend request timed out after ${timeoutMs}ms`)))
+      req.on('error', reject)
+      if (body !== undefined) req.write(body)
+      req.end()
+    })
   }
 
   /**
@@ -816,26 +897,18 @@ export class MeetingASRService extends EventEmitter {
     // the same class of desync that caused the v0.7.17
     // "DASHSCOPE_API_KEY is not configured" incident for ASR.
     try {
-      const scheme = this._useTls ? 'https' : 'http'
-      const init: RequestInit = {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const response = await this.backendRequest(
+        this._asrPort!,
+        '/api/config/llm',
+        'POST',
+        JSON.stringify({
           api_key: config.llmApiKey || '',
           base_url: config.llmBaseUrl || '',
           model: config.llmModel || '',
         }),
-      }
-      if (this._useTls) {
-        const { Agent } = await import('node:https')
-        ;(init as any).dispatcher = new Agent({ rejectUnauthorized: false })
-      }
-      const response = await fetch(
-        `${scheme}://127.0.0.1:${this._asrPort}/api/config/llm`,
-        init,
       )
-      if (!response.ok) {
-        throw new Error(`Python backend rejected LLM config: ${response.status} ${response.statusText}`)
+      if (response.status < 200 || response.status >= 300) {
+        throw new Error(`Python backend rejected LLM config: ${response.status}`)
       }
       logger.info('[meeting-asr] LLM config persisted via Python backend')
     } catch (err) {
@@ -875,19 +948,9 @@ export class MeetingASRService extends EventEmitter {
     })
 
     try {
-      const scheme = this._useTls ? 'https' : 'http'
-      const init: RequestInit = {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body,
-      }
-      if (this._useTls) {
-        const { Agent } = await import('node:https')
-        ;(init as any).dispatcher = new Agent({ rejectUnauthorized: false })
-      }
-      const response = await fetch(`${scheme}://127.0.0.1:${this._asrPort}/api/config`, init)
-      if (!response.ok) {
-        throw new Error(`Failed to update config: ${response.statusText}`)
+      const response = await this.backendRequest(this._asrPort!, '/api/config', 'POST', body)
+      if (response.status < 200 || response.status >= 300) {
+        throw new Error(`Failed to update config: HTTP ${response.status}`)
       }
     } catch (err) {
       logger.error('[meeting-asr] Failed to update config: %s', err)
@@ -905,3 +968,34 @@ export class MeetingASRService extends EventEmitter {
 }
 
 export const meetingASRService = MeetingASRService.getInstance()
+
+/**
+ * True when nothing is listening on `port` (probed on 0.0.0.0 to match the
+ * `--host 0.0.0.0` uvicorn bind). Exported for tests.
+ */
+export function checkPortAvailable(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const srv = createNetServer()
+    let settled = false
+    const finish = (ok: boolean) => {
+      if (settled) return
+      settled = true
+      resolve(ok)
+    }
+    srv.once('error', () => finish(false))
+    srv.once('listening', () => srv.close(() => finish(true)))
+    srv.listen(port, '0.0.0.0')
+  })
+}
+
+/**
+ * First free port at or after `base` (skipping `avoid`), scanning a bounded
+ * window. Exported for tests.
+ */
+export async function pickFreePort(base: number, avoid: Set<number> = new Set(), attempts = 50): Promise<number> {
+  for (let port = base; port < base + attempts; port++) {
+    if (avoid.has(port)) continue
+    if (await checkPortAvailable(port)) return port
+  }
+  throw new Error(`no free TCP port found in [${base}, ${base + attempts})`)
+}
