@@ -46,6 +46,34 @@ saturate the disk and brick updates.
 - (e) v0.8.9 ships (1) auto 4 vaults, (2) upload checkbox,
   (3) USB on-demand, (4) quota monitor — all four together because
   none of them is useful in isolation.
+- (f) Confirmed 2026-09-14 by the operator, binding for the vault
+  drawer:
+  1. **Drawer, not modal** — the 720-px right-side `NDrawer`
+     (matches `KnowledgeSettingsCard`'s drawer pattern).
+  2. **`kind='auto'` is hidden from non-power users** — the radio
+     option only renders behind `KNOWLEDGE_POWER_USER_UI=true`;
+     normal users see `手动` / `U盘` only. Rationale: an `auto`
+     vault created by hand overlaps the four bootstrap vaults and
+     confuses the metadata-only contract.
+  3. **Allowlist includes `/tmp`, `/data`, `/sdcard`, `/mnt`** in
+     addition to `$HERMES_WEB_UI_HOME` and mounted USB roots —
+     each probed with `existsSync` and silently skipped when
+     absent. Expanding this list is a spec change, not a code
+     change.
+  4. **Vault ceiling is a flat total of 8** across all kinds
+     (auto + manual + usb counted together), not per-kind
+     buckets. Simple to explain, simple to enforce in one
+     `COUNT(*)` against `knowledge_vaults`.
+- (g) v0.8.9 also ships the update-source hardening from the
+  2026-09-14 v0.8.8 pin incident (§ "Update-source hardening").
+  The incident: device 6.6.6.73 carried a hand-edited
+  `WEBUI_UPDATE_MANIFEST_URL` pin to
+  `releases/v0.8.6/manifest.json` from the v0.8.6-era manual
+  deploys. The pin was always-fetchable, so every 30-min check
+  "succeeded" with version 0.8.6 — freshness green, empty
+  `remoteError` — and the device rendered no update button with
+  no error anywhere. It surfaced only because v0.8.8 was the
+  first release to depend on the channel `latest.json`.
 
 ## Hard rules (must not regress)
 
@@ -424,6 +452,105 @@ Refs: AGENTS.md (getWebUiHome, route order, deploy-script
 bootstrap-only).
 ```
 
+## Update-source hardening — the v0.8.6 pin incident (2026-09-14)
+
+Lesson: **a config override that always answers successfully is
+indistinguishable from a healthy update source.** The device's
+highest-priority env pin pointed at a versioned manifest that
+never changes, every check succeeded, no surface ever complained,
+and the device missed the first channel release of its lifetime.
+The fix is not "remember to clean env files" — it is to make the
+system detect and surface the shape of the misconfiguration.
+
+### Detection rule
+
+A new check runs inside `resolveManifestCheckResult()`'s caller
+(`update-check-cache.doRefresh()`), after the primary manifest
+resolves:
+
+```
+pinned_stale := config.update.manifestUrl is set          // exact-URL pin, not base+channel
+             && pinned.version <= localVersion            // pinned tip is not newer than what runs
+             && channelManifest.version > pinned.version  // the channel knows a newer release
+```
+
+When true, the system **prefers the channel result for the update
+check** (the pin only made sense at install time; after install it
+is a liability) and records a warning:
+
+```ts
+interface UpdateCheckResult {
+  // existing fields…
+  warnings?: Array<'manifest_pinned_stale'>
+  pinnedManifestUrl?: string     // for the UI to display
+  effectiveManifestUrl?: string  // which URL actually won
+}
+```
+
+The channel fetch must not break the primary path: if the channel
+`latest.json` is unreachable, the pinned result stands and no
+warning is emitted (a pinned source is legitimate offline
+behavior).
+
+### Surfacing
+
+- `GET /health` → new optional field `webui_update_warnings: ['manifest_pinned_stale']`.
+- `GET /api/hermes/update/capabilities` → same array plus
+  `pinnedManifestUrl` / `effectiveManifestUrl`.
+- `GET /api/update/identity` → the manifestCache block gains
+  `pinned: boolean` and `stale: boolean` (staleness keeps its
+  existing freshness semantics).
+- Client (`KnowledgeStatusBar` is knowledge-specific; the update
+  UI lives in the settings page): the update section renders a
+  yellow inline warning banner —
+  "更新源被钉死在 {pinnedVersion}（{url}），已自动改用频道最新版
+  {latestVersion}。请清理设备 env 中的 WEBUI_UPDATE_MANIFEST_URL。"
+  The banner is non-blocking; the update button stays usable.
+- Server log: one `console.warn('[update] manifest pinned to
+  {url} at version {v}; channel tip {v2} wins')` per refresh
+  cycle, not per request (the 5-min cache naturally dedupes).
+
+### Deploy-side rules (regression guard)
+
+- `deploy-source-armbian.sh` and `update-orchestrator.sh` MUST
+  NOT write `WEBUI_UPDATE_MANIFEST_URL` with a versioned path into
+  `/etc/default/hermes-web-ui`. The deploy script already passes
+  operator env through; add a `deploy_sanity_check` that **fails
+  the deploy** when the resulting env would pin a versioned
+  `manifest.json` unless `ALLOW_PINNED_MANIFEST=1` is explicitly
+  set (escape hatch for rollback drills).
+- A device-package release test asserts the deploy script's env
+  block contains no `releases/v*/manifest.json` literal
+  (`tests/release/device-package-manifest.test.ts` or a sibling).
+
+### Removal of the one-off mirror shim
+
+`tmp-mirror-pinned-manifests.yml` exists only because device
+6.6.6.73 cannot be SSH'd into today. Once that device upgraded
+past 0.8.8 and the pin is removed (or this hardening ships and
+the pin stops mattering), the workflow file is deleted. Do not
+extend the mirror to new releases.
+
+### Acceptance criteria (added)
+
+19. A device env with `WEBUI_UPDATE_MANIFEST_URL` pinned to a
+    versioned manifest whose version ≤ local, while the channel
+    tip is newer: `/health` reports `webui_update_warnings`
+    containing `manifest_pinned_stale`, and the update check
+    uses the channel tip (update button appears).
+20. The same pin with an unreachable channel URL: no warning,
+    pinned result used, behavior identical to today (offline
+    compatibility preserved).
+21. No pin configured: zero warnings, zero behavior change.
+22. Deploy script run with a versioned `WEBUI_UPDATE_MANIFEST_URL`
+    and without `ALLOW_PINNED_MANIFEST=1` exits non-zero before
+    touching the service.
+23. The settings update section shows the yellow pinned-manifest
+    banner with the pinned URL and the effective version.
+24. All existing update tests stay green; new tests cover the
+    three detection branches above (pinned+channel-newer,
+    pinned+channel-down, no-pin).
+
 ## Out of scope (future work)
 
 - Localized USB labels (volume name detection via blkid).
@@ -440,3 +567,232 @@ bootstrap-only).
   bindings via package.json optionalDependencies).
 - Device storage probe from earlier this session: emmc 64 GB
   total, user area 40 GB, current SQLite 540 MB, vec0 dim 1024.
+
+## Extensibility — user-added vaults and visual directory picker
+
+The four auto vaults cover the common cases, but users will want
+their own folders — a project directory on USB, a synchronized
+Nextcloud mirror, a manually curated archive. This section adds
+the "create your own vault" path with the same UX standard as
+auto-vaults: **zero free-text paths in the happy path**.
+
+### What users see today vs after
+
+Today (v0.8.8, confirmed by `walk-addmodal.png`): two text fields,
+`名称 / 我的文档` and `根路径 / /path/to/documents`, plus a 确认
+button. A non-technical user cannot fill in `根路径` because they
+do not know what paths are valid on the device. The user
+explicitly flagged this in the v0.8.8 design review and asked for
+the USB explorer's visual file picker to be reused.
+
+After v0.8.9: the `添加知识库` action opens a 720-px-wide NDrawer
+(not NModal — drawers are easier to escape and match the
+`KnowledgeSettingsCard` pattern already in use). Two columns:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ 添加知识库                                                  × │
+├────────────────────────────┬─────────────────────────────────┤
+│ 名称 [ 我的文档        ]   │ 📁 /home/quanthermes      [↻]  │
+│ 类型 [●手动 ○U盘 ○自动归]  │ ─────────────────────────────  │
+│                            │ 📁 Documents           [选择]   │
+│ 路径 [/home/...        ]   │ 📁 Downloads           [选择]   │
+│                            │ 📁 Desktop             [选择]   │
+│ 快捷入口：                  │ 📁 knowledge           [选择]   │
+│ [USB 设备]  [最近上传]      │ ─────────────────────────────  │
+│ [扫码记录]  [应用默认]      │ 💾 KINGSTON 32GB       [挂载]   │
+│                            │ 💾 SanDisk 64GB        [挂载]   │
+├────────────────────────────┴─────────────────────────────────┤
+│ ✓ 目录存在，已挂载 (2 GB)        取消          创建          │
+└──────────────────────────────────────────────────────────────┘
+```
+
+The `名称` field auto-fills from the chosen directory's basename
+and remains editable. The `类型` radio selects `kind` (`manual` /
+`usb` / `auto`); `auto` only appears for power users behind a
+`KNOWLEDGE_POWER_USER_UI=true` flag because it overlaps with the
+four default vaults and confuses non-technical users. The `路径`
+textbox is still present — power users can type any path
+under the allowlist (see below).
+
+### Directory picker backend
+
+Two new endpoints, registered before the settings routes:
+
+```
+GET  /api/knowledge/dirs?path=<absolute-path>
+  -> {
+       path,
+       entries: Array<{
+         name, isDir, sizeBytes?, modifiedAt?,
+         inAllowlist: boolean  // false if outside the allowlist
+       }>,
+       parent: string | null
+     }
+
+GET  /api/knowledge/drives
+  -> {
+       usb: Array<{ uuid, label, mountPath, sizeBytes, freeBytes }>,
+       homeRoots: Array<{ name, path, exists }>  // quick-pick rows
+     }
+```
+
+`GET /api/knowledge/dirs` behavior:
+
+- Allowed roots (allowlist, evaluated in order):
+  - `$HERMES_WEB_UI_HOME` (via `getWebUiHome()`; resolves
+    `HERMES_WEB_UI_HOME` / `HERMES_WEBUI_STATE_DIR`, falls back to
+    `~/.hermes-web-ui`).
+  - `$HERMES_WEB_UI_HOME/mnt/usb/<uuid>` for every mounted USB.
+  - Standard user-writable roots: `/tmp`, `/data`, `/sdcard`,
+    `/mnt` (each checked with `existsSync`; missing roots are
+    silently skipped).
+- Path normalization: rejects `..` traversal, resolves symlinks,
+  refuses paths outside the allowlist with `403 forbidden_path`
+  (not `404`, to make the reason visible to the UI).
+- Empty directory listing is allowed (a user may want to point a
+  vault at an empty folder they will populate later).
+- Hidden files (dotfiles) are excluded by default; a `?includeHidden=true`
+  flag is provided for power users.
+
+The implementation reuses `USBService.listFiles()` patterns (same
+`readdir({ withFileTypes: true })` + `stat`) but is **not** a
+method on `USBService` because the allowlist and home-root
+enumeration are knowledge-specific. Lives at
+`packages/server/src/services/knowledge/dir-browser.ts`.
+
+### Component layout
+
+`KnowledgeVaultList.vue` keeps its table view but its `NModal`
+becomes an `NDrawer` (`width=720`, `placement='right'`). New
+component `KnowledgeVaultFormDrawer.vue` hosts the two-column
+layout. New component `KnowledgeDirBrowser.vue` is the right
+column — visually identical to `USBExplorerList.vue` (table of
+`name / size / modified`, folder-row click → `path` deepens,
+back/forward/up buttons, breadcrumb click → ancestor).
+
+The browser component takes:
+
+```ts
+interface KnowledgeDirBrowserProps {
+  initialPath: string
+  homeRoots: HomeRoot[]
+  usbDrives: USBDrive[]
+  selection: { path: string | null; sizeBytes: number | null }
+}
+```
+
+Emits:
+
+```ts
+emit('select', { path: string, sizeBytes: number, exists: boolean })
+emit('navigate', { path: string })
+emit('mount-usb', { uuid: string })
+emit('pick-home', { path: string })
+```
+
+`KnowledgeVaultFormDrawer.vue` reuses `NDrawer`, `NInput`,
+`NRadioGroup`, and `NButton` from naive-ui (same as the rest of
+the knowledge plugin).
+
+### Shortcut buttons (left column)
+
+- `USB 设备`: opens a dropdown listing the USB volumes (reuses
+  `GET /api/knowledge/drives` `usb[]`). Selecting one auto-fills
+  `类型=usb`, `路径=/mnt/usb/<uuid>`, `名称=<label>`.
+- `最近上传`: lists the last 5 distinct subdirectories of
+  `$HERMES_WEB_UI_HOME/upload/<profile>/` that contain files.
+- `扫码记录`: lists the directories that the scanner wrote to
+  in the last 7 days (reuses `GET /api/scanner/sessions`).
+- `应用默认`: picks from the four auto vault root paths (visible
+  to power users behind the flag; non-power users see this button
+  only as "复制默认路径" for reference).
+
+### Extending beyond the four defaults
+
+The user's spec calls out "用户自己选择方便高级扩展" — the
+mechanism is:
+
+1. Manual vaults created via the drawer are persisted with
+   `kind='manual'` (or `'usb'` for USB pick).
+2. The unique constraint `knowledge_vaults.root_path` is the
+   hard backstop: duplicate root_paths are rejected with
+   `409 vault_path_in_use`.
+3. The 8-vault ceiling (`maxVaults: 8` in `QUOTA`) covers the
+   four auto + four user-added; creating a 9th fails with
+   `409 vault_quota_exceeded` and the drawer shows a tooltip
+   pointing to the docs on removing a vault.
+4. `KNOWLEDGE_DEFAULT_VAULTS=off` users get zero auto vaults
+   and may add up to 8 manual ones.
+5. The drawer is **the only** way to add a vault in the UI; the
+   API still accepts `POST /api/knowledge/vaults` with a raw
+   path for automation (CLI / MCP), so power users aren't blocked.
+
+### Acceptance criteria (added)
+
+11. Clicking `添加知识库` opens a 720-px drawer (not a modal) with
+    a two-column layout; `名称` is auto-filled from the first
+    selection.
+12. The directory browser lists folders under the allowlist roots
+    only; paths outside the allowlist return `403 forbidden_path`
+    and the UI shows an inline warning.
+13. Selecting a USB volume from the shortcut row auto-fills
+    `kind='usb'`, `path=/mnt/usb/<uuid>`, `name=<label>`.
+14. The path textbox remains editable so power users can type any
+    allowlisted path; submitting a non-allowlisted path returns
+    the same `403 forbidden_path` error as the browser.
+15. After creating the 9th vault the drawer disables the create
+    button with a tooltip pointing to the removal flow.
+16. `KNOWLEDGE_DEFAULT_VAULTS=off`: bootstrap creates zero vaults;
+    the drawer still allows adding up to 8 manual vaults.
+17. The CLI/MCP path (`POST /api/knowledge/vaults` with raw
+    path) continues to work; both the drawer and the CLI go
+    through `KnowledgeService.addVault()` so the unique-constraint
+    and 8-vault checks are uniform.
+18. `walk-addmodal.png` is replaced by a new screenshot showing
+    the drawer with the directory browser populated; the new
+    screenshot is committed under `.deploy-staging/walk-drawer.png`.
+
+### Files (added to "Create" list)
+
+- `packages/server/src/services/knowledge/dir-browser.ts` —
+  allowlist resolution, `listDirs()`, `listDrives()`.
+- `packages/server/src/controllers/knowledge.ts` — `listDirs`,
+  `listDrives` controllers (404 if not allowed, 403 if outside
+  allowlist).
+- `packages/server/src/routes/knowledge.ts` — register both new
+  routes before settings routes.
+- `packages/client/src/plugins/knowledge/components/KnowledgeVaultFormDrawer.vue`
+  — two-column drawer.
+- `packages/client/src/plugins/knowledge/components/KnowledgeDirBrowser.vue`
+  — right-column directory picker (visually mirrors
+  `USBExplorerList.vue`).
+- `packages/client/src/plugins/knowledge/api.ts` — `listDirs(path)`,
+  `listDrives()` helpers.
+- `tests/server/knowledge-dir-browser.test.ts` — allowlist
+  enforcement, traversal rejection, hidden-file default.
+- `tests/release/knowledge-vault-drawer.e2e.test.ts` — full
+  drawer flow with mocked `listDirs`.
+- 11 new i18n keys (5 in zh-CN + en-US, others fall back to en):
+  `vaults.drawer.title`, `vaults.drawer.column.browser`,
+  `vaults.drawer.column.form`, `vaults.drawer.shortcuts.*`,
+  `vaults.drawer.errors.forbidden_path`,
+  `vaults.drawer.errors.vault_quota_exceeded`.
+
+### Files (added to "Modify" list)
+
+- `packages/client/src/plugins/knowledge/components/KnowledgeVaultList.vue`
+  — replace `NModal` with the new `KnowledgeVaultFormDrawer`.
+- `packages/client/src/plugins/knowledge/composables/useKnowledgeData.ts`
+  — surface `drives` and `dirs` reactive state.
+- `packages/server/src/services/knowledge/knowledge.service.ts`
+  — `addVault(rootPath, name, kind)` enforces `maxVaults` (count
+  `kind IN ('auto','manual','usb')` rows against the constant
+  8) and the unique-constraint `409`.
+- `AGENTS.md` — append a new hard rule in the section right
+  after the `getWebUiHome()` paragraph: "Directory browser
+  endpoints (`/api/knowledge/dirs`, `/api/knowledge/drives`)
+  must use `getWebUiHome()` for the home root and never call
+  `process.env.HERMES_WEB_UI_HOME` directly. The allowlist is
+  closed; expanding it is a spec change, not a code change."
+
