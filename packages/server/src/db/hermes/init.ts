@@ -19,6 +19,7 @@ import { loadKnowledgeConfig } from '../../services/knowledge/config'
 import { KnowledgeService } from '../../services/knowledge/knowledge.service'
 import { initKnowledgeRoutes } from '../../routes/knowledge'
 import { resolveDefaultRoots, resolveDefaultVaultsMode } from '../../services/knowledge/bootstrap'
+import { reconcileUsbMounts } from '../../services/knowledge/usb-scanner'
 import { setKnowledgeReinit } from '../../controllers/knowledge'
 
 // Module-level handle for subsequent wiring (e.g., future Socket.IO
@@ -92,6 +93,14 @@ function tryInitKnowledgeService(): void {
       }
     } catch (err) {
       warn('knowledge default-vault bootstrap failed (non-fatal):', err instanceof Error ? err.message : err)
+    }
+
+    // Task-12: reconcile any USB vaults against the live mount set so a
+    // stick that vanished while the service was down is marked unmounted.
+    try {
+      reconcileUsbMounts(service)
+    } catch (err) {
+      warn('knowledge USB reconcile failed (non-fatal):', err instanceof Error ? err.message : err)
     }
   } catch (err) {
     warn(

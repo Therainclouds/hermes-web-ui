@@ -31,6 +31,9 @@ knowledgeRoutes.post('/api/knowledge/vaults/bootstrap-defaults', ctrl.bootstrapD
 knowledgeRoutes.get('/api/knowledge/quota', ctrl.getQuota)
 knowledgeRoutes.get('/api/knowledge/dirs', ctrl.listDirs)
 knowledgeRoutes.get('/api/knowledge/drives', ctrl.listDrives)
+knowledgeRoutes.get('/api/knowledge/usb-volumes', ctrl.listUsbVolumesCtrl)
+knowledgeRoutes.post('/api/knowledge/usb-volumes/:uuid/scan', ctrl.scanUsbVolumeCtrl)
+knowledgeRoutes.post('/api/knowledge/task-archive/:sessionId', ctrl.taskArchiveCtrl)
 
 knowledgeRoutes.get('/api/knowledge/documents', ctrl.listDocuments)
 knowledgeRoutes.get('/api/knowledge/documents/:id/chunks', ctrl.listDocumentChunks)

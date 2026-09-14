@@ -313,6 +313,45 @@ export class KnowledgeService extends EventEmitter {
     return this.db.prepare('SELECT * FROM knowledge_vaults ORDER BY id').all() as unknown as KnowledgeVault[]
   }
 
+  /**
+   * Stamp the provenance source on a document row (task-12). The ingest
+   * pipeline leaves `source` at its 'unknown' default; the semi-auto
+   * task-archive path marks its rows 'task-finalize' so the auto_tasks
+   * vault can distinguish continuously-watched workspace files from
+   * task deliverables sharing the same root path.
+   */
+  setDocumentSource(documentId: number, source: string): void {
+    this.db.prepare('UPDATE knowledge_documents SET source = ? WHERE id = ?')
+      .run(source, documentId)
+  }
+
+  findVaultByPath(rootPath: string): KnowledgeVault | undefined {
+    return this.db.prepare(
+      'SELECT * FROM knowledge_vaults WHERE root_path = ?'
+    ).get(rootPath) as KnowledgeVault | undefined
+  }
+
+  /** Locate an already-recorded document for a source path inside a vault. */
+  findDocumentInVault(sourcePath: string, vaultId: number): { id: number; status: string } | undefined {
+    return this.db.prepare(
+      'SELECT id, status FROM knowledge_documents WHERE source_path = ? AND vault_id = ?'
+    ).get(sourcePath, vaultId) as { id: number; status: string } | undefined
+  }
+
+  /**
+   * Flip a USB vault's documents between 'unmounted' (mount gone) and
+   * 'fts_only' (mount back), touching only rows currently in the opposite
+   * state so chunk content persists and re-mount needs no re-extraction
+   * (task-12). Returns the number of rows changed.
+   */
+  markUsbVaultUnmounted(vaultId: number, target: 'unmounted' | 'fts_only'): number {
+    const from = target === 'unmounted' ? 'fts_only' : 'unmounted'
+    const res = this.db.prepare(
+      'UPDATE knowledge_documents SET status = ? WHERE vault_id = ? AND status = ?'
+    ).run(target, vaultId, from) as { changes: number }
+    return Number(res.changes)
+  }
+
   /** Disk quota snapshot (task-12). Pure read over the shared connection. */
   getQuota(): KnowledgeQuota {
     return computeKnowledgeQuota(this.db)
@@ -464,6 +503,67 @@ export class KnowledgeService extends EventEmitter {
     return { documentId: docId, status: 'metadata_only', chunks: 0 }
   }
 
+  /**
+   * FTS5-only ingest for USB vaults (task-12). Extracts text and writes
+   * knowledge_chunks + knowledge_chunks_fts, but NEVER vec0 — the mount
+   * may vanish at any moment and embedding a removable drive is wasted
+   * budget. Document status ends as 'fts_only' so keyword search sees it
+   * and vector search does not.
+   */
+  private async ftsOnlyIngest(path: string, vaultId: number): Promise<IngestResult> {
+    let fileStat: { size: number; mtimeMs: number }
+    try {
+      const s = statSync(path)
+      if (s.size > this.config.maxFileSizeBytes) {
+        const maxMb = Math.round(this.config.maxFileSizeBytes / (1024 * 1024))
+        throw new Error(`File too large (${Math.round(s.size / (1024 * 1024))}MB > ${maxMb}MB limit)`)
+      }
+      fileStat = { size: s.size, mtimeMs: s.mtimeMs }
+    } catch (err) {
+      const docId = this.upsertDocument(path, vaultId, '', { size: 0, mtimeMs: Date.now() })
+      this.db.prepare("UPDATE knowledge_documents SET status = 'failed', error = ? WHERE id = ?")
+        .run((err as Error).message, docId)
+      return { documentId: docId, status: 'failed', chunks: 0, error: (err as Error).message }
+    }
+
+    let fileContent: { text: string; tokenCount: number }
+    try {
+      fileContent = await this.extractorFn(path)
+    } catch (err) {
+      const docId = this.upsertDocument(path, vaultId, '', fileStat)
+      this.db.prepare("UPDATE knowledge_documents SET status = 'failed', error = ? WHERE id = ?")
+        .run((err as Error).message, docId)
+      return { documentId: docId, status: 'failed', chunks: 0, error: (err as Error).message }
+    }
+
+    const sourceHash = createHash('sha256').update(fileContent.text).digest('hex')
+    const docId = this.upsertDocument(path, vaultId, sourceHash, fileStat)
+    this.db.prepare("UPDATE knowledge_documents SET status = 'indexing', error = NULL WHERE id = ?").run(docId)
+    this.deleteDocumentIndexes(docId)
+
+    const ext = extname(path).toLowerCase()
+    const chunks = chunkText(fileContent.text, ext === '.md' ? 'markdown' : 'plaintext', {
+      chunkSize: this.config.chunkSize,
+      chunkOverlap: this.config.chunkOverlap,
+      chunkFallbackSize: this.config.chunkFallbackSize,
+    })
+
+    try {
+      this.insertChunksFtsOnly(docId, chunks)
+    } catch (err) {
+      const errorMsg = (err as Error).message
+      this.db.prepare("UPDATE knowledge_documents SET status = 'failed', error = ? WHERE id = ?")
+        .run(errorMsg, docId)
+      return { documentId: docId, status: 'failed', chunks: 0, error: errorMsg }
+    }
+
+    this.db.prepare("UPDATE knowledge_documents SET status = 'fts_only', indexed_at = ? WHERE id = ?")
+      .run(Date.now(), docId)
+    this._lastSuccessAt = Date.now()
+    this.emit('knowledge:ingest:success', { documentId: docId, chunks: chunks.length })
+    return { documentId: docId, status: 'fts_only', chunks: chunks.length }
+  }
+
   private async processIngest(
     path: string,
     vaultId: number,
@@ -482,6 +582,14 @@ export class KnowledgeService extends EventEmitter {
     // queue for minutes on the ARM device.
     if (!forceFull && this.getVaultKind(vaultId) === 'auto') {
       return this.metadataOnlyIngest(path, vaultId)
+    }
+
+    // 0.6 USB vaults (task-12): FTS5-only, reference-based. The mount is
+    // read but content is never copied into vec0 (embedding a removable
+    // drive the user may unplug any moment is wasted budget). Keyword
+    // search works; vector search does not for these rows.
+    if (!forceFull && this.getVaultKind(vaultId) === 'usb') {
+      return this.ftsOnlyIngest(path, vaultId)
     }
 
     // 1. Read file and compute source_hash.
@@ -664,6 +772,34 @@ export class KnowledgeService extends EventEmitter {
         }
       }
 
+      this.db.exec('COMMIT')
+    } catch (err) {
+      this.db.exec('ROLLBACK')
+      throw err
+    }
+  }
+
+  /**
+   * FTS5-only variant of insertChunks: writes knowledge_chunks + the
+   * FTS5 shadow (with the same rowid coupling and bigram tokenization)
+   * but never touches vec0. Used by USB-vault fts_only ingest (task-12).
+   */
+  private insertChunksFtsOnly(documentId: number, chunks: Chunk[]): void {
+    this.db.exec('BEGIN')
+    try {
+      const insertChunk = this.db.prepare(`
+        INSERT INTO knowledge_chunks (document_id, position, content, token_count)
+        VALUES (?, ?, ?, ?)
+      `)
+      const insertFts = this.db.prepare(`
+        INSERT INTO knowledge_chunks_fts (rowid, content) VALUES (?, ?)
+      `)
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i]
+        const r = insertChunk.run(documentId, i, chunk.content, chunk.tokenCount) as { lastInsertRowid: number }
+        const chunkId = Number(r.lastInsertRowid)
+        insertFts.run(chunkId, tokenizeForFts(chunk.content).join(' '))
+      }
       this.db.exec('COMMIT')
     } catch (err) {
       this.db.exec('ROLLBACK')

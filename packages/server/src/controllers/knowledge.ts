@@ -14,6 +14,8 @@ import { KnowledgeConfigError, loadKnowledgeConfig } from '../services/knowledge
 import { getWebUiHome } from '../config'
 import { listDirs as listDirsImpl, ForbiddenPathError, type UsbDrive } from '../services/knowledge/dir-browser'
 import { resolveDefaultRoots } from '../services/knowledge/bootstrap'
+import { listUsbVolumes, scanUsbVolume, reconcileUsbMounts, type UsbVolume } from '../services/knowledge/usb-scanner'
+import { archiveTaskFiles } from '../services/knowledge/task-archive'
 
 // --- Vault path validation (ARM protection) -------------------------------
 
@@ -83,6 +85,15 @@ let _service: KnowledgeService | null = null
 
 export function setKnowledgeService(service: KnowledgeService | null): void {
   _service = service
+}
+
+/**
+ * The active knowledge service, or null when the plugin is disabled /
+ * uninitialized. For cross-controller callers (e.g. upload opt-in
+ * archiving) that must not surface a 503 to the client.
+ */
+export function getKnowledgeServiceOrNull(): KnowledgeService | null {
+  return _service
 }
 
 // Re-init hook: db/hermes/init.ts registers tryInitKnowledgeService here
@@ -227,9 +238,72 @@ export async function listDrives(ctx: Context): Promise<void> {
   const service = getServiceOr503(ctx)
   if (!service) return
   const home = getWebUiHome(process.env)
+  // Reading drives is also where we reconcile mount state (task-12): a
+  // stick pulled since last poll demotes its rows to 'unmounted'.
+  try { reconcileUsbMounts(service) } catch { /* best-effort */ }
   ctx.body = {
-    usb: enumerateUsbDrives().usb,
+    usb: listUsbVolumes(process.env, home).map((v: UsbVolume) => ({
+      uuid: v.uuid, label: v.label, mountPath: v.mountPath, sizeBytes: null, freeBytes: null,
+    })),
     homeRoots: [{ name: 'home', path: home, exists: existsSync(home) }],
+  }
+}
+
+export async function listUsbVolumesCtrl(ctx: Context): Promise<void> {
+  const service = getServiceOr503(ctx)
+  if (!service) return
+  ctx.body = { volumes: listUsbVolumes(process.env) }
+}
+
+export async function scanUsbVolumeCtrl(ctx: Context): Promise<void> {
+  const service = getServiceOr503(ctx)
+  if (!service) return
+  const uuid = String(ctx.params?.uuid || '').trim()
+  const volume = listUsbVolumes(process.env).find(v => v.uuid === uuid)
+  if (!volume) {
+    ctx.status = 404
+    ctx.body = { error: 'usb_not_mounted', message: `No mounted USB volume ${uuid}` }
+    return
+  }
+  try {
+    const result = scanUsbVolume(service, volume, loadKnowledgeConfig().supportedExtensions)
+    ctx.status = 202
+    ctx.body = result
+  } catch (err) {
+    if (err instanceof VaultLimitError) {
+      ctx.status = 409
+      ctx.body = { error: err.code, message: err.message }
+    } else {
+      throw err
+    }
+  }
+}
+
+export async function taskArchiveCtrl(ctx: Context): Promise<void> {
+  const service = getServiceOr503(ctx)
+  if (!service) return
+  const body = ctx.request.body as { files?: unknown }
+  const files = Array.isArray(body?.files)
+    ? (body.files as unknown[]).map(String).filter(Boolean)
+    : []
+  if (files.length === 0) {
+    ctx.status = 400
+    ctx.body = { error: 'missing_files', message: 'files[] is required' }
+    return
+  }
+  const roots = resolveDefaultRoots()
+  const workspaceRoot = join(roots.hermesDataDir, roots.profile, 'workspace')
+  try {
+    const result = await archiveTaskFiles(service, { workspaceRoot, files })
+    ctx.status = 202
+    ctx.body = result
+  } catch (err) {
+    if (err instanceof VaultLimitError) {
+      ctx.status = 409
+      ctx.body = { error: err.code, message: err.message }
+    } else {
+      throw err
+    }
   }
 }
 

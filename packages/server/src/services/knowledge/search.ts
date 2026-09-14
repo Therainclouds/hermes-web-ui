@@ -127,7 +127,7 @@ function searchHybrid(
       JOIN knowledge_chunks_fts f ON f.rowid = c.id
       JOIN knowledge_documents d ON d.id = c.document_id
       WHERE knowledge_chunks_fts MATCH ?
-        AND d.status = 'indexed'
+        AND d.status IN ('indexed', 'fts_only')
         AND d.vault_id = ?
     `
     candidateParams = [ftsQuery, params.vaultId]
@@ -138,7 +138,7 @@ function searchHybrid(
       JOIN knowledge_chunks_fts f ON f.rowid = c.id
       JOIN knowledge_documents d ON d.id = c.document_id
       WHERE knowledge_chunks_fts MATCH ?
-        AND d.status = 'indexed'
+        AND d.status IN ('indexed', 'fts_only')
     `
     candidateParams = [ftsQuery]
   }
@@ -213,6 +213,27 @@ function searchHybrid(
       content: candidate.content,
       distance: row.distance,
       vaultId: docRows[0].vault_id,
+    })
+  }
+
+  // fts_only candidates (USB-vault rows) have no vec0 entry, so vec
+  // re-ranking drops them. Append them AFTER the vector-ranked hits with
+  // the worst acceptable distance so keyword matches on removable drives
+  // still surface, ranked below every semantic hit (task-12 USB design).
+  const rankedIds = new Set(ranked.map(r => r.chunk_id))
+  for (const c of candidates) {
+    if (results.length >= limit) break
+    if (rankedIds.has(c.chunk_id)) continue
+    const meta = db.prepare(
+      'SELECT d.vault_id, d.status FROM knowledge_documents d JOIN knowledge_chunks kc ON kc.document_id = d.id WHERE kc.id = ?'
+    ).get(c.chunk_id) as { vault_id: number; status: string } | undefined
+    if (!meta || meta.status !== 'fts_only') continue
+    results.push({
+      chunkId: c.chunk_id,
+      documentId: c.document_id,
+      content: c.content,
+      distance: maxDistance,
+      vaultId: meta.vault_id,
     })
   }
 
