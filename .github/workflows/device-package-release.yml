@@ -584,6 +584,10 @@ jobs:
             git push origin "${MANIFEST_BRANCH}"
           )
 
+      - name: Setup OSS util
+        if: env.ALIYUN_OSS_ENDPOINT != ''
+        uses: yizhoumo/setup-ossutil@v2
+
       - name: Upload promoted latest.json to OSS
         if: env.ALIYUN_OSS_ENDPOINT != ''
         shell: bash
