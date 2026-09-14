@@ -1,0 +1,79 @@
+name: tmp-mirror-pinned-manifests
+
+# ONE-OFF compat shim (delete after use). Some deployed devices carry a
+# systemd env pin WEBUI_UPDATE_MANIFEST_URL=.../releases/v0.8.6/manifest.json
+# from an incident-era manual deploy; with no SSH access the only way to let
+# them see the channel tip is to mirror latest.json onto every pinned
+# releases/vX.Y.Z/manifest.json object. Devices pinned this way fetch it every
+# 30 min and report green freshness, so the mirror must track the channel tip
+# until the pins are removed on-device.
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Channel whose latest.json should be mirrored
+        required: false
+        default: stable
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup OSS util
+        uses: yizhoumo/setup-ossutil@v2
+
+      - name: Mirror latest.json over pinned version manifests
+        shell: bash
+        env:
+          RELEASE_CONFIG: .github/device-package-release.json
+          ALIYUN_OSS_ENDPOINT: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
+          ALIYUN_OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
+          ALIYUN_OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
+          CHANNEL: ${{ inputs.channel || 'stable' }}
+        run: |
+          set -euo pipefail
+
+          : "${ALIYUN_OSS_ENDPOINT:?ALIYUN_OSS_ENDPOINT is required}"
+          : "${ALIYUN_OSS_ACCESS_KEY_ID:?ALIYUN_OSS_ACCESS_KEY_ID is required}"
+          : "${ALIYUN_OSS_ACCESS_KEY_SECRET:?ALIYUN_OSS_ACCESS_KEY_SECRET is required}"
+
+          endpoint="${ALIYUN_OSS_ENDPOINT}"
+          if [[ "${endpoint}" != http://* && "${endpoint}" != https://* ]]; then
+            endpoint="https://${endpoint}"
+          fi
+
+          cat > "${HOME}/.ossutilconfig" <<EOF
+          [Credentials]
+          language = EN
+          endpoint = ${endpoint}
+          accessKeyID = ${ALIYUN_OSS_ACCESS_KEY_ID}
+          accessKeySecret = ${ALIYUN_OSS_ACCESS_KEY_SECRET}
+          EOF
+          chmod 600 "${HOME}/.ossutilconfig"
+
+          OSS_PATH="$(node -e "console.log(JSON.parse(require('node:fs').readFileSync('${RELEASE_CONFIG}','utf8')).ossPath || '')")"
+          echo "ossPath=${OSS_PATH}"
+
+          LATEST_KEY="${OSS_PATH}/releases/${CHANNEL}/latest.json"
+          ossutil -c "${HOME}/.ossutilconfig" cp -f "oss://${LATEST_KEY}" /tmp/latest.json
+          cat /tmp/latest.json
+
+          # Enumerate releases/vX.Y.Z/ prefixes and overwrite each
+          # manifest.json with the channel tip.
+          ossutil -c "${HOME}/.ossutilconfig" ls "oss://${OSS_PATH}/releases/" | grep -oE "releases/v[0-9]+\.[0-9]+\.[0-9]+/manifest\.json" | sort -u > /tmp/pinned-keys.txt
+          echo "pinned manifests found:"; cat /tmp/pinned-keys.txt
+
+          while IFS= read -r key; do
+            echo "mirroring -> ${key}"
+            ossutil -c "${HOME}/.ossutilconfig" cp -f /tmp/latest.json "oss://${OSS_PATH}/${key}"
+          done < /tmp/pinned-keys.txt
+
+          echo "done"
