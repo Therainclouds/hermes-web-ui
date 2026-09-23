@@ -203,6 +203,16 @@ const router = createRouter({
       component: () => import('@/views/hermes/FilesView.vue'),
     },
     {
+      path: '/hermes/petdex',
+      name: 'hermes.petdex',
+      component: () => import('@/views/hermes/PetdexView.vue'),
+    },
+    {
+      path: '/hermes/desktop-pet',
+      name: 'hermes.desktopPet',
+      component: () => import('@/views/hermes/DesktopPetView.vue'),
+    },
+    {
       path: '/hermes/coding-agents',
       name: 'hermes.codingAgents',
       component: () => import('@/views/hermes/CodingAgentsView.vue'),
