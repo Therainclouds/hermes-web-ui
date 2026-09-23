@@ -45,6 +45,7 @@ import { ttsRoutes, ttsProtectedRoutes } from './hermes/tts'
 import { sttProtectedRoutes } from './hermes/stt'
 import { realtimeModelRoutes } from './hermes/realtime-model'
 import { mcuFirmwareRoutes } from './hermes/mcu-firmware'
+import { mcuDeviceRoutes } from './hermes/mcu-devices'
 import { mediaRoutes } from './hermes/media'
 import { groupChatPublicRoutes, groupChatRoutes, setGroupChatServer } from './hermes/group-chat'
 import { chatRunRoutes } from './hermes/chat-run'
@@ -123,6 +124,7 @@ export function registerRoutes(app: any, authMiddleware: Array<(ctx: Context, ne
   app.use(sttProtectedRoutes.routes())
   app.use(realtimeModelRoutes.routes())      // Realtime (Qwen) model profile settings
   app.use(mcuFirmwareRoutes.routes())
+  app.use(mcuDeviceRoutes.routes())
   app.use(mediaRoutes.routes())
   app.use(performanceMonitorRoutes.routes())
   app.use(journeyRoutes.routes())
