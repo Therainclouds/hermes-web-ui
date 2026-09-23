@@ -2065,6 +2065,11 @@ function commandExecution(command: string, args: string[]): CommandExecution {
   return { command: normalizedCommand, args }
 }
 
+// Public re-exports so the DSH plugin-management host can reuse the same
+// platform command resolution. Kept as named exports to preserve the existing
+// internal call sites.
+export { findCommandPaths, resolveCommandForExecution, commandExecution }
+
 function packageParts(packageName: string): string[] {
   return packageName.split('/').filter(Boolean)
 }
@@ -3220,4 +3225,74 @@ export async function openCodingAgentNativeTerminal(id: string, input: CodingAge
     nativeTerminal: true,
     terminal,
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/* DeepSeek Harness plugin management                                          */
+/* -------------------------------------------------------------------------- */
+
+import {
+  createDshHost as createDshHostInternal,
+  shutdownDshManagement,
+  shutdownDshPluginOperations,
+  type DshManagement,
+  type DshUiGateway,
+} from './dsh'
+
+/**
+ * Resolve the DeepSeek Harness source root in priority order: explicit env,
+ * well-known home directories. Used as the native plugin inventory source.
+ */
+export function getDshSourceHome(env: Record<string, string | undefined> = process.env): string {
+  const explicit = env.DSH_HOME?.trim()
+  if (explicit) return explicit
+  const candidates = [
+    env.DEEPSEEK_HARNESS_ROOT?.trim(),
+    join(homedir(), 'dev', 'deepseek-harness'),
+    join(homedir(), 'deepseek-harness'),
+    '/home/kali/dev/deepseek-harness',
+  ].filter((value): value is string => typeof value === 'string' && value !== '')
+  for (const root of candidates) {
+    try {
+      const hasBin = existsSync(join(root, 'profiles/web/package.json'))
+      if (hasBin) return root
+    } catch {
+      /* keep scanning */
+    }
+  }
+  // Fall back to a stable per-user directory so plugin inventory still resolves
+  // even before the user installs DSH.
+  return join(getWebUiHome(env), 'dsh')
+}
+
+let dshHostPromise: Promise<ReturnType<typeof createDshHostInternal>> | undefined
+
+export interface DshHost {
+  getNativeDshPluginInventory(): ReturnType<ReturnType<typeof createDshHostInternal>['getNativeDshPluginInventory']>
+  changePlugins(body: unknown, revision: string): ReturnType<ReturnType<typeof createDshHostInternal>['changePlugins']>
+  management: DshManagement
+  ui: DshUiGateway
+  presets: InstanceType<typeof import('./dsh').DshAgentPresetService>
+}
+
+export async function getDshHost(): Promise<DshHost> {
+  if (!dshHostPromise) {
+    dshHostPromise = (async () => {
+      const host = createDshHostInternal({
+        commandEnv: () => commandEnv(),
+        findCommandPaths,
+        resolveCommandForExecution,
+        commandExecution,
+        getSourceHome: () => getDshSourceHome(),
+      })
+      return host
+    })()
+  }
+  return dshHostPromise as Promise<DshHost>
+}
+
+export async function shutdownDshHosts(): Promise<void> {
+  await shutdownDshManagement()
+  await shutdownDshPluginOperations()
+  dshHostPromise = undefined
 }

@@ -60,6 +60,8 @@ import { createRequestBodyParser } from './middleware/request-body-parser'
 import {
   migratePersistedPiRuntimeMcpConfigs,
   restorePersistedPiProxyTargets,
+  getDshHost,
+  shutdownDshHosts,
 } from './services/coding-agents'
 
 // Injected by esbuild at build time; fallback to reading package.json in dev mode
@@ -481,6 +483,15 @@ export async function bootstrap() {
   setupTerminalWebSocket(servers)
   setupKanbanEventsWebSocket(servers)
   getLanPeerSocketManager().setupServer(servers)
+  // DSH plugin UI gateway owns the WebSocket tunnel to the native runtime.
+  void (async () => {
+    try {
+      const host = await getDshHost()
+      host.ui.attach(servers)
+    } catch (err) {
+      logger.warn(err, '[dsh] plugin UI gateway attach failed')
+    }
+  })()
   console.log('[bootstrap] terminal + kanban + LAN peer websocket setup')
 
   const loopbackBaseUrl = getLoopbackBaseUrl(server)
@@ -635,6 +646,7 @@ const interfaces = safeNetworkInterfaces()
   })
 
   desktopShutdownHandler = bindShutdown(servers, groupChatServer, chatRunServer, agentBridgeManager, usbSocketServer as any)
+  void shutdownDshHosts().catch(err => logger.warn(err, '[dsh] shutdown failed'))
   startVersionCheck()
   startReconcileLoop()
 }
