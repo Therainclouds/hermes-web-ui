@@ -26,7 +26,7 @@
  *   - P2-4: tests use usePolling against real temp dirs, never memfs.
  */
 
-import { watch, type FSWatcher, type WatchOptions } from 'chokidar'
+import { watch, type FSWatcher, type ChokidarOptions } from 'chokidar'
 import { EventEmitter } from 'events'
 import { statSync, existsSync } from 'fs'
 import { join, extname } from 'path'
@@ -110,7 +110,7 @@ export class KnowledgeWatcher {
 
     const supportedExts = new Set(this.options.supportedExtensions ?? [])
 
-    const chokidarOptions: WatchOptions = {
+    const chokidarOptions: ChokidarOptions = {
       persistent: true,
       ignoreInitial: true,
       ignored: (filePath: string) => {
