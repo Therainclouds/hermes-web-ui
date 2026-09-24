@@ -2182,7 +2182,7 @@ export default {
     realtimeApiKeyPlaceholder: 'sk-…',
     realtimeApiKeyHint: '保存在当前用户 Profile（服务端，与 STT/TTS 等模型设置一致），换浏览器/设备不丢失；作为会议模式 ASR 与实时语音对话的默认 Key。',
     realtimeModelLabel: '实时对话模型',
-    realtimeModelPlaceholder: 'qwen3.5-omni-flash-realtime',
+    realtimeModelPlaceholder: 'qwen3.8-omni-flash-realtime',
     realtimeVoiceLabel: '默认语音',
     realtimeAsrProviderHint: '选择会议模式语音识别使用的服务商。DashScope（默认）走 Paraformer/Fun-ASR；MiniMax 走 MiniMax 语音识别 REST API。',
     realtimeAsrProviderLabel: 'ASR 服务商',
@@ -2792,6 +2792,7 @@ export default {
       resetFailed: '恢复默认头像失败',
     },
     voice: {
+      qwenSharedKey: "复用当前 Profile 的 Realtime 模型设置中已保存的千问 API Key，也可填写独立密钥。",
       activeTtsApi: '当前 TTS API',
       activeSttApi: '当前 STT API',
       ttsProvidersTitle: 'TTS 提供方',

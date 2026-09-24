@@ -21,7 +21,8 @@ import {
 /**
  * GPT-Realtime 风格的单聊实时对话舞台。
  *
- * 复用会议模式的 Omni-Realtime 通道（/ws/omni-realtime，Qwen3.5-Omni-Flash-Realtime）：
+ * 复用会议模式的 Omni-Realtime 通道（/ws/omni-realtime，Qwen3.8-Omni-Flash-Realtime，
+ * 通过 DashScope `OmniRealtimeConversation` SDK 驱动）：
  *   - 免提：麦克风持续推流，服务端 VAD 负责分轮；
  *   - 打断：用户开口时自动停止本地播放并取消上游响应（barge-in）；
  *   - 摄像头：开始前可选择开启本地预览；
@@ -48,29 +49,30 @@ const realtimeModelStore = useRealtimeModelStore()
 const profilesStore = useProfilesStore()
 
 // Voices verified against the DashScope Qwen-Omni-Realtime catalogue.
-// The same `Tina/Serena/Ethan/Jennifer/Ryan` voice IDs are accepted by every
-// qwen3.5-omni-* and qwen3-omni-* model — they share the DashScope voice
-// registry. Voices from the previous Cherry/Chelsie/Adam family are NOT
-// accepted by Qwen-Omni-Realtime and DashScope closes the WS with 1007
+// `Ethan` (男声) is the default voice that ships with the qwen3.8 SDK
+// reference; the same catalogue is also accepted by qwen3.5-omni-* and
+// qwen3-omni-* models — they share the DashScope voice registry. Voices
+// from the previous Cherry/Chelsie/Adam family are NOT accepted by
+// Qwen-Omni-Realtime and DashScope closes the WS with 1007
 // `Voice 'X' is not supported.` if any of them is sent upstream.
 const voiceOptions: SelectOption[] = [
-  { label: 'Tina (女声 · 中文 · 默认)', value: 'Tina' },
+  { label: 'Ethan (男声 · 中文 · 默认)', value: 'Ethan' },
+  { label: 'Tina (女声 · 中文)', value: 'Tina' },
   { label: 'Serena (女声 · 中文)', value: 'Serena' },
-  { label: 'Ethan (男声 · 中文)', value: 'Ethan' },
   { label: 'Jennifer (女声 · 中文)', value: 'Jennifer' },
   { label: 'Ryan (男声 · 中文)', value: 'Ryan' },
 ]
 
-const selectedVoice = ref('Tina')
+const selectedVoice = ref('Ethan')
 // Apply the default voice configured in the Realtime model panel.
-selectedVoice.value = realtimeModelStore.config.voice || 'Tina'
+selectedVoice.value = realtimeModelStore.config.voice || 'Ethan'
 
 /**
  * Surface a heads-up banner on the setup card when the chosen model has a
  * tight turn / duration cap per the Bailian docs. Most relevant for
  * `qwen3-omni-flash-realtime` (only 8 audio turns before older turns drop)
- * — but the qwen3.5 family also has 80/100-turn limits and 120-480 second
- * audio retention that surprise users during long meetings.
+ * — but the qwen3.5 / qwen3.8 families also have 80/100-turn limits and
+ * 120-480 second audio retention that surprise users during long meetings.
  */
 const modelLimits = computed(() => realtimeModelStore.limits)
 const showLimitsBanner = computed(() => {

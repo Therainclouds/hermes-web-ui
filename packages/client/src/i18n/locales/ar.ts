@@ -2025,7 +2025,7 @@ export default {
     realtimeApiKeyPlaceholder: 'sk-…',
     realtimeApiKeyHint: 'يُحفظ في ملف تعريف المستخدم الحالي على الخادم (مثل إعدادات نماذج STT/TTS)، لذلك يبقى معك عبر المتصفحات والأجهزة. يُستخدم كمفتاح افتراضي لوضع الاجتماع ومحادثات الصوت في الوقت الفعلي.',
     realtimeModelLabel: 'نموذج الوقت الفعلي',
-    realtimeModelPlaceholder: 'qwen3.5-omni-flash-realtime',
+    realtimeModelPlaceholder: 'qwen3.8-omni-flash-realtime',
     realtimeVoiceLabel: 'الصوت الافتراضي',
     realtimeAsrProviderHint: 'اختر مزود التعرف على الصوت لوضع الاجتماع. DashScope (الافتراضي) يمر عبر Paraformer / Fun-ASR؛ MiniMax يمر عبر واجهة MiniMax Speech-to-Text REST.',
     realtimeAsrProviderLabel: 'مزود ASR',
@@ -2576,6 +2576,7 @@ export default {
       resetFailed: 'تعذّر إعادة تعيين الصورة',
     },
     voice: {
+      qwenSharedKey: "Reuse the saved Qwen API key from this profile’s Realtime model settings, or enter a separate key.",
       activeTtsApi: 'واجهة API النشطة لتحويل النص إلى كلام',
       activeSttApi: 'واجهة API النشطة لتحويل الكلام إلى نص',
       ttsProvidersTitle: 'مزوّدو تحويل النص إلى كلام',

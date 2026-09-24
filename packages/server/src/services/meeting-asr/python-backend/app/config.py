@@ -87,23 +87,28 @@ class Settings:
         "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
     )
     paraformer_model: str = os.environ.get("PARAFORMER_MODEL", "paraformer-realtime-v2")
-    # Omni-Realtime (multimodal conversation model, e.g.
-    # `qwen3.5-omni-flash-realtime`). Reuses the same DASHSCOPE_API_KEY as the
-    # ASR service — we never expose a per-session key from the client.
+    # Omni-Realtime (multimodal conversation model). The frontend + SDK target
+    # `qwen3.8-omni-flash-realtime` (DashScope realtime endpoint), wired via
+    # `dashscope.audio.qwen_omni.OmniRealtimeConversation`. The proxy no longer
+    # speaks the raw OpenAI-Realtime WS — it drives the SDK and translates
+    # the SDK's event stream into the existing frontend protocol. Reuses the
+    # same DASHSCOPE_API_KEY as the ASR service — we never expose a per-session
+    # key from the client.
     omni_realtime_ws_url: str = os.environ.get(
         "OMNI_REALTIME_WS_URL",
         "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
     )
     omni_realtime_model: str = os.environ.get(
         "OMNI_REALTIME_MODEL",
-        "qwen3.5-omni-flash-realtime",
+        "qwen3.8-omni-flash-realtime",
     )
     omni_realtime_voice: str = os.environ.get(
         "OMNI_REALTIME_VOICE",
-        # `Tina` is the default voice for `qwen3.5-omni-flash-realtime`.
-        # `Cherry` (the previous default) is NOT in that model's voice
-        # catalogue — DashScope rejects it with 1007 / InvalidParameter.
-        "Tina",
+        # `Ethan` is the default voice shipped with the `qwen3.8-omni-flash-realtime`
+        # example in the DashScope SDK reference. The previous default `Tina`
+        # belonged to the qwen3.5 catalogue and the qwen3.8 server rejects it
+        # with `1007 InvalidParameter: Voice 'Tina' is not supported.`.
+        "Ethan",
     )
     omni_realtime_instructions: str = os.environ.get(
         "OMNI_REALTIME_INSTRUCTIONS",

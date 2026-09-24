@@ -1,115 +1,105 @@
 """
-DashScope Omni-Realtime WebSocket proxy.
+DashScope Omni-Realtime proxy, driven by the official Qwen Omni SDK.
 
 Bridges a frontend WebSocket and the Aliyun DashScope real-time multimodal
-endpoint that powers the Qwen-Omni-Realtime model family:
+endpoint that powers the Qwen-Omni-Realtime model family. The default target
+is ``qwen3.8-omni-flash-realtime`` (DashScope model id) which the SDK ships
+in ``dashscope.audio.qwen_omni.OmniRealtimeConversation``; earlier generations
+(``qwen3.5-omni-flash-realtime`` / ``qwen3.5-omni-plus-realtime``) were driven
+by hand-rolled WebSocket frames and are no longer supported here.
 
-  * `qwen3.5-omni-plus-realtime`  (latest, smarter, ≤100 audio turns)
-  * `qwen3.5-omni-flash-realtime` (latest, fastest, ≤80 audio turns)
-  * `qwen3-omni-flash-realtime`   (previous gen, ≤8 turns — hard limit)
+  * ``qwen3.8-omni-flash-realtime`` (default, fastest)
+  * Older Qwen-Omni-Realtime families — set ``OMNI_REALTIME_MODEL`` to the
+    model id you want; the proxy drives whatever the SDK accepts, but only
+    qwen3.8 has been validated against the operator presets shipped here.
 
-The wire protocol is OpenAI-Realtime-API compatible; the upstream URL is
-`wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=<name>` (or the
-region-specific `{WorkspaceId}.cn-beijing.maas.aliyuncs.com` variant).
+The wire protocol the SDK speaks is OpenAI-Realtime-API compatible; the
+upstream URL is ``wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=<name>``
+(or the region-specific ``{WorkspaceId}.cn-beijing.maas.aliyuncs.com``
+variant). Authentication uses the same DASHSCOPE_API_KEY as the rest of the
+meeting ASR service — we deliberately *do not* expose a per-session key from
+the client.
 
-Per the official Bailian docs:
+Thread / asyncio bridging
+------------------------
 
-  * `audio.input.format` / `audio.output.format` is the new (qwen3.5-only)
-    configuration shape; the legacy `input_audio_format` /
-    `output_audio_format` fields are still accepted on the older
-    `qwen3-omni-flash-realtime` family. We send the new shape because
-    the docs recommend it, and fall back to the legacy shape only when
-    the upstream rejects the new one (rare; defensive).
-  * `turn_detection.type = "semantic_vad"` is the recommended VAD mode
-    for the qwen3.5 family (server_vad is the older fallback). We default
-    to semantic_vad for any qwen3.5 model and server_vad otherwise.
-  * `session.finish` is the documented close event; we send it before
-    tearing the WebSocket down so the server can flush its audio buffer
-    and free the context window.
-  * Tool calling and `enable_search` are mutually exclusive
-    ("联网搜索和工具调用不兼容，不可同时开启"). When `tools` are present
-    we explicitly omit `enable_search` even if the parent model panel
-    defaults to true.
-  * Single session hard limit is 120 minutes; the upstream closes the
-    connection when hit.
+The SDK is built on top of the synchronous ``websocket-client`` library:
+``OmniRealtimeConversation`` runs its ``WebSocketApp`` on a daemon thread
+and delivers each event through ``OmniRealtimeCallback.on_event(message)``.
+FastAPI, by contrast, drives this proxy from an asyncio event loop.
 
-Frontend protocol (binary in, JSON events out):
+We bridge the two via an :class:`asyncio.Queue`:
+
+  * The SDK callback runs on the WebSocket thread; it forwards every parsed
+    event into the queue with ``loop.call_soon_threadsafe``.
+  * :meth:`OmniRealtimeProxy.upstream_events` is the asyncio consumer: it
+    pulls items off the queue, observes response / buffer lifecycle state,
+    and yields the original JSON strings to the FastAPI ``pump_upstream``
+    task (which then runs ``translate_event``).
+
+A sentinel (``_STOP_SENTINEL``) pushed by ``on_close`` or by our own
+:meth:`OmniRealtimeProxy.close` makes the upstream iterator return.
+
+Frontend protocol (binary in, JSON events out — unchanged from the previous
+hand-rolled proxy):
 
   Frame 1 (text, required): control JSON
-      {"type": "start", "voice": "Tina", "instructions": "...", "model": "...",
+      {"type": "start", "voice": "Ethan", "instructions": "...", "model": "...",
        "tools": [{"type": "function", "name": "...", "description": "...",
                   "parameters": {...}}, ...]}
     `model` / `voice` / `instructions` / `tools` are optional; the server-side
-    config.py defaults apply otherwise. We send `session.update` upstream with
-    these values immediately after the upstream handshake so the user can
-    switch persona / voice per session without restarting the backend. When
-    `tools` is provided, the session is configured with `tool_choice: "auto"`
-    and the model may emit function calls that are relayed to the client.
+    config.py defaults apply otherwise. The SDK's ``update_session`` is called
+    immediately after the upstream handshake with these values so the user
+    can switch persona / voice per session without restarting the backend.
+    When `tools` is provided the session is configured with
+    ``tool_choice: "auto"`` and the model may emit function calls that are
+    relayed to the client.
 
-  Subsequent frames (binary): raw PCM16 mono little-endian Int16
-    samples, exactly what the upstream API expects in `input_audio_buffer.append`
-    payloads (which we re-encode to base64 here). Sample rate is configurable
-    per session (16 kHz / 24 kHz / 48 kHz); we ship 16 kHz on input and
-    24 kHz on output by default, matching the docs' recommended defaults.
+  Subsequent frames (binary): raw PCM16 mono little-endian Int16 samples,
+    exactly what the upstream API expects in ``input_audio_buffer.append``
+    payloads (we re-encode to base64 here before forwarding via
+    ``OmniRealtimeConversation.append_audio``). The bridge resamples browser
+    mic input to 16 kHz on input and the upstream emits 24 kHz on output by
+    default, matching the SDK's ``AudioFormat.PCM_16000HZ_MONO_16BIT`` /
+    ``AudioFormat.PCM_24000HZ_MONO_16BIT`` enum values.
 
   Text frames (JSON): control frames the frontend can send at any time:
-      {"type": "cancel"}   — abort the current in-flight response
-      {"type": "ping"}     — heartbeat (echoed back as {"type": "pong"})
+      {"type": "cancel"} — abort the current in-flight response
+      {"type": "ping"}   — heartbeat (echoed back as {"type": "pong"})
       {"type": "tool_result", "call_id": "...", "output": "..."}
                            — client-side function-call result; forwarded
-                             upstream as `function_call_output` followed by
-                             `response.create` so the model continues.
+                             upstream as ``conversation.item.create``
+                             (function_call_output) followed by
+                             ``response.create`` so the model continues.
       {"type": "image", "image": "<base64 JPEG>"}
                            — one camera frame (data URL or raw base64);
-                             forwarded upstream as `input_image_buffer.append`.
+                             forwarded upstream as ``input_image_buffer.append``.
                              DashScope constraints: JPG/JPEG only, ≤256 KB
                              base64, ~1 fps recommended, and audio must be
-                             appended before image data — enforced per commit
-                             cycle (DashScope clears the audio + image
-                             buffers on every `input_audio_buffer.commit`,
-                             which in VAD mode the server does automatically
-                             at the end of each utterance), so frames landing
-                             in a post-commit window are dropped locally
-                             instead of surfacing the upstream "append image
-                             before append audio" error.
+                             appended before image data — enforced locally
+                             (see ``_audio_seen`` / ``_audio_appended_since_commit``
+                             below).
       {"type": "text", "text": "<prompt>"}
                            — inject a text-only user message (conversation
                              item) and ask the model to reply *within the same
                              session* (reuses the multimodal context it already
-                             saw/heard). Forwarded upstream as
-                             `conversation.item.create` (role=user,
-                             content=input_text) followed by `response.create`.
-                             Used by 口语对练's same-session closing review:
-                             the coach answers by voice, and its ASR transcript
-                             is relayed back as the usual transcript frames —
-                             no separate offline window or re-upload needed.
-      {"type": "stop"}     — flush audio buffer and close the session
-                             (we send `session.finish` upstream before
+                             saw/heard). Used by 口语对练's same-session closing
+                             review.
+      {"type": "stop"}   — flush audio buffer and close the session
+                             (we send ``session.finish`` upstream before
                              tearing the WS down).
 
-Server → frontend frames:
+Server → frontend frames (also unchanged):
 
   Binary frames: raw PCM16 mono (delta chunks from upstream
-    `response.audio.delta` events, concatenated and forwarded as soon as
+    ``response.audio.delta`` events, concatenated and forwarded as soon as
     they arrive).
 
-  Text frames (JSON):
-      {"type": "ready",        "session_id": "..."}
-      {"type": "listening"}                       — server VAD says user is speaking
-      {"type": "speech_stopped"}                  — server VAD says user stopped
-      {"type": "user_transcript", "text": "..."}  — final ASR of user's turn
-      {"type": "transcript_delta","text": "..."}  — incremental AI text
-      {"type": "transcript",      "text": "..."}  — final AI text
-      {"type": "response_started"}
-      {"type": "response_done"}
-      {"type": "error", "message": "..."}
-      {"type": "stopped"}
-      {"type": "pong"}
-
-Authentication uses the same DASHSCOPE_API_KEY as the rest of the meeting
-ASR service — we deliberately *do not* expose a per-session key from the
-client. The user pre-configures the key in the meeting wizard and the server
-injects it when opening the upstream WS.
+  Text frames (JSON): ``ready`` / ``listening`` / ``speech_stopped`` /
+    ``user_transcript`` / ``transcript_delta`` / ``transcript`` /
+    ``response_started`` / ``response_done`` / ``error`` / ``stopped`` /
+    ``pong``. The translator in :func:`translate_event` does the protocol
+    mapping.
 """
 
 from __future__ import annotations
@@ -121,8 +111,15 @@ import logging
 import uuid
 from typing import Any, AsyncIterator
 
-import websockets
-from websockets.exceptions import ConnectionClosed
+# DashScope SDK — provides the high-level conversation wrapper that drives
+# the OpenAI-Realtime WS on a background thread, plus the AudioFormat /
+# MultiModality enums the session config requires.
+from dashscope.audio.qwen_omni import (
+    AudioFormat,
+    MultiModality,
+    OmniRealtimeCallback,
+    OmniRealtimeConversation,
+)
 
 from .config import settings
 from ._log_helper import log_skip
@@ -131,10 +128,10 @@ log = logging.getLogger("omni_realtime_proxy")
 
 
 # Output is fixed at 24 kHz / 16-bit / mono — that's the rate DashScope sends
-# the audio delta frames at. Input sample rate is configurable per session
-# (16 / 24 / 48 kHz per the docs) but the bridge resamples browser mic input
-# to 16 kHz upstream before sending. Documenting both as module constants so
-# client + server stay in lock-step without a separate handshake.
+# the audio delta frames at. Input sample rate is also 16 kHz to match the
+# SDK's `AudioFormat.PCM_16000HZ_MONO_16BIT` enum (the SDK does not accept
+# 48 kHz on input). Documenting both as module constants so client + server
+# stay in lock-step without a separate handshake.
 OUTPUT_SAMPLE_RATE = 24000
 INPUT_SAMPLE_RATE = 16000
 BITS_PER_SAMPLE = 16
@@ -142,6 +139,11 @@ CHANNELS = 1
 
 # JSON object `arguments` == "no arguments were supplied".
 EMPTY_ARGUMENTS = ("", "{}")
+
+# Pushed by the SDK callback (``on_close``) or by ``OmniRealtimeProxy.close`` to
+# make the upstream iterator return. Sentinel object identity matters — must
+# not collide with a real JSON event (which is always a ``str``).
+_STOP_SENTINEL: object = object()
 
 
 def _as_arguments_json(value: object) -> str:
@@ -230,48 +232,69 @@ DEFAULT_INSTRUCTIONS = (
 )
 
 
-def _is_qwen35_family(model: str) -> bool:
-    """True for any qwen3.5-omni-realtime model. The qwen3.5 family uses the
-    new audio.input/output.format shape and prefers semantic_vad; the older
-    qwen3-omni-flash-realtime falls back to the legacy fields and server_vad.
+class _Callback(OmniRealtimeCallback):
+    """Bridge the SDK's thread-based callbacks into our asyncio queue.
+
+    The SDK delivers every parsed event through ``on_event(message)`` while
+    its ``WebSocketApp`` runs on a daemon thread. To stay inside the FastAPI
+    asyncio loop we push to a ``loop.call_soon_threadsafe`` queue and let
+    :meth:`OmniRealtimeProxy.upstream_events` drain it as an async iterator.
+
+    ``message`` is delivered as the parsed JSON ``dict`` (the SDK does the
+    ``json.loads`` for us in ``_on_message``). We re-encode it back to a JSON
+    string before placing it on the queue so the consumer side contract
+    (``translate_event`` expects a JSON string) is unchanged from the
+    previous hand-rolled proxy.
     """
-    return 'qwen3.5' in (model or '').lower()
 
+    def __init__(self, loop: asyncio.AbstractEventLoop, queue: asyncio.Queue) -> None:
+        self._loop = loop
+        self._queue = queue
 
-def _turn_detection(model: str) -> dict[str, Any]:
-    """Pick the VAD config the docs recommend for the model family.
+    def on_open(self) -> None:
+        # `connect()` already blocked until the underlying WS was up; nothing
+        # to signal. Empty callback (per the SDK interface) — kept explicit so
+        # future code can hook the open boundary if needed.
+        return
 
-    * qwen3.5 → `semantic_vad` (the docs explicitly recommend it)
-    * qwen3   → `server_vad` (the legacy fallback that older accounts are
-      already familiar with; the upstream also accepts `null` for manual
-      mode, but the browser UX is hands-free so we keep VAD on).
-    """
-    if _is_qwen35_family(model):
-        return {
-            "type": "semantic_vad",
-            "threshold": 0.5,
-            "silence_duration_ms": 800,
-        }
-    return {
-        "type": "server_vad",
-        "threshold": 0.5,
-        "silence_duration_ms": 800,
-    }
+    def on_close(self, close_status_code, close_msg) -> None:
+        # Upstream died; release the upstream iterator.
+        self._safe_put(_STOP_SENTINEL)
+
+    def on_event(self, message: Any) -> None:
+        # `message` is the parsed JSON dict; the previous proxy contract
+        # handed the FastAPI handler raw JSON strings, so re-encode here to
+        # avoid breaking ``translate_event``.
+        try:
+            encoded = json.dumps(message, ensure_ascii=False)
+        except (TypeError, ValueError):
+            log.warning("omni-realtime: dropping non-JSON-serialisable event: %r", message)
+            return
+        self._safe_put(encoded)
+
+    def _safe_put(self, item: Any) -> None:
+        try:
+            self._loop.call_soon_threadsafe(self._queue.put_nowait, item)
+        except RuntimeError:
+            # Loop is closed (proxy teardown raced with an SDK callback).
+            # Nothing left to do — the SDK thread is going away too.
+            pass
 
 
 class OmniRealtimeProxy:
-    """Bridges one frontend WS to one DashScope Omni-Realtime upstream WS.
+    """Bridges one frontend WS to one DashScope Omni-Realtime upstream via the
+    official SDK.
 
     Lifecycle:
 
-        proxy = OmniRealtimeProxy(voice="Tina", instructions="...")
-        await proxy.connect()                 # opens upstream + sends session.update
-        await proxy.send_audio(pcm_bytes)     # binary frame, PCM16@24k mono
+        proxy = OmniRealtimeProxy(voice="Ethan", instructions="...")
+        await proxy.connect()                 # opens upstream + configures session
+        await proxy.send_audio(pcm_bytes)     # binary frame, PCM16@16k mono
         await proxy.commit_audio()            # optional: flush buffer (server VAD also flushes)
         await proxy.cancel()                  # abort current response
         await proxy.close()
 
-    The proxy translates between OpenAI-Realtime events and the small
+    The proxy translates between the SDK's event stream and the small
     frontend protocol documented in the module docstring.
     """
 
@@ -289,9 +312,13 @@ class OmniRealtimeProxy:
         # {"type": "function", "name", "description", "parameters"}). The
         # client owns execution — the proxy only relays calls and results.
         self.tools = [dict(tool) for tool in tools or [] if isinstance(tool, dict)]
+        # Local session id (a uuid we mint; replaced by the SDK's authoritative
+        # session id once `session.created` arrives in upstream_events()).
         self.session_id = str(uuid.uuid4())
-        self.upstream: websockets.WebSocketClientProtocol | None = None
-        self._send_lock = asyncio.Lock()
+        # asyncio bridge state — populated by connect(), torn down by close().
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._queue: asyncio.Queue | None = None
+        self._conversation: OmniRealtimeConversation | None = None
         self._closed = False
         # Response-lifecycle gate: DashScope rejects any attempt to create a
         # new response while one is still in flight with
@@ -323,7 +350,7 @@ class OmniRealtimeProxy:
     # --- upstream lifecycle --------------------------------------------------
 
     async def connect(self) -> None:
-        """Open the upstream WS, send `session.update`, and confirm session.created."""
+        """Open the upstream SDK WS, configure the session, and ready for input."""
         if not settings.dashscope_api_key:
             raise RuntimeError("DASHSCOPE_API_KEY is not configured")
 
@@ -342,120 +369,91 @@ class OmniRealtimeProxy:
                     f"cn-beijing.maas.aliyuncs.com/"
                     f"{base[len('wss://dashscope.aliyuncs.com/'):]}"
                 )
-        url = f"{base}?model={self.model}"
-        headers = [
-            ("Authorization", f"Bearer {settings.dashscope_api_key}"),
-            ("User-Agent", "meeting-asr-cloud/omni-realtime/0.1"),
-        ]
-        log.info("omni-realtime: connecting to %s (session=%s)", url, self.session_id)
-        self.upstream = await websockets.connect(
-            url,
-            extra_headers=headers,
-            max_size=32 * 1024 * 1024,
-            ping_interval=20,
-            ping_timeout=20,
+        # The SDK appends `?model=<name>` to the base URL itself, so we hand
+        # it the bare URL.
+        if self._loop is None:
+            self._loop = asyncio.get_running_loop()
+        if self._queue is None:
+            self._queue = asyncio.Queue()
+
+        callback = _Callback(self._loop, self._queue)
+        self._conversation = OmniRealtimeConversation(
+            model=self.model,
+            callback=callback,
+            url=base,
+            api_key=settings.dashscope_api_key,
+            workspace=settings.omni_realtime_workspace_id or None,
         )
 
-        # Configure the session: text + audio I/O, voice, persona instructions.
-        # The Omni endpoint accepts an OpenAI-Realtime-shaped session object.
-        #
-        # Per the Qwen-Omni-Realtime docs:
-        #   * qwen3.5 models use `audio.input.format` / `audio.output.format`
-        #     with explicit sample_rate. The legacy `input_audio_format` /
-        #     `output_audio_format` fields are documented as deprecated for
-        #     qwen3.5 and still required by qwen3. We send the new shape —
-        #     DashScope accepts both for the qwen3.5 family and it remains
-        #     backwards compatible with the older model.
-        #   * VAD type defaults to `semantic_vad` for qwen3.5 (docs
-        #     recommend it) and `server_vad` for qwen3-omni-flash-realtime.
-        #   * Tool calling and `enable_search` are mutually exclusive; when
-        #     `tools` are present we deliberately omit enable_search even if
-        #     it would otherwise default to true.
-        session: dict[str, Any] = {
-            "modalities": ["text", "audio"],
-            "voice": self.voice,
-            "audio": {
-                "input": {
-                    "format": {
-                        "type": "pcm",
-                        "sample_rate": settings.omni_realtime_input_sample_rate,
-                    },
-                },
-                "output": {
-                    "format": {
-                        "type": "pcm",
-                        "sample_rate": settings.omni_realtime_output_sample_rate,
-                    },
-                },
-            },
-            "instructions": self.instructions,
-            "turn_detection": _turn_detection(self.model),
+        log.info(
+            "omni-realtime: connecting via SDK to %s?model=%s (session=%s)",
+            base,
+            self.model,
+            self.session_id,
+        )
+
+        # The SDK's `connect()` blocks (busy-poll up to 5 s) on the WS
+        # handshake. Run it on a worker thread so concurrent sessions and
+        # other FastAPI handlers keep moving.
+        try:
+            await asyncio.to_thread(self._conversation.connect)
+        except Exception as exc:
+            self._conversation = None
+            raise
+
+        # Configure the session through the SDK. The SDK forwards arbitrary
+        # kwargs into the `session.update` payload, which lets us keep the
+        # previous tool-choice / enable_search semantics without re-implementing
+        # the wire format.
+        update_kwargs: dict[str, Any] = {
+            "input_audio_format": AudioFormat.PCM_16000HZ_MONO_16BIT,
+            "output_audio_format": AudioFormat.PCM_24000HZ_MONO_16BIT,
+            "enable_input_audio_transcription": True,
+            # Server-VAD is the SDK's documented default for qwen3-omni-flash
+            # and the qwen3.8 family; hands-free UX is unchanged from the
+            # previous proxy.
+            "enable_turn_detection": True,
+            "turn_detection_type": "server_vad",
+            "turn_detection_threshold": 0.5,
+            "turn_detection_silence_duration_ms": 800,
         }
-        # `enable_search` is opt-in: when set, the upstream toggles web search
-        # on. Note that the docs forbid combining it with tools, so the
-        # tool branch above strips it again even if an operator leaves it on.
-        if settings.omni_realtime_enable_search and not self.tools:
-            session["enable_search"] = True
-            session["search_options"] = {"enable_source": True}
         if self.tools:
-            session["tools"] = self.tools
-            session["tool_choice"] = "auto"
-            # Tool calling is incompatible with enable_search. Be explicit so
-            # an operator who set `OMNI_REALTIME_ENABLE_SEARCH=true` cannot
-            # accidentally break the realtime dialog by turning tools on.
-            session.pop("enable_search", None)
+            # Tool calling is incompatible with enable_search per the docs;
+            # when tools are present, the SDK forwards `tools` and
+            # `tool_choice="auto"` into the session.update payload.
+            update_kwargs["tools"] = self.tools
+            update_kwargs["tool_choice"] = "auto"
+        try:
+            self._conversation.update_session(
+                output_modalities=[MultiModality.TEXT, MultiModality.AUDIO],
+                voice=self.voice,
+                instructions=self.instructions,
+                **update_kwargs,
+            )
+        except Exception as exc:
+            log.exception("omni-realtime: session.update failed: %s", exc)
+            await self.close()
+            raise
 
-        session_update: dict[str, Any] = {
-            "type": "session.update",
-            "session": session,
-        }
-        async with self._send_lock:
-            await self.upstream.send(json.dumps(session_update))
-
-        # Drain the synchronous session.created / session.updated acknowledgements.
-        # We accept either event name as confirmation — some DashScope versions
-        # emit only one of them, depending on protocol revision.
-        for _ in range(4):
-            try:
-                raw = await asyncio.wait_for(self.upstream.recv(), timeout=10.0)
-            except (asyncio.TimeoutError, ConnectionClosed) as exc:
-                raise RuntimeError(f"omni-realtime: handshake failed: {exc}") from exc
-            if isinstance(raw, (bytes, bytearray)):
-                continue
-            try:
-                msg = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            event = msg.get("type") or msg.get("event")
-            if event in ("session.created", "session.updated"):
-                log.info(
-                    "omni-realtime: session ready (model=%s, family=%s, event=%s)",
-                    self.model,
-                    "qwen3.5" if _is_qwen35_family(self.model) else "qwen3",
-                    event,
-                )
-                return
-            if event == "error":
-                raise RuntimeError(
-                    "omni-realtime: server rejected session.update: "
-                    f"{msg.get('error', {}).get('message') or msg}"
-                )
-        raise RuntimeError("omni-realtime: did not receive session.created within 4 frames")
+        log.info(
+            "omni-realtime: session ready (model=%s, voice=%s, tools=%d)",
+            self.model,
+            self.voice,
+            len(self.tools),
+        )
 
     async def send_audio(self, pcm_bytes: bytes) -> None:
         """Append a binary PCM16 chunk to the upstream input_audio_buffer."""
-        if self.upstream is None:
+        if self._conversation is None or self._closed:
             raise RuntimeError("omni-realtime: upstream not connected")
         if not pcm_bytes:
             return
         self._audio_seen = True
         self._audio_appended_since_commit = True
-        event = {
-            "type": "input_audio_buffer.append",
-            "audio": base64.b64encode(pcm_bytes).decode("ascii"),
-        }
-        async with self._send_lock:
-            await self.upstream.send(json.dumps(event))
+        audio_b64 = base64.b64encode(pcm_bytes).decode("ascii")
+        # SDK's `append_audio` is synchronous (websocket-client send); run it
+        # on a worker thread so a slow send never stalls the event loop.
+        await asyncio.to_thread(self._conversation.append_audio, audio_b64)
 
     async def send_image(self, image: str) -> None:
         """Append one JPEG camera frame to the upstream input_image_buffer.
@@ -476,7 +474,7 @@ class OmniRealtimeProxy:
         session start; ``_audio_appended_since_commit`` guards every
         post-commit window.
         """
-        if self.upstream is None:
+        if self._conversation is None or self._closed:
             raise RuntimeError("omni-realtime: upstream not connected")
         if not self._audio_seen:
             log.warning("omni-realtime: dropping image frame — no audio appended yet")
@@ -496,9 +494,9 @@ class OmniRealtimeProxy:
             image = image.strip()
         if not image:
             return
-        event = {"type": "input_image_buffer.append", "image": image}
-        async with self._send_lock:
-            await self.upstream.send(json.dumps(event))
+        # SDK's `append_video` is synchronous (websocket-client send); run it
+        # on a worker thread so a slow send never stalls the event loop.
+        await asyncio.to_thread(self._conversation.append_video, image)
         self._image_frames_sent += 1
         if self._image_frames_sent == 1 or self._image_frames_sent % 60 == 0:
             log.info(
@@ -520,26 +518,22 @@ class OmniRealtimeProxy:
         collides with the live response and returns
         "Conversation already has an active response".
         """
-        if self.upstream is None:
+        if self._conversation is None or self._closed:
             return
         await self._await_response_done("commit_audio")
-        event = {"type": "input_audio_buffer.commit"}
         try:
-            async with self._send_lock:
-                await self.upstream.send(json.dumps(event))
-        except ConnectionClosed:
-            pass
+            await asyncio.to_thread(self._conversation.commit)
+        except Exception as exc:
+            log_skip("omni_realtime_commit_audio", exc)
 
     async def cancel(self) -> None:
         """Abort the current in-flight response (used by PTT release)."""
-        if self.upstream is None:
+        if self._conversation is None or self._closed:
             return
-        event = {"type": "response.cancel"}
         try:
-            async with self._send_lock:
-                await self.upstream.send(json.dumps(event))
-        except ConnectionClosed:
-            pass
+            await asyncio.to_thread(self._conversation.cancel_response)
+        except Exception as exc:
+            log_skip("omni_realtime_cancel", exc)
 
     async def send_tool_output(self, call_id: str, output: str) -> None:
         """Return a client-side function-call result and ask for the next turn.
@@ -554,23 +548,19 @@ class OmniRealtimeProxy:
         race with the still-active response and DashScope would reject with
         "Conversation already has an active response".
         """
-        if self.upstream is None or not call_id:
+        if self._conversation is None or self._closed or not call_id:
             return
         await self._await_response_done("send_tool_output")
         item = {
-            "type": "conversation.item.create",
-            "item": {
-                "type": "function_call_output",
-                "call_id": call_id,
-                "output": output,
-            },
+            "type": "function_call_output",
+            "call_id": call_id,
+            "output": output,
         }
         try:
-            async with self._send_lock:
-                await self.upstream.send(json.dumps(item))
-                await self.upstream.send(json.dumps({"type": "response.create"}))
-        except ConnectionClosed:
-            pass
+            await asyncio.to_thread(self._conversation.create_item, item)
+            await asyncio.to_thread(self._conversation.create_response)
+        except Exception as exc:
+            log_skip("omni_realtime_send_tool_output", exc)
 
     async def send_text(self, text: str) -> None:
         """Inject a text-only user message and ask for a reply (same session).
@@ -582,26 +572,22 @@ class OmniRealtimeProxy:
         and saw. The answer comes back as the model's spoken response whose
         ASR transcript is relayed to the client as usual.
         """
-        if self.upstream is None:
+        if self._conversation is None or self._closed:
             raise RuntimeError("omni-realtime: upstream not connected")
         prompt = str(text or "").strip()
         if not prompt:
             return
         await self._await_response_done("send_text")
         item = {
-            "type": "conversation.item.create",
-            "item": {
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": prompt}],
-            },
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": prompt}],
         }
         try:
-            async with self._send_lock:
-                await self.upstream.send(json.dumps(item))
-                await self.upstream.send(json.dumps({"type": "response.create"}))
-        except ConnectionClosed:
-            pass
+            await asyncio.to_thread(self._conversation.create_item, item)
+            await asyncio.to_thread(self._conversation.create_response)
+        except Exception as exc:
+            log_skip("omni_realtime_send_text", exc)
 
     async def _await_response_done(self, action: str, timeout: float = 30.0) -> None:
         """Block until no response is in flight, with a safety timeout.
@@ -623,57 +609,75 @@ class OmniRealtimeProxy:
                 timeout,
             )
 
-    # --- upstream event pump -------------------------------------------------
+    # --- upstream event pump ---------------------------------------------------
 
-    async def upstream_events(self) -> AsyncIterator[bytes | str]:
-        """Yield raw frames (bytes or JSON strings) from the upstream.
+    async def upstream_events(self) -> AsyncIterator[str]:
+        """Yield raw JSON strings from the upstream.
 
-        Returning the raw frame (instead of a typed dict) lets the FastAPI
-        handler forward them to the browser with minimal latency — decoding
-        and re-encoding would round-trip large base64 audio payloads.
+        Returns ``str`` (not ``bytes``) because the SDK never delivers binary
+        frames — the previous proxy forwarded audio deltas as raw PCM16
+        bytes, but the SDK base64-decodes for us inside
+        ``_on_message`` and hands us the parsed JSON event. We re-encode on
+        the way out so the consumer contract (``translate_event``) is
+        unchanged.
+
+        Side effects: update ``_response_active`` / ``_response_done_event``
+        / ``_audio_appended_since_commit`` from each event so the gating
+        logic in ``send_tool_output`` / ``commit_audio`` / ``send_text``
+        sees consistent state when the FastAPI handler races against
+        upstream lifecycle events.
         """
-        if self.upstream is None:
+        if self._queue is None:
             raise RuntimeError("omni-realtime: upstream not connected")
-        try:
-            async for raw in self.upstream:
-                if self._closed:
-                    return
-                # Track response lifecycle so downstream actions that request
-                # a new response (`commit_audio`, `send_tool_output`) can
-                # wait for the in-flight one to finish — see `_response_active`
-                # docstring in __init__.
-                if isinstance(raw, str):
-                    try:
-                        msg = json.loads(raw)
-                    except json.JSONDecodeError:
-                        pass
-                    else:
-                        evt = msg.get("type") or msg.get("event")
-                        if evt == "response.created":
-                            self._response_active = True
-                            self._response_done_event.clear()
-                        elif evt in ("response.done", "response.cancelled"):
-                            if self._response_active:
-                                self._response_active = False
-                                self._response_done_event.set()
-                        elif evt in (
-                            "input_audio_buffer.speech_started",
-                            "input_audio_buffer.speech_stopped",
-                            "input_audio_buffer.committed",
-                            "input_audio_buffer.cleared",
-                        ):
-                            # DashScope commits (and thereby clears) the
-                            # audio + image buffers at the end of each VAD
-                            # utterance, and truncates the buffer at speech
-                            # onset. Until fresh audio is appended again any
-                            # image frame would be rejected with "append
-                            # image before append audio" — reset the
-                            # freshness flag so `send_image` drops frames
-                            # that land in the post-commit window.
-                            self._audio_appended_since_commit = False
-                yield raw
-        except ConnectionClosed:
-            log.info("omni-realtime: upstream connection closed")
+        while True:
+            item = await self._queue.get()
+            if item is _STOP_SENTINEL:
+                return
+            if not isinstance(item, str):
+                # Defensive: the queue only ever holds strings + sentinel; if
+                # a future change puts another shape here, log + drop instead
+                # of crashing the pump.
+                log.warning("omni-realtime: dropping unexpected queue item: %r", item)
+                continue
+            # Observe lifecycle events BEFORE yielding so the consumer sees a
+            # consistent snapshot. We only inspect events we care about — the
+            # full translation still happens in `translate_event`.
+            try:
+                msg = json.loads(item)
+            except json.JSONDecodeError:
+                yield item
+                continue
+            evt = msg.get("type") or msg.get("event")
+            if evt == "response.created":
+                self._response_active = True
+                self._response_done_event.clear()
+            elif evt in ("response.done", "response.cancelled"):
+                if self._response_active:
+                    self._response_active = False
+                    self._response_done_event.set()
+            elif evt in (
+                "input_audio_buffer.speech_started",
+                "input_audio_buffer.speech_stopped",
+                "input_audio_buffer.committed",
+                "input_audio_buffer.cleared",
+            ):
+                # DashScope commits (and thereby clears) the audio + image
+                # buffers at the end of each VAD utterance, and truncates
+                # the buffer at speech onset. Until fresh audio is appended
+                # again any image frame would be rejected with "append
+                # image before append audio" — reset the freshness flag so
+                # `send_image` drops frames that land in the post-commit
+                # window.
+                self._audio_appended_since_commit = False
+            elif evt == "session.created":
+                # The SDK hands us an authoritative session id from upstream;
+                # surface it as our own so log lines + downstream callers
+                # match what the upstream actually created.
+                session = msg.get("session") or {}
+                upstream_sid = session.get("id")
+                if upstream_sid:
+                    self.session_id = upstream_sid
+            yield item
 
     async def close(self) -> None:
         """Tear the session down cleanly.
@@ -686,18 +690,28 @@ class OmniRealtimeProxy:
         if self._closed:
             return
         self._closed = True
-        if self.upstream is not None:
+        conversation = self._conversation
+        # Release the upstream iterator first so the pump task returns even
+        # if the SDK close hangs.
+        if self._queue is not None and self._loop is not None:
             try:
-                async with self._send_lock:
-                    await self.upstream.send(json.dumps({"type": "session.finish"}))
-            except (ConnectionClosed, RuntimeError, Exception) as exc:
-                # Best-effort: if the upstream is already gone we don't care.
+                self._loop.call_soon_threadsafe(self._queue.put_nowait, _STOP_SENTINEL)
+            except RuntimeError:
+                pass
+        if conversation is not None:
+            try:
+                # Send session.finish async (no waiting), then close. The
+                # SDK will dispatch on_close shortly after, which would
+                # also push the sentinel — call_soon_threadsafe above is
+                # idempotent against that.
+                conversation.end_session_async()
+            except Exception as exc:
                 log_skip("omni_realtime_session_finish", exc)
             try:
-                await self.upstream.close()
+                await asyncio.to_thread(conversation.close)
             except Exception as exc:
                 log_skip("omni_realtime_close", exc)
-            self.upstream = None
+            self._conversation = None
 
 
 def translate_event(raw: str | bytes) -> str | bytes | None:

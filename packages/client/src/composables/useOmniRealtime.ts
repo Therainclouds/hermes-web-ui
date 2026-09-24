@@ -2,8 +2,8 @@
  * Omni-Realtime client composable.
  *
  * Wraps the `/ws/omni-realtime` WebSocket exposed by the meeting backend
- * (which itself proxies DashScope's `qwen3.5-omni-flash-realtime` model)
- * and handles:
+ * (which itself proxies DashScope's `qwen3.8-omni-flash-realtime` model
+ * via the `OmniRealtimeConversation` SDK) and handles:
  *
  *   - Audio capture: microphone → Float32 → resample to 24 kHz → Int16 PCM →
  *     binary WebSocket frames.

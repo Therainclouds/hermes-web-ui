@@ -17,9 +17,9 @@ import { useProfilesStore } from './profiles'
 export interface RealtimeModelConfig {
   /** 千问/DashScope API Key（sk-...），供会议 ASR 与 Realtime 共用。 */
   apiKey: string
-  /** Realtime 对话模型，默认 qwen3.5-omni-flash-realtime。 */
+  /** Realtime 对话模型，默认 qwen3.8-omni-flash-realtime。 */
   model: string
-  /** 默认语音（qwen3.5-omni-flash-realtime 目录内有效）。 */
+  /** 默认语音（qwen3.8-omni-flash-realtime 目录内有效）。 */
   voice: string
   /**
    * 会议 ASR provider：'dashscope'（默认 — DashScope Paraformer/Fun-ASR）或
@@ -56,8 +56,8 @@ export interface RealtimeModelLimits {
 
 const STORAGE_KEY = 'hermes.realtimeModel'
 
-const DEFAULT_MODEL = 'qwen3.5-omni-flash-realtime'
-const DEFAULT_VOICE = 'Tina'
+const DEFAULT_MODEL = 'qwen3.8-omni-flash-realtime'
+const DEFAULT_VOICE = 'Ethan'
 /** MiniMax speech-to-text API defaults (https://platform.minimax.cn/docs/api-reference/speech-to-text). */
 const DEFAULT_MINIMAX_ASR_MODEL = 'asr-1.0'
 const DEFAULT_MINIMAX_BASE_URL = 'https://api.minimaxi.com'
@@ -65,6 +65,13 @@ const SUPPORTED_ASR_PROVIDERS = new Set(['dashscope', 'minimax'])
 
 /** Per-model limits from the Bailian docs (https://help.aliyun.com/zh/model-studio/qwen-omni-realtime). */
 const MODEL_LIMITS: Record<string, RealtimeModelLimits> = {
+  'qwen3.8-omni-flash-realtime': {
+    // qwen3.8 inherits the same context-window caps as qwen3.5 flash; if
+    // DashScope publishes a stricter ceiling for qwen3.8, this is the row
+    // to update first.
+    audioTurns: 80, videoTurns: 50, audioSeconds: 480, videoSeconds: 120,
+    label: 'qwen3.8-omni-flash-realtime',
+  },
   'qwen3.5-omni-plus-realtime': {
     audioTurns: 100, videoTurns: 50, audioSeconds: 600, videoSeconds: 240,
     label: 'qwen3.5-omni-plus-realtime',

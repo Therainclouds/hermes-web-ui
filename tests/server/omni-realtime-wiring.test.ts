@@ -43,22 +43,27 @@ describe('omni-realtime endpoint wiring', () => {
     expect(source).toContain('wss://dashscope.aliyuncs.com/api-ws/v1/realtime')
   })
 
-  it('OmniRealtimeProxy uses the qwen3.5 audio.input/output.format shape and semantic_vad', () => {
+  it('OmniRealtimeProxy is now driven by the dashscope Omni-Realtime SDK', () => {
+    // The hand-rolled OpenAI-Realtime WS proxy was replaced with the official
+    // `dashscope.audio.qwen_omni.OmniRealtimeConversation` SDK (qwen3.8+).
+    // The proxy still owns the FastAPI↔frontend protocol, the per-session
+    // response-gate, and the audio-before-image prefilter — it just lets
+    // the SDK own the WebSocket lifecycle, VAD, and `session.update`.
     const source = readFileSync(`${PY_APP}/omni_realtime_proxy.py`, 'utf8')
-    // New (qwen3.5) audio config shape per the docs.
-    expect(source).toContain('"audio": {')
-    expect(source).toContain('"input": {')
-    expect(source).toContain('"output": {')
-    expect(source).toContain('"sample_rate": settings.omni_realtime_input_sample_rate')
-    expect(source).toContain('"sample_rate": settings.omni_realtime_output_sample_rate')
-    // VAD per docs: semantic_vad for qwen3.5 family, server_vad fallback for qwen3.
-    expect(source).toContain('"semantic_vad"')
-    expect(source).toContain('_is_qwen35_family')
-    // `session.finish` close event per docs.
-    expect(source).toContain('"type": "session.finish"')
-    // Tool calling is incompatible with enable_search; the proxy must not
-    // forward enable_search when tools are present.
-    expect(source).toMatch(/session\.pop\(\s*["']enable_search["']/)
+    expect(source).toContain('OmniRealtimeConversation')
+    expect(source).toContain('AudioFormat')
+    expect(source).toContain('MultiModality')
+    expect(source).toContain('OmniRealtimeCallback')
+    // VAD is configured through the SDK (server_vad is the qwen3.8 default
+    // documented by the SDK reference).
+    expect(source).toContain('turn_detection_type')
+    expect(source).toContain('server_vad')
+    // `session.finish` close event per docs — proxied via end_session_async.
+    expect(source).toContain('end_session_async')
+    expect(source).toContain('session.finish')
+    // Tools + tool_choice="auto" for function calling.
+    expect(source).toContain('"tool_choice"')
+    expect(source).toContain('"auto"')
   })
 
   it('OmniRealtimeProxy rewrites the WSS URL with WorkspaceId when configured', () => {
@@ -72,8 +77,8 @@ describe('omni-realtime endpoint wiring', () => {
     expect(source).toMatch(/omni_realtime_ws_url:\s*str\s*=\s*os\.environ\.get\(/)
     expect(source).toMatch(/omni_realtime_model:\s*str\s*=\s*os\.environ\.get\(/)
     expect(source).toMatch(/omni_realtime_voice:\s*str\s*=\s*os\.environ\.get\(/)
-    // default model must be the user-requested qwen3.5 omni flash realtime
-    expect(source).toContain('qwen3.5-omni-flash-realtime')
+    // default model must be the user-requested qwen3.8 omni flash realtime
+    expect(source).toContain('qwen3.8-omni-flash-realtime')
     // New per the Bailian docs: input/output sample rates + workspace-id
     // override for region-routed WSS endpoints.
     expect(source).toMatch(/omni_realtime_input_sample_rate:\s*int/)
@@ -179,9 +184,9 @@ describe('omni-realtime client wiring', () => {
     expect(block).not.toMatch(/echoCancellation\s*:\s*\{\s*ideal\s*:\s*false\s*\}/)
   })
 
-  it('omni-realtime voice pickers only offer voices valid for qwen3.5-omni-flash-realtime', () => {
+  it('omni-realtime voice pickers only offer voices valid for qwen3.8-omni-flash-realtime', () => {
     // Regression guard: Cherry / Chelsie / Adam are not in the
-    // `qwen3.5-omni-flash-realtime` voice catalogue — DashScope rejects
+    // `qwen3.8-omni-flash-realtime` voice catalogue — DashScope rejects
     // them with `1007 InvalidParameter: Voice 'X' is not supported.`
     // (The meeting-side picker that used to be checked here was removed with
     // the meeting realtime-dialog entry; the chat stage remains.)
@@ -194,7 +199,7 @@ describe('omni-realtime client wiring', () => {
       for (const voice of disallowed) {
         expect(
           source,
-          `${path} must not offer '${voice}' as a voice option (not supported by qwen3.5-omni-flash-realtime)`,
+          `${path} must not offer '${voice}' as a voice option (not supported by qwen3.8-omni-flash-realtime)`,
         ).not.toMatch(new RegExp(`value:\\s*['"]${voice}['"]`))
       }
       // Each picker must also have a non-empty default that's actually in its
@@ -209,7 +214,7 @@ describe('omni-realtime client wiring', () => {
     }
   })
 
-  it('omni-realtime server default voice is valid for qwen3.5-omni-flash-realtime', () => {
+  it('omni-realtime server default voice is valid for qwen3.8-omni-flash-realtime', () => {
     const source = readFileSync(`${PY_APP}/config.py`, 'utf8')
     // Slice the file at the `omni_realtime_voice:` field and stop at the
     // closing paren of its `os.environ.get(...)` call so we don't pick up
@@ -226,8 +231,8 @@ describe('omni-realtime client wiring', () => {
     expect(literals.length, 'omni_realtime_voice default literal not found').toBeGreaterThan(1)
     const defaultVoice = literals[literals.length - 1].match(/"([\w]+)"/)![1]
     expect(
-      ['Tina', 'Serena', 'Ethan', 'Jennifer', 'Ryan'].includes(defaultVoice),
-      `omni_realtime_voice default '${defaultVoice}' is not in the qwen3.5 catalogue`,
+      ['Ethan', 'Tina', 'Serena', 'Jennifer', 'Ryan'].includes(defaultVoice),
+      `omni_realtime_voice default '${defaultVoice}' is not in the qwen3.8 catalogue`,
     ).toBe(true)
   })
 
@@ -508,15 +513,16 @@ describe('omni-realtime camera frame wiring', () => {
     expect(source).toMatch(/append image before append audio/)
     // The filter must be inside the `translate_event()` error branch — pin
     // to that function's body so the regex cannot accidentally match an
-    // unrelated upstream pump `event == "error"` branch elsewhere.
-    // The proxy file is CRLF, so allow either line ending in the anchor.
-    const translateEventBody = source.match(
-      /def translate_event\([\s\S]*?\r?\n    return None\r?\n/,
-    )
-    expect(translateEventBody, 'translate_event() body must end with return None').toBeTruthy()
-    expect(translateEventBody![0]).toMatch(/event == "error"/)
-    expect(translateEventBody![0]).toMatch(/append image before append audio/)
-    expect(translateEventBody![0]).toMatch(/return\s+None/)
+    // unrelated upstream pump `event == "error"` branch elsewhere. The
+    // function body must also contain a trailing `return None` so we never
+    // leak an unrecognised event to the client.
+    const translateEventStart = source.indexOf('def translate_event(')
+    expect(translateEventStart, 'translate_event() not found').toBeGreaterThan(-1)
+    const translateEventBody = source.slice(translateEventStart)
+    expect(translateEventBody, 'translate_event() body must end with return None')
+      .toMatch(/event == "error"/)
+    expect(translateEventBody).toMatch(/append image before append audio/)
+    expect(translateEventBody).toMatch(/return\s+None\s*\n\s*$/m)
   })
 
   it('useOmniRealtime exposes sendImage and sends the image control frame', () => {
@@ -577,17 +583,19 @@ describe('omni-realtime server response-lifecycle gating', () => {
   it('send_tool_output waits for the in-flight response to drain', () => {
     const source = readFileSync(proxy, 'utf8')
     // _await_response_done must be called inside send_tool_output before
-    // the response.create is sent upstream.
+    // any response.create is sent upstream. The proxy now drives the SDK
+    // (DashScope `OmniRealtimeConversation.create_response`), so we look
+    // for the SDK call instead of a raw WS frame.
     const methodBody = source.match(/async def send_tool_output[\s\S]*?async def _await_response_done/)
     expect(methodBody, 'send_tool_output method body missing').not.toBeNull()
     const body = methodBody![0]
     const gateIdx = body.indexOf('_await_response_done')
-    const createIdx = body.indexOf('"type": "response.create"')
+    const createIdx = body.indexOf('create_response')
     expect(gateIdx, 'send_tool_output must gate on _await_response_done').toBeGreaterThan(-1)
-    expect(createIdx, 'send_tool_output must send response.create').toBeGreaterThan(-1)
+    expect(createIdx, 'send_tool_output must invoke conversation.create_response').toBeGreaterThan(-1)
     expect(
       gateIdx < createIdx,
-      '_await_response_done must run BEFORE response.create is sent upstream',
+      '_await_response_done must run BEFORE the new response is requested upstream',
     ).toBe(true)
   })
 
@@ -597,9 +605,9 @@ describe('omni-realtime server response-lifecycle gating', () => {
     expect(methodBody, 'commit_audio method body missing').not.toBeNull()
     const body = methodBody![0]
     const gateIdx = body.indexOf('_await_response_done')
-    const commitIdx = body.indexOf('"type": "input_audio_buffer.commit"')
+    const commitIdx = body.indexOf('_conversation.commit')
     expect(gateIdx, 'commit_audio must gate on _await_response_done').toBeGreaterThan(-1)
-    expect(commitIdx, 'commit_audio must send input_audio_buffer.commit').toBeGreaterThan(-1)
+    expect(commitIdx, 'commit_audio must invoke conversation.commit').toBeGreaterThan(-1)
     expect(
       gateIdx < commitIdx,
       '_await_response_done must run BEFORE input_audio_buffer.commit is sent upstream',
@@ -808,14 +816,14 @@ describe('OmniRealtimeStage UI regressions', () => {
     expect(panel).toMatch(/openOmniRealtime\(\s*\{\s*createFresh:\s*true,\s*persistRemote:\s*true/)
   })
 
-  it('realtime drawer exposes a Flash vs Plus model picker', () => {
+it('realtime drawer exposes a qwen3.8 Flash model picker', () => {
     const panel = readFileSync(
-      'packages/client/src/components/hermes/chat/ChatPanel.vue',
+      `${CLIENT_SRC}/components/hermes/chat/ChatPanel.vue`,
       'utf8',
     )
-    // Both Qwen-Omni-Realtime model ids must appear in the drawer template.
-    expect(panel).toContain('qwen3.5-omni-flash-realtime')
-    expect(panel).toContain('qwen3.5-omni-plus-realtime')
+    // The drawer template must advertise the qwen3.8 omni-flash-realtime
+    // model id (post-replacement default).
+    expect(panel).toContain('qwen3.8-omni-flash-realtime')
     // The picker must be wired to the realtime model store on confirm so
     // OmniRealtimeStage reads the user's choice on connect.
     expect(panel).toMatch(/realtimeModelStore\.updateConfig\(\s*\{\s*model:\s*newChatRealtimeModel\.value/)

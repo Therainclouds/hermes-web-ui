@@ -13,7 +13,7 @@ import { REALTIME_PROFILE_SETTINGS_TABLE } from './schemas'
  */
 
 export interface RealtimeModelStoredSettings {
-  /** Realtime dialog model id, e.g. `qwen3.5-omni-flash-realtime`. */
+  /** Realtime dialog model id, e.g. `qwen3.8-omni-flash-realtime`. */
   model?: string
   /** Default voice within the model's voice catalogue. */
   voice?: string

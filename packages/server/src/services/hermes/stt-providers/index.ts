@@ -1,3 +1,4 @@
+import { transcribeQwen } from './qwen'
 import { transcribeDoubaoFile } from './doubao'
 import { transcribeOpenAiCompatible } from './openai'
 import { transcribeElevenLabs, transcribeXai } from './hermes-cloud'
@@ -10,6 +11,8 @@ export * from './types'
 
 export async function transcribeWithProvider(input: SttTranscribeInput): Promise<SttTranscribeResult> {
   switch (input.provider) {
+    case 'qwen':
+      return transcribeQwen(input)
     case 'local':
       return transcribeWithLocalStt(input)
     case 'openai':

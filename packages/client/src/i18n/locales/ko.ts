@@ -1604,7 +1604,7 @@ export default {
     realtimeApiKeyPlaceholder: 'sk-…',
     realtimeApiKeyHint: '현재 사용자 프로필(서버 측, STT/TTS 등 모델 설정과 동일)에 저장되므로 브라우저나 기기를 바꿔도 유지됩니다. 회의 모드 ASR 및 실시간 음성 대화의 기본 키로 사용됩니다.',
     realtimeModelLabel: '실시간 모델',
-    realtimeModelPlaceholder: 'qwen3.5-omni-flash-realtime',
+    realtimeModelPlaceholder: 'qwen3.8-omni-flash-realtime',
     realtimeVoiceLabel: '기본 음성',
     realtimeAsrProviderHint: '회의 모드 음성 인식에 사용할 공급자를 선택하세요. DashScope(기본)는 Paraformer/Fun-ASR, MiniMax는 MiniMax Speech-to-Text REST API를 사용합니다.',
     realtimeAsrProviderLabel: 'ASR 공급자',
@@ -2181,6 +2181,7 @@ export default {
       corsHint: '허용된 교차 출처',
     },
     voice: {
+      qwenSharedKey: "Reuse the saved Qwen API key from this profile’s Realtime model settings, or enter a separate key.",
       activeTtsApi: '활성 TTS API',
       activeSttApi: '활성 STT API',
       ttsProvidersTitle: 'TTS 제공자',

@@ -1,3 +1,4 @@
+import { getRealtimeModelSetting } from './realtime-settings-store'
 import { getDb } from '../index'
 import {
   STT_PROFILE_PROVIDER_SETTINGS_TABLE,
@@ -15,6 +16,7 @@ export type StoredSttProvider =
   | 'xai'
   | 'elevenlabs'
   | 'deepinfra'
+  | 'qwen'
 export type ActiveSttProvider = 'browser' | StoredSttProvider
 
 const SETTINGS_KEYS = [
@@ -60,6 +62,7 @@ const PROVIDERS: StoredSttProvider[] = [
   'xai',
   'elevenlabs',
   'deepinfra',
+  'qwen',
 ]
 const ACTIVE_PROVIDERS: ActiveSttProvider[] = ['browser', ...PROVIDERS]
 const PROVIDER_SQL_PLACEHOLDERS = PROVIDERS.map(() => '?').join(', ')
@@ -72,6 +75,7 @@ const PROVIDER_LABELS: Record<StoredSttProvider, string> = {
   mistral: 'Mistral STT',
   xai: 'xAI STT',
   elevenlabs: 'ElevenLabs STT',
+  qwen: 'Qwen',
   deepinfra: 'DeepInfra STT',
 }
 type StoredRow = {
@@ -335,7 +339,14 @@ export function getSttProviderSetting(
   const profileName = normalizeProfile(profile)
   const storedProvider = assertStoredSttProvider(provider)
   const row = readStoredRow(profileName, storedProvider)
-  return row ? rowToResult(row, options?.includeSecrets === true) : null
+  if (!row) return null
+  const result = rowToResult(row, options?.includeSecrets === true)
+  // Qwen voice may reuse only this profile's saved DashScope key.
+  if (provider === 'qwen' && !result.secrets.apiKey) {
+    const shared = getRealtimeModelSetting(profileName, { includeSecrets: true })?.secrets.apiKey
+    if (shared) result.secrets.apiKey = options?.includeSecrets ? shared : '[stored]'
+  }
+  return result
 }
 
 export function saveSttProviderSetting(

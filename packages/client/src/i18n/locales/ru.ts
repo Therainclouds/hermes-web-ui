@@ -1818,7 +1818,7 @@ export default {
     realtimeApiKeyPlaceholder: 'sk-…',
     realtimeApiKeyHint: 'Сохраняется в текущем профиле пользователя на сервере (как настройки моделей STT/TTS) и следует за вами между браузерами и устройствами. Используется как ключ по умолчанию для ASR режима встреч и голосовых разговоров в реальном времени.',
     realtimeModelLabel: 'Модель реального времени',
-    realtimeModelPlaceholder: 'qwen3.5-omni-flash-realtime',
+    realtimeModelPlaceholder: 'qwen3.8-omni-flash-realtime',
     realtimeVoiceLabel: 'Голос по умолчанию',
     realtimeAsrProviderHint: 'Выберите провайдера распознавания речи для режима встреч. DashScope (по умолчанию) — Paraformer / Fun-ASR; MiniMax — REST API MiniMax Speech-to-Text.',
     realtimeAsrProviderLabel: 'Провайдер ASR',
@@ -2381,6 +2381,7 @@ export default {
       resetFailed: 'Не удалось сбросить аватар',
     },
     voice: {
+      qwenSharedKey: "Reuse the saved Qwen API key from this profile’s Realtime model settings, or enter a separate key.",
       activeTtsApi: 'Активная TTS API',
       activeSttApi: 'Активная STT API',
       ttsProvidersTitle: 'Провайдеры TTS',

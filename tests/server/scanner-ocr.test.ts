@@ -117,7 +117,7 @@ describe('scanner ocr key resolution', () => {
     const fetchImpl = vi.fn(async () => makeOcrResponse('OCR result') as any)
     realtimeStoreMock.getRealtimeModelSetting.mockReturnValue({
       profile: 'default',
-      settings: { model: 'qwen3.5-omni-flash-realtime', voice: 'Cherry' },
+      settings: { model: 'qwen3.8-omni-flash-realtime', voice: 'Cherry' },
       secrets: { apiKey: 'sk-realtime' },
       createdAt: 0,
       updatedAt: 0,

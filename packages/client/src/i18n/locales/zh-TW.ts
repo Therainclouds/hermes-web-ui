@@ -2039,7 +2039,7 @@ export default {
     realtimeApiKeyPlaceholder: 'sk-…',
     realtimeApiKeyHint: '保存在目前使用者 Profile（伺服端，與 STT/TTS 等模型設定一致），換瀏覽器／裝置也不遺失；作為會議模式 ASR 與即時語音對話的預設 Key。',
     realtimeModelLabel: '即時對話模型',
-    realtimeModelPlaceholder: 'qwen3.5-omni-flash-realtime',
+    realtimeModelPlaceholder: 'qwen3.8-omni-flash-realtime',
     realtimeVoiceLabel: '預設語音',
     realtimeAsrProviderHint: '選擇會議模式語音辨識使用的服務商。DashScope（預設）走 Paraformer/Fun-ASR；MiniMax 走 MiniMax 語音辨識 REST API。',
     realtimeAsrProviderLabel: 'ASR 服務商',
@@ -2625,6 +2625,7 @@ export default {
       resetFailed: '恢復預設頭像失敗',
     },
     voice: {
+      qwenSharedKey: "重用目前 Profile 的 Realtime 模型設定中已儲存的千問 API Key，也可填寫獨立金鑰。",
       activeTtsApi: '目前 TTS API',
       activeSttApi: '目前 STT API',
       ttsProvidersTitle: 'TTS 提供方',

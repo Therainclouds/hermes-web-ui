@@ -51,13 +51,13 @@ describe('realtime profile settings schema', () => {
     const { store } = await initStore()
 
     const saved = store.saveRealtimeModelSetting('default', {
-      settings: { model: 'qwen3.5-omni-flash-realtime', voice: 'Tina' },
+      settings: { model: 'qwen3.8-omni-flash-realtime', voice: 'Tina' },
       secrets: { apiKey: 'sk-secret-value' },
     })
 
     expect(saved).toMatchObject({
       profile: 'default',
-      settings: { model: 'qwen3.5-omni-flash-realtime', voice: 'Tina' },
+      settings: { model: 'qwen3.8-omni-flash-realtime', voice: 'Tina' },
       secrets: { apiKey: '[stored]' },
     })
     expect(JSON.stringify(saved)).not.toContain('sk-secret-value')
@@ -86,7 +86,7 @@ describe('realtime profile settings schema', () => {
     const { store } = await initStore()
 
     store.saveRealtimeModelSetting('default', {
-      settings: { model: 'qwen3.5-omni-flash-realtime', voice: 'Tina' },
+      settings: { model: 'qwen3.8-omni-flash-realtime', voice: 'Tina' },
       secrets: { apiKey: 'sk-default' },
     })
     store.saveRealtimeModelSetting('english', {
@@ -95,7 +95,7 @@ describe('realtime profile settings schema', () => {
     })
 
     expect(store.getRealtimeModelSetting('default', { includeSecrets: true })).toMatchObject({
-      settings: { model: 'qwen3.5-omni-flash-realtime', voice: 'Tina' },
+      settings: { model: 'qwen3.8-omni-flash-realtime', voice: 'Tina' },
       secrets: { apiKey: 'sk-default' },
     })
     expect(store.getRealtimeModelSetting('english', { includeSecrets: true })).toMatchObject({
@@ -108,18 +108,18 @@ describe('realtime profile settings schema', () => {
     const { store } = await initStore()
 
     store.saveRealtimeModelSetting('default', {
-      settings: { model: 'qwen3.5-omni-flash-realtime', voice: 'Tina' },
+      settings: { model: 'qwen3.8-omni-flash-realtime', voice: 'Tina' },
       secrets: { apiKey: 'sk-secret-value' },
     })
 
     store.saveRealtimeModelSetting('default', {
-      settings: { model: 'qwen3.5-omni-plus-realtime', voice: 'Ryan' },
+      settings: { model: 'qwen3.8-omni-plus-realtime', voice: 'Ryan' },
       secrets: { apiKey: '' },
     })
 
     const fetched = store.getRealtimeModelSetting('default', { includeSecrets: true })
     expect(fetched).toMatchObject({
-      settings: { model: 'qwen3.5-omni-plus-realtime', voice: 'Ryan' },
+      settings: { model: 'qwen3.8-omni-plus-realtime', voice: 'Ryan' },
       secrets: {},
     })
   })
@@ -128,17 +128,17 @@ describe('realtime profile settings schema', () => {
     const { store } = await initStore()
 
     store.saveRealtimeModelSetting('default', {
-      settings: { model: 'qwen3.5-omni-flash-realtime', voice: 'Tina' },
+      settings: { model: 'qwen3.8-omni-flash-realtime', voice: 'Tina' },
       secrets: { apiKey: 'sk-secret-value' },
     })
 
     store.saveRealtimeModelSetting('default', {
-      settings: { model: 'qwen3.5-omni-flash-realtime', voice: 'Ethan' },
+      settings: { model: 'qwen3.8-omni-flash-realtime', voice: 'Ethan' },
       secrets: { apiKey: '[stored]' },
     })
 
     expect(store.getRealtimeModelSetting('default', { includeSecrets: true })).toMatchObject({
-      settings: { model: 'qwen3.5-omni-flash-realtime', voice: 'Ethan' },
+      settings: { model: 'qwen3.8-omni-flash-realtime', voice: 'Ethan' },
       secrets: { apiKey: 'sk-secret-value' },
     })
   })
@@ -147,7 +147,7 @@ describe('realtime profile settings schema', () => {
     const { store } = await initStore()
 
     store.saveRealtimeModelSetting('default', {
-      settings: { model: 'qwen3.5-omni-flash-realtime', voice: 'Tina' },
+      settings: { model: 'qwen3.8-omni-flash-realtime', voice: 'Tina' },
       secrets: { apiKey: 'sk-secret-value' },
     })
 
@@ -160,7 +160,7 @@ describe('realtime profile settings schema', () => {
     const { store } = await initStore()
 
     store.saveRealtimeModelSetting('', {
-      settings: { model: 'qwen3.5-omni-flash-realtime', voice: 'Tina' },
+      settings: { model: 'qwen3.8-omni-flash-realtime', voice: 'Tina' },
       secrets: { apiKey: 'sk-secret-value' },
     })
 
@@ -179,7 +179,7 @@ describe('realtime profile settings schema', () => {
 
     store.saveRealtimeModelSetting('default', {
       settings: {
-        model: 'qwen3.5-omni-flash-realtime',
+        model: 'qwen3.8-omni-flash-realtime',
         voice: 'Tina',
         asrProvider: 'minimax',
         minimaxAsrModel: 'asr-1.0',
@@ -194,7 +194,7 @@ describe('realtime profile settings schema', () => {
     const fetched = store.getRealtimeModelSetting('default', { includeSecrets: true })
     expect(fetched).toMatchObject({
       settings: {
-        model: 'qwen3.5-omni-flash-realtime',
+        model: 'qwen3.8-omni-flash-realtime',
         voice: 'Tina',
         asrProvider: 'minimax',
         minimaxAsrModel: 'asr-1.0',

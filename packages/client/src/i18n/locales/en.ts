@@ -2136,7 +2136,7 @@ export default {
     realtimeApiKeyPlaceholder: 'sk-…',
     realtimeApiKeyHint: 'Saved to the current user profile on the server (like the STT/TTS model settings), so it follows you across browsers and devices. Used as the default key for meeting-mode ASR and realtime voice conversations.',
     realtimeModelLabel: 'Realtime model',
-    realtimeModelPlaceholder: 'qwen3.5-omni-flash-realtime',
+    realtimeModelPlaceholder: 'qwen3.8-omni-flash-realtime',
     realtimeVoiceLabel: 'Default voice',
     realtimeAsrProviderHint: 'Pick the provider used by meeting-mode speech recognition. DashScope (default) goes through Paraformer / Fun-ASR; MiniMax goes through the MiniMax Speech-to-Text REST API.',
     realtimeAsrProviderLabel: 'ASR provider',
@@ -2754,6 +2754,7 @@ export default {
       resetFailed: 'Failed to reset avatar',
     },
     voice: {
+      qwenSharedKey: "Reuse the saved Qwen API key from this profile’s Realtime model settings, or enter a separate key.",
       activeTtsApi: 'Active TTS API',
       activeSttApi: 'Active STT API',
       ttsProvidersTitle: 'TTS providers',
