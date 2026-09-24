@@ -1,0 +1,90 @@
+export default {
+  knowledge: {
+    title: 'Base de conocimientos',
+    subtitle: 'Bóvedas RAG para búsqueda de documentos',
+    sidebarLabel: 'Conocimientos',
+    description: 'Indexa documentos locales para búsqueda semántica con Hermes Agent.',
+
+    tabs: {
+      dashboard: 'Resumen',
+      graph: 'Grafo',
+      list: 'Biblioteca',
+    },
+
+    sidebar: {
+      vaults: 'Bóvedas',
+      tags: 'Etiquetas',
+      allVaults: 'Todas las bóvedas',
+      noVaults: 'Sin bóvedas',
+      noTags: 'Sin etiquetas',
+    },
+
+    dashboard: {
+      statusBreakdown: 'Desglose por estado',
+      recentActivity: 'Actividad reciente',
+      noRecentActivity: 'Sin actividad reciente',
+      quickActions: 'Acciones rápidas',
+      openGraph: 'Abrir grafo',
+      openList: 'Abrir biblioteca',
+    },
+
+    graph: {
+      title: 'Grafo de conocimientos',
+      empty: 'No hay datos para visualizar',
+      allVaults: 'Todas las bóvedas',
+      legend: {
+        vault: 'Bóveda',
+        document: 'Documento',
+      },
+    },
+
+    detail: {
+      title: 'Detalle del documento',
+      noDocument: 'Ningún documento seleccionado',
+      metadata: 'Metadatos',
+      content: 'Contenido',
+      path: 'Ruta',
+      vault: 'Bóveda',
+      mime: 'Tipo',
+      size: 'Tamaño',
+      indexed: 'Indexado',
+      error: 'Error',
+      noChunks: 'Sin fragmentos de contenido',
+      close: 'Cerrar',
+    },
+
+    vaults: {
+      title: 'Bóvedas', add: 'Añadir bóveda', name: 'Nombre', path: 'Ruta raíz',
+      status: 'Estado', watching: 'Vigilando', offline: 'Sin conexión',
+      documents: 'Documentos', confirmDelete: '¿Eliminar esta bóveda?',
+      cascadeDelete: 'Eliminar también todos los documentos indexados',
+      pathPlaceholder: '/ruta/a/documentos', namePlaceholder: 'Mis documentos',
+    },
+    documents: {
+      title: 'Documentos', name: 'Nombre', status: 'Estado', path: 'Ruta fuente', size: 'Tamaño',
+      indexedAt: 'Indexado', pending: 'Pendiente', indexing: 'Indexando',
+      indexed: 'Indexado', failed: 'Fallido', metadata_only: 'Solo metadatos',
+      all: 'Todos', noDocuments: 'No se encontraron documentos.', error: 'Error',
+    },
+    health: {
+      title: 'Salud', vaults: 'Bóvedas', documents: 'Documentos',
+      chunks: 'Fragmentos', vectors: 'Vectores', lastSuccess: 'Último éxito',
+      lastFailure: 'Último fallo', noError: 'Sin errores',
+    },
+    actions: { delete: 'Eliminar', refresh: 'Actualizar', cancel: 'Cancelar', confirm: 'Confirmar' },
+    errors: { fetchFailed: 'Error al cargar datos', createFailed: 'Error al crear bóveda', deleteFailed: 'Error al eliminar bóveda' },
+    messages: { vaultCreated: 'Bóveda creada' },
+    settings: {
+      title: 'Ajustes',
+      apiKeyPlaceholder: 'sk-...',
+      keyConfigured: 'Clave API configurada (termina en {hint})',
+      notConfigured: 'No hay clave API de embedding configurada — no se pueden indexar documentos.',
+      pluginDisabled: 'El plugin de conocimientos está deshabilitado. Configure KNOWLEDGE_ENABLED=1 y reinicie el servidor.',
+      save: 'Guardar clave',
+      saved: 'Clave API guardada — plugin activo',
+      savedButNotInitialized: 'Clave API guardada, pero el plugin no arrancó. Revise los logs del servidor.',
+      saveFailed: 'Error al guardar la clave API',
+    },
+  },
+  pluginsKnowledge: { sidebarLabel: 'Conocimientos', description: 'Base de conocimientos documental con búsqueda RAG.' },
+}

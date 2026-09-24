@@ -9,7 +9,7 @@ import {
 } from './device-package-contract'
 import { UpdateError } from './errors'
 import { describeUpdateNetworkError, fetchUpdateJson } from './network-client'
-import { parseSemver } from './version-compare'
+import { isRemoteVersionNewer, parseSemver } from './version-compare'
 import type {
   DeviceEnvironment,
   DeviceEnvironmentFile,
@@ -421,4 +421,73 @@ export async function resolveManifestCheckResult(update: UpdateConfig = config.u
     strategy: update.strategy,
     detectionSource: 'manifest',
   }
+}
+
+/** A URL that points at a frozen manifest (version dir or candidate). */
+export function isPinnedManifestUrl(url: string): boolean {
+  return /\/releases\/v\d[^/]*\//.test(url) || /\/candidates\//.test(url)
+}
+
+async function fetchManifestInfoWithUrl(
+  update: UpdateConfig,
+): Promise<{ info: ReturnType<typeof normalizeBaseManifestInfo>; manifestUrl: string }> {
+  const { manifestUrl, payload } = await fetchRawManifest(update)
+  return { info: normalizeBaseManifestInfo(payload, manifestUrl, update), manifestUrl }
+}
+
+/**
+ * resolveManifestCheckResult + the pinned-stale guard (task-12
+ * § Update-source hardening).
+ *
+ * The device's env ranks an explicit manifest URL ahead of the
+ * `manifestBaseUrl + channel` fallback, so a stale version/candidate pin
+ * wins every fetch and the device freezes on it forever — the exact
+ * failure that made 6.6.6.73 miss every release after 0.8.1. When the
+ * winning URL is such a pin AND a channel tip is configured AND the
+ * channel tip is strictly newer, prefer the channel tip and record
+ * `manifest_pinned_stale`.
+ *
+ * Offline safety: if the channel tip is unreachable, the pinned result
+ * stands and NO warning is emitted (a pin is legitimate offline behavior;
+ * we never block an update on a network miss).
+ */
+export async function resolveManifestCheckResultGuarded(
+  update: UpdateConfig = config.update,
+): Promise<UpdateCheckResult> {
+  const primary = await fetchManifestInfoWithUrl(update)
+  const result: UpdateCheckResult = {
+    latestVersion: primary.info.version,
+    sourceLabel: primary.info.sourceLabel || update.sourceLabel,
+    channel: primary.info.channel || update.channel,
+    packageType: primary.info.packageType || update.packageType,
+    strategy: update.strategy,
+    detectionSource: 'manifest',
+    effectiveManifestUrl: primary.manifestUrl,
+  }
+
+  if (
+    update.manifestBaseUrl &&
+    isPinnedManifestUrl(primary.manifestUrl) &&
+    primary.manifestUrl !== buildManifestUrl(update.manifestBaseUrl, update.channel)
+  ) {
+    try {
+      // Channel-only resolution: strip the explicit pins so
+      // fetchRawManifest falls back to manifestBaseUrl + channel.
+      const channelOnly: UpdateConfig = { ...update, manifestUrl: '', manifestUrls: [] }
+      const chan = await fetchManifestInfoWithUrl(channelOnly)
+      if (isRemoteVersionNewer(primary.info.version, chan.info.version)) {
+        result.latestVersion = chan.info.version
+        result.sourceLabel = chan.info.sourceLabel || result.sourceLabel
+        result.channel = chan.info.channel || result.channel
+        result.packageType = chan.info.packageType || result.packageType
+        result.pinnedManifestUrl = primary.manifestUrl
+        result.effectiveManifestUrl = chan.manifestUrl
+        result.warnings = ['manifest_pinned_stale']
+      }
+    } catch {
+      // Channel unreachable — pinned result stands, no warning.
+    }
+  }
+
+  return result
 }

@@ -1,5 +1,60 @@
 # Work Log
 
+## 2026-09-10 · Knowledge 插件根除式修复（6 提交）
+
+OCR review + 人工审查发现 Knowledge 插件在生产环境完全不可用：
+UI 可见但后端从未初始化，9 类问题叠加导致所有部署路径下功能失效。
+
+### 根因与修复
+
+1. **Bootstrap 接线** — `KnowledgeService` 从未被 `initAllStores()` 实例化。
+   新增 `tryInitKnowledgeService()` 在 `initAllStores()` 中调用；控制器
+   返回 503 而非 500。
+
+2. **CJK 检索恒返回零** — FTS5 porter 不分词中文；`buildFtsQuery` 按
+   空白分词也错；`searchHybrid` 不降级。修复：bigram 切词 + vector-only
+   fallback。不引外部分词库，避免增加 native 依赖。
+
+3. **`sqlite-vec` 在 devDeps** — Docker `npm prune --omit=dev` 删除。
+   移到 `optionalDependencies`，仿 `sherpa-onnx-*` 模式；`loadSqliteVec`
+   优雅降级。
+
+4. **Embedding 模型不持久** — 架构要求 persist model/dim 但未实现。
+   新增 `knowledge_embeddings_meta` 单例表；软迁移旧部署标记
+   `unverified`。
+
+5. **资源安全** — 文件大小上限（`KNOWLEDGE_MAX_FILE_SIZE_MB`）；
+   vault 路径校验（realpathSync + 系统目录黑名单 + 深度限制）；
+   扩展名白名单生效。
+
+6. **事务原子性** — `removeVault(cascade)` 包 `BEGIN/COMMIT/ROLLBACK`；
+   `deleteDocumentIndexes` 改 prepared statement（消除 SQL 注入）。
+
+7. **Client i18n** — 8 个新 locale（ja/ko/fr/es/de/pt/ru/ar）；
+   `message.success` 改用 i18n key；indexed_at 非 indexed 文档显示 `—`；
+   filter 按钮加 `indexing`。
+
+### 关键决策
+
+- **Bigram vs 外部分词**：选 bigram，不增 native 依赖，recall 足够
+  （precision 由 vector re-rank 兜底）。代价：CJK 索引体积 ~1.5-2x。
+- **软迁移 vs 阻塞升级**：选软迁移，不阻碍已有部署升级；health
+  报告标 `unverified` 提醒用户 re-index。
+- **`optionalDependencies` vs `dependencies`**：前者在 prune 后保留，
+  同时允许平台缺失时不阻塞安装。
+
+### 测试
+
+- `knowledge-schema.test.ts` — schema bootstrap + soft migration + dim mismatch
+- `knowledge-search-cjk.test.ts` — bigram + CJK search + hybrid fallback
+- `knowledge-controller.test.ts` — 路径校验 + 503
+- `knowledge-service.test.ts` — cascade delete + health
+- `knowledge-extractors.test.ts` — PDF/DOCX 抽取（加 timeout）
+
+详见 `docs/adr/0012-knowledge-plugin-root-cause-fix.md`。
+
+---
+
 ## 2026-09-07 · 更新系统 phase (a) 重构——"可信任的更新"落地（7 提交）
 
 设计来源：grilling 会话 25 项决议（25 问逐轮收敛），spec 落在

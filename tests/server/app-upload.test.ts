@@ -49,6 +49,7 @@ describe('App chunked uploads', () => {
     const { APP_UPLOAD_MAX_BYTES, appendAppUploadChunk, openAppUpload } = await import(
       '../../packages/server/src/services/hermes/app-upload'
     )
+    expect(APP_UPLOAD_MAX_BYTES).toBe(1024 * 1024 * 1024)
     await expect(openAppUpload({
       id: 'upload_too_large',
       owner: '7',

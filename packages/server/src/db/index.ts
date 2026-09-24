@@ -38,7 +38,13 @@ export function getDb(): DatabaseSync | null {
   if (!SQLITE_AVAILABLE) return null
   if (!_db) {
     mkdirSync(DB_DIR, { recursive: true })
-    _db = new DatabaseSync(DB_PATH)
+    // allowExtension is required for sqlite-vec loadExtension().
+    // The runtime loading gate stays CLOSED here — loadSqliteVec() in
+    // knowledge-schema.ts opens it momentarily during bootstrap and
+    // closes it right after, so the window during which arbitrary
+    // native extensions can be loaded is minimized.
+    // See knowledge plugin root-cause fix (2026-09-10).
+    _db = new DatabaseSync(DB_PATH, { allowExtension: true })
     // Use WAL mode for better concurrency and WSL compatibility
     if (isTest) {
       _db.exec('PRAGMA journal_mode=WAL')

@@ -1812,6 +1812,36 @@ WEBUI_UPDATE_REPO="${WEBUI_UPDATE_REPO:-https://github.com/tangledup-ai/hermes-w
 WEBUI_UPDATE_MANIFEST_BASE_URL="${WEBUI_UPDATE_MANIFEST_BASE_URL:-${OSS_PUBLIC_BASE_URL}/releases}"
 WEBUI_UPDATE_MANIFEST_URLS="${WEBUI_UPDATE_MANIFEST_URLS:-${OSS_PUBLIC_BASE_URL}/releases/stable/latest.json}"
 WEBUI_UPDATE_PACKAGE_TYPE="${WEBUI_UPDATE_PACKAGE_TYPE:-source-deploy}"
+
+# Update-source hardening (task-12; the v0.8.6 candidate-pin incident):
+# a WEBUI_UPDATE_MANIFEST_URL/URLS pinned to a versioned
+# `releases/vX.Y.Z/manifest.json` or a `candidates/<channel>/<version>.json`
+# answers successfully forever and freezes the device on that version — the
+# device never sees a channel release after the pin. Reject it at deploy
+# time unless the operator explicitly allows a pin (rollback drills).
+_pin_manifest_guard() {
+  local var value
+  for var in WEBUI_UPDATE_MANIFEST_URL WEBUI_UPDATE_MANIFEST_URLS; do
+    value="${!var:-}"
+    # comma-separated list support for the *_URLS variant
+    local one
+    local IFS=','
+    for one in ${value}; do
+      case "$one" in
+        */releases/v[0-9]*/*|*/candidates/*)
+          if [ "${ALLOW_PINNED_MANIFEST:-0}" != "1" ]; then
+            echo "[deploy] FATAL: ${var} pins a frozen manifest (versioned or candidate path): ${one}" >&2
+            echo "[deploy] Use the channel latest.json (releases/<channel>/latest.json), or set ALLOW_PINNED_MANIFEST=1 to override deliberately." >&2
+            exit 1
+          fi
+          echo "[deploy] WARN: ${var} pins a frozen manifest (ALLOW_PINNED_MANIFEST=1): ${one}" >&2
+          ;;
+      esac
+    done
+    unset IFS
+  done
+}
+_pin_manifest_guard
 WEBUI_UPDATE_INSTALLER_SCRIPT="${WEBUI_UPDATE_INSTALLER_SCRIPT:-${DEPLOY_DIR}/scripts/install-device-package.sh}"
 WEBUI_UPDATE_AUTO_INSTALL_DEPENDENCIES_RAW="${HERMES_WEB_UI_UPDATE_AUTO_INSTALL_DEPENDENCIES:-${WEBUI_UPDATE_AUTO_INSTALL_DEPENDENCIES:-true}}"
 RESTART_AGENT_RUNTIME_RAW="${HERMES_WEB_UI_UPDATE_RESTART_AGENT_RUNTIME:-true}"

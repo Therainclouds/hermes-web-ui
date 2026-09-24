@@ -7,7 +7,7 @@ import { UpdateError } from '../services/update/errors'
 import { getLocalWebUiVersion, readPackageInfo } from '../services/update/package-info'
 import { assertDevicePackageCompatibility, assertDevicePackageExecution, assertInstallerScriptCompatible, buildDevicePackageInstallEnv, buildDevicePackageReconcileCommand, buildDevicePackageReconcileEnv, downloadAndVerifyDevicePackage, getDevicePackageExecutionMessage, resolveDevicePackageManifest } from '../services/update/strategies/device-package'
 import { assertEnvironmentMatches, getLastEnvironmentCheck, readDeviceEnvState, runEnvironmentCheck } from '../services/update/reconcile'
-import { fetchDevicePackageManifest, fetchSourcePackageManifest, readManifestCache, resolveManifestCheckResult } from '../services/update/manifest-client'
+import { fetchDevicePackageManifest, fetchSourcePackageManifest, isPinnedManifestUrl, readManifestCache, resolveManifestCheckResult } from '../services/update/manifest-client'
 import { manifestCacheFreshness } from '../services/update/manifest-cache-freshness'
 import { stampIdentityFromDeploy } from '../services/update/identity-stamp'
 import { assertSourcePackageCompatibility } from '../services/update/strategies/source-package'
@@ -1372,6 +1372,9 @@ async function buildUpdateCapabilitiesPayload(): Promise<UpdateCapabilities> {
     latestVersion: result?.latestVersion || '',
     updateAvailable: Boolean(result?.latestVersion && isRemoteVersionNewer(currentVersion, result.latestVersion)),
     detectionSource: result?.detectionSource || 'none',
+    warnings: result?.warnings ?? [],
+    pinnedManifestUrl: result?.pinnedManifestUrl || '',
+    effectiveManifestUrl: result?.effectiveManifestUrl || '',
     remoteError,
     supports: {
       versionCheck: hasConfiguredManifestCheck(config.update),
@@ -2179,6 +2182,8 @@ export async function getUpdateIdentity(ctx: any) {
       freshness: manifestCacheFreshness(cached?.cachedAt ?? null),
       cachedAt: cached?.cachedAt ?? null,
       version: cachedPayloadVersion,
+      pinned: isPinnedManifestUrl(cached?.manifestUrl ?? ''),
+      stale: getSnapshot().result?.warnings?.includes('manifest_pinned_stale') ?? false,
     },
   }
 }

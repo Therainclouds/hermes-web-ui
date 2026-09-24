@@ -584,6 +584,13 @@ jobs:
             git push origin "${MANIFEST_BRANCH}"
           )
 
+      - name: Setup OSS util
+        # No `if` here: the env context is not available to a step's own
+        # condition when the step carries no env block (run #91 skipped
+        # exactly this step for that reason), and installing ossutil
+        # unconditionally is harmless.
+        uses: yizhoumo/setup-ossutil@v2
+
       - name: Upload promoted latest.json to OSS
         if: env.ALIYUN_OSS_ENDPOINT != ''
         shell: bash

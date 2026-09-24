@@ -1,5 +1,6 @@
 import { Readable } from 'stream'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { PAGE_UPLOAD_MAX_BYTES } from '../../packages/server/src/services/hermes/upload-limits'
 
 const mkdirMock = vi.hoisted(() => vi.fn())
 const writeFileMock = vi.hoisted(() => vi.fn())
@@ -47,6 +48,10 @@ describe('upload controller', () => {
     vi.clearAllMocks()
     mkdirMock.mockResolvedValue(undefined)
     writeFileMock.mockResolvedValue(undefined)
+  })
+
+  it('uses the 1G page upload limit', () => {
+    expect(PAGE_UPLOAD_MAX_BYTES).toBe(1024 * 1024 * 1024)
   })
 
   it('stores chat uploads under the request-scoped profile upload directory', async () => {
@@ -97,7 +102,7 @@ describe('upload controller', () => {
     const { handleUpload } = await import('../../packages/server/src/controllers/upload')
     // Three chunks: the limit is crossed on the second, and the third is what a
     // still-writing client would send after the server has made up its mind.
-    const chunk = Buffer.alloc(30 * 1024 * 1024, 0x61)
+    const chunk = Buffer.alloc(600 * 1024 * 1024, 0x61)
     const sent: number[] = []
     const req = new Readable({
       read() {
@@ -120,7 +125,7 @@ describe('upload controller', () => {
     await handleUpload(ctx)
 
     expect(ctx.status).toBe(413)
-    expect(ctx.body).toEqual({ error: 'File too large (max 50MB)' })
+    expect(ctx.body).toEqual({ error: 'File too large (max 1G)' })
     expect(writeFileMock).not.toHaveBeenCalled()
     // The whole body was read, so the client is not cut off mid-write and can
     // still read the reason it was refused.
@@ -133,7 +138,7 @@ describe('upload controller', () => {
     try {
       const boundary = 'test-boundary'
       const { handleUpload } = await import('../../packages/server/src/controllers/upload')
-      const chunk = Buffer.alloc(30 * 1024 * 1024, 0x61)
+      const chunk = Buffer.alloc(600 * 1024 * 1024, 0x61)
       let reads = 0
       const req = new Readable({
         read() {
@@ -162,7 +167,7 @@ describe('upload controller', () => {
 
       expect(req.destroyed).toBe(true)
       expect(ctx.status).toBe(413)
-      expect(ctx.body).toEqual({ error: 'File too large (max 50MB)' })
+      expect(ctx.body).toEqual({ error: 'File too large (max 1G)' })
     } finally {
       vi.useRealTimers()
     }

@@ -4,13 +4,14 @@
 上游主 spec: [source-deploy-refactor.md](./source-deploy-refactor.md)（phase a 不变量仍然全部有效）
 本文取代的讨论: 2026-09 fleet 分析（0.6.15→0.8.3 全档位更新路径审查）
 
-三个工作流，按优先级排序：
+四个工作流，按优先级排序：
 
 - **R1 旧版本兜底与数据安全**（最高优先——先于一切放量）
 - **R2 移除 OSS 更新机制**（CI/CD GitHub 全链路）
 - **R3 Hermes-Agent 升级跟进**（phase c 的 agent seam）
+- **R5 旧版本升级能力矩阵**（v0.6.x / v0.7.0 跨度升级 — 验证与补全）
 
-执行顺序: R1-0 热修 → R1 门禁 → R2（OSS 为主 + GitHub 镜像）→ R4（staging GC）→ R3。R2 与 R3 有交叠（agent 资产双镜像），R3 依赖 R2 完成；R4 无依赖可穿插，优先级高于 R3（磁盘耗尽为活跃事故类）。
+执行顺序: R1-0 热修 → R1 门禁 → R2（OSS 为主 + GitHub 镜像）→ R4（staging GC）→ R5（升级跨度矩阵）→ R3。R2 与 R3 有交叠（agent 资产双镜像），R3 依赖 R2 完成；R4 无依赖可穿插，优先级高于 R3（磁盘耗尽为活跃事故类）；R5 在 R1+R4 之后做真实机验证，避免伪绿灯。
 
 ---
 
@@ -273,6 +274,70 @@ ORCHESTRATOR_CAPABILITIES="hermes_data_preservation prebuilt_dist node_modules_p
 
 ---
 
+## R5 — 旧版本升级能力矩阵（v0.6.x / v0.7.0 跨度升级验证）
+
+背景：R1 解决了 v0.8.3 树的存量设备数据安全，但真实 fleet 中存在以下跨度场景，过去未做真机验证：
+
+- v0.6.x（deb 包或 npm 安装形态，未走 source-deploy 管线）
+- v0.7.0（npm package 阶段，更新管线为 `update-source-deploy.sh`，无 atomic-swap / 无 identity-stamp）
+- v0.7.10 之前（无 staging-gc，磁盘使用模式不同）
+
+跨度升级路径必须保证：(a) 旧部署形态的入口能被新 orchestrator 正确识别并接管；(b) 数据布局差异在 swap 前被 reconcile，不出现 `hermes_data` 被清空的事故类。
+
+### 跨度矩阵
+
+| 起始版本 | 部署形态 | upgrade-script | upgrade-time 关键差异 | 升级到 v0.8.7+ 风险点 |
+|---|---|---|---|---|
+| v0.6.15 | npm-install（`/opt/hermes-web-ui`） | `update-source-deploy.sh` 调用 `deploy-source-armbian.sh` | 无 atomic-swap，单代 lastgood 缺失 | 旧 `state/` 目录不在位，identity 需首次 stamp |
+| v0.6.19 | npm-install | 同上 | 同上 | 同上 |
+| v0.7.0 | npm-install | `update-source-deploy.sh` + `deploy-source-armbian.sh` | 无 staging dir、无 lastgood、无 identity.json | orchestrator 需 fallback 到 source-deploy 升级链 |
+| v0.7.10 | source-deploy（首版 source-deploy 链） | `update-source-deploy.sh` | 无 identity stamp，无 hermes_data preservation | swap 后 hermes_data 跨代保留必须验证 |
+| v0.8.0 | source-deploy | 同上 + 早期 orchestrator 试用 | 有 lastgood（rename-based），无 inventory | inventory 第一次生成 |
+| v0.8.3 | source-deploy + 早期 orchestrator | 同上 | 无 journal 写入、无 manifest cache | journal/cache 第一次生成 |
+| v0.8.4+ | source-deploy + 新 orchestrator | `update-orchestrator.sh` | 完整 orchestrator | 当前最新升级链 |
+
+### R5-1 跨度升级路径检测（orchestrator 自识别）
+
+新增 orchestrator 自识别函数 `detect_install_flavor`：
+
+- 探测 `state/identity.json` 存在与否（决定是否首次 stamp）。
+- 探测 `updates/lastgood` 是 file/dir/symlink 哪种形态（决定是否需做 symlink 化修复）。
+- 探测 `hermes_data/` 是否在 deploy 树内（决定 hermes_data preservation 策略）。
+- 探测 `package-lock.json` 是否存在且 sha 匹配（决定 node_modules 是否复用）。
+
+返回值：flavor tag + 必需 reconcile 动作清单。orchestrator 在 `acquire_lock` 后第一步执行，结果写入 journal `[meta].install_flavor`。
+
+### R5-2 跨度升级 reconcile 操作
+
+每种 flavor 配套一组 idempotent reconcile 动作：
+
+- **`legacy-npm`** (v0.6.x / v0.7.0)：将 `/opt/hermes-web-ui` 软链化到 source-deploy 标准部署路径；首次生成 `state/identity.json`（distSha256 用真实 sha 写入，agentManifestSha 写哨兵）；创建 `updates/lastgood` 软链。
+- **`early-source-deploy`** (v0.7.10 / v0.8.0 / v0.8.3)：若 `lastgood` 是目录则原子替换为软链；若 `hermes_data` 不在 deploy 树外，先 cp -al 到 `var/lib/hermes-web-ui/hermes_data`（若 mountpoint 安全，参见 `chown_r_mount_safe`）；若 journal 目录缺失则 mkdir。
+- **`current-source-deploy`** (v0.8.4+)：no-op，仅做检测确认。
+
+reconcile 失败必须 fail-closed：拒绝升级并保留旧树（lastgood 形态不变）。
+
+### R5-3 测试矩阵
+
+每种 flavor 各加一个 e2e 升级测试：
+
+- 构造起始部署树（最小可行 dist/ + scripts/ + hermes_data fixture）。
+- 调用 orchestrator dry-run（`scripts/update-orchestrator.sh --dry-run`），断言：
+  - `[meta].install_flavor` 与预期一致。
+  - reconcile 动作清单覆盖所有必需项。
+  - 模拟 swap 后 hermes_data byte-level inventory 一致。
+- 真机验收：在至少一台 6.6.6.x 设备上手动从 v0.7.0 升级到当前 main，记录 journal 头部 / `[meta].install_flavor` 标记 / 升级前后 `du -sh hermes_data` / `du -sh updates/`。
+
+### R5 验收标准
+
+- [ ] `detect_install_flavor` 在六种 flavor 输入下返回正确标签（单测）。
+- [ ] `legacy-npm` reconcile 走通"npm install 路径 → source-deploy 路径"全链路（沙箱测试 + 至少一台真机）。
+- [ ] `early-source-deploy` reconcile 在 lastgood 是目录、hermes_data 在树内两种子场景下都能 idempotent 修正（沙箱 + 真机）。
+- [ ] 真机跨度升级后，`hermes_data inventory` 与升级前 byte-for-byte 一致（除合法的 mtime 更新）。
+- [ ] 真机跨度升级后，`/var/log/hermes-web-update/journal.jsonl` 头部 `[meta].install_flavor` 与 reconcile 动作清单完整可见。
+
+---
+
 ## 执行顺序与提交切分
 
 | # | 提交 | 内容 | 前置 |
@@ -292,8 +357,11 @@ ORCHESTRATOR_CAPABILITIES="hermes_data_preservation prebuilt_dist node_modules_p
 | 13 | `feat(release): agent wheel dual-mirror` | R3-1 | #6, #9 |
 | 14 | `feat(orchestrator): agent upgrade stage` | R3-2 + R3-3 | #13 |
 | 15 | `test: agent update seam coverage` | R3-4 | #14 |
+| 16 | `feat(orchestrator): install_flavor self-detect` | R5-1 | #1-#4（R1 数据安全门禁就位后） |
+| 17 | `feat(orchestrator): flavor-specific reconcile actions` | R5-2 | #16 |
+| 18 | `test: cross-version upgrade matrix` | R5-3 | #16, #17 |
 
-每个提交独立可回滚；#2/#3 合入后打 0.8.4（R1-0+R1-1 必须同版本上线，门禁依赖新标记）；R2 各提交可分散在 0.8.4–0.9.0；R4 #11 建议尽早（0.8.7 即可，磁盘耗尽是活跃事故类）；R3 对应 0.9.0。
+每个提交独立可回滚；#2/#3 合入后打 0.8.4（R1-0+R1-1 必须同版本上线，门禁依赖新标记）；R2 各提交可分散在 0.8.4–0.9.0；R4 #11 建议尽早（0.8.7 即可，磁盘耗尽是活跃事故类）；R5 #16-#18 紧随 R1+R4 之后（推荐 0.8.8–0.8.9），目的是在放量前闭环跨度升级路径；R3 对应 0.9.0。
 
 ## 明确不做（本 spec 范围外）
 
