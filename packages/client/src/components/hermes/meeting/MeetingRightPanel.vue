@@ -1,26 +1,42 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { meetingPanels } from '@/plugins/registry'
+import { useMeetingStore } from '@/stores/hermes/meeting'
+const meetingStore = useMeetingStore()
+
+/**
+ * 场景 → 插件自动绑定：当活跃会议的 sceneTemplate 等于某个已注册插件的 id 时，
+ * 右栏直接渲染该插件面板（例如 scene='trpg' + 插件已启用 → 直接显示跑团面板，
+ * 不再经过下拉框选择）。其他场景统一走 standard analysis / agent / realtime 分发。
+ * 插件被运行时禁用（localStorage 关掉）时不入选 meetingPanels，自动回退到
+ * 通用分发；面板不提供手动切换入口。
+ */
+const pluginPanel = computed(() => {
+  const sceneTemplate = meetingStore.activeSession?.sceneTemplate
+  return sceneTemplate ? meetingPanels.find(p => p.id === sceneTemplate) : undefined
+})
 
 /**
  * Right panel shell for the meeting view. Owns the outer chrome (aside,
  * resize handle, header with title + close button, scrollable inner area)
- * and exposes four mutually-exclusive slots for the content modes:
+ * and exposes mutually-exclusive slots for the content modes:
  *
- *   #analysis  - rendered when !showAgentPanel && !isSpeechScene && !showRealtimeDialog
+ *   #analysis  - rendered when !showAgentPanel && !isSpeechScene
  *   #agent     - rendered when showAgentPanel (Agent realtime assist)
- *   #realtime  - rendered when showRealtimeDialog (Omni Realtime dialog)
  *   #speech    - rendered when isSpeechScene (SpeechEvaluationPanel)
+ *   (a registered plugin panel for the active sceneTemplate takes priority)
  *
- * The toolbar above the content (analysis trigger / report buttons /
+ * The header actions are always available: 下载音频 (post-recording export)
+ * and 拆分人声 (send the whole recording to the ASR again, with speaker
+ * labels). The toolbar above the content (analysis trigger / report buttons /
  * agent toggle) is exposed as its own slot so MeetingView keeps all the
  * Naive UI tooltip/loading wiring in one place. Resize handle is bound
  * here because it logically lives on the aside element itself; parent
  * passes a `resizeStyle` + pointerdown handler through props.
  *
  * Modes are derived in the parent and passed as booleans, not computed
- * here, so the dispatch order (speech > agent > realtime > analysis) stays
- * explicit and matches the original template.
+ * here, so the dispatch order (speech > agent > analysis) stays explicit.
  */
 
 const props = withDefaults(defineProps<{
@@ -29,15 +45,24 @@ const props = withDefaults(defineProps<{
   isLegalScene?: boolean
   isInterviewScene?: boolean
   showAgentPanel: boolean
-  showRealtimeDialog?: boolean
+  /** 录音已完成、存在可下载的音频。 */
+  canDownloadAudio?: boolean
+  /** 录音已完成、存在可重新做说话人分离的音频。 */
+  canDiarize?: boolean
+  /** 整段人声拆分进行中（按钮转 loading 态）。 */
+  isDiarizing?: boolean
   resizeStyle?: Record<string, string>
 }>(), {
-  showRealtimeDialog: false,
+  canDownloadAudio: false,
+  canDiarize: false,
+  isDiarizing: false,
   resizeStyle: () => ({}),
 })
 
 const emit = defineEmits<{
   (e: 'close'): void
+  (e: 'download-audio'): void
+  (e: 'diarize'): void
   (e: 'resize-start', event: PointerEvent): void
 }>()
 
@@ -48,7 +73,6 @@ const panelTitle = computed(() => {
   if (props.isLegalScene) return t('meeting.scene.legal')
   if (props.isInterviewScene) return t('meeting.scene.interview')
   if (props.showAgentPanel) return t('meeting.agentChat')
-  if (props.showRealtimeDialog) return t('meeting.realtime.title')
   return t('meeting.analysis')
 })
 </script>
@@ -57,7 +81,7 @@ const panelTitle = computed(() => {
   <aside
     v-if="props.visible"
     class="right-panel"
-    :style="props.resizeStyle"
+    :style="pluginPanel?.preferredWidth ? { ...props.resizeStyle, width: pluginPanel.preferredWidth } : props.resizeStyle"
   >
     <div
       class="right-panel-resize-handle"
@@ -65,8 +89,38 @@ const panelTitle = computed(() => {
     />
     <div class="right-panel-inner">
       <div class="right-panel-header">
-        <h2>{{ panelTitle }}</h2>
+        <h2>{{ pluginPanel ? t(pluginPanel.labelKey) : panelTitle }}</h2>
         <div class="right-panel-actions">
+          <!-- 下载音频：录音完成后导出整段音频（原实时对话入口位置） -->
+          <button
+            class="panel-header-btn"
+            :title="t('meeting.downloadAudio')"
+            :aria-label="t('meeting.downloadAudio')"
+            :disabled="!props.canDownloadAudio"
+            @click="emit('download-audio')"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+          </button>
+          <!-- 拆分人声：把整段录音重新送 ASR，按发言人标注 -->
+          <button
+            class="panel-header-btn"
+            :class="{ active: props.isDiarizing }"
+            :title="t('meeting.diarizeActionHint')"
+            :aria-label="t('meeting.diarizeAction')"
+            :disabled="!props.canDiarize || props.isDiarizing"
+            @click="emit('diarize')"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+              <circle cx="9" cy="7" r="4" />
+              <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+              <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+            </svg>
+          </button>
           <!-- 关闭按钮：始终位于最右，确保不被遮挡 -->
           <button
             class="panel-close-btn"
@@ -82,12 +136,15 @@ const panelTitle = computed(() => {
       </div>
 
       <!-- 分析工具栏：仅在 analysis 模式下显示（parent passes the wired buttons） -->
-      <div v-if="!props.showAgentPanel && !props.isSpeechScene && !props.showRealtimeDialog" class="right-panel-toolbar">
+      <div v-if="!pluginPanel && !props.showAgentPanel && !props.isSpeechScene" class="right-panel-toolbar">
         <slot name="toolbar" />
       </div>
 
-      <!-- 四类内容分发：speech > agent > realtime > analysis -->
-      <template v-if="props.isSpeechScene">
+      <!-- 内容分发：plugin > speech > agent > analysis -->
+      <component v-if="pluginPanel && meetingStore.activeSession" :is="pluginPanel.component"
+        :key="pluginPanel.id + meetingStore.activeSession.id" :session-id="meetingStore.activeSession.id"
+        :sentences="meetingStore.activeSession.sentences" />
+      <template v-else-if="props.isSpeechScene">
         <slot name="speech" />
       </template>
       <template v-else-if="props.isLegalScene">
@@ -98,9 +155,6 @@ const panelTitle = computed(() => {
       </template>
       <template v-else-if="props.showAgentPanel">
         <slot name="agent" />
-      </template>
-      <template v-else-if="props.showRealtimeDialog">
-        <slot name="realtime" />
       </template>
       <template v-else>
         <slot name="analysis" />
@@ -250,6 +304,41 @@ const panelTitle = computed(() => {
   &:hover {
     background: rgba(239, 68, 68, 0.1);
     color: #ef4444;
+  }
+}
+
+/* 面板头部工具按钮（实时对话入口）：与关闭按钮同尺寸，激活态跟随主题色 */
+.panel-header-btn {
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: $text-secondary;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+
+  &:hover {
+    background: rgba($accent-primary, 0.12);
+    color: $accent-primary;
+  }
+
+  &:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+
+    &:hover {
+      background: transparent;
+      color: $text-secondary;
+    }
+  }
+
+  &.active {
+    background: rgba($accent-primary, 0.16);
+    color: $accent-primary;
   }
 }
 

@@ -45,6 +45,13 @@ class Storage:
             paraformer_format=os.environ.get("PARAFORMER_FORMAT", "pcm"),
             paraformer_language_hints=os.environ.get("PARAFORMER_LANGUAGE_HINTS", "zh,en"),
             paraformer_semantic_punctuation=os.environ.get("PARAFORMER_SEMANTIC_PUNCTUATION", "true").lower() in ("true", "1", "yes"),
+            minimax_api_key=os.environ.get("MINIMAX_API_KEY", ""),
+            minimax_asr_model=os.environ.get("MINIMAX_ASR_MODEL", "asr-1.0"),
+            minimax_base_url=os.environ.get("MINIMAX_BASE_URL", "https://api.minimaxi.com"),
+            minimax_language=os.environ.get("MINIMAX_LANGUAGE", ""),
+            minimax_audio_format=os.environ.get("MINIMAX_AUDIO_FORMAT", "wav"),
+            minimax_sample_rate=int(os.environ.get("MINIMAX_SAMPLE_RATE", "16000")),
+            minimax_chunk_seconds=float(os.environ.get("MINIMAX_CHUNK_SECONDS", "12.0")),
         )
         if CONFIG_FILE.exists():
             try:
@@ -66,6 +73,13 @@ class Storage:
                         if file_asr_data.get("paraformer_semantic_punctuation") is not None
                         else env_asr.paraformer_semantic_punctuation
                     ),
+                    minimax_api_key=file_asr_data.get("minimax_api_key") or env_asr.minimax_api_key,
+                    minimax_asr_model=file_asr_data.get("minimax_asr_model") or env_asr.minimax_asr_model,
+                    minimax_base_url=file_asr_data.get("minimax_base_url") or env_asr.minimax_base_url,
+                    minimax_language=file_asr_data.get("minimax_language", env_asr.minimax_language),
+                    minimax_audio_format=file_asr_data.get("minimax_audio_format") or env_asr.minimax_audio_format,
+                    minimax_sample_rate=int(file_asr_data.get("minimax_sample_rate") or env_asr.minimax_sample_rate),
+                    minimax_chunk_seconds=float(file_asr_data.get("minimax_chunk_seconds") or env_asr.minimax_chunk_seconds),
                 )
                 return AllConfig(
                     asr=merged_asr,
@@ -113,6 +127,13 @@ class Storage:
                                 "PARAFORMER_FORMAT",
                                 "PARAFORMER_LANGUAGE_HINTS",
                                 "PARAFORMER_SEMANTIC_PUNCTUATION",
+                                "MINIMAX_API_KEY",
+                                "MINIMAX_ASR_MODEL",
+                                "MINIMAX_BASE_URL",
+                                "MINIMAX_LANGUAGE",
+                                "MINIMAX_AUDIO_FORMAT",
+                                "MINIMAX_SAMPLE_RATE",
+                                "MINIMAX_CHUNK_SECONDS",
                             ]:
                                 env_lines.append(line)
 
@@ -124,6 +145,16 @@ class Storage:
             env_lines.append(f"PARAFORMER_FORMAT={asr.paraformer_format}")
             env_lines.append(f"PARAFORMER_LANGUAGE_HINTS={asr.paraformer_language_hints}")
             env_lines.append(f"PARAFORMER_SEMANTIC_PUNCTUATION={'true' if asr.paraformer_semantic_punctuation else 'false'}")
+            # MiniMax provider secrets/config — only persisted when populated
+            # so empty keys from older installs don't leak into the .env file.
+            if asr.minimax_api_key:
+                env_lines.append(f"MINIMAX_API_KEY={asr.minimax_api_key}")
+            env_lines.append(f"MINIMAX_ASR_MODEL={asr.minimax_asr_model}")
+            env_lines.append(f"MINIMAX_BASE_URL={asr.minimax_base_url}")
+            env_lines.append(f"MINIMAX_LANGUAGE={asr.minimax_language}")
+            env_lines.append(f"MINIMAX_AUDIO_FORMAT={asr.minimax_audio_format}")
+            env_lines.append(f"MINIMAX_SAMPLE_RATE={asr.minimax_sample_rate}")
+            env_lines.append(f"MINIMAX_CHUNK_SECONDS={asr.minimax_chunk_seconds}")
 
             with open(ENV_FILE, "w", encoding="utf-8") as f:
                 f.write("\n".join(env_lines) + "\n")
@@ -140,6 +171,12 @@ class Storage:
             data["asr"]["dashscope_api_key_masked"] = key[:8] + "****" + key[-4:] if len(key) > 12 else "****"
         else:
             data["asr"]["dashscope_api_key_masked"] = ""
+        # Mirror the same masking for MiniMax — same secret-leak hygiene.
+        if data["asr"].get("minimax_api_key"):
+            key = data["asr"]["minimax_api_key"]
+            data["asr"]["minimax_api_key_masked"] = key[:8] + "****" + key[-4:] if len(key) > 12 else "****"
+        else:
+            data["asr"]["minimax_api_key_masked"] = ""
         if data["llm"]["api_key"]:
             key = data["llm"]["api_key"]
             data["llm"]["api_key_masked"] = key[:8] + "****" + key[-4:] if len(key) > 12 else "****"
@@ -184,6 +221,16 @@ class Storage:
             paraformer_semantic_punctuation=bool(
                 getattr(new, "paraformer_semantic_punctuation", old.paraformer_semantic_punctuation)
             ),
+            # MiniMax provider fields — independent of DashScope so a partial
+            # update from the UI that only fills the DashScope key doesn't
+            # accidentally clear the MiniMax side.
+            minimax_api_key=keep("minimax_api_key", ""),
+            minimax_asr_model=getattr(new, "minimax_asr_model", None) or old.minimax_asr_model,
+            minimax_base_url=getattr(new, "minimax_base_url", None) or old.minimax_base_url,
+            minimax_language=getattr(new, "minimax_language", old.minimax_language),
+            minimax_audio_format=getattr(new, "minimax_audio_format", None) or old.minimax_audio_format,
+            minimax_sample_rate=int(getattr(new, "minimax_sample_rate", 0) or old.minimax_sample_rate),
+            minimax_chunk_seconds=float(getattr(new, "minimax_chunk_seconds", 0.0) or old.minimax_chunk_seconds),
         )
 
     @staticmethod

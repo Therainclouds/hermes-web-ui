@@ -2,8 +2,8 @@
 // ASR 配置向导（DashScope / LLM / OSS 表单，拆分自 MeetingView.vue，行为保持一致）。
 //
 // 状态契约：
-//   - `asrApiKey` 与分析模式由父级持有（父级的"创建"按钮禁用条件需要响应式
-//     依赖 asrApiKey），通过 defineModel 双向绑定。
+//   - `asrApiKey` 与分析模式、`asrProvider` 由父级持有（父级的"创建"按钮禁用条件
+//     需要响应式依赖 asrApiKey），通过 defineModel 双向绑定。
 //   - 其余向导字段（LLM / OSS / 步骤 / ASR 模型）由本组件自持；父级通过
 //     ref 调用 `reset()`（打开弹窗时从 store 重播种）与 `collectConfig()`
 //     （创建会议 / 启动 ASR 服务时取当前输入值）。
@@ -13,12 +13,16 @@ import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NAlert, NButton, NInput, NRadio, NRadioGroup, NSelect, NStep, NSteps } from 'naive-ui'
 import { useMeetingStore } from '@/stores/hermes/meeting'
+import { useRealtimeModelStore } from '@/stores/hermes/realtime-model'
 
 const { t } = useI18n()
 const meetingStore = useMeetingStore()
+const realtimeModelStore = useRealtimeModelStore()
 
 const asrApiKey = defineModel<string>('asrApiKey', { default: '' })
 const newMeetingAnalysisMode = defineModel<'hermes' | 'custom'>('analysisMode', { default: 'hermes' })
+const newMeetingAsrProvider = defineModel<'dashscope' | 'minimax'>('asrProvider', { default: 'dashscope' })
+const newMeetingMinimaxApiKey = defineModel<string>('minimaxApiKey', { default: '' })
 
 // --- LLM 配置 ---
 const llmApiKey = ref(meetingStore.asrConfig.llmApiKey)
@@ -34,24 +38,51 @@ const ossEndpoint = ref(meetingStore.asrConfig.ossEndpoint)
 const ossPathPrefix = ref(meetingStore.asrConfig.ossPathPrefix)
 const newMeetingAsrModel = ref('paraformer-v2')
 
-// ASR 模型选项
-const asrModelOptions = computed(() => [
+// ASR 模型选项（每个 provider 内部的子模型）
+const dashscopeModelOptions = computed(() => [
   {
     label: 'Paraformer V2',
     value: 'paraformer-v2',
-    description: t('meeting.asrModelParaformerDesc')
+    description: t('meeting.asrModelParaformerDesc'),
   },
   {
     label: 'Fun-ASR',
     value: 'fun-asr',
-    description: t('meeting.asrModelFunAsrDesc')
+    description: t('meeting.asrModelFunAsrDesc'),
   },
   {
     label: 'Fun-ASR MTL',
     value: 'fun-asr-mtl',
-    description: t('meeting.asrModelFunAsrMtlDesc')
+    description: t('meeting.asrModelFunAsrMtlDesc'),
   },
 ])
+
+/**
+ * MiniMax 子模型选项。官方 ASR 文档（v1，2025）只暴露 `asr-1.0`；保留一个
+ *  `speech-01` 入口作为对外口径的别名，便于未来版本切换时无需改动 UI。
+ */
+const minimaxModelOptions = computed(() => [
+  {
+    label: 'asr-1.0',
+    value: 'asr-1.0',
+    description: t('meeting.asrModelMinimaxAsr10Desc'),
+  },
+  {
+    label: 'speech-01',
+    value: 'speech-01',
+    description: t('meeting.asrModelMinimaxSpeech01Desc'),
+  },
+])
+
+const asrModelOptions = computed(() =>
+  newMeetingAsrProvider.value === 'minimax' ? minimaxModelOptions.value : dashscopeModelOptions.value,
+)
+
+// 切换 provider 时回到对应 provider 的默认子模型 — 避免跨 provider 的旧值残留。
+function onProviderChange(value: 'dashscope' | 'minimax') {
+  newMeetingAsrProvider.value = value
+  newMeetingAsrModel.value = value === 'minimax' ? 'asr-1.0' : 'paraformer-v2'
+}
 
 /** 隐藏说话人分离功能（产品需求：会议只显示 agent 对话，不展示说话人分离）。
  *  与 MeetingView 中的同名常量保持一致；置 false 可恢复 OSS 配置区块。 */
@@ -59,6 +90,15 @@ const HIDE_SPEAKER_DIARIZATION = true
 
 /** 打开弹窗时从 store 重播种所有自持字段（与旧版 openCreateModal 一致）。 */
 function reset() {
+  // ASR provider 默认按 Realtime 模型面板里保存的选择；如果 store 没配置过
+  // provider，沿用 'dashscope'。
+  const preferred = realtimeModelStore.config.asrProvider || meetingStore.asrConfig.asrProvider
+  newMeetingAsrProvider.value = preferred === 'minimax' ? 'minimax' : 'dashscope'
+  newMeetingAsrModel.value = newMeetingAsrProvider.value === 'minimax' ? 'asr-1.0' : 'paraformer-v2'
+  // MiniMax API key 默认填入 Realtime 面板里保存的值（如果有），用户未填时
+  // 可直接使用共享 key。
+  newMeetingMinimaxApiKey.value = meetingStore.asrConfig.minimaxApiKey
+    || realtimeModelStore.config.minimaxApiKey
   llmApiKey.value = meetingStore.asrConfig.llmApiKey
   llmBaseUrl.value = meetingStore.asrConfig.llmBaseUrl
   llmModel.value = meetingStore.asrConfig.llmModel
@@ -74,6 +114,8 @@ function reset() {
 function collectConfig() {
   return {
     asrApiKey: asrApiKey.value,
+    asrProvider: newMeetingAsrProvider.value,
+    minimaxApiKey: newMeetingMinimaxApiKey.value,
     analysisMode: newMeetingAnalysisMode.value,
     llmApiKey: llmApiKey.value,
     llmBaseUrl: llmBaseUrl.value,
@@ -99,27 +141,66 @@ defineExpose({ reset, collectConfig })
       <NStep :title="t('meeting.wizardStepReview')" />
     </NSteps>
 
-    <!-- Step 1: DashScope API Key (required) -->
+    <!-- Step 1: ASR provider + API key（必填） -->
     <div v-if="asrWizardStep === 1" class="form-item">
-      <label class="form-label">
-        {{ t('meeting.dashscopeApiKey') }}
-        <a
-          href="https://dashscope.aliyun.com/"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="form-tutorial-link"
-          @click.stop
-        >{{ t('meeting.howToGetApiKey') }}</a>
-        <span v-if="meetingStore.hasASRConfig" class="form-label-badge">{{ t('meeting.configured') }}</span>
-      </label>
-      <NInput
-        :value="asrApiKey"
-        type="password"
-        show-password-on="click"
-        :placeholder="meetingStore.hasASRConfig ? t('meeting.apiKeySaved') : t('meeting.dashscopeApiKeyPlaceholder')"
-        @update:value="asrApiKey = $event"
-      />
-      <div class="form-hint">{{ t('meeting.dashscopeApiKeyHint') }}</div>
+      <label class="form-label">{{ t('meeting.asrProvider') }}</label>
+      <NRadioGroup :value="newMeetingAsrProvider" @update:value="onProviderChange">
+        <NRadio value="dashscope">
+          <div class="radio-content">
+            <span class="radio-title">{{ t('meeting.asrProviderDashscope') }}</span>
+            <span class="radio-desc">{{ t('meeting.asrProviderDashscopeDesc') }}</span>
+          </div>
+        </NRadio>
+        <NRadio value="minimax">
+          <div class="radio-content">
+            <span class="radio-title">{{ t('meeting.asrProviderMinimax') }}</span>
+            <span class="radio-desc">{{ t('meeting.asrProviderMinimaxDesc') }}</span>
+          </div>
+        </NRadio>
+      </NRadioGroup>
+
+      <template v-if="newMeetingAsrProvider === 'dashscope'">
+        <label class="form-label" style="margin-top: 12px">
+          {{ t('meeting.dashscopeApiKey') }}
+          <a
+            href="https://dashscope.aliyun.com/"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="form-tutorial-link"
+            @click.stop
+          >{{ t('meeting.howToGetApiKey') }}</a>
+          <span v-if="meetingStore.hasASRConfig" class="form-label-badge">{{ t('meeting.configured') }}</span>
+        </label>
+        <NInput
+          :value="asrApiKey"
+          type="password"
+          show-password-on="click"
+          :placeholder="meetingStore.hasASRConfig ? t('meeting.apiKeySaved') : t('meeting.dashscopeApiKeyPlaceholder')"
+          @update:value="asrApiKey = $event"
+        />
+        <div class="form-hint">{{ t('meeting.dashscopeApiKeyHint') }}</div>
+      </template>
+
+      <template v-else>
+        <label class="form-label" style="margin-top: 12px">
+          {{ t('meeting.minimaxApiKey') }}
+          <a
+            href="https://platform.minimax.cn/user-center/basic-information/interface-key"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="form-tutorial-link"
+            @click.stop
+          >{{ t('meeting.howToGetApiKey') }}</a>
+        </label>
+        <NInput
+          :value="newMeetingMinimaxApiKey"
+          type="password"
+          show-password-on="click"
+          :placeholder="t('meeting.minimaxApiKeyPlaceholder')"
+          @update:value="newMeetingMinimaxApiKey = $event"
+        />
+        <div class="form-hint">{{ t('meeting.minimaxApiKeyHint') }}</div>
+      </template>
 
       <!-- OSS 配置（说话人分离必填，可折叠）——隐藏说话人分离时一并隐藏 -->
       <details v-if="!HIDE_SPEAKER_DIARIZATION" class="oss-config-details">
@@ -200,8 +281,11 @@ defineExpose({ reset, collectConfig })
 
     <!-- Step 3: Review -->
     <div v-if="asrWizardStep === 3" class="form-item">
-      <NAlert v-if="!meetingStore.hasASRConfig && !asrApiKey" type="warning" :show-icon="true" style="margin-bottom: 8px">
+      <NAlert v-if="!meetingStore.hasASRConfig && !asrApiKey && newMeetingAsrProvider === 'dashscope'" type="warning" :show-icon="true" style="margin-bottom: 8px">
         {{ t('meeting.wizardWarnMissingAsr') }}
+      </NAlert>
+      <NAlert v-if="newMeetingAsrProvider === 'minimax' && !newMeetingMinimaxApiKey.trim()" type="warning" :show-icon="true" style="margin-bottom: 8px">
+        {{ t('meeting.wizardWarnMissingMinimax') }}
       </NAlert>
       <NAlert v-if="newMeetingAnalysisMode === 'custom' && !meetingStore.hasLLMConfig && !llmApiKey" type="info" :show-icon="false" style="margin-bottom: 8px">
         {{ t('meeting.wizardWarnMissingLlm') }}
@@ -209,7 +293,14 @@ defineExpose({ reset, collectConfig })
       <ul class="wizard-review-list">
         <li>
           <span class="wizard-review-label">{{ t('meeting.wizardStepAsr') }}:</span>
-          <span class="wizard-review-value">{{ (asrApiKey || meetingStore.asrConfig.dashscopeApiKey) ? '✓ ' + t('meeting.configured') : '— ' + t('meeting.notConfigured') }}</span>
+          <span class="wizard-review-value">
+            <template v-if="newMeetingAsrProvider === 'minimax'">
+              {{ newMeetingMinimaxApiKey.trim() ? '✓ ' + t('meeting.asrProviderMinimax') : '— ' + t('meeting.notConfigured') }}
+            </template>
+            <template v-else>
+              {{ (asrApiKey || meetingStore.asrConfig.dashscopeApiKey) ? '✓ ' + t('meeting.asrProviderDashscope') : '— ' + t('meeting.notConfigured') }}
+            </template>
+          </span>
         </li>
         <li>
           <span class="wizard-review-label">{{ t('meeting.wizardStepLlm') }}:</span>

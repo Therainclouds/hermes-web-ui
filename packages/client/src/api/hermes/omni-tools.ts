@@ -4,9 +4,10 @@ import { fetchSessions } from './sessions'
 import { getApiKey } from '@/api/client'
 
 /**
- * Qwen Omni Realtime 模型（`qwen3.5-omni-flash-realtime`、DashScope 模型 id
- * 3041584，以及 `qwen3-omni-flash-realtime`、模型 id 2880812 都走同一份
- * OpenAI-Realtime 兼容协议）的 function calling 工具集。
+ * Qwen Omni Realtime 模型（`qwen3.8-omni-flash-realtime`、
+ * `qwen3.5-omni-flash-realtime` / `qwen3.5-omni-plus-realtime`、
+ * 以及 `qwen3-omni-flash-realtime` 都走同一份 OpenAI-Realtime 兼容协议）
+ * 的 function calling 工具集。
  *
  * 形状遵循 OpenAI-Realtime 的扁平格式（type/name/description/parameters），
  * 由 `useOmniRealtime` 通过 `start` 帧下发给 Python 代理写入 session.update，

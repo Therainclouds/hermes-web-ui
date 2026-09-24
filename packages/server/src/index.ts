@@ -47,6 +47,7 @@ import { WorkflowSocketServer } from './services/workflow-socket'
 import { logger } from './services/logger'
 import { meetingASRService } from './services/meeting-asr'
 import { realtimeAssistService } from './services/meeting-asr/realtime-assist'
+import { reconcileNovelJobs } from './services/trpg/novel-lease'
 import net from 'net'
 import { startUSBService } from './services/usb'
 import { USBSocketServer } from './services/usb/USBSocketServer'
@@ -59,6 +60,8 @@ import { createRequestBodyParser } from './middleware/request-body-parser'
 import {
   migratePersistedPiRuntimeMcpConfigs,
   restorePersistedPiProxyTargets,
+  getDshHost,
+  shutdownDshHosts,
 } from './services/coding-agents'
 
 // Injected by esbuild at build time; fallback to reading package.json in dev mode
@@ -316,6 +319,18 @@ function startRuntimeServicesAfterListen(): void {
       return
     }
   })()
+
+  // Long-novel jobs are durable on disk, but their worker lives in this process. Anything left
+  // `running` by a previous boot has no owner: mark it `interrupted` so the UI reports the real
+  // state instead of an invented `paused`, and never auto-start it (recovery spends money and
+  // stays an explicit user action).
+  void reconcileNovelJobs()
+    .then(result => {
+      if (result.interrupted || result.live) {
+        console.log(`[bootstrap] novel job reconcile: ${result.interrupted} interrupted, ${result.live} owned by a live process`)
+      }
+    })
+    .catch(err => logger.warn(err, '[bootstrap] novel job reconcile failed'))
 }
 
 function startLanDiscovery(): void {
@@ -468,6 +483,15 @@ export async function bootstrap() {
   setupTerminalWebSocket(servers)
   setupKanbanEventsWebSocket(servers)
   getLanPeerSocketManager().setupServer(servers)
+  // DSH plugin UI gateway owns the WebSocket tunnel to the native runtime.
+  void (async () => {
+    try {
+      const host = await getDshHost()
+      host.ui.attach(servers)
+    } catch (err) {
+      logger.warn(err, '[dsh] plugin UI gateway attach failed')
+    }
+  })()
   console.log('[bootstrap] terminal + kanban + LAN peer websocket setup')
 
   const loopbackBaseUrl = getLoopbackBaseUrl(server)
@@ -622,6 +646,7 @@ const interfaces = safeNetworkInterfaces()
   })
 
   desktopShutdownHandler = bindShutdown(servers, groupChatServer, chatRunServer, agentBridgeManager, usbSocketServer as any)
+  void shutdownDshHosts().catch(err => logger.warn(err, '[dsh] shutdown failed'))
   startVersionCheck()
   startReconcileLoop()
 }

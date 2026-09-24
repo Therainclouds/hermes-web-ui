@@ -1,3 +1,4 @@
+import { getRealtimeModelSetting } from './realtime-settings-store'
 import { getDb } from '../index'
 import {
   TTS_PROFILE_PROVIDER_SETTINGS_TABLE,
@@ -17,6 +18,7 @@ export type StoredTtsProvider =
   | 'mistral'
   | 'minimax'
   | 'deepinfra'
+  | 'qwen'
 export type ActiveTtsProvider = StoredTtsProvider
 
 const SETTINGS_KEYS = [
@@ -64,6 +66,7 @@ const MAX_BASE_URL_PRESETS = 20
 const PROVIDERS: StoredTtsProvider[] = [
   'custom',
   'deepinfra',
+  'qwen',
   'doubao',
   'edge',
   'elevenlabs',
@@ -87,6 +90,7 @@ const PROVIDER_LABELS: Record<StoredTtsProvider, string> = {
   xai: 'xAI TTS',
   mistral: 'Mistral TTS',
   minimax: 'MiniMax TTS',
+  qwen: 'Qwen',
   deepinfra: 'DeepInfra TTS',
 }
 
@@ -338,7 +342,14 @@ export function getTtsProviderSetting(
   const profileName = normalizeProfile(profile)
   const storedProvider = assertStoredTtsProvider(provider)
   const row = readStoredRow(profileName, storedProvider)
-  return row ? rowToResult(row, options?.includeSecrets === true) : null
+  if (!row) return null
+  const result = rowToResult(row, options?.includeSecrets === true)
+  // Qwen voice may reuse only this profile's saved DashScope key.
+  if (provider === 'qwen' && !result.secrets.apiKey) {
+    const shared = getRealtimeModelSetting(profileName, { includeSecrets: true })?.secrets.apiKey
+    if (shared) result.secrets.apiKey = options?.includeSecrets ? shared : '[stored]'
+  }
+  return result
 }
 
 export function saveTtsProviderSetting(

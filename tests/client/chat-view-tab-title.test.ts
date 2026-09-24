@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { nextTick } from 'vue'
 import ChatView from '@/views/hermes/ChatView.vue'
@@ -8,6 +8,7 @@ import { useAppStore } from '@/stores/hermes/app'
 import { useChatStore, type Session } from '@/stores/hermes/chat'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useSettingsStore } from '@/stores/hermes/settings'
+import { queuePendingChatPrompt, takePendingChatPrompt } from '@/utils/hermes/pending-chat-prompt'
 
 vi.mock('@/components/hermes/chat/ChatPanel.vue', () => ({
   default: {
@@ -143,6 +144,24 @@ describe('ChatView tab title', () => {
     expect(wrapper.getComponent({ name: 'ChatPanel' }).props('standalone')).toBe(true)
     expect(wrapper.get('.chat-view').classes()).toContain('chat-view--standalone')
     expect(document.title).toBe('Desktop Chat')
+    wrapper.unmount()
+  })
+
+  it('sends a prompt queued by another tab once this tab opens the session', async () => {
+    localStorage.clear()
+    const chatStore = useChatStore()
+    mockRoute.params = { sessionId: 'session-1' }
+    chatStore.activeSessionId = 'session-1'
+    chatStore.activeSession = makeSession('Recap')
+    const send = vi.spyOn(chatStore, 'sendMessage').mockResolvedValue(undefined as never)
+    queuePendingChatPrompt('session-1', '生成编年史')
+
+    const wrapper = mount(ChatView)
+    await flushPromises()
+
+    expect(send).toHaveBeenCalledWith('生成编年史')
+    // One-shot: a second mount of the same session must not resend it.
+    expect(takePendingChatPrompt('session-1')).toBeNull()
     wrapper.unmount()
   })
 })

@@ -11,6 +11,7 @@ export type SttProvider =
   | 'xai'
   | 'elevenlabs'
   | 'deepinfra'
+  | 'qwen'
 export type StoredSttProvider = Exclude<SttProvider, 'browser'>
 
 export interface SttStoredSettings {
@@ -56,6 +57,7 @@ function normalizeActiveProvider(value: unknown): SttProvider | null {
     value === 'mistral' ||
     value === 'xai' ||
     value === 'elevenlabs' ||
+    value === 'qwen' ||
     value === 'deepinfra'
     ? value
     : null

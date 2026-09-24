@@ -85,17 +85,17 @@ const meetingStore = useMeetingStore()
 const realtimeModelStore = useRealtimeModelStore()
 
 // Voices verified against the DashScope Qwen-Omni-Realtime catalogue.
-// The same voice IDs are accepted by every qwen3.5-omni-* / qwen3-omni-*
-// model — see OmniRealtimeStage.vue for the registry comment.
+// The same voice IDs are accepted by every qwen3.8-omni-* / qwen3.5-omni-* /
+// qwen3-omni-* model — see OmniRealtimeStage.vue for the registry comment.
 const voiceOptions: SelectOption[] = [
-  { label: 'Tina (女声 · 中文 · 默认)', value: 'Tina' },
+  { label: 'Ethan (男声 · 中文 · 默认)', value: 'Ethan' },
+  { label: 'Tina (女声 · 中文)', value: 'Tina' },
   { label: 'Serena (女声 · 中文)', value: 'Serena' },
-  { label: 'Ethan (男声 · 中文)', value: 'Ethan' },
   { label: 'Jennifer (女声 · 中文)', value: 'Jennifer' },
   { label: 'Ryan (男声 · 中文)', value: 'Ryan' },
 ]
-const selectedVoice = ref('Tina')
-selectedVoice.value = realtimeModelStore.config.voice || 'Tina'
+const selectedVoice = ref('Ethan')
+selectedVoice.value = realtimeModelStore.config.voice || 'Ethan'
 /** 用户是否在本场手动改过音色（true 后技能建议音色不再覆盖）。 */
 const userVoicePicked = ref(false)
 

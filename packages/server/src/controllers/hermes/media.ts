@@ -3,9 +3,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { dirname, extname, isAbsolute, join, resolve } from 'path'
 import { getActiveProfileName, getProfileDir, listProfileNamesFromDisk } from '../../services/hermes/hermes-profile'
 import { userCanAccessProfile } from '../../db/hermes/users-store'
-import { config } from '../../config'
 import { readConfigYamlForProfile } from '../../services/config-helpers'
 import { getCompatibleCustomProviders } from '../../services/hermes/custom-providers-compat'
+import { CHATGPT_WEB_PROVIDER, ChatGptWebImageService } from '../../services/chatgpt-web-image'
 
 const XAI_VIDEO_GENERATIONS_URL = 'https://api.x.ai/v1/videos/generations'
 const XAI_VIDEO_STATUS_URL = 'https://api.x.ai/v1/videos'
@@ -442,16 +442,9 @@ function normalizeDuration(value: unknown): number {
   return duration
 }
 
-export function defaultMediaOutputPath(requestId: string, now = new Date()): string {
-  const safeRequestId = requestId.replace(/[^A-Za-z0-9_-]/g, '_') || `video_${now.getTime()}`
-  return join(config.appHome, 'media', `${safeRequestId}.mp4`)
-}
+import { defaultImageOutputPath, defaultMediaOutputPath } from '../../services/hermes/media-output-paths'
 
-export function defaultImageOutputPath(requestId: string, index = 0): string {
-  const safeRequestId = requestId.replace(/[^A-Za-z0-9_-]/g, '_') || `image_${Date.now()}`
-  const suffix = index > 0 ? `-${index + 1}` : ''
-  return join(config.appHome, 'media', `${safeRequestId}${suffix}.png`)
-}
+export { defaultImageOutputPath, defaultMediaOutputPath }
 
 function normalizeImageMode(value: unknown): ApiKeyImageMode {
   const mode = String(value || 'text').trim().toLowerCase()
@@ -563,7 +556,7 @@ async function requestApiKeyImage(
         size: body.size || '1024x1024',
         quality: body.quality || 'auto',
         stream: true,
-        response_format: 'b64_json',
+        ...(body.return_base64 === true ? { output_format: 'png' } : { response_format: 'b64_json' }),
       }),
     })
   } else if (mode === 'image') {
@@ -593,18 +586,37 @@ async function requestApiKeyImage(
       }),
     })
   } else {
-    const image = await normalizeImageFile(body)
-    const imageBytes = new Uint8Array(image.buffer.byteLength)
-    imageBytes.set(image.buffer)
     const form = new FormData()
-    form.append('image', new Blob([imageBytes.buffer], { type: image.mime }), image.name)
+    if (body.reference_images !== undefined) {
+      const refs = body.reference_images
+      if (!Array.isArray(refs) || refs.length < 1 || refs.length > 4) {
+        throw Object.assign(new Error('Use 1 to 4 reference images'), { status: 400 })
+      }
+      let total = 0
+      for (const [index, uri] of refs.entries()) {
+        if (typeof uri !== 'string' || !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(uri)) {
+          throw Object.assign(new Error('Reference images must be PNG, JPEG or WebP data URIs'), { status: 400 })
+        }
+        assertImageSize(uri.slice(uri.indexOf(',') + 1), 5 * 1024 * 1024)
+        const image = imageDataUriToBytes(uri)
+        total += image.buffer.byteLength
+        if (total > 10 * 1024 * 1024 || mimeFromMagic(image.buffer) !== image.mime) {
+          throw Object.assign(new Error('Invalid reference image or reference size limit exceeded'), { status: 400 })
+        }
+        form.append('image[]', new Blob([new Uint8Array(image.buffer)], { type: image.mime }), `reference-${index + 1}.${image.mime === 'image/jpeg' ? 'jpg' : image.mime.split('/')[1]}`)
+      }
+    } else {
+      const image = await normalizeImageFile(body)
+      form.append('image', new Blob([new Uint8Array(image.buffer)], { type: image.mime }), image.name)
+    }
     form.append('prompt', prompt)
     form.append('model', body.model || models.generation || APIKEY_IMAGE_MODEL)
     form.append('n', String(n))
     form.append('quality', body.quality || 'auto')
     form.append('size', body.size || '1024x1024')
     form.append('stream', 'true')
-    form.append('response_format', 'b64_json')
+    if (body.return_base64 === true) form.append('output_format', 'png')
+    else form.append('response_format', 'b64_json')
     res = await fetch(buildApiUrl(provider.baseUrl, '/v1/images/edits'), {
       method: 'POST',
       headers,
@@ -668,7 +680,7 @@ export async function apiKeyImageGenerate(ctx: Context) {
     const providerName = requestedApiKeyImageProviderName(body)
     const resolution = resolveApiKeyImageProvider(hermesConfig, providerName, configuredProvider)
     if (!resolution.provider) {
-      ctx.status = 401
+      ctx.status = body.return_base64 === true ? 503 : 401
       const isDefaultProvider = canonicalCustomProviderName(resolution.attemptedName) === APIKEY_IMAGE_PROVIDER
       ctx.body = {
         error: `Missing ${resolution.attemptedName} provider in profile "${profile}" config.yaml.`,
@@ -685,6 +697,11 @@ export async function apiKeyImageGenerate(ctx: Context) {
       { generation: generationSettings.model, edit: editSettings.model },
       activeSettings.timeoutMs,
     )
+    // Browser plugins persist binary images in their own IndexedDB store.
+    if (body.return_base64 === true) {
+      ctx.body = { ok: true, images, provider: provider.name, profile }
+      return
+    }
     const requestedOutputPath = typeof body.output_path === 'string' ? body.output_path.trim() : ''
     const outputPaths = saveGeneratedImages(images, requestedOutputPath || undefined)
     ctx.body = {
@@ -864,6 +881,9 @@ export async function miniMaxImageToVideo(ctx: Context) {
       region?: string
       output_path?: string
       timeout_ms?: number
+      // Accepted for parity with apiKeyImageGenerate, but unsupported here:
+      // image-to-video never returns binary image payloads.
+      return_base64?: boolean
     } | undefined
     const body = input || {}
     const model = typeof body.model === 'string' && body.model.trim() ? body.model.trim() : MINIMAX_VIDEO_DEFAULT_MODEL
@@ -890,6 +910,15 @@ export async function miniMaxImageToVideo(ctx: Context) {
     const timeoutMs = Number.isFinite(rawTimeoutMs)
       ? Math.max(10000, Math.min(rawTimeoutMs, 30 * 60 * 1000))
       : DEFAULT_TIMEOUT_MS
+    // Video endpoints never produce binary image payloads; the return_base64
+    // shortcut only applies to apiKeyImageGenerate (where images / provider
+    // are in scope). Reject explicitly so plugins don't accidentally depend
+    // on a payload that never existed.
+    if (body.return_base64 === true) {
+      ctx.status = 400
+      ctx.body = { error: 'return_base64 is not supported on image-to-video endpoints', code: 'return_base64_unsupported' }
+      return
+    }
     const requestedOutputPath = typeof body.output_path === 'string' ? body.output_path.trim() : ''
     const requestBody = miniMaxV1ImageRequest(body, prompt, image, model, region)
 
@@ -991,6 +1020,15 @@ export async function grokImageToVideo(ctx: Context) {
     const timeoutMs = Number.isFinite(rawTimeoutMs)
       ? Math.max(10000, Math.min(rawTimeoutMs, 30 * 60 * 1000))
       : DEFAULT_TIMEOUT_MS
+    // Video endpoints never produce binary image payloads; the return_base64
+    // shortcut only applies to apiKeyImageGenerate (where images / provider
+    // are in scope). Reject explicitly so plugins don't accidentally depend
+    // on a payload that never existed.
+    if (body.return_base64 === true) {
+      ctx.status = 400
+      ctx.body = { error: 'return_base64 is not supported on image-to-video endpoints', code: 'return_base64_unsupported' }
+      return
+    }
     const requestedOutputPath = typeof body.output_path === 'string' ? body.output_path.trim() : ''
 
     const started = await requestXaiJson(XAI_VIDEO_GENERATIONS_URL, tokenInfo.token, {
@@ -1037,5 +1075,126 @@ export async function grokImageToVideo(ctx: Context) {
   } catch (err: any) {
     ctx.status = err.status || 500
     ctx.body = { error: err.message || String(err) }
+  }
+}
+
+/**
+ * ChatGPT web project image generation.
+ *
+ * Opt-in alternative to `apiKeyImageGenerate`: instead of an image API the work
+ * happens in a real Chrome window driving the user's own ChatGPT project, and
+ * the finished PNG is downloaded back. All of the browser handling lives in the
+ * service; this controller only maps HTTP to it.
+ *
+ * Pass `async: true` to start a job and poll `GET .../chatgpt-web-image/jobs/:jobId`
+ * instead of holding one long request. The web flow takes minutes, so the async
+ * form is what keeps a slow (but healthy) generation from surfacing as a 502.
+ */
+export async function chatGptWebImageGenerate(ctx: Context) {
+  let profile: string
+  try {
+    profile = resolveMediaProfile(ctx)
+  } catch (err: any) {
+    ctx.status = err.status || 400
+    ctx.body = { error: err.message || String(err), code: err.code || 'invalid_profile' }
+    return
+  }
+
+  const body = (ctx.request.body || {}) as any
+  const requestedCount = Number(body.n)
+  if (Number.isFinite(requestedCount) && requestedCount > 1) {
+    ctx.status = 400
+    ctx.body = {
+      error: 'ChatGPT web generation returns one image per request; n must be 1',
+      code: 'chatgpt_web_n_unsupported',
+    }
+    return
+  }
+
+  const returnBase64 = body.return_base64 === true
+  const request = {
+    profile,
+    prompt: typeof body.prompt === 'string' ? body.prompt : '',
+    referenceImages: body.reference_images,
+    projectUrl: typeof body.project_url === 'string' ? body.project_url : '',
+    timeoutMs: Number.isFinite(Number(body.timeout_ms)) && Number(body.timeout_ms) > 0
+      ? Number(body.timeout_ms)
+      : undefined,
+    outputPath: typeof body.output_path === 'string' ? body.output_path : '',
+    returnBase64,
+  }
+
+  if (body.async === true) {
+    try {
+      const jobId = ChatGptWebImageService.getInstance().startJob(request)
+      ctx.status = 202
+      ctx.body = { ok: true, mode: 'chatgpt-web', provider: CHATGPT_WEB_PROVIDER, profile, async: true, job_id: jobId, state: 'queued' }
+    } catch (err: any) {
+      ctx.status = err.status || 502
+      ctx.body = {
+        error: err.message || String(err),
+        code: err.code || 'chatgpt_web_failed',
+        ...(err.detail ? { detail: err.detail } : {}),
+      }
+    }
+    return
+  }
+
+  try {
+    const result = await ChatGptWebImageService.getInstance().generate(request)
+    ctx.body = {
+      ok: true,
+      mode: 'chatgpt-web',
+      provider: result.provider,
+      profile,
+      conversation_id: result.conversationId,
+      width: result.width,
+      height: result.height,
+      duration_ms: result.durationMs,
+      ...(returnBase64
+        ? { images: result.images }
+        : { output_paths: result.outputPaths }),
+    }
+  } catch (err: any) {
+    ctx.status = err.status || 502
+    ctx.body = {
+      error: err.message || String(err),
+      code: err.code || 'chatgpt_web_failed',
+      ...(err.detail ? { detail: err.detail } : {}),
+    }
+  }
+}
+
+/** Poll one async ChatGPT web generation started with `async: true`. */
+export async function chatGptWebImageJobStatus(ctx: Context) {
+  let profile: string
+  try {
+    profile = resolveMediaProfile(ctx)
+  } catch (err: any) {
+    ctx.status = err.status || 400
+    ctx.body = { error: err.message || String(err), code: err.code || 'invalid_profile' }
+    return
+  }
+  try {
+    const job = ChatGptWebImageService.getInstance().getJob(String(ctx.params.jobId || ''), profile)
+    ctx.body = { ok: true, mode: 'chatgpt-web', provider: CHATGPT_WEB_PROVIDER, profile, ...job }
+  } catch (err: any) {
+    ctx.status = err.status || 500
+    ctx.body = {
+      error: err.message || String(err),
+      code: err.code || 'chatgpt_web_job_status_failed',
+      ...(err.detail ? { detail: err.detail } : {}),
+    }
+  }
+}
+
+/** Browser bridge diagnostics: whether Chrome is up and which profile it uses. */
+export async function chatGptWebImageStatus(ctx: Context) {
+  try {
+    const status = await ChatGptWebImageService.getInstance().status()
+    ctx.body = { ok: true, ...status }
+  } catch (err: any) {
+    ctx.status = err.status || 500
+    ctx.body = { error: err.message || String(err), code: 'chatgpt_web_status_failed' }
   }
 }

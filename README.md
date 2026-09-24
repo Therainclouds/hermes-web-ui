@@ -24,6 +24,7 @@
 | Local control plane | Manages profiles, providers, models, credentials, memory, skills, plugins, logs, and runtime settings from one dashboard. |
 | Automation | Configures platform channels, cron jobs, Kanban tasks, group-chat rooms, and MCP servers around the same Hermes profiles. |
 | Workspace tools | Provides a file browser, web terminal, voice input/output, coding-agent runners, device discovery, and performance views. |
+| Meeting plugins | Ships a tabletop-RPG companion (character sheets, highlights, recap book, long-form novel pipeline, ancient-book reader) and a camera-driven document scanner — both live inside Meeting Mode. |
 | Distribution | Ships as a desktop app for Windows/macOS/Linux, an npm CLI package, and a Docker image. |
 
 ## Features
@@ -230,13 +231,14 @@ Real-time speech transcription with AI-powered meeting analysis, speaker diariza
 
 | Feature | Description |
 |---|---|
-| Real-time Speech Transcription | WebSocket connection to ASR service for live speech-to-text |
+| Real-time Speech Transcription | WebSocket connection to ASR service for live speech-to-text; ASR provider is selectable (DashScope Paraformer / Fun-ASR by default, MiniMax `asr-1.0` REST streaming as an opt-in alternative) |
 | Speaker Diarization | Alibaba Cloud DashScope Paraformer model for automatic speaker identification |
-| Speaker Renaming | Click speaker labels to customize names, auto-syncs to all related sentences |
+| Speaker Renaming | Speaker chips are always visible in the transcript; hover reveals an edit icon, click opens a rename popover, and the new name is mirrored to every sentence of that speaker and synced to the server (so a page reload does not revert it) |
 | Speaker Count Setting | Auto-detect or manually specify 2-8 speakers for improved accuracy |
 | Audio Recording & Playback | Record meeting audio with progress bar, drag seek, and click-to-jump on sentences |
 | AI Analysis | Hermes Agent or custom model analysis for summaries, key points, and action items |
 | Multi-format Export | Download audio (WebM), transcript (TXT), structured JSON data, and HTML reports |
+| Whole-file transcription | New "Direct audio transcription" tab in the create-meeting dialog uploads a recording; "Separate speakers" button on the right panel re-runs the same audio for speaker labels. Engines: MiniMax `asr-1.0` (diarized, chunked above 480s) or Qwen (≤5 min, diarization requires OSS) |
 
 **Speaker Diarization Mode:**
 
@@ -324,6 +326,19 @@ Real-time speech transcription with AI-powered meeting analysis, speaker diariza
 - **Markdown rendering for assistant content.** The plain-text `<div class="assistant-content">{{ msg.content }}</div>` is replaced with an async-loaded `MarkdownRenderer` so analysis output is rendered as actual Markdown (headings, lists, tables, code blocks) instead of escaped text.
 - **Smarter report prompt.** `useMeetingAgent.generateReport` now passes a pinned `instructions` payload to Hermes, includes the session title, and folds in any prior `analysisResult` plus the previous assistant/system messages as `### Previous analysis result` / `### Previous conversation` blocks. This keeps a re-run of "Generate Report" idempotent instead of re-analyzing from scratch, and the strict instructions enforce the `write_file + ```html code block` contract that `extractHtml` looks for.
 - **Looser HTML detection.** `looksLikeHtmlDocument` now also accepts `<!DOCTYPE html>` prefixes and drops the minimum-length threshold from 200 to 100 characters, so shorter ECharts-free reports are still recognized as full HTML documents.
+
+**Whole-file transcription & post-recording speaker separation (2026-02):**
+
+- **Two entry points** for batch transcription in addition to the real-time WebSocket path:
+  - **「直接音频转录」** tab in the create-meeting dialog — pick an audio file, choose the engine, optionally enable speaker separation, then create the meeting. Transcription starts immediately and the file is stored with the meeting so playback / download still work.
+  - **「拆分人声」** button on the right-panel header (enabled once a recording exists) — re-sends the finished recording and backfills speaker labels onto the transcript. Opens a dialog where you pick the recognition engine (MiniMax / Qwen) and speaker count; for Qwen the dialog also collects OSS credentials inline because DashScope's diarized file API only accepts publicly reachable URLs.
+- **Engine support.** MiniMax uses `asr-1.0` with `response_format=verbose_json` + `segments[].speaker` (500 s / 50 MB per request; longer audio is chunked at 480 s with global timestamps). Qwen supports diarization only via the async file API (`diarization_enabled`) and requires OSS as the public audio host; the synchronous endpoint has a 5-minute cap and no speaker labels.
+- **Background job + polling.** Long transcriptions never hold an HTTP request open. The client calls `POST /api/meeting-asr/transcribe/file?engine=&diarize=&speakerCount=&language=&sessionId=` (raw audio body) and polls `GET /api/meeting-asr/transcribe/status/:jobId` for `{ status, progress, result | error }`. Errors carry the failing call site (e.g. `[file_transcribe.py:283]`) so reports point straight at the code.
+- **Stale-backend self-heal.** Because the uvicorn child imports Python modules once at spawn, rebuilding `dist/` updates the client but leaves the running backend on the old code. `MeetingASRService` now hashes `python-backend/**/*.py` at spawn, passes it as `MEETING_ASR_CODE_HASH`, and respawns on the next `start()` when the hash on disk changes. `/healthz` advertises a `transcribe` capability marker mirrored by `TRANSCRIBE_CAPABILITY` in `MeetingView.vue`; both whole-file entry points call `ensureTranscribeBackend()` and stop the service when its reported `code_hash` doesn't match, forcing a fresh spawn.
+- **Container decode.** Uploaded containers (webm/mp3/wav/m4a/…) are decoded to 16 kHz mono Int16 PCM with `ffmpeg` (declared device / Docker dependency) before being sent to the engine.
+- **Hot config sync.** `MeetingASRService.updateConfig()` forwards both DashScope *and* MiniMax fields, so a session can swap engines without restarting the service. Settings pushed mid-run land in `config.yaml` and `asr_minimax.py` picks up the new key/endpoint on the next request.
+
+Full contract (engine selection, OSS bucket fields, error shapes, retry policy) lives in [`MEETING_MODE_README.md`](./MEETING_MODE_README.md#7-whole-file-transcription--post-recording-speaker-separation-2026-02).
 
 ### Speech Practice / Oral Coach (v0.8.0)
 
@@ -577,6 +592,36 @@ active Hermes profile workspace.
 - E2E (`scanner-precision.spec.ts`) exercises the live preview: selection
   retention through `held`, drag-time freeze, post-release camera tracking,
   and 13" laptop vs. mobile viewports.
+
+### Meeting TRPG Plugin
+
+A tabletop-RPG companion that ships inside Meeting Mode. Create a meeting with
+the **TRPG** scenario and the right-hand panel loads a lazy, self-contained TRPG
+workspace (character sheets, highlights, recap books, novel workbench, dice,
+chronicle illustration) — independent from the document-scanner plugin.
+
+**At a glance:**
+
+| Capability | Description |
+|---|---|
+| Character sheets | D&D 5E-style cards grouped by identity / six attributes / combat / skills / background / spells, collapsible. Player (speaker) and character names are kept separate; output names are normalized to 【Character】. |
+| Character draft (PDF / image) | The AI scribe reads PDF text + coordinates through the locally bundled `pdfjs-dist`, then hands the extracted layout to the active Hermes profile model. Scanned pages still need OCR. Drafts tolerate Markdown JSON, peripheral notes, nested `character/data/sheet`, Chinese keys and attribute abbreviations; agent final answer wins over the reasoning trace. |
+| Highlights gallery | Captures the last 60 confirmed transcript turns (≤ 12,000 chars) at click time and shows action evidence. The gallery **no longer drops cards beyond the recent 30** — older ones are accessible via "Load earlier N highlights" and the dedicated `HighlightWorkbench` page. Supports manual upload of PNG/JPEG/WebP (≤ 5 MB) to replace or supplement generated images. |
+| Recap book | Three writing modes — literary / documentary / journal — plus a **long-form novel** pipeline that targets 1/2/4/6 万 Chinese characters with durable background jobs, chapter planning, per-scene writing + review and resumable checkpoints. Snapshots are saved at the click boundary and re-read for every scene; the recap agent runs through a fresh Hermes session using the `trpg-recap` skill and `hermes_studio_meetings_toolset` MCP. |
+| Long-novel workbench | The dedicated novel workbench streams the model's in-flight output as a tool-call card (kind badge + step id + body prose + collapsible coverage / issues / suggestions / warnings / events / omitted sections), shows each artifact's dependency fingerprint, and lets the operator delete or regenerate a single artifact without nuking the whole book. Sticky extract/canon/write checkpoints mean resume only rebuilds what is actually missing or changed. |
+| Live output preview | The "AI 正在输出" panel parses the streaming JSON and renders each in-progress artifact (revision / review / check / canon / write / plan) as an AI-style card with a tool badge per step kind, prose body, and collapsible structured sections. Incomplete streaming JSON falls back to a raw `<pre>` so nothing is hidden mid-stream. |
+| Recap book reader | A standalone Vite entry (`/recap-book.html?meetingId=...&recapId=...`) renders the saved Markdown in an ancient-book layout (parchment texture, drifting embers, leather cover with seal and title slip), brush-style Chinese font (`Ma Shan Zheng`, OFL, served from `public/fonts/`), real-paginated chapter layout with mouse-drag and keyboard page-flip, and a right-side illustration rail populated from the recap's `images[]`. |
+| Generation settings | One dialog covers highlight transcript scope (all / last N turns / selected paragraph), recap transcript scope (same options, default all) and recap illustration (saved recap × cover / content × optional chapter). Scope selection is stored as sentence `segments: {from,to}[]`, not paragraph IDs, so transcript edits don't silently invalidate it. |
+| ChatGPT web image | Async job + polling flow for ChatGPT-web image generation. `POST /api/hermes/media/chatgpt-web-image?async=true` returns a 202 with `job_id`; the panel polls `GET .../jobs/:jobId` every 3 s, transient failures auto-retry, and finished jobs are retained on the server for 1 hour (≤ 30 per profile). |
+| Storage | Character / highlight / image / settings live in a dedicated IndexedDB keyed by server + user + profile + meeting. Recap snapshots are written under `getWebUiHome()/meetings/<meetingId>/recaps.json` (atomic, per-meeting serial queue, same `requestId` retries overwrite). Markdown renders to `<recapId>.md` next to the snapshots. |
+
+The plugin keeps routes thin (controllers delegate to `services/trpg/`) and
+shares field definitions through `packages/shared/trpg-*.ts`. It reuses the
+existing chat transport, profile credentials and bridge sessions — no new chat
+runner, no Hermes Agent upgrade and no recording-path changes. See
+[`packages/client/src/plugins/trpg/README.md`](./packages/client/src/plugins/trpg/README.md)
+for the full contract (storage keys, MCP tool surface, scope semantics,
+recap-book pagination model and validation tests).
 
 ### Web Terminal
 

@@ -11,10 +11,18 @@ import { request } from '../client'
 export interface RealtimeModelServerSettings {
   model?: string
   voice?: string
+  /** ASR provider: 'dashscope' (default) or 'minimax'. */
+  asrProvider?: string
+  /** MiniMax ASR model id, e.g. 'asr-1.0'. */
+  minimaxAsrModel?: string
+  /** MiniMax ASR HTTP endpoint, defaults to https://api.minimaxi.com. */
+  minimaxBaseUrl?: string
 }
 
 export interface RealtimeModelServerSecrets {
   apiKey?: string
+  /** MiniMax API key (Bearer token for api.minimaxi.com / api.minimax.io). */
+  minimaxApiKey?: string
 }
 
 export interface RealtimeModelServerSetting {

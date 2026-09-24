@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -11,13 +12,15 @@ from contextlib import asynccontextmanager
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from sse_starlette.sse import EventSourceResponse
 
 from .asr_proxy import ParaformerProxy
+from .asr_minimax import MiniMaxProxy
 from .config import settings
+from .file_transcribe import get_job as get_transcribe_job, start_transcription
 from .omni_realtime_proxy import FunctionCallGate, OmniRealtimeProxy, translate_event as translate_omni_event
 from ._log_helper import log_skip
 from .html_generator import generate_html_report
@@ -33,6 +36,14 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 log = logging.getLogger("main")
+
+# Capability marker for the whole-file transcription endpoints. The Web UI
+# ships the same value and compares it against /healthz: a long-lived uvicorn
+# child keeps the Python modules it imported at spawn time, so after a code
+# update (rebuild dist + refresh the browser) it can still be running stale
+# logic. Detecting the mismatch lets the client restart the service instead of
+# failing mid-request. Bump this whenever the /api/transcribe contract changes.
+TRANSCRIBE_CAPABILITY = "2"
 
 _analysis_task: asyncio.Task | None = None
 _analysis_running = False
@@ -64,12 +75,16 @@ app.add_middleware(
 
 
 @app.get("/healthz")
-async def healthz() -> dict[str, str]:
+async def healthz() -> dict:
     config = storage.get_config()
     return {
         "status": "ok",
         "asr_model": config.asr.paraformer_model,
         "llm_model": config.llm.model,
+        # See TRANSCRIBE_CAPABILITY: the client uses these two fields to decide
+        # whether the running process is stale and needs a restart.
+        "transcribe": TRANSCRIBE_CAPABILITY,
+        "code_hash": os.environ.get("MEETING_ASR_CODE_HASH", ""),
     }
 
 
@@ -303,10 +318,64 @@ async def clear_transcript() -> dict:
     return {"status": "ok"}
 
 
+# ── Whole-file transcription (batch) ─────────────────────────────────────
+# Used by the "split speakers after recording" button and by the
+# "direct audio transcription" tab of the create-meeting dialog. The audio
+# body is the raw container bytes (webm/mp3/wav/...); ffmpeg decodes it in
+# the background job. Long transcriptions are polled through
+# /api/transcribe/status/{job_id} instead of holding the HTTP request open.
+
+
+def _truthy(raw: str | None) -> bool:
+    return str(raw or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+@app.post("/api/transcribe/file")
+async def start_file_transcription(
+    request: Request,
+    engine: str = "minimax",
+    diarize: str = "false",
+    speaker_count: str = "0",
+    language: str = "",
+    session_id: str = "",
+) -> dict:
+    body = await request.body()
+    try:
+        count = int(speaker_count or 0)
+    except (TypeError, ValueError):
+        count = 0
+    try:
+        job_id = start_transcription(
+            body,
+            engine=engine,
+            diarize=_truthy(diarize),
+            speaker_count=count,
+            language=language,
+            session_id=session_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"job_id": job_id, "status": "pending"}
+
+
+@app.get("/api/transcribe/status/{job_id}")
+async def get_file_transcription_status(job_id: str) -> dict:
+    job = get_transcribe_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="transcription job not found")
+    return job
+
+
 @app.websocket("/ws/asr")
 async def ws_asr(ws: WebSocket) -> None:
+    """Bridge the frontend WS to either DashScope Paraformer (default) or the
+    MiniMax REST provider. Routing is decided at connect time from the
+    `provider` field on the start frame, falling back to the global
+    `settings.asr_provider` so operators can switch providers via env
+    (`ASR_PROVIDER=minimax`) without touching the client.
+    """
     await ws.accept()
-    proxy = ParaformerProxy()
+    proxy: ParaformerProxy | MiniMaxProxy | None = None
     upstream_task: asyncio.Task | None = None
     closed = False
 
@@ -329,48 +398,91 @@ async def ws_asr(ws: WebSocket) -> None:
             await ws.close()
             return
 
+        # Provider selection precedence:
+        #   1. `provider` field on the WS start frame (per-session override)
+        #   2. `settings.asr_provider` (env / hot config push)
+        #   3. DashScope (default, backward-compatible)
+        requested_provider = str(start_msg.get("provider") or "").strip().lower()
+        if requested_provider == "minimax" or (
+            not requested_provider and settings.is_minimax_provider
+        ):
+            proxy = MiniMaxProxy()
+        else:
+            proxy = ParaformerProxy()
+
         await proxy.connect()
-        await ws.send_json({"type": "ready", "task_id": proxy.task_id})
+        await ws.send_json({"type": "ready", "task_id": proxy.task_id, "provider": "minimax" if isinstance(proxy, MiniMaxProxy) else "dashscope"})
 
         async def pump_upstream() -> None:
             try:
                 async for event in proxy.upstream_events():
-                    header = event.get("header", {})
-                    name = header.get("event")
-                    payload = event.get("payload", {}) or {}
-                    sentence = (payload.get("output") or {}).get("sentence") or {}
-
-                    try:
-                        if name == "result-generated":
-                            text = sentence.get("text", "")
-                            if sentence.get("heartbeat"):
-                                continue
-                            is_final = bool(sentence.get("sentence_end"))
-                            await ws.send_json({
-                                "type": "partial" if not is_final else "final",
-                                "text": text,
-                                "begin_time": sentence.get("begin_time"),
-                                "end_time": sentence.get("end_time"),
-                                "sentence_end": is_final,
-                                "usage": payload.get("usage"),
-                            })
-                            if is_final and text:
-                                llm_service.add_transcript(text)
-                        elif name == "task-started":
-                            await ws.send_json({"type": "started"})
-                        elif name == "task-finished":
-                            await ws.send_json({"type": "stopped"})
-                        elif name == "task-failed":
-                            await ws.send_json({
-                                "type": "error",
-                                "code": header.get("error_code"),
-                                "message": header.get("error_message"),
-                            })
-                    except (WebSocketDisconnect, RuntimeError):
-                        return
-                    except Exception as exc:
-                        log.warning("upstream send failed: %s", exc)
-                        return
+                    # MiniMax emits a flatter dict (`{type, text, ...}`);
+                    # DashScope wraps events in `{header, payload}`. Branch on
+                    # presence of `header` so both providers share the same
+                    # pump without leaking upstream-specific shapes.
+                    if "header" in event:
+                        header = event.get("header", {})
+                        name = header.get("event")
+                        payload = event.get("payload", {}) or {}
+                        sentence = (payload.get("output") or {}).get("sentence") or {}
+                        try:
+                            if name == "result-generated":
+                                text = sentence.get("text", "")
+                                if sentence.get("heartbeat"):
+                                    continue
+                                is_final = bool(sentence.get("sentence_end"))
+                                await ws.send_json({
+                                    "type": "partial" if not is_final else "final",
+                                    "text": text,
+                                    "begin_time": sentence.get("begin_time"),
+                                    "end_time": sentence.get("end_time"),
+                                    "sentence_end": is_final,
+                                    "usage": payload.get("usage"),
+                                })
+                                if is_final and text:
+                                    llm_service.add_transcript(text)
+                            elif name == "task-started":
+                                await ws.send_json({"type": "started"})
+                            elif name == "task-finished":
+                                await ws.send_json({"type": "stopped"})
+                            elif name == "task-failed":
+                                await ws.send_json({
+                                    "type": "error",
+                                    "code": header.get("error_code"),
+                                    "message": header.get("error_message"),
+                                })
+                        except (WebSocketDisconnect, RuntimeError):
+                            return
+                        except Exception as exc:
+                            log.warning("upstream send failed: %s", exc)
+                            return
+                    else:
+                        # MiniMax-style flat event.
+                        mtype = event.get("type")
+                        try:
+                            if mtype == "final":
+                                text = event.get("text", "")
+                                await ws.send_json({
+                                    "type": "final",
+                                    "text": text,
+                                    "begin_time": event.get("begin_time"),
+                                    "end_time": event.get("end_time"),
+                                    "usage": event.get("usage"),
+                                })
+                                if text:
+                                    llm_service.add_transcript(text)
+                            elif mtype == "stopped":
+                                await ws.send_json({"type": "stopped"})
+                            elif mtype == "error":
+                                await ws.send_json({
+                                    "type": "error",
+                                    "message": event.get("message"),
+                                })
+                        except (WebSocketDisconnect, RuntimeError):
+                            return
+                        except Exception as exc:
+                            log.warning("minimax upstream send failed: %s", exc)
+                            return
             except Exception as exc:
                 log.exception("upstream pump error: %s", exc)
 
@@ -419,7 +531,8 @@ async def ws_asr(ws: WebSocket) -> None:
                 await upstream_task
             except (asyncio.CancelledError, Exception):
                 pass
-        await proxy.close()
+        if proxy is not None:
+            await proxy.close()
 
 
 @app.websocket("/ws/omni-realtime")

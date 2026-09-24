@@ -45,6 +45,9 @@ import { ttsRoutes, ttsProtectedRoutes } from './hermes/tts'
 import { sttProtectedRoutes } from './hermes/stt'
 import { realtimeModelRoutes } from './hermes/realtime-model'
 import { mcuFirmwareRoutes } from './hermes/mcu-firmware'
+import { mcuDeviceRoutes } from './hermes/mcu-devices'
+import { petRoutes } from './pets'
+import { petdexRoutes, petdexPublicRoutes } from './petdex'
 import { mediaRoutes } from './hermes/media'
 import { groupChatPublicRoutes, groupChatRoutes, setGroupChatServer } from './hermes/group-chat'
 import { chatRunRoutes } from './hermes/chat-run'
@@ -55,6 +58,7 @@ import { mcpRoutes } from './hermes/mcp'
 import { runtimeVersionRoutes } from './hermes/runtime-versions'
 import { writeGateRoutes } from './hermes/write-gate'
 import { expertsRoutes } from './hermes/experts'
+import { trpgRoutes } from './trpg'
 import { meetingASRRoutes } from './hermes/meeting-asr'
 import { meetingStorageRoutes } from './hermes/meeting-storage'
 import { realtimeAgentRoutes } from './hermes/realtime-agent'
@@ -122,6 +126,10 @@ export function registerRoutes(app: any, authMiddleware: Array<(ctx: Context, ne
   app.use(sttProtectedRoutes.routes())
   app.use(realtimeModelRoutes.routes())      // Realtime (Qwen) model profile settings
   app.use(mcuFirmwareRoutes.routes())
+  app.use(mcuDeviceRoutes.routes())
+  app.use(petdexPublicRoutes.routes())
+  app.use(petRoutes.routes())
+  app.use(petdexRoutes.routes())
   app.use(mediaRoutes.routes())
   app.use(performanceMonitorRoutes.routes())
   app.use(journeyRoutes.routes())
@@ -129,6 +137,7 @@ export function registerRoutes(app: any, authMiddleware: Array<(ctx: Context, ne
   app.use(runtimeVersionRoutes.routes())         // Runtime and version management
   app.use(writeGateRoutes.routes())              // Hermes Agent write approval review
   app.use(expertsRoutes.routes())               // Expert marketplace local bridge
+  app.use(trpgRoutes.routes())
   app.use(meetingASRRoutes.routes())            // Meeting ASR service management
   app.use(meetingStorageRoutes.routes())        // Meeting data storage
   app.use(realtimeAgentRoutes.routes())         // Realtime tool → Hermes Agent one-shot bridge

@@ -5,17 +5,23 @@ seam between DashScope's OpenAI-Realtime-compatible wire protocol and the
 small frontend protocol our realtime clients (OmniRealtimeStage.vue and
 InlineRealtimePanel.vue) speak. Covering it gives us a regression net for
 protocol-shape changes without standing up a live DashScope upstream.
+
+The send-side methods (`send_audio` / `send_image` / `commit_audio` /
+`cancel` / `send_tool_output` / `send_text`) are exercised against a mock of
+the underlying `OmniRealtimeConversation` SDK object, so we never open a real
+WebSocket. Upstream event observation is driven by pre-populating the
+asyncio bridge queue — see `_make_proxy` for the helpers.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import importlib
 import json
 import os
 import sys
 import unittest
-import asyncio
 from pathlib import Path
 from unittest import mock
 
@@ -33,6 +39,40 @@ def _import_app():
     defaults, env lookups) reflects the patched environment.
     """
     return importlib.import_module("app")
+
+
+def _install_mock_conversation(proxy, sent: list) -> mock.MagicMock:
+    """Replace ``proxy._conversation`` with a MagicMock that records every
+    SDK call onto ``sent`` as the wire-shape JSON dict the SDK would have
+    sent upstream. Returns the MagicMock so individual tests can inspect
+    call counts or override behaviour.
+    """
+    convo = mock.MagicMock()
+    convo.append_audio = mock.MagicMock(
+        side_effect=lambda b64: sent.append({"type": "input_audio_buffer.append", "audio": b64}),
+    )
+    convo.append_video = mock.MagicMock(
+        side_effect=lambda b64: sent.append({"type": "input_image_buffer.append", "image": b64}),
+    )
+    convo.commit = mock.MagicMock(
+        side_effect=lambda: sent.append({"type": "input_audio_buffer.commit"}),
+    )
+    convo.cancel_response = mock.MagicMock(
+        side_effect=lambda: sent.append({"type": "response.cancel"}),
+    )
+    convo.create_item = mock.MagicMock(
+        side_effect=lambda item: sent.append({"type": "conversation.item.create", "item": item}),
+    )
+    convo.create_response = mock.MagicMock(
+        side_effect=lambda: sent.append({"type": "response.create"}),
+    )
+    convo.end_session_async = mock.MagicMock(
+        side_effect=lambda: sent.append({"type": "session.finish"}),
+    )
+    convo.close = mock.MagicMock(side_effect=lambda: None)
+    convo.update_session = mock.MagicMock(side_effect=lambda **kwargs: None)
+    proxy._conversation = convo
+    return convo
 
 
 class TranslateEventTest(unittest.TestCase):
@@ -309,23 +349,65 @@ class OmniProxyConnectTest(unittest.TestCase):
     def test_connect_requires_api_key(self) -> None:
         with mock.patch.object(self.omni.settings, "dashscope_api_key", ""):
             proxy = self.omni.OmniRealtimeProxy()
-            import asyncio
             with self.assertRaises(RuntimeError) as ctx:
                 asyncio.get_event_loop().run_until_complete(proxy.connect())
             self.assertIn("DASHSCOPE_API_KEY", str(ctx.exception))
 
     def test_send_audio_requires_connection(self) -> None:
         proxy = self.omni.OmniRealtimeProxy()
-        import asyncio
         with self.assertRaises(RuntimeError) as ctx:
             asyncio.get_event_loop().run_until_complete(proxy.send_audio(b"\x00\x01"))
+        self.assertIn("not connected", str(ctx.exception))
+
+    def test_send_image_requires_connection(self) -> None:
+        proxy = self.omni.OmniRealtimeProxy()
+        with self.assertRaises(RuntimeError) as ctx:
+            asyncio.get_event_loop().run_until_complete(proxy.send_image("aGVsbG8="))
+        self.assertIn("not connected", str(ctx.exception))
+
+    def test_send_text_requires_connection(self) -> None:
+        proxy = self.omni.OmniRealtimeProxy()
+        with self.assertRaises(RuntimeError) as ctx:
+            asyncio.get_event_loop().run_until_complete(proxy.send_text("hi"))
         self.assertIn("not connected", str(ctx.exception))
 
     def test_cancel_is_safe_without_upstream(self) -> None:
         proxy = self.omni.OmniRealtimeProxy()
         # Should be a no-op, not raise
-        import asyncio
         asyncio.get_event_loop().run_until_complete(proxy.cancel())
+
+    def test_commit_is_safe_without_upstream(self) -> None:
+        proxy = self.omni.OmniRealtimeProxy()
+        # Should be a no-op, not raise
+        asyncio.get_event_loop().run_until_complete(proxy.commit_audio())
+
+    def test_send_tool_output_is_safe_without_upstream(self) -> None:
+        proxy = self.omni.OmniRealtimeProxy()
+        # Should be a no-op, not raise
+        asyncio.get_event_loop().run_until_complete(proxy.send_tool_output("call_1", "ok"))
+
+    def test_upstream_events_requires_connection(self) -> None:
+        proxy = self.omni.OmniRealtimeProxy()
+        # ``upstream_events`` is an async generator; the ``not connected``
+        # check fires on first ``__anext__``. We drive it through a
+        # coroutine so the RuntimeError surfaces cleanly.
+        async def _drive():
+            gen = proxy.upstream_events()
+            try:
+                await gen.__anext__()
+            finally:
+                await gen.aclose()
+
+        with self.assertRaises(RuntimeError) as ctx:
+            asyncio.get_event_loop().run_until_complete(_drive())
+        self.assertIn("not connected", str(ctx.exception))
+
+
+async def _collect(aiter):
+    out = []
+    async for item in aiter:
+        out.append(item)
+    return out
 
 
 class OmniProxyResponseGatingTest(unittest.TestCase):
@@ -348,35 +430,45 @@ class OmniProxyResponseGatingTest(unittest.TestCase):
         self.omni = importlib.import_module("app.omni_realtime_proxy")
         self.sent: list[dict] = []
 
-    def _make_proxy(self, frames: list[str]) -> tuple["self.omni.OmniRealtimeProxy", "_AsyncFrames"]:
+    def _make_proxy(self, frames: list[str]) -> tuple["self.omni.OmniRealtimeProxy", "asyncio.Queue"]:
+        """Build a proxy wired against a mock SDK conversation + a pre-populated
+        asyncio bridge queue.
+
+        The returned queue carries the ``frames`` in order, followed by the
+        upstream-closed sentinel — exactly what ``upstream_events`` would
+        yield against a real session that delivers those events and then
+        goes away. Tests drain it via ``_drain_one`` / ``_drain_all``.
+        """
         proxy = self.omni.OmniRealtimeProxy()
-        proxy.upstream = mock.MagicMock()
+        # Mock the SDK conversation so every call onto `append_audio` /
+        # `create_item` / etc. records the wire shape into `self.sent`
+        # without actually opening a WebSocket.
+        _install_mock_conversation(proxy, self.sent)
+        # The queue is created on a running loop later (when connect() runs),
+        # so build one here too. Upstream pumps call `call_soon_threadsafe`
+        # on the proxy's loop; for tests we just push directly into the
+        # queue and pretend the SDK callback fired.
+        queue: asyncio.Queue = asyncio.Queue()
+        proxy._loop = asyncio.get_event_loop()
+        proxy._queue = queue
+        for frame in frames:
+            queue.put_nowait(frame)
+        # Sentinel so upstream_events() returns once frames are drained.
+        queue.put_nowait(self.omni._STOP_SENTINEL)
+        return proxy, queue
 
-        async def _send(payload):
-            if isinstance(payload, (bytes, bytearray)):
-                self.sent.append({"_bytes": len(payload)})
-            else:
-                self.sent.append(json.loads(payload))
-
-        proxy.upstream.send = mock.AsyncMock(side_effect=_send)
-
-        # Single stateful async iterator shared by all upstream_events()
-        # generators — re-creating it per __aiter__ call would restart
-        # playback from the first frame.
-        frames_iter = _AsyncFrames(frames)
-        proxy.upstream.__aiter__ = lambda self=None: frames_iter
-        return proxy, frames_iter
-
-    async def _drain_one(self, proxy, frames_iter) -> None:
+    async def _drain_one(self, proxy) -> None:
         gen = proxy.upstream_events()
         try:
             await asyncio.wait_for(gen.__anext__(), timeout=1.0)
         except (StopAsyncIteration, asyncio.TimeoutError):
             pass
+        finally:
+            await gen.aclose()
 
     def test_response_lifecycle_marks_active_then_idle(self) -> None:
         async def scenario():
-            proxy, frames = self._make_proxy([
+            proxy, _ = self._make_proxy([
                 json.dumps({"type": "response.created"}),
                 json.dumps({"type": "response.done"}),
                 json.dumps({"type": "response.created"}),
@@ -388,19 +480,19 @@ class OmniProxyResponseGatingTest(unittest.TestCase):
             self.assertTrue(proxy._response_done_event.is_set())
 
             # response.created flips the gate closed.
-            await self._drain_one(proxy, frames)
+            await self._drain_one(proxy)
             self.assertTrue(proxy._response_active)
             self.assertFalse(proxy._response_done_event.is_set())
 
             # response.done opens the gate again.
-            await self._drain_one(proxy, frames)
+            await self._drain_one(proxy)
             self.assertFalse(proxy._response_active)
             self.assertTrue(proxy._response_done_event.is_set())
 
             # response.cancelled also opens the gate.
-            await self._drain_one(proxy, frames)
+            await self._drain_one(proxy)
             self.assertTrue(proxy._response_active)
-            await self._drain_one(proxy, frames)
+            await self._drain_one(proxy)
             self.assertFalse(proxy._response_active)
             self.assertTrue(proxy._response_done_event.is_set())
 
@@ -420,9 +512,9 @@ class OmniProxyResponseGatingTest(unittest.TestCase):
                 "input_audio_buffer.cleared",
             ):
                 with self.subTest(evt=evt):
-                    proxy, frames = self._make_proxy([json.dumps({"type": evt})])
+                    proxy, _ = self._make_proxy([json.dumps({"type": evt})])
                     proxy._audio_appended_since_commit = True
-                    await self._drain_one(proxy, frames)
+                    await self._drain_one(proxy)
                     self.assertFalse(proxy._audio_appended_since_commit)
 
         asyncio.get_event_loop().run_until_complete(scenario())
@@ -501,14 +593,9 @@ class OmniProxySendImageTest(unittest.TestCase):
 
     def _make_proxy(self, audio_seen: bool = True, audio_appended_since_commit: bool = True):
         proxy = self.omni.OmniRealtimeProxy()
-        proxy.upstream = mock.MagicMock()
         proxy._audio_seen = audio_seen
         proxy._audio_appended_since_commit = audio_appended_since_commit
-
-        async def _send(payload):
-            self.sent.append(json.loads(payload))
-
-        proxy.upstream.send = mock.AsyncMock(side_effect=_send)
+        _install_mock_conversation(proxy, self.sent)
         return proxy
 
     def test_send_image_forwards_input_image_buffer_append(self) -> None:
@@ -602,6 +689,7 @@ class OmniProxySendImageTest(unittest.TestCase):
         asyncio.get_event_loop().run_until_complete(scenario())
 
     def test_send_image_requires_connection(self) -> None:
+        # Override the connect check by leaving _conversation = None
         proxy = self.omni.OmniRealtimeProxy()
         with self.assertRaises(RuntimeError) as ctx:
             asyncio.get_event_loop().run_until_complete(proxy.send_image("aGVsbG8="))
@@ -621,12 +709,7 @@ class OmniProxySendTextTest(unittest.TestCase):
 
     def _make_proxy(self):
         proxy = self.omni.OmniRealtimeProxy()
-        proxy.upstream = mock.MagicMock()
-
-        async def _send(payload):
-            self.sent.append(json.loads(payload))
-
-        proxy.upstream.send = mock.AsyncMock(side_effect=_send)
+        _install_mock_conversation(proxy, self.sent)
         return proxy
 
     def test_send_text_creates_input_text_item_then_response(self) -> None:
@@ -689,11 +772,10 @@ class OmniProxySendTextTest(unittest.TestCase):
 class _AsyncFrames:
     """Single-pass async iterator over a list of pre-recorded upstream frames.
 
-    The proxy does ``async for raw in self.upstream`` (which calls
-    ``__aiter__`` once per generator instance) and treats each yielded value
-    as either ``bytes`` (audio delta / ping) or ``str`` (JSON event). We hand
-    the same instance back from every ``__aiter__`` call so successive
-    generators see the next frame, not frame 1 again.
+    Kept around for any future test that wants an async-iterator mock
+    instead of an asyncio.Queue; the proxy now consumes from a queue, but
+    the upstream contract is the same — yield JSON strings, then a
+    ``StopAsyncIteration`` to signal end of stream.
     """
 
     def __init__(self, frames) -> None:

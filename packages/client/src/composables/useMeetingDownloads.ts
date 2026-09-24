@@ -2,6 +2,7 @@ import type { Ref } from 'vue'
 import { useMeetingStore } from '@/stores/hermes/meeting'
 import { meetingStorageApi } from '@/utils/meeting-storage-api'
 import { buildReportHtml } from '@/utils/report-html'
+import { downloadMeetingTranscriptMarkdown } from '@/utils/meeting-transcript-markdown'
 
 export interface UseMeetingDownloadsDeps {
   /** 录音结束生成的本地 Blob（下载音频时回退用） */
@@ -96,6 +97,18 @@ export function useMeetingDownloads(deps: UseMeetingDownloadsDeps) {
     a.click()
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
+  }
+
+  /**
+   * 导出会议文字（ASR 逐字稿）Markdown：会议信息 + 说话人 + 带时间戳逐字稿
+   * + 全文 + AI 分析 + 实时分析记录（+ 演讲评分数据）。
+   * 返回 false 表示当前会话没有可导出的转写内容。
+   */
+  function downloadTranscriptMarkdown(): boolean {
+    const session = meetingStore.activeSession
+    if (!session || session.sentences.length === 0) return false
+    downloadMeetingTranscriptMarkdown(session)
+    return true
   }
 
   async function downloadJson() {
@@ -202,6 +215,7 @@ export function useMeetingDownloads(deps: UseMeetingDownloadsDeps) {
   return {
     downloadAudio,
     downloadTranscript,
+    downloadTranscriptMarkdown,
     downloadJson,
     downloadReport,
     formatDuration,

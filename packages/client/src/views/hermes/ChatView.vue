@@ -6,6 +6,7 @@ import { useAppStore } from '@/stores/hermes/app'
 import { useChatStore } from '@/stores/hermes/chat'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useSettingsStore } from '@/stores/hermes/settings'
+import { flushPendingChatPrompt } from '@/utils/hermes/pending-chat-prompt'
 
 const appStore = useAppStore()
 const chatStore = useChatStore()
@@ -54,6 +55,15 @@ async function applyRouteProfile() {
   chatStore.setSessionProfileFilter(profile)
 }
 
+async function flushQueuedChatPrompt() {
+  await flushPendingChatPrompt(
+    routeSessionId.value,
+    chatStore.activeSessionId === routeSessionId.value,
+    !!chatStore.activeSession?.isLocalOnly,
+    content => chatStore.sendMessage(content),
+  )
+}
+
 onMounted(async () => {
   chatStore.setRuntimeMode('default')
   appStore.loadModels()
@@ -66,6 +76,9 @@ onMounted(async () => {
   chatStore.validateSessionProfileFilter(profilesStore.profiles.map(profile => profile.name))
   await applyRouteProfile()
   await loadRouteSession()
+  // A feature (for example the TRPG chronicle) may have opened this session in a
+  // new tab with an instruction queued for it; send it once the session is live.
+  await flushQueuedChatPrompt()
 })
 
 watch([routeSessionId, routeProfile], async ([sessionId]) => {
@@ -80,10 +93,12 @@ watch([routeSessionId, routeProfile], async ([sessionId]) => {
   const exists = chatStore.sessions.some(session => session.id === sessionId)
   if (!exists) {
     await loadRouteSession()
+    await flushQueuedChatPrompt()
     return
   }
 
   await chatStore.switchSession(sessionId)
+  await flushQueuedChatPrompt()
 })
 </script>
 

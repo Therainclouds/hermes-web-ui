@@ -963,12 +963,13 @@ const headerTitle = computed(() =>
 const showNewChatModal = ref(false);
 const newChatMode = ref<"standard" | "realtime">("standard");
 // Qwen-Omni-Realtime model family — see docs:
-//   * qwen3.5-omni-flash-realtime  : faster, ≤80 audio turns / 480s audio / 120s video
+//   * qwen3.8-omni-flash-realtime  : current generation (DashScope SDK reference),
+//                                   faster, ≤80 audio turns / 480s audio / 120s video
 //   * qwen3.5-omni-plus-realtime   : smarter, ≤100 audio turns / 600s audio / 240s video
 // The user picks one from the drawer; we then seed realtime-model store so the
 // dialog reads the right config.
-type NewChatRealtimeModel = "qwen3.5-omni-flash-realtime" | "qwen3.5-omni-plus-realtime";
-const newChatRealtimeModel = ref<NewChatRealtimeModel>("qwen3.5-omni-flash-realtime");
+type NewChatRealtimeModel = "qwen3.8-omni-flash-realtime" | "qwen3.5-omni-plus-realtime";
+const newChatRealtimeModel = ref<NewChatRealtimeModel>("qwen3.8-omni-flash-realtime");
 
 /**
  * realtime 实时对话之下的子模式（选择 realtime 后出现）：
@@ -1467,7 +1468,7 @@ async function openNewChatModal() {
   // Reset the realtime model picker to the default each time the drawer
   // opens so a previous pick doesn't leak into a new session. The user can
   // override again before confirming.
-  newChatRealtimeModel.value = "qwen3.5-omni-flash-realtime";
+  newChatRealtimeModel.value = "qwen3.8-omni-flash-realtime";
   // Realtime 子模式默认回到 Agent 模式；对练配置（语言/方向/难度/时长）复位。
   newChatRealtimeSubMode.value = "agent";
   newChatPracticeLanguage.value = "zh";
@@ -2960,7 +2961,7 @@ async function handleSessionModelCustomSubmit() {
             >
               <span class="new-chat-label">{{ t("omniRealtime.modelPickerLabel") }}</span>
               <NRadioGroup v-model:value="newChatRealtimeModel" name="new-chat-realtime-model">
-                <NRadioButton value="qwen3.5-omni-flash-realtime" data-testid="new-chat-realtime-model-flash">
+                <NRadioButton value="qwen3.8-omni-flash-realtime" data-testid="new-chat-realtime-model-flash">
                   {{ t("omniRealtime.modelFlash") }}
                 </NRadioButton>
                 <NRadioButton value="qwen3.5-omni-plus-realtime" data-testid="new-chat-realtime-model-plus">

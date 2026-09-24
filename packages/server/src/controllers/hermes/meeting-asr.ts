@@ -1,5 +1,7 @@
 import type { Context } from 'koa'
 import { PassThrough } from 'node:stream'
+import http from 'node:http'
+import https from 'node:https'
 import { meetingASRService } from '../../services/meeting-asr'
 import { REPORT_FALLBACK_MARKER } from '../../services/meeting-asr/realtime-assist'
 import { logger } from '../../services/logger'
@@ -23,46 +25,98 @@ function denyProfileAccess(ctx: Context, profile: unknown): boolean {
   return false
 }
 
+/**
+ * Talk to the local ASR backend over the protocol it was spawned with.
+ *
+ * Uses `node:http(s)` rather than `fetch` on purpose: the device image can
+ * spawn uvicorn with a self-signed cert (`HERMES_WEB_UI_MEETING_ASR_TLS=true`),
+ * and undici's `dispatcher` option rejects a `node:https.Agent` with
+ * `agent.dispatch is not a function` — every proxied call then fails with 502.
+ * `rejectUnauthorized:false` on the native transport is the supported way to
+ * accept the shared cert.
+ */
+function backendHttpRequest(
+  asrPort: number,
+  useTls: boolean,
+  path: string,
+  method: 'GET' | 'POST',
+  body?: string,
+  headers?: Record<string, string>,
+  timeoutMs = 30_000,
+): Promise<{ status: number; body: string; contentType: string }> {
+  return new Promise((resolve, reject) => {
+    const transport = useTls ? https : http
+    const req = transport.request(
+      {
+        host: '127.0.0.1',
+        port: asrPort,
+        path,
+        method,
+        headers: headers ?? {},
+        timeout: timeoutMs,
+        ...(useTls ? { rejectUnauthorized: false } : {}),
+      },
+      (res) => {
+        const chunks: Buffer[] = []
+        res.on('data', (chunk: Buffer) => chunks.push(chunk))
+        res.on('end', () => resolve({
+          status: res.statusCode || 502,
+          body: Buffer.concat(chunks).toString('utf-8'),
+          contentType: String(res.headers['content-type'] || ''),
+        }))
+      },
+    )
+    req.on('timeout', () => {
+      req.destroy(new Error(`backend request timed out after ${timeoutMs}ms`))
+    })
+    req.on('error', reject)
+    if (body !== undefined) req.write(body)
+    req.end()
+  })
+}
+
 async function proxyToBackend(ctx: Context, path: string, method: 'GET' | 'POST' = 'GET', body?: any): Promise<any> {
   const status = meetingASRService.status
   if (!status.isRunning || !status.asrPort) {
     ctx.status = 503
-    ctx.body = { error: 'ASR service is not running' }
+    // Carry the service-side reason (crash / restart phase / last error) so a
+    // bare "Service Unavailable" in the browser console is diagnosable.
+    ctx.body = {
+      error: 'ASR service is not running',
+      detail: status.error || null,
+      startupPhase: status.startupPhase,
+      uptime: status.uptime,
+      pid: status.pid,
+    }
     return null
   }
 
   try {
-    const options: RequestInit = {
+    const payload = body && method === 'POST' ? JSON.stringify(body) : undefined
+    const response = await backendHttpRequest(
+      status.asrPort,
+      !!status.useTls,
+      path,
       method,
-      headers: { 'Content-Type': 'application/json' },
-    }
-    if (body && method === 'POST') {
-      options.body = JSON.stringify(body)
-    }
-    // Follow the protocol chosen by the ASR service — see
-    // MeetingASRService.useTls. Hard-coding http:// breaks device images
-    // where uvicorn was spawned with --ssl-certfile.
-    if (status.useTls) {
-      const { Agent } = await import('node:https')
-      ;(options as any).dispatcher = new Agent({ rejectUnauthorized: false })
-    }
-    const scheme = status.useTls ? 'https' : 'http'
-    const response = await fetch(`${scheme}://127.0.0.1:${status.asrPort}${path}`, options)
-    const upstreamStatus = response.status
-    const upstreamBody = await response.text()
+      payload,
+      { 'Content-Type': 'application/json' },
+      // The analysis/HTML routes can be slow on ARM64; keep the old generous
+      // ceiling so this refactor does not introduce new timeouts.
+      path === '/api/analysis/html' || path.startsWith('/api/analysis/') ? 120_000 : 30_000,
+    )
 
     if (path === '/api/analysis/html') {
       ctx.type = 'text/html'
-      ctx.body = upstreamBody
+      ctx.body = response.body
       return null
     }
 
-    ctx.status = upstreamStatus
+    ctx.status = response.status
     try {
-      ctx.body = upstreamBody ? JSON.parse(upstreamBody) : null
+      ctx.body = response.body ? JSON.parse(response.body) : null
     } catch {
       // Backend returned non-JSON — surface the raw body so the client still sees something useful.
-      ctx.body = upstreamBody
+      ctx.body = response.body
     }
     return ctx.body
   } catch (err) {
@@ -250,35 +304,32 @@ export async function proxyAnalysisStream(ctx: Context): Promise<void> {
   ctx.set('Connection', 'keep-alive')
 
   try {
-    const scheme = status.useTls ? 'https' : 'http'
-    const init: RequestInit = {}
-    if (status.useTls) {
-      const { Agent } = await import('node:https')
-      ;(init as any).dispatcher = new Agent({ rejectUnauthorized: false })
-    }
-    const response = await fetch(`${scheme}://127.0.0.1:${status.asrPort}/api/analysis/stream`, init)
-    ctx.status = response.status
-
-    // HTTP stream: fetch returns a Web ReadableStream — wrap it for Koa.
-    const reader = response.body?.getReader()
-    if (!reader) {
-      ctx.body = null
-      return
-    }
-
-    ctx.body = new ReadableStream({
-      async start(controller) {
-        try {
-          while (true) {
-            const { done, value } = await reader.read()
-            if (done) break
-            controller.enqueue(value)
-          }
-        } finally {
-          controller.close()
-        }
-      },
+    // Same transport rule as proxyToBackend: undici cannot accept the
+    // node:https.Agent used for the self-signed backend cert, so the
+    // long-lived SSE stream is opened with node:http(s) and piped to Koa.
+    const transport = status.useTls ? https : http
+    const upstream = await new Promise<http.IncomingMessage>((resolve, reject) => {
+      const req = transport.request(
+        {
+          host: '127.0.0.1',
+          port: status.asrPort!,
+          path: '/api/analysis/stream',
+          method: 'GET',
+          // SSE: no request timeout — the stream stays open for the session.
+          timeout: 0,
+          ...(status.useTls ? { rejectUnauthorized: false } : {}),
+        },
+        (res) => resolve(res),
+      )
+      req.on('error', reject)
+      req.end()
     })
+
+    ctx.status = upstream.statusCode || 502
+    upstream.on('error', (err) => {
+      logger.warn('[meeting-asr-ctrl] analysis stream aborted: %s', err instanceof Error ? err.message : err)
+    })
+    ctx.body = upstream
   } catch (err) {
     ctx.status = 502
     ctx.body = { error: `Failed to proxy to ASR backend: ${err}` }
@@ -435,4 +486,126 @@ export async function meetingTitle(ctx: Context): Promise<void> {
     logger.warn('[meeting-asr-ctrl] meetingTitle failed: %s', err instanceof Error ? err.message : String(err))
     ctx.body = { title: null }
   }
+}
+
+// ── Whole-file transcription (batch) ─────────────────────────────────────
+// The raw audio body is streamed straight through to the Python backend,
+// which starts a background job and answers with a job id. The client polls
+// /transcribe/status/:jobId — long recordings can take minutes to transcribe
+// and must not hold a single request open.
+
+/** Mirrors the Python-side cap; keeps runaway uploads off the proxy. */
+const TRANSCRIBE_MAX_BYTES = Number(process.env.MEETING_TRANSCRIBE_MAX_BYTES) || 250 * 1024 * 1024
+
+/**
+ * Pipe the request body to the local ASR backend and resolve with its JSON
+ * response. Uses node:http instead of fetch so the stream body can be
+ * forwarded without buffering it in memory, and TLS (device images spawn
+ * uvicorn with a self-signed cert) can be handled explicitly.
+ */
+function requestBackendRaw(
+  asrPort: number,
+  useTls: boolean,
+  path: string,
+  source: NodeJS.ReadableStream,
+  contentType: string,
+  contentLength?: number,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const transport = useTls ? https : http
+    const headers: Record<string, string> = { 'Content-Type': contentType }
+    if (contentLength && Number.isFinite(contentLength)) {
+      headers['Content-Length'] = String(contentLength)
+    }
+    const req = transport.request(
+      {
+        host: '127.0.0.1',
+        port: asrPort,
+        path,
+        method: 'POST',
+        headers,
+        // 0 disables the socket timeout: transcription upload can be large.
+        timeout: 0,
+        ...(useTls ? { rejectUnauthorized: false } : {}),
+      },
+      (res) => {
+        const chunks: Buffer[] = []
+        res.on('data', (chunk: Buffer) => chunks.push(chunk))
+        res.on('end', () => {
+          resolve({
+            status: res.statusCode || 502,
+            body: Buffer.concat(chunks).toString('utf-8'),
+          })
+        })
+      },
+    )
+    req.on('error', reject)
+    source.on('error', (err: Error) => {
+      req.destroy(err)
+      reject(err)
+    })
+    source.pipe(req)
+  })
+}
+
+/** Map the client's camelCase query keys onto the Python snake_case ones. */
+function buildTranscribeQuery(ctx: Context): string {
+  const q = ctx.query || {}
+  const params = new URLSearchParams()
+  const engine = String(q.engine ?? 'minimax')
+  params.set('engine', engine === 'qwen' || engine === 'dashscope' ? 'qwen' : 'minimax')
+  const diarize = String(q.diarize ?? 'false')
+  params.set('diarize', diarize === 'true' || diarize === '1' ? 'true' : 'false')
+  const speakerCount = String(q.speakerCount ?? q.speaker_count ?? '0')
+  params.set('speaker_count', /^\d+$/.test(speakerCount) ? speakerCount : '0')
+  if (q.language) params.set('language', String(q.language))
+  if (q.sessionId) params.set('session_id', String(q.sessionId))
+  return params.toString()
+}
+
+export async function startFileTranscription(ctx: Context): Promise<void> {
+  const status = meetingASRService.status
+  if (!status.isRunning || !status.asrPort) {
+    ctx.status = 503
+    ctx.body = { error: 'ASR service is not running' }
+    return
+  }
+
+  const declared = Number(ctx.request.length ?? ctx.req.headers['content-length'] ?? 0)
+  if (declared && declared > TRANSCRIBE_MAX_BYTES) {
+    ctx.status = 413
+    ctx.body = { error: `Audio too large: ${declared} > ${TRANSCRIBE_MAX_BYTES} bytes` }
+    return
+  }
+
+  const query = buildTranscribeQuery(ctx)
+  try {
+    const result = await requestBackendRaw(
+      status.asrPort,
+      !!status.useTls,
+      `/api/transcribe/file?${query}`,
+      ctx.req,
+      ctx.request.type || 'application/octet-stream',
+      declared || undefined,
+    )
+    ctx.status = result.status
+    try {
+      ctx.body = result.body ? JSON.parse(result.body) : null
+    } catch {
+      ctx.body = result.body
+    }
+  } catch (err) {
+    ctx.status = 502
+    ctx.body = { error: `Failed to proxy audio to ASR backend: ${err}` }
+  }
+}
+
+export async function getFileTranscriptionStatus(ctx: Context): Promise<void> {
+  const { jobId } = ctx.params
+  if (!jobId || !/^[a-zA-Z0-9_-]+$/.test(jobId)) {
+    ctx.status = 400
+    ctx.body = { error: 'invalid jobId' }
+    return
+  }
+  await proxyToBackend(ctx, `/api/transcribe/status/${jobId}`)
 }

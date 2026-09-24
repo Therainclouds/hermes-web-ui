@@ -13,15 +13,32 @@ import { REALTIME_PROFILE_SETTINGS_TABLE } from './schemas'
  */
 
 export interface RealtimeModelStoredSettings {
-  /** Realtime dialog model id, e.g. `qwen3.5-omni-flash-realtime`. */
+  /** Realtime dialog model id, e.g. `qwen3.8-omni-flash-realtime`. */
   model?: string
   /** Default voice within the model's voice catalogue. */
   voice?: string
+  /**
+   * Optional ASR provider selected for meeting-mode speech recognition.
+   * `'dashscope'` (default — uses DashScope Paraformer/Fun-ASR) or `'minimax'`
+   * (uses the MiniMax Speech-to-Text REST API). Empty/undefined treated as
+   * `'dashscope'` for backward compatibility.
+   */
+  asrProvider?: 'dashscope' | 'minimax' | string
+  /** MiniMax ASR model id, e.g. `asr-1.0`. Empty uses the API default. */
+  minimaxAsrModel?: string
+  /** MiniMax ASR HTTP endpoint, defaults to https://api.minimaxi.com. */
+  minimaxBaseUrl?: string
 }
 
 export interface RealtimeModelStoredSecrets {
   /** 千问/DashScope API key (sk-...), shared by meeting ASR + Realtime. */
   apiKey?: string
+  /**
+   * MiniMax API key (Bearer token for api.minimaxi.com / api.minimax.io).
+   * Optional — only required when ASR provider is `'minimax'`. Stored
+   * separately from the DashScope key so the two providers stay independent.
+   */
+  minimaxApiKey?: string
 }
 
 export interface StoredRealtimeModelRow {
@@ -34,13 +51,15 @@ export interface StoredRealtimeModelRow {
 
 export class RealtimeModelSettingsValidationError extends Error {}
 
-const SETTINGS_KEYS = ['model', 'voice'] as const
-const SECRET_KEYS = ['apiKey'] as const
+const SETTINGS_KEYS = ['model', 'voice', 'asrProvider', 'minimaxAsrModel', 'minimaxBaseUrl'] as const
+const SECRET_KEYS = ['apiKey', 'minimaxApiKey'] as const
 /** Marker used to indicate a stored secret exists without echoing its value. */
 export const REALTIME_STORED_MARKER = '[stored]'
 const MAX_MODEL_LENGTH = 200
 const MAX_VOICE_LENGTH = 100
 const MAX_API_KEY_LENGTH = 1000
+const MAX_BASE_URL_LENGTH = 200
+const MINIMAX_PROVIDERS = new Set(['dashscope', 'minimax'])
 
 type StoredRow = {
   profile: string
@@ -99,6 +118,14 @@ function sanitizeStoredSettings(input: Record<string, unknown>): RealtimeModelSt
       out.model = value
     } else if (key === 'voice' && value.length <= MAX_VOICE_LENGTH) {
       out.voice = value
+    } else if (key === 'asrProvider' && MINIMAX_PROVIDERS.has(value)) {
+      out.asrProvider = value
+    } else if (key === 'minimaxAsrModel' && value.length <= MAX_MODEL_LENGTH) {
+      out.minimaxAsrModel = value
+    } else if (key === 'minimaxBaseUrl' && value.length <= MAX_BASE_URL_LENGTH) {
+      // Only accept https URLs (defence-in-depth — these are passed straight
+      // to the Python ASR client).
+      if (/^https:\/\//i.test(value)) out.minimaxBaseUrl = value
     }
   }
 
@@ -114,7 +141,7 @@ function readSecrets(input: Record<string, unknown>): RealtimeModelStoredSecrets
     if (typeof raw !== 'string') continue
     const value = raw.trim()
     if (value && value !== REALTIME_STORED_MARKER && value.length <= MAX_API_KEY_LENGTH) {
-      out[key as 'apiKey'] = value
+      out[key as 'apiKey' | 'minimaxApiKey'] = value
     }
   }
   return out
@@ -124,6 +151,9 @@ function maskSecrets(secrets: RealtimeModelStoredSecrets): RealtimeModelStoredSe
   const masked: RealtimeModelStoredSecrets = {}
   if (secrets.apiKey) {
     masked.apiKey = REALTIME_STORED_MARKER
+  }
+  if (secrets.minimaxApiKey) {
+    masked.minimaxApiKey = REALTIME_STORED_MARKER
   }
   return masked
 }
@@ -165,15 +195,15 @@ export function getRealtimeModelSetting(
   return row ? rowToResult(row, options?.includeSecrets === true) : null
 }
 
-/**
- * Create/update the realtime model config for a profile.
- *
- * The client always saves the complete configuration (model + voice + the
- * current apiKey field), so `settings` replaces the stored settings and an
- * explicitly empty `secrets.apiKey` clears the stored key. For defensive
- * compatibility, an absent `secrets` or a `[stored]` marker leaves the stored
- * key untouched. Returns the masked row.
- */
+  /**
+   * Create/update the realtime model config for a profile.
+   *
+   * The client always saves the complete configuration (model + voice + the
+   * current apiKey field), so `settings` replaces the stored settings and an
+   * explicitly empty `secrets.<field>` clears that specific stored secret.
+   * For defensive compatibility, an absent `secrets` or a `[stored]` marker
+   * leaves the stored value untouched. Returns the masked row.
+   */
 export function saveRealtimeModelSetting(
   profile: string,
   input: {
@@ -196,19 +226,25 @@ export function saveRealtimeModelSetting(
     ? sanitizeStoredSettings(settingsInput)
     : existingSettings
 
-  let nextSecrets: RealtimeModelStoredSecrets = existingSecrets
+  let nextSecrets: RealtimeModelStoredSecrets = { ...existingSecrets }
   const secretsInput = asObject(input.secrets)
-  if (typeof secretsInput.apiKey === 'string') {
-    const cleaned = secretsInput.apiKey.trim()
+  // Each recognised secret key is handled independently so a partial update
+  // (e.g. the MiniMax key on a request that omits `apiKey`) does not wipe the
+  // other provider's key. Mirrors the STT settings store's per-field model.
+  for (const key of SECRET_KEYS) {
+    const raw = secretsInput[key]
+    if (typeof raw !== 'string') continue
+    const cleaned = raw.trim()
     if (cleaned === REALTIME_STORED_MARKER) {
       // Masked marker from a client that does not echo secrets → keep stored.
-      nextSecrets = existingSecrets
-    } else if (!cleaned) {
-      // User cleared the api key field → drop the stored key.
-      nextSecrets = {}
-    } else {
-      nextSecrets = { apiKey: cleaned.slice(0, MAX_API_KEY_LENGTH) }
+      continue
     }
+    if (!cleaned) {
+      // User cleared this secret field → drop only this key.
+      delete nextSecrets[key]
+      continue
+    }
+    nextSecrets[key] = cleaned.slice(0, MAX_API_KEY_LENGTH)
   }
 
   const now = Date.now()

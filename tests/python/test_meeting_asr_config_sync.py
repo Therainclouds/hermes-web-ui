@@ -123,6 +123,42 @@ class ConfigSyncTest(unittest.TestCase):
         self.assertEqual(s.asr_language_hints, "en")
         self.assertFalse(s.paraformer_semantic_punctuation)
 
+    def test_minimax_fields_sync_on_hot_push(self) -> None:
+        """The whole-file transcription dialog lets the user run a MiniMax pass
+        on a DashScope session, so the hot config push must also carry the
+        MiniMax credentials (Node `MeetingASRService.updateConfig`)."""
+        storage = self._storage_instance()
+        storage.update_config(
+            self._config_settings(
+                all_asr={
+                    "dashscope_api_key": "sk-dash-1234567890",
+                    "minimax_api_key": "mm-hotpush-secret",
+                    "minimax_asr_model": "asr-1.0",
+                    "minimax_base_url": "https://api.minimaxi.com",
+                }
+            )
+        )
+        s = self._config.settings
+        self.assertEqual(s.dashscope_api_key, "sk-dash-1234567890")
+        self.assertEqual(s.minimax_api_key, "mm-hotpush-secret")
+        self.assertEqual(s.minimax_asr_model, "asr-1.0")
+        self.assertEqual(s.minimax_base_url, "https://api.minimaxi.com")
+
+    def test_minimax_push_without_key_keeps_previous_value(self) -> None:
+        """An omitted MiniMax key must not wipe a previously pushed one."""
+        storage = self._storage_instance()
+        storage.update_config(
+            self._config_settings(all_asr={"minimax_api_key": "mm-keep-me"})
+        )
+        self.assertEqual(self._config.settings.minimax_api_key, "mm-keep-me")
+
+        storage.update_config(
+            self._config_settings(
+                all_asr={"dashscope_api_key": "sk-dash-only-1234567890"}
+            )
+        )
+        self.assertEqual(self._config.settings.minimax_api_key, "mm-keep-me")
+
     def _config_settings(self, all_asr: dict | None = None, **kwargs):
         """Build an AllConfig via pydantic, reusing app.models to avoid
         hand-maintaining the shape."""

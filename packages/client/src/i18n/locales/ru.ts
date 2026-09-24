@@ -1501,6 +1501,68 @@ export default {
   },
 
 
+// DeepSeek Harness plugin management — covers management UI strings used by
+  // packages/client/src/components/coding-agents/dsh/*.vue.
+  dshPresets: {
+    sessionMode: 'DSH mode',
+    selectMode: 'Select an Agent preset',
+    sessionHint:
+      'Applies only to this new session. Tools and session plugins follow the selected preset.',
+    title: 'Agent presets',
+    unavailable:
+      'Unable to load DSH Agent presets. Check the DSH installation and refresh.',
+    hint:
+      'Defaults apply to new DSH sessions. Existing sessions keep their original preset.',
+    copy: 'Duplicate',
+    view: 'View',
+    setDefault: 'Set as default',
+    default: 'Default',
+    delete: 'Delete',
+    deleteConfirm: 'Delete preset "{name}" and its directory?',
+    identifier: 'Identifier',
+    name: 'Name',
+    idHint:
+      'Use a unique identifier with lowercase letters, numbers and hyphens.',
+    empty: 'No Agent presets',
+    copyTitle: 'Duplicate preset: {name}',
+    create: 'Create',
+    location: 'Open folder',
+  },
+  dshPlugins: {
+    configurationTab: 'Plugin configuration',
+    listTab: 'Plugin list',
+    webPackages: 'Installed Web plugins',
+    presetEntries: 'Preset plugin entries',
+    packageVersion: 'Version',
+    registeredBundle: 'Registered in Web profile',
+    noWebPackages: 'No additional Web plugins installed',
+    webInstallHint:
+      'Install or update using package@exact-version or github:owner/repo#commit. Changes apply to subsequent DSH turns.',
+    nativeOperationFailed:
+      'The Web plugin operation failed. Reload the list to inspect the current installation.',
+    settingsUnavailable:
+      'Cannot read plugin settings. Check the DSH installation and Web profile, then refresh.',
+    nativeHint:
+      'These are preset plugin entries. Selecting a preset changes only the preview. Status labels describe configuration, not live activation.',
+    nativeFailed:
+      'Unable to read this native preset configuration. Check the DSH installation and source files.',
+    searchPlugins: 'Search plugin ID or module',
+    shipped: 'Shipped preset',
+    userPreset: 'User preset',
+    noEntries: 'No plugin entries',
+    conditional: 'Conditional',
+    title: 'Plugins',
+    install: 'Install',
+    packageSpec: 'Package and exact version',
+    dependency: 'Dependency',
+    enabled: 'Enabled in configuration',
+    disabled: 'Disabled in configuration',
+    remove: 'Remove',
+    removeConfirm: 'Remove {name} from future launches?',
+    conflict:
+      'Configuration changed elsewhere. Your draft is preserved; compare with the latest version before reloading.',
+    missingDependency: 'Install DSH and pnpm before managing packages.',
+  },
   plugins: {
     title: 'Плагины',
     refresh: 'Обновить',
@@ -1756,8 +1818,20 @@ export default {
     realtimeApiKeyPlaceholder: 'sk-…',
     realtimeApiKeyHint: 'Сохраняется в текущем профиле пользователя на сервере (как настройки моделей STT/TTS) и следует за вами между браузерами и устройствами. Используется как ключ по умолчанию для ASR режима встреч и голосовых разговоров в реальном времени.',
     realtimeModelLabel: 'Модель реального времени',
-    realtimeModelPlaceholder: 'qwen3.5-omni-flash-realtime',
+    realtimeModelPlaceholder: 'qwen3.8-omni-flash-realtime',
     realtimeVoiceLabel: 'Голос по умолчанию',
+    realtimeAsrProviderHint: 'Выберите провайдера распознавания речи для режима встреч. DashScope (по умолчанию) — Paraformer / Fun-ASR; MiniMax — REST API MiniMax Speech-to-Text.',
+    realtimeAsrProviderLabel: 'Провайдер ASR',
+    realtimeAsrSectionTitle: 'ASR режима встреч',
+    realtimeMinimaxApiKey: 'API-ключ MiniMax',
+    realtimeMinimaxApiKeyHint: 'Сохраняется в текущем профиле пользователя на сервере. Создайте ключ на platform.minimax.cn → Interface Key. Используется, только если провайдер ASR — MiniMax.',
+    realtimeMinimaxApiKeyPlaceholder: 'Введите API-ключ MiniMax',
+    realtimeMinimaxBaseUrlHint: 'По умолчанию https://api.minimaxi.com (Китай). Для международной версии используйте https://api.minimax.io.',
+    realtimeMinimaxBaseUrlLabel: 'Эндпоинт MiniMax',
+    realtimeMinimaxBaseUrlPlaceholder: 'https://api.minimaxi.com',
+    realtimeMinimaxModelHint: 'Официальная документация ASR сейчас раскрывает только `asr-1.0`; `speech-01` оставлен как псевдоним для будущих смен моделей.',
+    realtimeMinimaxModelLabel: 'Модель распознавания MiniMax',
+    realtimeMinimaxModelPlaceholder: 'asr-1.0',
     realtimeSaved: 'Конфигурация модели Realtime сохранена',
     realtimeSaveFailed: 'Не удалось сохранить конфигурацию модели Realtime',
     fallbackTitle: 'Резервные модели',
@@ -2307,6 +2381,7 @@ export default {
       resetFailed: 'Не удалось сбросить аватар',
     },
     voice: {
+      qwenSharedKey: "Reuse the saved Qwen API key from this profile’s Realtime model settings, or enter a separate key.",
       activeTtsApi: 'Активная TTS API',
       activeSttApi: 'Активная STT API',
       ttsProvidersTitle: 'Провайдеры TTS',

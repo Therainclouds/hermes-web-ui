@@ -1177,6 +1177,27 @@ export const EXPERT_PROFILE_BINDINGS_SCHEMA: Record<string, string> = {
 }
 
 // ============================================================================
+// MCU Devices (mcu-devices-store.ts)
+// ============================================================================
+// Local catalogue of MCU device codes the user has paired with this Studio
+// instance. Codes are verified against the configured remote relay on insert
+// (config.remoteRelay.url) and tracked separately from the LAN peer devices
+// used for direct device-to-device tooling.
+export const MCU_DEVICES_TABLE = 'mcu_devices'
+
+export const MCU_DEVICES_SCHEMA: Record<string, string> = {
+  id: 'INTEGER PRIMARY KEY AUTOINCREMENT',
+  name: "TEXT NOT NULL DEFAULT ''",
+  device_code: 'TEXT NOT NULL',
+  is_official: 'INTEGER NOT NULL DEFAULT 0',
+  created_at: 'INTEGER NOT NULL',
+}
+
+export const MCU_DEVICES_INDEXES = {
+  uniq_mcu_devices_code: 'CREATE UNIQUE INDEX IF NOT EXISTS uniq_mcu_devices_code ON mcu_devices(device_code)',
+}
+
+// ============================================================================
 // Schema Migrations
 // ============================================================================
 
@@ -1983,6 +2004,9 @@ export function initAllHermesTables(): void {
         idx_expert_bindings_parent: 'CREATE INDEX IF NOT EXISTS idx_expert_bindings_parent ON expert_profile_bindings(parent_team_slug)',
       }
     })
+
+    // MCU device catalogue (paired via the relay)
+    syncTable(MCU_DEVICES_TABLE, MCU_DEVICES_SCHEMA, { indexes: MCU_DEVICES_INDEXES })
 
     // Idempotent data-fix migrations. Safe to run on every startup; each
     // migration self-gates on its own server_migrations row.

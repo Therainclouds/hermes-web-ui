@@ -19,6 +19,7 @@ export type TtsProviderId =
   | 'mistral'
   | 'minimax'
   | 'deepinfra'
+  | 'qwen'
 
 const TTS_PROVIDER_IDS = new Set<TtsProviderId>([
   'edge',
@@ -32,6 +33,7 @@ const TTS_PROVIDER_IDS = new Set<TtsProviderId>([
   'mistral',
   'minimax',
   'deepinfra',
+  'qwen',
 ])
 
 export function isServerTtsProvider(value: unknown): value is TtsProviderId {

@@ -2,10 +2,10 @@
 // 会议模式顶部控制条：
 //   - 侧栏 toggle 按钮
 //   - 标题（logo + 文字）
-//   - 控制按钮组：Agent 面板 / 说话人分离 / 保存模式 / 说话人数 / 清空转写
+//   - 控制按钮组：Agent 面板 / 导出会议文字 / 说话人分离 / 保存模式 / 说话人数 / 清空转写
 //
 // 数据与状态从父级传入，本组件只承担"显示什么"和"通知用户操作"——
-// 真正的录音逻辑、Agent 状态、Diarize 协议等都在父级。
+// 真正的录音逻辑、Agent 状态、导出实现等都在父级。
 
 import { useI18n } from 'vue-i18n'
 import { NTooltip, NButton, NSelect } from 'naive-ui'
@@ -20,7 +20,6 @@ interface SpeakerCountOption {
 const props = defineProps<{
   sidebarExpanded: boolean
   showAgentPanel: boolean
-  showRealtimeDialog: boolean
   useDiarize: boolean
   saveMode: boolean
   speakerCount: number
@@ -33,7 +32,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'toggle-sidebar'): void
   (e: 'toggle-agent-panel'): void
-  (e: 'toggle-realtime-dialog'): void
+  (e: 'export-transcript'): void
   (e: 'toggle-diarize'): void
   (e: 'toggle-save-mode'): void
   (e: 'update:speakerCount', value: number): void
@@ -86,25 +85,26 @@ function onSpeakerCountUpdate(value: number | null) {
         {{ t('meeting.showAgentChat') }}
       </NTooltip>
 
-      <!-- 实时对话 (Qwen Omni Realtime) -->
+      <!-- 导出会议文字（ASR 逐字稿 Markdown） -->
       <NTooltip trigger="hover">
         <template #trigger>
           <NButton
             size="small"
-            :type="props.showRealtimeDialog ? 'primary' : 'default'"
-            @click="emit('toggle-realtime-dialog')"
+            :disabled="!props.hasSentences"
+            @click="emit('export-transcript')"
           >
             <template #icon>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
-                <path d="M21 19a2 2 0 0 1-2 2h-1v-6h1a2 2 0 0 1 2 2z" />
-                <path d="M3 19a2 2 0 0 0 2 2h1v-6H5a2 2 0 0 0-2 2z" />
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+                <line x1="8" y1="13" x2="16" y2="13" />
+                <line x1="8" y1="17" x2="13" y2="17" />
               </svg>
             </template>
-            {{ t('meeting.realtime.tabLabel') }}
+            {{ t('meeting.exportTranscript') }}
           </NButton>
         </template>
-        {{ t('meeting.realtime.tabTooltip') }}
+        {{ props.hasSentences ? t('meeting.exportTranscriptHint') : t('meeting.noTranscript') }}
       </NTooltip>
 
       <template v-if="!props.hideSpeakerDiarization">

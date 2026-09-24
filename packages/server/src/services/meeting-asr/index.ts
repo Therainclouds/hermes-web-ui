@@ -1,5 +1,10 @@
 import { ChildProcess, spawn } from 'child_process'
 import { EventEmitter } from 'events'
+import { createHash } from 'crypto'
+import { readdirSync, readFileSync } from 'fs'
+import http from 'node:http'
+import https from 'node:https'
+import { createServer as createNetServer } from 'node:net'
 import path from 'path'
 import fs from 'fs/promises'
 import os from 'os'
@@ -8,6 +13,13 @@ import * as venvManager from './venv-manager'
 import * as dashscopeKeyStore from './dashscope-key-store'
 
 export interface MeetingASRConfig {
+  /**
+   * ASR provider selection: `'dashscope'` (default — Paraformer/Fun-ASR
+   * WebSocket flow) or `'minimax'` (MiniMax Speech-to-Text REST chunking
+   * flow, https://platform.minimax.cn/docs/api-reference/speech-to-text).
+   * Undefined is treated as `'dashscope'` for backward compatibility.
+   */
+  asrProvider?: 'dashscope' | 'minimax'
   dashscopeApiKey?: string
   asrModel?: string  // 'paraformer-v2' | 'fun-asr' | 'fun-asr-mtl'
   paraformerWsUrl?: string
@@ -16,6 +28,20 @@ export interface MeetingASRConfig {
   paraformerFormat?: string
   paraformerLanguageHints?: string
   paraformerSemanticPunctuation?: boolean
+  /** MiniMax Speech-to-Text API key (Bearer token). */
+  minimaxApiKey?: string
+  /** MiniMax ASR model id, e.g. 'asr-1.0'. */
+  minimaxAsrModel?: string
+  /** MiniMax ASR HTTP base URL. */
+  minimaxBaseUrl?: string
+  /** BCP-47 language hint for MiniMax (`zh`, `en`, ...). */
+  minimaxLanguage?: string
+  /** Container MiniMax accepts (MiniMax rejects raw PCM). */
+  minimaxAudioFormat?: 'wav' | 'mp3' | 'opus' | 'aac' | 'ogg'
+  /** PCM sample rate fed into the MiniMax encoder (Hz). */
+  minimaxSampleRate?: number
+  /** Maximum PCM chunk seconds per MiniMax request. */
+  minimaxChunkSeconds?: number
   llmApiKey?: string
   llmBaseUrl?: string
   llmModel?: string
@@ -52,6 +78,12 @@ export interface MeetingASRStatus {
    * `net.connect` automatically — no deploy-time env coordination needed.
    */
   useTls: boolean
+  /**
+   * Content hash of the python-backend sources currently on disk. The client
+   * compares it with the hash the backend reports on `/healthz` to notice a
+   * stale uvicorn child after a rebuild.
+   */
+  codeHash?: string | null
 }
 
 /**
@@ -76,6 +108,16 @@ export class MeetingASRService extends EventEmitter {
   private _error: string | null = null
   private _asrPort: number | null = null
   private _diarizePort: number | null = null
+  /** Content hash of the python-backend sources the running child loaded. */
+  private _backendCodeHash: string | null = null
+  /**
+   * Tail of the main child's stdout/stderr. uvicorn writes tracebacks and the
+   * kernel's OOM notice there, but the live stream is only logged at debug
+   * level (too noisy for access logs). Keeping the tail lets an unexpected
+   * exit report *why* it died, which is what the 503 `detail` field shows.
+   */
+  private _mainLogTail: string[] = []
+  private static readonly LOG_TAIL_LINES = 25
   // Auto-restart: when true, an unexpected main-process exit triggers a
   // bounded backoff restart loop. Disabled by stop() to avoid fighting
   // deliberate shutdowns.
@@ -131,7 +173,68 @@ export class MeetingASRService extends EventEmitter {
       startupPhase: this._startupPhase,
       isVenvReady: this._isVenvReady,
       useTls: this._useTls,
+      codeHash: this._backendCodeHash,
     }
+  }
+
+  /**
+   * Content hash of the bundled python-backend sources.
+   *
+   * The uvicorn child imports its modules once at spawn; a rebuild that
+   * replaces `python-backend/` on disk does not affect an already-running
+   * process. Hashing the sources lets us (a) detect that mismatch on the next
+   * start and respawn, and (b) expose the marker to the client via status so
+   * it can compare against the hash the backend reports on /healthz.
+   *
+   * Best-effort: any IO error just yields null and the staleness check is
+   * skipped rather than blocking startup.
+   */
+  private computeBackendCodeHash(): string | null {
+    try {
+      const root = this.getPythonBackendPath()
+      const files: string[] = []
+      const walk = (dir: string): void => {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          if (entry.name === '__pycache__' || entry.name.startsWith('.')) continue
+          const full = path.join(dir, entry.name)
+          if (entry.isDirectory()) walk(full)
+          else if (entry.name.endsWith('.py')) files.push(full)
+        }
+      }
+      walk(root)
+      files.sort()
+      const hash = createHash('sha256')
+      for (const file of files) {
+        hash.update(path.relative(root, file))
+        hash.update(readFileSync(file))
+      }
+      return hash.digest('hex').slice(0, 16)
+    } catch (err) {
+      logger.warn('[meeting-asr] failed to hash python-backend sources: %s', err)
+      return null
+    }
+  }
+
+  /**
+   * True when the sources on disk no longer match the ones the running child
+   * imported. False when nothing is running, when the hash is unknown, or
+   * when hashing failed — the caller then falls back to a hot config push.
+   */
+  private isBackendCodeStale(): boolean {
+    if (!this._backendCodeHash) return false
+    const current = this.computeBackendCodeHash()
+    return !!current && current !== this._backendCodeHash
+  }
+
+  /** Append a child output chunk to the bounded diagnostic tail. */
+  private _recordMainLog(chunk: unknown): void {
+    const text = String(chunk ?? '')
+    for (const line of text.split(/\r?\n/)) {
+      const trimmed = line.trim()
+      if (trimmed) this._mainLogTail.push(trimmed)
+    }
+    const overflow = this._mainLogTail.length - MeetingASRService.LOG_TAIL_LINES
+    if (overflow > 0) this._mainLogTail.splice(0, overflow)
   }
 
   /**
@@ -222,8 +325,21 @@ export class MeetingASRService extends EventEmitter {
       //   - All other fields (DashScope key, Paraformer, LLM) are pushed via
       //     updateConfig() → POST /api/config so we avoid interrupting the
       //     user's recording session.
+      //   - Changed python-backend sources also require a restart: the child
+      //     imported its modules at spawn and would otherwise keep running
+      //     stale logic after a rebuild (this is how an already-fixed bug can
+      //     keep reproducing until the service is manually restarted).
+      const currentHash = this.computeBackendCodeHash()
+      const codeChanged = this.isBackendCodeStale()
       if (config.ossBucket || config.ossAccessKeyId || config.ossAccessKeySecret) {
         logger.info('[meeting-asr] OSS config provided while running; restarting to pick up new credentials')
+        await this.stop()
+        // Fall through to the normal start path below.
+      } else if (codeChanged) {
+        logger.info(
+          '[meeting-asr] python-backend sources changed (%s → %s); restarting to load the new code',
+          this._backendCodeHash, currentHash,
+        )
         await this.stop()
         // Fall through to the normal start path below.
       } else {
@@ -269,9 +385,28 @@ export class MeetingASRService extends EventEmitter {
       const pythonPath = await this.ensureVirtualEnv()
       const backendPath = this.getPythonBackendPath()
 
-      // Set ports
-      this._asrPort = config.asrPort || 8000
-      this._diarizePort = config.diarizePort || 8001
+      // Set ports. If the configured port is already taken — typically by an
+      // orphaned uvicorn from a previous Node process (`detached:false`
+      // children survive a parent exit) — walk forward to a free one. Without
+      // this the new child fails to bind while `waitForReady` happily talks to
+      // the orphan, which still runs the OLD code: that is how an
+      // already-fixed bug keeps reproducing after a rebuild.
+      const requestedAsrPort = config.asrPort || 8000
+      const requestedDiarizePort = config.diarizePort || 8001
+      this._asrPort = await pickFreePort(requestedAsrPort)
+      this._diarizePort = await pickFreePort(requestedDiarizePort, new Set([this._asrPort]))
+      if (this._asrPort !== requestedAsrPort) {
+        logger.warn(
+          '[meeting-asr] port %d is in use (orphaned backend?); serving ASR on %d instead',
+          requestedAsrPort, this._asrPort,
+        )
+      }
+      if (this._diarizePort !== requestedDiarizePort) {
+        logger.warn(
+          '[meeting-asr] port %d is in use (orphaned backend?); serving diarize on %d instead',
+          requestedDiarizePort, this._diarizePort,
+        )
+      }
 
       // Build environment variables
       const env: Record<string, string> = {
@@ -281,6 +416,14 @@ export class MeetingASRService extends EventEmitter {
         BACKEND_PORT: String(this._asrPort),
         DIARIZE_PORT: String(this._diarizePort),
         CORS_ORIGIN: `http://localhost:${process.env.PORT || 6060}`,
+      }
+
+      // Stamp the sources this child is about to load. /healthz echoes it and
+      // the client compares it with `status.codeHash` to spot a stale process.
+      const codeHash = this.computeBackendCodeHash()
+      if (codeHash) {
+        env.MEETING_ASR_CODE_HASH = codeHash
+        this._backendCodeHash = codeHash
       }
 
       if (config.dashscopeApiKey) {
@@ -302,6 +445,21 @@ export class MeetingASRService extends EventEmitter {
           if (key) env.DASHSCOPE_API_KEY = key
         } catch { /* best effort */ }
       }
+      // MiniMax provider config — passed through to Python via env so
+      // `config.py` can read it at import time. Only honoured when
+      // `asrProvider === 'minimax'`; for DashScope the Python ASR proxy
+      // continues to use DASHSCOPE_API_KEY untouched.
+      if (config.minimaxApiKey) env.MINIMAX_API_KEY = config.minimaxApiKey
+      if (config.minimaxAsrModel) env.MINIMAX_ASR_MODEL = config.minimaxAsrModel
+      if (config.minimaxBaseUrl) env.MINIMAX_BASE_URL = config.minimaxBaseUrl
+      if (config.minimaxLanguage) env.MINIMAX_LANGUAGE = config.minimaxLanguage
+      if (config.minimaxAudioFormat) env.MINIMAX_AUDIO_FORMAT = config.minimaxAudioFormat
+      if (config.minimaxSampleRate) env.MINIMAX_SAMPLE_RATE = String(config.minimaxSampleRate)
+      if (config.minimaxChunkSeconds) env.MINIMAX_CHUNK_SECONDS = String(config.minimaxChunkSeconds)
+      // `asrProvider` defaults to 'dashscope' on the Python side, so we
+      // only export it when explicitly non-default to keep env diffs
+      // narrow for ops that grep the spawned process env.
+      if (config.asrProvider === 'minimax') env.ASR_PROVIDER = 'minimax'
       if (config.asrModel) {
         env.ASR_MODEL = config.asrModel
       }
@@ -352,6 +510,7 @@ export class MeetingASRService extends EventEmitter {
         '-m', 'uvicorn', 'app.main:app', '--host', '0.0.0.0', '--port', String(this._asrPort),
         ...this._uvicornTlsArgs(),
       ]
+      this._mainLogTail = []
       this.mainProcess = spawn(pythonPath, mainUvicornArgs, {
         cwd: backendPath,
         env,
@@ -360,10 +519,12 @@ export class MeetingASRService extends EventEmitter {
       })
 
       this.mainProcess.stdout?.on('data', (data) => {
+        this._recordMainLog(data)
         logger.debug('[meeting-asr:main] %s', data.toString().trim())
       })
 
       this.mainProcess.stderr?.on('data', (data) => {
+        this._recordMainLog(data)
         logger.debug('[meeting-asr:main] %s', data.toString().trim())
       })
 
@@ -380,7 +541,14 @@ export class MeetingASRService extends EventEmitter {
         this.emit('stopped', code ?? 0)
         // Auto-restart on unexpected crash, unless explicitly stopped.
         if (this._autoRestart && (code ?? 0) !== 0) {
-          this._scheduleRestart('main process exited unexpectedly')
+          // The tail is the only place the reason survives (Python traceback /
+          // OOM kill). It is surfaced through status.error → the 503 body the
+          // UI logs, so "Service Unavailable" becomes diagnosable.
+          const tail = this._mainLogTail.slice(-MeetingASRService.LOG_TAIL_LINES).join(' | ')
+          const reason = `main process exited unexpectedly (code ${code})${tail ? `: ${tail.slice(-800)}` : ''}`
+          this._error = reason
+          logger.error('[meeting-asr] %s', reason)
+          this._scheduleRestart(reason)
         }
       })
 
@@ -516,22 +684,52 @@ export class MeetingASRService extends EventEmitter {
     timeoutMs = 2000,
   ): Promise<{ ok: boolean; status?: number; err?: string }> {
     try {
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), timeoutMs)
-      const scheme = this._useTls ? 'https' : 'http'
-      const url = `${scheme}://127.0.0.1:${port}/healthz`
-      // Dynamic import avoids loading node:https on the cold path for dev runs.
-      const init: RequestInit = { signal: controller.signal }
-      if (this._useTls) {
-        const { Agent } = await import('node:https')
-        ;(init as any).dispatcher = new Agent({ rejectUnauthorized: false })
-      }
-      const response = await fetch(url, init)
-      clearTimeout(timer)
-      return { ok: response.ok, status: response.status }
+      const response = await this.backendRequest(port, '/healthz', 'GET', undefined, timeoutMs)
+      return { ok: response.status >= 200 && response.status < 300, status: response.status }
     } catch (err) {
       return { ok: false, err: err instanceof Error ? err.message : String(err) }
     }
+  }
+
+  /**
+   * Request against the local Python backend over the protocol it was spawned
+   * with. `node:http(s)` — not `fetch` — because undici's `dispatcher` option
+   * rejects a `node:https.Agent` with `agent.dispatch is not a function`, which
+   * silently broke every backend call on TLS device images.
+   */
+  private backendRequest(
+    port: number,
+    path: string,
+    method: 'GET' | 'POST' = 'GET',
+    body?: string,
+    timeoutMs = 30_000,
+  ): Promise<{ status: number; body: string }> {
+    return new Promise((resolve, reject) => {
+      const transport = this._useTls ? https : http
+      const req = transport.request(
+        {
+          host: '127.0.0.1',
+          port,
+          path,
+          method,
+          headers: body ? { 'Content-Type': 'application/json' } : {},
+          timeout: timeoutMs,
+          ...(this._useTls ? { rejectUnauthorized: false } : {}),
+        },
+        (res) => {
+          const chunks: Buffer[] = []
+          res.on('data', (chunk: Buffer) => chunks.push(chunk))
+          res.on('end', () => resolve({
+            status: res.statusCode || 502,
+            body: Buffer.concat(chunks).toString('utf-8'),
+          }))
+        },
+      )
+      req.on('timeout', () => req.destroy(new Error(`backend request timed out after ${timeoutMs}ms`)))
+      req.on('error', reject)
+      if (body !== undefined) req.write(body)
+      req.end()
+    })
   }
 
   /**
@@ -589,6 +787,7 @@ export class MeetingASRService extends EventEmitter {
     this.mainProcess = null
     this._isRunning = false
     this._startTime = null
+    this._backendCodeHash = null
     this._asrPort = null
     this._diarizePort = null
     this._startupPhase = 'idle'
@@ -698,26 +897,18 @@ export class MeetingASRService extends EventEmitter {
     // the same class of desync that caused the v0.7.17
     // "DASHSCOPE_API_KEY is not configured" incident for ASR.
     try {
-      const scheme = this._useTls ? 'https' : 'http'
-      const init: RequestInit = {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const response = await this.backendRequest(
+        this._asrPort!,
+        '/api/config/llm',
+        'POST',
+        JSON.stringify({
           api_key: config.llmApiKey || '',
           base_url: config.llmBaseUrl || '',
           model: config.llmModel || '',
         }),
-      }
-      if (this._useTls) {
-        const { Agent } = await import('node:https')
-        ;(init as any).dispatcher = new Agent({ rejectUnauthorized: false })
-      }
-      const response = await fetch(
-        `${scheme}://127.0.0.1:${this._asrPort}/api/config/llm`,
-        init,
       )
-      if (!response.ok) {
-        throw new Error(`Python backend rejected LLM config: ${response.status} ${response.statusText}`)
+      if (response.status < 200 || response.status >= 300) {
+        throw new Error(`Python backend rejected LLM config: ${response.status}`)
       }
       logger.info('[meeting-asr] LLM config persisted via Python backend')
     } catch (err) {
@@ -740,6 +931,14 @@ export class MeetingASRService extends EventEmitter {
         paraformer_format: config.paraformerFormat,
         paraformer_language_hints: config.paraformerLanguageHints,
         paraformer_semantic_punctuation: config.paraformerSemanticPunctuation,
+        // MiniMax credentials are provider-independent: the whole-file
+        // transcription dialog lets the user pick either engine regardless of
+        // the session's provider, so any known key is pushed. The Python
+        // `Settings.sync_from()` only overwrites these when truthy, so an
+        // omitted field keeps the previous value.
+        minimax_api_key: config.minimaxApiKey,
+        minimax_asr_model: config.minimaxAsrModel,
+        minimax_base_url: config.minimaxBaseUrl,
       },
       llm: {
         api_key: config.llmApiKey,
@@ -749,19 +948,9 @@ export class MeetingASRService extends EventEmitter {
     })
 
     try {
-      const scheme = this._useTls ? 'https' : 'http'
-      const init: RequestInit = {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body,
-      }
-      if (this._useTls) {
-        const { Agent } = await import('node:https')
-        ;(init as any).dispatcher = new Agent({ rejectUnauthorized: false })
-      }
-      const response = await fetch(`${scheme}://127.0.0.1:${this._asrPort}/api/config`, init)
-      if (!response.ok) {
-        throw new Error(`Failed to update config: ${response.statusText}`)
+      const response = await this.backendRequest(this._asrPort!, '/api/config', 'POST', body)
+      if (response.status < 200 || response.status >= 300) {
+        throw new Error(`Failed to update config: HTTP ${response.status}`)
       }
     } catch (err) {
       logger.error('[meeting-asr] Failed to update config: %s', err)
@@ -779,3 +968,34 @@ export class MeetingASRService extends EventEmitter {
 }
 
 export const meetingASRService = MeetingASRService.getInstance()
+
+/**
+ * True when nothing is listening on `port` (probed on 0.0.0.0 to match the
+ * `--host 0.0.0.0` uvicorn bind). Exported for tests.
+ */
+export function checkPortAvailable(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const srv = createNetServer()
+    let settled = false
+    const finish = (ok: boolean) => {
+      if (settled) return
+      settled = true
+      resolve(ok)
+    }
+    srv.once('error', () => finish(false))
+    srv.once('listening', () => srv.close(() => finish(true)))
+    srv.listen(port, '0.0.0.0')
+  })
+}
+
+/**
+ * First free port at or after `base` (skipping `avoid`), scanning a bounded
+ * window. Exported for tests.
+ */
+export async function pickFreePort(base: number, avoid: Set<number> = new Set(), attempts = 50): Promise<number> {
+  for (let port = base; port < base + attempts; port++) {
+    if (avoid.has(port)) continue
+    if (await checkPortAvailable(port)) return port
+  }
+  throw new Error(`no free TCP port found in [${base}, ${base + attempts})`)
+}

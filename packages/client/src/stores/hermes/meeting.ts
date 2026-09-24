@@ -19,6 +19,13 @@ export interface MeetingSession {
   status: 'idle' | 'recording' | 'paused' | 'completed'
   // ASR 模型配置
   asrModel?: string  // 'paraformer-v2' | 'fun-asr' | 'fun-asr-mtl'
+  /**
+   * ASR provider for the meeting — `'dashscope'` (default) or `'minimax'`.
+   * Recorded on the session so the user does not have to re-select the
+   * provider after a reload; the backend uses this to route audio to the
+   * right upstream API.
+   */
+  asrProvider?: 'dashscope' | 'minimax'
   // 分析模型配置
   analysisMode: 'hermes' | 'custom'
   hermesProfile?: string
@@ -161,6 +168,13 @@ export interface ASRConfig {
   ossAccessKeySecret: string
   ossEndpoint: string
   ossPathPrefix: string
+  // Optional MiniMax ASR provider config (https://platform.minimax.cn/docs/api-reference/speech-to-text).
+  // When `asrProvider === 'minimax'`, the meeting ASR backend will route
+  // audio through the MiniMax Speech-to-Text REST API instead of DashScope.
+  asrProvider: 'dashscope' | 'minimax'
+  minimaxApiKey: string
+  minimaxAsrModel: string
+  minimaxBaseUrl: string
 }
 
 export interface SpeakerEntry {
@@ -186,6 +200,7 @@ function loadSessions(): MeetingSession[] {
         speakers: s.speakers || [],
         analysisRounds: s.analysisRounds || [],
         audioChunks: undefined,
+        asrProvider: s.asrProvider === 'minimax' ? 'minimax' : 'dashscope',
       }))
     }
   } catch {}
@@ -271,6 +286,10 @@ function loadASRConfig(): ASRConfig {
         ossAccessKeySecret: parsed.ossAccessKeySecret || '',
         ossEndpoint: parsed.ossEndpoint || 'oss-cn-beijing.aliyuncs.com',
         ossPathPrefix: parsed.ossPathPrefix || 'meeting-asr-uploads/',
+        asrProvider: parsed.asrProvider === 'minimax' ? 'minimax' : 'dashscope',
+        minimaxApiKey: parsed.minimaxApiKey || '',
+        minimaxAsrModel: parsed.minimaxAsrModel || 'asr-1.0',
+        minimaxBaseUrl: parsed.minimaxBaseUrl || 'https://api.minimaxi.com',
       }
     }
   } catch {}
@@ -288,6 +307,10 @@ function loadASRConfig(): ASRConfig {
     ossAccessKeySecret: '',
     ossEndpoint: 'oss-cn-beijing.aliyuncs.com',
     ossPathPrefix: 'meeting-asr-uploads/',
+    asrProvider: 'dashscope',
+    minimaxApiKey: '',
+    minimaxAsrModel: 'asr-1.0',
+    minimaxBaseUrl: 'https://api.minimaxi.com',
   }
 }
 
@@ -313,6 +336,14 @@ export const useMeetingStore = defineStore('meeting', () => {
   function createSession(options?: {
     title?: string
     asrModel?: string
+    /**
+     * ASR provider for the meeting. `'dashscope'` (default) uses Paraformer /
+     * Fun-ASR over DashScope; `'minimax'` routes through the MiniMax
+     * Speech-to-Text REST API. Stored on the session so a reload can resume
+     * with the same provider — UI never re-prompts for this once a session
+     * is started.
+     */
+    asrProvider?: 'dashscope' | 'minimax'
     analysisMode?: 'hermes' | 'custom'
     hermesProfile?: string
     customProvider?: string
@@ -334,6 +365,7 @@ export const useMeetingStore = defineStore('meeting', () => {
       speakers: [],
       status: 'idle',
       asrModel: options?.asrModel || 'paraformer-v2',
+      asrProvider: options?.asrProvider || 'dashscope',
       analysisMode: options?.analysisMode || 'hermes',
       hermesProfile: options?.hermesProfile,
       customProvider: options?.customProvider,

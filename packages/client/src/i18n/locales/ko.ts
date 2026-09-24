@@ -1336,6 +1336,68 @@ export default {
   },
 
   // 플러그인
+// DeepSeek Harness plugin management — covers management UI strings used by
+  // packages/client/src/components/coding-agents/dsh/*.vue.
+  dshPresets: {
+    sessionMode: 'DSH mode',
+    selectMode: 'Select an Agent preset',
+    sessionHint:
+      'Applies only to this new session. Tools and session plugins follow the selected preset.',
+    title: 'Agent presets',
+    unavailable:
+      'Unable to load DSH Agent presets. Check the DSH installation and refresh.',
+    hint:
+      'Defaults apply to new DSH sessions. Existing sessions keep their original preset.',
+    copy: 'Duplicate',
+    view: 'View',
+    setDefault: 'Set as default',
+    default: 'Default',
+    delete: 'Delete',
+    deleteConfirm: 'Delete preset "{name}" and its directory?',
+    identifier: 'Identifier',
+    name: 'Name',
+    idHint:
+      'Use a unique identifier with lowercase letters, numbers and hyphens.',
+    empty: 'No Agent presets',
+    copyTitle: 'Duplicate preset: {name}',
+    create: 'Create',
+    location: 'Open folder',
+  },
+  dshPlugins: {
+    configurationTab: 'Plugin configuration',
+    listTab: 'Plugin list',
+    webPackages: 'Installed Web plugins',
+    presetEntries: 'Preset plugin entries',
+    packageVersion: 'Version',
+    registeredBundle: 'Registered in Web profile',
+    noWebPackages: 'No additional Web plugins installed',
+    webInstallHint:
+      'Install or update using package@exact-version or github:owner/repo#commit. Changes apply to subsequent DSH turns.',
+    nativeOperationFailed:
+      'The Web plugin operation failed. Reload the list to inspect the current installation.',
+    settingsUnavailable:
+      'Cannot read plugin settings. Check the DSH installation and Web profile, then refresh.',
+    nativeHint:
+      'These are preset plugin entries. Selecting a preset changes only the preview. Status labels describe configuration, not live activation.',
+    nativeFailed:
+      'Unable to read this native preset configuration. Check the DSH installation and source files.',
+    searchPlugins: 'Search plugin ID or module',
+    shipped: 'Shipped preset',
+    userPreset: 'User preset',
+    noEntries: 'No plugin entries',
+    conditional: 'Conditional',
+    title: 'Plugins',
+    install: 'Install',
+    packageSpec: 'Package and exact version',
+    dependency: 'Dependency',
+    enabled: 'Enabled in configuration',
+    disabled: 'Disabled in configuration',
+    remove: 'Remove',
+    removeConfirm: 'Remove {name} from future launches?',
+    conflict:
+      'Configuration changed elsewhere. Your draft is preserved; compare with the latest version before reloading.',
+    missingDependency: 'Install DSH and pnpm before managing packages.',
+  },
   plugins: {
     title: '플러그인',
     refresh: '새로고침',
@@ -1542,8 +1604,20 @@ export default {
     realtimeApiKeyPlaceholder: 'sk-…',
     realtimeApiKeyHint: '현재 사용자 프로필(서버 측, STT/TTS 등 모델 설정과 동일)에 저장되므로 브라우저나 기기를 바꿔도 유지됩니다. 회의 모드 ASR 및 실시간 음성 대화의 기본 키로 사용됩니다.',
     realtimeModelLabel: '실시간 모델',
-    realtimeModelPlaceholder: 'qwen3.5-omni-flash-realtime',
+    realtimeModelPlaceholder: 'qwen3.8-omni-flash-realtime',
     realtimeVoiceLabel: '기본 음성',
+    realtimeAsrProviderHint: '회의 모드 음성 인식에 사용할 공급자를 선택하세요. DashScope(기본)는 Paraformer/Fun-ASR, MiniMax는 MiniMax Speech-to-Text REST API를 사용합니다.',
+    realtimeAsrProviderLabel: 'ASR 공급자',
+    realtimeAsrSectionTitle: '회의 모드 ASR',
+    realtimeMinimaxApiKey: 'MiniMax API 키',
+    realtimeMinimaxApiKeyHint: '현재 사용자 프로필(서버)에 저장됩니다. platform.minimax.cn → 인터페이스 키에서 발급하세요. ASR 공급자가 MiniMax일 때만 사용됩니다.',
+    realtimeMinimaxApiKeyPlaceholder: 'MiniMax API 키 입력',
+    realtimeMinimaxBaseUrlHint: '기본값은 https://api.minimaxi.com(중국). 국제판은 https://api.minimax.io 를 사용하세요.',
+    realtimeMinimaxBaseUrlLabel: 'MiniMax API 엔드포인트',
+    realtimeMinimaxBaseUrlPlaceholder: 'https://api.minimaxi.com',
+    realtimeMinimaxModelHint: '공식 ASR 문서는 현재 asr-1.0만 노출합니다. speech-01은 향후 모델 전환을 위한 별칭입니다.',
+    realtimeMinimaxModelLabel: 'MiniMax 인식 모델',
+    realtimeMinimaxModelPlaceholder: 'asr-1.0',
     realtimeSaved: 'Realtime 모델 설정이 저장되었습니다',
     realtimeSaveFailed: 'Realtime 모델 설정 저장에 실패했습니다',
     fallbackTitle: '폴백',
@@ -2107,6 +2181,7 @@ export default {
       corsHint: '허용된 교차 출처',
     },
     voice: {
+      qwenSharedKey: "Reuse the saved Qwen API key from this profile’s Realtime model settings, or enter a separate key.",
       activeTtsApi: '활성 TTS API',
       activeSttApi: '활성 STT API',
       ttsProvidersTitle: 'TTS 제공자',

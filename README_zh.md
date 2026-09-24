@@ -21,6 +21,7 @@
 | 本地控制台 | 在一个仪表盘中管理 Profile、Provider、模型、凭证、记忆、技能、插件、日志和运行时设置。 |
 | 自动化 | 围绕同一套 Hermes Profile 配置平台渠道、Cron 任务、Kanban 任务、群聊房间和 MCP Server。 |
 | 工作区工具 | 提供文件浏览器、Web 终端、语音输入输出、Coding Agent、设备发现和性能视图。 |
+| 会议插件 | 内置跑团助手（角色卡、高光、编年史、长篇小说流水线、古籍阅读页）和摄像头文档扫描插件，均在会议模式中加载。 |
 | 分发形态 | 支持 Windows/macOS/Linux 桌面应用、npm CLI 包和 Docker 镜像。 |
 
 ## 功能特性
@@ -227,13 +228,14 @@ Web UI BFF 端点：
 
 | 功能 | 说明 |
 |---|---|
-| 实时语音转写 | 通过 WebSocket 连接 ASR 服务，实时将语音转为文字 |
+| 实时语音转写 | 通过 WebSocket 连接 ASR 服务，实时将语音转为文字；ASR 服务商可切换（默认 DashScope Paraformer / Fun-ASR，可选 MiniMax `asr-1.0` REST 流式识别） |
 | 说话人分离 | 基于阿里云 DashScope Paraformer 模型，自动识别不同说话人 |
-| 说话人重命名 | 点击说话人标签可自定义名称，重命名后自动同步到所有相关句子 |
+| 说话人重命名 | 转写列表里的说话人标签始终可见，hover 时露出编辑图标，点击打开重命名弹窗；新名字会同步应用到该说话人的所有句子，并写入服务端（刷新页面不会回滚） |
 | 说话人数设置 | 支持自动识别或手动指定 2-8 人，提升分离精准度 |
 | 音频录制与回放 | 录制会议音频，支持进度条拖拽、点击句子跳转播放 |
 | AI 分析 | 支持 Hermes Agent 或自定义模型分析，生成摘要、要点、待办事项 |
 | 多格式导出 | 支持下载音频（WebM）、转写文本（TXT）、JSON 结构化数据、HTML 报告 |
+| 整文件转写 | 新建会议对话框的「直接音频转录」标签可直接上传录音开始转写；右栏的「拆分人声」按钮对同一段录音重跑一遍识别并补上说话人标签。引擎：MiniMax `asr-1.0`（支持说话人分离，超过 480s 自动切片）或 Qwen（≤5 分钟，说话人分离需 OSS） |
 
 **说话人分离模式：**
 
@@ -321,6 +323,19 @@ Web UI BFF 端点：
 - **Assistant 内容走 Markdown 渲染。** 把 `<div class="assistant-content">{{ msg.content }}</div>` 替换为异步加载的 `MarkdownRenderer`，分析结果会按 Markdown 渲染（标题、列表、表格、代码块），不再是被转义的纯文本。
 - **报告生成 prompt 加固。** `useMeetingAgent.generateReport` 现在通过 `sendMessage` 的第二个参数下发 pinned `instructions`，带上会议标题，并把已有 `analysisResult` 以及之前 assistant/system 消息以 `### Previous analysis result` / `### Previous conversation` 块的形式拼进 prompt。再点一次 "生成报告" 会基于之前的分析结果增量补全，而不是从头再来；严格的 instructions 同时强制 `write_file + ```html` 契约，与 `extractHtml` 的抽取规则对齐。
 - **HTML 检测放宽。** `looksLikeHtmlDocument` 现在同时接受 `<!DOCTYPE html>` 开头，最小长度阈值从 200 字符降到 100 字符，短的（不含 ECharts 图表的）报告也能被识别为完整 HTML 文档。
+
+**整文件转写与事后说话人分离（2026-02）：**
+
+- **两条批量转写入口**，与实时 WebSocket 路径并列：
+  - **「直接音频转录」** 标签：在创建会议对话框里直接上传音频文件、选引擎、按需开启说话人分离，创建会议后立刻开始转写；录音文件随会议保存，播放 / 下载照常工作。
+  - **「拆分人声」** 按钮：位于右栏头部，有录音时可点击。重传整段录音并回填说话人标签到转写。点击后弹出对话框，先选识别引擎（MiniMax / Qwen）和说话人数；Qwen 引擎还需要在对话框里就地填 OSS 凭据，因为 DashScope 说话人分离文件接口只接受公网可达的音频 URL。
+- **引擎支持。** MiniMax 走 `asr-1.0`，使用 `response_format=verbose_json` + `segments[].speaker`（单次请求 500 s / 50 MB 上限，超过 480 s 自动切片，全局时间戳连续）；Qwen 的说话人分离只能走异步文件接口（`diarization_enabled`），需要 OSS 作为公网音频托管，同步接口则只有 5 分钟时长上限且不支持说话人标签。
+- **后台任务 + 轮询。** 长转写不会一直占住 HTTP 请求。客户端调 `POST /api/meeting-asr/transcribe/file?engine=&diarize=&speakerCount=&language=&sessionId=`（请求体为原始音频），再轮询 `GET /api/meeting-asr/transcribe/status/:jobId` 拿到 `{ status, progress, result | error }`。任务错误会带上失败调用点（例如 `[file_transcribe.py:283]`），反馈直接指向代码位置。
+- **陈旧后端自愈。** uvicorn 子进程在 spawn 时一次性导入 Python 模块，所以重新打包 `dist/` 只更新了客户端，运行时后端仍停留在旧代码。`MeetingASRService` 现在在 spawn 时给 `python-backend/**/*.py` 算内容哈希，作为 `MEETING_ASR_CODE_HASH` 传给子进程；下次 `start()` 若磁盘上的哈希变了就 respawn。`/healthz` 会暴露 `transcribe` 能力标记（`MeetingView.vue` 里的 `TRANSCRIBE_CAPABILITY` 与之对应）；两条整文件入口都会调用 `ensureTranscribeBackend()`，发现报告的 `code_hash` 对不上就先把服务停掉，再强制 spawn 新进程。
+- **容器解码。** 上传的容器（webm/mp3/wav/m4a/…）先用 `ffmpeg`（设备 / Docker 依赖里已声明）解码为 16 kHz 单声道 Int16 PCM，再送进引擎。
+- **热配置同步。** `MeetingASRService.updateConfig()` 同时转发 DashScope *和* MiniMax 字段，所以一次会话里切换引擎不需要重启服务。运行中下发的设置落到 `config.yaml`，`asr_minimax.py` 在下一次请求时直接拿到新的 key / endpoint。
+
+完整契约（引擎选择、OSS 桶字段、错误结构、重试策略）见 [`MEETING_MODE_README.md`](./MEETING_MODE_README.md#7-整文件转写与事后说话人分离-2026-02)。
 
 ### 口语对练 / 口语教练（v0.8.0）
 
@@ -533,6 +548,33 @@ Hermes profile 的工作区。
 - 端到端测试（`scanner-precision.spec.ts`）覆盖实时预览：选框进入 `held`
   后仍保留、拖动期间冻结、松手后跟随摄像头移动，以及 13" 笔记本与移动端
   两种视口。
+
+### 会议跑团插件（Meeting TRPG Plugin）
+
+桌游 / TRPG 跑团辅助，嵌入在会议模式里：创建会议时选择 **TRPG** 场景，
+右栏就会加载一个独立、懒加载的跑团工作台（角色卡、高光、编年史、长篇
+小说工作台、骰子、配图等），与文档扫描插件互不耦合。
+
+**能力一览：**
+
+| 能力 | 说明 |
+|---|---|
+| 角色卡 | 按 D&D 5E 的身份 / 六项属性 / 战斗 / 技能 / 背景 / 法术分组，可折叠。玩家（说话人）与角色名分开，输出名统一为【角色名】。 |
+| 角色草稿（PDF / 图片） | AI 抄写员先通过本地打包的 `pdfjs-dist` 提取 PDF 文本与坐标，再交给当前 Hermes profile 的模型填卡；扫描件仍需 OCR。草稿兼容 Markdown JSON、外围说明、嵌套 `character/data/sheet`、中文字段与属性缩写；Agent 最终答复优先于推理流。 |
+| 高光图库 | 点击时取最近 60 句确认转写（≤ 12000 字符），保留动作证据。**不再按 30 条丢弃**，更早的卡片可通过「展开更早的 N 条高光」和独立 `HighlightWorkbench` 页查看。支持手动上传 PNG/JPEG/WebP（≤ 5 MB）补图 / 换图。 |
+| 编年史 | 三种写作模式（小说化 / 记录体 / 日志体）+ **长篇小说**流水线（目标 1/2/4/6 万中文字符），后台任务、可断点续写、可取消；分章节规划、逐场景写作 + 审核；快照在点击时落盘，每段写作再读回原文。Agent 走新增的 `trpg-recap` skill 和 `hermes_studio_meetings_toolset` MCP，不另造聊天执行器。 |
+| 长篇小说工作台 | 独立的工作台把模型实时输出按步骤类型渲染成 AI 工具调用卡片（修订 / 写作 / 检查 / 事实账本 / 规划…），并展示每个产物的依赖指纹；操作员可以单独「删除」或「删除并重新生成」某一个产物而不必整本重来。提取块 / 事实账本 / 场景初稿是粘性断点，续写只重建真正缺失或变化的部分。 |
+| 实时输出预览 | 「AI 正在输出」面板会解析流式 JSON，把每个进行中的产物（修订 / 全文修订 / 检查 / 事实账本 / 写作 / 规划）渲染成带步骤徽章、正文 prose、可折叠结构化分区的 AI 风格卡片；流式中途 JSON 不完整时回落到 `<pre>` 原文，不隐藏任何中间状态。 |
+| 古籍阅读页 | 独立 Vite 入口（`/recap-book.html?meetingId=...&recapId=...`）渲染已保存的 Markdown：牛皮纸纹理、余烬漂浮、深色皮革封面 + 题签 + 红印、毛笔手写体字体（`Ma Shan Zheng`，OFL，本地 `public/fonts/`）、按真实排版分页、鼠标拖拽 + 键盘翻页、右侧插画栏对应 `images[]`。 |
+| 生成设置 | 一个对话框统一管理：高光转写范围（全部 / 最近 N 句 / 指定段落）、编年史转写范围（同上，默认全部）、编年史配图（已保存编年史 × 封面 / 内容 × 可选章节）。范围以**句子区间** `segments: {from,to}[]` 保存，不依赖段落 id，转写变化不会静默失效。 |
+| ChatGPT 网页生图 | 异步任务 + 轮询流程：`POST /api/hermes/media/chatgpt-web-image?async=true` 立即返回 202 + `job_id`，面板每 3s 轮询 `GET .../jobs/:jobId`，瞬时失败自动重试，任务在服务端保留 1 小时（每 profile 最多 30 个）。 |
+| 存储 | 角色 / 高光 / 图片 / 设置存于独立 IndexedDB，按 server + user + profile + meeting 隔离。编年史快照写入 `getWebUiHome()/meetings/<meetingId>/recaps.json`（原子写、会议级串行队列、同 `requestId` 重试覆盖），Markdown 渲染到同目录 `<recapId>.md`。 |
+
+插件保持「路由薄、服务厚」（控制器只委托到 `services/trpg/`），字段定义
+通过 `packages/shared/trpg-*.ts` 共享，复用现有聊天传输、profile 凭证和
+bridge 会话——不引入新的聊天执行器、不升级 Hermes Agent、不改动录音链路。
+完整契约（存储 key、MCP 工具集、范围语义、古籍阅读页分页模型、验证测试）
+见 [`packages/client/src/plugins/trpg/README.md`](./packages/client/src/plugins/trpg/README.md)。
 
 ### Web 终端
 

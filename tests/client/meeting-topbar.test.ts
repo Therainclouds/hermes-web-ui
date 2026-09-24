@@ -11,7 +11,6 @@ import MeetingTopBar from '@/components/hermes/meeting/MeetingTopBar.vue'
 const baseProps = {
   sidebarExpanded: true,
   showAgentPanel: false,
-  showRealtimeDialog: false,
   useDiarize: false,
   saveMode: false,
   speakerCount: 0,
@@ -54,6 +53,30 @@ describe('MeetingTopBar', () => {
     expect(clearBtn).toBeDefined()
     await clearBtn!.trigger('click')
     expect(wrapper.emitted('clear-transcript')).toBeTruthy()
+  })
+
+  it('emits export-transcript when the export button is clicked', async () => {
+    const wrapper = mount(MeetingTopBar, { props: baseProps })
+    const buttons = wrapper.findAll('button')
+    const exportBtn = buttons.find((b) => b.text().includes('meeting.exportTranscript'))
+    expect(exportBtn).toBeDefined()
+    await exportBtn!.trigger('click')
+    expect(wrapper.emitted('export-transcript')).toBeTruthy()
+  })
+
+  it('disables export button when hasSentences=false', () => {
+    const wrapper = mount(MeetingTopBar, {
+      props: { ...baseProps, hasSentences: false },
+    })
+    const buttons = wrapper.findAll('button')
+    const exportBtn = buttons.find((b) => b.text().includes('meeting.exportTranscript'))
+    expect(exportBtn).toBeDefined()
+    expect((exportBtn!.element as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('no longer renders the realtime dialog toggle in the top bar', () => {
+    const wrapper = mount(MeetingTopBar, { props: baseProps })
+    expect(wrapper.text()).not.toContain('meeting.realtime.tabLabel')
   })
 
   it('disables clear button when hasSentences=false', () => {

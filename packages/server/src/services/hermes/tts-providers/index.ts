@@ -1,3 +1,4 @@
+import { qwenTtsProvider } from './qwen'
 import { edgeTtsProvider } from './edge'
 import { customTtsProvider, deepinfraTtsProvider, openaiTtsProvider } from './openai'
 import { mimoTtsProvider } from './mimo'
@@ -12,6 +13,7 @@ import {
 import type { TtsProvider, TtsProviderId } from './types'
 
 const providers: Record<TtsProviderId, TtsProvider<any>> = {
+  qwen: qwenTtsProvider,
   edge: edgeTtsProvider,
   openai: openaiTtsProvider,
   custom: customTtsProvider,

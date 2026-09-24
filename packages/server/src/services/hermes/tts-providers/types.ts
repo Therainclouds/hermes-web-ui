@@ -10,6 +10,7 @@ export type TtsProviderId =
   | 'mistral'
   | 'minimax'
   | 'deepinfra'
+  | 'qwen'
 
 export interface TtsSynthesisRequest {
   text: string

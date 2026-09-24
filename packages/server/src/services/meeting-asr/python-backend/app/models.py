@@ -11,6 +11,23 @@ class ASRConfig(BaseModel):
     paraformer_format: str = "pcm"
     paraformer_language_hints: str = "zh,en"
     paraformer_semantic_punctuation: bool = True
+    # ------------------------------------------------------------------
+    # MiniMax provider (https://platform.minimax.cn/docs/api-reference/speech-to-text)
+    # ------------------------------------------------------------------
+    # The MiniMax ASR API is REST-only and rejects raw PCM (it needs a
+    # container — wav / mp3 / opus / aac / ogg). The Python layer encodes
+    # 16 kHz mono PCM chunks into a container before each request and posts
+    # them with a Bearer-token Authorization header. See `asr_minimax.py`.
+    minimax_api_key: str = ""
+    minimax_asr_model: str = "asr-1.0"
+    minimax_base_url: str = "https://api.minimaxi.com"
+    minimax_language: str = ""  # empty → API's mixed-language auto mode
+    minimax_audio_format: str = "wav"
+    minimax_sample_rate: int = 16000
+    # 500s is the API hard cap (per request). Smaller values trade latency
+    # for more requests; the Python client splits the recording stream into
+    # rolling windows of this size.
+    minimax_chunk_seconds: float = 12.0
 
 
 class LLMConfig(BaseModel):

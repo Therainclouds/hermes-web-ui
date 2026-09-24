@@ -1336,6 +1336,68 @@ export default {
   },
 
   // プラグイン
+// DeepSeek Harness plugin management — covers management UI strings used by
+  // packages/client/src/components/coding-agents/dsh/*.vue.
+  dshPresets: {
+    sessionMode: 'DSH mode',
+    selectMode: 'Select an Agent preset',
+    sessionHint:
+      'Applies only to this new session. Tools and session plugins follow the selected preset.',
+    title: 'Agent presets',
+    unavailable:
+      'Unable to load DSH Agent presets. Check the DSH installation and refresh.',
+    hint:
+      'Defaults apply to new DSH sessions. Existing sessions keep their original preset.',
+    copy: 'Duplicate',
+    view: 'View',
+    setDefault: 'Set as default',
+    default: 'Default',
+    delete: 'Delete',
+    deleteConfirm: 'Delete preset "{name}" and its directory?',
+    identifier: 'Identifier',
+    name: 'Name',
+    idHint:
+      'Use a unique identifier with lowercase letters, numbers and hyphens.',
+    empty: 'No Agent presets',
+    copyTitle: 'Duplicate preset: {name}',
+    create: 'Create',
+    location: 'Open folder',
+  },
+  dshPlugins: {
+    configurationTab: 'Plugin configuration',
+    listTab: 'Plugin list',
+    webPackages: 'Installed Web plugins',
+    presetEntries: 'Preset plugin entries',
+    packageVersion: 'Version',
+    registeredBundle: 'Registered in Web profile',
+    noWebPackages: 'No additional Web plugins installed',
+    webInstallHint:
+      'Install or update using package@exact-version or github:owner/repo#commit. Changes apply to subsequent DSH turns.',
+    nativeOperationFailed:
+      'The Web plugin operation failed. Reload the list to inspect the current installation.',
+    settingsUnavailable:
+      'Cannot read plugin settings. Check the DSH installation and Web profile, then refresh.',
+    nativeHint:
+      'These are preset plugin entries. Selecting a preset changes only the preview. Status labels describe configuration, not live activation.',
+    nativeFailed:
+      'Unable to read this native preset configuration. Check the DSH installation and source files.',
+    searchPlugins: 'Search plugin ID or module',
+    shipped: 'Shipped preset',
+    userPreset: 'User preset',
+    noEntries: 'No plugin entries',
+    conditional: 'Conditional',
+    title: 'Plugins',
+    install: 'Install',
+    packageSpec: 'Package and exact version',
+    dependency: 'Dependency',
+    enabled: 'Enabled in configuration',
+    disabled: 'Disabled in configuration',
+    remove: 'Remove',
+    removeConfirm: 'Remove {name} from future launches?',
+    conflict:
+      'Configuration changed elsewhere. Your draft is preserved; compare with the latest version before reloading.',
+    missingDependency: 'Install DSH and pnpm before managing packages.',
+  },
   plugins: {
     title: 'プラグイン',
     refresh: '更新',
@@ -1542,8 +1604,20 @@ export default {
     realtimeApiKeyPlaceholder: 'sk-…',
     realtimeApiKeyHint: '現在のユーザープロファイル（サーバー側、STT/TTS 等のモデル設定と同じ）に保存されるため、ブラウザや端末を変えても引き継がれます。会議モードの ASR とリアルタイム音声会話のデフォルトキーとして使われます。',
     realtimeModelLabel: 'リアルタイムモデル',
-    realtimeModelPlaceholder: 'qwen3.5-omni-flash-realtime',
+    realtimeModelPlaceholder: 'qwen3.8-omni-flash-realtime',
     realtimeVoiceLabel: 'デフォルトの音声',
+    realtimeAsrProviderHint: '会議モードの音声認識で使用するプロバイダーを選択します。DashScope（既定）は Paraformer / Fun-ASR、MiniMax は MiniMax Speech-to-Text REST API を使用します。',
+    realtimeAsrProviderLabel: 'ASR プロバイダー',
+    realtimeAsrSectionTitle: '会議モード ASR',
+    realtimeMinimaxApiKey: 'MiniMax API キー',
+    realtimeMinimaxApiKeyHint: '現在のユーザープロファイル（サーバー側）に保存されます。platform.minimax.cn → インターフェースキーで作成できます。ASR プロバイダーが MiniMax の場合のみ使用されます。',
+    realtimeMinimaxApiKeyPlaceholder: 'MiniMax API キーを入力',
+    realtimeMinimaxBaseUrlHint: '既定は https://api.minimaxi.com（中国）。国際版は https://api.minimax.io を使用します。',
+    realtimeMinimaxBaseUrlLabel: 'MiniMax API エンドポイント',
+    realtimeMinimaxBaseUrlPlaceholder: 'https://api.minimaxi.com',
+    realtimeMinimaxModelHint: '公式 ASR ドキュメントでは現在 asr-1.0 のみが公開されています。speech-01 は将来のモデル切替用のエイリアスです。',
+    realtimeMinimaxModelLabel: 'MiniMax 認識モデル',
+    realtimeMinimaxModelPlaceholder: 'asr-1.0',
     realtimeSaved: 'Realtime モデル設定を保存しました',
     realtimeSaveFailed: 'Realtime モデル設定の保存に失敗しました',
     fallbackTitle: 'フォールバック',
@@ -2107,6 +2181,7 @@ export default {
       corsHint: '許可するクロスオリジン',
     },
     voice: {
+      qwenSharedKey: "Reuse the saved Qwen API key from this profile’s Realtime model settings, or enter a separate key.",
       activeTtsApi: '有効な TTS API',
       activeSttApi: '有効な STT API',
       ttsProvidersTitle: 'TTS プロバイダー',
