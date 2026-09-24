@@ -1,20 +1,14 @@
 <script setup lang="ts">
 // 场景模板卡片选择器（新建会议对话框用）
 //
-// 6 个内置场景卡片 + 任意数量的插件贡献场景。插件通过 PluginContext.addSceneTemplate()
-// 注册（sceneTemplateContributions），与核心场景同处一卡片网格，选中态一致。
-// 服务端对未知 sceneTemplate 走通用 prompt 回退（getSceneTemplateOrDefault），
-// 因此插件贡献的场景无需在 server scene-templates 注册。
 // speech（演讲评分）为 Toastmasters 风格场景：计时/赘语/增量评分；medical/legal/interview 目前渲染占位布局，
 // 但在这里都是可选项——用户选了就按该模板新建会议。
 
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { SCENE_IDS, type SceneId } from './scene-templates'
-import { sceneTemplateContributions } from '@/plugins/registry'
 
 const props = defineProps<{
-  // 插件可能贡献任意字符串 id；核心 6 个 id 是 SceneId 子集。
   modelValue: string
 }>()
 
@@ -54,20 +48,14 @@ interface PickerEntry {
   descriptionKey: string
 }
 
-const entries = computed<PickerEntry[]>(() => [
-  ...SCENE_IDS.map(id => ({
+const entries = computed<PickerEntry[]>(() =>
+  SCENE_IDS.map(id => ({
     id,
     icon: CORE_TEMPLATE_ICONS[id],
     labelKey: `meeting.scene.${id}`,
     descriptionKey: `meeting.scene.${id}Desc`,
   })),
-  ...sceneTemplateContributions.map(s => ({
-    id: s.id,
-    icon: s.iconSvg,
-    labelKey: s.labelKey,
-    descriptionKey: s.descriptionKey,
-  })),
-])
+)
 
 function isSelected(id: string): boolean {
   return props.modelValue === id

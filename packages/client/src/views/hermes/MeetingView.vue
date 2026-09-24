@@ -15,6 +15,7 @@ import { normalizeSceneId } from '@/components/hermes/meeting/scene-templates'
 import MeetingTopBar from '@/components/hermes/meeting/MeetingTopBar.vue'
 import MeetingRightPanel from '@/components/hermes/meeting/MeetingRightPanel.vue'
 import TranscriptList from '@/components/hermes/meeting/TranscriptList.vue'
+import type { SceneId } from '@/components/hermes/meeting/scene-templates'
 import { useMeetingStore } from '@/stores/hermes/meeting'
 import type { MeetingSession, TranscriptSentence, AgentConfig, SpeechEvalState } from '@/stores/hermes/meeting'
 import { useModelsStore } from '@/stores/hermes/models'
@@ -62,7 +63,7 @@ const newMeetingAnalysisMode = ref<'hermes' | 'custom'>('hermes')
 const newMeetingHermesProfile = ref('')
 const newMeetingCustomProvider = ref('')
 const newMeetingCustomModel = ref('')
-const newMeetingSceneTemplate = ref<string>('general')
+const newMeetingSceneTemplate = ref<SceneId>('general')
 
 // --- Agent 配置 ---
 const newMeetingAgentType = ref<'hermes' | 'claude-code' | 'codex'>('hermes')

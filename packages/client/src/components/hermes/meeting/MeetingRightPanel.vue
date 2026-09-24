@@ -1,21 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { meetingPanels } from '@/plugins/registry'
-import { useMeetingStore } from '@/stores/hermes/meeting'
-const meetingStore = useMeetingStore()
-
-/**
- * 场景 → 插件自动绑定：当活跃会议的 sceneTemplate 等于某个已注册插件的 id 时，
- * 右栏直接渲染该插件面板（例如 scene='trpg' + 插件已启用 → 直接显示跑团面板，
- * 不再经过下拉框选择）。其他场景统一走 standard analysis / agent / realtime 分发。
- * 插件被运行时禁用（localStorage 关掉）时不入选 meetingPanels，自动回退到
- * 通用分发；面板不提供手动切换入口。
- */
-const pluginPanel = computed(() => {
-  const sceneTemplate = meetingStore.activeSession?.sceneTemplate
-  return sceneTemplate ? meetingPanels.find(p => p.id === sceneTemplate) : undefined
-})
 
 /**
  * Right panel shell for the meeting view. Owns the outer chrome (aside,
@@ -25,7 +10,6 @@ const pluginPanel = computed(() => {
  *   #analysis  - rendered when !showAgentPanel && !isSpeechScene
  *   #agent     - rendered when showAgentPanel (Agent realtime assist)
  *   #speech    - rendered when isSpeechScene (SpeechEvaluationPanel)
- *   (a registered plugin panel for the active sceneTemplate takes priority)
  *
  * The header actions are always available: 下载音频 (post-recording export)
  * and 拆分人声 (send the whole recording to the ASR again, with speaker
@@ -81,7 +65,7 @@ const panelTitle = computed(() => {
   <aside
     v-if="props.visible"
     class="right-panel"
-    :style="pluginPanel?.preferredWidth ? { ...props.resizeStyle, width: pluginPanel.preferredWidth } : props.resizeStyle"
+    :style="props.resizeStyle"
   >
     <div
       class="right-panel-resize-handle"
@@ -89,7 +73,7 @@ const panelTitle = computed(() => {
     />
     <div class="right-panel-inner">
       <div class="right-panel-header">
-        <h2>{{ pluginPanel ? t(pluginPanel.labelKey) : panelTitle }}</h2>
+        <h2>{{ panelTitle }}</h2>
         <div class="right-panel-actions">
           <!-- 下载音频：录音完成后导出整段音频（原实时对话入口位置） -->
           <button
@@ -136,15 +120,12 @@ const panelTitle = computed(() => {
       </div>
 
       <!-- 分析工具栏：仅在 analysis 模式下显示（parent passes the wired buttons） -->
-      <div v-if="!pluginPanel && !props.showAgentPanel && !props.isSpeechScene" class="right-panel-toolbar">
+      <div v-if="!props.showAgentPanel && !props.isSpeechScene" class="right-panel-toolbar">
         <slot name="toolbar" />
       </div>
 
-      <!-- 内容分发：plugin > speech > agent > analysis -->
-      <component v-if="pluginPanel && meetingStore.activeSession" :is="pluginPanel.component"
-        :key="pluginPanel.id + meetingStore.activeSession.id" :session-id="meetingStore.activeSession.id"
-        :sentences="meetingStore.activeSession.sentences" />
-      <template v-else-if="props.isSpeechScene">
+      <!-- 内容分发：speech > agent > analysis -->
+      <template v-if="props.isSpeechScene">
         <slot name="speech" />
       </template>
       <template v-else-if="props.isLegalScene">

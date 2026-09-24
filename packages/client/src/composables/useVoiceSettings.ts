@@ -14,6 +14,7 @@ export type TtsProvider =
   | 'mistral'
   | 'minimax'
   | 'deepinfra'
+  | 'qwen'
 export type MimoAuthMode = 'api-key' | 'bearer' | 'both'
 
 export interface VoiceSettingsData {

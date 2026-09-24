@@ -123,8 +123,6 @@ const SERVER_TOKEN_EXACT_PATHS = new Set([
   '/api/hermes/media/apikey-image-generate',
   '/api/hermes/media/grok-image-to-video',
   '/api/hermes/media/minimax-image-to-video',
-  '/api/hermes/media/chatgpt-web-image',
-  '/api/hermes/media/chatgpt-web-status',
 ])
 
 function allowsServerTokenPath(path: string): boolean {
