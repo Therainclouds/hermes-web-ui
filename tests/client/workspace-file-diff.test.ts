@@ -24,8 +24,8 @@ vi.mock('naive-ui', () => ({
   useMessage: () => ({ success: vi.fn(), error: vi.fn() }),
 }))
 
-vi.mock('@/api/studio/sessions', async importOriginal => {
-  const actual = await importOriginal<typeof import('@/api/studio/sessions')>()
+vi.mock('@/api/hermes/sessions', async importOriginal => {
+  const actual = await importOriginal<typeof import('@/api/hermes/sessions')>()
   return {
     ...actual,
     fetchSessionWorkspaceFileDiff: workspaceMocks.fetchSessionWorkspaceFileDiff,
