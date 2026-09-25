@@ -9,7 +9,11 @@ import { getHermesAgentVersion, getHermesWebUiVersion } from './system-info'
 
 const ACTIVE_VERSION_FILE = 'active-version.json'
 const DEFAULT_REMOTE_MANIFEST_URL = 'https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui/versions.json'
-const FALLBACK_REMOTE_MANIFEST_URL = 'https://hermes-studio.ai/versions.json'
+// Optional secondary manifest source. Disabled by default: the primary
+// manifest already lives on our own OSS bucket, so there is no second origin
+// to fall back to, and retrying the same URL only delays the error. Set
+// HERMES_WEB_UI_VERSION_MANIFEST_FALLBACK_URL to enable a real standby.
+const FALLBACK_REMOTE_MANIFEST_URL = process.env.HERMES_WEB_UI_VERSION_MANIFEST_FALLBACK_URL?.trim() || ''
 const DEFAULT_DOWNLOAD_BASE_URL = 'https://tangledup-ai-staging.oss-cn-shanghai.aliyuncs.com/quanthermes_pj/quanthermes_web_ui'
 const DEFAULT_GITHUB_REPO = 'tangledup-ai/hermes-web-ui'
 
@@ -366,7 +370,7 @@ async function fetchRemoteVersions(): Promise<{ manifest: StudioVersionManifest 
   try {
     return { manifest: await fetchVersionManifest(primaryUrl), error: '' }
   } catch (primaryError) {
-    if (primaryUrl === FALLBACK_REMOTE_MANIFEST_URL) {
+    if (!FALLBACK_REMOTE_MANIFEST_URL || primaryUrl === FALLBACK_REMOTE_MANIFEST_URL) {
       return { manifest: null, error: primaryError instanceof Error ? primaryError.message : String(primaryError) }
     }
     try {

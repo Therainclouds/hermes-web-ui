@@ -247,8 +247,10 @@ const updateManifestBaseUrls = parseUrlList(process.env.WEBUI_UPDATE_MANIFEST_BA
 const remoteRelay = {
   url: normalizeUrl(process.env.HERMES_REMOTE_RELAY_URL || process.env.REMOTE_RELAY_URL || ''),
 }
+// Cloud App relay is not offered by default. Point HERMES_APP_RELAY_URL at an
+// operator-owned relay to enable it; LAN connections never read this value.
 const appRelay = {
-  url: process.env.HERMES_APP_RELAY_URL?.trim() || 'https://api.hermes-studio.ai',
+  url: process.env.HERMES_APP_RELAY_URL?.trim() || '',
   entitlementRequired: isAppEntitlementRequired(),
 }
 

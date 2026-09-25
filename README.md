@@ -656,13 +656,13 @@ Open **http://localhost:8648**
 Automatically installs Node.js (if missing) and hermes-web-ui on Debian/Ubuntu/macOS:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/EKKOLearnAI/hermes-web-ui/main/scripts/setup.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/tangledup-ai/hermes-web-ui/main/scripts/setup.sh)
 ```
 
 ### WSL
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/EKKOLearnAI/hermes-web-ui/main/scripts/setup.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/tangledup-ai/hermes-web-ui/main/scripts/setup.sh)
 hermes-web-ui start
 ```
 
