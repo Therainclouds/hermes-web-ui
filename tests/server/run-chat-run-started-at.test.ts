@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+// Importing the run-chat module graph costs ~5s on cold transform, which sits
+// right on the default 5s timeout and flakes under parallel runs.
+vi.setConfig({ testTimeout: 20_000 })
+
 const handleBridgeRunMock = vi.hoisted(() => vi.fn(async () => {}))
 const resumeBridgeRunMock = vi.hoisted(() => vi.fn(async () => {}))
 const handleCodingAgentRunMock = vi.hoisted(() => vi.fn(async () => {}))
