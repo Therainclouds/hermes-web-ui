@@ -581,6 +581,12 @@ async function handleSessionClick(sessionId: string) {
   if (mobileQuery?.matches) showSessions.value = false;
 }
 
+async function handleRecentSessionClick(sessionId: string) {
+  // Recent is a shortcut; selecting it must not overwrite the real category's saved collapse state.
+  categoryRevealSuppressedSessionId.value = sessionId;
+  await handleSessionClick(sessionId);
+}
+
 function handleMobileChange(e: MediaQueryListEvent | MediaQueryList) {
   isMobile.value = e.matches;
   if (e.matches && showSessions.value) {
@@ -775,6 +781,7 @@ function loadCollapsedCategories(): Set<string> {
 }
 
 const collapsedCategories = ref<Set<string>>(loadCollapsedCategories());
+const categoryRevealSuppressedSessionId = ref<string | null>(null);
 
 function persistCollapsedCategories() {
   localStorage.setItem(
@@ -879,6 +886,8 @@ watch(
   () => {
     if (!sessionCategoriesLoaded.value || categorizedSessions.value.length === 0) return;
     const activeSession = chatStore.sessions.find((session) => session.id === chatStore.activeSessionId);
+    if (categoryRevealSuppressedSessionId.value === activeSession?.id) return;
+    categoryRevealSuppressedSessionId.value = null;
     const activeKey = activeSession?.categoryId == null
       ? "category-none"
       : `category-${activeSession.categoryId}`;
@@ -2526,7 +2535,7 @@ async function handleSessionModelCustomSubmit() {
               :category-label="recentCategoryLabel(s)"
               :to="sessionHref(s.id)"
               :intercept-modified-navigation="desktopChatWindowAvailable"
-              @select="handleSessionClick(s.id)"
+              @select="handleRecentSessionClick(s.id)"
               @open-new="openSessionInNewTab(s.id)"
               @contextmenu="handleContextMenu($event, s.id)"
               @delete="handleDeleteSession(s.id)"

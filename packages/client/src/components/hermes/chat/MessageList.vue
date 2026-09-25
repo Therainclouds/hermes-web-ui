@@ -19,6 +19,7 @@ import LiveReasoningStatus from "./LiveReasoningStatus.vue";
 import ToolRunCard from "./ToolRunCard.vue";
 import MessageQueueFloatPanel from "./MessageQueueFloatPanel.vue";
 import { LIVE_CHAT_MAX_LOADED_MESSAGES, parseMessageReference, useChatStore, type Message } from "@/stores/hermes/chat";
+import { useProfilesStore } from "@/stores/hermes/profiles";
 import { useToolTraceVisibility } from "@/composables/useToolTraceVisibility";
 import { openSubagentStream, subagentIdFromToolCall } from "@/utils/hermes/subagent-stream";
 import { messageScrollPositionKey, rememberMessageScrollPosition } from "./message-scroll-position";
@@ -35,6 +36,7 @@ const props = withDefaults(defineProps<{
 })
 
 const chatStore = useChatStore();
+const profilesStore = useProfilesStore();
 const { t } = useI18n();
 const { toolTraceVisible } = useToolTraceVisibility();
 const listRef = ref<InstanceType<typeof VirtualMessageList> | null>(null);
@@ -172,6 +174,16 @@ const liveReasoningDetail = computed<{
 });
 
 const assistantAgent = computed(() => chatSessionAgentAvatar(chatStore.activeSession));
+const activeSessionProfileName = computed(() => (
+  chatStore.activeSession?.profile || profilesStore.activeProfileName || "default"
+));
+const activeSessionProfile = computed(() => (
+  profilesStore.profiles.find(profile => profile.name === activeSessionProfileName.value) || null
+));
+const userProfileName = computed(() => (
+  activeSessionProfile.value?.alias?.trim() || activeSessionProfileName.value
+));
+const userProfileAvatar = computed(() => activeSessionProfile.value?.avatar || null);
 
 const emptyState = computed(() => {
   const agent = assistantAgent.value;
@@ -538,18 +550,30 @@ watch(
 );
 
 watch(
-  isRunIndicatorActive,
-  (visible) => {
+  // Switching between two sessions that are both already working leaves
+  // isRunIndicatorActive true, so the session and its reported start have to be
+  // watched too or the timer keeps the previous session's origin.
+  () => [
+    isRunIndicatorActive.value,
+    chatStore.activeSessionId,
+    chatStore.activeSessionId ? chatStore.runStartedAt.get(chatStore.activeSessionId) || 0 : 0,
+  ] as const,
+  ([visible]) => {
     stopThinkingTimer();
     if (!visible) {
       thinkingStartedAt = 0;
       thinkingElapsedMs.value = 0;
       return;
     }
-    thinkingStartedAt = Date.now();
-    thinkingElapsedMs.value = 0;
+    // Prefer when the run actually began. Opening the page mid-run used to
+    // start this clock at zero, so the same run read differently on two
+    // devices and restarted every time you navigated away and back.
+    const sid = chatStore.activeSessionId;
+    const reportedStart = sid ? chatStore.runStartedAt.get(sid) || 0 : 0;
+    thinkingStartedAt = reportedStart > 0 ? reportedStart : Date.now();
+    thinkingElapsedMs.value = Math.max(0, Date.now() - thinkingStartedAt);
     thinkingTimer = setInterval(() => {
-      thinkingElapsedMs.value = Date.now() - thinkingStartedAt;
+      thinkingElapsedMs.value = Math.max(0, Date.now() - thinkingStartedAt);
     }, 1000);
   },
   { immediate: true },
@@ -669,6 +693,8 @@ defineExpose({
           v-else
           :message="msg"
           :assistant-agent="assistantAgent"
+          :user-profile-name="userProfileName"
+          :user-profile-avatar="userProfileAvatar"
           :highlight="chatStore.focusMessageId === msg.id"
           :show-fork-action="canForkActiveSession && msg.id === lastForkActionMessageId"
         />
