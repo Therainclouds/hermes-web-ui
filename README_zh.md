@@ -801,9 +801,9 @@ BFF 层负责：Socket.IO 聊天流式推送、Hermes agent bridge、按 Profile
 
 ## Star 历史
 
-[![Star 历史图表](https://api.star-history.com/svg?repos=EKKOLearnAI/hermes-studio&type=Date)](https://star-history.com/#EKKOLearnAI/hermes-studio&Date)
+[![Star 历史图表](https://api.star-history.com/svg?repos=tangledup-ai/hermes-web-ui&type=Date)](https://star-history.com/#tangledup-ai/hermes-web-ui&Date)
 
-<!-- 如上方图表未加载，可访问 https://star-history.com/#EKKOLearnAI/hermes-studio -->
+<!-- 如上方图表未加载，可访问 https://star-history.com/#tangledup-ai/hermes-web-ui -->
 
 ## 许可证
 

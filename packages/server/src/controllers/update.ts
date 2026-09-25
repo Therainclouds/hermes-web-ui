@@ -1781,9 +1781,14 @@ export async function handleUpdate(ctx: any) {
       let detectionSource: 'manifest' | 'npm-registry' = 'npm-registry'
       if (hasConfiguredManifestCheck(config.update)) {
         try {
-          sourceManifest = await fetchSourcePackageManifest(config.update)
-          assertSourcePackageCompatibility(sourceManifest, getLocalWebUiVersion())
-          version = sourceManifest.version
+          // Assign only after every gate passes. Assigning before the
+          // compatibility check leaves sourceManifest non-null when the check
+          // throws, which makes the `!sourceManifest` fallback below
+          // unreachable and starts the update with an empty target version.
+          const manifest = await fetchSourcePackageManifest(config.update)
+          assertSourcePackageCompatibility(manifest, getLocalWebUiVersion())
+          sourceManifest = manifest
+          version = manifest.version
           detectionSource = 'manifest'
         } catch (err) {
           console.warn('[update] source-deploy manifest lookup failed, falling back to npm registry:', err instanceof Error ? err.message : String(err))

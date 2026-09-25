@@ -24,7 +24,9 @@ describe('App Relay route configuration', () => {
     )
 
     expect(await getAppRelayRoute()).toBe('official')
-    expect(appRelayUrlForRoute('official')).toBe('https://api.hermes-studio.ai')
+    // Cloud relay is opt-in. No upstream relay URL is baked into the build;
+    // operators must set HERMES_APP_RELAY_URL to enable it.
+    expect(appRelayUrlForRoute('official')).toBe('')
   })
 
   it('persists and maps the Cloudflare route', async () => {
@@ -34,6 +36,6 @@ describe('App Relay route configuration', () => {
 
     await setAppRelayRoute('cloudflare')
     expect(writeAppConfig).toHaveBeenCalledWith({ appRelayRoute: 'cloudflare' })
-    expect(appRelayUrlForRoute('cloudflare')).toBe('https://cn.hermes-studio.ai')
+    expect(appRelayUrlForRoute('cloudflare')).toBe('')
   })
 })
