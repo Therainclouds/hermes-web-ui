@@ -3700,6 +3700,8 @@ export default {
   files: {
     title: 'Files',
     fileTree: 'File Tree',
+    collapseTree: 'Collapse file tree',
+    expandTree: 'Expand file tree',
     tree: 'Directory Tree',
     list: 'File List',
     breadcrumbRoot: 'Home',

@@ -3202,6 +3202,8 @@ export default {
   files: {
     title: 'Файлы',
     fileTree: 'Древо файлов',
+    collapseTree: 'Свернуть дерево файлов',
+    expandTree: 'Развернуть дерево файлов',
     tree: 'Древо каталогов',
     list: 'Список файлов',
     breadcrumbRoot: 'Корневая директория',
