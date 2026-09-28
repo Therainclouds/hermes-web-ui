@@ -22,6 +22,7 @@
 | 自动化 | 围绕同一套 Hermes Profile 配置平台渠道、Cron 任务、Kanban 任务、群聊房间和 MCP Server。 |
 | 工作区工具 | 提供文件浏览器、Web 终端、语音输入输出、Coding Agent、设备发现和性能视图。 |
 | 会议插件 | 内置跑团助手（角色卡、高光、编年史、长篇小说流水线、古籍阅读页）和摄像头文档扫描插件，均在会议模式中加载。 |
+| 语音设备 | 通过本地网关把离线 XiaoZhi（小智）AI 音箱桥接到 Hermes Agent —— STT → Agent → TTS，凭证与当前 profile 共享。 |
 | 分发形态 | 支持 Windows/macOS/Linux 桌面应用、npm CLI 包和 Docker 镜像。 |
 
 ## 功能特性
@@ -219,6 +220,42 @@ Web UI BFF 端点：
 - 当 Assistant 音频正在播放时，开始新的语音输入会先停止播放。这个 barge-in 只打断音频，不会隐式取消正在运行的 Agent；停止 run 仍然需要显式操作。
 - 支持的设置项、安全边界和当前非目标范围见 [`docs/voice-dialogue.md`](./docs/voice-dialogue.md)。
 - 限制：浏览器/服务端中断后，外部 TTS Provider 仍可能继续处理请求；自定义 / OpenAI 兼容 / MiMo base URL 必须是公网 `http`/`https` 端点，不能指向 localhost 或私网。
+
+### 小智语音网关
+
+把离线的 [XiaoZhi（小智）](https://github.com/78/xiaozhi-esp32) AI 音箱接入 Hermes Agent，全程不上云。Studio 的 `/global-agent` 路由从本地伴生网关接收 Opus 音频，走当前 profile 配置的 STT → 触发 Agent → 把 TTS 音频流式回传到设备，全部在局域网内完成。
+
+|| 能力 | 说明 |
+| --- | --- |
+| OTA 配网 | 公开的 `GET/POST /api/xiaozhi/ota/<setupCode>` 端点在 timing-safe 校验 setup code 后返回 WebSocket 地址 + device token，绝不泄露 Studio 凭据或固件。 |
+| 状态查询 | 仅 super admin 的 `GET /api/xiaozhi/status` 报告网关可达性、当前会话数和 OTA 地址。 |
+| 局域网地址自适应 | `selectXiaozhiLanAddress` 每次请求都把 WebSocket URL 重写为宿主机的当前局域网地址，换 Wi-Fi 不用改设备配置。 |
+| 凭证复用 | Qwen ASR / Qwen TTS 直接使用当前 profile 已保存的 DashScope Key，无需重复填。 |
+| Devices 页组件 | `XiaozhiConnection.vue` 显示设备 ID、网关健康度、STT/TTS provider 和一键复制 OTA 地址，10 s 自动刷新。 |
+
+**配置。** 在 `<getWebUiHome()>/devices/xiaozhi.json` 放一个 `mode-0600` 的 JSON：
+
+```json
+{
+  "deviceId": "08:3A:8D:xx:xx:xx",
+  "setupCode": "<≥24 位随机字符串>",
+  "websocketUrl": "ws://xiaozhi-ekko-gateway.local:8765/xiaozhi",
+  "deviceToken": "<共享密钥>"
+}
+```
+
+Studio 会在响应前校验 `deviceId`、`setupCode`（≥ 24 位，timing-safe 比较）、`websocketUrl`（`ws:`/`wss:`，不嵌凭据）和 `deviceToken`（≥ 24 位）。伴生网关（端口 `8765`）独立发布，systemd 单元、网关探针与踩坑见 [`docs/harness/xiaozhi-integration.md`](./docs/harness/xiaozhi-integration.md)。
+
+**运维要点。**
+
+- 设备下发 `mcu.session.clear`（例如双击 BOOT）会 bump 一代会话，**下一轮作为新 Hermes 会话**而不是把现有会话清空。
+- MCU 的 `playbackDone` 拒绝不再污染后续片段 —— 之前只要有一段丢失就会用 `tts-failed` 把整段回答截断。
+- 语音分段阈值改为 `firstSegmentMinChars=3` + `maxChars=120`，段间停顿从 0.4–1.9 s 降到几乎不可感知。
+- 客户端断开时会同步清掉进行中的 MCU 语音流，下一轮不会让设备卡在 `listening`。
+- 嗯 / 哦 / 那个 等口头禅在进入 Agent 前直接丢弃，省一次 LLM + TTS 来回。
+- Qwen TTS 返回的 OSS HTTP 音频地址会被改写成 HTTPS，但不会把 API Key 一起带上。
+
+覆盖测试：`tests/server/loopback-url.test.ts`、`tests/server/mcu-model-selection.test.ts`、`tests/server/mcu-speech-segmenter.test.ts`、`tests/server/mcu-filler-transcript.test.ts`、`tests/server/xiaozhi-lan-address.test.ts`、`tests/server/global-agent-server.test.ts`。
 
 ### 会议模式
 

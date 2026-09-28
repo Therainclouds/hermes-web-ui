@@ -25,6 +25,7 @@
 | Automation | Configures platform channels, cron jobs, Kanban tasks, group-chat rooms, and MCP servers around the same Hermes profiles. |
 | Workspace tools | Provides a file browser, web terminal, voice input/output, coding-agent runners, device discovery, and performance views. |
 | Meeting plugins | Ships a tabletop-RPG companion (character sheets, highlights, recap book, long-form novel pipeline, ancient-book reader) and a camera-driven document scanner — both live inside Meeting Mode. |
+| Voice devices | Bridges an offline XiaoZhi (小智) AI speaker to Hermes Agent over a local gateway — STT → Agent → TTS with profile-shared credentials. |
 | Distribution | Ships as a desktop app for Windows/macOS/Linux, an npm CLI package, and a Docker image. |
 
 ## Features
@@ -222,6 +223,42 @@ Unbind from the UI: **Settings → Device Binding → Unbind**, or call `DELETE 
 - Starting a new voice turn while assistant audio is playing stops playback first. This barge-in boundary does not implicitly cancel an active agent run; stopping a run remains an explicit action.
 - For supported settings, security notes, and current non-goals, see [`docs/voice-dialogue.md`](./docs/voice-dialogue.md).
 - Limitation: external TTS providers may continue processing a request after the browser/server aborts; custom/OpenAI-compatible and MiMo base URLs must be public `http`/`https` endpoints and cannot target localhost/private networks.
+
+### XiaoZhi Voice Gateway
+
+Connect an offline [XiaoZhi](https://github.com/78/xiaozhi-esp32) (小智) AI speaker box to Hermes Agent without touching the cloud. The Studio `/global-agent` route receives Opus audio from a local companion gateway, runs it through the active profile's STT provider, fires the configured Agent, and streams TTS audio back to the device — all over LAN.
+
+|| Capability | What it does |
+| --- | --- |
+| OTA provisioning | Public `GET/POST /api/xiaozhi/ota/<setupCode>` returns the WebSocket endpoint + device token after verifying a timing-safe setup code; never exposes Studio credentials or firmware. |
+| Status probe | Admin-only `GET /api/xiaozhi/status` reports gateway reachability, active sessions, and the current OTA URL. |
+| LAN-aware URL | `selectXiaozhiLanAddress` rewrites the WebSocket URL to the host's current LAN address on every request, so a Wi-Fi change does not require editing the device config. |
+| Profile-shared credentials | Qwen ASR / Qwen TTS reuse the active profile's DashScope key — no separate key entry. |
+| Devices page widget | `XiaozhiConnection.vue` shows device id, gateway health, STT/TTS provider, and a one-click copy of the OTA URL. Refreshes every 10 s. |
+
+**Configuration.** Drop a `mode-0600` JSON at `<getWebUiHome()>/devices/xiaozhi.json`:
+
+```json
+{
+  "deviceId": "08:3A:8D:xx:xx:xx",
+  "setupCode": "<at-least-24-random-chars>",
+  "websocketUrl": "ws://xiaozhi-ekko-gateway.local:8765/xiaozhi",
+  "deviceToken": "<shared-secret>"
+}
+```
+
+The studio validates `deviceId`, `setupCode` (≥ 24 chars, timing-safe compare), `websocketUrl` (`ws:`/`wss:`, no embedded credentials), and `deviceToken` (≥ 24 chars) before responding. The companion gateway (port `8765`) ships separately — see [`docs/harness/xiaozhi-integration.md`](./docs/harness/xiaozhi-integration.md) for systemd unit layout, gateway probe, and integration pitfalls.
+
+**Operational notes.**
+
+- A `mcu.session.clear` from the device (e.g. double-tap BOOT) bumps the conversation generation, so the next turn starts a **new** Hermes session instead of replacing one in place.
+- MCU `playbackDone` rejections no longer poison later segments — a single dropped segment used to truncate the entire reply with the `tts-failed` prompt.
+- Voice segment boundaries stream with `firstSegmentMinChars=3` + `maxChars=120`, eliminating the 0.4–1.9 s inter-segment gap.
+- On disconnect the client now drops the in-flight MCU voice stream, so the next turn does not strand the device in `listening`.
+- Back-channel noises (嗯 / 哦 / 那个 / ...) are dropped before the agent turn, saving an LLM + TTS round trip on coughs and filler.
+- Qwen TTS HTTP OSS audio URLs are rewritten to HTTPS without forwarding the API key.
+
+Coverage: `tests/server/loopback-url.test.ts`, `tests/server/mcu-model-selection.test.ts`, `tests/server/mcu-speech-segmenter.test.ts`, `tests/server/mcu-filler-transcript.test.ts`, `tests/server/xiaozhi-lan-address.test.ts`, `tests/server/global-agent-server.test.ts`.
 
 ### Meeting Mode
 
