@@ -977,7 +977,10 @@ export default {
     uncategorized: '미분류',
     categoryPlaceholder: '카테고리 선택 또는 만들기',
     categoryCreateHint: '이름을 입력하고 Enter 키를 눌러 만드세요.',
+    createCategory: '새 카테고리 만들기',
     categoryCreated: '카테고리 "{name}" 생성됨',
+    categoryCreatedAndMoved: '카테고리 "{name}"을(를) 만들고 세션을 이동했습니다',
+    categoryCreatedMoveFailed: '카테고리 "{name}"은(는) 생성되었지만 세션을 이동하지 못했습니다. 다시 시도하세요.',
     categoryCreateFailed: '카테고리를 만들지 못했습니다',
     categoryLoadFailed: '카테고리를 불러오지 못했습니다',
     moveToCategory: '카테고리로 이동',
@@ -3309,6 +3312,7 @@ export default {
   },
 
   files: {
+    collapseTree: '파일 트리 접기', expandTree: '파일 트리 펼치기',
     attachToChat: '채팅에 추가', attachFailed: '파일을 채팅에 추가하지 못했습니다',
     previewMode: '미리보기', sourceMode: '소스', tableMode: '표', worksheet: '워크시트',
     htmlPreviewTitle: '격리된 HTML 미리보기', previewLoading: '미리보기 불러오는 중...', previewFailed: '미리보기를 사용할 수 없음',

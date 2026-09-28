@@ -37,7 +37,7 @@ sudo ./scripts/deploy-armbian.sh
 ### 方式二：直接远程执行
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EKKOLearnAI/hermes-web-ui/main/scripts/deploy-armbian.sh -o deploy-armbian.sh
+curl -fsSL https://raw.githubusercontent.com/tangledup-ai/hermes-web-ui/main/scripts/deploy-armbian.sh -o deploy-armbian.sh
 chmod +x deploy-armbian.sh
 sudo ./deploy-armbian.sh
 ```
@@ -57,7 +57,7 @@ apt-get install -y git
 
 ```bash
 cd /opt
-git clone https://github.com/EKKOLearnAI/hermes-web-ui.git
+git clone https://github.com/tangledup-ai/hermes-web-ui.git
 cd /opt/hermes-web-ui
 ```
 

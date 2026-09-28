@@ -10,7 +10,7 @@ const stars = ref<number | null>(null)
 const releaseVersion = __WEBSITE_DOWNLOAD_VERSION__
 
 const chartSrc = computed(() => {
-  return 'https://api.star-history.com/svg?repos=EKKOLearnAI%2Fhermes-studio&type=Date'
+  return 'https://api.star-history.com/svg?repos=tangledup-ai%2Fhermes-web-ui&type=Date'
 })
 
 onMounted(async () => {
@@ -47,7 +47,7 @@ onMounted(async () => {
 
     <div class="star-chart reveal reveal-delay-2">
       <a
-        href="https://www.star-history.com/?type=date&repos=EKKOLearnAI%2Fhermes-studio"
+        href="https://www.star-history.com/?type=date&repos=tangledup-ai%2Fhermes-web-ui"
         target="_blank"
         rel="noopener noreferrer"
         class="chart-link"
