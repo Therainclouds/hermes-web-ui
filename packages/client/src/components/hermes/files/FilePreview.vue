@@ -12,6 +12,7 @@ import { handleCodeBlockCopyClick, renderHighlightedCodeBlock } from '@/componen
 import { useMessage } from '@/composables/useAppMessage'
 import { previewMimeMatches } from '@/utils/hermes/file-preview'
 import { openHtmlInDesktopBrowser } from '@/utils/desktop-browser'
+import FileTreeToggle from './FileTreeToggle.vue'
 
 const MarkdownRenderer = defineAsyncComponent(async () => (await import('@/components/hermes/chat/MarkdownRenderer.vue')).default)
 const HtmlFilePreview = defineAsyncComponent(async () => (await import('./HtmlFilePreview.vue')).default)
@@ -23,7 +24,17 @@ const SpreadsheetFilePreview = defineAsyncComponent(async () => (await import('.
 const { t } = useI18n()
 const message = useMessage()
 const filesStore = useFilesStore()
-const props = defineProps<{ customClose?: () => void }>()
+const props = withDefaults(defineProps<{
+  customClose?: () => void
+  showTreeToggle?: boolean
+  treeCollapsed?: boolean
+}>(), {
+  showTreeToggle: false,
+  treeCollapsed: false,
+})
+const emit = defineEmits<{
+  'toggle-tree': []
+}>()
 const loading = ref(false)
 const downloading = ref(false)
 const previewError = ref('')
@@ -160,6 +171,11 @@ onBeforeUnmount(() => {
   <div class="file-preview" v-if="filesStore.previewFile">
     <div class="preview-header">
       <div class="preview-file-info">
+        <FileTreeToggle
+          v-if="props.showTreeToggle"
+          :collapsed="props.treeCollapsed"
+          @toggle="emit('toggle-tree')"
+        />
         <span class="preview-filename">{{ filesStore.previewFile.path }}</span>
         <span class="preview-size">{{ formatSize(filesStore.previewFile.size) }}</span>
       </div>

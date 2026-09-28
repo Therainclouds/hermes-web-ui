@@ -977,7 +977,10 @@ export default {
     uncategorized: '未分類',
     categoryPlaceholder: 'カテゴリーを選択または作成',
     categoryCreateHint: '名前を入力して Enter キーで作成します。',
+    createCategory: '新しいカテゴリーを作成',
     categoryCreated: 'カテゴリー「{name}」を作成しました',
+    categoryCreatedAndMoved: 'カテゴリー「{name}」を作成してセッションを移動しました',
+    categoryCreatedMoveFailed: 'カテゴリー「{name}」は作成されましたが、セッションを移動できませんでした。もう一度お試しください。',
     categoryCreateFailed: 'カテゴリーを作成できませんでした',
     categoryLoadFailed: 'カテゴリーを読み込めませんでした',
     moveToCategory: 'カテゴリーに移動',
@@ -3309,6 +3312,7 @@ export default {
   },
 
   files: {
+    collapseTree: 'ファイルツリーを折りたたむ', expandTree: 'ファイルツリーを展開',
     attachToChat: 'チャットに追加', attachFailed: 'ファイルをチャットに追加できませんでした',
     previewMode: 'プレビュー', sourceMode: 'ソース', tableMode: '表', worksheet: 'ワークシート',
     htmlPreviewTitle: '分離された HTML プレビュー', previewLoading: 'プレビューを読み込み中...', previewFailed: 'プレビューできません',

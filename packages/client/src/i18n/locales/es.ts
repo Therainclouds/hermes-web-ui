@@ -977,7 +977,10 @@ export default {
     uncategorized: 'Sin categoría',
     categoryPlaceholder: 'Seleccionar o crear una categoría',
     categoryCreateHint: 'Escribe un nombre y pulsa Enter para crearla.',
+    createCategory: 'Crear nueva categoría',
     categoryCreated: 'Categoría «{name}» creada',
+    categoryCreatedAndMoved: 'Categoría «{name}» creada y sesión movida',
+    categoryCreatedMoveFailed: 'Se creó la categoría «{name}», pero no se pudo mover la sesión. Inténtalo de nuevo.',
     categoryCreateFailed: 'No se pudo crear la categoría',
     categoryLoadFailed: 'No se pudieron cargar las categorías',
     moveToCategory: 'Mover a categoría',
@@ -3310,6 +3313,7 @@ jobTriggered: 'Job ejecutado',
   },
 
   files: {
+    collapseTree: 'Contraer árbol de archivos', expandTree: 'Expandir árbol de archivos',
     attachToChat: 'Añadir al chat', attachFailed: 'No se pudo añadir el archivo al chat',
     previewMode: 'Vista previa', sourceMode: 'Código fuente', tableMode: 'Tabla', worksheet: 'Hoja',
     htmlPreviewTitle: 'Vista previa HTML aislada', previewLoading: 'Cargando vista previa...', previewFailed: 'Vista previa no disponible',

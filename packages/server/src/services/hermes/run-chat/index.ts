@@ -33,7 +33,12 @@ import {
   parseCodingAgentSessionCommand,
 } from '../../coding-agents/session-command'
 import { contentBlocksToString } from './content-blocks'
-import { buildOutboundRunEvent, buildResumeEvents, buildResumeMessagePage } from './resume-payload'
+import {
+  buildAppResumeMessagePage,
+  buildOutboundRunEvent,
+  buildResumeEvents,
+  buildResumeMessagePage,
+} from './resume-payload'
 import type {
   BackgroundContinuationContext,
   ChatCodingAgentId,
@@ -493,6 +498,7 @@ export class ChatRunSocket {
         }
         state.events = []
         state.isWorking = !isCodingAgentExecution(source, data)
+        state.runStartedAt = Date.now()
         state.profile = runProfile
         state.source = source
       }
@@ -585,6 +591,23 @@ export class ChatRunSocket {
       }
       socket.join(`session:${sid}`)
       await this.resumeSession(socket, sid)
+    })
+
+    socket.on('app.resume', async (data: { session_id?: string; id?: string }) => {
+      if (!data.session_id || typeof data.id !== 'string' || data.id.length > 128) return
+      const sid = data.session_id
+      try {
+        requireSocketSessionAccess(sid)
+      } catch (err) {
+        socket.emit('run.failed', {
+          event: 'run.failed',
+          session_id: sid,
+          error: err instanceof Error ? err.message : String(err),
+        })
+        return
+      }
+      socket.join(`session:${sid}`)
+      await this.resumeSession(socket, sid, { event: 'app.resumed', cachedId: data.id })
     })
 
     socket.on('abort', (data: { session_id?: string }) => {
@@ -1225,7 +1248,11 @@ export class ChatRunSocket {
 
   // --- Resume ---
 
-  private async resumeSession(socket: Socket, sid: string) {
+  private async resumeSession(
+    socket: Socket,
+    sid: string,
+    options?: { event: 'app.resumed'; cachedId: string },
+  ) {
     let state = this.sessionMap.get(sid)
     if (!state) {
       state = await loadSessionStateFromDb(sid, this.sessionMap)
@@ -1241,9 +1268,13 @@ export class ChatRunSocket {
       messageTotal: state.messageTotal,
       messageStateBaselineCount: state.messageStateBaselineCount,
     })
-    socket.emit('resumed', {
+    const appMessagePage = options
+      ? buildAppResumeMessagePage(messagePage, options.cachedId)
+      : null
+    const outboundMessagePage = appMessagePage || messagePage
+    socket.emit(options?.event || 'resumed', {
       session_id: sid,
-      ...messagePage,
+      ...outboundMessagePage,
       parentSessionId: sessionDetail?.parent_session_id || null,
       forkPointMessageId: sessionDetail?.fork_point_message_id || null,
       parentTitle: sessionDetail?.parent_title || null,
@@ -1255,6 +1286,7 @@ export class ChatRunSocket {
       api_mode: sessionDetail?.api_mode || '',
       reasoning_effort: sessionDetail?.reasoning_effort || '',
       isWorking: state.isWorking,
+      runStartedAt: state.runStartedAt,
       isAborting: state.isAborting || false,
       events: buildResumeEvents(resumeEvents),
       inputTokens: state.inputTokens,
@@ -1275,8 +1307,9 @@ export class ChatRunSocket {
       backgroundPending: this.backgroundPendingCount(state),
     })
 
-    logger.info('[chat-run-socket] socket %s resumed session %s (working: %s, messages: %d)',
-      socket.id, sid, state.isWorking, state.messages.length)
+    logger.info('[chat-run-socket] socket %s resumed session %s (working: %s, messages: %d, app cache: %s)',
+      socket.id, sid, state.isWorking, state.messages.length,
+      appMessagePage ? (appMessagePage.messagesCached ? 'hit' : 'miss') : 'n/a')
   }
 
   private async reattachBridgeRun(socket: Socket, sid: string, state: SessionState) {
@@ -1294,6 +1327,12 @@ export class ChatRunSocket {
       pollKey = `${sid}:${runId}`
       if (this.bridgeResumePolls.has(pollKey)) return
       this.bridgeResumePolls.add(pollKey)
+      if (!state.isWorking || !(state.runStartedAt && state.runStartedAt > 0)) {
+        // The bridge does not expose the original start in its lightweight
+        // status response. Use one shared server-side fallback for every
+        // client attaching after this Web UI process discovers the run.
+        state.runStartedAt = Date.now()
+      }
       state.isWorking = true
       state.isAborting = state.isAborting === true
       state.runId = runId
@@ -1575,6 +1614,8 @@ export class ChatRunSocket {
   }
 
   private runQueuedItem(socket: Socket, sessionId: string, next: QueuedRun, fallbackProfile = 'default') {
+    const state = this.sessionMap.get(sessionId)
+    if (state) state.runStartedAt = Date.now()
     const skipUserMessage = next.displayInput === null
     const backgroundContinuationContext = next.backgroundContinuationContext
       || (next.backgroundDelegationId
@@ -1678,6 +1719,7 @@ export class ChatRunSocket {
     const state = getOrCreateSession(this.sessionMap, sessionId)
     state.events = []
     state.isWorking = !isCodingAgentExecution(source, data)
+    state.runStartedAt = Date.now()
     state.profile = profile
     state.source = source
 

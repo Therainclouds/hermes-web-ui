@@ -261,3 +261,58 @@ docs/planning/
 docs/research/
 config/experts-marketplace.yaml
 ```
+
+---
+
+## 七、不可逆分叉与选择性合并策略
+
+> 确立时间：2026-09-25。起因：上游 `upstream/main` 在 2026-08-26 之后发生了两次不可逆变更。
+
+### 分叉事实
+
+1. **架构重命名**（8/26，`refactor: enforce canonical server module ownership`）：
+   服务端 `services/ controllers/ routes/ db/ middleware/ lib/ shared/ config.ts security.ts`
+   → `modules/{hermes,studio,ekko,coding-agents}/` + `bootstrap/`；
+   客户端 `api/hermes/*` → `api/studio/*`。本地 828 个独有提交全部基于旧结构。
+2. **品牌分叉**（9/8 起）：上游改名为 **Ekko Studio**（`package.json` name = `ekko-studio`），
+   本地保持 `@quanthermes/hermes-web-ui`。
+3. 实测 `git merge-tree`：**2071 文件变更、约 1007 个冲突文件**。
+
+### 硬规则
+
+- **禁止对 `upstream/main` 执行 `git merge --no-ff`**。本文件第四节的**全量 merge 流程自
+  2026-09-25 起作废**，仅保留其中的冲突解决规则与品牌残留检查，作为 cherry-pick 后的核对项。
+- 所有上游代码一律通过 **cherry-pick** 或**文件级手工移植**进入本地。
+- 每次同步必须先做**提交级筛选**（是否触及重构路径 / 是否含品牌字符串 / 是否落在本地独有域），
+  再决定「接受 / 移植 / 拒绝」，筛选结论写入同步评审文档。
+- 上游删除文件**不得**自动跟随。尤其 `docs/chat-chain-changes/`
+  （上游删了 242 个，本地全都有），`AGENTS.md` 要求这些 fragment 必须保留。
+
+### 判定速查
+
+| 上游改动落在 | 处置 |
+|---|---|
+| `packages/server/src/modules/**` | ❌ 拒绝整体；有价值的能力按旧结构手工重写 |
+| `packages/client/src/api/studio/**` | ❌ 拒绝；对应能力改到 `api/hermes/**` |
+| `packages/server/src/{services,controllers,routes,db}/**`（旧结构残留提交） | ✅ 可直接 cherry-pick |
+| `packages/ekko-agent/**` | ⚠️ 可整包同步（本地零改动），需单独核对品牌字符串 |
+| 品牌改名 / Ekko 重命名 / release + changelog | ❌ 拒绝 |
+| 仅 `tests/**` `docs/**` | ⚠️ 按需，且上游删文档不得跟随 |
+| 上游新增的独立功能模块（Grok / OpenCode / JEV / session-shares 等） | ⚠️ L3 手工移植到旧结构 |
+
+### 本地自研域（上游为零，永不冲突，但也无人维护）
+
+`services/update/`（device-package OTA）、`services/usb/`、`services/knowledge/`、
+`services/scanner/` + `services/grading/`、`services/meeting-asr/`、
+`services/hermes/experts/`、`packages/client/src/plugins/`（上游无 plugins 目录）。
+对照数据见 `upstream-sync-20260925-feature-diff.md` 第三节。
+
+### iOS / 手机 App 生态依赖判定
+
+上游部分能力依赖其自有手机 App 与 APNs 证书，**这类功能搬了也无法运行**，直接拒绝：
+
+- iOS Live Activities（#3111 #3151 #3152 #3167）—— iOS 独占 + APNs p8 证书
+- 消息推送投递侧（#2940 #3131 等）—— 依赖 App 连接与 APNs/FCM
+- 例外：**会话分享与作用域权限**（`session-shares`）是纯服务端 + Web 能力，**可以移植**。
+
+> 每次同步前先问一句：这个功能是否需要手机 App 或 Apple/Google 证书？是则直接拒绝。

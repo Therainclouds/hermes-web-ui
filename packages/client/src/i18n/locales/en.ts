@@ -1039,7 +1039,10 @@ export default {
     uncategorized: 'Uncategorized',
     categoryPlaceholder: 'Select or create a category',
     categoryCreateHint: 'Select a category, or type a new name and press Enter to create it.',
+    createCategory: 'Create new category',
     categoryCreated: 'Category "{name}" created',
+    categoryCreatedAndMoved: 'Category "{name}" created and session moved',
+    categoryCreatedMoveFailed: 'Category "{name}" was created, but the session was not moved. Try again to move it.',
     categoryCreateFailed: 'Failed to create category',
     categoryLoadFailed: 'Failed to load categories',
     moveToCategory: 'Move to category',
@@ -3698,6 +3701,8 @@ export default {
   files: {
     title: 'Files',
     fileTree: 'File Tree',
+    collapseTree: 'Collapse file tree',
+    expandTree: 'Expand file tree',
     tree: 'Directory Tree',
     list: 'File List',
     breadcrumbRoot: 'Home',
@@ -3778,6 +3783,14 @@ export default {
 
   // Changelog
   changelog: {
+    new_0_8_9_1: 'Knowledge task-12: USB drives are scanned automatically, full-text indexing is opt-in on upload, archived tasks can be restored, and a pure FTS search mode is available for keyword-only queries',
+    new_0_8_9_2: 'Meeting now transcribes whole audio files and runs post-recording speaker diarization — open Diarize whole file from the right panel to turn a single recording into per-speaker transcript segments after the meeting ends',
+    new_0_8_9_3: 'Realtime voice settings gain MiniMax ASR and Qwen DashScope STT/TTS providers — pick the new providers from the realtime models drawer, save once, and they apply to voice chats and the embedded voice pipeline',
+    new_0_8_9_4: 'Coding agents get the DeepSeek Harness (DSH) plugin management UI — browse, install, configure, and preselect native plugins per session from a new panel',
+    new_0_8_9_5: 'Devices module adds an MCU device CRUD catalogue — register MCUs with name/model/firmware, list and edit them from a new admin view',
+    new_0_8_9_6: 'Virtual Pet (Petdex) is here — adopt a desktop pet, watch it roam over the chat window, and browse Petdex entries from the new view',
+    new_0_8_9_7: 'Meeting UX refinements — speaker chips on transcript lines and one-click markdown export of the cleaned transcript',
+    new_0_8_9_8: 'Update hardening — devices now detect a manifest pinned to a stale version and surface the channel tip, so a frozen pin can no longer silently block updates',
     new_0_8_8_1: 'Knowledge plugin ships: a five-mode workspace (Tasks/Legal/Learning/Explorer/Batch) that adapts to your main use — pick one on first run, switch anytime, no data loss',
     new_0_8_8_2: 'Citation audit log: every UI search and Agent retrieval hit is recorded — expand a document in Tasks mode to see exactly who cited it and when, so compliance review has a paper trail',
     new_0_8_8_3: 'New documents are recorded as metadata-only by default instead of occupying the embedding queue; click Full-text index in the detail drawer when you need them searchable — existing indexed documents are unaffected',

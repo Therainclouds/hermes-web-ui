@@ -166,3 +166,65 @@ export async function fetchDocumentReferences(id: number, limit = 200): Promise<
 export async function indexDocument(id: number): Promise<{ documentId: number; status: string }> {
   return request(`/api/knowledge/documents/${id}/index`, { method: 'POST' })
 }
+
+// --- Task-12: bootstrap, quota, directory browser, USB, task archive ----
+
+export function bootstrapDefaultVaults(): Promise<{ created: string[]; skipped: string[]; failed: Array<{ path: string; reason: string }> }> {
+  return request('/api/knowledge/vaults/bootstrap-defaults', { method: 'POST' })
+}
+
+export interface KnowledgeQuota {
+  totalBytes: number
+  warn: boolean
+  downgrade: boolean
+  hardLimitReached: boolean
+  vaultCount: number
+  perVaultBytes: number
+}
+
+export function fetchQuota(): Promise<KnowledgeQuota> {
+  return request('/api/knowledge/quota')
+}
+
+export interface DirEntry {
+  name: string
+  path: string
+  isDir: boolean
+  sizeBytes: number | null
+  modifiedAt: number | null
+  inAllowlist: boolean
+}
+
+export interface DirListing {
+  path: string
+  parent: string | null
+  entries: DirEntry[]
+}
+
+export function listDirs(path: string, includeHidden = false): Promise<DirListing> {
+  const qs = `path=${encodeURIComponent(path)}${includeHidden ? '&includeHidden=true' : ''}`
+  return request(`/api/knowledge/dirs?${qs}`)
+}
+
+export interface UsbDriveEntry {
+  uuid: string
+  label: string
+  mountPath: string
+  sizeBytes: number | null
+  freeBytes: number | null
+}
+
+export interface HomeRootEntry {
+  name: string
+  path: string
+  exists: boolean
+}
+
+export function listDrives(): Promise<{ usb: UsbDriveEntry[]; homeRoots: HomeRootEntry[] }> {
+  return request('/api/knowledge/drives')
+}
+
+export function scanUsbVolume(uuid: string): Promise<{ vaultId: number; status: string; documentsQueued: number; reused: boolean }> {
+  return request(`/api/knowledge/usb-volumes/${encodeURIComponent(uuid)}/scan`, { method: 'POST' })
+}
+

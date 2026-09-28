@@ -977,7 +977,10 @@ export default {
     uncategorized: 'Ohne Kategorie',
     categoryPlaceholder: 'Kategorie auswählen oder erstellen',
     categoryCreateHint: 'Namen eingeben und mit Enter erstellen.',
+    createCategory: 'Neue Kategorie erstellen',
     categoryCreated: 'Kategorie „{name}“ erstellt',
+    categoryCreatedAndMoved: 'Kategorie „{name}“ erstellt und Sitzung verschoben',
+    categoryCreatedMoveFailed: 'Kategorie „{name}“ wurde erstellt, aber die Sitzung konnte nicht verschoben werden. Versuchen Sie es erneut.',
     categoryCreateFailed: 'Kategorie konnte nicht erstellt werden',
     categoryLoadFailed: 'Kategorien konnten nicht geladen werden',
     moveToCategory: 'In Kategorie verschieben',
@@ -3310,6 +3313,7 @@ jobTriggered: 'Job ausgelost',
   },
 
   files: {
+    collapseTree: 'Dateibaum einklappen', expandTree: 'Dateibaum ausklappen',
     attachToChat: 'Zum Chat hinzufügen', attachFailed: 'Datei konnte nicht zum Chat hinzugefügt werden',
     previewMode: 'Vorschau', sourceMode: 'Quelltext', tableMode: 'Tabelle', worksheet: 'Arbeitsblatt',
     htmlPreviewTitle: 'Isolierte HTML-Vorschau', previewLoading: 'Vorschau wird geladen...', previewFailed: 'Vorschau nicht verfügbar',

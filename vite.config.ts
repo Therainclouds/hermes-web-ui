@@ -61,12 +61,8 @@ export default defineConfig({
     // CSS code splitting for better caching
     cssCodeSplit: true,
     rollupOptions: {
-      // Two independent documents: the Hermes SPA and the standalone TRPG
-      // chronicle reader (`/recap-book.html`). The reader must not be a SPA
-      // route, so it gets its own HTML entry and bundle.
       input: {
         main: resolve(__dirname, 'packages/client/index.html'),
-        'recap-book': resolve(__dirname, 'packages/client/recap-book.html'),
       },
       output: {
         // Optimize chunk file names for better caching
