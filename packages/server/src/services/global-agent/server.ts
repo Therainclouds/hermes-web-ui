@@ -14,6 +14,7 @@ import { MCU_TTS_SAMPLE_RATE, mcuPromptText, mcuPromptUrl } from '../hermes/mcu-
 import { createMcuSpeechSegmenter, normalizeMcuSpeechText } from './mcu-speech-segmenter'
 import {
   mcuChatRunFields,
+  resolveMcuModelFields,
   normalizeMcuAgentRuntime,
   type McuAgentRuntime,
 } from './mcu-agent-runtime'
@@ -436,6 +437,8 @@ export class GlobalAgentServer {
   private readonly localSocketBridges = new Map<string, LocalSocketBridge>()
   private readonly activeMcuRuns = new Map<string, { socket: ClientSocket; sessionId: string }>()
   private readonly mcuSessionRuns = new Map<string, { interactionId: string; socket: ClientSocket }>()
+  /** Conversation generation per MCU session base; bumped by `mcu.session.clear`. */
+  private readonly mcuSessionGenerations = new Map<string, number>()
   private readonly mcuBackgroundListeners = new Map<string, McuBackgroundListener>()
   private readonly pendingMcuBackgroundSpeech = new Map<string, PendingMcuBackgroundSpeech[]>()
   private readonly mcuBackgroundSpeechRuns = new Set<string>()
@@ -581,7 +584,7 @@ export class GlobalAgentServer {
     let backgroundOutput = ''
     let backgroundPending = 0
     let output = ''
-    const speechSegmenter = createMcuSpeechSegmenter()
+    const speechSegmenter = createMcuSpeechSegmenter({ sentenceStreaming: true, firstSegmentMinChars: 3, maxChars: 120 })
     const ownsBackgroundEvents = () => {
       const listener = this.mcuBackgroundListeners.get(sessionId)
       return primaryTerminalReceived || listener?.socket === socket
@@ -656,10 +659,18 @@ export class GlobalAgentServer {
         })
       ttsQueue = ttsQueue
         .then(async () => {
-          await previousPlaybackDone
+          // Emit as soon as this segment is synthesised. The gateway serialises
+          // playback per interaction itself, so waiting here for the previous
+          // segment's `audio.done` only delayed this segment's download and left
+          // an audible gap (0.4-1.9s) between sentences.
           const audio = await this.enqueueMcuSpeechSegment(options, segmentId, segmentText, audioResult)
-          previousPlaybackDone = audio.playbackDone
-          playbackQueue.push(audio.playbackDone)
+          // `playbackDone` rejects on `audio.dropped` / playback timeout. Keep a
+          // settled copy: the raw rejected promise used to be awaited by every
+          // later segment, so a single dropped segment made the catch below fire
+          // for all of them and replaced the rest of the reply with the
+          // "tts-failed" prompt (i.e. the spoken answer was cut short).
+          previousPlaybackDone = audio.playbackDone.catch(() => undefined)
+          playbackQueue.push(previousPlaybackDone)
         })
         .catch((err) => {
           if (err instanceof Error && err.message === 'audio.interrupted') {
@@ -707,7 +718,11 @@ export class GlobalAgentServer {
       }
       fail(`chat-run disconnected: ${reason}`)
     })
-    socket.on('connect', () => {
+    socket.on('connect', async () => {
+      let modelFields
+      try { modelFields = await resolveMcuModelFields(options.profile, agentRuntime) }
+      catch (error) { fail(error instanceof Error ? error.message : 'MCU model configuration failed'); return }
+      if (settled) return
       logger.info({
         interactionId: options.interactionId,
         sessionId,
@@ -722,6 +737,7 @@ export class GlobalAgentServer {
         queue_id: primaryQueueId,
         profile: options.profile,
         ...mcuChatRunFields(agentRuntime),
+        ...modelFields,
       }
       const interruptedAt = this.recentlyInterruptedMcuSessions.get(sessionId) || 0
       if (Date.now() - interruptedAt < 10_000) {
@@ -945,7 +961,7 @@ export class GlobalAgentServer {
       .slice(0, 96) || randomUUID()
     const interactionId = `mcu-background-${suffix}`
     const options = { ...item.options, interactionId }
-    const segmenter = createMcuSpeechSegmenter()
+    const segmenter = createMcuSpeechSegmenter({ sentenceStreaming: true, firstSegmentMinChars: 3, maxChars: 120 })
     const segments = segmenter.pushDelta(item.text)
     const tail = segmenter.flush()
     if (tail) segments.push(tail)
@@ -1006,6 +1022,11 @@ export class GlobalAgentServer {
         this.clients.delete(clientId)
       }
       this.cancelPendingMcuInterruptsForClient(clientId)
+      // A client key holds exactly one in-flight MCU voice stream. Leaving it
+      // behind after a disconnect makes the next turn's chunks look "stale" and
+      // they are then dropped without any terminal status, which strands the
+      // device in listening because the gateway never sends `tts.stop`.
+      this.mcuVoiceStreams.delete(clientId)
       this.closeInboundSocketsForOwner(socket.id)
       logger.info('[global-agent] client disconnected id=%s socket=%s', clientId, socket.id)
     })
@@ -1424,7 +1445,13 @@ export class GlobalAgentServer {
     this.emitFrontendBridgeEvent(clientId, this.redactMcuAuthPayload(body))
   }
 
-  private mcuSessionId(clientId: string | undefined, profile: string, agentRuntime: McuAgentRuntime): string {
+  /**
+   * Stable per-device ChatRun session id. `mcu.session.clear` (sent when the
+   * device asks for a new conversation, e.g. BOOT double-click) bumps the
+   * generation so the following turn runs under a fresh session id -- that is
+   * what makes it show up as a NEW conversation instead of an emptied one.
+   */
+  private mcuSessionBase(clientId: string | undefined, profile: string, agentRuntime: McuAgentRuntime): string {
     const instance = (clientId || 'device')
       .toLowerCase()
       .replace(/[^a-z0-9_-]+/g, '-')
@@ -1436,6 +1463,19 @@ export class GlobalAgentServer {
       .replace(/^-+|-+$/g, '')
       .slice(0, 64) || 'default'
     return `mcu-${instance}-${profileId}-${agentRuntime}`
+  }
+
+  private mcuSessionId(clientId: string | undefined, profile: string, agentRuntime: McuAgentRuntime): string {
+    const base = this.mcuSessionBase(clientId, profile, agentRuntime)
+    const generation = this.mcuSessionGenerations.get(base) ?? 0
+    return generation > 0 ? `${base}-g${generation}` : base
+  }
+
+  /** Start the next MCU turn in a brand-new conversation. */
+  private rotateMcuSession(clientId: string, profile: string, agentRuntime: McuAgentRuntime): string {
+    const base = this.mcuSessionBase(clientId, profile, agentRuntime)
+    this.mcuSessionGenerations.set(base, (this.mcuSessionGenerations.get(base) ?? 0) + 1)
+    return this.mcuSessionId(clientId, profile, agentRuntime)
   }
 
   private async synthesizeMcuSpeech(text: string, userToken: string, profile: string, signal?: AbortSignal): Promise<{ url: string; mimeType: string }> {
@@ -1714,7 +1754,13 @@ export class GlobalAgentServer {
     const cleared = chatRunServer.clearSessionHistory(sessionId)
     const deleted = cleared.deleted
     const memoryCleared = cleared.hadMemoryState
-    logger.info({ clientId, sessionId, deleted, memoryCleared }, '[global-agent] cleared MCU chat session')
+    // A clear issued by the device means "new conversation": rotate the session
+    // so the next turn is tracked (and listed in the Web UI) as a new one.
+    const nextSessionId = this.rotateMcuSession(clientId, profile, agentRuntime)
+    logger.info(
+      { clientId, sessionId, deleted, memoryCleared, nextSessionId },
+      '[global-agent] cleared MCU chat session',
+    )
     this.emitMcuEvent({
       type: 'mcu.session.cleared',
       interactionId: interactionId || undefined,
@@ -1924,17 +1970,33 @@ export class GlobalAgentServer {
 
   private async handleMcuVoiceStreamEnd(clientId: string, payload: Record<string, unknown>): Promise<void> {
     const stream = this.mcuVoiceStreams.get(clientId)
+    const interactionId = typeof payload.interactionId === 'string' ? payload.interactionId.trim() : ''
     if (!stream) {
-      this.emitMcuEvent({ type: 'interaction.status', status: 'failed', text: 'missing voice stream metadata' }, { clientId })
+      // Without an interactionId the gateway cannot route this failure back to
+      // the turn it belongs to, so echo whatever the device told us.
+      this.emitMcuEvent({
+        type: 'interaction.status',
+        ...(interactionId ? { interactionId } : {}),
+        status: 'failed',
+        text: 'missing voice stream metadata',
+      }, { clientId })
       return
     }
-    const interactionId = typeof payload.interactionId === 'string' ? payload.interactionId.trim() : ''
     if (interactionId && interactionId !== stream.interactionId) {
       logger.warn({
         clientId,
         streamInteractionId: stream.interactionId,
         endInteractionId: interactionId,
-      }, '[global-agent] ignoring MCU voice stream end for stale interaction')
+      }, '[global-agent] MCU voice stream end for a superseded interaction')
+      // The device still holds a turn open for `interactionId`. Retire it
+      // explicitly (the gateway only forwards `tts.stop` on a terminal status)
+      // and leave the live stream untouched.
+      this.emitMcuEvent({
+        type: 'interaction.status',
+        interactionId,
+        status: 'failed',
+        text: 'voice stream superseded',
+      }, { clientId })
       return
     }
     this.mcuVoiceStreams.delete(clientId)
@@ -2067,7 +2129,13 @@ export class GlobalAgentServer {
         clientId,
         streamInteractionId: stream.interactionId,
         abortInteractionId: payloadInteractionId,
-      }, '[global-agent] ignoring MCU voice stream abort for stale interaction')
+      }, '[global-agent] MCU voice stream abort for a superseded interaction')
+      this.emitMcuEvent({
+        type: 'interaction.status',
+        interactionId: payloadInteractionId,
+        status: 'failed',
+        text: 'voice stream superseded',
+      }, { clientId })
       return
     }
     this.mcuVoiceStreams.delete(clientId)
@@ -2102,6 +2170,17 @@ export class GlobalAgentServer {
     const segmentId = `${interactionId}-prompt`
 
     this.emitMcuEvent({ type: 'interaction.status', interactionId, status: 'speaking', text }, { clientId })
+    // Register the playback waiter *before* enqueueing. The gateway only emits
+    // `tts.stop` on a terminal status, so a prompt that is never followed by
+    // `completed` leaves the device stuck out of its listening state.
+    const waitForDone = this.waitForMcuAudioDone(segmentId, Math.max(30_000, durationMs + 20_000))
+      .catch((err) => {
+        logger.warn({
+          err,
+          interactionId,
+          segmentId,
+        }, '[global-agent] MCU prompt playback did not complete')
+      })
     this.emitMcuEvent({
       type: 'audio.enqueue',
       interactionId,
@@ -2113,6 +2192,8 @@ export class GlobalAgentServer {
       sampleRate,
       durationMs,
     }, { clientId })
+    await waitForDone
+    this.emitMcuEvent({ type: 'interaction.status', interactionId, status: 'completed' }, { clientId })
     return true
   }
 

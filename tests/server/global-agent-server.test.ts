@@ -5,6 +5,13 @@ import {
 } from '../../packages/server/src/services/hermes/mcu-adpcm'
 import { MCU_VOICE_SYSTEM_INSTRUCTIONS } from '../../packages/server/src/services/global-agent/mcu-voice-instructions'
 
+vi.mock('../../packages/server/src/services/config-helpers', () => ({
+  readConfigYamlForProfile: vi.fn(async () => ({ model: { provider: 'minimax-cn', default: 'MiniMax-M3' } })),
+}))
+vi.mock('../../packages/server/src/services/ekko-agent/provider-runtime', () => ({
+  resolveEkkoProviderRuntimeConfig: vi.fn(async () => ({ apiMode: 'anthropic_messages' })),
+}))
+
 const authMocks = vi.hoisted(() => ({
   authenticateUserToken: vi.fn(),
   userCanAccessProfile: vi.fn(),
@@ -729,6 +736,15 @@ describe('GlobalAgentServer', () => {
       bytes: currentPcm.length,
     })
 
+    // The superseded turn must still be retired with a terminal status: the
+    // gateway only forwards `tts.stop` on completed/failed/aborted, and without
+    // it the device stays in listening forever.
+    const staleRetirements = agentSocket.emit.mock.calls.filter(
+      ([event, payload]: [string, any]) => event === 'interaction.status' && payload?.interactionId === 'voice-1',
+    )
+    expect(staleRetirements).toHaveLength(1)
+    expect((staleRetirements[0][1] as any).status).toBe('failed')
+
     await waitForMockCalls(fetchImpl, 1)
     const request = fetchImpl.mock.calls[0][1] as RequestInit
     const wav = Buffer.from(request.body as Uint8Array)
@@ -964,7 +980,7 @@ describe('GlobalAgentServer', () => {
       agentRuntime: 'hermes',
     })
     const hermesSocket = clientSocketMocks.localSockets.at(-1)
-    hermesSocket.__handlers.get('connect')?.()
+    await hermesSocket.__handlers.get('connect')?.()
     const hermesRun = hermesSocket.emit.mock.calls.find(([event]: [string]) => event === 'run')?.[1]
     expect(hermesRun).toMatchObject({
       session_id: 'mcu-device-1-research-hermes',
@@ -983,7 +999,7 @@ describe('GlobalAgentServer', () => {
       agentRuntime: 'ekko',
     })
     const ekkoSocket = clientSocketMocks.localSockets.at(-1)
-    ekkoSocket.__handlers.get('connect')?.()
+    await ekkoSocket.__handlers.get('connect')?.()
     expect(ekkoSocket.emit).toHaveBeenCalledWith('run', expect.objectContaining({
       session_id: 'mcu-device-1-research-ekko',
       source: 'coding_agent',
@@ -1028,7 +1044,7 @@ describe('GlobalAgentServer', () => {
       clientId: 'device-1',
     })
     const localSocket = clientSocketMocks.localSockets.at(-1)
-    localSocket.__handlers.get('connect')?.()
+    await localSocket.__handlers.get('connect')?.()
     startPrimaryMockRun(localSocket)
     localSocket.__handlers.get('message.delta')?.({ delta: '好嘞，这就去查。\n' })
     await waitForMockCalls(fetchImpl, 1)
@@ -1147,7 +1163,7 @@ describe('GlobalAgentServer', () => {
       clientId: 'device-1',
     })
     const localSocket = clientSocketMocks.localSockets.at(-1)
-    localSocket.__handlers.get('connect')?.()
+    await localSocket.__handlers.get('connect')?.()
     startPrimaryMockRun(localSocket, 'run-parent')
     localSocket.__handlers.get('delegation.updated')?.({
       delegation_id: 'delegation-1',
@@ -1247,7 +1263,7 @@ describe('GlobalAgentServer', () => {
       clientId: 'device-1',
     })
     const parentSocket = clientSocketMocks.localSockets.at(-1)
-    parentSocket.__handlers.get('connect')?.()
+    await parentSocket.__handlers.get('connect')?.()
     startPrimaryMockRun(parentSocket, 'run-parent')
     parentSocket.__handlers.get('run.completed')?.({
       run_id: 'run-parent',
@@ -1275,7 +1291,7 @@ describe('GlobalAgentServer', () => {
       clientId: 'device-1',
     })
     const followUpSocket = clientSocketMocks.localSockets.at(-1)
-    followUpSocket.__handlers.get('connect')?.()
+    await followUpSocket.__handlers.get('connect')?.()
 
     expect(parentSocket.disconnect).not.toHaveBeenCalled()
     expect(followUpSocket.emit).not.toHaveBeenCalledWith('abort', { session_id: 'mcu-device-1-research-ekko' })
@@ -1321,7 +1337,7 @@ describe('GlobalAgentServer', () => {
       clientId: 'device-1',
     })
     const parentSocket = clientSocketMocks.localSockets.at(-1)
-    parentSocket.__handlers.get('connect')?.()
+    await parentSocket.__handlers.get('connect')?.()
     const parentQueueId = startPrimaryMockRun(parentSocket, 'run-parent')
     parentSocket.__handlers.get('run.completed')?.({
       run_id: 'run-parent',
@@ -1343,7 +1359,7 @@ describe('GlobalAgentServer', () => {
       clientId: 'device-1',
     })
     const followUpSocket = clientSocketMocks.localSockets.at(-1)
-    followUpSocket.__handlers.get('connect')?.()
+    await followUpSocket.__handlers.get('connect')?.()
     const followUpRun = followUpSocket.emit.mock.calls
       .filter(([event]: [string]) => event === 'run')
       .at(-1)?.[1]
@@ -1454,7 +1470,7 @@ describe('GlobalAgentServer', () => {
       clientId: 'device-1',
     })
     const localSocket = clientSocketMocks.localSockets.at(-1)
-    localSocket.__handlers.get('connect')?.()
+    await localSocket.__handlers.get('connect')?.()
     startPrimaryMockRun(localSocket)
     localSocket.__handlers.get('message.delta')?.({ delta: '第一句。\n' })
     await waitForMockCalls(fetchImpl, 1)
@@ -1479,15 +1495,12 @@ describe('GlobalAgentServer', () => {
     const segmentIds = agentSocket.emit.mock.calls
       .filter(([event]: [string]) => event === 'audio.enqueue')
       .map(([, payload]: [string, { segmentId: string }]) => payload.segmentId)
-    expect(segmentIds).toEqual(['voice-pipeline-tts-1'])
+    expect(segmentIds).toEqual(['voice-pipeline-tts-1', 'voice-pipeline-tts-2'])
 
     agentSocket.__handlers.get('audio.done')?.({
       interactionId: 'voice-pipeline',
       segmentId: 'voice-pipeline-tts-1',
     })
-    await waitForMockCallWith(agentSocket.emit, ([event, payload]) =>
-      event === 'audio.enqueue' && (payload as { segmentId?: string })?.segmentId === 'voice-pipeline-tts-2',
-    )
     const segmentIdsAfterFirstDone = agentSocket.emit.mock.calls
       .filter(([event]: [string]) => event === 'audio.enqueue')
       .map(([, payload]: [string, { segmentId: string }]) => payload.segmentId)
@@ -1541,7 +1554,7 @@ describe('GlobalAgentServer', () => {
       clientId: 'device-1',
     })
     const localSocket = clientSocketMocks.localSockets.at(-1)
-    localSocket.__handlers.get('connect')?.()
+    await localSocket.__handlers.get('connect')?.()
     startPrimaryMockRun(localSocket)
     localSocket.__handlers.get('message.delta')?.({ delta: '这段正在合成。\n' })
 
@@ -1589,7 +1602,7 @@ describe('GlobalAgentServer', () => {
       clientId: 'device-1',
     })
     const localSocket = clientSocketMocks.localSockets.at(-1)
-    localSocket.__handlers.get('connect')?.()
+    await localSocket.__handlers.get('connect')?.()
     startPrimaryMockRun(localSocket)
     localSocket.__handlers.get('approval.requested')?.({
       approval_id: 'approval-1',

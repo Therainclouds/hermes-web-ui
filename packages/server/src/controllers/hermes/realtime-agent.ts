@@ -1,7 +1,7 @@
 /**
  * Realtime 工具调用的服务端 Agent 代理。
  *
- * 给 Omni-Realtime（`/ws/omni-realtime` → Qwen3.5-Omni-Flash-Realtime）的
+ * 给 Omni-Realtime（`/ws/omni-realtime` → Qwen3.8-Omni-Flash-Realtime）的
  * function calling 提供一个能直接驱动 Hermes Agent 的能力。客户端工具
  * `query_hermes_agent(question)` 通过 HTTP POST 把用户随口问的一句问题送到
  * 这里，本控制器走与 `/chat-run` 同款的 AgentBridgeClient 链路：

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import XiaozhiConnection from '@/components/hermes/XiaozhiConnection.vue'
 import { computed, onMounted, ref } from 'vue'
 import { NButton, NDrawer, NDrawerContent, NInput, NModal, NPopconfirm, NSpin, NTag } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
@@ -318,6 +319,7 @@ onMounted(() => {
       </div>
     </header>
 
+    <XiaozhiConnection />
     <NSpin :show="loading" class="devices-spin">
       <div class="devices-content">
         <div v-if="devices.length === 0 && !loading" class="empty-state">

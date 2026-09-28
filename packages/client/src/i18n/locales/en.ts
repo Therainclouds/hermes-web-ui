@@ -1,4 +1,5 @@
 export default {
+  xiaozhiConnection: {"title": "Device connection · XiaoZhi", "refresh": "Refresh", "error": "Connection status unavailable. Retry shortly.", "connected": "Device connected", "offline": "Offline", "gateway": "Gateway", "online": "Online", "unconfigured": "Not configured", "setup": "Set this OTA address in the device Wi-Fi setup page, then restart on the same network.", "copy": "Copy OTA address", "copied": "Copied", "voiceSettings": "Open voice settings"},
   pluginsClient: { "paper-grading": { name: "Paper grading", description: "Requires Scanner. Grade papers, edit annotations and export class reports." } },
   browser: {
     title: 'Browser', settings: 'Browser Settings', desktopOnly: 'The embedded browser is available only in Hermes Studio Desktop.', newTab: 'New Tab',
@@ -728,7 +729,7 @@ export default {
     toolRunning: 'Looking up: {tool} …',
     toolsHint: 'Workspace tools enabled: memory, skills, sessions, jobs, Hermes Agent',
     toolCallsTitle: 'Tool calls',
-    modelNote: 'Qwen3.5-Omni-Flash-Realtime · same model as meeting realtime',
+    modelNote: 'Qwen3.8-Omni-Flash-Realtime · same model as meeting realtime',
     camera: 'Open camera',
     mute: 'Mute microphone',
     unmute: 'Unmute microphone',
@@ -4847,9 +4848,9 @@ export default {
     },
     realtime: {
       title: 'Realtime dialog',
-      subtitle: 'Voice conversations with the Qwen3.5-Omni-Flash-Realtime multimodal model',
+      subtitle: 'Voice conversations with the Qwen3.8-Omni-Flash-Realtime multimodal model',
       tabLabel: 'Realtime',
-      tabTooltip: 'Open a realtime voice session with Qwen3.5-Omni-Flash-Realtime using the same DashScope key as ASR',
+      tabTooltip: 'Open a realtime voice session with Qwen3.8-Omni-Flash-Realtime using the same DashScope key as ASR',
       closeHint: 'Close the realtime dialog panel',
       needApiKey: 'Configure the DashScope API key above before starting a realtime dialog.',
       voice: 'Voice',

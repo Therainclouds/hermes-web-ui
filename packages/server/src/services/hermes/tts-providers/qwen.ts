@@ -1,10 +1,12 @@
 import { qwenSpeechJson, qwenSpeechUrl, speechSignal } from '../qwen-speech'
 import { cleanTtsText, clampTtsText } from './text'
+import { logger } from '../../logger'
 import type { CloudTtsProviderOptions, TtsProvider } from './types'
 
 export const qwenTtsProvider: TtsProvider<CloudTtsProviderOptions> = {
   id: 'qwen',
   async synthesize(req, options) {
+    const started = Date.now()
     const text = clampTtsText(cleanTtsText(req.text))
     if (!text) throw new Error('Qwen TTS text is empty')
     const signal = speechSignal(req.signal, req.timeoutMs)
@@ -16,6 +18,8 @@ export const qwenTtsProvider: TtsProvider<CloudTtsProviderOptions> = {
     const rawUrl = result.output?.audio?.url
     if (typeof rawUrl !== 'string') throw new Error('Qwen TTS returned no audio URL')
     const url = new URL(rawUrl)
+    // OSS may return HTTP; retrieve the signed object over HTTPS.
+    if (url.protocol === 'http:' && url.hostname.endsWith('.aliyuncs.com')) url.protocol = 'https:'
     if (url.protocol !== 'https:' || url.username || url.password || url.port || !url.hostname.endsWith('.aliyuncs.com')) {
       throw new Error('Qwen TTS returned an unsupported audio URL')
     }
@@ -31,6 +35,15 @@ export const qwenTtsProvider: TtsProvider<CloudTtsProviderOptions> = {
     }
     const audio = Buffer.concat(chunks)
     if (!audio.length) throw new Error('Qwen TTS returned empty audio')
+    // This provider had no timing telemetry at all, so a slow first-audio
+    // latency could not be attributed between LLM streaming and synthesis.
+    logger.info({
+      provider: 'qwen',
+      model: options.model || 'qwen3-tts-flash',
+      textChars: text.length,
+      audioBytes: audio.length,
+      durationMs: Date.now() - started,
+    }, '[tts:qwen] synthesized speech')
     return { audio, contentType: response.headers.get('content-type')?.split(';')[0] || 'audio/wav', engine: 'qwen', provider: 'qwen' }
   },
 }

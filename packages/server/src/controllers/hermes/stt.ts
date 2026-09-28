@@ -777,6 +777,24 @@ export async function transcribeVoiceProxy(ctx: Context) {
   }
 }
 
+/**
+ * Short back-channel noises ("嗯", "哦", "啊"...) are not questions. The MCU mic
+ * has no push-to-talk, so a cough, a filler or the tail of a previous reply
+ * used to start a full agent turn and the assistant answered "在的，请讲。" into
+ * the conversation. Dropping them here saves an LLM + TTS round trip (the two
+ * slowest legs) and keeps the transcript clean.
+ */
+const MCU_FILLER_TRANSCRIPTS = new Set([
+  '嗯', '嗯嗯', '唔', '哦', '哦哦', '噢', '啊', '啊啊', '呃', '唉', '诶', '哎',
+  '呀', '哈', '嗨', '喂', '在', '在吗', '那个', '然后',
+])
+
+export function isMcuFillerTranscript(text: string): boolean {
+  const normalized = text.replace(/[\s。，,、！!？?…~—\-]+/gu, '')
+  if (!normalized) return true
+  return normalized.length <= 2 && MCU_FILLER_TRANSCRIPTS.has(normalized)
+}
+
 export async function mcuVoiceTurn(ctx: Context) {
   const userId = authUserId(ctx)
   if (!userId) return
@@ -908,7 +926,16 @@ export async function mcuVoiceTurn(ctx: Context) {
       }, '[mcu-stt] voice turn transcribed')
 
       const transcript = result.text.trim()
-      if (!transcript) {
+      if (!transcript || isMcuFillerTranscript(transcript)) {
+        if (transcript) {
+          logger.info({
+            userId,
+            profile,
+            provider: result.provider,
+            interactionId,
+            transcriptLength: transcript.length,
+          }, '[mcu-stt] ignored back-channel noise instead of starting a turn')
+        }
         globalAgentServer?.emitMcuEvent({ type: 'interaction.status', interactionId, status: 'completed', text: '' }, { clientId })
         return
       }

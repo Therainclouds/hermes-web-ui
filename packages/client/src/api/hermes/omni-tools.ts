@@ -5,7 +5,7 @@ import { getApiKey } from '@/api/client'
 
 /**
  * Qwen Omni Realtime 模型（`qwen3.8-omni-flash-realtime`、
- * `qwen3.5-omni-flash-realtime` / `qwen3.5-omni-plus-realtime`、
+ * `qwen3.8-omni-plus-realtime`、
  * 以及 `qwen3-omni-flash-realtime` 都走同一份 OpenAI-Realtime 兼容协议）
  * 的 function calling 工具集。
  *

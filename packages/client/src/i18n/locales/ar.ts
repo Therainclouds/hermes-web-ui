@@ -1,4 +1,5 @@
 export default {
+  xiaozhiConnection: {"title": "Device connection · XiaoZhi", "refresh": "Refresh", "error": "Connection status unavailable. Retry shortly.", "connected": "Device connected", "offline": "Offline", "gateway": "Gateway", "online": "Online", "unconfigured": "Not configured", "setup": "Set this OTA address in the device Wi-Fi setup page, then restart on the same network.", "copy": "Copy OTA address", "copied": "Copied", "voiceSettings": "Open voice settings"},
   pluginsClient: { "paper-grading": { name: "تصحيح الأوراق", description: "يتطلب الماسح الضوئي. تصحيح الأوراق وتحرير الملاحظات وتصدير التقارير." } },
   browser: {
     title: 'المتصفح', settings: 'إعدادات المتصفح', desktopOnly: 'المتصفح المدمج متوفر فقط في Hermes Studio Desktop.', newTab: 'تبويب جديد',
@@ -596,7 +597,7 @@ export default {
     toolRunning: 'جارٍ البحث: {tool} …',
     toolsHint: 'أدوات مساحة العمل مفعّلة: الذاكرة، المهارات، الجلسات، المهام، Hermes Agent',
     toolCallsTitle: 'استدعاءات الأدوات',
-    modelNote: 'Qwen3.5-Omni-Flash-Realtime · نفس نموذج المحادثة الفورية في الاجتماعات',
+    modelNote: 'Qwen3.8-Omni-Flash-Realtime · نفس نموذج المحادثة الفورية في الاجتماعات',
     camera: 'فتح الكاميرا',
     mute: 'كتم الميكروفون',
     unmute: 'إلغاء الكتم',

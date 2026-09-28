@@ -50,7 +50,7 @@ const profilesStore = useProfilesStore()
 
 // Voices verified against the DashScope Qwen-Omni-Realtime catalogue.
 // `Ethan` (男声) is the default voice that ships with the qwen3.8 SDK
-// reference; the same catalogue is also accepted by qwen3.5-omni-* and
+// reference; the same catalogue is also accepted by qwen3.8-omni-* and
 // qwen3-omni-* models — they share the DashScope voice registry. Voices
 // from the previous Cherry/Chelsie/Adam family are NOT accepted by
 // Qwen-Omni-Realtime and DashScope closes the WS with 1007
@@ -71,8 +71,8 @@ selectedVoice.value = realtimeModelStore.config.voice || 'Ethan'
  * Surface a heads-up banner on the setup card when the chosen model has a
  * tight turn / duration cap per the Bailian docs. Most relevant for
  * `qwen3-omni-flash-realtime` (only 8 audio turns before older turns drop)
- * — but the qwen3.5 / qwen3.8 families also have 80/100-turn limits and
- * 120-480 second audio retention that surprise users during long meetings.
+ * — but the qwen3.8 family also has 80/100-turn limits and 120-480 second
+ * audio retention that surprise users during long meetings.
  */
 const modelLimits = computed(() => realtimeModelStore.limits)
 const showLimitsBanner = computed(() => {

@@ -9,7 +9,15 @@ export interface McuSpeechSegmenter {
 }
 
 export interface McuSpeechSegmenterOptions {
+  /** Hard cap per utterance handed to TTS; long text is chunked at a natural
+   *  break so synthesis can start (and speech can begin) much earlier.
+   *  0 disables chunking. */
   maxChars?: number
+  sentenceStreaming?: boolean
+  /** Sentence boundary length required for the FIRST segment only. A short
+   *  first segment lets the LLM's opening clause reach TTS while the rest of
+   *  the answer is still streaming. */
+  firstSegmentMinChars?: number
 }
 
 export function normalizeMcuSpeechText(text: string): string {
@@ -39,7 +47,7 @@ function paragraphEndsNormally(text: string): boolean {
   return PARAGRAPH_END_RE.test(text.trimEnd())
 }
 
-function findReadyParagraphBoundary(text: string): number {
+function findReadyParagraphBoundary(text: string, sentenceStreaming = false, minChars = 7, maxChars = 0): number {
   let inFence = false
   let inInlineCode = false
   let inLinkText = false
@@ -95,6 +103,27 @@ function findReadyParagraphBoundary(text: string): number {
       continue
     }
 
+    if (sentenceStreaming && i >= minChars && /[。！？!?]/.test(char)) return i + 1
+    if (sentenceStreaming && i >= minChars && char === '.' && /\s/.test(text[i + 1] || '')) return i + 1
+    // Chunking: once the pending text passes `maxChars`, cut at the last
+    // clause break so a run-on sentence starts being spoken instead of waiting
+    // for its final full stop. Only real clause punctuation counts -- splitting
+    // on a space or mid-word would garble links/English, and if the window has
+    // no clause break at all we keep waiting for the natural boundary.
+    if (maxChars > 0 && i + 1 >= maxChars) {
+      const window = text.slice(0, Math.min(i + 1, maxChars))
+      const clauseBreak = Math.max(
+        window.lastIndexOf('，'),
+        window.lastIndexOf('、'),
+        window.lastIndexOf('；'),
+        window.lastIndexOf(','),
+      )
+      if (clauseBreak > 0) return clauseBreak + 1
+      // No clause break inside the window: keep waiting for the natural
+      // boundary. A blind hard cut here sliced through fenced code and
+      // markdown links.
+    }
+
     if (char === '\n' || char === '\r') {
       let end = i + 1
       if (char === '\r' && text[i + 1] === '\n') {
@@ -109,14 +138,17 @@ function findReadyParagraphBoundary(text: string): number {
 }
 
 export function createMcuSpeechSegmenter(options: McuSpeechSegmenterOptions = {}): McuSpeechSegmenter {
-  void options
+  const maxChars = Math.max(0, Number(options.maxChars) || 0)
+  const firstSegmentMinChars = Math.max(2, Number(options.firstSegmentMinChars) || 3)
   let buffer = ''
+  let emitted = 0
 
   function takeReadySegments(force = false): string[] {
     const segments: string[] = []
 
     while (buffer.length > 0) {
-      let end = findReadyParagraphBoundary(buffer)
+      const minChars = emitted + segments.length === 0 ? firstSegmentMinChars : 7
+      let end = findReadyParagraphBoundary(buffer, options.sentenceStreaming, minChars, maxChars)
       if (end < 0 && force) {
         end = buffer.length
       }
@@ -126,6 +158,7 @@ export function createMcuSpeechSegmenter(options: McuSpeechSegmenterOptions = {}
       buffer = buffer.slice(end)
       const segment = normalizeMcuSpeechText(rawSegment)
       if (segment) segments.push(segment)
+      emitted += 1
     }
 
     return segments
@@ -143,6 +176,7 @@ export function createMcuSpeechSegmenter(options: McuSpeechSegmenterOptions = {}
     },
     reset() {
       buffer = ''
+      emitted = 0
     },
   }
 }

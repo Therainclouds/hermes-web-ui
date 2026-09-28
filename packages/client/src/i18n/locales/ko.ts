@@ -1,4 +1,5 @@
 export default {
+  xiaozhiConnection: {"title": "Device connection · XiaoZhi", "refresh": "Refresh", "error": "Connection status unavailable. Retry shortly.", "connected": "Device connected", "offline": "Offline", "gateway": "Gateway", "online": "Online", "unconfigured": "Not configured", "setup": "Set this OTA address in the device Wi-Fi setup page, then restart on the same network.", "copy": "Copy OTA address", "copied": "Copied", "voiceSettings": "Open voice settings"},
   pluginsClient: { "paper-grading": { name: "시험 채점", description: "스캐너가 필요합니다. 시험 채점, 주석 편집 및 학급 보고서를 지원합니다." } },
   browser: {
     title: '브라우저', settings: '브라우저 설정', desktopOnly: '내장 브라우저는 Hermes Studio Desktop에서만 사용할 수 있습니다.', newTab: '새 탭',
@@ -736,7 +737,7 @@ export default {
     toolRunning: '조회 중: {tool} …',
     toolsHint: '워크스페이스 도구 활성화: 메모리·스킬·세션·작업·Hermes Agent',
     toolCallsTitle: '도구 호출',
-    modelNote: 'Qwen3.5-Omni-Flash-Realtime · 회의 실시간 대화와 동일한 모델',
+    modelNote: 'Qwen3.8-Omni-Flash-Realtime · 회의 실시간 대화와 동일한 모델',
     camera: '카메라 켜기',
     mute: '마이크 음소거',
     unmute: '음소거 해제',

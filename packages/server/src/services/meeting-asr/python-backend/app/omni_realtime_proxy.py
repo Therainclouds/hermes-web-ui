@@ -4,11 +4,10 @@ DashScope Omni-Realtime proxy, driven by the official Qwen Omni SDK.
 Bridges a frontend WebSocket and the Aliyun DashScope real-time multimodal
 endpoint that powers the Qwen-Omni-Realtime model family. The default target
 is ``qwen3.8-omni-flash-realtime`` (DashScope model id) which the SDK ships
-in ``dashscope.audio.qwen_omni.OmniRealtimeConversation``; earlier generations
-(``qwen3.5-omni-flash-realtime`` / ``qwen3.5-omni-plus-realtime``) were driven
-by hand-rolled WebSocket frames and are no longer supported here.
+in ``dashscope.audio.qwen_omni.OmniRealtimeConversation``.
 
   * ``qwen3.8-omni-flash-realtime`` (default, fastest)
+  * ``qwen3.8-omni-plus-realtime``  (smarter, larger context window)
   * Older Qwen-Omni-Realtime families — set ``OMNI_REALTIME_MODEL`` to the
     model id you want; the proxy drives whatever the SDK accepts, but only
     qwen3.8 has been validated against the operator presets shipped here.

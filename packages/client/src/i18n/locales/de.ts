@@ -1,4 +1,5 @@
 export default {
+  xiaozhiConnection: {"title": "Device connection · XiaoZhi", "refresh": "Refresh", "error": "Connection status unavailable. Retry shortly.", "connected": "Device connected", "offline": "Offline", "gateway": "Gateway", "online": "Online", "unconfigured": "Not configured", "setup": "Set this OTA address in the device Wi-Fi setup page, then restart on the same network.", "copy": "Copy OTA address", "copied": "Copied", "voiceSettings": "Open voice settings"},
   pluginsClient: { "paper-grading": { name: "Prüfungskorrektur", description: "Benötigt Scanner. Arbeiten korrigieren, Anmerkungen bearbeiten und Berichte exportieren." } },
   browser: {
     title: 'Browser', settings: 'Browser-Einstellungen', desktopOnly: 'Der integrierte Browser ist nur in Hermes Studio Desktop verfügbar.', newTab: 'Neuer Tab',
@@ -736,7 +737,7 @@ export default {
     toolRunning: 'Abfrage läuft: {tool} …',
     toolsHint: 'Arbeitsbereich-Tools aktiv: Gedächtnis, Skills, Sitzungen, Aufgaben, Hermes Agent',
     toolCallsTitle: 'Tool-Aufrufe',
-    modelNote: 'Qwen3.5-Omni-Flash-Realtime · gleiches Modell wie das Meeting-Echtzeitgespräch',
+    modelNote: 'Qwen3.8-Omni-Flash-Realtime · gleiches Modell wie das Meeting-Echtzeitgespräch',
     camera: 'Kamera öffnen',
     mute: 'Mikrofon stummschalten',
     unmute: 'Stummschaltung aufheben',

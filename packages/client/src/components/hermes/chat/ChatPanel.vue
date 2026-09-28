@@ -965,10 +965,10 @@ const newChatMode = ref<"standard" | "realtime">("standard");
 // Qwen-Omni-Realtime model family — see docs:
 //   * qwen3.8-omni-flash-realtime  : current generation (DashScope SDK reference),
 //                                   faster, ≤80 audio turns / 480s audio / 120s video
-//   * qwen3.5-omni-plus-realtime   : smarter, ≤100 audio turns / 600s audio / 240s video
+//   * qwen3.8-omni-plus-realtime   : smarter, ≤100 audio turns / 600s audio / 240s video
 // The user picks one from the drawer; we then seed realtime-model store so the
 // dialog reads the right config.
-type NewChatRealtimeModel = "qwen3.8-omni-flash-realtime" | "qwen3.5-omni-plus-realtime";
+type NewChatRealtimeModel = "qwen3.8-omni-flash-realtime" | "qwen3.8-omni-plus-realtime";
 const newChatRealtimeModel = ref<NewChatRealtimeModel>("qwen3.8-omni-flash-realtime");
 
 /**
@@ -2964,7 +2964,7 @@ async function handleSessionModelCustomSubmit() {
                 <NRadioButton value="qwen3.8-omni-flash-realtime" data-testid="new-chat-realtime-model-flash">
                   {{ t("omniRealtime.modelFlash") }}
                 </NRadioButton>
-                <NRadioButton value="qwen3.5-omni-plus-realtime" data-testid="new-chat-realtime-model-plus">
+                <NRadioButton value="qwen3.8-omni-plus-realtime" data-testid="new-chat-realtime-model-plus">
                   {{ t("omniRealtime.modelPlus") }}
                 </NRadioButton>
               </NRadioGroup>

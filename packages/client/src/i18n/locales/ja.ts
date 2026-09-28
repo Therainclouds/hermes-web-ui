@@ -1,4 +1,5 @@
 export default {
+  xiaozhiConnection: {"title": "Device connection · XiaoZhi", "refresh": "Refresh", "error": "Connection status unavailable. Retry shortly.", "connected": "Device connected", "offline": "Offline", "gateway": "Gateway", "online": "Online", "unconfigured": "Not configured", "setup": "Set this OTA address in the device Wi-Fi setup page, then restart on the same network.", "copy": "Copy OTA address", "copied": "Copied", "voiceSettings": "Open voice settings"},
   pluginsClient: { "paper-grading": { name: "答案採点", description: "スキャナーが必要です。答案の採点、注釈の編集、クラスのレポートを出力します。" } },
   browser: {
     title: 'ブラウザー', settings: 'ブラウザー設定', desktopOnly: '内蔵ブラウザーは Hermes Studio Desktop でのみ利用できます。', newTab: '新しいタブ',
@@ -736,7 +737,7 @@ export default {
     toolRunning: '照会中：{tool} …',
     toolsHint: 'ワークスペースツール有効：記憶・スキル・セッション・タスク・Hermes Agent',
     toolCallsTitle: 'ツール呼び出し',
-    modelNote: 'Qwen3.5-Omni-Flash-Realtime · 会議のリアルタイム会話と同じモデル',
+    modelNote: 'Qwen3.8-Omni-Flash-Realtime · 会議のリアルタイム会話と同じモデル',
     camera: 'カメラを開く',
     mute: 'マイクをミュート',
     unmute: 'ミュート解除',

@@ -481,7 +481,7 @@ export async function bootstrap() {
   })()
   console.log('[bootstrap] terminal + kanban + LAN peer websocket setup')
 
-  const loopbackBaseUrl = getLoopbackBaseUrl(server)
+  const loopbackBaseUrl = getLoopbackBaseUrl()
 
   // Group chat Socket.IO (must be after server is created)
   const groupChatServer = new GroupChatServer(servers)

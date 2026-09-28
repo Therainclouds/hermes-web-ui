@@ -1,3 +1,4 @@
+import { xiaozhiPublicRoutes, xiaozhiProtectedRoutes } from './xiaozhi'
 import type { Context, Next } from 'koa'
 
 // Shared route modules
@@ -72,6 +73,7 @@ import { knowledgeRoutes } from './knowledge'
 export function registerRoutes(app: any, authMiddleware: Array<(ctx: Context, next: Next) => Promise<void>>) {
   // --- Public routes (no auth required) ---
   app.use(healthRoutes.routes())
+  app.use(xiaozhiPublicRoutes.routes())
   app.use(authPublicRoutes.routes())
   app.use(recoveryPublicRoutes.routes())
   app.use(devicePublicRoutes.routes())
@@ -87,6 +89,7 @@ export function registerRoutes(app: any, authMiddleware: Array<(ctx: Context, ne
 
   // --- Protected routes (auth required) ---
   app.use(authProtectedRoutes.routes())
+  app.use(xiaozhiProtectedRoutes.routes())
   app.use(deviceRoutes.routes())
   app.use(usbRoutes.routes())
   app.use(scannerRoutes.routes())

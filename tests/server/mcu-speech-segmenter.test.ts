@@ -41,14 +41,25 @@ describe('MCU speech segmenter', () => {
     ])
   })
 
-  it('does not split long paragraphs on the old max character soft boundary', () => {
+  it('chunks a run-on sentence at a clause break once maxChars is exceeded', () => {
+    // maxChars used to be a dead option: long text waited for its final full
+    // stop (and was then silently hard-truncated at 1500 chars by the TTS
+    // clamp). It now splits at a real clause break so speech can start early.
     const segmenter = createMcuSpeechSegmenter({ maxChars: 24 })
     const longText = '这是一段很长很长的内容，没有提前结束，也不会因为逗号，或者长度超过限制就提前播放'
 
-    expect(segmenter.pushDelta(longText)).toEqual([])
-    expect(segmenter.pushDelta('，直到段落正常结束。\n')).toEqual([
-      `${longText}，直到段落正常结束。`,
-    ])
+    const first = segmenter.pushDelta(longText)
+    // The first chunk must be a clause, not the whole run-on sentence.
+    expect(first.length).toBeGreaterThan(0)
+    expect(first[0]!.length).toBeLessThanOrEqual(24)
+    expect(first[0]!.endsWith('，')).toBe(true)
+
+    const rest = segmenter.pushDelta('直到段落正常结束。\n')
+    // Nothing is lost or duplicated: the chunks reassemble the source.
+    const joined = [...first, ...rest].join('')
+    expect(joined.replace(/\s+/g, '')).toBe(
+      `${longText}直到段落正常结束。`.replace(/\s+/g, ''),
+    )
   })
 
   it('normalizes markdown without preserving table syntax', () => {
@@ -59,4 +70,10 @@ describe('MCU speech segmenter', () => {
     expect(normalized).not.toContain('www.')
     expect(normalized).not.toContain('foo')
   })
+})
+
+it('can stream a complete short Chinese sentence before the paragraph finishes', () => {
+  const segmenter = createMcuSpeechSegmenter({ sentenceStreaming: true })
+  expect(segmenter.pushDelta('可以，我先帮你查一下。后面')).toEqual(['可以，我先帮你查一下。'])
+  expect(segmenter.flush()).toBe('后面')
 })

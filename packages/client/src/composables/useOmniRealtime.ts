@@ -120,7 +120,7 @@ export interface UseOmniRealtimeOptions {
  * Per the Qwen-Omni-Realtime docs the input sample_rate defaults to 16 kHz
  * and the output defaults to 24 kHz. Both must match the `audio.input.format`
  * / `audio.output.format` sent in `session.update` upstream, otherwise the
- * upstream decodes the input audio at the wrong rate (Qwen3.5 will refuse
+ * upstream decodes the input audio at the wrong rate (Qwen3.8 will refuse
  * mismatched audio with `input_audio_format_mismatch`).
  */
 const INPUT_SAMPLE_RATE = 16_000

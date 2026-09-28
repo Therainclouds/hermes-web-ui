@@ -72,13 +72,9 @@ const MODEL_LIMITS: Record<string, RealtimeModelLimits> = {
     audioTurns: 80, videoTurns: 50, audioSeconds: 480, videoSeconds: 120,
     label: 'qwen3.8-omni-flash-realtime',
   },
-  'qwen3.5-omni-plus-realtime': {
+  'qwen3.8-omni-plus-realtime': {
     audioTurns: 100, videoTurns: 50, audioSeconds: 600, videoSeconds: 240,
-    label: 'qwen3.5-omni-plus-realtime',
-  },
-  'qwen3.5-omni-flash-realtime': {
-    audioTurns: 80, videoTurns: 50, audioSeconds: 480, videoSeconds: 120,
-    label: 'qwen3.5-omni-flash-realtime',
+    label: 'qwen3.8-omni-plus-realtime',
   },
   'qwen3-omni-flash-realtime': {
     audioTurns: 8, videoTurns: 8, audioSeconds: null, videoSeconds: null,

@@ -198,7 +198,11 @@ export function getLoopbackPort(): number {
 }
 
 export function getLoopbackBaseUrl(port: number | string = LOOPBACK_PORT): string {
-  return `http://127.0.0.1:${port}`
+  const value = typeof port === 'number' || typeof port === 'string' ? Number(port) : NaN
+  if (!Number.isInteger(value) || value < 1 || value > 65535) {
+    throw new TypeError('Loopback port must be an integer between 1 and 65535')
+  }
+  return `http://127.0.0.1:${value}`
 }
 
 function getDefaultUpdateHealthcheckUrl(port: number | string = LOOPBACK_PORT): string {

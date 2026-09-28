@@ -1,4 +1,5 @@
 export default {
+  xiaozhiConnection: {"title": "设备连接 · 小智", "refresh": "刷新", "error": "暂时无法读取连接状态，请稍后重试。", "connected": "设备已连接", "offline": "未连接", "gateway": "网关", "online": "在线", "unconfigured": "未配置", "setup": "在设备配网页面填写此 OTA 地址，连接同一网络后重启。", "copy": "复制 OTA 地址", "copied": "已复制", "voiceSettings": "打开语音设置"},
   pluginsClient: { "paper-grading": { name: "試卷批改", description: "依賴掃描外掛。單張與批次批改、批註編輯及班級報表。" } },
   browser: {
     title: '瀏覽器', settings: '瀏覽器設定', desktopOnly: '內建瀏覽器僅在 Hermes Studio 桌面版可用。', newTab: '新分頁',
@@ -642,7 +643,7 @@ export default {
     toolRunning: '正在查詢：{tool} …',
     toolsHint: '已啟用工作台工具：記憶、技能、會話、任務、呼叫 Hermes Agent',
     toolCallsTitle: '工具呼叫',
-    modelNote: 'Qwen3.5-Omni-Flash-Realtime · 與會議即時對話一致',
+    modelNote: 'Qwen3.8-Omni-Flash-Realtime · 與會議即時對話一致',
     camera: '開啟攝影機',
     mute: '靜音麥克風',
     unmute: '取消靜音',
@@ -4550,9 +4551,9 @@ export default {
     },
     realtime: {
       title: '即時對話',
-      subtitle: '與 Qwen3.5-Omni-Flash-Realtime 多模態模型即時語音對話',
+      subtitle: '與 Qwen3.8-Omni-Flash-Realtime 多模態模型即時語音對話',
       tabLabel: '即時對話',
-      tabTooltip: '使用同一個 DashScope Key 接入 Qwen3.5-Omni-Flash-Realtime 即時語音對話',
+      tabTooltip: '使用同一個 DashScope Key 接入 Qwen3.8-Omni-Flash-Realtime 即時語音對話',
       closeHint: '關閉即時對話面板',
       needApiKey: '請先在上方設定 DashScope API Key 後再啟動即時對話。',
       voice: '聲音',
