@@ -778,6 +778,42 @@ class AgentPool:
                 add_note=True,
             )
 
+    def _install_mcu_camera_tool_repair(self, agent: Any, session_id: str) -> None:
+        """Accept the exact authorized camera name when an MCU model skips tool_call.
+
+        Tool search can return a deferred name which the model then calls directly.
+        Re-authorize against the session's current uncollapsed catalog, and publish
+        only that camera schema. Normal registry dispatch/approval stays in charge.
+        """
+        if not session_id.startswith("mcu-"):
+            return
+        original = getattr(agent, "_repair_tool_call", None)
+        if not callable(original) or getattr(original, "_mcu_camera_repair", False):
+            return
+
+        def repair_camera_name(name: str) -> str | None:
+            if isinstance(name, str) and name.startswith("mcp__xiaozhi_device__"):
+                try:
+                    from model_tools import get_tool_definitions
+                    definitions = get_tool_definitions(
+                        enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+                        disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                        quiet_mode=True, skip_tool_search_assembly=True,
+                    ) or []
+                    for definition in definitions:
+                        function = definition.get("function", {})
+                        if function.get("name") == name and "self.camera.take_photo" in function.get("description", ""):
+                            agent.valid_tool_names.add(name)
+                            if not any(item.get("function", {}).get("name") == name for item in agent.tools):
+                                agent.tools.append(definition)
+                            return name
+                except Exception as exc:
+                    print(f"[hermes_bridge] camera tool scope refresh failed: {exc}", file=sys.stderr, flush=True)
+            return original(name)
+
+        repair_camera_name._mcu_camera_repair = True
+        agent._repair_tool_call = repair_camera_name
+
     def _install_prepersist_dedup_hook(self, agent: Any) -> None:
         """Skip one bridge-pre-persisted user message in the native DB flush."""
         original = getattr(agent, "_persist_session", None)
@@ -1662,6 +1698,7 @@ class AgentPool:
         # plugin reload that clears the manager's callback registry.
         self._install_usage_hook()
         self._install_boundary_interrupt(session)
+        self._install_mcu_camera_tool_repair(session.agent, session_id)
         session.config["boundary_interrupt_supported"] = session.boundary_supported
         if session.boundary_error:
             session.config["boundary_interrupt_error"] = session.boundary_error

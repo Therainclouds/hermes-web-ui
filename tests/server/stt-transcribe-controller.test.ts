@@ -473,7 +473,7 @@ describe('stt transcribe controller', () => {
     expect(getHeader(init.headers, 'X-Api-Key')).not.toContain('attacker-secret')
   })
 
-  it('passes MCU WAV audio to Doubao without ffmpeg normalization', async () => {
+  it.each([true, false])('passes MCU WAV audio and speechEnabled=%s without ffmpeg normalization', async (speechEnabled) => {
     const startMcuVoiceChatTurn = vi.fn()
     const audioConvertMock = {
       transcodeToWav: vi.fn(async (audio: Buffer) => ({
@@ -523,6 +523,7 @@ describe('stt transcribe controller', () => {
         'x-hermes-mcu-interaction-id': 'voice-1',
         'x-hermes-mcu-device-id': 'device-1',
         'x-hermes-mcu-agent-runtime': 'hermes',
+        ...(speechEnabled ? {} : { 'x-hermes-mcu-speech-enabled': 'false' }),
       },
     )
 
@@ -546,6 +547,7 @@ describe('stt transcribe controller', () => {
       transcript: '你好',
       clientId: 'device-1',
       agentRuntime: 'hermes',
+      ...(speechEnabled ? {} : { speechEnabled: false }),
     })
   })
 

@@ -18,6 +18,7 @@ from bridge_runtime import (
     _hermes_home,
     _install_stop_signal_handlers,
     _jsonable,
+    _mcp_discovery_functions,
     _positive_int,
     _profile_env,
     _profile_home,
@@ -375,7 +376,8 @@ class BridgeServer:
     def _handle_mcp_action(self, action: str, req: dict[str, Any], profile: str | None = None) -> dict[str, Any]:
         """Handle MCP management actions in worker process."""
         try:
-            from tools.mcp_tool import discover_mcp_tools, register_mcp_servers, _run_on_mcp_loop, _servers, _lock
+            from tools.mcp_tool import _run_on_mcp_loop, _servers, _lock
+            discover_mcp_tools, register_mcp_servers = _mcp_discovery_functions()
         except ImportError:
             return {"error": "MCP tool module not available", "ok": False}
 

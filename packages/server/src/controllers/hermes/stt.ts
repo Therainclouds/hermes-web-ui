@@ -853,6 +853,7 @@ export async function mcuVoiceTurn(ctx: Context) {
   const token = bearerToken(ctx)
   const clientId = ctx.get('x-hermes-mcu-device-id') || undefined
   const agentRuntime = normalizeMcuAgentRuntime(ctx.get('x-hermes-mcu-agent-runtime'))
+  const speechEnabled = ctx.get('x-hermes-mcu-speech-enabled') !== 'false'
   let debugAudioPath = ''
   let debugMetadataPath = ''
   try {
@@ -956,6 +957,7 @@ export async function mcuVoiceTurn(ctx: Context) {
         transcript,
         clientId,
         agentRuntime,
+        ...(speechEnabled ? {} : { speechEnabled: false }),
       })
     } catch (error) {
       const globalAgentServer = getActiveGlobalAgentServer()

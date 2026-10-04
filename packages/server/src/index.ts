@@ -1,3 +1,4 @@
+import { ensureRealtimeBackendReady } from './services/realtime-backend'
 import Koa from 'koa'
 import type { Context } from 'koa'
 import cors from '@koa/cors'
@@ -557,7 +558,10 @@ export async function bootstrap() {
       }
       if (!targetPort) return // fall through to catch-all
 
+      const upgradeTimer = setTimeout(() => socket.destroy(), 65_000)
+      socket.once('close', () => clearTimeout(upgradeTimer))
       const forward = (upstream: import('net').Socket): void => {
+        clearTimeout(upgradeTimer)
         const requestLine = `${req.method} ${req.url} HTTP/${req.httpVersion}\r\n`
         const headers = Object.entries(req.headers)
           .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
@@ -568,28 +572,42 @@ export async function bootstrap() {
         }
         upstream.pipe(socket)
         socket.pipe(upstream)
+        socket.resume()
+        socket.on('close', () => upstream.destroy())
+        upstream.on('close', () => socket.destroy())
         upstream.on('error', () => socket.destroy())
         socket.on('error', () => upstream.destroy())
       }
 
-      if (meetingASRService.useTls) {
-        // Lazy-load tls only when the device runtime actually needs it.
-        import('node:tls').then((tls) => {
-          forward(tls.connect({ port: targetPort!, host: '127.0.0.1', rejectUnauthorized: false }))
+      socket.pause()
+      // Realtime uses the managed ASR child. Node reloads stop that child;
+      // lazily restore it instead of forwarding into a closed port forever.
+      void (req.url === '/ws/omni-realtime' ? ensureRealtimeBackendReady() : Promise.resolve())
+        .then(() => {
+          if (socket.destroyed) return
+          if (req.url === '/ws/omni-realtime') targetPort = meetingASRService.getASRPort() || 8000
+          if (meetingASRService.useTls) {
+            // Lazy-load tls only when the device runtime actually needs it.
+            import('node:tls').then((tls) => {
+              forward(tls.connect({ port: targetPort!, host: '127.0.0.1', rejectUnauthorized: false }))
+            }).catch((err) => {
+              logger.error('[bootstrap] failed to load node:tls for ASR proxy: %s', err?.message || err)
+              socket.destroy()
+            })
+          } else {
+            // Dev/local default — uvicorn serves plain HTTP, so a raw TCP relay
+            // is correct and avoids TLS handshake failures against non-SSL backends.
+            import('net').then((net) => {
+              forward(net.connect(targetPort!, '127.0.0.1'))
+            }).catch((err) => {
+              logger.error('[bootstrap] failed to load node:net for ASR proxy: %s', err?.message || err)
+              socket.destroy()
+            })
+          }
         }).catch((err) => {
-          logger.error('[bootstrap] failed to load node:tls for ASR proxy: %s', err?.message || err)
+          logger.warn('[bootstrap] realtime backend unavailable: %s', err?.message || err)
           socket.destroy()
         })
-      } else {
-        // Dev/local default — uvicorn serves plain HTTP, so a raw TCP relay
-        // is correct and avoids TLS handshake failures against non-SSL backends.
-        import('net').then((net) => {
-          forward(net.connect(targetPort!, '127.0.0.1'))
-        }).catch((err) => {
-          logger.error('[bootstrap] failed to load node:net for ASR proxy: %s', err?.message || err)
-          socket.destroy()
-        })
-      }
     })
   })
 

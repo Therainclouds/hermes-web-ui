@@ -835,10 +835,19 @@ def _load_enabled_toolsets() -> list[str] | None:
         return None
 
 
+def _mcp_discovery_functions():
+    # Hermes split discovery out of mcp_tool; keep support for older runtimes.
+    try:
+        from tools.mcp_tool_discovery import discover_mcp_tools, register_mcp_servers
+    except ImportError:
+        from tools.mcp_tool import discover_mcp_tools, register_mcp_servers
+    return discover_mcp_tools, register_mcp_servers
+
+
 def _discover_bridge_mcp_tools() -> list[str]:
     _ensure_agent_imports()
     try:
-        from tools.mcp_tool import discover_mcp_tools
+        discover_mcp_tools, _ = _mcp_discovery_functions()
 
         tools = discover_mcp_tools()
         return list(tools) if isinstance(tools, list) else []

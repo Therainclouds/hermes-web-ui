@@ -3440,6 +3440,8 @@ export class GroupChatServer {
         const servers = Array.isArray(httpServers) ? httpServers : [httpServers]
 
         this.io = new Server(servers[0], {
+            // Bootstrap owns unknown upgrades; Realtime may wait for its backend.
+            destroyUpgrade: false,
             cors: { origin: createSocketIoCorsOrigin(config.corsOrigins) },
             maxHttpBufferSize: 2_000_000,
             allowRequest: (req, callback) => {

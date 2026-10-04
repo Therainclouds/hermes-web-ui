@@ -157,6 +157,7 @@ interface LocalSocketBridge {
 }
 
 interface McuVoiceChatTurnOptions {
+  speechEnabled?: boolean
   userToken: string
   profile: string
   interactionId: string
@@ -180,6 +181,7 @@ type McuSpeechSynthesisResult =
   | { ok: false; err: unknown; aborted: boolean }
 
 interface McuVoiceStreamState {
+  speechEnabled: boolean
   interactionId: string
   profile: string
   agentRuntime: McuAgentRuntime
@@ -645,6 +647,7 @@ export class GlobalAgentServer {
         status: 'speaking',
         text: segmentText,
       }, { clientId: options.clientId })
+      if (options.speechEnabled === false) return
       const controller = this.registerMcuTtsAbortController(options.interactionId)
       const audioResult: Promise<McuSpeechSynthesisResult> = this.synthesizeMcuSpeech(
         segmentText,
@@ -972,6 +975,10 @@ export class GlobalAgentServer {
         const text = normalizeMcuSpeechText(rawText)
         if (!text) continue
         const segmentId = `${interactionId}-tts-${++segmentIndex}`
+        if (options.speechEnabled === false) {
+          this.emitMcuEvent({ type: 'interaction.status', interactionId, status: 'speaking', text }, { clientId: options.clientId })
+          continue
+        }
         const controller = this.registerMcuTtsAbortController(interactionId)
         const audioResult: Promise<McuSpeechSynthesisResult> = this.synthesizeMcuSpeech(
           text,
@@ -1853,6 +1860,7 @@ export class GlobalAgentServer {
       ? payload.interactionId.trim()
       : `mcu-voice-${Date.now()}`
     this.mcuVoiceStreams.set(clientId, {
+      speechEnabled: payload.speechEnabled !== false,
       interactionId,
       profile: typeof payload.profile === 'string' && payload.profile.trim() ? payload.profile.trim() : this.frontendProfile(socket) || 'default',
       agentRuntime: normalizeMcuAgentRuntime(payload.agentRuntime),
@@ -2091,6 +2099,7 @@ export class GlobalAgentServer {
           'X-Hermes-Mcu-Interaction-Id': stream.interactionId,
           'X-Hermes-Mcu-Device-Id': clientId,
           'X-Hermes-Mcu-Agent-Runtime': stream.agentRuntime,
+          'X-Hermes-Mcu-Speech-Enabled': String(stream.speechEnabled),
           'X-Hermes-Profile': stream.profile,
         },
         body: new Uint8Array(wav),
