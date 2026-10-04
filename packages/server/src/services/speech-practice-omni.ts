@@ -240,7 +240,7 @@ function meetingAsrDataDir(): string {
   return process.env.MEETING_ASR_DATA_DIR || path.join(process.cwd(), 'data', 'meeting-asr')
 }
 
-async function resolveDashScopeKey(provided?: string): Promise<string | null> {
+export async function resolveDashScopeKey(provided?: string): Promise<string | null> {
   if (provided && provided.trim()) return provided.trim()
   const stored = await readStoredDashScopeKey(meetingAsrDataDir()).catch(() => null)
   if (stored) return stored

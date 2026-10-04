@@ -1,7 +1,17 @@
 import type { Context } from 'koa'
 import { parseMultipartBoundary, splitMultipart } from '../lib/multipart'
 import { drainRejectedRequest, nonDestroyingRequestBody } from '../lib/request-body'
-import { authorizeCameraUpload, captureXiaozhiPhoto, readCameraPhoto, saveCameraPhoto } from '../services/xiaozhi-camera'
+import { analyzeCameraPhoto, authorizeCameraUpload, captureXiaozhiPhoto, readCameraPhoto, saveCameraPhoto } from '../services/xiaozhi-camera'
+
+export async function analyzeCameraFrame(ctx: Context) {
+  ctx.set('Cache-Control', 'no-store')
+  const deviceId = ctx.get('device-id')
+  if (!await authorizeCameraUpload(deviceId, ctx.get('authorization').replace(/^Bearer\s+/i, ''))) { ctx.status = 401; return }
+  const body = ctx.request.body as Record<string, unknown> | undefined
+  if (typeof body?.id !== 'string' || typeof body.question !== 'string' || !body.question.trim() || body.question.length > 1000) { ctx.status = 400; return }
+  try { ctx.body = await analyzeCameraPhoto(body.id, deviceId, body.question) }
+  catch (error) { ctx.status = 502; ctx.body = { error: error instanceof Error ? error.message : 'Camera vision failed' } }
+}
 
 export async function uploadCameraPhoto(ctx: Context) {
   ctx.set('Cache-Control', 'no-store')

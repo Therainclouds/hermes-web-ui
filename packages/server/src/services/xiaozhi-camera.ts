@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import sharp from 'sharp'
 import { getWebUiHome } from '../config'
 import { readXiaozhiConfig } from './xiaozhi-provisioning'
+import { describeXiaozhiFrame } from './xiaozhi-vision'
 
 const photoDir = () => join(getWebUiHome(), 'devices', 'xiaozhi', 'photos')
 export const validPhotoId = (id: string) => /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(id)
@@ -27,6 +28,14 @@ export async function saveCameraPhoto(jpeg: Buffer, deviceId: string) {
 export async function readCameraPhoto(id: string) {
   if (!validPhotoId(id)) return null
   try { return await readFile(join(photoDir(), `${id}.jpg`)) } catch { return null }
+}
+export async function analyzeCameraPhoto(id: string, deviceId: string, question: string) {
+  if (!validPhotoId(id)) throw new Error('Invalid camera photo')
+  const metadata = JSON.parse(await readFile(join(photoDir(), `${id}.json`), 'utf8'))
+  if (String(metadata.deviceId).toLowerCase() !== deviceId.toLowerCase()) throw new Error('Camera photo belongs to another device')
+  const photo = await readCameraPhoto(id)
+  if (!photo) throw new Error('Camera photo not found')
+  return { id, analysis: await describeXiaozhiFrame(photo, question) }
 }
 export async function captureXiaozhiPhoto() {
   const config = await readXiaozhiConfig()
