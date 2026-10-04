@@ -26,10 +26,12 @@
  *   - P2-4: tests use usePolling against real temp dirs, never memfs.
  */
 
-import { watch, type FSWatcher, type ChokidarOptions } from 'chokidar'
+import { watch, type FSWatcher } from 'chokidar'
 import { EventEmitter } from 'events'
 import { statSync, existsSync } from 'fs'
 import { join, extname } from 'path'
+
+type ChokidarOptions = NonNullable<Parameters<typeof watch>[1]>
 
 // --- Event types ---------------------------------------------------------
 

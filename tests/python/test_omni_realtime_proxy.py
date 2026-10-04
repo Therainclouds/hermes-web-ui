@@ -75,6 +75,32 @@ def _install_mock_conversation(proxy, sent: list) -> mock.MagicMock:
     return convo
 
 
+class HandshakeDiagnosisTest(unittest.TestCase):
+    def setUp(self) -> None:
+        os.environ.setdefault("DASHSCOPE_API_KEY", "test-key")
+        _import_app()
+        self.omni = importlib.import_module("app.omni_realtime_proxy")
+
+    def test_blocked_key_is_reported_without_exposing_credentials(self) -> None:
+        rejection = self.omni.websocket.WebSocketBadStatusException(
+            "handshake rejected", 401,
+            resp_body=b'{"code":"InvalidApiKey","message":"API-key is blocked."}',
+        )
+        with mock.patch.object(self.omni.websocket, "create_connection", side_effect=rejection) as connect:
+            detail = self.omni.diagnose_realtime_handshake(
+                "wss://example.test/realtime", "secret-key",
+            )
+        self.assertEqual(detail, "DashScope API key is blocked")
+        self.assertNotIn("secret-key", detail)
+        self.assertEqual(connect.call_args.kwargs["header"]["Authorization"], "Bearer secret-key")
+
+    def test_transport_error_keeps_original_timeout(self) -> None:
+        with mock.patch.object(self.omni.websocket, "create_connection", side_effect=OSError("offline")):
+            self.assertIsNone(self.omni.diagnose_realtime_handshake(
+                "wss://example.test/realtime", "secret-key",
+            ))
+
+
 class TranslateEventTest(unittest.TestCase):
     def setUp(self) -> None:
         os.environ.setdefault("DASHSCOPE_API_KEY", "test-key")
@@ -329,6 +355,11 @@ class OmniProxyDefaultsTest(unittest.TestCase):
         self.assertEqual(proxy.model, "custom-model")
         self.assertEqual(proxy.voice, "CustomVoice")
         self.assertEqual(proxy.instructions, "always answer in English")
+
+    def test_turn_silence_is_bounded_for_device_sessions(self) -> None:
+        self.assertEqual(self.omni.OmniRealtimeProxy(turn_silence_ms=450).turn_silence_ms, 450)
+        self.assertEqual(self.omni.OmniRealtimeProxy(turn_silence_ms=50).turn_silence_ms, 300)
+        self.assertEqual(self.omni.OmniRealtimeProxy(turn_silence_ms=5000).turn_silence_ms, 1200)
 
     def test_settings_expose_omni_realtime_keys(self) -> None:
         # Belt-and-braces: make sure all the env-backed fields exist on Settings

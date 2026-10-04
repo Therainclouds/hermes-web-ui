@@ -48,24 +48,18 @@ const meetingStore = useMeetingStore()
 const realtimeModelStore = useRealtimeModelStore()
 const profilesStore = useProfilesStore()
 
-// Voices verified against the DashScope Qwen-Omni-Realtime catalogue.
-// `Ethan` (男声) is the default voice that ships with the qwen3.8 SDK
-// reference; the same catalogue is also accepted by qwen3.8-omni-* and
-// qwen3-omni-* models — they share the DashScope voice registry. Voices
-// from the previous Cherry/Chelsie/Adam family are NOT accepted by
-// Qwen-Omni-Realtime and DashScope closes the WS with 1007
-// `Voice 'X' is not supported.` if any of them is sent upstream.
+// Tina is verified with qwen3.8-omni-flash-realtime. Ethan is rejected by
+// that model and must not be offered as its default voice.
 const voiceOptions: SelectOption[] = [
-  { label: 'Ethan (男声 · 中文 · 默认)', value: 'Ethan' },
-  { label: 'Tina (女声 · 中文)', value: 'Tina' },
+  { label: 'Tina (女声 · 中文 · 默认)', value: 'Tina' },
   { label: 'Serena (女声 · 中文)', value: 'Serena' },
   { label: 'Jennifer (女声 · 中文)', value: 'Jennifer' },
   { label: 'Ryan (男声 · 中文)', value: 'Ryan' },
 ]
 
-const selectedVoice = ref('Ethan')
+const selectedVoice = ref('Tina')
 // Apply the default voice configured in the Realtime model panel.
-selectedVoice.value = realtimeModelStore.config.voice || 'Ethan'
+selectedVoice.value = realtimeModelStore.config.voice || 'Tina'
 
 /**
  * Surface a heads-up banner on the setup card when the chosen model has a

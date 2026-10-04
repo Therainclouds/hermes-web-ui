@@ -57,7 +57,7 @@ export interface RealtimeModelLimits {
 const STORAGE_KEY = 'hermes.realtimeModel'
 
 const DEFAULT_MODEL = 'qwen3.8-omni-flash-realtime'
-const DEFAULT_VOICE = 'Ethan'
+const DEFAULT_VOICE = 'Tina'
 /** MiniMax speech-to-text API defaults (https://platform.minimax.cn/docs/api-reference/speech-to-text). */
 const DEFAULT_MINIMAX_ASR_MODEL = 'asr-1.0'
 const DEFAULT_MINIMAX_BASE_URL = 'https://api.minimaxi.com'

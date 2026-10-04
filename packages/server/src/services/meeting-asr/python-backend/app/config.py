@@ -104,11 +104,9 @@ class Settings:
     )
     omni_realtime_voice: str = os.environ.get(
         "OMNI_REALTIME_VOICE",
-        # `Ethan` is the default voice shipped with the `qwen3.8-omni-flash-realtime`
-        # example in the DashScope SDK reference. The previous default `Tina`
-        # belonged to the qwen3.5 catalogue and the qwen3.8 server rejects it
-        # with `1007 InvalidParameter: Voice 'Tina' is not supported.`.
-        "Ethan",
+        # Verified against qwen3.8-omni-flash-realtime with a complete
+        # text-to-speech turn. Ethan is rejected by this model.
+        "Tina",
     )
     omni_realtime_instructions: str = os.environ.get(
         "OMNI_REALTIME_INSTRUCTIONS",

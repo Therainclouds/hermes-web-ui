@@ -1,5 +1,5 @@
 export default {
-  xiaozhiConnection: {"title": "设备连接 · 小智", "refresh": "刷新", "error": "暂时无法读取连接状态，请稍后重试。", "connected": "设备已连接", "offline": "未连接", "gateway": "网关", "online": "在线", "unconfigured": "未配置", "setup": "在设备配网页面填写此 OTA 地址，连接同一网络后重启。", "copy": "复制 OTA 地址", "copied": "已复制", "voiceSettings": "打开语音设置"},
+  xiaozhiConnection: {"takePhoto": "用小智拍照", "photoHint": "连接设备后唤醒小智，再点击拍照。照片仅保存到这台服务器。", "photoError": "拍照失败，请确认摄像头设备已连接并唤醒，然后重试。", "photoAlt": "小智摄像头拍摄的照片", "downloadPhoto": "下载照片", "title": "设备连接 · 小智", "refresh": "刷新", "error": "暂时无法读取连接状态，请稍后重试。", "connected": "设备已连接", "offline": "未连接", "gateway": "网关", "online": "在线", "unconfigured": "未配置", "setup": "在设备配网页面填写此 OTA 地址，连接同一网络后重启。", "copy": "复制 OTA 地址", "copied": "已复制", "voiceSettings": "打开语音设置"},
   pluginsClient: { "paper-grading": { name: "試卷批改", description: "依賴掃描外掛。單張與批次批改、批註編輯及班級報表。" } },
   browser: {
     title: '瀏覽器', settings: '瀏覽器設定', desktopOnly: '內建瀏覽器僅在 Hermes Studio 桌面版可用。', newTab: '新分頁',

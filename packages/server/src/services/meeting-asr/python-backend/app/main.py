@@ -637,9 +637,15 @@ async def ws_omni_realtime(ws: WebSocket) -> None:
             voice=start_msg.get("voice"),
             instructions=start_msg.get("instructions"),
             tools=start_msg.get("tools"),
+            turn_silence_ms=450 if start_msg.get("client") == "xiaozhi" else 800,
         )
         await proxy.connect()
-        await ws.send_json({"type": "ready", "session_id": proxy.session_id, "model": proxy.model})
+        await ws.send_json({
+            "type": "ready", "session_id": proxy.session_id, "model": proxy.model,
+            "input_audio": {"format": "pcm_s16le", "sample_rate": 16000, "channels": 1},
+            "output_audio": {"format": "pcm_s16le", "sample_rate": 24000, "channels": 1},
+            "turn_silence_ms": proxy.turn_silence_ms,
+        })
 
         upstream_task = asyncio.create_task(pump_upstream())
 

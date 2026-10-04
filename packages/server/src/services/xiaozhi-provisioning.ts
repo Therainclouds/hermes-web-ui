@@ -4,7 +4,7 @@ import { isIP } from 'node:net'
 import { networkInterfaces, type NetworkInterfaceInfo } from 'node:os'
 import { join } from 'node:path'
 import { config, getWebUiHome } from '../config'
-interface DeviceConfig { deviceId: string; setupCode: string; websocketUrl: string; deviceToken: string }
+interface DeviceConfig { deviceId: string; deviceIds?: string[]; setupCode: string; websocketUrl: string; deviceToken: string; gatewayMcpToken?: string }
 
 type Interfaces = Record<string, NetworkInterfaceInfo[] | undefined>
 
@@ -37,7 +37,7 @@ function currentWebsocketUrl(c: DeviceConfig, localAddress?: string, requestHost
   return url.toString()
 }
 
-async function readConfig(): Promise<DeviceConfig | null> {
+export async function readXiaozhiConfig(): Promise<DeviceConfig | null> {
   try {
     const c = JSON.parse(await readFile(join(getWebUiHome(), 'devices', 'xiaozhi.json'), 'utf8'))
     if (typeof c.deviceId !== 'string' || typeof c.setupCode !== 'string' || c.setupCode.length < 24 || typeof c.deviceToken !== 'string' || c.deviceToken.length < 24) return null
@@ -47,14 +47,14 @@ async function readConfig(): Promise<DeviceConfig | null> {
   } catch { return null }
 }
 export async function getXiaozhiProvisioning(deviceId: string, code: string, localAddress?: string, requestHost?: string) {
-  const c = await readConfig()
-  if (!c || c.deviceId.toLowerCase() !== deviceId.toLowerCase()) return null
+  const c = await readXiaozhiConfig()
+  if (!c || ![c.deviceId, ...(c.deviceIds || [])].some(id => id.toLowerCase() === deviceId.toLowerCase())) return null
   const expected = Buffer.from(c.setupCode), supplied = Buffer.from(code)
   if (expected.length !== supplied.length || !timingSafeEqual(expected, supplied)) return null
   return { websocket: { url: currentWebsocketUrl(c, localAddress, requestHost), token: c.deviceToken, version: 1 }, server_time: { timestamp: Date.now() } }
 }
 export async function getXiaozhiStatus(localAddress?: string, requestHost?: string) {
-  const c = await readConfig()
+  const c = await readXiaozhiConfig()
   if (!c) return { configured: false, gatewayOnline: false, sessions: 0 }
   const ws = new URL(currentWebsocketUrl(c, localAddress, requestHost))
   const ota = new URL(`http://${ws.hostname}:${config.port}`)

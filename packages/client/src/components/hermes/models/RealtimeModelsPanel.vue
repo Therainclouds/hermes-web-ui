@@ -22,12 +22,10 @@ const { t } = useI18n()
 const message = useMessage()
 const store = useRealtimeModelStore()
 
-// Voices verified against the DashScope `qwen3.8-omni-flash-realtime`
-// catalogue (default model). `Cherry`, `Chelsie`, and `Adam` are NOT valid
-// for that model — DashScope closes the WS with 1007 if they are sent.
+// Tina is verified with the default qwen3.8 model. Ethan is rejected by that
+// model, so it must not appear as a default option.
 const voiceOptions: SelectOption[] = [
-  { label: 'Ethan (男声 · 中文 · 默认)', value: 'Ethan' },
-  { label: 'Tina (女声 · 中文)', value: 'Tina' },
+  { label: 'Tina (女声 · 中文 · 默认)', value: 'Tina' },
   { label: 'Serena (女声 · 中文)', value: 'Serena' },
   { label: 'Jennifer (女声 · 中文)', value: 'Jennifer' },
   { label: 'Ryan (男声 · 中文)', value: 'Ryan' },
@@ -73,7 +71,7 @@ async function handleSave() {
     const result = await store.updateConfig({
       apiKey: apiKey.value.trim(),
       model: model.value.trim() || 'qwen3.8-omni-flash-realtime',
-      voice: voice.value || 'Ethan',
+      voice: voice.value || 'Tina',
       asrProvider: asrProvider.value,
       minimaxApiKey: minimaxApiKey.value.trim(),
       minimaxAsrModel: minimaxAsrModel.value.trim() || 'asr-1.0',

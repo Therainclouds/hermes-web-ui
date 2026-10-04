@@ -43,7 +43,7 @@ Frontend protocol (binary in, JSON events out — unchanged from the previous
 hand-rolled proxy):
 
   Frame 1 (text, required): control JSON
-      {"type": "start", "voice": "Ethan", "instructions": "...", "model": "...",
+      {"type": "start", "voice": "Tina", "instructions": "...", "model": "...",
        "tools": [{"type": "function", "name": "...", "description": "...",
                   "parameters": {...}}, ...]}
     `model` / `voice` / `instructions` / `tools` are optional; the server-side
@@ -109,6 +109,7 @@ import json
 import logging
 import uuid
 from typing import Any, AsyncIterator
+import websocket
 
 # DashScope SDK — provides the high-level conversation wrapper that drives
 # the OpenAI-Realtime WS on a background thread, plus the AudioFormat /
@@ -143,6 +144,35 @@ EMPTY_ARGUMENTS = ("", "{}")
 # make the upstream iterator return. Sentinel object identity matters — must
 # not collide with a real JSON event (which is always a ``str``).
 _STOP_SENTINEL: object = object()
+
+
+def diagnose_realtime_handshake(url: str, api_key: str, workspace: str | None = None) -> str | None:
+    """Recover an actionable HTTP rejection hidden by the SDK's 5 s timeout.
+
+    Only called after the SDK handshake fails, so successful sessions pay no
+    extra connection cost. Never include the credential or response headers in
+    the returned text.
+    """
+    headers = {"Authorization": f"Bearer {api_key}"}
+    if workspace:
+        headers["X-DashScope-WorkSpace"] = workspace
+    try:
+        probe = websocket.create_connection(url, header=headers, timeout=3)
+        probe.close()
+    except websocket.WebSocketBadStatusException as exc:
+        status = getattr(exc, "status_code", 0)
+        try:
+            body = json.loads(exc.resp_body or b"{}")
+        except (TypeError, ValueError):
+            body = {}
+        code = str(body.get("code") or "")[:64]
+        detail = str(body.get("message") or "")[:120]
+        if status == 401 and code == "InvalidApiKey":
+            return "DashScope API key is blocked" if "blocked" in detail.lower() else "DashScope API key is invalid"
+        return f"DashScope realtime rejected connection (HTTP {status}{f' {code}' if code else ''})"
+    except Exception:
+        return None
+    return None
 
 
 def _as_arguments_json(value: object) -> str:
@@ -286,7 +316,7 @@ class OmniRealtimeProxy:
 
     Lifecycle:
 
-        proxy = OmniRealtimeProxy(voice="Ethan", instructions="...")
+        proxy = OmniRealtimeProxy(voice="Tina", instructions="...")
         await proxy.connect()                 # opens upstream + configures session
         await proxy.send_audio(pcm_bytes)     # binary frame, PCM16@16k mono
         await proxy.commit_audio()            # optional: flush buffer (server VAD also flushes)
@@ -303,6 +333,7 @@ class OmniRealtimeProxy:
         voice: str | None = None,
         instructions: str | None = None,
         tools: list[dict] | None = None,
+        turn_silence_ms: int = 800,
     ) -> None:
         self.model = model or settings.omni_realtime_model
         self.voice = voice or settings.omni_realtime_voice
@@ -311,6 +342,7 @@ class OmniRealtimeProxy:
         # {"type": "function", "name", "description", "parameters"}). The
         # client owns execution — the proxy only relays calls and results.
         self.tools = [dict(tool) for tool in tools or [] if isinstance(tool, dict)]
+        self.turn_silence_ms = max(300, min(1200, int(turn_silence_ms)))
         # Local session id (a uuid we mint; replaced by the SDK's authoritative
         # session id once `session.created` arrives in upstream_events()).
         self.session_id = str(uuid.uuid4())
@@ -397,7 +429,21 @@ class OmniRealtimeProxy:
         try:
             await asyncio.to_thread(self._conversation.connect)
         except Exception as exc:
+            diagnosis = None
+            if isinstance(exc, TimeoutError):
+                diagnosis = await asyncio.to_thread(
+                    diagnose_realtime_handshake,
+                    self._conversation.url,
+                    settings.dashscope_api_key,
+                    settings.omni_realtime_workspace_id or None,
+                )
+            try:
+                await asyncio.to_thread(self._conversation.close)
+            except Exception:
+                pass
             self._conversation = None
+            if diagnosis:
+                raise RuntimeError(diagnosis) from exc
             raise
 
         # Configure the session through the SDK. The SDK forwards arbitrary
@@ -414,7 +460,7 @@ class OmniRealtimeProxy:
             "enable_turn_detection": True,
             "turn_detection_type": "server_vad",
             "turn_detection_threshold": 0.5,
-            "turn_detection_silence_duration_ms": 800,
+            "turn_detection_silence_duration_ms": self.turn_silence_ms,
         }
         if self.tools:
             # Tool calling is incompatible with enable_search per the docs;
