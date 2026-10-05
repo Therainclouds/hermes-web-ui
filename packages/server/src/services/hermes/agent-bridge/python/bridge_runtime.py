@@ -835,6 +835,15 @@ def _load_enabled_toolsets() -> list[str] | None:
         return None
 
 
+def _mcp_runtime_parts():
+    from tools.mcp_tool import _servers, _lock
+    try:
+        from tools.mcp_tool_loop import _run_on_mcp_loop
+    except ImportError:
+        from tools.mcp_tool import _run_on_mcp_loop
+    return _servers, _lock, _run_on_mcp_loop
+
+
 def _mcp_discovery_functions():
     # Hermes split discovery out of mcp_tool; keep support for older runtimes.
     try:
