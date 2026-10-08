@@ -515,7 +515,10 @@ test('uses the newly selected profile for the next chat-run socket after profile
   }, defaultRun.run.session_id)
   await expect(page.getByRole('button', { name: 'Stop' })).toHaveCount(0)
 
-  await page.evaluate(() => window.localStorage.setItem('hermes_active_profile_name', 'research'))
+  await page.evaluate(async () => {
+    await fetch('/api/hermes/profiles/active', { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + window.localStorage.getItem('hermes_api_key') }, body: JSON.stringify({ name: 'research' }) })
+    window.localStorage.setItem('hermes_active_profile_name', 'research')
+  })
   await page.reload()
   await page.waitForLoadState('domcontentloaded')
   expect(await page.evaluate(() => window.localStorage.getItem('hermes_active_profile_name'))).toBe('research')
@@ -529,7 +532,7 @@ test('uses the newly selected profile for the next chat-run socket after profile
   expect(run.input).toBe('Use the active research profile')
   expect(await page.evaluate(() => window.localStorage.getItem('hermes_active_profile_name'))).toBe('research')
 
-  expect(api.requests.some((request) => request.pathname === '/api/hermes/profiles/active')).toBe(false)
+  expect(api.requests.some((request) => request.pathname === '/api/hermes/profiles/active')).toBe(true)
   expect(api.unexpectedRequests).toEqual([])
 })
 

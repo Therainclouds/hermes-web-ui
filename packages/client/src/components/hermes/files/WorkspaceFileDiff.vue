@@ -3,8 +3,8 @@ import { computed, defineAsyncComponent, ref, watch } from 'vue'
 import { NAlert, NButton, NSpin, NTooltip, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import type { FileEntry, WorkspaceFileDiff } from '@/api/hermes/files'
-import { fetchSessionWorkspaceFileDiff, readSessionWorkspaceFile } from '@/api/hermes/sessions'
-import { fetchGroupWorkspaceFileDiff, readGroupWorkspaceFile } from '@/api/hermes/group-chat'
+import { fetchSessionWorkspaceFileDiff, readSessionWorkspaceFile, downloadSessionWorkspaceFile } from '@/api/hermes/sessions'
+import { fetchGroupWorkspaceFileDiff, readGroupWorkspaceFile, downloadGroupWorkspaceFile } from '@/api/hermes/group-chat'
 import { getLanguageFromPath, isMarkdownFile, useFilesStore } from '@/stores/hermes/files'
 import { handleCodeBlockCopyClick, renderHighlightedCodeBlock } from '@/components/hermes/chat/highlight'
 import FileTreeToggle from './FileTreeToggle.vue'
@@ -30,6 +30,17 @@ const { t } = useI18n()
 const message = useMessage()
 const filesStore = useFilesStore()
 const loading = ref(false)
+const downloading = ref(false)
+async function downloadCurrentFile() {
+  if (downloading.value || props.entry.isDir) return
+  downloading.value = true
+  try {
+    if (props.workspaceRoomId) await downloadGroupWorkspaceFile(props.workspaceRoomId, props.entry.path, props.entry.name)
+    else if (props.workspaceSessionId) await downloadSessionWorkspaceFile(props.workspaceSessionId, props.entry.path, props.entry.name)
+    else throw new Error(t('files.backendError'))
+  } catch (error) { message.error(error instanceof Error ? error.message : t('download.downloadFailed')) }
+  finally { downloading.value = false }
+}
 const error = ref('')
 const diff = ref<WorkspaceFileDiff | null>(null)
 const fileContent = ref<string | null>(null)
@@ -132,6 +143,15 @@ watch(
         </span>
       </div>
       <div class="diff-actions">
+        <NTooltip trigger="hover">
+          <template #trigger>
+            <NButton class="diff-action-button" size="small" quaternary circle :loading="downloading"
+              :aria-label="t('files.download')" @click="downloadCurrentFile">
+              <template #icon><svg data-icon="download" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 17v4h14v-4" /></svg></template>
+            </NButton>
+          </template>
+          {{ t('files.download') }}
+        </NTooltip>
         <NTooltip trigger="hover">
           <template #trigger>
             <NButton

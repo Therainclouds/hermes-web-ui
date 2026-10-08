@@ -1,3 +1,4 @@
+import { readTomlAssignment } from './toml-assignment'
 import { execFile } from 'child_process'
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'crypto'
 import { existsSync, readdirSync, realpathSync } from 'fs'
@@ -1347,6 +1348,116 @@ function parseCodexExternalMcpBlocks(...contents: Array<string | null | undefine
   return Array.from(blockByServer.values()).filter(Boolean)
 }
 
+function isManagedCodexSection(section: string): boolean {
+  return section === 'models'
+    || section.startsWith('model.')
+    || section.startsWith('model_providers.')
+    || section.startsWith('mcp_servers.')
+    || section === 'auth'
+    || section.startsWith('auth.')
+    || section === 'account'
+    || section.startsWith('account.')
+}
+
+function codexRuntimeUserConfig(...contents: Array<string | null | undefined>): {
+  topLevelLines: string[]
+  sectionBlocks: string[]
+  featureLines: string[]
+} {
+  const topLevel = new Map<string, string>()
+  const sections = new Map<string, {
+    header: string
+    entries: string[][]
+    assignmentIndexes: Map<string, number>
+  }>()
+  const featureLines = new Map<string, string>()
+  const runtimeKeys = new Set([
+    'model',
+    'model_provider',
+    'model_catalog_json',
+    'model_reasoning_summary',
+    'model_reasoning_effort',
+    'developer_instructions',
+    'disable_response_storage',
+    'experimental_bearer_token',
+    'forced_login_method',
+    'preferred_auth_method',
+    'chatgpt_base_url',
+  ])
+  const runtimeFeatures = new Set(['tool_search', 'tool_search_always_defer_mcp_tools'])
+
+  let arraySectionIndex = 0
+  for (const content of contents) {
+    if (!content?.trim()) continue
+    let section = ''
+    let sectionKey = ''
+    const lines = content.split(/\r?\n/)
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+      const line = lines[lineIndex]
+      const arrayHeader = line.match(/^\s*\[\[([^\]]+)\]\]\s*$/)
+      if (arrayHeader) {
+        section = arrayHeader[1].trim()
+        sectionKey = `array:${arraySectionIndex++}`
+        sections.set(sectionKey, { header: line.trim(), entries: [], assignmentIndexes: new Map() })
+        continue
+      }
+      const tableHeader = line.match(/^\s*\[([^\]]+)\]\s*$/)
+      if (tableHeader) {
+        section = tableHeader[1].trim()
+        sectionKey = `table:${section}`
+        if (!sections.has(sectionKey)) {
+          sections.set(sectionKey, { header: line.trim(), entries: [], assignmentIndexes: new Map() })
+        }
+        continue
+      }
+      const assignment = readTomlAssignment(lines, lineIndex)
+      if (assignment) lineIndex = assignment.endIndex
+      const assignmentKey = assignment ? JSON.stringify(assignment.key) : ''
+      const settingName = assignment?.key.length === 1 ? assignment.key[0] : ''
+      if (!section) {
+        if (assignment && !runtimeKeys.has(settingName)) {
+          topLevel.set(assignmentKey, assignment.lines.join('\n'))
+        }
+        continue
+      }
+      if (section === 'features') {
+        if (assignment && !runtimeFeatures.has(settingName)) {
+          featureLines.set(assignmentKey, assignment.lines.join('\n'))
+        }
+        continue
+      }
+      if (isManagedCodexSection(section)) continue
+      const sectionBlock = sections.get(sectionKey)
+      if (!sectionBlock || !line.trim()) continue
+      if (!assignment) {
+        sectionBlock.entries.push([line])
+        continue
+      }
+
+      const previousIndex = sectionBlock.assignmentIndexes.get(assignmentKey)
+      if (previousIndex === undefined) {
+        sectionBlock.assignmentIndexes.set(assignmentKey, sectionBlock.entries.length)
+        sectionBlock.entries.push(assignment.lines)
+      } else {
+        sectionBlock.entries[previousIndex] = assignment.lines
+      }
+    }
+  }
+
+  const sectionBlocks: string[] = []
+  for (const [key, { header, entries }] of sections) {
+    const lines = entries.flat()
+    if (lines.length || key.startsWith('array:')) {
+      sectionBlocks.push(lines.length ? `${header}\n${lines.join('\n')}` : header)
+    }
+  }
+  return {
+    topLevelLines: [...topLevel.values()],
+    sectionBlocks,
+    featureLines: [...featureLines.values()],
+  }
+}
+
 function codexMcpConfigToml(profile: string, ...externalContents: Array<string | null | undefined>): string {
   const blocks: string[] = [...parseCodexExternalMcpBlocks(...externalContents)]
   for (const item of HERMES_MCP_SERVERS) {
@@ -2189,7 +2300,7 @@ async function ensureDshSdkInstalled(env: NodeJS.ProcessEnv): Promise<string | n
     if (await resolveDshSdkLaunch()) return null
     const sdkDir = getDshSdkDir()
     await runNpm(
-      ['install', '--prefix', sdkDir, '--no-audit', '--no-fund', ...getDshSdkInstallSpecs()],
+      ['install', '--prefer-dedupe', '--prefix', sdkDir, '--no-audit', '--no-fund', ...getDshSdkInstallSpecs()],
       { timeout: 10 * 60 * 1000, env },
     )
     return (await resolveDshSdkLaunch()) ? null : 'SDK packages installed but the dsh-jsonrpc-agent runtime was not found'
@@ -2806,16 +2917,22 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
     const codexApiKey = proxyTarget?.token || apiKey
     const providerId = 'custom'
     const catalogPath = join(rootDir, CODEX_MODEL_CATALOG_FILE)
+    const inheritedConfig = codexRuntimeUserConfig(
+      await safeReadFile(getLiveConfigFileDefinition(tool.id, 'config')?.absolutePath || ''),
+      await safeReadFile(getScopedConfigFileDefinition(tool.id, 'config', scope)?.absolutePath || ''),
+    )
     const toolSearchFeatures = await resolveCodexToolSearchConfig()
-    const featureConfig = toolSearchFeatures.toolSearch || toolSearchFeatures.alwaysDefer
+    const featureConfig = inheritedConfig.featureLines.length || toolSearchFeatures.toolSearch || toolSearchFeatures.alwaysDefer
       ? [
           '',
           '[features]',
+          ...inheritedConfig.featureLines,
           ...(toolSearchFeatures.toolSearch ? ['tool_search = true'] : []),
           ...(toolSearchFeatures.alwaysDefer ? ['tool_search_always_defer_mcp_tools = true'] : []),
         ]
       : []
     const configToml = [
+      ...inheritedConfig.topLevelLines,
       `model_catalog_json = ${JSON.stringify(catalogPath)}`,
       `model_provider = ${JSON.stringify(providerId)}`,
       `model = ${JSON.stringify(model)}`,
@@ -2836,6 +2953,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
         await safeReadFile(getLiveConfigFileDefinition(tool.id, 'config')?.absolutePath || ''),
         await safeReadFile(getScopedConfigFileDefinition(tool.id, 'config', scope)?.absolutePath || ''),
       ),
+      ...inheritedConfig.sectionBlocks,
       ...featureConfig,
     ].join('\n')
     const catalog = buildCodexModelCatalog({

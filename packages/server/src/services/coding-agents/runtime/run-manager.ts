@@ -24,6 +24,7 @@ import { attachPiJsonlReader } from '../pi/jsonl-parser'
 import { normalizePiThinkingLevel } from '../pi/thinking'
 import { getChatRunServer } from '../../hermes/run-chat/server-registry'
 import { compactCodexThread } from './codex-compact'
+import { isContextWindowExceededError, nativeContextRecoveryMessage, nativeTurnContextRecoveryMessage, resetNativeSessionAfterContextOverflow } from '../context-recovery'
 
 const DEFAULT_IDLE_MS = 30 * 60 * 1000
 const TERMINAL_OUTPUT_FLUSH_MS = 120
@@ -168,6 +169,9 @@ interface ManagedCodingAgentRun {
   printMessageId?: string
   printTextStarted?: boolean
   printText?: string
+  claudeResultUsage?: any
+  claudeStreamMessageId?: string
+  claudeMessageText?: Map<string, string>
   printCompleted?: boolean
   responseStartEmitted?: boolean
   terminalEventHandled?: boolean
@@ -183,6 +187,7 @@ interface ManagedCodingAgentRun {
   pendingChatCompletionEvent?: 'run.completed' | 'run.failed'
   pendingChatCompletionPayload?: Record<string, unknown>
   memoryExportStarted?: boolean
+  nativeCompactCommandActive?: boolean
   assistantMessageId?: string
   dsh?: {
     rpc: DshJsonRpcClient
@@ -863,6 +868,7 @@ export class CodingAgentRunManager {
     const nativeSessionId = String(run.launch.agentNativeSessionId || '').trim()
     if (run.launch.agentId === 'claude-code') {
       if (!nativeSessionId) throw new Error('Claude Code session has no native session to compact')
+      run.nativeCompactCommandActive = true
       this.startClaudePrintTurn(run, `/compact${args ? ` ${args}` : ''}`, '', [])
       return { started: true }
     }
@@ -1811,6 +1817,9 @@ export class CodingAgentRunManager {
     run.responseStartEmitted = false
     run.terminalEventHandled = false
     run.printToolBlocks = new Map()
+    run.claudeResultUsage = undefined
+    run.claudeStreamMessageId = undefined
+    run.claudeMessageText = new Map()
     run.currentChildStderr = ''
     run.runMarker = undefined
     run.memoryExportStarted = false
@@ -1913,7 +1922,7 @@ export class CodingAgentRunManager {
         return
       }
       if (code === 0) {
-        this.completeClaudePrintTurn(run)
+        this.completeClaudePrintTurn(run, run.claudeResultUsage)
         return
       }
       this.handleClaudePrintResponseEvent(run, {
@@ -2005,21 +2014,20 @@ export class CodingAgentRunManager {
     if (event.type === 'result') {
       if (run.printCompleted) return
       const resultText = String(event.result || '')
-      if (resultText && !run.printTextStarted) {
-        this.ensureClaudePrintText(run)
-        run.printText = `${run.printText || ''}${resultText}`
-        this.handleClaudePrintResponseEvent(run, {
-          type: 'response.output_text.delta',
-          data: {
-            type: 'response.output_text.delta',
-            item_id: run.printMessageId,
-            output_index: 0,
-            content_index: 0,
-            delta: resultText,
-          },
-        })
+      // The process can still emit native messages after a result (for example
+      // resumed background notifications). Do not latch printCompleted until
+      // close has drained stdout; otherwise all subsequent records are lost.
+      if (resultText && !(run.printText || '').endsWith(resultText)) {
+        const delta = appendedTextDelta(run.printText || '', resultText)
+        this.appendClaudeText(run, delta)
       }
-      this.completeClaudePrintTurn(run, event.usage)
+      run.claudeResultUsage = event.usage ?? run.claudeResultUsage
+      logger.debug({
+        runId: run.id, sessionId: run.launch.sessionId,
+        subtype: event.subtype, textChars: (run.printText || '').length,
+        waitingForClose: Boolean(run.currentChild),
+      }, '[coding-agent-run] Claude result received; waiting for stdout close')
+      if (!run.currentChild) this.completeClaudePrintTurn(run, run.claudeResultUsage)
     }
   }
 
@@ -2041,6 +2049,17 @@ export class CodingAgentRunManager {
     if (!content.length) return
 
     if (role === 'assistant') {
+      // Native snapshots may remove thinking/redacted blocks and reindex text.
+      // Reconcile the complete message's text, not provider block positions.
+      const messageId = String(message.id || run.claudeStreamMessageId || run.printMessageId)
+      const text = content.filter((block: any) => block?.type === 'text')
+        .map((block: any) => String(block.text || '')).join('')
+      run.claudeMessageText ??= new Map()
+      const previous = run.claudeMessageText.get(messageId) || ''
+      if (text.startsWith(previous)) {
+        this.appendClaudeText(run, text.slice(previous.length))
+        run.claudeMessageText.set(messageId, text)
+      }
       for (const [index, block] of content.entries()) {
         if (block?.type !== 'tool_use') continue
         const toolBlock = {
@@ -2108,6 +2127,7 @@ export class CodingAgentRunManager {
     const type = String(event?.type || '')
     if (type === 'message_start') {
       const id = String(event?.message?.id || run.printResponseId || `resp_${Date.now()}`)
+      run.claudeStreamMessageId = id
       run.printResponseId = id
       run.printMessageId = `msg_${id}`
       return
@@ -2164,17 +2184,10 @@ export class CodingAgentRunManager {
       if (delta.type === 'text_delta' && delta.text) {
         this.ensureClaudePrintText(run)
         const text = String(delta.text)
-        run.printText = `${run.printText || ''}${text}`
-        this.handleClaudePrintResponseEvent(run, {
-          type: 'response.output_text.delta',
-          data: {
-            type: 'response.output_text.delta',
-            item_id: run.printMessageId,
-            output_index: 0,
-            content_index: 0,
-            delta: text,
-          },
-        })
+        const key = String(run.claudeStreamMessageId || run.printMessageId)
+        run.claudeMessageText ??= new Map()
+        run.claudeMessageText.set(key, `${run.claudeMessageText.get(key) || ''}${text}`)
+        this.appendClaudeText(run, text)
         return
       }
       if (delta.type === 'input_json_delta' && delta.partial_json) {
@@ -2220,6 +2233,19 @@ export class CodingAgentRunManager {
     }
   }
 
+  private appendClaudeText(run: ManagedCodingAgentRun, text: string) {
+    if (!text) return
+    this.ensureClaudePrintText(run)
+    run.printText = `${run.printText || ''}${text}`
+    this.handleClaudePrintResponseEvent(run, {
+      type: 'response.output_text.delta',
+      data: {
+        type: 'response.output_text.delta', item_id: run.printMessageId,
+        output_index: 0, content_index: 0, delta: text,
+      },
+    })
+  }
+
   private ensureClaudePrintText(run: ManagedCodingAgentRun) {
     if (run.printTextStarted) return
     run.printTextStarted = true
@@ -2240,8 +2266,49 @@ export class CodingAgentRunManager {
     })
   }
 
+  private recoverFailedNativeCompact(run: ManagedCodingAgentRun, error: unknown) {
+    if (!run.nativeCompactCommandActive) return
+    run.nativeCompactCommandActive = false
+    this.recoverNativeSessionAfterContextOverflow(run, error, 'compact')
+  }
+
+  private recoverNativeSessionAfterContextOverflow(
+    run: ManagedCodingAgentRun,
+    error: unknown,
+    action: 'compact' | 'recover',
+  ): boolean {
+    if (!isContextWindowExceededError(error)) return false
+    const recovery = resetNativeSessionAfterContextOverflow(run.launch.sessionId, run.launch.agentId)
+    if (!recovery.reset) return false
+    run.launch.agentNativeSessionId = ''
+    run.nativeResumeReady = false
+    run.disposeAfterTurn = true
+    const agentName = run.launch.agentId === 'codex'
+      ? 'Codex'
+      : run.launch.agentId === 'grok'
+        ? 'Grok'
+        : run.launch.agentId === 'pi'
+          ? 'Pi'
+          : 'Claude Code'
+    this.emitToChat(run.launch.sessionId, 'session.command', {
+      event: 'session.command',
+      session_id: run.launch.sessionId,
+      command: action,
+      action,
+      ok: true,
+      terminal: true,
+      compacted: false,
+      resetNativeThread: true,
+      message: action === 'compact'
+        ? nativeContextRecoveryMessage(agentName)
+        : nativeTurnContextRecoveryMessage(agentName),
+    })
+    return true
+  }
+
   private failClaudePrintTurn(run: ManagedCodingAgentRun, errorText: string) {
     if (run.printCompleted) return
+    this.recoverFailedNativeCompact(run, errorText)
     run.printCompleted = true
     const existingText = run.printText || ''
     const appendedError = appendedTextDelta(existingText, errorText)
@@ -2286,6 +2353,7 @@ export class CodingAgentRunManager {
 
   private completeClaudePrintTurn(run: ManagedCodingAgentRun, usage?: any) {
     if (run.printCompleted) return
+    run.nativeCompactCommandActive = false
     run.printCompleted = true
     const text = run.printText || ''
     const output = run.printTextStarted
@@ -2454,6 +2522,8 @@ export class CodingAgentRunManager {
       this.completeCodexExecTurn(run, run.codexPendingUsage)
       return
     }
+    const error = run.codexPendingError || exitErrorMessage('Codex', code, run.currentChildStderr)
+    this.recoverNativeSessionAfterContextOverflow(run, error, 'recover')
     this.handleClaudePrintResponseEvent(run, {
       type: 'response.failed',
       data: {
@@ -2463,7 +2533,7 @@ export class CodingAgentRunManager {
           object: 'response',
           status: 'failed',
           model: run.launch.model,
-          error: { message: run.codexPendingError || exitErrorMessage('Codex', code, run.currentChildStderr) },
+          error: { message: error },
           output: [],
         },
       },
@@ -2567,9 +2637,11 @@ export class CodingAgentRunManager {
 
   private deferCodexExecError(run: ManagedCodingAgentRun, message: string) {
     // Codex emits broad `error` events for recoverable stream retries as well as
-    // failures. Let the native process exit status arbitrate the turn: exit 0
-    // discards this provisional error, while a non-zero exit reports it.
-    if (childIsRunning(run.currentChild)) {
+    // failures. Keep errors provisional while the child reference still exists,
+    // including final buffered JSONL parsed after the child has exited. The exit
+    // status then arbitrates the turn: exit 0 discards the error, while a non-zero
+    // exit reports it.
+    if (run.currentChild) {
       run.codexPendingError = message
       return
     }
@@ -2577,6 +2649,7 @@ export class CodingAgentRunManager {
   }
 
   private failCodexExecTurn(run: ManagedCodingAgentRun, message: string) {
+    this.recoverNativeSessionAfterContextOverflow(run, message, 'recover')
     this.handleClaudePrintResponseEvent(run, {
       type: 'response.failed',
       data: {

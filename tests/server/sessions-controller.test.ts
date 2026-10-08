@@ -16,6 +16,7 @@ const getUsageStatsFromDbMock = vi.fn()
 const getSessionMock = vi.fn()
 const deleteHermesSessionForProfileMock = vi.fn()
 const localListSessionsMock = vi.fn()
+const localCountSessionsMock = vi.fn()
 const localGetSessionDetailMock = vi.fn()
 const localSearchSessionsMock = vi.fn()
 const localDeleteSessionMock = vi.fn()
@@ -86,6 +87,7 @@ vi.mock('../../packages/server/src/db/hermes/sessions-db', () => ({
 
 vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
   listSessions: localListSessionsMock,
+  countSessions: localCountSessionsMock,
   searchSessions: localSearchSessionsMock,
   getSessionDetail: localGetSessionDetailMock,
   deleteSession: localDeleteSessionMock,
@@ -191,6 +193,7 @@ describe('session conversations controller', () => {
     getSessionMock.mockReset()
     deleteHermesSessionForProfileMock.mockReset()
     localListSessionsMock.mockReset()
+    localCountSessionsMock.mockReset().mockReturnValue(0)
     localGetSessionDetailMock.mockReset()
     localSearchSessionsMock.mockReset()
     localDeleteSessionMock.mockReset()
@@ -873,7 +876,7 @@ describe('session conversations controller', () => {
     }
     await mod.list(ctx)
 
-    expect(localListSessionsMock).toHaveBeenCalledWith(undefined, undefined, 2000)
+    expect(localListSessionsMock).toHaveBeenCalledWith(undefined, undefined, 2000, expect.objectContaining({ includeArchived: false }))
     expect(ctx.body.sessions.map((session: any) => session.id)).toEqual(['default-session', 'travel-session'])
   })
 
@@ -888,7 +891,91 @@ describe('session conversations controller', () => {
     }
     await mod.list(ctx)
 
-    expect(localListSessionsMock).toHaveBeenCalledWith('travel', undefined, 2000)
+    expect(localListSessionsMock).toHaveBeenCalledWith('travel', undefined, 2000, {
+      sources: ['api_server', 'cli', 'coding_agent', 'global_agent'],
+      profiles: undefined,
+      includeArchived: false,
+      excludeSessionIds: [],
+    })
+  })
+
+  it('returns a single-chat page with a lookahead row without changing legacy list responses', async () => {
+    localCountSessionsMock.mockReturnValue(5)
+    localListSessionsMock.mockReturnValue([
+      { id: 'chat-3', profile: 'travel', source: 'cli' },
+      { id: 'chat-2', profile: 'travel', source: 'cli' },
+      { id: 'chat-1', profile: 'travel', source: 'cli' },
+    ])
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = { query: { profile: 'travel', offset: '2', limit: '2' }, state: {}, body: null }
+    await mod.list(ctx)
+    expect(localListSessionsMock).toHaveBeenCalledWith('travel', undefined, 3, expect.objectContaining({ offset: 2 }))
+    expect(ctx.body).toEqual({
+      sessions: [
+        expect.objectContaining({ id: 'chat-3' }),
+        expect.objectContaining({ id: 'chat-2' }),
+      ],
+      hasMore: true, offset: 2, limit: 2, total: 5,
+    })
+    localListSessionsMock.mockReturnValue([{ id: 'chat-1', profile: 'travel', source: 'cli' }])
+    ctx.query.offset = '4'
+    await mod.list(ctx)
+    expect(ctx.body).toMatchObject({ hasMore: false, offset: 4, limit: 2, total: 5 })
+    localCountSessionsMock.mockClear()
+    delete ctx.query.offset
+    await mod.list(ctx)
+    expect(ctx.body).not.toHaveProperty('hasMore')
+    expect(ctx.body).not.toHaveProperty('total')
+    expect(localCountSessionsMock).not.toHaveBeenCalled()
+  })
+
+  it.each(['-1', 'NaN', '1.5'])('normalizes invalid single-chat offsets (%s)', async (offset) => {
+    localListSessionsMock.mockReturnValue([])
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = { query: { offset, limit: '10' }, state: {}, body: null }
+    await mod.list(ctx)
+    expect(ctx.body).toEqual({ sessions: [], hasMore: false, offset: 0, limit: 10, total: 0 })
+  })
+
+  it.each([['7', 7], ['none', null]])('passes category %s and pin filters into the paginated query', async (category, categoryId) => {
+    localListSessionsMock.mockReturnValue([])
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = { query: { category, offset: '10', limit: '10', exclude: ['pin-a', 'pin-b'] }, state: {}, body: null }
+    await mod.list(ctx)
+    expect(localListSessionsMock).toHaveBeenLastCalledWith(undefined, undefined, 11, expect.objectContaining({
+      categoryId, offset: 10, excludeSessionIds: ['pin-a', 'pin-b'],
+    }))
+    expect(localCountSessionsMock).toHaveBeenLastCalledWith(undefined, undefined, expect.objectContaining({
+      categoryId, excludeSessionIds: ['pin-a', 'pin-b'], includeArchived: false,
+    }))
+    ctx.query = { include: 'pin-a', offset: '0', limit: '10' }
+    await mod.list(ctx)
+    expect(localListSessionsMock).toHaveBeenLastCalledWith(undefined, undefined, 11, expect.objectContaining({ includeSessionIds: ['pin-a'] }))
+    expect(localCountSessionsMock).toHaveBeenLastCalledWith(undefined, undefined, expect.objectContaining({ includeSessionIds: ['pin-a'] }))
+  })
+
+  it('counts only accessible profiles and does not reveal totals for a forbidden explicit profile', async () => {
+    localListSessionsMock.mockReturnValue([])
+    localCountSessionsMock.mockReturnValue(27)
+    listUserProfilesMock.mockReturnValue([{ profile_name: 'default' }])
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = { query: { offset: '0', limit: '10' }, state: { user: { id: 'user-1', role: 'user' } } }
+    await mod.list(ctx)
+    expect(ctx.body.total).toBe(27)
+    expect(localCountSessionsMock).toHaveBeenLastCalledWith(undefined, undefined, expect.objectContaining({ profiles: ['default'] }))
+    localCountSessionsMock.mockClear()
+    ctx.query.profile = 'travel'
+    await mod.list(ctx)
+    expect(ctx.body.total).toBe(0)
+    expect(localCountSessionsMock).not.toHaveBeenCalled()
+  })
+
+  it.each(['invalid', '-1', '1.5'])('rejects invalid session category %s', async category => {
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = { query: { category, offset: '0' }, state: {}, body: null }
+    await mod.list(ctx)
+    expect(ctx.status).toBe(400)
+    expect(localListSessionsMock).not.toHaveBeenCalled()
   })
 
   it('lists only global-agent sessions when requested by source', async () => {
@@ -905,7 +992,7 @@ describe('session conversations controller', () => {
     }
     await mod.list(ctx)
 
-    expect(localListSessionsMock).toHaveBeenCalledWith(undefined, 'global_agent', 2000)
+    expect(localListSessionsMock).toHaveBeenCalledWith(undefined, 'global_agent', 2000, expect.objectContaining({ includeArchived: false }))
     expect(ctx.body.sessions).toEqual([expect.objectContaining({ id: 'global-1', source: 'global_agent' })])
   })
 
@@ -944,7 +1031,7 @@ describe('session conversations controller', () => {
     }
     await mod.list(workflowCtx)
 
-    expect(localListSessionsMock).toHaveBeenLastCalledWith(undefined, 'workflow', 2000)
+    expect(localListSessionsMock).toHaveBeenLastCalledWith(undefined, 'workflow', 2000, expect.objectContaining({ includeArchived: false }))
     expect(workflowCtx.body.sessions).toEqual([expect.objectContaining({ id: 'workflow-1', source: 'workflow' })])
   })
 

@@ -1,8 +1,10 @@
+import { parse as parseToml } from 'smol-toml'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
 import { createCipheriv, randomBytes } from 'crypto'
 import { tmpdir } from 'os'
 import { dirname, join } from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
 import { claudeProxyMessages, claudeProxyModels, registerClaudeCodeProxyTarget } from '../../packages/server/src/services/coding-agents/claude-code/proxy'
 import { codexProxyModels, codexProxyResponses, registerCodexProxyTarget } from '../../packages/server/src/services/coding-agents/codex/proxy'
 import {
@@ -96,6 +98,329 @@ describe('coding agent launch preparation', () => {
     expect(codexToolSearchConfig('0.141.0')).toEqual({ toolSearch: true, alwaysDefer: true })
     expect(codexToolSearchConfig('0.142.0')).toEqual({ toolSearch: true, alwaysDefer: false })
     expect(codexToolSearchConfig('')).toEqual({ toolSearch: true, alwaysDefer: true })
+  })
+
+
+  it('preserves complete multiline top-level arrays when strings and comments contain brackets', async () => {
+    const home = makeHome()
+    const globalConfigPath = join(home, 'global-home', '.codex', 'config.toml')
+    mkdirSync(dirname(globalConfigPath), { recursive: true })
+    writeFileSync(globalConfigPath, [
+      'notify = [',
+      '  "first item contains ]",',
+      '  "second item", # comment contains [',
+      ']',
+      '',
+      '[features]',
+      'goals = true',
+      '',
+    ].join('\n'))
+
+    const launch = await prepareCodingAgentLaunch('codex', {
+      profile: 'default',
+      provider: 'custom:test',
+      model: 'codex-model',
+      baseUrl: 'https://api.example.com/v1',
+      apiKey: 'test-key',
+      apiMode: 'codex_responses',
+      sessionId: 'codex-multiline-array-session',
+      agentSessionId: 'codex-multiline-array-agent-session',
+    })
+    const config = readFileSync(join(launch.rootDir, 'config.toml'), 'utf-8')
+    const parsed = parseToml(config)
+
+    expect(parsed.notify).toEqual(['first item contains ]', 'second item'])
+    expect(config).toContain('  "second item", # comment contains [\n]')
+  })
+
+  it('preserves arrays containing multiline strings that end with a quote', async () => {
+    const home = makeHome()
+    const globalConfigPath = join(home, 'global-home', '.codex', 'config.toml')
+    mkdirSync(dirname(globalConfigPath), { recursive: true })
+    writeFileSync(globalConfigPath, [
+      'notify = [',
+      '  """first line contains ]',
+      'second line contains [ and ends with a quote"""",',
+      ']',
+      '',
+      '[features]',
+      'goals = true',
+      '',
+    ].join('\n'))
+
+    const launch = await prepareCodingAgentLaunch('codex', {
+      profile: 'default',
+      provider: 'custom:test',
+      model: 'codex-model',
+      baseUrl: 'https://api.example.com/v1',
+      apiKey: 'test-key',
+      apiMode: 'codex_responses',
+      sessionId: 'codex-multiline-string-array-session',
+      agentSessionId: 'codex-multiline-string-array-agent-session',
+    })
+    const config = readFileSync(join(launch.rootDir, 'config.toml'), 'utf-8')
+    const parsed = parseToml(config)
+
+    expect(parsed.notify).toEqual(['first line contains ]\nsecond line contains [ and ends with a quote"'])
+    expect(config).toContain('second line contains [ and ends with a quote"""",\n]')
+  })
+
+  it('preserves top-level multiline string values', async () => {
+    const home = makeHome()
+    const globalConfigPath = join(home, 'global-home', '.codex', 'config.toml')
+    mkdirSync(dirname(globalConfigPath), { recursive: true })
+    writeFileSync(globalConfigPath, [
+      'custom_instructions = """first line',
+      'second line contains [ and ]',
+      'third line"""',
+      '',
+      '[features]',
+      'goals = true',
+      '',
+    ].join('\n'))
+
+    const launch = await prepareCodingAgentLaunch('codex', {
+      profile: 'default',
+      provider: 'custom:test',
+      model: 'codex-model',
+      baseUrl: 'https://api.example.com/v1',
+      apiKey: 'test-key',
+      apiMode: 'codex_responses',
+      sessionId: 'codex-multiline-string-session',
+      agentSessionId: 'codex-multiline-string-agent-session',
+    })
+    const config = readFileSync(join(launch.rootDir, 'config.toml'), 'utf-8')
+    const parsed = parseToml(config)
+
+    expect(parsed.custom_instructions).toBe('first line\nsecond line contains [ and ]\nthird line')
+  })
+
+  it('does not treat table headers inside multiline strings as real sections', async () => {
+    const home = makeHome()
+    const globalConfigPath = join(home, 'global-home', '.codex', 'config.toml')
+    mkdirSync(dirname(globalConfigPath), { recursive: true })
+    writeFileSync(globalConfigPath, [
+      '[custom]',
+      'template = """first line',
+      '[features]',
+      'this remains string content',
+      '"""',
+      '',
+      '[features]',
+      'goals = true',
+      '',
+    ].join('\n'))
+
+    const launch = await prepareCodingAgentLaunch('codex', {
+      profile: 'default',
+      provider: 'custom:test',
+      model: 'codex-model',
+      baseUrl: 'https://api.example.com/v1',
+      apiKey: 'test-key',
+      apiMode: 'codex_responses',
+      sessionId: 'codex-multiline-table-string-session',
+      agentSessionId: 'codex-multiline-table-string-agent-session',
+    })
+    const parsed = parseToml(readFileSync(join(launch.rootDir, 'config.toml'), 'utf-8'))
+
+    expect(parsed.custom).toEqual({
+      template: 'first line\n[features]\nthis remains string content\n',
+    })
+  })
+
+  it('keeps Codex array-of-table hooks out of the features table', async () => {
+    const home = makeHome()
+    const globalConfigPath = join(home, 'global-home', '.codex', 'config.toml')
+    mkdirSync(dirname(globalConfigPath), { recursive: true })
+    writeFileSync(globalConfigPath, [
+      '[features]',
+      'goals = true',
+      'hooks = true',
+      'js_repl = false',
+      '',
+      '[[hooks.SessionStart]]',
+      'matcher = "startup|resume|clear|compact"',
+      '',
+      '[[hooks.SessionStart.hooks]]',
+      'command = \'node "C:/Users/Lenovo/.agent-extensions/token-saver/agent-token-saver-hook.mjs"\'',
+      'timeout = 5',
+      'type = "command"',
+      '',
+    ].join('\n'))
+
+    const launch = await prepareCodingAgentLaunch('codex', {
+      profile: 'default',
+      provider: 'custom:test',
+      model: 'codex-model',
+      baseUrl: 'https://api.example.com/v1',
+      apiKey: 'test-key',
+      apiMode: 'codex_responses',
+      sessionId: 'codex-array-table-session',
+      agentSessionId: 'codex-array-table-agent-session',
+    })
+    const config = readFileSync(join(launch.rootDir, 'config.toml'), 'utf-8')
+    const featureIndex = config.indexOf('[features]')
+    const featureBlock = config.slice(featureIndex)
+
+    expect(config).toContain('[[hooks.SessionStart]]')
+    expect(config).toContain('[[hooks.SessionStart.hooks]]')
+    expect(featureBlock).toContain('goals = true')
+    expect(featureBlock).not.toContain('matcher = "startup|resume|clear|compact"')
+    expect(featureBlock).not.toContain('type = "command"')
+  })
+
+  it('preserves empty Codex array-of-table instances', async () => {
+    const home = makeHome()
+    const globalConfigPath = join(home, 'global-home', '.codex', 'config.toml')
+    mkdirSync(dirname(globalConfigPath), { recursive: true })
+    writeFileSync(globalConfigPath, [
+      '[[hooks.SessionStart]]',
+      '',
+      '[[hooks.SessionStart]]',
+      'matcher = "resume"',
+      '',
+    ].join('\n'))
+
+    const launch = await prepareCodingAgentLaunch('codex', {
+      profile: 'default',
+      provider: 'custom:test',
+      model: 'codex-model',
+      baseUrl: 'https://api.example.com/v1',
+      apiKey: 'test-key',
+      apiMode: 'codex_responses',
+      sessionId: 'codex-empty-array-table-session',
+      agentSessionId: 'codex-empty-array-table-agent-session',
+    })
+    const config = readFileSync(join(launch.rootDir, 'config.toml'), 'utf-8')
+
+    expect(config.match(/\[\[hooks\.SessionStart\]\]/g)).toHaveLength(2)
+    expect(parseToml(config)).toMatchObject({
+      hooks: { SessionStart: [{}, { matcher: 'resume' }] },
+    })
+  })
+
+  it.each([
+    {
+      name: 'quoted multiline values',
+      source: '[shell_environment_policy.set]\n"SCRIPT" = """\nmode=first\nmode=second\n"""\n',
+      expected: { shell_environment_policy: { set: { SCRIPT: 'mode=first\nmode=second\n' } } },
+    },
+    {
+      name: 'quoted multiline values containing a table header',
+      source: '[custom]\n"template" = """first line\n[features]\nthis remains string content\n"""\n\n[features]\ngoals = true\n',
+      expected: { custom: { template: 'first line\n[features]\nthis remains string content\n' }, features: { goals: true } },
+    },
+    {
+      name: 'literal keys and multiline literal strings',
+      source: "[shell_environment_policy.set]\n'SCRIPT' = '''\nmode=first\n\n[features]\nmode=second\n'''\n",
+      expected: { shell_environment_policy: { set: { SCRIPT: 'mode=first\n\n[features]\nmode=second\n' } } },
+    },
+    {
+      name: 'multiline values in excluded provider tables',
+      source: '[model_providers.original]\nname = """first line\n[custom]\ntext = "from provider name"\n"""\n\n[shell_environment_policy]\ninherit = "core"\n',
+      expected: { shell_environment_policy: { inherit: 'core' } },
+    },
+    {
+      name: 'settings after an excluded top-level multiline value',
+      source: '"developer_instructions" = """\n[custom]\ntext = "discarded"\n"""\nsandbox_mode = "workspace-write"\n',
+      expected: { sandbox_mode: 'workspace-write' },
+    },
+  ])('preserves $name in scoped Codex configuration', async ({ source, expected }) => {
+    parseToml(source)
+    const home = makeHome()
+    const globalConfigPath = join(home, 'global-home', '.codex', 'config.toml')
+    mkdirSync(dirname(globalConfigPath), { recursive: true })
+    writeFileSync(globalConfigPath, source)
+    const launch = await prepareCodingAgentLaunch('codex', {
+      profile: 'default', provider: 'openrouter', model: 'codex-model',
+      baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'codex_responses',
+      sessionId: 'codex-multiline-config', agentSessionId: 'codex-multiline-config-agent',
+    })
+    expect(parseToml(readFileSync(join(launch.rootDir, 'config.toml'), 'utf-8'))).toMatchObject(expected)
+  })
+
+  it('deduplicates inherited Codex table keys when scoped config overrides global config', async () => {
+    const home = makeHome()
+    const globalConfigPath = join(home, 'global-home', '.codex', 'config.toml')
+    const scopedConfigPath = join(home, 'coding-agent', 'model', 'default', 'openrouter', 'codex', 'config.toml')
+    mkdirSync(dirname(globalConfigPath), { recursive: true })
+    mkdirSync(dirname(scopedConfigPath), { recursive: true })
+    writeFileSync(globalConfigPath, [
+      '[projects."/workspace"]',
+      'trust_level = "trusted"',
+      'notify = [',
+      '  "global",',
+      ']',
+      '',
+    ].join('\n'))
+    writeFileSync(scopedConfigPath, [
+      '[projects."/workspace"]',
+      'trust_level = "untrusted"',
+      'notify = [',
+      '  "scoped",',
+      ']',
+      '',
+    ].join('\n'))
+
+    const launch = await prepareCodingAgentLaunch('codex', {
+      profile: 'default',
+      provider: 'openrouter',
+      model: 'codex-model',
+      baseUrl: 'https://api.example.com/v1',
+      apiKey: 'test-key',
+      apiMode: 'codex_responses',
+      sessionId: 'codex-deduplicated-table-session',
+      agentSessionId: 'codex-deduplicated-table-agent-session',
+    })
+    const config = readFileSync(join(launch.rootDir, 'config.toml'), 'utf-8')
+    const parsed = parseToml(config)
+
+    expect(config.match(/trust_level\s*=/g)).toHaveLength(1)
+    expect(config.match(/notify\s*=/g)).toHaveLength(1)
+    expect(parsed.projects['/workspace']).toEqual({
+      trust_level: 'untrusted',
+      notify: ['scoped'],
+    })
+  })
+
+  it('merges equivalent quoted Codex keys and replaces entire multiline values', async () => {
+    const home = makeHome()
+    const globalConfigPath = join(home, 'global-home', '.codex', 'config.toml')
+    const scopedConfigPath = join(home, 'coding-agent', 'model', 'default', 'openrouter', 'codex', 'config.toml')
+    mkdirSync(dirname(globalConfigPath), { recursive: true })
+    mkdirSync(dirname(scopedConfigPath), { recursive: true })
+    writeFileSync(globalConfigPath, [
+      '[custom]',
+      '"template" = """global',
+      'retired line"""',
+      'notify = ["global"]',
+      '"tool=mode" = """first',
+      'second"""',
+      'nested . "key" = "global"',
+      '"nested.key" = "literal key"',
+    ].join('\n'))
+    writeFileSync(scopedConfigPath, [
+      '[custom]',
+      "'template' = '''scoped",
+      "replacement'''",
+      '"not\\u0069fy" = [',
+      '  "scoped", # ] is only a comment',
+      ']',
+      'nested.key = "scoped"',
+    ].join('\n'))
+    const launch = await prepareCodingAgentLaunch('codex', {
+      profile: 'default', provider: 'openrouter', model: 'codex-model',
+      baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'codex_responses',
+      sessionId: 'codex-quoted-config', agentSessionId: 'codex-quoted-config-agent',
+    })
+    const parsed = parseToml(readFileSync(join(launch.rootDir, 'config.toml'), 'utf-8'))
+    expect(parsed.custom).toEqual({
+      template: 'scoped\nreplacement',
+      notify: ['scoped'],
+      'tool=mode': 'first\nsecond',
+      nested: { key: 'scoped' },
+      'nested.key': 'literal key',
+    })
   })
 
   it('translates Studio reasoning choices into Pi thinking levels', () => {
@@ -638,9 +963,9 @@ describe('coding agent launch preparation', () => {
     expect(settings).toContain('model: "deepseek/deepseek-v4-flash"')
 
     const launcher = readFileSync(join(result.rootDir, LAUNCHER_FILE), 'utf-8')
-    expect(launcher).toContain("'dsh'")
-    expect(launcher).toContain("'--profile'")
-    expect(launcher).toContain("'headless'")
+    expect(launcher).toMatch(/exec (?:'dsh'|dsh) /)
+    expect(launcher).toMatch(/(?:'--profile'|--profile) /)
+    expect(launcher).toMatch(/(?:'headless'|headless)(?:\s|$)/)
   })
 
   it('rejects DeepSeek Harness scoped launches with unsupported protocols', async () => {
@@ -690,9 +1015,9 @@ describe('coding agent launch preparation', () => {
     expect(settings).not.toContain('llm-deepseek:')
 
     const launcher = readFileSync(join(result.rootDir, LAUNCHER_FILE), 'utf-8')
-    expect(launcher).toContain("'dsh'")
-    expect(launcher).toContain("'--profile'")
-    expect(launcher).toContain("'headless'")
+    expect(launcher).toMatch(/exec (?:'dsh'|dsh) /)
+    expect(launcher).toMatch(/(?:'--profile'|--profile) /)
+    expect(launcher).toMatch(/(?:'headless'|headless)(?:\s|$)/)
   })
 
   it('launches DeepSeek Harness in full SDK mode when a local source checkout is available', async () => {

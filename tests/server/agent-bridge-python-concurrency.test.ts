@@ -1095,7 +1095,7 @@ assert "session-1" in server.pool._sessions
 `)
   })
 
-  it('hot-switches a loaded idle session model without recreating the session', () => {
+  it('hot-switches only the targeted idle session without affecting another running session', () => {
     runPython(String.raw`
 ${harness}
 
@@ -1134,9 +1134,20 @@ session = bridge.AgentSession(
     config={"profile": "default", "model": "old-model", "provider": "openai"},
 )
 pool._sessions["session-model"] = session
+other_agent = SwitchableAgent()
+other_session = bridge.AgentSession(
+    session_id="other-session", agent=other_agent, running=True,
+    config={"profile": "default", "model": "old-model", "provider": "openai"},
+)
+pool._sessions["other-session"] = other_session
 
 result = pool.switch_session_model("session-model", "new-model", "anthropic", "default")
 
+assert pool._sessions["other-session"] is other_session
+assert other_agent.switch_calls == []
+assert other_agent.model == "old-model" and other_agent.provider == "openai"
+assert other_session.config == {"profile": "default", "model": "old-model", "provider": "openai"}
+assert other_session.running is True
 assert result["switched"] is True
 assert pool._sessions["session-model"] is session
 assert agent.switch_calls == [{
@@ -2380,11 +2391,18 @@ class FakeProcess:
 worker = bridge.WorkerProcess("default", "default", "tcp://127.0.0.1:1", None, None)
 worker.process = FakeProcess()
 
-def fake_request(req, timeout=None):
+def fake_request(endpoint, req, timeout):
+    assert endpoint == worker.endpoint
     events.append(("request", req, timeout))
-    return {"status": "shutting_down"}
+    return {"ok": True, "status": "shutting_down"}
 
-worker.request = fake_request
+def unexpected_start():
+    events.append("unexpected-start")
+
+# Keep the real request method: it auto-starts workers and must never be used
+# after clearing the current process during shutdown.
+worker.start = unexpected_start
+bridge._transport._send_bridge_request = fake_request
 worker.stop()
 
 assert events == [

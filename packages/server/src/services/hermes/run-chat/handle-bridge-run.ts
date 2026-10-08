@@ -44,6 +44,8 @@ import { writeModelRunProfileToken } from './model-run-prompt'
 import type { AuthenticatedUser } from '../../../middleware/user-auth'
 import { ensureHermesRunWorkspace } from './workspace'
 import { completeWorkspaceRunCheckpoint, startWorkspaceRunCheckpoint } from './workspace-diff-tracker'
+import { resolveAuthorizedProviderRuntimeCredentials } from '../authorized-provider-credentials'
+import { saveEnvValueForProfile } from '../../config-helpers'
 
 const BRIDGE_USAGE_FLUSH_DELAY_MS = 200
 const BRIDGE_TITLE_EVENT_POLL_INTERVAL_MS = 500
@@ -110,6 +112,38 @@ function fallbackTitleFromText(text: string, limit: number, ellipsis: boolean): 
   return ellipsis ? `${normalized.slice(0, limit)}...` : normalized.slice(0, limit)
 }
 
+function firstUserTextVariants(content: unknown): string[] {
+  const raw = String(content || '')
+  if (!raw.trimStart().startsWith('[')) return raw ? [raw] : []
+
+  try {
+    const blocks = JSON.parse(raw) as unknown
+    if (!Array.isArray(blocks)) return raw ? [raw] : []
+    const text = blocks
+      .filter((block): block is { type?: unknown; text?: unknown } => Boolean(block) && typeof block === 'object')
+      .filter(block => block.type === 'text')
+      .map(block => String(block.text ?? ''))
+      .join('\n')
+    // A plain-text JSON prompt has the same stored shape as content blocks.
+    // Keep both forms so its original fallback title remains replaceable.
+    return text.trim() ? [raw, text] : raw ? [raw] : []
+  } catch (error) {
+    logger.debug(error, '[chat-run-socket] failed to parse first user content title candidates')
+    return raw ? [raw] : []
+  }
+}
+
+function addTitleVariants(variants: Set<string>, text: string): void {
+  const normalized = normalizeTitleText(text)
+  if (!normalized) return
+  variants.add(normalized)
+  variants.add(fallbackTitleFromText(normalized, 40, true))
+  variants.add(fallbackTitleFromText(normalized, 63, false))
+  variants.add(fallbackTitleFromText(normalized, 100, false))
+  // Session creation truncates before title comparison collapses whitespace.
+  variants.add(normalizeTitleText(text.replace(/[\r\n]/g, ' ').substring(0, 100)))
+}
+
 function isReplaceableLocalTitle(sessionId: string): boolean {
   const session = getSession(sessionId)
   if (!session) return false
@@ -124,12 +158,8 @@ function isReplaceableLocalTitle(sessionId: string): boolean {
     variants.add(fallbackTitleFromText(preview, 100, false))
   }
   const firstUser = getFirstSessionMessageByRole(sessionId, 'user')
-  const firstUserText = normalizeTitleText(firstUser?.content)
-  if (firstUserText) {
-    variants.add(firstUserText)
-    variants.add(fallbackTitleFromText(firstUserText, 40, true))
-    variants.add(fallbackTitleFromText(firstUserText, 63, false))
-    variants.add(fallbackTitleFromText(firstUserText, 100, false))
+  for (const firstUserText of firstUserTextVariants(firstUser?.content)) {
+    addTitleVariants(variants, firstUserText)
   }
   return variants.has(current)
 }
@@ -138,7 +168,7 @@ function isBridgeSessionSource(source?: string | null): boolean {
   return source === 'cli' || source === 'global_agent'
 }
 
-function syncBridgeGeneratedTitle(sessionId: string, title: unknown, emit: (event: string, payload: any) => void): boolean {
+export function syncBridgeGeneratedTitle(sessionId: string, title: unknown, emit: (event: string, payload: any) => void): boolean {
   const nextTitle = normalizeTitleText(title)
   if (!nextTitle) return false
   const session = getSession(sessionId)
@@ -478,7 +508,7 @@ export async function handleBridgeRun(
   if (sessionRow && !sessionRow.workspace) updateSession(session_id, { workspace })
   const sessionModel = callbackContext?.model || sessionRow?.model || ''
   const sessionProvider = callbackContext?.provider || sessionRow?.provider || ''
-  const { model: resolvedModel, provider: resolvedProvider } = await resolveBridgeRunModelConfig({
+  const selectedModelConfig = await resolveBridgeRunModelConfig({
     profile,
     sessionModel,
     sessionProvider,
@@ -486,11 +516,29 @@ export async function handleBridgeRun(
     requestedProvider: callbackContext?.provider || data.provider,
     modelGroups: data.model_groups,
     preferRequested: Boolean(callbackContext) || data.one_shot_model === true,
+    preserveAuthorizedProvider: true,
   })
+  const resolvedModel = selectedModelConfig.model
+  const selectedProvider = selectedModelConfig.provider
+  if (selectedProvider === 'claude-oauth') {
+    // Studio owns OAuth refresh. Resolving here happens before context
+    // estimation can create a cached Python Agent and synchronizes Claude's
+    // fresh access token into the profile ANTHROPIC_TOKEN environment.
+    const credentials = await resolveAuthorizedProviderRuntimeCredentials({
+      profile,
+      provider: selectedProvider,
+      model: resolvedModel,
+    })
+    // Hermes Agent's native Anthropic bridge reads Claude OAuth only from
+    // ANTHROPIC_TOKEN. This is intentionally Claude-specific: no other
+    // authorized provider or provider environment is touched here.
+    await saveEnvValueForProfile(profile, 'ANTHROPIC_TOKEN', credentials.apiKey)
+  }
+  const resolvedProvider = selectedProvider === 'claude-oauth' ? 'anthropic' : selectedProvider
   if (sessionRow && !callbackContext && data.one_shot_model !== true) {
     const updates: { model?: string; provider?: string } = {}
     if (resolvedModel && sessionRow.model !== resolvedModel) updates.model = resolvedModel
-    if (resolvedProvider && sessionRow.provider !== resolvedProvider) updates.provider = resolvedProvider
+    if (selectedProvider && sessionRow.provider !== selectedProvider) updates.provider = selectedProvider
     if (Object.keys(updates).length > 0) updateSession(session_id, updates)
   }
   const socketUser = socket.data.user as AuthenticatedUser | undefined
@@ -566,7 +614,7 @@ export async function handleBridgeRun(
     if (!getSession(session_id)) {
       const previewText = extractTextForPreview(displayInput || input)
       const preview = previewText.replace(/[\r\n]/g, ' ').substring(0, 100)
-      createSession({ id: session_id, profile, source: runSource, model: resolvedModel, provider: resolvedProvider, reasoning_effort: reasoningEffort || '', title: preview, workspace, category_id: data.category_id })
+      createSession({ id: session_id, profile, source: runSource, model: resolvedModel, provider: selectedProvider, reasoning_effort: reasoningEffort || '', title: preview, workspace, category_id: data.category_id })
     }
     messageId = addMessage({
       session_id,
@@ -588,7 +636,7 @@ export async function handleBridgeRun(
   } else if (!getSession(session_id)) {
     const previewText = displayInput === null ? extractTextForPreview(input) : extractTextForPreview(displayInput || input)
     const preview = previewText.replace(/[\r\n]/g, ' ').substring(0, 100)
-    createSession({ id: session_id, profile, source: runSource, model: resolvedModel, provider: resolvedProvider, reasoning_effort: reasoningEffort || '', title: preview, workspace, category_id: data.category_id })
+    createSession({ id: session_id, profile, source: runSource, model: resolvedModel, provider: selectedProvider, reasoning_effort: reasoningEffort || '', title: preview, workspace, category_id: data.category_id })
   }
 
   socket.join(`session:${session_id}`)
@@ -722,7 +770,7 @@ export async function handleBridgeRun(
           { role: 'user', content: structuredClone(bridgeInput) } as ChatMessage,
         ],
         model: resolvedModel,
-        provider: resolvedProvider,
+        provider: selectedProvider,
         profile,
         instructions: fullInstructions,
         workspace,

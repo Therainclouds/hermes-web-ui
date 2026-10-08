@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NButton, NSpin, NTabPane, NTabs } from 'naive-ui'
+import { NButton, NSelect, NSpin, NTabPane, NTabs } from 'naive-ui'
+
 import { useI18n } from 'vue-i18n'
 import AuxiliaryModelsPanel from '@/components/hermes/models/AuxiliaryModelsPanel.vue'
 import CombinationModelsPanel from '@/components/hermes/models/CombinationModelsPanel.vue'
@@ -11,6 +12,7 @@ import RealtimeModelsPanel from '@/components/hermes/models/RealtimeModelsPanel.
 import VoiceSettings from '@/components/hermes/settings/VoiceSettings.vue'
 import { useModelsStore } from '@/stores/hermes/models'
 import { useProfilesStore } from '@/stores/hermes/profiles'
+import { fetchProfiles, type HermesProfile } from '@/api/hermes/profiles'
 import { checkCopilotToken } from '@/api/hermes/copilot-auth'
 import { useMessage } from '@/composables/useAppMessage'
 
@@ -21,7 +23,27 @@ const message = useMessage()
 const route = useRoute()
 const router = useRouter()
 const showModal = ref(false)
+const profiles = ref<HermesProfile[]>([])
+const selectedProfile = ref(typeof route.query.modelProfile === 'string' ? route.query.modelProfile : profilesStore.activeProfileName || 'default')
+const profileOptions = computed(() => profiles.value.map(profile => ({ label: profile.name, value: profile.name })))
+const profileLoading = ref(true)
+let profilesReady = false
+let loadId = 0
+
+function handleProfileUpdate(profile: string) {
+  if (profileLoading.value || !profiles.value.some(item => item.name === profile)) return
+  void router.replace({ query: { ...route.query, modelProfile: profile } })
+}
+
+watch(() => route.query.modelProfile, profile => {
+  if (!profilesReady || typeof profile !== 'string' || profile === selectedProfile.value) return
+  if (!profiles.value.some(item => item.name === profile)) return
+  selectedProfile.value = profile
+  showModal.value = false
+  void loadProvidersForProfile()
+})
 type ModelsTab = 'general' | 'auxiliary' | 'combination' | 'realtime' | 'stt' | 'tts'
+
 
 const MODELS_TABS = new Set<ModelsTab>(['general', 'auxiliary', 'combination', 'realtime', 'stt', 'tts'])
 const activeTab = ref<ModelsTab>('general')
@@ -43,18 +65,33 @@ function handleTabUpdate(tab: ModelsTab) {
 }
 
 async function loadProvidersForProfile() {
-  if (!profilesStore.activeProfileName || profilesStore.profiles.length === 0) {
-    await profilesStore.fetchProfiles()
+  const currentLoad = ++loadId
+  profileLoading.value = true
+  try {
+    try { await checkCopilotToken() } catch { /* ignore */ }
+    if (currentLoad !== loadId) return
+    await modelsStore.fetchProviders()
+  } finally {
+    if (currentLoad === loadId) profileLoading.value = false
   }
-  // 先 invalidate 后端 copilot 缓存（gh logout / VS Code 退出后下一次 list 立刻反映），
-  // 再拉 providers 与 appStore 的模型显示名配置。check-token 失败不阻断。
-  try { await checkCopilotToken() } catch { /* ignore */ }
-  await modelsStore.fetchProviders()
 }
 
 onMounted(async () => {
-  await loadProvidersForProfile()
+  try {
+    profiles.value = await fetchProfiles()
+    selectedProfile.value = profiles.value.find(profile => profile.name === selectedProfile.value)?.name || profiles.value[0]?.name || ''
+    if (!selectedProfile.value) return
+    await router.replace({ query: { ...route.query, modelProfile: selectedProfile.value } })
+    profilesReady = true
+    await loadProvidersForProfile()
+  } catch (err: any) {
+    message.error(err.message)
+  } finally {
+    profileLoading.value = false
+  }
 })
+
+onUnmounted(() => { loadId++ })
 
 function openCreateModal() {
   showModal.value = true
@@ -107,12 +144,26 @@ async function handleRefreshModelCache() {
 
     <header class="page-header">
       <h2 class="header-title">{{ t('models.title') }}</h2>
-      <div v-if="activeTab === 'general'" class="header-actions">
+      <div class="header-actions">
+        <NSelect
+          class="models-profile-select"
+          data-testid="models-profile-select"
+          :value="selectedProfile"
+          :options="profileOptions"
+          :disabled="profileLoading || modelsStore.refreshingModelCache"
+          :loading="profileLoading"
+          :aria-label="t('workflow.profile')"
+          size="small"
+          filterable
+          @update:value="handleProfileUpdate"
+        />
         <NButton
+          v-if="activeTab === 'general'"
           data-guide-id="models-refresh-cache"
+
           size="small"
           :loading="modelsStore.refreshingModelCache"
-          :disabled="modelsStore.loading"
+          :disabled="modelsStore.loading || profileLoading"
           :aria-label="t('models.refreshModelCache')"
           :title="t('models.refreshModelCache')"
           @click="handleRefreshModelCache"
@@ -124,6 +175,9 @@ async function handleRefreshModelCache() {
         </NButton>
         <NButton
           data-guide-id="models-add-provider"
+          v-if="activeTab === 'general'"
+          :disabled="profileLoading || !selectedProfile"
+
           type="primary"
           size="small"
           :aria-label="t('models.addProvider')"
@@ -139,7 +193,8 @@ async function handleRefreshModelCache() {
     </header>
 
     <div class="models-content">
-      <NTabs v-model:value="activeTab" type="line" animated @update:value="handleTabUpdate">
+      <NSpin v-if="profileLoading" class="models-profile-loading" />
+      <NTabs v-else-if="selectedProfile" :key="selectedProfile" v-model:value="activeTab" type="line" animated @update:value="handleTabUpdate">
         <NTabPane name="general" :tab="t('models.generalTitle')">
           <NSpin :show="modelsStore.loading && modelsStore.providers.length === 0">
             <div data-guide-id="models-provider-list">
@@ -157,16 +212,16 @@ async function handleRefreshModelCache() {
           <RealtimeModelsPanel />
         </NTabPane>
         <NTabPane name="stt" :tab="t('settings.voice.sttProvidersTitle')">
-          <VoiceSettings :key="`stt-${profilesStore.activeProfileName || 'default'}`" kind="stt" />
+          <VoiceSettings :key="`stt-${selectedProfile}`" kind="stt" />
         </NTabPane>
         <NTabPane name="tts" :tab="t('settings.voice.ttsProvidersTitle')">
-          <VoiceSettings :key="`tts-${profilesStore.activeProfileName || 'default'}`" kind="tts" />
+          <VoiceSettings :key="`tts-${selectedProfile}`" kind="tts" />
         </NTabPane>
       </NTabs>
     </div>
 
     <ProviderFormModal
-      v-if="showModal"
+      v-if="showModal && !profileLoading"
       @close="handleModalClose"
       @saved="handleSaved"
     />
@@ -199,6 +254,10 @@ async function handleRefreshModelCache() {
   padding: 20px;
 }
 
+.models-profile-select {
+  width: 160px;
+}
+
 .header-actions {
   display: flex;
   align-items: center;
@@ -208,6 +267,10 @@ async function handleRefreshModelCache() {
 }
 
 @media (max-width: 640px) {
+  .models-profile-select {
+    width: 120px;
+  }
+
   .header-actions {
     flex-wrap: nowrap;
   }

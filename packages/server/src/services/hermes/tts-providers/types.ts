@@ -81,6 +81,7 @@ export interface DoubaoTtsProviderOptions {
   model?: string
   voice?: string
   stylePrompt?: string
+  speed?: string | number
   format?: string
   sampleRate?: number
   sample_rate?: number

@@ -5,6 +5,7 @@ import type { AgentRuntimeContextEstimate, EkkoBackgroundContinuationContext } f
 import type { MemoryContextDiagnostics } from '../memory/types'
 
 export type AgentRuntimeEvent =
+  | { type: 'plan.updated'; runId: string; plan: import('../tools/plan').AgentTaskPlan }
   | { type: 'run.started'; runId: string; maxSteps: number }
   | { type: 'memory.retrieved'; runId: string; diagnostics: MemoryContextDiagnostics; memoryIds: string[] }
   | { type: 'skill.review.started'; runId: string; reviewId: string }
@@ -45,9 +46,11 @@ export type AgentRuntimeEvent =
       cacheReadTokens: number
       cacheWriteTokens: number
       reasoningTokens: number
+      costUsd?: number
+      costSource?: 'reported' | 'estimated'
       continuationContext?: EkkoBackgroundContinuationContext
     }
-  | { type: 'run.tool_failure_limit'; runId: string; failures: number }
+  | { type: 'run.tool_recovery_required'; runId: string; toolName: string; failures: number }
   | { type: 'run.completed'; runId: string; output: AgentOutputMessage; steps: number; context?: unknown; contextEstimate?: AgentRuntimeContextEstimate }
   | { type: 'run.failed'; runId: string; error: string; steps: number }
   | { type: 'run.max_steps'; runId: string; maxSteps: number }

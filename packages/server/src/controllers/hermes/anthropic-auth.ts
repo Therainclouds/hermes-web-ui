@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { getActiveProfileName, getProfileDir } from '../../services/hermes/hermes-profile'
 import { logger } from '../../services/logger'
-import { updateConfigYamlForProfile } from '../../services/config-helpers'
+import { saveEnvValueForProfile, updateConfigYamlForProfile } from '../../services/config-helpers'
 import { resolveAuthorizedProviderRuntimeCredentials } from '../../services/hermes/authorized-provider-credentials'
 
 const ANTHROPIC_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
@@ -160,6 +160,11 @@ export async function saveAnthropicOAuthTokensForProfile(
   }]
   saveAuthJson(authPathForProfile(profile), auth)
 
+  // Hermes Agent's native Anthropic runtime discovers Claude OAuth through
+  // ANTHROPIC_TOKEN. Keep only the short-lived access token in the profile
+  // environment; refresh_token remains exclusively in Studio-managed auth
+  // storage.
+  await saveEnvValueForProfile(profile, 'ANTHROPIC_TOKEN', accessToken)
   await updateConfigYamlForProfile(profile, applyAnthropicOAuthDefaultModel)
 }
 

@@ -93,7 +93,7 @@ describe('ekko-agent browser tools', () => {
   it('runs the Windows agent-browser .cmd shim through cmd.exe', async () => {
     Object.defineProperty(process, 'platform', { value: 'win32' })
     process.env.ComSpec = 'C:\\Windows\\System32\\cmd.exe'
-    process.env.AGENT_BROWSER_BIN = 'C:\\Program Files\\Hermes Studio\\agent-browser.cmd'
+    process.env.AGENT_BROWSER_BIN = 'C:\\Program Files\\Ekko Studio\\agent-browser.cmd'
     mockBrowserSpawn({ success: true, data: { url: 'https://www.baidu.com/', title: 'Baidu' } })
     mockBrowserSpawn({ success: true, data: { snapshot: 'link "News" [ref=@e1]', refs: { '@e1': {} } } })
 
@@ -131,8 +131,11 @@ describe('ekko-agent browser tools', () => {
     const options = mockedSpawn.mock.calls[0]?.[2] as { env?: NodeJS.ProcessEnv }
     expect(options.env?.BROWSERBASE_API_KEY).toBe('browser-key')
     expect(options.env?.OPENAI_API_KEY).toBeUndefined()
-    expect(options.env?.AGENT_BROWSER_SOCKET_DIR).toBe(`/tmp/eab_${hashedSession('browser-session')}`)
-    expect((options.env?.AGENT_BROWSER_SOCKET_DIR || '').length).toBeLessThan(40)
+    const socketDir = options.env?.AGENT_BROWSER_SOCKET_DIR || ''
+    const sessionDir = `eab_${hashedSession('browser-session')}`
+    expect(socketDir.endsWith(sessionDir)).toBe(true)
+    expect(socketDir.length).toBeLessThan(40)
+    if (process.platform !== 'win32') expect(socketDir).toBe(`/tmp/${sessionDir}`)
   })
 
   it('blocks sensitive console expressions before spawning the browser CLI', async () => {

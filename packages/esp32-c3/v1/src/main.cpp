@@ -210,7 +210,7 @@ bool bootSecondClickStarted = false;
 bool bootInputArmed = false;
 bool idlePowerSaveActive = false;
 bool listeningModeEnabled = false;
-bool hermesAgentSelected = false;
+bool hermesAgentSelected = true;
 uint32_t lastOledAtMs = 0;
 uint32_t oledStatusReturnAtMs = 0;
 uint32_t restartAtMs = 0;
@@ -1121,7 +1121,7 @@ void loadAudioPreferences() {
       static_cast<uint32_t>(prefs.getUChar("idle_min", kDefaultIdlePowerSaveMinutes)),
       kMaxIdlePowerSaveMinutes);
   listeningModeEnabled = prefs.getBool("listen_mode", false);
-  hermesAgentSelected = prefs.getBool("agent_hermes", false);
+  hermesAgentSelected = prefs.getBool("agent_hermes", true);
   prefs.end();
 }
 
@@ -2328,7 +2328,7 @@ void cleanupMcuPreferences() {
       static_cast<uint32_t>(prefs.getUChar("idle_min", kDefaultIdlePowerSaveMinutes)),
       kMaxIdlePowerSaveMinutes);
   bool listenMode = prefs.getBool("listen_mode", false);
-  bool agentHermes = prefs.getBool("agent_hermes", false);
+  bool agentHermes = prefs.getBool("agent_hermes", true);
   String activeKey = prefs.getString("active_key", "");
   String activeAddr = prefs.getString("active_addr", "");
   String activeUrl = prefs.getString("active_url", "");

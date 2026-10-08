@@ -4,6 +4,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync } 
 import os from 'node:os'
 import path from 'node:path'
 import type { AgentTool, AgentToolContext, AgentToolResult } from './types'
+import { workspaceTempRoot } from './workspace-temp'
 
 type BrowserCommand = {
   command: string
@@ -53,7 +54,7 @@ const BROWSER_PASSTHROUGH_ENV = [
 const browserToolDefinitions: AgentTool['definition'][] = [
   {
     name: 'browser_navigate',
-    description: 'Navigate to a URL in a browser session. Use this before other browser tools. Returns page metadata and a compact accessibility snapshot with refs.',
+    description: 'Navigate in the separate Agent browser environment. It does not share Ekko Studio built-in browser tabs or logins. For Studio built-in browser tasks prefer ekko_studio_browser_toolset when available. Returns page metadata and a compact accessibility snapshot with refs.',
     parameters: {
       type: 'object',
       properties: {
@@ -643,10 +644,19 @@ function browserSocketDir(sessionName: string): string {
   return path.join(shortTempDir(), `eab_${sessionName}`)
 }
 
+const BROWSER_SOCKET_DIR_LIMIT = 40
+const BROWSER_SOCKET_LEAF = 'eab_e_0123456789'
+
 function shortTempDir(): string {
   if (process.env.EKKO_AGENT_BROWSER_TMPDIR) return process.env.EKKO_AGENT_BROWSER_TMPDIR
   if (process.platform !== 'win32' && existsSync('/tmp')) return '/tmp'
-  return os.tmpdir()
+  const candidates = [
+    os.tmpdir(),
+    process.env.SystemRoot ? path.join(process.env.SystemRoot, 'Temp') : '',
+  ].filter(candidate => candidate.length > 0)
+  return candidates.find(candidate => (
+    existsSync(candidate) && path.join(candidate, BROWSER_SOCKET_LEAF).length < BROWSER_SOCKET_DIR_LIMIT
+  )) || os.tmpdir()
 }
 
 function shortHash(value: string): string {
@@ -654,7 +664,7 @@ function shortHash(value: string): string {
 }
 
 function browserScreenshotPath(context: AgentToolContext): string {
-  const dir = path.join(os.tmpdir(), 'ekko-agent-browser-screenshots', browserSessionName(context))
+  const dir = path.join(workspaceTempRoot(context), 'browser-screenshots', browserSessionName(context))
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   return path.join(dir, `browser_screenshot_${Date.now()}_${Math.random().toString(16).slice(2)}.png`)
 }

@@ -299,11 +299,12 @@ function findModelEntry(models: Record<string, ModelEntry>, modelName: string): 
     if (entry.name?.toLowerCase() === lower) return entry
   }
 
-  const suffix = `/${lower}`
-  for (const [name, entry] of Object.entries(models)) {
-    if (name.toLowerCase().endsWith(suffix)) return entry
-    if (entry.id?.toLowerCase().endsWith(suffix)) return entry
-  }
+  // Provider prefixes can differ between gateways and the cached catalog.
+  const tail = lower.slice(lower.lastIndexOf('/') + 1)
+  const matches = Object.entries(models).filter(([name, entry]) =>
+    name.toLowerCase().split('/').at(-1) === tail || entry.id?.toLowerCase().split('/').at(-1) === tail,
+  ).map(([, entry]) => entry)
+  if (matches.length && matches.every(entry => JSON.stringify({ limit: entry.limit, reasoning: entry.reasoning, attachment: entry.attachment, modalities: entry.modalities }) === JSON.stringify({ limit: matches[0].limit, reasoning: matches[0].reasoning, attachment: matches[0].attachment, modalities: matches[0].modalities }))) return matches[0]
 
   return undefined
 }

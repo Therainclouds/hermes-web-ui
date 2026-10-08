@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, provide, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { NInput, NButton, NSpace, NSelect, NPopover, NPopconfirm, NInputNumber, NDropdown, NModal, NDrawer, NDrawerContent, NProgress, NSwitch, NCheckbox, type DropdownOption } from 'naive-ui'
@@ -95,6 +95,7 @@ const props = withDefaults(defineProps<{
 }>(), {
     standalone: false,
 })
+
 const emit = defineEmits<{
     requestAgentLink: []
     requestAgentEdit: [agent: RoomAgent]
@@ -274,6 +275,7 @@ const liveDiscussion = computed(() => {
     if (!roomId) return null
     return store.discussionStates.get(roomId) || null
 })
+const deliveryUsage = ref<DeliveryUsage | null>(null)
 // 打开/切换房间时拉取该房间的讨论状态（含交付文件清单 deliverables），
 // 否则刷新页面后报告消息下方无法呈现本场交付文件。
 watch(
@@ -288,10 +290,9 @@ watch(
 )
 
 // ─── 交付目录用量统计与清理提醒 ─────────────────────────────
-const deliveryUsage = ref<DeliveryUsage | null>(null)
 async function loadDeliveryUsage(): Promise<void> {
     const roomId = store.currentRoomId
-    if (!roomId) return
+    if (!roomId || store.inviteGuest) return
     try {
         deliveryUsage.value = await fetchDeliveryUsage(roomId)
     } catch {
@@ -1028,6 +1029,8 @@ async function handleArchiveDismiss(mode: 'ignore' | 'later') {
         message.error(err.message || t('groupChat.archiveFailed'))
     }
 }
+provide('hermesWorkspaceFilePreview', currentRoomCanManage)
+
 const currentRoomCanMentionAll = computed(() => !props.standalone && currentRoom.value?.canMentionAll === true)
 const currentRoomNeedsSummaryConfiguration = computed(() => {
     if (props.standalone) return false
@@ -1320,15 +1323,34 @@ function groupWorkspacePreviewPath(filePath: string): string | null {
 }
 
 function handleWorkspaceFilePreviewRequest(event: Event): void {
-    const customEvent = event as CustomEvent<{ path?: string; fileName?: string }>
+    const customEvent = event as CustomEvent<{
+        path?: string
+        fileName?: string
+        startLine?: number
+        endLine?: number
+    }>
     const roomId = store.currentRoomId
     const path = groupWorkspacePreviewPath(typeof customEvent.detail?.path === 'string' ? customEvent.detail.path : '')
     if (!roomId || !path || !currentRoomCanManage.value) return
     customEvent.preventDefault()
     const fileName = customEvent.detail?.fileName || path.split('/').pop() || path
+    const requestedStartLine = customEvent.detail?.startLine
+    const startLine = Number.isInteger(requestedStartLine) && requestedStartLine! > 0
+        ? requestedStartLine
+        : undefined
+    const requestedEndLine = customEvent.detail?.endLine
+    const endLine = startLine && Number.isInteger(requestedEndLine) && requestedEndLine! >= startLine
+        ? requestedEndLine
+        : startLine
     toolPanelStore.closeWorkspaceDiff()
     filesStore.closePreview()
-    void filesStore.openGroupWorkspacePreview(roomId, path, fileName).catch(error => {
+    void filesStore.openGroupWorkspacePreview(
+        roomId,
+        path,
+        fileName,
+        -1,
+        startLine ? { startLine, endLine } : undefined,
+    ).catch(error => {
         message.error(error instanceof Error ? error.message : t('files.previewFailed'))
     })
 }

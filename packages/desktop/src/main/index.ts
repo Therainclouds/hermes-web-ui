@@ -37,6 +37,8 @@ import {
 import { BrowserManager } from './browser/browser-manager'
 import { BrowserBroker } from './browser/browser-broker'
 import type { BrowserBounds } from './browser/browser-types'
+import { getOpenAtLogin as readOpenAtLogin, setOpenAtLogin as writeOpenAtLogin, refreshLinuxLoginItem } from './login-item-settings'
+
 
 const PORT = Number(process.env.HERMES_DESKTOP_PORT) || 8748
 const START_HIDDEN = process.argv.includes('--hidden')
@@ -186,23 +188,17 @@ function hasQuitRequest(data: unknown): boolean {
     && (data as { quit?: unknown }).quit === true
 }
 
-function loginItemOptions() {
-  return {
-    path: process.execPath,
-    args: ['--hidden'],
+function getOpenAtLogin(): boolean {
+  try {
+    return readOpenAtLogin(app)
+  } catch (error) {
+    console.warn('[tray] failed to read the login item:', error)
+    return false
   }
 }
 
-function getOpenAtLogin(): boolean {
-  return app.getLoginItemSettings(loginItemOptions()).openAtLogin
-}
-
 function setOpenAtLogin(openAtLogin: boolean) {
-  app.setLoginItemSettings({
-    ...loginItemOptions(),
-    openAtLogin,
-    openAsHidden: true,
-  })
+  writeOpenAtLogin(app, openAtLogin)
 }
 
 async function clearWebLoginSession() {
@@ -311,10 +307,17 @@ function updateTrayMenu() {
     {
       label: t('tray.openAtLogin'),
       type: 'checkbox',
+      enabled: process.platform !== 'linux' || app.isPackaged,
       checked: getOpenAtLogin(),
       click: (item) => {
-        setOpenAtLogin(item.checked)
-        updateTrayMenu()
+        try {
+          setOpenAtLogin(item.checked)
+        } catch (error) {
+          console.error('[tray] failed to change the login item:', error)
+          dialog.showErrorBox(t('tray.openAtLoginFailedTitle'), `${t('tray.openAtLoginFailedMessage')}\n\n${String(error instanceof Error ? error.message : error)}`)
+        } finally {
+          updateTrayMenu()
+        }
       },
     },
     { type: 'separator' },
@@ -1075,6 +1078,12 @@ function runDesktopApp() {
     // visual clutter. macOS keeps a menu (system requirement) but Electron's
     // default is fine there.
     if (process.platform !== 'darwin') Menu.setApplicationMenu(null)
+    try {
+      refreshLinuxLoginItem(app)
+    } catch (error) {
+      console.warn('[desktop] failed to refresh the Linux login item:', error)
+    }
+
     installMicrophonePermissionHandler()
     createTray()
     await createWindow()

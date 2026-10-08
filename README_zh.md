@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>Hermes Studio</strong>
+  <strong>Quanthermes Studio</strong>
   <a href="./README.md">English</a>
 </p>
 
@@ -10,8 +10,22 @@
 </p>
 
 <p align="center">
-  <code>npm install -g hermes-web-ui && hermes-web-ui start</code>
+  <code>npm install -g @quanthermes/hermes-web-ui && hermes-web-ui start</code>
 </p>
+
+## Quanthermes 上游整合（2026-10-08）
+
+本仓库保留 **Quanthermes Studio**、`@quanthermes/hermes-web-ui` 和独立更新渠道。基于 [Ekko Studio 母仓库](https://github.com/EKKOLearnAI/ekko-studio) 的 `86f60d24` 选择性移植有价值的功能和修复，不引入上游品牌替换、购买推广、发布源替换或默认 Agent 接管。
+
+- 长会话搜索与分页、统一会话菜单、工作区下载、文件预览和源码行号定位。
+- 按页面所选 Profile 隔离模型与语音配置；启动恢复 TTS 配置，支持豆包语速。
+- Hermes bridge 启动、凭证、worker 生命周期、MCP 实例隔离，以及 Coding Agent 上下文恢复、流式输出和 TOML 配置修复。
+- 更新可选 Ekko runtime：工具输出限额、记忆恢复、并行工具调用和 MCP 兼容；额外 JEV 评估默认关闭，已有技能目录保留。
+- 保留专家中心、专家市场、USB 识别、会议/扫描插件、实时语音和本地设备更新系统。
+
+**小智默认使用本仓库的 Hermes OTA / `/global-agent` 链路。** `agentRuntime` 缺省或无效时选择 `hermes`；显式传入 `agentRuntime: "ekko"` 才使用备选方案，两套运行时的会话相互隔离。保留 OTA 摄像头、上传和分析接口。 ESP32-C3 v1/v2 源码出厂默认同步选择 Hermes，已保存的设备选择继续保留；本次不发布固件二进制，已刷入设备可能仍需在配置页选择 Hermes。本机另一套 `/ws/device` 固件服务不会替换这条链路；真实设备仍需联调验收。
+
+[整合审查与验证记录](docs/harness/upstream-sync-20261008-review.md) 说明了移植范围、排除项、性能测量及测试限制。本次更新源码，不发布设备版本、不修改 OTA manifest。
 
 ## 核心能力
 
@@ -239,7 +253,7 @@ Web UI BFF 端点：
 {
   "deviceId": "08:3A:8D:xx:xx:xx",
   "setupCode": "<≥24 位随机字符串>",
-  "websocketUrl": "ws://xiaozhi-ekko-gateway.local:8765/xiaozhi",
+  "websocketUrl": "ws://xiaozhi-gateway.local:8765/xiaozhi",
   "deviceToken": "<共享密钥>"
 }
 ```
@@ -667,10 +681,7 @@ hermes-web-ui start
 单容器部署，内置 Hermes Agent 运行时：
 
 ```bash
-# 使用预构建镜像（推荐）
-WEBUI_IMAGE=ekkoye8888/hermes-web-ui docker compose up -d
-
-# 或从源码构建
+# 从本仓库源码构建
 docker compose up -d --build
 
 docker compose logs -f hermes-webui

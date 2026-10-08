@@ -61,6 +61,9 @@ export interface AgentToolCall {
 }
 
 export interface ModelUsage {
+  /** Provider-reported USD cost, when supplied. Missing is not free. */
+  costUsd?: number
+  costSource?: 'reported' | 'estimated'
   inputTokens?: number
   outputTokens?: number
   totalTokens?: number
@@ -133,6 +136,8 @@ export interface ModelCapabilities {
 export interface ModelProviderConfig {
   id: string
   type: ModelProviderType
+  /** Persisted/public API mode name; requestStyle is its adapter-level form. */
+  apiMode?: import('./provider-presets').EkkoModelApiMode
   requestStyle?: ModelRequestStyle
   /**
    * Provider-specific assistant reasoning field used only by the OpenAI Chat

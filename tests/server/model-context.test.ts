@@ -59,6 +59,23 @@ describe('getModelContextLength', () => {
     homeDir = ''
   })
 
+  it('matches prefixed gateway IDs by the final segment within the configured provider', async () => {
+    writeConfig('model:\n  default: gateway/deepseek-v3\n  provider: deepseek\n')
+    writeModelsCache({ deepseek: { models: { 'vendor/deepseek-v3': { limit: { context: 128_000 } } } } })
+    const { getModelContextLength } = await loadModelContext()
+    expect(getModelContextLength()).toBe(128_000)
+  })
+
+  it('does not guess a context window for ambiguous final-segment matches', async () => {
+    writeConfig('model:\n  default: gateway/shared-model\n  provider: deepseek\n')
+    writeModelsCache({ deepseek: { models: {
+      'one/shared-model': { limit: { context: 128_000 } },
+      'two/shared-model': { limit: { context: 512_000 } },
+    } } })
+    const { getModelContextLength } = await loadModelContext()
+    expect(getModelContextLength()).toBe(256_000)
+  })
+
   it('does not borrow a same-named model context from another provider when the configured provider is uncached', async () => {
     writeConfig(`model:\n  default: gpt-5.5\n  provider: openai-codex\n`)
     writeModelsCache({

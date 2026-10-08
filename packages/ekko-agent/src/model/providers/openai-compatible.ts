@@ -8,7 +8,7 @@ import {
   parseServerSentEventLine,
   providerHttpError,
   providerUrl,
-  requestHeaders,
+  modelRequestHeaders,
 } from '../http'
 import type {
   AgentMessage,
@@ -105,6 +105,7 @@ interface OpenAIChatResponse {
     finish_reason?: string | null
   }>
   usage?: {
+    cost?: number
     prompt_tokens?: number
     completion_tokens?: number
     total_tokens?: number
@@ -152,12 +153,12 @@ export class OpenAICompatibleModelClient implements ModelClient {
   }
 
   async create(request: ModelRequest): Promise<ModelResponse> {
-    const response = await this.postWithImageFallback({ ...request, stream: false }, request.signal)
+    const response = await this.postWithImageFallback(request, false, request.signal)
     return normalizeOpenAIChatResponse(this.provider, await parseResponseJson(this.provider, response))
   }
 
   async *stream(request: ModelRequest): AsyncIterable<ModelEvent> {
-    const response = await this.postWithImageFallback({ ...request, stream: true }, request.signal)
+    const response = await this.postWithImageFallback(request, true, request.signal)
 
     if (!response.body) {
       throw new ModelProviderError('Model provider returned an empty stream body.', {
@@ -239,10 +240,17 @@ export class OpenAICompatibleModelClient implements ModelClient {
           }
 
           if (choice.finish_reason === 'tool_calls') {
+            let validToolCalls = 0
             for (const toolCall of toolCalls.values()) {
-              yield { type: 'tool-call', toolCall: normalizeToolCall(toolCall.id, toolCall.name, toolCall.argumentsText) }
+              const normalized = normalizeToolCall(toolCall.id, toolCall.name, toolCall.argumentsText)
+              if (!normalized) continue
+              validToolCalls += 1
+              yield { type: 'tool-call', toolCall: normalized }
             }
             toolCalls.clear()
+            if (validToolCalls === 0) {
+              throw invalidOpenAIToolCallError(this.provider)
+            }
           }
         }
       }
@@ -264,26 +272,26 @@ export class OpenAICompatibleModelClient implements ModelClient {
     }
   }
 
-  private async postWithImageFallback(request: ModelRequest, signal?: AbortSignal): Promise<Response> {
+  private async postWithImageFallback(request: ModelRequest, stream: boolean, signal?: AbortSignal): Promise<Response> {
     const model = request.model ?? this.config.defaultModel
     const target = chatTargetKey(this.config, model)
     const initialConfig = textOnlyChatTargets.has(target)
       ? withoutVision(this.config)
       : this.config
-    const payload = toOpenAIChatPayload(initialConfig, request)
+    const payload = toOpenAIChatPayload(initialConfig, { ...request, stream })
     try {
-      return await this.post(payload, signal)
+      return await this.post(payload, request, signal)
     } catch (error) {
       if (!payloadContainsImage(payload) || !isUnsupportedImageError(error)) throw error
       rememberTextOnlyChatTarget(target)
-      return this.post(toOpenAIChatPayload(withoutVision(this.config), request), signal)
+      return this.post(toOpenAIChatPayload(withoutVision(this.config), { ...request, stream }), request, signal)
     }
   }
 
-  private async post(payload: OpenAIChatPayload, signal?: AbortSignal): Promise<Response> {
+  private async post(payload: OpenAIChatPayload, request: ModelRequest, signal?: AbortSignal): Promise<Response> {
     const response = await this.fetchImpl(chatCompletionsUrl(this.config), {
       method: 'POST',
-      headers: requestHeaders(this.config),
+      headers: modelRequestHeaders(this.config, request),
       body: JSON.stringify(payload),
       signal: abortSignal(this.config.timeoutMs, signal),
     })
@@ -355,31 +363,59 @@ function isUnsupportedImageError(error: unknown): boolean {
 export function toOpenAIChatPayload(config: ModelProviderConfig, request: ModelRequest): OpenAIChatPayload {
   const isQwenOAuth = config.id === 'qwen-oauth'
   const supportsVision = config.capabilities?.vision !== false
+  const model = request.model ?? config.defaultModel
   const reasoningReplayField = openAIReasoningReplayField(
     config,
-    request.model ?? config.defaultModel,
+    model,
   )
   const requiresAssistantContent = requiresNonNullAssistantContent(
     config,
-    request.model ?? config.defaultModel,
+    model,
   )
+  const supportsToolChoice = supportsOpenAIChatToolChoice(model)
   const tools = request.tools?.length ? request.tools.map(toOpenAIToolDefinition) : undefined
+  const messages = sanitizeOpenAIChatToolHistory(request.messages)
+  const chatMessages: OpenAIChatMessage[] = []
+  const toolImageMessages: OpenAIChatMessage[] = []
+  for (const message of messages) {
+    // Image attachments become user messages and must follow the entire tool batch.
+    if (message.role !== 'tool') chatMessages.push(...toolImageMessages.splice(0))
+    const converted = toOpenAIChatMessages(
+      message, isQwenOAuth, reasoningReplayField, requiresAssistantContent, supportsVision,
+    )
+    if (message.role === 'tool') {
+      chatMessages.push(converted[0]!)
+      toolImageMessages.push(...converted.slice(1))
+    } else {
+      chatMessages.push(...converted)
+    }
+  }
+  chatMessages.push(...toolImageMessages)
   return {
-    model: request.model ?? config.defaultModel,
-    messages: request.messages.flatMap(message =>
-      toOpenAIChatMessages(message, isQwenOAuth, reasoningReplayField, requiresAssistantContent, supportsVision)),
+    model,
+    messages: chatMessages,
     temperature: request.temperature,
     max_tokens: request.maxTokens,
     ...(tools
       ? {
           tools,
-          ...(request.toolChoice ? { tool_choice: request.toolChoice } : {}),
+          ...(request.toolChoice && supportsToolChoice ? { tool_choice: request.toolChoice } : {}),
         }
       : {}),
     stream: request.stream,
     stream_options: request.stream ? { include_usage: true } : undefined,
     vl_high_resolution_images: isQwenOAuth && supportsVision ? true : undefined,
   }
+}
+
+function supportsOpenAIChatToolChoice(model: string): boolean {
+  // DeepSeek Chat thinking mode rejects the tool_choice parameter. V4 models
+  // enable thinking by default; the legacy deepseek-reasoner alias does too.
+  const modelId = model.trim().toLowerCase()
+  return !(
+    modelId.includes('deepseek-v4') ||
+    modelId.endsWith('deepseek-reasoner')
+  )
 }
 
 export function normalizeOpenAIChatResponse(provider: string, response: OpenAIChatResponse): ModelResponse {
@@ -391,6 +427,10 @@ export function normalizeOpenAIChatResponse(provider: string, response: OpenAICh
   }
 
   const choice = response.choices?.[0]
+  const toolCalls = normalizeOpenAIToolCalls(choice?.message?.tool_calls)
+  if (choice?.finish_reason === 'tool_calls' && !toolCalls?.length) {
+    throw invalidOpenAIToolCallError(provider)
+  }
   return {
     id: response.id,
     model: response.model,
@@ -399,7 +439,7 @@ export function normalizeOpenAIChatResponse(provider: string, response: OpenAICh
       normalizeReasoning(choice?.message),
       openAIReasoningDetails(choice?.message?.reasoning_details),
     ),
-    toolCalls: choice?.message?.tool_calls?.map(toAgentToolCall),
+    toolCalls,
     usage: response.usage ? normalizeUsage(response.usage) : undefined,
     finishReason: choice?.finish_reason ?? undefined,
     raw: response,
@@ -436,8 +476,8 @@ function toOpenAIChatMessages(
     ? {}
     : reasoningReplayField === 'reasoning' && reasoningText
       ? { reasoning: reasoningText }
-      : reasoningReplayField === 'reasoning_content' && reasoningText
-        ? { reasoning_content: reasoningText }
+      : reasoningReplayField === 'reasoning_content'
+        ? { reasoning_content: reasoningText || '' }
         : reasoningReplayField === 'reasoning_details' && reasoningDetails
           ? { reasoning_details: reasoningDetails }
           : reasoningReplayField === 'reasoning_details' && reasoningText
@@ -467,7 +507,7 @@ function toOpenAIChatMessages(
   return [base, {
     role: 'user',
     content: [
-      { type: 'text', text: 'Visual output from the preceding tool result:' },
+      { type: 'text', text: `Visual output from tool result ${message.toolCallId}:` },
       ...images.map(image => ({ type: 'image_url' as const, image_url: { url: `data:${image.mimeType};base64,${image.data}` } })),
     ],
   }]
@@ -596,16 +636,120 @@ function toOpenAIToolCall(toolCall: AgentToolCall): OpenAIToolCall {
   }
 }
 
-function toAgentToolCall(toolCall: OpenAIToolCall): AgentToolCall {
-  return normalizeToolCall(toolCall.id, toolCall.function.name, toolCall.function.arguments)
+function toAgentToolCall(toolCall: OpenAIToolCall): AgentToolCall | null {
+  return normalizeToolCall(
+    toolCall?.id,
+    toolCall?.function?.name,
+    toolCall?.function?.arguments,
+  )
 }
 
-function normalizeToolCall(id: string, name: string, argumentsText: string): AgentToolCall {
-  const parsedArguments = parseJson<unknown>(argumentsText)
+function normalizeToolCall(id: unknown, name: unknown, argumentsText: unknown): AgentToolCall | null {
+  const normalizedId = String(id || '').trim()
+  const normalizedName = String(name || '').trim()
+  if (!normalizedId || !normalizedName) return null
+  const normalizedArgumentsText = String(argumentsText || '').trim() || '{}'
+  const parsedArguments = parseJson<unknown>(normalizedArgumentsText)
   if (isPlainRecord(parsedArguments)) {
-    return { id, name, arguments: parsedArguments, rawArguments: argumentsText }
+    return {
+      id: normalizedId,
+      name: normalizedName,
+      arguments: parsedArguments,
+      rawArguments: normalizedArgumentsText,
+    }
   }
-  return { id, name, arguments: {}, rawArguments: argumentsText }
+  return {
+    id: normalizedId,
+    name: normalizedName,
+    arguments: {},
+    rawArguments: normalizedArgumentsText,
+  }
+}
+
+function normalizeOpenAIToolCalls(toolCalls: OpenAIToolCall[] | undefined): AgentToolCall[] | undefined {
+  const normalized = (toolCalls ?? [])
+    .map(toAgentToolCall)
+    .filter((toolCall): toolCall is AgentToolCall => !!toolCall)
+  return normalized.length ? normalized : undefined
+}
+
+function invalidOpenAIToolCallError(provider: string): ModelProviderError {
+  return new ModelProviderError(
+    'Model provider returned tool_calls without a complete id and function name.',
+    {
+      provider,
+      retryable: true,
+      details: { reason: 'invalid_tool_call' },
+    },
+  )
+}
+
+function sanitizeOpenAIChatToolHistory(messages: AgentMessage[]): AgentMessage[] {
+  const pendingToolCalls = new Map<string, AgentToolCall>()
+  const sanitized: AgentMessage[] = []
+
+  const closeToolBatch = () => {
+    for (const toolCall of pendingToolCalls.values()) {
+      sanitized.push({
+        role: 'tool',
+        toolCallId: toolCall.id,
+        name: toolCall.name,
+        content: 'Tool result is missing from the conversation history. Execution status is unknown; verify the current state before retrying any action.',
+      })
+    }
+    pendingToolCalls.clear()
+  }
+
+  for (const message of messages) {
+    if (message.role === 'tool') {
+      const toolCallId = String(message.toolCallId || '').trim()
+      if (!pendingToolCalls.delete(toolCallId)) continue
+      sanitized.push({ ...message, toolCallId })
+      continue
+    }
+
+    // Interrupted or truncated history must still close every declared call.
+    closeToolBatch()
+    if (message.role === 'assistant' && message.toolCalls?.length) {
+      const toolCalls: AgentToolCall[] = []
+      for (const toolCall of message.toolCalls) {
+        const normalized = normalizeAgentToolCall(toolCall)
+        if (normalized && !pendingToolCalls.has(normalized.id)) {
+          toolCalls.push(normalized)
+          pendingToolCalls.set(normalized.id, normalized)
+        }
+      }
+      if (
+        toolCalls.length === 0 &&
+        !message.content.trim() &&
+        !agentReasoningText(message.reasoning).trim() &&
+        !message.reasoning?.native
+      ) continue
+      sanitized.push({
+        ...message,
+        toolCalls: toolCalls.length ? toolCalls : undefined,
+      })
+      continue
+    }
+
+    sanitized.push(message)
+  }
+
+  closeToolBatch()
+  return sanitized
+}
+
+function normalizeAgentToolCall(toolCall: AgentToolCall): AgentToolCall | null {
+  const id = String(toolCall?.id || '').trim()
+  const name = String(toolCall?.name || '').trim()
+  if (!id || !name) return null
+  return {
+    ...toolCall,
+    id,
+    name,
+    arguments: isPlainRecord(toolCall.arguments) ? toolCall.arguments : {},
+    rawArguments: String(toolCall.rawArguments || '').trim() || '{}',
+  }
 }
 
 function normalizeContent(content: OpenAIMessageContent): string {
@@ -618,6 +762,7 @@ function normalizeUsage(usage: NonNullable<OpenAIChatResponse['usage']>): ModelU
   const cacheReadTokens = usage.prompt_tokens_details?.cached_tokens ?? 0
   const inputTokens = usage.prompt_tokens ?? 0
   return {
+    ...(typeof usage.cost === 'number' && Number.isFinite(usage.cost) && usage.cost >= 0 ? { costUsd: usage.cost } : {}),
     inputTokens: Math.max(0, inputTokens - cacheReadTokens),
     outputTokens: usage.completion_tokens,
     totalTokens: usage.total_tokens,

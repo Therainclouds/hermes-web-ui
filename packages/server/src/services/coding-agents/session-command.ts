@@ -6,6 +6,7 @@ import { calcAndUpdateUsage } from '../hermes/run-chat/usage'
 import type { SessionState } from '../hermes/run-chat/types'
 import { codingAgentRunManager } from './runtime/run-manager'
 import { compactStoredCodingAgentSession, startCodingAgentRun } from './index'
+import { isContextWindowExceededError, nativeContextRecoveryMessage, resetNativeSessionAfterContextOverflow } from './context-recovery'
 
 export type CodingAgentCommandName = 'context' | 'compact' | 'usage' | 'status'
 
@@ -264,6 +265,24 @@ export async function handleCodingAgentSessionCommand(
         compacted: result.compacted,
       })
     } catch (err) {
+      if (isContextWindowExceededError(err)) {
+        const recovery = resetNativeSessionAfterContextOverflow(sessionId, compactAgentId)
+        if (recovery.reset) {
+          codingAgentRunManager.stop(sessionId, { reportClosed: false })
+          state.isWorking = false
+          state.runId = undefined
+          state.abortController = undefined
+          state.activeRunMarker = undefined
+          emitCommand({
+            action: 'compact',
+            terminal: true,
+            message: nativeContextRecoveryMessage(compactAgentName),
+            compacted: false,
+            resetNativeThread: true,
+          })
+          return
+        }
+      }
       emitCommand({
         ok: false,
         action: 'compact',

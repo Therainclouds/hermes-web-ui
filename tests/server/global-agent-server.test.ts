@@ -178,9 +178,8 @@ function startPrimaryMockRun(socket: any, runId = 'run-primary'): string {
     .filter(([event]: [string]) => event === 'run')
     .at(-1)
   expect(runCall?.[1]).toMatchObject({
-    source: 'coding_agent',
+    source: 'global_agent',
     session_source: 'global_agent',
-    coding_agent_id: 'ekko-agent',
     instructions: MCU_VOICE_SYSTEM_INSTRUCTIONS,
   })
   const queueId = runCall?.[1]?.queue_id
@@ -979,7 +978,6 @@ describe('GlobalAgentServer', () => {
       interactionId: 'voice-hermes',
       transcript: 'use Hermes',
       clientId: 'device-1',
-      agentRuntime: 'hermes',
     })
     const hermesSocket = clientSocketMocks.localSockets.at(-1)
     await hermesSocket.__handlers.get('connect')?.()
@@ -1283,7 +1281,7 @@ describe('GlobalAgentServer', () => {
       profile: 'research',
     })
     await new Promise(resolve => setTimeout(resolve, 320))
-    expect(parentSocket.emit).not.toHaveBeenCalledWith('abort', { session_id: 'mcu-device-1-research-ekko' })
+    expect(parentSocket.emit).not.toHaveBeenCalledWith('abort', { session_id: 'mcu-device-1-research-hermes' })
 
     server.startMcuVoiceChatTurn({
       userToken: 'user-jwt',
@@ -1296,10 +1294,10 @@ describe('GlobalAgentServer', () => {
     await followUpSocket.__handlers.get('connect')?.()
 
     expect(parentSocket.disconnect).not.toHaveBeenCalled()
-    expect(followUpSocket.emit).not.toHaveBeenCalledWith('abort', { session_id: 'mcu-device-1-research-ekko' })
+    expect(followUpSocket.emit).not.toHaveBeenCalledWith('abort', { session_id: 'mcu-device-1-research-hermes' })
     expect(followUpSocket.emit).toHaveBeenCalledWith('run', expect.objectContaining({
       input: '继续聊另一个问题',
-      session_id: 'mcu-device-1-research-ekko',
+      session_id: 'mcu-device-1-research-hermes',
     }))
   })
 
@@ -1595,7 +1593,7 @@ describe('GlobalAgentServer', () => {
     await vi.waitFor(() => {
       expect(ttsSignal?.aborted).toBe(true)
     })
-    expect(localSocket.emit).toHaveBeenCalledWith('abort', { session_id: 'mcu-device-1-research-ekko' })
+    expect(localSocket.emit).toHaveBeenCalledWith('abort', { session_id: 'mcu-device-1-research-hermes' })
     expect(agentSocket.emit).not.toHaveBeenCalledWith('audio.enqueue', expect.anything())
   })
 
@@ -1641,7 +1639,7 @@ describe('GlobalAgentServer', () => {
       tool: 'approval',
     })
     expect(localSocket.emit).toHaveBeenCalledWith('approval.respond', {
-      session_id: 'mcu-device-1-research-ekko',
+      session_id: 'mcu-device-1-research-hermes',
       approval_id: 'approval-1',
       choice: 'session',
     })
@@ -1760,18 +1758,18 @@ describe('GlobalAgentServer', () => {
       profile: 'research',
     })
 
-    expect(chatRunMocks.clearSessionHistory).toHaveBeenCalledWith('mcu-device-1-research-ekko')
+    expect(chatRunMocks.clearSessionHistory).toHaveBeenCalledWith('mcu-device-1-research-hermes')
     expect(agentSocket.emit).toHaveBeenCalledWith('mcu.session.cleared', expect.objectContaining({
       type: 'mcu.session.cleared',
       interactionId: 'clear-1',
       profile: 'research',
-      sessionId: 'mcu-device-1-research-ekko',
+      sessionId: 'mcu-device-1-research-hermes',
       deleted: 2,
       memoryCleared: true,
     }))
     expect(frontendSocket.emit).toHaveBeenCalledWith('session.command', {
       event: 'session.command',
-      session_id: 'mcu-device-1-research-ekko',
+      session_id: 'mcu-device-1-research-hermes',
       command: 'clear',
       action: 'clear',
       clearHistory: true,
@@ -1804,7 +1802,7 @@ describe('GlobalAgentServer', () => {
       nsp.__handlers.get('connection')?.(agentSocket)
 
       const runSocket = { emit: vi.fn() }
-      ;(server as any).mcuSessionRuns.set('mcu-device-1-research-ekko', {
+      ;(server as any).mcuSessionRuns.set('mcu-device-1-research-hermes', {
         interactionId: 'run-1',
         socket: runSocket,
       })
@@ -1815,7 +1813,7 @@ describe('GlobalAgentServer', () => {
       })
       await vi.advanceTimersByTimeAsync(300)
 
-      expect(runSocket.emit).toHaveBeenCalledWith('abort', { session_id: 'mcu-device-1-research-ekko' })
+      expect(runSocket.emit).toHaveBeenCalledWith('abort', { session_id: 'mcu-device-1-research-hermes' })
     } finally {
       vi.useRealTimers()
     }
@@ -1845,7 +1843,7 @@ describe('GlobalAgentServer', () => {
       nsp.__handlers.get('connection')?.(agentSocket)
 
       const runSocket = { emit: vi.fn() }
-      ;(server as any).mcuSessionRuns.set('mcu-device-1-research-ekko', {
+      ;(server as any).mcuSessionRuns.set('mcu-device-1-research-hermes', {
         interactionId: 'run-1',
         socket: runSocket,
       })
@@ -1864,12 +1862,12 @@ describe('GlobalAgentServer', () => {
       await vi.advanceTimersByTimeAsync(300)
 
       expect(runSocket.emit).not.toHaveBeenCalled()
-      expect(chatRunMocks.clearSessionHistory).toHaveBeenCalledWith('mcu-device-1-research-ekko')
+      expect(chatRunMocks.clearSessionHistory).toHaveBeenCalledWith('mcu-device-1-research-hermes')
       expect(agentSocket.emit).toHaveBeenCalledWith('mcu.session.cleared', expect.objectContaining({
         type: 'mcu.session.cleared',
         interactionId: 'clear-1',
         profile: 'research',
-        sessionId: 'mcu-device-1-research-ekko',
+        sessionId: 'mcu-device-1-research-hermes',
       }))
     } finally {
       vi.useRealTimers()
@@ -1906,7 +1904,7 @@ describe('GlobalAgentServer', () => {
     expect(chatRunMocks.clearSessionHistory).not.toHaveBeenCalled()
     expect(agentSocket.emit).toHaveBeenCalledWith('mcu.session.cleared', expect.objectContaining({
       type: 'mcu.session.cleared',
-      sessionId: 'mcu-device-1-research-ekko',
+      sessionId: 'mcu-device-1-research-hermes',
       ok: false,
       error: 'chat_run_server_unavailable',
     }))

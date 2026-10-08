@@ -28,6 +28,7 @@ import { listUserProfiles, replaceUserProfiles, deleteProfileBindingsByName, set
 import { readAppProfileAvatar } from '../../services/hermes/app-profile-avatar'
 
 const bridgeCleanupClient = () => new AgentBridgeClient({ connectRetryMs: 0, timeoutMs: 5000 })
+const bridgeProfileRestartClient = () => new AgentBridgeClient({ connectRetryMs: 0 })
 
 interface ProfileAvatarResponse {
   type: 'generated' | 'image' | 'remote'
@@ -740,7 +741,7 @@ export async function restartProfileRuntime(ctx: any) {
     return
   }
   try {
-    const result = await bridgeCleanupClient().destroyProfile(name)
+    const result = await bridgeProfileRestartClient().destroyProfile(name)
     logger.info('[profiles] destroyed bridge sessions after profile restart profile=%s destroyed=%s', name, result.destroyed)
     const profiles = await listProfilesForStatus()
     const profile = profiles.find(item => item.name === name)

@@ -2,6 +2,7 @@ import * as hermesCli from '../../services/hermes/hermes-cli'
 import { listSessionSummaries, listSessionSummaryGroups, getUsageStatsFromDb, getSessionDetailFromDb, getSessionDetailFromDbWithProfile, getSessionDetailPaginatedFromDbWithProfile, getExactSessionDetailFromDbWithProfile } from '../../db/hermes/sessions-db'
 import {
   listSessions as localListSessions,
+  countSessions as localCountSessions,
   searchSessions as localSearchSessions,
   getSession as localGetSession,
   getSessionDetail as localGetSessionDetail,
@@ -469,13 +470,49 @@ export async function list(ctx: any) {
   const profile = explicitProfileFilter(ctx)
   const effectiveLimit = limit && limit > 0 ? limit : 2000
 
-  const allSessions = localListSessions(profile, source, effectiveLimit)
+  const paginated = ctx.query.offset !== undefined
+  const requestedOffset = Number(ctx.query.offset)
+  const offset = Number.isSafeInteger(requestedOffset) && requestedOffset > 0 ? requestedOffset : 0
+  const category = ctx.query.category
+  const categoryId = category === 'none' ? null : category === undefined ? undefined : Number(category)
+  if (categoryId !== undefined && categoryId !== null && (!Number.isSafeInteger(categoryId) || categoryId <= 0)) {
+    ctx.status = 400
+    ctx.body = { error: 'category must be a positive integer or none' }
+    return
+  }
+  const readIds = (raw: unknown): string[] => (Array.isArray(raw) ? raw : raw ? [raw] : [])
+    .map(value => String(value).trim()).filter(Boolean)
+  const includedIds = ctx.query.include === undefined ? undefined : readIds(ctx.query.include)
+  const excludedIds = readIds(ctx.query.exclude)
+
   const knownProfiles = profile ? null : new Set(listProfileNamesFromDisk())
-  ctx.body = {
-    sessions: filterPendingDeletedSessions(filterArchivedSessions(filterByAllowedProfiles(ctx, allSessions).filter(s =>
+  const allowedProfiles = allowedProfileSet(ctx)
+  const visibleProfiles = knownProfiles
+    ? [...knownProfiles].filter(name => !allowedProfiles || allowedProfiles.has(name))
+    : undefined
+  const listOptions = {
+    ...(categoryId !== undefined ? { categoryId } : {}),
+    ...(includedIds !== undefined ? { includeSessionIds: includedIds } : {}),
+    sources: source ? undefined : requestedSessionSources(),
+    profiles: visibleProfiles,
+    includeArchived: false,
+    excludeSessionIds: [...getPendingDeletedSessionIds(), ...excludedIds],
+  }
+  const allSessions = localListSessions(profile, source, effectiveLimit + (paginated ? 1 : 0), {
+    ...listOptions,
+    ...(paginated ? { offset } : {}),
+  })
+  const sessions = filterPendingDeletedSessions(filterArchivedSessions(filterByAllowedProfiles(ctx, allSessions).filter(s =>
       isRequestedSessionSource(source, s.source) &&
       (!knownProfiles || knownProfiles.has(s.profile || 'default')),
-    ))),
+    )))
+  ctx.body = {
+    sessions: paginated ? sessions.slice(0, effectiveLimit) : sessions,
+    ...(paginated ? {
+      hasMore: sessions.length > effectiveLimit, offset, limit: effectiveLimit,
+      total: profile && allowedProfiles && !allowedProfiles.has(profile)
+        ? 0 : localCountSessions(profile, source, listOptions),
+    } : {}),
   }
 }
 
@@ -1368,7 +1405,17 @@ export async function rename(ctx: any) {
  */
 export async function archive(ctx: any) {
   const existing = localGetSession(ctx.params.id)
+  if (!existing) {
+    ctx.status = 404
+    ctx.body = { error: 'Session not found' }
+    return
+  }
   if (denySessionAccess(ctx, existing)) return
+  if (existing.source === 'global_agent') {
+    ctx.status = 400
+    ctx.body = { error: 'Global agent sessions cannot be archived' }
+    return
+  }
   const ok = localSetSessionArchived(ctx.params.id, true)
   ctx.status = ok ? 200 : 404
   ctx.body = ok ? { ok: true } : { error: 'Session not found' }
@@ -1379,6 +1426,11 @@ export async function archive(ctx: any) {
  */
 export async function unarchive(ctx: any) {
   const existing = localGetSession(ctx.params.id)
+  if (!existing) {
+    ctx.status = 404
+    ctx.body = { error: 'Session not found' }
+    return
+  }
   if (denySessionAccess(ctx, existing)) return
   const ok = localSetSessionArchived(ctx.params.id, false)
   ctx.status = ok ? 200 : 404

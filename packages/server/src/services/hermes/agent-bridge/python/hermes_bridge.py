@@ -270,9 +270,11 @@ def main(argv: list[str] | None = None) -> int:
     args.agent_root = args.agent_root if args.agent_root != "" else None
 
     _set_path_env(args.agent_root, args.hermes_home)
-    _ensure_agent_imports()
     if args.worker_profile:
         _set_worker_profile_env(str(args.worker_profile or "default"))
+    _ensure_agent_imports()
+    if args.worker_profile:
+        _refresh_worker_profile_env()
         _log_worker_startup_context(str(args.worker_profile or "default"))
         BridgeServer(args.endpoint).serve_forever()
     else:

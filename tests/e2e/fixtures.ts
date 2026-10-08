@@ -196,6 +196,27 @@ export async function mockHermesApi(page: Page, options: MockHermesApiOptions = 
 
     requests.push(recordRequest(request))
 
+    if (pathname === '/api/device-login/request') {
+      await route.fulfill(jsonResponse({ success: false, message: 'Device login unavailable in password-auth tests' }, 503))
+      return
+    }
+    if (pathname === '/api/hermes/tts/settings' || pathname === '/api/hermes/stt/settings') {
+      await route.fulfill(jsonResponse({ providers: [], activeProvider: 'browser' }))
+      return
+    }
+    if (pathname === '/api/hermes/realtime-model/settings') {
+      await route.fulfill(jsonResponse({ setting: null }))
+      return
+    }
+    if (pathname === '/api/hermes/update/status') {
+      await route.fulfill(jsonResponse({ status: 'idle', configured: false }))
+      return
+    }
+    if (pathname === '/api/update/identity') {
+      await route.fulfill(jsonResponse({ identity: null, drift: false }))
+      return
+    }
+
     if (pathname === '/health') {
       await route.fulfill(jsonResponse({ status: 'ok', webui_version: '0.5.23', node_version: '23.0.0' }))
       return
@@ -803,7 +824,9 @@ function makeSocket(url, options) {
       onceListeners.set(event, handlers)
       return this
     },
-    emit(event, payload) {
+    timeout() { return this },
+    emit(event, payload, ack) {
+      if (typeof ack === 'function') setTimeout(() => ack(null, { ok: true, data: { devices: [], events: [], runtime: { state: 'stopped' }, workflows: [] } }), 0)
       state.emitted.push({ event, payload })
       if (event === 'resume') {
         const sessionId = payload && payload.session_id

@@ -172,12 +172,6 @@ export function setupGlobalEkkoAgent(
     profiles: options.profiles ?? listProfileNamesFromDisk(),
     env: options.env,
   })
-  if (globalEkkoSetup.skillImport) {
-    logger.info(
-      { import: globalEkkoSetup.skillImport },
-      '[ekko-agent] imported Hermes profile skills',
-    )
-  }
   logger.info({
     dataDirectory: globalEkkoSetup.layout.rootDirectory,
     configPath: globalEkkoSetup.layout.configPath,

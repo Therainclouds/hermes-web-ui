@@ -14,6 +14,7 @@ const getSessionMock = vi.hoisted(() => vi.fn())
 const updateSessionMock = vi.hoisted(() => vi.fn())
 const handleCodingAgentSessionCommandMock = vi.hoisted(() => vi.fn(async () => undefined))
 const parseCodingAgentSessionCommandMock = vi.hoisted(() => vi.fn())
+const resolveAuthorizedProviderRuntimeCredentialsMock = vi.hoisted(() => vi.fn())
 
 vi.mock('../../packages/server/src/services/coding-agents/runtime/run-manager', () => ({
   codingAgentRunManager: managerMock,
@@ -41,6 +42,10 @@ vi.mock('../../packages/server/src/services/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }))
 
+vi.mock('../../packages/server/src/services/hermes/authorized-provider-credentials', () => ({
+  resolveAuthorizedProviderRuntimeCredentials: resolveAuthorizedProviderRuntimeCredentialsMock,
+}))
+
 vi.mock('../../packages/server/src/services/coding-agents/session-command', () => ({
   handleCodingAgentSessionCommand: handleCodingAgentSessionCommandMock,
   parseCodingAgentSessionCommand: parseCodingAgentSessionCommandMock,
@@ -54,6 +59,44 @@ describe('handleCodingAgentRun', () => {
     writeModelRunProfileTokenMock.mockResolvedValue(undefined)
     getSystemPromptMock.mockReturnValue('system prompt')
     parseCodingAgentSessionCommandMock.mockReturnValue(null)
+    resolveAuthorizedProviderRuntimeCredentialsMock.mockResolvedValue({
+      apiKey: 'studio-claude-oauth-access-token',
+    })
+  })
+
+  it('runs global Claude Code without requiring Studio OAuth credentials', async () => {
+    resolveAuthorizedProviderRuntimeCredentialsMock.mockRejectedValue(new Error('Studio OAuth is not configured'))
+    managerMock.runIdForSession.mockReturnValue('agent-session-1')
+    managerMock.isSessionLaunchCompatible.mockReturnValue(true)
+    sendCodingAgentRunInputMock.mockResolvedValue({ runId: 'agent-session-1' })
+
+    const { handleCodingAgentRun } = await import('../../packages/server/src/services/hermes/run-chat/handle-coding-agent-run')
+    const state = {
+      messages: [],
+      isWorking: false,
+      isAborting: false,
+      events: [],
+      queue: [],
+    }
+    const sessionMap = new Map([['session-1', state]])
+    const socket = {
+      join: vi.fn(),
+      emit: vi.fn(),
+    }
+
+    await handleCodingAgentRun({} as any, socket as any, {
+      session_id: 'session-1',
+      input: 'hello claude',
+      coding_agent_id: 'claude-code',
+      mode: 'global',
+    }, 'default', sessionMap as any)
+
+    expect(resolveAuthorizedProviderRuntimeCredentialsMock).not.toHaveBeenCalled()
+    expect(sendCodingAgentRunInputMock).toHaveBeenCalledWith(
+      'session-1',
+      'hello claude',
+      'system prompt',
+    )
   })
 
   it('restarts an existing coding-agent runner when the requested launch mode changes', async () => {

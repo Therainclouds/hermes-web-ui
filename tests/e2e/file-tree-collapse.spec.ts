@@ -48,7 +48,7 @@ test('collapses and restores the workspace file tree without closing the file vi
   await page.addInitScript(() => window.localStorage.setItem('hermes_locale', 'en'))
   const api = await mockHermesApi(page, { sessions: [session] })
 
-  await page.route(`**/api/studio/sessions/${sessionId}/workspace-files/list**`, async route => {
+  await page.route(`**/api/hermes/sessions/${sessionId}/workspace-files/list**`, async route => {
     const url = new URL(route.request().url())
     await route.fulfill({
       status: 200,
@@ -56,14 +56,14 @@ test('collapses and restores the workspace file tree without closing the file vi
       body: JSON.stringify({ entries, path: url.searchParams.get('path') || '', absolutePath: sessionWorkspace }),
     })
   })
-  await page.route(`**/api/studio/sessions/${sessionId}/workspace-file/diff**`, async route => {
+  await page.route(`**/api/hermes/sessions/${sessionId}/workspace-file/diff**`, async route => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({ patch: '', additions: 0, deletions: 0, binary: false, truncated: false }),
     })
   })
-  await page.route(`**/api/studio/sessions/${sessionId}/workspace-file/read**`, async route => {
+  await page.route(`**/api/hermes/sessions/${sessionId}/workspace-file/read**`, async route => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',

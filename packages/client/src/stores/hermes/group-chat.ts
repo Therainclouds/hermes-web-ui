@@ -1849,7 +1849,7 @@ const discussionStates = ref<Map<string, DiscussionState>>(new Map())
 
     // ─── Discussion Actions ─────────────────────────────────
     async function loadDiscussion(roomId: string): Promise<void> {
-        if (!roomId) return
+        if (!roomId || inviteGuest.value) return
         try {
             const { discussion } = await fetchDiscussionApi(roomId)
             if (discussion) {

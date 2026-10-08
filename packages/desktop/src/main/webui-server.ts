@@ -24,6 +24,7 @@ import {
   pythonDir,
   pythonEnvironmentDir,
 } from './paths'
+import { WebUiStartupDiagnostics } from './webui-startup-diagnostics'
 
 const DEFAULT_PORT = 8748
 const DEFAULT_READY_TIMEOUT_MS = 120_000
@@ -466,6 +467,12 @@ export async function startWebUiServer(port = DEFAULT_PORT): Promise<string> {
 }
 
 async function launchWebUiServer(webUiDirectory: string, entry: string, env: NodeJS.ProcessEnv, port: number): Promise<string> {
+  const diagnostics = new WebUiStartupDiagnostics(
+    join(webUiHome(), 'logs', 'desktop-startup.log'),
+    `Desktop ${app.getVersion()} ${process.platform}-${process.arch}; `
+    + `Electron ${process.versions.electron || '-'}; Node ${process.versions.node}\n`
+    + `Executable: ${process.execPath}\nWeb UI: ${webUiDirectory}\nEntry: ${entry}`,
+  )
   serverProc = spawn(process.execPath, [entry], {
     cwd: webUiDirectory,
     env,
@@ -477,6 +484,7 @@ async function launchWebUiServer(webUiDirectory: string, entry: string, env: Nod
   const bridgeStartup = createAgentBridgeStartupTracker()
 
   launchedProc.stdout?.on('data', (chunk: Buffer) => {
+    diagnostics.observeStdout(chunk)
     bridgeStartup.observe(chunk)
     try {
       process.stdout.write(`[webui] ${chunk}`)
@@ -486,6 +494,7 @@ async function launchWebUiServer(webUiDirectory: string, entry: string, env: Nod
   })
   launchedProc.stdout?.on('error', () => { /* EPIPE: ignore */ })
   launchedProc.stderr?.on('data', (chunk: Buffer) => {
+    diagnostics.observeStderr(chunk)
     bridgeStartup.observe(chunk)
     try {
       process.stderr.write(`[webui] ${chunk}`)
@@ -504,8 +513,12 @@ async function launchWebUiServer(webUiDirectory: string, entry: string, env: Nod
 
   const timeoutMs = readyTimeoutMs()
   const bridgeReady = bridgeStartup.wait(timeoutMs)
+  // A pre-readiness failure can return before the bridge timeout settles.
+  void bridgeReady.catch(() => undefined)
   const exitBeforeReady = new Promise<never>((_, reject) => {
-    launchedProc.once('exit', (code, signal) => {
+    launchedProc.once('error', reject)
+    // close follows drained stdout/stderr; exit can arrive before the traceback.
+    launchedProc.once('close', (code, signal) => {
       reject(new Error(`Web UI server exited before becoming ready code=${code} signal=${signal}`))
     })
   })
@@ -514,7 +527,7 @@ async function launchWebUiServer(webUiDirectory: string, entry: string, env: Nod
   } catch (err) {
     await terminateLaunchedProcess(launchedProc)
     if (serverProc === launchedProc) serverProc = null
-    throw err
+    throw diagnostics.failure(err)
   }
   const fullStartupTimeoutMs = fullStartupWaitMs()
   if (fullStartupTimeoutMs > 0) {

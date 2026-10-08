@@ -101,7 +101,7 @@
     (function() {
       try {
         const brightness = localStorage.getItem('hermes_brightness') || 'system';
-        const style = localStorage.getItem('hermes_style') || 'ink';
+        const style = localStorage.getItem('hermes_style') === 'comic' ? 'comic' : 'ink';
 
         // Resolve dark mode
         const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;

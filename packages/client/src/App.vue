@@ -5,6 +5,8 @@ import { darkTheme, NConfigProvider, NMessageProvider, NDialogProvider, NNotific
 import { useI18n } from 'vue-i18n'
 import { getThemeOverrides } from '@/styles/theme'
 import { useTheme } from '@/composables/useTheme'
+import { watchServerTtsSettingsHydration } from '@/composables/useTtsSettingsHydration'
+import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useKeyboard } from '@/composables/useKeyboard'
 import { useSessionSearch } from '@/composables/useSessionSearch'
 import { useAppStore } from '@/stores/hermes/app'
@@ -33,6 +35,7 @@ const { t, locale } = useI18n()
 const naiveLocale = computed(() => naiveLocaleFor(locale.value))
 const naiveRtl = computed(() => naiveRtlFor(locale.value))
 const appStore = useAppStore()
+const profilesStore = useProfilesStore()
 const route = useRoute()
 const { sessionSearchOpen } = useSessionSearch()
 
@@ -42,6 +45,10 @@ const themeOverrides = computed(() =>
 const naiveTheme = computed(() => isDark.value ? darkTheme : null)
 
 const isLoginPage = computed(() => route.name === 'login')
+watchServerTtsSettingsHydration({
+  isLoginPage: () => isLoginPage.value || route.meta?.inviteOnly === true,
+  activeProfileName: () => profilesStore.activeProfileName,
+})
 const isStandaloneChatPage = computed(() => route.meta?.standaloneChat === true)
 const isInviteOnlyPage = computed(() => route.meta?.inviteOnly === true)
 const usesPageSidebar = computed(() =>
@@ -123,7 +130,7 @@ useKeyboard()
   >
     <NMessageProvider>
       <AuthEventListener />
-      <USBEventBridge />
+      <USBEventBridge v-if="!isLoginPage && !isInviteOnlyPage" />
       <NDialogProvider>
         <NNotificationProvider>
           <div

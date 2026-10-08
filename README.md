@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>Hermes Studio</strong>
+  <strong>Quanthermes Studio</strong>
   <a href="./README_zh.md">中文</a>
 </p>
 
@@ -15,6 +15,20 @@
 <p align="center">
   <code>npm install -g @quanthermes/hermes-web-ui && hermes-web-ui start</code>
 </p>
+
+## Quanthermes upstream integration (2026-10-08)
+
+This fork keeps **Quanthermes Studio**, `@quanthermes/hermes-web-ui`, and its independent update channel. Useful changes are selectively adapted from [Ekko Studio](https://github.com/EKKOLearnAI/ekko-studio) at `86f60d24`; upstream branding, purchase links, release feeds, and default-agent changes are excluded.
+
+- Improved long-chat search and pagination, session menus, workspace downloads, and file previews with source-line navigation.
+- Profile-scoped model and voice settings; TTS startup hydration and Doubao speech speed.
+- Hermes bridge bootstrap, credentials, worker lifecycle, MCP instance isolation, and native Coding Agent context recovery, streaming, and TOML configuration fixes.
+- Updated optional Ekko runtime with bounded tools, memory recovery, parallel tools, and MCP compatibility. Extra JEV evaluations stay disabled by default; existing skills are preserved.
+- Preserved Expert Center, Experts Marketplace, USB discovery, meeting/scanner plugins, realtime voice, and the local device update system.
+
+**XiaoZhi defaults to this repository's Hermes OTA / `/global-agent` integration.** Missing or invalid `agentRuntime` selects `hermes`; `agentRuntime: "ekko"` explicitly selects the alternative runtime with separate sessions. The OTA camera/upload/analysis routes remain available. ESP32-C3 v1/v2 source defaults now select Hermes; existing saved choices remain intact. Published firmware binaries are unchanged, so an existing device may need Hermes selected in its configuration page. The separate local `/ws/device` firmware service is not substituted for this protocol. Hardware compatibility still requires a device-level acceptance test.
+
+See the [integration review and validation record](docs/harness/upstream-sync-20261008-review.md) for adopted changes, exclusions, performance measurements, and known test limitations. This source update does not publish a device release or change an OTA manifest.
 
 ## Core Capabilities
 
@@ -242,7 +256,7 @@ Connect an offline [XiaoZhi](https://github.com/78/xiaozhi-esp32) (小智) AI sp
 {
   "deviceId": "08:3A:8D:xx:xx:xx",
   "setupCode": "<at-least-24-random-chars>",
-  "websocketUrl": "ws://xiaozhi-ekko-gateway.local:8765/xiaozhi",
+  "websocketUrl": "ws://xiaozhi-gateway.local:8765/xiaozhi",
   "deviceToken": "<shared-secret>"
 }
 ```
@@ -710,10 +724,7 @@ hermes-web-ui start
 Single-container deployment with integrated Hermes Agent:
 
 ```bash
-# Use pre-built image (Recommended)
-WEBUI_IMAGE=ekkoye8888/hermes-web-ui docker compose up -d
-
-# Or build from source
+# Build this repository from source
 docker compose up -d --build
 
 docker compose logs -f hermes-webui

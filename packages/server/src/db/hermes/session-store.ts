@@ -3,7 +3,7 @@
  * Uses the same ensureTable/getDb pattern as usage-store.ts.
  */
 import { isSqliteAvailable, getDb } from '../index'
-import { COMPRESSION_SNAPSHOT_TABLE, SESSIONS_TABLE, MESSAGES_TABLE } from './schemas'
+import { SESSION_CATEGORIES_TABLE, COMPRESSION_SNAPSHOT_TABLE, SESSIONS_TABLE, MESSAGES_TABLE } from './schemas'
 import { normalizeMessageContentForStorageRole } from './message-content'
 import { copyCompressionSnapshot } from './compression-snapshot'
 
@@ -74,12 +74,17 @@ export interface HermesSessionSearchRow extends HermesSessionRow {
   rank: number
 }
 
-export interface SessionSearchOptions {
+export interface SessionListOptions {
+  offset?: number
+  categoryId?: number | null
+  includeSessionIds?: string[]
   sources?: string[]
   profiles?: string[]
   includeArchived?: boolean
   excludeSessionIds?: string[]
 }
+
+export type SessionSearchOptions = SessionListOptions
 
 export interface HermesSessionDetailRow extends HermesSessionRow {
   messages: HermesMessageRow[]
@@ -472,10 +477,16 @@ export function setSessionArchived(id: string, archived: boolean): boolean {
   return result.changes > 0
 }
 
-export function listSessions(profile?: string, source?: string, limit = 2000): HermesSessionRow[] {
+export function listSessions(
+  profile?: string,
+  source?: string,
+  limit = 2000,
+  options: SessionListOptions = {},
+): HermesSessionRow[] {
   if (!isSqliteAvailable()) return []
+  const filters = sessionFilterSql(profile, source ? { ...options, sources: [source] } : options)
+  if (!filters) return []
   const db = getDb()!
-  const profileFilter = profile?.trim()
 
   // Use a subquery to generate preview from first user message if not set
   const sql = `
@@ -515,24 +526,78 @@ export function listSessions(profile?: string, source?: string, limit = 2000): H
       ) AS parent_last_message_role
     FROM ${SESSIONS_TABLE} s
     LEFT JOIN ${SESSIONS_TABLE} p ON p.id = s.parent_session_id
-    WHERE 1 = 1
-      ${profileFilter ? 'AND s.profile = ?' : ''}
-      ${source ? 'AND s.source = ?' : ''}
-    ORDER BY s.last_active DESC
-    LIMIT ?
+    WHERE ${filters.sql}
+    ORDER BY s.last_active DESC, s.id DESC
+    LIMIT ? OFFSET ?
   `
 
-  const params: any[] = []
-  if (profileFilter) {
-    params.push(profileFilter)
-  }
-  if (source) {
-    params.push(source)
-  }
-  params.push(limit)
-
-  const rows = db.prepare(sql).all(...params) as Record<string, unknown>[]
+  const offset = Number.isSafeInteger(options.offset) && options.offset! > 0 ? options.offset! : 0
+  const rows = db.prepare(sql).all(...filters.params, limit, offset) as Record<string, unknown>[]
   return rows.map(mapSessionRow)
+}
+
+export function countSessions(
+  profile?: string,
+  source?: string,
+  options: SessionListOptions = {},
+): number {
+  if (!isSqliteAvailable()) return 0
+  const filters = sessionFilterSql(profile, source ? { ...options, sources: [source] } : options)
+  if (!filters) return 0
+  const row = getDb()!.prepare(`SELECT COUNT(*) AS total FROM ${SESSIONS_TABLE} s WHERE ${filters.sql}`)
+    .get(...filters.params) as { total: number }
+  return Number(row.total)
+}
+
+function sessionFilterSql(
+  profile: string | null | undefined,
+  options: SessionListOptions,
+): { sql: string; params: string[] } | null {
+  const clauses: string[] = []
+  const params: string[] = []
+  const profileFilter = profile?.trim()
+  if (profileFilter) {
+    clauses.push('s.profile = ?')
+    params.push(profileFilter)
+  } else if (options.profiles !== undefined) {
+    const profiles = [...new Set(options.profiles.map(value => value.trim()).filter(Boolean))]
+    if (profiles.length === 0) return null
+    clauses.push(`s.profile IN (${profiles.map(() => '?').join(', ')})`)
+    params.push(...profiles)
+  }
+
+  if (options.sources !== undefined) {
+    const sources = [...new Set(options.sources.map(value => value.trim()).filter(Boolean))]
+    if (sources.length === 0) return null
+    clauses.push(`s.source IN (${sources.map(() => '?').join(', ')})`)
+    params.push(...sources)
+  }
+  if (options.includeArchived === false) {
+    clauses.push('COALESCE(s.is_archived, 0) = 0')
+  }
+  if (options.categoryId === null) {
+    clauses.push(`(s.category_id IS NULL OR NOT EXISTS (SELECT 1 FROM ${SESSION_CATEGORIES_TABLE} c WHERE c.id = s.category_id))`)
+  } else if (options.categoryId !== undefined) {
+    clauses.push('s.category_id = ?')
+    params.push(String(options.categoryId))
+  }
+  if (options.includeSessionIds !== undefined) {
+    const includedIds = [...new Set(options.includeSessionIds.map(value => value.trim()).filter(Boolean))]
+    if (!includedIds.length) return null
+    clauses.push(`s.id IN (${includedIds.map(() => '?').join(', ')})`)
+    params.push(...includedIds)
+  }
+
+  const excludedIds = [...new Set((options.excludeSessionIds || []).map(value => value.trim()).filter(Boolean))]
+  if (excludedIds.length > 0) {
+    clauses.push(`s.id NOT IN (${excludedIds.map(() => '?').join(', ')})`)
+    params.push(...excludedIds)
+  }
+
+  return {
+    sql: clauses.length > 0 ? clauses.join(' AND ') : '1 = 1',
+    params,
+  }
 }
 
 function escapeSessionSearchLike(value: string): string {

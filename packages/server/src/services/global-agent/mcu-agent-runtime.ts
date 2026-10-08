@@ -5,11 +5,11 @@ import { MCU_VOICE_SYSTEM_INSTRUCTIONS } from './mcu-voice-instructions'
 
 export type McuAgentRuntime = 'ekko' | 'hermes'
 
-export const DEFAULT_MCU_AGENT_RUNTIME: McuAgentRuntime = 'ekko'
+export const DEFAULT_MCU_AGENT_RUNTIME: McuAgentRuntime = 'hermes'
 
 export function normalizeMcuAgentRuntime(value: unknown): McuAgentRuntime {
-  return typeof value === 'string' && value.trim().toLowerCase() === 'hermes'
-    ? 'hermes'
+  return typeof value === 'string' && value.trim().toLowerCase() === 'ekko'
+    ? 'ekko'
     : DEFAULT_MCU_AGENT_RUNTIME
 }
 

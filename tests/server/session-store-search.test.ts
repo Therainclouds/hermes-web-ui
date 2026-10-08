@@ -78,6 +78,79 @@ describe('session store search', () => {
     }))
   })
 
+  it('filters hidden session sources before applying the list limit', async () => {
+    const { createSession, listSessions } = await import(
+      '../../packages/server/src/db/hermes/session-store'
+    )
+    createSession({ id: 'visible-chat', profile: 'default', source: 'cli', title: 'Visible chat' })
+    createSession({ id: 'latest-workflow', profile: 'default', source: 'workflow', title: 'Workflow node' })
+    db.prepare('UPDATE sessions SET last_active = 100 WHERE id = ?').run('visible-chat')
+    db.prepare('UPDATE sessions SET last_active = 200 WHERE id = ?').run('latest-workflow')
+
+    const results = listSessions(undefined, undefined, 1, {
+      sources: ['api_server', 'cli', 'coding_agent', 'global_agent'],
+      profiles: ['default'],
+      includeArchived: false,
+    })
+
+    expect(results).toHaveLength(1)
+    expect(results[0]).toEqual(expect.objectContaining({ id: 'visible-chat', source: 'cli' }))
+  })
+
+  it('paginates after visibility filters with stable ordering for equal activity times', async () => {
+    const { createSession, listSessions, countSessions } = await import(
+      '../../packages/server/src/db/hermes/session-store'
+    )
+    for (const id of ['chat-a', 'chat-b', 'chat-c', 'archived', 'deleted']) {
+      createSession({ id, profile: 'default', source: 'cli' })
+    }
+    createSession({ id: 'other-profile', profile: 'travel', source: 'cli' })
+    createSession({ id: 'workflow', profile: 'default', source: 'workflow' })
+    db.prepare('UPDATE sessions SET last_active = 100').run()
+    db.prepare("UPDATE sessions SET is_archived = 1 WHERE id = 'archived'").run()
+    const options = {
+      profiles: ['default'], sources: ['cli'], includeArchived: false, excludeSessionIds: ['deleted'],
+    }
+    const first = listSessions(undefined, undefined, 2, options)
+    const second = listSessions(undefined, undefined, 2, { ...options, offset: 2 })
+    expect(first.map(session => session.id)).toEqual(['chat-c', 'chat-b'])
+    expect(second.map(session => session.id)).toEqual(['chat-a'])
+    expect(listSessions(undefined, undefined, 2, { ...options, offset: 3 })).toEqual([])
+    expect(countSessions(undefined, undefined, { ...options, offset: 100 })).toBe(3)
+    expect(countSessions(undefined, undefined, { ...options, profiles: [] })).toBe(0)
+    expect(countSessions('travel', 'cli', { includeArchived: false })).toBe(1)
+  })
+
+  it('pages each category and pinned selection independently before applying the limit', async () => {
+    const { createSession, listSessions, countSessions } = await import('../../packages/server/src/db/hermes/session-store')
+    const { createSessionCategory, setSessionCategory } = await import('../../packages/server/src/db/hermes/session-category-store')
+    const category = createSessionCategory('Work')
+    for (let index = 0; index < 25; index++) {
+      const id = `work-${String(index).padStart(2, '0')}`
+      createSession({ id, profile: 'default', source: 'cli' })
+      setSessionCategory(id, category.id)
+      createSession({ id: `none-${index}`, profile: 'default', source: 'cli' })
+    }
+    db.prepare('UPDATE sessions SET last_active = 100').run()
+    const options = { categoryId: category.id, excludeSessionIds: ['work-24'], includeArchived: false }
+    const first = listSessions(undefined, undefined, 10, options)
+    const next = listSessions(undefined, undefined, 10, { ...options, offset: 10 })
+    expect(first.map(row => row.id)).toEqual(Array.from({ length: 10 }, (_, i) => `work-${23 - i}`))
+    expect(next.map(row => row.id)).toEqual(Array.from({ length: 10 }, (_, i) => `work-${String(13 - i).padStart(2, '0')}`))
+    const none = listSessions(undefined, undefined, 10, { categoryId: null })
+    expect(none).toHaveLength(10)
+    expect(none.every(row => row.id.startsWith('none-'))).toBe(true)
+    expect(listSessions(undefined, undefined, 10, { includeSessionIds: ['work-24'] }).map(row => row.id)).toEqual(['work-24'])
+    expect(listSessions(undefined, undefined, 10, { includeSessionIds: [] })).toEqual([])
+    expect(countSessions(undefined, undefined, options)).toBe(24)
+    expect(countSessions(undefined, undefined, { ...options, offset: 20 })).toBe(24)
+    expect(countSessions(undefined, undefined, { categoryId: null })).toBe(25)
+    expect(countSessions(undefined, undefined, { includeSessionIds: ['work-24', 'missing'] })).toBe(1)
+    expect(countSessions(undefined, undefined, { includeSessionIds: [] })).toBe(0)
+    db.prepare("UPDATE sessions SET category_id = 999 WHERE id = 'work-00'").run()
+    expect(countSessions(undefined, undefined, { categoryId: null })).toBe(26)
+  })
+
   it('updates display-only message content without changing model context content', async () => {
     const {
       addMessage,

@@ -20,6 +20,7 @@ from bridge_runtime import (
     _jsonable,
     _mcp_discovery_functions,
     _mcp_runtime_parts,
+    _load_yaml_module,
     _positive_int,
     _profile_env,
     _profile_home,
@@ -333,7 +334,7 @@ class BridgeServer:
 
     def _read_mcp_config(self, profile=None):
         """Read config.yaml for the given profile."""
-        import yaml
+        yaml = _load_yaml_module()
         config_path = _profile_home(profile) / "config.yaml"
         try:
             with open(config_path, encoding="utf-8") as f:
@@ -343,7 +344,6 @@ class BridgeServer:
 
     def _save_mcp_config(self, cfg, profile=None):
         """Save config.yaml for the given profile using atomic write."""
-        import yaml
         from utils import atomic_yaml_write
         config_path = _profile_home(profile) / "config.yaml"
         config_path.parent.mkdir(parents=True, exist_ok=True)

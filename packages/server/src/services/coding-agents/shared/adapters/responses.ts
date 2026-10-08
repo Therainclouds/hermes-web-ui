@@ -171,6 +171,15 @@ for (const [namespace, tools] of HERMES_STUDIO_SPLIT_MCP_TOOLS) {
   for (const tool of tools) HERMES_STUDIO_MCP_TOOL_NAMESPACES.set(tool.name, namespace)
 }
 
+// These tools are exposed by the dedicated, context-scoped interaction server.
+// Restore only the return-call namespace; do not synthesize tools or expand
+// permissions when the MCP server has intentionally omitted them.
+for (const prefix of ['ekko', 'hermes']) {
+  for (const suffix of ['update_plan', 'clarify']) {
+    HERMES_STUDIO_MCP_TOOL_NAMESPACES.set(`${prefix}_studio_${suffix}`, `mcp__${prefix}_studio_interaction`)
+  }
+}
+
 function inputSchema(properties: Record<string, unknown> = {}, required: string[] = []) {
   return {
     type: 'object',
@@ -366,6 +375,67 @@ function truncateResponsesToolOutputText(output: string): string {
   ].join('\n')
 }
 
+function inlineResponseImageDataUrl(part: any): string {
+  if (!part || typeof part !== 'object' || part.type !== 'input_image') return ''
+  const imageUrl = typeof part.image_url === 'string'
+    ? part.image_url
+    : typeof part.image_url?.url === 'string'
+      ? part.image_url.url
+      : ''
+  return /^data:image\//i.test(imageUrl) ? imageUrl : ''
+}
+
+function historicalImageOmission(originalBytes: number): any {
+  return {
+    type: 'input_text',
+    text: `[Hermes Web UI: historical inline image omitted before provider request; original_bytes=${originalBytes}]`,
+  }
+}
+
+/**
+ * Remove every inline image before the latest user item. The latest user item
+ * and every item produced after it form the active Codex turn, so all of their
+ * images remain available to the model. The transformation is copy-on-write.
+ */
+export function stripHistoricalResponsesInlineImages(body: any): any {
+  const input = responseInputItems(body)
+  if (!input.length) return body
+
+  let currentTurnStart = -1
+  for (let index = input.length - 1; index >= 0; index -= 1) {
+    if (input[index]?.role === 'user') {
+      currentTurnStart = index
+      break
+    }
+  }
+  if (currentTurnStart <= 0) return body
+
+  let changed = false
+  const nextInput = input.map((item: any, itemIndex: number) => {
+    if (itemIndex >= currentTurnStart || !item || typeof item !== 'object') return item
+
+    let nextItem: any = item
+    for (const key of ['content', 'output'] as const) {
+      if (!Array.isArray(item[key])) continue
+      let partsChanged = false
+      const nextParts = item[key].map((part: any) => {
+        const imageUrl = inlineResponseImageDataUrl(part)
+        if (!imageUrl) return part
+        partsChanged = true
+        changed = true
+        return historicalImageOmission(utf8ByteLength(imageUrl))
+      })
+      if (partsChanged) {
+        if (nextItem === item) nextItem = { ...item }
+        nextItem[key] = nextParts
+      }
+    }
+    return nextItem
+  })
+
+  return changed ? { ...body, input: nextInput } : body
+}
+
 export function truncateResponsesToolOutputs(body: any): any {
   const input = responseInputItems(body)
   if (!input.length) return body
@@ -449,7 +519,9 @@ export function responseToolNamespaceForName(name: unknown): string | undefined 
 
 export function normalizeResponseFunctionCall(name: unknown, argumentsValue: unknown): { name: string; arguments: string; namespace?: string } {
   const rawName = String(name || 'tool')
-  const rawArguments = String(argumentsValue || '{}')
+  // An empty string starts streamed arguments; adding {} would corrupt the
+  // JSON when the client appends subsequent argument deltas.
+  const rawArguments = String(argumentsValue ?? '{}')
   const namespace = normalizedNamespaceName(rawName)
   if (namespace.startsWith('mcp__')) {
     const parsed = safeJsonParse(rawArguments)
@@ -574,10 +646,16 @@ function chatRoleForResponsesRole(role: unknown): string {
   return 'user'
 }
 
-function responsesReasoningText(item: any): string {
+function inlineReasoningText(item: any): string {
   for (const field of ['reasoning_content', 'reasoning', 'reasoning_text']) {
     if (typeof item?.[field] === 'string' && item[field]) return item[field]
   }
+  return ''
+}
+
+function responsesReasoningText(item: any): string {
+  const inline = inlineReasoningText(item)
+  if (inline) return inline
 
   const textParts = (value: unknown): string[] => {
     const entries = Array.isArray(value) ? value : [value]
@@ -620,7 +698,9 @@ function responsesInputToChatMessages(body: any, target: ResponsesAdapterTarget)
       messages.push({
         role: 'assistant',
         content: null,
-        ...(preserveReasoningContent && pendingReasoning
+        // Synthetic/replayed tool calls may have no reasoning item. Keep the
+        // required field present, matching Ekko's Chat Completions adapter.
+        ...(preserveReasoningContent
           ? { reasoning_content: pendingReasoning }
           : {}),
         tool_calls: pendingToolCalls,
@@ -692,8 +772,8 @@ function responsesInputToChatMessages(body: any, target: ResponsesAdapterTarget)
       messages.push({
         role,
         content: responseContentToOpenAiChat(item.content),
-        ...(role === 'assistant' && preserveReasoningContent && pendingReasoning
-          ? { reasoning_content: pendingReasoning }
+        ...(role === 'assistant' && preserveReasoningContent
+          ? { reasoning_content: inlineReasoningText(item) || pendingReasoning }
           : {}),
       })
       pendingReasoning = ''
@@ -761,6 +841,11 @@ export function responsesToOpenAiChat(body: any, target: ResponsesAdapterTarget,
     ...(typeof body?.top_p === 'number' ? { top_p: body.top_p } : {}),
     ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
     ...(tools?.length ? { tools } : {}),
+    // OpenAI-compatible streaming providers (notably vLLM) omit token usage
+    // from the final SSE chunk unless the client explicitly requests it.
+    // Without this the Responses→Chat Completions conversion never receives a
+    // usage frame, so the turn lands with zero/missing token accounting.
+    ...(stream ? { stream_options: { include_usage: true } } : {}),
     stream,
   }
 }

@@ -11,10 +11,10 @@ function readFirmwareSources(): string[] {
 }
 
 describe('MCU firmware remote reliability', () => {
-  it('defaults to Ekko and persists an explicit Hermes selection', () => {
+  it('defaults to Hermes and preserves an explicit runtime selection', () => {
     for (const source of readFirmwareSources()) {
-      expect(source).toContain('bool hermesAgentSelected = false;')
-      expect(source).toContain('prefs.getBool("agent_hermes", false)')
+      expect(source).toContain('bool hermesAgentSelected = true;')
+      expect(source).toContain('prefs.getBool("agent_hermes", true)')
       expect(source).toContain('prefs.putBool("agent_hermes", hermesAgentSelected)')
       expect(source).toContain("action='/device/agent'")
       expect(source).toContain("name='runtime' value='ekko'")

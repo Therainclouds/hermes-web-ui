@@ -370,7 +370,7 @@ test('disables category creation until the destination list finishes loading', a
   const categoriesReady = new Promise<void>((resolve) => {
     releaseCategories = resolve
   })
-  await page.route('**/api/studio/session-categories', async route => {
+  await page.route('**/api/hermes/session-categories', async route => {
     if (route.request().method() === 'GET') {
       await categoriesReady
       await route.fallback()
@@ -391,12 +391,12 @@ test('disables category creation until the destination list finishes loading', a
   await createOption.evaluate((element: HTMLElement) => element.click())
   await expect(page.getByRole('dialog').filter({ hasText: 'Create new category' })).toHaveCount(0)
   expect(api.requests.filter(request =>
-    request.method === 'POST' && request.pathname === '/api/studio/session-categories',
+    request.method === 'POST' && request.pathname === '/api/hermes/session-categories',
   )).toHaveLength(0)
 
   const categoryResponse = page.waitForResponse(response => (
     response.request().method() === 'GET' &&
-    new URL(response.url()).pathname === '/api/studio/session-categories'
+    new URL(response.url()).pathname === '/api/hermes/session-categories'
   ))
   releaseCategories()
   await categoryResponse
@@ -421,7 +421,7 @@ test('disables category creation until the destination list finishes loading', a
   await expect(createDialog).toBeHidden()
   await expect(generalNotes.locator('.session-item-category-tag')).toHaveText('After Load')
   const createRequests = api.requests.filter(request =>
-    request.method === 'POST' && request.pathname === '/api/studio/session-categories',
+    request.method === 'POST' && request.pathname === '/api/hermes/session-categories',
   )
   expect(createRequests).toHaveLength(1)
   expect(JSON.parse(createRequests[0]?.postData || '{}')).toEqual({ name: 'After Load' })
@@ -469,7 +469,7 @@ test('creates a category and moves the session from its context menu', async ({ 
     })
   })
   expect(api.requests.filter(request =>
-    request.method === 'POST' && request.pathname === '/api/studio/session-categories',
+    request.method === 'POST' && request.pathname === '/api/hermes/session-categories',
   )).toHaveLength(0)
   await expect(createDialog).toBeVisible()
   await categoryNameInput.press('Enter')
@@ -480,12 +480,12 @@ test('creates a category and moves the session from its context menu', async ({ 
   await expect(page.getByRole('link', { name: /General Notes/ }).first().locator('.session-item-category-tag')).toHaveText('Client Work')
 
   const createRequests = api.requests.filter(request =>
-    request.method === 'POST' && request.pathname === '/api/studio/session-categories',
+    request.method === 'POST' && request.pathname === '/api/hermes/session-categories',
   )
   expect(createRequests).toHaveLength(1)
   expect(JSON.parse(createRequests[0]?.postData || '{}')).toEqual({ name: 'Client Work' })
   const moveRequests = api.requests.filter(request =>
-    request.method === 'POST' && request.pathname === '/api/studio/sessions/general-session/category',
+    request.method === 'POST' && request.pathname === '/api/hermes/sessions/general-session/category',
   )
   expect(moveRequests).toHaveLength(1)
   expect(JSON.parse(moveRequests[0]?.postData || '{}')).toEqual({ categoryId: 2 })
@@ -499,7 +499,7 @@ test('reports partial success and retries moving without recreating the category
     sessions: [sessionSummary('general-session', 'General Notes', null, 100)],
   })
   let moveAttempts = 0
-  await page.route('**/api/studio/sessions/general-session/category', async route => {
+  await page.route('**/api/hermes/sessions/general-session/category', async route => {
     if (route.request().method() !== 'POST') {
       await route.fallback()
       return
@@ -539,7 +539,7 @@ test('reports partial success and retries moving without recreating the category
   await expect(categoryNameInput).toHaveValue('Client Work')
   await expect(generalNotes.locator('.session-item-category-tag')).toHaveText('Uncategorized')
   expect(api.requests.filter(request =>
-    request.method === 'POST' && request.pathname === '/api/studio/session-categories',
+    request.method === 'POST' && request.pathname === '/api/hermes/session-categories',
   )).toHaveLength(1)
   expect(moveAttempts).toBe(1)
 
@@ -548,7 +548,7 @@ test('reports partial success and retries moving without recreating the category
   await expect(page.getByText('Category "Client Work" was created, but the session was not moved. Try again to move it.').last()).toBeVisible()
   await expect(createDialog).toBeVisible()
   expect(api.requests.filter(request =>
-    request.method === 'POST' && request.pathname === '/api/studio/session-categories',
+    request.method === 'POST' && request.pathname === '/api/hermes/session-categories',
   )).toHaveLength(1)
 
   await categoryNameInput.press('Enter')
@@ -556,7 +556,7 @@ test('reports partial success and retries moving without recreating the category
   await expect(createDialog).toBeHidden()
   await expect(generalNotes.locator('.session-item-category-tag')).toHaveText('Client Work')
   expect(api.requests.filter(request =>
-    request.method === 'POST' && request.pathname === '/api/studio/session-categories',
+    request.method === 'POST' && request.pathname === '/api/hermes/session-categories',
   )).toHaveLength(1)
   expect(moveAttempts).toBe(3)
 })

@@ -125,9 +125,8 @@ describe('outbound relay client', () => {
       .filter(([event]: [string]) => event === 'run')
       .at(-1)
     expect(runCall?.[1]).toMatchObject({
-      source: 'coding_agent',
+      source: 'global_agent',
       session_source: 'global_agent',
-      coding_agent_id: 'ekko-agent',
       instructions: MCU_VOICE_SYSTEM_INSTRUCTIONS,
     })
     const queueId = runCall?.[1]?.queue_id
@@ -859,7 +858,7 @@ describe('outbound relay client', () => {
     await vi.waitFor(() => {
       expect(ttsSignal?.aborted).toBe(true)
     })
-    expect(localSocket.emit).toHaveBeenCalledWith('abort', { session_id: 'mcu-device-research-ekko' })
+    expect(localSocket.emit).toHaveBeenCalledWith('abort', { session_id: 'mcu-device-research-hermes' })
     expect(remoteSocket.emit).not.toHaveBeenCalledWith('audio.enqueue', expect.any(Object))
   })
 
