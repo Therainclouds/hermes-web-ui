@@ -21,17 +21,16 @@ import scannerPlugin from './scanner'
 import gradingPlugin from './grading'
 import knowledgePlugin from './knowledge'
 
+// 内置插件**全部默认关闭**：fresh 安装 / 未做过显式选择时，侧边栏不会出现
+// 「扫描」「批改模式」「知识库」入口。需要时到 设置 → 插件管理 手动开启，
+// 选择结果记在 localStorage `hermes.plugins.enabled`（有 override 时以它为准）。
+// 插件代码仍然随构建产物一起存在，可随时启用，不做编译期下线。
 export const BUILTIN_PLUGINS: PluginRegistration[] = [
-  {
-    plugin: scannerPlugin,
-    /** 默认启用；用户可在 localStorage `hermes.plugins.enabled` 关闭。 */
-    enabledByDefault: true,
-  },
-  // Grading 依赖 Scanner，二者默认启用；这样启动后主页面即可见「批改模式」，
-  // 无需进入 Settings 的插件管理页手动开启。
-  { plugin: gradingPlugin, enabledByDefault: true },
-  // Knowledge — RAG vaults for document search. 默认启用。
-  { plugin: knowledgePlugin, enabledByDefault: true },
+  { plugin: scannerPlugin, enabledByDefault: false },
+  // Grading（批改模式）依赖 Scanner，同样默认关闭。
+  { plugin: gradingPlugin, enabledByDefault: false },
+  // Knowledge — RAG vaults for document search. 默认关闭。
+  { plugin: knowledgePlugin, enabledByDefault: false },
 ]
 
 /**

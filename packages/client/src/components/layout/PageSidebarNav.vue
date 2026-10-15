@@ -22,11 +22,11 @@ const { t } = useI18n()
 const router = useRouter()
 const { openSessionSearch } = useSessionSearch()
 
-// 批改模式：依赖扫描插件与批改插件都已启用（二者默认启用），启动后在主页面
-// 的「新建对话」旁直接显示，无需进入 Settings 的插件管理页。点击进入左右
-// 分屏的批改工作台（/hermes/grading-batch）。
+// 批改模式：依赖扫描插件与批改插件都已启用。两个插件都默认关闭，只有在
+// 设置 → 插件管理里分别显式开启后，主页面「新建对话」旁才会出现入口。点击
+// 进入左右分屏的批改工作台（/hermes/grading-batch）。
 const gradingAvailable = computed(
-  () => isPluginEnabled('paper-grading', true) && isPluginEnabled('scanner', true),
+  () => isPluginEnabled('paper-grading', false) && isPluginEnabled('scanner', false),
 )
 
 function openGrading() {
